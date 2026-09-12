@@ -1,0 +1,20 @@
+{
+  "name": "nightshift",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Autonomous engineering control plane: controlled delegation, deterministic verification, model routing, and reversible decisions for frontier coding agents.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wildorder/nightshift.git"
+  },
+  "keywords": [],
+  "author": "",
+  "bugs": {
+    "url": "https://github.com/wildorder/nightshift/issues"
+  },
+  "homepage": "https://github.com/wildorder/nightshift#readme"
+}
