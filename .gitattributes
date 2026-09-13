@@ -1,0 +1,23 @@
+# Line endings are LF in the repository *and* in every working tree.
+#
+# Without this, a Windows checkout with the default `core.autocrlf=true` — which
+# is what the GitHub Windows runner uses — converts LF to CRLF on checkout, and
+# Biome's `lineEnding: "lf"` then reports every single file as unformatted. That
+# is a real failure the Windows CI leg caught on the first run; `eol=lf` is the
+# fix, rather than relaxing the formatter.
+*               text=auto eol=lf
+
+# Binary formats must never be line-ending converted or diffed as text.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.pdf           binary
+*.zip           binary
+*.gz            binary
+*.woff          binary
+*.woff2         binary
+
+# Generated; keep it out of diffs and reviews without making it untracked.
+package-lock.json   -diff linguist-generated=true

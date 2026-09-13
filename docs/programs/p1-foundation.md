@@ -43,16 +43,20 @@ surface it.
 
 ### Heads-up for P2 (start now, these take calendar time)
 
-These are not P1 blockers, but P2 cannot start without them, and P2 is next.
+These are not P1 blockers. **Check current state before treating any of them as
+outstanding work** — the AWS CLI is installed and this machine already has
+sixteen named profiles configured, including `wildorder`, `sandbox`, `wingit`
+and several SSO sessions. The open items below are decisions and one-time setup
+steps, not "create an account from nothing".
 
-| # | Prerequisite | Notes |
-|---|--------------|-------|
-| H-P2-01 | A dedicated **development** AWS account, isolated from anything production | P2's verification is deploy, smoke, destroy. It must be safe to destroy everything in the account. |
-| H-P2-02 | An IAM identity for CLI use in that account (IAM Identity Center / SSO recommended) with a named profile, plus a default region | The implementing session needs `aws sts get-caller-identity` to succeed under that profile. Never paste long-lived keys into the repo or into agent context. |
-| H-P2-03 | `cdk bootstrap` run once in that account and region | Required before the first `cdk deploy`. |
-| H-P2-04 | A billing budget alarm on the account | Guards against a runaway smoke test. |
-| H-P2-05 | Ratify **O-01**: control-plane compute/API shape and client authentication | Recommendation on file: Lambda behind an API Gateway HTTP API with IAM SigV4 auth; the local MCP server and CLI sign with the user's AWS credentials. |
-| H-P2-06 | Decide whether this same account will later host real model spend. Bedrock model access is enabled per region and per model and takes time. | Needed by P6, but the account choice is made now. |
+| # | Item | Notes |
+|---|------|-------|
+| H-P2-01 | **Decide which existing AWS account P2 targets.** | The only hard requirement is that it be safe to destroy everything in it, because P2's verification is deploy, smoke, destroy. `sandbox` and `wildorder` both already have profiles; which one is the human's call, not something to infer from a profile name. |
+| H-P2-02 | Confirm `aws sts get-caller-identity` succeeds under the chosen profile, and that it has a default region | If it is an SSO profile, this may just mean `aws sso login`. Never paste long-lived keys into the repo or into agent context. |
+| H-P2-03 | Confirm whether `cdk bootstrap` has already run in that account and region | `aws cloudformation describe-stacks --stack-name CDKToolkit` answers this. Bootstrap only if it has not. |
+| H-P2-04 | Confirm a billing budget alarm exists on the account | Guards against a runaway smoke test. May already be in place. |
+| H-P2-05 | Ratify **O-01**: control-plane compute/API shape and client authentication | Recommendation on file: Lambda behind an API Gateway HTTP API with IAM SigV4 auth; the local MCP server and CLI sign with the user's AWS credentials. This one is a genuine open decision (architecture §3). |
+| H-P2-06 | Decide whether the same account will later carry Bedrock model spend | Model access is enabled per region and per model. Needed by P6, but the account choice is made now. |
 
 ## 3. Ratified decisions
 

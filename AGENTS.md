@@ -175,6 +175,10 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
   contract runs in CI.
 - Scripts must run on Windows (Git Bash) and Linux. Repo scripts are Node
   scripts, not shell scripts.
+- `.gitattributes` pins `eol=lf` for every text file, so the working tree is LF
+  on every platform regardless of a developer's `core.autocrlf`. Biome's
+  `lineEnding: "lf"` depends on it: a CRLF checkout makes the formatter reject
+  every file in the repository. Do not relax the formatter to work around it.
 - CDK stacks are named `nightshift-<stage>-control-plane`. `stage` defaults to
   `dev` and is overridden with `-c stage=...`.
 - **Vitest project configs do not inherit the root `test` options.** A package
