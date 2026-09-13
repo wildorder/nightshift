@@ -7,7 +7,7 @@
  */
 import { z } from "zod";
 import { ExecutionNodeIdSchema, JobContractIdSchema } from "../ids.js";
-import { IsoTimestampSchema, runScoped, ScopeSchema } from "./common.js";
+import { CommitShaSchema, IsoTimestampSchema, runScoped, ScopeSchema } from "./common.js";
 
 /** `sub-program` carries its own orchestrator and its own delegation authority. */
 export const ExecutionNodeKindSchema = z.enum(["program", "sub-program", "job"]);
@@ -50,6 +50,13 @@ export const ExecutionNodeSchema = z.strictObject({
   status: ExecutionNodeStatusSchema,
   /** Set when `kind` is `job`; `null` for program and sub-program nodes. */
   jobContractId: JobContractIdSchema.nullable(),
+  /**
+   * The commit this node's work currently sits on, once it has produced one.
+   * `null` before the worker commits. Recording it here is what lets
+   * verification be matched to the node from the two records alone, rather than
+   * the caller asserting they belong together.
+   */
+  commitSha: CommitShaSchema.nullable(),
   createdAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
 });

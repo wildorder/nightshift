@@ -133,6 +133,7 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     },
     status: "verified",
     jobContractId: EXAMPLE_IDS.jobContractId,
+    commitSha: COMMIT,
     createdAt: AT,
     updatedAt: AT_LATER,
   },
