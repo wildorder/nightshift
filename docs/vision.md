@@ -222,7 +222,7 @@ so that a Studio is a UI over existing APIs rather than a new backend project.
 Infrastructure code is production code and carries the same testing requirements
 as application code.
 
-## Scope: Phase 1
+## Scope: v1
 
 The first meaningful milestone is not AgentCore, routing, or recursion. It is:
 
@@ -261,7 +261,7 @@ the v1 stages are grouped into programs, and
 Legacy Nightshift remains reachable only through its tags and history, for
 deliberate human reference.
 
-## Scope: Phase 2+
+## Scope: After v1
 
 Learned routing trained on the v1 outcome dataset; Nightshift Studio as a pure
 client of the v1 APIs; multi-user and multi-tenant identity beyond the single-user

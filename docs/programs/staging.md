@@ -3,7 +3,7 @@
 > **Recommendation, not decree.** `00-source-program-plan.md` defines eleven
 > stages (0–10). This document groups them into **nine programs**, each with a
 > single demonstrable exit capability, and states why each boundary falls where it
-> does. Adjust before running `/plan-program` on P1.
+> does. Adjust before planning P1.
 
 ## Why split at all
 
@@ -81,6 +81,11 @@ domain library provably refuses to let a child widen its parent's scope.
 > `docs/vision.md`, and `docs/architecture.md`. P1's remaining Stage 0 scope is
 > the monorepo/package structure, TypeScript and tooling conventions, the CDK app
 > skeleton, and CI — plus the automated greenfield-sterility checks.
+>
+> P1 also defines the persistence **port interfaces** together with an in-memory
+> implementation used only by tests. That lets `execution` and everything above it
+> be tested offline from P3 onward without creating any local canonical state
+> (A-06). The real DynamoDB/S3 adapters remain P2 scope.
 
 **P2 stands alone.** It is the first program needing AWS credentials and a
 dedicated development account, and the first whose verification includes a real
@@ -98,6 +103,11 @@ riskiest single stage in the plan: it changes scheduling and integration
 semantics, and introduces stale-base detection, conflict recovery, and
 whole-program verification. Merging them would let low-risk adapter work and
 high-risk scheduler work share one risk posture and one review.
+
+> **Note:** before planning P4, confirm what "AgentCore Harness" concretely is as
+> a runnable coding harness. If that adapter can only execute through a hosted
+> runtime, its conformance run needs cloud access, which changes P4's dependency
+> class and must be stated in P4's contract rather than discovered mid-program.
 
 **P6 merges Stages 6 and 7.** Both are policy layers over an already-working
 engine, both are configuration-driven with table-driven determinism tests, and
@@ -132,8 +142,9 @@ wrong.
 
 ## Running a program
 
-Each program gets its own program branch and its own Program Contract, drafted by
-`/plan-program` from:
+Each program gets its own program branch and its own Program Contract. A human
+drafts the contract in an ordinary coding-agent session, with no Nightshift
+tooling involved, from:
 
 - `docs/vision.md`
 - `docs/architecture.md`

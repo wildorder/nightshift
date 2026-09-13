@@ -9,6 +9,7 @@
 
 ```text
 ┌──────────────────────────────────────────────────────────┐
+│ apps/cli          CLI: nightshift run / run --remote     │
 │ apps/mcp          Nightshift MCP server                  │
 │ apps/api          control-plane HTTP/runtime             │
 │ apps/studio       reserved — not built in v1             │
@@ -59,6 +60,7 @@
 | A-13 | Routing optimizes cheapest path to a *verified* result | Not cheapest token. Every routing decision is persisted with its alternatives and outcome. |
 | A-14 | One AgentCore Runtime Instance per remote program run | Not one VM per leaf job. |
 | A-15 | The Studio is a client, not a backend | v1 ships the data surface; the UI is out of scope. |
+| A-16 | The CLI lives in `apps/cli` and is a thin client | It calls the same control-plane and dispatch APIs a future Studio will call. No domain, routing, or execution logic lives in the CLI. |
 
 ## 3. Open decisions
 
@@ -67,10 +69,10 @@ silently — surface them as decisions for human ratification at the stated poin
 
 | # | Question | Resolve by |
 |---|----------|-----------|
-| O-01 | Control-plane HTTP/runtime implementation (exact AWS compute/API shape) | Before Stage 2 implementation |
+| O-01 | Control-plane HTTP/runtime implementation: the exact AWS compute/API shape **and** how its clients (local MCP server, CLI, remote runner) authenticate to it | Before Stage 2 implementation (P2) |
 | O-02 | Realtime transport technology | Before Stage 10 |
 | O-03 | AgentCore instance class, scaling, idle timeout, max lifetime, retention | During Stage 9 |
-| O-04 | Local authentication mechanism to Nightshift MCP | Before Stage 3 |
+| O-04 | Local authentication between an orchestrator and the Nightshift MCP server (client-to-control-plane auth belongs to O-01) | Before Stage 3 (P3) |
 | O-05 | Which harness subscription credentials may legitimately be transported into ephemeral AgentCore environments vs. API/Bedrock auth | Provider-specific work during Stage 9 — never assumed |
 | O-06 | Git remote/integration policy: push timing, whether verified leaf branches are ever pushed independently | Before remote execution |
 

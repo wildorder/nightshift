@@ -1,4 +1,4 @@
-<!-- BEGIN UNIVERSAL — source: @wildorder/nightshift packaged default -->
+<!-- BEGIN UNIVERSAL -->
 # Agent Directives: Universal
 
 These directives apply to every agent working in this repository, regardless
@@ -6,7 +6,7 @@ of provider or harness.
 
 ## Scope and depth
 
-1. SPEC-FIRST: When a workstream spec exists under `tasks/`, read it before
+1. SPEC-FIRST: When a task spec exists under `tasks/`, read it before
    implementing. Do not invent architecture that contradicts the spec or
    `docs/vision.md`. If the spec is ambiguous, ask — do not guess.
 
@@ -59,7 +59,7 @@ See `docs/vision.md` for the full product vision.
 See `docs/architecture.md` for settled and open architectural decisions.
 See `docs/programs/staging.md` for how v1 is split into programs.
 See `docs/programs/` for program plans and manifests.
-See `tasks/{program-id}/` for workstream specs.
+See `tasks/{program-id}/` for task specs.
 
 ### Greenfield Boundary — read first
 
@@ -87,8 +87,12 @@ Legacy refs remain in the repository solely for deliberate human reference. A
 human may explicitly instruct you to consult one; absent that instruction, treat
 them as absent.
 
-**Nightshift v1 does not dogfood itself.** Do not use a prior Nightshift version
-to plan, execute, verify, or review v1 delivery.
+**Nightshift v1 does not dogfood itself.** No Nightshift tooling of any version
+plans, executes, verifies, or reviews v1 delivery. In particular, do not invoke
+Nightshift skills installed at the user level, do not read or recreate a
+`nightshift.config.json`, and do not expect a `docs/as-built.md`. A human plans
+each program in an ordinary coding-agent session; the resulting Program Contract
+lives under `docs/programs/` and task specs live under `tasks/{program-id}/`.
 
 ### Tech Stack
 
@@ -106,7 +110,7 @@ to that layering; if something does not fit, that is a decision to surface, not 
 directory to invent.
 
 ```text
-apps/        api, mcp, studio (reserved — not built in v1)
+apps/        api, cli, mcp, studio (reserved — not built in v1)
 packages/    contracts, core, persistence, execution, routing,
              verification, harness, harness-claude, harness-codex,
              harness-agentcore
@@ -147,19 +151,46 @@ and proceed silently.
 **Contract authority.** You may continuously revise your implementation plan. You
 may not revise a Program Contract to make your implementation pass.
 
-**Conventions still to be established by P1 (Foundation):** formatter and lint
-configuration, test runner and file layout, naming and ID conventions, module
-boundaries within packages, and CI. Record them here as P1 settles them rather
-than leaving them implicit.
+**Conventions ratified for P1 (Foundation) on 2026-09-13.** Full rationale and
+decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
+
+- Workspace: npm workspaces, TypeScript project references, `strict: true`,
+  Node 22 runtime. Package names are `@nightshift/<dir-name>`.
+- Formatter and linter: Biome, one config at the repo root. No ESLint, no
+  Prettier.
+- Tests: vitest; property tests with fast-check. Test files sit beside the code
+  they test as `*.test.ts`; cross-package fixtures live under `test/`.
+- Contract schemas: zod. Every persisted record carries a literal
+  `schemaVersion`.
+- IDs: prefixed ULIDs (`proj_`, `prog_`, `run_`, `node_`, `job_`, `agent_`,
+  `dec_`, `ckpt_`, `ver_`, `exam_`, `route_`, `art_`, `evt_`). ID generation
+  takes an injected clock and randomness source so tests are deterministic.
+- Naming: kebab-case files, PascalCase types, camelCase fields.
+- Module boundaries: persistence **port** interfaces live in `packages/core`.
+  `packages/persistence` exposes `./memory` (test-only, no AWS import) and
+  `./aws` (DynamoDB/S3, P2). Nothing above `persistence` imports `./aws`
+  directly.
+- CI: GitHub Actions on push and pull request, ubuntu and windows matrix.
+  Every check in the Deterministic Verification list of the active program
+  contract runs in CI.
+- Scripts must run on Windows (Git Bash) and Linux. Repo scripts are Node
+  scripts, not shell scripts.
 
 ### Dependency Versions (pin these)
 
-| Package | Version |
-|---------|---------|
-| aws-cdk-lib | pin in P1 |
-| constructs | pin in P1 |
-| typescript | pin in P1 |
-| @modelcontextprotocol/sdk | pin in P3 |
+| Package | Version | Introduced |
+|---------|---------|------------|
+| typescript | 7.0.2 | P1 |
+| @types/node | 22.20.2 | P1 |
+| aws-cdk-lib | 2.269.0 | P1 |
+| constructs | 10.8.1 | P1 |
+| aws-cdk | 2.1141.0 | P1 |
+| vitest | 5.0.0 | P1 |
+| fast-check | 4.10.0 | P1 |
+| zod | 4.6.4 | P1 |
+| @biomejs/biome | 2.5.13 | P1 |
+| ulid | 3.0.2 | P1 |
+| @modelcontextprotocol/sdk | pin in P3 (1.30.0 observed 2026-09-13) | P3 |
 
 Populate this table as each program introduces its dependencies. An unpinned
 version in this table is a gap, not a default.
