@@ -1,0 +1,2 @@
+// AgentCore harness adapter.
+export {};

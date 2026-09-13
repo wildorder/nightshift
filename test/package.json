@@ -1,0 +1,12 @@
+{
+  "name": "@nightshift/test",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-package fixtures, conformance suites, and architecture tests.",
+  "dependencies": {
+    "@nightshift/contracts": "*",
+    "@nightshift/core": "*",
+    "@nightshift/persistence": "*"
+  }
+}

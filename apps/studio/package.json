@@ -1,0 +1,6 @@
+{
+  "name": "@nightshift/studio",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reserved. Not built in v1 (A-15). The v1 data surface is in scope; the UI is not."
+}

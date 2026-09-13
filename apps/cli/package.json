@@ -1,0 +1,16 @@
+{
+  "name": "@nightshift/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CLI: nightshift run, nightshift run --remote. A thin client (A-16).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@nightshift/contracts": "*"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@nightshift/verification",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic verification.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@nightshift/contracts": "*",
+    "@nightshift/core": "*"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@nightshift/harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Harness adapter contract. Contains no provider code.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@nightshift/contracts": "*",
+    "@nightshift/core": "*"
+  }
+}

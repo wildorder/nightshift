@@ -1,0 +1,16 @@
+{
+  "name": "@nightshift/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Versioned domain schemas and types. Imports nothing but zod.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "zod": "4.6.4"
+  }
+}

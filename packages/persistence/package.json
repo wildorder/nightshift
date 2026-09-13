@@ -1,0 +1,25 @@
+{
+  "name": "@nightshift/persistence",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Persistence adapters. ./memory is test-only; ./aws is DynamoDB and S3.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./memory": {
+      "types": "./dist/memory/index.d.ts",
+      "default": "./dist/memory/index.js"
+    },
+    "./aws": {
+      "types": "./dist/aws/index.d.ts",
+      "default": "./dist/aws/index.js"
+    }
+  },
+  "dependencies": {
+    "@nightshift/contracts": "*",
+    "@nightshift/core": "*"
+  }
+}

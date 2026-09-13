@@ -1,0 +1,17 @@
+{
+  "name": "@nightshift/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure domain rules and persistence port interfaces. No I/O.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@nightshift/contracts": "*",
+    "ulid": "3.0.2"
+  }
+}

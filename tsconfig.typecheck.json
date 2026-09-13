@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "//": "Typechecks everything the build deliberately skips, above all *.test.ts. Resolves @nightshift/* through the workspace symlinks, so `npm run build` must run first.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "incremental": false
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "apps/*/src/**/*.ts",
+    "infra/cdk/src/**/*.ts",
+    "test/**/*.ts",
+    "scripts/**/*.mjs",
+    "vitest.config.ts"
+  ],
+  "exclude": ["**/dist/**", "**/cdk.out/**", "node_modules"]
+}

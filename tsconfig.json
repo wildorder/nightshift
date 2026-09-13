@@ -1,0 +1,50 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/contracts"
+    },
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/persistence"
+    },
+    {
+      "path": "./packages/harness"
+    },
+    {
+      "path": "./packages/harness-claude"
+    },
+    {
+      "path": "./packages/harness-codex"
+    },
+    {
+      "path": "./packages/harness-agentcore"
+    },
+    {
+      "path": "./packages/execution"
+    },
+    {
+      "path": "./packages/routing"
+    },
+    {
+      "path": "./packages/verification"
+    },
+    {
+      "path": "./apps/api"
+    },
+    {
+      "path": "./apps/cli"
+    },
+    {
+      "path": "./apps/mcp"
+    },
+    {
+      "path": "./infra/cdk"
+    },
+    {
+      "path": "./test"
+    }
+  ]
+}

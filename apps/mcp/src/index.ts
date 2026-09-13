@@ -1,0 +1,2 @@
+// Nightshift MCP server.
+export {};

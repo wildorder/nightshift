@@ -1,0 +1,18 @@
+{
+  "name": "@nightshift/harness-agentcore",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentCore harness adapter.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@nightshift/contracts": "*",
+    "@nightshift/core": "*",
+    "@nightshift/harness": "*"
+  }
+}
