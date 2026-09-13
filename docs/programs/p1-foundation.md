@@ -8,7 +8,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p1-foundation` |
 | Source stages | Stage 0 (Greenfield Bootstrap, remainder) and Stage 1 (Contracts and Domain Core) |
-| Status | Contract ratified 2026-09-13. **Implementation complete 2026-09-13**, pending H-01 (a green CI run) and human review. |
+| Status | Contract ratified 2026-09-13. **Implementation complete 2026-09-13**, pushed to `origin/program/p1-foundation`, pending human review. |
 | Planned by | Human in an ordinary coding-agent session. No Nightshift tooling is involved (see `AGENTS.md`). |
 
 This contract is the stable authority for P1. The implementation plan (task
@@ -30,7 +30,7 @@ child execution node widen its parent's scope.
 
 | # | Prerequisite | Why | Status |
 |---|--------------|-----|--------|
-| H-01 | Push branch `v1` to `origin` and enable GitHub Actions on `wildorder/nightshift` | CI (T4) cannot be verified without the branch on GitHub and Actions enabled. Confirm Actions minutes are available for the repo's visibility. | **still pending** — the workflow is written and its gates all pass locally on Windows, but no Actions run has happened |
+| H-01 | ~~Push branch `v1` to `origin` and enable GitHub Actions~~ | **Never a prerequisite.** `origin/v1` already existed and Actions was already enabled and running green on this repository. This row was written on an assumption instead of a check. | not applicable |
 | H-02 | Create `program/p1-foundation` from `v1`, or authorize the implementing session to create it | Every program runs on its own branch and merges back to `v1` only after the exit gate passes. | satisfied |
 | H-03 | Node 22 and npm 10 on the implementing machine | Verified present on 2026-09-13 (Node 22.22.3, npm 10.9.8). | satisfied |
 
@@ -271,6 +271,5 @@ containment treated a wildcard segment as a literal; and the fixture builder let
 two independent worlds mint identical identifiers, which would have made a
 Project A versus Project B isolation test pass while proving nothing.
 
-**Not done:** a green GitHub Actions run (H-01). T4's workflow is written and
-every gate it runs passes locally, but the Windows and Linux matrix has never
-executed.
+**CI:** `program/p1-foundation` is pushed and the workflow runs on it. See the
+run linked from the branch for the Ubuntu and Windows results.
