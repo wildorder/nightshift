@@ -57,16 +57,14 @@ when that happens. Recorded as A-17 and A-18 in `docs/architecture.md`.
 | H-P2-05 | Ratify **O-01**: control-plane compute/API shape and client authentication | **open** — a genuine architectural decision (§3 of `docs/architecture.md`). Recommendation on file: Lambda behind an API Gateway HTTP API with IAM SigV4 auth; the local MCP server and CLI sign with the user's AWS credentials. |
 | H-P2-06 | Whether this account will also carry Bedrock model spend | **open** — needed by P6. With one account the answer is probably yes, but model access is enabled per region and per model, so it is worth confirming early. |
 
-**What the single-account choice costs, and how P2 pays for it.** The reason the
-original plan wanted a throwaway development account was to verify that the stack
-destroys cleanly — a stack that cannot be torn down is usually one with an
-accidental `RETAIN` policy nobody noticed. Dropping the destroy step entirely
-would lose that signal, so P2 keeps it and aims it somewhere safe: teardown is
-verified against an **ephemeral stage instance** (`-c stage=<throwaway>`), while
-the long-lived stage stays up as the working sandbox and is never destroyed to
-satisfy a test (A-18). Stateful resources carry termination protection and an
-explicit removal policy, so destroyability is an intentional property of each
-resource rather than an accident of defaults.
+**What the single-account choice costs.** The original plan wanted a throwaway
+development account partly to prove the stack destroys cleanly. v1 drops that
+check (A-18): with one account and one user there is nothing to migrate to, so it
+earns less than it costs. What is kept is the part that was doing the real work —
+every stateful resource declares its removal policy explicitly, because CDK
+defaults some of them to `RETAIN` and an unstated policy is one nobody chose.
+Stacks holding state carry termination protection. Revisit teardown verification
+if a second environment is ever stood up.
 
 ## 3. Ratified decisions
 

@@ -95,11 +95,10 @@ invented by an implementer.
 > **Account posture (A-17, A-18).** v1 uses one account, `755348349819`
 > (`nightshift-prod`) in `us-west-2`, treated as a sandbox until Nightshift is
 > launched and supported. There is no development account and nothing may assume
-> one. The persistent stage is never destroyed to satisfy a test; teardown is
-> verified against a throwaway `-c stage=<name>` instance instead. The trade is
-> deliberate: a single account means the blast radius of a mistake is the only
-> environment there is, so stateful resources carry termination protection and an
-> explicit removal policy rather than relying on defaults.
+> one. v1 does not verify teardown at all: nothing is destroyed to satisfy a test.
+> The trade is deliberate — a single account means the blast radius of a mistake
+> is the only environment there is, so stateful resources carry termination
+> protection and an explicit removal policy rather than relying on defaults.
 
 **P3 stands alone** because the source plan says so explicitly: this is the first
 meaningful product milestone, and the invariant everything else builds from. It

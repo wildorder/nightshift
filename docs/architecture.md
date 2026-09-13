@@ -62,7 +62,7 @@
 | A-15 | The Studio is a client, not a backend | v1 ships the data surface; the UI is out of scope. |
 | A-16 | The CLI lives in `apps/cli` and is a thin client | It calls the same control-plane and dispatch APIs a future Studio will call. No domain, routing, or execution logic lives in the CLI. |
 | A-17 | v1 runs in **one** AWS account, `755348349819` (`nightshift-prod`), in `us-west-2` | Deliberate single-account start. The account is treated as a sandbox until Nightshift is launched and supported; a separate development account arrives only if and when that happens. Nothing in v1 may assume a second account exists. |
-| A-18 | The persistent stack is never torn down to satisfy a test | Teardown is still verified, but only against **ephemeral stage instances** (`-c stage=<throwaway>`), never against the stage carrying real state. See §7. |
+| A-18 | v1 does not verify teardown | The persistent stack is never destroyed to satisfy a test, and no throwaway stack is deployed to prove `destroy` works. With one account and one user there is nothing to migrate to, so the check earns less than it costs. Removal policies are still set **explicitly** per resource so retention is chosen rather than inherited from a default. Revisit if a second environment is ever stood up. |
 
 ## 3. Open decisions
 
@@ -156,14 +156,10 @@ An irreversible external effect is never described as reversible.
   single v1 account (A-17). Project-isolation tests must prove Project A queries
   cannot return Project B records.
 
-  Teardown is still verified, because a stack that cannot be destroyed is a stack
-  with an accidental `RETAIN` policy nobody noticed. It is verified against an
-  **ephemeral stage instance**: synth and deploy under a throwaway
-  `-c stage=<name>`, smoke it, destroy it, and assert the destroy left nothing
-  behind. The long-lived stage is a persistent sandbox and is never the target of
-  a destroy test (A-18). Stacks that hold state carry termination protection and
-  an explicit removal policy, so "can this be destroyed" is an intentional
-  property of each resource rather than an accident of defaults.
+  No teardown verification in v1 (A-18). Every stateful resource still declares
+  its removal policy explicitly, because CDK defaults some of them to `RETAIN`
+  and an unstated policy is one nobody chose. Stacks holding state carry
+  termination protection.
 - `harness-*`: one shared conformance suite. The same Job Contract must execute
   through every adapter, plus a deterministic failure fixture and a cancellation
   fixture.
