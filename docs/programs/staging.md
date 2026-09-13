@@ -28,7 +28,7 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 | # | Program | Stages | Exit capability | Blocking decisions |
 |---|---------|--------|-----------------|-------------------|
 | **P1** | Foundation | 0, 1 | Workspace builds, typechecks, lints, `cdk synth` succeeds; the execution/control model exists as a deterministic offline library with its invariants under property test | — |
-| **P2** | Control Plane | 2 | Centralized authoritative backend, deployed and project-isolated, independent of any agent execution | **O-01** control-plane HTTP/runtime implementation |
+| **P2** | Control Plane | 2 | Centralized authoritative backend, deployed to the single v1 account and project-isolated, independent of any agent execution | **O-01** control-plane HTTP/runtime implementation |
 | **P3** | First Vertical Slice | 3 | One real local delegated coding job: contract → worktree → worker → verification → sealed commit → integration → checkpoint, fully visible centrally | **O-04** local MCP authentication |
 | **P4** | Harness Neutrality | 4 | The identical Job Contract executes through Claude Code, Codex, and AgentCore adapters against one conformance suite | — |
 | **P5** | Parallel & Recursive Execution | 5 | Recursive execution graphs run concurrently in isolated worktrees with deterministic, stale-base-aware integration | — |
@@ -87,10 +87,19 @@ domain library provably refuses to let a child widen its parent's scope.
 > be tested offline from P3 onward without creating any local canonical state
 > (A-06). The real DynamoDB/S3 adapters remain P2 scope.
 
-**P2 stands alone.** It is the first program needing AWS credentials and a
-dedicated development account, and the first whose verification includes a real
-deploy/smoke/destroy cycle. It also carries O-01, which should be ratified at
-program-planning time rather than invented by an implementer.
+**P2 stands alone.** It is the first program needing AWS credentials and the
+first whose verification includes a real deploy against a live account. It also
+carries O-01, which should be ratified at program-planning time rather than
+invented by an implementer.
+
+> **Account posture (A-17, A-18).** v1 uses one account, `755348349819`
+> (`nightshift-prod`) in `us-west-2`, treated as a sandbox until Nightshift is
+> launched and supported. There is no development account and nothing may assume
+> one. The persistent stage is never destroyed to satisfy a test; teardown is
+> verified against a throwaway `-c stage=<name>` instance instead. The trade is
+> deliberate: a single account means the blast radius of a mistake is the only
+> environment there is, so stateful resources carry termination protection and an
+> explicit removal policy rather than relying on defaults.
 
 **P3 stands alone** because the source plan says so explicitly: this is the first
 meaningful product milestone, and the invariant everything else builds from. It

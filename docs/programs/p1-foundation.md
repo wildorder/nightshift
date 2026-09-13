@@ -41,22 +41,32 @@ CDK app is environment-agnostic and `cdk synth` runs fully offline. If any P1
 task finds it needs AWS credentials, that task has left P1 scope. Stop and
 surface it.
 
-### Heads-up for P2 (start now, these take calendar time)
+### P2 environment — settled 2026-09-13
 
-These are not P1 blockers. **Check current state before treating any of them as
-outstanding work** — the AWS CLI is installed and this machine already has
-sixteen named profiles configured, including `wildorder`, `sandbox`, `wingit`
-and several SSO sessions. The open items below are decisions and one-time setup
-steps, not "create an account from nothing".
+v1 runs in **one AWS account**: `755348349819` (`nightshift-prod`) in `us-west-2`.
+A deliberate single-account start. The account is treated as a sandbox until
+Nightshift is launched and supported; a development account arrives only if and
+when that happens. Recorded as A-17 and A-18 in `docs/architecture.md`.
 
-| # | Item | Notes |
-|---|------|-------|
-| H-P2-01 | **Decide which existing AWS account P2 targets.** | The only hard requirement is that it be safe to destroy everything in it, because P2's verification is deploy, smoke, destroy. `sandbox` and `wildorder` both already have profiles; which one is the human's call, not something to infer from a profile name. |
-| H-P2-02 | Confirm `aws sts get-caller-identity` succeeds under the chosen profile, and that it has a default region | If it is an SSO profile, this may just mean `aws sso login`. Never paste long-lived keys into the repo or into agent context. |
-| H-P2-03 | Confirm whether `cdk bootstrap` has already run in that account and region | `aws cloudformation describe-stacks --stack-name CDKToolkit` answers this. Bootstrap only if it has not. |
-| H-P2-04 | Confirm a billing budget alarm exists on the account | Guards against a runaway smoke test. May already be in place. |
-| H-P2-05 | Ratify **O-01**: control-plane compute/API shape and client authentication | Recommendation on file: Lambda behind an API Gateway HTTP API with IAM SigV4 auth; the local MCP server and CLI sign with the user's AWS credentials. This one is a genuine open decision (architecture §3). |
-| H-P2-06 | Decide whether the same account will later carry Bedrock model spend | Model access is enabled per region and per model. Needed by P6, but the account choice is made now. |
+| # | Item | Status |
+|---|------|--------|
+| H-P2-01 | Which AWS account P2 targets | **settled** — `755348349819` / `us-west-2`, single account, sandbox posture |
+| H-P2-02 | A working CLI profile for it | **done** — `[profile nightshift]` with `[sso-session nightshift]`, `AdministratorAccess` (the only permission set assigned), region `us-west-2`. `aws sts get-caller-identity --profile nightshift` resolves to the account. Re-auth with `aws sso login --sso-session nightshift`. |
+| H-P2-03 | `cdk bootstrap` in that account and region | **done** — see §12 |
+| H-P2-04 | A budget alarm on the account | **open** — not created. A budget notification needs a subscriber address, which is the human's to choose. More important here than it would be with a separate dev account, because there is only one environment. |
+| H-P2-05 | Ratify **O-01**: control-plane compute/API shape and client authentication | **open** — a genuine architectural decision (§3 of `docs/architecture.md`). Recommendation on file: Lambda behind an API Gateway HTTP API with IAM SigV4 auth; the local MCP server and CLI sign with the user's AWS credentials. |
+| H-P2-06 | Whether this account will also carry Bedrock model spend | **open** — needed by P6. With one account the answer is probably yes, but model access is enabled per region and per model, so it is worth confirming early. |
+
+**What the single-account choice costs, and how P2 pays for it.** The reason the
+original plan wanted a throwaway development account was to verify that the stack
+destroys cleanly — a stack that cannot be torn down is usually one with an
+accidental `RETAIN` policy nobody noticed. Dropping the destroy step entirely
+would lose that signal, so P2 keeps it and aims it somewhere safe: teardown is
+verified against an **ephemeral stage instance** (`-c stage=<throwaway>`), while
+the long-lived stage stays up as the working sandbox and is never destroyed to
+satisfy a test (A-18). Stateful resources carry termination protection and an
+explicit removal policy, so destroyability is an intentional property of each
+resource rather than an accident of defaults.
 
 ## 3. Ratified decisions
 
@@ -281,6 +291,24 @@ prerequisite table were both written from assumption rather than from a check.
 `origin/v1` already existed, Actions was already enabled and green, and sixteen
 AWS profiles were already configured. Verify the environment before writing a
 prerequisite into a contract.
+
+**AWS environment (A-17).** One account, bootstrapped 2026-09-13.
+
+| Item | Value |
+|------|-------|
+| Account | `755348349819` (`nightshift-prod`) |
+| Region | `us-west-2` |
+| CLI profile | `nightshift`, via `[sso-session nightshift]`, role `AdministratorAccess` |
+| CDK bootstrap | `CDKToolkit` `CREATE_COMPLETE`, bootstrap version 32 |
+| Termination protection | enabled on `CDKToolkit` |
+| Asset bucket | `cdk-hnb659fds-assets-755348349819-us-west-2` |
+| Execution policy | `arn:aws:iam::aws:policy/AdministratorAccess` |
+| Trusted accounts | none — single account, so no cross-account trust was granted |
+
+`cdk bootstrap` was run with `--termination-protection` deliberately: with one
+account there is no spare environment, so losing the toolkit stack would be
+losing the only deploy path. Still open: a budget alarm (H-P2-04), which needs a
+notification address to send to.
 
 **CI:** green on `program/p1-foundation`, both legs, every gate.
 

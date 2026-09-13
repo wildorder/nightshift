@@ -907,6 +907,13 @@ Event writes use idempotency keys.
 * smoke test
 * clean destroy where supported
 
+> **Superseded by A-17 and A-18 (2026-09-13).** There is no dedicated development
+> account. v1 runs in one account, `755348349819` in `us-west-2`, treated as a
+> sandbox until launch. "Clean destroy" is still verified, but against an
+> ephemeral `-c stage=<name>` instance; the persistent stage is never destroyed to
+> satisfy a test. See `docs/architecture.md` §2 and §7 for the authoritative
+> wording. The rest of this stage's verification list stands unchanged.
+
 ### Data isolation
 
 Create:
