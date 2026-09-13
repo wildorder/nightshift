@@ -269,11 +269,30 @@ files. `npm run verify` runs the whole chain.
 | SC-P1-18 | `test/src/architecture/offline.test.ts`, probed to confirm it detects both a network import and a bare `fetch` call |
 | SC-P1-19 … SC-P1-21 | `test/src/architecture/` rules AR-1 … AR-6, each with a negative fixture |
 
-Three defects were found and fixed by the tests that were meant to catch them:
+Four defects were found and fixed by the checks that were meant to catch them:
 the cycle check in `addChild` was unreachable behind the duplicate check; glob
-containment treated a wildcard segment as a literal; and the fixture builder let
-two independent worlds mint identical identifiers, which would have made a
-Project A versus Project B isolation test pass while proving nothing.
+containment treated a wildcard segment as a literal; the fixture builder let two
+independent worlds mint identical identifiers, which would have made a Project A
+versus Project B isolation test pass while proving nothing; and the missing
+`eol=lf` pin broke lint on any Windows checkout, which only CI could reveal.
 
-**CI:** `program/p1-foundation` is pushed and the workflow runs on it. See the
-run linked from the branch for the Ubuntu and Windows results.
+One process failure is worth recording too. H-01 and the original P2
+prerequisite table were both written from assumption rather than from a check.
+`origin/v1` already existed, Actions was already enabled and green, and sixteen
+AWS profiles were already configured. Verify the environment before writing a
+prerequisite into a contract.
+
+**CI:** green on `program/p1-foundation`, both legs, every gate.
+
+| Runner | Build | Typecheck | Lint | Test | Synth | Sterility |
+|--------|-------|-----------|------|------|-------|-----------|
+| ubuntu-latest | pass | pass | pass | pass | pass | pass |
+| windows-latest | pass | pass | pass | pass | pass | pass |
+
+The first run failed on Windows only, at lint. With no `.gitattributes`, the
+runner's default `core.autocrlf=true` rewrote every file to CRLF on checkout and
+Biome's `lineEnding: "lf"` rejected all of them. It had passed locally only
+because the dev machine has `core.autocrlf=input`. Fixed by pinning `eol=lf`
+rather than by relaxing the formatter. This is the whole argument for keeping the
+Windows leg: a green local run on one developer's machine proved nothing about
+the other platform.
