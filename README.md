@@ -1,5 +1,7 @@
 # Nightshift
 
+[![CI](https://github.com/wildorder/nightshift/actions/workflows/ci.yml/badge.svg)](https://github.com/wildorder/nightshift/actions/workflows/ci.yml)
+
 Autonomous engineering control plane: controlled delegation, deterministic
 verification, model routing, and reversible decisions for frontier coding
 agents.

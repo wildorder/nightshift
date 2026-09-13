@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - v1
+      - "program/**"
+  pull_request:
+    branches:
+      - v1
+
+# One run per ref. A new push supersedes an in-flight run rather than queueing.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # The dev machine is Windows and CI is Linux; both legs must pass, and a
+      # failure on one must not hide the result on the other.
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # A shallow clone is enough: the sterility check reads the tracked file
+          # list at HEAD and never inspects history or another ref.
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Each gate is its own step so a red run names what failed without anyone
+      # having to read the log. Order matters: synth needs the build (D-P1-10),
+      # and typecheck resolves @nightshift/* through the built declarations.
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      # No AWS credentials are configured anywhere in this workflow, and none are
+      # needed: the P1 stack is environment-agnostic and defines no resources.
+      # Adding a credentials step is a P2 change, not a convenience.
+      - name: Synth
+        run: npm run synth
+
+      - name: Sterility
+        run: npm run check:sterility
