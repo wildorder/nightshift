@@ -120,6 +120,8 @@ const dependencyNames = (text) => {
 const RULES = [
   {
     id: 1,
+    // SC-P1-01 (no legacy source) and SC-P1-02 (no v0 program/task artifacts).
+    criteria: ["SC-P1-01", "SC-P1-02"],
     name: "no v0 artifacts or manifests",
     detect(files) {
       const offenders = [];
@@ -155,6 +157,8 @@ const RULES = [
   },
   {
     id: 2,
+    // SC-P1-03: a dependency on the v0 package is a v0 configuration schema.
+    criteria: ["SC-P1-03"],
     name: "no package.json depends on v0 packages",
     detect(files) {
       const offenders = [];
@@ -187,6 +191,8 @@ const RULES = [
   },
   {
     id: 3,
+    // SC-P1-01 and SC-P1-03: v0 config keys and pipeline markers.
+    criteria: ["SC-P1-01", "SC-P1-03"],
     name: "no v0 marker strings",
     detect(files) {
       const offenders = [];
@@ -209,6 +215,8 @@ const RULES = [
   },
   {
     id: 4,
+    // SC-P1-04.
+    criteria: ["SC-P1-04"],
     name: "AGENTS.md forbids autonomous legacy inspection",
     detect(files) {
       const agents = files.find((f) => f.path === "AGENTS.md");
@@ -232,6 +240,8 @@ const RULES = [
   },
   {
     id: 5,
+    // SC-P1-01: tracked build output is v0 source by another name.
+    criteria: ["SC-P1-01"],
     name: "no tracked build output or scratch directories",
     detect(files) {
       const offenders = [];
@@ -333,6 +343,7 @@ const main = () => {
 
   const ruleResults = RULES.map((rule) => ({
     rule: rule.id,
+    criteria: rule.criteria,
     name: rule.name,
     offenders: rule.detect(files),
   }));

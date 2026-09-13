@@ -8,7 +8,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p1-foundation` |
 | Source stages | Stage 0 (Greenfield Bootstrap, remainder) and Stage 1 (Contracts and Domain Core) |
-| Status | Contract ratified 2026-09-13. Implementation not started. |
+| Status | Contract ratified 2026-09-13. **Implementation complete 2026-09-13**, pending H-01 (a green CI run) and human review. |
 | Planned by | Human in an ordinary coding-agent session. No Nightshift tooling is involved (see `AGENTS.md`). |
 
 This contract is the stable authority for P1. The implementation plan (task
@@ -30,8 +30,8 @@ child execution node widen its parent's scope.
 
 | # | Prerequisite | Why | Status |
 |---|--------------|-----|--------|
-| H-01 | Push branch `v1` to `origin` and enable GitHub Actions on `wildorder/nightshift` | CI (T4) cannot be verified without the branch on GitHub and Actions enabled. Confirm Actions minutes are available for the repo's visibility. | pending |
-| H-02 | Create `program/p1-foundation` from `v1`, or authorize the implementing session to create it | Every program runs on its own branch and merges back to `v1` only after the exit gate passes. | pending |
+| H-01 | Push branch `v1` to `origin` and enable GitHub Actions on `wildorder/nightshift` | CI (T4) cannot be verified without the branch on GitHub and Actions enabled. Confirm Actions minutes are available for the repo's visibility. | **still pending** — the workflow is written and its gates all pass locally on Windows, but no Actions run has happened |
+| H-02 | Create `program/p1-foundation` from `v1`, or authorize the implementing session to create it | Every program runs on its own branch and merges back to `v1` only after the exit gate passes. | satisfied |
 | H-03 | Node 22 and npm 10 on the implementing machine | Verified present on 2026-09-13 (Node 22.22.3, npm 10.9.8). | satisfied |
 
 ### Explicitly NOT required for P1
@@ -239,3 +239,38 @@ Specs live in `tasks/p1-foundation/`.
 | Date | Decision | By |
 |------|----------|----|
 | 2026-09-13 | Contract ratified, including D-P1-01 … D-P1-10 | Human |
+| 2026-09-13 | TypeScript 7.0.2 confirmed working with `tsc -b` project references under npm workspaces, so the D-P1-05 fallback to 5.9.3 was not needed | Implementation |
+| 2026-09-13 | ulid 3.0.2 has no `factory` export; `monotonicFactory(prng)` is the injection point. Verified deterministic and lexicographically ordered under a fixed clock and seed, so D-P1-07 stands as ratified | Implementation |
+| 2026-09-13 | `ExecutionNode` gained `commitSha`. Without it, matching a verification to a node required the caller to assert the two belonged together, which is the assertion SC-P1-14 exists to check | Implementation |
+| 2026-09-13 | The fast-check generators and the port conformance suite live in `@nightshift/test`, not `packages/core`, because both are built modules and importing a test library from `core` would add it to `core`'s runtime surface (architecture §1). The dependency-free fixture builders stayed in `core`. Deviates from T7 and T3's stated paths | Implementation |
+| 2026-09-13 | Architecture rule AR-6 added beyond the T3 spec: every external dependency pinned exactly, enforcing contract §7 | Implementation |
+| 2026-09-13 | `vitest` project configs do not inherit the root `test` options. Packages with their own config restate timeouts and exclusions, and the `test` package pins its project name so `--project test` selects it | Implementation |
+| 2026-09-13 | Concurrency is enforced per parent, not run-wide, following T6's wording. A run-wide cap is scheduler policy and belongs to P5's execution layer, not to `core` | Implementation |
+| 2026-09-13 | `interrupted` was added to the retryable set beyond T6's minimum table, so killing a worker leaves recoverable state rather than a dead end (architecture §4) | Implementation |
+
+## 12. As built
+
+Every gate in §6 exits 0 on a clean checkout on Windows. 658 tests across 22
+files. `npm run verify` runs the whole chain.
+
+| Criterion | Discharged by |
+|-----------|---------------|
+| SC-P1-01 … SC-P1-04 | `npm run check:sterility`; each rule tags the criteria it covers, visible in `--json` |
+| SC-P1-05 … SC-P1-09 | `npm run build`, `typecheck`, `lint`, `test`, `synth` |
+| SC-P1-10 | `test/src/properties/scope.property.test.ts`, stated as a biconditional with both directions generated plus a dimension-coverage assertion |
+| SC-P1-11, SC-P1-12 | `test/src/properties/execution-tree.property.test.ts` |
+| SC-P1-13 … SC-P1-15 | `test/src/properties/verification.property.test.ts`, plus the exhaustive 14×15 table enumeration in `packages/core/src/rules/transitions.test.ts` |
+| SC-P1-16 | `test/src/properties/delegation.property.test.ts` |
+| SC-P1-17 | `test/src/properties/project-scoping.property.test.ts`, driven from the contracts registry |
+| SC-P1-18 | `test/src/architecture/offline.test.ts`, probed to confirm it detects both a network import and a bare `fetch` call |
+| SC-P1-19 … SC-P1-21 | `test/src/architecture/` rules AR-1 … AR-6, each with a negative fixture |
+
+Three defects were found and fixed by the tests that were meant to catch them:
+the cycle check in `addChild` was unreachable behind the duplicate check; glob
+containment treated a wildcard segment as a literal; and the fixture builder let
+two independent worlds mint identical identifiers, which would have made a
+Project A versus Project B isolation test pass while proving nothing.
+
+**Not done:** a green GitHub Actions run (H-01). T4's workflow is written and
+every gate it runs passes locally, but the Windows and Linux matrix has never
+executed.
