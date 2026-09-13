@@ -11,6 +11,8 @@
 import {
   type Agent,
   AgentSchema,
+  type Checkpoint,
+  CheckpointSchema,
   type CommitSha,
   type Decision,
   DecisionSchema,
@@ -259,6 +261,22 @@ export const makeFailedVerification = (
   makeVerification(f, node, {
     commands: [{ stepId: "test", command: "npm test", exitCode: 1, durationMs: 1 }],
     outcome: "failed",
+    ...overrides,
+  });
+
+export const makeCheckpoint = (
+  f: Fixtures,
+  executionNodeId: ExecutionNodeId,
+  overrides: Overrides<Checkpoint> = {},
+): Checkpoint =>
+  CheckpointSchema.parse({
+    schemaVersion: 1,
+    ...f.scope,
+    checkpointId: f.ids.next("ckpt"),
+    executionNodeId,
+    commitSha: FIXTURE_COMMIT,
+    ref: "refs/nightshift/checkpoints/fixture",
+    createdAt: AT,
     ...overrides,
   });
 

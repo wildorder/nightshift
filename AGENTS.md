@@ -175,6 +175,20 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
   contract runs in CI.
 - Scripts must run on Windows (Git Bash) and Linux. Repo scripts are Node
   scripts, not shell scripts.
+- CDK stacks are named `nightshift-<stage>-control-plane`. `stage` defaults to
+  `dev` and is overridden with `-c stage=...`.
+- **Vitest project configs do not inherit the root `test` options.** A package
+  with its own `vitest.config.ts` must restate `testTimeout`, `hookTimeout` and
+  the `dist` exclusions. A package without one inherits the root's, including
+  `passWithNoTests`. The `test` package pins its project name to `test` so
+  `--project test` selects it rather than matching nothing.
+- Test-only libraries (fast-check, vitest) may not appear in `contracts` or
+  `core`, whose runtime surface is limited to zod and ulid. Generators and
+  conformance suites that need them live in `@nightshift/test`; the
+  dependency-free fixture builders live in `@nightshift/core`'s `testing` module.
+- Conformance suites live in `test/src/conformance/` and are shared across
+  adapters. An adapter that cannot pass one unchanged is a conversation, not a
+  reason to edit the suite.
 
 ### Dependency Versions (pin these)
 
@@ -191,6 +205,10 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
 | @biomejs/biome | 2.5.13 | P1 |
 | ulid | 3.0.2 | P1 |
 | @modelcontextprotocol/sdk | pin in P3 (1.30.0 observed 2026-09-13) | P3 |
+
+`fast-check` and `vitest` are also declared on `@nightshift/test`, which needs
+them at build time because its generators and conformance suites are built
+modules rather than test files.
 
 Populate this table as each program introduces its dependencies. An unpinned
 version in this table is a gap, not a default.

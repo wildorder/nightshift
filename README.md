@@ -24,6 +24,15 @@ Individual gates: `npm run build`, `npm run typecheck`, `npm run lint`,
 
 No AWS account or credentials are needed for any of these.
 
+## The P1 demo
+
+The one thing P1 exists to prove is that a delegated child can never widen the
+authority it inherited. See it refuse, with the generated scopes printed:
+
+```sh
+npx vitest run --project test -t "P1 exit demo"
+```
+
 ## Layout
 
 See `docs/architecture.md` §1. Dependencies point downward only, and that is

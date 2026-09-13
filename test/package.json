@@ -7,6 +7,10 @@
   "dependencies": {
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
-    "@nightshift/persistence": "*"
+    "@nightshift/persistence": "*",
+    "fast-check": "4.10.0"
+  },
+  "devDependencies": {
+    "vitest": "5.0.0"
   }
 }
