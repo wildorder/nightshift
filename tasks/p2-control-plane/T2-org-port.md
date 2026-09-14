@@ -17,6 +17,12 @@ has a contract to satisfy rather than inventing one.
 What does not exist yet is any way to *query* by it. The contract's access-pattern
 table marks pattern 2 as new in P2; this is that work.
 
+**`listByOrg` is a grouping query, not an authorisation check.** v1 enforces no
+org separation at all: nothing maps a caller to an org, so any principal able to
+sign a request can read any project in any org (A-21 non-guarantee). Do not add
+an org check here and do not imply one in the naming — a half-enforced boundary
+is worse than an absent one, because it gets trusted.
+
 `orgId` is deliberately **not** in the ownership chain. Do not add it to the other
 twelve aggregates, and do not add it to `RunScope`. A-21 explains why: `projectId`
 is a globally unique ULID, so project-scoped records need no org prefix to be

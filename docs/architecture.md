@@ -65,10 +65,33 @@
 | A-18 | v1 does not verify teardown | The persistent stack is never destroyed to satisfy a test, and no throwaway stack is deployed to prove `destroy` works. With one account and one user there is nothing to migrate to, so the check earns less than it costs. Removal policies are still set **explicitly** per resource so retention is chosen rather than inherited from a default. Revisit if a second environment is ever stood up. |
 | A-19 | The control plane is a Lambda behind an API Gateway HTTP API, authenticated by IAM SigV4 | **Resolves O-01.** API Gateway rejects an unsigned request before the function runs, so there is no authentication code to write. The Lambda is the entire API and the only holder of DynamoDB and S3 credentials. Local clients sign with the user's credentials; the remote runner signs with its own task role rather than carrying the user's. |
 | A-20 | One DynamoDB table with one GSI, and one S3 bucket | Every access pattern is prefixed by the ownership chain, so a second table buys nothing. `PK` always begins with `projectId`, which makes a cross-project query structurally impossible rather than merely forbidden. See `docs/programs/p2-control-plane.md` for the key schema. |
-| A-21 | A project belongs to an **organisation**; the ownership chain is unchanged | `Project` carries `orgId` and an `ORG#` partition lists an org's projects. `orgId` is deliberately *not* added to the chain on every aggregate: `projectId` is a globally unique ULID, so project-scoped items need no org prefix to be unambiguous, and adding one would buy nothing that is not already true. Retrofitting later therefore costs an attribute, not a migration. |
+| A-21 | A project belongs to an **organisation**; the ownership chain is unchanged | `Project` carries `orgId` and an `ORG#` partition lists an org's projects. `orgId` is deliberately *not* added to the chain on every aggregate: `projectId` is a globally unique ULID, so project-scoped items need no org prefix to be unambiguous. **v1 provides org labelling, not org separation** — see the non-guarantee below. |
 | A-22 | Event sequence numbers are assigned **after** durability, by a DynamoDB Streams consumer | An event is written synchronously with its ULID as the sort key, so the writer gets durability and an identifier immediately. A stream consumer, ordered and single-threaded per run partition, then stamps a dense `sequence`. A crash cannot burn a number, because numbering happens after the record is durable and the consumer resumes from its last committed position. The cost is a brief window in which an event is durable but unnumbered, so every reader must tolerate an absent `sequence`. |
-| A-23 | Project isolation is enforced in the application, not in IAM | Single user in v1, and per-tenant IAM identities are not how multi-tenant products are usually built. Isolation lives in one place: the Lambda. This is what A-21's light org scoping depends on; if IAM ever becomes the tenant boundary, A-21 has to be revisited first. |
+| A-23 | **Project** isolation is enforced in the application, not in IAM | Single user in v1, and per-tenant IAM identities are not how multi-tenant products are usually built. Isolation lives in one place: the Lambda. This is what A-21's light org scoping depends on; if IAM ever becomes the tenant boundary, A-21 has to be revisited first. |
 | A-24 | Infrastructure is split into a stateful stack and a stateless stack | The data stack holds DynamoDB and S3, carries termination protection, and changes rarely. The API stack holds the function, the API and the stream consumer, and can be replaced freely. With one account (A-17) that separation is the only thing standing between a bad deploy and the data. |
+
+### A-21 non-guarantee: orgs are a label, not a boundary
+
+v1 does not enforce organisation separation anywhere. `Project.orgId` and
+`listByOrg` support *grouping* — filtering is not authorisation. Nothing maps a
+caller to an organisation, so any principal able to sign a request can read any
+project in any org. With one user and one org that is the right amount of work,
+but the label must not be mistaken for a fence.
+
+When separation is needed it belongs in the API handler (A-19, A-23): resolve the
+caller's principal to an org, then verify the target project belongs to it, on
+every request.
+
+**The cost this defers.** A-21's light shape makes *retrofitting the data* cheap —
+an attribute, not a key migration. It makes *enforcement* more expensive, and that
+trade was not stated when the decision was taken. Because `orgId` lives only on
+`Project`, authorising a run-scoped request requires resolving
+`projectId` → project → `orgId` first, which is an extra read per request. Had
+`orgId` been in the partition key, the check would be free. Workable when the time
+comes — cache the mapping, or denormalise `orgId` onto records at write time,
+which is still an attribute plus a backfill rather than a key change — but it is a
+real cost, and it is the reason to revisit A-21 before building anything
+multi-tenant rather than after.
 
 ## 3. Open decisions
 
