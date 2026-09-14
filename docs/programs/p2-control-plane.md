@@ -44,7 +44,10 @@ also recorded as A-19 … A-24 in `docs/architecture.md`.
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
-| D-P2-01 | Lambda behind an API Gateway HTTP API, IAM SigV4 auth. Resolves **O-01**. | API Gateway rejects an unsigned request before the function runs, so there is no auth code to write. The Lambda is the whole API and the only holder of data credentials. |
+| D-P2-01 | Lambda behind an API Gateway HTTP API, **Cognito JWT authorizer**. Resolves **O-01**. | Reversed from IAM SigV4 on 2026-09-14 before implementation (A-19a). SigV4 would require every caller to hold an IAM identity in the Nightshift account — fine for one internal user, fatal for distribution. The gateway still rejects bad tokens before the handler runs, so there is still no auth code to write. |
+| D-P2-13 | Tenancy comes from a **token claim**, never from the URL | A path segment that must match the token is redundancy you have to validate on every request. If the org cannot be expressed in the URL, a cross-org request cannot be formed. Matches how Stripe, Slack and AWS itself work. |
+| D-P2-14 | Cross-account access to a project's AWS account is by role assumption with an external ID (A-25). P2 **reserves the fields, builds nothing.** | `Project` gains an optional role ARN and external ID so the shape exists before anything depends on it. Actually assuming roles is execution-layer work in P3 and later. |
+| D-P2-15 | Secrets in DynamoDB plaintext for now (A-26) | Explicit risk decision. Single account, single user, all principals are admin already. Revisit before a second tenant or any non-admin principal exists. |
 | D-P2-02 | One DynamoDB table, one GSI. On-demand capacity. | Every access pattern is chain-prefixed; a second table buys nothing. On-demand because the load is one user and bursty. |
 | D-P2-03 | `PK` always begins with `projectId` | Makes a cross-project query structurally impossible instead of merely forbidden. This is the data-layer half of SC-P2-05. |
 | D-P2-04 | Event sequence numbers are stamped **after** durability by a DynamoDB Streams consumer | Keeps `append` synchronous so the P1 port contract survives, and moves the fragile step somewhere a retry is harmless. A crash cannot burn a number. Readers must tolerate a briefly absent `sequence`. |
@@ -166,6 +169,10 @@ Consequences to design around, not discover:
   event; record for decision, checkpoint, verification, routing decision and
   artifact reference; and query current run state.
 - `orgId` on `Project` in `@nightshift/contracts`, plus the org partition.
+- A Cognito user pool, a JWT authorizer, and the user/membership model needed to
+  resolve a token to an org (T9).
+- Reserved cross-account fields on `Project` (D-P2-14). Fields only, no assumption
+  logic.
 - The smoke suite (D-P2-12) and a budget alarm.
 
 ### Out of scope
@@ -289,12 +296,14 @@ Forbidden:
 | T5 | The API stack | T1, T4, T6 | no |
 | T7 | First deploy and the smoke suite | T1, T3, T4, T5, T6 | **yes** |
 | T8 | Budget alarm | — | yes |
+| T9 | Cognito, the JWT authorizer, and the membership model | T2 | partly |
 
 ```text
-T1 ──────────────┐
-T2 ──┬── T3 ─────┼──────── T7
-     ├── T4 ──┐  │
-     └── T6 ──┴── T5
+T1 ──────────────────┐
+T2 ──┬── T3 ─────────┼──────── T7
+     ├── T4 ──┐      │
+     ├── T6 ──┼── T5 ┘
+     └── T9 ──┘
 T8 (independent)
 ```
 
@@ -328,3 +337,7 @@ Three things the tasks absorb rather than discover:
 | 2026-09-13 | D-P2-01 … D-P2-12 ratified in design review; O-01 resolved as A-19 | Human |
 | 2026-09-13 | Event sequencing moved out of the request path (D-P2-04), superseding an earlier preference for an in-request atomic counter. The counter survives; it moved to the stream consumer. | Human |
 | 2026-09-13 | Teardown verification dropped (A-18) after establishing that it was inherited from a plan assuming a disposable account | Human |
+| 2026-09-14 | **D-P2-01 reversed**: Cognito JWT replaces IAM SigV4 (A-19, A-19a). Reason: SigV4 requires an IAM identity in the Nightshift account, which does not survive distribution and forces the operator to hold a Nightshift profile alongside client-account credentials. Adds T9. | Human |
+| 2026-09-14 | D-P2-13: tenancy from the token claim, not the URL. Revises an earlier suggestion of `/orgs/{orgId}/…` paths. | Human |
+| 2026-09-14 | D-P2-14 and A-25: cross-account role assumption with an external ID. P2 reserves the fields only. | Human |
+| 2026-09-14 | D-P2-15 and A-26: plaintext secrets accepted for now, with the upgrade path recorded. | Human |

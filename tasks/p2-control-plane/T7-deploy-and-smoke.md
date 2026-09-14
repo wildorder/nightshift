@@ -1,7 +1,7 @@
 # T7 — First deploy and the smoke suite
 
 **Program:** `p2-control-plane`
-**Depends on:** T1, T3, T4, T5, T6
+**Depends on:** T1, T3, T4, T5, T6, T9
 **Unblocks:** the exit gate
 **Decisions applied:** D-P2-09, D-P2-12; A-17, A-18
 
@@ -23,9 +23,13 @@ sandbox but it is the **only** environment, so nothing here destroys a stack.
    fast with a clear message if `AWS_PROFILE` is unset or resolves to any account
    other than the expected one — deploying or smoking the wrong account is the
    mistake worth engineering against.
-2. **Phase 1, reachability and auth.** An unsigned request to the API returns 403
-   from the gateway; the same request signed returns 200 (SC-P2-07). Without the
-   unsigned half, this proves nothing about whether the API is open.
+2. **Phase 1, reachability and auth.** A request with no token returns 401 from
+   the gateway, a request with a malformed or expired token returns 401, and the
+   same request with a valid token returns 200 (SC-P2-07). Without the negative
+   halves this proves nothing about whether the API is open.
+
+   The suite obtains its token from the machine app client built in T9. It must
+   not depend on an interactive login — that lands with the CLI in P3.
 3. **Phase 2, conformance.** Run `describePortConformance` from P1 against the AWS
    adapter, unchanged (SC-P2-12). Editing the suite to pass is forbidden by
    contract §10.

@@ -1,7 +1,7 @@
 # T4 — The control-plane API handler
 
 **Program:** `p2-control-plane`
-**Depends on:** T2
+**Depends on:** T2, T9
 **Unblocks:** T5, T7
 **Decisions applied:** D-P2-01, D-P2-06; A-19, A-23
 
@@ -13,9 +13,13 @@ in `core` (D-P1-08): the API's behaviour is provable without AWS.
 
 ## What the handler does not do
 
-No authentication. API Gateway validates SigV4 and rejects an unsigned request
-before the function is invoked (A-19). There is no auth code to write, and adding
-any would create a second place for isolation to be enforced.
+No authentication. API Gateway's Cognito JWT authorizer validates the token and
+rejects a bad one before the function is invoked (A-19). There is no auth code to
+write, and adding any would create a second place for isolation to be enforced.
+
+The handler does read the **validated claims** the authorizer passes through, to
+resolve the acting organisation (T9, D-P2-13). Reading a claim the gateway already
+verified is not authentication.
 
 ## Deliverables
 
@@ -34,7 +38,11 @@ any would create a second place for isolation to be enforced.
 3. Every route takes the ownership chain from the **path**, not the body, and
    rejects a body whose chain disagrees with the path. Otherwise a caller could
    write into another project by lying in the payload — this is where A-23's
-   application-level isolation is actually enforced.
+   application-level project isolation is actually enforced.
+
+   The **organisation is the exception**: it comes from the validated token claim
+   and must never appear in a path or body (D-P2-13). A URL that cannot express a
+   cross-org request needs no cross-org validation.
 4. Domain rule violations map to meaningful status codes rather than 500:
    ownership violation 403, scope widening 403, illegal transition 409, verification
    evidence 409, delegation refusal 429 for concurrency and 422 for depth. Use the

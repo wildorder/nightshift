@@ -63,12 +63,51 @@
 | A-16 | The CLI lives in `apps/cli` and is a thin client | It calls the same control-plane and dispatch APIs a future Studio will call. No domain, routing, or execution logic lives in the CLI. |
 | A-17 | v1 runs in **one** AWS account, `755348349819` (`nightshift-prod`), in `us-west-2` | Deliberate single-account start. The account is treated as a sandbox until Nightshift is launched and supported; a separate development account arrives only if and when that happens. Nothing in v1 may assume a second account exists. |
 | A-18 | v1 does not verify teardown | The persistent stack is never destroyed to satisfy a test, and no throwaway stack is deployed to prove `destroy` works. With one account and one user there is nothing to migrate to, so the check earns less than it costs. Removal policies are still set **explicitly** per resource so retention is chosen rather than inherited from a default. Revisit if a second environment is ever stood up. |
-| A-19 | The control plane is a Lambda behind an API Gateway HTTP API, authenticated by IAM SigV4 | **Resolves O-01.** API Gateway rejects an unsigned request before the function runs, so there is no authentication code to write. The Lambda is the entire API and the only holder of DynamoDB and S3 credentials. Local clients sign with the user's credentials; the remote runner signs with its own task role rather than carrying the user's. |
+| A-19 | The control plane is a Lambda behind an API Gateway HTTP API, authenticated by a **Cognito JWT authorizer** | **Resolves O-01.** Supersedes the original IAM SigV4 form (see A-19a). The gateway validates the token and rejects bad requests before the function runs, so there is still no authentication code in the handler. The Lambda remains the entire API and the only holder of DynamoDB and S3 credentials. Tenancy comes from a claim in the validated token — never from the URL, and never from which AWS profile the caller happens to hold. |
+| A-19a | *Superseded:* IAM SigV4 authentication | Ratified 2026-09-13, reversed 2026-09-14 before implementation. SigV4 requires every caller to hold an IAM identity **in the Nightshift account**. Workable for one internal user, fatal for distribution: it would mean issuing IAM users to customers. It also forced the operator to juggle a Nightshift profile alongside the client-account credentials they were already using. Recorded rather than deleted because the reasoning that made it attractive — no auth code in the handler — is preserved by the JWT authorizer, and a future reader should know the trade was examined. |
 | A-20 | One DynamoDB table with one GSI, and one S3 bucket | Every access pattern is prefixed by the ownership chain, so a second table buys nothing. `PK` always begins with `projectId`, which makes a cross-project query structurally impossible rather than merely forbidden. See `docs/programs/p2-control-plane.md` for the key schema. |
 | A-21 | A project belongs to an **organisation**; the ownership chain is unchanged | `Project` carries `orgId` and an `ORG#` partition lists an org's projects. `orgId` is deliberately *not* added to the chain on every aggregate: `projectId` is a globally unique ULID, so project-scoped items need no org prefix to be unambiguous. **v1 provides org labelling, not org separation** — see the non-guarantee below. |
 | A-22 | Event sequence numbers are assigned **after** durability, by a DynamoDB Streams consumer | An event is written synchronously with its ULID as the sort key, so the writer gets durability and an identifier immediately. A stream consumer, ordered and single-threaded per run partition, then stamps a dense `sequence`. A crash cannot burn a number, because numbering happens after the record is durable and the consumer resumes from its last committed position. The cost is a brief window in which an event is durable but unnumbered, so every reader must tolerate an absent `sequence`. |
 | A-23 | **Project** isolation is enforced in the application, not in IAM | Single user in v1, and per-tenant IAM identities are not how multi-tenant products are usually built. Isolation lives in one place: the Lambda. This is what A-21's light org scoping depends on; if IAM ever becomes the tenant boundary, A-21 has to be revisited first. |
 | A-24 | Infrastructure is split into a stateful stack and a stateless stack | The data stack holds DynamoDB and S3, carries termination protection, and changes rarely. The API stack holds the function, the API and the stream consumer, and can be replaced freely. With one account (A-17) that separation is the only thing standing between a bad deploy and the data. |
+
+| A-25 | Nightshift reaches a project's AWS account by **assuming a role in that account**, with an external ID | The standard cross-account pattern. The account owner creates the role and controls its permissions; Nightshift stores the role ARN and external ID against the Project and calls `sts:AssumeRole` per job, receiving short-lived credentials. Nightshift never holds long-lived credentials for anyone's account. The external ID prevents the confused-deputy problem. Identical for local and remote execution, which is what keeps A-16's "same canonical model" true. Expressed through `Scope.permissions`, so A-11's narrowing applies for free: a child may be granted fewer assumable roles than its parent and structurally cannot widen. |
+| A-26 | Secrets are stored in DynamoDB in plaintext for now, with a stated upgrade path | An explicit, time-boxed risk decision, not an oversight. In a single-account single-user deployment anyone with read access to the table already holds admin, so the marginal exposure is small. It stops being acceptable the moment a second tenant exists or the account gains non-admin principals. Upgrade path and the distinction between kinds of secret are below. |
+
+### A-25 / A-26: the two credential worlds, and where secrets live
+
+**Two unrelated uses of AWS credentials.** Conflating them is the most likely way
+to get this wrong, so they are named separately.
+
+- **Control-plane credentials** answer *who is calling Nightshift*. Under A-19
+  these are no longer AWS credentials at all — they are a Cognito token. Which
+  AWS profiles a user holds is irrelevant to the control plane.
+- **Workload credentials** answer *what a job may do inside a project's account*.
+  These come from A-25's role assumption, are short-lived, and are scoped by a
+  policy the account owner wrote. The control plane never sees them.
+
+A **Nightshift organisation is not an AWS Organization.** The collision is
+accidental and it is a genuine trap: an operator may hold credentials in several
+unrelated AWS Organizations while working under a single Nightshift org, or work
+under several Nightshift orgs from one AWS identity. Nothing maps between them.
+
+**Kinds of secret, and where each belongs.**
+
+| Kind | Count | Sensitivity | Now | Later |
+|------|-------|-------------|-----|-------|
+| Cross-account external IDs | one per project | AWS states an external ID is *not* a secret; it must simply be unpredictable | DynamoDB, plaintext | unchanged, or encrypted with the rest |
+| Provider API keys (O-05) | a handful | genuinely secret | DynamoDB, plaintext (A-26) | **Secrets Manager** — few enough that per-secret cost is trivial, and rotation comes free |
+| Per-project sensitive attributes | many | varies | DynamoDB, plaintext (A-26) | **AWS Database Encryption SDK** for DynamoDB |
+
+On the upgrade path: hand-rolled `kms:Encrypt` on a field works, but the AWS
+Database Encryption SDK for DynamoDB is the better tool for the many-items case.
+It does envelope encryption per item, caches data keys so KMS cost stays flat,
+and binds the ciphertext to the item's primary key as additional authenticated
+data — so a ciphertext cannot be lifted from one item and replayed into another.
+That last property is the one a hand-rolled `kms:Encrypt` usually misses.
+DynamoDB's encryption at rest is already on by default; the concern A-26 defers is
+readability from the console and by any principal with table read access, which
+client-side encryption is what actually addresses.
 
 ### A-21 non-guarantee: orgs are a label, not a boundary
 
