@@ -62,14 +62,34 @@ export interface Fixtures {
 }
 
 /**
- * Builds one fixture world.
+ * How many worlds this module has handed out. Each gets a disjoint identifier
+ * range, so two independent `createFixtures()` calls never collide.
  *
- * Beware: a counting generator restarts at 1, so two independent
- * `createFixtures()` calls mint the *same* identifiers. When a test needs two
- * distinguishable worlds — proving Project A cannot see Project B, for instance —
- * use {@link createFixturePair}, or pass both calls one shared generator.
+ * An earlier version defaulted every world to a generator starting at 1, which
+ * meant two "independent" worlds shared every identifier. That silently turned
+ * isolation tests into tautologies, and it caught three separate tests — including
+ * one written by the author of the warning comment — before the default was
+ * changed. Deterministic per module load, which is what a test needs; the counter
+ * resets with the module, and vitest loads each test file fresh.
  */
-export const createFixtures = (ids: IdGenerator = createCountingIdGenerator()): Fixtures => {
+let worldsHandedOut = 0;
+
+/** Identifier space reserved per world. Generous enough that no world overruns it. */
+const WORLD_STRIDE = 1_000_000;
+
+/**
+ * Builds one fixture world with its own identifier range.
+ *
+ * Two calls yield two genuinely distinct worlds, which is what an isolation test
+ * needs. Pass an explicit generator only when a test wants to control identifiers
+ * exactly.
+ */
+export const createFixtures = (ids?: IdGenerator): Fixtures => {
+  const generator = ids ?? createCountingIdGenerator(worldsHandedOut++ * WORLD_STRIDE);
+  return createFixturesWith(generator);
+};
+
+const createFixturesWith = (ids: IdGenerator): Fixtures => {
   const scope: RunScope = {
     projectId: ids.next("proj"),
     programId: ids.next("prog"),
@@ -79,12 +99,16 @@ export const createFixtures = (ids: IdGenerator = createCountingIdGenerator()): 
 };
 
 /**
- * Two fixture worlds guaranteed to share no identifier, drawn from one generator.
- * This is the shape isolation tests want: everything about `b` differs from `a`.
+ * Two fixture worlds sharing no identifier.
+ *
+ * Since {@link createFixtures} now guarantees this on its own, this is kept only
+ * because it reads clearly at the top of an isolation test. Passing a shared
+ * generator still works and keeps both worlds in one identifier range.
  */
-export const createFixturePair = (
-  ids: IdGenerator = createCountingIdGenerator(),
-): readonly [Fixtures, Fixtures] => [createFixtures(ids), createFixtures(ids)];
+export const createFixturePair = (ids?: IdGenerator): readonly [Fixtures, Fixtures] =>
+  ids === undefined
+    ? [createFixtures(), createFixtures()]
+    : [createFixturesWith(ids), createFixturesWith(ids)];
 
 export const makeProject = (f: Fixtures, overrides: Overrides<Project> = {}): Project =>
   ProjectSchema.parse({

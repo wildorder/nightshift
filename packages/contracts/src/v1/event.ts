@@ -86,8 +86,16 @@ export const EventSchema = z
      * same key must not create a second event.
      */
     idempotencyKey: z.string().min(1).max(256),
-    /** Monotonic within a run. Ordering must be reconstructable from stored records alone. */
-    sequence: z.int().min(0),
+    /**
+     * Monotonic within a run, dense, assigned by the control plane.
+     *
+     * `null` means **durable but not yet numbered**. Sequence numbers are stamped
+     * after the write commits, by an ordered consumer (A-22), so there is a brief
+     * window in which an event exists and has no number. Modelled as nullable
+     * rather than optional so no reader can forget the case: see
+     * `isSequenced` and `orderEvents` in `@nightshift/core`.
+     */
+    sequence: z.int().min(0).nullable(),
     type: EventTypeSchema,
     source: EventSourceSchema,
     executionNodeId: ExecutionNodeIdSchema.nullable(),

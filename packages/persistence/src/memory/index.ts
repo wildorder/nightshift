@@ -81,11 +81,31 @@ export interface InMemoryState {
   clear(): void;
   /** Total records held, for assertions about what a test actually wrote. */
   readonly size: number;
+  /**
+   * Stamps sequence numbers on events appended while `deferSequencing` was on,
+   * in append order, imitating the DynamoDB Streams consumer (A-22). Returns how
+   * many it numbered.
+   *
+   * Without this, the durable-but-unnumbered state would only ever exist against
+   * real AWS, and every consumer written in P3 onward would be untested against
+   * the case it most needs to handle.
+   */
+  materializeSequences(): number;
+}
+
+export interface InMemoryOptions {
+  /**
+   * Leave `sequence` null on append, until `materializeSequences()` is called.
+   * Off by default, so the adapter behaves synchronously unless a test is
+   * deliberately exercising the lag.
+   */
+  readonly deferSequencing?: boolean;
 }
 
 export interface InMemoryStores extends NightshiftStores, InMemoryState {}
 
-export const createInMemoryStores = (): InMemoryStores => {
+export const createInMemoryStores = (options: InMemoryOptions = {}): InMemoryStores => {
+  const deferSequencing = options.deferSequencing ?? false;
   const projects = new ScopedMap<Project>();
   const programContracts = new ScopedMap<ProgramContract>();
   const runs = new ScopedMap<Run>();
@@ -120,6 +140,9 @@ export const createInMemoryStores = (): InMemoryStores => {
 
   /** Sequence counters, one per run. Never reused, so ordering is total. */
   const sequences = new Map<string, number>();
+  /** Per-run arrival count, and global append order, for deferred numbering. */
+  const arrivals = new Map<string, number>();
+  const appendOrder: string[] = [];
 
   const projectStore: ProjectStore = {
     put: async (project) => {
@@ -195,20 +218,43 @@ export const createInMemoryStores = (): InMemoryStores => {
       if (existing !== undefined) return { stored: false, event: existing };
 
       const runKey = runPrefix(parsed);
-      const sequence = sequences.get(runKey) ?? 0;
-      sequences.set(runKey, sequence + 1);
+
+      // Key by the event's ULID, matching the real adapter: the storage key cannot
+      // depend on a sequence that may not exist yet.
+      const key = `${runKey}${parsed.eventId}`;
+      const arrival = (arrivals.get(runKey) ?? 0) + 1;
+      arrivals.set(runKey, arrival);
+      appendOrder.push(key);
+
+      let sequence: number | null = null;
+      if (!deferSequencing) {
+        sequence = sequences.get(runKey) ?? 0;
+        sequences.set(runKey, sequence + 1);
+      }
 
       // Sequence is assigned by the store, never trusted from the caller.
       const stored: Event = { ...parsed, sequence };
-      // Zero-padded so lexicographic key order matches numeric sequence order.
-      events.set(`${runKey}${String(sequence).padStart(12, "0")}`, stored);
+      events.set(key, stored);
       eventsByIdempotencyKey.set(idempotencyKey, stored);
       return { stored: true, event: stored };
     },
     listByRun: async (scope: RunScope, options?: PageRequest & { afterSequence?: number }) => {
-      const ordered = events.scan(runPrefix(scope));
+      // Scan yields ULID order, which is append order. Numbered events are then
+      // ordered by sequence, with unnumbered ones last — see `orderEvents` in core.
+      const scanned = events.scan(runPrefix(scope));
+      const numbered = scanned
+        .filter((e): e is Event & { sequence: number } => e.sequence !== null)
+        .sort((a, b) => a.sequence - b.sequence);
+      const unnumbered = scanned.filter((e) => e.sequence === null);
+      const ordered = [...numbered, ...unnumbered];
+
       const after = options?.afterSequence;
-      const filtered = after === undefined ? ordered : ordered.filter((e) => e.sequence > after);
+      // A sequence cursor cannot see unnumbered events. That is the documented
+      // trade (A-22): it lags rather than skipping.
+      const filtered =
+        after === undefined
+          ? ordered
+          : ordered.filter((e) => e.sequence !== null && e.sequence > after);
       return paginate(filtered, options);
     },
     nextSequence: async (scope: RunScope) => sequences.get(runPrefix(scope)) ?? 0,
@@ -303,6 +349,25 @@ export const createInMemoryStores = (): InMemoryStores => {
     clear: () => {
       for (const store of all) store.clear();
       sequences.clear();
+      arrivals.clear();
+      appendOrder.length = 0;
+    },
+    materializeSequences: () => {
+      let stamped = 0;
+      // Append order, so numbering matches the order an ordered stream consumer
+      // would see. Per run, because sequences are per run.
+      for (const key of appendOrder) {
+        const event = events.get(key);
+        if (event === undefined || event.sequence !== null) continue;
+        const runKey = runPrefix(event);
+        const next = sequences.get(runKey) ?? 0;
+        sequences.set(runKey, next + 1);
+        events.set(key, { ...event, sequence: next });
+        const idemKey = `${runKey}${event.idempotencyKey}`;
+        eventsByIdempotencyKey.set(idemKey, { ...event, sequence: next });
+        stamped += 1;
+      }
+      return stamped;
     },
     get size() {
       return all.reduce((total, store) => total + store.size, 0);

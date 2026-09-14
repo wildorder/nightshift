@@ -15,6 +15,7 @@ import {
   createCountingIdGenerator,
   createFixtures,
   type Fixtures,
+  isSequenced,
   makeAgent,
   makeCheckpoint,
   makeDecision,
@@ -36,6 +37,20 @@ import { beforeEach, describe, expect, it } from "vitest";
  * depend on another's writes.
  */
 export type StoresFactory = () => Promise<NightshiftStores> | NightshiftStores;
+
+/**
+ * Asserts an event has been numbered and returns its sequence.
+ *
+ * Deliberately strict: `sequence` is nullable because numbering trails durability
+ * (A-22), and a suite that silently coerced null to a number would stop catching
+ * an adapter whose numbering never ran.
+ */
+const sequenceOf = (event: Event): number => {
+  if (!isSequenced(event)) {
+    throw new Error(`event ${event.eventId} is still unnumbered; expected a sequence`);
+  }
+  return event.sequence;
+};
 
 /** Two fully disjoint fixture worlds, for the isolation section. */
 const twoWorlds = (): readonly [Fixtures, Fixtures] => {
@@ -284,8 +299,8 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
         for (let i = 0; i < 12; i += 1) {
           await stores.events.append(makeEvent(a, { idempotencyKey: `k${i}` }));
         }
-        const first = (await stores.events.listByRun(a.scope)).items.map((e) => e.sequence);
-        const second = (await stores.events.listByRun(a.scope)).items.map((e) => e.sequence);
+        const first = (await stores.events.listByRun(a.scope)).items.map(sequenceOf);
+        const second = (await stores.events.listByRun(a.scope)).items.map(sequenceOf);
 
         expect(first).toEqual([...first].sort((x, y) => x - y));
         expect(second).toEqual(first);
@@ -296,7 +311,7 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
           await stores.events.append(makeEvent(a, { idempotencyKey: `k${i}` }));
         }
         const tail = await stores.events.listByRun(a.scope, { afterSequence: 3 });
-        expect(tail.items.map((e) => e.sequence)).toEqual([4, 5]);
+        expect(tail.items.map(sequenceOf)).toEqual([4, 5]);
       });
 
       it("keeps per-run sequences independent", async () => {
@@ -322,7 +337,7 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
             a.scope,
             cursor === undefined ? { limit: 5 } : { limit: 5, cursor },
           );
-          seen.push(...page.items.map((e) => e.sequence));
+          seen.push(...page.items.map(sequenceOf));
           cursor = page.cursor;
           guard += 1;
           expect(guard).toBeLessThan(20);

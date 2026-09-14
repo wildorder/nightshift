@@ -43,11 +43,11 @@ export const createUlidIdGenerator = (
  * exported from `core` rather than a test file because every package's tests
  * need it.
  */
-export const createCountingIdGenerator = (): IdGenerator => {
+export const createCountingIdGenerator = (startAt = 0): IdGenerator => {
   const counters = new Map<IdPrefix, number>();
   return {
     next: <P extends IdPrefix>(prefix: P): IdOf<P> => {
-      const n = (counters.get(prefix) ?? 0) + 1;
+      const n = (counters.get(prefix) ?? startAt) + 1;
       counters.set(prefix, n);
       return parseId(prefix, `${prefix}_${encodeCrockford(n)}`);
     },

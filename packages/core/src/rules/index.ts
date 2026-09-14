@@ -1,5 +1,6 @@
 export * from "./decisions.js";
 export * from "./delegation.js";
+export * from "./event-stream.js";
 export * from "./execution-tree.js";
 export * from "./ownership.js";
 export * from "./scope.js";
