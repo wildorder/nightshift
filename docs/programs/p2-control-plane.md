@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p2-control-plane` |
 | Source stage | Stage 2 (AWS Control Plane) |
-| Status | Decisions ratified 2026-09-13. Tasks not yet drafted. |
+| Status | Decisions ratified and tasks drafted 2026-09-13. Implementation not started. |
 | Depends on | P1 Foundation (complete) |
 
 This contract is the stable authority for P2. The implementation plan may be
@@ -279,7 +279,47 @@ Forbidden:
 
 ## 11. Tasks
 
-Not yet drafted. To be written once this contract is reviewed.
+| Task | Title | Depends on | Needs AWS |
+|------|-------|------------|-----------|
+| T1 | Split the stacks, and build the data stack | — | no |
+| T2 | Org scoping in the ports | — | no |
+| T3 | DynamoDB and S3 adapters | T2 | no (verified in T7) |
+| T4 | The control-plane API handler | T2 | no |
+| T6 | The sequence materializer | T2 | no |
+| T5 | The API stack | T1, T4, T6 | no |
+| T7 | First deploy and the smoke suite | T1, T3, T4, T5, T6 | **yes** |
+| T8 | Budget alarm | — | yes |
+
+```text
+T1 ──────────────┐
+T2 ──┬── T3 ─────┼──────── T7
+     ├── T4 ──┐  │
+     └── T6 ──┴── T5
+T8 (independent)
+```
+
+**Seven of eight tasks need no AWS credentials.** That is deliberate, and it is
+what P1's persistence ports bought: the adapters, the handler and the materializer
+are all provable against the in-memory adapter before anything is deployed. T7 is
+the first task that touches the account, and it is where SC-P2-03 through SC-P2-12
+are actually discharged.
+
+T1 and T2 are independent and can start together. T2 is the last cheap moment to
+change a port method — after T3 exists, every port addition means two
+implementations.
+
+Specs live in `tasks/p2-control-plane/`.
+
+### Carried over from P1
+
+Three things the tasks absorb rather than discover:
+
+- P1 left one `nightshift-<stage>-control-plane` stack. T1 replaces it with the
+  two-stack split before any resource exists, so nothing has to migrate later.
+- "List projects in an org" needs a new port method, which means the in-memory
+  adapter and the conformance suite grow too. T2.
+- The materializer is a second Lambda with its own failure modes, including
+  events that are durable but permanently unnumbered. T6 and T5.
 
 ## 12. Decision log
 
