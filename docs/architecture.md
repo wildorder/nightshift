@@ -63,6 +63,12 @@
 | A-16 | The CLI lives in `apps/cli` and is a thin client | It calls the same control-plane and dispatch APIs a future Studio will call. No domain, routing, or execution logic lives in the CLI. |
 | A-17 | v1 runs in **one** AWS account, `755348349819` (`nightshift-prod`), in `us-west-2` | Deliberate single-account start. The account is treated as a sandbox until Nightshift is launched and supported; a separate development account arrives only if and when that happens. Nothing in v1 may assume a second account exists. |
 | A-18 | v1 does not verify teardown | The persistent stack is never destroyed to satisfy a test, and no throwaway stack is deployed to prove `destroy` works. With one account and one user there is nothing to migrate to, so the check earns less than it costs. Removal policies are still set **explicitly** per resource so retention is chosen rather than inherited from a default. Revisit if a second environment is ever stood up. |
+| A-19 | The control plane is a Lambda behind an API Gateway HTTP API, authenticated by IAM SigV4 | **Resolves O-01.** API Gateway rejects an unsigned request before the function runs, so there is no authentication code to write. The Lambda is the entire API and the only holder of DynamoDB and S3 credentials. Local clients sign with the user's credentials; the remote runner signs with its own task role rather than carrying the user's. |
+| A-20 | One DynamoDB table with one GSI, and one S3 bucket | Every access pattern is prefixed by the ownership chain, so a second table buys nothing. `PK` always begins with `projectId`, which makes a cross-project query structurally impossible rather than merely forbidden. See `docs/programs/p2-control-plane.md` for the key schema. |
+| A-21 | A project belongs to an **organisation**; the ownership chain is unchanged | `Project` carries `orgId` and an `ORG#` partition lists an org's projects. `orgId` is deliberately *not* added to the chain on every aggregate: `projectId` is a globally unique ULID, so project-scoped items need no org prefix to be unambiguous, and adding one would buy nothing that is not already true. Retrofitting later therefore costs an attribute, not a migration. |
+| A-22 | Event sequence numbers are assigned **after** durability, by a DynamoDB Streams consumer | An event is written synchronously with its ULID as the sort key, so the writer gets durability and an identifier immediately. A stream consumer, ordered and single-threaded per run partition, then stamps a dense `sequence`. A crash cannot burn a number, because numbering happens after the record is durable and the consumer resumes from its last committed position. The cost is a brief window in which an event is durable but unnumbered, so every reader must tolerate an absent `sequence`. |
+| A-23 | Project isolation is enforced in the application, not in IAM | Single user in v1, and per-tenant IAM identities are not how multi-tenant products are usually built. Isolation lives in one place: the Lambda. This is what A-21's light org scoping depends on; if IAM ever becomes the tenant boundary, A-21 has to be revisited first. |
+| A-24 | Infrastructure is split into a stateful stack and a stateless stack | The data stack holds DynamoDB and S3, carries termination protection, and changes rarely. The API stack holds the function, the API and the stream consumer, and can be replaced freely. With one account (A-17) that separation is the only thing standing between a bad deploy and the data. |
 
 ## 3. Open decisions
 
@@ -71,7 +77,7 @@ silently — surface them as decisions for human ratification at the stated poin
 
 | # | Question | Resolve by |
 |---|----------|-----------|
-| O-01 | Control-plane HTTP/runtime implementation: the exact AWS compute/API shape **and** how its clients (local MCP server, CLI, remote runner) authenticate to it | Before Stage 2 implementation (P2) |
+| ~~O-01~~ | ~~Control-plane HTTP/runtime implementation and client authentication~~ | **Resolved 2026-09-13 — see A-19.** |
 | O-02 | Realtime transport technology | Before Stage 10 |
 | O-03 | AgentCore instance class, scaling, idle timeout, max lifetime, retention | During Stage 9 |
 | O-04 | Local authentication between an orchestrator and the Nightshift MCP server (client-to-control-plane auth belongs to O-01) | Before Stage 3 (P3) |

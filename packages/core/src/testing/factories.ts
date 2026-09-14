@@ -90,6 +90,7 @@ export const makeProject = (f: Fixtures, overrides: Overrides<Project> = {}): Pr
   ProjectSchema.parse({
     schemaVersion: 1,
     projectId: f.scope.projectId,
+    orgId: f.ids.next("org"),
     name: "fixture-project",
     createdAt: AT,
     ...overrides,

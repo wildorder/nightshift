@@ -162,7 +162,7 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
   they test as `*.test.ts`; cross-package fixtures live under `test/`.
 - Contract schemas: zod. Every persisted record carries a literal
   `schemaVersion`.
-- IDs: prefixed ULIDs (`proj_`, `prog_`, `run_`, `node_`, `job_`, `agent_`,
+- IDs: prefixed ULIDs (`org_`, `proj_`, `prog_`, `run_`, `node_`, `job_`, `agent_`,
   `dec_`, `ckpt_`, `ver_`, `exam_`, `route_`, `art_`, `evt_`). ID generation
   takes an injected clock and randomness source so tests are deterministic.
 - Naming: kebab-case files, PascalCase types, camelCase fields.

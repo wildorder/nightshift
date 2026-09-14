@@ -23,6 +23,7 @@ describe("identifier prefixes", () => {
         "exam",
         "job",
         "node",
+        "org",
         "proj",
         "prog",
         "route",

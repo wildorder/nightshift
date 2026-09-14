@@ -18,6 +18,7 @@ const ULID_C = "01HF7YAT02GGGGGGGGGGGGGGGG";
 const ULID_D = "01HF7YAT03GGGGGGGGGGGGGGGG";
 
 export const EXAMPLE_IDS = {
+  orgId: `org_${ULID_A}`,
   projectId: `proj_${ULID_A}`,
   programId: `prog_${ULID_A}`,
   runId: `run_${ULID_A}`,
@@ -64,6 +65,7 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
   Project: {
     schemaVersion: 1,
     projectId: EXAMPLE_IDS.projectId,
+    orgId: EXAMPLE_IDS.orgId,
     name: "example-app",
     description: "Fixture project used by contract and conformance tests.",
     createdAt: AT,

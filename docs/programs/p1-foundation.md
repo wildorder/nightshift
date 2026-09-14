@@ -53,9 +53,11 @@ when that happens. Recorded as A-17 and A-18 in `docs/architecture.md`.
 | H-P2-01 | Which AWS account P2 targets | **settled** — `755348349819` / `us-west-2`, single account, sandbox posture |
 | H-P2-02 | A working CLI profile for it | **done** — `[profile nightshift]` with `[sso-session nightshift]`, `AdministratorAccess` (the only permission set assigned), region `us-west-2`. `aws sts get-caller-identity --profile nightshift` resolves to the account. Re-auth with `aws sso login --sso-session nightshift`. |
 | H-P2-03 | `cdk bootstrap` in that account and region | **done** — see §12 |
-| H-P2-04 | A budget alarm on the account | **open** — not created. A budget notification needs a subscriber address, which is the human's to choose. More important here than it would be with a separate dev account, because there is only one environment. |
-| H-P2-05 | Ratify **O-01**: control-plane compute/API shape and client authentication | **open** — a genuine architectural decision (§3 of `docs/architecture.md`). Recommendation on file: Lambda behind an API Gateway HTTP API with IAM SigV4 auth; the local MCP server and CLI sign with the user's AWS credentials. |
-| H-P2-06 | Whether this account will also carry Bedrock model spend | **open** — needed by P6. With one account the answer is probably yes, but model access is enabled per region and per model, so it is worth confirming early. |
+| H-P2-04 | A budget alarm on the account | **settled** — notifications to `tim+nightshift@wingitlabs.com` (D-P2-11). Creating it is P2 work. |
+| H-P2-05 | Ratify **O-01**: control-plane compute/API shape and client authentication | **resolved** — A-19 / D-P2-01: Lambda behind an API Gateway HTTP API, IAM SigV4. |
+| H-P2-06 | Whether this account will also carry Bedrock model spend | **open** — needed by P6, not by P2. Model access is enabled per region and per model, so worth confirming before P6 rather than during it. |
+
+Every other P2 decision is settled in `docs/programs/p2-control-plane.md` §3.
 
 **What the single-account choice costs.** The original plan wanted a throwaway
 development account partly to prove the stack destroys cleanly. v1 drops that
@@ -79,7 +81,7 @@ decision supersedes them. `AGENTS.md` carries the short form.
 | D-P1-04 | Contract schemas: zod 4. Every persisted record carries a literal `schemaVersion`. | Runtime validation and static types from one definition; delegation validates a Job Contract before persisting it (A-03). |
 | D-P1-05 | Pins: typescript 7.0.2, @types/node 22.20.2, aws-cdk-lib 2.269.0, constructs 10.8.1, aws-cdk 2.1141.0, vitest 5.0.0, fast-check 4.10.0, zod 4.6.4, @biomejs/biome 2.5.13, ulid 3.0.2 | Latest published on 2026-09-13. TypeScript 7 is the native compiler; vitest and Biome do not depend on `tsc`, so the only consumers of `tsc` are typecheck and build. If TypeScript 7 blocks project references, fall back to 5.9.3 and record it in §11. |
 | D-P1-06 | CI: GitHub Actions on push and pull request, matrix of ubuntu-latest and windows-latest, running every command in §6 | The dev machine is Windows; CI is Linux. Both must pass. |
-| D-P1-07 | IDs are prefixed ULIDs (`proj_`, `prog_`, `run_`, `node_`, `job_`, `agent_`, `dec_`, `ckpt_`, `ver_`, `exam_`, `route_`, `art_`, `evt_`). Generation takes an injected clock and randomness source. Files kebab-case, types PascalCase, fields camelCase. | ULIDs sort by time, which suits DynamoDB range keys and event ordering. Injection keeps `core` deterministic under test. |
+| D-P1-07 | IDs are prefixed ULIDs (`org_`, `proj_`, `prog_`, `run_`, `node_`, `job_`, `agent_`, `dec_`, `ckpt_`, `ver_`, `exam_`, `route_`, `art_`, `evt_`). Generation takes an injected clock and randomness source. Files kebab-case, types PascalCase, fields camelCase. | ULIDs sort by time, which suits DynamoDB range keys and event ordering. Injection keeps `core` deterministic under test. |
 | D-P1-08 | Persistence **port** interfaces live in `packages/core`. `packages/persistence` exposes `./memory` (test-only, no AWS import) and `./aws` (DynamoDB/S3, built in P2). Nothing above `persistence` imports `./aws` directly. | Lets `execution` and above test offline from P3 onward without any local canonical state (A-06). |
 | D-P1-09 | Sterility and architecture checks are custom Node scripts and vitest tests. No dependency-cruiser or similar. | The rules are few and specific. A script is faster to run and to read than a rules DSL. |
 | D-P1-10 | The CDK app entry runs compiled JavaScript (`node infra/cdk/dist/bin/app.js`), so `cdk synth` requires `npm run build` first and needs no TypeScript loader | Avoids an extra runtime dependency and keeps synth deterministic. |
@@ -258,6 +260,7 @@ Specs live in `tasks/p1-foundation/`.
 | 2026-09-13 | Architecture rule AR-6 added beyond the T3 spec: every external dependency pinned exactly, enforcing contract §7 | Implementation |
 | 2026-09-13 | `vitest` project configs do not inherit the root `test` options. Packages with their own config restate timeouts and exclusions, and the `test` package pins its project name so `--project test` selects it | Implementation |
 | 2026-09-13 | Concurrency is enforced per parent, not run-wide, following T6's wording. A run-wide cap is scheduler policy and belongs to P5's execution layer, not to `core` | Implementation |
+| 2026-09-13 | **Amends D-P1-07.** An `org_` prefix was added, and `Project` gained `orgId`, when the single-table design was settled for P2 (A-21, D-P2-05). Done during P2 planning rather than in P2 itself because the key namespace is expensive to retrofit while the attribute is not. The ownership chain is unchanged. | Human |
 | 2026-09-13 | `interrupted` was added to the retryable set beyond T6's minimum table, so killing a worker leaves recoverable state rather than a dead end (architecture §4) | Implementation |
 
 ## 12. As built

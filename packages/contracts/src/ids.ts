@@ -24,6 +24,7 @@ const rawId = (prefix: string) =>
     message: `must be "${prefix}_" followed by ${ULID_LENGTH} Crockford base32 characters`,
   });
 
+export const OrgIdSchema = rawId("org").brand<"OrgId">();
 export const ProjectIdSchema = rawId("proj").brand<"ProjectId">();
 export const ProgramIdSchema = rawId("prog").brand<"ProgramId">();
 export const RunIdSchema = rawId("run").brand<"RunId">();
@@ -38,6 +39,7 @@ export const RoutingDecisionIdSchema = rawId("route").brand<"RoutingDecisionId">
 export const ArtifactIdSchema = rawId("art").brand<"ArtifactId">();
 export const EventIdSchema = rawId("evt").brand<"EventId">();
 
+export type OrgId = z.infer<typeof OrgIdSchema>;
 export type ProjectId = z.infer<typeof ProjectIdSchema>;
 export type ProgramId = z.infer<typeof ProgramIdSchema>;
 export type RunId = z.infer<typeof RunIdSchema>;
@@ -57,6 +59,7 @@ export type EventId = z.infer<typeof EventIdSchema>;
  * aggregate cannot be introduced without an ID prefix.
  */
 export const ID_SCHEMAS = {
+  org: OrgIdSchema,
   proj: ProjectIdSchema,
   prog: ProgramIdSchema,
   run: RunIdSchema,
