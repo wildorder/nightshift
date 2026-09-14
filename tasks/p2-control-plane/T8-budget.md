@@ -16,10 +16,7 @@ and production (A-17), an unnoticed runaway has nowhere else to be.
 2. Thresholds at 50%, 80% and 100% of budgeted spend, plus a forecasted-to-exceed
    notification. Forecast is the one that gives useful warning; the others are
    confirmation.
-3. The monthly amount is a human decision. Propose a figure based on what P2
-   actually costs — DynamoDB on-demand, S3 and two Lambdas at development volumes
-   is small — and leave headroom for P6's model spend. Surface it for ratification
-   rather than picking silently.
+3. The monthly amount is 500 dollars - leaving enough headroom for P6's model spend. 
 4. Define it in CDK in the data stack, not by hand in the console, so it is
    reviewable and reproducible. Note that Budgets is a global service: the budget
    must be declared in `us-east-1` or handled accordingly, and CDK needs the

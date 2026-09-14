@@ -26,7 +26,16 @@ and IAM. Nothing in this stack holds state, so it can be replaced freely.
      broad execution role.
 3. An HTTP API (API Gateway v2) with `AWS_IAM` authorisation on every route
    (A-19). An unsigned request must be rejected by the gateway, which T7 asserts.
-   No route may be public, including health checks.
+   No route may be **unauthenticated**, including health checks.
+
+   To be precise about what this does and does not mean: the endpoint is
+   internet-facing, on public DNS, reachable from anywhere. That is deliberate and
+   required — it is how a local MCP server on a laptop reaches the control plane,
+   and later how the AgentCore runtime does. IAM authorisation means every request
+   must carry a valid SigV4 signature, so the endpoint is publicly *reachable* but
+   not publicly *usable*. A private API behind a VPC endpoint was not chosen
+   because a laptop cannot reach one without a VPN, which would defeat the local
+   execution model entirely.
 4. The materializer function from T6, wired to the table's stream:
    - Batch size and window chosen for latency over throughput, since this sets
      how far behind the realtime surface runs. Record the numbers and why.
@@ -54,9 +63,11 @@ Still no credentials for any of the above. First deploy is T7.
 
 ## Notes
 
-- The "no public route" assertion is worth more than it looks. It is the only
-  automated check that the control plane is not open to the internet, and A-19
-  makes API Gateway solely responsible for authentication.
+- The "every route requires IAM" assertion is worth more than it looks. Since
+  A-19 makes API Gateway solely responsible for authentication, a single route
+  authored with `authorizationType: NONE` would be an unauthenticated hole in an
+  internet-facing API, and nothing downstream would catch it — the handler has no
+  auth code by design.
 - Add a root `npm run deploy` script that deploys both stacks under
   `AWS_PROFILE=nightshift`, and keep it out of CI (D-P2-09).
 - Bundling: prefer CDK's Node bundling over a hand-rolled build step, and confirm
