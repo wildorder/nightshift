@@ -54,7 +54,7 @@ when that happens. Recorded as A-17 and A-18 in `docs/architecture.md`.
 | H-P2-02 | A working CLI profile for it | **done** — `[profile nightshift]` with `[sso-session nightshift]`, `AdministratorAccess` (the only permission set assigned), region `us-west-2`. `aws sts get-caller-identity --profile nightshift` resolves to the account. Re-auth with `aws sso login --sso-session nightshift`. |
 | H-P2-03 | `cdk bootstrap` in that account and region | **done** — see §12 |
 | H-P2-04 | A budget alarm on the account | **settled** — notifications to `tim+nightshift@wingitlabs.com` (D-P2-11). Creating it is P2 work. |
-| H-P2-05 | Ratify **O-01**: control-plane compute/API shape and client authentication | **resolved** — A-19 / D-P2-01: Lambda behind an API Gateway HTTP API, IAM SigV4. |
+| H-P2-05 | Ratify **O-01**: control-plane compute/API shape and client authentication | **resolved** — A-19 / D-P2-01: Lambda behind an API Gateway HTTP API with a Cognito JWT authorizer. An earlier IAM SigV4 form was reversed on 2026-09-14; see A-19a. |
 | H-P2-06 | Whether this account will also carry Bedrock model spend | **open** — needed by P6, not by P2. Model access is enabled per region and per model, so worth confirming before P6 rather than during it. |
 
 Every other P2 decision is settled in `docs/programs/p2-control-plane.md` §3.

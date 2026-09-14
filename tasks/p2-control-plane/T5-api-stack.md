@@ -47,8 +47,8 @@ and IAM. Nothing in this stack holds state, so it can be replaced freely.
    - IAM limited to reading the stream and updating that table.
 5. Log groups created explicitly with 30-day retention (D-P2-10), not left to
    Lambda's implicit group with infinite retention.
-6. CDK assertion tests: the stack synthesizes; every route has `AWS_IAM`
-   authorisation and none is public; the execution role has no wildcard resource;
+6. CDK assertion tests: the stack synthesizes; every route is bound to the JWT
+   authorizer and none is anonymous; the execution role has no wildcard resource;
    log retention is 30 days; the stream consumer has a DLQ and partial-batch
    failure reporting; the function runtime is Node 22.
 

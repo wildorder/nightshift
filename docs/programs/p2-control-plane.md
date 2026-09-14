@@ -240,8 +240,11 @@ account belongs in the smoke suite.
 
 Four phases. Exit 0 or it failed.
 
-1. **Reachability and auth.** An unsigned request gets 403; a signed one gets
-   200. The only proof SigV4 is wired rather than the API being open.
+1. **Reachability and auth.** A request with no token gets 401, one with a
+   malformed or expired token gets 401, and a valid token gets 200. The negative
+   halves are the only proof the authorizer is wired rather than the API being
+   open. The token comes from the machine app client (T9), never an interactive
+   login.
 2. **Conformance.** `describePortConformance` from P1, against the AWS adapter.
    Unchanged. If it needs changing, either the port contract or the adapter is
    wrong, and that is a conversation (SC-P2-12).
