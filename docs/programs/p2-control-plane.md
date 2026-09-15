@@ -365,7 +365,8 @@ Deployed, below). T8 still needs a notification confirmed as delivered.
 
 Every credential-free command in §7 exits 0 on macOS: build, typecheck, lint,
 `npm test` (988 tests in 40 files), synth (both stacks, both functions bundled),
-`check:sterility`, and `check:architecture`. CI has not yet run on this branch.
+`check:sterility`, and `check:architecture`. CI passed on its first run of this
+branch (run 34988067065, ubuntu-latest and windows-latest).
 
 | Task | State | Where |
 |------|-------|-------|
@@ -456,4 +457,5 @@ deployed table, with the suite as amended by D-P2-16.
   protection for the only environment there is, and a human call.
 - **Budget.** Deployed from `us-west-2` without trouble. Still open: confirm a
   notification actually arrives (T8).
-- **CI** has not yet run on this branch.
+- **CI** passed on the branch before merge: run 34988067065, ubuntu-latest and
+  windows-latest, every gate.
