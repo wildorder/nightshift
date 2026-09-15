@@ -1,10 +1,17 @@
 /**
  * The shared persistence-port conformance suite.
  *
- * One suite, run against every adapter. P1 wires it to the in-memory adapter;
- * P2 must wire it to the DynamoDB and S3 adapter **unchanged**. If P2 needs to
- * edit an assertion here to pass, either the port contract was wrong or the
- * adapter is, and that is the conversation to have rather than a quiet edit.
+ * One suite, run against every adapter: the in-memory adapter in `npm test`, and
+ * the DynamoDB and S3 adapter in the smoke suite. If an adapter needs an assertion
+ * edited to pass, either the port contract was wrong or the adapter is, and that
+ * is the conversation to have rather than a quiet edit.
+ *
+ * One such conversation has happened. A-22 moved sequence numbering after
+ * durability, so `append` may return an unnumbered event, which this suite
+ * predated and could not express. D-P2-16 amended it: an adapter supplies an
+ * optional `settle`, and every assertion about sequence numbers awaits it first.
+ * The assertions about the final numbering are unchanged, and a number an adapter
+ * does return from `append` must still be the right one.
  *
  * The isolation section is the offline form of P2's required proof that a
  * Project A query cannot return a Project B record. Running it here means the
@@ -21,13 +28,17 @@ import {
   makeDecision,
   makeEvent,
   makeJobContract,
+  makeMembership,
   makeNode,
   makeProgramContract,
   makeProject,
   makeRootNode,
   makeRun,
+  makeUser,
   makeVerification,
   type NightshiftStores,
+  nextUserId,
+  orderEvents,
   type RunScope,
 } from "@nightshift/core";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -36,7 +47,18 @@ import { beforeEach, describe, expect, it } from "vitest";
  * Builds a fresh, empty set of stores. Called before every test, so no test can
  * depend on another's writes.
  */
-export type StoresFactory = () => Promise<NightshiftStores> | NightshiftStores;
+export type StoresFactory<S extends NightshiftStores = NightshiftStores> = () => Promise<S> | S;
+
+export interface ConformanceOptions<S extends NightshiftStores> {
+  /**
+   * Resolves once every event appended so far has been numbered (D-P2-16).
+   *
+   * Omit it for an adapter that numbers synchronously. An adapter that defers
+   * numbering (A-22) must supply it, or the sequencing assertions fail on an
+   * unnumbered event — which is the point: they must not pass vacuously.
+   */
+  readonly settle?: (stores: S) => Promise<void> | void;
+}
 
 /**
  * Asserts an event has been numbered and returns its sequence.
@@ -52,17 +74,36 @@ const sequenceOf = (event: Event): number => {
   return event.sequence;
 };
 
+/**
+ * An adapter may return an event from `append` before numbering it (A-22), but a
+ * number it does return must already be the final one.
+ */
+const expectNumberOrPending = (event: Event, expected: number): void => {
+  if (event.sequence !== null) expect(event.sequence).toBe(expected);
+};
+
+/** An event without its sequence, for comparing records whose numbering may have moved on. */
+const withoutSequence = ({ sequence: _sequence, ...rest }: Event) => rest;
+
 /** Two fully disjoint fixture worlds, for the isolation section. */
 const twoWorlds = (): readonly [Fixtures, Fixtures] => {
   const ids = createCountingIdGenerator();
   return [createFixtures(ids), createFixtures(ids)];
 };
 
-export const describePortConformance = (name: string, factory: StoresFactory): void => {
+export const describePortConformance = <S extends NightshiftStores>(
+  name: string,
+  factory: StoresFactory<S>,
+  options: ConformanceOptions<S> = {},
+): void => {
   describe(`${name} — persistence port conformance`, () => {
-    let stores: NightshiftStores;
+    let stores: S;
     let a: Fixtures;
     let b: Fixtures;
+
+    const settle = async (): Promise<void> => {
+      await options.settle?.(stores);
+    };
 
     beforeEach(async () => {
       stores = await factory();
@@ -236,6 +277,115 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
       });
     });
 
+    describe("organisation grouping (T2, A-21)", () => {
+      it("round-trips a project with its orgId", async () => {
+        const orgId = a.ids.next("org");
+        const project = makeProject(a, { orgId });
+        await stores.projects.put(project);
+        expect((await stores.projects.get(project.projectId))?.orgId).toBe(orgId);
+      });
+
+      it("lists only that org's projects, and two orgs do not leak into each other", async () => {
+        const orgOne = a.ids.next("org");
+        const orgTwo = b.ids.next("org");
+        const first = makeProject(a, { orgId: orgOne });
+        const second = makeProject(a, { projectId: a.ids.next("proj"), orgId: orgOne });
+        const elsewhere = makeProject(b, { orgId: orgTwo });
+        for (const project of [first, second, elsewhere]) await stores.projects.put(project);
+
+        const one = (await stores.projects.listByOrg(orgOne)).items;
+        expect(one.map((p) => p.projectId)).toEqual([first.projectId, second.projectId].sort());
+        expect(one.every((p) => p.orgId === orgOne)).toBe(true);
+
+        const two = (await stores.projects.listByOrg(orgTwo)).items;
+        expect(two).toEqual([elsewhere]);
+      });
+
+      it("returns an empty page, not an error, for an org with no projects", async () => {
+        const page = await stores.projects.listByOrg(a.ids.next("org"), { limit: 5 });
+        expect(page.items).toEqual([]);
+        expect(page.cursor).toBeUndefined();
+      });
+
+      it("pages through an org's projects without repeating or dropping one", async () => {
+        const orgId = a.ids.next("org");
+        const written: ProjectId[] = [];
+        for (let i = 0; i < 5; i += 1) {
+          const project = makeProject(a, { projectId: a.ids.next("proj"), orgId });
+          await stores.projects.put(project);
+          written.push(project.projectId);
+        }
+
+        const seen: ProjectId[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await stores.projects.listByOrg(
+            orgId,
+            cursor === undefined ? { limit: 2 } : { limit: 2, cursor },
+          );
+          seen.push(...page.items.map((p) => p.projectId));
+          cursor = page.cursor;
+        } while (cursor !== undefined);
+
+        expect(seen).toEqual(written.sort());
+      });
+
+      it("keeps the org listing current when a project is rewritten in the same org", async () => {
+        const project = makeProject(a, { orgId: a.ids.next("org") });
+        await stores.projects.put(project);
+        await stores.projects.put({ ...project, name: "renamed" });
+        expect((await stores.projects.listByOrg(project.orgId)).items).toEqual([
+          { ...project, name: "renamed" },
+        ]);
+      });
+
+      it("refuses to move a project to another org, and changes nothing", async () => {
+        const project = makeProject(a, { orgId: a.ids.next("org") });
+        const otherOrg = b.ids.next("org");
+        await stores.projects.put(project);
+
+        await expect(stores.projects.put({ ...project, orgId: otherOrg })).rejects.toThrow();
+
+        expect(await stores.projects.get(project.projectId)).toEqual(project);
+        expect((await stores.projects.listByOrg(project.orgId)).items).toEqual([project]);
+        expect((await stores.projects.listByOrg(otherOrg)).items).toEqual([]);
+      });
+    });
+
+    describe("identity (T9, D-P2-17)", () => {
+      it("stores and reads a user, and returns undefined for an unknown subject", async () => {
+        const user = makeUser(a);
+        await stores.users.put(user);
+        expect(await stores.users.get(user.userId)).toEqual(user);
+        expect(await stores.users.get(nextUserId(a))).toBeUndefined();
+      });
+
+      it("lists every org a user belongs to, and only that user's memberships", async () => {
+        const several = nextUserId(a);
+        const single = nextUserId(b);
+        const orgOne = a.ids.next("org");
+        const orgTwo = a.ids.next("org");
+
+        await stores.memberships.put(makeMembership(several, orgTwo));
+        await stores.memberships.put(makeMembership(several, orgOne));
+        await stores.memberships.put(makeMembership(single, orgOne));
+
+        const held = await stores.memberships.listByUser(several);
+        expect(held.map((m) => m.orgId)).toEqual([orgOne, orgTwo].sort());
+        expect(held.every((m) => m.userId === several)).toBe(true);
+        expect((await stores.memberships.listByUser(single)).map((m) => m.orgId)).toEqual([orgOne]);
+        expect(await stores.memberships.listByUser(nextUserId(b))).toEqual([]);
+      });
+
+      it("holds at most one membership per user and org", async () => {
+        const userId = nextUserId(a);
+        const orgId = a.ids.next("org");
+        await stores.memberships.put(makeMembership(userId, orgId));
+        await stores.memberships.put(makeMembership(userId, orgId));
+        expect(await stores.memberships.listByUser(userId)).toHaveLength(1);
+      });
+    });
+
     describe("event append is idempotent", () => {
       it("stores one event for a duplicate idempotency key", async () => {
         const event = makeEvent(a, { idempotencyKey: "repeated-key" });
@@ -245,16 +395,27 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
 
         const second = await stores.events.append(event);
         expect(second.stored).toBe(false);
-        expect(second.event).toEqual(first.event);
+        // Compared without `sequence`: the stored event may have been numbered
+        // between the two calls, which is the lag A-22 permits, not a second event.
+        expect(withoutSequence(second.event)).toEqual(withoutSequence(first.event));
 
+        expect((await stores.events.listByRun(a.scope)).items).toHaveLength(1);
+      });
+
+      it("treats a different eventId with the same key as the same submission", async () => {
+        await stores.events.append(makeEvent(a, { idempotencyKey: "retried" }));
+        const retry = await stores.events.append(makeEvent(a, { idempotencyKey: "retried" }));
+        expect(retry.stored).toBe(false);
         expect((await stores.events.listByRun(a.scope)).items).toHaveLength(1);
       });
 
       it("does not advance the sequence on a duplicate", async () => {
         const event = makeEvent(a, { idempotencyKey: "repeated-key" });
         await stores.events.append(event);
+        await settle();
         const after = await stores.events.nextSequence(a.scope);
         await stores.events.append(event);
+        await settle();
         expect(await stores.events.nextSequence(a.scope)).toBe(after);
       });
 
@@ -275,7 +436,11 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
         for (const event of spool) await stores.events.append(event);
         // Replay the whole spool, as a reconnecting local buffer would.
         for (const event of [...spool, ...spool]) await stores.events.append(event);
-        expect((await stores.events.listByRun(a.scope)).items).toHaveLength(3);
+        await settle();
+
+        // Three events, numbered 0..2: no duplicate consumed a number.
+        const listed = (await stores.events.listByRun(a.scope)).items;
+        expect(listed.map(sequenceOf)).toEqual([0, 1, 2]);
       });
     });
 
@@ -283,8 +448,12 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
       it("assigns sequences from zero, densely", async () => {
         for (let i = 0; i < 5; i += 1) {
           const result = await stores.events.append(makeEvent(a, { idempotencyKey: `k${i}` }));
-          expect(result.event.sequence).toBe(i);
+          expectNumberOrPending(result.event, i);
         }
+        await settle();
+        expect((await stores.events.listByRun(a.scope)).items.map(sequenceOf)).toEqual([
+          0, 1, 2, 3, 4,
+        ]);
         expect(await stores.events.nextSequence(a.scope)).toBe(5);
       });
 
@@ -292,13 +461,16 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
         const result = await stores.events.append(
           makeEvent(a, { idempotencyKey: "k", sequence: 9999 }),
         );
-        expect(result.event.sequence).toBe(0);
+        expectNumberOrPending(result.event, 0);
+        await settle();
+        expect((await stores.events.listByRun(a.scope)).items.map(sequenceOf)).toEqual([0]);
       });
 
       it("lists in ascending sequence order, stably across calls", async () => {
         for (let i = 0; i < 12; i += 1) {
           await stores.events.append(makeEvent(a, { idempotencyKey: `k${i}` }));
         }
+        await settle();
         const first = (await stores.events.listByRun(a.scope)).items.map(sequenceOf);
         const second = (await stores.events.listByRun(a.scope)).items.map(sequenceOf);
 
@@ -310,6 +482,7 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
         for (let i = 0; i < 6; i += 1) {
           await stores.events.append(makeEvent(a, { idempotencyKey: `k${i}` }));
         }
+        await settle();
         const tail = await stores.events.listByRun(a.scope, { afterSequence: 3 });
         expect(tail.items.map(sequenceOf)).toEqual([4, 5]);
       });
@@ -318,7 +491,39 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
         await stores.events.append(makeEvent(a, { idempotencyKey: "a1" }));
         await stores.events.append(makeEvent(a, { idempotencyKey: "a2" }));
         const firstInB = await stores.events.append(makeEvent(b, { idempotencyKey: "b1" }));
-        expect(firstInB.event.sequence).toBe(0);
+        expectNumberOrPending(firstInB.event, 0);
+        await settle();
+        expect((await stores.events.listByRun(b.scope)).items.map(sequenceOf)).toEqual([0]);
+      });
+
+      it("orders a listing as orderEvents does, numbered first then unnumbered", async () => {
+        for (let i = 0; i < 4; i += 1) {
+          await stores.events.append(makeEvent(a, { idempotencyKey: `settled-${i}` }));
+        }
+        await settle();
+        // Whether these are numbered yet depends on the adapter; the order must hold either way.
+        for (let i = 0; i < 3; i += 1) {
+          await stores.events.append(makeEvent(a, { idempotencyKey: `fresh-${i}` }));
+        }
+
+        const items = (await stores.events.listByRun(a.scope)).items;
+        expect(items).toHaveLength(7);
+        expect(items).toEqual(orderEvents(items));
+      });
+
+      it("never returns an unnumbered event after a sequence cursor: it lags, never skips", async () => {
+        for (let i = 0; i < 3; i += 1) {
+          await stores.events.append(makeEvent(a, { idempotencyKey: `settled-${i}` }));
+        }
+        await settle();
+        for (let i = 0; i < 2; i += 1) {
+          await stores.events.append(makeEvent(a, { idempotencyKey: `fresh-${i}` }));
+        }
+
+        const tail = (await stores.events.listByRun(a.scope, { afterSequence: 1 })).items;
+        expect(tail.length).toBeGreaterThanOrEqual(1);
+        // Dense from 2: whatever has been numbered is returned, nothing is jumped over.
+        expect(tail.map(sequenceOf)).toEqual(tail.map((_, i) => i + 2));
       });
     });
 
@@ -328,6 +533,7 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
         for (let i = 0; i < total; i += 1) {
           await stores.events.append(makeEvent(a, { idempotencyKey: `k${i}` }));
         }
+        await settle();
 
         const seen: number[] = [];
         let cursor: string | undefined;
@@ -463,8 +669,11 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
       it("exposes no method that can list across projects", () => {
         // A structural assertion, not a behavioural one: every read signature on
         // every store takes a scope, so there is no call that could return two
-        // projects' records. Adding one would fail this count.
+        // projects' records. Adding one would fail this count. `listByOrg` takes
+        // an org rather than a project chain; it lists projects themselves, never
+        // records inside one.
         const readMethodsRequiringScope = [
+          stores.projects.listByOrg,
           stores.programContracts.listByProject,
           stores.runs.listByProgram,
           stores.executionNodes.listByRun,
@@ -479,6 +688,7 @@ export const describePortConformance = (name: string, factory: StoresFactory): v
           stores.examinations.listByNode,
           stores.routingDecisions.listByNode,
           stores.artifacts.listByRun,
+          stores.memberships.listByUser,
         ];
         for (const method of readMethodsRequiringScope) {
           expect(method.length).toBeGreaterThanOrEqual(1);

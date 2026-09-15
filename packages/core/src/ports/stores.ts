@@ -10,6 +10,8 @@
  * - **No method can list across projects.** Every read takes the ownership chain
  *   it needs, so "Project A cannot see Project B" is not something an
  *   implementation has to remember; there is no signature that would let it.
+ *   Identity records (users and memberships) are the one exception, because they
+ *   sit above every project rather than inside one (D-P2-17).
  * - **Event appends are idempotent.** `append` reports whether it stored a new
  *   event or found an existing one with the same key, so a replayed local spool
  *   converges (A-06).
@@ -30,6 +32,8 @@ import type {
   ExecutionNodeId,
   JobContract,
   JobContractId,
+  Membership,
+  OrgId,
   ProgramContract,
   ProgramId,
   Project,
@@ -37,6 +41,8 @@ import type {
   RoutingDecision,
   Run,
   RunId,
+  User,
+  UserId,
   Verification,
   VerificationId,
 } from "@nightshift/contracts";
@@ -55,8 +61,23 @@ export interface Page<T> {
 }
 
 export interface ProjectStore {
+  /**
+   * Stores a project together with its organisation listing.
+   *
+   * A project's `orgId` is immutable. A put that would move a stored project to
+   * another org throws `OwnershipViolationError` (field `orgId`) and changes
+   * nothing, rather than leaving the project listed under both.
+   */
   put(project: Project): Promise<void>;
   get(projectId: ProjectId): Promise<Project | undefined>;
+  /**
+   * The projects in one organisation, in ascending `projectId` order.
+   *
+   * **A grouping query, not an authorisation check.** v1 enforces no org
+   * separation (A-21 non-guarantee): nothing here decides whether a caller may see
+   * these projects, and anyone able to read one project can read any.
+   */
+  listByOrg(orgId: OrgId, page?: PageRequest): Promise<Page<Project>>;
 }
 
 export interface ProgramContractStore {
@@ -98,18 +119,32 @@ export interface AppendResult {
 
 export interface EventStore {
   /**
-   * Appends `event`, assigning it the next sequence for its run.
+   * Durably appends `event`.
    *
-   * Idempotent on `idempotencyKey` within a run: a duplicate submission returns
-   * the previously stored event and does not advance the sequence.
+   * `sequence` is assigned by the store and never taken from the caller, and it
+   * may still be `null` when this returns: numbering trails durability (A-22). An
+   * adapter that numbers synchronously returns the number; one that defers
+   * returns `null` and numbers the event later, densely and in append order.
+   *
+   * Idempotent on `idempotencyKey` within a run: a duplicate submission stores
+   * nothing, returns the previously stored event, and never consumes a number.
    */
   append(event: Event): Promise<AppendResult>;
-  /** Events in ascending `sequence` order. Ordering must be stable across calls. */
+  /**
+   * Numbered events in ascending `sequence`, then unnumbered events by
+   * identifier — the order `orderEvents` defines. Stable across calls.
+   *
+   * `afterSequence` returns only numbered events after that point. It therefore
+   * lags behind an unnumbered tail, and never skips an event.
+   */
   listByRun(
     scope: RunScope,
     options?: PageRequest & { readonly afterSequence?: number },
   ): Promise<Page<Event>>;
-  /** The sequence the next append to this run will receive. */
+  /**
+   * The number the next event to be numbered in this run will receive, which is
+   * also how many of its events have been numbered so far.
+   */
   nextSequence(scope: RunScope): Promise<number>;
 }
 
@@ -156,6 +191,28 @@ export interface ArtifactStore {
 }
 
 /**
+ * Principals keyed by their Cognito subject (T9). Not project scoped: a user
+ * exists above every project (D-P2-17).
+ */
+export interface UserStore {
+  put(user: User): Promise<void>;
+  get(userId: UserId): Promise<User | undefined>;
+}
+
+/**
+ * Which organisations a user may act for (T9).
+ *
+ * Deriving the acting org from a membership is not the same as refusing
+ * cross-org access, and nothing here does the latter (A-21 non-guarantee).
+ */
+export interface MembershipStore {
+  /** Idempotent: a user holds at most one membership per org. */
+  put(membership: Membership): Promise<void>;
+  /** Every membership `userId` holds, in ascending `orgId` order. */
+  listByUser(userId: UserId): Promise<readonly Membership[]>;
+}
+
+/**
  * Everything the control plane persists, in one injectable bundle. The execution
  * layer depends on this interface; only an application wires a concrete set.
  */
@@ -173,4 +230,6 @@ export interface NightshiftStores {
   readonly examinations: ExaminationStore;
   readonly routingDecisions: RoutingDecisionStore;
   readonly artifacts: ArtifactStore;
+  readonly users: UserStore;
+  readonly memberships: MembershipStore;
 }

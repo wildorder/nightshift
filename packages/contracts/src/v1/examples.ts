@@ -68,6 +68,10 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     orgId: EXAMPLE_IDS.orgId,
     name: "example-app",
     description: "Fixture project used by contract and conformance tests.",
+    crossAccount: {
+      roleArn: "arn:aws:iam::123456789012:role/nightshift-workload",
+      externalId: "nightshift-7Hq2-Xv9P-kR4m",
+    },
     createdAt: AT,
   },
 

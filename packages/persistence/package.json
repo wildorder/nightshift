@@ -16,9 +16,17 @@
     "./aws": {
       "types": "./dist/aws/index.d.ts",
       "default": "./dist/aws/index.js"
+    },
+    "./aws/testing": {
+      "types": "./dist/aws/testing/index.d.ts",
+      "default": "./dist/aws/testing/index.js"
     }
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1131.0",
+    "@aws-sdk/client-s3": "3.1131.0",
+    "@aws-sdk/lib-dynamodb": "3.1131.0",
+    "@aws-sdk/util-dynamodb": "3.996.9",
     "@nightshift/contracts": "*",
     "@nightshift/core": "*"
   }

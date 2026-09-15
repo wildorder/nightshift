@@ -179,8 +179,11 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
   on every platform regardless of a developer's `core.autocrlf`. Biome's
   `lineEnding: "lf"` depends on it: a CRLF checkout makes the formatter reject
   every file in the repository. Do not relax the formatter to work around it.
-- CDK stacks are named `nightshift-<stage>-control-plane`. `stage` defaults to
-  `dev` and is overridden with `-c stage=...`.
+- CDK stacks are `nightshift-<stage>-data` (stateful: table, bucket, user pool,
+  budget; termination protection on) and `nightshift-<stage>-api` (stateless),
+  per D-P2-07. `stage` defaults to `dev` and is overridden with `-c stage=...`.
+  The API stack reads the data stack only through its CloudFormation export names
+  (`dataExportName`), never through a construct reference.
 - **Vitest project configs do not inherit the root `test` options.** A package
   with its own `vitest.config.ts` must restate `testTimeout`, `hookTimeout` and
   the `dist` exclusions. A package without one inherits the root's, including
@@ -208,6 +211,15 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
 | zod | 4.6.4 | P1 |
 | @biomejs/biome | 2.5.13 | P1 |
 | ulid | 3.0.2 | P1 |
+| @aws-sdk/client-dynamodb | 3.1131.0 | P2 |
+| @aws-sdk/lib-dynamodb | 3.1131.0 | P2 |
+| @aws-sdk/util-dynamodb | 3.996.9 | P2 |
+| @aws-sdk/client-s3 | 3.1131.0 | P2 |
+| @aws-sdk/client-cognito-identity-provider | 3.1131.0 | P2 |
+| @aws-sdk/client-cloudformation | 3.1131.0 | P2 |
+| @aws-sdk/client-sts | 3.1131.0 | P2 |
+| @types/aws-lambda | 8.10.163 | P2 |
+| esbuild | 0.28.2 | P2 |
 | @modelcontextprotocol/sdk | pin in P3 (1.30.0 observed 2026-09-13) | P3 |
 
 `fast-check` and `vitest` are also declared on `@nightshift/test`, which needs

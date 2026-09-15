@@ -7,7 +7,7 @@
  * database beside it is explicitly out of scope for v1.
  *
  * Two behaviours are load-bearing and are asserted by the shared conformance
- * suite, which the DynamoDB adapter will have to pass unchanged:
+ * suite, which the DynamoDB adapter passes too:
  *
  * - Keys embed the full ownership chain, so cross-project reads are impossible
  *   by construction rather than by filtering.
@@ -38,6 +38,9 @@ import {
   type JobContract,
   type JobContractId,
   JobContractSchema,
+  type Membership,
+  MembershipSchema,
+  type OrgId,
   type ProgramContract,
   ProgramContractSchema,
   type ProgramId,
@@ -49,30 +52,38 @@ import {
   type Run,
   type RunId,
   RunSchema,
+  type User,
+  type UserId,
+  UserSchema,
   type Verification,
   type VerificationId,
   VerificationSchema,
 } from "@nightshift/contracts";
-import type {
-  AgentStore,
-  AppendResult,
-  ArtifactStore,
-  CheckpointStore,
-  DecisionStore,
-  EventStore,
-  ExaminationStore,
-  ExecutionNodeStore,
-  JobContractStore,
-  NightshiftStores,
-  Page,
-  PageRequest,
-  ProgramContractStore,
-  ProgramScope,
-  ProjectStore,
-  RoutingDecisionStore,
-  RunScope,
-  RunStore,
-  VerificationStore,
+import {
+  type AgentStore,
+  type AppendResult,
+  type ArtifactStore,
+  type CheckpointStore,
+  type DecisionStore,
+  type EventStore,
+  type ExaminationStore,
+  type ExecutionNodeStore,
+  type JobContractStore,
+  type MembershipStore,
+  type NightshiftStores,
+  OwnershipViolationError,
+  type Page,
+  type PageRequest,
+  type ProgramContractStore,
+  type ProgramScope,
+  type ProjectStore,
+  type RoutingDecisionStore,
+  type RunScope,
+  type RunStore,
+  type SequenceLedger,
+  type StampOutcome,
+  type UserStore,
+  type VerificationStore,
 } from "@nightshift/core";
 import { paginate, programPrefix, projectPrefix, runPrefix, ScopedMap } from "./scoped-map.js";
 
@@ -91,22 +102,32 @@ export interface InMemoryState {
    * the case it most needs to handle.
    */
   materializeSequences(): number;
+  /**
+   * The same numbering one event at a time, through the port the Streams
+   * consumer uses, so the consumer's logic can be tested offline (T6).
+   */
+  readonly sequenceLedger: SequenceLedger;
 }
 
 export interface InMemoryOptions {
   /**
-   * Leave `sequence` null on append, until `materializeSequences()` is called.
-   * Off by default, so the adapter behaves synchronously unless a test is
-   * deliberately exercising the lag.
+   * Leave `sequence` null on append, until `materializeSequences()` or the
+   * `sequenceLedger` numbers it. Off by default, so the adapter behaves
+   * synchronously unless a test is deliberately exercising the lag.
    */
   readonly deferSequencing?: boolean;
 }
 
 export interface InMemoryStores extends NightshiftStores, InMemoryState {}
 
+/** `/` separates key parts; no identifier or Cognito subject can contain one. */
+const orgPrefix = (orgId: OrgId): string => `${orgId}/`;
+const userPrefix = (userId: UserId): string => `${userId}/`;
+
 export const createInMemoryStores = (options: InMemoryOptions = {}): InMemoryStores => {
   const deferSequencing = options.deferSequencing ?? false;
   const projects = new ScopedMap<Project>();
+  const projectsByOrg = new ScopedMap<Project>();
   const programContracts = new ScopedMap<ProgramContract>();
   const runs = new ScopedMap<Run>();
   const executionNodes = new ScopedMap<ExecutionNode>();
@@ -120,9 +141,12 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const examinations = new ScopedMap<Examination>();
   const routingDecisions = new ScopedMap<RoutingDecision>();
   const artifacts = new ScopedMap<Artifact>();
+  const users = new ScopedMap<User>();
+  const memberships = new ScopedMap<Membership>();
 
   const all = [
     projects,
+    projectsByOrg,
     programContracts,
     runs,
     executionNodes,
@@ -136,20 +160,47 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     examinations,
     routingDecisions,
     artifacts,
+    users,
+    memberships,
   ];
 
   /** Sequence counters, one per run. Never reused, so ordering is total. */
   const sequences = new Map<string, number>();
-  /** Per-run arrival count, and global append order, for deferred numbering. */
-  const arrivals = new Map<string, number>();
+  /** Global append order, for deferred numbering. */
   const appendOrder: string[] = [];
+
+  /**
+   * Numbers the event stored under `key` if it is still unnumbered. The one place
+   * a number is assigned after the fact, shared by `materializeSequences` and the
+   * ledger so the two cannot number differently.
+   */
+  const stampStored = (key: string): StampOutcome => {
+    const event = events.get(key);
+    if (event === undefined) return { kind: "missing" };
+    if (event.sequence !== null) return { kind: "already_numbered", sequence: event.sequence };
+    const runKey = runPrefix(event);
+    const next = sequences.get(runKey) ?? 0;
+    sequences.set(runKey, next + 1);
+    const numbered = { ...event, sequence: next };
+    events.set(key, numbered);
+    eventsByIdempotencyKey.set(`${runKey}${event.idempotencyKey}`, numbered);
+    return { kind: "stamped", sequence: next };
+  };
 
   const projectStore: ProjectStore = {
     put: async (project) => {
       const parsed = ProjectSchema.parse(project);
+      const existing = projects.get(parsed.projectId);
+      // The org listing is written beside the project; moving orgs would strand it.
+      if (existing !== undefined && existing.orgId !== parsed.orgId) {
+        throw new OwnershipViolationError("orgId", existing.orgId, parsed.orgId);
+      }
       projects.set(parsed.projectId, parsed);
+      projectsByOrg.set(`${orgPrefix(parsed.orgId)}${parsed.projectId}`, parsed);
     },
     get: async (projectId: ProjectId) => projects.get(projectId),
+    listByOrg: async (orgId: OrgId, page?: PageRequest) =>
+      paginate(projectsByOrg.scan(orgPrefix(orgId)), page),
   };
 
   const programContractStore: ProgramContractStore = {
@@ -222,8 +273,6 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       // Key by the event's ULID, matching the real adapter: the storage key cannot
       // depend on a sequence that may not exist yet.
       const key = `${runKey}${parsed.eventId}`;
-      const arrival = (arrivals.get(runKey) ?? 0) + 1;
-      arrivals.set(runKey, arrival);
       appendOrder.push(key);
 
       let sequence: number | null = null;
@@ -239,8 +288,8 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       return { stored: true, event: stored };
     },
     listByRun: async (scope: RunScope, options?: PageRequest & { afterSequence?: number }) => {
-      // Scan yields ULID order, which is append order. Numbered events are then
-      // ordered by sequence, with unnumbered ones last — see `orderEvents` in core.
+      // Scan yields ULID order. Numbered events are then ordered by sequence, with
+      // unnumbered ones last — see `orderEvents` in core.
       const scanned = events.scan(runPrefix(scope));
       const numbered = scanned
         .filter((e): e is Event & { sequence: number } => e.sequence !== null)
@@ -332,6 +381,22 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       paginate(artifacts.scan(runPrefix(scope)), page),
   };
 
+  const userStore: UserStore = {
+    put: async (user) => {
+      const parsed = UserSchema.parse(user);
+      users.set(parsed.userId, parsed);
+    },
+    get: async (userId: UserId) => users.get(userId),
+  };
+
+  const membershipStore: MembershipStore = {
+    put: async (membership) => {
+      const parsed = MembershipSchema.parse(membership);
+      memberships.set(`${userPrefix(parsed.userId)}${parsed.orgId}`, parsed);
+    },
+    listByUser: async (userId: UserId) => memberships.scan(userPrefix(userId)),
+  };
+
   return {
     projects: projectStore,
     programContracts: programContractStore,
@@ -346,26 +411,22 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     examinations: examinationStore,
     routingDecisions: routingDecisionStore,
     artifacts: artifactStore,
+    users: userStore,
+    memberships: membershipStore,
+    sequenceLedger: {
+      stamp: async (scope, eventId) => stampStored(`${runPrefix(scope)}${eventId}`),
+    },
     clear: () => {
       for (const store of all) store.clear();
       sequences.clear();
-      arrivals.clear();
       appendOrder.length = 0;
     },
     materializeSequences: () => {
-      let stamped = 0;
       // Append order, so numbering matches the order an ordered stream consumer
-      // would see. Per run, because sequences are per run.
+      // would see.
+      let stamped = 0;
       for (const key of appendOrder) {
-        const event = events.get(key);
-        if (event === undefined || event.sequence !== null) continue;
-        const runKey = runPrefix(event);
-        const next = sequences.get(runKey) ?? 0;
-        sequences.set(runKey, next + 1);
-        events.set(key, { ...event, sequence: next });
-        const idemKey = `${runKey}${event.idempotencyKey}`;
-        eventsByIdempotencyKey.set(idemKey, { ...event, sequence: next });
-        stamped += 1;
+        if (stampStored(key).kind === "stamped") stamped += 1;
       }
       return stamped;
     },

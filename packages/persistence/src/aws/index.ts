@@ -1,12 +1,37 @@
 /**
- * DynamoDB and S3 adapters — **built in P2, not P1**.
+ * `@nightshift/persistence/aws` — DynamoDB and S3 adapters (P2, T3).
  *
- * P1 defines the ports (`@nightshift/core`) and the in-memory adapter
- * (`@nightshift/persistence/memory`). This module exists so the subpath export
- * and the architecture rule that guards it are in place and under test before
- * there is anything behind them.
+ * Only an app or `infra/cdk` may import this, which the architecture tests
+ * enforce. Everything is configured by injection: table and bucket names and
+ * clients come from the caller, never from `process.env`.
  *
- * When P2 fills this in, it must pass the same conformance suite the memory
- * adapter passes, unchanged.
+ * The adapters pass the shared persistence-port conformance suite: offline
+ * against `FakeTable` in `npm test`, and against the deployed table in the smoke
+ * suite.
  */
-export {};
+export {
+  type ArtifactBodyStore,
+  type ArtifactBodyStoreConfig,
+  artifactObjectKey,
+  createArtifactBodyStore,
+  type ObjectClient,
+  type StoredBody,
+  s3ObjectClient,
+} from "./artifact-bodies.js";
+export { type AwsClientOptions, type AwsClients, createAwsClients } from "./clients.js";
+export { COUNTER_ATTRIBUTE, createEventStore, type EventStoreConfig } from "./events.js";
+export { estimateItemBytes, ItemTooLargeError, MAX_ITEM_BYTES } from "./items.js";
+export { artifactPrefix, keys, NODE_INDEX_NAME, type NodeIndexKey, type TableKey } from "./keys.js";
+export { createDynamoSequenceLedger, type SequenceLedgerConfig } from "./sequence-ledger.js";
+export { type AwsStoresConfig, createAwsStores } from "./stores.js";
+export {
+  type ParsedStreamRecord,
+  parseStreamRecord,
+  type StreamRecordLike,
+} from "./stream-records.js";
+export {
+  conditionFailures,
+  documentTableClient,
+  isConditionalCheckFailure,
+  type TableClient,
+} from "./table-client.js";

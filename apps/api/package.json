@@ -13,6 +13,15 @@
   "dependencies": {
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
-    "@nightshift/persistence": "*"
+    "@nightshift/persistence": "*",
+    "zod": "4.6.4"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-cloudformation": "3.1131.0",
+    "@aws-sdk/client-cognito-identity-provider": "3.1131.0",
+    "@aws-sdk/client-s3": "3.1131.0",
+    "@aws-sdk/client-sts": "3.1131.0",
+    "@nightshift/test": "*",
+    "@types/aws-lambda": "8.10.163"
   }
 }

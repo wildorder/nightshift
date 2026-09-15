@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p2-control-plane` |
 | Source stage | Stage 2 (AWS Control Plane) |
-| Status | Decisions ratified and tasks drafted 2026-09-13. Implementation not started. |
+| Status | Decisions ratified and tasks drafted 2026-09-13. Implemented 2026-09-14; deployed and smoke-tested 2026-09-15 (§13). Budget email delivery still to confirm. |
 | Depends on | P1 Foundation (complete) |
 
 This contract is the stable authority for P2. The implementation plan may be
@@ -28,7 +28,7 @@ Settled. One AWS account, no development account (A-17).
 |------|-------|
 | Account | `755348349819` (`nightshift-prod`) |
 | Region | `us-west-2` |
-| CLI profile | `nightshift` (SSO session `nightshift`, role `AdministratorAccess`) |
+| CLI profile | `nightshift`: IAM Roles Anywhere certificate `CN=tim-mac-agent` assumes role `nightshift-agent` (`AdministratorAccess`); no SSO login (D-P2-18) |
 | CDK bootstrap | done, `CDKToolkit` v32, termination protection on |
 | Deploys run from | a developer machine, not CI (D-P2-09) |
 | Budget notifications | `tim+nightshift@wingitlabs.com` |
@@ -64,10 +64,13 @@ also recorded as A-19 … A-24 in `docs/architecture.md`.
 
 ### 4.1 Key schema
 
-Single table. `PK` always begins with `projectId` (D-P2-03).
+Single table. `PK` always begins with `projectId` (D-P2-03), with one ratified
+exception: identity records (D-P2-17), which exist above any project.
 
 | Entity | PK | SK |
 |--------|----|----|
+| User (T9, D-P2-17) | `USER#<sub>` | `META` |
+| Membership (T9, D-P2-17) | `USER#<sub>` | `MEMBER#<org>` |
 | Organisation | `ORG#<org>` | `META` |
 | Org → project pointer | `ORG#<org>` | `PROJ#<proj>` |
 | Project | `PROJ#<proj>` | `META` |
@@ -84,6 +87,12 @@ Single table. `PK` always begins with `projectId` (D-P2-03).
 | Artifact | `RUN#…` | `ART#<id>` |
 | Event | `EVT#<proj>#<prog>#<run>` | `ULID#<eventId>` |
 | Sequence counter | `EVT#…` | `COUNTER` |
+| Idempotency marker (D-P2-17) | `EVT#…` | `IDEM#<idempotencyKey>` |
+
+The idempotency marker is written in the same transaction as its event, with
+`attribute_not_exists` on the marker, so a second submission carrying the same key
+is refused by DynamoDB rather than by a read-then-write, even when it carries a
+different `eventId`.
 
 Events sit on their own partition deliberately. They are the only high-volume,
 write-heavy items, and separating them keeps them from competing with state reads
@@ -344,3 +353,107 @@ Three things the tasks absorb rather than discover:
 | 2026-09-14 | D-P2-13: tenancy from the token claim, not the URL. Revises an earlier suggestion of `/orgs/{orgId}/…` paths. | Human |
 | 2026-09-14 | D-P2-14 and A-25: cross-account role assumption with an external ID. P2 reserves the fields only. | Human |
 | 2026-09-14 | D-P2-15 and A-26: plaintext secrets accepted for now, with the upgrade path recorded. | Human |
+| 2026-09-14 | **D-P2-16**: the P1 conformance suite is amended for deferred sequencing. A-22 made `append` return an unnumbered event, which the suite (written before A-22) could not express, so SC-P2-12 was unsatisfiable as worded. The suite gains an optional `settle` hook that sequencing assertions await, runs the in-memory adapter both immediate and deferred, and keeps every assertion about the final numbering. Raised during implementation; not an edit to make an adapter pass. | Human |
+| 2026-09-14 | **D-P2-17**: three key-schema and registry additions the contract did not define. (1) `IDEM#<key>` marker in the event partition, so idempotency is a write condition. (2) `USER#<sub>` / `META` and `USER#<sub>` / `MEMBER#<org>` for T9 identity, the one exception to D-P2-03 because a user spans orgs. (3) `User` and `Membership` live in a separate identity registry rather than `AGGREGATE_SCHEMAS`, whose SC-P1-17 tests require every aggregate to be project scoped. | Human |
+| 2026-09-15 | **D-P2-18**: deploy and smoke credentials come from IAM Roles Anywhere rather than SSO. The `nightshift` profile's `credential_process` presents certificate `CN=tim-mac-agent` (CA `wingitlabs-roles-anywhere-ca`, expires 2027-09-15) and assumes `nightshift-agent`, which holds `AdministratorAccess` until the project is stable. Reasons: long-lived, no interactive login, and only a profile name ever reaches an agent, never a credential (§10). A scoped role was tried first and cannot chain into the CDK bootstrap roles, whose v32 trust policies do not allow `sts:SetSourceIdentity`. Revoke by disabling the trust anchor. | Human |
+
+## 13. As built
+
+Recorded 2026-09-14 offline and updated 2026-09-15 after the first deploy. All
+nine tasks are implemented and SC-P2-01 through SC-P2-12 are discharged (see
+Deployed, below). T8 still needs a notification confirmed as delivered.
+
+Every credential-free command in §7 exits 0 on macOS: build, typecheck, lint,
+`npm test` (988 tests in 40 files), synth (both stacks, both functions bundled),
+`check:sterility`, and `check:architecture`. CI has not yet run on this branch.
+
+| Task | State | Where |
+|------|-------|-------|
+| T1 | done | `infra/cdk/src/lib/data-stack.ts`, `data-exports.ts` |
+| T2 | done | `ProjectStore.listByOrg`; memory adapter; conformance org section |
+| T3 | done offline | `packages/persistence/src/aws`; conformance run in `apps/api/src/aws-conformance.test.ts` |
+| T4 | done | `apps/api/src` handler, router, operations |
+| T5 | done | `infra/cdk/src/lib/api-stack.ts` |
+| T6 | done offline | `apps/api/src/materializer`, `packages/persistence/src/aws/sequence-ledger.ts` |
+| T7 | done: deployed 2026-09-15, smoke suite passed twice | `apps/api/src/smoke`, `scripts/smoke.mjs`, `scripts/deploy.mjs` |
+| T8 | deployed and verified; email delivery not yet confirmed | `infra/cdk/src/lib/budget.ts` |
+| T9 | done offline | identity contracts and registry; `apps/api/src/auth/acting-org.ts`; Cognito in the data stack |
+
+### Implementation choices worth knowing
+
+None of these amends the contract; each is recorded where a reviewer would look.
+
+- **Stamping is one transaction.** T6 describes an atomic increment followed by a
+  conditional stamp. As two writes, a crash between them consumes a number no
+  event carries, which is the gap A-22 rules out. The ledger instead advances the
+  counter conditionally on the value it read and stamps the event conditionally on
+  `sequence` being null, in one `TransactWriteItems`. Tests inject a crash before
+  and after the commit and assert that no number is burned.
+- **Event listings read the whole event partition.** Numbering follows commit
+  order, which need not match ULID order, so the adapter orders in memory. That is
+  linear in the number of events in a run, per page. A sparse index on `sequence`
+  is the upgrade, and a GSI can be added later without replacing the table.
+- **The DynamoDB adapter passes the conformance suite offline.** `FakeTable` is a
+  strict in-process table (expression parser, transactions, cancellation reasons,
+  page caps, a stream). The suite's `settle` drives the real materializer and
+  ledger over the fake stream. The smoke suite runs the same suite on the real table.
+- **Acting org (T9).** The claim `custom:active_org` if present, which must name a
+  membership; otherwise the caller's only membership; otherwise a typed refusal.
+  Resolved only to create a project and to list projects. Nothing enforces org
+  separation (A-21).
+- **Cognito.** Lite feature plan set explicitly. Interactive client loopback
+  redirect `http://localhost:47821/callback`. Both clients allow only refresh-token
+  auth as a direct flow.
+- **IAM.** No managed policies. The API function may `GetItem`, `PutItem` and
+  `Query`; the materializer may read the stream, `GetItem`, `PutItem` and
+  `UpdateItem`, and send to its dead-letter queue. Nothing has S3 access yet.
+- **The smoke suite lives in `apps/api`**, the only package §9 lets import
+  `@nightshift/persistence/aws`. It is excluded from the build and from `npm test`.
+
+### Deployed (2026-09-15)
+
+First deploy from the Mac mini with the `nightshift` profile (D-P2-18):
+`nightshift-dev-data` in 31 s and `nightshift-dev-api` in 77 s, both
+`CREATE_COMPLETE`. CDK could not assume its bootstrap roles from a Roles Anywhere
+session and fell back to the caller's credentials, which are in the right
+account. `CDKToolkit` was not changed.
+
+| Item | Value |
+|------|-------|
+| Data stack | `nightshift-dev-data`, termination protection on |
+| API stack | `nightshift-dev-api` |
+| Table | `nightshift-dev-data-TableCD117FA1-BF9WSGGU1TW9` |
+| Bucket | `nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm` |
+| User pool | `us-west-2_GKWK85Mub`; token endpoint `https://nightshift-dev-755348349819.auth.us-west-2.amazoncognito.com/oauth2/token` |
+| API endpoint | `https://4xnsx809u6.execute-api.us-west-2.amazonaws.com` |
+| Functions | `nightshift-dev-api-ApiFunctionCE271BD4-COvjJHToizUW` and `nightshift-dev-api-MaterializerFunctionFE78AC96-bT0iH4WxAFrh`, Node 22 on arm64 |
+| Budget | `MonthlyCostBudgetDB65A044-us-west-2-1789484736137-wF13ZZZznPXB`: 500 USD monthly, actual 50/80/100% and forecast 100% to `tim+nightshift@wingitlabs.com`, confirmed with `describe-budgets` |
+
+**Smoke suite**, run twice back to back:
+
+| Run | Tests | Runtime | Sequencing lag | Large output | Cleanup |
+|-----|-------|---------|----------------|--------------|---------|
+| 1 | 62 passed | 75 s | 324 ms | 24,587-byte payload in S3; event item 690 bytes | 42 items, 3 objects, 2 conformance leftovers |
+| 2 | 62 passed | 34 s | 312 ms | same | same, and found none of run 1's data left |
+
+Sequencing lag runs from the last acknowledged append to the last number stamped,
+polled every 250 ms, so it is accurate to about a quarter of a second. After both
+runs the table held no items, the bucket no objects and the dead-letter queue no
+messages; the stream mapping reported `OK` and neither function logged an error.
+
+**Success criteria.** SC-P2-01 and SC-P2-02 by synth and the assertion tests.
+SC-P2-03 by this deploy. SC-P2-04 by both smoke runs. SC-P2-07 by phase 1: no
+token, a malformed token and a forged expired token each got 401, and a valid
+machine token got 200. SC-P2-05, SC-P2-06, SC-P2-08, SC-P2-09, SC-P2-10 and
+SC-P2-11 by phase 3. SC-P2-12 by phase 2: 52 conformance tests against the
+deployed table, with the suite as amended by D-P2-16.
+
+### Open items
+
+- **Deploy credentials: resolved 2026-09-15 (D-P2-18).** The `nightshift` profile
+  uses IAM Roles Anywhere on the Mac mini; see §2.
+- **DynamoDB point-in-time recovery is off.** No task asked for it. It is cheap
+  protection for the only environment there is, and a human call.
+- **Budget.** Deployed from `us-west-2` without trouble. Still open: confirm a
+  notification actually arrives (T8).
+- **CI** has not yet run on this branch.

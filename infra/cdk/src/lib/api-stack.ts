@@ -1,0 +1,276 @@
+/**
+ * The stateless stack: `nightshift-<stage>-api` (D-P2-07, A-24, T5).
+ *
+ * The control-plane handler, the HTTP API in front of it with its Cognito JWT
+ * authorizer, the sequence materializer on the table's stream, their log groups
+ * and their IAM. It holds no state, so it can be replaced freely and carries no
+ * termination protection.
+ *
+ * It consumes the data stack's outputs by export name (`dataExportName`), never by
+ * construct reference, so either stack can be deployed or replaced on its own.
+ *
+ * ## What "internet-facing" means here
+ *
+ * The API endpoint is on public DNS and reachable from anywhere. That is required:
+ * it is how a local MCP server on a laptop reaches the control plane, and later
+ * the AgentCore runtime. Every route is behind the JWT authorizer, so the endpoint
+ * is publicly *reachable* but not publicly *usable*. A private API behind a VPC
+ * endpoint was not chosen because a laptop cannot reach one without a VPN.
+ */
+import { fileURLToPath } from "node:url";
+import { CfnOutput, Duration, Fn, RemovalPolicy, Stack } from "aws-cdk-lib";
+import { HttpApi } from "aws-cdk-lib/aws-apigatewayv2";
+import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
+import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as iam from "aws-cdk-lib/aws-iam";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import { SqsDlq } from "aws-cdk-lib/aws-lambda-event-sources";
+import * as nodejs from "aws-cdk-lib/aws-lambda-nodejs";
+import * as logs from "aws-cdk-lib/aws-logs";
+import * as sqs from "aws-cdk-lib/aws-sqs";
+import type { Construct } from "constructs";
+import { type DataExportKey, dataExportName } from "./data-exports.js";
+import { NODE_INDEX_NAME } from "./data-stack.js";
+import { assertValidStage, type NightshiftStackProps, stackNameFor } from "./stack-props.js";
+
+/**
+ * The repository root, resolved from this module. `src/lib` and `dist/lib` sit at
+ * the same depth, so the path holds for the assertion tests and for `cdk synth`.
+ */
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+
+/**
+ * The functions are bundled from `apps/api`'s **compiled** output, the same
+ * choice D-P1-10 makes for the CDK app: `npm run synth` and `npm run deploy` build
+ * the workspace first, so esbuild resolves `@nightshift/*` through the workspace
+ * links to built JavaScript and no TypeScript loader is involved.
+ */
+export const API_ENTRY = `${REPO_ROOT}apps/api/dist/lambda/api.js`;
+export const MATERIALIZER_ENTRY = `${REPO_ROOT}apps/api/dist/lambda/materializer.js`;
+
+/**
+ * Stream consumer tuning, chosen for latency over throughput because it sets how
+ * far the realtime surface runs behind durability (T5 deliverable 4).
+ *
+ * - No batching window: Lambda invokes as soon as records arrive rather than
+ *   waiting to fill a batch.
+ * - A batch of 25 caps the work per invocation. Each record is a few consistent
+ *   reads and one transaction, so 25 finish well inside the timeout, and a
+ *   burst still drains in few invocations.
+ * - Parallelization factor 1: a run's events live on one shard, and numbering
+ *   must follow that shard's order. Higher factors split a shard by partition key,
+ *   which would still be correct per run but buys nothing at this volume.
+ * - Ten retries before a record goes to the dead-letter queue: enough to ride
+ *   out throttling, few enough that a poison record stalls its shard for minutes,
+ *   not the stream's 24-hour retention.
+ */
+export const STREAM_BATCH_SIZE = 25;
+export const STREAM_RETRY_ATTEMPTS = 10;
+
+/** D-P2-10: enough to debug a run, cheap, and never infinite. */
+export const LOG_RETENTION = logs.RetentionDays.ONE_MONTH;
+
+export class NightshiftApiStack extends Stack {
+  readonly stage: string;
+
+  constructor(scope: Construct, id: string, props: NightshiftStackProps) {
+    const { stage, ...stackProps } = props;
+    assertValidStage(stage);
+    super(scope, id, { stackName: stackNameFor(stage, "api"), ...stackProps });
+    this.stage = stage;
+
+    const imported = (key: DataExportKey): string => Fn.importValue(dataExportName(stage, key));
+    const tableArn = imported("TableArn");
+    const streamArn = imported("TableStreamArn");
+
+    const environment = {
+      NIGHTSHIFT_TABLE_NAME: imported("TableName"),
+      NIGHTSHIFT_BUCKET_NAME: imported("BucketName"),
+      NIGHTSHIFT_STAGE: stage,
+    };
+
+    // --- The control-plane API function ------------------------------------------
+    const apiLogs = this.logGroup("ApiFunctionLogs");
+    const apiRole = this.executionRole("ApiFunctionRole", apiLogs, [
+      // Exactly what the adapters call: gets and puts (including the puts inside
+      // TransactWriteItems, which IAM authorises per item) and queries on the
+      // table and its one index. No update or delete: the API never issues one.
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+        resources: [tableArn],
+      }),
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Query"],
+        resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
+      }),
+      // No S3 statement: no API route reads or writes an artifact body yet. The
+      // bucket name is in the environment so the first route that does needs a
+      // policy change, not a configuration change.
+    ]);
+    const apiFunction = this.nodeFunction("ApiFunction", {
+      entry: API_ENTRY,
+      role: apiRole,
+      logGroup: apiLogs,
+      environment,
+      // API Gateway gives an HTTP API integration 30 seconds; stay well inside it.
+      timeout: Duration.seconds(10),
+      memorySize: 512,
+    });
+
+    // --- The HTTP API ----------------------------------------------------------------
+    // Issuer and audience from the data stack's user pool (A-19, T9). The audience
+    // lists both clients: an interactive caller presents an ID token (`aud`), a
+    // machine caller an access token (`client_id`); the authorizer accepts either.
+    const authorizer = new HttpJwtAuthorizer(
+      "CognitoJwtAuthorizer",
+      `https://cognito-idp.${this.region}.amazonaws.com/${imported("UserPoolId")}`,
+      { jwtAudience: [imported("InteractiveClientId"), imported("MachineClientId")] },
+    );
+    // One `$default` route carrying the authorizer: the handler owns routing, and
+    // there is no second route that could be authored without authorization. The
+    // `$default` stage keeps `rawPath` unprefixed, which the handler relies on.
+    const httpApi = new HttpApi(this, "HttpApi", {
+      description: `Nightshift control plane (${stage})`,
+      defaultAuthorizer: authorizer,
+      defaultIntegration: new HttpLambdaIntegration("ApiIntegration", apiFunction),
+      createDefaultStage: true,
+    });
+
+    // --- The sequence materializer (T6) ---------------------------------------------
+    // Operationally, anything in this queue is an event that is durable but will
+    // never be numbered: the materializer gave up on it after every retry. Readers
+    // tolerate unnumbered events (A-22), so nothing breaks, but `findSequenceGaps`
+    // cannot see the problem — the run's later events are numbered past it and its
+    // position in the order is lost. The same failure follows an outage longer than
+    // the stream's 24-hour retention: records expire unread and their events stay
+    // unnumbered. A repair path (re-drive from the queue, or rescan a run for null
+    // sequences) is not in P2's scope; this comment is where the failure mode is
+    // written down instead of discovered.
+    const deadLetters = new sqs.Queue(this, "MaterializerDeadLetters", {
+      retentionPeriod: Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      // The messages are diagnostics about events that remain in DynamoDB; losing
+      // the queue with the stateless stack loses no data.
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
+    const materializerLogs = this.logGroup("MaterializerFunctionLogs");
+    const materializerRole = this.executionRole("MaterializerFunctionRole", materializerLogs, [
+      new iam.PolicyStatement({
+        actions: [
+          "dynamodb:DescribeStream",
+          "dynamodb:GetRecords",
+          "dynamodb:GetShardIterator",
+          "dynamodb:ListStreams",
+        ],
+        resources: [streamArn],
+      }),
+      // Reads of the event and counter, the counter's first put, and the
+      // transactional updates that advance it and stamp the event.
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
+        resources: [tableArn],
+      }),
+    ]);
+    const materializer = this.nodeFunction("MaterializerFunction", {
+      entry: MATERIALIZER_ENTRY,
+      role: materializerRole,
+      logGroup: materializerLogs,
+      environment,
+      timeout: Duration.seconds(60),
+      memorySize: 256,
+    });
+
+    new lambda.EventSourceMapping(this, "MaterializerStreamMapping", {
+      target: materializer,
+      eventSourceArn: streamArn,
+      // From the oldest retained record, so an event written before the first
+      // deploy of this stack is still numbered.
+      startingPosition: lambda.StartingPosition.TRIM_HORIZON,
+      batchSize: STREAM_BATCH_SIZE,
+      maxBatchingWindow: Duration.seconds(0),
+      parallelizationFactor: 1,
+      // The handler returns the records it did not commit; without this flag
+      // Lambda ignores that and retries whole batches.
+      reportBatchItemFailures: true,
+      retryAttempts: STREAM_RETRY_ATTEMPTS,
+      bisectBatchOnError: false,
+      onFailure: new SqsDlq(deadLetters),
+    });
+
+    // --- Outputs, for the smoke suite and for operators ------------------------------
+    new CfnOutput(this, "ApiEndpoint", { value: httpApi.apiEndpoint });
+    new CfnOutput(this, "ApiFunctionName", { value: apiFunction.functionName });
+    new CfnOutput(this, "MaterializerFunctionName", { value: materializer.functionName });
+    new CfnOutput(this, "MaterializerDeadLetterQueueUrl", { value: deadLetters.queueUrl });
+  }
+
+  /** A log group with the retention D-P2-10 sets, instead of Lambda's infinite default. */
+  private logGroup(id: string): logs.LogGroup {
+    return new logs.LogGroup(this, id, {
+      retention: LOG_RETENTION,
+      // Logs are diagnostics, not records; they go with the stateless stack.
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+  }
+
+  /**
+   * A role with no managed policies and exactly the given statements, plus writes
+   * to its own log group. `AWSLambdaBasicExecutionRole` is deliberately not used:
+   * it grants log writes on every resource.
+   */
+  private executionRole(
+    id: string,
+    logGroup: logs.LogGroup,
+    statements: readonly iam.PolicyStatement[],
+  ): iam.Role {
+    const role = new iam.Role(this, id, {
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+    });
+    // The group ARN ends in `:*`, naming the streams inside that one group; IAM
+    // offers no narrower way to name streams Lambda creates on demand.
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
+        resources: [logGroup.logGroupArn],
+      }),
+    );
+    for (const statement of statements) role.addToPolicy(statement);
+    return role;
+  }
+
+  /**
+   * A bundled Node 22 function. `arm64` because nothing here needs x86 and
+   * Graviton is cheaper per millisecond. The AWS SDK is bundled rather than taken
+   * from the runtime, so the deployed SDK is the pinned one the tests ran against.
+   */
+  private nodeFunction(
+    id: string,
+    props: Required<
+      Pick<
+        nodejs.NodejsFunctionProps,
+        "entry" | "role" | "logGroup" | "environment" | "timeout" | "memorySize"
+      >
+    >,
+  ): nodejs.NodejsFunction {
+    return new nodejs.NodejsFunction(this, id, {
+      ...props,
+      // Bundling emits source maps; Node only applies them to stack traces when
+      // asked, and CDK does not ask on our behalf.
+      environment: { ...props.environment, NODE_OPTIONS: "--enable-source-maps" },
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      projectRoot: REPO_ROOT,
+      depsLockFilePath: `${REPO_ROOT}package-lock.json`,
+      bundling: {
+        format: nodejs.OutputFormat.CJS,
+        target: "node22",
+        minify: true,
+        sourceMap: true,
+        externalModules: [],
+      },
+    });
+  }
+}

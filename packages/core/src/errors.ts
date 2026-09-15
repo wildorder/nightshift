@@ -29,12 +29,16 @@ export abstract class DomainError extends Error {
   }
 }
 
-/** A record was used outside the project, program or run that owns it (A-07). */
+/**
+ * A record was used outside the project, program or run that owns it (A-07), or
+ * a stored project was asked to move to another organisation, which would strand
+ * its org pointer (`field: "orgId"`).
+ */
 export class OwnershipViolationError extends DomainError {
   readonly code = "ownership_violation" as const;
 
   constructor(
-    readonly field: "projectId" | "programId" | "runId",
+    readonly field: "orgId" | "projectId" | "programId" | "runId",
     readonly expected: string,
     readonly actual: string,
   ) {

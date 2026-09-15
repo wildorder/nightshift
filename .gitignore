@@ -10,3 +10,4 @@ worktrees/
 .env
 .env.local
 .env.*
+.claude/settings.local.json
