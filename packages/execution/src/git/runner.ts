@@ -49,6 +49,25 @@ export const identityOverrides = (): readonly string[] => [
   // resolves to the repository root, where there is no `pre-commit` to run.
   "-c",
   "core.hooksPath=",
+  // Line endings are Nightshift's, not the machine's.
+  //
+  // A-29 says Nightshift owns every commit, and owning a commit means owning
+  // its bytes: `completeJob` snapshots the worktree, and `cleanCheckout` then
+  // materialises that commit again for verification. With `core.autocrlf=true`
+  // — the default on a Windows installation, and on the GitHub Windows runner —
+  // those two are not the same bytes, so a worker writes `\n`, verification
+  // reads `\r\n`, and a step that compares file contents fails for a reason
+  // nobody can see in the diff. Found by CI: `operations.test.ts` read back
+  // `committed\r\n` from a file it had written as `committed\n`.
+  //
+  // This disables the *implicit* platform conversion only. A repository that
+  // declares `text eol=crlf` in `.gitattributes` still gets CRLF, because
+  // attributes outrank both of these — so an operator who means it keeps it,
+  // and one who never asked gets what they wrote.
+  "-c",
+  "core.autocrlf=false",
+  "-c",
+  "core.eol=lf",
 ];
 
 export class GitError extends Error {

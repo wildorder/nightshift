@@ -42,6 +42,7 @@ import {
   type Transport,
 } from "@nightshift/persistence/http";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
+import { sanitizeEnvironment } from "@nightshift/verification";
 import type { ScriptName } from "../harness/scripted.js";
 import { type MaterialisedRepo, materialiseFixtureRepo } from "./fixture-repo.js";
 
@@ -213,9 +214,18 @@ export interface Structured extends Record<string, unknown> {
 export const startOrchestrator = async (options: OrchestratorOptions): Promise<Orchestrator> => {
   const { context } = options;
   const harness = options.harness ?? sliceHarness();
+  // The platform allowlist, not `PATH` and `HOME` by hand: on Windows a child
+  // spawned without `SystemRoot`, `PATHEXT` and `TEMP` fails to start at all,
+  // and the failure surfaces as the MCP client's "Connection closed" rather
+  // than as anything about the environment. `sanitizeEnvironment` is the same
+  // function the verification runner uses, and it matches names
+  // case-insensitively on Windows so a parent's `Path` still reaches the child.
   const env: Record<string, string> = {
-    PATH: process.env.PATH ?? "",
-    HOME: process.env.HOME ?? "",
+    ...sanitizeEnvironment({
+      platform: process.platform,
+      parentEnv: process.env,
+      extra: undefined,
+    }),
     ...context.serverEnv,
     // Under a second in a test, rather than the production default: a slice test
     // that waited fifty-five seconds per poll would dominate `npm test`.

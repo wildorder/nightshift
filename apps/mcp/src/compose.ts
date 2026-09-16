@@ -19,7 +19,7 @@
  * `switch` rather than by threading a type through six packages.
  */
 
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ArtifactBodyStore, LocalPaths, ProjectStores } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import type { GitRunner, WorkerLaunchIdentity } from "@nightshift/execution";
@@ -101,12 +101,30 @@ const createTransport = async (env: Env): Promise<{ transport: Transport; endpoi
   };
 };
 
+/**
+ * What `await import()` is actually given for {@link HARNESS_MODULE_ENV}.
+ *
+ * A filesystem path becomes a `file://` URL, because on Windows a bare
+ * `C:\Users\…\scripted.js` is not an importable specifier at all: the ESM
+ * resolver reads `C:` as a URL scheme and refuses it with
+ * `ERR_UNSUPPORTED_ESM_URL_SCHEME`. A bare package name is left exactly as
+ * written, so both forms of specifier work and a POSIX absolute path keeps
+ * behaving as it always did.
+ *
+ * Exported only so a test can state the rule for a Windows path without being
+ * on Windows.
+ */
+export const harnessModuleSpecifier = (specifier: string): string => {
+  const isPath = /^[./\\]/.test(specifier) || /^[A-Za-z]:[\\/]/.test(specifier);
+  return isPath ? pathToFileURL(specifier).href : specifier;
+};
+
 /** The adapter, named here and only here. */
 const createHarness = async (env: Env): Promise<Harness> => {
   const specifier = env[HARNESS_MODULE_ENV];
   if (specifier === undefined || specifier === "") return createClaudeHarness({ env });
 
-  const module: unknown = await import(specifier);
+  const module: unknown = await import(harnessModuleSpecifier(specifier));
   const factory = (module as { createHarness?: unknown }).createHarness;
   if (typeof factory !== "function") {
     throw new Error(`${HARNESS_MODULE_ENV}=${specifier} does not export a createHarness function`);

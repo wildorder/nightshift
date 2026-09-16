@@ -6,7 +6,12 @@
  * dependencies as parameters, which is what lets the slice suite run **this**
  * binary against a scripted harness.
  */
-export { createRuntime, HARNESS_MODULE_ENV, type Runtime } from "./compose.js";
+export {
+  createRuntime,
+  HARNESS_MODULE_ENV,
+  harnessModuleSpecifier,
+  type Runtime,
+} from "./compose.js";
 export {
   DEFAULT_JOB_WAIT_CAP_SECONDS,
   JOB_WAIT_CAP_ENV,

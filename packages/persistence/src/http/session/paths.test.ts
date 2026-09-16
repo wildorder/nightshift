@@ -115,13 +115,18 @@ describe("the files and directories underneath", () => {
   });
 
   it("never places anything under the current working directory", () => {
+    // The prefixes through `join` too: on Windows `join("/state", …)` yields
+    // `\state\…`, so a literal `"/state"` would be comparing against a
+    // separator this platform never produces.
+    const cfg = join("/cfg");
+    const state = join("/state");
     for (const path of [
       profilePath(at),
       credentialsPath(at),
       spoolPath("run_a", at),
       worktreePath("run_a", "node_b", at),
     ]) {
-      expect(path.startsWith("/cfg") || path.startsWith("/state")).toBe(true);
+      expect(path.startsWith(cfg) || path.startsWith(state)).toBe(true);
     }
   });
 });
@@ -145,7 +150,7 @@ describe("the LocalPaths port", () => {
       paths.spool("run_a"),
       paths.transcript("run_a", "agent_c"),
     ]) {
-      expect(path.startsWith("/state")).toBe(true);
+      expect(path.startsWith(join("/state"))).toBe(true);
     }
   });
 });

@@ -37,6 +37,7 @@ import {
   hookTypeForExit,
   isHookEventType,
 } from "@nightshift/harness";
+import { sanitizeEnvironment } from "@nightshift/verification";
 
 /** What a scripted worker does. Chosen per test, or by `NIGHTSHIFT_SCRIPT`. */
 export type ScriptName =
@@ -156,9 +157,15 @@ export const createScriptedHarness = (options: ScriptedHarnessOptions): Harness 
       const child = spawn(options.node ?? process.execPath, [options.entry ?? workerEntry()], {
         cwd: input.worktree,
         env: {
-          // A small, explicit environment, as a real adapter builds (T4, T8).
-          PATH: process.env.PATH ?? "",
-          HOME: process.env.HOME ?? "",
+          // A small, allowlisted environment, as a real adapter builds (T4, T8)
+          // — through the same function, so this harness cannot be the reason a
+          // child starts on one platform and not another. On Windows a child
+          // given only `PATH` and `HOME` does not start.
+          ...sanitizeEnvironment({
+            platform: process.platform,
+            parentEnv: process.env,
+            extra: undefined,
+          }),
           [WORKER_SCRIPT_ENV]: script,
           [WORKER_WORKTREE_ENV]: input.worktree,
           // The worker's own MCP server: command, args and the seven identity

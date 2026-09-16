@@ -9,6 +9,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExecutionNode, RouteTarget, Scope } from "@nightshift/contracts";
 import {
   createFixtures,
@@ -98,6 +99,18 @@ const fakeSpawn = () => {
   };
   return { spawn, calls, children };
 };
+
+/**
+ * The temporary directory the fake hands out, and the two files inside it.
+ *
+ * Built with `join`, not written as literals: the adapter joins them with
+ * `node:path`, so on Windows the paths it produces use `\` and a literal
+ * `"/fake-tmp/…/mcp.json"` would be asserting against a separator this
+ * platform never emits. Found by CI, on the windows leg.
+ */
+const TEMP_DIR = "/fake-tmp/nightshift-claude-1";
+const MCP_CONFIG_PATH = join(TEMP_DIR, "mcp.json");
+const SETTINGS_PATH = join(TEMP_DIR, "settings.json");
 
 const fakeFileSystem = () => {
   const written = new Map<string, string>();
@@ -212,10 +225,10 @@ describe("the launch, against a fake spawn", () => {
       "--model",
       "claude-sonnet-5",
       "--mcp-config",
-      "/fake-tmp/nightshift-claude-1/mcp.json",
+      MCP_CONFIG_PATH,
       "--strict-mcp-config",
       "--settings",
-      "/fake-tmp/nightshift-claude-1/settings.json",
+      SETTINGS_PATH,
       "--setting-sources",
       "",
       "--permission-mode",
@@ -263,7 +276,7 @@ describe("the launch, against a fake spawn", () => {
     const files = fakeFileSystem();
     await harnessWith(spawn, files.fs).start(startInput());
 
-    const config = JSON.parse(files.written.get("/fake-tmp/nightshift-claude-1/mcp.json") ?? "{}");
+    const config = JSON.parse(files.written.get(MCP_CONFIG_PATH) ?? "{}");
     expect(config.mcpServers.nightshift.env).toEqual(MCP.env);
   });
 
@@ -298,13 +311,10 @@ describe("the launch, against a fake spawn", () => {
     const { spawn, children } = fakeSpawn();
     const files = fakeFileSystem();
     const handle = await harnessWith(spawn, files.fs).start(startInput());
-    expect([...files.written.keys()]).toEqual([
-      "/fake-tmp/nightshift-claude-1/mcp.json",
-      "/fake-tmp/nightshift-claude-1/settings.json",
-    ]);
+    expect([...files.written.keys()]).toEqual([MCP_CONFIG_PATH, SETTINGS_PATH]);
     children[0]?.close(0);
     await handle.exit;
-    expect(files.removed).toEqual(["/fake-tmp/nightshift-claude-1"]);
+    expect(files.removed).toEqual([TEMP_DIR]);
   });
 });
 
