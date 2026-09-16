@@ -1,0 +1,169 @@
+/**
+ * Minting an ID token from the operator's refresh token.
+ *
+ * ## Why the ID token and not the access token
+ *
+ * Both are valid at the gateway: the authorizer's audience lists the interactive
+ * client, which an ID token's `aud` names and an access token's `client_id`
+ * names. But the control plane resolves the acting organisation from
+ * `custom:active_org`, and on the pool's Lite feature plan **`custom:` claims
+ * appear only in ID tokens** (`apps/api/src/auth/acting-org.ts` says so, and
+ * that is where the rule lives). An access token would authenticate and then
+ * fail to resolve an org for a caller who belongs to more than one.
+ *
+ * ## The refresh grant
+ *
+ * The interactive client is public — no secret — so the refresh exchange sends
+ * `client_id` in the form body and no `Authorization` header. Cognito returns a
+ * new ID and access token and, on this grant, no new refresh token; the stored
+ * one keeps working until it expires or is revoked, which is why nothing here
+ * rewrites the credentials file.
+ */
+import type { Clock } from "@nightshift/core";
+import { systemClock } from "@nightshift/core";
+import type { TokenProvider } from "../transport.js";
+import type { PathEnvironment } from "./paths.js";
+import { NotLoggedInError, type Profile, requireCredentials, requireProfile } from "./store.js";
+
+/** The slice of `fetch` the token exchange uses. Injected so a test opens no socket. */
+export type TokenFetch = (
+  url: string,
+  init: {
+    readonly method: "POST";
+    readonly headers: Record<string, string>;
+    readonly body: string;
+  },
+) => Promise<{ readonly status: number; text(): Promise<string> }>;
+
+/**
+ * How long before expiry a cached token is considered spent.
+ *
+ * Cognito ID tokens last an hour. Sixty seconds of headroom covers a request that
+ * starts just before expiry and arrives just after, plus ordinary clock skew
+ * between a laptop and AWS, without minting a token per call.
+ */
+export const TOKEN_REFRESH_MARGIN_MS = 60_000;
+
+export interface TokenProviderOptions {
+  readonly profile?: Profile;
+  readonly refreshToken?: string;
+  readonly fetch?: TokenFetch;
+  readonly clock?: Clock;
+  readonly paths?: PathEnvironment;
+}
+
+/** A JWT's `exp`, in epoch milliseconds, read without verifying the signature. */
+export const tokenExpiry = (token: string): number | undefined => {
+  const payload = token.split(".")[1];
+  if (payload === undefined) return undefined;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      exp?: unknown;
+    };
+    return typeof claims.exp === "number" ? claims.exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** A JWT's claims, unverified. The gateway verifies; a client only reads. */
+export const tokenClaims = (token: string): Readonly<Record<string, unknown>> => {
+  const payload = token.split(".")[1];
+  if (payload === undefined) return {};
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    return {};
+  }
+};
+
+export const tokenEndpointFor = (profile: Profile): string =>
+  `https://${profile.authDomain}/oauth2/token`;
+
+/**
+ * Exchanges a refresh token for an ID token. One request, no caching.
+ *
+ * Exported so `nightshift login` can prove the credentials it just stored work
+ * before telling the operator they are signed in.
+ */
+export const refreshIdToken = async (
+  profile: Profile,
+  refreshToken: string,
+  doFetch: TokenFetch = globalThis.fetch as unknown as TokenFetch,
+): Promise<string> => {
+  const response = await doFetch(tokenEndpointFor(profile), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    // A public client: `client_id` in the body, no Basic authorization header.
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: profile.clientId,
+      refresh_token: refreshToken,
+    }).toString(),
+  });
+  const text = await response.text();
+  if (response.status !== 200) {
+    // The refresh token is expired, revoked, or belongs to another client. The
+    // body is echoed because Cognito names which; it never contains the token.
+    throw new NotLoggedInError(
+      `the token endpoint refused the refresh (${response.status}): ${text.slice(0, 300)}`,
+    );
+  }
+  const idToken = (JSON.parse(text) as { id_token?: unknown }).id_token;
+  if (typeof idToken !== "string") {
+    throw new NotLoggedInError("the token endpoint returned no id_token");
+  }
+  return idToken;
+};
+
+/**
+ * A provider that mints an ID token and caches it until shortly before expiry.
+ *
+ * Reads the profile and credentials from disk on first use unless both are
+ * supplied. Concurrent callers share one in-flight refresh rather than each
+ * starting their own: a job that emits a burst of events on a cold cache would
+ * otherwise mint a token per event.
+ */
+export const createTokenProvider = (options: TokenProviderOptions = {}): TokenProvider => {
+  const clock = options.clock ?? systemClock;
+  const doFetch = options.fetch ?? (globalThis.fetch as unknown as TokenFetch);
+  let cached: { token: string; expiresAtMs: number } | undefined;
+  let inFlight: Promise<string> | undefined;
+
+  const mint = async (): Promise<string> => {
+    const profile = options.profile ?? (await requireProfile(options.paths ?? {}));
+    const refreshToken =
+      options.refreshToken ?? (await requireCredentials(options.paths ?? {})).refreshToken;
+    const token = await refreshIdToken(profile, refreshToken, doFetch);
+    // A token with no readable `exp` is treated as good for one refresh margin,
+    // so a malformed one is retried soon rather than cached forever.
+    const expiresAtMs = tokenExpiry(token) ?? clock.now() + TOKEN_REFRESH_MARGIN_MS;
+    cached = { token, expiresAtMs };
+    return token;
+  };
+
+  return {
+    idToken: async () => {
+      if (cached !== undefined && cached.expiresAtMs - TOKEN_REFRESH_MARGIN_MS > clock.now()) {
+        return cached.token;
+      }
+      inFlight ??= mint().finally(() => {
+        inFlight = undefined;
+      });
+      return inFlight;
+    },
+  };
+};
+
+/**
+ * A provider over a token somebody else obtained.
+ *
+ * For a script that already holds one: the deployed slice suite, which uses the
+ * machine client's credentials grant rather than an operator's session.
+ */
+export const staticTokenProvider = (token: string): TokenProvider => ({
+  idToken: async () => token,
+});

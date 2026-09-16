@@ -263,7 +263,24 @@ const ABOVE_ADAPTER_PACKAGES = new Set([
 const isAboveAdapterLayer = (dir: string): boolean =>
   ABOVE_ADAPTER_PACKAGES.has(dir) || dir.startsWith("apps/");
 
-const MEMORY_PREFIX = "packages/persistence/src/memory/";
+/**
+ * Adapter directories that must never touch the AWS SDK.
+ *
+ * `memory` is test-only and must run offline (D-P1-08). `http` is the adapter the
+ * local machinery uses, and the whole point of it is that an orchestrator on a
+ * laptop needs no AWS credentials (A-28, D-P3-02) — an AWS import here would be
+ * that guarantee quietly lapsing.
+ */
+const AWS_FREE_ADAPTER_PREFIXES: readonly [string, string][] = [
+  [
+    "packages/persistence/src/memory/",
+    "the memory adapter is test-only and must run offline (D-P1-08)",
+  ],
+  [
+    "packages/persistence/src/http/",
+    "the http adapter reaches the control plane over HTTPS and must hold no AWS credentials (A-28)",
+  ],
+];
 
 const PERSISTENCE_AWS = "@nightshift/persistence/aws";
 
@@ -403,16 +420,17 @@ export const ARCHITECTURE_RULES: readonly ArchitectureRule[] = [
   },
   {
     id: "AR-3",
-    name: "packages/persistence/src/memory has no AWS SDK import (SC-P1-21)",
+    name: "the memory and http adapters have no AWS SDK import (SC-P1-21, A-28)",
     check: (repo) => {
       const violations: Violation[] = [];
       for (const file of repo.sources) {
-        if (!file.path.startsWith(MEMORY_PREFIX)) continue;
+        const match = AWS_FREE_ADAPTER_PREFIXES.find(([prefix]) => file.path.startsWith(prefix));
+        if (match === undefined) continue;
         for (const ref of extractImports(file.text)) {
           if (!ref.specifier.startsWith("@aws-sdk/")) continue;
           violations.push({
             path: file.path,
-            detail: `line ${ref.line} imports \`${ref.specifier}\`; the memory adapter is test-only and must run offline (D-P1-08)`,
+            detail: `line ${ref.line} imports \`${ref.specifier}\`; ${match[1]}`,
           });
         }
       }

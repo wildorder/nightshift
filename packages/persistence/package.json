@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Persistence adapters. ./memory is test-only; ./aws is DynamoDB and S3.",
+  "description": "Persistence adapters. ./memory is test-only; ./aws is DynamoDB and S3; ./http is the control-plane API.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -20,6 +20,10 @@
     "./aws/testing": {
       "types": "./dist/aws/testing/index.d.ts",
       "default": "./dist/aws/testing/index.js"
+    },
+    "./http": {
+      "types": "./dist/http/index.d.ts",
+      "default": "./dist/http/index.js"
     }
   },
   "dependencies": {
@@ -29,6 +33,7 @@
     "@aws-sdk/s3-request-presigner": "3.1131.0",
     "@aws-sdk/util-dynamodb": "3.996.9",
     "@nightshift/contracts": "*",
-    "@nightshift/core": "*"
+    "@nightshift/core": "*",
+    "zod": "4.6.4"
   }
 }

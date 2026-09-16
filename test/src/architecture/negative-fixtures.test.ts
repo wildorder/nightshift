@@ -165,8 +165,17 @@ describe("AR-2 negative fixtures: no harness or provider SDK above the adapter l
   });
 });
 
-describe("AR-3 negative fixtures: the memory adapter stays offline", () => {
+describe("AR-3 negative fixtures: the memory and http adapters stay offline", () => {
   const r = rule("AR-3");
+
+  it("reports an AWS SDK import under packages/persistence/src/http", () => {
+    const violations = r.check(
+      makeRepo({
+        sources: [staticImport("packages/persistence/src/http/stores.ts", "@aws-sdk/client-s3")],
+      }),
+    );
+    expect(offendingPaths(violations)).toEqual(["packages/persistence/src/http/stores.ts"]);
+  });
 
   it("reports an AWS SDK import under packages/persistence/src/memory", () => {
     const violations = r.check(
