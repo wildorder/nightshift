@@ -252,6 +252,43 @@ const adapterLeakViolation = (specifier: string): string | undefined => {
 };
 
 /**
+ * Composition roots (D-P3-12, A-31).
+ *
+ * P1's rule forbade a harness implementation anywhere above the adapter layer,
+ * which included every app — and therefore left nothing in the repository able
+ * to instantiate an adapter at all. A rule that forbids the program from working
+ * is a rule with a gap, not a strict rule.
+ *
+ * The amendment is the narrowest thing that closes it: **one named file per
+ * app**, listed here by exact path. Everything else in that app is still
+ * refused, and the ban stays absolute on `execution`, `routing`, `verification`,
+ * `core` and `contracts` — the packages where a harness-specific import would
+ * actually do damage, and the ones SC-P1-20 was really about.
+ *
+ * A path here is a decision, not a convenience. Adding a second file to this
+ * list would be reintroducing the problem one file at a time.
+ */
+const COMPOSITION_ROOTS: readonly string[] = ["apps/mcp/src/compose.ts"];
+
+/**
+ * What only a composition root may import, inside the app that owns one.
+ *
+ * `@nightshift/persistence/http` is here for the same reason a harness is: the
+ * MCP server must not learn which adapter backs its stores, or the slice suite's
+ * ability to run the real binary against a local control plane would be a
+ * fiction. Other apps may import it freely — `apps/cli` is a thin client of the
+ * same API — so this is scoped to the app that has a composition root.
+ */
+const PERSISTENCE_HTTP = "@nightshift/persistence/http";
+
+const isCompositionRoot = (path: string): boolean => COMPOSITION_ROOTS.includes(path);
+
+/** The app a composition root belongs to, e.g. `apps/mcp`. */
+const APPS_WITH_COMPOSITION_ROOTS: readonly string[] = COMPOSITION_ROOTS.map(
+  (path) => packageDirOf(path) ?? "",
+);
+
+/**
  * Rule AR-2 applies above the adapter layer: the named packages plus every
  * app. `apps/*` is matched by prefix so a new app is covered the day it is
  * created. `packages/harness-*`, `packages/persistence` and `infra/cdk` sit at
@@ -405,19 +442,36 @@ export const ARCHITECTURE_RULES: readonly ArchitectureRule[] = [
   },
   {
     id: "AR-2",
-    name: "no harness implementation or provider SDK above the adapter layer (SC-P1-20)",
+    name: "no harness implementation or provider SDK above the adapter layer, except in a named composition root (SC-P1-20, D-P3-12)",
     check: (repo) => {
       const violations: Violation[] = [];
       for (const file of repo.sources) {
         const dir = packageDirOf(file.path);
         if (dir === undefined || !isAboveAdapterLayer(dir)) continue;
+        const root = isCompositionRoot(file.path);
+
         for (const ref of extractImports(file.text)) {
+          // A composition root may name an adapter. That is the whole of the
+          // exception, and it is granted by exact path.
           const why = adapterLeakViolation(ref.specifier);
-          if (why === undefined) continue;
-          violations.push({
-            path: file.path,
-            detail: `line ${ref.line} imports ${why}; ${dir} sits above the adapter layer, so provider-specific code must stay inside a harness-* package`,
-          });
+          if (why !== undefined && !root) {
+            violations.push({
+              path: file.path,
+              detail: `line ${ref.line} imports ${why}; ${dir} sits above the adapter layer, so provider-specific code must stay inside a harness-* package or its app's composition root (${COMPOSITION_ROOTS.join(", ")})`,
+            });
+          }
+          // And inside an app that *has* a composition root, the http
+          // persistence adapter is that root's business too.
+          if (
+            isSubpathOf(ref.specifier, PERSISTENCE_HTTP) &&
+            !root &&
+            APPS_WITH_COMPOSITION_ROOTS.includes(dir)
+          ) {
+            violations.push({
+              path: file.path,
+              detail: `line ${ref.line} imports \`${ref.specifier}\`; ${dir} has a composition root, and wiring an adapter is its job alone`,
+            });
+          }
         }
       }
       return violations;

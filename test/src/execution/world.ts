@@ -1,14 +1,14 @@
 /**
- * The world an execution-layer test runs in.
+ * The world an execution-layer or MCP test runs in.
  *
  * Everything real except the model:
  *
  * - a **real HTTP control plane** on loopback, running the production handler,
- *   so every route, every schema and every domain rule is in the loop. The
- *   execution layer reaches it through `@nightshift/persistence/http`, exactly as
- *   it does in production — never through the in-memory stores directly, which
- *   would skip referential integrity, the transition tables and the evidence
- *   rule that makes `implemented ≠ verified` structural;
+ *   so every route, every schema and every domain rule is in the loop. Reached
+ *   through `@nightshift/persistence/http`, exactly as in production — never
+ *   through the in-memory stores directly, which would skip referential
+ *   integrity, the transition tables and the evidence rule that makes
+ *   `implemented ≠ verified` structural;
  * - a **real git repository** in a temporary directory, with real worktrees;
  * - a **real verification runner**, running real child processes;
  * - and a fake harness, because the one thing a test must not need is an LLM.
@@ -21,7 +21,14 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type LocalControlPlane, startLocalControlPlane } from "@nightshift/api/testing";
-import type { Agent, CommitSha, ProgramContract, Project } from "@nightshift/contracts";
+import type {
+  Agent,
+  CommitSha,
+  ProgramContract,
+  ProgramId,
+  Project,
+  ProjectId,
+} from "@nightshift/contracts";
 import {
   createSteppingClock,
   createUlidIdGenerator,
@@ -52,6 +59,8 @@ import {
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 
 export const PROGRAM_BRANCH = "program/slice";
+/** Where a repository declares which program it belongs to. */
+export const CONTRACT_FILE = "nightshift.program.json";
 const START_MS = Date.parse("2026-09-15T12:00:00.000Z");
 
 /** Files the fixture repository starts with. Small, and enough to edit. */
@@ -72,34 +81,71 @@ const FIXTURE_FILES: Readonly<Record<string, string>> = {
   "package.json": `${JSON.stringify({ name: "slice-fixture", private: true, type: "module" }, null, 2)}\n`,
 };
 
-export interface World {
-  readonly plane: LocalControlPlane;
-  readonly backing: InMemoryStores;
-  readonly stores: ProjectStores;
-  readonly environment: ExecutionEnvironment;
-  readonly session: RunSession;
-  readonly repo: string;
-  readonly stateDir: string;
-  readonly outbox: EventOutbox;
-  readonly ids: IdGenerator;
-  readonly git: GitRunner;
-  readonly scope: RunScope;
-  readonly baseCommit: CommitSha;
-  /** Numbers every event appended so far, imitating the Streams consumer (A-22). */
-  settle(): void;
-  close(): Promise<void>;
-}
-
-export interface WorldOptions {
-  readonly harness: Harness;
-  /** Overrides merged into the fixture program contract. */
-  readonly program?: Partial<ProgramContract>;
-  readonly verificationTimeoutMs?: number;
-}
+/**
+ * The fixture Program Contract.
+ *
+ * The verification step is bare `node --test`, with no path, deliberately: on
+ * Node 22.22.0 passing a directory makes Node resolve it as a module and fail,
+ * while bare `node --test` discovers the test files itself. Learned by watching
+ * a correct worker produce a red verification, and worth keeping in one place.
+ */
+const fixtureProgram = (
+  projectId: ProjectId,
+  programId: ProgramId,
+  repo: string,
+  createdAt: string,
+): ProgramContract => ({
+  schemaVersion: 1,
+  projectId,
+  programId,
+  objective: "Prove the vertical slice.",
+  repository: { url: repo, baseBranch: "main", programBranch: PROGRAM_BRANCH },
+  successCriteria: [{ id: "SC-01", outcome: "The sum helper works." }],
+  constraints: ["Change nothing outside src/ and test/."],
+  scope: {
+    includes: ["src/**", "test/**"],
+    excludes: ["src/generated/**"],
+    permissions: ["fs.read", "fs.write", "shell.exec"],
+    forbiddenActions: ["push any ref"],
+  },
+  verification: [
+    { id: "test", command: "node --test" },
+    { id: "shape", command: 'node -e "process.exit(0)"' },
+  ],
+  modelPolicy: {
+    allowedProviders: ["anthropic"],
+    allowedModels: ["claude-sonnet-5"],
+    forbiddenModels: [],
+  },
+  examinationPolicy: {
+    low: {
+      required: false,
+      mustDifferModel: false,
+      mustDifferProvider: false,
+      blockOnMaterialFindings: false,
+    },
+    medium: {
+      required: false,
+      mustDifferModel: false,
+      mustDifferProvider: false,
+      blockOnMaterialFindings: false,
+    },
+    high: {
+      required: false,
+      mustDifferModel: false,
+      mustDifferProvider: false,
+      blockOnMaterialFindings: false,
+    },
+  },
+  delegationLimits: { maxDepth: 1, maxConcurrency: 1 },
+  costPolicy: {},
+  defaultRisk: "low",
+  createdAt,
+});
 
 const cleanups: (() => Promise<void>)[] = [];
 
-/** Torn down by the suite's `afterEach`, whether or not the test passed. */
+/** Torn down by a suite's `afterEach`, whether or not the test passed. */
 export const cleanupWorlds = async (): Promise<void> => {
   for (const cleanup of cleanups.splice(0)) await cleanup().catch(() => {});
 };
@@ -112,7 +158,38 @@ const writeFixture = async (repo: string): Promise<void> => {
   }
 };
 
-export const createWorld = async (options: WorldOptions): Promise<World> => {
+export interface BaseWorld {
+  readonly root: string;
+  readonly repo: string;
+  readonly stateDir: string;
+  readonly plane: LocalControlPlane;
+  readonly backing: InMemoryStores;
+  readonly stores: ProjectStores;
+  readonly bodies: ReturnType<typeof createHttpArtifactBodyStore>;
+  readonly ids: IdGenerator;
+  readonly clock: ReturnType<typeof createSteppingClock>;
+  readonly subject: string;
+  /** The authored contract, written to the repository and committed. */
+  readonly program: ProgramContract;
+  readonly git: GitRunner;
+  close(): Promise<void>;
+}
+
+export interface BaseWorldOptions {
+  readonly program?: Partial<ProgramContract>;
+}
+
+/**
+ * A repository with an authored, committed program contract, and a control
+ * plane that knows about its project.
+ *
+ * The contract file is committed **before** anything starts, because that is how
+ * a real one exists: a human authors it, commits it, and runs `nightshift run`.
+ * An uncommitted contract file would also leave the checkout dirty, and a dirty
+ * checkout refuses integration — correct behaviour, and a very confusing way for
+ * a test to fail.
+ */
+export const createBaseWorld = async (options: BaseWorldOptions = {}): Promise<BaseWorld> => {
   const root = await mkdtemp(join(tmpdir(), "nightshift-slice-"));
   const repo = join(root, "repo");
   const stateDir = join(root, "state");
@@ -120,14 +197,6 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
   await mkdir(stateDir, { recursive: true });
   await writeFixture(repo);
 
-  const runner = nodeGitRunner;
-  const run = (args: readonly string[]) => git(runner, args, { cwd: repo, atMs: START_MS });
-  await run(["init", "--initial-branch=main"]);
-  await run(["add", "-A"]);
-  await run(["commit", "-m", "the fixture repository"]);
-  await run(["checkout", "-b", PROGRAM_BRANCH]);
-
-  // --- The control plane -----------------------------------------------------
   const backing = createInMemoryStores({ deferSequencing: true });
   const ids = createUlidIdGenerator();
   const subject = "11111111-2222-3333-4444-555555555555";
@@ -147,12 +216,10 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
   const stores = createHttpStores({ transport, actingOrg: orgId });
   const bodies = createHttpArtifactBodyStore({
     transport,
-    // The plane holds bodies in memory; a reader for assertions about a log.
     read: async (scope, artifactId) =>
       plane.bodies.get(`${scope.projectId}/${scope.programId}/${scope.runId}/${artifactId}`)?.body,
   });
 
-  // --- The project and the program -------------------------------------------
   const projectId = ids.next("proj");
   const programId = ids.next("prog");
   const project: Project = {
@@ -165,65 +232,81 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
   await stores.projects.put(project);
 
   const program: ProgramContract = {
-    schemaVersion: 1,
-    projectId,
-    programId,
-    objective: "Prove the vertical slice.",
-    repository: { url: repo, baseBranch: "main", programBranch: PROGRAM_BRANCH },
-    successCriteria: [{ id: "SC-01", outcome: "The sum helper works." }],
-    constraints: ["Change nothing outside src/."],
-    scope: {
-      includes: ["src/**", "test/**"],
-      excludes: ["src/generated/**"],
-      permissions: ["fs.read", "fs.write", "shell.exec"],
-      forbiddenActions: ["push any ref"],
-    },
-    verification: [
-      { id: "test", command: "node --test" },
-      { id: "shape", command: 'node -e "process.exit(0)"' },
-    ],
-    modelPolicy: {
-      allowedProviders: ["anthropic"],
-      allowedModels: ["claude-sonnet-5"],
-      forbiddenModels: [],
-    },
-    examinationPolicy: {
-      low: {
-        required: false,
-        mustDifferModel: false,
-        mustDifferProvider: false,
-        blockOnMaterialFindings: false,
-      },
-      medium: {
-        required: false,
-        mustDifferModel: false,
-        mustDifferProvider: false,
-        blockOnMaterialFindings: false,
-      },
-      high: {
-        required: false,
-        mustDifferModel: false,
-        mustDifferProvider: false,
-        blockOnMaterialFindings: false,
-      },
-    },
-    delegationLimits: { maxDepth: 1, maxConcurrency: 1 },
-    costPolicy: {},
-    defaultRisk: "low",
-    createdAt: nowIso(clock),
+    ...fixtureProgram(projectId, programId, repo, nowIso(clock)),
     ...options.program,
   };
+  await writeFile(join(repo, CONTRACT_FILE), `${JSON.stringify(program, null, 2)}\n`, "utf8");
 
-  // --- The run, through the function the CLI and `run.start` share ------------
-  const started = await startRun({ stores, clock, ids, git: runner }, { program, repoPath: repo });
+  const run = (args: readonly string[]) => git(nodeGitRunner, args, { cwd: repo, atMs: START_MS });
+  await run(["init", "--initial-branch=main"]);
+  await run(["add", "-A"]);
+  await run(["commit", "-m", "the fixture repository"]);
+  await run(["checkout", "-b", PROGRAM_BRANCH]);
+
+  const base: BaseWorld = {
+    root,
+    repo,
+    stateDir,
+    plane,
+    backing,
+    stores,
+    bodies,
+    ids,
+    clock,
+    subject,
+    program,
+    git: nodeGitRunner,
+    close: async () => {
+      await plane.close();
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+  cleanups.push(base.close);
+  return base;
+};
+
+/** Paths under a world's own state directory, never the program checkout. */
+export const localPathsIn = (stateDir: string): LocalPaths => ({
+  worktree: (runId, nodeId) => join(stateDir, "wt", runId.slice(-8), nodeId.slice(-8)),
+  runDir: (runId) => join(stateDir, "runs", runId),
+  spool: (runId) => join(stateDir, "runs", runId, "spool.ndjson"),
+  transcript: (runId, agentId) =>
+    join(stateDir, "runs", runId, "agents", agentId, "transcript.jsonl"),
+});
+
+export interface World extends BaseWorld {
+  readonly environment: ExecutionEnvironment;
+  readonly session: RunSession;
+  readonly outbox: EventOutbox;
+  readonly scope: RunScope;
+  readonly baseCommit: CommitSha;
+  /** Numbers every event appended so far, imitating the Streams consumer (A-22). */
+  settle(): void;
+}
+
+export interface WorldOptions extends BaseWorldOptions {
+  readonly harness: Harness;
+  readonly verificationTimeoutMs?: number;
+}
+
+/** A base world with a started, attached run — what the execution tests drive. */
+export const createWorld = async (options: WorldOptions): Promise<World> => {
+  const base = await createBaseWorld(
+    options.program === undefined ? {} : { program: options.program },
+  );
+  const { repo, stateDir, stores, bodies, ids, clock, program } = base;
+
+  const started = await startRun(
+    { stores, clock, ids, git: nodeGitRunner },
+    { program, repoPath: repo },
+  );
   const scope: RunScope = {
-    projectId,
-    programId,
+    projectId: program.projectId,
+    programId: program.programId,
     runId: started.run.runId,
   };
   await stores.runs.put({ ...started.run, status: "running" });
 
-  // --- The orchestrator's own agent -------------------------------------------
   const orchestrator: Agent = {
     schemaVersion: 1,
     ...scope,
@@ -240,16 +323,9 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
   // The root node follows the table: `validated` when the run was authorized,
   // then queued and started when an orchestrator attaches. The API refuses the
   // single-step shortcut, which is how we know the table is in the loop.
-  await stores.executionNodes.put({
-    ...started.rootNode,
-    status: "queued",
-    updatedAt: nowIso(clock),
-  });
-  await stores.executionNodes.put({
-    ...started.rootNode,
-    status: "running",
-    updatedAt: nowIso(clock),
-  });
+  for (const status of ["queued", "running"] as const) {
+    await stores.executionNodes.put({ ...started.rootNode, status, updatedAt: nowIso(clock) });
+  }
 
   const outbox = createEventOutbox({
     events: stores.events,
@@ -261,57 +337,37 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
     maxDelayMs: 4,
   });
 
-  const paths: LocalPaths = {
-    worktree: (runId, nodeId) => join(stateDir, "wt", runId.slice(-8), nodeId.slice(-8)),
-    runDir: (runId) => join(stateDir, "runs", runId),
-    spool: (runId) => join(stateDir, "runs", runId, "spool.ndjson"),
-    transcript: (runId, agentId) =>
-      join(stateDir, "runs", runId, "agents", agentId, "transcript.jsonl"),
-  };
-
   const environment: ExecutionEnvironment = {
     stores,
     bodies,
     harness: options.harness,
     clock,
     ids,
-    paths,
-    git: runner,
+    paths: localPathsIn(stateDir),
+    git: nodeGitRunner,
     outbox,
     verificationTimeoutMs: options.verificationTimeoutMs ?? 60_000,
     cancelGraceMs: 2_000,
   };
 
-  const session: RunSession = {
-    scope,
-    program: started.program,
-    run: { ...started.run, status: "running" },
-    rootNodeId: started.rootNode.executionNodeId,
-    orchestratorAgentId: orchestrator.agentId,
-    repoPath: repo,
-  };
-
-  const world: World = {
-    plane,
-    backing,
-    stores,
+  return {
+    ...base,
     environment,
-    session,
-    repo,
-    stateDir,
     outbox,
-    ids,
-    git: runner,
     scope,
     baseCommit: started.baseCommit as CommitSha,
-    settle: () => void backing.materializeSequences(),
-    close: async () => {
-      await plane.close();
-      await rm(root, { recursive: true, force: true });
+    settle: () => {
+      base.backing.materializeSequences();
+    },
+    session: {
+      scope,
+      program: started.program,
+      run: { ...started.run, status: "running" },
+      rootNodeId: started.rootNode.executionNodeId,
+      orchestratorAgentId: orchestrator.agentId,
+      repoPath: repo,
     },
   };
-  cleanups.push(world.close);
-  return world;
 };
 
 /** Every event of the run, numbered, in order. */

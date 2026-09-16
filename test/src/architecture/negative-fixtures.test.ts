@@ -124,6 +124,55 @@ describe("AR-1 negative fixtures: contracts and core purity", () => {
 describe("AR-2 negative fixtures: no harness or provider SDK above the adapter layer", () => {
   const r = rule("AR-2");
 
+  /**
+   * The exception D-P3-12 grants, and its boundary. The composition root may
+   * name an adapter; every other file in the same app still may not, which is
+   * what stops "one named module" from becoming "anywhere in apps/mcp".
+   */
+  it("permits a harness implementation in the composition root, and nowhere else", () => {
+    const permitted = r.check(
+      makeRepo({
+        sources: [
+          staticImport("apps/mcp/src/compose.ts", "@nightshift/harness-claude"),
+          staticImport("apps/mcp/src/compose.ts", "@nightshift/persistence/http"),
+        ],
+      }),
+    );
+    expect(formatViolations(permitted)).toEqual([]);
+
+    const refused = r.check(
+      makeRepo({
+        sources: [
+          staticImport("apps/mcp/src/server.ts", "@nightshift/harness-claude"),
+          staticImport("apps/mcp/src/orchestrator.ts", "@nightshift/persistence/http"),
+          // A file next to the composition root is not the composition root.
+          staticImport("apps/mcp/src/compose-helpers.ts", "@nightshift/harness-codex"),
+        ],
+      }),
+    );
+    expect(offendingPaths(refused)).toEqual([
+      "apps/mcp/src/compose-helpers.ts",
+      "apps/mcp/src/orchestrator.ts",
+      "apps/mcp/src/server.ts",
+    ]);
+  });
+
+  /**
+   * The http adapter is only a composition root's business inside an app that
+   * has one. `apps/cli` is a thin client of the same API and imports it freely.
+   */
+  it("leaves the http adapter alone in an app with no composition root", () => {
+    const violations = r.check(
+      makeRepo({
+        sources: [
+          staticImport("apps/cli/src/login.ts", "@nightshift/persistence/http"),
+          staticImport("apps/api/src/http-adapter.ts", "@nightshift/persistence/http"),
+        ],
+      }),
+    );
+    expect(formatViolations(violations)).toEqual([]);
+  });
+
   it("reports harness implementations and provider SDKs above the adapter layer", () => {
     const violations = r.check(
       makeRepo({
