@@ -19,6 +19,7 @@ import {
   changedPaths,
   checkpointRef,
   cleanCheckout,
+  commitMessageFor,
   currentBranch,
   fastForward,
   isDirty,
@@ -203,6 +204,42 @@ describe("the snapshot commit", () => {
     expect(await readFile(join(worktree, "src", "c.ts"), "utf8")).toBe("step three\n");
   });
 
+  /**
+   * The exit gate's finding (T10). A real model answers `job.complete` with a
+   * paragraph, and `git commit -m` makes everything before the first blank line
+   * the subject — so the first integrated commit carried a 700-character one.
+   */
+  it("gives a paragraph summary a readable subject and keeps it as the body", async () => {
+    const { repo, base } = await repository();
+    const worktree = await worktreeAt(repo, base);
+    await writeFile(join(worktree, "src", "a.ts"), "changed\n", "utf8");
+
+    const summary =
+      "Added a median named function to src/math.js that sorts a copy of the input array " +
+      "numerically, returns the middle value for odd-length arrays and the mean of the two " +
+      "middle values for even-length arrays. Re-exported median from src/index.js. Added tests.";
+    const sha = await snapshotCommit(nodeGitRunner, {
+      worktree,
+      base,
+      message: summary,
+      trailers: {
+        "Nightshift-Run": "run_a",
+        "Nightshift-Node": "node_c",
+        "Nightshift-Job": "job_d",
+      },
+      atMs: AT,
+    });
+
+    const subject = (
+      await git(nodeGitRunner, ["log", "-1", "--format=%s", sha], { cwd: worktree })
+    ).trim();
+    expect(subject.length).toBeLessThanOrEqual(72);
+    const body = await git(nodeGitRunner, ["log", "-1", "--format=%B", sha], { cwd: worktree });
+    // Nothing is discarded: the worker's own account survives in full.
+    expect(body).toContain("Re-exported median from src/index.js");
+    expect(body).toContain("Nightshift-Run: run_a");
+  });
+
   it("carries the run, node and job trailers", async () => {
     const { repo, base } = await repository();
     const worktree = await worktreeAt(repo, base);
@@ -352,5 +389,54 @@ describe("sealing, integrating and checkpointing", () => {
     expect(sealedRef("node_x")).toBe("refs/nightshift/sealed/node_x");
     expect(checkpointRef("ckpt_x")).toBe("refs/nightshift/checkpoints/ckpt_x");
     expect(baseRef("node_x")).toBe("refs/nightshift/base/node_x");
+  });
+});
+
+/**
+ * The shaper on its own, where the awkward inputs are cheap to state.
+ *
+ * A real repository proves the commit comes out right; these prove the rule,
+ * including the cases a worker will eventually produce — an empty summary, one
+ * enormous unpunctuated sentence, and an author who already wrote a body.
+ */
+describe("commitMessageFor", () => {
+  it("leaves a short one-line summary exactly as it is", () => {
+    expect(commitMessageFor("Add a median helper to src/math.js")).toBe(
+      "Add a median helper to src/math.js",
+    );
+  });
+
+  it("collapses the whitespace of a short summary that was wrapped", () => {
+    expect(commitMessageFor("  Add a median helper\n  to src/math.js  ")).toBe(
+      "Add a median helper to src/math.js",
+    );
+  });
+
+  it("takes the first sentence as the subject when it fits", () => {
+    const message = commitMessageFor(
+      `Add a median helper. ${"It sorts a copy of the input rather than mutating it. ".repeat(3)}`,
+    );
+    const [subject, blank] = message.split("\n");
+    expect(subject).toBe("Add a median helper.");
+    expect(blank).toBe("");
+    expect(message).toContain("mutating it.");
+  });
+
+  it("cuts at a word boundary when the first sentence is itself too long", () => {
+    const summary = `${"considered ".repeat(20)}and then stopped.`;
+    const subject = commitMessageFor(summary).split("\n")[0] ?? "";
+    expect(subject.length).toBeLessThanOrEqual(72);
+    expect(subject.endsWith("\u2026")).toBe(true);
+    // Never mid-word.
+    expect(subject.slice(0, -1).endsWith("considered")).toBe(true);
+  });
+
+  it("leaves a summary that already has a subject and a body untouched", () => {
+    const authored = `Add a median helper\n\n${"Because the fixture needed one. ".repeat(5)}`;
+    expect(commitMessageFor(authored)).toBe(authored.trim());
+  });
+
+  it("says so rather than writing an empty commit message", () => {
+    expect(commitMessageFor("   ")).toBe("a Nightshift snapshot with no summary");
   });
 });

@@ -104,6 +104,47 @@ export interface SnapshotInput {
   readonly atMs: number;
 }
 
+/** The conventional limit for a git subject line. */
+const SUBJECT_LIMIT = 72;
+
+/**
+ * Shapes a worker's completion summary into a commit message.
+ *
+ * Found at the exit gate (T10), and worth stating plainly because the scripted
+ * harness could never have found it: a real model's summary is a **paragraph**,
+ * and `git commit -m` treats everything before the first blank line as the
+ * subject. The first integrated commit therefore carried a 700-character
+ * subject line, which `git log --oneline`, every UI and every mail formatter
+ * renders as a wall. Nightshift owns every commit (A-29), so the shape of one
+ * is Nightshift's problem and not the worker's.
+ *
+ * Nothing is discarded. A summary that already has a subject and a body is left
+ * exactly as written; one that does not gains a subject — its first sentence,
+ * cut at a word boundary if that sentence is itself too long — and keeps the
+ * whole original text as the body, so the worker's own account survives
+ * verbatim under a line a human can read.
+ */
+export const commitMessageFor = (summary: string): string => {
+  const text = summary.trim();
+  if (text === "") return "a Nightshift snapshot with no summary";
+  // An author who already wrote a subject and a body gets left alone.
+  if (/\n\s*\n/.test(text)) return text;
+
+  const oneLine = text.replace(/\s+/g, " ");
+  if (oneLine.length <= SUBJECT_LIMIT) return oneLine;
+
+  // The first sentence, when there is one that fits.
+  const sentence = /^(.+?[.!?])(?:\s|$)/.exec(oneLine)?.[1];
+  const subject =
+    sentence !== undefined && sentence.length <= SUBJECT_LIMIT
+      ? sentence
+      : // Otherwise cut at the last word boundary that leaves room for the
+        // ellipsis, so the subject never ends mid-word.
+        `${oneLine.slice(0, SUBJECT_LIMIT - 1).replace(/\s+\S*$/, "")}\u2026`;
+
+  return `${subject}\n\n${text}`;
+};
+
 /**
  * Collapses whatever is in the worktree into one commit on top of `base`.
  *
@@ -144,7 +185,7 @@ export const snapshotCommit = async (
       // commit is Nightshift's.
       "--no-verify",
       "-m",
-      input.message,
+      commitMessageFor(input.message),
       ...trailerArgs,
     ],
     options,

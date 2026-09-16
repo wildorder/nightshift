@@ -72,7 +72,7 @@ import {
   revParse,
   updateRef,
 } from "./git/index.js";
-import { createHookSink } from "./hook-sink.js";
+import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
 import { verifyNode } from "./verify.js";
 
@@ -351,6 +351,7 @@ export const runJob = async (
     branch,
     base,
     handle,
+    sink,
     stopMode: () => stopMode,
   });
 
@@ -386,6 +387,8 @@ interface FinishInput {
   readonly branch: string;
   readonly base: CommitSha;
   readonly handle: HarnessHandle;
+  /** The sink the adapter was given, so the ending is emitted once. */
+  readonly sink: RecordingHookSink;
   /** Why we asked the worker to stop, when we did. See `StartedJob.stop`. */
   stopMode(): "cancelled" | "interrupted" | undefined;
 }
@@ -513,16 +516,26 @@ const recordAgentEnd = async (
       ...(exit.kind === "failed" ? { exitCode: exit.exitCode } : {}),
     }),
   );
-  outbox.emit({
-    type: hookTypeForExit(exit),
-    source: "hook",
-    payload: {
-      ...(exit.kind === "failed" ? { exitCode: exit.exitCode } : {}),
-      ...(exit.kind === "interrupted" ? { signal: exit.signal } : {}),
-    },
-    executionNodeId: input.nodeId,
-    agentId: input.agentId,
-  });
+  // The agent *record* is always this layer's to write — only the execution
+  // layer may — but the ending *event* belongs to whoever observed it. A
+  // well-behaved adapter already emitted one, from the same `hookTypeForExit`
+  // mapping and with its own account of the ending in the payload; emitting a
+  // second, emptier one is how the exit-gate run ended up with two
+  // `agent.completed` events for one agent. So this is a backstop, for the
+  // harness that reports nothing at all — which D-P3-09 requires to leave
+  // terminal state behind regardless.
+  if (!input.sink.sawEnding()) {
+    outbox.emit({
+      type: hookTypeForExit(exit),
+      source: "hook",
+      payload: {
+        ...(exit.kind === "failed" ? { exitCode: exit.exitCode } : {}),
+        ...(exit.kind === "interrupted" ? { signal: exit.signal } : {}),
+      },
+      executionNodeId: input.nodeId,
+      agentId: input.agentId,
+    });
+  }
 };
 
 /** The transcript, once the process that was writing it has stopped. */

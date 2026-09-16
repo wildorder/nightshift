@@ -18,10 +18,23 @@
  *   reported" a detectable gap rather than an indistinguishable silence.
  */
 
-import type { AgentId, ExecutionNodeId } from "@nightshift/contracts";
+import type { AgentId, EventType, ExecutionNodeId } from "@nightshift/contracts";
 import type { HookSink } from "@nightshift/harness";
 import { isHookEventType } from "@nightshift/harness";
 import type { EventOutbox } from "./outbox.js";
+
+/**
+ * The four ways an agent can end.
+ *
+ * Named here because the sink has to recognise one: see
+ * {@link RecordingHookSink.sawEnding}.
+ */
+const ENDINGS: ReadonlySet<EventType> = new Set<EventType>([
+  "agent.completed",
+  "agent.failed",
+  "agent.cancelled",
+  "agent.interrupted",
+]);
 
 export interface HookSinkOptions {
   readonly outbox: EventOutbox;
@@ -35,19 +48,44 @@ export interface HookSinkOptions {
   readonly onUnexpected?: (type: string) => void;
 }
 
-export const createHookSink = (options: HookSinkOptions): HookSink => ({
-  emit: (event) => {
-    if (!isHookEventType(event.type)) {
-      options.onUnexpected?.(event.type);
-      return;
-    }
-    options.outbox.emit({
-      type: event.type,
-      source: "hook",
-      payload: event.payload,
-      executionNodeId: options.executionNodeId,
-      agentId: options.agentId,
-      occurredAt: event.occurredAt,
-    });
-  },
-});
+export interface RecordingHookSink extends HookSink {
+  /**
+   * Whether an adapter has already emitted one of {@link ENDINGS}.
+   *
+   * The runner emits an ending of its own after awaiting `handle.exit`, because
+   * D-P3-09 requires terminal state from **observing a process** rather than
+   * from an adapter's cooperation — a harness that emits nothing at all must
+   * still leave `agent.failed` behind. A well-behaved adapter emits one too,
+   * from the same `hookTypeForExit` mapping and with far more in its payload,
+   * and the exit gate (T10) found the consequence: the first integrated run
+   * carried two `agent.completed` events, sequences 30 and 31, the second one
+   * empty.
+   *
+   * So the runner asks. This is the only way it can tell the difference between
+   * an adapter that reported and one that did not, and the answer decides
+   * whether its own emit is a backstop or a duplicate.
+   */
+  readonly sawEnding: () => boolean;
+}
+
+export const createHookSink = (options: HookSinkOptions): RecordingHookSink => {
+  let sawEnding = false;
+  return {
+    sawEnding: () => sawEnding,
+    emit: (event) => {
+      if (!isHookEventType(event.type)) {
+        options.onUnexpected?.(event.type);
+        return;
+      }
+      if (ENDINGS.has(event.type)) sawEnding = true;
+      options.outbox.emit({
+        type: event.type,
+        source: "hook",
+        payload: event.payload,
+        executionNodeId: options.executionNodeId,
+        agentId: options.agentId,
+        occurredAt: event.occurredAt,
+      });
+    },
+  };
+};

@@ -50,12 +50,39 @@ export interface FakeHarnessOptions {
   readonly onStart?: (input: HarnessStartInput) => Promise<void> | void;
   /** Writes this to the transcript path, so the upload path is exercised. */
   readonly transcript?: string;
+  /**
+   * Emit no ending at all, standing in for an adapter that reports nothing.
+   *
+   * D-P3-09 requires terminal state from observing a process rather than from
+   * an adapter's cooperation, so the runner has a backstop; this is how a test
+   * makes that backstop the only emitter. See `lifecycle.test.ts`.
+   */
+  readonly silentEnding?: boolean;
 }
 
 interface FakeState {
   settled: HarnessExit | undefined;
   cancelling: boolean;
 }
+
+/**
+ * The ending a well-behaved adapter emits, from the shared mapping.
+ *
+ * Its own function so `silentEnding` is one line at the call site rather than a
+ * branch wrapped around fifteen.
+ */
+const emitEnding = (sink: HookSink, settled: HarnessExit): void => {
+  sink.emit({
+    type: hookTypeForExit(settled),
+    occurredAt: new Date().toISOString(),
+    payload:
+      settled.kind === "failed"
+        ? { exitCode: settled.exitCode }
+        : settled.kind === "interrupted"
+          ? { signal: settled.signal }
+          : {},
+  });
+};
 
 export const createFakeHarness = (options: FakeHarnessOptions): Harness => {
   const states = new Map<AgentId, FakeState>();
@@ -119,16 +146,7 @@ export const createFakeHarness = (options: FakeHarnessOptions): Harness => {
         // A cancel in flight wins: the process stopped because we asked.
         const settled = state.cancelling ? ({ kind: "cancelled" } as const) : outcome;
         state.settled = settled;
-        input.sink.emit({
-          type: hookTypeForExit(settled),
-          occurredAt: new Date().toISOString(),
-          payload:
-            settled.kind === "failed"
-              ? { exitCode: settled.exitCode }
-              : settled.kind === "interrupted"
-                ? { signal: settled.signal }
-                : {},
-        });
+        if (options.silentEnding !== true) emitEnding(input.sink, settled);
         return settled;
       })();
 

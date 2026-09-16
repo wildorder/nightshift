@@ -389,6 +389,63 @@ describe("the happy path, end to end", () => {
   });
 });
 
+/**
+ * The exit gate's second finding (T10).
+ *
+ * The runner writes the agent record — only the execution layer may — but the
+ * *event* that says how the agent ended belongs to whoever observed it. Both
+ * were emitting one, so the first integrated run carried two `agent.completed`
+ * events for one agent, the second with an empty payload. The rule is now: the
+ * adapter's if there is one, the runner's if there is not, never both.
+ */
+describe("the ending is emitted exactly once", () => {
+  it("does not repeat an ending the adapter already emitted", async () => {
+    const world = await createWorld({
+      harness: createFakeHarness({
+        script: async (context) => {
+          const worker = workerEnvironment(world, context.identity);
+          const exit = await implementWell(context);
+          await completeJob(worker, context.identity, "Added a median helper.");
+          await worker.outbox.flush();
+          return exit;
+        },
+      }),
+    });
+    const started = await delegate(world, jobFor(world));
+    await started.completion;
+    await world.outbox.flush();
+
+    const endings = (await eventTypesOf(world)).filter((type) => type === "agent.completed");
+    expect(endings).toEqual(["agent.completed"]);
+  });
+
+  it("emits one itself when the adapter emitted none (D-P3-09)", async () => {
+    const world = await createWorld({
+      harness: createFakeHarness({
+        // An adapter that observes a process and says nothing about it: the
+        // case terminal state must survive anyway.
+        silentEnding: true,
+        script: async (context) => {
+          const worker = workerEnvironment(world, context.identity);
+          const exit = await implementWell(context);
+          await completeJob(worker, context.identity, "Added a median helper.");
+          await worker.outbox.flush();
+          return exit;
+        },
+      }),
+    });
+    const started = await delegate(world, jobFor(world));
+    await started.completion;
+    await world.outbox.flush();
+
+    const endings = (await eventTypesOf(world)).filter((type) => type === "agent.completed");
+    expect(endings).toEqual(["agent.completed"]);
+    // And the record moved regardless, which is the half that was never in doubt.
+    const agent = await world.stores.agents.get(world.scope, started.agentId);
+    expect(agent?.status).toBe("completed");
+  });
+});
+
 describe("concurrency", () => {
   it("refuses a second job while one is running, and says P5 lifts it", async () => {
     const world = await createWorld({
