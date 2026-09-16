@@ -15,6 +15,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { credentialsPath, profilePath } from "@nightshift/persistence/http";
 import { afterEach, describe, expect, it } from "vitest";
+import { INTERACTIVE_CLIENT_IDS } from "../hostnames.js";
 import type { TestEnvironment } from "../testing/harness.js";
 import {
   createFakeFetch,
@@ -290,8 +291,11 @@ describe("nightshift login", () => {
     };
     const result = await login(second, { flags: {} });
 
+    // The stored `execute-api` endpoint is the one a redeploy can change, so the
+    // second login moves the profile to the stable hostname and says so.
+    expect(first.out.join("\n")).toContain("api.dev.nightshift.wildorder.dev");
     expect(result.profile).toEqual({
-      apiEndpoint: API,
+      apiEndpoint: "https://api.dev.nightshift.wildorder.dev",
       authDomain: DOMAIN,
       clientId: CLIENT,
       stage: "dev",
@@ -352,28 +356,80 @@ describe("the files login writes", () => {
   });
 });
 
-describe("resolving the flags against the stored profile", () => {
+describe("resolving the profile: flags, then what is stored, then the stage's defaults (D-P3-18)", () => {
+  const STABLE_API = "https://api.dev.nightshift.wildorder.dev";
+
+  it("signs in with no flags and no profile: the CLI knows where dev is", () => {
+    const { profile, notes } = resolveProfile({}, undefined);
+    expect(profile).toEqual({
+      apiEndpoint: STABLE_API,
+      authDomain: DOMAIN,
+      clientId: INTERACTIVE_CLIENT_IDS.dev,
+      stage: "dev",
+    });
+    expect(notes).toEqual([]);
+  });
+
   it("defaults the stage to dev", () => {
-    expect(resolveProfile(FLAGS, undefined).stage).toBe("dev");
+    expect(resolveProfile(FLAGS, undefined).profile.stage).toBe("dev");
   });
 
   it("accepts an auth domain pasted as a URL", () => {
     expect(
-      resolveProfile({ ...FLAGS, authDomain: `https://${DOMAIN}/` }, undefined).authDomain,
+      resolveProfile({ ...FLAGS, authDomain: `https://${DOMAIN}/` }, undefined).profile.authDomain,
     ).toBe(DOMAIN);
   });
 
   it("strips a trailing slash from the API endpoint, which would double every path", () => {
-    expect(resolveProfile({ ...FLAGS, api: `${API}/` }, undefined).apiEndpoint).toBe(API);
+    expect(resolveProfile({ ...FLAGS, api: `${API}/` }, undefined).profile.apiEndpoint).toBe(API);
   });
 
-  it("names every missing flag on a first login", () => {
-    expect(() => resolveProfile({}, undefined)).toThrow(/--api, --auth-domain, --client-id/);
+  it("lets a flag override what is stored and what is shipped", () => {
+    const stored = { apiEndpoint: STABLE_API, authDomain: DOMAIN, clientId: CLIENT, stage: "dev" };
+    expect(resolveProfile({ api: "https://elsewhere.example" }, stored).profile.apiEndpoint).toBe(
+      "https://elsewhere.example",
+    );
   });
 
-  it("lets a flag override what is stored", () => {
+  it("keeps a stored profile for the same stage", () => {
+    const stored = {
+      apiEndpoint: "https://api.dev.nightshift.wildorder.dev",
+      authDomain: "auth.example",
+      clientId: "stored-client",
+      stage: "dev",
+    };
+    expect(resolveProfile({}, stored).profile).toEqual(stored);
+  });
+
+  it("replaces a stored generated execute-api endpoint with the stable hostname, and says so", () => {
     const stored = { apiEndpoint: API, authDomain: DOMAIN, clientId: CLIENT, stage: "dev" };
-    expect(resolveProfile({ stage: "prod" }, stored)).toEqual({ ...stored, stage: "prod" });
+    const { profile, notes } = resolveProfile({}, stored);
+    expect(profile.apiEndpoint).toBe(STABLE_API);
+    expect(notes.join("\n")).toContain(API);
+    expect(notes.join("\n")).toContain(STABLE_API);
+  });
+
+  it("keeps a generated endpoint a developer names explicitly with --api", () => {
+    const { profile, notes } = resolveProfile({ api: API }, undefined);
+    expect(profile.apiEndpoint).toBe(API);
+    expect(notes).toEqual([]);
+  });
+
+  it("ignores a stored profile for another stage", () => {
+    const stored = { apiEndpoint: API, authDomain: "x.example", clientId: "x", stage: "prod" };
+    const { profile } = resolveProfile({ stage: "dev" }, stored);
+    expect(profile.clientId).toBe(INTERACTIVE_CLIENT_IDS.dev);
+    expect(profile.apiEndpoint).toBe(STABLE_API);
+  });
+
+  it("requires --client-id for a stage the CLI ships none for, and names the output", () => {
+    expect(() => resolveProfile({ stage: "prod" }, undefined)).toThrow(/--client-id/);
+    expect(resolveProfile({ stage: "prod", clientId: "prod-client" }, undefined).profile).toEqual({
+      apiEndpoint: "https://api.prod.nightshift.wildorder.dev",
+      authDomain: "nightshift-prod-755348349819.auth.us-west-2.amazoncognito.com",
+      clientId: "prod-client",
+      stage: "prod",
+    });
   });
 });
 

@@ -29,7 +29,7 @@ import { describeFailure, failureLines, UsageError } from "./failures.js";
 export const USAGE = `nightshift — the Nightshift control plane, from a terminal
 
 Usage:
-  nightshift login [--api <url>] [--auth-domain <domain>] [--client-id <id>] [--stage <stage>] [--no-browser]
+  nightshift login [--no-browser]
   nightshift logout [--no-revoke]
   nightshift whoami
   nightshift project create --name <name> [--description <text>]
@@ -37,8 +37,12 @@ Usage:
   nightshift id <prefix>
   nightshift --help | --version
 
-Sign in once with all three flags; they are remembered in your profile, so every
-later \`nightshift login\` needs none.`;
+\`nightshift login\` needs no flags: the CLI knows where the control plane is.
+Over SSH, add --no-browser and paste the address your browser lands on.
+
+Developer flags for \`login\`, for another stage or a control plane the CLI does
+not ship: --stage <stage>, --api <url>, --auth-domain <domain>, --client-id <id>.
+They are remembered in your profile.`;
 
 /** Bumped by hand. The CLI has no release train of its own in v1. */
 export const VERSION = "0.0.0";
@@ -70,7 +74,7 @@ const parse = <T extends Parameters<typeof parseArgs>[0]>(
 };
 
 const LOGIN_USAGE =
-  "nightshift login [--api <url>] [--auth-domain <domain>] [--client-id <id>] [--stage <stage>] [--no-browser]";
+  "nightshift login [--no-browser] [--stage <stage>] [--api <url>] [--auth-domain <domain>] [--client-id <id>]";
 
 const doLogin = async (environment: CliEnvironment, args: readonly string[]): Promise<void> => {
   const { values } = parse(

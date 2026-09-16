@@ -16,22 +16,42 @@
  * the AgentCore runtime. Every route is behind the JWT authorizer, so the endpoint
  * is publicly *reachable* but not publicly *usable*. A private API behind a VPC
  * endpoint was not chosen because a laptop cannot reach one without a VPN.
+ *
+ * ## The hostname a client stores (D-P3-18)
+ *
+ * `api.<stage>.nightshift.wildorder.dev`, an alias to a custom domain on the HTTP
+ * API, with a certificate validated against the zone the DNS stack owns. The
+ * generated `execute-api` endpoint stays and the smoke suite keeps using it, but
+ * it is never the name a CLI stores: this stack can be replaced (D-P2-07), and
+ * replacing it changes that name. In `zone-only` mode none of this exists, so the
+ * first deploy of a new account can land the zone, be delegated, and only then
+ * create a certificate CloudFormation would otherwise wait on.
  */
 import { fileURLToPath } from "node:url";
 import { CfnOutput, Duration, Fn, RemovalPolicy, Stack } from "aws-cdk-lib";
-import { HttpApi } from "aws-cdk-lib/aws-apigatewayv2";
+import { ApiMapping, DomainName, HttpApi } from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import { SqsDlq } from "aws-cdk-lib/aws-lambda-event-sources";
 import * as nodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import { ApiGatewayv2DomainProperties } from "aws-cdk-lib/aws-route53-targets";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import type { Construct } from "constructs";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
 import { NODE_INDEX_NAME } from "./data-stack.js";
-import { assertValidStage, type NightshiftStackProps, stackNameFor } from "./stack-props.js";
+import { apiHostnameFor, type HostnamesMode, ZONE_NAME } from "./hostnames.js";
+import {
+  assertValidStage,
+  dnsExportName,
+  hostnamesModeOf,
+  type NightshiftStackProps,
+  stackNameFor,
+} from "./stack-props.js";
 
 /**
  * The repository root, resolved from this module. `src/lib` and `dist/lib` sit at
@@ -72,12 +92,16 @@ export const LOG_RETENTION = logs.RetentionDays.ONE_MONTH;
 
 export class NightshiftApiStack extends Stack {
   readonly stage: string;
+  readonly hostnames: HostnamesMode;
+  /** `https://api.<stage>.nightshift.wildorder.dev`, or `undefined` in `zone-only` mode. */
+  readonly customEndpoint: string | undefined;
 
   constructor(scope: Construct, id: string, props: NightshiftStackProps) {
-    const { stage, ...stackProps } = props;
+    const { stage, hostnames: _hostnames, ...stackProps } = props;
     assertValidStage(stage);
     super(scope, id, { stackName: stackNameFor(stage, "api"), ...stackProps });
     this.stage = stage;
+    this.hostnames = hostnamesModeOf(props);
 
     const imported = (key: DataExportKey): string => Fn.importValue(dataExportName(stage, key));
     const tableArn = imported("TableArn");
@@ -206,11 +230,52 @@ export class NightshiftApiStack extends Stack {
       onFailure: new SqsDlq(deadLetters),
     });
 
+    // --- The stable hostname (D-P3-18) ---------------------------------------------
+    this.customEndpoint =
+      this.hostnames === "full" ? this.publicHostname(httpApi, apiHostnameFor(stage)) : undefined;
+
     // --- Outputs, for the smoke suite and for operators ------------------------------
     new CfnOutput(this, "ApiEndpoint", { value: httpApi.apiEndpoint });
+    if (this.customEndpoint !== undefined) {
+      new CfnOutput(this, "ApiCustomEndpoint", { value: this.customEndpoint });
+    }
     new CfnOutput(this, "ApiFunctionName", { value: apiFunction.functionName });
     new CfnOutput(this, "MaterializerFunctionName", { value: materializer.functionName });
     new CfnOutput(this, "MaterializerDeadLetterQueueUrl", { value: deadLetters.queueUrl });
+  }
+
+  /**
+   * `https://<hostname>` in front of `httpApi`: a certificate validated against
+   * the zone the DNS stack owns, a custom domain, a mapping to the `$default`
+   * stage, and an alias record. Every route stays behind the authorizer: the
+   * mapping is to the same API, and a hostname adds no route.
+   *
+   * The zone arrives by export name, exactly as the data stack's outputs do, so
+   * the DNS stack can be deployed and (never, one hopes) replaced on its own.
+   */
+  private publicHostname(httpApi: HttpApi, hostname: string): string {
+    const zone = route53.HostedZone.fromHostedZoneAttributes(this, "Zone", {
+      hostedZoneId: Fn.importValue(dnsExportName("HostedZoneId")),
+      zoneName: ZONE_NAME,
+    });
+    // DNS validation: CloudFormation writes the validation CNAME into the zone
+    // itself, so this needs the zone to be delegated before it can complete.
+    // That is the whole reason `zone-only` mode exists.
+    const certificate = new acm.Certificate(this, "ApiCertificate", {
+      domainName: hostname,
+      validation: acm.CertificateValidation.fromDns(zone),
+    });
+    const domain = new DomainName(this, "ApiDomain", { domainName: hostname, certificate });
+    new ApiMapping(this, "ApiMapping", { api: httpApi, domainName: domain });
+    new route53.ARecord(this, "ApiAlias", {
+      zone,
+      recordName: hostname,
+      target: route53.RecordTarget.fromAlias(
+        new ApiGatewayv2DomainProperties(domain.regionalDomainName, domain.regionalHostedZoneId),
+      ),
+      comment: `Nightshift control plane (${this.stage})`,
+    });
+    return `https://${hostname}`;
   }
 
   /** A log group with the retention D-P2-10 sets, instead of Lambda's infinite default. */
