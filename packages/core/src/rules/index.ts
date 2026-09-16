@@ -3,6 +3,7 @@ export * from "./delegation.js";
 export * from "./event-stream.js";
 export * from "./execution-tree.js";
 export * from "./ownership.js";
+export * from "./permissions.js";
 export * from "./scope.js";
 export * from "./transitions.js";
 export * from "./verification.js";

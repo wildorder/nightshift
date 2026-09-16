@@ -111,11 +111,21 @@ export const PERMITTED_REFERENCES: Readonly<Record<string, readonly string[]>> =
   "packages/harness-claude": ["packages/contracts", "packages/core", "packages/harness"],
   "packages/harness-codex": ["packages/contracts", "packages/core", "packages/harness"],
   "packages/harness-agentcore": ["packages/contracts", "packages/core", "packages/harness"],
-  "packages/execution": ["packages/contracts", "packages/core", "packages/harness"],
+  // P3 (D-P3-12): the runner drives the verification package directly.
+  "packages/execution": [
+    "packages/contracts",
+    "packages/core",
+    "packages/harness",
+    "packages/verification",
+  ],
   "packages/routing": ["packages/contracts", "packages/core"],
   "packages/verification": ["packages/contracts", "packages/core"],
   "apps/api": ["packages/contracts", "packages/core", "packages/persistence"],
-  "apps/cli": ["packages/contracts"],
+  // P3 (D-P3-12): the CLI is still a thin client, but it mints identifiers and
+  // speaks to the control plane through the http adapter.
+  "apps/cli": ["packages/contracts", "packages/core", "packages/persistence"],
+  // P3 (D-P3-12): `apps/mcp` is a composition root and names the Claude adapter
+  // in exactly one module, which AR-2 permits by path.
   "apps/mcp": [
     "packages/contracts",
     "packages/core",
@@ -123,9 +133,22 @@ export const PERMITTED_REFERENCES: Readonly<Record<string, readonly string[]>> =
     "packages/execution",
     "packages/routing",
     "packages/verification",
+    "packages/harness",
+    "packages/harness-claude",
   ],
   "infra/cdk": [],
-  test: ["packages/contracts", "packages/core", "packages/persistence"],
+  // P3 (D-P3-12): the slice suite drives the real server, the real execution
+  // layer and the real local control plane, so `test` references what it drives.
+  test: [
+    "packages/contracts",
+    "packages/core",
+    "packages/persistence",
+    "packages/harness",
+    "packages/execution",
+    "packages/verification",
+    "apps/api",
+    "apps/mcp",
+  ],
 };
 
 /** `packages/core` -> `@nightshift/core`. */

@@ -7,6 +7,7 @@
   "dependencies": {
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
+    "@nightshift/harness": "*",
     "@nightshift/persistence": "*",
     "fast-check": "4.10.0"
   },
@@ -21,6 +22,10 @@
     "./conformance": {
       "types": "./dist/conformance/persistence-ports.d.ts",
       "default": "./dist/conformance/persistence-ports.js"
+    },
+    "./conformance/harness": {
+      "types": "./dist/conformance/harness.d.ts",
+      "default": "./dist/conformance/harness.js"
     }
   }
 }
