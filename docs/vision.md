@@ -130,7 +130,9 @@ Program Contract to make its implementation pass.
 **Job Contract** — objective, scope (includes/excludes), acceptance criteria,
 dependencies, risk, ambiguity. Nightshift — not the orchestrator — then decides
 harness, model, workspace, worktree, priority, examination requirement, and
-fallback policy.
+fallback policy. An orchestrator may *request* a model; Nightshift honours it
+only within the Program Contract's policy and records the routing decision as
+an override, so the choice stays explainable.
 
 **Execution node** — a node in the run's execution tree. Parentage, scope
 inheritance, depth, and concurrency are enforced structurally.

@@ -38,6 +38,9 @@
 - Provider-specific imports live **only** inside a `harness-*` package. The
   execution scheduler and everything above the adapter layer must contain no
   harness-specific import. This is enforced by test, not by convention.
+  **Amended by A-31 (P3):** each app has one named composition module that may
+  instantiate adapters; that module is the only exception, and `execution`,
+  `routing`, `verification`, `core` and `contracts` have none.
 - `infra/cdk` is production code and carries the same testing requirements as
   application code.
 
@@ -73,6 +76,12 @@
 
 | A-25 | Nightshift reaches a project's AWS account by **assuming a role in that account**, with an external ID | The standard cross-account pattern. The account owner creates the role and controls its permissions; Nightshift stores the role ARN and external ID against the Project and calls `sts:AssumeRole` per job, receiving short-lived credentials. Nightshift never holds long-lived credentials for anyone's account. The external ID prevents the confused-deputy problem. Identical for local and remote execution, which is what keeps A-16's "same canonical model" true. Expressed through `Scope.permissions`, so A-11's narrowing applies for free: a child may be granted fewer assumable roles than its parent and structurally cannot widen. |
 | A-26 | Secrets are stored in DynamoDB in plaintext for now, with a stated upgrade path | An explicit, time-boxed risk decision, not an oversight. In a single-account single-user deployment anyone with read access to the table already holds admin, so the marginal exposure is small. It stops being acceptable the moment a second tenant exists or the account gains non-admin principals. Upgrade path and the distinction between kinds of secret are below. |
+| A-27 | The Nightshift MCP server is a **stdio child process** of the harness that uses it, and the operating-system process boundary is its local authentication | **Resolves O-04.** The server opens no listener; whoever can spawn it is the operator. It authenticates *itself* to the control plane with the operator's Cognito session (`nightshift login`), and carries its **execution identity** (role, run, node, agent) from whoever spawned it: the operator's MCP configuration for the orchestrator, Nightshift's execution layer for a worker. Non-guarantee, stated: a worker runs as the same OS user and therefore shares the operator's control-plane identity in v1. See `docs/programs/p3-vertical-slice.md` D-P3-01. |
+| A-28 | Local machinery reaches the control plane **only through the HTTP API**, never with AWS credentials | `@nightshift/persistence/http` implements the store ports over the API with the Cognito ID token, so `execution` depends on one port interface whichever adapter is wired. Artifact bodies go to S3 through presigned URLs the API signs; the Lambda stays the only credential holder (A-19). Keeps A-25's two credential worlds apart: an orchestrator on a laptop needs no AWS profile for Nightshift. |
+| A-29 | **Nightshift owns every commit.** Workers never commit; job completion snapshots the worktree into one Nightshift-authored commit and refuses changes outside the effective scope; sealing is `refs/nightshift/sealed/<node>`; integration is fast-forward only; checkpoints are `refs/nightshift/checkpoints/<id>`; nothing is pushed | Makes A-10 and A-11 structural at the one point that matters. A non-fast-forward is a durable `stale_base` failure until P5 reconciles it. O-06 is untouched. |
+| A-30 | **Three event sources, three writers**: `mcp` from tool calls, `hook` from the adapter observing the harness process, `control-plane` from the execution layer | Sharpens §5. Hook-sourced lifecycle events must arrive without any cooperation from the worker; an adapter that cannot produce them is not conformant. Idempotency keys are deterministic per writer so replay converges (A-06). |
+| A-31 | Apps are **composition roots**: one named module per app may import adapters | Amends the §1 dependency rule, which as written let nothing instantiate a harness. The intent, a harness-neutral scheduler, is preserved by keeping the ban on every package above the adapter layer. `apps/cli` may reference `core` and `persistence`; `test` may reference what its suites drive. |
+| A-32 | **Starting a run is one CLI verb**, `nightshift run <contract> [--remote]` | Sharpens A-16. The first half, persist program, run, root node and initial checkpoint, is identical local and remote; the local form then prints the run id for the orchestrator's MCP server to attach to, and remote (P8) adds dispatch. Authorizing work stays a human act at a terminal, distinct from the orchestrator that does it. |
 
 ### A-25 / A-26: the two credential worlds, and where secrets live
 
@@ -142,7 +151,7 @@ silently — surface them as decisions for human ratification at the stated poin
 | ~~O-01~~ | ~~Control-plane HTTP/runtime implementation and client authentication~~ | **Resolved 2026-09-13 — see A-19.** |
 | O-02 | Realtime transport technology | Before Stage 10 |
 | O-03 | AgentCore instance class, scaling, idle timeout, max lifetime, retention | During Stage 9 |
-| O-04 | Local authentication between an orchestrator and the Nightshift MCP server (client-to-control-plane auth belongs to O-01) | Before Stage 3 (P3) |
+| ~~O-04~~ | ~~Local authentication between an orchestrator and the Nightshift MCP server~~ | **Resolved 2026-09-15 — see A-27.** |
 | O-05 | Which harness subscription credentials may legitimately be transported into ephemeral AgentCore environments vs. API/Bedrock auth | Provider-specific work during Stage 9 — never assumed |
 | O-06 | Git remote/integration policy: push timing, whether verified leaf branches are ever pushed independently | Before remote execution |
 
@@ -232,6 +241,10 @@ An irreversible external effect is never described as reversible.
   through every adapter, plus a deterministic failure fixture and a cancellation
   fixture.
 - `execution`: fixture repositories exercising real delegation, real worktrees,
-  real verification, stale-base detection, and concurrency.
-- Architecture tests: no harness-specific import above the adapter layer; no AWS
-  import in `contracts` or `core`.
+  real verification, stale-base detection, and concurrency. From P3, `npm test`
+  carries the offline slice suite: the real MCP server over stdio, a scripted
+  worker process, real git, and the production API handler on loopback over the
+  in-memory stores. Only the LLM is scripted; the real-harness run is opt-in.
+- Architecture tests: no harness-specific import above the adapter layer except
+  in each app's named composition module (A-31); no AWS import in `contracts` or
+  `core`.

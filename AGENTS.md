@@ -197,6 +197,50 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
   adapters. An adapter that cannot pass one unchanged is a conversation, not a
   reason to edit the suite.
 
+**Conventions ratified for P3 (First Vertical Slice) on 2026-09-15.** Full
+rationale and decision IDs live in `docs/programs/p3-vertical-slice.md` §3;
+the lasting ones are A-27 … A-32 in `docs/architecture.md`.
+
+- The Nightshift MCP server (`apps/mcp`) is one binary with two roles selected
+  by `NIGHTSHIFT_ROLE`. It speaks stdio and opens no socket. The worker role
+  requires its execution identity in environment variables and registers no
+  delegation tool. Nothing local ever holds AWS credentials for the Nightshift
+  account; the control plane is reached only through the HTTP API with the
+  operator's Cognito **ID** token, via `@nightshift/persistence/http`.
+- Persistence now has three adapters: `./memory`, `./aws`, `./http`. The store
+  ports are split into project-scoped stores and identity stores; the http
+  adapter implements the project half. `ArtifactBodyStore` is a `core` port.
+- Composition roots: `apps/mcp/src/compose.ts` is the only module that may
+  import a `harness-*` package or `@nightshift/persistence/http`. `execution`,
+  `routing`, `verification`, `core` and `contracts` import no adapter and no
+  provider SDK. `apps/cli` may reference `core` and `persistence`; `test` may
+  reference the packages its suites drive.
+- Nightshift owns every commit. Workers never commit. Job completion snapshots
+  the worktree into one Nightshift-authored commit with `Nightshift-Run`,
+  `Nightshift-Node` and `Nightshift-Job` trailers; out-of-scope changes fail the
+  job. Sealed and checkpoint refs live under `refs/nightshift/`. Integration is
+  `--ff-only`. Nothing is pushed.
+- Only the execution layer writes a `Verification`. No MCP tool creates one.
+  Verification runs the Program Contract's steps on a clean checkout of the
+  candidate commit with a sanitized environment.
+- Events carry their writer: `mcp`, `hook`, `control-plane`. Idempotency keys
+  are `<source>:<writerId>:<n>`. Every reader tolerates a null `sequence`.
+- Local state lives under `NIGHTSHIFT_STATE_DIR` (worktrees, spool,
+  transcripts) and `NIGHTSHIFT_CONFIG_DIR` (profile, credentials, mode 0600).
+  Nothing is written into the program checkout except by fast-forwarding its
+  branch.
+- `npm test` includes the offline slice suite and must stay runnable with no
+  AWS credentials, no Claude Code sign-in and no network beyond loopback. The
+  real-harness, real-control-plane run is `npm run slice`, opt-in, never in CI.
+- Worker permissions vocabulary: `fs.read`, `fs.write`, `shell.exec`, mapped to
+  harness tool policy inside the adapter. Workers never get git write access
+  and never have a human answering prompts.
+- Starting a run is `nightshift run <contract> [--remote]`; the MCP `run.start`
+  calls the same function. `--remote` is refused until P8.
+- The Cognito pool never depends on the invitation email: the bootstrap script
+  sets a permanent password, the invite template carries the hosted sign-in
+  URL, and delivery-error logging is in CDK.
+
 ### Dependency Versions (pin these)
 
 | Package | Version | Introduced |
@@ -220,7 +264,8 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
 | @aws-sdk/client-sts | 3.1131.0 | P2 |
 | @types/aws-lambda | 8.10.163 | P2 |
 | esbuild | 0.28.2 | P2 |
-| @modelcontextprotocol/sdk | pin in P3 (1.30.0 observed 2026-09-13) | P3 |
+| @modelcontextprotocol/sdk | 1.30.0 | P3 |
+| @aws-sdk/s3-request-presigner | 3.1131.0 | P3 |
 
 `fast-check` and `vitest` are also declared on `@nightshift/test`, which needs
 them at build time because its generators and conformance suites are built
