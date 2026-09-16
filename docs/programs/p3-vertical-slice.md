@@ -569,11 +569,12 @@ Specs live in `tasks/p3-vertical-slice/`.
 | 2026-09-16 | **Nightshift shapes the commit message it owns.** A real worker's `job.complete` summary is a paragraph, and `git commit -m` makes everything before the first blank line the subject — so the first integrated commit carried a 700-character subject. `commitMessageFor` derives a subject inside 72 characters and keeps the whole summary as the body. A change to how A-29's "Nightshift owns every commit" is executed, not to what it says. | Agent, for human ratification |
 | 2026-09-16 | **SC-P3-16's `nightshift login` leg is deferred to a human, and everything else in it is done.** The interactive app client allows `ALLOW_REFRESH_TOKEN_AUTH` only, so a refresh token comes from the hosted UI with the operator's password and from nowhere else; `admin/user.ts` never stores that password, by design. An agent cannot complete the flow, and the alternatives — resetting the operator's password, or a throwaway user the client's flow list rules out anyway — are worse than leaving it. The exit-gate run therefore used the machine client's credentials grant, which `compose.ts` supports as a documented path. §13.4 records what that leaves unproven (the browser leg and the exchange against real Cognito), where the rest is proven, and the three commands that close it. | Agent, for human ratification |
 | 2026-09-16 | **Two observations recorded rather than fixed**, because fixing either at the exit gate would settle a rule the contract left open. The program node stays `running` after a run succeeds — §4.3 covers job nodes and says P3 does not decide a run's outcome from its nodes, so no terminal status for the root is specified. And `RoutingDecision.usage` stays `{}`: the record is written at `queued` and is create-or-confirm, so carrying the adapter's token counts or the wall clock would need a widened `Harness` port and a mutable route. Both belong to P4/P6. | Agent, for human ratification |
+| 2026-09-16 | **Line endings are Nightshift's, not the machine's.** `identityOverrides` now prepends `core.autocrlf=false` and `core.eol=lf` to every Nightshift `git` invocation. Found by CI's windows leg, but it is not a test fix: A-29 says Nightshift owns every commit, and owning one means owning its bytes. `completeJob` snapshots a worktree into a commit and `cleanCheckout` materialises that same commit again for verification — with `core.autocrlf=true`, the default on a Windows installation, those are not the same bytes, so a worker writes `\n`, verification reads `\r\n`, and a step comparing file contents fails for a reason invisible in the diff. Only the implicit platform conversion is disabled: a repository that declares `text eol=crlf` in `.gitattributes` still gets CRLF, because attributes outrank both settings. | Agent, for human ratification |
 
 ## 13. As built
 
-Built 2026-09-15/16 on `program/p3-vertical-slice`, nine commits from
-`dee4373` (the ratified contract) to `e0d8510`. 376 tracked files.
+Built 2026-09-15/16 on `program/p3-vertical-slice`, ten commits from
+`dee4373` (the ratified contract) to `9e3ae16`. 377 tracked files.
 
 ### 13.1 Task states and where each landed
 
@@ -796,7 +797,42 @@ Two observations recorded rather than fixed:
   D-P3-08's claim that "the dataset for learned routing starts with the first
   job" is true of the choice and its options, and not yet true of the cost.
 
-### 13.6 Observed runs
+### 13.6 What the windows runner cost us
+
+CI's windows leg failed twenty tests on the first push, and two of the four
+causes were in production code rather than in the suite. Recorded here because
+the slice suite is new in T9 and this was its first exposure to a Windows
+runner — every earlier program's CI had nothing cross-platform to break.
+
+1. **A child spawned with `PATH` and `HOME` does not start on Windows.** The
+   slice suite and the scripted harness each built a small environment by
+   hand; without `SystemRoot`, `PATHEXT` and `TEMP` the process dies before it
+   runs, and it surfaces as the MCP client's "Connection closed" through
+   `cross-spawn`'s ENOENT — which says nothing about environments. Both now
+   call `sanitizeEnvironment` from `@nightshift/verification`, the same
+   allowlist the verification runner uses. Thirteen of the twenty.
+2. **`await import()` cannot take a Windows path.** `NIGHTSHIFT_HARNESS_MODULE`
+   carries an absolute path, and the ESM resolver reads `C:` as a URL scheme
+   and refuses it. `harnessModuleSpecifier` in `apps/mcp/src/compose.ts`
+   converts a path to a `file://` URL and leaves a bare package name alone.
+3. **Line endings were the machine's, not Nightshift's.** `identityOverrides`
+   now carries `core.autocrlf=false` and `core.eol=lf`. This is the one worth
+   reading twice: A-29 says Nightshift owns every commit, and owning a commit
+   means owning its bytes. `completeJob` snapshots a worktree and
+   `cleanCheckout` materialises that same commit again for verification — and
+   with `autocrlf=true`, the Windows default and the runner's, those are not
+   the same bytes. A worker writes `\n`, verification reads `\r\n`, and a step
+   that compares file contents fails for a reason invisible in the diff. A
+   repository that declares `text eol=crlf` in `.gitattributes` still gets
+   CRLF, because attributes outrank both settings.
+4. **Two tests asserted POSIX separators** against paths built with
+   `node:path`. Both now build their expected prefixes with `join` too.
+
+Only the third would have been felt by an operator on Windows; the other three
+are the suite and one test-only seam. But the third is a data-integrity
+property, and it was being left to whatever `git config --global` said.
+
+### 13.7 Observed runs
 
 | Run | Harness | Worker start | Settled | Artifacts |
 |-----|---------|--------------|---------|-----------|
@@ -816,15 +852,16 @@ cleanup. `routing p3-fixed chose claude-sonnet-5` in every run;
 `wasOverride: true` in the exit-gate run because the orchestrator named the
 model, which the policy allowed.
 
-### 13.7 The gates
+### 13.8 The gates
 
 | Gate | Result |
 |------|--------|
 | `npm run build` | clean |
 | `npm run typecheck` | clean |
-| `npm run lint` | clean, 328 files |
-| `npm test` | **87 files, 1,649 passed, 1 skipped**, ~32 s, no credentials |
+| `npm run lint` | clean, 329 files |
+| `npm test` | **88 files, 1,653 passed, 1 skipped**, ~32 s, no credentials, green on **ubuntu and windows** |
 | `npm run check:architecture` | 21 files, 279 tests |
+| CI (`verify`, ubuntu + windows matrix) | both legs green on `9e3ae16` |
 | `npm run check:sterility` | 5 rules, 0 offenders, 376 tracked files |
 | `npm run synth` | both stacks |
 | `AWS_PROFILE=nightshift npm run smoke` | 67 passed, twice consecutively (SC-P3-17) |
@@ -834,7 +871,7 @@ The one skipped test is the identity section of the port conformance suite
 under the http adapter, skipped **with the reason in its name** (the T2
 amendment in §12), never silently.
 
-### 13.8 Discharging the success criteria
+### 13.9 Discharging the success criteria
 
 | Criterion | Where it is proven | Status |
 |-----------|--------------------|--------|
@@ -852,11 +889,11 @@ amendment in §12), never silently.
 | SC-P3-12 hook events without the worker's cooperation | `slice/interruption.test.ts`; the `silent-exit` script calls nothing and prints nothing and still yields `agent.started` and `agent.failed` | pass |
 | SC-P3-13 out-of-scope change never integrates | `execution/failures.test.ts`, `slice/failures.test.ts` (`out-of-scope`) | pass |
 | SC-P3-14 no harness-specific import above the adapter layer | AR-2 over the tracked tree in `test/src/architecture/`, plus negative fixtures; pointed at by `slice/offline.test.ts` | pass |
-| SC-P3-15 `npm test` proves 01…14 offline | `slice/offline.test.ts` asserts the endpoints are all `127.0.0.1`, that no `AWS_*` variable reaches the server, and that the default target is `local`; the suite runs on ubuntu and windows in CI | pass |
+| SC-P3-15 `npm test` proves 01…14 offline | `slice/offline.test.ts` asserts the endpoints are all `127.0.0.1`, that no `AWS_*` variable reaches the server, and that the default target is `local`; green on both CI legs as of `9e3ae16`, which took four fixes (§13.6) | pass |
 | SC-P3-16 the deployed slice, orchestrator included | §13.4 — a real Claude orchestrator through the skill, a real Claude worker, the deployed plane, read back from the API alone | **pass, with the `nightshift login` leg deferred to a human** (§13.4) |
 | SC-P3-17 the smoke suite against the redeployed stack | `npm run smoke`, 67 tests, twice consecutively; every P1 and P2 gate unchanged | pass |
 
-### 13.9 Carried forward
+### 13.10 Carried forward
 
 - `nightshift login` by hand (§13.4). Until then, the CLI's interactive leg is
   proven only offline.
