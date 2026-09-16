@@ -12,6 +12,7 @@ import { PathGlobSchema, ScopeRequestSchema, ScopeSchema } from "./common.js";
 import { EventSchema, inlinePayloadBytes, MAX_INLINE_PAYLOAD_BYTES } from "./event.js";
 import { ExaminationSchema } from "./examination.js";
 import { AGGREGATE_EXAMPLES, EXAMPLE_IDS } from "./examples.js";
+import { ProgramContractSchema } from "./program-contract.js";
 import { RoutingDecisionSchema } from "./routing-decision.js";
 import { VerificationSchema } from "./verification.js";
 
@@ -203,5 +204,52 @@ describe("scope", () => {
 
     const empty = ScopeRequestSchema.parse({ includes: ["src/**"], permissions: [] });
     expect(empty.permissions).toEqual([]);
+  });
+});
+
+describe("a program contract's step identifiers (P3, T4)", () => {
+  const contract = (overrides: Record<string, unknown>) => ({
+    ...clone(AGGREGATE_EXAMPLES.ProgramContract),
+    ...overrides,
+  });
+
+  it("refuses two verification steps sharing an id", () => {
+    // They are what a Verification's exit code and log artifact are labelled
+    // with, so a duplicate loses one of the two logs silently.
+    const result = ProgramContractSchema.safeParse(
+      contract({
+        verification: [
+          { id: "test", command: "node --test" },
+          { id: "test", command: "npm run lint" },
+        ],
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain("unique");
+  });
+
+  it("refuses two success criteria sharing an id", () => {
+    const result = ProgramContractSchema.safeParse(
+      contract({
+        successCriteria: [
+          { id: "SC-01", outcome: "It works." },
+          { id: "SC-01", outcome: "It also works." },
+        ],
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts distinct identifiers", () => {
+    expect(
+      ProgramContractSchema.safeParse(
+        contract({
+          verification: [
+            { id: "test", command: "node --test" },
+            { id: "lint", command: "npm run lint" },
+          ],
+        }),
+      ).success,
+    ).toBe(true);
   });
 });

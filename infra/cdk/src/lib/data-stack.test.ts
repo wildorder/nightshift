@@ -6,7 +6,11 @@ import { DATA_EXPORT_KEYS, dataExportName } from "./data-exports.js";
 import {
   BUDGET_LIMIT_USD,
   BUDGET_NOTIFY_EMAIL,
+  DELIVERY_LOG_EVENT_SOURCE,
+  DELIVERY_LOG_LEVEL,
+  DELIVERY_LOG_RETENTION,
   EXPLICIT_AUTH_FLOWS,
+  INVITATION_SUBJECT,
   LOOPBACK_CALLBACK_URL,
   MACHINE_SCOPE,
   NightshiftDataStack,
@@ -45,6 +49,10 @@ const POLICY_BY_TYPE: Readonly<Record<string, "Retain" | "Delete">> = {
   "AWS::Cognito::UserPoolResourceServer": "Delete",
   "AWS::Cognito::UserPoolClient": "Delete",
   "AWS::Cognito::UserPoolDomain": "Delete",
+  // Delivery-error logging (D-P3-16): diagnostics, not records. Losing the group
+  // loses nothing that is not reproducible by the next failed send.
+  "AWS::Logs::LogGroup": "Delete",
+  "AWS::Cognito::LogDeliveryConfiguration": "Delete",
   "AWS::Budgets::Budget": "Delete",
   "AWS::CDK::Metadata": "Delete",
 };
@@ -323,6 +331,69 @@ describe("NightshiftDataStack", () => {
     });
   });
 
+  /**
+   * D-P3-16. The incident these two assertions exist for: an invitation that
+   * appeared lost, a pool that logged nothing, and an afternoon spent proving the
+   * cause was a dead recipient domain. Both settings were applied by hand during
+   * that diagnosis; these tests are what stops a stack replacement from silently
+   * dropping them again.
+   */
+  describe("pool hardening (D-P3-16)", () => {
+    it("puts the hosted domain in the invitation, beside the username and password", () => {
+      dev.template.hasResourceProperties("AWS::Cognito::UserPool", {
+        AdminCreateUserConfig: Match.objectLike({
+          AllowAdminCreateUserOnly: true,
+          InviteMessageTemplate: Match.objectLike({ EmailSubject: INVITATION_SUBJECT }),
+        }),
+      });
+      const pool = Object.values(dev.json.Resources ?? {}).find(
+        (resource) => resource.Type === "AWS::Cognito::UserPool",
+      );
+      const invite = JSON.stringify(
+        (pool?.Properties?.AdminCreateUserConfig as Record<string, unknown> | undefined)
+          ?.InviteMessageTemplate,
+      );
+      // Cognito refuses a template missing either placeholder.
+      expect(invite).toContain("{username}");
+      expect(invite).toContain("{####}");
+      // And the thing the default template omitted: where to go.
+      expect(invite).toContain(".auth.");
+      expect(invite).toContain("amazoncognito.com");
+    });
+
+    it("delivers userNotification errors to an explicit log group with finite retention", () => {
+      dev.template.hasResourceProperties("AWS::Cognito::LogDeliveryConfiguration", {
+        LogConfigurations: [
+          Match.objectLike({
+            EventSource: DELIVERY_LOG_EVENT_SOURCE,
+            LogLevel: DELIVERY_LOG_LEVEL,
+            CloudWatchLogsConfiguration: Match.objectLike({ LogGroupArn: Match.anyValue() }),
+          }),
+        ],
+      });
+      // Cognito validates the ARN against a character class excluding `*`, so
+      // CloudWatch's `:*` stream suffix makes it refuse the deploy outright.
+      const delivery = Object.values(dev.json.Resources ?? {}).find(
+        (resource) => resource.Type === "AWS::Cognito::LogDeliveryConfiguration",
+      );
+      expect(JSON.stringify(delivery?.Properties)).not.toContain(":*");
+      dev.template.hasResourceProperties("AWS::Logs::LogGroup", {
+        RetentionInDays: Number(DELIVERY_LOG_RETENTION),
+      });
+      // Exactly one group, so nobody has quietly added a second, infinite one.
+      dev.template.resourceCountIs("AWS::Logs::LogGroup", 1);
+    });
+
+    it("names no app client inside the pool, which would be a circular dependency", () => {
+      // The pool cannot refer to a client that refers to the pool. The complete
+      // sign-in URL, client id included, is the HostedSignInUrl output instead.
+      const pool = Object.values(dev.json.Resources ?? {}).find(
+        (resource) => resource.Type === "AWS::Cognito::UserPool",
+      );
+      expect(JSON.stringify(pool?.Properties)).not.toContain("InteractiveClient");
+    });
+  });
+
   describe("exports", () => {
     it("exports exactly the documented keys, each named by dataExportName", () => {
       for (const stage of ["dev", "staging"]) {
@@ -338,6 +409,20 @@ describe("NightshiftDataStack", () => {
       dev.template.hasOutput("MachineScope", { Value: "nightshift/api" });
       const endpoint = JSON.stringify(dev.json.Outputs?.TokenEndpoint);
       expect(endpoint).toContain(".amazoncognito.com/oauth2/token");
+    });
+
+    it("exports the auth domain and a complete hosted sign-in URL (T2, T7)", () => {
+      const domain = JSON.stringify(dev.json.Outputs?.AuthDomain);
+      expect(domain).toContain(".auth.");
+      expect(domain).toContain("amazoncognito.com");
+
+      const signIn = JSON.stringify(dev.json.Outputs?.HostedSignInUrl);
+      expect(signIn).toContain("/login?client_id=");
+      expect(signIn).toContain("response_type=code");
+      // The loopback redirect the CLI listens on, percent-encoded.
+      expect(signIn).toContain(encodeURIComponent(LOOPBACK_CALLBACK_URL));
+      // And it names the interactive client, which is why it cannot live on the pool.
+      expect(signIn).toContain("InteractiveClient");
     });
   });
 });

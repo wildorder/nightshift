@@ -34,9 +34,15 @@ import {
   VerificationEvidenceError,
 } from "@nightshift/core";
 import { HttpError, parseBody, sameRecord } from "../http.js";
-import { assertChainMatches, assertIdentifierMatches, pathId, runScopeFrom } from "../params.js";
+import {
+  assertChainMatches,
+  assertIdentifierMatches,
+  parsePageQuery,
+  pathId,
+  runScopeFrom,
+} from "../params.js";
 import type { Handler } from "../router.js";
-import { pageAt, readAll, requireProgram, requireRun } from "./common.js";
+import { pageAt, pageBody, readAll, requireProgram, requireRun, withCursor } from "./common.js";
 
 const depthMismatch = (node: ExecutionNode, depth: number): TreeStructureError =>
   new TreeStructureError(
@@ -103,6 +109,11 @@ const assertMutableChangesOnly = (existing: ExecutionNode, node: ExecutionNode):
   }
   if (existing.jobContractId !== null && node.jobContractId !== existing.jobContractId) {
     throw new HttpError(409, "conflict", "jobContractId cannot change once it is set");
+  }
+  // A durable failure reason is written once. Rewriting it would let a later
+  // caller edit the record of why work failed, which is the opposite of durable.
+  if (existing.outcomeReason !== undefined && node.outcomeReason !== existing.outcomeReason) {
+    throw new HttpError(409, "conflict", "outcomeReason cannot change once it is set");
   }
 
   const workChanged =
@@ -226,4 +237,25 @@ export const getNode: Handler = async ({ deps, params }) => {
     throw new HttpError(404, "not_found", `node ${nodeId} does not exist in this run`);
   }
   return { status: 200, body: node };
+};
+
+/** Every node of a run, for `execution.status` and the http adapter's `listByRun`. */
+export const listNodes: Handler = async ({ deps, request, params }) => {
+  const scope = runScopeFrom(params);
+  const page = parsePageQuery(request.query);
+  await requireRun(deps.stores, scope);
+  const result = await withCursor(() => deps.stores.executionNodes.listByRun(scope, page));
+  return { status: 200, body: pageBody(result) };
+};
+
+/**
+ * One node's children. The port returns all of them rather than a page: a
+ * parent's children are bounded by `delegationLimits`, not by data volume.
+ */
+export const listChildren: Handler = async ({ deps, params }) => {
+  const scope = runScopeFrom(params);
+  const nodeId = pathId("node", params, "nodeId");
+  await requireRun(deps.stores, scope);
+  const items = await deps.stores.executionNodes.listChildren(scope, nodeId);
+  return { status: 200, body: pageBody({ items }) };
 };

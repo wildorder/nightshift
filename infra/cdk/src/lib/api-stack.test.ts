@@ -150,9 +150,19 @@ describe("NightshiftApiStack", () => {
         expect(resources).not.toContain("*");
         const wildcarded = resources.filter((resource) => resource.includes("*"));
         if (wildcarded.length === 0) continue;
-        // The one tolerated form: CloudFormation's log group ARN, which ends `:*`
-        // to name the streams inside that single group.
-        expect(actions.every((action) => action.startsWith("logs:"))).toBe(true);
+        // Two tolerated forms, both of which name one resource's contents rather
+        // than a class of resources:
+        //
+        //  - CloudFormation's log group ARN, which ends `:*` to name the streams
+        //    inside that single group;
+        //  - the artifact bucket's object prefix, `<BucketArn>/*` (T2). S3 offers
+        //    no way to say "every object in this bucket" without it, and the
+        //    statement is still pinned to one bucket.
+        const tolerated =
+          actions.every((action) => action.startsWith("logs:")) ||
+          (actions.every((action) => action.startsWith("s3:")) &&
+            wildcarded.every((resource) => resource.endsWith("/*")));
+        expect(tolerated, `${actions.join()} on ${wildcarded.join()}`).toBe(true);
       }
     });
 
@@ -176,9 +186,15 @@ describe("NightshiftApiStack", () => {
           .filter((action) => !action.startsWith("logs:")),
       );
 
-    it("gives the API function exactly the DynamoDB actions its adapters use", () => {
+    /**
+     * The whole set, not a containment. P2 granted DynamoDB gets, puts and
+     * queries and no more; P3 adds `s3:PutObject` for signing the artifact
+     * upload (T2) and nothing else. An action added without a decision fails
+     * here, which is the point of asserting the set.
+     */
+    it("gives the API function exactly the actions its adapters and the signer use", () => {
       expect(dataActionsOf(synth().template, "ApiFunctionRole")).toEqual(
-        new Set(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"]),
+        new Set(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "s3:PutObject"]),
       );
     });
 
@@ -201,9 +217,27 @@ describe("NightshiftApiStack", () => {
       );
     });
 
-    it("grants no S3 action to anything", () => {
-      const all = statementsOf(synth().template).flatMap(actionsOf);
-      expect(all.some((action) => action.startsWith("s3:"))).toBe(false);
+    /**
+     * P2 granted no S3 action at all and said the first route needing one would
+     * bring a policy change. That route is the presigned upload (T2), and this is
+     * the change: exactly `s3:PutObject`, scoped to the bucket's objects.
+     *
+     * The action list is asserted as a set rather than a containment, because a
+     * signature can only convey permission the signer holds — adding
+     * `s3:GetObject` here would silently turn every signed URL into a potential
+     * read of any artifact in the account.
+     */
+    it("grants exactly s3:PutObject, on the artifact bucket's objects and nothing else", () => {
+      const statements = statementsOf(synth().template);
+      const s3Statements = statements.filter((statement) =>
+        actionsOf(statement).some((action) => action.startsWith("s3:")),
+      );
+      expect(s3Statements).toHaveLength(1);
+      expect(s3Statements.flatMap(actionsOf)).toEqual(["s3:PutObject"]);
+
+      const resources = JSON.stringify(s3Statements[0]?.Resource);
+      expect(resources).toContain("BucketArn");
+      expect(resources).toContain("/*");
     });
   });
 

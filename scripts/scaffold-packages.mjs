@@ -40,7 +40,7 @@ const PACKAGES = {
     ext: [],
   },
   "packages/execution": {
-    refs: ["packages/contracts", "packages/core", "packages/harness"],
+    refs: ["packages/contracts", "packages/core", "packages/harness", "packages/verification"],
     ext: [],
   },
   "packages/routing": { refs: ["packages/contracts", "packages/core"], ext: [] },
@@ -49,7 +49,10 @@ const PACKAGES = {
     refs: ["packages/contracts", "packages/core", "packages/persistence"],
     ext: [],
   },
-  "apps/cli": { refs: ["packages/contracts"], ext: [] },
+  "apps/cli": {
+    refs: ["packages/contracts", "packages/core", "packages/persistence", "packages/execution"],
+    ext: [],
+  },
   "apps/mcp": {
     refs: [
       "packages/contracts",
@@ -58,12 +61,23 @@ const PACKAGES = {
       "packages/execution",
       "packages/routing",
       "packages/verification",
+      "packages/harness",
+      "packages/harness-claude",
     ],
     ext: [],
   },
   "infra/cdk": { refs: [], ext: ["aws-cdk-lib", "constructs"] },
   test: {
-    refs: ["packages/contracts", "packages/core", "packages/persistence"],
+    refs: [
+      "packages/contracts",
+      "packages/core",
+      "packages/persistence",
+      "packages/harness",
+      "packages/execution",
+      "packages/verification",
+      "apps/api",
+      "apps/mcp",
+    ],
     ext: [],
   },
 };

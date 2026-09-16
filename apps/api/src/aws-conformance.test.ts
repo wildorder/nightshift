@@ -31,6 +31,8 @@ describePortConformance<FakeBackedStores>(
     return { ...createAwsStores({ tableName, table }), table };
   },
   {
+    // The DynamoDB adapter implements both halves of the split (T2).
+    identity: (stores) => stores,
     settle: async ({ table }) => {
       const ledger = createDynamoSequenceLedger({ tableName, table });
       // Stamping writes stream records of its own (all ignored), so drain until quiet.

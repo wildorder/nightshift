@@ -18,6 +18,10 @@ export const DATA_EXPORT_KEYS = [
   "MachineClientId",
   "TokenEndpoint",
   "MachineScope",
+  // P3 (T2, T7): the CLI's interactive login needs the hosted domain, and the
+  // operator bootstrap needs the sign-in URL that goes in the invite template.
+  "AuthDomain",
+  "HostedSignInUrl",
 ] as const;
 export type DataExportKey = (typeof DATA_EXPORT_KEYS)[number];
 export const dataExportName = (stage: string, key: DataExportKey): string =>

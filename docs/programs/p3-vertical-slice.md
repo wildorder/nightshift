@@ -556,7 +556,355 @@ Specs live in `tasks/p3-vertical-slice/`.
 | 2026-09-15 | Contract drafted; D-P3-01 … D-P3-15 proposed; tasks T1 … T10 drafted | Agent, for human ratification |
 | 2026-09-15 | **Contract ratified**, D-P3-01 … D-P3-17, after a consistency review against the vision and the source plan. Three departures from the letter accepted knowingly: D-P3-12 amends architecture §1 with a composition root; the orchestrator may pin a model within policy, recorded as an override, which P1's Job Contract already allowed and the vision now states; and the MCP surface defers `verification.request`, `verification.get`, `examination.request` and `artifact.record` until something can call them. D-P3-16 and D-P3-17 added at ratification. | Human |
 | 2026-09-15 | H-P3-02 satisfied by hand. The invitation seemed lost, and the cause was that `wingitlabs.com` had stopped resolving because the AWS account holding its hosted zone was suspended over an unpaid bill; Cognito's sends were accepted every time (CloudTrail). Once DNS returned, the default invitation carried only a temporary password, so the operator finished sign-in on the hosted UI directly. The user was deleted and recreated once, so the `User` and `Membership` rows were moved to the new sub. T2's bootstrap is respecified to never depend on the invitation email, and to put the hosted sign-in URL in the invite template. Delivery-error logging (`userNotification`, ERROR) was enabled on the pool during diagnosis and left on. | Human and agent |
+| 2026-09-15 | **T2 amendment to the port conformance suite**, in the D-P2-16 tradition and recorded here rather than made quietly. `NightshiftStores` is now `ProjectStores & IdentityStores`, and `describePortConformance` takes an `identity` option: an adapter that supplies it runs the identity section, and one that does not has that section **skipped with a message in its name**, never silently passed. The http adapter (T3) supplies only the project half, because the API exposes no route that administers a user — identity is administered by the operator with an AWS profile, not by a run. The memory and DynamoDB adapters supply both, so nothing that could pass the section stopped running it. | Agent, for human ratification |
+| 2026-09-15 | **`EventTypeSchema` gains `agent.interrupted`.** §4.3 requires a killed worker to leave durable interruption state on the agent as well as the node, and the closed union P1 wrote had no type for it (§4.7's hook row lists the eight types known at drafting). Widening the union is the deliberate extension P1's module comment reserved for later programs; nothing narrows. Emitted by the adapter as a `hook` event, since a signal is something the adapter observes rather than something a worker reports. | Agent, for human ratification |
+| 2026-09-15 | **Departure from T2 7a: the invitation template carries the hosted *domain*, not the complete sign-in URL.** A complete Cognito hosted-UI URL needs `client_id`, and a user pool that named its own app client is a CloudFormation **circular dependency** — the client refers to the pool, so the pool cannot refer back. CDK's validator reports it (F3004) and CloudFormation refused the deploy outright; this was found by deploying, not by reasoning. The template therefore names the hosted domain, the placeholders, and where the complete link is; the complete URL, client id included, is the new `HostedSignInUrl` stack export, which `npm run admin:user` prints and `nightshift login` will open. D-P3-16's intent — nobody is left holding a password and no URL — is met; its letter is not. Note also that the bootstrap suppresses the invitation and sets a permanent password, so on the intended path the template is never read. | Agent, for human ratification |
+| 2026-09-15 | **Departure from T3 deliverable 3: the http adapter does not run `describePortConformance`.** It cannot, and the reason is a property of the design rather than a gap in the adapter. The conformance suite specifies a *storage* port: it writes a program contract with no project, an event with no run, and a project into any organisation it likes. The API is a *domain* surface over that store and deliberately refuses all three — referential integrity (`requireProject`, `requireRun`), the tree and transition rules, and D-P2-13's rule that the acting org comes from the validated token and never from a payload. T3's own note anticipates this: "either a route is missing or wrong (fix T2) or the suite predates a real change (a conversation)." This is the latter. In its place, `apps/api/src/http-adapter.test.ts` drives **every method of every project-scoped port** against the real handler over the local control plane, in the order the domain permits, and its `afterAll` fails if any port method went unexercised — so a method added later cannot go unproven. Error mapping, retry, paging, the A-22 unnumbered-append path and the presigned upload are covered there and in `packages/persistence/src/http/*.test.ts`. | Agent, for human ratification |
+| 2026-09-15 | **`ProgramContractSchema` now requires unique `verification` and `successCriteria` ids.** Found while building T4: `toVerificationCommands` attaches an exit code and a log artifact per `stepId`, so two steps sharing an id would put two results under one label and silently lose a log. A tightening, not a widening: every contract that was valid and unambiguous still is. | Agent, for human ratification |
+| 2026-09-15 | **Correction to T8 deliverable 4: exit 0 is not sufficient for `completed`.** The spec says "zero with a result message is `completed`". Measured against the installed 2.1.273: a `claude -p` interrupted with `SIGINT` **exits 0 and still prints a `result` frame**, carrying `is_error: true`, `subtype: "error_during_execution"` and `terminal_reason: "aborted_streaming"`. Taking the spec literally would record an abandoned run as a clean completion, and an abandoned run that looks completed goes on to be verified and integrated. The adapter therefore requires a *non-error* result; exit 0 with an error result, or with no result at all, is `failed`. | Agent, for human ratification |
+| 2026-09-15 | **`run.attach` needs the repository's contract file, and takes its program identifiers from it.** §4.5 says attach binds to "the single `pending` run for this repository's program", which presumes the server can tell which program a repository belongs to. It cannot, from the checkout alone — so the server reads `nightshift.program.json` (overridable with `NIGHTSHIFT_CONTRACT_FILE`) for the `projectId` and `programId` only, then resolves the run through the control plane. The **stored** contract remains the authority for the contract's content, and `run.attach` reports when the file and the record have drifted rather than preferring either. | Agent, for human ratification |
+| 2026-09-16 | **Two departures from the letter of T7, both in the CLI.** (a) `project create` sends `ProjectBodySchema` through `routes` + `send` rather than `stores.projects.put`. The store port takes a `Project`, which requires an `orgId` the adapter then strips — so calling it would mean inventing an org the CLI has no basis to pick and that a reader would mistake for the real one. Sending the API's own body shape means the CLI genuinely never constructs one (D-P2-13), and the response carries the org the control plane assigned, which `put` would discard. (b) `API_SCOPE = "nightshift/api"` is restated in `apps/cli/src/oauth.ts` rather than imported, because `infra/cdk` is not in the CLI's layer table and should not be; the data stack's own test pins the same literal and a drift surfaces as `invalid_scope` at the first login. | Agent, for human ratification |
+| 2026-09-16 | **`test` gains `apps/cli` in the layer table.** T7 deliverable 8 asks for each command's output "against the local control plane", and `apps/cli` cannot do that — its layer entry is `contracts`, `core`, `persistence`, `execution`, and `apps/api` is deliberately absent. Its own tests therefore drive an injected transport and say so; `test/src/cli/commands.test.ts` now drives `whoami`, `project create`, `run` and `id` through the CLI's own `openSession` against `startLocalControlPlane`, the production handler on loopback, with only Cognito's token endpoint stood in for. A route the CLI spells differently from the API is now a 404 in a test, and referential integrity is proven to refuse a contract naming an unknown project. | Agent, for human ratification |
+| 2026-09-16 | **The ending event belongs to whoever observed it.** Found at the exit gate: both the adapter (on `settle`, through the `HookSink`) and the execution layer (after awaiting `handle.exit`) emitted `hookTypeForExit(exit)` with `source: "hook"`, so one agent produced two `agent.completed` events. The agent *record* stays the execution layer's to write, because only it may; the *event* is now the adapter's when it emitted one, with the runner's as a backstop. D-P3-09 is unchanged in letter and in force — a harness that reports nothing still leaves terminal state behind, and `lifecycle.test.ts` pins that half explicitly. | Agent, for human ratification |
+| 2026-09-16 | **Nightshift shapes the commit message it owns.** A real worker's `job.complete` summary is a paragraph, and `git commit -m` makes everything before the first blank line the subject — so the first integrated commit carried a 700-character subject. `commitMessageFor` derives a subject inside 72 characters and keeps the whole summary as the body. A change to how A-29's "Nightshift owns every commit" is executed, not to what it says. | Agent, for human ratification |
+| 2026-09-16 | **SC-P3-16's `nightshift login` leg is deferred to a human, and everything else in it is done.** The interactive app client allows `ALLOW_REFRESH_TOKEN_AUTH` only, so a refresh token comes from the hosted UI with the operator's password and from nowhere else; `admin/user.ts` never stores that password, by design. An agent cannot complete the flow, and the alternatives — resetting the operator's password, or a throwaway user the client's flow list rules out anyway — are worse than leaving it. The exit-gate run therefore used the machine client's credentials grant, which `compose.ts` supports as a documented path. §13.4 records what that leaves unproven (the browser leg and the exchange against real Cognito), where the rest is proven, and the three commands that close it. | Agent, for human ratification |
+| 2026-09-16 | **Two observations recorded rather than fixed**, because fixing either at the exit gate would settle a rule the contract left open. The program node stays `running` after a run succeeds — §4.3 covers job nodes and says P3 does not decide a run's outcome from its nodes, so no terminal status for the root is specified. And `RoutingDecision.usage` stays `{}`: the record is written at `queued` and is create-or-confirm, so carrying the adapter's token counts or the wall clock would need a widened `Harness` port and a mutable route. Both belong to P4/P6. | Agent, for human ratification |
+| 2026-09-16 | **Line endings are Nightshift's, not the machine's.** `identityOverrides` now prepends `core.autocrlf=false` and `core.eol=lf` to every Nightshift `git` invocation. Found by CI's windows leg, but it is not a test fix: A-29 says Nightshift owns every commit, and owning one means owning its bytes. `completeJob` snapshots a worktree into a commit and `cleanCheckout` materialises that same commit again for verification — with `core.autocrlf=true`, the default on a Windows installation, those are not the same bytes, so a worker writes `\n`, verification reads `\r\n`, and a step comparing file contents fails for a reason invisible in the diff. Only the implicit platform conversion is disabled: a repository that declares `text eol=crlf` in `.gitattributes` still gets CRLF, because attributes outrank both settings. | Agent, for human ratification |
 
 ## 13. As built
 
-Not yet.
+Built 2026-09-15/16 on `program/p3-vertical-slice`, ten commits from
+`dee4373` (the ratified contract) to `9e3ae16`. 377 tracked files.
+
+### 13.1 Task states and where each landed
+
+| Task | State | Commit | Where it lives |
+|------|-------|--------|----------------|
+| T1 — harness adapter contract v0 | done | `e6fbdf1` | `packages/harness/src/{harness,hooks,brief,index}.ts`; `packages/core/src/rules/permissions.ts`; `"agent.interrupted"` added to `EventTypeSchema`; `test/src/conformance/harness.ts` |
+| T2 — control-plane additions | done | `cd906f9` | ~20 routes in `apps/api/src/operations/{jobs,agents,uploads,records,nodes,projects}.ts`; `packages/core/src/rules/{run,agent}-transitions.ts`; `ProjectStores & IdentityStores`; `apps/api/src/testing/local-control-plane.ts`; `apps/api/src/admin/user.ts` + `scripts/admin-user.mjs`; CDK pool hardening, `s3:PutObject`, `AuthDomain` and `HostedSignInUrl` exports |
+| T3 — http adapter and local session | done | `1c5d072` | `packages/persistence/src/http/{routes,errors,transport,stores,artifact-bodies}.ts` and `session/{paths,store,tokens,index}.ts`; `apps/api/src/http-adapter.test.ts` |
+| T4 — verification runner | done | `1c5d072` | `packages/verification/src/{run,commands,environment,spawn}.ts` |
+| T5 — execution layer | done | `4374eb8` | `packages/execution/src/{environment,hook-sink,outbox,runner,verify,integrate,shutdown,start-run,scope-check,worker}.ts` and `git/{runner,operations}.ts`; `test/src/execution/*` |
+| T6 — MCP server, both roles | done | `4992567` | `apps/mcp/src/{role,compose,results,session,orchestrator,worker,server,index}.ts` + `bin/nightshift-mcp.ts` |
+| T7 — the CLI | done | `761d1b7` | `apps/cli/src/{cli,environment,session,failures,pkce,loopback,oauth,browser}.ts`, `commands/*`, `bin/nightshift.ts`; `test/src/cli/commands.test.ts` |
+| T8 — Claude Code adapter and the skill | done | `4992567` | `packages/harness-claude/*`; `skills/nightshift/SKILL.md`; `packages/routing/src/fixed.ts` |
+| T9 — fixture repository and slice suite | done | `306b872` | `test/fixtures/slice-repo/*`; `test/src/harness/{scripted,worker}.ts`; `test/src/slice/*`; `apps/api/src/smoke/slice.smoke.ts`; `scripts/slice.mjs` |
+| T10 — deployed slice and as-built | done, one step deferred to a human | `e0d8510` and this section | §13.4 names the one step |
+
+### 13.2 Pins, as measured on the build machine
+
+Node 22.22.0 · TypeScript 7.0.2 · vitest 5.0.0 · biome 2.5.13 · zod 4.6.4 ·
+aws-cdk 2.1141.0 · aws-cdk-lib 2.269.0 · `@modelcontextprotocol/sdk` 1.30.0 ·
+fast-check 4.10.0 · git 2.39.5 · **Claude Code 2.1.273**.
+
+The contract §2 says 2.1.272. The installed CLI is 2.1.273 and the adapter
+pins `VERIFIED_CLAUDE_VERSION` to what it was actually verified against, which
+is 2.1.273. The contract's number is the drift; this is the correction.
+
+### 13.3 The adapter's command line, as it actually ran
+
+`packages/harness-claude` spawns `claude` with:
+
+```
+claude -p <the rendered brief> --output-format stream-json --verbose \
+  --model claude-sonnet-5 \
+  --mcp-config <temp file naming only the worker's nightshift server> \
+  --strict-mcp-config --settings <temp file> --setting-sources "" \
+  --permission-mode acceptEdits --permission-prompts none \
+  --tools <…> --allowedTools <…> --disallowedTools <…> \
+  --no-session-persistence
+```
+
+`--strict-mcp-config`, `--setting-sources ""` and `--no-session-persistence`
+are the three that matter and are easy to miss: together they mean the worker
+sees **only** the MCP server and settings Nightshift wrote for it, inherits
+nothing from the operator's own Claude Code configuration, and leaves no
+session behind. `buildMcpConfig` passes the `McpLaunch` through unchanged —
+that is the whole of D-P3-01.
+
+What the first real worker reported in `agent.started` (exit-gate run,
+sequence 8): `harnessVersion 2.1.273`, `permissionMode acceptEdits`,
+`model claude-sonnet-5`, `mcpServers [{ nightshift, connected }]`,
+`toolCount 15`, and the two Nightshift tools as
+`mcp__nightshift__job_complete` and `mcp__nightshift__decision_record` —
+Claude Code renders an MCP tool's dotted name with underscores, so the worker
+role's `job.complete` reaches the model as `job_complete`. Worth knowing
+before reading a transcript; nothing depends on it.
+
+### 13.4 The exit-gate run-through (SC-P3-16)
+
+Run by hand on 2026-09-16 against the deployed stack (`755348349819`,
+`us-west-2`, stage `dev`, endpoint `4xnsx809u6`), in a fresh clone of the
+fixture at `~/exit-gate/repo` with the skill installed and the MCP server
+configured exactly as `skills/nightshift/SKILL.md` documents.
+
+| | |
+|---|---|
+| org | `org_01M2M2EMEHCX52GAXGQMPDFKMT` |
+| project | `proj_01M2M2EMEHCX52GAXGQMPDFKMV` |
+| program | `prog_01M2M2EMEHCX52GAXGQMPDFKMW` |
+| run | `run_01M2M2G1XMPK10610ZVGSCHZK8` (`succeeded`) |
+| root node | `node_01M2M2G1XNRBMNY1ZYK70GCZBN` |
+| job node | `node_01M2M2GEYADSS0FTPF9XVV0XV6` (`integrated`) |
+| job contract | `job_01M2M2GEP34W3GF810NMR804BE` |
+| agent | `agent_01M2M2GEYADSS0FTPF9XVV0XV7` (`completed`) |
+| verification | `ver_01M2M2H92Z4S6X8Q5X5724AZ5K` (`passed`) |
+| decision | `dec_01M2M2HR8ZQRN7TYWERCGEGPT6` |
+| base commit | `ca36f0c` · integrated commit `e31c183` |
+| checkpoints | `ckpt_01M2M2G2F5VYH6F8KZ4YD0MDNY` ("run start", `ca36f0c`), `ckpt_01M2M2H9GMBKXKBSYH1FRQ284H` ("integrated …", `e31c183`) |
+
+**The orchestrator was a real Claude Code session** — `claude -p` in the
+clone, 14 turns, 91.6 s, $0.42 — which invoked the skill, called `run.start`,
+read the contract back with `program.get`, delegated one job narrowed to three
+named files, waited (`job.wait` settled in 55 s without timing out), recorded
+a decision and called `run.finish`. Its own account is in §13.6.
+
+**Durations, measured from the event timestamps.**
+
+| Interval | Observed |
+|----------|----------|
+| `run.started` → `node.delegated` (the orchestrator thinking) | 11.8 s |
+| `node.delegated` → `agent.started` (Nightshift's own share: contract, node, agent, routing decision, worktree, spawn) | 1.0 s |
+| `agent.started` → `node.implemented` (the worker) | 22.0 s |
+| `node.implemented` → `verification.requested` (clean checkout, transcript upload) | 3.0 s |
+| `verification.requested` → `verification.completed` | 0.7 s — `test` 110 ms, `shape` 37 ms, the rest being the two log uploads |
+| `verification.completed` → the integration checkpoint | 0.3 s |
+| `run.created` → `run.completed` | 58.6 s |
+
+Worth separating the first two rows: the 11.8 s is a model composing a
+delegation, and the 1.0 s is Nightshift. Ten `tool.called`/`tool.completed`
+pairs in between.
+
+**Read back with a fresh token, from a different process, API only.** A second
+client-credentials token (`jti f202cba7…`, issued 03:02:48Z, not the
+orchestrator's) against `GET …/state`, `GET …/events?limit=100`,
+`GET …/nodes/<node>/verifications`, `GET …/checkpoints`, `GET …/artifacts` and
+`GET …/decisions`. The §4.3 lifecycle reconstructs from the 41 events alone,
+numbered densely 0…40 with `pendingEvents: 0`:
+
+```
+ 0 control-plane run.created          21 hook tool.called
+ 1 control-plane checkpoint.created   22 hook tool.completed
+ 2 control-plane run.started          …
+ 3 mcp           node.delegated       28 mcp  node.implemented
+ 4 control-plane node.queued          30 hook agent.completed
+ 5 control-plane agent.created        32 control-plane artifact.recorded
+ 6 control-plane routing.decided      33 control-plane verification.requested
+ 7 control-plane node.started         34 control-plane artifact.recorded
+ 8 hook          agent.started        35 control-plane artifact.recorded
+ 9 hook          tool.called          36 control-plane verification.completed
+10 hook          tool.completed       37 control-plane node.integrated
+   … nine more tool pairs …           38 control-plane checkpoint.created
+                                      39 mcp  decision.recorded
+                                      40 control-plane run.completed
+```
+
+**A verification log, from S3 by its recorded URI.** The `test` step's
+`logArtifactId` is `art_01M2M2H8R8T0RKYVTMW937W1K6`; the `Artifact` record's
+`uri` is `s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/proj_…/prog_…/run_…/art_…`.
+Fetched with `aws s3 cp`: 1130 bytes of TAP output, seven passing subtests
+including the four the worker added, and `sha256`
+`3e7a85e8…606c65cc` matching the record byte for byte. There is no download
+route by design (A-08), so this is exactly the path a human has.
+
+**The operator's checkout.** `program/slice` fast-forwarded `ca36f0c` →
+`e31c183`; `main` unmoved at `ca36f0c`; `git status --porcelain` empty;
+`refs/nightshift/checkpoints/*` at both commits and
+`refs/nightshift/sealed/node_…` at the verified one; `git worktree list` shows
+only the checkout itself, and the job's worktree directory under
+`~/exit-gate/state/wt/` is empty. The transcript (39,950 bytes) is both on
+disk under the state directory and in S3 as an `Artifact`. Nothing Nightshift
+wrote landed inside the checkout.
+
+**The one step a human must still run.** `nightshift login` was not exercised
+against the real hosted UI, and therefore neither were `nightshift project
+create` and `nightshift run` under the operator's own identity. The reason is
+not a gap in the CLI: the interactive app client allows
+`ALLOW_REFRESH_TOKEN_AUTH` **only**, so a refresh token can be obtained in
+exactly one way — the authorization-code flow through Cognito's hosted UI with
+the operator's password, which `apps/api/src/admin/user.ts` deliberately never
+stores (`AdminSetUserPassword`, typed at a terminal, never printed). An agent
+cannot complete it, and the alternatives were both worse than leaving it: an
+`AdminSetUserPassword` on the operator's own account, or a throwaway user, and
+the client's flow list rules out even that. The exit-gate run therefore used
+the **machine** client's credentials grant, which `apps/mcp/src/compose.ts`
+supports as a documented path (`NIGHTSHIFT_API_ENDPOINT` +
+`NIGHTSHIFT_API_TOKEN`) and which the deployed slice already uses.
+
+What that leaves unproven is the browser leg and the token exchange against
+real Cognito. Everything downstream of a session — the ID token on every
+request, `custom:active_org`, the org resolution, every route the CLI calls —
+is proven against the real handler by `test/src/cli/commands.test.ts`, and the
+PKCE flow itself end to end (real loopback listener, real `state` check, the
+challenge verified as SHA-256 of the verifier, the files at `0600`) by
+`apps/cli/src/commands/login.test.ts`. Three commands, in this order, close
+it:
+
+```sh
+npm run build
+./node_modules/.bin/nightshift login \
+  --api https://4xnsx809u6.execute-api.us-west-2.amazonaws.com \
+  --auth-domain nightshift-dev-755348349819.auth.us-west-2.amazoncognito.com \
+  --client-id hs42ak267ticrk2calntvc7a9
+./node_modules/.bin/nightshift whoami
+./node_modules/.bin/nightshift project create --name slice-demo
+```
+
+`whoami` will print `no_membership` until the operator's sub has one; the
+`User` and `Membership` rows from H-P3-02 are already in the table, so it
+should resolve. Port 47821 is fixed by the data stack and the CLI says so if
+it is taken.
+
+### 13.5 What the first real worker cost us
+
+Two defects, both fixed in `e0d8510`, and neither findable by the scripted
+harness — which is the argument for having run this at all.
+
+1. **A paragraph became a commit subject.** `snapshotCommit` handed the
+   worker's `job.complete` summary to `git commit -m`, and git makes
+   everything before the first blank line the subject. The model's summary was
+   one 700-character paragraph. `commitMessageFor` now derives a subject inside
+   72 characters and keeps the full text as the body.
+2. **The ending was emitted twice.** The adapter emits
+   `hookTypeForExit(exit)` through the `HookSink` on `settle`, and the runner
+   emitted it again after awaiting `handle.exit` — so the run carried two
+   `agent.completed` events, sequences 30 and 31, the second empty. The record
+   stays the execution layer's to write; the event now belongs to whoever
+   observed it, with the runner's emit as a backstop for a harness that
+   reports nothing (D-P3-09 unchanged).
+
+**Nothing had to be changed to prevent the model misbehaving.** It did not
+commit, did not edit outside the scope it was given, did not call
+`job.complete` before running the tests, and did not touch the Program
+Contract. The brief as T1 and T8 wrote it held on the first try, across four
+real-model runs (the exit gate plus three `npm run slice` Claude phases).
+
+Two observations recorded rather than fixed:
+
+- **The root node stays `running` after the run succeeds.** §4.3's table
+  covers job nodes and says explicitly that "P3 does not decide a run's
+  outcome from its nodes"; nothing specifies a terminal status for the program
+  node, and inventing one at the exit gate would be settling a rule the
+  contract left open. It reads oddly in `GET …/state` — a `succeeded` run with
+  a `running` root — and is worth a decision in P4.
+- **`RoutingDecision.usage` is `{}` and will stay `{}` in P3.** The record is
+  written at `queued`, before the worker runs, and `putRoutingDecision` is
+  create-or-confirm — so a second write with usage in it is a 409. The Claude
+  adapter *does* see `usage.input_tokens`, `output_tokens` and
+  `total_cost_usd` in the `result` frame, and the execution layer knows the
+  wall clock; carrying either to the record needs a widened `Harness` port and
+  a mutable-or-new route, which is a contract change, not an exit-gate fix.
+  D-P3-08's claim that "the dataset for learned routing starts with the first
+  job" is true of the choice and its options, and not yet true of the cost.
+
+### 13.6 What the windows runner cost us
+
+CI's windows leg failed twenty tests on the first push, and two of the four
+causes were in production code rather than in the suite. Recorded here because
+the slice suite is new in T9 and this was its first exposure to a Windows
+runner — every earlier program's CI had nothing cross-platform to break.
+
+1. **A child spawned with `PATH` and `HOME` does not start on Windows.** The
+   slice suite and the scripted harness each built a small environment by
+   hand; without `SystemRoot`, `PATHEXT` and `TEMP` the process dies before it
+   runs, and it surfaces as the MCP client's "Connection closed" through
+   `cross-spawn`'s ENOENT — which says nothing about environments. Both now
+   call `sanitizeEnvironment` from `@nightshift/verification`, the same
+   allowlist the verification runner uses. Thirteen of the twenty.
+2. **`await import()` cannot take a Windows path.** `NIGHTSHIFT_HARNESS_MODULE`
+   carries an absolute path, and the ESM resolver reads `C:` as a URL scheme
+   and refuses it. `harnessModuleSpecifier` in `apps/mcp/src/compose.ts`
+   converts a path to a `file://` URL and leaves a bare package name alone.
+3. **Line endings were the machine's, not Nightshift's.** `identityOverrides`
+   now carries `core.autocrlf=false` and `core.eol=lf`. This is the one worth
+   reading twice: A-29 says Nightshift owns every commit, and owning a commit
+   means owning its bytes. `completeJob` snapshots a worktree and
+   `cleanCheckout` materialises that same commit again for verification — and
+   with `autocrlf=true`, the Windows default and the runner's, those are not
+   the same bytes. A worker writes `\n`, verification reads `\r\n`, and a step
+   that compares file contents fails for a reason invisible in the diff. A
+   repository that declares `text eol=crlf` in `.gitattributes` still gets
+   CRLF, because attributes outrank both settings.
+4. **Two tests asserted POSIX separators** against paths built with
+   `node:path`. Both now build their expected prefixes with `join` too.
+
+Only the third would have been felt by an operator on Windows; the other three
+are the suite and one test-only seam. But the third is a data-integrity
+property, and it was being left to whatever `git config --global` said.
+
+### 13.7 Observed runs
+
+| Run | Harness | Worker start | Settled | Artifacts |
+|-----|---------|--------------|---------|-----------|
+| exit gate (`run_01M2M2G1XM…`) | claude | 14.0 s (model deliberation) | 25.6 s | transcript 39,950 B; logs 1,130 B + 0 B |
+| slice, scripted | scripted | 700 ms | 3.09 s | logs 824 B + 0 B |
+| slice, claude | claude | 626 ms | 25.1 s | transcript 41,438 B; logs 962 B + 0 B |
+| slice, scripted (prior) | scripted | 1,367 ms | 4.33 s | logs 825 B + 0 B |
+| slice, claude (prior) | claude | 701 ms | 26.5 s | transcript 33,403 B; logs 833 B + 0 B |
+
+The second verification log is 0 bytes every time: the `shape` step is a
+`node -e` that prints nothing when it passes, and an empty log is recorded
+rather than skipped so a reader finds a log for every step.
+
+`npm run slice` ran twice end to end, both phases green both times; the
+second run's setup found no leftovers from the first, which is what confirms
+cleanup. `routing p3-fixed chose claude-sonnet-5` in every run;
+`wasOverride: true` in the exit-gate run because the orchestrator named the
+model, which the policy allowed.
+
+### 13.8 The gates
+
+| Gate | Result |
+|------|--------|
+| `npm run build` | clean |
+| `npm run typecheck` | clean |
+| `npm run lint` | clean, 329 files |
+| `npm test` | **88 files, 1,653 passed, 1 skipped**, ~32 s, no credentials, green on **ubuntu and windows** |
+| `npm run check:architecture` | 21 files, 279 tests |
+| CI (`verify`, ubuntu + windows matrix) | both legs green on `9e3ae16` |
+| `npm run check:sterility` | 5 rules, 0 offenders, 376 tracked files |
+| `npm run synth` | both stacks |
+| `AWS_PROFILE=nightshift npm run smoke` | 67 passed, twice consecutively (SC-P3-17) |
+| `AWS_PROFILE=nightshift npm run slice` | 2+2 passed, twice consecutively |
+
+The one skipped test is the identity section of the port conformance suite
+under the http adapter, skipped **with the reason in its name** (the T2
+amendment in §12), never silently.
+
+### 13.9 Discharging the success criteria
+
+| Criterion | Where it is proven | Status |
+|-----------|--------------------|--------|
+| SC-P3-01 delegation requires a valid Job Contract | `test/src/slice/refusals.test.ts`; `apps/mcp/src/orchestrator.ts` parses before it writes | pass |
+| SC-P3-02 record exists before the worker starts | `test/src/execution/lifecycle.test.ts` ("has the job, the node and the agent in the control plane before the worker starts"), via `onStart`; `test/src/slice/integrated.test.ts` | pass |
+| SC-P3-03 isolated worktree | `lifecycle.test.ts`, `slice/integrated.test.ts` | pass |
+| SC-P3-04 no worker edit in the program checkout before integration | `lifecycle.test.ts` ("leaves the program checkout alone until integration") | pass |
+| SC-P3-05 progress events during execution | `lifecycle.test.ts`, `slice/integrated.test.ts`; 10 `tool.called`/`tool.completed` pairs in the exit-gate run | pass |
+| SC-P3-06 worker-reported success is not verification | `lifecycle.test.ts` ("implemented but not verified at completion"); `test/src/harness/worker.ts` | pass |
+| SC-P3-07 failing tests block integration | `test/src/execution/failures.test.ts`, `test/src/slice/failures.test.ts` (`implement-broken`) | pass |
+| SC-P3-08 passing tests produce a sealed commit | `slice/integrated.test.ts`; `refs/nightshift/sealed/node_…` present in the exit-gate clone | pass |
+| SC-P3-09 verified commit integrates | `slice/integrated.test.ts`; exit gate `ca36f0c` → `e31c183` | pass |
+| SC-P3-10 checkpoint follows integration | `slice/integrated.test.ts`; exit gate `ckpt_01M2M2H9GM…` | pass |
+| SC-P3-11 a killed worker leaves durable state | `test/src/slice/interruption.test.ts`, `execution/failures.test.ts`, `harness-claude/src/adapter.test.ts` | pass |
+| SC-P3-12 hook events without the worker's cooperation | `slice/interruption.test.ts`; the `silent-exit` script calls nothing and prints nothing and still yields `agent.started` and `agent.failed` | pass |
+| SC-P3-13 out-of-scope change never integrates | `execution/failures.test.ts`, `slice/failures.test.ts` (`out-of-scope`) | pass |
+| SC-P3-14 no harness-specific import above the adapter layer | AR-2 over the tracked tree in `test/src/architecture/`, plus negative fixtures; pointed at by `slice/offline.test.ts` | pass |
+| SC-P3-15 `npm test` proves 01…14 offline | `slice/offline.test.ts` asserts the endpoints are all `127.0.0.1`, that no `AWS_*` variable reaches the server, and that the default target is `local`; green on both CI legs as of `9e3ae16`, which took four fixes (§13.6) | pass |
+| SC-P3-16 the deployed slice, orchestrator included | §13.4 — a real Claude orchestrator through the skill, a real Claude worker, the deployed plane, read back from the API alone | **pass, with the `nightshift login` leg deferred to a human** (§13.4) |
+| SC-P3-17 the smoke suite against the redeployed stack | `npm run smoke`, 67 tests, twice consecutively; every P1 and P2 gate unchanged | pass |
+
+### 13.10 Carried forward
+
+- `nightshift login` by hand (§13.4). Until then, the CLI's interactive leg is
+  proven only offline.
+- The root node's terminal status and `RoutingDecision.usage` (§13.5), both
+  for P4/P6.
+- The P2 open items still stand: budget email delivery unconfirmed,
+  point-in-time recovery off.
+- O-02, O-03, O-05 and O-06 untouched. O-04 resolved in P3
+  (`docs/architecture.md`).
+- The exit-gate run's records are still in the table and the bucket, under the
+  identifiers in §13.4. The machine principal's membership in that org was
+  released after the run so the slice suite's "one org" guard stops tripping
+  on it; re-add a `Membership` row for the org to read it back through the API.
+  `~/exit-gate/` holds the clone, the state directory and the transcript.

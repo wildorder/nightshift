@@ -44,6 +44,13 @@ export const EventTypeSchema = z.enum([
   "agent.completed",
   "agent.failed",
   "agent.cancelled",
+  /**
+   * Added in P3. The Job lifecycle (`p3-vertical-slice.md` §4.3) requires a
+   * killed worker to leave durable interruption state on the agent as well as
+   * the node, and the union P1 closed had no type for it. Widening a closed
+   * union is the deliberate extension the module comment reserves.
+   */
+  "agent.interrupted",
   "agent.subagent_created",
   "agent.context_compacted",
   "tool.called",

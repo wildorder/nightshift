@@ -14,6 +14,9 @@ export const DOMAIN_ERROR_STATUS: Readonly<Record<DomainErrorCode, number>> = {
   ownership_violation: 403,
   scope_widening: 403,
   illegal_transition: 409,
+  // Chosen here. The transition was legal but the record was incomplete: a
+  // well-formed request the handler cannot process, which is 422 not 409.
+  outcome_required: 422,
   verification_evidence: 409,
   concurrency_limit_exceeded: 429,
   depth_limit_exceeded: 422,

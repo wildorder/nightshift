@@ -6,11 +6,19 @@ import {
   ProgramContractSchema,
   ProjectBodySchema,
   ProjectSchema,
+  type Run,
   RunSchema,
 } from "@nightshift/contracts";
-import { OwnershipViolationError } from "@nightshift/core";
+import {
+  explainRunEnding,
+  explainRunUpdate,
+  IllegalTransitionError,
+  OwnershipViolationError,
+  runEventFor,
+  transitionRun,
+} from "@nightshift/core";
 import { describeRefusal, resolveActingOrg } from "../auth/acting-org.js";
-import { HttpError, parseBody } from "../http.js";
+import { HttpError, parseBody, sameRecord } from "../http.js";
 import {
   assertChainMatches,
   parsePageQuery,
@@ -74,6 +82,57 @@ export const getProgram: Handler = async ({ deps, params }) => ({
   body: await requireProgram(deps.stores, programScopeFrom(params)),
 });
 
+export const listPrograms: Handler = async ({ deps, request, params }) => {
+  const projectId = projectIdFrom(params);
+  const page = parsePageQuery(request.query);
+  await requireProject(deps.stores, projectId);
+  const result = await withCursor(() =>
+    deps.stores.programContracts.listByProject(projectId, page),
+  );
+  return { status: 200, body: pageBody(result) };
+};
+
+/** An incomplete record is 422: well formed, but not something that can be stored. */
+const assertRunComplete = (run: Run): void => {
+  const reasons = explainRunEnding(run);
+  if (reasons.length > 0) throw new HttpError(422, "incomplete_record", reasons.join("; "));
+};
+
+/**
+ * `PUT` on an existing run applies the run table in `core` (T2, D-P3-13).
+ *
+ * P2 left this as create-or-confirm, which was enough for a suite that never
+ * moved a run. P3 does: `run.start` moves it to `running`, `run.finish` and
+ * shutdown move it to a terminal status.
+ */
+const applyRunUpdate = (existing: Run, next: Run): void => {
+  // The transition first, for the reason `operations/agents.ts` documents: a
+  // status regression is an illegal transition, not a dropped timestamp.
+  const statusMoved = existing.status !== next.status;
+  const event = statusMoved ? runEventFor(existing.status, next.status) : undefined;
+  if (statusMoved && event === undefined) {
+    throw new IllegalTransitionError(existing.status, `transition to ${next.status}`);
+  }
+
+  const immutable = explainRunUpdate(existing, next);
+  if (immutable.length > 0) throw new HttpError(409, "conflict", immutable.join("; "));
+  assertRunComplete(next);
+
+  if (event === undefined) {
+    throw new HttpError(
+      409,
+      "conflict",
+      "a run's status is the only field that changes; this request changes something else",
+    );
+  }
+  // Applied for its refusals: the table, and the rule that no run ends in
+  // silence. The submitted record is what gets stored, as with execution nodes.
+  transitionRun(existing, event, {
+    endedAt: next.endedAt ?? existing.startedAt,
+    ...(next.outcomeReason === undefined ? {} : { outcomeReason: next.outcomeReason }),
+  });
+};
+
 export const putRun: Handler = async ({ deps, request, params }) => {
   const run = parseBody(RunSchema, request.body);
   const scope = runScopeFrom(params);
@@ -81,7 +140,15 @@ export const putRun: Handler = async ({ deps, request, params }) => {
 
   await requireProgram(deps.stores, scope);
   const existing = await deps.stores.runs.get(scope, scope.runId);
-  return createOrConfirm(existing, run, () => deps.stores.runs.put(run));
+  if (existing === undefined) {
+    assertRunComplete(run);
+    await deps.stores.runs.put(run);
+    return { status: 201, body: run };
+  }
+  if (sameRecord(existing, run)) return { status: 200, body: existing };
+  applyRunUpdate(existing, run);
+  await deps.stores.runs.put(run);
+  return { status: 200, body: run };
 };
 
 export const getRun: Handler = async ({ deps, params }) => {
@@ -89,4 +156,12 @@ export const getRun: Handler = async ({ deps, params }) => {
   const run = await deps.stores.runs.get(scope, scope.runId);
   if (run === undefined) throw new HttpError(404, "not_found", `run ${scope.runId} does not exist`);
   return { status: 200, body: run };
+};
+
+export const listRuns: Handler = async ({ deps, request, params }) => {
+  const scope = programScopeFrom(params);
+  const page = parsePageQuery(request.query);
+  await requireProgram(deps.stores, scope);
+  const result = await withCursor(() => deps.stores.runs.listByProgram(scope, page));
+  return { status: 200, body: pageBody(result) };
 };

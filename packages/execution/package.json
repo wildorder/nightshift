@@ -13,6 +13,7 @@
   "dependencies": {
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
-    "@nightshift/harness": "*"
+    "@nightshift/harness": "*",
+    "@nightshift/verification": "*"
   }
 }

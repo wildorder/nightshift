@@ -111,11 +111,26 @@ export const PERMITTED_REFERENCES: Readonly<Record<string, readonly string[]>> =
   "packages/harness-claude": ["packages/contracts", "packages/core", "packages/harness"],
   "packages/harness-codex": ["packages/contracts", "packages/core", "packages/harness"],
   "packages/harness-agentcore": ["packages/contracts", "packages/core", "packages/harness"],
-  "packages/execution": ["packages/contracts", "packages/core", "packages/harness"],
+  // P3 (D-P3-12): the runner drives the verification package directly.
+  "packages/execution": [
+    "packages/contracts",
+    "packages/core",
+    "packages/harness",
+    "packages/verification",
+  ],
   "packages/routing": ["packages/contracts", "packages/core"],
   "packages/verification": ["packages/contracts", "packages/core"],
   "apps/api": ["packages/contracts", "packages/core", "packages/persistence"],
-  "apps/cli": ["packages/contracts"],
+  // P3 (D-P3-12): the CLI is still a thin client, but it mints identifiers and
+  // speaks to the control plane through the http adapter. It also references
+  // `execution` for exactly one function — `startRun`, the half of starting a
+  // run that `nightshift run` and the MCP `run.start` share (D-P3-17, A-32).
+  // T7 sanctions this: "the layer table gains `execution` for `apps/cli` only if
+  // that function lives there", and it does, because creating the initial
+  // checkpoint is a git operation and the CLI holds no domain logic of its own.
+  "apps/cli": ["packages/contracts", "packages/core", "packages/persistence", "packages/execution"],
+  // P3 (D-P3-12): `apps/mcp` is a composition root and names the Claude adapter
+  // in exactly one module, which AR-2 permits by path.
   "apps/mcp": [
     "packages/contracts",
     "packages/core",
@@ -123,9 +138,28 @@ export const PERMITTED_REFERENCES: Readonly<Record<string, readonly string[]>> =
     "packages/execution",
     "packages/routing",
     "packages/verification",
+    "packages/harness",
+    "packages/harness-claude",
   ],
   "infra/cdk": [],
-  test: ["packages/contracts", "packages/core", "packages/persistence"],
+  // P3 (D-P3-12): the slice suite drives the real server, the real execution
+  // layer and the real local control plane, so `test` references what it drives.
+  test: [
+    "packages/contracts",
+    "packages/core",
+    "packages/persistence",
+    "packages/harness",
+    "packages/execution",
+    "packages/verification",
+    "apps/api",
+    // P3 (T7 deliverable 8): the CLI's commands are held to the **real**
+    // handler here. `apps/cli` may not reference `apps/api`, so its own tests
+    // drive an injected transport and say what that leaves unproven; `test`
+    // references both, so this is where a route the CLI spells differently
+    // from the API becomes a 404.
+    "apps/cli",
+    "apps/mcp",
+  ],
 };
 
 /** `packages/core` -> `@nightshift/core`. */
@@ -224,6 +258,43 @@ const adapterLeakViolation = (specifier: string): string | undefined => {
 };
 
 /**
+ * Composition roots (D-P3-12, A-31).
+ *
+ * P1's rule forbade a harness implementation anywhere above the adapter layer,
+ * which included every app — and therefore left nothing in the repository able
+ * to instantiate an adapter at all. A rule that forbids the program from working
+ * is a rule with a gap, not a strict rule.
+ *
+ * The amendment is the narrowest thing that closes it: **one named file per
+ * app**, listed here by exact path. Everything else in that app is still
+ * refused, and the ban stays absolute on `execution`, `routing`, `verification`,
+ * `core` and `contracts` — the packages where a harness-specific import would
+ * actually do damage, and the ones SC-P1-20 was really about.
+ *
+ * A path here is a decision, not a convenience. Adding a second file to this
+ * list would be reintroducing the problem one file at a time.
+ */
+const COMPOSITION_ROOTS: readonly string[] = ["apps/mcp/src/compose.ts"];
+
+/**
+ * What only a composition root may import, inside the app that owns one.
+ *
+ * `@nightshift/persistence/http` is here for the same reason a harness is: the
+ * MCP server must not learn which adapter backs its stores, or the slice suite's
+ * ability to run the real binary against a local control plane would be a
+ * fiction. Other apps may import it freely — `apps/cli` is a thin client of the
+ * same API — so this is scoped to the app that has a composition root.
+ */
+const PERSISTENCE_HTTP = "@nightshift/persistence/http";
+
+const isCompositionRoot = (path: string): boolean => COMPOSITION_ROOTS.includes(path);
+
+/** The app a composition root belongs to, e.g. `apps/mcp`. */
+const APPS_WITH_COMPOSITION_ROOTS: readonly string[] = COMPOSITION_ROOTS.map(
+  (path) => packageDirOf(path) ?? "",
+);
+
+/**
  * Rule AR-2 applies above the adapter layer: the named packages plus every
  * app. `apps/*` is matched by prefix so a new app is covered the day it is
  * created. `packages/harness-*`, `packages/persistence` and `infra/cdk` sit at
@@ -240,7 +311,24 @@ const ABOVE_ADAPTER_PACKAGES = new Set([
 const isAboveAdapterLayer = (dir: string): boolean =>
   ABOVE_ADAPTER_PACKAGES.has(dir) || dir.startsWith("apps/");
 
-const MEMORY_PREFIX = "packages/persistence/src/memory/";
+/**
+ * Adapter directories that must never touch the AWS SDK.
+ *
+ * `memory` is test-only and must run offline (D-P1-08). `http` is the adapter the
+ * local machinery uses, and the whole point of it is that an orchestrator on a
+ * laptop needs no AWS credentials (A-28, D-P3-02) — an AWS import here would be
+ * that guarantee quietly lapsing.
+ */
+const AWS_FREE_ADAPTER_PREFIXES: readonly [string, string][] = [
+  [
+    "packages/persistence/src/memory/",
+    "the memory adapter is test-only and must run offline (D-P1-08)",
+  ],
+  [
+    "packages/persistence/src/http/",
+    "the http adapter reaches the control plane over HTTPS and must hold no AWS credentials (A-28)",
+  ],
+];
 
 const PERSISTENCE_AWS = "@nightshift/persistence/aws";
 
@@ -360,19 +448,36 @@ export const ARCHITECTURE_RULES: readonly ArchitectureRule[] = [
   },
   {
     id: "AR-2",
-    name: "no harness implementation or provider SDK above the adapter layer (SC-P1-20)",
+    name: "no harness implementation or provider SDK above the adapter layer, except in a named composition root (SC-P1-20, D-P3-12)",
     check: (repo) => {
       const violations: Violation[] = [];
       for (const file of repo.sources) {
         const dir = packageDirOf(file.path);
         if (dir === undefined || !isAboveAdapterLayer(dir)) continue;
+        const root = isCompositionRoot(file.path);
+
         for (const ref of extractImports(file.text)) {
+          // A composition root may name an adapter. That is the whole of the
+          // exception, and it is granted by exact path.
           const why = adapterLeakViolation(ref.specifier);
-          if (why === undefined) continue;
-          violations.push({
-            path: file.path,
-            detail: `line ${ref.line} imports ${why}; ${dir} sits above the adapter layer, so provider-specific code must stay inside a harness-* package`,
-          });
+          if (why !== undefined && !root) {
+            violations.push({
+              path: file.path,
+              detail: `line ${ref.line} imports ${why}; ${dir} sits above the adapter layer, so provider-specific code must stay inside a harness-* package or its app's composition root (${COMPOSITION_ROOTS.join(", ")})`,
+            });
+          }
+          // And inside an app that *has* a composition root, the http
+          // persistence adapter is that root's business too.
+          if (
+            isSubpathOf(ref.specifier, PERSISTENCE_HTTP) &&
+            !root &&
+            APPS_WITH_COMPOSITION_ROOTS.includes(dir)
+          ) {
+            violations.push({
+              path: file.path,
+              detail: `line ${ref.line} imports \`${ref.specifier}\`; ${dir} has a composition root, and wiring an adapter is its job alone`,
+            });
+          }
         }
       }
       return violations;
@@ -380,16 +485,17 @@ export const ARCHITECTURE_RULES: readonly ArchitectureRule[] = [
   },
   {
     id: "AR-3",
-    name: "packages/persistence/src/memory has no AWS SDK import (SC-P1-21)",
+    name: "the memory and http adapters have no AWS SDK import (SC-P1-21, A-28)",
     check: (repo) => {
       const violations: Violation[] = [];
       for (const file of repo.sources) {
-        if (!file.path.startsWith(MEMORY_PREFIX)) continue;
+        const match = AWS_FREE_ADAPTER_PREFIXES.find(([prefix]) => file.path.startsWith(prefix));
+        if (match === undefined) continue;
         for (const ref of extractImports(file.text)) {
           if (!ref.specifier.startsWith("@aws-sdk/")) continue;
           violations.push({
             path: file.path,
-            detail: `line ${ref.line} imports \`${ref.specifier}\`; the memory adapter is test-only and must run offline (D-P1-08)`,
+            detail: `line ${ref.line} imports \`${ref.specifier}\`; ${match[1]}`,
           });
         }
       }

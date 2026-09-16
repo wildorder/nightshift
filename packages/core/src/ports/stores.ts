@@ -213,10 +213,17 @@ export interface MembershipStore {
 }
 
 /**
- * Everything the control plane persists, in one injectable bundle. The execution
- * layer depends on this interface; only an application wires a concrete set.
+ * Everything a *run* persists (T2).
+ *
+ * Split out from {@link NightshiftStores} in P3 because the two halves have
+ * different adapters. `persistence/http` implements this half and no more: the
+ * local machinery reaches the control plane through the API (A-28), and the API
+ * exposes no route that administers a user. Identity is administered by the
+ * operator with an AWS profile, not by a run.
+ *
+ * The execution layer depends on this interface, never on the full set.
  */
-export interface NightshiftStores {
+export interface ProjectStores {
   readonly projects: ProjectStore;
   readonly programContracts: ProgramContractStore;
   readonly runs: RunStore;
@@ -230,6 +237,22 @@ export interface NightshiftStores {
   readonly examinations: ExaminationStore;
   readonly routingDecisions: RoutingDecisionStore;
   readonly artifacts: ArtifactStore;
+}
+
+/**
+ * Principals and their organisations (T2, D-P2-17).
+ *
+ * Above every project, so kept apart from {@link ProjectStores}. An adapter that
+ * cannot administer identity — the http adapter — supplies this half not at all,
+ * and the conformance suite runs its identity section only for adapters that do.
+ */
+export interface IdentityStores {
   readonly users: UserStore;
   readonly memberships: MembershipStore;
 }
+
+/**
+ * Everything the control plane persists, in one injectable bundle. The API
+ * handler takes the full set; only an application wires a concrete one.
+ */
+export interface NightshiftStores extends ProjectStores, IdentityStores {}

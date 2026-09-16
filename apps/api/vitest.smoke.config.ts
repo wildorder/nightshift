@@ -11,7 +11,10 @@ export default defineConfig({
   test: {
     name: "smoke",
     root: fileURLToPath(new URL(".", import.meta.url)),
-    include: ["src/smoke/**/*.smoke.ts"],
+    // The P2 suite by name, not by pattern: `slice.smoke.ts` sits beside it and
+    // has its own config and its own npm script. Running both from one command
+    // would make a slice failure look like a smoke failure.
+    include: ["src/smoke/p2.smoke.ts"],
     exclude: ["**/node_modules/**", "**/dist/**"],
     fileParallelism: false,
     // Real network calls, a stream consumer to wait on, and cleanup that scans.

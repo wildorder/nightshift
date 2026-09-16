@@ -5,9 +5,16 @@
   "type": "module",
   "description": "Cross-package fixtures, conformance suites, and architecture tests.",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@nightshift/api": "*",
+    "@nightshift/cli": "*",
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
+    "@nightshift/execution": "*",
+    "@nightshift/harness": "*",
+    "@nightshift/mcp": "*",
     "@nightshift/persistence": "*",
+    "@nightshift/verification": "*",
     "fast-check": "4.10.0"
   },
   "devDependencies": {
@@ -21,6 +28,18 @@
     "./conformance": {
       "types": "./dist/conformance/persistence-ports.d.ts",
       "default": "./dist/conformance/persistence-ports.js"
+    },
+    "./conformance/harness": {
+      "types": "./dist/conformance/harness.d.ts",
+      "default": "./dist/conformance/harness.js"
+    },
+    "./slice": {
+      "types": "./dist/slice/index.d.ts",
+      "default": "./dist/slice/index.js"
+    },
+    "./harness": {
+      "types": "./dist/harness/scripted.d.ts",
+      "default": "./dist/harness/scripted.js"
     }
   }
 }

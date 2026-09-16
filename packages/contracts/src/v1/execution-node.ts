@@ -57,6 +57,20 @@ export const ExecutionNodeSchema = z.strictObject({
    * the caller asserting they belong together.
    */
   commitSha: CommitShaSchema.nullable(),
+  /**
+   * Why this node ended as it did, when it ended in anything but success.
+   *
+   * Added in P3. The job lifecycle (`p3-vertical-slice.md` §4.3) names it on
+   * every failure path — a worker's own reason from `job.fail`, the offending
+   * paths from a scope violation, `stale_base` with the two commits, "the worker
+   * exited N without reporting completion" — and `job.get` returns it. Killing a
+   * worker must leave durable state, never silence (architecture §4), and a node
+   * that failed for no recorded reason is that silence.
+   *
+   * Optional because a node that has not failed has nothing to say here, not
+   * because it is ever optional on a failure.
+   */
+  outcomeReason: z.string().min(1).optional(),
   createdAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
 });

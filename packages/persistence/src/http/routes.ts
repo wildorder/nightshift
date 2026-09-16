@@ -1,0 +1,78 @@
+/**
+ * Every control-plane path, built in one place.
+ *
+ * The route table in `apps/api/src/handler.ts` is the API surface; this is the
+ * client's copy of it, and the two are held together by the http adapter's tests
+ * running against the real handler. A path built anywhere else in this adapter is
+ * a path nothing checks.
+ */
+import type {
+  AgentId,
+  ArtifactId,
+  CheckpointId,
+  DecisionId,
+  ExaminationId,
+  ExecutionNodeId,
+  JobContractId,
+  ProgramId,
+  ProjectId,
+  RoutingDecisionId,
+  RunId,
+  VerificationId,
+} from "@nightshift/contracts";
+import type { ProgramScope, RunScope } from "@nightshift/core";
+
+export const routes = {
+  projects: () => "/projects",
+  project: (projectId: ProjectId) => `/projects/${projectId}`,
+  programs: (projectId: ProjectId) => `/projects/${projectId}/programs`,
+  program: (projectId: ProjectId, programId: ProgramId) =>
+    `/projects/${projectId}/programs/${programId}`,
+
+  runs: (scope: ProgramScope) => `${routes.program(scope.projectId, scope.programId)}/runs`,
+  run: (scope: ProgramScope, runId: RunId) => `${routes.runs(scope)}/${runId}`,
+
+  /** Everything below a run hangs off this prefix. */
+  inRun: (scope: RunScope) => routes.run(scope, scope.runId),
+
+  state: (scope: RunScope) => `${routes.inRun(scope)}/state`,
+
+  nodes: (scope: RunScope) => `${routes.inRun(scope)}/nodes`,
+  node: (scope: RunScope, nodeId: ExecutionNodeId) => `${routes.nodes(scope)}/${nodeId}`,
+  children: (scope: RunScope, nodeId: ExecutionNodeId) => `${routes.node(scope, nodeId)}/children`,
+
+  jobs: (scope: RunScope) => `${routes.inRun(scope)}/jobs`,
+  job: (scope: RunScope, jobContractId: JobContractId) => `${routes.jobs(scope)}/${jobContractId}`,
+
+  agent: (scope: RunScope, agentId: AgentId) => `${routes.inRun(scope)}/agents/${agentId}`,
+  nodeAgents: (scope: RunScope, nodeId: ExecutionNodeId) => `${routes.node(scope, nodeId)}/agents`,
+
+  events: (scope: RunScope) => `${routes.inRun(scope)}/events`,
+
+  decisions: (scope: RunScope) => `${routes.inRun(scope)}/decisions`,
+  decision: (scope: RunScope, decisionId: DecisionId) => `${routes.decisions(scope)}/${decisionId}`,
+
+  checkpoints: (scope: RunScope) => `${routes.inRun(scope)}/checkpoints`,
+  checkpoint: (scope: RunScope, checkpointId: CheckpointId) =>
+    `${routes.checkpoints(scope)}/${checkpointId}`,
+
+  verification: (scope: RunScope, verificationId: VerificationId) =>
+    `${routes.inRun(scope)}/verifications/${verificationId}`,
+  nodeVerifications: (scope: RunScope, nodeId: ExecutionNodeId) =>
+    `${routes.node(scope, nodeId)}/verifications`,
+
+  examination: (scope: RunScope, examinationId: ExaminationId) =>
+    `${routes.inRun(scope)}/examinations/${examinationId}`,
+  nodeExaminations: (scope: RunScope, nodeId: ExecutionNodeId) =>
+    `${routes.node(scope, nodeId)}/examinations`,
+
+  routingDecision: (scope: RunScope, routingDecisionId: RoutingDecisionId) =>
+    `${routes.inRun(scope)}/routing-decisions/${routingDecisionId}`,
+  nodeRoutingDecisions: (scope: RunScope, nodeId: ExecutionNodeId) =>
+    `${routes.node(scope, nodeId)}/routing-decisions`,
+
+  artifacts: (scope: RunScope) => `${routes.inRun(scope)}/artifacts`,
+  artifact: (scope: RunScope, artifactId: ArtifactId) => `${routes.artifacts(scope)}/${artifactId}`,
+  artifactUploadUrl: (scope: RunScope, artifactId: ArtifactId) =>
+    `${routes.artifact(scope, artifactId)}/upload-url`,
+} as const;

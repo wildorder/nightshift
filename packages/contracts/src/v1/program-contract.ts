@@ -81,22 +81,40 @@ export const RepositorySchema = z.strictObject({
 });
 export type Repository = z.infer<typeof RepositorySchema>;
 
-export const ProgramContractSchema = z.strictObject({
-  ...programScoped,
-  objective: z.string().min(1),
-  repository: RepositorySchema,
-  successCriteria: z.array(SuccessCriterionSchema).min(1),
-  /** Prose guidance for the orchestrator. Unlike `scope`, not machine-enforced. */
-  constraints: z.array(z.string().min(1)),
-  /** The root authority every execution node inherits from and may only narrow. */
-  scope: ScopeSchema,
-  verification: z.array(VerificationStepSchema).min(1),
-  modelPolicy: ModelPolicySchema,
-  examinationPolicy: ExaminationPolicySchema,
-  delegationLimits: DelegationLimitsSchema,
-  costPolicy: CostPolicySchema,
-  /** Default risk when a Job Contract does not state one. */
-  defaultRisk: RiskLevelSchema,
-  createdAt: IsoTimestampSchema,
-});
+const uniqueIds = (items: readonly { readonly id: string }[]): boolean =>
+  new Set(items.map((item) => item.id)).size === items.length;
+
+export const ProgramContractSchema = z
+  .strictObject({
+    ...programScoped,
+    objective: z.string().min(1),
+    repository: RepositorySchema,
+    successCriteria: z.array(SuccessCriterionSchema).min(1),
+    /** Prose guidance for the orchestrator. Unlike `scope`, not machine-enforced. */
+    constraints: z.array(z.string().min(1)),
+    /** The root authority every execution node inherits from and may only narrow. */
+    scope: ScopeSchema,
+    verification: z.array(VerificationStepSchema).min(1),
+    modelPolicy: ModelPolicySchema,
+    examinationPolicy: ExaminationPolicySchema,
+    delegationLimits: DelegationLimitsSchema,
+    costPolicy: CostPolicySchema,
+    /** Default risk when a Job Contract does not state one. */
+    defaultRisk: RiskLevelSchema,
+    createdAt: IsoTimestampSchema,
+  })
+  /**
+   * Step identifiers are what a `Verification` attaches an exit code and a log
+   * artifact to, so two steps sharing one would put two results under the same
+   * label and silently lose a log. Checked here because it is a property of the
+   * authored contract, not of any one runner.
+   */
+  .refine((value) => uniqueIds(value.verification), {
+    message: "verification step ids must be unique within a program contract",
+    path: ["verification"],
+  })
+  .refine((value) => uniqueIds(value.successCriteria), {
+    message: "success criterion ids must be unique within a program contract",
+    path: ["successCriteria"],
+  });
 export type ProgramContract = z.infer<typeof ProgramContractSchema>;

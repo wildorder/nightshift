@@ -22,6 +22,7 @@ import {
   createCountingIdGenerator,
   createFixtures,
   type Fixtures,
+  type IdentityStores,
   isSequenced,
   makeAgent,
   makeCheckpoint,
@@ -36,9 +37,9 @@ import {
   makeRun,
   makeUser,
   makeVerification,
-  type NightshiftStores,
   nextUserId,
   orderEvents,
+  type ProjectStores,
   type RunScope,
 } from "@nightshift/core";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -47,9 +48,9 @@ import { beforeEach, describe, expect, it } from "vitest";
  * Builds a fresh, empty set of stores. Called before every test, so no test can
  * depend on another's writes.
  */
-export type StoresFactory<S extends NightshiftStores = NightshiftStores> = () => Promise<S> | S;
+export type StoresFactory<S extends ProjectStores = ProjectStores> = () => Promise<S> | S;
 
-export interface ConformanceOptions<S extends NightshiftStores> {
+export interface ConformanceOptions<S extends ProjectStores> {
   /**
    * Resolves once every event appended so far has been numbered (D-P2-16).
    *
@@ -58,6 +59,21 @@ export interface ConformanceOptions<S extends NightshiftStores> {
    * unnumbered event — which is the point: they must not pass vacuously.
    */
   readonly settle?: (stores: S) => Promise<void> | void;
+  /**
+   * The adapter's identity half, when it has one (T2).
+   *
+   * Users and memberships sit above every project (D-P2-17), and the http
+   * adapter implements only the project-scoped half: the API exposes no route
+   * that administers a user, because identity is administered by the operator
+   * with an AWS profile rather than by a run. So the identity section runs for
+   * adapters that supply this and is **skipped with a message** for those that do
+   * not — never silently passed, which would let a real gap look like a green
+   * suite.
+   *
+   * This is a deliberate amendment in the D-P2-16 tradition, recorded in the P3
+   * contract §12, not a quiet edit.
+   */
+  readonly identity?: (stores: S) => IdentityStores;
 }
 
 /**
@@ -91,7 +107,7 @@ const twoWorlds = (): readonly [Fixtures, Fixtures] => {
   return [createFixtures(ids), createFixtures(ids)];
 };
 
-export const describePortConformance = <S extends NightshiftStores>(
+export const describePortConformance = <S extends ProjectStores>(
   name: string,
   factory: StoresFactory<S>,
   options: ConformanceOptions<S> = {},
@@ -352,39 +368,54 @@ export const describePortConformance = <S extends NightshiftStores>(
       });
     });
 
-    describe("identity (T9, D-P2-17)", () => {
-      it("stores and reads a user, and returns undefined for an unknown subject", async () => {
-        const user = makeUser(a);
-        await stores.users.put(user);
-        expect(await stores.users.get(user.userId)).toEqual(user);
-        expect(await stores.users.get(nextUserId(a))).toBeUndefined();
-      });
+    const identityOf = options.identity;
+    const identitySection = identityOf === undefined ? describe.skip : describe;
+    identitySection(
+      identityOf === undefined
+        ? "identity (T9, D-P2-17) — skipped: this adapter supplies no identity stores"
+        : "identity (T9, D-P2-17)",
+      () => {
+        /** Non-null by construction: `describe.skip` above when the option is absent. */
+        const identity = (): IdentityStores => {
+          if (identityOf === undefined) throw new Error("no identity stores");
+          return identityOf(stores);
+        };
 
-      it("lists every org a user belongs to, and only that user's memberships", async () => {
-        const several = nextUserId(a);
-        const single = nextUserId(b);
-        const orgOne = a.ids.next("org");
-        const orgTwo = a.ids.next("org");
+        it("stores and reads a user, and returns undefined for an unknown subject", async () => {
+          const user = makeUser(a);
+          await identity().users.put(user);
+          expect(await identity().users.get(user.userId)).toEqual(user);
+          expect(await identity().users.get(nextUserId(a))).toBeUndefined();
+        });
 
-        await stores.memberships.put(makeMembership(several, orgTwo));
-        await stores.memberships.put(makeMembership(several, orgOne));
-        await stores.memberships.put(makeMembership(single, orgOne));
+        it("lists every org a user belongs to, and only that user's memberships", async () => {
+          const several = nextUserId(a);
+          const single = nextUserId(b);
+          const orgOne = a.ids.next("org");
+          const orgTwo = a.ids.next("org");
+          const { memberships } = identity();
 
-        const held = await stores.memberships.listByUser(several);
-        expect(held.map((m) => m.orgId)).toEqual([orgOne, orgTwo].sort());
-        expect(held.every((m) => m.userId === several)).toBe(true);
-        expect((await stores.memberships.listByUser(single)).map((m) => m.orgId)).toEqual([orgOne]);
-        expect(await stores.memberships.listByUser(nextUserId(b))).toEqual([]);
-      });
+          await memberships.put(makeMembership(several, orgTwo));
+          await memberships.put(makeMembership(several, orgOne));
+          await memberships.put(makeMembership(single, orgOne));
 
-      it("holds at most one membership per user and org", async () => {
-        const userId = nextUserId(a);
-        const orgId = a.ids.next("org");
-        await stores.memberships.put(makeMembership(userId, orgId));
-        await stores.memberships.put(makeMembership(userId, orgId));
-        expect(await stores.memberships.listByUser(userId)).toHaveLength(1);
-      });
-    });
+          const held = await memberships.listByUser(several);
+          expect(held.map((m) => m.orgId)).toEqual([orgOne, orgTwo].sort());
+          expect(held.every((m) => m.userId === several)).toBe(true);
+          expect((await memberships.listByUser(single)).map((m) => m.orgId)).toEqual([orgOne]);
+          expect(await memberships.listByUser(nextUserId(b))).toEqual([]);
+        });
+
+        it("holds at most one membership per user and org", async () => {
+          const userId = nextUserId(a);
+          const orgId = a.ids.next("org");
+          const { memberships } = identity();
+          await memberships.put(makeMembership(userId, orgId));
+          await memberships.put(makeMembership(userId, orgId));
+          expect(await memberships.listByUser(userId)).toHaveLength(1);
+        });
+      },
+    );
 
     describe("event append is idempotent", () => {
       it("stores one event for a duplicate idempotency key", async () => {
@@ -688,7 +719,10 @@ export const describePortConformance = <S extends NightshiftStores>(
           stores.examinations.listByNode,
           stores.routingDecisions.listByNode,
           stores.artifacts.listByRun,
-          stores.memberships.listByUser,
+          // The identity half, only for an adapter that has one.
+          ...(options.identity === undefined
+            ? []
+            : [options.identity(stores).memberships.listByUser]),
         ];
         for (const method of readMethodsRequiringScope) {
           expect(method.length).toBeGreaterThanOrEqual(1);

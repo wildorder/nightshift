@@ -1,0 +1,7 @@
+{
+  "name": "nightshift-slice-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The repository a Nightshift slice job works in. No dependencies: verification must need no install."
+}

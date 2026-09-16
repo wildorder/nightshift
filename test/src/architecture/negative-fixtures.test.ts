@@ -124,6 +124,55 @@ describe("AR-1 negative fixtures: contracts and core purity", () => {
 describe("AR-2 negative fixtures: no harness or provider SDK above the adapter layer", () => {
   const r = rule("AR-2");
 
+  /**
+   * The exception D-P3-12 grants, and its boundary. The composition root may
+   * name an adapter; every other file in the same app still may not, which is
+   * what stops "one named module" from becoming "anywhere in apps/mcp".
+   */
+  it("permits a harness implementation in the composition root, and nowhere else", () => {
+    const permitted = r.check(
+      makeRepo({
+        sources: [
+          staticImport("apps/mcp/src/compose.ts", "@nightshift/harness-claude"),
+          staticImport("apps/mcp/src/compose.ts", "@nightshift/persistence/http"),
+        ],
+      }),
+    );
+    expect(formatViolations(permitted)).toEqual([]);
+
+    const refused = r.check(
+      makeRepo({
+        sources: [
+          staticImport("apps/mcp/src/server.ts", "@nightshift/harness-claude"),
+          staticImport("apps/mcp/src/orchestrator.ts", "@nightshift/persistence/http"),
+          // A file next to the composition root is not the composition root.
+          staticImport("apps/mcp/src/compose-helpers.ts", "@nightshift/harness-codex"),
+        ],
+      }),
+    );
+    expect(offendingPaths(refused)).toEqual([
+      "apps/mcp/src/compose-helpers.ts",
+      "apps/mcp/src/orchestrator.ts",
+      "apps/mcp/src/server.ts",
+    ]);
+  });
+
+  /**
+   * The http adapter is only a composition root's business inside an app that
+   * has one. `apps/cli` is a thin client of the same API and imports it freely.
+   */
+  it("leaves the http adapter alone in an app with no composition root", () => {
+    const violations = r.check(
+      makeRepo({
+        sources: [
+          staticImport("apps/cli/src/login.ts", "@nightshift/persistence/http"),
+          staticImport("apps/api/src/http-adapter.ts", "@nightshift/persistence/http"),
+        ],
+      }),
+    );
+    expect(formatViolations(violations)).toEqual([]);
+  });
+
   it("reports harness implementations and provider SDKs above the adapter layer", () => {
     const violations = r.check(
       makeRepo({
@@ -165,8 +214,17 @@ describe("AR-2 negative fixtures: no harness or provider SDK above the adapter l
   });
 });
 
-describe("AR-3 negative fixtures: the memory adapter stays offline", () => {
+describe("AR-3 negative fixtures: the memory and http adapters stay offline", () => {
   const r = rule("AR-3");
+
+  it("reports an AWS SDK import under packages/persistence/src/http", () => {
+    const violations = r.check(
+      makeRepo({
+        sources: [staticImport("packages/persistence/src/http/stores.ts", "@aws-sdk/client-s3")],
+      }),
+    );
+    expect(offendingPaths(violations)).toEqual(["packages/persistence/src/http/stores.ts"]);
+  });
 
   it("reports an AWS SDK import under packages/persistence/src/memory", () => {
     const violations = r.check(
@@ -232,7 +290,10 @@ describe("AR-5 negative fixtures: tsconfig reference direction", () => {
       makeRepo({
         tsconfigs: [
           tsconfig("packages/core", ["../persistence"]),
-          tsconfig("apps/cli", ["../../packages/execution"]),
+          // Still forbidden after D-P3-12: the CLI gained `core`, `persistence`
+          // and `execution`, but naming a harness implementation is the
+          // composition-root privilege of `apps/mcp` alone.
+          tsconfig("apps/cli", ["../../packages/harness-claude"]),
           tsconfig("packages/mystery", []),
         ],
       }),

@@ -11,11 +11,18 @@
     }
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
-    "@nightshift/persistence": "*",
     "@nightshift/execution": "*",
+    "@nightshift/harness": "*",
+    "@nightshift/harness-claude": "*",
+    "@nightshift/persistence": "*",
     "@nightshift/routing": "*",
-    "@nightshift/verification": "*"
+    "@nightshift/verification": "*",
+    "zod": "4.6.4"
+  },
+  "bin": {
+    "nightshift-mcp": "./dist/bin/nightshift-mcp.js"
   }
 }

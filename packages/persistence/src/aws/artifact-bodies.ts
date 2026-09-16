@@ -8,9 +8,13 @@
  */
 import { createHash } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
-import type { ArtifactId } from "@nightshift/contracts";
-import type { RunScope } from "@nightshift/core";
-import { artifactPrefix } from "./keys.js";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import {
+  type ArtifactBodyStore,
+  type ArtifactUploadSigner,
+  type ArtifactUploadTarget,
+  artifactObjectKey,
+} from "@nightshift/core";
 
 export interface PutObjectInput {
   readonly Bucket: string;
@@ -48,32 +52,10 @@ export const s3ObjectClient = (s3: S3Client): ObjectClient => ({
   },
 });
 
-export interface StoredBody {
-  /** `s3://<bucket>/<key>`, the form `Artifact.uri` records. */
-  readonly uri: string;
-  readonly key: string;
-  readonly sizeBytes: number;
-  /** Lowercase hex, the form `Artifact.sha256` records. */
-  readonly sha256: string;
-}
-
-export interface ArtifactBodyStore {
-  put(
-    scope: RunScope,
-    artifactId: ArtifactId,
-    body: Uint8Array | string,
-    contentType: string,
-  ): Promise<StoredBody>;
-  get(scope: RunScope, artifactId: ArtifactId): Promise<Uint8Array | undefined>;
-}
-
 export interface ArtifactBodyStoreConfig {
   readonly bucketName: string;
   readonly objects: ObjectClient;
 }
-
-export const artifactObjectKey = (scope: RunScope, artifactId: ArtifactId): string =>
-  `${artifactPrefix(scope)}${artifactId}`;
 
 export const createArtifactBodyStore = (config: ArtifactBodyStoreConfig): ArtifactBodyStore => ({
   put: async (scope, artifactId, body, contentType) => {
@@ -102,3 +84,86 @@ export const createArtifactBodyStore = (config: ArtifactBodyStoreConfig): Artifa
       Key: artifactObjectKey(scope, artifactId),
     }),
 });
+
+/** How long a signed upload URL stays valid (T2). Minutes: long enough for a
+ * multi-megabyte log on a slow connection, short enough that a leaked URL is
+ * worthless by the time anyone finds it. */
+export const UPLOAD_URL_TTL_SECONDS = 15 * 60;
+
+export interface ArtifactUploadSignerConfig {
+  readonly bucketName: string;
+  readonly s3: S3Client;
+  /** Injected so a test can assert the URL without reaching AWS. */
+  readonly sign?: (input: {
+    readonly bucket: string;
+    readonly key: string;
+    readonly contentType: string;
+    readonly sizeBytes: number;
+    readonly expiresIn: number;
+  }) => Promise<string>;
+  readonly now?: () => number;
+}
+
+/**
+ * Signs a `PUT` for one artifact body (T2, A-08).
+ *
+ * The function signs; the client uploads. Nothing here touches S3, which is why
+ * the API's IAM statement needs only `s3:PutObject` and no read: signing is a
+ * local computation over the credentials the role already holds, and the
+ * permission is what the *signature* conveys to its bearer.
+ *
+ * ## Why `signableHeaders` is not optional
+ *
+ * Putting `ContentType` and `ContentLength` on the command is **not** enough.
+ * Probed against the deployed bucket on 2026-09-15:
+ *
+ * | Signing                                   | wrong content type | wrong length |
+ * |-------------------------------------------|--------------------|--------------|
+ * | `ContentType` on the command only         | 200 accepted       | 200 accepted |
+ * | `signableHeaders: content-type`            | 403 refused        | 200 accepted |
+ * | `signableHeaders: content-type` + `-length`| 403 refused        | 403 refused  |
+ *
+ * By default a presigned PUT hoists neither header into the signature, so the
+ * declared type and size would be documentation rather than enforcement. Both
+ * are signed, so A-08's declared size is a real bound and the content type
+ * cannot drift from what the `Artifact` record will claim. A client must send
+ * exactly the `content-type` and `content-length` it asked to have signed.
+ */
+export const createArtifactUploadSigner = (
+  config: ArtifactUploadSignerConfig,
+): ArtifactUploadSigner => {
+  const now = config.now ?? Date.now;
+  const sign =
+    config.sign ??
+    (({ bucket, key, contentType, sizeBytes, expiresIn }) =>
+      getSignedUrl(
+        config.s3,
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          ContentType: contentType,
+          ContentLength: sizeBytes,
+        }),
+        { expiresIn, signableHeaders: new Set(["content-type", "content-length"]) },
+      ));
+
+  return {
+    sign: async (request): Promise<ArtifactUploadTarget> => {
+      const key = artifactObjectKey(request.scope, request.artifactId);
+      const uploadUrl = await sign({
+        bucket: config.bucketName,
+        key,
+        contentType: request.contentType,
+        sizeBytes: request.sizeBytes,
+        expiresIn: UPLOAD_URL_TTL_SECONDS,
+      });
+      return {
+        uri: `s3://${config.bucketName}/${key}`,
+        uploadUrl,
+        key,
+        contentType: request.contentType,
+        expiresAt: new Date(now() + UPLOAD_URL_TTL_SECONDS * 1000).toISOString(),
+      };
+    },
+  };
+};
