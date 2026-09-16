@@ -9,6 +9,15 @@
   "references": [
     {
       "path": "../../packages/contracts"
+    },
+    {
+      "path": "../../packages/core"
+    },
+    {
+      "path": "../../packages/persistence"
+    },
+    {
+      "path": "../../packages/execution"
     }
   ]
 }

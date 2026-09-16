@@ -11,6 +11,13 @@
     }
   },
   "dependencies": {
-    "@nightshift/contracts": "*"
+    "@nightshift/contracts": "*",
+    "@nightshift/core": "*",
+    "@nightshift/execution": "*",
+    "@nightshift/persistence": "*",
+    "zod": "4.6.4"
+  },
+  "bin": {
+    "nightshift": "./dist/bin/nightshift.js"
   }
 }

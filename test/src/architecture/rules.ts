@@ -152,6 +152,12 @@ export const PERMITTED_REFERENCES: Readonly<Record<string, readonly string[]>> =
     "packages/execution",
     "packages/verification",
     "apps/api",
+    // P3 (T7 deliverable 8): the CLI's commands are held to the **real**
+    // handler here. `apps/cli` may not reference `apps/api`, so its own tests
+    // drive an injected transport and say what that leaves unproven; `test`
+    // references both, so this is where a route the CLI spells differently
+    // from the API becomes a 404.
+    "apps/cli",
     "apps/mcp",
   ],
 };

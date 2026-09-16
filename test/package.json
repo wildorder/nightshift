@@ -7,6 +7,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "@nightshift/api": "*",
+    "@nightshift/cli": "*",
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
     "@nightshift/execution": "*",
