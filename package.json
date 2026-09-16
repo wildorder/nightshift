@@ -28,6 +28,7 @@
     "check:architecture": "vitest run --project test",
     "deploy": "node scripts/deploy.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "slice": "node scripts/slice.mjs",
     "admin:user": "node scripts/admin-user.mjs",
     "verify": "npm run build && npm run typecheck && npm run lint && npm test && npm run synth && npm run check:sterility"
   },

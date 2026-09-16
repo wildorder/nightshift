@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "projectId": "proj_FXTR00000000000000000000P1",
+  "programId": "prog_FXTR00000000000000000000G1",
+  "objective": "Extend the fixture's math module with a median helper, verified by its own tests.",
+  "repository": {
+    "url": "file://nightshift-slice-fixture",
+    "baseBranch": "main",
+    "programBranch": "program/slice"
+  },
+  "successCriteria": [
+    { "id": "SC-01", "outcome": "median returns the middle value of an odd-length list." },
+    { "id": "SC-02", "outcome": "The existing tests still pass." }
+  ],
+  "constraints": [
+    "Change nothing outside src/ and test/.",
+    "Add no dependency: verification runs on a clean checkout with no install."
+  ],
+  "scope": {
+    "includes": ["src/**", "test/**"],
+    "excludes": ["src/generated/**"],
+    "permissions": ["fs.read", "fs.write", "shell.exec"],
+    "forbiddenActions": ["push any ref", "install a dependency"]
+  },
+  "verification": [
+    {
+      "id": "test",
+      "command": "node --test",
+      "description": "The fixture's own tests, on a clean checkout."
+    },
+    {
+      "id": "shape",
+      "command": "node -e \"import('./src/index.js').then(m => { if (typeof m.sum !== 'function') { throw new Error('src/index.js must still export sum'); } })\"",
+      "description": "A second, cheap step, so a Verification carries more than one command."
+    }
+  ],
+  "modelPolicy": {
+    "allowedProviders": ["anthropic"],
+    "allowedModels": ["claude-sonnet-5"],
+    "forbiddenModels": []
+  },
+  "examinationPolicy": {
+    "low": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "medium": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "high": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    }
+  },
+  "delegationLimits": { "maxDepth": 1, "maxConcurrency": 1 },
+  "costPolicy": { "maxWallClockSeconds": 900 },
+  "defaultRisk": "low",
+  "createdAt": "2026-09-15T00:00:00.000Z"
+}

@@ -10,7 +10,9 @@ export default defineConfig({
     passWithNoTests: true,
     // Never collect compiled output. The build excludes *.test.ts, so this is
     // belt-and-braces against a stray emitted test.
-    exclude: ["**/node_modules/**", "**/dist/**", "**/cdk.out/**"],
+    // `**/fixtures/**` keeps the slice fixture's own `node --test` files out:
+    // they are run by a verification step inside a materialised copy, never here.
+    exclude: ["**/node_modules/**", "**/dist/**", "**/cdk.out/**", "**/fixtures/**"],
     // P1 tests are offline and deterministic; nothing should need longer.
     testTimeout: 20_000,
     hookTimeout: 20_000,

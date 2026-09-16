@@ -31,6 +31,14 @@
     "./conformance/harness": {
       "types": "./dist/conformance/harness.d.ts",
       "default": "./dist/conformance/harness.js"
+    },
+    "./slice": {
+      "types": "./dist/slice/index.d.ts",
+      "default": "./dist/slice/index.js"
+    },
+    "./harness": {
+      "types": "./dist/harness/scripted.d.ts",
+      "default": "./dist/harness/scripted.js"
     }
   }
 }
