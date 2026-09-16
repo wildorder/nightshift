@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p3-vertical-slice` |
 | Source stage | Stage 3 (Nightshift MCP + First Local Vertical Slice) |
-| Status | **Complete.** Contract ratified 2026-09-15; built 2026-09-15/16; merged into `v1` 2026-09-16 as `ea53fad` (PR #14); the deferred `nightshift login` leg closed by the operator 2026-09-16 (§13.4). Build-time decisions in §12 marked "for human ratification" still await it. |
+| Status | **Complete except T11.** Contract ratified 2026-09-15; T1 … T10 built 2026-09-15/16 and merged into `v1` 2026-09-16 as `ea53fad` (PR #14); the deferred `nightshift login` leg closed by the operator 2026-09-16 (§13.4). **Reopened 2026-09-16 for T11** (stable hostnames and a zero-flag login, D-P3-18), which the exit gate showed to be a defect in T7's deliverable. Build-time decisions in §12 marked "for human ratification" still await it. |
 | Depends on | P1 Foundation (complete), P2 Control Plane (deployed 2026-09-15) |
 | Blocking decision | **O-04** local authentication to Nightshift MCP, resolved by D-P3-01 |
 
@@ -50,6 +50,7 @@ Settled by P2. One account, no development account (A-17).
 | H-P3-02 | A Cognito user for the operator, with `User` and `Membership` records in the table | The interactive login (T7) can only sign in a user the operator created; no self sign-up exists. | **satisfied 2026-09-15**: user `58819310-5081-70f2-81fe-66601586db46` (`tim+nightshift@wingitlabs.com`, `CONFIRMED`, created by hand in the console after a first attempt was deleted), `User` and `Membership` rows keyed by that sub, org `org_01M2K3A96ZZ7EJE93PQWR845T3`. The invitation appeared not to arrive because the recipient domain's DNS was down (its registrar account was suspended), not because of Cognito; see §12. |
 | H-P3-03 | Redeploy the API stack after T2 | The control plane gains routes, an S3 permission and a dependency. Deploys run from a developer machine (D-P2-09). | open |
 | H-P3-04 | Claude Code signed in on the machine that runs the deployed slice | The worker is `claude -p`, billed to the operator's subscription. There is no API-key spend in P3. | satisfied on the Mac mini |
+| H-P3-05 | An `NS` record for `nightshift.wildorder.dev` in the `wildorder.dev` hosted zone, pointing at the four nameservers the new zone is assigned on its first deploy (T11) | The zone lives in the Nightshift account (A-17); its parent lives in the wildorder management account, which no Nightshift credential may touch. One record, once. | open, after T11's first data-stack deploy |
 
 **Explicitly not required.** No Bedrock access, no second harness, no AgentCore,
 no new AWS resource beyond an IAM statement and a Lambda dependency. If a task
@@ -81,6 +82,7 @@ carries the short form.
 | D-P3-14 | **`@modelcontextprotocol/sdk` pinned at 1.30.0**, the version AGENTS.md observed on 2026-09-13 and still the latest on 2026-09-15. It appears in `apps/mcp` and, for the scripted harness's client, in `test`. Nowhere else. | The pin AGENTS.md reserved for P3. |
 | D-P3-15 | **Worker permissions** use a small vocabulary on `Scope.permissions`: `fs.read`, `fs.write`, `shell.exec`. The adapter maps them to the harness's tool policy and runs the worker non-interactively, with permission prompts resolved by that policy and never by a human. Git write operations are never granted to a worker. | The vocabulary already appears in P1's fixtures. Mapping it inside the adapter is what the source plan's harness section asks for: sandbox configuration is a harness-specific concern. Scope containment is then enforced twice, by tool policy during the job and structurally at commit time (D-P3-05). |
 | D-P3-16 | **The user pool never depends on the invitation email.** The operator bootstrap finds or creates the Cognito user with the invitation suppressed and a permanent password set; the invitation template carries the hosted sign-in URL; delivery-error logging (`userNotification`, ERROR) moves into the CDK data stack, where it was enabled by hand on 2026-09-15. | The day's incident: an invitation that appeared lost was a dead recipient domain, and it took an afternoon to prove because the pool logged nothing. Cognito's default mailer is best-effort, capped at 50 a day, and keeps its own suppression list. A hosted zone and SES sender for `nightshift.wildorder.dev` are deferred until an invitation fails with working DNS. |
+| D-P3-18 | **Nightshift's public hostnames are stable and owned.** A public hosted zone `nightshift.wildorder.dev` in the Nightshift account, delegated from `wildorder.dev`; per stage, `api.<stage>.nightshift.wildorder.dev` in front of the HTTP API and `auth.<stage>.nightshift.wildorder.dev` in front of the Cognito hosted UI. The CLI ships the stage-to-hostname rule and the interactive client id as defaults, so **`nightshift login` takes no flags**; `--stage` and the explicit flags remain for developers and are not shown to users. Generated hostnames stay reachable but are never stored in a profile. | Nightshift is one hosted control plane, and a user should no more type its URL than a `gh` user types `github.com`. The obstacle was that the URL was not static: `4xnsx809u6.execute-api…` is an identifier API Gateway generated, and D-P2-07 makes the API stack disposable, so replacing it would have broken every installed CLI; the Cognito domain embeds the account id. The stage sits in the hostname from the start so that a `prod` stage later is a new record and a one-constant change to the CLI's default, never a rename. Found by the first human login (§13.4), so it is P3's to finish. |
 | D-P3-17 | **Starting a run is one CLI verb**, `nightshift run <contract> [--remote]`. Its first half, validate the contract and persist program, run, root node and initial checkpoint, is identical in both modes; the local form then prints the run id for the orchestrator's MCP server to attach to, and P8 adds the dispatch call behind `--remote`. The MCP `run.start` stays as a convenience and calls the same function. | The vision names `nightshift run` as the CLI entry and A-16 says the CLI calls the APIs a Studio would. One command with one flag is what makes SC-16's "same canonical model" a workflow rather than a claim, and it keeps authorizing the work a human act at a terminal, distinct from the orchestrator that later does it. |
 
 ### Non-guarantees, stated so they are not mistaken for guarantees
@@ -349,6 +351,8 @@ plane is (A-06).
   `skills/nightshift/`.
 - `apps/cli`: `login`, `logout`, `whoami`, `run` (local form only), `project
   create`, `id`.
+- T11 (D-P3-18): the hosted zone, two certificates, the API and Cognito custom
+  domains, the CLI defaults, and the invitation template on the new domain.
 - `apps/api` and `infra/cdk`: the additions in §4.8, their tests, the smoke
   suite extension, one redeploy.
 - `core`: run and agent transition tables, the stores split, the artifact-body
@@ -411,6 +415,10 @@ plus four P3 additions that make the invariants structural rather than observed.
   real Claude Code orchestrator through the Nightshift skill, completes the
   fixture job against the deployed control plane, and the lifecycle above is
   readable from `GET …/state` and `GET …/events` alone.
+- **SC-P3-18** `nightshift login` with no flags signs the operator in on a
+  machine with no stored profile, on macOS and on Windows, against
+  `api.dev.nightshift.wildorder.dev`; and the generated API Gateway and
+  Cognito hostnames appear in no profile the CLI writes (D-P3-18).
 - **SC-P3-17** The P2 smoke suite, extended for §4.8, passes against the
   redeployed stack, and every P1 and P2 gate is unchanged.
 
@@ -520,6 +528,7 @@ Forbidden:
 | T8 | The Claude Code adapter | T1 | Claude Code, for the manual check |
 | T9 | Fixture repository, scripted harness and the offline slice suite | T6 | git |
 | T10 | Deployed slice, skill run-through and as-built | T7, T8, T9 | AWS, Claude Code |
+| T11 | Stable hostnames and a zero-flag login | T7, T10 | AWS; one NS record in the wildorder account (H-P3-05) |
 
 ```text
 T1 ─────┬──────────────── T8 ─────────┐
@@ -530,7 +539,11 @@ T2 ──┬──┘          ├── T6 ── T9 ──────┼─�
                └────── T7 ────────────┘
 ```
 
-**Eight of ten tasks need neither AWS nor a model.** T1, T2 and T4 are
+T11 was added on 2026-09-16 after the exit gate; its spec is in
+`tasks/p3-vertical-slice/T11-stable-hostnames.md` and it depends on nothing
+still unbuilt.
+
+**Eight of ten original tasks need neither AWS nor a model.** T1, T2 and T4 are
 independent and can start together; T2 is the one with a deploy at its end and
 should start first. T5 and T6 are one line of work and should stay in one
 context. T8 can be built and unit-tested on recorded harness output before T10
@@ -569,6 +582,7 @@ Specs live in `tasks/p3-vertical-slice/`.
 | 2026-09-16 | **Nightshift shapes the commit message it owns.** A real worker's `job.complete` summary is a paragraph, and `git commit -m` makes everything before the first blank line the subject — so the first integrated commit carried a 700-character subject. `commitMessageFor` derives a subject inside 72 characters and keeps the whole summary as the body. A change to how A-29's "Nightshift owns every commit" is executed, not to what it says. | Agent, for human ratification |
 | 2026-09-16 | **SC-P3-16's `nightshift login` leg is deferred to a human, and everything else in it is done.** The interactive app client allows `ALLOW_REFRESH_TOKEN_AUTH` only, so a refresh token comes from the hosted UI with the operator's password and from nowhere else; `admin/user.ts` never stores that password, by design. An agent cannot complete the flow, and the alternatives — resetting the operator's password, or a throwaway user the client's flow list rules out anyway — are worse than leaving it. The exit-gate run therefore used the machine client's credentials grant, which `compose.ts` supports as a documented path. §13.4 records what that leaves unproven (the browser leg and the exchange against real Cognito), where the rest is proven, and the three commands that close it. | Agent, for human ratification |
 | 2026-09-16 | **Two observations recorded rather than fixed**, because fixing either at the exit gate would settle a rule the contract left open. The program node stays `running` after a run succeeds — §4.3 covers job nodes and says P3 does not decide a run's outcome from its nodes, so no terminal status for the root is specified. And `RoutingDecision.usage` stays `{}`: the record is written at `queued` and is create-or-confirm, so carrying the adapter's token counts or the wall clock would need a widened `Harness` port and a mutable route. Both belong to P4/P6. | Agent, for human ratification |
+| 2026-09-16 | **P3 reopened for T11; D-P3-18 ratified.** The operator's first login from a second machine took a three-flag command whose values are stack outputs a user cannot know, and the API value is a hostname D-P2-07 lets us discard. Judged a defect in T7's deliverable rather than P4 work: P4's theme is harness neutrality, and hosted zones do not belong in its risk posture. Considered and rejected: an unauthenticated discovery document on the API (would loosen "every route is authorized" and still make the user type an endpoint), and buying `nightshift.dev` (parked at GoDaddy since 2023, renewed 2026-08; a brand decision the product has not earned). | Human |
 | 2026-09-16 | **`nightshift login` always prints the authorization URL, gains `--no-browser`, and gains a paste path.** Found the moment a human ran SC-P3-16's deferred leg: from an SSH session into the Mac mini, `open` reported success, a browser window appeared on the Mac mini's own desktop, and the CLI, taking success at its word, printed no URL, so the operator sat waiting on a listener they could not reach. The opener's answer means "a browser was launched on this machine", not "the operator can see it". The command now prints the URL in every case and says which loopback port the browser must reach; `--no-browser` skips the opener for remote sessions. And because the address the remote browser then fails to reach carries the whole authorization result, the command also reads one line from the terminal and accepts that pasted address, a bare query string, or a bare code (`apps/cli/src/paste.ts`), checking `state` exactly as the listener does; whichever arrives first, callback or paste, completes the login. This is the flow Claude Code and the older `gcloud` use, minus a hosted page to display the code: Cognito has no device-authorization grant to poll (P2 T9), and a hosted page would need an unauthenticated route on an API whose every route is behind the authorizer (A-19). A bare code is accepted without a `state` check, stated as a trade: the human who typed it is the one that check protects, and the code is useless without the PKCE verifier that never left the process. Seventeen tests added across `paste.test.ts`, `login.test.ts` and `environment.test.ts`. The last file exists because the first real paste was read and silently discarded: the terminal reader closed its readline interface before resolving, `close` fires synchronously, and the close handler resolved "no terminal" first. The login tests had injected a fake paste source, so the real reader had never run; it now takes any stream and is tested over one. The three-command recipe in §13.4 stands, with `--no-browser` for a remote operator. | Agent, for human ratification |
 | 2026-09-16 | **Line endings are Nightshift's, not the machine's.** `identityOverrides` now prepends `core.autocrlf=false` and `core.eol=lf` to every Nightshift `git` invocation. Found by CI's windows leg, but it is not a test fix: A-29 says Nightshift owns every commit, and owning one means owning its bytes. `completeJob` snapshots a worktree into a commit and `cleanCheckout` materialises that same commit again for verification — with `core.autocrlf=true`, the default on a Windows installation, those are not the same bytes, so a worker writes `\n`, verification reads `\r\n`, and a step comparing file contents fails for a reason invisible in the diff. Only the implicit platform conversion is disabled: a repository that declares `text eol=crlf` in `.gitattributes` still gets CRLF, because attributes outrank both settings. | Agent, for human ratification |
 
@@ -909,6 +923,8 @@ amendment in §12), never silently.
 
 ### 13.10 Carried forward
 
+- **T11** (D-P3-18): stable hostnames and the zero-flag login. Open; its
+  as-built goes here when done, and closes the program.
 - The root node's terminal status and `RoutingDecision.usage` (§13.5), both
   for P4/P6.
 - The P2 open items still stand: budget email delivery unconfirmed,
