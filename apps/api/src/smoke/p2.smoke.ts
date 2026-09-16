@@ -16,10 +16,13 @@
  * first, so a half-cleaned run can be finished by hand. Two smoke runs must not
  * overlap: the conformance phase uses deterministic identifiers.
  */
-import { ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import {
+  type Agent,
+  AgentSchema,
   AppendEventResponseSchema,
   type Artifact,
+  ArtifactUploadResponseSchema,
   type Event,
   EventPageSchema,
   MAX_INLINE_PAYLOAD_BYTES,
@@ -27,19 +30,26 @@ import {
   ProgramIdSchema,
   ProjectIdSchema,
   ProjectPageSchema,
+  type RoutingDecision,
   RunIdSchema,
   RunStateResponseSchema,
   UserIdSchema,
 } from "@nightshift/contracts";
 import {
   createUlidIdGenerator,
+  FIXTURE_COMMIT,
   type Fixtures,
   findSequenceGaps,
   highestSequence,
+  makeAgent,
+  makeCheckpoint,
+  makeDecision,
   makeEvent,
+  makeJobContract,
   makeProgramContract,
   makeRootNode,
   makeRun,
+  makeVerification,
   pendingCount,
   type RunScope,
 } from "@nightshift/core";
@@ -125,6 +135,17 @@ const appendBody = (f: Fixtures, overrides: Partial<Record<keyof Event, unknown>
 };
 
 const rootNodeFor = (f: Fixtures) => makeRootNode(f, { status: "validated" });
+
+/**
+ * A second run under project A's program, used only by the P3 lifecycle
+ * assertions. Separate so the run the state-reconstruction test reads (SC-P2-10)
+ * is never moved out from under it.
+ */
+const lifecycleRunId = ids.next("run");
+const lifecycleRootNodeId = ids.next("node");
+const lifecycleScope: RunScope = { ...worldA.scope, runId: lifecycleRunId };
+const lifecycleWorld: Fixtures = { ids, scope: lifecycleScope, rootNodeId: lifecycleRootNodeId };
+const lifecycleRunPath = `${programPath(worldA)}/runs/${lifecycleRunId}`;
 
 // --- Conformance bookkeeping (phase 2) ------------------------------------------------
 // The suite expects fresh stores per test, and its identifiers repeat between tests,
@@ -216,6 +237,11 @@ afterAll(async () => {
     return undefined;
   });
 
+  // `runRecord` and `event` build one partition per run, shared by every
+  // run-scoped record type — NODE, JOB, AGENT, DEC, CKPT, VER, EXAM, ROUTE, ART
+  // — so the job contracts, agents and examinations P3 adds need no new entry
+  // here: emptying the run's partition removes them all. What did need adding is
+  // the second run (`lifecycleRunId`), which has partitions of its own.
   const partitions = [
     keys.user(machineSubject).PK,
     keys.orgProject(orgId, worldA.scope.projectId).PK,
@@ -225,6 +251,9 @@ afterAll(async () => {
       keys.runRecord(f.scope, "NODE", rootNodeId).PK,
       keys.event(f.scope, rootNodeId).PK,
     ]),
+    keys.run(lifecycleScope, lifecycleRunId).PK,
+    keys.runRecord(lifecycleScope, "NODE", lifecycleRootNodeId).PK,
+    keys.event(lifecycleScope, lifecycleRootNodeId).PK,
   ];
   await step("smoke partitions", () => deletePartitions(clients.table, tableName, partitions));
   for (const f of [worldA, worldB]) {
@@ -276,6 +305,8 @@ describePortConformance(
     return createAwsStores({ tableName, table: trackingTable });
   },
   {
+    // The deployed adapter implements both halves of the split (T2).
+    identity: (deployed) => deployed,
     settle: async () => {
       await waitForNumbering(stores.events, writtenRuns());
     },
@@ -448,5 +479,272 @@ describe("phase 3: live-only assertions", () => {
     expect(state.run).toEqual(makeRun(worldA));
     expect(state.nodes).toEqual([rootNodeFor(worldA)]);
     expect(state.highestSequence).toBe(events.length - 1);
+  });
+
+  // -------------------------------------------------------------------------
+  // The P3 additions (T2, D-P3-13). Every route P3 added is exercised here,
+  // against the deployed stack, because a route the smoke suite does not touch
+  // is a route nobody has proved is wired.
+  // -------------------------------------------------------------------------
+
+  it("round trips a job contract and an agent, and applies the agent table (T2)", async () => {
+    const job = makeJobContract(worldA, { objective: `${runLabel}: the smoke job` });
+    expectStatus(await api.put(`${runPath(worldA)}/jobs/${job.jobContractId}`, job), 201);
+    expect((await api.get(`${runPath(worldA)}/jobs/${job.jobContractId}`)).body).toEqual(job);
+    const listedJobs = (await api.get(`${runPath(worldA)}/jobs`)).body as { items: unknown[] };
+    expect(listedJobs.items).toEqual([job]);
+
+    const agent: Agent = makeAgent(worldA, rootNodeId, { role: "worker" });
+    const agentPath = `${runPath(worldA)}/agents/${agent.agentId}`;
+    expectStatus(await api.put(agentPath, agent), 201);
+    expect(AgentSchema.parse((await api.get(agentPath)).body).status).toBe("created");
+
+    // Legal: created -> started.
+    const startedAt = new Date().toISOString();
+    const started = { ...agent, status: "started", startedAt };
+    expectStatus(await api.put(agentPath, started), 200);
+
+    // Illegal: started -> created. The table has no such edge.
+    const backwards = await api.put(agentPath, agent);
+    expectStatus(backwards, 409);
+    expect((backwards.body as { error: { code: string } }).error.code).toBe("illegal_transition");
+
+    // And an ending with no reason is refused even though the edge exists.
+    const silent = await api.put(agentPath, {
+      ...started,
+      status: "failed",
+      endedAt: new Date().toISOString(),
+    });
+    expectStatus(silent, 422);
+
+    const listedAgents = (await api.get(`${runPath(worldA)}/nodes/${rootNodeId}/agents`)).body as {
+      items: { agentId: string }[];
+    };
+    expect(listedAgents.items.map((a) => a.agentId)).toEqual([agent.agentId]);
+  });
+
+  it("moves a run pending, running, succeeded, and refuses an illegal jump (T2)", async () => {
+    const pending = makeRun(lifecycleWorld, { status: "pending" });
+    expectStatus(await api.put(lifecycleRunPath, pending), 201);
+    expectStatus(
+      await api.put(
+        `${lifecycleRunPath}/nodes/${lifecycleRootNodeId}`,
+        rootNodeFor(lifecycleWorld),
+      ),
+      201,
+    );
+
+    // pending cannot jump straight to succeeded.
+    const jump = await api.put(lifecycleRunPath, {
+      ...pending,
+      status: "succeeded",
+      endedAt: new Date().toISOString(),
+    });
+    expectStatus(jump, 409);
+
+    const running = { ...pending, status: "running" };
+    expectStatus(await api.put(lifecycleRunPath, running), 200);
+
+    const succeeded = { ...running, status: "succeeded", endedAt: new Date().toISOString() };
+    expectStatus(await api.put(lifecycleRunPath, succeeded), 200);
+    expect((await api.get(lifecycleRunPath)).body).toEqual(succeeded);
+
+    const listedRuns = (await api.get(`${programPath(worldA)}/runs`)).body as {
+      items: { runId: string }[];
+    };
+    expect(listedRuns.items.map((r) => r.runId).sort()).toEqual([runId, lifecycleRunId].sort());
+
+    const listedPrograms = (await api.get(`${projectPath(worldA)}/programs`)).body as {
+      items: { programId: string }[];
+    };
+    expect(listedPrograms.items.map((p) => p.programId)).toEqual([programId]);
+  });
+
+  it("signs an upload the client completes, then records the Artifact (A-08, T2)", async () => {
+    const artifactId = ids.next("art");
+    const body = `${runLabel}: verification log
+step test: exit 0
+`;
+    const contentType = "text/plain";
+    const sizeBytes = Buffer.byteLength(body);
+
+    const signed = await api.post(`${runPath(worldA)}/artifacts/${artifactId}/upload-url`, {
+      kind: "verification-log",
+      contentType,
+      sizeBytes,
+    });
+    expectStatus(signed, 200);
+    const target = ArtifactUploadResponseSchema.parse(signed.body);
+    expect(target.key).toBe(`${worldA.scope.projectId}/${programId}/${runId}/${artifactId}`);
+    expect(target.uri).toBe(`s3://${context.bucketName}/${target.key}`);
+
+    // The client uploads. The function never sees the bytes. Both headers are in
+    // the signature, so both must match exactly.
+    const uploaded = await fetch(target.uploadUrl, {
+      method: "PUT",
+      headers: { "content-type": contentType, "content-length": String(sizeBytes) },
+      body,
+    });
+    expect(uploaded.status, await uploaded.text()).toBe(200);
+
+    // The object is under this project's prefix with the type the signature pinned.
+    const head = await s3.send(
+      new HeadObjectCommand({ Bucket: context.bucketName, Key: target.key }),
+    );
+    expect(head.ContentType).toBe(contentType);
+    expect(head.ContentLength).toBe(sizeBytes);
+    expect(new TextDecoder().decode(await bodies.get(worldA.scope, artifactId))).toBe(body);
+
+    // Only now is the reference recorded: the record follows the durable bytes.
+    const artifact: Artifact = {
+      schemaVersion: 1,
+      ...worldA.scope,
+      artifactId,
+      executionNodeId: rootNodeId,
+      kind: "verification-log",
+      uri: target.uri,
+      sizeBytes,
+      contentType,
+      createdAt: new Date().toISOString(),
+    };
+    expectStatus(await api.put(`${runPath(worldA)}/artifacts/${artifactId}`, artifact), 201);
+    expect((await api.get(`${runPath(worldA)}/artifacts/${artifactId}`)).body).toEqual(artifact);
+    const listed = (await api.get(`${runPath(worldA)}/artifacts`)).body as {
+      items: { artifactId: string }[];
+    };
+    expect(listed.items.map((a) => a.artifactId)).toContain(artifactId);
+
+    // The signature pins the type and the length. Both are enforced by S3, which
+    // is only true because the signer hoists them into its signed headers; the
+    // default presigned PUT enforces neither. Each mismatch is a 403
+    // SignatureDoesNotMatch.
+    const wrongType = await fetch(target.uploadUrl, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "content-length": String(sizeBytes) },
+      body: "x".repeat(sizeBytes),
+    });
+    expect(wrongType.status, await wrongType.text()).toBe(403);
+
+    const wrongLength = await fetch(target.uploadUrl, {
+      method: "PUT",
+      headers: { "content-type": contentType, "content-length": String(sizeBytes + 1) },
+      body: `${body}!`,
+    });
+    expect(wrongLength.status, await wrongLength.text()).toBe(403);
+  });
+
+  it("round trips an examination, which nothing in P3 writes (T2, D-P3-07)", async () => {
+    const node = rootNodeFor(worldA);
+    const verification = makeVerification(worldA, { ...node, commitSha: FIXTURE_COMMIT });
+    expectStatus(
+      await api.put(
+        `${runPath(worldA)}/verifications/${verification.verificationId}`,
+        verification,
+      ),
+      201,
+    );
+
+    const examinationId = ids.next("exam");
+    const examination = {
+      schemaVersion: 1,
+      ...worldA.scope,
+      examinationId,
+      executionNodeId: rootNodeId,
+      verificationId: verification.verificationId,
+      commitSha: verification.commitSha,
+      implementerAgentId: ids.next("agent"),
+      examinerAgentId: ids.next("agent"),
+      requiredByRisk: "high",
+      outcome: "findings_raised",
+      findings: [
+        {
+          id: "F-01",
+          severity: "minor",
+          summary: "a placeholder finding",
+          evidence: "written by the smoke suite, never by P3",
+          resolution: "unresolved",
+        },
+      ],
+      createdAt: new Date().toISOString(),
+    };
+    expectStatus(
+      await api.put(`${runPath(worldA)}/examinations/${examinationId}`, examination),
+      201,
+    );
+    expect((await api.get(`${runPath(worldA)}/examinations/${examinationId}`)).body).toEqual(
+      examination,
+    );
+    const listed = (await api.get(`${runPath(worldA)}/nodes/${rootNodeId}/examinations`)).body as {
+      items: { examinationId: string }[];
+    };
+    expect(listed.items.map((e) => e.examinationId)).toEqual([examinationId]);
+  });
+
+  it("reads back every remaining list route the http adapter needs (T2)", async () => {
+    const checkpoint = makeCheckpoint(worldA, rootNodeId);
+    expectStatus(
+      await api.put(`${runPath(worldA)}/checkpoints/${checkpoint.checkpointId}`, checkpoint),
+      201,
+    );
+    const decision = makeDecision(worldA, rootNodeId, {
+      checkpointBefore: checkpoint.checkpointId,
+    });
+    expectStatus(
+      await api.put(`${runPath(worldA)}/decisions/${decision.decisionId}`, decision),
+      201,
+    );
+    const routing: RoutingDecision = {
+      schemaVersion: 1,
+      ...worldA.scope,
+      routingDecisionId: ids.next("route"),
+      executionNodeId: rootNodeId,
+      attempt: 1,
+      eligibleOptions: [
+        {
+          target: { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" },
+          eligible: true,
+        },
+      ],
+      chosen: { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" },
+      ruleId: "p3-fixed",
+      wasOverride: false,
+      usage: {},
+      outcome: "pending",
+      previousRouteId: null,
+      createdAt: new Date().toISOString(),
+    };
+    expectStatus(
+      await api.put(`${runPath(worldA)}/routing-decisions/${routing.routingDecisionId}`, routing),
+      201,
+    );
+
+    const expectOne = async (path: string, field: string, value: string) => {
+      const result = await api.get(path);
+      expectStatus(result, 200);
+      const items = (result.body as { items: Record<string, unknown>[] }).items;
+      expect(
+        items.map((item) => item[field]),
+        path,
+      ).toContain(value);
+    };
+
+    await expectOne(`${runPath(worldA)}/decisions`, "decisionId", decision.decisionId);
+    await expectOne(`${runPath(worldA)}/checkpoints`, "checkpointId", checkpoint.checkpointId);
+    await expectOne(`${runPath(worldA)}/nodes`, "executionNodeId", rootNodeId);
+    await expectOne(
+      `${runPath(worldA)}/nodes/${rootNodeId}/routing-decisions`,
+      "routingDecisionId",
+      routing.routingDecisionId,
+    );
+    expect((await api.get(`${runPath(worldA)}/decisions/${decision.decisionId}`)).body).toEqual(
+      decision,
+    );
+    expect(
+      (await api.get(`${runPath(worldA)}/checkpoints/${checkpoint.checkpointId}`)).body,
+    ).toEqual(checkpoint);
+    // The root node has no children; an empty listing is a listing, not a 404.
+    const children = await api.get(`${runPath(worldA)}/nodes/${rootNodeId}/children`);
+    expectStatus(children, 200);
+    expect((children.body as { items: unknown[] }).items).toEqual([]);
   });
 });

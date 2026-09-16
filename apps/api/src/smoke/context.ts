@@ -1,86 +1,29 @@
 /**
  * Where the smoke suite runs, and as whom (T7).
  *
- * Everything is discovered from the deployed stacks rather than configured: the
- * API endpoint, table, bucket and user pool come from CloudFormation outputs, and
- * the machine client's secret is read from Cognito at run time. Nothing secret is
- * stored, printed or passed on — the secret lives in memory for one token request.
+ * Everything is discovered from the deployed stacks rather than configured. The
+ * discovery itself moved to `../aws/stack-outputs.ts` in P3 (T2) so the operator
+ * bootstrap reads the same outputs through the same code; this module keeps the
+ * suite's own vocabulary and the token handling.
  */
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import {
   CognitoIdentityProviderClient,
   DescribeUserPoolClientCommand,
 } from "@aws-sdk/client-cognito-identity-provider";
-import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
+import {
+  EXPECTED_ACCOUNT,
+  loadStackEnvironment,
+  REGION,
+  type StackEnvironment,
+} from "../aws/stack-outputs.js";
 
-/** The one account v1 may touch (A-17). Checked again here, not only in the npm script. */
-export const EXPECTED_ACCOUNT = "755348349819";
-export const REGION = "us-west-2";
+export { EXPECTED_ACCOUNT, REGION };
 
-export interface SmokeContext {
-  readonly stage: string;
-  readonly callerArn: string;
-  readonly apiEndpoint: string;
-  readonly tableName: string;
-  readonly bucketName: string;
-  readonly userPoolId: string;
-  readonly machineClientId: string;
-  readonly tokenEndpoint: string;
-  readonly machineScope: string;
-}
+/** The smoke suite's view of the environment. Every field the P2 suite named. */
+export type SmokeContext = StackEnvironment;
 
-type OutputReader = (key: string) => string;
-
-const stackOutputs = async (
-  cfn: CloudFormationClient,
-  stackName: string,
-): Promise<OutputReader> => {
-  const described = await cfn.send(new DescribeStacksCommand({ StackName: stackName }));
-  const stack = described.Stacks?.[0];
-  if (stack === undefined) {
-    throw new Error(`stack ${stackName} does not exist; deploy first with npm run deploy`);
-  }
-  const outputs = new Map<string, string>();
-  for (const output of stack.Outputs ?? []) {
-    if (output.OutputKey !== undefined && output.OutputValue !== undefined) {
-      outputs.set(output.OutputKey, output.OutputValue);
-    }
-  }
-  return (key) => {
-    const value = outputs.get(key);
-    if (value === undefined) {
-      throw new Error(`stack ${stackName} has no output ${key}; was it deployed from this branch?`);
-    }
-    return value;
-  };
-};
-
-export const loadSmokeContext = async (
-  stage = process.env.NIGHTSHIFT_STAGE ?? "dev",
-): Promise<SmokeContext> => {
-  const identity = await new STSClient({ region: REGION }).send(new GetCallerIdentityCommand({}));
-  if (identity.Account !== EXPECTED_ACCOUNT) {
-    throw new Error(
-      `credentials resolve to account ${identity.Account}, not ${EXPECTED_ACCOUNT}; ` +
-        "refusing to smoke any other account (A-17)",
-    );
-  }
-
-  const cfn = new CloudFormationClient({ region: REGION });
-  const data = await stackOutputs(cfn, `nightshift-${stage}-data`);
-  const api = await stackOutputs(cfn, `nightshift-${stage}-api`);
-  return {
-    stage,
-    callerArn: identity.Arn ?? "unknown",
-    apiEndpoint: api("ApiEndpoint"),
-    tableName: data("TableName"),
-    bucketName: data("BucketName"),
-    userPoolId: data("UserPoolId"),
-    machineClientId: data("MachineClientId"),
-    tokenEndpoint: data("TokenEndpoint"),
-    machineScope: data("MachineScope"),
-  };
-};
+export const loadSmokeContext = (stage?: string): Promise<SmokeContext> =>
+  stage === undefined ? loadStackEnvironment() : loadStackEnvironment(stage);
 
 /**
  * A client-credentials access token for the machine app client (T9). Never an

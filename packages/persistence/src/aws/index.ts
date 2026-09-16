@@ -10,13 +10,13 @@
  * suite.
  */
 export {
-  type ArtifactBodyStore,
   type ArtifactBodyStoreConfig,
-  artifactObjectKey,
+  type ArtifactUploadSignerConfig,
   createArtifactBodyStore,
+  createArtifactUploadSigner,
   type ObjectClient,
-  type StoredBody,
   s3ObjectClient,
+  UPLOAD_URL_TTL_SECONDS,
 } from "./artifact-bodies.js";
 export { type AwsClientOptions, type AwsClients, createAwsClients } from "./clients.js";
 export { COUNTER_ATTRIBUTE, createEventStore, type EventStoreConfig } from "./events.js";

@@ -16,6 +16,7 @@ export type DomainErrorCode =
   | "concurrency_limit_exceeded"
   | "delegation_refused"
   | "illegal_transition"
+  | "outcome_required"
   | "verification_evidence"
   | "decision_authority"
   | "reversibility_softened";
@@ -114,6 +115,25 @@ export class DelegationRefusedError extends DomainError {
 
   constructor(readonly reason: string) {
     super(`delegation refused: ${reason}`);
+  }
+}
+
+/**
+ * A run or agent was ended without the reason that ending requires (T2).
+ *
+ * Separate from `illegal_transition` because the transition itself was legal: a
+ * `running` run may certainly fail. What is refused is ending it in silence.
+ * Killing a worker must leave durable state (architecture §4), and a terminal
+ * record with no reason is the silence that rule exists to prevent.
+ */
+export class OutcomeReasonRequiredError extends DomainError {
+  readonly code = "outcome_required" as const;
+
+  constructor(
+    readonly record: "run" | "agent",
+    readonly status: string,
+  ) {
+    super(`a ${record} ending as "${status}" must carry an outcomeReason`);
   }
 }
 

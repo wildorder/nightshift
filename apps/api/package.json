@@ -8,9 +8,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/local-control-plane.d.ts",
+      "default": "./dist/testing/local-control-plane.js"
     }
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1131.0",
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
     "@nightshift/persistence": "*",
@@ -19,7 +24,6 @@
   "devDependencies": {
     "@aws-sdk/client-cloudformation": "3.1131.0",
     "@aws-sdk/client-cognito-identity-provider": "3.1131.0",
-    "@aws-sdk/client-s3": "3.1131.0",
     "@aws-sdk/client-sts": "3.1131.0",
     "@nightshift/test": "*",
     "@types/aws-lambda": "8.10.163"

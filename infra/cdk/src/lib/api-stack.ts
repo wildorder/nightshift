@@ -103,9 +103,16 @@ export class NightshiftApiStack extends Stack {
         actions: ["dynamodb:Query"],
         resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
-      // No S3 statement: no API route reads or writes an artifact body yet. The
-      // bucket name is in the environment so the first route that does needs a
-      // policy change, not a configuration change.
+      // `s3:PutObject` on the bucket's objects, for **signing only** (T2, A-08).
+      // The presigned-upload route computes a signature from the credentials the
+      // role already holds; the function never calls S3 and never reads an
+      // object. A signature can only convey permission the signer holds, which
+      // is why this statement is exactly one action and no more: adding
+      // `GetObject` here would make every signed URL a potential read.
+      new iam.PolicyStatement({
+        actions: ["s3:PutObject"],
+        resources: [`${imported("BucketArn")}/*`],
+      }),
     ]);
     const apiFunction = this.nodeFunction("ApiFunction", {
       entry: API_ENTRY,

@@ -1,13 +1,17 @@
-import type { OrgId, RoutingDecision } from "@nightshift/contracts";
-import { AGGREGATE_EXAMPLES } from "@nightshift/contracts";
+import type { Agent, OrgId, RoutingDecision } from "@nightshift/contracts";
+import { AGGREGATE_EXAMPLES, ArtifactUploadResponseSchema } from "@nightshift/contracts";
+import type { ArtifactUploadRequest, ArtifactUploadSigner } from "@nightshift/core";
 import {
   createFixedClock,
   createFixtures,
   type Fixtures,
+  makeAgent,
   makeCheckpoint,
   makeDecision,
   makeEvent,
+  makeJobContract,
   makeMembership,
+  makeNode,
   makeProgramContract,
   makeProject,
   makeRootNode,
@@ -30,6 +34,8 @@ const NOW = "2026-09-14T10:00:00.000Z";
 interface World {
   readonly stores: InMemoryStores;
   readonly deps: ApiDeps;
+  /** What the fake signer was asked for, newest last. */
+  readonly signed: ArtifactUploadRequest[];
   readonly a: Fixtures;
   readonly b: Fixtures;
   readonly orgId: OrgId;
@@ -43,9 +49,27 @@ const setup = async (options: InMemoryOptions = {}): Promise<World> => {
   const subject = nextUserId(a);
   const orgId = a.ids.next("org");
   await stores.memberships.put(makeMembership(subject, orgId));
+  const signed: ArtifactUploadRequest[] = [];
+  // A stand-in signer. What matters here is that the route passes the path's
+  // ownership chain through and returns what it was handed; the real signature
+  // is the presigner's business and the smoke suite's proof.
+  const uploads: ArtifactUploadSigner = {
+    sign: async (request) => {
+      signed.push(request);
+      const key = `${request.scope.projectId}/${request.scope.programId}/${request.scope.runId}/${request.artifactId}`;
+      return {
+        uri: `s3://bucket/${key}`,
+        uploadUrl: `https://signed.invalid/${key}`,
+        key,
+        contentType: request.contentType,
+        expiresAt: NOW,
+      };
+    },
+  };
   return {
     stores,
-    deps: { stores, clock: createFixedClock(Date.parse(NOW)) },
+    deps: { stores, clock: createFixedClock(Date.parse(NOW)), uploads },
+    signed,
     a,
     b,
     orgId,
@@ -535,5 +559,512 @@ describe("recording run-scoped records", () => {
       checkpoint,
     );
     expect(response.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The P3 additions (T2, D-P3-13)
+// ---------------------------------------------------------------------------
+
+describe("job contracts (A-03)", () => {
+  it("stores a job contract before execution and reads it back", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const job = makeJobContract(w.a);
+
+    const created = await call(w, "PUT", `${p.run}/jobs/${job.jobContractId}`, job);
+    expect(created.status).toBe(201);
+    expect((await call(w, "GET", `${p.run}/jobs/${job.jobContractId}`)).body).toEqual(job);
+    expect((await call(w, "PUT", `${p.run}/jobs/${job.jobContractId}`, job)).status).toBe(200);
+  });
+
+  it("refuses a different body under the same identifier: a job is immutable", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const job = makeJobContract(w.a);
+    await call(w, "PUT", `${p.run}/jobs/${job.jobContractId}`, job);
+
+    const changed = await call(w, "PUT", `${p.run}/jobs/${job.jobContractId}`, {
+      ...job,
+      objective: "something else entirely",
+    });
+    expect(changed.status).toBe(409);
+    expect(errorCode(changed)).toBe("conflict");
+  });
+
+  it("refuses a body whose identifier disagrees with the path", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const job = makeJobContract(w.a);
+    const other = makeJobContract(w.a);
+    const response = await call(w, "PUT", `${p.run}/jobs/${other.jobContractId}`, job);
+    expect(response.status).toBe(400);
+    expect(errorCode(response)).toBe("identifier_mismatch");
+  });
+
+  it("lists a run's job contracts and 404s an absent one", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const job = makeJobContract(w.a);
+    await call(w, "PUT", `${p.run}/jobs/${job.jobContractId}`, job);
+
+    const listed = await call(w, "GET", `${p.run}/jobs`);
+    expect(listed.status).toBe(200);
+    expect((listed.body as { items: unknown[] }).items).toEqual([job]);
+    expect((await call(w, "GET", `${p.run}/jobs/${w.a.ids.next("job")}`)).status).toBe(404);
+  });
+});
+
+describe("agents (A-04)", () => {
+  /** A run with its root node, and an agent bound to that node. */
+  const withAgent = async (w: World): Promise<{ readonly agent: Agent; readonly run: string }> => {
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const agent = makeAgent(w.a, w.a.rootNodeId, { role: "orchestrator" });
+    expect((await call(w, "PUT", `${p.run}/agents/${agent.agentId}`, agent)).status).toBe(201);
+    return { agent, run: p.run };
+  };
+
+  it("creates the execution identity as created, before anything runs", async () => {
+    const w = await setup();
+    const { agent, run } = await withAgent(w);
+    expect((await call(w, "GET", `${run}/agents/${agent.agentId}`)).body).toEqual(agent);
+    expect(agent.status).toBe("created");
+  });
+
+  it("refuses an agent bound to a node that does not exist", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const agent = makeAgent(w.a, w.a.ids.next("node"));
+    const response = await call(w, "PUT", `${p.run}/agents/${agent.agentId}`, agent);
+    expect(response.status).toBe(404);
+    expect(errorCode(response)).toBe("not_found");
+  });
+
+  it("applies the agent table: created to started is legal", async () => {
+    const w = await setup();
+    const { agent, run } = await withAgent(w);
+    const started = { ...agent, status: "started" as const, startedAt: NOW };
+    expect((await call(w, "PUT", `${run}/agents/${agent.agentId}`, started)).status).toBe(200);
+    expect((await call(w, "GET", `${run}/agents/${agent.agentId}`)).body).toEqual(started);
+  });
+
+  it("refuses a transition outside the table", async () => {
+    const w = await setup();
+    const { agent, run } = await withAgent(w);
+    // An agent that never started cannot have completed.
+    const response = await call(w, "PUT", `${run}/agents/${agent.agentId}`, {
+      ...agent,
+      status: "completed",
+      startedAt: NOW,
+      endedAt: NOW,
+    });
+    expect(response.status).toBe(409);
+    expect(errorCode(response)).toBe("illegal_transition");
+  });
+
+  it("refuses an ending with no reason, and accepts one with a reason", async () => {
+    const w = await setup();
+    const { agent, run } = await withAgent(w);
+    const started = { ...agent, status: "started" as const, startedAt: NOW };
+    await call(w, "PUT", `${run}/agents/${agent.agentId}`, started);
+
+    const silent = await call(w, "PUT", `${run}/agents/${agent.agentId}`, {
+      ...started,
+      status: "failed",
+      endedAt: NOW,
+    });
+    expect(silent.status).toBe(422);
+    expect(errorCode(silent)).toBe("incomplete_record");
+
+    const explained = await call(w, "PUT", `${run}/agents/${agent.agentId}`, {
+      ...started,
+      status: "failed",
+      endedAt: NOW,
+      outcomeReason: "the worker process exited 2 without reporting completion",
+      exitCode: 2,
+    });
+    expect(explained.status).toBe(200);
+  });
+
+  it("refuses to rewrite the model routing chose", async () => {
+    const w = await setup();
+    const { agent, run } = await withAgent(w);
+    const response = await call(w, "PUT", `${run}/agents/${agent.agentId}`, {
+      ...agent,
+      status: "started",
+      startedAt: NOW,
+      model: "some-other-model",
+    });
+    expect(response.status).toBe(409);
+    expect(errorCode(response)).toBe("conflict");
+  });
+
+  it("lists the agents of one node", async () => {
+    const w = await setup();
+    const { agent, run } = await withAgent(w);
+    const listed = await call(w, "GET", `${run}/nodes/${w.a.rootNodeId}/agents`);
+    expect(listed.status).toBe(200);
+    expect((listed.body as { items: unknown[] }).items).toEqual([agent]);
+  });
+});
+
+describe("run transitions (T2)", () => {
+  /** A project, a program and a `pending` run with its root node. */
+  const pendingRun = async (w: World) => {
+    const p = paths(w.a);
+    expect((await call(w, "PUT", p.project, projectBody(w.a))).status).toBe(201);
+    expect((await call(w, "PUT", p.program, makeProgramContract(w.a))).status).toBe(201);
+    const run = makeRun(w.a, { status: "pending" });
+    expect((await call(w, "PUT", p.run, run)).status).toBe(201);
+    return { run, p };
+  };
+
+  it("moves a pending run to running", async () => {
+    const w = await setup();
+    const { run, p } = await pendingRun(w);
+    const started = { ...run, status: "running" as const };
+    expect((await call(w, "PUT", p.run, started)).status).toBe(200);
+    expect((await call(w, "GET", p.run)).body).toEqual(started);
+  });
+
+  it("refuses a transition outside the table", async () => {
+    const w = await setup();
+    const { run, p } = await pendingRun(w);
+    const response = await call(w, "PUT", p.run, {
+      ...run,
+      status: "succeeded",
+      endedAt: NOW,
+    });
+    expect(response.status).toBe(409);
+    expect(errorCode(response)).toBe("illegal_transition");
+  });
+
+  it("requires endedAt on a terminal run and a reason on a non-successful one", async () => {
+    const w = await setup();
+    const { run, p } = await pendingRun(w);
+    const running = { ...run, status: "running" as const };
+    await call(w, "PUT", p.run, running);
+
+    const noEnd = await call(w, "PUT", p.run, { ...running, status: "succeeded" });
+    expect(noEnd.status).toBe(422);
+    expect(errorCode(noEnd)).toBe("incomplete_record");
+
+    const noReason = await call(w, "PUT", p.run, {
+      ...running,
+      status: "interrupted",
+      endedAt: NOW,
+    });
+    expect(noReason.status).toBe(422);
+
+    const complete = await call(w, "PUT", p.run, {
+      ...running,
+      status: "interrupted",
+      endedAt: NOW,
+      outcomeReason: "the MCP server shut down with a worker running",
+    });
+    expect(complete.status).toBe(200);
+  });
+
+  it("refuses to move the root node, the location or the start time", async () => {
+    const w = await setup();
+    const { run, p } = await pendingRun(w);
+    for (const change of [
+      { location: "remote" as const },
+      { rootNodeId: w.a.ids.next("node") },
+      { startedAt: NOW },
+    ]) {
+      const response = await call(w, "PUT", p.run, { ...run, status: "running", ...change });
+      expect(response.status, JSON.stringify(change)).toBe(409);
+      expect(errorCode(response)).toBe("conflict");
+    }
+  });
+
+  it("refuses a change that is not a status move", async () => {
+    const w = await setup();
+    const { run, p } = await pendingRun(w);
+    const response = await call(w, "PUT", p.run, { ...run, outcomeReason: "no reason at all" });
+    expect(response.status).toBe(422);
+  });
+
+  it("lists a program's runs", async () => {
+    const w = await setup();
+    const { run, p } = await pendingRun(w);
+    const listed = await call(w, "GET", `${p.program}/runs`);
+    expect(listed.status).toBe(200);
+    expect((listed.body as { items: unknown[] }).items).toEqual([run]);
+  });
+
+  it("lists a project's programs", async () => {
+    const w = await setup();
+    await pendingRun(w);
+    const listed = await call(w, "GET", `${paths(w.a).project}/programs`);
+    expect(listed.status).toBe(200);
+    expect((listed.body as { items: unknown[] }).items).toEqual([makeProgramContract(w.a)]);
+  });
+});
+
+describe("node and record listings (T2)", () => {
+  it("lists a run's nodes and one node's children", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const child = makeNode(w.a, w.a.rootNodeId, { status: "validated" });
+    expect((await call(w, "PUT", `${p.run}/nodes/${child.executionNodeId}`, child)).status).toBe(
+      201,
+    );
+
+    const all = await call(w, "GET", `${p.run}/nodes`);
+    expect(
+      (all.body as { items: { executionNodeId: string }[] }).items
+        .map((n) => n.executionNodeId)
+        .sort(),
+    ).toEqual([w.a.rootNodeId, child.executionNodeId].sort());
+
+    const children = await call(w, "GET", `${p.run}/nodes/${w.a.rootNodeId}/children`);
+    expect((children.body as { items: unknown[] }).items).toEqual([child]);
+    expect(
+      (
+        (await call(w, "GET", `${p.run}/nodes/${child.executionNodeId}/children`)).body as {
+          items: unknown[];
+        }
+      ).items,
+    ).toEqual([]);
+  });
+
+  it("reads and lists decisions, checkpoints and artifacts", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const checkpoint = makeCheckpoint(w.a, w.a.rootNodeId);
+    await call(w, "PUT", `${p.run}/checkpoints/${checkpoint.checkpointId}`, checkpoint);
+    const decision = makeDecision(w.a, w.a.rootNodeId, {
+      checkpointBefore: checkpoint.checkpointId,
+    });
+    await call(w, "PUT", `${p.run}/decisions/${decision.decisionId}`, decision);
+    const artifact = {
+      schemaVersion: 1,
+      ...w.a.scope,
+      artifactId: w.a.ids.next("art"),
+      executionNodeId: w.a.rootNodeId,
+      kind: "verification-log",
+      uri: "s3://bucket/key",
+      sizeBytes: 12,
+      contentType: "text/plain",
+      createdAt: NOW,
+    };
+    await call(w, "PUT", `${p.run}/artifacts/${artifact.artifactId}`, artifact);
+
+    expect((await call(w, "GET", `${p.run}/decisions/${decision.decisionId}`)).body).toEqual(
+      decision,
+    );
+    expect((await call(w, "GET", `${p.run}/checkpoints/${checkpoint.checkpointId}`)).body).toEqual(
+      checkpoint,
+    );
+    expect((await call(w, "GET", `${p.run}/artifacts/${artifact.artifactId}`)).body).toEqual(
+      artifact,
+    );
+    for (const collection of ["decisions", "checkpoints", "artifacts"]) {
+      const listed = await call(w, "GET", `${p.run}/${collection}`);
+      expect((listed.body as { items: unknown[] }).items, collection).toHaveLength(1);
+    }
+  });
+
+  it("reads a verification by id and lists a node's verifications and routing decisions", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const node = makeRootNode(w.a);
+    const verification = makeVerification(w.a, node);
+    await call(w, "PUT", `${p.run}/verifications/${verification.verificationId}`, verification);
+    const routing: RoutingDecision = {
+      schemaVersion: 1,
+      ...w.a.scope,
+      routingDecisionId: w.a.ids.next("route"),
+      executionNodeId: w.a.rootNodeId,
+      attempt: 1,
+      eligibleOptions: [
+        { target: { harness: "claude", provider: "anthropic", model: "m" }, eligible: true },
+      ],
+      chosen: { harness: "claude", provider: "anthropic", model: "m" },
+      ruleId: "p3-fixed",
+      wasOverride: false,
+      usage: {},
+      outcome: "pending",
+      previousRouteId: null,
+      createdAt: NOW,
+    };
+    await call(w, "PUT", `${p.run}/routing-decisions/${routing.routingDecisionId}`, routing);
+
+    expect(
+      (await call(w, "GET", `${p.run}/verifications/${verification.verificationId}`)).body,
+    ).toEqual(verification);
+    expect(
+      (
+        (await call(w, "GET", `${p.run}/nodes/${w.a.rootNodeId}/verifications`)).body as {
+          items: unknown[];
+        }
+      ).items,
+    ).toEqual([verification]);
+    expect(
+      (
+        (await call(w, "GET", `${p.run}/nodes/${w.a.rootNodeId}/routing-decisions`)).body as {
+          items: unknown[];
+        }
+      ).items,
+    ).toEqual([routing]);
+  });
+});
+
+describe("examinations (port completeness; nothing in P3 writes one)", () => {
+  it("round trips an examination and lists it by node", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const node = makeRootNode(w.a);
+    const verification = makeVerification(w.a, node);
+    await call(w, "PUT", `${p.run}/verifications/${verification.verificationId}`, verification);
+
+    const examination = {
+      schemaVersion: 1,
+      ...w.a.scope,
+      examinationId: w.a.ids.next("exam"),
+      executionNodeId: w.a.rootNodeId,
+      verificationId: verification.verificationId,
+      commitSha: verification.commitSha,
+      implementerAgentId: w.a.ids.next("agent"),
+      examinerAgentId: w.a.ids.next("agent"),
+      requiredByRisk: "high",
+      outcome: "passed",
+      findings: [],
+      createdAt: NOW,
+    };
+    const created = await call(
+      w,
+      "PUT",
+      `${p.run}/examinations/${examination.examinationId}`,
+      examination,
+    );
+    expect(created.status).toBe(201);
+    expect(
+      (await call(w, "GET", `${p.run}/examinations/${examination.examinationId}`)).body,
+    ).toEqual(examination);
+    expect(
+      (
+        (await call(w, "GET", `${p.run}/nodes/${w.a.rootNodeId}/examinations`)).body as {
+          items: unknown[];
+        }
+      ).items,
+    ).toEqual([examination]);
+  });
+
+  it("refuses an agent examining its own work, through the contract's own rule", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const agentId = w.a.ids.next("agent");
+    const examinationId = w.a.ids.next("exam");
+    const response = await call(w, "PUT", `${p.run}/examinations/${examinationId}`, {
+      schemaVersion: 1,
+      ...w.a.scope,
+      examinationId,
+      executionNodeId: w.a.rootNodeId,
+      verificationId: w.a.ids.next("ver"),
+      commitSha: "1111111111111111111111111111111111111111",
+      implementerAgentId: agentId,
+      examinerAgentId: agentId,
+      requiredByRisk: "high",
+      outcome: "passed",
+      findings: [],
+      createdAt: NOW,
+    });
+    expect(response.status).toBe(400);
+    expect(errorCode(response)).toBe("validation_failed");
+  });
+});
+
+describe("the presigned artifact upload (A-08)", () => {
+  it("signs a PUT under the run's own prefix and returns the s3 URI", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const artifactId = w.a.ids.next("art");
+
+    const response = await call(w, "POST", `${p.run}/artifacts/${artifactId}/upload-url`, {
+      kind: "verification-log",
+      contentType: "text/plain",
+      sizeBytes: 4096,
+    });
+    expect(response.status).toBe(200);
+    const target = ArtifactUploadResponseSchema.parse(response.body);
+    expect(target.artifactId).toBe(artifactId);
+    expect(target.key).toBe(
+      `${w.a.scope.projectId}/${w.a.scope.programId}/${w.a.scope.runId}/${artifactId}`,
+    );
+    expect(target.uri).toBe(`s3://bucket/${target.key}`);
+    expect(target.contentType).toBe("text/plain");
+
+    // The chain the signer saw came from the path, never from the body (A-23).
+    expect(w.signed).toHaveLength(1);
+    expect(w.signed[0]?.scope).toEqual(w.a.scope);
+    expect(w.signed[0]?.sizeBytes).toBe(4096);
+  });
+
+  it("creates no Artifact record: the reference follows the bytes", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const artifactId = w.a.ids.next("art");
+    await call(w, "POST", `${p.run}/artifacts/${artifactId}/upload-url`, {
+      kind: "verification-log",
+      contentType: "text/plain",
+      sizeBytes: 1,
+    });
+    expect((await call(w, "GET", `${p.run}/artifacts/${artifactId}`)).status).toBe(404);
+  });
+
+  it("refuses to sign for a run that does not exist", async () => {
+    const w = await setup();
+    const p = paths(w.a);
+    const response = await call(w, "POST", `${p.run}/artifacts/${w.a.ids.next("art")}/upload-url`, {
+      kind: "other",
+      contentType: "text/plain",
+      sizeBytes: 1,
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("refuses a body larger than a single S3 PUT can carry", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const response = await call(w, "POST", `${p.run}/artifacts/${w.a.ids.next("art")}/upload-url`, {
+      kind: "other",
+      contentType: "application/octet-stream",
+      sizeBytes: 6 * 1024 * 1024 * 1024,
+    });
+    expect(response.status).toBe(400);
+    expect(errorCode(response)).toBe("validation_failed");
+  });
+
+  it("says so plainly when the control plane was wired without a signer", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const p = paths(w.a);
+    const { uploads: _uploads, ...withoutSigner } = w.deps;
+    const response = await handleRequest(withoutSigner, {
+      method: "POST",
+      path: `${p.run}/artifacts/${w.a.ids.next("art")}/upload-url`,
+      query: {},
+      body: { kind: "other", contentType: "text/plain", sizeBytes: 1 },
+      claims: w.claims,
+    });
+    expect(response.status).toBe(501);
+    expect(errorCode(response)).toBe("uploads_unavailable");
   });
 });

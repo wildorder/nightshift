@@ -15,10 +15,21 @@
  * themselves, and a successful write responds with the stored record.
  */
 import { z } from "zod";
+import { ArtifactIdSchema } from "../ids.js";
+import { AgentSchema } from "./agent.js";
+import { ArtifactKindSchema, ArtifactSchema, ArtifactUriSchema } from "./artifact.js";
+import { CheckpointSchema } from "./checkpoint.js";
+import { IsoTimestampSchema } from "./common.js";
+import { DecisionSchema } from "./decision.js";
 import { EventSchema, inlinePayloadBytes, MAX_INLINE_PAYLOAD_BYTES } from "./event.js";
+import { ExaminationSchema } from "./examination.js";
 import { ExecutionNodeSchema } from "./execution-node.js";
+import { JobContractSchema } from "./job-contract.js";
+import { ProgramContractSchema } from "./program-contract.js";
 import { ProjectSchema } from "./project.js";
+import { RoutingDecisionSchema } from "./routing-decision.js";
 import { RunSchema } from "./run.js";
+import { VerificationSchema } from "./verification.js";
 
 /** `PUT /projects/{projectId}`. The org is resolved from the token, never sent. */
 export const ProjectBodySchema = ProjectSchema.omit({ orgId: true });
@@ -88,3 +99,90 @@ export const RunStateResponseSchema = z.strictObject({
   pendingEvents: z.int().min(0),
 });
 export type RunStateResponse = z.infer<typeof RunStateResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Listings (P3, T2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every list route answers in the page shape, whether or not it can page.
+ *
+ * The `listByNode` ports return a whole array rather than a page — a node's
+ * agents, verifications, examinations and routing decisions are few by
+ * construction — so those routes never emit a `cursor`. One response shape means
+ * one client parse, and a route that later gains paging does not change its
+ * contract.
+ */
+export const ProgramContractPageSchema = pageResponseSchema(ProgramContractSchema);
+export type ProgramContractPage = z.infer<typeof ProgramContractPageSchema>;
+
+export const RunPageSchema = pageResponseSchema(RunSchema);
+export type RunPage = z.infer<typeof RunPageSchema>;
+
+export const ExecutionNodePageSchema = pageResponseSchema(ExecutionNodeSchema);
+export type ExecutionNodePage = z.infer<typeof ExecutionNodePageSchema>;
+
+export const JobContractPageSchema = pageResponseSchema(JobContractSchema);
+export type JobContractPage = z.infer<typeof JobContractPageSchema>;
+
+export const AgentPageSchema = pageResponseSchema(AgentSchema);
+export type AgentPage = z.infer<typeof AgentPageSchema>;
+
+export const DecisionPageSchema = pageResponseSchema(DecisionSchema);
+export type DecisionPage = z.infer<typeof DecisionPageSchema>;
+
+export const CheckpointPageSchema = pageResponseSchema(CheckpointSchema);
+export type CheckpointPage = z.infer<typeof CheckpointPageSchema>;
+
+export const VerificationPageSchema = pageResponseSchema(VerificationSchema);
+export type VerificationPage = z.infer<typeof VerificationPageSchema>;
+
+export const ExaminationPageSchema = pageResponseSchema(ExaminationSchema);
+export type ExaminationPage = z.infer<typeof ExaminationPageSchema>;
+
+export const RoutingDecisionPageSchema = pageResponseSchema(RoutingDecisionSchema);
+export type RoutingDecisionPage = z.infer<typeof RoutingDecisionPageSchema>;
+
+export const ArtifactPageSchema = pageResponseSchema(ArtifactSchema);
+export type ArtifactPage = z.infer<typeof ArtifactPageSchema>;
+
+// ---------------------------------------------------------------------------
+// Presigned artifact upload (P3, T2, A-08)
+// ---------------------------------------------------------------------------
+
+/**
+ * The largest body the upload route will sign: S3's single-`PUT` limit of 5 GiB.
+ * Anything larger needs a multipart upload, which nothing in v1 produces.
+ */
+export const MAX_ARTIFACT_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024;
+
+/**
+ * `POST …/artifacts/{artifactId}/upload-url`.
+ *
+ * The size is declared up front so A-08 has a number to refuse on, rather than
+ * discovering the size after the bytes have already crossed the wire.
+ */
+export const ArtifactUploadRequestBodySchema = z.strictObject({
+  kind: ArtifactKindSchema,
+  contentType: z.string().min(1),
+  sizeBytes: z.int().min(0).max(MAX_ARTIFACT_UPLOAD_BYTES),
+});
+export type ArtifactUploadRequestBody = z.infer<typeof ArtifactUploadRequestBodySchema>;
+
+/**
+ * Where to `PUT` the bytes, and the URI the `Artifact` record will carry.
+ *
+ * `uploadUrl` is a presigned S3 `PUT`, short-lived, with `contentType` pinned
+ * into the signature: a client that uploads a different type is refused by S3.
+ * The record is written *after* the bytes are durable, which is why this response
+ * does not create one.
+ */
+export const ArtifactUploadResponseSchema = z.strictObject({
+  artifactId: ArtifactIdSchema,
+  uri: ArtifactUriSchema,
+  uploadUrl: z.string().min(1),
+  key: z.string().min(1),
+  contentType: z.string().min(1),
+  expiresAt: IsoTimestampSchema,
+});
+export type ArtifactUploadResponse = z.infer<typeof ArtifactUploadResponseSchema>;

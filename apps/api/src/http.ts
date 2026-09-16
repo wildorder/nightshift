@@ -3,7 +3,7 @@
  * Gateway. Tests speak these; only `lambda/api-handler.ts` knows the Lambda event.
  */
 import type { ErrorResponse } from "@nightshift/contracts";
-import type { Clock, NightshiftStores } from "@nightshift/core";
+import type { ArtifactUploadSigner, Clock, NightshiftStores } from "@nightshift/core";
 import type { z } from "zod";
 
 export interface ApiRequest {
@@ -29,6 +29,13 @@ export interface ApiResponse {
 export interface ApiDeps {
   readonly stores: NightshiftStores;
   readonly clock: Clock;
+  /**
+   * Signs presigned artifact uploads (T2). Optional because the handler is a
+   * pure function that many tests drive without object storage at all; the one
+   * route that needs it answers 501 rather than 500 when it is absent, so a
+   * misconfiguration names itself instead of looking like a crash.
+   */
+  readonly uploads?: ArtifactUploadSigner;
 }
 
 /** A refusal the handler decided on itself, as opposed to one raised by a domain rule. */
