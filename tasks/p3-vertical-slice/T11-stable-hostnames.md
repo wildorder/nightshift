@@ -1,5 +1,14 @@
 # T11 — Stable hostnames and a zero-flag login
 
+> **Built 2026-09-16, narrowed by the owner.** The Cognito custom domain
+> (deliverable 3, the `edge` stack and the placeholder `A` record) was dropped:
+> the derived pool domain is already stable, and the branded name would have
+> cost a second-region certificate, cross-region references and custom-resource
+> Lambdas. The hosted zone landed in an unstaged account-wide `nightshift-dns`
+> stack rather than the data stack, and the CLI restates the hostname rule
+> rather than importing it from `contracts`. Contract §12 and §13.11 record
+> the reasons and the result.
+
 **Program:** `p3-vertical-slice` (see `docs/programs/p3-vertical-slice.md`)
 **Depends on:** T7, T10 (everything is built and deployed; this changes how it is reached)
 **Unblocks:** the close of P3

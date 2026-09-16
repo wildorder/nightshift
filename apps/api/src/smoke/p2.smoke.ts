@@ -16,6 +16,7 @@
  * first, so a half-cleaned run can be finished by hand. Two smoke runs must not
  * overlap: the conformance phase uses deterministic identifiers.
  */
+import { resolveNs } from "node:dns/promises";
 import { HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import {
   type Agent,
@@ -94,6 +95,23 @@ const bodies = createArtifactBodyStore({
 const token = await fetchMachineToken(context);
 const machineSubject = UserIdSchema.parse(subjectOf(token));
 const api = smokeApiClient(context.apiEndpoint, token);
+
+// D-P3-18: whether the stable hostname can be tested at all. Decided here, at the
+// module's top level, because `describe` bodies are synchronous.
+const customEndpoint = context.apiCustomEndpoint;
+const delegated =
+  customEndpoint === undefined
+    ? false
+    : await resolveNs("nightshift.wildorder.dev").then(
+        () => true,
+        () => false,
+      );
+const skipReason =
+  customEndpoint === undefined
+    ? "the API stack was deployed zone-only"
+    : delegated
+      ? undefined
+      : "nightshift.wildorder.dev is not delegated yet";
 
 // --- What this run writes ------------------------------------------------------------
 const ids = createUlidIdGenerator();
@@ -293,6 +311,28 @@ describe("phase 1: reachability and auth (SC-P2-07)", () => {
     expectStatus(result, 200);
     expect(ProjectPageSchema.parse(result.body).items).toEqual([]);
   });
+
+  /**
+   * D-P3-18, SC-P3-18: the hostname a CLI stores. Skipped, with the reason in
+   * the name, until the API stack has been deployed in `full` mode *and* the
+   * zone is delegated from `wildorder.dev` (H-P3-05): before either, the name
+   * resolves to nothing and a failure here would say nothing new.
+   */
+  it.skipIf(skipReason !== undefined)(
+    `serves the same authorized API on the stable hostname${skipReason === undefined ? "" : ` (skipped: ${skipReason})`}`,
+    async () => {
+      if (customEndpoint === undefined) throw new Error("unreachable: skipped above");
+      const stable = smokeApiClient(customEndpoint, token);
+      expectStatus(await stable.withAuthorization(undefined, "GET", "/projects"), 401);
+      const result = await stable.get("/projects");
+      expectStatus(result, 200);
+      expect(ProjectPageSchema.parse(result.body).items).toEqual([]);
+      findings.stableHostname = new URL(customEndpoint).hostname;
+      say(
+        `stable hostname ${new URL(customEndpoint).hostname} answers with the authorizer in front`,
+      );
+    },
+  );
 });
 
 // --- Phase 2 ----------------------------------------------------------------------------

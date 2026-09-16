@@ -21,6 +21,11 @@ export interface StackEnvironment {
   readonly stage: string;
   readonly callerArn: string;
   readonly apiEndpoint: string;
+  /**
+   * `https://api.<stage>.nightshift.wildorder.dev` (D-P3-18), the hostname a CLI
+   * stores. `undefined` when the API stack was deployed in `zone-only` mode.
+   */
+  readonly apiCustomEndpoint: string | undefined;
   readonly tableName: string;
   readonly bucketName: string;
   readonly userPoolId: string;
@@ -34,7 +39,11 @@ export interface StackEnvironment {
   readonly hostedSignInUrl: string;
 }
 
-type OutputReader = (key: string) => string;
+interface OutputReader {
+  (key: string): string;
+  /** The output's value, or `undefined` when the stack has no such output. */
+  readonly optional: (key: string) => string | undefined;
+}
 
 const stackOutputs = async (
   cfn: CloudFormationClient,
@@ -51,13 +60,14 @@ const stackOutputs = async (
       outputs.set(output.OutputKey, output.OutputValue);
     }
   }
-  return (key) => {
+  const read = (key: string): string => {
     const value = outputs.get(key);
     if (value === undefined) {
       throw new Error(`stack ${stackName} has no output ${key}; was it deployed from this branch?`);
     }
     return value;
   };
+  return Object.assign(read, { optional: (key: string) => outputs.get(key) });
 };
 
 /** Refuses to continue against any account but the one v1 owns. Returns the caller's ARN. */
@@ -83,6 +93,7 @@ export const loadStackEnvironment = async (
     stage,
     callerArn,
     apiEndpoint: api("ApiEndpoint"),
+    apiCustomEndpoint: api.optional("ApiCustomEndpoint"),
     tableName: data("TableName"),
     bucketName: data("BucketName"),
     userPoolId: data("UserPoolId"),

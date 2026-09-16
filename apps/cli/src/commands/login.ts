@@ -45,6 +45,7 @@ import {
 } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
+import { DEFAULT_STAGE, defaultsFor, isGeneratedEndpoint } from "../hostnames.js";
 import type { Loopback } from "../loopback.js";
 import { authorizeUrl, exchangeAuthorizationCode } from "../oauth.js";
 import { PastedCallbackError, parsePastedCallback } from "../paste.js";
@@ -56,8 +57,7 @@ import {
   StateMismatchError,
 } from "../pkce.js";
 
-/** `--stage` when neither the flags nor the stored profile say otherwise. */
-export const DEFAULT_STAGE = "dev";
+export { DEFAULT_STAGE } from "../hostnames.js";
 
 export interface LoginFlags {
   readonly api?: string;
@@ -90,40 +90,65 @@ const trimTrailingSlashes = (value: string): string => value.replace(/\/+$/, "")
 const normalizeAuthDomain = (value: string): string =>
   trimTrailingSlashes(value.replace(/^https?:\/\//, ""));
 
+/** What `resolveProfile` decided, and what it wants said about it. */
+export interface ResolvedProfile {
+  readonly profile: Profile;
+  /** Lines worth telling the operator: a rewritten value, for instance. */
+  readonly notes: readonly string[];
+}
+
 /**
- * The three flags, defaulted from the stored profile.
+ * The profile to sign in with: flags, then the stored profile, then the stage's
+ * shipped defaults (D-P3-18).
  *
- * "Flags are remembered in the profile, so a second login needs none" is the
- * whole of this function, and the failure it produces for a first login is the
- * one an operator will actually hit, so it names all three and where to find
- * their values.
+ * The precedence is the whole of this function. A developer's flag always wins.
+ * A stored value is kept — that is what "a second login needs no flags" means —
+ * with one exception: a stored generated `execute-api` endpoint is replaced by
+ * the stable hostname and the operator is told, because the generated name is
+ * the one a stack replacement changes. Everything else comes from the rule, so a
+ * fresh machine signs in with `nightshift login` and nothing after it.
+ *
+ * The only way to fail is a stage this CLI ships no client id for and no flag
+ * naming one; that failure names the flag and where its value lives.
  */
-export const resolveProfile = (flags: LoginFlags, stored: Profile | undefined): Profile => {
-  const apiEndpoint = flags.api ?? stored?.apiEndpoint;
-  const authDomain = flags.authDomain ?? stored?.authDomain;
-  const clientId = flags.clientId ?? stored?.clientId;
+export const resolveProfile = (flags: LoginFlags, stored: Profile | undefined): ResolvedProfile => {
   const stage = flags.stage ?? stored?.stage ?? DEFAULT_STAGE;
+  // A stored profile for another stage says nothing about this one.
+  const kept = stored !== undefined && stored.stage === stage ? stored : undefined;
+  const defaults = defaultsFor(stage);
+  const notes: string[] = [];
 
-  const missing = [
-    apiEndpoint === undefined ? "--api" : undefined,
-    authDomain === undefined ? "--auth-domain" : undefined,
-    clientId === undefined ? "--client-id" : undefined,
-  ].filter((name) => name !== undefined);
+  let apiEndpoint = flags.api ?? kept?.apiEndpoint;
+  if (apiEndpoint === undefined) {
+    apiEndpoint = defaults.apiEndpoint;
+  } else if (flags.api === undefined && isGeneratedEndpoint(apiEndpoint)) {
+    notes.push(
+      `the stored control plane ${apiEndpoint} is a generated hostname a redeploy can change; ` +
+        `using ${defaults.apiEndpoint} instead`,
+    );
+    apiEndpoint = defaults.apiEndpoint;
+  }
 
-  if (apiEndpoint === undefined || authDomain === undefined || clientId === undefined) {
+  const authDomain = flags.authDomain ?? kept?.authDomain ?? defaults.authDomain;
+  const clientId = flags.clientId ?? kept?.clientId ?? defaults.clientId;
+
+  if (clientId === undefined) {
     throw new UsageError(
-      `no profile is stored yet, so ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} required`,
-      "The values are the data stack's outputs: --api is the API stack's endpoint, " +
-        "--auth-domain is `AuthDomain`, and --client-id is `InteractiveClientId`. " +
-        "After one successful login they are remembered and `nightshift login` takes no flags.",
+      `stage "${stage}" ships no interactive client id, so --client-id is required`,
+      "The value is the data stack's `InteractiveClientId` output for that stage. " +
+        "After one successful login it is remembered and `nightshift login --stage " +
+        `${stage}\` takes no other flag.`,
     );
   }
 
   return {
-    apiEndpoint: trimTrailingSlashes(apiEndpoint),
-    authDomain: normalizeAuthDomain(authDomain),
-    clientId,
-    stage,
+    profile: {
+      apiEndpoint: trimTrailingSlashes(apiEndpoint),
+      authDomain: normalizeAuthDomain(authDomain),
+      clientId,
+      stage,
+    },
+    notes,
   };
 };
 
@@ -176,11 +201,14 @@ export const login = async (
   options: LoginOptions,
 ): Promise<LoginResult> => {
   const stored = await readProfile(environment.paths);
-  const profile = resolveProfile(options.flags, stored);
+  const { profile, notes } = resolveProfile(options.flags, stored);
+  for (const note of notes) environment.out(note);
 
   // Step 2: before any network call. See the module comment.
   await writeProfile(profile, environment.paths);
-  environment.out(`profile written to ${profilePath(environment.paths)}`);
+  environment.out(
+    `profile written to ${profilePath(environment.paths)} (control plane ${profile.apiEndpoint}, stage ${profile.stage})`,
+  );
 
   const pkce = createPkce(options.random);
   const state = createState(options.random);

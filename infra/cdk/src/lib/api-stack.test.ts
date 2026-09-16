@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest";
 import { NightshiftApiStack, STREAM_BATCH_SIZE, STREAM_RETRY_ATTEMPTS } from "./api-stack.js";
 import { DATA_EXPORT_KEYS, dataExportName } from "./data-exports.js";
 import { NightshiftDataStack } from "./data-stack.js";
+import { NightshiftDnsStack } from "./dns-stack.js";
+import { apiHostnameFor, type HostnamesMode, ZONE_NAME } from "./hostnames.js";
+import { DNS_EXPORT_KEYS, dnsExportName } from "./stack-props.js";
 
 /**
  * An app that skips asset bundling. Bundling runs esbuild over the compiled API
@@ -11,8 +14,8 @@ import { NightshiftDataStack } from "./data-stack.js";
  */
 const testApp = (): App => new App({ context: { "aws:cdk:bundling-stacks": [] } });
 
-const synth = (stage = "dev") => {
-  const stack = new NightshiftApiStack(testApp(), "Api", { stage });
+const synth = (stage = "dev", hostnames: HostnamesMode = "full") => {
+  const stack = new NightshiftApiStack(testApp(), "Api", { stage, hostnames });
   return { stack, template: Template.fromStack(stack) };
 };
 
@@ -86,7 +89,7 @@ describe("NightshiftApiStack", () => {
     expect(api.dependencies).toEqual([data]);
   });
 
-  it("consumes the data stack only through its stage's export names", () => {
+  it("consumes the data and DNS stacks only through export names", () => {
     const { template } = synth("staging");
     const imports = new Set(
       JSON.stringify(template.toJSON())
@@ -94,8 +97,76 @@ describe("NightshiftApiStack", () => {
         ?.map((match) => match.slice('"Fn::ImportValue":"'.length, -1)),
     );
     expect(imports.size).toBeGreaterThan(0);
-    const allowed = new Set(DATA_EXPORT_KEYS.map((key) => dataExportName("staging", key)));
+    const allowed = new Set([
+      ...DATA_EXPORT_KEYS.map((key) => dataExportName("staging", key)),
+      ...DNS_EXPORT_KEYS.map((key) => dnsExportName(key)),
+    ]);
     for (const name of imports) expect(allowed.has(name), name).toBe(true);
+    // And it does import the zone: that is how the stable hostname is anchored.
+    expect(imports.has(dnsExportName("HostedZoneId"))).toBe(true);
+  });
+
+  /**
+   * D-P3-18. The hostname a client stores is `api.<stage>.nightshift.wildorder.dev`;
+   * these pin how it is built and that `zone-only` builds none of it.
+   */
+  describe("the stable hostname (D-P3-18)", () => {
+    it("fronts the API with api.<stage>.nightshift.wildorder.dev, certificate validated in the zone", () => {
+      const { stack, template } = synth("staging");
+      const hostname = apiHostnameFor("staging");
+      expect(hostname).toBe(`api.staging.${ZONE_NAME}`);
+      expect(stack.customEndpoint).toBe(`https://${hostname}`);
+      template.hasResourceProperties("AWS::CertificateManager::Certificate", {
+        DomainName: hostname,
+        ValidationMethod: "DNS",
+        DomainValidationOptions: [
+          {
+            DomainName: hostname,
+            HostedZoneId: { "Fn::ImportValue": dnsExportName("HostedZoneId") },
+          },
+        ],
+      });
+      template.hasResourceProperties("AWS::ApiGatewayV2::DomainName", {
+        DomainName: hostname,
+        DomainNameConfigurations: [Match.objectLike({ EndpointType: "REGIONAL" })],
+      });
+      template.hasResourceProperties("AWS::ApiGatewayV2::ApiMapping", { Stage: "$default" });
+      template.hasResourceProperties("AWS::Route53::RecordSet", {
+        Name: `${hostname}.`,
+        Type: "A",
+        HostedZoneId: { "Fn::ImportValue": dnsExportName("HostedZoneId") },
+        AliasTarget: Match.objectLike({ DNSName: Match.anyValue() }),
+      });
+      template.hasOutput("ApiCustomEndpoint", { Value: `https://${hostname}` });
+    });
+
+    it("pins the literal the CLI restates, so the two rules cannot drift apart", () => {
+      expect(apiHostnameFor("dev")).toBe("api.dev.nightshift.wildorder.dev");
+    });
+
+    it("builds none of it in zone-only mode, and still serves the generated endpoint", () => {
+      const { stack, template } = synth("dev", "zone-only");
+      expect(stack.customEndpoint).toBeUndefined();
+      template.resourceCountIs("AWS::CertificateManager::Certificate", 0);
+      template.resourceCountIs("AWS::ApiGatewayV2::DomainName", 0);
+      template.resourceCountIs("AWS::Route53::RecordSet", 0);
+      template.hasOutput("ApiEndpoint", {});
+      expect(JSON.stringify(template.toJSON())).not.toContain(dnsExportName("HostedZoneId"));
+    });
+
+    it("adds no route: a hostname is not a way around the authorizer", () => {
+      const full = resourcesOf(synth("dev", "full").template, "AWS::ApiGatewayV2::Route");
+      const zoneOnly = resourcesOf(synth("dev", "zone-only").template, "AWS::ApiGatewayV2::Route");
+      expect(full.length).toBe(zoneOnly.length);
+    });
+
+    it("can depend on the DNS stack without a construct reference", () => {
+      const app = testApp();
+      const dns = new NightshiftDnsStack(app, "Dns");
+      const api = new NightshiftApiStack(app, "Api", { stage: "dev" });
+      api.addStackDependency(dns, "imports the DNS stack's exports by name");
+      expect(api.dependencies).toEqual([dns]);
+    });
   });
 
   describe("authentication (A-19)", () => {
