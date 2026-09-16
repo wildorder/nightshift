@@ -96,7 +96,9 @@ lives under `docs/programs/` and task specs live under `tasks/{program-id}/`.
 
 ### Tech Stack
 
-TypeScript monorepo (npm workspaces), Node.js, AWS CDK v2, MCP
+TypeScript monorepo (npm workspaces), Node.js, AWS CDK v2, MCP, Claude Code as
+both orchestrator and worker (`claude -p`, pinned in
+`packages/harness-claude/src/command.ts`).
 
 ### Product
 
@@ -240,6 +242,24 @@ the lasting ones are A-27 … A-32 in `docs/architecture.md`.
 - The Cognito pool never depends on the invitation email: the bootstrap script
   sets a permanent password, the invite template carries the hosted sign-in
   URL, and delivery-error logging is in CDK.
+- The interactive app client allows `ALLOW_REFRESH_TOKEN_AUTH` only, so a
+  refresh token comes from the hosted UI with the operator's password and from
+  nowhere else. **An agent cannot run `nightshift login`.** Never reach for
+  `AdminSetUserPassword` on the operator's account to get around it; a machine
+  token (`NIGHTSHIFT_API_ENDPOINT` + `NIGHTSHIFT_API_TOKEN`, which
+  `apps/mcp/src/compose.ts` accepts) is the supported alternative for anything
+  that does not need the operator's own identity.
+- A worker's `job.complete` summary is a paragraph, not a subject line.
+  `commitMessageFor` shapes it; nothing else should reshape a commit message,
+  and nothing may discard the worker's own text.
+- An adapter emits the ending it observed; the runner emits one only if the
+  adapter did not. The agent **record** is always the execution layer's to
+  write. Two emitters for one fact is how the exit-gate run got two
+  `agent.completed` events.
+- `apps/cli` may not reference `apps/api`. Commands are held to the real
+  handler from `test/src/cli/commands.test.ts`, which may reference both.
+- Verification logs are recorded for every step, including a step that printed
+  nothing — a 0-byte log is the honest record, not a skipped one.
 
 ### Dependency Versions (pin these)
 
