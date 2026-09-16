@@ -182,7 +182,8 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
   `lineEnding: "lf"` depends on it: a CRLF checkout makes the formatter reject
   every file in the repository. Do not relax the formatter to work around it.
 - CDK stacks are `nightshift-<stage>-data` (stateful: table, bucket, user pool,
-  budget; termination protection on) and `nightshift-<stage>-api` (stateless),
+  budget; termination protection on), `nightshift-<stage>-api` (stateless) and
+  the unstaged `nightshift-dns` (the hosted zone; P3 T11),
   per D-P2-07. `stage` defaults to `dev` and is overridden with `-c stage=...`.
   The API stack reads the data stack only through its CloudFormation export names
   (`dataExportName`), never through a construct reference.
@@ -239,6 +240,16 @@ the lasting ones are A-27 … A-32 in `docs/architecture.md`.
   and never have a human answering prompts.
 - Starting a run is `nightshift run <contract> [--remote]`; the MCP `run.start`
   calls the same function. `--remote` is refused until P8.
+- Public hostnames (D-P3-18): one account-wide, unstaged stack `nightshift-dns`
+  holds the hosted zone `nightshift.wildorder.dev` (retained, termination
+  protection on). The API is `api.<stage>.nightshift.wildorder.dev`, an alias
+  the API stack creates in `full` mode by importing the zone id **by export
+  name**. `-c hostnames=zone-only` omits the certificate and domain for a new
+  account's first deploy. The CLI ships the rule (`apps/cli/src/hostnames.ts`)
+  and `infra/cdk/src/lib/hostnames.ts` restates it; both pin
+  `api.dev.nightshift.wildorder.dev` in a test. Never store a generated
+  `execute-api` or account-suffixed hostname in a profile; the Cognito hosted
+  domain is derived from stage and account and is not branded.
 - The Cognito pool never depends on the invitation email: the bootstrap script
   sets a permanent password, the invite template carries the hosted sign-in
   URL, and delivery-error logging is in CDK.
