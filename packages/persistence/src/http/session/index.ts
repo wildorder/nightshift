@@ -9,6 +9,7 @@ export {
   agentStateDir,
   CONFIG_DIR_ENV,
   configDir,
+  createLocalPaths,
   credentialsPath,
   idTail,
   type PathEnvironment,

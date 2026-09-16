@@ -122,8 +122,13 @@ export const PERMITTED_REFERENCES: Readonly<Record<string, readonly string[]>> =
   "packages/verification": ["packages/contracts", "packages/core"],
   "apps/api": ["packages/contracts", "packages/core", "packages/persistence"],
   // P3 (D-P3-12): the CLI is still a thin client, but it mints identifiers and
-  // speaks to the control plane through the http adapter.
-  "apps/cli": ["packages/contracts", "packages/core", "packages/persistence"],
+  // speaks to the control plane through the http adapter. It also references
+  // `execution` for exactly one function — `startRun`, the half of starting a
+  // run that `nightshift run` and the MCP `run.start` share (D-P3-17, A-32).
+  // T7 sanctions this: "the layer table gains `execution` for `apps/cli` only if
+  // that function lives there", and it does, because creating the initial
+  // checkpoint is a git operation and the CLI holds no domain logic of its own.
+  "apps/cli": ["packages/contracts", "packages/core", "packages/persistence", "packages/execution"],
   // P3 (D-P3-12): `apps/mcp` is a composition root and names the Claude adapter
   // in exactly one module, which AR-2 permits by path.
   "apps/mcp": [

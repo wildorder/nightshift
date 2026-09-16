@@ -110,6 +110,11 @@ const assertMutableChangesOnly = (existing: ExecutionNode, node: ExecutionNode):
   if (existing.jobContractId !== null && node.jobContractId !== existing.jobContractId) {
     throw new HttpError(409, "conflict", "jobContractId cannot change once it is set");
   }
+  // A durable failure reason is written once. Rewriting it would let a later
+  // caller edit the record of why work failed, which is the opposite of durable.
+  if (existing.outcomeReason !== undefined && node.outcomeReason !== existing.outcomeReason) {
+    throw new HttpError(409, "conflict", "outcomeReason cannot change once it is set");
+  }
 
   const workChanged =
     existing.commitSha !== node.commitSha || existing.jobContractId !== node.jobContractId;

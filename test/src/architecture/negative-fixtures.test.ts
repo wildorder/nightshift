@@ -241,7 +241,10 @@ describe("AR-5 negative fixtures: tsconfig reference direction", () => {
       makeRepo({
         tsconfigs: [
           tsconfig("packages/core", ["../persistence"]),
-          tsconfig("apps/cli", ["../../packages/execution"]),
+          // Still forbidden after D-P3-12: the CLI gained `core`, `persistence`
+          // and `execution`, but naming a harness implementation is the
+          // composition-root privilege of `apps/mcp` alone.
+          tsconfig("apps/cli", ["../../packages/harness-claude"]),
           tsconfig("packages/mystery", []),
         ],
       }),

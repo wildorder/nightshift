@@ -5,10 +5,13 @@
   "type": "module",
   "description": "Cross-package fixtures, conformance suites, and architecture tests.",
   "dependencies": {
+    "@nightshift/api": "*",
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
+    "@nightshift/execution": "*",
     "@nightshift/harness": "*",
     "@nightshift/persistence": "*",
+    "@nightshift/verification": "*",
     "fast-check": "4.10.0"
   },
   "devDependencies": {

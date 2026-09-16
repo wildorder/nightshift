@@ -18,6 +18,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { LocalPaths } from "@nightshift/core";
 
 export const CONFIG_DIR_ENV = "NIGHTSHIFT_CONFIG_DIR";
 export const STATE_DIR_ENV = "NIGHTSHIFT_STATE_DIR";
@@ -129,3 +130,17 @@ export const worktreePath = (
   nodeId: string,
   environment: PathEnvironment = {},
 ): string => join(stateDir(environment), "wt", idTail(runId), idTail(nodeId));
+
+/**
+ * The {@link LocalPaths} port over this module (D-P3-10).
+ *
+ * The execution layer takes the port; the composition root builds this. Declared
+ * against the port in `core` so the two cannot drift: a change to either side
+ * that broke the other fails to compile here.
+ */
+export const createLocalPaths = (environment: PathEnvironment = {}): LocalPaths => ({
+  worktree: (runId, nodeId) => worktreePath(runId, nodeId, environment),
+  runDir: (runId) => runStateDir(runId, environment),
+  spool: (runId) => spoolPath(runId, environment),
+  transcript: (runId, agentId) => transcriptPath(runId, agentId, environment),
+});

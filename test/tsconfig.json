@@ -18,6 +18,15 @@
     },
     {
       "path": "../packages/harness"
+    },
+    {
+      "path": "../packages/execution"
+    },
+    {
+      "path": "../packages/verification"
+    },
+    {
+      "path": "../apps/api"
     }
   ]
 }

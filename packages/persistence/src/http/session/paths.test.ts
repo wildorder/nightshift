@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentStateDir,
   configDir,
+  createLocalPaths,
   credentialsPath,
   idTail,
   profilePath,
@@ -121,6 +122,30 @@ describe("the files and directories underneath", () => {
       worktreePath("run_a", "node_b", at),
     ]) {
       expect(path.startsWith("/cfg") || path.startsWith("/state")).toBe(true);
+    }
+  });
+});
+
+describe("the LocalPaths port", () => {
+  const at = { env: { NIGHTSHIFT_STATE_DIR: "/state" }, platform: "linux" as const, home: HOME };
+
+  it("answers the same paths the module's own functions do", () => {
+    const paths = createLocalPaths(at);
+    expect(paths.worktree("run_a", "node_b")).toBe(worktreePath("run_a", "node_b", at));
+    expect(paths.runDir("run_a")).toBe(runStateDir("run_a", at));
+    expect(paths.spool("run_a")).toBe(spoolPath("run_a", at));
+    expect(paths.transcript("run_a", "agent_c")).toBe(transcriptPath("run_a", "agent_c", at));
+  });
+
+  it("puts nothing inside the program checkout", () => {
+    const paths = createLocalPaths(at);
+    for (const path of [
+      paths.worktree("run_a", "node_b"),
+      paths.runDir("run_a"),
+      paths.spool("run_a"),
+      paths.transcript("run_a", "agent_c"),
+    ]) {
+      expect(path.startsWith("/state")).toBe(true);
     }
   });
 });

@@ -49,6 +49,25 @@ export const RouteUsageSchema = z.strictObject({
 });
 export type RouteUsage = z.infer<typeof RouteUsageSchema>;
 
+/**
+ * What a routing rule decides, before it becomes a record.
+ *
+ * A `RoutingDecision` carries identifiers the execution layer mints — its own id
+ * and the node it belongs to — so a rule cannot build one. It returns this, and
+ * the runner turns it into the record. Declared here, beside the record it
+ * becomes, so `routing` (which produces it) and `execution` (which consumes it)
+ * share one shape without depending on each other.
+ */
+export interface RouteChoice {
+  readonly target: RouteTarget;
+  /** Every option considered, eligible or not, so the choice is explainable. */
+  readonly eligibleOptions: readonly RouteOption[];
+  /** The routing rule responsible, for example `p3-fixed`. */
+  readonly ruleId: string;
+  /** True when an orchestrator pinned the target rather than policy selecting it. */
+  readonly wasOverride: boolean;
+}
+
 export const RoutingDecisionSchema = z
   .strictObject({
     ...runScoped,

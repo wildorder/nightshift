@@ -50,7 +50,7 @@ const PACKAGES = {
     ext: [],
   },
   "apps/cli": {
-    refs: ["packages/contracts", "packages/core", "packages/persistence"],
+    refs: ["packages/contracts", "packages/core", "packages/persistence", "packages/execution"],
     ext: [],
   },
   "apps/mcp": {
