@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p3-vertical-slice` |
 | Source stage | Stage 3 (Nightshift MCP + First Local Vertical Slice) |
-| Status | **Complete except T11.** Contract ratified 2026-09-15; T1 … T10 built 2026-09-15/16 and merged into `v1` 2026-09-16 as `ea53fad` (PR #14); the deferred `nightshift login` leg closed by the operator 2026-09-16 (§13.4). **Reopened 2026-09-16 for T11** (stable hostnames and a zero-flag login, D-P3-18), which the exit gate showed to be a defect in T7's deliverable. Build-time decisions in §12 marked "for human ratification" still await it. |
+| Status | **Complete.** Contract ratified 2026-09-15; T1 … T10 built 2026-09-15/16 and merged into `v1` 2026-09-16 as `ea53fad` (PR #14); the deferred `nightshift login` leg closed by the operator 2026-09-16 (§13.4); T11 (stable hostnames and a zero-flag login, D-P3-18) built, deployed and proven on both platforms 2026-09-16 (§13.11). Build-time decisions in §12 marked "for human ratification" still await it. |
 | Depends on | P1 Foundation (complete), P2 Control Plane (deployed 2026-09-15) |
 | Blocking decision | **O-04** local authentication to Nightshift MCP, resolved by D-P3-01 |
 
@@ -920,7 +920,8 @@ amendment in §12), never silently.
 | SC-P3-14 no harness-specific import above the adapter layer | AR-2 over the tracked tree in `test/src/architecture/`, plus negative fixtures; pointed at by `slice/offline.test.ts` | pass |
 | SC-P3-15 `npm test` proves 01…14 offline | `slice/offline.test.ts` asserts the endpoints are all `127.0.0.1`, that no `AWS_*` variable reaches the server, and that the default target is `local`; green on both CI legs as of `9e3ae16`, which took four fixes (§13.6) | pass |
 | SC-P3-16 the deployed slice, orchestrator included | §13.4 — a real Claude orchestrator through the skill, a real Claude worker, the deployed plane, read back from the API alone; the login leg run by the operator on 2026-09-16 | pass |
-| SC-P3-17 the smoke suite against the redeployed stack | `npm run smoke`, 67 tests, twice consecutively; every P1 and P2 gate unchanged | pass |
+| SC-P3-17 the smoke suite against the redeployed stack | `npm run smoke`, 67 tests, twice consecutively; every P1 and P2 gate unchanged; 68 after T11 | pass |
+| SC-P3-18 a flagless login on both platforms, no generated hostname stored | `nightshift login` with no flags on the Windows laptop (browser) and the Mac mini (`--no-browser`, paste path) on 2026-09-16, both rewriting the stored `execute-api` endpoint to `api.dev.nightshift.wildorder.dev` and reporting it; `whoami` names the stable control plane on both | pass |
 
 ### 13.11 T11 as built: stable hostnames and a zero-flag login
 
@@ -939,6 +940,7 @@ both, narrowed by the owner to the API hostname (§12).
 | Auth domain | unchanged: `nightshift-dev-755348349819.auth.us-west-2.amazoncognito.com` |
 | Deploys | `nightshift-dns` created 2026-09-16 (zone only); `nightshift-dev-api` updated the same day in `full` mode once the delegation was visible at the parent's authoritative servers; the data stack was not touched |
 | Smoke | 68 passed in 39 s against the redeployed stack, including the new stable-hostname check: 401 with no token and 200 with one through `api.dev.nightshift.wildorder.dev`; cleanup complete |
+| SC-P3-18 | `nightshift login`, no flags, on the Windows laptop and over SSH on the Mac mini, 2026-09-16: both replaced the stored generated endpoint with the stable one and said so; `whoami` reports `control plane https://api.dev.nightshift.wildorder.dev (stage dev)` on both |
 
 **How the CLI now resolves a profile.** Flags, then a stored profile for the
 same stage, then the stage's shipped defaults: `https://api.<stage>.nightshift.wildorder.dev`,
@@ -964,8 +966,6 @@ stacks remain environment-agnostic; the data stack was not redeployed.
 
 ### 13.10 Carried forward
 
-- **T11** (D-P3-18): built and deployed; §13.11. The one leg left to a human
-  is the flagless login on each machine, which only the operator can run.
 - The root node's terminal status and `RoutingDecision.usage` (§13.5), both
   for P4/P6.
 - The P2 open items still stand: budget email delivery unconfirmed,
