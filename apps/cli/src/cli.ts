@@ -29,7 +29,7 @@ import { describeFailure, failureLines, UsageError } from "./failures.js";
 export const USAGE = `nightshift — the Nightshift control plane, from a terminal
 
 Usage:
-  nightshift login [--api <url>] [--auth-domain <domain>] [--client-id <id>] [--stage <stage>]
+  nightshift login [--api <url>] [--auth-domain <domain>] [--client-id <id>] [--stage <stage>] [--no-browser]
   nightshift logout [--no-revoke]
   nightshift whoami
   nightshift project create --name <name> [--description <text>]
@@ -70,7 +70,7 @@ const parse = <T extends Parameters<typeof parseArgs>[0]>(
 };
 
 const LOGIN_USAGE =
-  "nightshift login [--api <url>] [--auth-domain <domain>] [--client-id <id>] [--stage <stage>]";
+  "nightshift login [--api <url>] [--auth-domain <domain>] [--client-id <id>] [--stage <stage>] [--no-browser]";
 
 const doLogin = async (environment: CliEnvironment, args: readonly string[]): Promise<void> => {
   const { values } = parse(
@@ -81,12 +81,16 @@ const doLogin = async (environment: CliEnvironment, args: readonly string[]): Pr
         "auth-domain": { type: "string" },
         "client-id": { type: "string" },
         stage: { type: "string" },
+        // Over SSH the opener "succeeds" on the remote desktop. This skips it and
+        // prints the URL for a browser that can reach the loopback port.
+        "no-browser": { type: "boolean" },
       },
       allowPositionals: false,
       strict: true,
     },
     LOGIN_USAGE,
   );
+  const noBrowser = values["no-browser"] === true;
   const api = optional(values, "api");
   const authDomain = optional(values, "auth-domain");
   const clientId = optional(values, "client-id");
@@ -97,6 +101,7 @@ const doLogin = async (environment: CliEnvironment, args: readonly string[]): Pr
       ...(authDomain === undefined ? {} : { authDomain }),
       ...(clientId === undefined ? {} : { clientId }),
       ...(stage === undefined ? {} : { stage }),
+      ...(noBrowser ? { noBrowser } : {}),
     },
   });
 };

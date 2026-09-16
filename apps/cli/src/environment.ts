@@ -12,6 +12,8 @@
  * `createCliEnvironment` is the only place in this package that reaches for an
  * ambient anything. It is called by the binary and by nothing else.
  */
+
+import { createInterface } from "node:readline";
 import type { Clock, IdGenerator } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import type { GitRunner } from "@nightshift/execution";
@@ -32,6 +34,63 @@ export type Write = (line: string) => void;
  */
 export type BrowserOpener = (url: string) => Promise<boolean>;
 
+/**
+ * One line of terminal input, for the paste path of `nightshift login`.
+ *
+ * `line` resolves with what the human typed, or `undefined` when there is no
+ * terminal to read from (a pipe, a service), in which case the loopback callback
+ * is the only way in. `cancel` releases stdin so a login that finished through
+ * the callback does not leave the process waiting on a keyboard.
+ */
+export type PasteSource = () => {
+  readonly line: Promise<string | undefined>;
+  cancel(): void;
+};
+
+/** What {@link pasteSourceFor} needs from stdin: a readable that may be a TTY. */
+export type PasteInput = NodeJS.ReadableStream & {
+  readonly isTTY?: boolean;
+  pause?(): unknown;
+};
+
+/**
+ * A paste source over `input`.
+ *
+ * Only a terminal is read: on a pipe or a service `line` resolves `undefined`
+ * at once and the loopback callback is the only way in. Order matters inside
+ * the `line` handler and is the bug this comment exists to prevent: `close`
+ * fires synchronously from `reader.close()`, so resolving *after* closing would
+ * let the `close` handler resolve `undefined` first and the paste would be read
+ * and silently thrown away. Resolve first, then close.
+ */
+export const pasteSourceFor =
+  (input: PasteInput, isTTY: boolean = input.isTTY === true): PasteSource =>
+  () => {
+    if (!isTTY) return { line: Promise.resolve(undefined), cancel: () => undefined };
+    const reader = createInterface({ input, terminal: false });
+    let settled = false;
+    const line = new Promise<string | undefined>((resolve) => {
+      reader.once("line", (text) => {
+        settled = true;
+        resolve(text);
+        reader.close();
+      });
+      reader.once("close", () => {
+        if (!settled) resolve(undefined);
+      });
+    });
+    return {
+      line,
+      cancel: () => {
+        reader.close();
+        input.pause?.();
+      },
+    };
+  };
+
+/** Reads one line from the process's terminal, if there is one. */
+export const terminalPaste: PasteSource = () => pasteSourceFor(process.stdin)();
+
 export interface CliEnvironment {
   /** Ordinary output. */
   readonly out: Write;
@@ -43,6 +102,8 @@ export interface CliEnvironment {
   readonly paths: PathEnvironment;
   readonly fetch: FetchLike;
   readonly openBrowser: BrowserOpener;
+  /** A line the operator pastes into the terminal during `login`. */
+  readonly readPaste: PasteSource;
   readonly clock: Clock;
   readonly ids: IdGenerator;
   readonly git: GitRunner;
@@ -62,6 +123,7 @@ export const createCliEnvironment = (): CliEnvironment => ({
   paths: { env: process.env },
   fetch: globalThis.fetch as unknown as FetchLike,
   openBrowser,
+  readPaste: terminalPaste,
   clock: systemClock,
   ids: createUlidIdGenerator(),
   git: nodeGitRunner,

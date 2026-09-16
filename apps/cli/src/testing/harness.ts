@@ -124,6 +124,8 @@ export interface TestEnvironment {
 export interface TestEnvironmentOptions {
   readonly fetch?: FetchLike;
   readonly openBrowser?: (url: string) => Promise<boolean>;
+  /** What the operator pastes. Default: nobody types anything. */
+  readonly readPaste?: CliEnvironment["readPaste"];
   readonly ids?: IdGenerator;
   readonly git?: GitRunner;
   readonly cwd?: string;
@@ -162,6 +164,9 @@ export const createTestEnvironment = async (
     },
     fetch: options.fetch ?? noFetch,
     openBrowser: options.openBrowser ?? (async () => false),
+    readPaste:
+      options.readPaste ??
+      (() => ({ line: new Promise<undefined>(() => undefined), cancel: () => undefined })),
     clock: createFixedClock(options.nowMs ?? FIXED_NOW),
     ids: options.ids ?? createCountingIdGenerator(),
     git: options.git ?? createFakeGit(),

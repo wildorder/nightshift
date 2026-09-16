@@ -20,6 +20,16 @@
  *    before the ID token is read, so a refresh token that was issued is never
  *    lost to a parsing failure two lines later.
  *
+ * The authorization URL is **always printed**, whether or not the opener
+ * reported success. `open` on macOS and `xdg-open` on Linux report success when
+ * a browser was launched on *that machine's* desktop, which over SSH is a window
+ * nobody is looking at; the callback still lands on this machine's loopback
+ * port, so the operator needs the URL and a browser (or a tunnel) that can reach
+ * it. `--no-browser` skips the opener for exactly that case, and the **paste
+ * path** (`paste.ts`) finishes it: the address the browser failed to reach,
+ * pasted into the terminal, carries the code. Whichever arrives first, the
+ * callback or the paste, completes the login.
+ *
  * The refresh token exists in this module as one local binding that goes
  * straight into `writeCredentials`. It is never printed, never logged, never put
  * in an error message, and never returned by {@link login}.
@@ -35,8 +45,16 @@ import {
 } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
+import type { Loopback } from "../loopback.js";
 import { authorizeUrl, exchangeAuthorizationCode } from "../oauth.js";
-import { assertState, createPkce, createState, type RandomBytes } from "../pkce.js";
+import { PastedCallbackError, parsePastedCallback } from "../paste.js";
+import {
+  assertState,
+  createPkce,
+  createState,
+  type RandomBytes,
+  StateMismatchError,
+} from "../pkce.js";
 
 /** `--stage` when neither the flags nor the stored profile say otherwise. */
 export const DEFAULT_STAGE = "dev";
@@ -46,6 +64,8 @@ export interface LoginFlags {
   readonly authDomain?: string;
   readonly clientId?: string;
   readonly stage?: string;
+  /** Print the URL and do not try to open a browser (an SSH session, a container). */
+  readonly noBrowser?: boolean;
 }
 
 export interface LoginOptions {
@@ -107,6 +127,50 @@ export const resolveProfile = (flags: LoginFlags, stored: Profile | undefined): 
   };
 };
 
+/**
+ * The code, from whichever arrives first: the loopback callback or a paste.
+ *
+ * A paste that is not a callback, or carries the wrong `state`, is reported and
+ * the wait continues; the operator can paste again or finish in the browser. A
+ * machine with no terminal (`line` resolves `undefined`) waits on the callback
+ * alone, which is the pre-paste behaviour exactly.
+ */
+const waitForCode = async (
+  loopback: Loopback,
+  environment: CliEnvironment,
+  checkState: (received: string | null) => void,
+): Promise<string> => {
+  // Read by the race below; the timeout rejection is handled there, so the
+  // extra handler only keeps it from ever counting as unhandled after a paste
+  // has already won.
+  void loopback.code.catch(() => undefined);
+  const callback = loopback.code.then((code) => ({ kind: "callback" as const, code }));
+
+  let paste = environment.readPaste();
+  try {
+    for (;;) {
+      const winner = await Promise.race([
+        callback,
+        paste.line.then((line) => ({ kind: "paste" as const, line })),
+      ]);
+      if (winner.kind === "callback") return winner.code;
+      if (winner.line === undefined) return (await callback).code;
+      try {
+        return parsePastedCallback(winner.line, checkState);
+      } catch (error) {
+        if (error instanceof PastedCallbackError || error instanceof StateMismatchError) {
+          environment.err(`${error.message}. Paste again, or finish the sign-in in the browser.`);
+          paste = environment.readPaste();
+          continue;
+        }
+        throw error;
+      }
+    }
+  } finally {
+    paste.cancel();
+  }
+};
+
 export const login = async (
   environment: CliEnvironment,
   options: LoginOptions,
@@ -141,15 +205,25 @@ export const login = async (
       codeChallengeMethod: pkce.method,
     });
 
-    const opened = await environment.openBrowser(url);
+    const opened = options.flags.noBrowser === true ? false : await environment.openBrowser(url);
     environment.out(
       opened
-        ? "opened your browser to sign in; waiting for the callback…"
-        : "could not open a browser. Open this URL to sign in:",
+        ? "opened a browser on this machine to sign in. If no window appeared (over SSH, for " +
+            "example), open this URL in a browser that can reach " +
+            `${loopback.redirectUri.replace(/\/callback$/, "")} on this machine:`
+        : options.flags.noBrowser === true
+          ? "open this URL to sign in:"
+          : "could not open a browser. Open this URL to sign in:",
     );
-    if (!opened) environment.out(url);
+    environment.out(url);
+    environment.out(
+      `waiting for the callback on ${loopback.redirectUri}. If the browser cannot reach it, ` +
+        "paste the address it was redirected to (or just the code) here and press Enter:",
+    );
 
-    const code = await loopback.code;
+    const code = await waitForCode(loopback, environment, (received) => {
+      assertState(state, received);
+    });
 
     const tokens = await exchangeAuthorizationCode(
       {

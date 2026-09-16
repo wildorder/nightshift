@@ -16,7 +16,12 @@ import { dirname } from "node:path";
 import { credentialsPath, profilePath } from "@nightshift/persistence/http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TestEnvironment } from "../testing/harness.js";
-import { createFakeFetch, createTestEnvironment, fakeIdToken } from "../testing/harness.js";
+import {
+  createFakeFetch,
+  createTestEnvironment,
+  fakeIdToken,
+  type RecordedRequest,
+} from "../testing/harness.js";
 import { login, resolveProfile } from "./login.js";
 
 const API = "https://4xnsx809u6.execute-api.us-west-2.amazonaws.com";
@@ -62,6 +67,21 @@ const browserThatSignsIn =
     await fetch(redirect.toString());
     return true;
   };
+
+/**
+ * Polls the captured output for the authorize URL `login` prints, so a test can
+ * play the human who copies it out of a terminal.
+ */
+const waitForPrintedUrl = async (created: TestEnvironment): Promise<string> => {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const line = created.out.find((entry) =>
+      entry.startsWith(`https://${DOMAIN}/oauth2/authorize?`),
+    );
+    if (line !== undefined) return line;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("login never printed the authorize URL");
+};
 
 const tokenEndpointAnswering = (body: Record<string, unknown>, status = 200) =>
   createFakeFetch(() => ({ status, body: JSON.stringify(body) }));
@@ -169,6 +189,57 @@ describe("nightshift login", () => {
     expect((failure as Error).stack ?? "").not.toContain(REFRESH_TOKEN);
     expect(created.out.join("\n")).not.toContain(REFRESH_TOKEN);
     expect(created.err.join("\n")).not.toContain(REFRESH_TOKEN);
+  });
+
+  it("prints the URL even when the opener reports success (SSH: the window is on the wrong desktop)", async () => {
+    const fake = tokenEndpointAnswering({
+      id_token: fakeIdToken({ sub: SUBJECT, email: EMAIL }),
+      refresh_token: REFRESH_TOKEN,
+    });
+    const captured: { url?: string } = {};
+    const created = await createTestEnvironment({
+      fetch: fake.fetch,
+      openBrowser: browserThatSignsIn(captured),
+    });
+    live.push(created);
+
+    await login(created.environment, { flags: FLAGS });
+
+    const printed = created.out.join("\n");
+    expect(printed).toContain("opened a browser on this machine");
+    expect(captured.url).toBeDefined();
+    expect(printed).toContain(captured.url ?? "never");
+    expect(printed).toContain("waiting for the callback on http://localhost:");
+  });
+
+  it("skips the opener with --no-browser and prints the URL", async () => {
+    const fake = tokenEndpointAnswering({
+      id_token: fakeIdToken({ sub: SUBJECT, email: EMAIL }),
+      refresh_token: REFRESH_TOKEN,
+    });
+    let openerCalls = 0;
+    const created = await createTestEnvironment({
+      fetch: fake.fetch,
+      openBrowser: async () => {
+        openerCalls += 1;
+        return true;
+      },
+    });
+    live.push(created);
+
+    // The human pastes the printed URL somewhere and the callback arrives.
+    const pending = login(created.environment, { flags: { ...FLAGS, noBrowser: true } });
+    const printedUrl = await waitForPrintedUrl(created);
+    const authorize = new URL(printedUrl);
+    const redirect = new URL(authorize.searchParams.get("redirect_uri") ?? "");
+    redirect.hostname = "127.0.0.1";
+    redirect.searchParams.set("code", "code-pasted-from-elsewhere");
+    redirect.searchParams.set("state", authorize.searchParams.get("state") ?? "");
+    await fetch(redirect.toString());
+    await pending;
+
+    expect(openerCalls).toBe(0);
+    expect(created.out.join("\n")).toContain("open this URL to sign in:");
   });
 
   it("prints the URL when no browser can be opened, and still completes", async () => {
@@ -303,5 +374,134 @@ describe("resolving the flags against the stored profile", () => {
   it("lets a flag override what is stored", () => {
     const stored = { apiEndpoint: API, authDomain: DOMAIN, clientId: CLIENT, stage: "dev" };
     expect(resolveProfile({ stage: "prod" }, stored)).toEqual({ ...stored, stage: "prod" });
+  });
+});
+
+/** A terminal where the operator pastes these lines, in order, then goes quiet. */
+const operatorPasting = (lines: readonly string[]) => {
+  const queue = [...lines];
+  return () => {
+    const next = queue.shift();
+    return {
+      line:
+        next === undefined
+          ? new Promise<undefined>(() => undefined)
+          : new Promise<string>((resolve) => setTimeout(() => resolve(next), 5)),
+      cancel: () => undefined,
+    };
+  };
+};
+
+const signedInSession = () =>
+  tokenEndpointAnswering({
+    id_token: fakeIdToken({ sub: SUBJECT, email: EMAIL }),
+    refresh_token: REFRESH_TOKEN,
+  });
+
+/** The address a remote browser shows when it cannot reach the loopback port. */
+const failedRedirectFor = (authorizeUrl: string, code: string, state?: string): string => {
+  const authorize = new URL(authorizeUrl);
+  const redirect = new URL(authorize.searchParams.get("redirect_uri") ?? "");
+  redirect.searchParams.set("code", code);
+  redirect.searchParams.set("state", state ?? authorize.searchParams.get("state") ?? "");
+  return redirect.toString();
+};
+
+describe("nightshift login, the paste path (SSH)", () => {
+  it("completes from the failed redirect address pasted into the terminal", async () => {
+    const fake = signedInSession();
+    const captured: { url?: string } = {};
+    const created = await createTestEnvironment({
+      fetch: fake.fetch,
+      // A remote browser: it gets the URL and never reaches the listener.
+      openBrowser: async (url) => {
+        captured.url = url;
+        return false;
+      },
+      readPaste: () => ({
+        line: (async () => {
+          while (captured.url === undefined) await new Promise((r) => setTimeout(r, 5));
+          return failedRedirectFor(captured.url, "code-from-the-address-bar");
+        })(),
+        cancel: () => undefined,
+      }),
+    });
+    live.push(created);
+
+    const result = await login(created.environment, { flags: { ...FLAGS, noBrowser: false } });
+
+    expect(result.subject).toBe(SUBJECT);
+    const exchange = fake.find("/oauth2/token");
+    expect(exchange).toBeDefined();
+    expect(fake.form(exchange as RecordedRequest).code).toBe("code-from-the-address-bar");
+  });
+
+  it("accepts a bare code", async () => {
+    const fake = signedInSession();
+    const created = await createTestEnvironment({
+      fetch: fake.fetch,
+      readPaste: operatorPasting(["  just-the-code  "]),
+    });
+    live.push(created);
+
+    await login(created.environment, { flags: { ...FLAGS, noBrowser: true } });
+
+    const exchange = fake.find("/oauth2/token");
+    expect(exchange).toBeDefined();
+    expect(fake.form(exchange as RecordedRequest).code).toBe("just-the-code");
+  });
+
+  it("refuses a pasted address with the wrong state, says so, and keeps waiting", async () => {
+    const fake = signedInSession();
+    const captured: { url?: string } = {};
+    const created = await createTestEnvironment({
+      fetch: fake.fetch,
+      openBrowser: async (url) => {
+        captured.url = url;
+        return false;
+      },
+      readPaste: (() => {
+        let attempt = 0;
+        return () => ({
+          line: (async () => {
+            while (captured.url === undefined) await new Promise((r) => setTimeout(r, 5));
+            attempt += 1;
+            return attempt === 1
+              ? failedRedirectFor(captured.url, "stolen-code", "someone-elses-state")
+              : failedRedirectFor(captured.url, "the-real-code");
+          })(),
+          cancel: () => undefined,
+        });
+      })(),
+    });
+    live.push(created);
+
+    await login(created.environment, { flags: FLAGS });
+
+    expect(created.err.join("\n")).toMatch(/state/i);
+    const exchanges = fake.requests.filter((request) => request.url.includes("/oauth2/token"));
+    expect(exchanges).toHaveLength(1);
+    expect(fake.form(exchanges[0] as RecordedRequest).code).toBe("the-real-code");
+  });
+
+  it("reports a refused sign-in pasted back, and still lets the callback finish", async () => {
+    const fake = signedInSession();
+    const captured: { url?: string } = {};
+    const created = await createTestEnvironment({
+      fetch: fake.fetch,
+      openBrowser: async (url) => {
+        captured.url = url;
+        // The human pastes the refusal first; a moment later they sign in properly.
+        setTimeout(() => void browserThatSignsIn({})(url), 40);
+        return false;
+      },
+      readPaste: operatorPasting(["error=access_denied&error_description=user+cancelled"]),
+    });
+    live.push(created);
+
+    await login(created.environment, { flags: FLAGS });
+
+    expect(created.err.join("\n")).toContain("access_denied");
+    expect(created.out.join("\n")).toContain(`signed in as ${EMAIL}`);
   });
 });

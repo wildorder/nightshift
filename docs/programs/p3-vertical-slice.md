@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p3-vertical-slice` |
 | Source stage | Stage 3 (Nightshift MCP + First Local Vertical Slice) |
-| Status | **Contract ratified 2026-09-15** (D-P3-01 … D-P3-17). Tasks T1 … T10 drafted. Implementation not started. |
+| Status | **Complete.** Contract ratified 2026-09-15; built 2026-09-15/16; merged into `v1` 2026-09-16 as `ea53fad` (PR #14); the deferred `nightshift login` leg closed by the operator 2026-09-16 (§13.4). Build-time decisions in §12 marked "for human ratification" still await it. |
 | Depends on | P1 Foundation (complete), P2 Control Plane (deployed 2026-09-15) |
 | Blocking decision | **O-04** local authentication to Nightshift MCP, resolved by D-P3-01 |
 
@@ -569,6 +569,7 @@ Specs live in `tasks/p3-vertical-slice/`.
 | 2026-09-16 | **Nightshift shapes the commit message it owns.** A real worker's `job.complete` summary is a paragraph, and `git commit -m` makes everything before the first blank line the subject — so the first integrated commit carried a 700-character subject. `commitMessageFor` derives a subject inside 72 characters and keeps the whole summary as the body. A change to how A-29's "Nightshift owns every commit" is executed, not to what it says. | Agent, for human ratification |
 | 2026-09-16 | **SC-P3-16's `nightshift login` leg is deferred to a human, and everything else in it is done.** The interactive app client allows `ALLOW_REFRESH_TOKEN_AUTH` only, so a refresh token comes from the hosted UI with the operator's password and from nowhere else; `admin/user.ts` never stores that password, by design. An agent cannot complete the flow, and the alternatives — resetting the operator's password, or a throwaway user the client's flow list rules out anyway — are worse than leaving it. The exit-gate run therefore used the machine client's credentials grant, which `compose.ts` supports as a documented path. §13.4 records what that leaves unproven (the browser leg and the exchange against real Cognito), where the rest is proven, and the three commands that close it. | Agent, for human ratification |
 | 2026-09-16 | **Two observations recorded rather than fixed**, because fixing either at the exit gate would settle a rule the contract left open. The program node stays `running` after a run succeeds — §4.3 covers job nodes and says P3 does not decide a run's outcome from its nodes, so no terminal status for the root is specified. And `RoutingDecision.usage` stays `{}`: the record is written at `queued` and is create-or-confirm, so carrying the adapter's token counts or the wall clock would need a widened `Harness` port and a mutable route. Both belong to P4/P6. | Agent, for human ratification |
+| 2026-09-16 | **`nightshift login` always prints the authorization URL, gains `--no-browser`, and gains a paste path.** Found the moment a human ran SC-P3-16's deferred leg: from an SSH session into the Mac mini, `open` reported success, a browser window appeared on the Mac mini's own desktop, and the CLI, taking success at its word, printed no URL, so the operator sat waiting on a listener they could not reach. The opener's answer means "a browser was launched on this machine", not "the operator can see it". The command now prints the URL in every case and says which loopback port the browser must reach; `--no-browser` skips the opener for remote sessions. And because the address the remote browser then fails to reach carries the whole authorization result, the command also reads one line from the terminal and accepts that pasted address, a bare query string, or a bare code (`apps/cli/src/paste.ts`), checking `state` exactly as the listener does; whichever arrives first, callback or paste, completes the login. This is the flow Claude Code and the older `gcloud` use, minus a hosted page to display the code: Cognito has no device-authorization grant to poll (P2 T9), and a hosted page would need an unauthenticated route on an API whose every route is behind the authorizer (A-19). A bare code is accepted without a `state` check, stated as a trade: the human who typed it is the one that check protects, and the code is useless without the PKCE verifier that never left the process. Seventeen tests added across `paste.test.ts`, `login.test.ts` and `environment.test.ts`. The last file exists because the first real paste was read and silently discarded: the terminal reader closed its readline interface before resolving, `close` fires synchronously, and the close handler resolved "no terminal" first. The login tests had injected a fake paste source, so the real reader had never run; it now takes any stream and is tested over one. The three-command recipe in §13.4 stands, with `--no-browser` for a remote operator. | Agent, for human ratification |
 | 2026-09-16 | **Line endings are Nightshift's, not the machine's.** `identityOverrides` now prepends `core.autocrlf=false` and `core.eol=lf` to every Nightshift `git` invocation. Found by CI's windows leg, but it is not a test fix: A-29 says Nightshift owns every commit, and owning one means owning its bytes. `completeJob` snapshots a worktree into a commit and `cleanCheckout` materialises that same commit again for verification — with `core.autocrlf=true`, the default on a Windows installation, those are not the same bytes, so a worker writes `\n`, verification reads `\r\n`, and a step comparing file contents fails for a reason invisible in the diff. Only the implicit platform conversion is disabled: a repository that declares `text eol=crlf` in `.gitattributes` still gets CRLF, because attributes outrank both settings. | Agent, for human ratification |
 
 ## 13. As built
@@ -716,8 +717,8 @@ only the checkout itself, and the job's worktree directory under
 disk under the state directory and in S3 as an `Artifact`. Nothing Nightshift
 wrote landed inside the checkout.
 
-**The one step a human must still run.** `nightshift login` was not exercised
-against the real hosted UI, and therefore neither were `nightshift project
+**The one step a human had to run, and did.** During the build `nightshift login`
+was not exercised against the real hosted UI, and therefore neither were `nightshift project
 create` and `nightshift run` under the operator's own identity. The reason is
 not a gap in the CLI: the interactive app client allows
 `ALLOW_REFRESH_TOKEN_AUTH` **only**, so a refresh token can be obtained in
@@ -737,8 +738,13 @@ request, `custom:active_org`, the org resolution, every route the CLI calls —
 is proven against the real handler by `test/src/cli/commands.test.ts`, and the
 PKCE flow itself end to end (real loopback listener, real `state` check, the
 challenge verified as SHA-256 of the verifier, the files at `0600`) by
-`apps/cli/src/commands/login.test.ts`. Three commands, in this order, close
-it:
+`apps/cli/src/commands/login.test.ts`. The operator closed it on 2026-09-16 from an SSH session into the Mac mini, over
+the paste path (below), after two defects the attempt surfaced were fixed in the
+same sitting: the URL was not printed when the opener "succeeded" onto the
+remote desktop, and the first paste reader discarded its line (§12). `whoami`
+then resolved subject `58819310-5081-70f2-81fe-66601586db46`,
+`tim+nightshift@wingitlabs.com`, org accepted by the control plane, credentials
+at `0600`. The three commands, for the next operator:
 
 ```sh
 npm run build
@@ -754,6 +760,14 @@ npm run build
 `User` and `Membership` rows from H-P3-02 are already in the table, so it
 should resolve. Port 47821 is fixed by the data stack and the CLI says so if
 it is taken.
+
+**Over SSH**, add `--no-browser`, open the printed URL in any browser, sign in,
+and when the browser reports it cannot reach `localhost:47821`, copy the address
+from its address bar and paste it into the terminal. The command reads it, checks
+`state`, and finishes. An SSH tunnel (`ssh -L 47821:127.0.0.1:47821 <user>@<host>`)
+makes the callback land on its own instead, and either path works; the paste path
+exists because the first human to run this leg did so over SSH, watched `open`
+report success onto a desktop nobody was looking at, and had no URL to copy.
 
 ### 13.5 What the first real worker cost us
 
@@ -890,13 +904,11 @@ amendment in §12), never silently.
 | SC-P3-13 out-of-scope change never integrates | `execution/failures.test.ts`, `slice/failures.test.ts` (`out-of-scope`) | pass |
 | SC-P3-14 no harness-specific import above the adapter layer | AR-2 over the tracked tree in `test/src/architecture/`, plus negative fixtures; pointed at by `slice/offline.test.ts` | pass |
 | SC-P3-15 `npm test` proves 01…14 offline | `slice/offline.test.ts` asserts the endpoints are all `127.0.0.1`, that no `AWS_*` variable reaches the server, and that the default target is `local`; green on both CI legs as of `9e3ae16`, which took four fixes (§13.6) | pass |
-| SC-P3-16 the deployed slice, orchestrator included | §13.4 — a real Claude orchestrator through the skill, a real Claude worker, the deployed plane, read back from the API alone | **pass, with the `nightshift login` leg deferred to a human** (§13.4) |
+| SC-P3-16 the deployed slice, orchestrator included | §13.4 — a real Claude orchestrator through the skill, a real Claude worker, the deployed plane, read back from the API alone; the login leg run by the operator on 2026-09-16 | pass |
 | SC-P3-17 the smoke suite against the redeployed stack | `npm run smoke`, 67 tests, twice consecutively; every P1 and P2 gate unchanged | pass |
 
 ### 13.10 Carried forward
 
-- `nightshift login` by hand (§13.4). Until then, the CLI's interactive leg is
-  proven only offline.
 - The root node's terminal status and `RoutingDecision.usage` (§13.5), both
   for P4/P6.
 - The P2 open items still stand: budget email delivery unconfirmed,

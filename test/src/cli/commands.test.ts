@@ -150,6 +150,8 @@ const signIn = async (): Promise<Operator> => {
     paths,
     fetch,
     openBrowser: async () => false,
+    // Nobody pastes anything in these tests; the callback path is the one under test.
+    readPaste: () => ({ line: new Promise<undefined>(() => undefined), cancel: () => undefined }),
     clock,
     ids,
     git: nodeGitRunner,
