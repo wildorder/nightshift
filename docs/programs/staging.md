@@ -116,6 +116,12 @@ high-risk scheduler work share one risk posture and one review.
 > a runnable coding harness. If that adapter can only execute through a hosted
 > runtime, its conformance run needs cloud access, which changes P4's dependency
 > class and must be stated in P4's contract rather than discovered mid-program.
+>
+> **Confirmed 2026-09-16.** Amazon Bedrock AgentCore Harness is a managed agent
+> loop (GA June 2026): `CreateHarness` / `InvokeHarness`, one isolated microVM per
+> session with a filesystem and shell, any Bedrock model, remote MCP servers and
+> inline functions. It executes only in AWS, so P4's dependency class is "AWS,
+> with metered spend", and `docs/programs/p4-harness-neutrality.md` says so.
 
 **P6 merges Stages 6 and 7.** Both are policy layers over an already-working
 engine, both are configuration-driven with table-driven determinism tests, and
