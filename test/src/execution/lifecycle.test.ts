@@ -447,7 +447,7 @@ describe("the ending is emitted exactly once", () => {
 });
 
 describe("concurrency", () => {
-  it("refuses a second job while one is running, and says P5 lifts it", async () => {
+  it("refuses a second job while one is running, and says P6 lifts it", async () => {
     const world = await createWorld({
       harness: createFakeHarness({
         script: async ({ cancelled }) => {
@@ -461,7 +461,7 @@ describe("concurrency", () => {
     const refusal = await rejectionOf(delegate(world, jobFor(world)));
 
     expect(refusal.message).toContain("one job at a time");
-    expect(refusal.message).toContain("P5");
+    expect(refusal.message).toContain("P6");
     expect(P3_MAX_CONCURRENT_CHILDREN).toBe(1);
 
     // Exactly one child was created: the refusal happened before any write.

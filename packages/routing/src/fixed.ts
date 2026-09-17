@@ -2,7 +2,7 @@
  * The one routing rule P3 has (D-P3-08).
  *
  * It chooses the Claude Code adapter and a model the Program Contract's policy
- * allows. That is all it does, and it is deliberately not interesting — P6
+ * allows. That is all it does, and it is deliberately not interesting — P7
  * replaces the rule, and what it replaces is a *rule*, not a record.
  *
  * ## Why a rule this simple still records everything
@@ -10,7 +10,7 @@
  * A `RoutingDecision` is written for every job from the very first one, with
  * every option considered, whether it was eligible, and why not when it was not.
  * The dataset learned routing trains on (A-13) starts with the first job, not
- * with P6, and a dataset that only begins when somebody builds the learner is a
+ * with P7, and a dataset that only begins when somebody builds the learner is a
  * dataset with no history. So the record is complete now, while the rule is
  * trivial, rather than being backfilled later from nothing.
  *
@@ -27,7 +27,7 @@ import type {
   RouteTarget,
 } from "@nightshift/contracts";
 
-/** The adapter P3 has. P4 adds Codex and AgentCore; this is not a list to grow here. */
+/** The adapter P3 has. P5 adds Codex and AgentCore; this is not a list to grow here. */
 export const P3_HARNESS = "claude";
 export const P3_PROVIDER = "anthropic";
 
@@ -123,7 +123,7 @@ export const fixedRoute = (input: FixedRouteInput): RouteChoice => {
     ];
     throw new RoutingRefusedError(
       "provider_not_allowed",
-      `this program allows no provider P3 can route to. Allowed: [${policy.allowedProviders.join(", ")}]; available: ${P3_PROVIDER}. A second adapter arrives in P4.`,
+      `this program allows no provider P3 can route to. Allowed: [${policy.allowedProviders.join(", ")}]; available: ${P3_PROVIDER}. A second adapter arrives in P5.`,
       options,
     );
   }

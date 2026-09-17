@@ -486,7 +486,7 @@ describe("delegate's refusals are typed (§4.5)", () => {
     expect(result.ok).toBe(false);
     expect(result.code).toBe("examination_unavailable");
     // Refused loudly, and it says what to do instead of pretending.
-    expect(String(result.message)).toContain("P6");
+    expect(String(result.message)).toContain("P7");
     await mcp.stop();
   });
 
@@ -500,7 +500,7 @@ describe("delegate's refusals are typed (§4.5)", () => {
     await mcp.stop();
   });
 
-  it("refuses a second job while one is running, and says P5 lifts it", async () => {
+  it("refuses a second job while one is running, and says P6 lifts it", async () => {
     const world = await createBaseWorld();
     const mcp = await attached(world);
     const first = await mcp.call("delegate", DELEGATION);
@@ -509,7 +509,7 @@ describe("delegate's refusals are typed (§4.5)", () => {
     const second = await mcp.call("delegate", DELEGATION);
     expect(second.ok).toBe(false);
     expect(second.code).toBe("concurrency_limit_exceeded");
-    expect(String(second.message)).toContain("P5");
+    expect(String(second.message)).toContain("P6");
 
     await mcp.call("job.cancel", { jobId: first.jobId });
     await mcp.stop();

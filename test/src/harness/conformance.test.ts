@@ -1,7 +1,7 @@
 /**
  * The scripted harness against T1's shared conformance suite.
  *
- * `describeHarnessConformance` is the seed of P4's suite, and this is its first
+ * `describeHarnessConformance` is the seed of P5's suite, and this is its first
  * subject. What it proves is narrow and load-bearing: a handle carries the
  * identity it was given, `exit` settles exactly once, `cancel` settles it as
  * `cancelled`, `status` agrees with `exit` forever, and every event that reached

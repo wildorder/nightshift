@@ -37,7 +37,7 @@ export const listEvents: Handler = async ({ deps, request, params }) => {
  *
  * Cost: this reads every node and every event in the run on each call. That is
  * fine at P2's scale and for rebuilding state from records alone (SC-P2-10), but
- * it is O(events) per request; a realtime surface (P9) should keep a cursor
+ * it is O(events) per request; a realtime surface (P10) should keep a cursor
  * instead of polling this.
  */
 export const getRunState: Handler = async ({ deps, params }) => {

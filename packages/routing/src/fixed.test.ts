@@ -146,7 +146,7 @@ describe("an orchestrator's override", () => {
 });
 
 describe("policies P3 cannot serve", () => {
-  it("refuses a program whose providers P3 has no adapter for, and names P4", () => {
+  it("refuses a program whose providers P3 has no adapter for, and names P5", () => {
     const failure = (() => {
       try {
         fixedRoute({ program: programWith({ allowedProviders: ["openai"] }), job });
@@ -157,7 +157,7 @@ describe("policies P3 cannot serve", () => {
     })();
     expect(failure?.code).toBe("provider_not_allowed");
     expect(failure?.message).toContain("openai");
-    expect(failure?.message).toContain("P4");
+    expect(failure?.message).toContain("P5");
   });
 
   it("refuses a policy that forbids everything it allows", () => {

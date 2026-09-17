@@ -79,7 +79,7 @@ import { verifyNode } from "./verify.js";
 /**
  * P3 allows exactly one running child under the root, whatever the program's
  * `delegationLimits.maxConcurrency` says (contract §5). A second is refused with
- * a typed reason that names P5, so an orchestrator knows to wait rather than to
+ * a typed reason that names P6, so an orchestrator knows to wait rather than to
  * restructure.
  */
 export const P3_MAX_CONCURRENT_CHILDREN = 1;
@@ -89,7 +89,7 @@ export class ConcurrencyRefusedError extends ConcurrencyLimitExceededError {
     super(running, P3_MAX_CONCURRENT_CHILDREN);
     this.message =
       `P3 runs one job at a time, and ${running} is already running. Wait for it with ` +
-      "job.wait, or cancel it. More than one job in flight arrives in P5.";
+      "job.wait, or cancel it. More than one job in flight arrives in P6.";
   }
 }
 

@@ -1,7 +1,7 @@
 /**
  * The shared harness conformance suite (T1 deliverable 3).
  *
- * This is the seed of P4's suite, and it deliberately asserts only what version 0
+ * This is the seed of P5's suite, and it deliberately asserts only what version 0
  * of the contract promises. Anything an adapter does beyond this — how it frames
  * its prompt, which flags it passes, how it names its tools to a model — is its
  * own business and its own tests.
@@ -13,9 +13,9 @@
  *    status; a second settlement would be a second terminal write.
  * 3. `cancel` on a running agent settles `exit` as `cancelled`. Shutdown depends
  *    on this (contract §4.3, last failure path).
- * 4. `status` agrees with `exit`, forever. P8 asks `status` about an agent this
+ * 4. `status` agrees with `exit`, forever. P9 asks `status` about an agent this
  *    process did not spawn; an adapter whose two answers can disagree is not one
- *    P8 can build on.
+ *    P9 can build on.
  * 5. Every event that reached the sink carries a hook-sourced `EventType`, and a
  *    completed run produced both a start and an end (D-P3-09).
  *
@@ -117,7 +117,7 @@ export const describeHarnessConformance = (
       const exit = await withTimeout(handle.exit, completionTimeout, "exit");
       const expected = agentStatusForExit(exit);
       expect(await harness.status(handle)).toBe(expected);
-      // Asked again, long after settlement: P8 reads this from a different place
+      // Asked again, long after settlement: P9 reads this from a different place
       // in the lifecycle than the runner does, and must get the same answer.
       expect(await harness.status(handle)).toBe(expected);
     });

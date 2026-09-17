@@ -380,7 +380,7 @@ describe("sealing, integrating and checkpointing", () => {
     expect(merged.detail.toLowerCase()).toContain("not possible to fast-forward");
     // Nothing happened: no merge commit, no moved branch.
     expect(await revParse(nodeGitRunner, repo, PROGRAM_BRANCH)).toBe(moved);
-    // And the sealed commit is still there to be reconciled in P5.
+    // And the sealed commit is still there to be reconciled in P6.
     await updateRef(nodeGitRunner, repo, sealedRef("node_g"), sha);
     expect(await revParse(nodeGitRunner, repo, sealedRef("node_g"))).toBe(sha);
   });

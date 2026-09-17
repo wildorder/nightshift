@@ -1,9 +1,9 @@
 # T3 — The Codex adapter
 
-**Program:** `p4-harness-neutrality`
+**Program:** `p5-harness-neutrality`
 **Depends on:** T1
-**Unblocks:** T7
-**Decisions applied:** D-P4-02, D-P4-09; D-P3-09, D-P3-15
+**Unblocks:** T5
+**Decisions applied:** D-P5-02, D-P5-07; D-P3-09, D-P3-15
 
 ## Objective
 
@@ -14,7 +14,7 @@ sandbox.
 ## Deliverables
 
 1. **Launch.** `codex exec --json <brief> -C <worktree> --sandbox
-   workspace-write --approve-for-me --ephemeral --ignore-user-config
+   workspace-write -c approval_policy=never --ephemeral --ignore-user-config
    --skip-git-repo-check -m <model>`, with the worker MCP server supplied as
    `-c mcp_servers.nightshift.command=… -c mcp_servers.nightshift.args=[…]
    -c mcp_servers.nightshift.env={…}` from `input.mcp`, unchanged. Environment
@@ -30,8 +30,11 @@ sandbox.
    `completed`; non-zero exit or no final message is `failed`; a signal is
    `interrupted`; `cancel` is `cancelled`. Check whether an interrupted
    `codex exec` exits 0, as Claude does, before trusting the exit code.
-4. **Permissions**: `workspace-write` plus `--approve-for-me`; no git write
-   command approved; `fs.read` alone maps to `read-only`.
+4. **Permissions**: `workspace-write` with approval policy `never`, so no
+   model and no human decides an approval at run time; `--approve-for-me` is
+   not used (D-P5-02). No git write command is reachable; `fs.read` alone maps
+   to `read-only`. Verify against 0.149.0 that `approval_policy=never` with
+   `workspace-write` behaves as documented and record the observed behaviour.
 5. **Transcript** to the given path; `usage` from the stream's token counts
    where present, `capabilities.usage` set accordingly.
 6. **Tests without Codex**: a recorded stream from one real headless run of the
@@ -54,4 +57,4 @@ npm run check:architecture
 
 - Codex reads `$CODEX_HOME` for authentication. Pass it through; pass nothing
   else from the operator's environment.
-- The ChatGPT login is the operator's. Nothing here moves it (D-P4-09).
+- The ChatGPT login is the operator's. Nothing here moves it (D-P5-07).

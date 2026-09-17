@@ -118,7 +118,7 @@ describe("nightshift run", () => {
 
     expect(failure).toBeInstanceOf(UsageError);
     expect((failure as Error).message).toBe(REMOTE_REFUSAL);
-    expect(REMOTE_REFUSAL).toBe("remote execution arrives in P8");
+    expect(REMOTE_REFUSAL).toBe("remote execution arrives in P9");
     // Refused before anything was written.
     expect(plane.calls).toHaveLength(0);
   });

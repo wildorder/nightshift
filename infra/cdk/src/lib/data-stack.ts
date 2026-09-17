@@ -27,7 +27,7 @@ import { assertValidStage, type NightshiftStackProps, stackNameFor } from "./sta
 /** The one GSI (contract §4.2). */
 export const NODE_INDEX_NAME = "gsi_node";
 
-/** Monthly budget in USD, with headroom for P6's model spend (T8). */
+/** Monthly budget in USD, with headroom for P7's model spend (T8). */
 export const BUDGET_LIMIT_USD = 500;
 export const BUDGET_NOTIFY_EMAIL = "tim+nightshift@wingitlabs.com";
 

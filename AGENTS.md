@@ -146,7 +146,8 @@ test/        cross-package fixtures and conformance suites
 - An irreversible external effect is never recorded as reversible.
 
 **Open decisions are not yours to settle.** `docs/architecture.md` §3 lists
-decisions deliberately left open (O-01 … O-06). If your work depends on one,
+decisions deliberately left open (O-02, O-03, O-05, O-06; O-01 and O-04 are
+resolved). If your work depends on one,
 surface it as a Nightshift decision for human ratification. Do not pick a default
 and proceed silently.
 
@@ -207,7 +208,10 @@ the lasting ones are A-27 … A-32 in `docs/architecture.md`.
 - The Nightshift MCP server (`apps/mcp`) is one binary with two roles selected
   by `NIGHTSHIFT_ROLE`. It speaks stdio and opens no socket. The worker role
   requires its execution identity in environment variables and registers no
-  delegation tool. Nothing local ever holds AWS credentials for the Nightshift
+  delegation tool. (Until P4 lands, a worker also reads the operator's
+  credentials file; P4 replaces that with a per-agent execution token and is
+  the program that makes orgs a boundary. Do not build on the worker holding
+  a human credential.) Nothing local ever holds AWS credentials for the Nightshift
   account; the control plane is reached only through the HTTP API with the
   operator's Cognito **ID** token, via `@nightshift/persistence/http`.
 - Persistence now has three adapters: `./memory`, `./aws`, `./http`. The store
@@ -239,7 +243,8 @@ the lasting ones are A-27 … A-32 in `docs/architecture.md`.
   harness tool policy inside the adapter. Workers never get git write access
   and never have a human answering prompts.
 - Starting a run is `nightshift run <contract> [--remote]`; the MCP `run.start`
-  calls the same function. `--remote` is refused until P8.
+  calls the same function. `--remote` is refused until the remote-runner
+  program (P9 after the 2026-09-16 restaging in `docs/programs/staging.md`).
 - Public hostnames (D-P3-18): one account-wide, unstaged stack `nightshift-dns`
   holds the hosted zone `nightshift.wildorder.dev` (retained, termination
   protection on). The API is `api.<stage>.nightshift.wildorder.dev`, an alias

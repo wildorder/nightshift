@@ -237,7 +237,7 @@ export interface FastForwardResult {
  * `--ff-only` is the whole guarantee: a program branch that has moved since the
  * worktree was cut cannot be merged, and the caller turns that into a durable
  * `stale_base` failure rather than a merge commit nobody asked for (D-P3-05).
- * Reconciling a moved base is P5.
+ * Reconciling a moved base is P6.
  *
  * Returns rather than throws, because a non-fast-forward is an expected outcome
  * with its own node status, not an exception.

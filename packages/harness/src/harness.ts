@@ -8,7 +8,7 @@
  * like, how it is authenticated, how its output is framed, or how its tool
  * permissions are expressed. Every one of those lives behind `start`.
  *
- * P4 finalizes this contract against three adapters. Version 0 exists so that
+ * P5 finalizes this contract against three adapters. Version 0 exists so that
  * the execution layer (T5) is written against an interface rather than a
  * process, and so that the Claude Code adapter (T8) is written against a
  * specification rather than an example.
@@ -154,7 +154,7 @@ export interface Harness {
    * The agent's current status.
    *
    * In P3 this is answered from the handle, which is why it looks redundant. It
-   * exists because P8 asks a remote runner about an agent this process did not
+   * exists because P9 asks a remote runner about an agent this process did not
    * spawn, and adding the method later would mean changing every adapter. It
    * must agree with `exit`: once `exit` settles, `status` reports the matching
    * terminal status forever.

@@ -15,7 +15,7 @@
  *
  * Everything below this file takes its dependencies as parameters. That is why
  * the slice suite can run the real server binary against a scripted harness
- * without the server knowing, and why P4 adds an adapter by changing one
+ * without the server knowing, and why P5 adds an adapter by changing one
  * `switch` rather than by threading a type through six packages.
  */
 

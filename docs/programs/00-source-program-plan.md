@@ -21,6 +21,37 @@ The core value proposition becomes:
 
 ---
 
+# Errata and restaging notes (2026-09-16)
+
+This document is the source plan and is left as written. Where reality has
+moved, the note is here rather than a silent edit in the stage text.
+
+* **Programs, not stages, are the unit of delivery.** `staging.md` groups the
+  eleven stages into programs and was adjusted on 2026-09-16: a program for
+  identity and tenancy was inserted as P4, and the numbering after it shifted
+  by one (Harness Neutrality is P5, the Remote Runner is P9, Realtime is P10).
+* **Multi-user identity is in v1.** "Single-user/private v1 is settled" below
+  described the assumption P2 was built on; P4 replaces it with enforced
+  organisation isolation and per-execution credentials. See `docs/vision.md`,
+  "Scope: After v1", for the amendment.
+* **"AgentCore Harness" is a product.** Amazon Bedrock AgentCore harness became
+  generally available in June 2026: a managed agent loop over any Bedrock,
+  OpenAI or Gemini model that can be exported to Strands code. In this plan it is
+  the cheap Bedrock worker; it runs as a process on the program's runtime
+  instance (Stage 9), never as one hosted environment per leaf job, which the
+  Non-Goals exclude.
+* **"AgentCore Runtime Instance" is now a specific thing.** Runtime instances
+  became generally available in August 2026: managed EC2 capacity hosting many
+  agents on a shared session with a common filesystem for up to fourteen days,
+  distinct from Runtime's serverless sessions, which are isolated environments
+  capped at eight hours. Stage 9's "one AgentCore Runtime Instance" means the
+  former.
+* **Two anticipated decisions are resolved**: the control-plane runtime (O-01,
+  `architecture.md` A-19) and local authentication to Nightshift MCP (O-04,
+  A-27). The section below lists them as open.
+
+---
+
 # Greenfield Boundary
 
 Nightshift v1 remains in the existing `wildorder/nightshift` repository but begins from an **orphan branch with a new root commit**.

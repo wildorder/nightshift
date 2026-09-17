@@ -218,8 +218,8 @@ so that a Studio is a UI over existing APIs rather than a new backend project.
 | State | DynamoDB | Project-scoped structured operational state, single-digit-ms reads for run status |
 | Artifacts | S3 | Transcripts, logs, diffs, reports — anything too large or durable for DynamoDB |
 | Agent interface | MCP | Semantic, harness-neutral interface between orchestrators and the control plane |
-| Cheap execution path | AgentCore Harness + Bedrock | Model-flexible low-cost route for bounded, strongly testable jobs |
-| Remote execution | AgentCore Runtime | One runtime instance per remote program run |
+| Cheap execution path | AgentCore harness + Bedrock | Model-flexible low-cost route for bounded, strongly testable jobs: the AgentCore harness loop, exported to code, running as a worker process on the program's runtime instance with a Bedrock model |
+| Remote execution | AgentCore Runtime, runtime instances | One runtime instance per remote program run: managed EC2 capacity hosting the orchestrator and its concurrent workers as processes, never one environment per leaf job |
 
 Infrastructure code is production code and carries the same testing requirements
 as application code.
@@ -242,6 +242,7 @@ the v1 stages are grouped into programs, and
 - Centralized AWS control plane (DynamoDB, S3, API, IAM) via CDK
 - Nightshift MCP server and local execution machinery
 - Harness adapters for Claude Code, Codex, and AgentCore, behind one conformance suite
+- Multi-user identity: organisations enforced as a boundary, and every executing agent holding its own scoped credential rather than a human's
 - Parallel and recursive execution in isolated worktrees, with serialized integration
 - Deterministic model/harness routing with fallback and escalation
 - Risk-based independent examination
@@ -266,6 +267,13 @@ deliberate human reference.
 ## Scope: After v1
 
 Learned routing trained on the v1 outcome dataset; Nightshift Studio as a pure
-client of the v1 APIs; multi-user and multi-tenant identity beyond the single-user
-private assumption of v1. These inform architectural decisions now — project
-scoping, API-first state, normalized analytics — but nothing is built for them.
+client of the v1 APIs; self-service sign-up and org administration. These inform
+architectural decisions now — project scoping, API-first state, normalized
+analytics — but nothing is built for them.
+
+*Amended 2026-09-16.* Multi-user identity was originally listed here as
+post-v1. It moved into v1 as program P4 (`docs/programs/staging.md`, "Restaging")
+once P3 showed that a single-user assumption had shaped the authentication
+design: a worker held the operator's own credential, and organisations were a
+label rather than a boundary. v1 now ships org isolation and per-execution
+credentials; what stays post-v1 is the administration surface around them.

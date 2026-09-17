@@ -11,7 +11,7 @@
  *   from nothing is a commit `gc` is entitled to delete.
  * - **Integrate** is `git merge --ff-only`. Not a merge commit, not a rebase. A
  *   program branch that moved since the worktree was cut is a durable
- *   `stale_base` failure naming both commits; reconciling it is P5.
+ *   `stale_base` failure naming both commits; reconciling it is P6.
  * - **Checkpoint** is a ref and a record at the integrated commit, so replay has
  *   somewhere to return to.
  *
@@ -73,8 +73,8 @@ const blockingReason = async (
   const head = await revParse(environment.git, repo, programBranch);
   if (head !== input.base) {
     // Named rather than reconciled: rebasing verified work onto a moved base
-    // would mean verifying something nobody verified. P5 does this properly.
-    return `stale_base: the worktree was cut from ${input.base} but "${programBranch}" is now at ${head}. Reconciling a moved base arrives in P5.`;
+    // would mean verifying something nobody verified. P6 does this properly.
+    return `stale_base: the worktree was cut from ${input.base} but "${programBranch}" is now at ${head}. Reconciling a moved base arrives in P6.`;
   }
   return undefined;
 };
@@ -163,7 +163,7 @@ export const integrateNode = async (
  * the table only lets it integrate or be cancelled. So the durable outcome is
  * `cancelled` with the reason, which is honest: the work is verified and sealed,
  * and it was this *integration attempt* that was abandoned. The sealed ref
- * survives, so P5 can pick the commit up and reconcile it.
+ * survives, so P6 can pick the commit up and reconcile it.
  */
 const failSealed = async (
   environment: ExecutionEnvironment,

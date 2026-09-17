@@ -11,6 +11,8 @@
 | Depends on | P1 Foundation (complete), P2 Control Plane (deployed 2026-09-15) |
 | Blocking decision | **O-04** local authentication to Nightshift MCP, resolved by D-P3-01 |
 
+> **Restaging note (2026-09-16).** Program numbers after P3 shifted by one when Identity and Tenancy was inserted as P4 (`staging.md`, "Restaging, 2026-09-16"). Forward references in this document predate that: read P4 as P5 (Harness Neutrality), P5 as P6, P6 as P7, P8 as P9 (Remote Runner), P9 as P10. The text is left as ratified.
+
 This contract is the stable authority for P3. The implementation plan may be
 revised continuously; this contract may not be revised to make an implementation
 pass. Amend it only through a human decision recorded in §12.

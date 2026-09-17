@@ -667,7 +667,7 @@ const assertExaminable = (program: ProgramContract, job: JobContract): void => {
   throw new ToolRefusal(
     "examination_unavailable",
     `this program's examination policy requires an examiner for ${job.risk}-risk work, and ` +
-      "examination arrives in P6. Lower the job's risk if that is honest, or change the " +
+      "examination arrives in P7. Lower the job's risk if that is honest, or change the " +
       "program's policy — do not pretend the work was examined.",
     { risk: job.risk, requirement },
   );
@@ -734,7 +734,7 @@ const describeRejection = (reason: DelegationRejection): string => {
       return (
         `${reason.running} job(s) already hold the limit of ${reason.maxConcurrency}. Wait for ` +
         "the running job with job.wait, or stop it with job.cancel. More than one job in flight " +
-        "arrives in P5."
+        "arrives in P6."
       );
     case "parent_is_terminal":
       return `the run's root node is ${reason.parentStatus} and can take no further jobs`;

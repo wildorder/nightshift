@@ -1,13 +1,13 @@
 # T1 — Adapter contract v1, `WorkerTools`, and the conformance fixture
 
-**Program:** `p4-harness-neutrality` (see `docs/programs/p4-harness-neutrality.md`)
+**Program:** `p5-harness-neutrality` (see `docs/programs/p5-harness-neutrality.md`)
 **Depends on:** nothing
-**Unblocks:** T3, T5, T6
-**Decisions applied:** D-P4-01, D-P4-04; A-04, A-05, A-29, A-30
+**Unblocks:** T3, T4
+**Decisions applied:** D-P5-01, D-P5-03; A-04, A-05, A-29, A-30
 
 ## Objective
 
-Finalize the adapter contract against what three adapters need, and write the
+Finalize the adapter contract against what two local adapters and P9's remote one need, and write the
 conformance suite that proves the nine Stage 4 items, so every adapter is built
 against a specification and judged by one suite. The scripted harness passes it
 in `npm test` before any model is involved.
@@ -19,22 +19,20 @@ in `npm test` before any model is involved.
      CompleteJobResult`, `fail(reason)`, `recordDecision(input) → Decision`.
      Defined here as an interface; implemented in `packages/execution` over
      `worker.ts` (deliverable 3) and injected into `HarnessStartInput.tools`.
-   - `Harness.capabilities`: `{ workspace: "local" | "remote"; usage: boolean }`.
+   - `Harness.capabilities`: `{ usage: boolean }`.
    - `HarnessExit` gains optional `usage: RouteUsage` on `completed` and
      `failed`.
-   - The five implementer rules become seven: the worker's tool calls reach
-     `WorkerTools` by exactly one transport, and an adapter with a remote
-     workspace is responsible for the worktree's contents being identical on
-     both sides at `complete`.
-   - The brief gains two provider-neutral paragraphs: how to report progress and
-     finish when the tools are functions rather than an MCP server, and that the
-     working directory is the whole repository, wherever it is.
+   - The five implementer rules become six: the worker's tool calls reach
+     `WorkerTools` by exactly one transport.
+   - The brief gains one provider-neutral paragraph: how to report progress and
+     finish, phrased so it reads correctly whether the tools arrive as an MCP
+     server or as functions.
 2. **Version 0 stays implementable.** The Claude adapter and the scripted
-   harness compile against v1 with only additive changes (T6 does the Claude
+   harness compile against v1 with only additive changes (T4 does the Claude
    work; this task keeps the build green).
 3. **`WorkerTools` implementation** in `packages/execution/src/worker.ts`,
    `createWorkerTools(environment, identity)`, used by the worker MCP role
-   (T6) and by the AgentCore adapter (T5). One implementation, two callers.
+   (T4) now and by P9's adapter later. One implementation, two callers.
 4. **The conformance fixture** in `test/fixtures/slice-repo/`: one Job Contract
    whose acceptance requires reading an existing module, changing it, changing
    its test, running the tests, and completing; the same file set the P3 slice
@@ -45,11 +43,11 @@ in `npm test` before any model is involved.
 5. **The suite**, `test/src/conformance/harness.ts` grown from the version 0
    seed: the nine §4.3 assertions per adapter, parameterised by a `Harness`
    and a `ConformanceEnvironment` (the local control plane or the deployed
-   one). Every assertion reads the control plane, never process memory. The
+   one). Identity-propagation refusals come from P4's `authorize`. Every assertion reads the control plane, never process memory. The
    version 0 assertions stay.
 6. **Scripted harness scripts** for the three fixtures, including one that
-   exercises `WorkerTools` directly (as a remote adapter would) rather than
-   through the stdio MCP server, so the function transport is tested offline.
+   exercises `WorkerTools` directly rather than through the stdio MCP server,
+   so the function transport P9 will use is tested offline now.
 7. `npm test` runs the suite against the scripted harness over both transports.
 
 ## Acceptance

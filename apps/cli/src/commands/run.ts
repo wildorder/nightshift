@@ -20,8 +20,8 @@ import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { openSession } from "../session.js";
 
-/** What `--remote` says until P8 turns it on. */
-export const REMOTE_REFUSAL = "remote execution arrives in P8";
+/** What `--remote` says until P9 turns it on. */
+export const REMOTE_REFUSAL = "remote execution arrives in P9";
 
 export interface RunOptions {
   /** Path to the authored Program Contract, relative to the working directory. */
@@ -45,7 +45,7 @@ const resolveFrom = (cwd: string, path: string): string =>
 export const run = async (environment: CliEnvironment, options: RunOptions): Promise<RunResult> => {
   if (options.remote) {
     // Refused, not ignored, and refused before anything is written: the flag's
-    // shape exists from day one so a script written today keeps working when P8
+    // shape exists from day one so a script written today keeps working when P9
     // makes it do something.
     throw new UsageError(
       REMOTE_REFUSAL,

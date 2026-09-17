@@ -11,6 +11,8 @@
 | Status | Contract ratified 2026-09-13. **Implementation complete 2026-09-13**, pushed to `origin/program/p1-foundation`, pending human review. |
 | Planned by | Human in an ordinary coding-agent session. No Nightshift tooling is involved (see `AGENTS.md`). |
 
+> **Restaging note (2026-09-16).** Program numbers after P3 shifted by one when Identity and Tenancy was inserted as P4 (`staging.md`, "Restaging, 2026-09-16"). Forward references in this document predate that: read P4 as P5 (Harness Neutrality), P5 as P6, P6 as P7, P8 as P9 (Remote Runner), P9 as P10. The text is left as ratified.
+
 This contract is the stable authority for P1. The implementation plan (task
 specs under `tasks/p1-foundation/`) may be revised continuously. This contract
 may not be revised to make an implementation pass. Amend it only through an

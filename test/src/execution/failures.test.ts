@@ -381,7 +381,7 @@ describe("the program checkout at integration time", () => {
     expect(node?.status).toBe("cancelled");
     expect(node?.outcomeReason).toContain("program_checkout_dirty");
 
-    // The commit is verified and still addressable, for P5 to pick up.
+    // The commit is verified and still addressable, for P6 to pick up.
     expect(await tryRevParse(nodeGitRunner, world.repo, sealedRef(started.nodeId))).toBe(
       node?.commitSha,
     );
@@ -427,8 +427,8 @@ describe("the program checkout at integration time", () => {
     // Both commits named, so a human can see the divergence without digging.
     expect(node?.outcomeReason).toContain(world.baseCommit);
     expect(node?.outcomeReason).toContain(moved);
-    // And P5 is named as what fixes it, rather than leaving a reader guessing.
-    expect(node?.outcomeReason).toContain("P5");
+    // And P6 is named as what fixes it, rather than leaving a reader guessing.
+    expect(node?.outcomeReason).toContain("P6");
 
     // No merge commit was created: `--ff-only` means refused, never merged.
     expect(await revParse(nodeGitRunner, world.repo, PROGRAM_BRANCH)).toBe(moved);
