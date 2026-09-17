@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p4-identity-and-tenancy` |
 | Source stage | none. Inserted at the 2026-09-16 restaging (`staging.md`); the source plan deferred multi-user identity to after v1, and the owner pulled it into v1 as a problem to solve now. |
-| Status | **Drafted 2026-09-16.** Decisions D-P4-01 … D-P4-08 are proposed and await human ratification; tasks are drafted against them. |
+| Status | **Contract ratified 2026-09-16** (D-P4-01 … D-P4-08). Tasks T1 … T6 drafted. Implementation not started. |
 | Depends on | P3 First Vertical Slice (complete, `v1` at `7627045`) |
 | Blocking decisions | none open in `architecture.md` §3. Amends A-19, A-21 and A-27. |
 
@@ -47,7 +47,11 @@ The pieces are all present: Cognito issues user identity, the table holds users,
 memberships and orgs, and every record carries its ownership chain. What is
 missing is the second identity kind and the checks.
 
-## 3. Decisions (proposed for ratification)
+## 3. Ratified decisions
+
+Ratified by the human on 2026-09-16. The lasting ones are recorded in
+`docs/architecture.md` as A-33 … A-36; A-19 carries its amendment, and the
+A-21 and A-27 non-guarantees carry their closing pointers.
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
@@ -285,6 +289,7 @@ Specs live in `tasks/p4-identity-and-tenancy/`.
 | Date | Decision | By |
 |------|----------|----|
 | 2026-09-16 | Program inserted at the restaging; contract drafted; D-P4-01 … D-P4-08 proposed; tasks T1 … T6 drafted | Agent, for human ratification |
+| 2026-09-16 | **Contract ratified**, D-P4-01 … D-P4-08 as drafted, after the owner's review of the restaging. Recorded as A-33 … A-36. | Human |
 
 ## 12. As built
 

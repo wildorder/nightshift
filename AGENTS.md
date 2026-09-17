@@ -277,6 +277,38 @@ the lasting ones are A-27 … A-32 in `docs/architecture.md`.
 - Verification logs are recorded for every step, including a step that printed
   nothing — a 0-byte log is the honest record, not a skipped one.
 
+**Conventions ratified for P4 (Identity and Tenancy) and P5 (Harness
+Neutrality) on 2026-09-16.** Rationale and decision IDs live in
+`docs/programs/p4-identity-and-tenancy.md` §3 and
+`docs/programs/p5-harness-neutrality.md` §3; the lasting ones are A-33 … A-38.
+
+- Two principal kinds, `user` and `execution`; the handler receives a typed
+  `Principal` and never verifies a token. `authorize(principal, operation,
+  target)` in `core` is the one place a principal's reach is decided, and the
+  API calls it in one place.
+- Every project-scoped route refuses a caller whose org does not own the
+  project, before reading anything. Orgs are a boundary from P4 on.
+- Workers hold only an execution token (`NIGHTSHIFT_EXECUTION_TOKEN`), minted by
+  the control plane and signed by KMS; they never read `credentials.json` and
+  their environment never carries `NIGHTSHIFT_CONFIG_DIR`. Never log a token.
+- The API's authorizer is Nightshift's Lambda authorizer; every route is bound
+  to it and none is anonymous.
+- Adapter contract v1: `HarnessStartInput.tools: WorkerTools` beside
+  `mcp: McpLaunch`; adapters report `usage` on exit; one implementation of the
+  worker operations in `packages/execution/src/worker.ts`.
+- Routing chooses `(harness, provider, model)` from `HARNESS_COMPATIBILITY` in
+  `packages/routing`, intersected with the Program Contract's policy; never a
+  one-to-one provider→harness map. The human picks the orchestrator's model;
+  Nightshift picks workers'; an orchestrator's request is an override within
+  policy.
+- Codex runs as `codex exec --json` with `approval_policy=never` and the
+  `workspace-write` sandbox; `--approve-for-me` is not used.
+- `ExecutionNodeStatus.succeeded` is legal for `program` and `sub-program`
+  nodes only. A job node's table, and the A-05 property tests, are untouched.
+- The AgentCore harness worker, Bedrock, and anything that runs on a runtime
+  instance belong to P9. Nightshift never runs a worker as a per-job hosted
+  environment.
+
 ### Dependency Versions (pin these)
 
 | Package | Version | Introduced |

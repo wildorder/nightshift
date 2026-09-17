@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p5-harness-neutrality` |
 | Source stage | Stage 4 (Harness-Neutral Execution), less the AgentCore adapter, which moved to P9 at the 2026-09-16 restaging (`staging.md`) |
-| Status | **Drafted 2026-09-16, superseding a withdrawn P4 draft of the same program.** Decisions D-P5-01 … D-P5-07 are proposed and await human ratification; tasks are drafted against them. |
+| Status | **Contract ratified 2026-09-16** (D-P5-01 … D-P5-07), superseding a withdrawn P4 draft of the same program. Tasks T1 … T5 drafted. Implementation starts after P4. |
 | Depends on | P4 Identity and Tenancy (workers on execution tokens) |
 | Blocking decisions | none. O-05 is untouched: every adapter runs on the operator's machine. |
 
@@ -46,13 +46,16 @@ Everything from P3 and P4 stands.
 
 | # | Prerequisite | Status |
 |---|--------------|--------|
-| H-P5-01 | Ratify D-P5-01 … D-P5-07 | **open** |
+| H-P5-01 | Ratify D-P5-01 … D-P5-07 | **satisfied 2026-09-16** |
 | H-P5-02 | P4 merged, so the worker environment is a token and an identity | open |
 
 **Explicitly not required.** No AWS change beyond the API additions in §4.4, no
 model spend beyond the two subscriptions, no Bedrock, no AgentCore.
 
-## 3. Decisions (proposed for ratification)
+## 3. Ratified decisions
+
+Ratified by the human on 2026-09-16. D-P5-01 and D-P5-04 are recorded in
+`docs/architecture.md` as A-37 and A-38.
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
@@ -255,6 +258,7 @@ Specs live in `tasks/p5-harness-neutrality/`.
 |------|----------|----|
 | 2026-09-16 | A first draft of this program, numbered P4, was withdrawn the same day. It had put the AgentCore adapter here as one hosted session per job with the worktree shuttled across as a tarball, mapped providers to harnesses one to one, given the harness's execution role bucket-wide S3 access, and finished program nodes as `integrated`. Each was wrong against the vision or the P1 invariants; the owner caught the first three. The restaging in `staging.md` records where the third adapter went. | Human and agent |
 | 2026-09-16 | Contract drafted as P5; D-P5-01 … D-P5-07 proposed; tasks T1 … T5 drafted | Agent, for human ratification |
+| 2026-09-16 | **Contract ratified**, D-P5-01 … D-P5-07 as drafted. D-P5-01 and D-P5-04 recorded as A-37 and A-38. | Human |
 
 ## 13. As built
 
