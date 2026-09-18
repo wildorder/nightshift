@@ -413,10 +413,23 @@ than a formality.
    config schema `apps/api` shares between its functions, and the stack gives
    them to the API function only — deliberately, because the materializer signs
    nothing. So it threw `ConfigError` at cold start on every invocation and the
-   stream backed up behind it. Twelve batches exhausted their retries; their
-   events are durable but will never be numbered (A-22 readers tolerate that),
-   and all of them belonged to throwaway smoke projects whose partitions the
-   suite deleted. **The CDK assertion written in T2 encoded the bug**: it
+   stream backed up behind it. Twelve batches exhausted their retries and were
+   dead-lettered. *Corrected 2026-09-18:* this section first said those batches'
+   events "are durable but will never be numbered". They held no events to
+   number. Before the queue was purged, all twelve messages were read without
+   being consumed and the 57 stream records behind them recovered, which was
+   possible only because DynamoDB keeps its stream for 24 hours: **none was an
+   event insert**, the one thing the materializer acts on. They were inserts and
+   deletes of programs, runs, nodes, jobs, agents, checkpoints, decisions,
+   verifications and project and membership rows, plus four deletes of events
+   and idempotency markers from smoke cleanup. The function crashed before it
+   looked at a record, so batches with nothing for it to do failed eleven times
+   like any other. A scan of the table found 41 events, all numbered. Nothing
+   was lost, and this incident is not evidence that the materializer needs a
+   repair path; the case A-22 and the API stack's comment warn about, a real
+   event left permanently unnumbered, has still never happened. The queue was
+   purged the same day, so that the next message in it means something. **The
+   CDK assertion written in T2 encoded the bug**: it
    checked that the materializer does *not* carry the token variables, which was
    right and was not the question. Nobody checked that it could still load. Fixed
    by splitting `loadTokenConfig` out; a shared config schema holds the
