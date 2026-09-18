@@ -557,17 +557,26 @@ describe("SC-P4-02 — only A may mint an execution token for A's agent", () => 
   });
 });
 
+/**
+ * The gateway's two refusal codes (P4). A request missing the identity source
+ * never reaches the authorizer and is 401; an authorizer that answers
+ * `isAuthorized: false` is 403. Both refuse before the handler, which is what
+ * SC-P4-05 claims.
+ */
+const NO_IDENTITY_SOURCE = 401;
+const AUTHORIZER_DENIED = 403;
+
 describe("SC-P4-05 — the authorizer refuses what it should, before the handler", () => {
   const base = () => `/projects/${world.scope.projectId}`;
 
   it("refuses a request with no Authorization header", async () => {
     const result = await a.api.withAuthorization(undefined, "GET", base());
-    expect(result.status).toBe(401);
+    expect(result.status).toBe(NO_IDENTITY_SOURCE);
   });
 
   it("refuses a bearer that is not a token at all", async () => {
     const result = await a.api.withAuthorization("Bearer not-a-token", "GET", base());
-    expect(result.status).toBe(401);
+    expect(result.status).toBe(AUTHORIZER_DENIED);
   });
 
   it("refuses an execution token signed by another key", async () => {
@@ -590,7 +599,7 @@ describe("SC-P4-05 — the authorizer refuses what it should, before the handler
       "not a signature",
     ).toString("base64url")}`;
     const result = await a.api.withAuthorization(`Bearer ${forged}`, "GET", base());
-    expect(result.status).toBe(401);
+    expect(result.status).toBe(AUTHORIZER_DENIED);
   });
 
   it("refuses an expired execution token", async () => {
@@ -612,6 +621,6 @@ describe("SC-P4-05 — the authorizer refuses what it should, before the handler
       "not a signature",
     ).toString("base64url")}`;
     const result = await a.api.withAuthorization(`Bearer ${expired}`, "GET", base());
-    expect(result.status).toBe(401);
+    expect(result.status).toBe(AUTHORIZER_DENIED);
   });
 });

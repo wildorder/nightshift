@@ -14,11 +14,16 @@ import {
   createAwsClients,
   createAwsStores,
 } from "@nightshift/persistence/aws";
-import { loadConfig } from "../config.js";
+import { loadConfig, loadTokenConfig } from "../config.js";
 import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
 import { createApiLambdaHandler } from "./api-handler.js";
 
 const config = loadConfig(process.env);
+/**
+ * Read separately from {@link loadConfig}, because only this function signs.
+ * The materializer shares `loadConfig` and has neither variable.
+ */
+const tokenConfig = loadTokenConfig(process.env);
 const stores = createAwsStores({ tableName: config.tableName, table: createAwsClients().table });
 /**
  * Signs presigned artifact uploads (T2). A separate S3 client from the one the
@@ -38,9 +43,9 @@ const uploads = createArtifactUploadSigner({
 const tokens = {
   signer: createKmsExecutionTokenSigner({
     kms: new KMSClient({}),
-    keyId: config.executionTokenKeyId,
+    keyId: tokenConfig.executionTokenKeyId,
   }),
-  issuer: config.tokenIssuer,
+  issuer: tokenConfig.tokenIssuer,
 };
 
 export const handler = createApiLambdaHandler(() => ({

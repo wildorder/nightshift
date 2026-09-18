@@ -309,6 +309,47 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   instance belong to P9. Nightshift never runs a worker as a per-job hosted
   environment.
 
+**As built for P4 (Identity and Tenancy), closed 2026-09-17.** The details a
+later program needs and cannot derive; full account in
+`docs/programs/p4-identity-and-tenancy.md` §12.
+
+- `Operation` in `packages/core/src/rules/authorize.ts` is a closed union with
+  **one member per API route**, and `EXECUTION_ACCESS` is a `Record` over it, so
+  adding a route without deciding what an execution may do with it is a type
+  error. `apps/api/src/route-table.test.ts` holds the two halves total against
+  each other in both directions. Add a route and you add an operation, a table
+  entry, and a cell in `packages/core/src/rules/authorize.test.ts`.
+- `enforce` in `apps/api/src/auth/enforce.ts` is the **only** caller of
+  `authorize`, and `handleRequest` is its only caller. Nothing else may check a
+  principal; an operation that wants to is a sign the target is missing
+  something.
+- Two of a worker's three writes name their node in the **body**, not the path
+  (`event.append`, `decision.put`). `targetFrom` reads `executionNodeId` from
+  the body when the path names no node. Do not move that check into those
+  routes.
+- The project → org cache **never caches a miss**. Remembering "no such project"
+  leaves a window in which a newly created project is invisible to the check and
+  every caller sails past it.
+- The execution-token key is **RSA-2048 / RS256**, asymmetric sign/verify,
+  retained, in the data stack. Verification is the hot path and KMS returns
+  ECDSA signatures DER-encoded where JOSE wants raw `r‖s`. Do not switch to ECC
+  without re-reading `apps/api/src/tokens/mint.ts`.
+- The gateway answers **401** when the `Authorization` header is absent (the
+  request never reaches the authorizer) and **403** when the authorizer denies.
+  That is API Gateway's choice for a request authorizer, not Nightshift's; the
+  JWT authorizer gave 401 for both.
+- `@nightshift/api/testing`'s local control plane signs and verifies execution
+  tokens with a process-wide key pair and routes bearers by `iss`, exactly as
+  the deployed authorizer does. A suite switches caller with
+  `encodeTestPrincipal(...)` as a bearer; anything else falls through to the
+  plane's default principal.
+- A worker's environment is the seven identity variables, the execution token
+  and the API endpoint — and **nothing else**. No `NIGHTSHIFT_CONFIG_DIR`, no
+  `NIGHTSHIFT_API_TOKEN`. `apps/mcp/src/compose.test.ts` asserts the absences.
+- `npm run smoke` runs two files, `fileParallelism: false`, because both seed a
+  membership for the machine principal and two memberships make the acting org
+  unresolvable.
+
 ### Dependency Versions (pin these)
 
 | Package | Version | Introduced |
