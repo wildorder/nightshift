@@ -1,4 +1,5 @@
 export * from "./agent-transitions.js";
+export * from "./authorize.js";
 export * from "./decisions.js";
 export * from "./delegation.js";
 export * from "./event-stream.js";
