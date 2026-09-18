@@ -78,6 +78,7 @@ const start = async (
     runtime: {
       stores: world.stores,
       bodies: world.bodies,
+      tokens: world.tokens,
       harness,
       paths: localPathsIn(world.stateDir),
       git: nodeGitRunner,
@@ -212,6 +213,7 @@ describe("the role split (D-P3-01)", () => {
       runtime: {
         stores: world.stores,
         bodies: world.bodies,
+        tokens: world.tokens,
         harness: createFakeHarness({ script: async () => ({ kind: "completed" }) }),
         paths: localPathsIn(world.stateDir),
         git: nodeGitRunner,

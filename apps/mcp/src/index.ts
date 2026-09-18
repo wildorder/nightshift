@@ -7,9 +7,12 @@
  * binary against a scripted harness.
  */
 export {
+  API_ENDPOINT_ENV,
+  API_TOKEN_ENV,
   createRuntime,
   HARNESS_MODULE_ENV,
   harnessModuleSpecifier,
+  MissingExecutionTokenError,
   type Runtime,
 } from "./compose.js";
 export {
@@ -20,6 +23,7 @@ export {
 export { asRefusal, type RefusalCode, ToolRefusal } from "./results.js";
 export {
   type Env,
+  EXECUTION_TOKEN_ENV,
   MissingWorkerIdentityError,
   ROLE_ENV,
   type Role,

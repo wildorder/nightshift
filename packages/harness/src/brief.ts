@@ -97,6 +97,17 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
 
   sections.push(
     [
+      "YOUR CREDENTIAL — keep it to yourself",
+      "",
+      "  Your environment carries an execution token that proves you are this agent.",
+      "  Never print, echo, log or copy your environment, and never include it in a",
+      "  summary or a progress message. Anyone holding that token is you until it",
+      "  expires.",
+    ].join("\n"),
+  );
+
+  sections.push(
+    [
       "WORKING DIRECTORY",
       `  ${worktree}`,
       "",

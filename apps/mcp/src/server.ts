@@ -59,7 +59,10 @@ export const createNightshiftServer = async (
   input: CreateServerInput,
 ): Promise<NightshiftServer> => {
   const role = roleFrom(input.env);
-  const runtime = input.runtime ?? (await createRuntime(input.env));
+  // The role decides how this process reaches the control plane: a worker builds
+  // its transport from its execution token alone (D-P4-06), an orchestrator from
+  // the operator's session.
+  const runtime = input.runtime ?? (await createRuntime(input.env, role));
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {

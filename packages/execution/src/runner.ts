@@ -106,7 +106,12 @@ export interface RunJobInput {
   readonly mcp: (identity: WorkerLaunchIdentity) => McpLaunch;
 }
 
-/** What the worker's MCP server must be told about itself (contract §4.2). */
+/**
+ * What the worker's MCP server must be told about itself (contract §4.2, §4.5).
+ *
+ * The identity says *which* agent it is; the token is *how it proves it*. Both
+ * are set by the party that spawns the worker, which is never the worker.
+ */
 export interface WorkerLaunchIdentity {
   readonly projectId: string;
   readonly programId: string;
@@ -115,6 +120,12 @@ export interface WorkerLaunchIdentity {
   readonly agentId: AgentId;
   readonly jobContractId: JobContractId;
   readonly worktree: string;
+  /**
+   * The worker's only credential (D-P4-06). Bound to this agent, this node and
+   * this run, expiring within the cost policy's wall clock. Never logged, never
+   * written to disk.
+   */
+  readonly executionToken: string;
 }
 
 export interface StartedJob {
@@ -227,6 +238,15 @@ export const runJob = async (
     agentId,
   });
 
+  // --- 3a. Its credential, minted the moment the identity exists (D-P4-06) -----
+  //
+  // Before the worktree, before the process, and — critically — before anything
+  // the worker could act with. A-04 says nothing executes without a Nightshift
+  // execution identity; P4 makes that a credential rather than a convention.
+  // The token is held in this frame and handed to the launch; it is never
+  // stored, never logged, and never reaches an event payload.
+  const { token: executionToken } = await environment.tokens.mint(session.scope, agentId);
+
   // --- 4. Why it runs where it runs (A-13) -------------------------------------
   const routingDecision: RoutingDecision = {
     schemaVersion: 1,
@@ -305,6 +325,7 @@ export const runJob = async (
         agentId,
         jobContractId: input.job.jobContractId,
         worktree,
+        executionToken,
       }),
       sink,
       transcriptPath: transcript,

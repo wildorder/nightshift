@@ -32,6 +32,7 @@ import type {
 import {
   createSteppingClock,
   createUlidIdGenerator,
+  type ExecutionTokenMinter,
   type IdGenerator,
   type LocalPaths,
   makeMembership,
@@ -53,6 +54,7 @@ import type { Harness } from "@nightshift/harness";
 import {
   createFetchTransport,
   createHttpArtifactBodyStore,
+  createHttpExecutionTokenMinter,
   createHttpStores,
   staticTokenProvider,
 } from "@nightshift/persistence/http";
@@ -166,6 +168,8 @@ export interface BaseWorld {
   readonly backing: InMemoryStores;
   readonly stores: ProjectStores;
   readonly bodies: ReturnType<typeof createHttpArtifactBodyStore>;
+  /** Mints a worker's execution token, as the orchestrator's session does (P4). */
+  readonly tokens: ExecutionTokenMinter;
   readonly ids: IdGenerator;
   readonly clock: ReturnType<typeof createSteppingClock>;
   readonly subject: string;
@@ -214,6 +218,9 @@ export const createBaseWorld = async (options: BaseWorldOptions = {}): Promise<B
     tokens: staticTokenProvider("ignored-by-the-local-plane"),
   });
   const stores = createHttpStores({ transport, actingOrg: orgId });
+  // The orchestrator's session mints a worker's token, through the real route
+  // against the real signer (P4, D-P4-06).
+  const tokens = createHttpExecutionTokenMinter({ transport });
   const bodies = createHttpArtifactBodyStore({
     transport,
     read: async (scope, artifactId) =>
@@ -251,6 +258,7 @@ export const createBaseWorld = async (options: BaseWorldOptions = {}): Promise<B
     backing,
     stores,
     bodies,
+    tokens,
     ids,
     clock,
     subject,
@@ -340,6 +348,7 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
   const environment: ExecutionEnvironment = {
     stores,
     bodies,
+    tokens: base.tokens,
     harness: options.harness,
     clock,
     ids,

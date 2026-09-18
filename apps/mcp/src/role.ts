@@ -21,6 +21,11 @@
  * tried through another route, the API's `CAN_DELEGATE` rule refuses a job node
  * as a parent anyway. Two independent reasons, which is the right number for
  * something this load-bearing.
+ *
+ * P4 adds a third, and the one that survives a worker escaping this process:
+ * its **credential** can only do the four things §4.4 grants it on its own
+ * node. Creating a node is `forbidden` in the table, so a worker that somehow
+ * called the route directly would still be refused by the control plane.
  */
 import {
   AgentIdSchema,
@@ -33,6 +38,20 @@ import {
 import type { WorkerIdentity } from "@nightshift/execution";
 
 export const ROLE_ENV = "NIGHTSHIFT_ROLE";
+
+/**
+ * The worker's only credential (D-P4-06, A-35).
+ *
+ * A Nightshift-issued JWT bound to this agent, this node and this run. A
+ * worker-role server refuses to start without it and reads no credentials file:
+ * before P4 a worker acted with whatever identity the operating-system user
+ * happened to hold, which with two users means acting as whichever human
+ * launched it.
+ *
+ * Never log it. It is a bearer token: whoever holds it is that agent until it
+ * expires, and Nightshift has no way to revoke one.
+ */
+export const EXECUTION_TOKEN_ENV = "NIGHTSHIFT_EXECUTION_TOKEN";
 
 export type Role = "orchestrator" | "worker";
 
@@ -112,8 +131,10 @@ export const workerLaunchEnv = (identity: {
   readonly agentId: string;
   readonly jobContractId: string;
   readonly worktree: string;
+  readonly executionToken: string;
 }): Record<string, string> => ({
   [ROLE_ENV]: "worker",
+  [EXECUTION_TOKEN_ENV]: identity.executionToken,
   [WORKER_IDENTITY_ENV.projectId]: identity.projectId,
   [WORKER_IDENTITY_ENV.programId]: identity.programId,
   [WORKER_IDENTITY_ENV.runId]: identity.runId,
