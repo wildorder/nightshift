@@ -321,6 +321,7 @@ Specs live in `tasks/p4-identity-and-tenancy/`.
 |------|----------|----|
 | 2026-09-16 | Program inserted at the restaging; contract drafted; D-P4-01 … D-P4-08 proposed; tasks T1 … T6 drafted | Agent, for human ratification |
 | 2026-09-16 | **Contract ratified**, D-P4-01 … D-P4-08 as drafted, after the owner's review of the restaging. Recorded as A-33 … A-36. | Human |
+| 2026-09-18 | **Defect found in review after the merge, fixed directly on `v1`.** `node.put` was `own_node` for an execution, and nothing limited which status the request asked for, so a worker's token could move its own node to any status `core`'s table allowed: `verifying`, `cancelled`, `interrupted`, back to `queued`. Never `verified`, which needs a `Verification` it cannot write, so A-05 held and no unverified work could integrate; but D-P4-05 grants a worker its node's *completion and failure* and nothing else, and the comment beside the table claimed exactly that while nothing enforced it. `authorize` now takes the requested status and refuses an execution anything but `implemented` or `failed`, fail-closed on a missing status; `enforce` reads it from the body for `node.put` only. The 260-cell matrix missed it because it is keyed by operation, and this was a question about what a permitted operation may contain (§12.5, item 4). | Human and agent |
 | 2026-09-17 | T1 … T6 implemented and deployed. RSA-2048 / RS256 chosen for the signing key (§12.2). Three departures recorded in §12.6, none of which revises a ratified decision. Three defects found only by the live run (§12.5). Exit gate met: SC-P4-11 green. | Agent |
 
 ## 12. As built
@@ -434,6 +435,20 @@ than a formality.
    handler, which is what SC-P2-07 and SC-P4-05 claim, so only the code moved —
    and it is API Gateway's to choose, not Nightshift's. Both smoke suites name
    the two cases rather than sharing one number.
+
+4. **A permitted operation was taken for a permitted content** (found
+   2026-09-18, by review rather than by a run). SC-P4-04 says a worker's token
+   does exactly what §4.4 grants, and the proof was a matrix over *operations*.
+   `node.put` is one operation and fifteen statuses, and the gate let an
+   execution ask for any of them on its own node. The transition table refused
+   the illegal ones and the evidence rule refused `verified`, so the worst a
+   worker could do was wedge or cancel its own job and have the record say
+   Nightshift did it. That is still a worker asserting something only
+   Nightshift may assert. Fixed in `core` (`EXECUTION_WRITABLE_NODE_STATUSES`),
+   with all fifteen statuses walked offline, through the real worker token, and
+   live. The lesson for P9, which widens execution tokens to orchestrators: for
+   every write a token is granted, ask what the body may say, not only which
+   route it may call.
 
 ### 12.6 Departures from the task specs
 

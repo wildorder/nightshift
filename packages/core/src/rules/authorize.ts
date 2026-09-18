@@ -27,10 +27,25 @@
  * Widening the read side beyond what D-P4-05 grants would be settling a ratified
  * decision; narrowing the write side below it would break the slice. The table
  * below is the decision, not an interpretation of it.
+ *
+ * ## An allowed operation is not an allowed *content*
+ *
+ * `node.put` is one route and fifteen statuses. D-P4-05 grants a worker its
+ * node's *completion* and *failure*, which are two of them. The table alone
+ * cannot say that, because it is keyed by operation, so `authorize` also takes
+ * the status the request asks for and refuses an execution anything but
+ * {@link EXECUTION_WRITABLE_NODE_STATUSES}. Without it, a worker's token could
+ * move its own node to `verifying`, `cancelled`, `interrupted` or back to
+ * `queued`: never to `verified`, which needs a `Verification` it cannot write
+ * (A-05 held), but far enough to wedge its own job and to make the record say
+ * Nightshift did something a worker did. Found in review after P4 merged; the
+ * operation matrix had 260 cells and none of them asked what a permitted
+ * operation may contain.
  */
 import type {
   AgentId,
   ExecutionNodeId,
+  ExecutionNodeStatus,
   OrgId,
   Principal,
   ProgramId,
@@ -135,8 +150,10 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "run.getState": "forbidden",
 
   // Nodes: its own, and only its own. `node.put` is how a worker reports
-  // implemented and failed — `core`'s transition table decides which moves are
-  // legal, and nothing here may move a node past `implemented` (A-05).
+  // implemented and failed, and `authorize` refuses it any other requested
+  // status (`EXECUTION_WRITABLE_NODE_STATUSES`), so nothing a worker holds can
+  // move a node past `implemented` (A-05). The transition table then decides
+  // whether the move is legal from where the node stands.
   "node.list": "own_run",
   "node.put": "own_node",
   "node.get": "own_node",
@@ -208,7 +225,25 @@ export interface AuthorizationTarget {
   readonly runId?: RunId;
   readonly nodeId?: ExecutionNodeId;
   readonly agentId?: AgentId;
+  /**
+   * For `node.put` only: the status the request asks the node to have. A plain
+   * string because the body has not been validated yet when this is read; an
+   * unknown value is simply not one an execution may write.
+   */
+  readonly requestedNodeStatus?: string;
 }
+
+/**
+ * The only statuses an execution may ask its own node to take: what a worker
+ * *claims* (`implemented`) and what a worker *admits* (`failed`). Every other
+ * status is Nightshift's to assert. Whether the move is legal from where the
+ * node stands is still `core`'s transition table's business, decided by the
+ * operation; this decides only whether an execution may ask at all.
+ */
+export const EXECUTION_WRITABLE_NODE_STATUSES: readonly ExecutionNodeStatus[] = [
+  "implemented",
+  "failed",
+];
 
 export type AuthorizationRefusal =
   /** A user principal reached for a project another organisation owns. */
@@ -288,6 +323,20 @@ export const authorize = (
     return refuse(
       "execution_out_of_scope",
       `an execution token may only ${operation} for the agent it was issued for`,
+    );
+  }
+  // Fail closed: a `node.put` that names no status, or one that is not a
+  // worker's to write, is refused before the operation parses anything.
+  if (
+    operation === "node.put" &&
+    !(EXECUTION_WRITABLE_NODE_STATUSES as readonly string[]).includes(
+      target.requestedNodeStatus ?? "",
+    )
+  ) {
+    return refuse(
+      "execution_forbidden_operation",
+      `an execution token may only report its node ${EXECUTION_WRITABLE_NODE_STATUSES.join(" or ")}; ` +
+        `"${target.requestedNodeStatus ?? "(no status)"}" is Nightshift's to assert`,
     );
   }
   return ALLOWED;

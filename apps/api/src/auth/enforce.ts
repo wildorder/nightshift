@@ -107,6 +107,14 @@ export const createProjectOrgCache = (options: ProjectOrgCacheOptions): ProjectO
  *
  * This is not a time-of-check problem: the field read here is the same field the
  * operation parses and stores, on the same object.
+ *
+ * ## And for the status, on `node.put`
+ *
+ * `authorize` refuses an execution any requested node status but `implemented`
+ * and `failed` (see `EXECUTION_WRITABLE_NODE_STATUSES` in `core`). The status is
+ * a field of the body, so it is read here by the same reasoning and for the same
+ * route only: every other record that happens to carry a `status` is a record an
+ * execution may not write at all.
  */
 export const targetFrom = (params: PathParams, body: unknown): AuthorizationTarget => {
   const target: {
@@ -149,9 +157,20 @@ export interface EnforceOptions {
  * operation only needed the check, which has already happened by the time this
  * returns.
  */
+/** The status a `node.put` body asks for, or `undefined` when it names none. */
+export const requestedNodeStatusFrom = (body: unknown): string | undefined => {
+  const status =
+    body !== null && typeof body === "object" ? (body as { status?: unknown }).status : undefined;
+  return typeof status === "string" ? status : undefined;
+};
+
 export const enforce = async (options: EnforceOptions): Promise<Principal> => {
   const { principal, operation, params } = options;
-  const target = targetFrom(params, options.body);
+  const requested = operation === "node.put" ? requestedNodeStatusFrom(options.body) : undefined;
+  const target: AuthorizationTarget = {
+    ...targetFrom(params, options.body),
+    ...(requested === undefined ? {} : { requestedNodeStatus: requested }),
+  };
 
   if (!isUserToken(principal)) {
     const decision = authorize(principal, operation, target);

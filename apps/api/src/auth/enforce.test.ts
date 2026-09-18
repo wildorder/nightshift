@@ -20,6 +20,7 @@ import {
   createProjectOrgCache,
   DEFAULT_PROJECT_ORG_TTL_MS,
   enforce,
+  requestedNodeStatusFrom,
   targetFrom,
 } from "./enforce.js";
 
@@ -108,6 +109,16 @@ describe("targetFrom", () => {
     for (const body of [undefined, null, "text", 7, { executionNodeId: 7 }]) {
       expect(targetFrom({ runId: "r" }, body)).toEqual({ runId: "r" });
     }
+  });
+});
+
+describe("requestedNodeStatusFrom", () => {
+  it("reads a string status and nothing else", () => {
+    expect(requestedNodeStatusFrom({ status: "implemented" })).toBe("implemented");
+    expect(requestedNodeStatusFrom({ status: 3 })).toBeUndefined();
+    expect(requestedNodeStatusFrom({})).toBeUndefined();
+    expect(requestedNodeStatusFrom(null)).toBeUndefined();
+    expect(requestedNodeStatusFrom("implemented")).toBeUndefined();
   });
 });
 

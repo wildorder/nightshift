@@ -23,6 +23,8 @@ import {
   createFixedClock,
   createFixtures,
   EXECUTION_ACCESS,
+  EXECUTION_NODE_STATUSES,
+  EXECUTION_WRITABLE_NODE_STATUSES,
   type Fixtures,
   makeAgent,
   makeMembership,
@@ -167,6 +169,7 @@ const callAs = async (
   method: string,
   path: string,
   nodeId: string,
+  extra: Readonly<Record<string, unknown>> = {},
 ): Promise<Answer> => {
   const response = await fetch(`${plane.url}${path}`, {
     method,
@@ -174,7 +177,12 @@ const callAs = async (
       authorization: `Bearer ${encodeTestPrincipal(principal)}`,
       "content-type": "application/json",
     },
-    ...(method === "GET" ? {} : { body: JSON.stringify({ executionNodeId: nodeId }) }),
+    // `status: "implemented"` is what a worker's `node.put` asks for when it is
+    // doing its job; `authorize` refuses an execution any other (see the block at
+    // the end of this file). Every other route ignores the field.
+    ...(method === "GET"
+      ? {}
+      : { body: JSON.stringify({ executionNodeId: nodeId, status: "implemented", ...extra }) }),
   });
   const text = await response.text();
   let code: string | undefined;
@@ -355,5 +363,56 @@ describe("the refusals themselves", () => {
       headers: { authorization: "Bearer test-principal.not-base64url-json" },
     });
     expect(response.status).toBe(401);
+  });
+});
+
+/**
+ * An allowed operation is not an allowed content (found in review after P4
+ * merged). `node.put` on its own node is how a worker reports, and the only two
+ * things it may report are `implemented` and `failed`. Everything else is
+ * Nightshift's to assert, and is refused at the gate, before the operation
+ * parses a byte of the body.
+ */
+describe("an execution token may only report its own node implemented or failed", () => {
+  const ownNodePath = () =>
+    pathFor("/projects/{projectId}/programs/{programId}/runs/{runId}/nodes/{nodeId}", a.params);
+
+  it.each(
+    EXECUTION_NODE_STATUSES.filter(
+      (status) => !EXECUTION_WRITABLE_NODE_STATUSES.includes(status),
+    ).map((status) => [status] as const),
+  )("is refused %s", async (status) => {
+    const answer = await callAs(a.execution, "PUT", ownNodePath(), a.params.nodeId, { status });
+    expect(answer.status).toBe(403);
+    expect(answer.code).toBe("execution_forbidden_operation");
+  });
+
+  it.each(EXECUTION_WRITABLE_NODE_STATUSES.map((status) => [status] as const))(
+    "is let through the gate for %s",
+    async (status) => {
+      const answer = await callAs(a.execution, "PUT", ownNodePath(), a.params.nodeId, { status });
+      // Past the gate the body is incomplete and validation answers; what it may
+      // never answer is 403.
+      expect(answer.status).not.toBe(403);
+    },
+  );
+
+  it("is refused a node.put that names no status at all", async () => {
+    const answer = await callAs(a.execution, "PUT", ownNodePath(), a.params.nodeId, {
+      status: undefined,
+    });
+    expect(answer.status).toBe(403);
+    expect(answer.code).toBe("execution_forbidden_operation");
+  });
+
+  it("leaves a user free to assert any status the transition table allows", async () => {
+    const answer = await callAs(
+      { kind: "user", userId: a.userId },
+      "PUT",
+      ownNodePath(),
+      a.params.nodeId,
+      { status: "verifying" },
+    );
+    expect(answer.status).not.toBe(403);
   });
 });

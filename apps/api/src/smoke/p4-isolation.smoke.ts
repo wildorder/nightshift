@@ -475,6 +475,29 @@ describe("SC-P4-02 — only A may mint an execution token for A's agent", () => 
       }
     });
 
+    it("is refused any status on its own node but implemented or failed", async () => {
+      // Found in review after P4 merged: `node.put` on its own node let a worker
+      // ask for any status `core`'s table allowed, so its token could move the
+      // node to `verifying`, `cancelled` or `interrupted`. The gate now refuses
+      // everything but what a worker claims and what it admits.
+      const own = `${run(world.scope)}/nodes/${world.node.executionNodeId}`;
+      for (const status of ["verifying", "cancelled", "interrupted", "queued", "verified"]) {
+        const result = await worker().put(own, { status });
+        expect(result.status, status).toBe(403);
+        expect((result.body as { error: { code: string } }).error.code, status).toBe(
+          "execution_forbidden_operation",
+        );
+      }
+      // And a status-less body, which is what this suite used to send.
+      const bare = await worker().put(own, {});
+      expect(bare.status).toBe(403);
+      // While the two it may report get past the gate to validation.
+      for (const status of ["implemented", "failed"]) {
+        const result = await worker().put(own, { status });
+        expect(result.status, status).not.toBe(403);
+      }
+    });
+
     it("is refused a node that is not its own", async () => {
       const result = await worker().put(`${run(world.scope)}/nodes/${world.rootNodeId}`, {});
       expect(result.status).toBe(403);

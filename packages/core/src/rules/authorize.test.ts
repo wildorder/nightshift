@@ -15,9 +15,11 @@ import {
   type AuthorizationTarget,
   authorize,
   EXECUTION_ACCESS,
+  EXECUTION_WRITABLE_NODE_STATUSES,
   type ExecutionAccess,
   type Operation,
 } from "./authorize.js";
+import { EXECUTION_NODE_STATUSES } from "./transitions.js";
 
 const [here, elsewhere] = createFixturePair();
 
@@ -53,6 +55,9 @@ const ownTarget: AuthorizationTarget = {
   runId: here.scope.runId,
   nodeId: OWN_NODE,
   agentId: OWN_AGENT,
+  // What a worker's `node.put` asks for when it is doing its job. Only
+  // `node.put` reads it; the status matrix at the end of this file walks the rest.
+  requestedNodeStatus: "implemented",
 };
 
 /** The same run, a sibling's node and agent. */
@@ -70,6 +75,7 @@ const otherRunTarget: AuthorizationTarget = {
   runId: elsewhere.scope.runId,
   nodeId: OTHER_NODE,
   agentId: OTHER_AGENT,
+  requestedNodeStatus: "implemented",
 };
 
 describe("the operation union", () => {
@@ -290,5 +296,70 @@ describe("the principal schema", () => {
 
   it("refuses a user principal carrying a run", () => {
     expect(PrincipalSchema.safeParse({ ...user, runId: here.scope.runId }).success).toBe(false);
+  });
+});
+
+/**
+ * An allowed operation is not an allowed content. `node.put` is one cell of the
+ * matrix above and fifteen statuses; D-P4-05 grants a worker two of them. This
+ * walks all fifteen, because the gap this closes survived a 260-cell matrix
+ * precisely by not being a question about operations.
+ */
+describe("what an execution may ask its own node to become", () => {
+  it("is exactly implemented and failed", () => {
+    expect([...EXECUTION_WRITABLE_NODE_STATUSES]).toEqual(["implemented", "failed"]);
+  });
+
+  it.each(EXECUTION_NODE_STATUSES.map((status) => [status] as const))(
+    "node.put asking for %s",
+    (status) => {
+      const decision = authorize(execution, "node.put", {
+        ...ownTarget,
+        requestedNodeStatus: status,
+      });
+      if ((EXECUTION_WRITABLE_NODE_STATUSES as readonly string[]).includes(status)) {
+        expect(decision.allowed).toBe(true);
+        return;
+      }
+      expect(decision).toMatchObject({
+        allowed: false,
+        reason: "execution_forbidden_operation",
+      });
+    },
+  );
+
+  it("fails closed on a node.put that names no status, or one that is not a status", () => {
+    const { requestedNodeStatus: _dropped, ...noStatus } = ownTarget;
+    expect(authorize(execution, "node.put", noStatus)).toMatchObject({
+      allowed: false,
+      reason: "execution_forbidden_operation",
+    });
+    expect(
+      authorize(execution, "node.put", { ...ownTarget, requestedNodeStatus: "verified " }),
+    ).toMatchObject({ allowed: false, reason: "execution_forbidden_operation" });
+  });
+
+  it("still refuses a sibling's node as out of scope, whatever status is asked", () => {
+    expect(
+      authorize(execution, "node.put", { ...siblingTarget, requestedNodeStatus: "failed" }),
+    ).toMatchObject({ allowed: false, reason: "execution_out_of_scope" });
+  });
+
+  it("does not constrain a user, who may assert any status the table allows", () => {
+    for (const status of EXECUTION_NODE_STATUSES) {
+      expect(
+        authorize(user, "node.put", { ...ownTarget, requestedNodeStatus: status }).allowed,
+      ).toBe(true);
+    }
+  });
+
+  it("reads the requested status for node.put only", () => {
+    // Every other own-node write ignores it: a decision or an event carrying a
+    // `status` field is not a node asking to change state.
+    for (const operation of ["event.append", "decision.put"] as const) {
+      expect(
+        authorize(execution, operation, { ...ownTarget, requestedNodeStatus: "verifying" }).allowed,
+      ).toBe(true);
+    }
   });
 });

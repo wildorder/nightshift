@@ -288,6 +288,10 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   API calls it in one place.
 - Every project-scoped route refuses a caller whose org does not own the
   project, before reading anything. Orgs are a boundary from P4 on.
+- An execution's `node.put` may only ask for `implemented` or `failed`
+  (`EXECUTION_WRITABLE_NODE_STATUSES` in `core`); `authorize` takes the
+  requested status and fails closed without one. When a token is granted a
+  write, decide what the body may say as well as which route it may call.
 - Workers hold only an execution token (`NIGHTSHIFT_EXECUTION_TOKEN`), minted by
   the control plane and signed by KMS; they never read `credentials.json` and
   their environment never carries `NIGHTSHIFT_CONFIG_DIR`. Never log a token.

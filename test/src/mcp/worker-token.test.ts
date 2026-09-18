@@ -286,6 +286,27 @@ describe("a worker holding only its execution token", () => {
     }
   });
 
+  it("cannot move its own node anywhere but implemented or failed", async () => {
+    const s = await seed();
+    const url =
+      `${s.world.plane.url}/projects/${s.node.projectId}/programs/${s.node.programId}` +
+      `/runs/${s.node.runId}/nodes/${s.node.executionNodeId}`;
+    // A complete, schema-valid node each time, so the only thing standing between
+    // the worker and the write is the gate. `verifying`, `cancelled` and
+    // `interrupted` are all legal moves in `core`'s table from where a worker's
+    // node can stand, which is exactly why the table alone was not enough.
+    for (const status of ["verifying", "cancelled", "interrupted", "queued", "verified"] as const) {
+      const response = await fetch(url, {
+        method: "PUT",
+        headers: { authorization: `Bearer ${s.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ ...s.node, status }),
+      });
+      const body = (await response.json()) as { error?: { code?: string } };
+      expect(response.status, status).toBe(403);
+      expect(body.error?.code, status).toBe("execution_forbidden_operation");
+    }
+  });
+
   it("cannot reach another run with its own token", async () => {
     const s = await seed();
     const other = await seed();
