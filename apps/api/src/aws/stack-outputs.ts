@@ -31,12 +31,24 @@ export interface StackEnvironment {
   readonly userPoolId: string;
   readonly interactiveClientId: string;
   readonly machineClientId: string;
+  /**
+   * The second machine client (P4, D-P4-07). The smoke suite's alone: it exists
+   * so the live isolation matrix has two principals, and holds no standing
+   * membership between runs.
+   */
+  readonly testPrincipalClientId: string;
   readonly tokenEndpoint: string;
   readonly machineScope: string;
   /** The Cognito hosted domain, without a scheme: `<prefix>.auth.<region>.amazoncognito.com`. */
   readonly authDomain: string;
   /** The complete hosted sign-in URL, client id included (D-P3-16). */
   readonly hostedSignInUrl: string;
+  /**
+   * The KMS key that signs execution tokens (P4, D-P4-03). The id is enough to
+   * call `kms:GetPublicKey`, which is how the smoke suite verifies a minted
+   * token against the deployed key's public half.
+   */
+  readonly executionTokenKeyId: string;
 }
 
 interface OutputReader {
@@ -99,9 +111,11 @@ export const loadStackEnvironment = async (
     userPoolId: data("UserPoolId"),
     interactiveClientId: data("InteractiveClientId"),
     machineClientId: data("MachineClientId"),
+    testPrincipalClientId: data("TestPrincipalClientId"),
     tokenEndpoint: data("TokenEndpoint"),
     machineScope: data("MachineScope"),
     authDomain: data("AuthDomain"),
     hostedSignInUrl: data("HostedSignInUrl"),
+    executionTokenKeyId: data("ExecutionTokenKeyId"),
   };
 };

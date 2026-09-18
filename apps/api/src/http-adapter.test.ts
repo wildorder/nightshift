@@ -162,7 +162,7 @@ beforeEach(async () => {
 
   const plane = await startLocalControlPlane({
     stores: backing,
-    claims: { sub: subject, "custom:active_org": orgId },
+    principal: { kind: "user", userId: subject, activeOrg: orgId },
     clock: createFixedClock(Date.parse(NOW)),
   });
   const transport = createFetchTransport({

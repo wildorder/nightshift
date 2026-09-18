@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p4-identity-and-tenancy` |
 | Source stage | none. Inserted at the 2026-09-16 restaging (`staging.md`); the source plan deferred multi-user identity to after v1, and the owner pulled it into v1 as a problem to solve now. |
-| Status | **Contract ratified 2026-09-16** (D-P4-01 … D-P4-08). Tasks T1 … T6 drafted. Implementation not started. |
+| Status | **Closed 2026-09-17.** Contract ratified 2026-09-16 (D-P4-01 … D-P4-08); T1 … T6 complete; deployed, smoke green twice, slice green on both harnesses. As built in §12. |
 | Depends on | P3 First Vertical Slice (complete, `v1` at `7627045`) |
 | Blocking decisions | none open in `architecture.md` §3. Amends A-19, A-21 and A-27. |
 
@@ -239,6 +239,37 @@ npm run check:architecture
 Plus, with `AWS_PROFILE=nightshift`: `npm run deploy`, `npm run smoke`,
 `npm run slice`.
 
+### 7.1 The isolation suite (T5 deliverable 4)
+
+`npm run smoke` runs two files, in this order: the P2 suite, then
+`p4-isolation.smoke.ts`. The second seeds two machine principals in two
+throwaway organisations — the operational machine client as **A**, the
+`TestPrincipalClient` of D-P4-07 as **B** — creates A's project, program, run,
+node, job and agent as A, and then asserts this table. A reader should be able
+to check each row against the suite's printed output.
+
+| # | Assertion | Criterion |
+|---|-----------|-----------|
+| 1 | Two principals hold real Cognito tokens, in two organisations | D-P4-07 |
+| 2 | A is refused nothing on its own project: no route answers 403 | — |
+| 3 | B is refused **every** project-scoped route of A's project, with `wrong_org` | SC-P4-01 |
+| 4 | `GET /projects` shows A its project and B none of A's | SC-P4-03 |
+| 5 | A mints an execution token; it verifies against the deployed KMS key's public half | D-P4-03 |
+| 6 | B cannot mint a token for A's agent | SC-P4-02 |
+| 7 | The minted token reads its own run, node, job and agent | SC-P4-04 |
+| 8 | The minted token is refused every operation §4.4 withholds, with `execution_forbidden_operation` | SC-P4-04 |
+| 9 | The minted token is refused a node that is not its own, with `execution_out_of_scope` | SC-P4-04 |
+| 10 | No token, an unreadable token, a foreign-signed token and an expired token are all 401 from the authorizer | SC-P4-05 |
+| 11 | Every record both organisations wrote is removed, including after a failure | A-18 |
+
+Row 3 walks the same route list as rows 2 and 8, built once from A's world, so a
+route added without an authorisation decision appears in all three.
+
+The offline halves of rows 3 … 9 are `apps/api/src/isolation.test.ts` (the
+§4.4 matrix over every route, four callers) and `test/src/mcp/worker-token.test.ts`
+(the real worker MCP server on a real minted token). They run in `npm test`,
+with no credentials and no network beyond loopback.
+
 ## 8. Constraints
 
 - No verification code in the handler; the authorizer is the one place tokens
@@ -290,7 +321,185 @@ Specs live in `tasks/p4-identity-and-tenancy/`.
 |------|----------|----|
 | 2026-09-16 | Program inserted at the restaging; contract drafted; D-P4-01 … D-P4-08 proposed; tasks T1 … T6 drafted | Agent, for human ratification |
 | 2026-09-16 | **Contract ratified**, D-P4-01 … D-P4-08 as drafted, after the owner's review of the restaging. Recorded as A-33 … A-36. | Human |
+| 2026-09-17 | T1 … T6 implemented and deployed. RSA-2048 / RS256 chosen for the signing key (§12.2). Three departures recorded in §12.6, none of which revises a ratified decision. Three defects found only by the live run (§12.5). Exit gate met: SC-P4-11 green. | Agent |
 
 ## 12. As built
 
-Not yet.
+Closed 2026-09-17. Six tasks, all complete; both stacks deployed to `dev`; the
+smoke suite green twice; the slice green on both harnesses.
+
+### 12.1 Task states
+
+| Task | State | Notes |
+|------|-------|-------|
+| T1 | Complete | `Principal`, `Operation` (41 members), `authorize`; 260 assertions |
+| T2 | Complete | RSA-2048 key, signer, verifier, mint route; offline tests sign with a local key pair through the same code path |
+| T3 | Complete | Lambda authorizer, `enforce`, principal threading, the offline matrix (181 assertions) |
+| T4 | Complete | Minting at agent creation, worker transport from the token alone, the credential paragraph in the brief |
+| T5 | Complete | `TestPrincipalClient`, `--org new`, the live isolation suite |
+| T6 | Complete | This section |
+
+### 12.2 The key type, and why (T2 deliverable 1)
+
+**RSA-2048, signed as `RS256`**, asymmetric sign/verify, alias
+`nightshift-dev-execution-tokens`, `RemovalPolicy.RETAIN`, in the data stack.
+Rotation is not applicable: KMS does not rotate asymmetric key material.
+
+ECC P-256 / `ES256` was the alternative. Both are KMS key specs and Node 22
+handles both natively, so library support decided nothing. Three things did:
+
+1. **Verification is the hot path.** The authorizer verifies on every request
+   that is not served from the gateway's decision cache; minting happens once
+   per agent. RSA verification with the standard public exponent is markedly
+   cheaper than ECDSA P-256 verification, and ECC's advantage is on the side
+   Nightshift does rarely. The KMS round trip dominates signing whatever the key
+   type.
+2. **No signature transcoding.** KMS returns an ECDSA signature DER-encoded, as
+   a SEQUENCE of two INTEGERs; JOSE's `ES256` wants fixed-width raw `r‖s`.
+   Converting means handling leading zeros and short integers correctly — code
+   that is wrong only in rare cases, which is the worst failure shape a
+   signature can have. `RS256`'s signature is already the bytes JOSE wants.
+3. **The cost is a longer token**: 256 signature bytes rather than 64, so about
+   256 more base64url characters in an environment variable and a header.
+
+The reasoning lives in `apps/api/src/tokens/mint.ts`, beside the code that
+depends on it.
+
+### 12.3 Measured latency
+
+The authorizer's own duration, from its log group over an hour of smoke traffic
+(n = 62 invocations):
+
+| | Duration |
+|---|---|
+| Warm (n = 33) | p50 **4.0 ms**, max 57 ms |
+| Cold (n = 29) | up to **1.04 s**, including the first JWKS fetch and `kms:GetPublicKey` on that instance |
+
+End to end, `GET /projects` with the operator's Cognito ID token against
+`api.dev.nightshift.wildorder.dev`: **2.1 s** on the first call with both
+functions cold, then **69–115 ms**.
+
+Most requests never invoke the authorizer at all: API Gateway caches a decision
+for `AUTHORIZER_CACHE_TTL` (5 minutes), keyed by the `Authorization` header. The
+TTL is bounded deliberately — the cache is keyed by the token, so an unbounded
+one would extend every token's life past its own expiry.
+
+### 12.4 The live matrix (§7.1)
+
+`npm run smoke` run twice, 81 assertions across two files, both clean, both
+cleaning up after themselves. The P4 half reported:
+
+```text
+[p4-isolation] A: subject 1u3uvfmdjgju5golgjn9sjj2bg in org_…
+[p4-isolation] B: subject d3j0q902aa1h8171692tuuic9 in org_…
+[p4-isolation] the matrix covers 40 routes
+[p4-isolation] B was refused all 40 routes with wrong_org
+[p4-isolation] A minted a token expiring 2026-09-18T13:19:46.000Z
+[p4-isolation] removed 12 items across both organisations
+```
+
+Every row of §7.1's table passed. The minted token was verified against the
+deployed key's public half fetched with `kms:GetPublicKey`, which is the
+assertion that the deployed signer and the deployed verifier agree rather than
+merely both existing.
+
+### 12.5 What the live run found that the offline one could not
+
+Three, and the third is the reason SC-P4-11 is written as an exit gate rather
+than a formality.
+
+1. **The materializer could not start.** T2 added the token variables to the
+   config schema `apps/api` shares between its functions, and the stack gives
+   them to the API function only — deliberately, because the materializer signs
+   nothing. So it threw `ConfigError` at cold start on every invocation and the
+   stream backed up behind it. Twelve batches exhausted their retries; their
+   events are durable but will never be numbered (A-22 readers tolerate that),
+   and all of them belonged to throwaway smoke projects whose partitions the
+   suite deleted. **The CDK assertion written in T2 encoded the bug**: it
+   checked that the materializer does *not* carry the token variables, which was
+   right and was not the question. Nobody checked that it could still load. Fixed
+   by splitting `loadTokenConfig` out; a shared config schema holds the
+   intersection of what its functions need, never the union.
+2. **The authorizer did not accept the second machine client.** T5 added
+   `TestPrincipalClient` to the pool but not to the authorizer's audience list,
+   so every request B made came back as a bare gateway 403 with no body — which
+   reads exactly like an authorisation bug. The offline matrix constructs
+   principals directly and never meets an audience check, so no amount of
+   offline testing could have found it. The assertion is now on the whole set:
+   every `*ClientId` the data stack exports must appear in the audiences.
+3. **The gateway's refusal codes moved.** `HttpJwtAuthorizer` answered 401 for
+   both a missing and a bad token. A **request** authorizer distinguishes: a
+   request with no identity source never reaches the function and is 401; a
+   function answering `isAuthorized: false` is 403. Both refuse before the
+   handler, which is what SC-P2-07 and SC-P4-05 claim, so only the code moved —
+   and it is API Gateway's to choose, not Nightshift's. Both smoke suites name
+   the two cases rather than sharing one number.
+
+### 12.6 Departures from the task specs
+
+- **T3's note on the org cache** describes caching a miss ("delay a newly
+  created project's first read by at most the TTL"). Misses are **not** cached.
+  Remembering "no such project" leaves a window in which a project created in
+  one organisation is invisible to the check, and every caller — including one
+  in another org — sails past `enforce` and has the operation read the record
+  for them. A miss costs one read and the operation reads anyway, so there is
+  nothing to save and a boundary to lose. Written down in `auth/enforce.ts` and
+  asserted.
+- **"An execution cannot create a node" (D-P4-05) is enforced by scope, not by
+  operation.** `node.put` is `own_node` rather than `forbidden`, because it is
+  how a worker reports its own node implemented; a node it holds no token for is
+  refused `execution_out_of_scope`. The outcome D-P4-05 names is delivered, by
+  the narrower of the two mechanisms.
+- **Two of a worker's three writes name their node in the body**, not the path:
+  `POST …/events` and `PUT …/decisions/{id}` both hang off the run. `targetFrom`
+  reads `executionNodeId` from the body where the path names no node, which
+  keeps the decision inside `enforce` rather than letting those two routes check
+  for themselves (SC-P4-08).
+- **The authorizer routes on `iss` alone.** A first draft also fell back to the
+  JWT header; both token kinds are RS256 JWTs, so that sent every Cognito token
+  to the execution verifier. Each verifier re-checks the issuer itself, so a
+  misrouted token is refused rather than mistaken for the other kind.
+
+### 12.7 Success criteria
+
+| # | Claim | Proven by |
+|---|-------|-----------|
+| SC-P4-01 | A user in org B receives 403 for every project-scoped route against org A's project | `isolation.test.ts` (40 routes, offline); `p4-isolation.smoke.ts` (40 routes, live) ✅ |
+| SC-P4-02 | A user in org B cannot mint an execution token for an agent in org A's run | Both matrices ✅ |
+| SC-P4-03 | Listing projects returns only the caller's org's | Both matrices ✅ |
+| SC-P4-04 | A worker's token performs exactly §4.4 on its own node and is refused everything else | `authorize.test.ts` (260 cells), `isolation.test.ts`, `worker-token.test.ts` (through the real worker MCP server), `p4-isolation.smoke.ts` ✅ |
+| SC-P4-05 | No token, an expired token, a foreign-signed token or one for a deleted agent is rejected by the authorizer, never the handler | `authorizer.test.ts` (19 cases offline), `p4-isolation.smoke.ts` (live) ✅ |
+| SC-P4-06 | The worker MCP server reads no credentials file, and its environment carries no `NIGHTSHIFT_CONFIG_DIR` | `worker-token.test.ts` plants a valid session and proves the worker refuses to start without a token anyway; `compose.test.ts` asserts the environment's absences ✅ |
+| SC-P4-07 | The complete P3 slice, offline and deployed, still passes with workers on execution tokens | `npm test` (2216 assertions); `npm run slice`, both harnesses ✅ |
+| SC-P4-08 | `authorize` is a pure table in `core` with an exhaustive test, and the API calls it in exactly one place | `authorize.test.ts`; `enforce.ts` is the only caller and `handleRequest` its only caller ✅ |
+| SC-P4-09 | Every route is bound to the Nightshift authorizer and none is anonymous | `api-stack.test.ts`, asserting each route names *this* authorizer rather than some authorizer ✅ |
+| SC-P4-10 | The handler contains no token verification code | Verification lives in `tokens/verify.ts` and `lambda/authorizer.ts`; the handler receives a typed `Principal` ✅ |
+| SC-P4-11 | Two machine principals in two orgs run the isolation matrix live; a real Claude worker completes the P3 fixture job holding only an execution token; the smoke suite passes | `npm run smoke` twice (81 assertions, clean both times); `npm run slice`, both harnesses, with the slice asserting the worker's own agent reported `node.implemented` as `source: "mcp"` ✅ |
+
+### 12.8 How "the worker held only an execution token" is proven
+
+The slice asserts the record half — `node.implemented` carries `source: "mcp"`
+and names a stored worker agent on its own node, and that agent is not the
+orchestrator's. An event's `agentId` is written by whoever appends it, so on its
+own that says the worker reported, not what credential it held.
+
+The credential half is structural, and it is the half that matters.
+`createWorkerTransport` has no fallback — no profile, no credentials file, no
+`??` — and throws `MissingExecutionTokenError` without a token. A worker that
+reached the control plane at all therefore held a valid execution token, and its
+environment carries neither `NIGHTSHIFT_CONFIG_DIR` nor `NIGHTSHIFT_API_TOKEN`
+to have used instead. `apps/mcp/src/compose.test.ts` asserts those absences,
+`test/src/mcp/worker-token.test.ts` proves the server refuses to start without a
+token even with a valid operator session planted beside it, and the deployed
+slice proves the whole path works against the real authorizer.
+
+### 12.9 What P4 deliberately did not do
+
+- The orchestrator still acts as the human (D-P4-06). P9 gives remote
+  orchestrators their own tokens.
+- No route creates a user, an org or a membership. The operator does that with
+  `npm run admin:user`.
+- A-26 was re-examined and not changed (D-P4-08): nothing secret is stored yet,
+  and the trigger arms the day one is.
+- An execution token is bearer. Nightshift cannot revoke one; it expires. The
+  brief tells a worker never to print its environment, and no adapter logs one.

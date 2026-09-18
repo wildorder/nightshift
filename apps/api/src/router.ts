@@ -2,6 +2,8 @@
  * A deliberately small router: literal segments and `{name}` parameters, nothing
  * else. The route table is the API surface, so it should read at a glance.
  */
+import type { Principal } from "@nightshift/contracts";
+import type { Operation } from "@nightshift/core";
 import type { ApiDeps, ApiRequest, ApiResponse } from "./http.js";
 import type { PathParams } from "./params.js";
 
@@ -11,6 +13,12 @@ export interface RouteContext {
   readonly deps: ApiDeps;
   readonly request: ApiRequest;
   readonly params: PathParams;
+  /**
+   * The caller, complete: a user principal carries the organisation it acts for.
+   * `enforce` has already allowed this operation against this target, so an
+   * operation reading this is reading an answer, not asking a question.
+   */
+  readonly principal: Principal;
 }
 
 export type Handler = (context: RouteContext) => Promise<ApiResponse>;
@@ -19,6 +27,12 @@ export interface Route {
   readonly method: HttpMethod;
   /** e.g. `/projects/{projectId}/programs/{programId}` */
   readonly path: string;
+  /**
+   * What this route *is*, in `core`'s vocabulary (D-P4-05). Declared beside the
+   * route rather than inferred from the path, because an inferred authorisation
+   * is one nobody reviews. A test asserts the table is total over `Operation`.
+   */
+  readonly operation: Operation;
   readonly handler: Handler;
 }
 

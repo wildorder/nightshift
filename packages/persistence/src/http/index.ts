@@ -21,6 +21,10 @@ export {
   ControlPlaneUnreachableError,
   toThrowable,
 } from "./errors.js";
+export {
+  createHttpExecutionTokenMinter,
+  type HttpExecutionTokenMinterOptions,
+} from "./execution-tokens.js";
 export { routes } from "./routes.js";
 export * from "./session/index.js";
 export { createHttpStores, type HttpStoresOptions } from "./stores.js";

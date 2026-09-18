@@ -20,7 +20,12 @@
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { ArtifactBodyStore, LocalPaths, ProjectStores } from "@nightshift/core";
+import type {
+  ArtifactBodyStore,
+  ExecutionTokenMinter,
+  LocalPaths,
+  ProjectStores,
+} from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import type { GitRunner, WorkerLaunchIdentity } from "@nightshift/execution";
 import { nodeGitRunner } from "@nightshift/execution";
@@ -29,6 +34,7 @@ import { createClaudeHarness } from "@nightshift/harness-claude";
 import {
   createFetchTransport,
   createHttpArtifactBodyStore,
+  createHttpExecutionTokenMinter,
   createHttpStores,
   createLocalPaths,
   createTokenProvider,
@@ -36,7 +42,7 @@ import {
   staticTokenProvider,
   type Transport,
 } from "@nightshift/persistence/http";
-import { type Env, workerLaunchEnv } from "./role.js";
+import { type Env, EXECUTION_TOKEN_ENV, type Role, workerLaunchEnv } from "./role.js";
 
 /**
  * Where the slice suite points the server at its own control plane and its own
@@ -58,6 +64,8 @@ export const API_TOKEN_ENV = "NIGHTSHIFT_API_TOKEN";
 export interface Runtime {
   readonly stores: ProjectStores;
   readonly bodies: ArtifactBodyStore;
+  /** Mints a worker's execution token. The orchestrator's session may; a worker's cannot. */
+  readonly tokens: ExecutionTokenMinter;
   readonly harness: Harness;
   readonly paths: LocalPaths;
   readonly git: GitRunner;
@@ -70,18 +78,61 @@ export interface Runtime {
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
 }
 
+/** A worker-role server started without the one credential it is allowed to have. */
+export class MissingExecutionTokenError extends Error {
+  override readonly name = "MissingExecutionTokenError";
+
+  constructor(readonly missing: readonly string[]) {
+    super(
+      "a worker-role Nightshift MCP server reaches the control plane with its execution " +
+        `token and nothing else, and these are missing or empty: ${missing.join(", ")}. ` +
+        "The execution layer sets both when it launches a worker; a worker never reads the " +
+        "operator's credentials (D-P4-06).",
+    );
+  }
+}
+
 /**
- * How the server reaches the control plane.
+ * How a **worker** reaches the control plane (P4, T4, D-P4-06).
  *
- * Normally: the operator's session, from `nightshift login` — a profile that
- * says where the control plane is and a refresh token that mints ID tokens. The
- * server holds no AWS credentials and never will (A-28).
+ * Its execution token, and nothing else. No profile, no credentials file, no
+ * refresh token, no fallback — a worker that cannot prove it is its own agent
+ * does not start, rather than quietly starting as whoever launched it. That is
+ * the whole of what P4 changes for a worker, and it is why this branch has no
+ * `??` in it.
+ */
+const createWorkerTransport = (env: Env): { transport: Transport; endpoint: string } => {
+  const endpoint = env[API_ENDPOINT_ENV];
+  const token = env[EXECUTION_TOKEN_ENV];
+  const missing = [
+    ...(endpoint === undefined || endpoint === "" ? [API_ENDPOINT_ENV] : []),
+    ...(token === undefined || token === "" ? [EXECUTION_TOKEN_ENV] : []),
+  ];
+  if (missing.length > 0 || endpoint === undefined || token === undefined) {
+    throw new MissingExecutionTokenError(missing);
+  }
+  return {
+    endpoint,
+    transport: createFetchTransport({ endpoint, tokens: staticTokenProvider(token) }),
+  };
+};
+
+/**
+ * How an **orchestrator** reaches the control plane.
+ *
+ * The operator's session, from `nightshift login` — a profile that says where
+ * the control plane is and a refresh token that mints ID tokens. The server
+ * holds no AWS credentials and never will (A-28). The orchestrator keeps the
+ * human's session in P4 by decision (D-P4-06): it is the human's proxy, and a
+ * remote orchestrator's own token is P9's change.
  *
  * The environment pair is for a caller that already holds a token: the deployed
  * slice suite, which uses the machine client's credentials grant rather than an
  * operator's session.
  */
-const createTransport = async (env: Env): Promise<{ transport: Transport; endpoint: string }> => {
+const createOrchestratorTransport = async (
+  env: Env,
+): Promise<{ transport: Transport; endpoint: string }> => {
   const endpoint = env[API_ENDPOINT_ENV];
   const token = env[API_TOKEN_ENV];
   if (endpoint !== undefined && endpoint !== "" && token !== undefined && token !== "") {
@@ -100,6 +151,12 @@ const createTransport = async (env: Env): Promise<{ transport: Transport; endpoi
     }),
   };
 };
+
+const createTransport = async (
+  env: Env,
+  role: Role,
+): Promise<{ transport: Transport; endpoint: string }> =>
+  role === "worker" ? createWorkerTransport(env) : createOrchestratorTransport(env);
 
 /**
  * What `await import()` is actually given for {@link HARNESS_MODULE_ENV}.
@@ -140,25 +197,28 @@ const createHarness = async (env: Env): Promise<Harness> => {
  * worker runs the build the orchestrator is running — a half-upgraded install
  * where the two disagree is a very confusing afternoon.
  *
- * What is passed through, and nothing else: the identity, and how to reach the
- * control plane. The worker finds its own credentials the same way this process
- * did, because it runs as the same operating-system user — which is the
- * non-guarantee D-P3-01 states plainly rather than pretending otherwise.
+ * What is passed through, and nothing else: the identity, its token, and where
+ * the control plane is (P4, T4, §4.5).
+ *
+ * **`NIGHTSHIFT_CONFIG_DIR` is deliberately absent**, and so is
+ * `NIGHTSHIFT_API_TOKEN`. Before P4 a worker inherited the config directory and
+ * found the operator's refresh token in it, because it runs as the same
+ * operating-system user — the non-guarantee D-P3-01 stated plainly. It now
+ * carries a credential that can do exactly its four operations on its own node
+ * and nothing that could yield a human's.
+ *
+ * The endpoint is written explicitly rather than passed through, because the
+ * orchestrator may have learned it from a profile the worker will never read.
  */
-const createWorkerLaunch =
-  (env: Env) =>
+export const createWorkerLaunch =
+  (env: Env, endpoint: string) =>
   (identity: WorkerLaunchIdentity): McpLaunch => {
     const binary = fileURLToPath(new URL("./bin/nightshift-mcp.js", import.meta.url));
-    const passThrough: Record<string, string> = {};
-    for (const name of [
-      API_ENDPOINT_ENV,
-      API_TOKEN_ENV,
-      "NIGHTSHIFT_CONFIG_DIR",
-      "NIGHTSHIFT_STATE_DIR",
-    ]) {
-      const value = env[name];
-      if (value !== undefined && value !== "") passThrough[name] = value;
-    }
+    const passThrough: Record<string, string> = { [API_ENDPOINT_ENV]: endpoint };
+    // The state directory only: worktrees, spool and transcripts. Nothing here
+    // names a credential.
+    const stateDir = env.NIGHTSHIFT_STATE_DIR;
+    if (stateDir !== undefined && stateDir !== "") passThrough.NIGHTSHIFT_STATE_DIR = stateDir;
     return {
       name: "nightshift",
       command: process.execPath,
@@ -167,18 +227,26 @@ const createWorkerLaunch =
     };
   };
 
-export const createRuntime = async (env: Env): Promise<Runtime> => {
-  const { transport, endpoint } = await createTransport(env);
+/**
+ * The worker launch builder, exported so its **absences** can be asserted
+ * directly (T4 deliverable 3). What a worker is not given is the security
+ * property, and it is cheaper to check here than by inspecting a live process.
+ */
+export const createWorkerLaunchForTest = createWorkerLaunch;
+
+export const createRuntime = async (env: Env, role: Role = "orchestrator"): Promise<Runtime> => {
+  const { transport, endpoint } = await createTransport(env, role);
   return {
     transport,
     endpoint,
     stores: createHttpStores({ transport }),
     bodies: createHttpArtifactBodyStore({ transport }),
+    tokens: createHttpExecutionTokenMinter({ transport }),
     harness: await createHarness(env),
     paths: createLocalPaths({ env }),
     git: nodeGitRunner,
     ids: createUlidIdGenerator(),
     clock: systemClock,
-    workerLaunch: createWorkerLaunch(env),
+    workerLaunch: createWorkerLaunch(env, endpoint),
   };
 };

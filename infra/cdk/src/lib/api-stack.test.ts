@@ -1,7 +1,12 @@
 import { App, Token } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { NightshiftApiStack, STREAM_BATCH_SIZE, STREAM_RETRY_ATTEMPTS } from "./api-stack.js";
+import {
+  AUTHORIZER_CACHE_TTL,
+  NightshiftApiStack,
+  STREAM_BATCH_SIZE,
+  STREAM_RETRY_ATTEMPTS,
+} from "./api-stack.js";
 import { DATA_EXPORT_KEYS, dataExportName } from "./data-exports.js";
 import { NightshiftDataStack } from "./data-stack.js";
 import { NightshiftDnsStack } from "./dns-stack.js";
@@ -23,6 +28,17 @@ type Resource = { Type: string; Properties?: Record<string, unknown> };
 
 const resourcesOf = (template: Template, type: string): Resource[] =>
   Object.values(template.findResources(type)) as Resource[];
+
+/** The one resource of `type` whose logical id starts with `prefix`. */
+const resourceNamed = (template: Template, type: string, prefix: string): Resource => {
+  const found = Object.entries(template.findResources(type)).filter(([id]) =>
+    id.startsWith(prefix),
+  );
+  if (found.length !== 1) {
+    throw new Error(`expected exactly one ${type} named ${prefix}*, found ${found.length}`);
+  }
+  return found[0]?.[1] as Resource;
+};
 
 /** Every string anywhere inside a CloudFormation value, intrinsics included. */
 const stringsIn = (value: unknown): string[] => {
@@ -169,34 +185,76 @@ describe("NightshiftApiStack", () => {
     });
   });
 
-  describe("authentication (A-19)", () => {
-    it("binds every route to the Cognito JWT authorizer, leaving none anonymous", () => {
+  describe("authentication (A-19 as amended, A-36)", () => {
+    /** The P2 assertion, retargeted (T3 deliverable 2). */
+    it("binds every route to the Nightshift authorizer, leaving none anonymous", () => {
       const { template } = synth();
       const routes = resourcesOf(template, "AWS::ApiGatewayV2::Route");
       expect(routes.length).toBeGreaterThan(0);
+
+      const authorizers = template.findResources("AWS::ApiGatewayV2::Authorizer");
+      expect(Object.keys(authorizers)).toHaveLength(1);
+      const [authorizerId] = Object.keys(authorizers) as [string];
+
       for (const route of routes) {
-        expect(route.Properties?.AuthorizationType).toBe("JWT");
-        expect(route.Properties?.AuthorizerId).toBeDefined();
+        expect(route.Properties?.AuthorizationType).toBe("CUSTOM");
+        // Bound to *this* authorizer, not merely to some authorizer.
+        expect(stringsIn(route.Properties?.AuthorizerId)).toContain(authorizerId);
       }
     });
 
-    it("trusts the user pool as issuer and both app clients as audience", () => {
+    it("is a request authorizer over the Authorization header, with a bounded cache", () => {
       const { template } = synth();
       template.hasResourceProperties("AWS::ApiGatewayV2::Authorizer", {
-        AuthorizerType: "JWT",
+        AuthorizerType: "REQUEST",
         IdentitySource: ["$request.header.Authorization"],
-        JwtConfiguration: {
-          Issuer: Match.anyValue(),
-          Audience: [
-            { "Fn::ImportValue": dataExportName("dev", "InteractiveClientId") },
-            { "Fn::ImportValue": dataExportName("dev", "MachineClientId") },
-          ],
-        },
+        EnableSimpleResponses: true,
+        AuthorizerResultTtlInSeconds: AUTHORIZER_CACHE_TTL.toSeconds(),
       });
-      const authorizer = resourcesOf(template, "AWS::ApiGatewayV2::Authorizer")[0];
-      const issuer = stringsIn(authorizer?.Properties?.JwtConfiguration);
+      // Set, and bounded: an unbounded cache would quietly extend every token's
+      // life past its expiry.
+      expect(AUTHORIZER_CACHE_TTL.toSeconds()).toBeGreaterThan(0);
+      expect(AUTHORIZER_CACHE_TTL.toSeconds()).toBeLessThanOrEqual(3600);
+    });
+
+    it("tells the authorizer the pool's issuer and both app clients", () => {
+      const { template } = synth();
+      const { Variables: variables } = property<{ Variables: Record<string, unknown> }>(
+        resourceNamed(template, "AWS::Lambda::Function", "AuthorizerFunction"),
+        "Environment",
+      );
+      const issuer = stringsIn(variables.NIGHTSHIFT_COGNITO_ISSUER);
       expect(issuer.some((part) => part.includes("cognito-idp."))).toBe(true);
       expect(issuer).toContain(dataExportName("dev", "UserPoolId"));
+
+      const audiences = stringsIn(variables.NIGHTSHIFT_COGNITO_AUDIENCES);
+      expect(audiences).toContain(dataExportName("dev", "InteractiveClientId"));
+      expect(audiences).toContain(dataExportName("dev", "MachineClientId"));
+      expect(audiences).toContain(dataExportName("dev", "TestPrincipalClientId"));
+    });
+
+    /**
+     * Every app client the data stack exports, with none left out.
+     *
+     * A client the authorizer does not list is refused with a bare gateway 403
+     * and no body — a failure that looks like an authorisation bug rather than a
+     * configuration one. That is exactly how `TestPrincipalClient` failed its
+     * first live run, so the assertion is on the whole set rather than on
+     * membership of it.
+     */
+    it("accepts every app client the data stack exports, and no others", () => {
+      const { template } = synth();
+      const { Variables: variables } = property<{ Variables: Record<string, unknown> }>(
+        resourceNamed(template, "AWS::Lambda::Function", "AuthorizerFunction"),
+        "Environment",
+      );
+      const listed = stringsIn(variables.NIGHTSHIFT_COGNITO_AUDIENCES).filter((value) =>
+        value.startsWith("nightshift-dev-data-"),
+      );
+      const clientExports = DATA_EXPORT_KEYS.filter((key) => key.endsWith("ClientId")).map((key) =>
+        dataExportName("dev", key),
+      );
+      expect(new Set(listed)).toEqual(new Set(clientExports));
     });
 
     it("serves the $default stage, so the handler sees unprefixed paths", () => {
@@ -260,12 +318,19 @@ describe("NightshiftApiStack", () => {
     /**
      * The whole set, not a containment. P2 granted DynamoDB gets, puts and
      * queries and no more; P3 adds `s3:PutObject` for signing the artifact
-     * upload (T2) and nothing else. An action added without a decision fails
-     * here, which is the point of asserting the set.
+     * upload (T2) and nothing else; P4 adds `kms:Sign` for minting execution
+     * tokens (T2, D-P4-03). An action added without a decision fails here, which
+     * is the point of asserting the set.
      */
-    it("gives the API function exactly the actions its adapters and the signer use", () => {
+    it("gives the API function exactly the actions its adapters and the signers use", () => {
       expect(dataActionsOf(synth().template, "ApiFunctionRole")).toEqual(
-        new Set(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "s3:PutObject"]),
+        new Set([
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "s3:PutObject",
+          "kms:Sign",
+        ]),
       );
     });
 
@@ -310,12 +375,49 @@ describe("NightshiftApiStack", () => {
       expect(resources).toContain("BucketArn");
       expect(resources).toContain("/*");
     });
+
+    /**
+     * The function signs execution tokens and does nothing else with any key
+     * (T2 deliverable 2). `kms:Decrypt`, `kms:GenerateDataKey` or a wildcard
+     * resource here would each turn one signing key into general KMS access.
+     */
+    it("grants exactly kms:Sign, on the execution-token key and nothing else", () => {
+      expect(dataActionsOf(synth().template, "ApiFunctionRole")).toContain("kms:Sign");
+      const signing = statementsOf(synth().template).filter(
+        (statement) => actionsOf(statement).length === 1 && actionsOf(statement)[0] === "kms:Sign",
+      );
+      expect(signing).toHaveLength(1);
+
+      const resources = JSON.stringify(signing[0]?.Resource);
+      expect(resources).toContain(dataExportName("dev", "ExecutionTokenKeyArn"));
+      expect(resources).not.toContain("*");
+    });
+
+    /**
+     * The authorizer's whole world is two public keys. Anything else in its IAM
+     * — the table, the bucket, `kms:Sign` — would mean it could do something
+     * other than check a signature.
+     */
+    it("gives the authorizer kms:GetPublicKey and nothing else", () => {
+      expect(dataActionsOf(synth().template, "AuthorizerFunctionRole")).toEqual(
+        new Set(["kms:GetPublicKey"]),
+      );
+    });
+
+    it("grants no KMS action beyond signing and reading the public key", () => {
+      const kmsActions = new Set(
+        statementsOf(synth().template)
+          .flatMap(actionsOf)
+          .filter((action) => action.startsWith("kms:")),
+      );
+      expect(kmsActions).toEqual(new Set(["kms:Sign", "kms:GetPublicKey"]));
+    });
   });
 
   describe("functions", () => {
     it("runs every function on Node 22, arm64", () => {
       const functions = resourcesOf(synth().template, "AWS::Lambda::Function");
-      expect(functions).toHaveLength(2);
+      expect(functions).toHaveLength(3);
       for (const fn of functions) {
         expect(fn.Properties?.Runtime).toBe("nodejs22.x");
         expect(fn.Properties?.Architectures).toEqual(["arm64"]);
@@ -323,26 +425,47 @@ describe("NightshiftApiStack", () => {
     });
 
     it("configures functions with table, bucket, stage and source maps, and nothing secret", () => {
-      for (const fn of resourcesOf(synth().template, "AWS::Lambda::Function")) {
-        const { Variables: variables } = property<{ Variables: Record<string, unknown> }>(
-          fn,
+      const common = [
+        "NIGHTSHIFT_BUCKET_NAME",
+        "NIGHTSHIFT_STAGE",
+        "NIGHTSHIFT_TABLE_NAME",
+        "NODE_OPTIONS",
+      ];
+      // The API function alone mints execution tokens (P4, T2), so it alone
+      // carries the key id and the issuer. Neither is a secret: the key id names
+      // a key whose private half never leaves KMS, and the issuer is a public
+      // hostname. The materializer gets neither, because it signs nothing.
+      const apiOnly = ["NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID", "NIGHTSHIFT_TOKEN_ISSUER"];
+      const { template } = synth();
+
+      const api = property<{ Variables: Record<string, unknown> }>(
+        resourceNamed(template, "AWS::Lambda::Function", "ApiFunction"),
+        "Environment",
+      );
+      expect(Object.keys(api.Variables).sort()).toEqual([...common, ...apiOnly].sort());
+
+      const materializer = property<{ Variables: Record<string, unknown> }>(
+        resourceNamed(template, "AWS::Lambda::Function", "MaterializerFunction"),
+        "Environment",
+      );
+      expect(Object.keys(materializer.Variables).sort()).toEqual(common.sort());
+    });
+
+    it("names the issuer from the one hostname rule, per stage (D-P3-18, T2)", () => {
+      for (const stage of ["dev", "staging"]) {
+        const { template } = synth(stage);
+        const { Variables: variables } = property<{ Variables: Record<string, string> }>(
+          resourceNamed(template, "AWS::Lambda::Function", "ApiFunction"),
           "Environment",
         );
-        expect(Object.keys(variables).sort()).toEqual(
-          [
-            "NIGHTSHIFT_BUCKET_NAME",
-            "NIGHTSHIFT_STAGE",
-            "NIGHTSHIFT_TABLE_NAME",
-            "NODE_OPTIONS",
-          ].sort(),
-        );
+        expect(variables.NIGHTSHIFT_TOKEN_ISSUER).toBe(`https://${apiHostnameFor(stage)}`);
       }
     });
 
     it("logs to explicit groups with 30-day retention (D-P2-10)", () => {
       const { template } = synth();
       const groups = template.findResources("AWS::Logs::LogGroup");
-      expect(Object.keys(groups)).toHaveLength(2);
+      expect(Object.keys(groups)).toHaveLength(3);
       for (const group of Object.values(groups) as Resource[]) {
         expect(group.Properties?.RetentionInDays).toBe(30);
       }

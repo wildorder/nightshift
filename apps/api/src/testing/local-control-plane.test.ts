@@ -1,7 +1,7 @@
 /**
  * The local control plane (T2 deliverable 5).
  *
- * These tests are about the *fake* half — the injected claims and the in-memory
+ * These tests are about the *fake* half — the injected principal and the in-memory
  * object store — because the real half is the production handler and every other
  * suite in this package already proves it. What matters here is that the fake is
  * faithful: an upload that lies about its type or its size is refused, exactly as
@@ -25,7 +25,6 @@ import {
 } from "@nightshift/core";
 import { createInMemoryStores } from "@nightshift/persistence/memory";
 import { afterEach, describe, expect, it } from "vitest";
-import { ACTIVE_ORG_CLAIM } from "../auth/acting-org.js";
 import { type LocalControlPlane, startLocalControlPlane } from "./local-control-plane.js";
 
 const NOW = "2026-09-15T12:00:00.000Z";
@@ -45,7 +44,7 @@ const start = async () => {
   await stores.memberships.put(makeMembership(subject, orgId));
   plane = await startLocalControlPlane({
     stores,
-    claims: { sub: subject, [ACTIVE_ORG_CLAIM]: orgId },
+    principal: { kind: "user", userId: subject, activeOrg: orgId },
     clock: createFixedClock(Date.parse(NOW)),
   });
   return { plane, stores, f, orgId };
@@ -110,7 +109,7 @@ describe("the local control plane", () => {
     ).toBe(400);
   });
 
-  it("injects the configured claims, so org resolution behaves as it would in AWS", async () => {
+  it("injects the configured principal, so org resolution behaves as it would in AWS", async () => {
     const { plane: local, f } = await start();
     const { orgId: _orgId, ...projectBody } = makeProject(f);
     expect(

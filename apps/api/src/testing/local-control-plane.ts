@@ -13,11 +13,17 @@
  *
  * ## What is faked, and how faithfully
  *
- * - **Authentication.** The `Authorization` header is ignored and the claims
- *   passed to the factory are injected verbatim. API Gateway's Cognito authorizer
- *   does the real thing in AWS (A-19); a second implementation here would be a
- *   second place for authentication to be subtly wrong. The smoke suite is where
- *   the real authorizer is proved.
+ * - **Authentication.** No signature is checked. The principal passed to the
+ *   factory is injected verbatim, and a request may name a different one with a
+ *   `Bearer test-principal.<base64url JSON>` token, which is how a suite switches
+ *   caller mid-test (T3 deliverable 6). Nightshift's authorizer does the real
+ *   thing in AWS (A-36); a second implementation here would be a second place for
+ *   authentication to be subtly wrong, and the smoke suite is where the real
+ *   authorizer is proved.
+ *
+ *   What is *not* faked is **authorisation**: `enforce` runs here exactly as it
+ *   does in the Lambda, so the offline two-principal matrix exercises the real
+ *   org check and the real §4.4 table.
  * - **Object storage.** Presigned uploads are signed to this server's own
  *   loopback address and the bytes are held in memory. The enforcement S3 applies
  *   is applied here too, and it is exactly the same set: an unknown or expired
@@ -32,22 +38,113 @@
  * Never bundled into the Lambda and never deployed: the function entry point does
  * not import this module, so esbuild never reaches it.
  */
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign as signWith } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { PrincipalSchema } from "@nightshift/contracts";
 import type { ArtifactUploadSigner, Clock, NightshiftStores } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
+import type { RequestPrincipal } from "../auth/principal.js";
+import { UserTokenLikeSchema } from "../auth/principal.js";
 import { handleRequest } from "../handler.js";
 import type { ApiDeps, ApiRequest } from "../http.js";
+import { splitToken } from "../tokens/jwt.js";
+import { verifyExecutionToken } from "../tokens/verify.js";
 
 /** The bucket name the local plane pretends to hold objects in. */
 export const LOCAL_BUCKET = "nightshift-local";
+
+/** The issuer local execution tokens carry. Never a real stage's. */
+export const LOCAL_TOKEN_ISSUER = "https://api.local.nightshift.invalid";
+
+/**
+ * One RSA key pair per process, standing in for KMS (P4, T4).
+ *
+ * Generated once at module load rather than per plane: key generation costs
+ * a beat, and a suite that starts several planes should not pay it several
+ * times. Nothing here is a secret — the module never leaves a test run, and the
+ * Lambda's entry point does not import it, so esbuild never reaches it.
+ *
+ * Its presence is what lets the offline slice be a real proof of D-P4-06: the
+ * worker mints through the **real** route, holds a **real** JWT, and this plane
+ * verifies it with the **real** verifier. Only KMS itself is stood in for.
+ */
+const localKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 /** Where a signed upload lands. Not a Nightshift route: only this server serves it. */
 const UPLOAD_PATH_PREFIX = "/__local-upload/";
 
 /** How long a local signature claims to last. Matches the AWS signer's fifteen minutes. */
 const UPLOAD_TTL_SECONDS = 15 * 60;
+
+/**
+ * The bearer-token prefix a suite uses to act as somebody else (T3 deliverable 6).
+ *
+ * Named so it could never be mistaken for a real credential, and readable only
+ * by this module — which is never bundled into the Lambda, because the function
+ * entry point does not import it.
+ */
+export const TEST_PRINCIPAL_PREFIX = "test-principal.";
+
+/** A principal a suite can hand to `staticTokenProvider`, so the http adapter carries it. */
+export const encodeTestPrincipal = (principal: RequestPrincipal): string =>
+  TEST_PRINCIPAL_PREFIX + Buffer.from(JSON.stringify(principal), "utf8").toString("base64url");
+
+const parseTestPrincipal = (encoded: string): RequestPrincipal | undefined => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    return undefined;
+  }
+  const execution = PrincipalSchema.safeParse(parsed);
+  if (execution.success && execution.data.kind === "execution") return execution.data;
+  const user = UserTokenLikeSchema.safeParse(parsed);
+  if (!user.success) return undefined;
+  const { userId, activeOrg } = user.data;
+  return activeOrg === undefined ? { kind: "user", userId } : { kind: "user", userId, activeOrg };
+};
+
+/**
+ * The principal a request declared, `undefined` for "use the plane's default",
+ * or `"malformed"` for a token that could not be read — which is a 401, because
+ * a suite that meant to act as someone else and failed should see that rather
+ * than silently act as the operator.
+ *
+ * Two kinds of bearer are understood, mirroring the deployed authorizer: a
+ * `test-principal` token, which a suite writes to switch caller; and a real
+ * execution token signed by this process's key, which is what a worker actually
+ * holds. Anything else falls through to the plane's default, because API
+ * Gateway's authorizer is what validates a Cognito token and there is none here.
+ */
+const principalFromHeader = (
+  authorization: string | undefined,
+  now: number,
+): RequestPrincipal | undefined | "malformed" => {
+  const match = /^bearer\s+(\S+)$/i.exec((authorization ?? "").trim());
+  const token = match?.[1];
+  if (token === undefined) return undefined;
+
+  if (token.startsWith(TEST_PRINCIPAL_PREFIX)) {
+    return parseTestPrincipal(token.slice(TEST_PRINCIPAL_PREFIX.length)) ?? "malformed";
+  }
+
+  // Routed by `iss`, exactly as the deployed authorizer routes: a token this
+  // plane issued is verified for real, and a failure is then a refusal rather
+  // than a fall-through to the operator. Anything else — a Cognito ID token, for
+  // instance — is not this plane's to check, because API Gateway's authorizer is
+  // what validates one in AWS.
+  const parts = splitToken(token);
+  if (parts === undefined) return undefined;
+  if ((parts.payload as { iss?: unknown } | null)?.iss !== LOCAL_TOKEN_ISSUER) return undefined;
+
+  const verified = verifyExecutionToken(token, {
+    publicKey: localKeys.publicKey,
+    issuer: LOCAL_TOKEN_ISSUER,
+    now,
+  });
+  return verified.ok ? verified.principal : "malformed";
+};
 
 export interface LocalBody {
   readonly body: Uint8Array;
@@ -68,11 +165,12 @@ export interface LocalBodies {
 export interface LocalControlPlaneOptions {
   readonly stores: NightshiftStores;
   /**
-   * The claims every request is treated as carrying. Typically
-   * `{ sub, "custom:active_org" }` for the operator, so `resolveActingOrg`
-   * resolves exactly as it would against a real ID token.
+   * Who every request is treated as coming from, unless it names another
+   * principal with a `test-principal` bearer token. Typically the operator's
+   * user token, so `resolveActingOrg` resolves exactly as it would against a
+   * real ID token.
    */
-  readonly claims: Readonly<Record<string, unknown>>;
+  readonly principal: RequestPrincipal;
   readonly clock?: Clock;
   /** Loopback host. `127.0.0.1` by default, and there is no reason to change it. */
   readonly host?: string;
@@ -163,7 +261,21 @@ export const startLocalControlPlane = async (
     },
   };
 
-  const deps: ApiDeps = { stores: options.stores, clock, uploads };
+  /**
+   * The execution-token signer, wired the way the Lambda's is: through the
+   * `ExecutionTokenSigner` port, so `mintExecutionToken` runs here exactly as it
+   * runs in AWS. The private key is this process's, not KMS's, and that is the
+   * only difference.
+   */
+  const deps: ApiDeps = {
+    stores: options.stores,
+    clock,
+    uploads,
+    tokens: {
+      issuer: LOCAL_TOKEN_ISSUER,
+      signer: { sign: async (input) => signWith("sha256", input, localKeys.privateKey) },
+    },
+  };
 
   /** The object-store half: a `PUT` to a URL this server signed. */
   const handleUpload = async (
@@ -235,14 +347,23 @@ export const startLocalControlPlane = async (
       }
     }
 
+    const declared = principalFromHeader(request.headers.authorization, clock.now());
+    if (declared === "malformed") {
+      send(response, 401, {
+        error: { code: "unauthenticated", message: "the test principal is not readable" },
+      });
+      return;
+    }
+
     const apiRequest: ApiRequest = {
       method: request.method ?? "GET",
       path: url.pathname,
       query,
       body,
-      // The gateway validated a token before the handler ran, in AWS. Here the
-      // caller declares who it is, once, at startup.
-      claims: options.claims,
+      // Nightshift's authorizer validated a token before the handler ran, in
+      // AWS. Here the caller either declared one per request or takes the one
+      // this plane was started with.
+      principal: declared ?? options.principal,
     };
     const result = await handleRequest(deps, apiRequest);
     send(response, result.status, result.body);

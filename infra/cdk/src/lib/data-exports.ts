@@ -22,6 +22,14 @@ export const DATA_EXPORT_KEYS = [
   // operator bootstrap needs the sign-in URL that goes in the invite template.
   "AuthDomain",
   "HostedSignInUrl",
+  // P4 (T2): the asymmetric key that signs execution tokens. The API function
+  // signs with it, the authorizer reads its public half, and the smoke suite
+  // verifies a minted token against it.
+  "ExecutionTokenKeyId",
+  "ExecutionTokenKeyArn",
+  // P4 (T5, D-P4-07): the smoke suite's second principal, so the deployed
+  // isolation matrix has two callers in two organisations.
+  "TestPrincipalClientId",
 ] as const;
 export type DataExportKey = (typeof DATA_EXPORT_KEYS)[number];
 export const dataExportName = (stage: string, key: DataExportKey): string =>

@@ -137,7 +137,7 @@ export const createLocalContext = async (): Promise<SliceContext> => {
   const clock = createSteppingClock(Date.parse("2026-09-15T12:00:00.000Z"), 1_000);
   const plane: LocalControlPlane = await startLocalControlPlane({
     stores: backing,
-    claims: { sub: subject, "custom:active_org": orgId },
+    principal: { kind: "user", userId: subject as never, activeOrg: orgId },
     clock,
   });
 

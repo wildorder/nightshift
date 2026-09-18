@@ -292,18 +292,34 @@ afterAll(async () => {
 });
 
 // --- Phase 1 ----------------------------------------------------------------------------
+/**
+ * The two codes the gateway answers with, and why they differ (P4).
+ *
+ * With the JWT authorizer both cases were 401. Nightshift's Lambda authorizer
+ * (D-P4-04) is a **request** authorizer, and API Gateway distinguishes: a
+ * request missing the identity source never reaches the function and is 401; a
+ * function that answers `isAuthorized: false` is 403. Both are the gateway
+ * refusing before the handler runs, which is what SC-P2-07 and SC-P4-05 claim —
+ * only the status code moved, and it is the gateway's to choose.
+ */
+const NO_IDENTITY_SOURCE = 401;
+const AUTHORIZER_DENIED = 403;
+
 describe("phase 1: reachability and auth (SC-P2-07)", () => {
   it("rejects a request with no token at the gateway", async () => {
-    expectStatus(await api.withAuthorization(undefined, "GET", "/projects"), 401);
+    expectStatus(await api.withAuthorization(undefined, "GET", "/projects"), NO_IDENTITY_SOURCE);
   });
 
   it("rejects a malformed token", async () => {
-    expectStatus(await api.withAuthorization("Bearer not-a-jwt", "GET", "/projects"), 401);
+    expectStatus(
+      await api.withAuthorization("Bearer not-a-jwt", "GET", "/projects"),
+      AUTHORIZER_DENIED,
+    );
   });
 
   it("rejects a well-formed token that expired and was signed by nothing", async () => {
     const forged = `Bearer ${forgedExpiredToken(context)}`;
-    expectStatus(await api.withAuthorization(forged, "GET", "/projects"), 401);
+    expectStatus(await api.withAuthorization(forged, "GET", "/projects"), AUTHORIZER_DENIED);
   });
 
   it("accepts a valid machine token and resolves its org", async () => {
@@ -323,7 +339,10 @@ describe("phase 1: reachability and auth (SC-P2-07)", () => {
     async () => {
       if (customEndpoint === undefined) throw new Error("unreachable: skipped above");
       const stable = smokeApiClient(customEndpoint, token);
-      expectStatus(await stable.withAuthorization(undefined, "GET", "/projects"), 401);
+      expectStatus(
+        await stable.withAuthorization(undefined, "GET", "/projects"),
+        NO_IDENTITY_SOURCE,
+      );
       const result = await stable.get("/projects");
       expectStatus(result, 200);
       expect(ProjectPageSchema.parse(result.body).items).toEqual([]);

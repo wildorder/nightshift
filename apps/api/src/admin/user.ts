@@ -3,6 +3,12 @@
  *
  *   AWS_PROFILE=nightshift npm run admin:user -- --email you@example.com
  *   AWS_PROFILE=nightshift npm run admin:user -- --email you@example.com --org org_…
+ *   AWS_PROFILE=nightshift npm run admin:user -- --email them@example.com --org new
+ *
+ * `--org new` is how the operator creates a **second human in a second
+ * organisation** (P4, T5): the point of P4 is that such a user can see nothing
+ * of the first one's, and the way to test that is to have one. The org actually
+ * used is printed on the last line either way.
  *
  * Creates, or adopts, the Cognito user a human signs in as, and writes the
  * `User` and `Membership` rows the API's org resolution needs. Opt-in, from a
@@ -52,9 +58,12 @@ const ENTER = ["\r", "\n"];
 const CANCEL = [String.fromCharCode(3), String.fromCharCode(4)];
 const BACKSPACE = [String.fromCharCode(127), "\b"];
 
+/** `new` mints a fresh organisation; an identifier names an existing one. */
+export type OrgRequest = OrgId | "new";
+
 export interface AdminUserOptions {
   readonly email: string;
-  readonly org?: OrgId;
+  readonly org?: OrgRequest;
   readonly stage?: string;
 }
 
@@ -202,7 +211,10 @@ export const runAdminUser = async (options: AdminUserOptions): Promise<void> => 
     say(`the User row already exists (created ${storedUser.createdAt}); left as it is`);
   }
 
-  await ensureMembership(stores, userId, now, options.org);
+  const orgId = await ensureMembership(stores, userId, now, options.org);
+  // One uniform last line, whichever branch ran: an operator scripting against
+  // this should not have to parse which of four sentences it got.
+  say(`acting org: ${orgId}`);
 };
 
 /**
@@ -217,28 +229,43 @@ const ensureMembership = async (
   stores: ReturnType<typeof createAwsStores>,
   userId: UserId,
   now: string,
-  requested: OrgId | undefined,
-): Promise<void> => {
+  requested: OrgRequest | undefined,
+): Promise<OrgId> => {
   const heldOrgs = (await stores.memberships.listByUser(userId)).map(
     (membership) => membership.orgId,
   );
 
+  const refuseSecond = (adding: string): never => {
+    throw new Error(
+      `this user already belongs to ${heldOrgs.join(", ")}. Adding ${adding} would leave ` +
+        "it in several organisations, and the control plane cannot pick one without an " +
+        "explicit custom:active_org claim. Remove the other membership first if that is " +
+        "what you mean.",
+    );
+  };
+
+  const mint = async (): Promise<OrgId> => {
+    const orgId = createUlidIdGenerator().next("org");
+    await stores.memberships.put({ schemaVersion: 1, userId, orgId, createdAt: now });
+    say(`minted a new organisation and wrote the Membership: ${orgId}`);
+    say(`record this org id; every project this user creates belongs to it: ${orgId}`);
+    return orgId;
+  };
+
+  if (requested === "new") {
+    if (heldOrgs.length > 0) refuseSecond("a new organisation");
+    return mint();
+  }
+
   if (requested !== undefined) {
     if (heldOrgs.includes(requested)) {
       say(`the Membership in ${requested} already exists; left as it is`);
-      return;
+      return requested;
     }
-    if (heldOrgs.length > 0) {
-      throw new Error(
-        `this user already belongs to ${heldOrgs.join(", ")}. Adding ${requested} would leave ` +
-          "it in several organisations, and the control plane cannot pick one without an " +
-          "explicit custom:active_org claim. Remove the other membership first if that is " +
-          "what you mean.",
-      );
-    }
+    if (heldOrgs.length > 0) refuseSecond(requested);
     await stores.memberships.put({ schemaVersion: 1, userId, orgId: requested, createdAt: now });
     say(`wrote the Membership in ${requested}`);
-    return;
+    return requested;
   }
 
   if (heldOrgs.length > 1) {
@@ -250,14 +277,14 @@ const ensureMembership = async (
   const onlyOrg = heldOrgs[0];
   if (onlyOrg !== undefined) {
     say(`the Membership in ${onlyOrg} already exists; left as it is`);
-    return;
+    return onlyOrg;
   }
-
-  const orgId = createUlidIdGenerator().next("org");
-  await stores.memberships.put({ schemaVersion: 1, userId, orgId, createdAt: now });
-  say(`minted a new organisation and wrote the Membership: ${orgId}`);
-  say(`record this org id; every project this user creates belongs to it: ${orgId}`);
+  return mint();
 };
+
+/** `--org` is either `new` or an organisation identifier; anything else is a typo. */
+export const parseOrgRequest = (value: string): OrgRequest =>
+  value === "new" ? "new" : OrgIdSchema.parse(value);
 
 export const main = async (argv: readonly string[]): Promise<void> => {
   const { values } = parseArgs({
@@ -270,11 +297,11 @@ export const main = async (argv: readonly string[]): Promise<void> => {
     strict: true,
   });
   if (values.email === undefined || values.email === "") {
-    throw new Error("usage: npm run admin:user -- --email <email> [--org org_…] [--stage dev]");
+    throw new Error("usage: npm run admin:user -- --email <email> [--org org_…|new] [--stage dev]");
   }
   await runAdminUser({
     email: values.email,
-    ...(values.org === undefined ? {} : { org: OrgIdSchema.parse(values.org) }),
+    ...(values.org === undefined ? {} : { org: parseOrgRequest(values.org) }),
     ...(values.stage === undefined ? {} : { stage: values.stage }),
   });
 };

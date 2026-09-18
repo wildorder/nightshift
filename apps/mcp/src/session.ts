@@ -72,6 +72,7 @@ export interface OrchestratorSession {
 const buildEnvironment = (runtime: Runtime, outbox: EventOutbox): ExecutionEnvironment => ({
   stores: runtime.stores,
   bodies: runtime.bodies,
+  tokens: runtime.tokens,
   harness: runtime.harness,
   clock: runtime.clock,
   ids: runtime.ids,

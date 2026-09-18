@@ -19,6 +19,7 @@ import type {
 import type {
   ArtifactBodyStore,
   Clock,
+  ExecutionTokenMinter,
   IdGenerator,
   LocalPaths,
   ProjectStores,
@@ -31,6 +32,11 @@ import type { EventOutbox } from "./outbox.js";
 export interface ExecutionEnvironment {
   readonly stores: ProjectStores;
   readonly bodies: ArtifactBodyStore;
+  /**
+   * Mints a worker's execution token when its agent is created (D-P4-06). Called
+   * with the orchestrator's own session, because minting is a user operation.
+   */
+  readonly tokens: ExecutionTokenMinter;
   readonly harness: Harness;
   readonly clock: Clock;
   readonly ids: IdGenerator;

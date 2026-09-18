@@ -11,6 +11,7 @@ export * from "./execution-node.js";
 export * from "./identity-registry.js";
 export * from "./job-contract.js";
 export * from "./membership.js";
+export * from "./principal.js";
 export * from "./program-contract.js";
 export * from "./project.js";
 export * from "./registry.js";

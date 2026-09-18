@@ -344,4 +344,57 @@ describe(`the deployed slice, with the ${harness} harness`, () => {
     const sequences = events.map((event) => event.sequence);
     expect(sequences).toEqual(sequences.map((_, index) => index));
   });
+
+  /**
+   * The worker wrote as itself, on its own execution token (P4, T6; SC-P4-11).
+   *
+   * Two halves, and the second is the one that matters.
+   *
+   * The record half: `node.implemented` carries `source: "mcp"` — the worker
+   * chose to say it — and names the worker's own agent and node. An event's
+   * `agentId` is written by whoever appends it, so on its own this says the
+   * worker reported; it does not say what credential it held.
+   *
+   * The structural half: it could not have held anything else. A worker-role
+   * server builds its transport in `createWorkerTransport`, which has no
+   * fallback — no profile, no credentials file, no `??` — and throws
+   * `MissingExecutionTokenError` without a token. So a worker that reached the
+   * control plane at all had a valid execution token, and its environment
+   * carries no `NIGHTSHIFT_CONFIG_DIR` and no `NIGHTSHIFT_API_TOKEN` to have
+   * used instead (`apps/mcp/src/compose.test.ts` asserts those absences; this
+   * run proves the path works end to end against the deployed authorizer).
+   */
+  it("was reported by the worker's own agent, which held only an execution token", async () => {
+    const scope = runScopes[0];
+    expect(scope, "the first test must have run").toBeDefined();
+    if (scope === undefined) return;
+
+    const events = (await stores.events.listByRun(scope)).items;
+    const implemented = events.find((event) => event.type === "node.implemented");
+    expect(implemented, "the worker must have reported completion").toBeDefined();
+    if (implemented === undefined) return;
+
+    expect(implemented.source).toBe("mcp");
+    expect(implemented.agentId).toBeDefined();
+    expect(implemented.executionNodeId).toBeDefined();
+
+    // The agent it names is a worker, on the node it names, in this run.
+    const agent = await stores.agents.get(
+      scope,
+      implemented.agentId as NonNullable<typeof implemented.agentId>,
+    );
+    expect(agent, "the reporting agent must be a stored execution identity (A-04)").toBeDefined();
+    expect(agent?.role).toBe("worker");
+    expect(agent?.executionNodeId).toBe(implemented.executionNodeId);
+
+    // And the orchestrator is a different agent entirely: the worker did not
+    // report as the human's proxy.
+    const orchestrators = events.filter(
+      (event) => event.type === "run.started" && event.agentId !== undefined,
+    );
+    for (const event of orchestrators) {
+      expect(event.agentId).not.toBe(implemented.agentId);
+    }
+    say(`worker agent ${String(implemented.agentId)} reported node.implemented as source=mcp`);
+  });
 });
