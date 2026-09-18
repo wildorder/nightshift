@@ -98,7 +98,7 @@ const signIn = async (): Promise<Operator> => {
 
   plane = await startLocalControlPlane({
     stores: backing,
-    claims: { sub: SUBJECT, "custom:active_org": orgId },
+    principal: { kind: "user", userId: SUBJECT as never, activeOrg: orgId },
     clock,
   });
 
@@ -226,7 +226,7 @@ describe("nightshift whoami, against the real handler", () => {
     const stranger = "99999999-8888-7777-6666-555555555555";
     plane = await startLocalControlPlane({
       stores: createInMemoryStores({ deferSequencing: true }),
-      claims: { sub: stranger },
+      principal: { kind: "user", userId: stranger as never },
     });
     const { operator: op } = here();
     await writeProfile(

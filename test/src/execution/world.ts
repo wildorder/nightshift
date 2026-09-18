@@ -206,7 +206,7 @@ export const createBaseWorld = async (options: BaseWorldOptions = {}): Promise<B
   const clock = createSteppingClock(START_MS, 1_000);
   const plane = await startLocalControlPlane({
     stores: backing,
-    claims: { sub: subject, "custom:active_org": orgId },
+    principal: { kind: "user", userId: subject as never, activeOrg: orgId },
     clock,
   });
   const transport = createFetchTransport({

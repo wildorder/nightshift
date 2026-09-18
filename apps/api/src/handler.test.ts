@@ -26,6 +26,7 @@ import {
   type InMemoryStores,
 } from "@nightshift/persistence/memory";
 import { describe, expect, it, vi } from "vitest";
+import type { RequestPrincipal } from "./auth/principal.js";
 import { handleRequest } from "./handler.js";
 import type { ApiDeps, ApiResponse } from "./http.js";
 
@@ -39,7 +40,7 @@ interface World {
   readonly a: Fixtures;
   readonly b: Fixtures;
   readonly orgId: OrgId;
-  readonly claims: Readonly<Record<string, unknown>>;
+  readonly principal: RequestPrincipal;
 }
 
 const setup = async (options: InMemoryOptions = {}): Promise<World> => {
@@ -73,7 +74,7 @@ const setup = async (options: InMemoryOptions = {}): Promise<World> => {
     a,
     b,
     orgId,
-    claims: { sub: subject },
+    principal: { kind: "user", userId: subject },
   };
 };
 
@@ -83,8 +84,8 @@ const call = (
   path: string,
   body?: unknown,
   query: Record<string, string> = {},
-  claims: Readonly<Record<string, unknown>> = w.claims,
-): Promise<ApiResponse> => handleRequest(w.deps, { method, path, query, body, claims });
+  principal: RequestPrincipal = w.principal,
+): Promise<ApiResponse> => handleRequest(w.deps, { method, path, query, body, principal });
 
 const paths = (f: Fixtures) => {
   const project = `/projects/${f.scope.projectId}`;
@@ -158,7 +159,13 @@ describe("routing", () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const response = await handleRequest(
       { ...w.deps, stores: failing },
-      { method: "GET", path: paths(w.a).project, query: {}, body: undefined, claims: w.claims },
+      {
+        method: "GET",
+        path: paths(w.a).project,
+        query: {},
+        body: undefined,
+        principal: w.principal,
+      },
     );
     spy.mockRestore();
     expect(response).toEqual({
@@ -218,10 +225,13 @@ describe("projects", () => {
       paths(w.a).project,
       projectBody(w.a),
       {},
-      { sub: intruder },
+      { kind: "user", userId: intruder },
     );
     expect(response.status).toBe(403);
-    expect(errorCode(response)).toBe("ownership_violation");
+    // P4 refuses this in `enforce`, before the project is read (D-P4-02), so the
+    // answer is `wrong_org` rather than the store-level `ownership_violation`
+    // P2 gave. The guard in `putProject` still stands behind it.
+    expect(errorCode(response)).toBe("wrong_org");
   });
 
   it("reads a project, and 404s one that does not exist", async () => {
@@ -267,7 +277,7 @@ describe("projects", () => {
 
   it("refuses org-requiring operations for a caller with no membership", async () => {
     const w = await setup();
-    const stranger = { sub: nextUserId(w.b) };
+    const stranger: RequestPrincipal = { kind: "user", userId: nextUserId(w.b) };
     const put = await call(w, "PUT", paths(w.a).project, projectBody(w.a), {}, stranger);
     expect(put.status).toBe(403);
     expect(errorCode(put)).toBe("no_membership");
@@ -1062,7 +1072,7 @@ describe("the presigned artifact upload (A-08)", () => {
       path: `${p.run}/artifacts/${w.a.ids.next("art")}/upload-url`,
       query: {},
       body: { kind: "other", contentType: "text/plain", sizeBytes: 1 },
-      claims: w.claims,
+      principal: w.principal,
     });
     expect(response.status).toBe(501);
     expect(errorCode(response)).toBe("uploads_unavailable");

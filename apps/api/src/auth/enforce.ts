@@ -1,0 +1,179 @@
+/**
+ * The one place a request's authorisation is decided (D-P4-02, D-P4-05, A-34).
+ *
+ * `handleRequest` calls this once, before it dispatches to any operation, and no
+ * operation checks anything itself. SC-P4-08 is the claim that this is the only
+ * caller of `authorize`, and it is kept true by there being exactly one call
+ * site in the repository.
+ *
+ * What happens here, in order:
+ *
+ * 1. The route names an `Operation`, and the path names as much of the ownership
+ *    chain as it carries.
+ * 2. For a **user token**, the acting org is resolved (D-P2-13) and the target
+ *    project's owning org is read through a per-instance cache. A mismatch is a
+ *    403 **before the operation runs**, so no record is read and no existence is
+ *    revealed.
+ * 3. For an **execution principal**, `authorize` in `core` decides against the
+ *    §4.4 table. No store is touched at all: an execution's reach is its own
+ *    chain, which is in its token.
+ *
+ * Nothing here verifies a token. The authorizer did that (A-36), and a signature
+ * check in this file would mean the design had drifted.
+ */
+import type { OrgId, Principal, ProjectId } from "@nightshift/contracts";
+import {
+  type AuthorizationTarget,
+  authorize,
+  type Clock,
+  type MembershipStore,
+  type Operation,
+  type ProjectStore,
+} from "@nightshift/core";
+import { HttpError } from "../http.js";
+import type { PathParams } from "../params.js";
+import { describeRefusal, resolveActingOrg } from "./acting-org.js";
+import { isUserToken, type RequestPrincipal } from "./principal.js";
+
+/**
+ * A project's owning organisation, cached per function instance.
+ *
+ * A project's org is immutable (P2: the stores refuse a move, and `putProject`
+ * answers 403 rather than rewriting one), so a cached entry can never become
+ * *wrong* — only old, and an old entry for an immutable value is the same value.
+ *
+ * **Misses are deliberately not cached.** Caching "no such project" would leave
+ * a window in which a project created in org A is invisible to this check, and
+ * every caller — including one in org B — would sail past `enforce` and have the
+ * operation read the record for them. A miss costs one read and then the
+ * operation reads anyway, so there is nothing to save and a boundary to lose.
+ */
+export interface ProjectOrgCache {
+  orgOf(projectId: ProjectId): Promise<OrgId | undefined>;
+}
+
+/**
+ * Minutes, not hours. Long enough that a burst of requests against one project
+ * is one read, short enough that replacing a project (which means deleting and
+ * recreating it, since its org cannot move) is not remembered for a working day.
+ */
+export const DEFAULT_PROJECT_ORG_TTL_MS = 5 * 60 * 1000;
+
+export interface ProjectOrgCacheOptions {
+  readonly projects: ProjectStore;
+  readonly clock: Clock;
+  readonly ttlMs?: number;
+}
+
+export const createProjectOrgCache = (options: ProjectOrgCacheOptions): ProjectOrgCache => {
+  const ttlMs = options.ttlMs ?? DEFAULT_PROJECT_ORG_TTL_MS;
+  const entries = new Map<ProjectId, { readonly orgId: OrgId; readonly expiresAt: number }>();
+
+  return {
+    async orgOf(projectId) {
+      const cached = entries.get(projectId);
+      if (cached !== undefined && cached.expiresAt > options.clock.now()) return cached.orgId;
+
+      const project = await options.projects.get(projectId);
+      if (project === undefined) {
+        // Not cached. See the note above: a cached miss is a hole, not a saving.
+        entries.delete(projectId);
+        return undefined;
+      }
+      entries.set(projectId, { orgId: project.orgId, expiresAt: options.clock.now() + ttlMs });
+      return project.orgId;
+    },
+  };
+};
+
+/**
+ * The ownership chain the request carries, read leniently: absent segments stay
+ * absent, and nothing is validated here — `authorize` compares strings, and the
+ * operation validates properly once it runs.
+ *
+ * ## Why the body is consulted for the node
+ *
+ * Two of the three writes an execution may make name their node in the **body**
+ * rather than the path: `POST …/runs/{runId}/events` and
+ * `PUT …/runs/{runId}/decisions/{decisionId}` both hang off the run, and the
+ * node they act on is a field of the record. Reading only the path would leave
+ * `nodeId` absent, and an `own_node` operation with no node is refused — so a
+ * worker could not report its own progress.
+ *
+ * The alternative was to let those two routes check the body themselves, which
+ * would put an authorisation decision outside this function and cost SC-P4-08
+ * its meaning. So the path wins where it names a node, and the body's
+ * `executionNodeId` fills in where it does not.
+ *
+ * This is not a time-of-check problem: the field read here is the same field the
+ * operation parses and stores, on the same object.
+ */
+export const targetFrom = (params: PathParams, body: unknown): AuthorizationTarget => {
+  const target: {
+    projectId?: string;
+    programId?: string;
+    runId?: string;
+    nodeId?: string;
+    agentId?: string;
+  } = {};
+  if (params.projectId !== undefined) target.projectId = params.projectId;
+  if (params.programId !== undefined) target.programId = params.programId;
+  if (params.runId !== undefined) target.runId = params.runId;
+  if (params.agentId !== undefined) target.agentId = params.agentId;
+
+  const fromBody =
+    body !== null && typeof body === "object"
+      ? (body as { executionNodeId?: unknown }).executionNodeId
+      : undefined;
+  const nodeId = params.nodeId ?? (typeof fromBody === "string" ? fromBody : undefined);
+  if (nodeId !== undefined) target.nodeId = nodeId;
+
+  return target as AuthorizationTarget;
+};
+
+export interface EnforceOptions {
+  readonly principal: RequestPrincipal;
+  readonly operation: Operation;
+  readonly params: PathParams;
+  /** The parsed request body, for the two routes that name their node in it. */
+  readonly body: unknown;
+  readonly memberships: MembershipStore;
+  readonly projectOrgs: ProjectOrgCache;
+}
+
+/**
+ * The complete principal the operation runs as.
+ *
+ * Returned rather than discarded because two operations need the acting org
+ * itself: `putProject` assigns it, and `listProjects` filters by it. Every other
+ * operation only needed the check, which has already happened by the time this
+ * returns.
+ */
+export const enforce = async (options: EnforceOptions): Promise<Principal> => {
+  const { principal, operation, params } = options;
+  const target = targetFrom(params, options.body);
+
+  if (!isUserToken(principal)) {
+    const decision = authorize(principal, operation, target);
+    if (!decision.allowed) throw new HttpError(403, decision.reason, decision.detail);
+    return principal;
+  }
+
+  const acting = await resolveActingOrg(principal, options.memberships);
+  if (!acting.ok) throw new HttpError(403, acting.reason, describeRefusal(acting.reason));
+  const user: Principal = { kind: "user", userId: acting.userId, orgId: acting.orgId };
+
+  // The project's owner, before anything reads the project itself. A path that
+  // names no project (`GET /projects`, `PUT /projects/{id}` for a project that
+  // does not exist yet) has no org to be wrong about, and `authorize` allows it:
+  // listing filters by the acting org and creation assigns it.
+  const projectId = target.projectId;
+  const owner = projectId === undefined ? undefined : await options.projectOrgs.orgOf(projectId);
+  const decision = authorize(
+    user,
+    operation,
+    owner === undefined ? target : { ...target, orgId: owner },
+  );
+  if (!decision.allowed) throw new HttpError(403, decision.reason, decision.detail);
+  return user;
+};

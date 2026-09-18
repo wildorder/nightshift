@@ -39,7 +39,13 @@ const setup = async (
   await stores.memberships.put(makeMembership(subject, orgId));
   const deps = { stores, clock: createFixedClock(Date.parse("2026-09-14T10:00:00.000Z")) };
   const call = (method: string, path: string, body?: unknown) =>
-    handleRequest(deps, { method, path, query: {}, body, claims: { sub: subject } });
+    handleRequest(deps, {
+      method,
+      path,
+      query: {},
+      body,
+      principal: { kind: "user", userId: subject },
+    });
 
   await stores.projects.put(makeProject(f, { orgId }));
   await stores.programContracts.put(makeProgramContract(f, { delegationLimits: limits }));

@@ -17,7 +17,6 @@ import {
   runEventFor,
   transitionRun,
 } from "@nightshift/core";
-import { describeRefusal, resolveActingOrg } from "../auth/acting-org.js";
 import { HttpError, parseBody, sameRecord } from "../http.js";
 import {
   assertChainMatches,
@@ -29,13 +28,27 @@ import {
 import type { Handler, RouteContext } from "../router.js";
 import { createOrConfirm, pageBody, requireProgram, requireProject, withCursor } from "./common.js";
 
-/** Only the two project operations resolve an org. See `auth/acting-org.ts` for why. */
-const actingOrg = async ({ deps, request }: RouteContext): Promise<OrgId> => {
-  const resolution = await resolveActingOrg(request.claims, deps.stores.memberships);
-  if (!resolution.ok) {
-    throw new HttpError(403, resolution.reason, describeRefusal(resolution.reason));
+/**
+ * The organisation the caller acts for, already resolved by `enforce`.
+ *
+ * Two operations need the org itself rather than just the check: creation
+ * assigns it and listing filters by it. Every other route only needed `enforce`
+ * to have allowed the request, which it has by the time any handler runs.
+ *
+ * An execution principal cannot reach either route — `project.put` and
+ * `project.list` are `forbidden` in the §4.4 table — so this is unreachable
+ * rather than merely unlikely. It refuses in words anyway, because "unreachable"
+ * is a property of a table that someone will edit one day.
+ */
+const actingOrg = ({ principal }: RouteContext): OrgId => {
+  if (principal.kind !== "user") {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "an execution token has no organisation to act for",
+    );
   }
-  return resolution.orgId;
+  return principal.orgId;
 };
 
 export const putProject: Handler = async (context) => {
@@ -43,12 +56,14 @@ export const putProject: Handler = async (context) => {
   const projectId = projectIdFrom(context.params);
   assertChainMatches({ projectId }, body);
 
-  const orgId = await actingOrg(context);
+  const orgId = actingOrg(context);
   const project = ProjectSchema.parse({ ...body, orgId });
   const { stores } = context.deps;
   const existing = await stores.projects.get(projectId);
-  // A project's org is immutable (the stores refuse it too). Checked before the
-  // retry comparison so the answer is 403, not a generic conflict.
+  // A project's org is immutable (the stores refuse it too). `enforce` has
+  // already refused a caller from another organisation, before this read; this
+  // stays as the store-level guard it always was, and as the answer if the
+  // cache above ever disagreed with the record.
   if (existing !== undefined && existing.orgId !== orgId) {
     throw new OwnershipViolationError("orgId", existing.orgId, orgId);
   }
@@ -62,7 +77,7 @@ export const getProject: Handler = async ({ deps, params }) => ({
 
 export const listProjects: Handler = async (context) => {
   const page = parsePageQuery(context.request.query);
-  const orgId = await actingOrg(context);
+  const orgId = actingOrg(context);
   const result = await withCursor(() => context.deps.stores.projects.listByOrg(orgId, page));
   return { status: 200, body: pageBody(result) };
 };

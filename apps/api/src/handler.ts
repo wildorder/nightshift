@@ -1,17 +1,23 @@
 /**
  * The control-plane API (T4): a pure function from request to response.
  *
- * There is no authentication here, by design. API Gateway's Cognito JWT
- * authorizer rejects a missing or bad token before this code runs (A-19), and a
- * second check here would be a second place for isolation to live. Project
- * isolation is enforced here, by taking the ownership chain from the path
- * (A-23).
+ * There is no authentication here, by design. Nightshift's Lambda authorizer
+ * validates the token and decides its kind before this code runs (A-19 as
+ * amended, A-36), and a second check here would be a second place for
+ * authentication to live.
+ *
+ * **Authorisation** is here, in exactly one place: `enforce` runs before every
+ * operation, comparing the caller's organisation against the target project's
+ * and an execution principal's reach against the table in `core` (D-P4-02,
+ * D-P4-05). The ownership chain still comes from the path (A-23); what P4 adds
+ * is that the chain now has to belong to the caller.
  *
  * The route table grew in P3 (D-P3-13) to cover every port method the local
  * machinery uses, plus a presigned artifact upload. Anything not listed is
  * surface area the smoke suite would have to cover, so it is not added
  * speculatively — and every route here is exercised by the smoke suite.
  */
+import { createProjectOrgCache, enforce } from "./auth/enforce.js";
 import { toErrorResponse } from "./errors.js";
 import { type ApiDeps, type ApiRequest, type ApiResponse, errorBody } from "./http.js";
 import { getAgent, listAgentsByNode, mintAgentToken, putAgent } from "./operations/agents.js";
@@ -62,75 +68,176 @@ const NODE = `${RUN}/nodes/{nodeId}`;
  */
 export const ROUTES: readonly Route[] = [
   // Projects and programs.
-  { method: "GET", path: "/projects", handler: listProjects },
-  { method: "PUT", path: PROJECT, handler: putProject },
-  { method: "GET", path: PROJECT, handler: getProject },
-  { method: "GET", path: `${PROJECT}/programs`, handler: listPrograms },
-  { method: "PUT", path: PROGRAM, handler: putProgram },
-  { method: "GET", path: PROGRAM, handler: getProgram },
+  { method: "GET", path: "/projects", operation: "project.list", handler: listProjects },
+  { method: "PUT", path: PROJECT, operation: "project.put", handler: putProject },
+  { method: "GET", path: PROJECT, operation: "project.get", handler: getProject },
+  {
+    method: "GET",
+    path: `${PROJECT}/programs`,
+    operation: "program.list",
+    handler: listPrograms,
+  },
+  { method: "PUT", path: PROGRAM, operation: "program.put", handler: putProgram },
+  { method: "GET", path: PROGRAM, operation: "program.get", handler: getProgram },
 
   // Runs. `PUT` on an existing run applies the run table in `core` (T2).
-  { method: "GET", path: `${PROGRAM}/runs`, handler: listRuns },
-  { method: "PUT", path: RUN, handler: putRun },
-  { method: "GET", path: RUN, handler: getRun },
-  { method: "GET", path: `${RUN}/state`, handler: getRunState },
+  { method: "GET", path: `${PROGRAM}/runs`, operation: "run.list", handler: listRuns },
+  { method: "PUT", path: RUN, operation: "run.put", handler: putRun },
+  { method: "GET", path: RUN, operation: "run.get", handler: getRun },
+  { method: "GET", path: `${RUN}/state`, operation: "run.getState", handler: getRunState },
 
   // Execution nodes.
-  { method: "GET", path: `${RUN}/nodes`, handler: listNodes },
-  { method: "PUT", path: NODE, handler: putNode },
-  { method: "GET", path: NODE, handler: getNode },
-  { method: "GET", path: `${NODE}/children`, handler: listChildren },
+  { method: "GET", path: `${RUN}/nodes`, operation: "node.list", handler: listNodes },
+  { method: "PUT", path: NODE, operation: "node.put", handler: putNode },
+  { method: "GET", path: NODE, operation: "node.get", handler: getNode },
+  {
+    method: "GET",
+    path: `${NODE}/children`,
+    operation: "node.listChildren",
+    handler: listChildren,
+  },
 
   // Job Contracts, persisted before execution (A-03).
-  { method: "GET", path: `${RUN}/jobs`, handler: listJobContracts },
-  { method: "PUT", path: `${RUN}/jobs/{jobContractId}`, handler: putJobContract },
-  { method: "GET", path: `${RUN}/jobs/{jobContractId}`, handler: getJobContract },
+  { method: "GET", path: `${RUN}/jobs`, operation: "job.list", handler: listJobContracts },
+  {
+    method: "PUT",
+    path: `${RUN}/jobs/{jobContractId}`,
+    operation: "job.put",
+    handler: putJobContract,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/jobs/{jobContractId}`,
+    operation: "job.get",
+    handler: getJobContract,
+  },
 
-  // Agents: the execution identity (A-04).
-  { method: "PUT", path: `${RUN}/agents/{agentId}`, handler: putAgent },
-  { method: "GET", path: `${RUN}/agents/{agentId}`, handler: getAgent },
-  { method: "GET", path: `${NODE}/agents`, handler: listAgentsByNode },
-  // The execution identity's own credential (D-P4-03). User principals only,
-  // and never stored: the response is the one place a token appears.
-  { method: "POST", path: `${RUN}/agents/{agentId}/token`, handler: mintAgentToken },
+  // Agents: the execution identity (A-04). `agent.mintToken` is the one route
+  // an execution principal may never call, whatever it targets (D-P4-05).
+  { method: "PUT", path: `${RUN}/agents/{agentId}`, operation: "agent.put", handler: putAgent },
+  { method: "GET", path: `${RUN}/agents/{agentId}`, operation: "agent.get", handler: getAgent },
+  {
+    method: "GET",
+    path: `${NODE}/agents`,
+    operation: "agent.listByNode",
+    handler: listAgentsByNode,
+  },
+  {
+    method: "POST",
+    path: `${RUN}/agents/{agentId}/token`,
+    operation: "agent.mintToken",
+    handler: mintAgentToken,
+  },
 
   // Events.
-  { method: "POST", path: `${RUN}/events`, handler: appendEvent },
-  { method: "GET", path: `${RUN}/events`, handler: listEvents },
+  { method: "POST", path: `${RUN}/events`, operation: "event.append", handler: appendEvent },
+  { method: "GET", path: `${RUN}/events`, operation: "event.list", handler: listEvents },
 
   // Decisions and checkpoints.
-  { method: "GET", path: `${RUN}/decisions`, handler: listDecisions },
-  { method: "PUT", path: `${RUN}/decisions/{decisionId}`, handler: putDecision },
-  { method: "GET", path: `${RUN}/decisions/{decisionId}`, handler: getDecision },
-  { method: "GET", path: `${RUN}/checkpoints`, handler: listCheckpoints },
-  { method: "PUT", path: `${RUN}/checkpoints/{checkpointId}`, handler: putCheckpoint },
-  { method: "GET", path: `${RUN}/checkpoints/{checkpointId}`, handler: getCheckpoint },
+  { method: "GET", path: `${RUN}/decisions`, operation: "decision.list", handler: listDecisions },
+  {
+    method: "PUT",
+    path: `${RUN}/decisions/{decisionId}`,
+    operation: "decision.put",
+    handler: putDecision,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/decisions/{decisionId}`,
+    operation: "decision.get",
+    handler: getDecision,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/checkpoints`,
+    operation: "checkpoint.list",
+    handler: listCheckpoints,
+  },
+  {
+    method: "PUT",
+    path: `${RUN}/checkpoints/{checkpointId}`,
+    operation: "checkpoint.put",
+    handler: putCheckpoint,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/checkpoints/{checkpointId}`,
+    operation: "checkpoint.get",
+    handler: getCheckpoint,
+  },
 
   // Verification: written by the execution layer and by nothing else (D-P3-06).
-  { method: "PUT", path: `${RUN}/verifications/{verificationId}`, handler: putVerification },
-  { method: "GET", path: `${RUN}/verifications/{verificationId}`, handler: getVerification },
-  { method: "GET", path: `${NODE}/verifications`, handler: listVerificationsByNode },
+  {
+    method: "PUT",
+    path: `${RUN}/verifications/{verificationId}`,
+    operation: "verification.put",
+    handler: putVerification,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/verifications/{verificationId}`,
+    operation: "verification.get",
+    handler: getVerification,
+  },
+  {
+    method: "GET",
+    path: `${NODE}/verifications`,
+    operation: "verification.listByNode",
+    handler: listVerificationsByNode,
+  },
 
   // Examination: port completeness only; nothing in P3 writes one (D-P3-07).
-  { method: "PUT", path: `${RUN}/examinations/{examinationId}`, handler: putExamination },
-  { method: "GET", path: `${RUN}/examinations/{examinationId}`, handler: getExamination },
-  { method: "GET", path: `${NODE}/examinations`, handler: listExaminationsByNode },
+  {
+    method: "PUT",
+    path: `${RUN}/examinations/{examinationId}`,
+    operation: "examination.put",
+    handler: putExamination,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/examinations/{examinationId}`,
+    operation: "examination.get",
+    handler: getExamination,
+  },
+  {
+    method: "GET",
+    path: `${NODE}/examinations`,
+    operation: "examination.listByNode",
+    handler: listExaminationsByNode,
+  },
 
   // Routing.
   {
     method: "PUT",
     path: `${RUN}/routing-decisions/{routingDecisionId}`,
+    operation: "routingDecision.put",
     handler: putRoutingDecision,
   },
-  { method: "GET", path: `${NODE}/routing-decisions`, handler: listRoutingDecisionsByNode },
+  {
+    method: "GET",
+    path: `${NODE}/routing-decisions`,
+    operation: "routingDecision.listByNode",
+    handler: listRoutingDecisionsByNode,
+  },
 
   // Artifacts. The upload route signs; the client uploads; the record follows (A-08).
-  { method: "GET", path: `${RUN}/artifacts`, handler: listArtifacts },
-  { method: "PUT", path: `${RUN}/artifacts/{artifactId}`, handler: putArtifact },
-  { method: "GET", path: `${RUN}/artifacts/{artifactId}`, handler: getArtifact },
+  { method: "GET", path: `${RUN}/artifacts`, operation: "artifact.list", handler: listArtifacts },
+  {
+    method: "PUT",
+    path: `${RUN}/artifacts/{artifactId}`,
+    operation: "artifact.put",
+    handler: putArtifact,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/artifacts/{artifactId}`,
+    operation: "artifact.get",
+    handler: getArtifact,
+  },
   {
     method: "POST",
     path: `${RUN}/artifacts/{artifactId}/upload-url`,
+    operation: "artifact.createUploadUrl",
     handler: createArtifactUploadUrl,
   },
 ];
@@ -150,7 +257,20 @@ export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise
     };
   }
   try {
-    return await match.route.handler({ deps, request, params: match.params });
+    // The one authorisation gate (SC-P4-08). Every route passes through it, and
+    // it runs *before* the operation, so a caller in the wrong organisation is
+    // refused without any record being read.
+    const principal = await enforce({
+      principal: request.principal,
+      operation: match.route.operation,
+      params: match.params,
+      body: request.body,
+      memberships: deps.stores.memberships,
+      projectOrgs:
+        deps.projectOrgs ??
+        createProjectOrgCache({ projects: deps.stores.projects, clock: deps.clock }),
+    });
+    return await match.route.handler({ deps, request, params: match.params, principal });
   } catch (error) {
     return toErrorResponse(error);
   }

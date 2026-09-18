@@ -5,6 +5,8 @@
 import type { ErrorResponse } from "@nightshift/contracts";
 import type { ArtifactUploadSigner, Clock, NightshiftStores } from "@nightshift/core";
 import type { z } from "zod";
+import type { ProjectOrgCache } from "./auth/enforce.js";
+import type { RequestPrincipal } from "./auth/principal.js";
 import type { ExecutionTokenSigner } from "./tokens/mint.js";
 
 export interface ApiRequest {
@@ -15,10 +17,13 @@ export interface ApiRequest {
   /** Parsed JSON, or `undefined` when there was no body. */
   readonly body: unknown;
   /**
-   * Claims the API Gateway JWT authorizer has already validated (A-19). Reading
-   * them is not authentication; the gateway did that before this code ran.
+   * Who is calling, as Nightshift's authorizer proved them (D-P4-01, A-33, A-36).
+   *
+   * A typed value, never a claim set: the authorizer validated the token and
+   * decided its kind before this code ran, and the handler contains no
+   * verification code of its own (SC-P4-10).
    */
-  readonly claims: Readonly<Record<string, unknown>>;
+  readonly principal: RequestPrincipal;
 }
 
 export interface ApiResponse {
@@ -44,6 +49,13 @@ export interface ApiDeps {
    * misconfiguration names itself instead of looking like a crash.
    */
   readonly tokens?: ExecutionTokenIssuing;
+  /**
+   * The project → organisation cache `enforce` checks isolation with (D-P4-02).
+   * Optional so a test can drive the handler without building one; when absent,
+   * `handleRequest` builds a fresh cache per request, which is correct and
+   * merely uncached.
+   */
+  readonly projectOrgs?: ProjectOrgCache;
 }
 
 /** Where execution tokens come from, and who they say issued them. */

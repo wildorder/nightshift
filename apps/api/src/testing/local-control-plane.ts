@@ -13,11 +13,17 @@
  *
  * ## What is faked, and how faithfully
  *
- * - **Authentication.** The `Authorization` header is ignored and the claims
- *   passed to the factory are injected verbatim. API Gateway's Cognito authorizer
- *   does the real thing in AWS (A-19); a second implementation here would be a
- *   second place for authentication to be subtly wrong. The smoke suite is where
- *   the real authorizer is proved.
+ * - **Authentication.** No signature is checked. The principal passed to the
+ *   factory is injected verbatim, and a request may name a different one with a
+ *   `Bearer test-principal.<base64url JSON>` token, which is how a suite switches
+ *   caller mid-test (T3 deliverable 6). Nightshift's authorizer does the real
+ *   thing in AWS (A-36); a second implementation here would be a second place for
+ *   authentication to be subtly wrong, and the smoke suite is where the real
+ *   authorizer is proved.
+ *
+ *   What is *not* faked is **authorisation**: `enforce` runs here exactly as it
+ *   does in the Lambda, so the offline two-principal matrix exercises the real
+ *   org check and the real §4.4 table.
  * - **Object storage.** Presigned uploads are signed to this server's own
  *   loopback address and the bytes are held in memory. The enforcement S3 applies
  *   is applied here too, and it is exactly the same set: an unknown or expired
@@ -35,8 +41,11 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { PrincipalSchema } from "@nightshift/contracts";
 import type { ArtifactUploadSigner, Clock, NightshiftStores } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
+import type { RequestPrincipal } from "../auth/principal.js";
+import { UserTokenLikeSchema } from "../auth/principal.js";
 import { handleRequest } from "../handler.js";
 import type { ApiDeps, ApiRequest } from "../http.js";
 
@@ -48,6 +57,49 @@ const UPLOAD_PATH_PREFIX = "/__local-upload/";
 
 /** How long a local signature claims to last. Matches the AWS signer's fifteen minutes. */
 const UPLOAD_TTL_SECONDS = 15 * 60;
+
+/**
+ * The bearer-token prefix a suite uses to act as somebody else (T3 deliverable 6).
+ *
+ * Named so it could never be mistaken for a real credential, and readable only
+ * by this module — which is never bundled into the Lambda, because the function
+ * entry point does not import it.
+ */
+export const TEST_PRINCIPAL_PREFIX = "test-principal.";
+
+/** A principal a suite can hand to `staticTokenProvider`, so the http adapter carries it. */
+export const encodeTestPrincipal = (principal: RequestPrincipal): string =>
+  TEST_PRINCIPAL_PREFIX + Buffer.from(JSON.stringify(principal), "utf8").toString("base64url");
+
+const parseTestPrincipal = (encoded: string): RequestPrincipal | undefined => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    return undefined;
+  }
+  const execution = PrincipalSchema.safeParse(parsed);
+  if (execution.success && execution.data.kind === "execution") return execution.data;
+  const user = UserTokenLikeSchema.safeParse(parsed);
+  if (!user.success) return undefined;
+  const { userId, activeOrg } = user.data;
+  return activeOrg === undefined ? { kind: "user", userId } : { kind: "user", userId, activeOrg };
+};
+
+/**
+ * The principal a request declared, `undefined` for "use the plane's default",
+ * or `"malformed"` for a `test-principal` token that could not be read — which
+ * is a 401, because a suite that meant to act as someone else and failed should
+ * see that rather than silently act as the operator.
+ */
+const principalFromHeader = (
+  authorization: string | undefined,
+): RequestPrincipal | undefined | "malformed" => {
+  const match = /^bearer\s+(\S+)$/i.exec((authorization ?? "").trim());
+  const token = match?.[1];
+  if (token === undefined || !token.startsWith(TEST_PRINCIPAL_PREFIX)) return undefined;
+  return parseTestPrincipal(token.slice(TEST_PRINCIPAL_PREFIX.length)) ?? "malformed";
+};
 
 export interface LocalBody {
   readonly body: Uint8Array;
@@ -68,11 +120,12 @@ export interface LocalBodies {
 export interface LocalControlPlaneOptions {
   readonly stores: NightshiftStores;
   /**
-   * The claims every request is treated as carrying. Typically
-   * `{ sub, "custom:active_org" }` for the operator, so `resolveActingOrg`
-   * resolves exactly as it would against a real ID token.
+   * Who every request is treated as coming from, unless it names another
+   * principal with a `test-principal` bearer token. Typically the operator's
+   * user token, so `resolveActingOrg` resolves exactly as it would against a
+   * real ID token.
    */
-  readonly claims: Readonly<Record<string, unknown>>;
+  readonly principal: RequestPrincipal;
   readonly clock?: Clock;
   /** Loopback host. `127.0.0.1` by default, and there is no reason to change it. */
   readonly host?: string;
@@ -235,14 +288,23 @@ export const startLocalControlPlane = async (
       }
     }
 
+    const declared = principalFromHeader(request.headers.authorization);
+    if (declared === "malformed") {
+      send(response, 401, {
+        error: { code: "unauthenticated", message: "the test principal is not readable" },
+      });
+      return;
+    }
+
     const apiRequest: ApiRequest = {
       method: request.method ?? "GET",
       path: url.pathname,
       query,
       body,
-      // The gateway validated a token before the handler ran, in AWS. Here the
-      // caller declares who it is, once, at startup.
-      claims: options.claims,
+      // Nightshift's authorizer validated a token before the handler ran, in
+      // AWS. Here the caller either declared one per request or takes the one
+      // this plane was started with.
+      principal: declared ?? options.principal,
     };
     const result = await handleRequest(deps, apiRequest);
     send(response, result.status, result.body);

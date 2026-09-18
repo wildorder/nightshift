@@ -1,7 +1,12 @@
 import { App, Token } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { NightshiftApiStack, STREAM_BATCH_SIZE, STREAM_RETRY_ATTEMPTS } from "./api-stack.js";
+import {
+  AUTHORIZER_CACHE_TTL,
+  NightshiftApiStack,
+  STREAM_BATCH_SIZE,
+  STREAM_RETRY_ATTEMPTS,
+} from "./api-stack.js";
 import { DATA_EXPORT_KEYS, dataExportName } from "./data-exports.js";
 import { NightshiftDataStack } from "./data-stack.js";
 import { NightshiftDnsStack } from "./dns-stack.js";
@@ -180,34 +185,51 @@ describe("NightshiftApiStack", () => {
     });
   });
 
-  describe("authentication (A-19)", () => {
-    it("binds every route to the Cognito JWT authorizer, leaving none anonymous", () => {
+  describe("authentication (A-19 as amended, A-36)", () => {
+    /** The P2 assertion, retargeted (T3 deliverable 2). */
+    it("binds every route to the Nightshift authorizer, leaving none anonymous", () => {
       const { template } = synth();
       const routes = resourcesOf(template, "AWS::ApiGatewayV2::Route");
       expect(routes.length).toBeGreaterThan(0);
+
+      const authorizers = template.findResources("AWS::ApiGatewayV2::Authorizer");
+      expect(Object.keys(authorizers)).toHaveLength(1);
+      const [authorizerId] = Object.keys(authorizers) as [string];
+
       for (const route of routes) {
-        expect(route.Properties?.AuthorizationType).toBe("JWT");
-        expect(route.Properties?.AuthorizerId).toBeDefined();
+        expect(route.Properties?.AuthorizationType).toBe("CUSTOM");
+        // Bound to *this* authorizer, not merely to some authorizer.
+        expect(stringsIn(route.Properties?.AuthorizerId)).toContain(authorizerId);
       }
     });
 
-    it("trusts the user pool as issuer and both app clients as audience", () => {
+    it("is a request authorizer over the Authorization header, with a bounded cache", () => {
       const { template } = synth();
       template.hasResourceProperties("AWS::ApiGatewayV2::Authorizer", {
-        AuthorizerType: "JWT",
+        AuthorizerType: "REQUEST",
         IdentitySource: ["$request.header.Authorization"],
-        JwtConfiguration: {
-          Issuer: Match.anyValue(),
-          Audience: [
-            { "Fn::ImportValue": dataExportName("dev", "InteractiveClientId") },
-            { "Fn::ImportValue": dataExportName("dev", "MachineClientId") },
-          ],
-        },
+        EnableSimpleResponses: true,
+        AuthorizerResultTtlInSeconds: AUTHORIZER_CACHE_TTL.toSeconds(),
       });
-      const authorizer = resourcesOf(template, "AWS::ApiGatewayV2::Authorizer")[0];
-      const issuer = stringsIn(authorizer?.Properties?.JwtConfiguration);
+      // Set, and bounded: an unbounded cache would quietly extend every token's
+      // life past its expiry.
+      expect(AUTHORIZER_CACHE_TTL.toSeconds()).toBeGreaterThan(0);
+      expect(AUTHORIZER_CACHE_TTL.toSeconds()).toBeLessThanOrEqual(3600);
+    });
+
+    it("tells the authorizer the pool's issuer and both app clients", () => {
+      const { template } = synth();
+      const { Variables: variables } = property<{ Variables: Record<string, unknown> }>(
+        resourceNamed(template, "AWS::Lambda::Function", "AuthorizerFunction"),
+        "Environment",
+      );
+      const issuer = stringsIn(variables.NIGHTSHIFT_COGNITO_ISSUER);
       expect(issuer.some((part) => part.includes("cognito-idp."))).toBe(true);
       expect(issuer).toContain(dataExportName("dev", "UserPoolId"));
+
+      const audiences = stringsIn(variables.NIGHTSHIFT_COGNITO_AUDIENCES);
+      expect(audiences).toContain(dataExportName("dev", "InteractiveClientId"));
+      expect(audiences).toContain(dataExportName("dev", "MachineClientId"));
     });
 
     it("serves the $default stage, so the handler sees unprefixed paths", () => {
@@ -335,23 +357,42 @@ describe("NightshiftApiStack", () => {
      * resource here would each turn one signing key into general KMS access.
      */
     it("grants exactly kms:Sign, on the execution-token key and nothing else", () => {
-      const statements = statementsOf(synth().template);
-      const kmsStatements = statements.filter((statement) =>
-        actionsOf(statement).some((action) => action.startsWith("kms:")),
+      expect(dataActionsOf(synth().template, "ApiFunctionRole")).toContain("kms:Sign");
+      const signing = statementsOf(synth().template).filter(
+        (statement) => actionsOf(statement).length === 1 && actionsOf(statement)[0] === "kms:Sign",
       );
-      expect(kmsStatements).toHaveLength(1);
-      expect(kmsStatements.flatMap(actionsOf)).toEqual(["kms:Sign"]);
+      expect(signing).toHaveLength(1);
 
-      const resources = JSON.stringify(kmsStatements[0]?.Resource);
+      const resources = JSON.stringify(signing[0]?.Resource);
       expect(resources).toContain(dataExportName("dev", "ExecutionTokenKeyArn"));
       expect(resources).not.toContain("*");
+    });
+
+    /**
+     * The authorizer's whole world is two public keys. Anything else in its IAM
+     * — the table, the bucket, `kms:Sign` — would mean it could do something
+     * other than check a signature.
+     */
+    it("gives the authorizer kms:GetPublicKey and nothing else", () => {
+      expect(dataActionsOf(synth().template, "AuthorizerFunctionRole")).toEqual(
+        new Set(["kms:GetPublicKey"]),
+      );
+    });
+
+    it("grants no KMS action beyond signing and reading the public key", () => {
+      const kmsActions = new Set(
+        statementsOf(synth().template)
+          .flatMap(actionsOf)
+          .filter((action) => action.startsWith("kms:")),
+      );
+      expect(kmsActions).toEqual(new Set(["kms:Sign", "kms:GetPublicKey"]));
     });
   });
 
   describe("functions", () => {
     it("runs every function on Node 22, arm64", () => {
       const functions = resourcesOf(synth().template, "AWS::Lambda::Function");
-      expect(functions).toHaveLength(2);
+      expect(functions).toHaveLength(3);
       for (const fn of functions) {
         expect(fn.Properties?.Runtime).toBe("nodejs22.x");
         expect(fn.Properties?.Architectures).toEqual(["arm64"]);
@@ -399,7 +440,7 @@ describe("NightshiftApiStack", () => {
     it("logs to explicit groups with 30-day retention (D-P2-10)", () => {
       const { template } = synth();
       const groups = template.findResources("AWS::Logs::LogGroup");
-      expect(Object.keys(groups)).toHaveLength(2);
+      expect(Object.keys(groups)).toHaveLength(3);
       for (const group of Object.values(groups) as Resource[]) {
         expect(group.Properties?.RetentionInDays).toBe(30);
       }

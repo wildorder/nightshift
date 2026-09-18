@@ -1,10 +1,10 @@
 /**
  * The stateless stack: `nightshift-<stage>-api` (D-P2-07, A-24, T5).
  *
- * The control-plane handler, the HTTP API in front of it with its Cognito JWT
- * authorizer, the sequence materializer on the table's stream, their log groups
- * and their IAM. It holds no state, so it can be replaced freely and carries no
- * termination protection.
+ * The control-plane handler, the HTTP API in front of it with Nightshift's own
+ * Lambda authorizer (P4, D-P4-04), the sequence materializer on the table's
+ * stream, their log groups and their IAM. It holds no state, so it can be
+ * replaced freely and carries no termination protection.
  *
  * It consumes the data stack's outputs by export name (`dataExportName`), never by
  * construct reference, so either stack can be deployed or replaced on its own.
@@ -13,9 +13,10 @@
  *
  * The API endpoint is on public DNS and reachable from anywhere. That is required:
  * it is how a local MCP server on a laptop reaches the control plane, and later
- * the AgentCore runtime. Every route is behind the JWT authorizer, so the endpoint
- * is publicly *reachable* but not publicly *usable*. A private API behind a VPC
- * endpoint was not chosen because a laptop cannot reach one without a VPN.
+ * the AgentCore runtime. Every route is behind the Nightshift authorizer and none
+ * is anonymous, so the endpoint is publicly *reachable* but not publicly
+ * *usable*. A private API behind a VPC endpoint was not chosen because a laptop
+ * cannot reach one without a VPN.
  *
  * ## The hostname a client stores (D-P3-18)
  *
@@ -30,7 +31,10 @@
 import { fileURLToPath } from "node:url";
 import { CfnOutput, Duration, Fn, RemovalPolicy, Stack } from "aws-cdk-lib";
 import { ApiMapping, DomainName, HttpApi } from "aws-cdk-lib/aws-apigatewayv2";
-import { HttpJwtAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
+import {
+  HttpLambdaAuthorizer,
+  HttpLambdaResponseType,
+} from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -67,6 +71,7 @@ const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
  */
 export const API_ENTRY = `${REPO_ROOT}apps/api/dist/lambda/api.js`;
 export const MATERIALIZER_ENTRY = `${REPO_ROOT}apps/api/dist/lambda/materializer.js`;
+export const AUTHORIZER_ENTRY = `${REPO_ROOT}apps/api/dist/lambda/authorizer-entry.js`;
 
 /**
  * Stream consumer tuning, chosen for latency over throughput because it sets how
@@ -89,6 +94,20 @@ export const STREAM_RETRY_ATTEMPTS = 10;
 
 /** D-P2-10: enough to debug a run, cheap, and never infinite. */
 export const LOG_RETENTION = logs.RetentionDays.ONE_MONTH;
+
+/**
+ * How long API Gateway caches one authorizer answer, keyed by the identity
+ * source (P4, T3 deliverable 2).
+ *
+ * Five minutes, and deliberately not zero: a worker makes many calls with one
+ * token, and re-verifying a signature per call buys nothing. Deliberately not
+ * longer either — the cache is keyed by the token itself, so a *revoked* token
+ * (which Nightshift has no way to revoke anyway; see the bearer non-guarantee in
+ * the contract) or an expired one stays usable for at most this long past its
+ * expiry. Bounded and asserted, because an unbounded cache would quietly extend
+ * every token's life.
+ */
+export const AUTHORIZER_CACHE_TTL = Duration.minutes(5);
 
 export class NightshiftApiStack extends Stack {
   readonly stage: string;
@@ -171,15 +190,52 @@ export class NightshiftApiStack extends Stack {
       memorySize: 512,
     });
 
-    // --- The HTTP API ----------------------------------------------------------------
-    // Issuer and audience from the data stack's user pool (A-19, T9). The audience
-    // lists both clients: an interactive caller presents an ID token (`aud`), a
-    // machine caller an access token (`client_id`); the authorizer accepts either.
-    const authorizer = new HttpJwtAuthorizer(
-      "CognitoJwtAuthorizer",
-      `https://cognito-idp.${this.region}.amazonaws.com/${imported("UserPoolId")}`,
-      { jwtAudience: [imported("InteractiveClientId"), imported("MachineClientId")] },
-    );
+    // --- The Nightshift authorizer (P4, T3, D-P4-04, A-36) --------------------------
+    //
+    // This replaces API Gateway's built-in `HttpJwtAuthorizer`, which accepts one
+    // OIDC issuer. Nightshift now has two token kinds — Cognito's and its own
+    // execution tokens — and the alternative to this function was becoming an
+    // OIDC provider with a public JWKS endpoint. The gateway still rejects a bad
+    // token before the handler runs; the verifying code is now ours.
+    //
+    // Its whole world is two public keys, so its IAM is one KMS action: no table,
+    // no bucket, no private key. The audiences list both clients, because an
+    // interactive caller presents an ID token (`aud`) and a machine caller an
+    // access token (`client_id`).
+    const authorizerLogs = this.logGroup("AuthorizerFunctionLogs");
+    const authorizerRole = this.executionRole("AuthorizerFunctionRole", authorizerLogs, [
+      new iam.PolicyStatement({
+        actions: ["kms:GetPublicKey"],
+        resources: [executionTokenKeyArn],
+      }),
+    ]);
+    const authorizerFunction = this.nodeFunction("AuthorizerFunction", {
+      entry: AUTHORIZER_ENTRY,
+      role: authorizerRole,
+      logGroup: authorizerLogs,
+      environment: {
+        ...tokenEnvironment,
+        NIGHTSHIFT_COGNITO_ISSUER: `https://cognito-idp.${this.region}.amazonaws.com/${imported("UserPoolId")}`,
+        NIGHTSHIFT_COGNITO_AUDIENCES: Fn.join(",", [
+          imported("InteractiveClientId"),
+          imported("MachineClientId"),
+        ]),
+      },
+      // One JWKS fetch on a cold instance, then signature checks. Short, because
+      // every request waits on it.
+      timeout: Duration.seconds(5),
+      memorySize: 256,
+    });
+
+    const authorizer = new HttpLambdaAuthorizer("NightshiftAuthorizer", authorizerFunction, {
+      // The simple response shape: `isAuthorized` plus a context the handler
+      // reads the principal out of. An IAM-policy response would let the
+      // authorizer decide *which routes* a caller may reach, which is precisely
+      // the decision `authorize` in `core` owns (D-P4-05).
+      responseTypes: [HttpLambdaResponseType.SIMPLE],
+      identitySource: ["$request.header.Authorization"],
+      resultsCacheTtl: AUTHORIZER_CACHE_TTL,
+    });
     // One `$default` route carrying the authorizer: the handler owns routing, and
     // there is no second route that could be authored without authorization. The
     // `$default` stage keeps `rawPath` unprefixed, which the handler relies on.
@@ -263,6 +319,7 @@ export class NightshiftApiStack extends Stack {
       new CfnOutput(this, "ApiCustomEndpoint", { value: this.customEndpoint });
     }
     new CfnOutput(this, "ApiFunctionName", { value: apiFunction.functionName });
+    new CfnOutput(this, "AuthorizerFunctionName", { value: authorizerFunction.functionName });
     new CfnOutput(this, "MaterializerFunctionName", { value: materializer.functionName });
     new CfnOutput(this, "MaterializerDeadLetterQueueUrl", { value: deadLetters.queueUrl });
   }

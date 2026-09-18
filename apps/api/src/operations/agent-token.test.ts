@@ -22,6 +22,7 @@ import {
 } from "@nightshift/core";
 import { createInMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it } from "vitest";
+import type { RequestPrincipal } from "../auth/principal.js";
 import { handleRequest } from "../handler.js";
 import type { ApiDeps, ApiResponse } from "../http.js";
 import { verifyExecutionToken } from "../tokens/verify.js";
@@ -50,9 +51,9 @@ const setup = async () => {
       signer: { sign: async (input) => signWith("sha256", input, privateKey) },
     },
   };
-  const claims = { sub: subject };
+  const principal: RequestPrincipal = { kind: "user", userId: subject };
   const call = (method: string, path: string, body?: unknown): Promise<ApiResponse> =>
-    handleRequest(deps, { method, path, query: {}, body, claims });
+    handleRequest(deps, { method, path, query: {}, body, principal });
 
   const run = `/projects/${f.scope.projectId}/programs/${f.scope.programId}/runs/${f.scope.runId}`;
   expect((await call("PUT", `/projects/${f.scope.projectId}`, projectBody)).status).toBe(201);
@@ -72,7 +73,7 @@ const setup = async () => {
   expect((await call("PUT", `${run}/nodes/${node.executionNodeId}`, node)).status).toBe(201);
   expect((await call("PUT", `${run}/agents/${agent.agentId}`, agent)).status).toBe(201);
 
-  return { stores, f, deps, call, run, node, agent, root };
+  return { stores, f, deps, call, run, node, agent, root, principal };
 };
 
 const errorCode = (response: ApiResponse): string =>
@@ -151,7 +152,7 @@ describe("POST …/agents/{agentId}/token", () => {
       path: `${w.run}/agents/${w.agent.agentId}/token`,
       query: {},
       body: undefined,
-      claims: {},
+      principal: w.principal,
     });
     expect(response.status).toBe(501);
     expect(errorCode(response)).toBe("tokens_unavailable");
