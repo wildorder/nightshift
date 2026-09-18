@@ -216,9 +216,15 @@ export class NightshiftApiStack extends Stack {
       environment: {
         ...tokenEnvironment,
         NIGHTSHIFT_COGNITO_ISSUER: `https://cognito-idp.${this.region}.amazonaws.com/${imported("UserPoolId")}`,
+        // **Every** app client the pool issues tokens for. A client missing from
+        // this list is refused by the authorizer with no body a caller can read,
+        // which is how the second machine principal (D-P4-07) failed its first
+        // live run: the client existed, held a membership, and every request it
+        // made came back as a bare 403 from the gateway.
         NIGHTSHIFT_COGNITO_AUDIENCES: Fn.join(",", [
           imported("InteractiveClientId"),
           imported("MachineClientId"),
+          imported("TestPrincipalClientId"),
         ]),
       },
       // One JWKS fetch on a cold instance, then signature checks. Short, because

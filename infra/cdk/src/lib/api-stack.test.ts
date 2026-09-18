@@ -230,6 +230,31 @@ describe("NightshiftApiStack", () => {
       const audiences = stringsIn(variables.NIGHTSHIFT_COGNITO_AUDIENCES);
       expect(audiences).toContain(dataExportName("dev", "InteractiveClientId"));
       expect(audiences).toContain(dataExportName("dev", "MachineClientId"));
+      expect(audiences).toContain(dataExportName("dev", "TestPrincipalClientId"));
+    });
+
+    /**
+     * Every app client the data stack exports, with none left out.
+     *
+     * A client the authorizer does not list is refused with a bare gateway 403
+     * and no body — a failure that looks like an authorisation bug rather than a
+     * configuration one. That is exactly how `TestPrincipalClient` failed its
+     * first live run, so the assertion is on the whole set rather than on
+     * membership of it.
+     */
+    it("accepts every app client the data stack exports, and no others", () => {
+      const { template } = synth();
+      const { Variables: variables } = property<{ Variables: Record<string, unknown> }>(
+        resourceNamed(template, "AWS::Lambda::Function", "AuthorizerFunction"),
+        "Environment",
+      );
+      const listed = stringsIn(variables.NIGHTSHIFT_COGNITO_AUDIENCES).filter((value) =>
+        value.startsWith("nightshift-dev-data-"),
+      );
+      const clientExports = DATA_EXPORT_KEYS.filter((key) => key.endsWith("ClientId")).map((key) =>
+        dataExportName("dev", key),
+      );
+      expect(new Set(listed)).toEqual(new Set(clientExports));
     });
 
     it("serves the $default stage, so the handler sees unprefixed paths", () => {

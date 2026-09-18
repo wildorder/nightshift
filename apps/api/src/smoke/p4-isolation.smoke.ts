@@ -36,7 +36,18 @@ import {
   type Run,
   type UserId,
 } from "@nightshift/contracts";
-import { createUlidIdGenerator, type RunScope } from "@nightshift/core";
+import {
+  createFixtures,
+  createUlidIdGenerator,
+  makeAgent,
+  makeJobContract,
+  makeNode,
+  makeProgramContract,
+  makeProject,
+  makeRootNode,
+  makeRun,
+  type RunScope,
+} from "@nightshift/core";
 import { createAwsClients, createAwsStores, keys } from "@nightshift/persistence/aws";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { encodeSegment } from "../tokens/jwt.js";
@@ -144,140 +155,50 @@ beforeAll(async () => {
   a = await makePrincipal("A", context.machineClientId);
   b = await makePrincipal("B", context.testPrincipalClientId);
 
-  // --- A's world, created by A ------------------------------------------------
-  const scope: RunScope = {
-    projectId: ids.next("proj"),
-    programId: ids.next("prog"),
-    runId: ids.next("run"),
-  };
-  const rootNodeId = ids.next("node");
-  const nodeId = ids.next("node");
-  const at = new Date().toISOString();
+  // --- A's world ---------------------------------------------------------------
+  //
+  // Built with `@nightshift/core`'s fixture builders rather than by hand. Each
+  // one parses through its contract schema, so a record here cannot drift out of
+  // shape as the contracts grow — which a hand-written program contract promptly
+  // did on the first live run.
+  //
+  // **`world` is assigned before the first write**, not after the last. The
+  // builders are pure, so every identifier is known up front, and cleanup needs
+  // them whether or not the writes below all succeed. A first version assigned
+  // it at the end; a failure part way through left a project behind, and the
+  // *next* run refused to start because its principal belonged to an
+  // organisation that held one.
+  // Seeded with the ULID generator, not the counting one `createFixtures()`
+  // defaults to: a live account is not a test process, and `proj_…0001` would
+  // collide with the last run's litter and with a concurrent one.
+  const f = createFixtures(ids);
+  const scope: RunScope = f.scope;
+  const rootNodeId = f.rootNodeId;
+  const job = makeJobContract(f);
+  const node = makeNode(f, rootNodeId, { status: "validated", jobContractId: job.jobContractId });
+  const nodeId = node.executionNodeId;
+  const runRecord = makeRun(f);
+  world = { scope, run: runRecord, rootNodeId, node, agent: makeAgent(f, nodeId), job };
   say(`A's world: ${scope.projectId} / ${scope.programId} / ${scope.runId}`);
 
+  const { orgId: _orgId, ...projectBody } = makeProject(f);
+  created(await a.api.put(`/projects/${scope.projectId}`, projectBody), "A creates its project");
   created(
-    await a.api.put(`/projects/${scope.projectId}`, {
-      schemaVersion: 1,
-      projectId: scope.projectId,
-      name: "p4-isolation",
-      createdAt: at,
-    }),
-    "A creates its project",
-  );
-
-  const program = {
-    schemaVersion: 1,
-    projectId: scope.projectId,
-    programId: scope.programId,
-    objective: "Prove organisations are a boundary.",
-    repository: {
-      url: "https://example.invalid/repo.git",
-      baseBranch: "main",
-      programBranch: "program/p4",
-    },
-    successCriteria: [{ id: "SC-01", outcome: "B sees nothing of A's." }],
-    constraints: [],
-    scope: {
-      includes: ["src/**"],
-      excludes: [],
-      permissions: ["fs.read", "fs.write"],
-      forbiddenActions: [],
-    },
-    verification: [{ id: "test", command: "npm test" }],
-    modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
-    examinationPolicy: {
-      low: { required: false, mustDifferModel: false },
-      medium: { required: false, mustDifferModel: false },
-      high: { required: false, mustDifferModel: false },
-    },
-    costPolicy: { maxWallClockSeconds: 3600 },
-    defaultRisk: "low",
-    createdAt: at,
-  };
-  created(
-    await a.api.put(`/projects/${scope.projectId}/programs/${scope.programId}`, program),
+    await a.api.put(
+      `/projects/${scope.projectId}/programs/${scope.programId}`,
+      makeProgramContract(f),
+    ),
     "A creates its program",
   );
-
-  const runRecord = {
-    schemaVersion: 1,
-    ...scope,
-    status: "running",
-    location: "local",
-    rootNodeId,
-    startedAt: at,
-  };
   created(await a.api.put(run(scope), runRecord), "A creates its run");
-
-  const rootNode = {
-    schemaVersion: 1,
-    ...scope,
-    executionNodeId: rootNodeId,
-    kind: "program",
-    parentNodeId: null,
-    depth: 0,
-    scope: program.scope,
-    status: "running",
-    jobContractId: null,
-    commitSha: null,
-    createdAt: at,
-    updatedAt: at,
-  };
-  created(await a.api.put(`${run(scope)}/nodes/${rootNodeId}`, rootNode), "A creates its root");
-
-  const job = {
-    schemaVersion: 1,
-    ...scope,
-    jobContractId: ids.next("job"),
-    objective: "A bounded job.",
-    scope: { includes: ["src/**"] },
-    acceptance: ["It exists."],
-    dependencies: [],
-    risk: "low",
-    ambiguity: "low",
-    createdAt: at,
-  };
+  created(
+    await a.api.put(`${run(scope)}/nodes/${rootNodeId}`, makeRootNode(f)),
+    "A creates its root",
+  );
   created(await a.api.put(`${run(scope)}/jobs/${job.jobContractId}`, job), "A creates its job");
-
-  const node = {
-    schemaVersion: 1,
-    ...scope,
-    executionNodeId: nodeId,
-    kind: "job",
-    parentNodeId: rootNodeId,
-    depth: 1,
-    scope: program.scope,
-    status: "running",
-    jobContractId: job.jobContractId,
-    commitSha: null,
-    createdAt: at,
-    updatedAt: at,
-  };
   created(await a.api.put(`${run(scope)}/nodes/${nodeId}`, node), "A creates its job node");
-
-  const agent = {
-    schemaVersion: 1,
-    ...scope,
-    agentId: ids.next("agent"),
-    executionNodeId: nodeId,
-    role: "worker",
-    harness: "claude",
-    provider: "anthropic",
-    model: "claude-sonnet-5",
-    status: "started",
-    startedAt: at,
-    createdAt: at,
-  };
+  const agent = world.agent;
   created(await a.api.put(`${run(scope)}/agents/${agent.agentId}`, agent), "A creates its agent");
-
-  world = {
-    scope,
-    run: runRecord as Run,
-    rootNodeId,
-    node: node as ExecutionNode,
-    agent: agent as Agent,
-    job: job as JobContract,
-  };
 
   const base = run(scope);
   probes = [
@@ -384,14 +305,21 @@ beforeAll(async () => {
 afterAll(async () => {
   if (context === undefined) return;
   const problems: string[] = [];
+  // Each half guarded on its own: a setup that failed part way still wrote the
+  // memberships, and leaving those behind is what makes the *next* run
+  // unresolvable.
   const partitions = [
-    keys.user(a.subject).PK,
-    keys.user(b.subject).PK,
-    keys.orgProject(a.orgId, world.scope.projectId).PK,
-    keys.project(world.scope.projectId).PK,
-    keys.run(world.scope, world.scope.runId).PK,
-    keys.runRecord(world.scope, "NODE", world.rootNodeId).PK,
-    keys.event(world.scope, world.rootNodeId).PK,
+    ...(a === undefined ? [] : [keys.user(a.subject).PK]),
+    ...(b === undefined ? [] : [keys.user(b.subject).PK]),
+    ...(world === undefined || a === undefined
+      ? []
+      : [
+          keys.orgProject(a.orgId, world.scope.projectId).PK,
+          keys.project(world.scope.projectId).PK,
+          keys.run(world.scope, world.scope.runId).PK,
+          keys.runRecord(world.scope, "NODE", world.rootNodeId).PK,
+          keys.event(world.scope, world.rootNodeId).PK,
+        ]),
   ];
   try {
     const deleted = await deletePartitions(clients.table, tableName, partitions);
