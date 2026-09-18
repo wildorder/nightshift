@@ -31,6 +31,12 @@ export interface StackEnvironment {
   readonly userPoolId: string;
   readonly interactiveClientId: string;
   readonly machineClientId: string;
+  /**
+   * The second machine client (P4, D-P4-07). The smoke suite's alone: it exists
+   * so the live isolation matrix has two principals, and holds no standing
+   * membership between runs.
+   */
+  readonly testPrincipalClientId: string;
   readonly tokenEndpoint: string;
   readonly machineScope: string;
   /** The Cognito hosted domain, without a scheme: `<prefix>.auth.<region>.amazoncognito.com`. */
@@ -105,6 +111,7 @@ export const loadStackEnvironment = async (
     userPoolId: data("UserPoolId"),
     interactiveClientId: data("InteractiveClientId"),
     machineClientId: data("MachineClientId"),
+    testPrincipalClientId: data("TestPrincipalClientId"),
     tokenEndpoint: data("TokenEndpoint"),
     machineScope: data("MachineScope"),
     authDomain: data("AuthDomain"),

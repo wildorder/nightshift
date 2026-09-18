@@ -239,6 +239,37 @@ npm run check:architecture
 Plus, with `AWS_PROFILE=nightshift`: `npm run deploy`, `npm run smoke`,
 `npm run slice`.
 
+### 7.1 The isolation suite (T5 deliverable 4)
+
+`npm run smoke` runs two files, in this order: the P2 suite, then
+`p4-isolation.smoke.ts`. The second seeds two machine principals in two
+throwaway organisations — the operational machine client as **A**, the
+`TestPrincipalClient` of D-P4-07 as **B** — creates A's project, program, run,
+node, job and agent as A, and then asserts this table. A reader should be able
+to check each row against the suite's printed output.
+
+| # | Assertion | Criterion |
+|---|-----------|-----------|
+| 1 | Two principals hold real Cognito tokens, in two organisations | D-P4-07 |
+| 2 | A is refused nothing on its own project: no route answers 403 | — |
+| 3 | B is refused **every** project-scoped route of A's project, with `wrong_org` | SC-P4-01 |
+| 4 | `GET /projects` shows A its project and B none of A's | SC-P4-03 |
+| 5 | A mints an execution token; it verifies against the deployed KMS key's public half | D-P4-03 |
+| 6 | B cannot mint a token for A's agent | SC-P4-02 |
+| 7 | The minted token reads its own run, node, job and agent | SC-P4-04 |
+| 8 | The minted token is refused every operation §4.4 withholds, with `execution_forbidden_operation` | SC-P4-04 |
+| 9 | The minted token is refused a node that is not its own, with `execution_out_of_scope` | SC-P4-04 |
+| 10 | No token, an unreadable token, a foreign-signed token and an expired token are all 401 from the authorizer | SC-P4-05 |
+| 11 | Every record both organisations wrote is removed, including after a failure | A-18 |
+
+Row 3 walks the same route list as rows 2 and 8, built once from A's world, so a
+route added without an authorisation decision appears in all three.
+
+The offline halves of rows 3 … 9 are `apps/api/src/isolation.test.ts` (the
+§4.4 matrix over every route, four callers) and `test/src/mcp/worker-token.test.ts`
+(the real worker MCP server on a real minted token). They run in `npm test`,
+with no credentials and no network beyond loopback.
+
 ## 8. Constraints
 
 - No verification code in the handler; the authorizer is the one place tokens

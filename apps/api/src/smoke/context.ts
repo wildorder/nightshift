@@ -26,21 +26,28 @@ export const loadSmokeContext = (stage?: string): Promise<SmokeContext> =>
   stage === undefined ? loadStackEnvironment() : loadStackEnvironment(stage);
 
 /**
- * A client-credentials access token for the machine app client (T9). Never an
- * interactive login: that lands with the CLI in P3.
+ * A client-credentials access token for a machine app client (T9).
+ *
+ * Never an interactive login: an interactive user cannot obtain a token without
+ * a browser (P3 §13.4), which is the whole reason D-P4-07 adds a **second**
+ * machine client — a live isolation proof needs two principals and a human
+ * typing two passwords is not a suite.
  */
-export const fetchMachineToken = async (context: SmokeContext): Promise<string> => {
+export const fetchMachineToken = async (
+  context: SmokeContext,
+  clientId: string = context.machineClientId,
+): Promise<string> => {
   const cognito = new CognitoIdentityProviderClient({ region: REGION });
   const described = await cognito.send(
     new DescribeUserPoolClientCommand({
       UserPoolId: context.userPoolId,
-      ClientId: context.machineClientId,
+      ClientId: clientId,
     }),
   );
   const secret = described.UserPoolClient?.ClientSecret;
-  if (secret === undefined) throw new Error("the machine app client has no secret");
+  if (secret === undefined) throw new Error(`app client ${clientId} has no secret`);
 
-  const basic = Buffer.from(`${context.machineClientId}:${secret}`).toString("base64");
+  const basic = Buffer.from(`${clientId}:${secret}`).toString("base64");
   const response = await fetch(context.tokenEndpoint, {
     method: "POST",
     headers: {

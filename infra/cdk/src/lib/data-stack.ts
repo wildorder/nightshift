@@ -239,6 +239,30 @@ export class NightshiftDataStack extends Stack {
       },
     });
 
+    /**
+     * A **second** machine caller, for the smoke suite and for nothing else
+     * (P4, T5, D-P4-07).
+     *
+     * Its whole purpose is to give the deployed isolation matrix a second
+     * principal in a second organisation. Interactive users cannot obtain tokens
+     * without a browser (P3 §13.4), so proving cross-org refusal live needs two
+     * client-credentials callers — and an isolation proof that only runs offline
+     * is half a proof.
+     *
+     * It is identical to `MachineClient` in every respect but its identity. It
+     * holds no standing membership: the smoke suite writes one into a throwaway
+     * org at the start of a run and deletes it at the end, so between runs this
+     * client can do nothing at all.
+     */
+    const testPrincipalClient = this.userPool.addClient("TestPrincipalClient", {
+      generateSecret: true,
+      authFlows: {},
+      oAuth: {
+        flows: { clientCredentials: true },
+        scopes: [apiOAuthScope],
+      },
+    });
+
     // Interactive callers: a local CLI signing a human in (P3 builds the UX).
     const interactiveClient = this.userPool.addClient("InteractiveClient", {
       generateSecret: false,
@@ -266,7 +290,7 @@ export class NightshiftDataStack extends Stack {
     // through the API: the machine client uses client credentials and the
     // interactive client the hosted authorization code flow. Pin both to refresh
     // tokens only, so no username/password surface exists on either.
-    for (const client of [machineClient, interactiveClient]) {
+    for (const client of [machineClient, testPrincipalClient, interactiveClient]) {
       const cfn = client.node.defaultChild as cognito.CfnUserPoolClient;
       cfn.explicitAuthFlows = [...EXPLICIT_AUTH_FLOWS];
     }
@@ -360,6 +384,7 @@ export class NightshiftDataStack extends Stack {
       UserPoolArn: this.userPool.userPoolArn,
       InteractiveClientId: interactiveClient.userPoolClientId,
       MachineClientId: machineClient.userPoolClientId,
+      TestPrincipalClientId: testPrincipalClient.userPoolClientId,
       TokenEndpoint: `${domain.baseUrl()}/oauth2/token`,
       MachineScope: MACHINE_SCOPE,
       AuthDomain: authDomain,

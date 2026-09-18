@@ -259,17 +259,31 @@ describe("NightshiftDataStack", () => {
       expect(MACHINE_SCOPE).toBe("nightshift/api");
     });
 
-    it("has a machine client with a secret and only the client credentials grant", () => {
+    /**
+     * Two machine clients since P4 (T5, D-P4-07): the operational one, and the
+     * smoke suite's second principal. Asserted together because they must be
+     * identical in everything but identity — a second client with a *different*
+     * grant or scope would prove something other than isolation.
+     */
+    it("has two machine clients with secrets and only the client credentials grant", () => {
       const machine = dev.template.findResources("AWS::Cognito::UserPoolClient", {
         Properties: { GenerateSecret: true },
       });
       const clients = Object.values(machine);
-      expect(clients).toHaveLength(1);
-      const props = clients[0]?.Properties as Record<string, unknown>;
-      expect(props.AllowedOAuthFlows).toEqual(["client_credentials"]);
-      expect(props.ExplicitAuthFlows).toEqual([...EXPLICIT_AUTH_FLOWS]);
-      expect(props.CallbackURLs).toBeUndefined();
-      expect(JSON.stringify(props.AllowedOAuthScopes)).toContain("/api");
+      expect(clients).toHaveLength(2);
+      for (const client of clients) {
+        const props = client.Properties as Record<string, unknown>;
+        expect(props.AllowedOAuthFlows).toEqual(["client_credentials"]);
+        expect(props.ExplicitAuthFlows).toEqual([...EXPLICIT_AUTH_FLOWS]);
+        expect(props.CallbackURLs).toBeUndefined();
+        expect(JSON.stringify(props.AllowedOAuthScopes)).toContain("/api");
+      }
+    });
+
+    it("exports the second machine client, which exists for the smoke suite alone", () => {
+      dev.template.hasOutput("TestPrincipalClientId", {
+        Export: { Name: dataExportName("dev", "TestPrincipalClientId") },
+      });
     });
 
     it("has an interactive public client using the code grant with a loopback redirect", () => {

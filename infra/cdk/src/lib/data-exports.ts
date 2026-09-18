@@ -27,6 +27,9 @@ export const DATA_EXPORT_KEYS = [
   // verifies a minted token against it.
   "ExecutionTokenKeyId",
   "ExecutionTokenKeyArn",
+  // P4 (T5, D-P4-07): the smoke suite's second principal, so the deployed
+  // isolation matrix has two callers in two organisations.
+  "TestPrincipalClientId",
 ] as const;
 export type DataExportKey = (typeof DATA_EXPORT_KEYS)[number];
 export const dataExportName = (stage: string, key: DataExportKey): string =>
