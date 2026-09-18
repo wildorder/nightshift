@@ -11,12 +11,22 @@ const ConfigEnvSchema = z.object({
   NIGHTSHIFT_TABLE_NAME: z.string().min(1),
   NIGHTSHIFT_BUCKET_NAME: z.string().min(1),
   NIGHTSHIFT_STAGE: z.string().min(1),
+  /** The KMS key that signs execution tokens (P4, T2). */
+  NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID: z.string().min(1),
+  /**
+   * `https://api.<stage>.nightshift.wildorder.dev`, set by the stack from the
+   * one hostname rule. Read rather than derived, so `apps/api` does not become a
+   * third place that states it.
+   */
+  NIGHTSHIFT_TOKEN_ISSUER: z.string().min(1),
 });
 
 export interface ApiConfig {
   readonly tableName: string;
   readonly bucketName: string;
   readonly stage: string;
+  readonly executionTokenKeyId: string;
+  readonly tokenIssuer: string;
 }
 
 export class ConfigError extends Error {
@@ -35,5 +45,7 @@ export const loadConfig = (env: Readonly<Record<string, string | undefined>>): A
     tableName: result.data.NIGHTSHIFT_TABLE_NAME,
     bucketName: result.data.NIGHTSHIFT_BUCKET_NAME,
     stage: result.data.NIGHTSHIFT_STAGE,
+    executionTokenKeyId: result.data.NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID,
+    tokenIssuer: result.data.NIGHTSHIFT_TOKEN_ISSUER,
   };
 };

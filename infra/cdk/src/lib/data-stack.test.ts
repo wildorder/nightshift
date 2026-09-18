@@ -10,6 +10,7 @@ import {
   DELIVERY_LOG_LEVEL,
   DELIVERY_LOG_RETENTION,
   EXPLICIT_AUTH_FLOWS,
+  executionTokenKeyAlias,
   INVITATION_SUBJECT,
   LOOPBACK_CALLBACK_URL,
   MACHINE_SCOPE,
@@ -44,11 +45,17 @@ const POLICY_BY_TYPE: Readonly<Record<string, "Retain" | "Delete">> = {
   "AWS::DynamoDB::Table": "Retain",
   "AWS::S3::Bucket": "Retain",
   "AWS::Cognito::UserPool": "Retain",
+  // The execution-token signing key (P4, T2). Losing it invalidates every token
+  // in flight and is the loss of an identity, not of a setting.
+  "AWS::KMS::Key": "Retain",
   // Configuration that CloudFormation can recreate exactly from this template.
   "AWS::S3::BucketPolicy": "Delete",
   "AWS::Cognito::UserPoolResourceServer": "Delete",
   "AWS::Cognito::UserPoolClient": "Delete",
   "AWS::Cognito::UserPoolDomain": "Delete",
+  // An alias is a name for the retained key, and CloudFormation recreates it
+  // from this template exactly.
+  "AWS::KMS::Alias": "Delete",
   // Delivery-error logging (D-P3-16): diagnostics, not records. Losing the group
   // loses nothing that is not reproducible by the next failed send.
   "AWS::Logs::LogGroup": "Delete",
@@ -285,6 +292,50 @@ describe("NightshiftDataStack", () => {
       dev.template.hasResourceProperties("AWS::Cognito::UserPoolDomain", {
         Domain: { "Fn::Join": ["", ["nightshift-dev-", { Ref: "AWS::AccountId" }]] },
       });
+    });
+  });
+
+  /**
+   * The key that signs execution tokens (P4, T2, D-P4-03, A-35).
+   *
+   * Asserted in full because every property here is a decision: the spec fixes
+   * the JWT algorithm the authorizer accepts, the usage forbids using it to
+   * encrypt anything, and the retention is what stops a stack replacement from
+   * invalidating every token in flight.
+   */
+  describe("execution-token key (P4, T2)", () => {
+    it("is one asymmetric RSA-2048 sign/verify key", () => {
+      dev.template.resourceCountIs("AWS::KMS::Key", 1);
+      dev.template.hasResourceProperties("AWS::KMS::Key", {
+        KeySpec: "RSA_2048",
+        KeyUsage: "SIGN_VERIFY",
+      });
+    });
+
+    it("carries the stage's alias", () => {
+      dev.template.hasResourceProperties("AWS::KMS::Alias", {
+        AliasName: `alias/${executionTokenKeyAlias("dev")}`,
+      });
+      const staging = synth("staging");
+      staging.template.hasResourceProperties("AWS::KMS::Alias", {
+        AliasName: `alias/${executionTokenKeyAlias("staging")}`,
+      });
+    });
+
+    it("is retained, so replacing the stack does not invalidate every token", () => {
+      const keys = Object.values(dev.json.Resources ?? {}).filter(
+        (resource) => resource.Type === "AWS::KMS::Key",
+      );
+      expect(keys).toHaveLength(1);
+      expect(keys[0]?.DeletionPolicy).toBe("Retain");
+      expect(keys[0]?.UpdateReplacePolicy).toBe("Retain");
+    });
+
+    it("does not ask for rotation, which KMS does not offer for asymmetric keys", () => {
+      const keys = Object.values(dev.json.Resources ?? {}).filter(
+        (resource) => resource.Type === "AWS::KMS::Key",
+      );
+      expect(keys[0]?.Properties?.EnableKeyRotation).toBeUndefined();
     });
   });
 

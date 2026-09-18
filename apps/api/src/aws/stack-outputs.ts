@@ -37,6 +37,12 @@ export interface StackEnvironment {
   readonly authDomain: string;
   /** The complete hosted sign-in URL, client id included (D-P3-16). */
   readonly hostedSignInUrl: string;
+  /**
+   * The KMS key that signs execution tokens (P4, D-P4-03). The id is enough to
+   * call `kms:GetPublicKey`, which is how the smoke suite verifies a minted
+   * token against the deployed key's public half.
+   */
+  readonly executionTokenKeyId: string;
 }
 
 interface OutputReader {
@@ -103,5 +109,6 @@ export const loadStackEnvironment = async (
     machineScope: data("MachineScope"),
     authDomain: data("AuthDomain"),
     hostedSignInUrl: data("HostedSignInUrl"),
+    executionTokenKeyId: data("ExecutionTokenKeyId"),
   };
 };

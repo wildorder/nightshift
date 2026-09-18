@@ -334,6 +334,7 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
 | esbuild | 0.28.2 | P2 |
 | @modelcontextprotocol/sdk | 1.30.0 | P3 |
 | @aws-sdk/s3-request-presigner | 3.1131.0 | P3 |
+| @aws-sdk/client-kms | 3.1131.0 | P4 |
 
 `fast-check` and `vitest` are also declared on `@nightshift/test`, which needs
 them at build time because its generators and conformance suites are built

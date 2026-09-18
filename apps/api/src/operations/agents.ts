@@ -9,7 +9,7 @@
  * harness, provider and model are what routing chose, and rewriting them would
  * make the `RoutingDecision` beside it a lie.
  */
-import { type Agent, AgentSchema } from "@nightshift/contracts";
+import { type Agent, AgentSchema, MintExecutionTokenResponseSchema } from "@nightshift/contracts";
 import {
   agentEventFor,
   explainAgentEnding,
@@ -26,7 +26,13 @@ import {
   runScopeFrom,
 } from "../params.js";
 import type { Handler } from "../router.js";
-import { pageBody, requireRun, withCursor } from "./common.js";
+import {
+  ExecutionTokenChainError,
+  ExecutionTokenStateError,
+  type MintedExecutionToken,
+  mintExecutionToken,
+} from "../tokens/mint.js";
+import { pageBody, requireProgram, requireRun, withCursor } from "./common.js";
 
 /** An incomplete record is 422: well formed, but not something that can be stored. */
 const assertComplete = (agent: Agent): void => {
@@ -120,4 +126,75 @@ export const listAgentsByNode: Handler = async ({ deps, request, params }) => {
   await requireRun(deps.stores, scope);
   const items = await withCursor(() => deps.stores.agents.listByNode(scope, nodeId));
   return { status: 200, body: pageBody({ items }) };
+};
+
+/**
+ * `POST …/runs/{runId}/agents/{agentId}/token` — mint an execution token
+ * (T2 deliverable 4, D-P4-03).
+ *
+ * A user principal whose org owns the project may call it; T3's `enforce` is
+ * where that is decided, and `agent.mintToken` is forbidden to every execution
+ * principal, so a token cannot mint a token.
+ *
+ * The response is the only place a token ever appears. Nothing stores it, so
+ * there is no idempotency to offer: a second call mints a second token, and
+ * both are valid until they expire. That is a deliberate property, not a gap —
+ * an idempotent mint would need somewhere to remember what it had issued.
+ */
+export const mintAgentToken: Handler = async ({ deps, params, request: _request }) => {
+  const scope = runScopeFrom(params);
+  const agentId = pathId("agent", params, "agentId");
+
+  const issuing = deps.tokens;
+  if (issuing === undefined) {
+    throw new HttpError(
+      501,
+      "tokens_unavailable",
+      "this control plane has no execution-token signer configured",
+    );
+  }
+
+  const run = await requireRun(deps.stores, scope);
+  const agent = await deps.stores.agents.get(scope, agentId);
+  if (agent === undefined) {
+    throw new HttpError(404, "not_found", `agent ${agentId} does not exist in this run`);
+  }
+  const node = await deps.stores.executionNodes.get(scope, agent.executionNodeId);
+  if (node === undefined) {
+    throw new HttpError(
+      404,
+      "not_found",
+      `execution node ${agent.executionNodeId} does not exist in this run`,
+    );
+  }
+  const program = await requireProgram(deps.stores, scope);
+
+  let minted: MintedExecutionToken;
+  try {
+    minted = await mintExecutionToken(issuing.signer, {
+      agent,
+      node,
+      run,
+      program,
+      issuer: issuing.issuer,
+      now: deps.clock.now(),
+    });
+  } catch (error) {
+    if (error instanceof ExecutionTokenStateError) {
+      throw new HttpError(409, "conflict", error.message);
+    }
+    if (error instanceof ExecutionTokenChainError) {
+      throw new HttpError(422, "incomplete_record", error.message);
+    }
+    throw error;
+  }
+
+  return {
+    status: 201,
+    body: MintExecutionTokenResponseSchema.parse({
+      token: minted.token,
+      agentId: agent.agentId,
+      expiresAt: minted.expiresAt,
+    }),
+  };
 };

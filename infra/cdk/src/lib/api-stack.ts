@@ -107,10 +107,25 @@ export class NightshiftApiStack extends Stack {
     const tableArn = imported("TableArn");
     const streamArn = imported("TableStreamArn");
 
+    const executionTokenKeyArn = imported("ExecutionTokenKeyArn");
+
     const environment = {
       NIGHTSHIFT_TABLE_NAME: imported("TableName"),
       NIGHTSHIFT_BUCKET_NAME: imported("BucketName"),
       NIGHTSHIFT_STAGE: stage,
+    };
+
+    /**
+     * What the API function needs beyond the data stack's names (P4, T2).
+     *
+     * The issuer is derived here, from the same rule that names the custom
+     * domain, rather than restated inside `apps/api`: there is one hostname rule
+     * per surface and it lives in `hostnames.ts`. The API reads the issuer it was
+     * given, so a stage cannot mint tokens claiming to be another stage's.
+     */
+    const tokenEnvironment = {
+      NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID: imported("ExecutionTokenKeyId"),
+      NIGHTSHIFT_TOKEN_ISSUER: `https://${apiHostnameFor(stage)}`,
     };
 
     // --- The control-plane API function ------------------------------------------
@@ -137,12 +152,20 @@ export class NightshiftApiStack extends Stack {
         actions: ["s3:PutObject"],
         resources: [`${imported("BucketArn")}/*`],
       }),
+      // `kms:Sign` on exactly one key, and no other KMS action on any key
+      // (T2 deliverable 2). The function mints execution tokens; it never
+      // decrypts anything, never reads key material, and cannot verify — the
+      // authorizer holds `kms:GetPublicKey` and does that.
+      new iam.PolicyStatement({
+        actions: ["kms:Sign"],
+        resources: [executionTokenKeyArn],
+      }),
     ]);
     const apiFunction = this.nodeFunction("ApiFunction", {
       entry: API_ENTRY,
       role: apiRole,
       logGroup: apiLogs,
-      environment,
+      environment: { ...environment, ...tokenEnvironment },
       // API Gateway gives an HTTP API integration 30 seconds; stay well inside it.
       timeout: Duration.seconds(10),
       memorySize: 512,

@@ -14,7 +14,7 @@
  */
 import { toErrorResponse } from "./errors.js";
 import { type ApiDeps, type ApiRequest, type ApiResponse, errorBody } from "./http.js";
-import { getAgent, listAgentsByNode, putAgent } from "./operations/agents.js";
+import { getAgent, listAgentsByNode, mintAgentToken, putAgent } from "./operations/agents.js";
 import { appendEvent, getRunState, listEvents } from "./operations/events.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
@@ -90,6 +90,9 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", path: `${RUN}/agents/{agentId}`, handler: putAgent },
   { method: "GET", path: `${RUN}/agents/{agentId}`, handler: getAgent },
   { method: "GET", path: `${NODE}/agents`, handler: listAgentsByNode },
+  // The execution identity's own credential (D-P4-03). User principals only,
+  // and never stored: the response is the one place a token appears.
+  { method: "POST", path: `${RUN}/agents/{agentId}/token`, handler: mintAgentToken },
 
   // Events.
   { method: "POST", path: `${RUN}/events`, handler: appendEvent },

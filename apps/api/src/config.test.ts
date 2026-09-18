@@ -5,6 +5,8 @@ const complete = {
   NIGHTSHIFT_TABLE_NAME: "table",
   NIGHTSHIFT_BUCKET_NAME: "bucket",
   NIGHTSHIFT_STAGE: "dev",
+  NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID: "11111111-2222-3333-4444-555555555555",
+  NIGHTSHIFT_TOKEN_ISSUER: "https://api.dev.nightshift.wildorder.dev",
 };
 
 describe("loadConfig", () => {
@@ -13,6 +15,8 @@ describe("loadConfig", () => {
       tableName: "table",
       bucketName: "bucket",
       stage: "dev",
+      executionTokenKeyId: "11111111-2222-3333-4444-555555555555",
+      tokenIssuer: "https://api.dev.nightshift.wildorder.dev",
     });
   });
 

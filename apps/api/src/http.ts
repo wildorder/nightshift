@@ -5,6 +5,7 @@
 import type { ErrorResponse } from "@nightshift/contracts";
 import type { ArtifactUploadSigner, Clock, NightshiftStores } from "@nightshift/core";
 import type { z } from "zod";
+import type { ExecutionTokenSigner } from "./tokens/mint.js";
 
 export interface ApiRequest {
   readonly method: string;
@@ -36,6 +37,20 @@ export interface ApiDeps {
    * misconfiguration names itself instead of looking like a crash.
    */
   readonly uploads?: ArtifactUploadSigner;
+  /**
+   * Signs execution tokens (T2, D-P4-03). Optional for the same reason `uploads`
+   * is: most tests drive the handler with no KMS at all, and the one route that
+   * needs a signer answers 501 rather than 500 when it is absent, so a
+   * misconfiguration names itself instead of looking like a crash.
+   */
+  readonly tokens?: ExecutionTokenIssuing;
+}
+
+/** Where execution tokens come from, and who they say issued them. */
+export interface ExecutionTokenIssuing {
+  readonly signer: ExecutionTokenSigner;
+  /** `https://api.<stage>.nightshift.wildorder.dev` — set from the stage by the stack. */
+  readonly issuer: string;
 }
 
 /** A refusal the handler decided on itself, as opposed to one raised by a domain rule. */

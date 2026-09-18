@@ -17,6 +17,7 @@
 import { Aws, CfnOutput, RemovalPolicy, Stack } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import type { Construct } from "constructs";
@@ -35,6 +36,15 @@ export const BUDGET_NOTIFY_EMAIL = "tim+nightshift@wingitlabs.com";
 export const RESOURCE_SERVER_IDENTIFIER = "nightshift";
 export const API_SCOPE_NAME = "api";
 export const MACHINE_SCOPE = `${RESOURCE_SERVER_IDENTIFIER}/${API_SCOPE_NAME}`;
+
+/**
+ * The alias of the key that signs execution tokens (P4, T2, D-P4-03).
+ *
+ * Aliased so the key is nameable by a human in the console and by a script that
+ * has not read a stack output; the API function is still given the key id.
+ */
+export const executionTokenKeyAlias = (stage: string): string =>
+  `nightshift-${stage}-execution-tokens`;
 
 /** The custom attribute the API reads, as claim `custom:active_org`, to select an org. */
 export const ACTIVE_ORG_ATTRIBUTE = "active_org";
@@ -116,6 +126,7 @@ export class NightshiftDataStack extends Stack {
   readonly table: dynamodb.Table;
   readonly bucket: s3.Bucket;
   readonly userPool: cognito.UserPool;
+  readonly executionTokenKey: kms.Key;
 
   constructor(scope: Construct, id: string, props: NightshiftStackProps) {
     const { stage, ...stackProps } = props;
@@ -160,6 +171,29 @@ export class NightshiftDataStack extends Stack {
       enforceSSL: true,
       removalPolicy: RemovalPolicy.RETAIN,
       autoDeleteObjects: false,
+    });
+
+    // --- KMS: the execution-token signing key (P4, T2, D-P4-03, A-35) -----------
+    //
+    // Asymmetric, sign/verify, RSA-2048. The reasoning for RSA over ECC P-256 is
+    // in `apps/api/src/tokens/mint.ts`, beside the code that depends on it:
+    // verification is the hot path and RSA verifies cheaply, and KMS returns an
+    // ECDSA signature DER-encoded where JOSE wants raw `r‖s`.
+    //
+    // The private key never leaves KMS. The API function holds `kms:Sign` on
+    // this one key and the authorizer holds `kms:GetPublicKey`; no process
+    // Nightshift runs can read the key material at all.
+    //
+    // Retained, and in the stateful stack, because losing it invalidates every
+    // token in flight and because a key is identity, not configuration. Rotation
+    // is not applicable: KMS does not rotate asymmetric key material, and an
+    // eight-hour token ceiling makes replacing the key a deploy plus a wait.
+    this.executionTokenKey = new kms.Key(this, "ExecutionTokenKey", {
+      description: `Signs Nightshift execution tokens (${stage})`,
+      keySpec: kms.KeySpec.RSA_2048,
+      keyUsage: kms.KeyUsage.SIGN_VERIFY,
+      alias: executionTokenKeyAlias(stage),
+      removalPolicy: RemovalPolicy.RETAIN,
     });
 
     // --- Cognito: control-plane identity (A-19, T9) -----------------------------
@@ -330,6 +364,8 @@ export class NightshiftDataStack extends Stack {
       MachineScope: MACHINE_SCOPE,
       AuthDomain: authDomain,
       HostedSignInUrl: hostedSignInUrl,
+      ExecutionTokenKeyId: this.executionTokenKey.keyId,
+      ExecutionTokenKeyArn: this.executionTokenKey.keyArn,
     };
     for (const [key, value] of Object.entries(exports) as [DataExportKey, string][]) {
       new CfnOutput(this, key, { value, exportName: dataExportName(stage, key) });

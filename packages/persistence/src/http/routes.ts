@@ -46,6 +46,8 @@ export const routes = {
 
   agent: (scope: RunScope, agentId: AgentId) => `${routes.inRun(scope)}/agents/${agentId}`,
   nodeAgents: (scope: RunScope, nodeId: ExecutionNodeId) => `${routes.node(scope, nodeId)}/agents`,
+  /** `POST` only: mints that agent's execution token (P4, D-P4-03). */
+  agentToken: (scope: RunScope, agentId: AgentId) => `${routes.agent(scope, agentId)}/token`,
 
   events: (scope: RunScope) => `${routes.inRun(scope)}/events`,
 

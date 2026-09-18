@@ -24,6 +24,17 @@ type Resource = { Type: string; Properties?: Record<string, unknown> };
 const resourcesOf = (template: Template, type: string): Resource[] =>
   Object.values(template.findResources(type)) as Resource[];
 
+/** The one resource of `type` whose logical id starts with `prefix`. */
+const resourceNamed = (template: Template, type: string, prefix: string): Resource => {
+  const found = Object.entries(template.findResources(type)).filter(([id]) =>
+    id.startsWith(prefix),
+  );
+  if (found.length !== 1) {
+    throw new Error(`expected exactly one ${type} named ${prefix}*, found ${found.length}`);
+  }
+  return found[0]?.[1] as Resource;
+};
+
 /** Every string anywhere inside a CloudFormation value, intrinsics included. */
 const stringsIn = (value: unknown): string[] => {
   if (typeof value === "string") return [value];
@@ -260,12 +271,19 @@ describe("NightshiftApiStack", () => {
     /**
      * The whole set, not a containment. P2 granted DynamoDB gets, puts and
      * queries and no more; P3 adds `s3:PutObject` for signing the artifact
-     * upload (T2) and nothing else. An action added without a decision fails
-     * here, which is the point of asserting the set.
+     * upload (T2) and nothing else; P4 adds `kms:Sign` for minting execution
+     * tokens (T2, D-P4-03). An action added without a decision fails here, which
+     * is the point of asserting the set.
      */
-    it("gives the API function exactly the actions its adapters and the signer use", () => {
+    it("gives the API function exactly the actions its adapters and the signers use", () => {
       expect(dataActionsOf(synth().template, "ApiFunctionRole")).toEqual(
-        new Set(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "s3:PutObject"]),
+        new Set([
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:Query",
+          "s3:PutObject",
+          "kms:Sign",
+        ]),
       );
     });
 
@@ -310,6 +328,24 @@ describe("NightshiftApiStack", () => {
       expect(resources).toContain("BucketArn");
       expect(resources).toContain("/*");
     });
+
+    /**
+     * The function signs execution tokens and does nothing else with any key
+     * (T2 deliverable 2). `kms:Decrypt`, `kms:GenerateDataKey` or a wildcard
+     * resource here would each turn one signing key into general KMS access.
+     */
+    it("grants exactly kms:Sign, on the execution-token key and nothing else", () => {
+      const statements = statementsOf(synth().template);
+      const kmsStatements = statements.filter((statement) =>
+        actionsOf(statement).some((action) => action.startsWith("kms:")),
+      );
+      expect(kmsStatements).toHaveLength(1);
+      expect(kmsStatements.flatMap(actionsOf)).toEqual(["kms:Sign"]);
+
+      const resources = JSON.stringify(kmsStatements[0]?.Resource);
+      expect(resources).toContain(dataExportName("dev", "ExecutionTokenKeyArn"));
+      expect(resources).not.toContain("*");
+    });
   });
 
   describe("functions", () => {
@@ -323,19 +359,40 @@ describe("NightshiftApiStack", () => {
     });
 
     it("configures functions with table, bucket, stage and source maps, and nothing secret", () => {
-      for (const fn of resourcesOf(synth().template, "AWS::Lambda::Function")) {
-        const { Variables: variables } = property<{ Variables: Record<string, unknown> }>(
-          fn,
+      const common = [
+        "NIGHTSHIFT_BUCKET_NAME",
+        "NIGHTSHIFT_STAGE",
+        "NIGHTSHIFT_TABLE_NAME",
+        "NODE_OPTIONS",
+      ];
+      // The API function alone mints execution tokens (P4, T2), so it alone
+      // carries the key id and the issuer. Neither is a secret: the key id names
+      // a key whose private half never leaves KMS, and the issuer is a public
+      // hostname. The materializer gets neither, because it signs nothing.
+      const apiOnly = ["NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID", "NIGHTSHIFT_TOKEN_ISSUER"];
+      const { template } = synth();
+
+      const api = property<{ Variables: Record<string, unknown> }>(
+        resourceNamed(template, "AWS::Lambda::Function", "ApiFunction"),
+        "Environment",
+      );
+      expect(Object.keys(api.Variables).sort()).toEqual([...common, ...apiOnly].sort());
+
+      const materializer = property<{ Variables: Record<string, unknown> }>(
+        resourceNamed(template, "AWS::Lambda::Function", "MaterializerFunction"),
+        "Environment",
+      );
+      expect(Object.keys(materializer.Variables).sort()).toEqual(common.sort());
+    });
+
+    it("names the issuer from the one hostname rule, per stage (D-P3-18, T2)", () => {
+      for (const stage of ["dev", "staging"]) {
+        const { template } = synth(stage);
+        const { Variables: variables } = property<{ Variables: Record<string, string> }>(
+          resourceNamed(template, "AWS::Lambda::Function", "ApiFunction"),
           "Environment",
         );
-        expect(Object.keys(variables).sort()).toEqual(
-          [
-            "NIGHTSHIFT_BUCKET_NAME",
-            "NIGHTSHIFT_STAGE",
-            "NIGHTSHIFT_TABLE_NAME",
-            "NODE_OPTIONS",
-          ].sort(),
-        );
+        expect(variables.NIGHTSHIFT_TOKEN_ISSUER).toBe(`https://${apiHostnameFor(stage)}`);
       }
     });
 
