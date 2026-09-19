@@ -5,7 +5,6 @@
  * taken from real runs on 0.154.0. What is tested is the adapter's own logic —
  * what it launches, what it lets through, and how it names an ending.
  */
-import { join } from "node:path";
 import type { ExecutionNode, RouteTarget, Scope } from "@nightshift/contracts";
 import {
   createFixtures,
@@ -241,7 +240,7 @@ describe("what it launches", () => {
     expect(calls[0]?.args).toContain(
       `shell_environment_policy.set={"PATH" = "${GUARD_DIR}:/usr/bin:/bin"}`,
     );
-    const guard = executables.get(join(GUARD_DIR, "git")) ?? "";
+    const guard = executables.get(`${GUARD_DIR}/git`) ?? "";
     expect(guard).toContain("exec '/usr/bin/git'");
     expect(guard).toContain("commit");
     expect(removed).toEqual([GUARD_DIR]);

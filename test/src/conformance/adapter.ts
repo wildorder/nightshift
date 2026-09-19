@@ -143,6 +143,17 @@ export const describeAdapterConformance = (
     };
 
     /**
+     * The job's routing decisions, once the route has its ending. The runner
+     * writes it *after* the node settles, so it trails `job.wait` by one write;
+     * a slow machine (the Windows CI leg) sees `pending` if it does not wait.
+     */
+    const routeEnded = (job: Delegated & { ctx: SliceContext }) =>
+      waitFor("the route's ending", async () => {
+        const decisions = await job.ctx.stores.routingDecisions.listByNode(job.scope, job.nodeId);
+        return decisions[0]?.outcome === "pending" ? undefined : decisions;
+      });
+
+    /**
      * What the worker said, when a job did not end as the fixture expects. A real
      * model's failure is only diagnosable from its own transcript, and the
      * fixture's state directory is gone the moment the test ends.
@@ -243,7 +254,7 @@ export const describeAdapterConformance = (
         const endings = ofNode.filter((event) => ENDINGS.includes(event.type));
         expect(endings.map((event) => event.type)).toEqual(["agent.completed"]);
         expect(agents[0]?.status).toBe("completed");
-        const routing = await ctx.stores.routingDecisions.listByNode(scope, job.nodeId);
+        const routing = await routeEnded(job);
         expect(routing).toHaveLength(1);
         if (options.pin !== undefined) expect(routing[0]?.wasOverride).toBe(true);
         // The route's ending, and Nightshift's own wall clock, for every adapter;
@@ -301,8 +312,7 @@ export const describeAdapterConformance = (
           types.indexOf("node.implemented"),
         );
         expect(types).not.toContain("node.integrated");
-        const routing = await ctx.stores.routingDecisions.listByNode(scope, job.nodeId);
-        expect(routing[0]?.outcome).toBe("verification_failed");
+        expect((await routeEnded(job))[0]?.outcome).toBe("verification_failed");
       },
       options.jobTimeoutMs,
     );
@@ -366,11 +376,7 @@ export const describeAdapterConformance = (
           (event) => event.executionNodeId === job.nodeId && ENDINGS.includes(event.type),
         );
         expect(endings.map((event) => event.type)).toEqual(["agent.cancelled"]);
-        const routing = await waitFor("the route's ending", async () => {
-          const decisions = await ctx.stores.routingDecisions.listByNode(scope, job.nodeId);
-          return decisions[0]?.outcome === "pending" ? undefined : decisions[0];
-        });
-        expect(routing.outcome).toBe("cancelled");
+        expect((await routeEnded(job))[0]?.outcome).toBe("cancelled");
       },
       options.jobTimeoutMs,
     );

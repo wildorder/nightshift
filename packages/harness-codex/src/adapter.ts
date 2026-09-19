@@ -44,7 +44,7 @@
  * cooperative stop. The `git` guard is a POSIX shell script and is **not
  * installed on Windows**; A-29 is the enforcement there as everywhere.
  */
-import { delimiter, join } from "node:path";
+import { posix } from "node:path";
 import type { AgentStatus } from "@nightshift/contracts";
 import type { Clock } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
@@ -141,8 +141,10 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
     if (realGit === undefined) return undefined;
     const guardDir = fs.makeTempDir("nightshift-codex-");
     state.guardDir = guardDir;
-    fs.writeExecutable(join(guardDir, "git"), buildGitGuard(realGit));
-    return `${guardDir}${delimiter}${state.env.PATH ?? ""}`;
+    // POSIX spelling on purpose: the guard exists only there, and a test that
+    // injects `platform` must read the same path on a Windows CI leg.
+    fs.writeExecutable(posix.join(guardDir, "git"), buildGitGuard(realGit));
+    return `${guardDir}${posix.delimiter}${state.env.PATH ?? ""}`;
   };
 
   const start = async (input: HarnessStartInput): Promise<HarnessHandle> => {
