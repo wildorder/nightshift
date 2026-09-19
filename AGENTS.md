@@ -313,6 +313,53 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   instance belong to P9. Nightshift never runs a worker as a per-job hosted
   environment.
 
+**As built for P5 (Harness Neutrality), 2026-09-19.** The details a later
+program needs and cannot derive; full account in
+`docs/programs/p5-harness-neutrality.md` §12 and §13.
+
+- The worker operations have **one implementation**, `createWorkerTools` in
+  `packages/execution/src/worker.ts`, and two callers: the worker-role MCP server
+  and `HarnessStartInput.tools`. The function form is built over
+  `ExecutionEnvironment.workerEnvironment(launch)`, which the composition root
+  supplies: stores and an outbox holding **that worker's execution token and
+  nothing else**. Never call a worker operation with the orchestrator's stores.
+- An adapter uses exactly one transport per worker. Both local adapters use the
+  MCP launch and never call `input.tools`.
+- `succeeded` is **not in the node transition table**: no event reaches it and
+  `transition()` cannot produce it. `maySucceed` and `finishRun` in `core` are
+  the only way in, for a `running` program or sub-program node; the API refuses a
+  node created as `succeeded`. Legality in the table still depends on status and
+  event alone (SC-P1-15). Do not add a kind guard to the table.
+- A `RoutingDecision` may be updated once: `usage` from empty, `outcome` from
+  `pending` (`explainRoutingUpdate` in `core`). The runner does both in one write
+  when a job settles, and always records its own `wallClockMs`.
+- **Token counts are not comparable across harnesses.** Claude's `inputTokens`
+  excludes cache reads; Codex's includes cached input and carries no cost on a
+  ChatGPT login. `RouteUsage` records what each harness said. Normalising is
+  P7's job.
+- Codex, measured on 0.154.0: `approval_policy="never"` alone refuses every MCP
+  call, so the Nightshift server (only) gets
+  `default_tools_approval_mode="approve"`; `workspace-write` does **not** stop
+  `git commit` in a worktree, so a `git` guard rides on
+  `shell_environment_policy.set` with `allow_login_shell=false`. **Never put the
+  guard on the Codex process's own `PATH`**: the worker's MCP server inherits it
+  and `job.complete` needs the real `git`. A `SIGTERM`ed `codex exec` exits 0, so
+  completion is exit 0 **and** `turn.completed`. A-29 is the enforcement; the
+  guard is a courtesy.
+- `apps/mcp/src/compose.ts` names both adapters and builds one only when a route
+  first chooses it (`createRoutedHarness`). `NIGHTSHIFT_HARNESS_MODULE` still
+  replaces the lot, for the scripted harness.
+- Two conformance suites: `test/src/conformance/harness.ts` (version 0, a
+  handle's lifecycle) and `adapter.ts` (version 1, three fixture jobs and the
+  nine Stage 4 items, read from the control plane). `npm test` runs version 1
+  over the scripted harness on both transports. `npm run conformance -- --harness
+  claude|codex|all` runs it for real against the deployed plane;
+  `NIGHTSHIFT_CONFORMANCE_HARNESS=codex npx vitest run
+  test/src/harness/adapter-conformance.test.ts` runs it against the local plane,
+  on the system clock, because the stepping clock expires a real worker's token.
+- When a real worker fails a fixture, read its transcript before touching the
+  suite: both P5 failures were Nightshift's, and the worker said so.
+
 **As built for P4 (Identity and Tenancy), closed 2026-09-17.** The details a
 later program needs and cannot derive; full account in
 `docs/programs/p4-identity-and-tenancy.md` §12.

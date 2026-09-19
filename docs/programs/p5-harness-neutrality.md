@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p5-harness-neutrality` |
 | Source stage | Stage 4 (Harness-Neutral Execution), less the AgentCore adapter, which moved to P9 at the 2026-09-16 restaging (`staging.md`) |
-| Status | **Contract ratified 2026-09-16** (D-P5-01 … D-P5-07), superseding a withdrawn P4 draft of the same program. Tasks T1 … T5 drafted. Implementation starts after P4. |
+| Status | **Contract ratified 2026-09-16** (D-P5-01 … D-P5-07), superseding a withdrawn P4 draft of the same program. **Built 2026-09-19**: T1 … T5 done, deployed, and the exit gate passed for both adapters against the deployed control plane (§13). Awaiting merge into `v1`. |
 | Depends on | P4 Identity and Tenancy (workers on execution tokens) |
 | Blocking decisions | none. O-05 is untouched: every adapter runs on the operator's machine. |
 
@@ -259,7 +259,172 @@ Specs live in `tasks/p5-harness-neutrality/`.
 | 2026-09-16 | A first draft of this program, numbered P4, was withdrawn the same day. It had put the AgentCore adapter here as one hosted session per job with the worktree shuttled across as a tarball, mapped providers to harnesses one to one, given the harness's execution role bucket-wide S3 access, and finished program nodes as `integrated`. Each was wrong against the vision or the P1 invariants; the owner caught the first three. The restaging in `staging.md` records where the third adapter went. | Human and agent |
 | 2026-09-16 | Contract drafted as P5; D-P5-01 … D-P5-07 proposed; tasks T1 … T5 drafted | Agent, for human ratification |
 | 2026-09-16 | **Contract ratified**, D-P5-01 … D-P5-07 as drafted. D-P5-01 and D-P5-04 recorded as A-37 and A-38. | Human |
+| 2026-09-19 | **`succeeded` has no edge in the job transition table.** T2's first implementation put `running → succeeded` in the table behind a guard on node kind. That made legality depend on something other than status and event, which is SC-P1-15, a P1 property; T2's own note says to stop at that point. `succeeded` is now a status with no incoming and no outgoing event. `maySucceed` and `finishRun` in `core` are the only way in, for a `running` program or sub-program node, and the API refuses a node *created* as `succeeded`. The property tests are untouched; the one edit is the cardinality guard, 14 statuses to 15, with the 15 events unchanged. | Agent, within D-P5-06 |
+| 2026-09-19 | **D-P5-02 amended by measurement: the Nightshift MCP server's tools are pre-approved.** With `approval_policy="never"` alone, Codex refuses every MCP tool call ("MCP tool call requires approval, but approval policy is never"), so a worker could neither report nor finish. The adapter passes `mcp_servers.<name>.default_tools_approval_mode="approve"` for the one server Nightshift supplies. This is the decision the Claude adapter makes with `--allowedTools mcp__nightshift__*`: made ahead of time by Nightshift, not at run time by a model or a human, which is what D-P5-02 forbids. `--approve-for-me` is still not used. | Agent, within D-P5-02 |
+| 2026-09-19 | **The `workspace-write` sandbox does not stop `git commit` in a job worktree** (measured on 0.154.0: exit 0, commit made). Codex takes no per-command deny list on its command line, so the adapter writes a `git` guard script and puts it first on the `PATH` of **model-run commands only** (`shell_environment_policy.set`, with `allow_login_shell=false` so a login shell cannot rebuild `PATH`). It is a guard at the point of use, as strong as the Claude adapter's `Bash(git commit:*)` denials and no stronger; the enforcement is A-29, because `completeJob` parents its snapshot on the base and a worker's own commits never become history. Not installed on Windows. | Agent, within D-P3-15 |
+| 2026-09-19 | **Verified against codex-cli 0.154.0, not 0.149.0.** The machine's Codex had moved on since the contract was written. Every flag in D-P5-02 still exists; `--ignore-rules` was added so the operator's execpolicy rules cannot vary a worker's behaviour. | Agent |
 
 ## 13. As built
 
-Not yet.
+Closed 2026-09-19 on `program/p5-harness-neutrality`. Everything below was
+measured or run, against codex-cli 0.154.0, Claude Code 2.1.273 and the deployed
+`dev` control plane.
+
+### 13.1 Task states
+
+| Task | State | Where |
+|------|-------|-------|
+| T1 | Done | `packages/harness/src/{harness,tools,brief}.ts`; `packages/execution/src/{worker,environment,runner}.ts`; `test/src/conformance/{adapter,fixture}.ts`; `test/src/harness/{scripts,scripted,worker,adapter-conformance.test}.ts` |
+| T2 | Done, deployed | `packages/core/src/rules/{transitions,routing-transitions}.ts`; `apps/api/src/operations/{nodes,records}.ts`; `packages/execution/src/{runner,shutdown}.ts`; smoke in `apps/api/src/smoke/p2.smoke.ts` |
+| T3 | Done | `packages/harness-codex/src/` |
+| T4 | Done | `packages/harness-claude/src/{stream,adapter}.ts`; `packages/routing/src/{compatibility,configured}.ts`; `apps/mcp/src/{compose,orchestrator}.ts`; `skills/nightshift/SKILL.md` |
+| T5 | Done | `apps/api/src/smoke/{conformance.smoke,deployed-slice,slice.smoke}.ts`; `scripts/{conformance,slice}.mjs`; this section |
+
+### 13.2 The two command lines, as they ran
+
+```text
+claude -p <brief> --output-format stream-json --verbose --model claude-sonnet-5
+       --mcp-config <tmp>/mcp.json --strict-mcp-config
+       --settings <tmp>/settings.json --setting-sources ""
+       --permission-mode <mode> --permission-prompts none
+       --tools <list> --allowedTools <list> --disallowedTools <list>
+       --no-session-persistence                                  (unchanged from P3)
+
+codex exec --json -C <worktree> --sandbox workspace-write
+      -c approval_policy="never"
+      -c allow_login_shell=false
+      -c shell_environment_policy.set={"PATH" = "<guard dir>:<PATH>"}
+      -c mcp_servers.nightshift.command="<node>"
+      -c mcp_servers.nightshift.args=["<…>/nightshift-mcp.js"]
+      -c mcp_servers.nightshift.env={…seven identity variables, the endpoint, the execution token…}
+      -c mcp_servers.nightshift.default_tools_approval_mode="approve"
+      --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
+      -m gpt-5.5 <brief>
+```
+
+The Codex process's environment is `PATH`, `HOME`, `CODEX_HOME` and the proxy
+and certificate variables when set. Nothing of the operator's Nightshift
+session, no `AWS_*`, and no `OPENAI_API_KEY`: D-P5-02 pins Codex to the
+operator's login, and a key passed through would change who pays.
+
+### 13.3 The exit gate, per adapter (SC-P5-17)
+
+`npm run conformance -- --harness all`, twice, against the deployed control
+plane. Each fixture job runs in its own throwaway project, removed afterwards;
+no cleanup failed in either run.
+
+| Adapter | Model | Job | Ended | Wall clock (run 1 / run 2) | Usage recorded on the route (run 1) |
+|---------|-------|-----|-------|----------------------------|--------------------------------------|
+| claude | claude-sonnet-5 | completing | `integrated` | 31.4 s / 21.2 s | 12 in, 2 717 out, $0.111, 28.7 s wall |
+| claude | claude-sonnet-5 | deterministic failure | `verification_failed` | 18.9 s / 17.5 s | |
+| claude | claude-sonnet-5 | cancellation | `cancelled` | 5.7 s / 5.1 s | |
+| codex | gpt-5.5 | completing | `integrated` | 77.3 s / 73.2 s | 320 711 in, 2 635 out, 75.5 s wall |
+| codex | gpt-5.5 | deterministic failure | `verification_failed` | 57.9 s / 42.3 s | |
+| codex | gpt-5.5 | cancellation | `cancelled` | 9.9 s / 10.7 s | |
+
+**The two token columns are not comparable, and P7 must not compare them as they
+stand.** Claude's `usage.input_tokens` excludes cache reads, which is nearly all
+of a Claude Code run's input; Codex's `input_tokens` includes its cached tokens
+(in the recorded run checked in as the stream fixture, 227 968 of 253 722). Codex reports no
+cost on a ChatGPT login. `RouteUsage` records what each harness said, faithfully;
+normalising it is routing's problem, not the adapter's.
+
+`npm run slice` then ran its three phases (scripted 5.5 s, Claude 20.7 s, Codex
+63.5 s), the Codex phase differing from the Claude one **only in the program's
+model policy**. `npm run smoke`: 83 passed, three times, after the one redeploy.
+
+### 13.4 What the first real Codex worker found
+
+As T5's notes predicted, and none of it was findable with the scripted harness.
+Each is a brief or enforcement change; the suite was not edited for any of them.
+
+1. **`approval_policy="never"` refuses every MCP tool call.** §12, second entry.
+   Found before any job ran, by a probe.
+2. **The sandbox allows `git commit` in a worktree.** §12, third entry.
+3. **The git guard, first version, broke `job.complete`.** It was put on the
+   Codex *process's* `PATH`. The worker's Nightshift MCP server is a child of
+   that process, inherits its environment, and `job.complete` is where Nightshift
+   itself runs `git add` to collect the work; the guard refused Nightshift its
+   own commit. The worker reported this precisely, in its `job.fail` reason. The
+   guard now rides on `shell_environment_policy.set`, which applies to commands
+   the model runs and to nothing else.
+4. **A `SIGTERM`ed `codex exec` exits 0**, having printed two lines; a `SIGINT`ed
+   one exits 1. So exit 0 is not completion, exactly as P3 found for Claude by a
+   different route. The condition is exit 0 **and** `turn.completed` **and** no
+   `turn.failed`.
+5. **The local test plane's stepping clock expired a real worker's token.** It
+   advances a second per reading; a job of real minutes reads it thousands of
+   times, and `job.complete` was refused as expired after flawless work. Not a
+   product defect: the deployed plane keeps real time. The opt-in local
+   real-adapter leg now runs on the system clock (`LocalContextOptions.realTime`).
+
+The brief itself needed one paragraph for Codex and no corrections: on its first
+run with working tools the worker read `job.get`, explored with `rg` and `sed`,
+edited source, test and the entry point, recorded its decision, ran both
+verification commands, and completed.
+
+### 13.5 Stream and hook mapping (T3 deliverable 2)
+
+In `packages/harness-codex/src/stream.ts`, recorded from real runs and tested
+against `__fixtures__/codex-stream-completing.jsonl`, the transcript of the
+completing fixture job. `agent.subagent_created` and `agent.context_compacted`
+have no source in `codex exec --json`; both are observations an adapter makes
+when its harness has them (D-P3-09), not lifecycle, and nothing is configured to
+fake them. The lifecycle never depends on the stream.
+
+### 13.6 Departures from the task specs
+
+- **T1.** `ExecutionEnvironment` gained `workerEnvironment(launch)`, supplied by
+  the composition root. The spec has `createWorkerTools(environment, identity)`
+  and says nothing about *whose* credentials the function transport writes with.
+  Called in the orchestrator's process with the orchestrator's stores, a
+  worker's operations would be recorded as the human's and allowed what a worker
+  is not (A-35). So the function form runs over stores holding that worker's
+  execution token and nothing else, exactly as the worker-role MCP server does.
+- **T1.** The scripted harness gained a `functions` transport (the same scripts
+  over `input.tools`, in-process) and keeps a transcript, so artifact collection
+  and the transport P9 will use are both proven offline. The version 0 suite
+  (`conformance/harness.ts`) stays, as the spec asks; version 1 is
+  `conformance/adapter.ts`.
+- **T1.** Identity propagation's refusal half is asserted in the *cancellation*
+  job: a token can only be minted for a live agent, and that is the one fixture
+  whose worker is reliably still running.
+- **T2.** `succeeded` is outside the transition table rather than guarded within
+  it. §12, first entry.
+- **T2.** The runner writes Nightshift's own `wallClockMs` on every route, so an
+  adapter that reports no usage still leaves a measured one. `escalated` counts
+  as an ending of a route.
+- **T3.** `--ignore-rules`, `allow_login_shell=false`, the pre-approval and the
+  guard are all additions to D-P5-02's command line, each measured. §12.
+- **T4.** "Constructing only the adapter the route chose" is a `Harness` in the
+  composition root (`createRoutedHarness`) that builds an adapter the first time
+  a route names it. The execution layer still holds exactly one `Harness`.
+- **T4.** The table's default OpenAI model is `gpt-5.5`, chosen from what the
+  operator's Codex login lists; a program that cares names its models.
+- **T5.** Conformance pins the harness on `delegate` against a policy that allows
+  both providers, so the override path is exercised live and recorded
+  (`wasOverride: true`); the slice's Codex phase changes the policy instead.
+  Between them both halves of SC-P5-16 run against the deployed plane.
+
+### 13.7 Success criteria
+
+| SC | Discharged by |
+|----|---------------|
+| SC-P5-01 … 09 | `describeAdapterConformance`, passing for `claude` and `codex` against the deployed plane (§13.3), and for the scripted harness over both transports in `npm test` |
+| SC-P5-10 | `test/src/conformance/fixture.ts`: three Job Contracts, no adapter named in any, run unchanged through all four legs |
+| SC-P5-11 | The failure and cancellation rows of §13.3 |
+| SC-P5-12 | `npm run check:architecture`; `compose.ts` is the only module naming either adapter |
+| SC-P5-13 | `test/src/harness/adapter-conformance.test.ts`, in `npm test` |
+| SC-P5-14 | Conformance asserts a terminal `outcome` on all three jobs and tokens where `capabilities.usage`; `routing-transitions.test.ts`; the smoke test |
+| SC-P5-15 | `transitions.test.ts` (no event reaches `succeeded`; `maySucceed` over every kind and status); `nodes.test.ts`; the smoke test; the completing job ends its run and reads the root back `succeeded` |
+| SC-P5-16 | `configured.test.ts`; live, both ways (§13.6, last item) |
+| SC-P5-17 | §13.3 |
+
+### 13.8 What P5 deliberately did not do
+
+- Nothing remote. Both adapters are local processes on the operator's login
+  (D-P5-07); the `bedrock` and `agentcore` rows of the table are refused by name
+  until P9.
+- No cost or capability reasoning in routing. The first compatible pair in the
+  policy's order wins; P7 replaces the rule and inherits the record.
+- More than one job at a time is still P6's.
