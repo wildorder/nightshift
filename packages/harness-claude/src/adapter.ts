@@ -438,7 +438,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
     return settled === undefined ? "started" : agentStatusForExit(settled);
   };
 
-  return { id: CLAUDE_HARNESS_ID, start, cancel, status };
+  return { id: CLAUDE_HARNESS_ID, capabilities: { usage: false }, start, cancel, status };
 };
 
 const messageOf = (error: unknown): string =>

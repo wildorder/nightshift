@@ -63,6 +63,7 @@ import {
   DEFAULT_CANCEL_GRACE_MS,
   type ExecutionEnvironment,
   type RunSession,
+  type WorkerLaunchIdentity,
 } from "./environment.js";
 import {
   addWorktree,
@@ -75,6 +76,7 @@ import {
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
 import { verifyNode } from "./verify.js";
+import { createWorkerTools } from "./worker.js";
 
 /**
  * P3 allows exactly one running child under the root, whatever the program's
@@ -104,28 +106,6 @@ export interface RunJobInput {
   readonly route: RouteChoice;
   /** Builds the worker's MCP server launch, given the identity it must carry. */
   readonly mcp: (identity: WorkerLaunchIdentity) => McpLaunch;
-}
-
-/**
- * What the worker's MCP server must be told about itself (contract §4.2, §4.5).
- *
- * The identity says *which* agent it is; the token is *how it proves it*. Both
- * are set by the party that spawns the worker, which is never the worker.
- */
-export interface WorkerLaunchIdentity {
-  readonly projectId: string;
-  readonly programId: string;
-  readonly runId: string;
-  readonly nodeId: ExecutionNodeId;
-  readonly agentId: AgentId;
-  readonly jobContractId: JobContractId;
-  readonly worktree: string;
-  /**
-   * The worker's only credential (D-P4-06). Bound to this agent, this node and
-   * this run, expiring within the cost policy's wall clock. Never logged, never
-   * written to disk.
-   */
-  readonly executionToken: string;
 }
 
 export interface StartedJob {
@@ -308,6 +288,32 @@ export const runJob = async (
   const transcript = environment.paths.transcript(session.scope.runId, agentId);
   await mkdir(dirname(transcript), { recursive: true });
 
+  // One identity, two transports (A-37). The launch is for an adapter that can be
+  // handed a process to spawn; the tools are the same four operations as
+  // functions, over stores that hold this worker's token and nothing else. Which
+  // one a worker's calls arrive through is the adapter's business, and never both.
+  const launch: WorkerLaunchIdentity = {
+    projectId: session.scope.projectId,
+    programId: session.scope.programId,
+    runId: session.scope.runId,
+    nodeId,
+    agentId,
+    jobContractId: input.job.jobContractId,
+    worktree,
+    executionToken,
+  };
+  const tools = createWorkerTools(
+    environment.workerEnvironment(launch),
+    {
+      scope: session.scope,
+      executionNodeId: nodeId,
+      jobContractId: input.job.jobContractId,
+      agentId,
+      worktree,
+    },
+    ids,
+  );
+
   let handle: HarnessHandle;
   try {
     handle = await environment.harness.start({
@@ -317,16 +323,8 @@ export const runJob = async (
       program: session.program,
       worktree,
       model: input.route.target,
-      mcp: input.mcp({
-        projectId: session.scope.projectId,
-        programId: session.scope.programId,
-        runId: session.scope.runId,
-        nodeId,
-        agentId,
-        jobContractId: input.job.jobContractId,
-        worktree,
-        executionToken,
-      }),
+      mcp: input.mcp(launch),
+      tools,
       sink,
       transcriptPath: transcript,
     });

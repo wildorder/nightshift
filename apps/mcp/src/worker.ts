@@ -14,14 +14,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ReversibilitySchema } from "@nightshift/contracts";
 import type { IdGenerator } from "@nightshift/core";
-import { nowIso } from "@nightshift/core";
 import {
-  completeJob,
-  failJob,
-  reportProgress,
+  createWorkerTools,
   type WorkerEnvironment,
   type WorkerIdentity,
 } from "@nightshift/execution";
+import { NoCheckpointError } from "@nightshift/harness";
 import { z } from "zod";
 import { guarded, ok, ToolRefusal } from "./results.js";
 
@@ -33,6 +31,9 @@ export interface WorkerDeps {
 
 export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void => {
   const { identity, environment } = deps;
+  // The one implementation of the four operations (A-37). This role is the stdio
+  // transport for it and adds nothing but the words a model reads back.
+  const tools = createWorkerTools(environment, identity, deps.ids);
 
   server.registerTool(
     "job.get",
@@ -89,7 +90,7 @@ export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void =
     },
     async ({ message, percent }) =>
       guarded(async () => {
-        reportProgress(environment, identity, message, percent);
+        await tools.progress(message, percent);
         return ok("Noted.", { message });
       }),
   );
@@ -105,11 +106,7 @@ export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void =
     },
     async ({ summary }) =>
       guarded(async () => {
-        const result = await completeJob(environment, identity, summary);
-        // The flush matters: the harness may kill this process the moment the
-        // tool returns, and an unsent `node.implemented` would make a completed
-        // job look like a silent one.
-        await environment.outbox.flush(5_000);
+        const result = await tools.complete(summary);
 
         if (result.kind === "scope_violation") {
           // Already durably failed. The worker is being told, not asked.
@@ -145,8 +142,7 @@ export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void =
     },
     async ({ reason }) =>
       guarded(async () => {
-        await failJob(environment, identity, reason);
-        await environment.outbox.flush(5_000);
+        await tools.fail(reason);
         return ok("Recorded. The job has failed durably, with your reason attached.", { reason });
       }),
   );
@@ -168,41 +164,9 @@ export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void =
     },
     async (input) =>
       guarded(async () => {
-        const { stores, clock } = environment;
-        const checkpoints = await stores.checkpoints.listByRun(identity.scope);
-        const latest = checkpoints.items.at(-1);
-        if (latest === undefined) {
-          throw new ToolRefusal("not_found", "this run has no checkpoint to record against");
-        }
-        const decisionId = deps.ids.next("dec");
-        await stores.decisions.put({
-          schemaVersion: 1,
-          ...identity.scope,
-          decisionId,
-          // On its own node, not the run's root: this is the worker's decision.
-          executionNodeId: identity.executionNodeId,
-          agentId: identity.agentId,
-          context: input.context,
-          alternatives: input.alternatives.map((alternative) =>
-            alternative.rejectedBecause === undefined
-              ? { summary: alternative.summary }
-              : { summary: alternative.summary, rejectedBecause: alternative.rejectedBecause },
-          ),
-          choice: input.choice,
-          rationale: input.rationale,
-          reversibility: input.reversibility,
-          checkpointBefore: latest.checkpointId,
-          affectedNodes: [],
-          authority: "agent",
-          supersedesDecisionId: null,
-          createdAt: nowIso(clock),
-        });
-        environment.outbox.emit({
-          type: "decision.recorded",
-          source: "mcp",
-          payload: { decisionId, choice: input.choice },
-          executionNodeId: identity.executionNodeId,
-          agentId: identity.agentId,
+        const { decisionId } = await tools.recordDecision(input).catch((error: unknown) => {
+          if (error instanceof NoCheckpointError) throw new ToolRefusal("not_found", error.message);
+          throw error;
         });
         return ok(`Recorded decision ${decisionId}.`, { decisionId });
       }),

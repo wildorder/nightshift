@@ -90,6 +90,7 @@ export const createFakeHarness = (options: FakeHarnessOptions): Harness => {
 
   return {
     id: options.id ?? "fake",
+    capabilities: { usage: false },
 
     start: async (input) => {
       // Before anything: the caller's chance to assert that the central record

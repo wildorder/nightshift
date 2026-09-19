@@ -49,6 +49,8 @@ import {
   nodeGitRunner,
   type RunSession,
   startRun,
+  type WorkerEnvironment,
+  type WorkerLaunchIdentity,
 } from "@nightshift/execution";
 import type { Harness } from "@nightshift/harness";
 import {
@@ -273,6 +275,39 @@ export const createBaseWorld = async (options: BaseWorldOptions = {}): Promise<B
   return base;
 };
 
+/**
+ * A worker's environment, as the composition root builds it: stores and an
+ * outbox over a transport holding the worker's execution token, and nothing else.
+ */
+export const workerEnvironmentIn =
+  (base: BaseWorld) =>
+  (launch: WorkerLaunchIdentity): WorkerEnvironment => {
+    const stores = createHttpStores({
+      transport: createFetchTransport({
+        endpoint: base.plane.url,
+        tokens: staticTokenProvider(launch.executionToken),
+      }),
+    });
+    return {
+      stores,
+      clock: base.clock,
+      git: nodeGitRunner,
+      outbox: createEventOutbox({
+        events: stores.events,
+        scope: {
+          projectId: launch.projectId,
+          programId: launch.programId,
+          runId: launch.runId,
+        } as RunScope,
+        clock: base.clock,
+        ids: base.ids,
+        writerId: launch.agentId,
+        initialDelayMs: 1,
+        maxDelayMs: 4,
+      }),
+    };
+  };
+
 /** Paths under a world's own state directory, never the program checkout. */
 export const localPathsIn = (stateDir: string): LocalPaths => ({
   worktree: (runId, nodeId) => join(stateDir, "wt", runId.slice(-8), nodeId.slice(-8)),
@@ -355,6 +390,7 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
     paths: localPathsIn(stateDir),
     git: nodeGitRunner,
     outbox,
+    workerEnvironment: workerEnvironmentIn(base),
     verificationTimeoutMs: options.verificationTimeoutMs ?? 60_000,
     cancelGraceMs: 2_000,
   };

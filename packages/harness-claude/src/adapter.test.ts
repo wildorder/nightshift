@@ -20,7 +20,7 @@ import {
   makeRootNode,
 } from "@nightshift/core";
 import type { HarnessExit, HarnessStartInput, HookEvent, McpLaunch } from "@nightshift/harness";
-import { millis } from "@nightshift/harness";
+import { millis, refusingWorkerTools } from "@nightshift/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeHarness, SPAWN_FAILURE_EXIT_CODE } from "./adapter.js";
 import type { AdapterFileSystem, SpawnedChild, SpawnLike, SpawnOptions } from "./process.js";
@@ -173,6 +173,7 @@ const startInput = (
     worktree: "/state/nightshift/worktrees/run_1/node_1",
     model: MODEL,
     mcp: MCP,
+    tools: refusingWorkerTools("the adapter's unit tests start no real job"),
     sink: { emit: (event) => void events.push(event) },
     ...(overrides.transcriptPath === undefined ? {} : { transcriptPath: overrides.transcriptPath }),
   };

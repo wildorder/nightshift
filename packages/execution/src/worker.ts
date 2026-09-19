@@ -1,11 +1,13 @@
 /**
  * The worker-side half of a job (T5 deliverable 7).
  *
- * Three functions, called by the **worker** role of the MCP server when the
- * model decides it is done, stuck, or has something to report. They live here
- * rather than in `apps/mcp` so that "what a completed job is" has exactly one
- * implementation, shared by the server role that receives the tool call and the
- * runner that waits for its result.
+ * The four worker operations and the one object that bundles them,
+ * {@link createWorkerTools}. They live here rather than in `apps/mcp` so that
+ * "what a completed job is" has exactly one implementation. Two callers reach
+ * it, and neither knows about the other (A-37): the **worker** role of the MCP
+ * server, when a local harness's model calls a tool over stdio; and an adapter
+ * whose harness calls back into its own process, through
+ * `HarnessStartInput.tools`.
  *
  * ## The seam this module sits on is A-05
  *
@@ -19,31 +21,26 @@
  * A worker can therefore claim completion and be wrong, which is the point. What
  * it cannot do is make that claim into a verdict.
  */
-import type { CommitSha, ExecutionNode, JobContract } from "@nightshift/contracts";
-import { markImplemented, nowIso, type ProjectStores, transition } from "@nightshift/core";
-import type { ExecutionEnvironment, WorkerIdentity } from "./environment.js";
+import type { Decision, ExecutionNode, JobContract } from "@nightshift/contracts";
+import {
+  type IdGenerator,
+  markImplemented,
+  nowIso,
+  type ProjectStores,
+  transition,
+} from "@nightshift/core";
+import {
+  NoCheckpointError,
+  type WorkerCompletion,
+  type WorkerDecisionInput,
+  type WorkerTools,
+} from "@nightshift/harness";
+import type { WorkerEnvironment, WorkerIdentity } from "./environment.js";
 import { baseRef, changedPaths, revParse, snapshotCommit } from "./git/index.js";
 import { checkChangedPaths, describeScopeViolation } from "./scope-check.js";
 
-/** What the worker half needs. A narrower set than the runner's. */
-export type WorkerEnvironment = Pick<ExecutionEnvironment, "stores" | "clock" | "git" | "outbox">;
-
-export type CompleteJobResult =
-  | {
-      readonly kind: "implemented";
-      readonly commitSha: CommitSha;
-      readonly changedPaths: readonly string[];
-    }
-  | {
-      /**
-       * The snapshot touched paths outside the node's effective scope. The job is
-       * **already durably failed** by the time this is returned; the worker is
-       * being told, not asked.
-       */
-      readonly kind: "scope_violation";
-      readonly offending: readonly string[];
-      readonly reason: string;
-    };
+/** The same shape the adapter contract names, so the two cannot drift. */
+export type CompleteJobResult = WorkerCompletion;
 
 const requireNode = async (
   stores: ProjectStores,
@@ -191,3 +188,85 @@ export const failJob = async (
     agentId: identity.agentId,
   });
 };
+
+/**
+ * A decision on the worker's own node, against the run's latest checkpoint.
+ *
+ * On its own node, not the run's root: this is the worker's decision, and the
+ * replay cone (P8) is computed from where a decision was made.
+ */
+export const recordWorkerDecision = async (
+  environment: WorkerEnvironment,
+  identity: WorkerIdentity,
+  ids: IdGenerator,
+  input: WorkerDecisionInput,
+): Promise<Decision> => {
+  const { stores, clock, outbox } = environment;
+  const checkpoints = await stores.checkpoints.listByRun(identity.scope);
+  const latest = checkpoints.items.at(-1);
+  if (latest === undefined) throw new NoCheckpointError();
+
+  const decisionId = ids.next("dec");
+  const decision: Decision = {
+    schemaVersion: 1,
+    ...identity.scope,
+    decisionId,
+    executionNodeId: identity.executionNodeId,
+    agentId: identity.agentId,
+    context: input.context,
+    alternatives: input.alternatives.map((alternative) =>
+      alternative.rejectedBecause === undefined
+        ? { summary: alternative.summary }
+        : { summary: alternative.summary, rejectedBecause: alternative.rejectedBecause },
+    ),
+    choice: input.choice,
+    rationale: input.rationale,
+    reversibility: input.reversibility,
+    checkpointBefore: latest.checkpointId,
+    affectedNodes: [],
+    authority: "agent",
+    supersedesDecisionId: null,
+    createdAt: nowIso(clock),
+  };
+  await stores.decisions.put(decision);
+  outbox.emit({
+    type: "decision.recorded",
+    source: "mcp",
+    payload: { decisionId, choice: input.choice },
+    executionNodeId: identity.executionNodeId,
+    agentId: identity.agentId,
+  });
+  return decision;
+};
+
+/** How long an ending waits for its own events to be delivered before returning. */
+export const WORKER_FLUSH_DEADLINE_MS = 5_000;
+
+/**
+ * The four worker operations as one object (A-37).
+ *
+ * `complete` and `fail` flush before they return, because whatever called them
+ * may be gone the moment they do: a harness kills its process when the model
+ * says it is finished, and an unsent `node.implemented` would make a completed
+ * job look like a silent one. `progress` and `recordDecision` do not wait; their
+ * events ride the outbox in order and are flushed by the ending.
+ */
+export const createWorkerTools = (
+  environment: WorkerEnvironment,
+  identity: WorkerIdentity,
+  ids: IdGenerator,
+): WorkerTools => ({
+  progress: async (message, percent) => {
+    reportProgress(environment, identity, message, percent);
+  },
+  complete: async (summary) => {
+    const result = await completeJob(environment, identity, summary);
+    await environment.outbox.flush(WORKER_FLUSH_DEADLINE_MS);
+    return result;
+  },
+  fail: async (reason) => {
+    await failJob(environment, identity, reason);
+    await environment.outbox.flush(WORKER_FLUSH_DEADLINE_MS);
+  },
+  recordDecision: (input) => recordWorkerDecision(environment, identity, ids, input),
+});

@@ -23,7 +23,7 @@ import {
   makeNode,
   makeProgramContract,
 } from "@nightshift/core";
-import { millis } from "@nightshift/harness";
+import { millis, refusingWorkerTools } from "@nightshift/harness";
 import { describeHarnessConformance } from "../conformance/harness.js";
 import { createScriptedHarness, WORKER_SCRIPT_ENV, workerEntry } from "./scripted.js";
 
@@ -65,6 +65,9 @@ const startInput = async (script: "fail" | "hang") => {
       // unchanged and reads its own variable back out of it.
       env: { [WORKER_SCRIPT_ENV]: script },
     },
+    // The handle and its lifecycle are what this suite asserts; the v1 suite
+    // (`conformance/worker.ts`) is where a real job runs.
+    tools: refusingWorkerTools("this start input describes no real job"),
   };
 };
 

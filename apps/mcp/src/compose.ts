@@ -20,6 +20,7 @@
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
 import type {
   ArtifactBodyStore,
   ExecutionTokenMinter,
@@ -27,8 +28,8 @@ import type {
   ProjectStores,
 } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
-import type { GitRunner, WorkerLaunchIdentity } from "@nightshift/execution";
-import { nodeGitRunner } from "@nightshift/execution";
+import type { GitRunner, WorkerEnvironment, WorkerLaunchIdentity } from "@nightshift/execution";
+import { createEventOutbox, nodeGitRunner } from "@nightshift/execution";
 import type { Harness, McpLaunch } from "@nightshift/harness";
 import { createClaudeHarness } from "@nightshift/harness-claude";
 import {
@@ -76,6 +77,11 @@ export interface Runtime {
   readonly endpoint: string;
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
+  /**
+   * The same worker, reached without a process (A-37): stores and an outbox over
+   * a transport that holds that worker's execution token and nothing else.
+   */
+  workerEnvironment(identity: WorkerLaunchIdentity): WorkerEnvironment;
 }
 
 /** A worker-role server started without the one credential it is allowed to have. */
@@ -234,6 +240,43 @@ export const createWorkerLaunch =
  */
 export const createWorkerLaunchForTest = createWorkerLaunch;
 
+/**
+ * The environment a worker's operations run in when an adapter calls them as
+ * functions rather than through a spawned MCP server (A-37, D-P5-01).
+ *
+ * Built exactly as `createWorkerTransport` builds a worker process's: the
+ * execution token, statically, and nothing else. The orchestrator's own
+ * transport is deliberately not reused, because a write made on a worker's
+ * behalf with a human's token would be recorded as the human's (A-35), and would
+ * be allowed things a worker is not.
+ */
+export const createWorkerEnvironment =
+  (endpoint: string) =>
+  (identity: WorkerLaunchIdentity): WorkerEnvironment => {
+    const transport = createFetchTransport({
+      endpoint,
+      tokens: staticTokenProvider(identity.executionToken),
+    });
+    const stores = createHttpStores({ transport });
+    return {
+      stores,
+      clock: systemClock,
+      git: nodeGitRunner,
+      outbox: createEventOutbox({
+        events: stores.events,
+        scope: {
+          projectId: ProjectIdSchema.parse(identity.projectId),
+          programId: ProgramIdSchema.parse(identity.programId),
+          runId: RunIdSchema.parse(identity.runId),
+        },
+        clock: systemClock,
+        ids: createUlidIdGenerator(),
+        // A worker's events are its own writer's (A-30), keyed by its agent id.
+        writerId: identity.agentId,
+      }),
+    };
+  };
+
 export const createRuntime = async (env: Env, role: Role = "orchestrator"): Promise<Runtime> => {
   const { transport, endpoint } = await createTransport(env, role);
   return {
@@ -248,5 +291,6 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     ids: createUlidIdGenerator(),
     clock: systemClock,
     workerLaunch: createWorkerLaunch(env, endpoint),
+    workerEnvironment: createWorkerEnvironment(endpoint),
   };
 };
