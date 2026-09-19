@@ -6,6 +6,7 @@ export * from "./event-stream.js";
 export * from "./execution-tree.js";
 export * from "./ownership.js";
 export * from "./permissions.js";
+export * from "./routing-transitions.js";
 export * from "./run-transitions.js";
 export * from "./scope.js";
 export * from "./transitions.js";

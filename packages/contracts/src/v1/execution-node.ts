@@ -31,6 +31,12 @@ export const ExecutionNodeStatusSchema = z.enum([
   "examination_failed",
   "sealed",
   "integrated",
+  /**
+   * A finished **program or sub-program** node (P5, D-P5-06). Never a job node:
+   * a job that worked is `integrated`, and only through `verified` (A-05). `core`
+   * guards the edge by node kind.
+   */
+  "succeeded",
   "failed",
   "cancelled",
   "interrupted",

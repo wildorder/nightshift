@@ -44,7 +44,7 @@ import {
   nowIso,
   pendingCount,
 } from "@nightshift/core";
-import { runJob, type StartedJob } from "@nightshift/execution";
+import { endProgramNode, runJob, type StartedJob } from "@nightshift/execution";
 import { fixedRoute, RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
 import type { RefusalCode } from "./results.js";
@@ -299,6 +299,9 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           endedAt: nowIso(clock),
           ...(reason === undefined ? {} : { outcomeReason: reason }),
         });
+        // The program node follows its run (D-P5-06): `succeeded`, never
+        // `integrated`, because a program node integrates nothing.
+        await endProgramNode(state.runtime, attached.session, outcome, reason);
         attached.outbox.emit({
           type: outcome === "succeeded" ? "run.completed" : `run.${outcome}`,
           source: "control-plane",

@@ -52,6 +52,7 @@ export {
 export { checkChangedPaths, describeScopeViolation, type ScopeCheck } from "./scope-check.js";
 export {
   DEFAULT_FLUSH_DEADLINE_MS,
+  endProgramNode,
   type ShutdownInput,
   type ShutdownResult,
   shutdown,

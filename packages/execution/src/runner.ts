@@ -40,6 +40,7 @@ import type {
   JobContract,
   JobContractId,
   RouteChoice,
+  RouteUsage,
   RoutingDecision,
   Scope,
 } from "@nightshift/contracts";
@@ -47,6 +48,7 @@ import {
   ConcurrencyLimitExceededError,
   nowIso,
   OCCUPIES_CONCURRENCY_SLOT,
+  routeOutcomeForNodeStatus,
   transition,
   transitionAgent,
 } from "@nightshift/core";
@@ -372,6 +374,8 @@ export const runJob = async (
     handle,
     sink,
     stopMode: () => stopMode,
+    routingDecision,
+    startedAtMs: clock.now(),
   });
 
   const stop = async (mode: "cancelled" | "interrupted"): Promise<void> => {
@@ -410,6 +414,9 @@ interface FinishInput {
   readonly sink: RecordingHookSink;
   /** Why we asked the worker to stop, when we did. See `StartedJob.stop`. */
   stopMode(): "cancelled" | "interrupted" | undefined;
+  /** As recorded before the work began: `usage` empty, `outcome` pending (A-13). */
+  readonly routingDecision: RoutingDecision;
+  readonly startedAtMs: number;
 }
 
 /**
@@ -423,8 +430,13 @@ interface FinishInput {
  */
 const finishJob = async (environment: ExecutionEnvironment, input: FinishInput): Promise<void> => {
   const { stores, clock, outbox } = environment;
+  let usage: RouteUsage | undefined;
   try {
-    const { exit, reason } = observed(input, await input.handle.exit);
+    const settledExit = await input.handle.exit;
+    if (settledExit.kind === "completed" || settledExit.kind === "failed") {
+      usage = settledExit.usage;
+    }
+    const { exit, reason } = observed(input, settledExit);
     await recordAgentEnd(environment, input, exit, reason);
     await uploadTranscript(environment, input);
 
@@ -480,6 +492,39 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
     // Nothing above should throw, but a bug here must not leave a node running
     // and a promise rejected into the void.
     await failHard(environment, input, error);
+  } finally {
+    await recordRouteResult(environment, input, usage);
+  }
+};
+
+/**
+ * What the route cost and how it ended, written once the node has settled
+ * (D-P5-06, SC-P5-14).
+ *
+ * The wall clock is Nightshift's own measurement, so every adapter has one; the
+ * tokens and cost are the adapter's, where it reports them. One write, because
+ * `core` lets `usage` be set once and `outcome` move once. It never throws: a
+ * route whose result could not be recorded is still a finished job.
+ */
+const recordRouteResult = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+  reported: RouteUsage | undefined,
+): Promise<void> => {
+  try {
+    const node = await environment.stores.executionNodes.get(input.session.scope, input.nodeId);
+    const outcome = routeOutcomeForNodeStatus(node?.status ?? "failed");
+    if (outcome === "pending") return;
+    await environment.stores.routingDecisions.put({
+      ...input.routingDecision,
+      usage: {
+        wallClockMs: Math.max(0, Math.round(environment.clock.now() - input.startedAtMs)),
+        ...reported,
+      },
+      outcome,
+    });
+  } catch {
+    // The decision stays `pending`, which is what it truthfully is: unrecorded.
   }
 };
 

@@ -198,6 +198,47 @@ describe("updating execution nodes", () => {
     expect(code(response)).toBe("illegal_transition");
   });
 
+  it("lets a running program node end succeeded, once, and never a job (D-P5-06)", async () => {
+    const w = await setup();
+    // The fixture's root is already `running`.
+    let root = makeRootNode(w.f);
+    // Not from anywhere but `running`: a queued sub-program cannot.
+    const queuedChild = await advance(
+      w,
+      await (async () => {
+        const node = makeNode(w.f, w.f.rootNodeId, { kind: "sub-program" });
+        expect((await putNode(w, node)).status).toBe(201);
+        return node;
+      })(),
+      { status: "queued" },
+    );
+    const early = await putNode(w, next(queuedChild, { status: "succeeded" }));
+    expect(early.status).toBe(409);
+    expect(code(early)).toBe("illegal_transition");
+
+    const job = await advance(w, await advance(w, await jobIn(w), { status: "queued" }), {
+      status: "running",
+    });
+
+    const asJob = await putNode(w, next(job, { status: "succeeded" }));
+    expect(asJob.status).toBe(409);
+    expect(code(asJob)).toBe("illegal_transition");
+
+    root = await advance(w, root, { status: "succeeded" });
+    // Terminal: nothing leaves it.
+    for (const status of ["running", "failed", "cancelled"] as const) {
+      expect((await putNode(w, next(root, { status }))).status, status).toBe(409);
+    }
+  });
+
+  it("refuses a node created already succeeded", async () => {
+    const w = await setup();
+    const child = makeNode(w.f, w.f.rootNodeId, { kind: "job", status: "succeeded" });
+    const response = await putNode(w, child);
+    expect(response.status).toBe(409);
+    expect(code(response)).toBe("illegal_transition");
+  });
+
   it("refuses a change to an immutable field", async () => {
     const w = await setup();
     const node = await jobIn(w);

@@ -194,10 +194,15 @@ export const describeAdapterConformance = (
       expect(agents[0]?.status).toBe("completed");
       const routing = await ctx.stores.routingDecisions.listByNode(scope, job.nodeId);
       expect(routing).toHaveLength(1);
+      // The route's ending, and Nightshift's own wall clock, for every adapter;
+      // tokens where the adapter says it reports them (SC-P5-14).
+      expect(routing[0]?.outcome).toBe("verified");
+      expect(routing[0]?.usage.wallClockMs).toBeGreaterThanOrEqual(0);
       if (options.expects.usage) {
-        expect(Object.keys(routing[0]?.usage ?? {}).length).toBeGreaterThan(0);
-        options.report?.(`  usage ${JSON.stringify(routing[0]?.usage)}`);
+        expect(routing[0]?.usage.inputTokens).toBeGreaterThan(0);
+        expect(routing[0]?.usage.outputTokens).toBeGreaterThan(0);
       }
+      options.report?.(`  usage ${JSON.stringify(routing[0]?.usage)}`);
 
       // --- artifact collection (SC-P5-09) -------------------------------------------
       const artifacts = (await ctx.stores.artifacts.listByRun(scope)).items.filter(
@@ -209,6 +214,16 @@ export const describeAdapterConformance = (
         expect(transcript).toBeDefined();
         expect(transcript?.sizeBytes).toBeGreaterThan(0);
       }
+
+      // --- the run's own ending (SC-P5-15) -------------------------------------------
+      // The program node ends `succeeded`, which is not a job's status and not
+      // `integrated`: a program node integrates nothing.
+      const finished = await job.driver.call("run.finish", { outcome: "succeeded" });
+      expect(finished.ok, JSON.stringify(finished)).toBe(true);
+      expect((await ctx.stores.executionNodes.get(scope, job.rootNodeId))?.status).toBe(
+        "succeeded",
+      );
+      expect((await ctx.stores.executionNodes.get(scope, job.nodeId))?.status).toBe("integrated");
     });
 
     it("runs the deterministic failure: the worker reports success and verification disagrees", async () => {
@@ -239,6 +254,8 @@ export const describeAdapterConformance = (
         types.indexOf("node.implemented"),
       );
       expect(types).not.toContain("node.integrated");
+      const routing = await ctx.stores.routingDecisions.listByNode(scope, job.nodeId);
+      expect(routing[0]?.outcome).toBe("verification_failed");
     });
 
     it("cancels a running worker, and refuses that worker any node but its own", async () => {
@@ -298,6 +315,11 @@ export const describeAdapterConformance = (
         (event) => event.executionNodeId === job.nodeId && ENDINGS.includes(event.type),
       );
       expect(endings.map((event) => event.type)).toEqual(["agent.cancelled"]);
+      const routing = await waitFor("the route's ending", async () => {
+        const decisions = await ctx.stores.routingDecisions.listByNode(scope, job.nodeId);
+        return decisions[0]?.outcome === "pending" ? undefined : decisions[0];
+      });
+      expect(routing.outcome).toBe("cancelled");
     });
   });
 };
