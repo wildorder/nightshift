@@ -25,6 +25,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeHarness, SPAWN_FAILURE_EXIT_CODE } from "./adapter.js";
 import type { AdapterFileSystem, SpawnedChild, SpawnLike, SpawnOptions } from "./process.js";
 
+/** What the recording's `result` frame says the run cost (contract v1, D-P5-01). */
+const RECORDED_USAGE = {
+  inputTokens: 10,
+  outputTokens: 900,
+  actualCostUsd: 0.1266714,
+  latencyMs: 24172,
+};
+
 const RECORDING = readFileSync(
   new URL("./__fixtures__/claude-stream-success.jsonl", import.meta.url),
   "utf8",
@@ -363,7 +371,7 @@ describe("the transcript", () => {
     expect(handle.transcript).toBeUndefined();
     children[0]?.emitStdout(RECORDING);
     children[0]?.close(0);
-    expect(await handle.exit).toEqual({ kind: "completed" });
+    expect(await handle.exit).toEqual({ kind: "completed", usage: RECORDED_USAGE });
     // Exactly one start, and the reason is on the ending rather than lost.
     expect(events.filter((event) => event.type === "agent.started")).toHaveLength(1);
     expect(endings(events)[0]?.payload.transcriptError).toContain("EROFS");
@@ -403,7 +411,7 @@ describe("the exit mapping", () => {
       child.emitStdout(RECORDING);
       child.close(0);
     });
-    expect(exit).toEqual({ kind: "completed" });
+    expect(exit).toEqual({ kind: "completed", usage: RECORDED_USAGE });
   });
 
   it("maps a stream that ends without a result to failed, even on exit 0", async () => {

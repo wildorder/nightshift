@@ -45,7 +45,7 @@ import {
   pendingCount,
 } from "@nightshift/core";
 import { endProgramNode, runJob, type StartedJob } from "@nightshift/execution";
-import { fixedRoute, RoutingRefusedError } from "@nightshift/routing";
+import { configuredRoute, RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
 import type { RefusalCode } from "./results.js";
 import { guarded, ok, ToolRefusal } from "./results.js";
@@ -408,6 +408,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         dependencies: z.array(z.string().min(1)).optional(),
         risk: RiskLevelSchema.optional(),
         ambiguity: RiskLevelSchema.optional(),
+        harness: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
       },
     },
@@ -426,7 +427,10 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         const check = await checkDelegationOrRefuse(state, attached, input.scope);
 
         // 4. Where it runs, and why (D-P3-08).
-        const route = chooseRoute(attached.session.program, job, input.model);
+        const route = chooseRoute(attached.session.program, job, {
+          harness: input.harness,
+          model: input.model,
+        });
 
         // 5. The runner persists everything before the harness starts.
         const started: StartedJob = await runJob(attached.environment, {
@@ -446,12 +450,15 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
 
         return ok(
           `Delegated job ${job.jobContractId} as node ${started.nodeId}. A ${route.target.model} ` +
-            `worker is running in ${started.worktree}. Wait for it with job.wait.`,
+            `worker on the ${route.target.harness} harness is running in ${started.worktree}. ` +
+            "Wait for it with job.wait.",
           {
             jobId: job.jobContractId,
             nodeId: started.nodeId,
             agentId: started.agentId,
             worktree: started.worktree,
+            harness: route.target.harness,
+            provider: route.target.provider,
             model: route.target.model,
             wasOverride: route.wasOverride,
           },
@@ -708,10 +715,10 @@ const checkDelegationOrRefuse = async (
 const chooseRoute = (
   program: ProgramContract,
   job: JobContract,
-  override: string | undefined,
+  override: { readonly harness?: string | undefined; readonly model?: string | undefined },
 ): RouteChoice => {
   try {
-    return fixedRoute({ program, job, ...(override === undefined ? {} : { override }) });
+    return configuredRoute({ program, job, override });
   } catch (error) {
     if (error instanceof RoutingRefusedError) {
       throw new ToolRefusal("validation_failed", error.message, {

@@ -6,7 +6,7 @@
  * | | `local` (default, `npm test`) | `deployed` (`npm run slice`) |
  * |---|---|---|
  * | control plane | the production handler over loopback, in-memory stores | the real endpoint, a machine token, a throwaway project |
- * | harness | the scripted harness: a real child, a real worker MCP server | `@nightshift/harness-claude` driving `claude -p` |
+ * | harness | the scripted harness: a real child, a real worker MCP server | a real adapter: `claude -p`, or `codex exec` (P5) |
  *
  * Whichever pair is chosen, **the thing under test is the same**: the real
  * `nightshift-mcp` binary, spawned as a child, driven over stdio by the SDK's
@@ -33,6 +33,7 @@ import {
   nowIso,
   type ProjectStores,
   type RunScope,
+  systemClock,
 } from "@nightshift/core";
 import {
   createFetchTransport,
@@ -44,19 +45,25 @@ import {
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { sanitizeEnvironment } from "@nightshift/verification";
 import type { ScriptName } from "../harness/scripted.js";
-import { type MaterialisedRepo, materialiseFixtureRepo } from "./fixture-repo.js";
+import {
+  type MaterialisedRepo,
+  type MaterialiseOptions,
+  materialiseFixtureRepo,
+} from "./fixture-repo.js";
 
 export const TARGET_ENV = "NIGHTSHIFT_SLICE_TARGET";
 export const HARNESS_ENV = "NIGHTSHIFT_SLICE_HARNESS";
 
 export type SliceTarget = "local" | "deployed";
-export type SliceHarness = "scripted" | "claude";
+export type SliceHarness = "scripted" | "claude" | "codex";
 
 export const sliceTarget = (): SliceTarget =>
   process.env[TARGET_ENV] === "deployed" ? "deployed" : "local";
 
-export const sliceHarness = (): SliceHarness =>
-  process.env[HARNESS_ENV] === "claude" ? "claude" : "scripted";
+export const sliceHarness = (): SliceHarness => {
+  const value = process.env[HARNESS_ENV];
+  return value === "claude" || value === "codex" ? value : "scripted";
+};
 
 /**
  * The repository root.
@@ -126,7 +133,20 @@ export const configuredUrls = (context: SliceContext): readonly string[] =>
  * The offline pair: the production handler over loopback, in-memory stores with
  * deferred numbering, and a fixture repository in a temporary directory.
  */
-export const createLocalContext = async (): Promise<SliceContext> => {
+export interface LocalContextOptions extends Pick<MaterialiseOptions, "modelPolicy"> {
+  /**
+   * Real time rather than the stepping clock. The stepping clock advances a
+   * second per reading, which makes a scripted run's records deterministic and
+   * makes a **real** worker's execution token expire in fake time: a job that
+   * takes minutes reads the clock thousands of times. Found by the first real
+   * Codex worker, whose `job.complete` was refused as expired.
+   */
+  readonly realTime?: boolean;
+}
+
+export const createLocalContext = async (
+  options: LocalContextOptions = {},
+): Promise<SliceContext> => {
   await assertBuilt();
   const backing: InMemoryStores = createInMemoryStores({ deferSequencing: true });
   const ids = createUlidIdGenerator();
@@ -134,7 +154,10 @@ export const createLocalContext = async (): Promise<SliceContext> => {
   const orgId = ids.next("org");
   await backing.memberships.put(makeMembership(subject as never, orgId));
 
-  const clock = createSteppingClock(Date.parse("2026-09-15T12:00:00.000Z"), 1_000);
+  const clock =
+    options.realTime === true
+      ? systemClock
+      : createSteppingClock(Date.parse("2026-09-15T12:00:00.000Z"), 1_000);
   const plane: LocalControlPlane = await startLocalControlPlane({
     stores: backing,
     principal: { kind: "user", userId: subject as never, activeOrg: orgId },
@@ -153,7 +176,9 @@ export const createLocalContext = async (): Promise<SliceContext> => {
   });
 
   // The authored identifiers, so a local run's records read the same every time.
-  const fixture = await materialiseFixtureRepo();
+  const fixture = await materialiseFixtureRepo(
+    options.modelPolicy === undefined ? {} : { modelPolicy: options.modelPolicy },
+  );
   await stores.projects.put({
     schemaVersion: 1,
     projectId: fixture.program.projectId,

@@ -30,8 +30,9 @@ import type {
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import type { GitRunner, WorkerEnvironment, WorkerLaunchIdentity } from "@nightshift/execution";
 import { createEventOutbox, nodeGitRunner } from "@nightshift/execution";
-import type { Harness, McpLaunch } from "@nightshift/harness";
+import type { Harness, HarnessHandle, McpLaunch } from "@nightshift/harness";
 import { createClaudeHarness } from "@nightshift/harness-claude";
+import { createCodexHarness } from "@nightshift/harness-codex";
 import {
   createFetchTransport,
   createHttpArtifactBodyStore,
@@ -182,10 +183,67 @@ export const harnessModuleSpecifier = (specifier: string): string => {
   return isPath ? pathToFileURL(specifier).href : specifier;
 };
 
-/** The adapter, named here and only here. */
+/**
+ * The adapters, named here and only here (AR-2, D-P3-12).
+ *
+ * One `switch` over the harnesses the compatibility table can route to today.
+ * **Only the adapter a route chose is ever constructed**, and only when the
+ * first job is routed to it: a machine without Codex runs a Claude job without
+ * anything Codex-shaped being built, looked up or complained about.
+ */
+const constructAdapter = (harness: string, env: Env): Harness => {
+  switch (harness) {
+    case "claude":
+      return createClaudeHarness({ env });
+    case "codex":
+      return createCodexHarness({ env });
+    default:
+      // `configuredRoute` refuses a harness with no adapter before anything is
+      // persisted, so this is a bug in the table rather than a user's mistake.
+      throw new Error(`no adapter is wired for the "${harness}" harness`);
+  }
+};
+
+/**
+ * A `Harness` that hands each worker to the adapter its route named.
+ *
+ * The execution layer holds one `Harness` and never learns there are several
+ * (SC-P5-12): `start` reads `input.model.harness`, which routing wrote, and
+ * `cancel` and `status` go back to whichever adapter made the handle.
+ */
+export const createRoutedHarness = (construct: (harness: string) => Harness): Harness => {
+  const adapters = new Map<string, Harness>();
+  const owners = new WeakMap<HarnessHandle, Harness>();
+  const adapterFor = (harness: string): Harness => {
+    const existing = adapters.get(harness);
+    if (existing !== undefined) return existing;
+    const made = construct(harness);
+    adapters.set(harness, made);
+    return made;
+  };
+
+  return {
+    id: "routed",
+    // True of the whole: an adapter that reports none simply attaches none.
+    capabilities: { usage: true },
+    start: async (input) => {
+      const adapter = adapterFor(input.model.harness);
+      const handle = await adapter.start(input);
+      owners.set(handle, adapter);
+      return handle;
+    },
+    cancel: async (handle, grace) => {
+      await owners.get(handle)?.cancel(handle, grace);
+    },
+    status: async (handle) => (await owners.get(handle)?.status(handle)) ?? "created",
+  };
+};
+
 const createHarness = async (env: Env): Promise<Harness> => {
   const specifier = env[HARNESS_MODULE_ENV];
-  if (specifier === undefined || specifier === "") return createClaudeHarness({ env });
+  if (specifier === undefined || specifier === "") {
+    return createRoutedHarness((harness) => constructAdapter(harness, env));
+  }
 
   const module: unknown = await import(harnessModuleSpecifier(specifier));
   const factory = (module as { createHarness?: unknown }).createHarness;

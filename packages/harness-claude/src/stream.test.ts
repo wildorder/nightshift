@@ -506,3 +506,47 @@ describe("tool summaries", () => {
     expect(summary?.endsWith("…")).toBe(true);
   });
 });
+
+describe("usage, from the result frame (contract v1)", () => {
+  const usageOf = (frame: Record<string, unknown>) => {
+    const interpreter = createStreamInterpreter({
+      sink: { emit: () => {} },
+      clock: { now: () => 0 },
+    });
+    interpreter.write(new TextEncoder().encode(`${JSON.stringify(frame)}\n`));
+    return interpreter.outcome.usage;
+  };
+
+  it("reads tokens, cost and duration, each only where the frame carries it", () => {
+    expect(
+      usageOf({
+        type: "result",
+        subtype: "success",
+        duration_ms: 1200,
+        total_cost_usd: 0.25,
+        usage: { input_tokens: 40, output_tokens: 7, cache_read_input_tokens: 9000 },
+      }),
+    ).toEqual({ inputTokens: 40, outputTokens: 7, actualCostUsd: 0.25, latencyMs: 1200 });
+    expect(usageOf({ type: "result", subtype: "success", total_cost_usd: 0.5 })).toEqual({
+      actualCostUsd: 0.5,
+    });
+  });
+
+  it("reports none rather than zeros when the frame says nothing, or nonsense", () => {
+    expect(usageOf({ type: "result", subtype: "success" })).toBeUndefined();
+    expect(
+      usageOf({ type: "result", subtype: "success", usage: { input_tokens: "many" } }),
+    ).toBeUndefined();
+  });
+
+  it("keeps what an interrupted run spent", () => {
+    expect(
+      usageOf({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        usage: { input_tokens: 3, output_tokens: 1 },
+      }),
+    ).toEqual({ inputTokens: 3, outputTokens: 1 });
+  });
+});

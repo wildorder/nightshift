@@ -22,26 +22,11 @@
  * assertion fails, and **reports its own failure rather than swallowing it**
  * (P2 T7): litter in the only account matters more with one account, not less.
  */
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import type { ProjectId } from "@nightshift/contracts";
-import { createUlidIdGenerator, nowIso, type RunScope, systemClock } from "@nightshift/core";
+import type { ModelPolicy } from "@nightshift/contracts";
+import type { RunScope } from "@nightshift/core";
 import { git, nodeGitRunner, revParse, sealedRef, tryRevParse } from "@nightshift/execution";
 import {
-  createAwsClients,
-  createAwsStores,
-  keys,
-  type TableClient,
-} from "@nightshift/persistence/aws";
-import {
-  createFetchTransport,
-  createHttpArtifactBodyStore,
-  createHttpStores,
-  staticTokenProvider,
-} from "@nightshift/persistence/http";
-import {
-  assertBuilt,
   type MaterialisedRepo,
-  materialiseFixtureRepo,
   type Orchestrator,
   PROGRAM_BRANCH,
   type SliceContext,
@@ -49,178 +34,52 @@ import {
   startOrchestrator,
 } from "@nightshift/test/slice";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { deleteObjectsUnder, deletePartitions } from "./cleanup.js";
-import { fetchMachineToken, loadSmokeContext, REGION, subjectOf } from "./context.js";
-import { waitForNumbering } from "./sequencing.js";
-
-const say = (line: string): void => {
-  process.stdout.write(`[slice] ${line}\n`);
-};
+import { type DeployedSlice, openDeployedSlice } from "./deployed-slice.js";
 
 const startedAt = Date.now();
 const harness = sliceHarness();
 
-await assertBuilt();
-const environment = await loadSmokeContext();
-const clients = createAwsClients({ region: REGION });
-const s3 = new S3Client({ region: REGION });
-const awsStores = createAwsStores({ tableName: environment.tableName, table: clients.table });
-const token = await fetchMachineToken(environment);
-const machineSubject = subjectOf(token);
+/**
+ * Harness choice is configuration (SC-P5-16): the `codex` phase changes the
+ * program's model policy and nothing else. The job, the fixture, the server and
+ * every assertion below are the ones the `claude` phase runs.
+ */
+const POLICY_FOR: Readonly<Record<string, ModelPolicy | undefined>> = {
+  codex: { allowedProviders: ["openai"], allowedModels: [], forbiddenModels: [] },
+};
 
-const ids = createUlidIdGenerator();
-const label = `slice-${ids.next("evt").slice("evt_".length)}`;
-const orgId = ids.next("org");
-const projectId: ProjectId = ids.next("proj");
-
-const transport = createFetchTransport({
-  endpoint: environment.apiEndpoint,
-  tokens: staticTokenProvider(token),
-});
-const stores = createHttpStores({ transport, actingOrg: orgId });
-const bodies = createHttpArtifactBodyStore({ transport });
-
+let slice: DeployedSlice;
 let fixture: MaterialisedRepo;
 let context: SliceContext;
+let environment: { readonly apiEndpoint: string };
+let projectId: DeployedSlice["projectId"];
+let stores: SliceContext["stores"];
 let mcp: Orchestrator | undefined;
 /** Every run this file created, so cleanup can find their partitions. */
 const runScopes: RunScope[] = [];
 
-say(`stage ${environment.stage}; caller ${environment.callerArn}; harness ${harness}`);
-say(`label ${label}; org ${orgId}; project ${projectId}; machine principal ${machineSubject}`);
+const say = (line: string): void => slice.say(line);
 
 beforeAll(async () => {
-  // The machine principal must resolve to exactly one org, or the API cannot
-  // pick one (`acting-org.ts`). A crashed earlier run can leave a stale empty
-  // membership; the smoke suite clears those, and this refuses to guess.
-  for (const membership of await awsStores.memberships.listByUser(machineSubject as never)) {
-    const projects = await awsStores.projects.listByOrg(membership.orgId, { limit: 1 });
-    if (projects.items.length > 0) {
-      throw new Error(
-        `the machine principal already belongs to ${membership.orgId}, which holds projects; ` +
-          "refusing to guess which org to act for",
-      );
-    }
-    await clients.table.delete({
-      TableName: environment.tableName,
-      Key: keys.membership(machineSubject as never, membership.orgId),
-    });
-    say(`removed a stale membership in ${membership.orgId}`);
-  }
-
-  const now = nowIso(systemClock);
-  await awsStores.users.put({
-    schemaVersion: 1,
-    userId: machineSubject as never,
-    kind: "machine",
-    createdAt: now,
+  const modelPolicy = POLICY_FOR[harness];
+  slice = await openDeployedSlice({
+    label: "slice",
+    ...(modelPolicy === undefined ? {} : { modelPolicy }),
   });
-  await awsStores.memberships.put({
-    schemaVersion: 1,
-    userId: machineSubject as never,
-    orgId,
-    createdAt: now,
-  });
-
-  fixture = await materialiseFixtureRepo({ projectId, programId: ids.next("prog") });
-  say(`fixture at ${fixture.repo}; program ${fixture.program.programId}`);
-
-  await stores.projects.put({
-    schemaVersion: 1,
-    projectId,
-    orgId,
-    name: label,
-    createdAt: now,
-  });
-
-  context = {
-    target: "deployed",
-    fixture,
-    stores,
-    bodies,
-    transport,
-    ids,
-    program: fixture.program,
-    serverEnv: {
-      NIGHTSHIFT_API_ENDPOINT: environment.apiEndpoint,
-      NIGHTSHIFT_API_TOKEN: token,
-      NIGHTSHIFT_STATE_DIR: fixture.stateDir,
-    },
-    // From S3 by the recorded key, which is what a human reading the API would
-    // also have to do: there is no download route, by design.
-    readArtifact: async (scope, artifactId) => {
-      const key = `${scope.projectId}/${scope.programId}/${scope.runId}/${artifactId}`;
-      try {
-        const object = await s3.send(
-          new GetObjectCommand({ Bucket: environment.bucketName, Key: key }),
-        );
-        return await object.Body?.transformToString();
-      } catch {
-        return undefined;
-      }
-    },
-    // Numbering is the deployed materializer's, so waiting is the settle.
-    settle: async () => {
-      if (runScopes.length > 0) {
-        await waitForNumbering(awsStores.events, runScopes, { timeoutMs: 60_000 });
-      }
-    },
-    close: async () => {
-      await fixture.remove();
-    },
-  };
+  say(`harness ${harness}`);
+  context = slice.context;
+  fixture = context.fixture;
+  stores = context.stores;
+  projectId = slice.projectId;
+  environment = { apiEndpoint: slice.apiEndpoint };
 });
 
 afterAll(async () => {
-  const problems: string[] = [];
-  const step = async (what: string, work: () => Promise<number | undefined>) => {
-    try {
-      const count = await work();
-      say(`cleanup: ${what}${count === undefined ? "" : `: ${count} removed`}`);
-    } catch (error) {
-      problems.push(`${what}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
   await mcp?.close().catch(() => {});
-
-  // Let numbering finish before deleting, or the materializer will write a
-  // counter into a partition after it has been read for deletion.
-  await step("wait for numbering", async () => {
-    if (runScopes.length > 0) {
-      await waitForNumbering(awsStores.events, runScopes, { timeoutMs: 30_000 });
-    }
-    return undefined;
-  });
-
-  const partitions = [
-    keys.user(machineSubject as never).PK,
-    keys.orgProject(orgId, projectId).PK,
-    keys.project(projectId).PK,
-    keys.programContract(projectId, context?.program.programId ?? ("" as never)).PK,
-    ...runScopes.flatMap((scope) => [
-      keys.run(scope, scope.runId).PK,
-      keys.runRecord(scope, "NODE", "x").PK,
-      keys.event(scope, "x").PK,
-    ]),
-  ];
-  await step("slice partitions", () =>
-    deletePartitions(clients.table as TableClient, environment.tableName, partitions),
-  );
-  await step(`S3 prefix ${projectId}/`, () =>
-    deleteObjectsUnder(s3, environment.bucketName, `${projectId}/`),
-  );
-  await step("the fixture checkout", async () => {
-    await context?.close();
-    return undefined;
-  });
-
-  say(`runtime ${((Date.now() - startedAt) / 1000).toFixed(1)} s`);
-  if (problems.length > 0) {
-    console.error(
-      `[slice] CLEANUP FAILED. Finish it by hand with the identifiers printed above:\n  ${problems.join("\n  ")}`,
-    );
-    throw new Error(`cleanup failed: ${problems.join("; ")}`);
+  try {
+    await slice?.cleanup();
+  } finally {
+    slice?.say(`runtime ${((Date.now() - startedAt) / 1000).toFixed(1)} s`);
   }
 });
 
@@ -246,6 +105,7 @@ describe(`the deployed slice, with the ${harness} harness`, () => {
       runId: String(run.runId) as never,
     };
     runScopes.push(scope);
+    slice.track(scope);
     say(`run ${scope.runId}; root node ${String(run.rootNodeId)}`);
 
     const delegatedAt = Date.now();

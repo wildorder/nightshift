@@ -30,6 +30,9 @@
     },
     {
       "path": "../../packages/harness-claude"
+    },
+    {
+      "path": "../../packages/harness-codex"
     }
   ]
 }

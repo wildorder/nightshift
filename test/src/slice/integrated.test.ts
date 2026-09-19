@@ -163,7 +163,7 @@ describe("a job that works, end to end", () => {
       scope,
       String(job.nodeId) as never,
     );
-    expect(routing[0]?.ruleId).toBe("p3-fixed");
+    expect(routing[0]?.ruleId).toBe("p5-configured");
     expect(routing[0]?.eligibleOptions.length).toBeGreaterThan(0);
 
     await settled(driver, job.jobId);

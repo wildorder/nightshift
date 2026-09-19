@@ -66,7 +66,7 @@
  * `terminal_reason: "aborted_streaming"`. Exit code zero alone therefore does
  * not mean the work completed; `adapter.ts` requires a *non-error* result.
  */
-import { MAX_INLINE_PAYLOAD_BYTES } from "@nightshift/contracts";
+import { MAX_INLINE_PAYLOAD_BYTES, type RouteUsage } from "@nightshift/contracts";
 import type { Clock } from "@nightshift/core";
 import { nowIso } from "@nightshift/core";
 import type { HookEvent, HookEventType, HookSink } from "@nightshift/harness";
@@ -132,6 +132,10 @@ type Frame = Readonly<Record<string, unknown>>;
 
 const isRecord = (value: unknown): value is Frame =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** A non-negative integer, which is what `RouteUsage` accepts for a count. */
+const tokenCount = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
 
 const str = (value: unknown): string | undefined =>
   typeof value === "string" && value.length > 0 ? value : undefined;
@@ -235,6 +239,13 @@ export interface StreamOutcome {
   readonly terminalReason?: string;
   /** Claude's own session identifier, from the `init` frame. */
   readonly sessionId?: string;
+  /**
+   * What the `result` frame said the run cost (contract v1, D-P5-01):
+   * `usage.input_tokens`, `usage.output_tokens`, `total_cost_usd` and
+   * `duration_ms`, each only when the frame carried it. An interrupted run's
+   * frame carries them too, and what it spent is still what it spent.
+   */
+  readonly usage?: RouteUsage;
   /** True once `agent.started` has been emitted, so it is emitted exactly once. */
   readonly startEmitted: boolean;
   /** Lines that were not parseable JSON. A non-zero count belongs in the failure payload. */
@@ -291,6 +302,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let resultSubtype: string | undefined;
   let terminalReason: string | undefined;
   let sessionId: string | undefined;
+  let usage: RouteUsage | undefined;
   let startEmitted = false;
   let unparseableLines = 0;
 
@@ -425,6 +437,20 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     resultErrored = frame.is_error === true || str(frame.subtype) !== "success";
     resultSubtype = str(frame.subtype);
     terminalReason = str(frame.terminal_reason);
+
+    const reported = isRecord(frame.usage) ? frame.usage : {};
+    const found: RouteUsage = {
+      ...optionalField("inputTokens", tokenCount(reported.input_tokens)),
+      ...optionalField("outputTokens", tokenCount(reported.output_tokens)),
+      ...optionalField(
+        "actualCostUsd",
+        typeof frame.total_cost_usd === "number" && frame.total_cost_usd >= 0
+          ? frame.total_cost_usd
+          : undefined,
+      ),
+      ...optionalField("latencyMs", tokenCount(frame.duration_ms)),
+    };
+    if (Object.keys(found).length > 0) usage = found;
   };
 
   const handleFrame = (frame: Frame): void => {
@@ -500,6 +526,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         ...optionalField("resultSubtype", resultSubtype),
         ...optionalField("terminalReason", terminalReason),
         ...optionalField("sessionId", sessionId),
+        ...optionalField("usage", usage),
         startEmitted,
         unparseableLines,
       };

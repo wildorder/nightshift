@@ -14,7 +14,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ProgramContract, ProgramId, ProjectId } from "@nightshift/contracts";
+import type { ModelPolicy, ProgramContract, ProgramId, ProjectId } from "@nightshift/contracts";
 import { ProgramContractSchema } from "@nightshift/contracts";
 import { type GitRunner, git, nodeGitRunner, revParse } from "@nightshift/execution";
 
@@ -55,6 +55,12 @@ export interface MaterialiseOptions {
    */
   readonly projectId?: ProjectId;
   readonly programId?: ProgramId;
+  /**
+   * Replace the authored model policy. The authored one allows Anthropic only;
+   * a run that routes to another harness says so here, because harness choice
+   * is configuration (SC-P5-16) and this is where a program configures it.
+   */
+  readonly modelPolicy?: ModelPolicy;
   readonly git?: GitRunner;
 }
 
@@ -80,6 +86,7 @@ export const materialiseFixtureRepo = async (
     ...authored,
     ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
     ...(options.programId === undefined ? {} : { programId: options.programId }),
+    ...(options.modelPolicy === undefined ? {} : { modelPolicy: options.modelPolicy }),
     // The contract's repository is where it actually is, now that it is
     // somewhere. The authored value is a placeholder.
     repository: { ...authored.repository, url: repo },
