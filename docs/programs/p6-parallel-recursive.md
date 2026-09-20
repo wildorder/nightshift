@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p6-parallel-recursive` |
 | Source stage | Stage 5 (Parallel and Recursive Execution) |
-| Status | **Drafted 2026-09-19**, for human ratification. D-P6-01 … D-P6-09 proposed; tasks T1 … T7 drafted. |
+| Status | **Contract ratified 2026-09-19** (D-P6-01 … D-P6-09). Tasks T1 … T7 drafted. |
 | Depends on | P5 Harness Neutrality (two adapters, contract v1, `succeeded` for program nodes) |
 | Blocking decisions | none. O-05 is untouched: everything still runs on the operator's machine. |
 
@@ -38,13 +38,15 @@ Everything from P3, P4 and P5 stands.
 
 | # | Prerequisite | Status |
 |---|--------------|--------|
-| H-P6-01 | Ratify D-P6-01 … D-P6-09 | open |
+| H-P6-01 | Ratify D-P6-01 … D-P6-09 | **satisfied 2026-09-19** |
 | H-P6-02 | P5 merged | **satisfied 2026-09-19** (PR #17) |
 
 **Explicitly not required.** No new AWS resource: the API gains rules, not
 infrastructure. No Bedrock, no AgentCore, nothing remote.
 
-## 3. Proposed decisions
+## 3. Ratified decisions
+
+Ratified by the human on 2026-09-19.
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
@@ -262,6 +264,7 @@ Specs live in `tasks/p6-parallel-recursive/`.
 | Date | Decision | By |
 |------|----------|----|
 | 2026-09-19 | Contract drafted; D-P6-01 … D-P6-09 proposed; tasks T1 … T7 drafted | Agent, for human ratification |
+| 2026-09-19 | **Contract ratified**, D-P6-01 … D-P6-09 as drafted. | Human |
 
 ## 13. As built
 
