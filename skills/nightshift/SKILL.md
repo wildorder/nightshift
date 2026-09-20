@@ -76,13 +76,47 @@ and one outside it is refused with the reason.
 `nodeId`, `agentId`, the worktree path, and the `harness`, `provider` and `model`
 the job was routed to.
 
+## Delegate work that can run together, together
+
+Jobs run at the same time, each in its own isolated worktree, up to the program's
+`maxConcurrency`; past that they queue and start as slots free. So delegate every
+job that does not depend on another **before you wait on any of them**, and then
+wait on them all at once. Delegating one, waiting, delegating the next is the
+slow way to do the same work.
+
+Two things decide whether jobs can run together:
+
+- **Do they change the same lines?** Then they will conflict. Give overlapping
+  work to one job, or delegate the second after the first has integrated.
+- **Does one depend on what the other produces?** Then it has to come after.
+
+Integration is one at a time and Nightshift's: each finished job is replayed onto
+the current program branch, **verified there**, and only then fast-forwarded. A
+job that was fine on its own and breaks against what landed before it ends
+`verification_failed`, and the branch stays green.
+
+### Sub-programs
+
+```
+delegate { kind: "sub-program", objective, scope, acceptance }
+```
+
+hands a **bounded region** of the program to an orchestrator of its own, which
+delegates the jobs within it. Use one when a part of the work is big enough to
+need its own planning and can be fenced by scope: give it a whole outcome and a
+narrower scope than yours. It can only delegate inside that scope, only as deep
+as the program's `maxDepth` allows, and it writes no code itself. You wait for it
+like a job; it ends `succeeded` or `failed`.
+
 ## Wait, and read the result
 
 ```
-job.wait { jobId }
+job.wait { jobIds: [a, b, c] }     or     job.wait { jobId }
 ```
 
-This blocks for a bounded time and then answers whatever `job.get` would. If it
+With several jobs it returns when the **first** of them settles, and says which;
+call it again with the rest. It blocks for a bounded time and then answers
+whatever `job.get` would. If it
 comes back with `timedOut: true`, the job is still running — call it again. The
 cap exists so the wait never outlives your own tool timeout; it is not a failure.
 
@@ -94,12 +128,20 @@ Read the status carefully, because the words are not interchangeable:
 | `verifying` | Nightshift is running the contract's verification steps. |
 | `verification_failed` | The commands failed. Nothing integrated. The `Verification` record names the failing step, and its log is an artifact. |
 | `verified` → `sealed` → `integrated` | Passed, addressable, and fast-forwarded into the program branch. |
-| `failed` | The worker failed, exited without reporting, or changed something outside its scope. `outcomeReason` says which. |
+| `queued` | Delegated and waiting for a slot. `job.get` says what it is waiting for. Not a problem. |
+| `failed` | The worker failed, exited without reporting, changed something outside its scope, or **conflicted** with work integrated since it started (`integration_conflict`, with the paths). `outcomeReason` says which. |
+| `succeeded` | A sub-program whose orchestrator reported its objective met. |
 | `interrupted` | Something stopped it that nobody chose. Retryable. |
 
 When a job fails, **read `outcomeReason` before doing anything else.** It is
 written to be acted on: the offending paths for a scope violation, the failing
 step for a verification failure, the two commits for a stale base.
+
+`job.retry { jobId }` runs a job again **from the current program branch** as a
+new attempt. It is usually right for an `integration_conflict`, where the work
+was fine and the ground moved, and for `interrupted`. For `verification_failed`
+it repeats the delegation exactly as written, so ask first whether the delegation
+was the problem. Nightshift never resolves a conflict for you.
 
 A failed job is usually a delegation problem, not a worker problem. Ask why
 before you retry: a vague objective, acceptance criteria that did not say what
@@ -135,11 +177,11 @@ Refused while a job is still running. Anything but `succeeded` needs a reason.
 - **Do not treat `implemented` as done.** It is a claim, and claims are exactly
   what verification exists to check. Wait for `integrated`.
 - **Do not work around a refusal.** `scope_widening`, `depth_limit_exceeded`,
-  `concurrency_limit_exceeded` and `examination_unavailable` are the system
+  `depth_limit_exceeded` and `examination_unavailable` are the system
   telling you something true about the work. Restate the delegation, wait, or
   tell the human — do not go and do the job yourself to get past it.
-- **Do not delegate a second job while one is running.** P3 runs one at a time;
-  you will be refused and told to wait.
+- **Do not finish the run while anything is running or queued.** `run.finish`
+  refuses; wait for it or cancel it.
 
 ## Configuring the server
 

@@ -41,6 +41,7 @@ import {
   checkAuthority,
   type DelegationRejection,
   highestSequence,
+  isSettled,
   nowIso,
   pendingCount,
 } from "@nightshift/core";
@@ -73,16 +74,6 @@ import { attachRun, createCheckpointAt, describeNodeLine, startNewRun } from "./
 export const DEFAULT_JOB_WAIT_CAP_SECONDS = 55;
 export const JOB_WAIT_CAP_ENV = "NIGHTSHIFT_JOB_WAIT_CAP_SECONDS";
 const JOB_WAIT_POLL_MS = 500;
-
-/** Statuses from which nothing further will happen without someone asking. */
-const SETTLED: readonly ExecutionNode["status"][] = [
-  "integrated",
-  "failed",
-  "cancelled",
-  "interrupted",
-  "verification_failed",
-  "examination_failed",
-];
 
 export interface OrchestratorDeps {
   readonly state: OrchestratorSession;
@@ -137,7 +128,9 @@ const jobReport = async (
     jobContractId,
     nodeId: node.executionNodeId,
     status: node.status,
-    settled: SETTLED.includes(node.status),
+    // `core`'s own list, so a status added there (`succeeded`, for a sub-program)
+    // is settled here too rather than waited on for ever.
+    settled: isSettled(node.status),
     commitSha: node.commitSha,
     outcomeReason: node.outcomeReason ?? null,
     worktree: running?.worktree ?? null,

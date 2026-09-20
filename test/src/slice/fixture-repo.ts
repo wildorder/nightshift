@@ -14,7 +14,13 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ModelPolicy, ProgramContract, ProgramId, ProjectId } from "@nightshift/contracts";
+import type {
+  DelegationLimits,
+  ModelPolicy,
+  ProgramContract,
+  ProgramId,
+  ProjectId,
+} from "@nightshift/contracts";
 import { ProgramContractSchema } from "@nightshift/contracts";
 import { type GitRunner, git, nodeGitRunner, revParse } from "@nightshift/execution";
 
@@ -61,6 +67,8 @@ export interface MaterialiseOptions {
    * is configuration (SC-P5-16) and this is where a program configures it.
    */
   readonly modelPolicy?: ModelPolicy;
+  /** Replace the authored limits (one deep, one at a time) for a run that needs a tree (P6). */
+  readonly delegationLimits?: DelegationLimits;
   readonly git?: GitRunner;
 }
 
@@ -87,6 +95,9 @@ export const materialiseFixtureRepo = async (
     ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
     ...(options.programId === undefined ? {} : { programId: options.programId }),
     ...(options.modelPolicy === undefined ? {} : { modelPolicy: options.modelPolicy }),
+    ...(options.delegationLimits === undefined
+      ? {}
+      : { delegationLimits: options.delegationLimits }),
     // The contract's repository is where it actually is, now that it is
     // somewhere. The authored value is a placeholder.
     repository: { ...authored.repository, url: repo },
