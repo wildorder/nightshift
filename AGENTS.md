@@ -306,7 +306,8 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   Nightshift picks workers'; an orchestrator's request is an override within
   policy.
 - **Workers run with permissions bypassed, and no adapter passes a list of
-  allowed tools** (owner's ruling, 2026-09-19, amending D-P3-15 and D-P5-02).
+  allowed tools** (owner's ruling, 2026-09-19, A-39, amending D-P3-15 and D-P5-02). Limit a
+  worker's reach by the environment it runs in, never by a list.
   Claude: `--permission-mode bypassPermissions`, no `--tools`, no
   `--allowedTools`. Codex: `--dangerously-bypass-approvals-and-sandbox`. A worker
   must never stop for approval or be denied a tool nobody listed. Do not
