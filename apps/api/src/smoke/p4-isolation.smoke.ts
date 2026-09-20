@@ -614,14 +614,17 @@ describe("P6 — a delegating token, and the limit at the start edge", () => {
     const token = (minted.body as { token: string }).token;
     const claims = JSON.parse(
       Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"),
-    ) as { role?: string; node?: string };
-    expect(claims.role).toBe("orchestrator");
+    ) as { nightshift?: { role?: string; nodeId?: string } };
+    expect(claims.nightshift?.role).toBe("orchestrator");
+    expect(claims.nightshift?.nodeId).toBe(sub.executionNodeId);
     delegating = smokeApiClient(endpoint, token);
 
     // The same role on a job node is delegation authority where there is none.
     const misplaced = makeAgent(f, world.node.executionNodeId, { role: "orchestrator" });
     created(await a.api.put(`${base()}/agents/${misplaced.agentId}`, misplaced), "misplaced agent");
-    expect((await a.api.post(`${base()}/agents/${misplaced.agentId}/token`, undefined)).status).toBe(422);
+    expect(
+      (await a.api.post(`${base()}/agents/${misplaced.agentId}/token`, undefined)).status,
+    ).toBe(422);
   });
 
   it("delegates under its own node, and nowhere else", async () => {

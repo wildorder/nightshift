@@ -22,6 +22,15 @@
  * - `start-run.ts` — the one function `nightshift run` and `run.start` share.
  */
 export {
+  createEngine,
+  type Engine,
+  type EngineOptions,
+  type EngineSnapshot,
+  type Submission,
+  type Submitted,
+  type WaitingReason,
+} from "./engine.js";
+export {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExecutionEnvironment,
@@ -34,6 +43,7 @@ export {
 export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";
 export { type IntegrateInput, type IntegrateResult, integrateNode } from "./integrate.js";
+export { createMergeQueue, type MergeQueue } from "./merge-queue.js";
 export {
   createEventOutbox,
   type EmitInput,
@@ -41,13 +51,17 @@ export {
   type OutboxOptions,
 } from "./outbox.js";
 export {
-  ConcurrencyRefusedError,
-  P3_MAX_CONCURRENT_CHILDREN,
+  type DelegateJobInput,
+  delegateJob,
+  type IntegrateCandidate,
+  type IntegrationCandidate,
   type RunJobInput,
   recordArtifact,
   runJob,
-  runningChildren,
   type StartedJob,
+  type StartJobInput,
+  startJob,
+  verifyAndIntegrate,
 } from "./runner.js";
 export { checkChangedPaths, describeScopeViolation, type ScopeCheck } from "./scope-check.js";
 export {

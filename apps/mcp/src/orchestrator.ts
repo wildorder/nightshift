@@ -38,13 +38,13 @@ import {
 } from "@nightshift/contracts";
 import {
   buildTree,
-  checkDelegation,
+  checkAuthority,
   type DelegationRejection,
   highestSequence,
   nowIso,
   pendingCount,
 } from "@nightshift/core";
-import { endProgramNode, runJob, type StartedJob } from "@nightshift/execution";
+import { endProgramNode } from "@nightshift/execution";
 import { configuredRoute, RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
 import type { RefusalCode } from "./results.js";
@@ -130,7 +130,8 @@ const jobReport = async (
   const checkpoint = checkpoints.items.find(
     (candidate) => candidate.commitSha === node.commitSha && node.commitSha !== null,
   );
-  const running = attached.job?.nodeId === node.executionNodeId ? attached.job : undefined;
+  const running = attached.engine.running(jobContractId as never);
+  const waiting = attached.engine.waiting(jobContractId as never);
 
   return {
     jobContractId,
@@ -141,6 +142,8 @@ const jobReport = async (
     outcomeReason: node.outcomeReason ?? null,
     worktree: running?.worktree ?? null,
     pid: running?.pid ?? null,
+    // Why a queued job is not running yet: a full parent, or a spent wall clock.
+    waitingFor: node.status === "queued" ? (waiting ?? null) : null,
     agent:
       agent === undefined
         ? null
@@ -179,17 +182,18 @@ const describeJob = (report: Readonly<Record<string, unknown>>): string => {
   return `Job ${String(report.jobContractId)} is ${status}.${commit}${verified}${reason}`;
 };
 
-/** A run does not end while its work is still going. */
-const assertNoJobRunning = async (deps: OrchestratorDeps, attached: AttachedRun): Promise<void> => {
-  const job = attached.job;
-  if (job === undefined) return;
-  const report = await jobReport(deps, job.jobContractId);
-  if (report.settled === true) return;
+/** A run does not end while its work is still going (D-P6-08). */
+const assertNoJobRunning = async (
+  _deps: OrchestratorDeps,
+  attached: AttachedRun,
+): Promise<void> => {
+  if (attached.engine.idle()) return;
+  const { running, queued } = attached.engine.snapshot();
   throw new ToolRefusal(
     "job_running",
-    `job ${job.jobContractId} is ${String(report.status)}. Wait for it with job.wait, or stop it ` +
-      "with job.cancel, before finishing the run.",
-    { jobContractId: job.jobContractId, status: report.status },
+    `${running.length} job${running.length === 1 ? " is" : "s are"} running and ${queued.length} queued. ` +
+      "Wait for them with job.wait, or stop them with job.cancel, before finishing the run.",
+    { running, queued },
   );
 };
 
@@ -432,31 +436,32 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           model: input.model,
         });
 
-        // 5. The runner persists everything before the harness starts.
-        const started: StartedJob = await runJob(attached.environment, {
-          session: attached.session,
+        // 5. The delegation is recorded, and the engine starts it when its parent
+        //    has a free slot: at once, usually (D-P6-01, D-P6-02). The lifecycle
+        //    continues in the background of this process (D-P3-04).
+        const submitted = await attached.engine.submit({
           job,
           scope: check.scope,
           depth: check.depth,
           parentNodeId: attached.session.rootNodeId,
           route,
-          mcp: (identity) => state.workerLaunch(identity),
         });
-        attached.job = started;
-        // The lifecycle continues in the background of this process (D-P3-04).
-        // Failures are durable statuses, never rejections, so nothing is lost by
-        // not awaiting — but an unobserved rejection would be, hence the catch.
-        void started.completion.catch(() => {});
+        const started = submitted.started;
 
         return ok(
-          `Delegated job ${job.jobContractId} as node ${started.nodeId}. A ${route.target.model} ` +
-            `worker on the ${route.target.harness} harness is running in ${started.worktree}. ` +
-            "Wait for it with job.wait.",
+          started === undefined
+            ? `Delegated job ${job.jobContractId} as node ${submitted.nodeId}. It is queued: its ` +
+                "parent's concurrency limit is full, and it starts when a slot frees. Wait for it " +
+                "with job.wait."
+            : `Delegated job ${job.jobContractId} as node ${submitted.nodeId}. A ${route.target.model} ` +
+                `worker on the ${route.target.harness} harness is running in ${started.worktree}. ` +
+                "Wait for it with job.wait.",
           {
             jobId: job.jobContractId,
-            nodeId: started.nodeId,
-            agentId: started.agentId,
-            worktree: started.worktree,
+            nodeId: submitted.nodeId,
+            status: submitted.status,
+            agentId: started?.agentId ?? null,
+            worktree: started?.worktree ?? null,
             harness: route.target.harness,
             provider: route.target.provider,
             model: route.target.model,
@@ -524,15 +529,13 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     async ({ jobId }) =>
       guarded(async () => {
         const attached = requireAttached(state);
-        const job = attached.job;
-        if (job === undefined || job.jobContractId !== jobId) {
+        if (!(await attached.engine.cancel(jobId as never))) {
           throw new ToolRefusal(
             "not_found",
-            `job ${jobId} is not the one running in this session. Only a job this server started ` +
-              "can be cancelled by it.",
+            `job ${jobId} is neither running nor queued in this session. Only a job this server ` +
+              "holds can be cancelled by it.",
           );
         }
-        await job.cancel();
         const report = await jobReport(deps, jobId);
         return ok(`Cancelled job ${jobId}. ${describeJob(report)}`, report);
       }),
@@ -637,7 +640,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
 
 interface DelegateInput {
   readonly objective: string;
-  readonly scope: Parameters<typeof checkDelegation>[3] & object;
+  readonly scope: Parameters<typeof checkAuthority>[3] & object;
   readonly acceptance: readonly string[];
   readonly dependencies?: readonly string[] | undefined;
   readonly risk?: "low" | "medium" | "high" | undefined;
@@ -691,7 +694,8 @@ const checkDelegationOrRefuse = async (
 ): Promise<{ readonly depth: number; readonly scope: Scope }> => {
   const nodes = await state.runtime.stores.executionNodes.listByRun(attached.session.scope);
   const tree = buildTree([...nodes.items]);
-  const check = checkDelegation(
+  // Authority, depth and scope. Not concurrency: excess work queues (D-P6-02).
+  const check = checkAuthority(
     tree,
     attached.session.rootNodeId,
     attached.session.program.delegationLimits,

@@ -28,12 +28,13 @@ import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contr
 import { nowIso, type RunScope } from "@nightshift/core";
 import {
   checkpointRef,
+  createEngine,
   createEventOutbox,
+  type Engine,
   type EventOutbox,
   type ExecutionEnvironment,
   type RunSession,
   revParse,
-  type StartedJob,
   startRun,
   updateRef,
   type WorkerLaunchIdentity,
@@ -49,8 +50,8 @@ export interface AttachedRun {
   readonly session: RunSession;
   readonly environment: ExecutionEnvironment;
   readonly outbox: EventOutbox;
-  /** The job this server started, while it is the current one. */
-  job?: StartedJob | undefined;
+  /** The run's engine: everything this server has queued or started (P6, D-P6-01). */
+  readonly engine: Engine;
   /** How many spooled events an earlier session for this run left behind. */
   readonly replayed: number;
   /** Whether the authored file disagrees with the stored contract. */
@@ -309,16 +310,23 @@ export const attachRun = async (
     agentId,
   });
 
+  const session: RunSession = {
+    scope,
+    program,
+    run: started,
+    rootNodeId: rootNode.executionNodeId,
+    orchestratorAgentId: agentId,
+    repoPath: state.repoPath,
+  };
+  const environment = buildEnvironment(runtime, outbox);
   const attached: AttachedRun = {
-    session: {
-      scope,
-      program,
-      run: started,
-      rootNodeId: rootNode.executionNodeId,
-      orchestratorAgentId: agentId,
-      repoPath: state.repoPath,
-    },
-    environment: buildEnvironment(runtime, outbox),
+    session,
+    environment,
+    engine: createEngine({
+      environment,
+      session,
+      mcp: (identity) => state.workerLaunch(identity),
+    }),
     outbox,
     replayed,
     contractDrifted: await contractDrifted(state, program),

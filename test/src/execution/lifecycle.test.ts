@@ -11,7 +11,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JobContract, RouteChoice } from "@nightshift/contracts";
 import { JobContractSchema } from "@nightshift/contracts";
-import { nowIso, rejectionOf } from "@nightshift/core";
+import { nowIso } from "@nightshift/core";
 import {
   checkChangedPaths,
   checkpointRef,
@@ -22,7 +22,6 @@ import {
   git,
   jobBranch,
   nodeGitRunner,
-  P3_MAX_CONCURRENT_CHILDREN,
   reportProgress,
   revParse,
   runJob,
@@ -446,34 +445,7 @@ describe("the ending is emitted exactly once", () => {
   });
 });
 
-describe("concurrency", () => {
-  it("refuses a second job while one is running, and says P6 lifts it", async () => {
-    const world = await createWorld({
-      harness: createFakeHarness({
-        script: async ({ cancelled }) => {
-          await cancelled;
-          return { kind: "cancelled" };
-        },
-      }),
-    });
-
-    const first = await delegate(world, jobFor(world));
-    const refusal = await rejectionOf(delegate(world, jobFor(world)));
-
-    expect(refusal.message).toContain("one job at a time");
-    expect(refusal.message).toContain("P6");
-    expect(P3_MAX_CONCURRENT_CHILDREN).toBe(1);
-
-    // Exactly one child was created: the refusal happened before any write.
-    const children = await world.stores.executionNodes.listChildren(
-      world.scope,
-      world.session.rootNodeId,
-    );
-    expect(children).toHaveLength(1);
-
-    await first.cancel();
-  });
-});
+// Concurrency, queueing and the merge queue are P6's: see `engine.test.ts`.
 
 describe("shutdown", () => {
   it("cancels the worker, leaves interrupted state, and spills what it could not send", async () => {

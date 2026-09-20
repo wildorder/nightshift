@@ -153,9 +153,12 @@ const buildOrchestrator = (
       stopped = true;
       const attached = state.current;
       if (attached !== undefined) {
+        // Nothing new starts, everything queued is withdrawn, and then every
+        // worker in flight is interrupted together (D-P6-08).
+        await attached.engine.close(`the run was interrupted: ${reason}`).catch(() => []);
         await shutdown(attached.environment, {
           session: attached.session,
-          job: attached.job,
+          jobs: attached.engine.jobs(),
           reason,
           flushDeadlineMs: SHUTDOWN_DEADLINE_MS,
         }).catch(() => {

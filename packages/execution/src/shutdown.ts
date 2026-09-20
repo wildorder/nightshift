@@ -27,15 +27,19 @@ import type { StartedJob } from "./runner.js";
 
 export interface ShutdownInput {
   readonly session: RunSession;
-  /** The job in flight, if there is one. */
+  /** The job in flight, if there is exactly one. P3's shape; see `jobs`. */
   readonly job?: StartedJob | undefined;
+  /** Every job in flight (P6, D-P6-08). Stopped together, within one grace period. */
+  readonly jobs?: readonly StartedJob[] | undefined;
   readonly reason: string;
   /** How long to wait for the outbox to drain before spilling what is left. */
   readonly flushDeadlineMs?: number;
 }
 
 export interface ShutdownResult {
+  /** The first interrupted job's node. Kept for P3's callers. */
   readonly cancelledJob: ExecutionNodeId | undefined;
+  readonly interruptedJobs: readonly ExecutionNodeId[];
   readonly eventsSpilled: number;
   readonly spoolPath: string;
 }
@@ -49,25 +53,28 @@ export const shutdown = async (
 ): Promise<ShutdownResult> => {
   const { stores, clock, outbox } = environment;
   const at = nowIso(clock);
-  let cancelledJob: ExecutionNodeId | undefined;
-
-  // --- The worker in flight ------------------------------------------------------
-  if (input.job !== undefined) {
-    cancelledJob = input.job.nodeId;
-    try {
-      // `interrupted`, not `cancelled`: a human did not decide to stop this
-      // work, a session ended underneath it (contract §4.3). The distinction is
-      // what tells a reader later whether to retry — `interrupted` is in
-      // `RETRYABLE_STATUSES`, `cancelled` is terminal. The lifecycle records
-      // both the node and the agent as it settles.
-      await input.job.stop("interrupted");
-    } catch {
-      // The adapter could not stop it, or the lifecycle failed on its way out.
-      // The fallback below still writes the records: a node left `running`
-      // because a kill failed is the worst of both worlds.
-    }
-    await interrupt(environment, input, input.job);
-  }
+  // --- The workers in flight ------------------------------------------------------
+  //
+  // All of them at once, so N workers cost one grace period rather than N. Each
+  // is `interrupted`, not `cancelled`: a human did not decide to stop this work,
+  // a session ended underneath it (P3 §4.3). The distinction is what tells a
+  // reader later whether to retry — `interrupted` is in `RETRYABLE_STATUSES`,
+  // `cancelled` is terminal. The lifecycle records both the node and the agent as
+  // it settles; `interrupt` is the fallback for one that could not be stopped,
+  // because a node left `running` by a kill that failed is the worst of both.
+  const jobs = [...(input.jobs ?? []), ...(input.job === undefined ? [] : [input.job])];
+  await Promise.all(
+    jobs.map(async (job) => {
+      try {
+        await job.stop("interrupted");
+      } catch {
+        // The adapter could not stop it, or the lifecycle failed on its way out.
+      }
+      await interrupt(environment, input, job).catch(() => {});
+    }),
+  );
+  const interruptedJobs = jobs.map((job) => job.nodeId);
+  const cancelledJob = interruptedJobs[0];
 
   // --- The run -------------------------------------------------------------------
   const run = await stores.runs.get(input.session.scope, input.session.scope.runId);
@@ -94,7 +101,7 @@ export const shutdown = async (
   const spoolPath = environment.paths.spool(input.session.scope.runId);
   const eventsSpilled = await outbox.spill(spoolPath);
 
-  return { cancelledJob, eventsSpilled, spoolPath };
+  return { cancelledJob, interruptedJobs, eventsSpilled, spoolPath };
 };
 
 /**

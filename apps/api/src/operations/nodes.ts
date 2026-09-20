@@ -30,6 +30,7 @@ import {
   maySucceed,
   type NightshiftStores,
   nextStatus,
+  RETRYABLE_STATUSES,
   type RunScope,
   ScopeWideningError,
   type TransitionEvent,
@@ -124,7 +125,19 @@ const assertMutableChangesOnly = (existing: ExecutionNode, node: ExecutionNode):
   }
   // A durable failure reason is written once. Rewriting it would let a later
   // caller edit the record of why work failed, which is the opposite of durable.
-  if (existing.outcomeReason !== undefined && node.outcomeReason !== existing.outcomeReason) {
+  //
+  // The one exception is a retry (D-P6-06): the node is going round again, the
+  // reason belonged to the attempt that ended, and that attempt's events and
+  // routing decision still carry it. It may be *cleared* there, never rewritten.
+  const retrying =
+    RETRYABLE_STATUSES.includes(existing.status) &&
+    node.status === "queued" &&
+    node.outcomeReason === undefined;
+  if (
+    !retrying &&
+    existing.outcomeReason !== undefined &&
+    node.outcomeReason !== existing.outcomeReason
+  ) {
     throw new HttpError(409, "conflict", "outcomeReason cannot change once it is set");
   }
 
