@@ -652,10 +652,12 @@ describe("P6 — a delegating token, and the limit at the start edge", () => {
       403,
     );
 
-    // Starting what it delegated is the engine's, not its.
+    // Starting what it delegated is the engine's, not its. `queued` is not a start
+    // (it is how a retry is asked for, and the engine starts a queued node when a
+    // slot is free); `running` is, and is refused.
     const start = await delegating.put(`${base()}/nodes/${child.executionNodeId}`, {
       ...child,
-      status: "queued",
+      status: "running",
       updatedAt: now(),
     });
     expect(start.status).toBe(403);

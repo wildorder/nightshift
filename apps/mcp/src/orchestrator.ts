@@ -74,6 +74,8 @@ import { attachRun, createCheckpointAt, describeNodeLine, startNewRun } from "./
 export const DEFAULT_JOB_WAIT_CAP_SECONDS = 55;
 export const JOB_WAIT_CAP_ENV = "NIGHTSHIFT_JOB_WAIT_CAP_SECONDS";
 const JOB_WAIT_POLL_MS = 500;
+/** How long a process may outlive its node's ending before `run.finish` stops it. */
+const SETTLED_PROCESS_GRACE_MS = 15_000;
 
 export interface OrchestratorDeps {
   readonly state: OrchestratorSession;
@@ -215,6 +217,10 @@ const assertNoJobRunning = async (
   _deps: OrchestratorDeps,
   attached: AttachedRun,
 ): Promise<void> => {
+  if (attached.engine.idle()) return;
+  // A process whose node has already settled is not work in flight: it is a
+  // model finishing its sentence. It gets a moment, and then it is stopped.
+  await attached.engine.releaseSettled(SETTLED_PROCESS_GRACE_MS);
   if (attached.engine.idle()) return;
   const { running, queued } = attached.engine.snapshot();
   throw new ToolRefusal(

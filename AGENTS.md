@@ -319,6 +319,66 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   instance belong to P9. Nightshift never runs a worker as a per-job hosted
   environment.
 
+**As built for P6 (Parallel and Recursive Execution), 2026-09-20.** The details
+a later program needs and cannot derive; full account in
+`docs/programs/p6-parallel-recursive.md` §12 and §13. The lasting decisions are
+A-40 and A-41.
+
+- **Delegation is a record; the engine starts work.** `delegate` (root or
+  sub-orchestrator) writes a Job Contract and a node and returns. One `Engine`
+  per run (`packages/execution/src/engine.ts`), in the root orchestrator's
+  process, starts a `queued` node when `core`'s `maySlotStart` says its parent
+  has a slot. Nothing else starts, verifies or integrates anything. A queued node
+  has no agent, token or worktree.
+- **The concurrency limit is the start edge's, per parent.** The API refuses
+  `queued → running` past the limit (429, "not yet"), and no longer refuses node
+  creation for concurrency. `checkDelegation` and its P1 property are unchanged;
+  `checkAuthority` is the same rule asked with concurrency held open. **Do not
+  change a P1 rule to make P6 work: nothing in P6 needed to.**
+- **The merge queue is the only route to the program branch**
+  (`packages/execution/src/merge-queue.ts`): reconcile onto the current head,
+  **verify there**, seal, fast-forward, checkpoint, one node at a time, in
+  `core`'s `nextToIntegrate` order among what is ready *now*. Never verify a node
+  anywhere but on the commit that will land, and never move a verified node's
+  commit. A conflict is `integration_conflict` with the paths, and **Nightshift
+  never resolves one**. `runJob` without an engine still integrates inline, and
+  is only correct with one job in flight.
+- **Sub-programs.** `delegate { kind: "sub-program" }` starts an
+  `orchestrator`-role agent through the same adapters, in MCP role
+  `sub-orchestrator` (`apps/mcp/src/sub-orchestrator.ts`), with a **delegating
+  execution token** (`role: "orchestrator"`), a detached checkout to read, and
+  nothing to integrate. It has a Job Contract like a job. It ends `succeeded` or
+  `failed`; the engine cancels its subtree when its process goes.
+- **`authorize` has two tables**, `EXECUTION_ACCESS` (worker) and
+  `ORCHESTRATOR_ACCESS`, both exhaustive over `Operation`. A delegating token
+  reaches only its own subtree, and where a node stands (`NodeRelation`) is
+  resolved by `enforce` **from the stored tree, never from the request**. It may
+  ask a node to be: `validated` (a new child of its own node), `cancelled` or
+  `queued` (a descendant: stop, or retry), `succeeded` or `failed` (itself).
+  Never `running` or anything past it. Add an operation and you decide it in
+  both tables, with a cell in both `authorize*.test.ts` files.
+- **A sub-orchestrator has no channel to the engine but the control plane.** The
+  engine reads the run's nodes once a second while one is running and adopts what
+  it finds. Do not add a socket, a port or an IPC path: P9 and P10 depend on this
+  being the only channel.
+- No program or sub-program node may end `succeeded` while anything under it is
+  unsettled (`mayEndProgramNode`, enforced by the API). `core`'s `isSettled` is
+  the one definition of settled; use it rather than a local list.
+- A retry is a new attempt at the same node: fresh worktree from the current
+  head, new agent, `RoutingDecision.attempt + 1` linked by `previousRouteId`. The
+  API lets `outcomeReason` be cleared on the `retry` edge and nowhere else.
+- **A process outlives its node's ending** with a real model. `run.finish` calls
+  `engine.releaseSettled`, which waits briefly for such a process and then stops
+  it, and never touches one whose node is in flight.
+- The scripted harness picks a job's script from a tag at the front of its
+  objective (`[add-module alpha wait=2 group=root]`), and barriers between worker
+  processes are files under the state directory. **Assert concurrency from the
+  event sequence, never from timing.** A run has more events than one page.
+- `npm run slice` ends with a **tree** phase (`apps/api/src/smoke/tree.smoke.ts`):
+  both real adapters at once and a real sub-orchestrator, against the deployed
+  plane. `NIGHTSHIFT_TREE_MAX_CONCURRENCY=1` forces it serial for the benchmark.
+  `npm run benchmark:parallel` is the scripted one. Smoke is 86 tests.
+
 **As built for P5 (Harness Neutrality), 2026-09-19.** The details a later
 program needs and cannot derive; full account in
 `docs/programs/p5-harness-neutrality.md` §12 and §13.

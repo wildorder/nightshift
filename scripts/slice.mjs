@@ -45,5 +45,9 @@ for (const [harness, description] of phases) {
   });
 }
 
+// P6: the Stage 5 tree, with both real adapters and a real sub-orchestrator.
+console.log("\n=== slice phase: tree — two harnesses at once, and a sub-program (P6)\n");
+run("npx", ["vitest", "run", "--config", "apps/api/vitest.tree.config.ts"], base);
+
 console.log("\nEvery slice phase passed. The run identifiers are printed above; read the");
 console.log("lifecycle back with GET …/state and GET …/events using a fresh token.");

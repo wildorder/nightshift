@@ -119,6 +119,18 @@ export interface Engine {
   retry(jobContractId: JobContractId): Promise<boolean>;
   /** True when nothing is running and nothing is queued. */
   idle(): boolean;
+  /**
+   * Lets go of processes whose **node has already settled**: each gets `graceMs`
+   * to exit by itself and is then stopped.
+   *
+   * A harness process outlives its node's ending by however long its model takes
+   * to say goodbye. Found by the first real sub-orchestrator, which called
+   * `subprogram.complete`, was recorded `succeeded`, and was still composing its
+   * closing message when its parent tried to finish the run. The record says the
+   * work is over; this makes the process agree, without ever stopping one whose
+   * node is still in flight.
+   */
+  releaseSettled(graceMs: number): Promise<void>;
   snapshot(): EngineSnapshot;
   /** Every running job, for shutdown. */
   jobs(): readonly StartedJob[];
@@ -149,6 +161,7 @@ export const createEngine = (options: EngineOptions): Engine => {
   const pending: Pending[] = [];
   const submissions = new Map<JobContractId, Submission>();
   const active = new Map<ExecutionNodeId, StartedJob>();
+  const departures = new Map<ExecutionNodeId, Promise<void>>();
   const nodeOfJob = new Map<JobContractId, ExecutionNodeId>();
   let closed = false;
 
@@ -261,7 +274,10 @@ export const createEngine = (options: EngineOptions): Engine => {
       const orchestrates = entry.node.kind === "sub-program";
       if (orchestrates) orchestrators.add(started.nodeId);
       watch();
-      void started.completion
+      // Kept, because "its lifecycle has settled" and "the engine has let go of it"
+      // are two moments: a subtree may still be being cancelled in between, and
+      // `releaseSettled` must wait for the second.
+      const departure = started.completion
         .catch(() => {})
         .then(async () => {
           // An orchestrator that has gone leaves nobody to answer for what it
@@ -270,9 +286,11 @@ export const createEngine = (options: EngineOptions): Engine => {
         })
         .finally(() => {
           active.delete(started.nodeId);
+          departures.delete(started.nodeId);
           orchestrators.delete(started.nodeId);
           void pump();
         });
+      departures.set(started.nodeId, departure);
       return true;
     } catch (error) {
       if (error instanceof ConcurrencyLimitExceededError) {
@@ -509,6 +527,29 @@ export const createEngine = (options: EngineOptions): Engine => {
 
     idle: () => active.size === 0 && pending.length === 0,
 
+    releaseSettled: async (graceMs) => {
+      const stored = new Map((await readNodes()).map((node) => [node.executionNodeId, node]));
+      await Promise.all(
+        [...active.entries()].map(async ([nodeId, started]) => {
+          const node = stored.get(nodeId);
+          if (node === undefined || !isSettled(node.status)) return;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const leaving = departures.get(nodeId) ?? started.completion.catch(() => {});
+          const exited = await Promise.race([
+            leaving.then(() => true),
+            new Promise<boolean>((resolve) => {
+              timer = setTimeout(() => resolve(false), graceMs);
+            }),
+          ]);
+          if (timer !== undefined) clearTimeout(timer);
+          if (!exited) {
+            await started.cancel().catch(() => {});
+            await leaving;
+          }
+        }),
+      );
+    },
+
     snapshot: () => ({
       running: [...active.keys()],
       queued: pending.map((entry) => entry.node.executionNodeId),
@@ -523,6 +564,11 @@ export const createEngine = (options: EngineOptions): Engine => {
       closed = true;
       if (watching !== undefined) clearTimeout(watching);
       watching = undefined;
+      // A launch already under way finishes first. Its node has taken its slot
+      // and its agent exists, but it is in nobody's list until `startJob`
+      // returns; stopping now would leave it running with nothing to stop it.
+      // Once it is in `jobs()`, shutdown interrupts it like the rest.
+      while (pumping !== undefined) await pumping;
       const withdrawn: ExecutionNodeId[] = [];
       for (const entry of [...pending]) {
         withdrawn.push(entry.node.executionNodeId);

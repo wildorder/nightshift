@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p6-parallel-recursive` |
 | Source stage | Stage 5 (Parallel and Recursive Execution) |
-| Status | **Contract ratified 2026-09-19** (D-P6-01 … D-P6-09). Tasks T1 … T7 drafted. |
+| Status | **Contract ratified 2026-09-19** (D-P6-01 … D-P6-09). **Built 2026-09-20**: T1 … T7 done, deployed, and the exit gate passed with real adapters against the deployed control plane (§13). Eight build-time decisions in §12 await ratification. |
 | Depends on | P5 Harness Neutrality (two adapters, contract v1, `succeeded` for program nodes) |
 | Blocking decisions | none. O-05 is untouched: everything still runs on the operator's machine. |
 
@@ -265,7 +265,154 @@ Specs live in `tasks/p6-parallel-recursive/`.
 |------|----------|----|
 | 2026-09-19 | Contract drafted; D-P6-01 … D-P6-09 proposed; tasks T1 … T7 drafted | Agent, for human ratification |
 | 2026-09-19 | **Contract ratified**, D-P6-01 … D-P6-09 as drafted. | Human |
+| 2026-09-20 | **A sub-program is delegated with a contract, like a job.** T4's spec said a sub-program node carries no Job Contract. Its objective, scope and acceptance have to be recorded somewhere before the node exists (A-03), and the record that already says exactly that is a Job Contract, so a sub-program's node carries a `jobContractId` too. One shape for "what was asked", one `job.get` / `job.wait` for both kinds, and the adapters' start input is unchanged. | Agent, within D-P6-03 |
+| 2026-09-20 | **A delegating token may ask for a descendant to be `queued`, as well as `cancelled`.** D-P6-03 gives a sub-orchestrator `job.retry`, and D-P6-04's list of what its token may write had no way to ask for one. `queued` is the table's own `retry` edge, legal only from a retryable status, and it is not a start: the engine starts a queued node, when its parent has a slot, and nothing else does. The engine adopts a `queued` node it does not hold exactly as it adopts a `validated` one. `running` and everything past it stay refused, offline over every status and live in smoke. | Agent, within D-P6-03 and D-P6-04 |
+| 2026-09-20 | **The ending rule covers the root as well as sub-programs, and the API enforces it.** No program or sub-program node may end `succeeded` while anything under it is unsettled (409). D-P6-03 stated it for sub-programs; leaving the root out would have let a buggy orchestrator finish a run over running work. P5's smoke test, which ended a root over a running job, was corrected to fail the job first. | Agent, within D-P6-03 and D-P6-08 |
+| 2026-09-20 | **A retry may clear the last attempt's `outcomeReason`.** P3 made a failure reason write-once. A node going round again is not the failure it was: the reason stays on that attempt's events and routing decision, and the API lets it be *cleared* (never rewritten) on the `retry` edge and nowhere else. | Agent, within D-P6-06 |
+| 2026-09-20 | **Three event types and one route outcome were added**: `node.rebased`, `integration.conflict`, `node.succeeded`, and `RouteOutcome.succeeded` for a sub-program's orchestrator, which produces no commit and so is never `verified`. | Agent |
+| 2026-09-20 | **A job's slot is claimed before its agent exists.** `startJob` writes `queued → running` first, because that is the one write the API may refuse for a reason that is not a failure, and refusing it first leaves nothing to clean up. The agent, its token, its route and its worktree follow. A-04 is unaffected: the identity still exists before any process does. | Agent, within D-P6-02 |
+| 2026-09-20 | **A branch moved from outside between verification and the fast-forward is a durable `stale_base`, not a second reconcile.** T3's spec had the queue re-enter reconcile on a lost compare-and-swap. By then the node is verified, and P1 forbids moving a verified node's commit, rightly. The queue is the only thing in Nightshift that moves the branch, so this can only be the operator's own doing, and saying so beats quietly re-verifying. | Agent, departing from T3 deliverable 4 |
+| 2026-09-20 | **`run.finish` lets a process whose node has settled finish, briefly, then stops it.** Found by the first real sub-orchestrator: it called `subprogram.complete`, its node was `succeeded`, and its model was still composing a closing message when the root tried to finish the run, which was refused for work in flight. A settled node's process is given fifteen seconds and then stopped; a process whose node is still in flight is never touched. | Agent, within D-P6-08 |
 
 ## 13. As built
 
-Not yet.
+Built 2026-09-19 and 2026-09-20 on `program/p6-parallel-recursive`. Everything
+below was run, against the deployed `dev` control plane, Claude Code 2.1.273 and
+codex-cli 0.154.0.
+
+### 13.1 Task states
+
+| Task | State | Where |
+|------|-------|-------|
+| T1 | Done, deployed | `packages/core/src/rules/{delegation,integration,authorize}.ts`; `apps/api/src/{auth/enforce,operations/nodes,tokens/mint}.ts`; `apps/api/src/isolation-orchestrator.test.ts`; smoke appended to `p4-isolation.smoke.ts` |
+| T2 | Done | `packages/execution/src/{engine,runner,shutdown}.ts` |
+| T3 | Done | `packages/execution/src/{merge-queue,git/operations}.ts`; retry in `engine.ts` and `runner.ts` |
+| T4 | Done | `apps/mcp/src/{sub-orchestrator,server,role}.ts`; `packages/harness/src/brief.ts`; discovery in `engine.ts` |
+| T5 | Done | `apps/mcp/src/orchestrator.ts`; `skills/nightshift/SKILL.md` |
+| T6 | Done | `test/src/execution/engine.test.ts`; `test/src/parallel/{tree,benchmark}.test.ts`; `test/src/harness/{scripts,scripted,worker}.ts` |
+| T7 | Done | `apps/api/src/smoke/tree.smoke.ts`; `scripts/slice.mjs`; this section |
+
+### 13.2 The exit gate (SC-P6-18)
+
+The Stage 5 tree against the deployed control plane, real adapters throughout:
+job A pinned to Claude Code (`claude-sonnet-5`), job B pinned to Codex
+(`gpt-5.5`), and sub-program C orchestrated by a real model holding a delegating
+token. Passed; the run below is the last of four.
+
+```text
+program                       succeeded
+├── job A   (claude)          integrated   at +17.9 s
+├── job B   (codex)           integrated   at +49.8 s
+└── sub-program C (claude)    succeeded    at +46.8 s     queued behind A and B, as the limit says
+    ├── job                   integrated
+    └── job                   integrated
+4 commits landed, each with a passed Verification naming that commit; 2 stale bases rebased.
+```
+
+The real sub-orchestrator, on its first run, read its checkout, delegated two
+jobs scoped to one module each, waited on both at once, and completed. It wrote
+no code. Its brief needed no correction.
+
+### 13.3 The benchmark (SC-P6-12)
+
+The same tree, forced serial (`maxConcurrency: 1`) against parallel
+(`maxConcurrency: 2`).
+
+| Harness | Serial | Parallel | Ratio |
+|---------|--------|----------|-------|
+| Real adapters, deployed plane | 113.3 s | 51.6 s | **2.2x** |
+| Scripted, 400 ms per worker, local plane | 5.6 s | 4.2 s | 1.35x |
+
+The scripted figure is small on purpose: with workers that take 400 ms, what is
+left is what does *not* parallelise — one verification per job (about 0.7 s of
+`node --test`, serial by D-P6-05) and up to a second of discovery per
+sub-orchestrator delegation. With real workers, whose minutes dwarf both, the
+tree ran in under half the time with two slots. `npm run benchmark:parallel`
+repeats the scripted half.
+
+### 13.4 What the live run found that the offline one could not
+
+1. **A process outlives its node's ending.** §12, last entry. The scripted
+   sub-orchestrator exits the moment it completes; a real model does not.
+2. **A launch in flight at shutdown was in nobody's list.** Not live, but under
+   load: `npm run verify` ran beside the live suites and the kill-mid-tree test
+   caught a job whose slot was claimed and whose agent existed but whose process
+   had not yet been spawned, so shutdown had nothing to interrupt and the agent
+   stayed `created`. `Engine.close` now waits for a launch under way, after
+   which it is in `jobs()` and is interrupted like the rest.
+3. **One page is not a run.** The live test read `events` once and asserted on
+   an event that was on the second page. A tree's run has more events than a
+   page holds; the test now reads every page. Not a product defect.
+
+Nothing else. In particular the delegating token, discovery through the control
+plane, the start-edge limit and the merge queue each worked against real AWS as
+they had offline.
+
+### 13.5 Discovery latency (D-P6-01)
+
+A sub-orchestrator's delegation is a record, and the engine reads the run's nodes
+once a second while an orchestrator is running, so a delegation is picked up
+within a second plus one read. In the live run C's two jobs were `running` within
+about two seconds of being delegated. P10 replaces the poll with a push; nothing
+else changes.
+
+### 13.6 Departures from the task specs
+
+- **T1.** The ending rule is `mayEndProgramNode`, for every program node, not
+  `mayEndSubProgram`. §12.
+- **T2.** The engine's surface is `submit`, `running`, `waiting`, `cancel`,
+  `retry`, `idle`, `snapshot`, `jobs`, `close`, `releaseSettled`. Waiting on
+  several jobs is the MCP roles' (it reads the control plane, as `job.wait`
+  always has), not the engine's.
+- **T2 and T3 landed together.** T2's note allowed a one-at-a-time lock over
+  P3's inline integration until T3; the merge queue was written straight after
+  and the lock was never committed.
+- **T3.** A lost compare-and-swap is a durable `stale_base`. §12.
+- **T4.** A sub-program has a Job Contract; its tools include `subprogram.get`
+  and `subprogram.refresh` (the latter moves its checkout to the run's latest
+  checkpoint). A sub-orchestrator's delegations are routed by the program's
+  policy and cannot pin a harness or a model; the root's can.
+- **T6.** Integration order and stale-base reconciliation are proven in
+  `engine.test.ts`, where the merge queue can be held behind a gate so that
+  "both were ready when the queue looked" is a fact; the tree test proves the
+  rest through the real server binary. The scripted harness picks a job's script
+  from a tag on its objective, because one run now holds jobs that must each do
+  something different.
+
+### 13.7 Things a reader should know
+
+- **`verifying` holds a slot, `implemented` does not** (P1's
+  `OCCUPIES_CONCURRENCY_SLOT`, unchanged). A finished worker waiting for the
+  merge queue frees its slot; the one being verified holds it for those seconds.
+- **The queue's order is among what is ready *now*.** A job delegated first that
+  finishes last does not hold up one delegated later that is already done.
+- **`maxConcurrency` multiplies with depth** (a stated non-guarantee): the live
+  tree had three workers running at one point, under a limit of two.
+
+### 13.8 Success criteria
+
+| SC | Discharged by |
+|----|---------------|
+| SC-P6-01, 03 | `tree.test.ts`: overlap from the event sequence, forced by barriers between worker processes; live, A and B (§13.2) |
+| SC-P6-02 | `tree.test.ts`: C's children are delegated by C's agent, with C's token; live |
+| SC-P6-04, 06 | `tree.test.ts`: depth and scope refused for a sub-orchestrator by the API; `authorize-orchestrator.test.ts`; `isolation-orchestrator.test.ts` |
+| SC-P6-05 | `tree.test.ts`, `engine.test.ts`, `server.test.ts`: queued, told why, then started; live, C queued behind A and B |
+| SC-P6-07 | `engine.test.ts`, `tree.test.ts`: each snapshot holds its own job's paths only |
+| SC-P6-08 | `integration.test.ts` (the property) and `engine.test.ts` (delegation order, with the later job finishing first) |
+| SC-P6-09 | `engine.test.ts`: rebased, recorded, verified, landed; live, two stale bases |
+| SC-P6-10 | `engine.test.ts`, `tree.test.ts`: `integration_conflict` with the paths, nothing landed, `job.retry` recovers it |
+| SC-P6-11 | `engine.test.ts`, `tree.test.ts`: the second of an incompatible pair ends `verification_failed`; the branch still passes |
+| SC-P6-12 | §13.3 |
+| SC-P6-13 | `authorize-orchestrator.test.ts` (every operation, every place, every status); `isolation-orchestrator.test.ts` (every route, through the gate); smoke |
+| SC-P6-14 | `nodes.test.ts`; `engine.test.ts` (straight at the runner, past the engine's own check); smoke |
+| SC-P6-15 | `engine.test.ts`, `tree.test.ts`, and live: every commit on the branch has a passed `Verification` naming it |
+| SC-P6-16 | `engine.test.ts` (shutdown with two running and one queued); `tree.test.ts` (the server stopped with two levels of work in flight) |
+| SC-P6-17 | The P1 property tests and `isolation.test.ts` are unedited; `npm run conformance -- --harness all` passed after P6 |
+| SC-P6-18 | §13.2; smoke 86 passed |
+
+### 13.9 What P6 deliberately did not do
+
+- `maxUsd` and `maxTokens` (P7, with usage normalisation).
+- Resolve a conflict, or pick between two jobs' work.
+- Verify speculatively in parallel. Verification is serial, by D-P6-05.
+- Contain a worker or a sub-orchestrator on the operator's machine (A-39, P9).
