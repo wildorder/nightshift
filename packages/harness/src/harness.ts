@@ -1,5 +1,6 @@
 /**
- * The harness adapter contract, version 0 (contract §4.6, D-P3-03).
+ * The harness adapter contract, version 1 (P3 §4.6 and D-P3-03; finalised by P5,
+ * D-P5-01, A-37).
  *
  * ## What this is for
  *
@@ -8,10 +9,12 @@
  * like, how it is authenticated, how its output is framed, or how its tool
  * permissions are expressed. Every one of those lives behind `start`.
  *
- * P5 finalizes this contract against three adapters. Version 0 exists so that
- * the execution layer (T5) is written against an interface rather than a
- * process, and so that the Claude Code adapter (T8) is written against a
- * specification rather than an example.
+ * Version 0 (P3) existed so the execution layer was written against an
+ * interface rather than a process. Version 1 (P5) is that contract finalised
+ * against two local adapters and the shape P9's remote one needs. Two things
+ * were added and nothing removed: the worker operations arrive as functions
+ * (`tools`, see `tools.ts`) beside the MCP launch, and an adapter says whether
+ * it reports `usage` and carries it on the exit.
  *
  * ## Rules for anyone implementing this
  *
@@ -32,6 +35,9 @@
  * 5. **The worker never gets git write access** (D-P3-15, A-29). Nightshift owns
  *    every commit; an adapter that granted a `git commit` tool would let a worker
  *    author history Nightshift did not.
+ * 6. **One transport per worker.** A worker's four operations reach `WorkerTools`
+ *    either through the MCP server in `input.mcp` or through `input.tools`
+ *    directly, never both: two transports are two ways to report one job.
  */
 import type {
   Agent,
@@ -41,8 +47,10 @@ import type {
   JobContract,
   ProgramContract,
   RouteTarget,
+  RouteUsage,
 } from "@nightshift/contracts";
 import type { HookSink } from "./hooks.js";
+import type { WorkerTools } from "./tools.js";
 
 /** A span of time. Milliseconds, named so a call site cannot mistake the unit. */
 export interface Duration {
@@ -84,6 +92,12 @@ export interface HarnessStartInput {
   readonly model: RouteTarget;
   /** The worker's Nightshift MCP server. Passed through unchanged. */
   readonly mcp: McpLaunch;
+  /**
+   * The same four operations that server exposes, as functions, for a harness
+   * that cannot be handed a process to spawn (rule 6). Built by the execution
+   * layer over stores holding the worker's own token (A-35).
+   */
+  readonly tools: WorkerTools;
   /** Where lifecycle observations go, in order (D-P3-09). */
   readonly sink: HookSink;
   /**
@@ -97,12 +111,12 @@ export interface HarnessStartInput {
 /** Why a worker process stopped. Exactly one of these settles `HarnessHandle.exit`. */
 export type HarnessExit =
   /** The process ended cleanly and the provider reported a final result. */
-  | { readonly kind: "completed" }
+  | { readonly kind: "completed"; readonly usage?: RouteUsage }
   /**
    * The process ended without completing: a non-zero exit, a stream that ended
    * with no result, or a launch that never got off the ground.
    */
-  | { readonly kind: "failed"; readonly exitCode: number }
+  | { readonly kind: "failed"; readonly exitCode: number; readonly usage?: RouteUsage }
   /**
    * The process was killed by a signal. Windows reports no signal for a killed
    * process, so an adapter on Windows returns `failed` with the exit code
@@ -126,9 +140,20 @@ export interface HarnessHandle {
   readonly transcript?: string;
 }
 
+/** What an adapter can do beyond the minimum, so nothing above it has to guess. */
+export interface HarnessCapabilities {
+  /**
+   * Whether the harness reports token, cost or latency figures. When true, a
+   * `completed` or `failed` exit carries `usage` whenever the provider supplied
+   * any; the execution layer writes it to the job's `RoutingDecision` (A-13).
+   */
+  readonly usage: boolean;
+}
+
 export interface Harness {
   /** Adapter identifier, matching `RouteTarget.harness`: `claude`, `codex`, `agentcore`. */
   readonly id: string;
+  readonly capabilities: HarnessCapabilities;
 
   /**
    * Starts a worker and returns as soon as the process exists. Does not wait for

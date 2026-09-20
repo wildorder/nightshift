@@ -10,7 +10,12 @@
  * `sealed` or `integrated` that skips `verified` (A-05). `implemented` is what a
  * worker may claim. `verified` is what only Nightshift may assert.
  */
-import type { ExecutionNode, ExecutionNodeStatus, IsoTimestamp } from "@nightshift/contracts";
+import type {
+  ExecutionNode,
+  ExecutionNodeStatus,
+  IsoTimestamp,
+  RunStatus,
+} from "@nightshift/contracts";
 import { IllegalTransitionError } from "../errors.js";
 
 export type TransitionEvent =
@@ -60,13 +65,18 @@ export const EXECUTION_NODE_STATUSES: readonly ExecutionNodeStatus[] = [
   "examination_failed",
   "sealed",
   "integrated",
+  "succeeded",
   "failed",
   "cancelled",
   "interrupted",
 ];
 
 /** Nothing leaves these. A run that reaches one of them is settled. */
-export const TERMINAL_STATUSES: readonly ExecutionNodeStatus[] = ["integrated", "cancelled"];
+export const TERMINAL_STATUSES: readonly ExecutionNodeStatus[] = [
+  "integrated",
+  "succeeded",
+  "cancelled",
+];
 
 /**
  * Statuses from which work can be re-queued. `interrupted` is included because
@@ -130,6 +140,8 @@ export const TRANSITIONS: TransitionTable = {
   examination_failed: { retry: "queued", fail: "failed", cancel: "cancelled" },
   sealed: { integrate: "integrated", cancel: "cancelled" },
   integrated: {},
+  // No event leads here and none leaves: `finishRun` is the only way in.
+  succeeded: {},
   failed: { retry: "queued", cancel: "cancelled" },
   cancelled: {},
   interrupted: { retry: "queued", fail: "failed", cancel: "cancelled" },
@@ -166,6 +178,60 @@ export const transition = (
   if (next === undefined) throw new IllegalTransitionError(node.status, event);
   return { ...node, status: next, updatedAt: at };
 };
+
+/**
+ * Whether `node` may end `succeeded` (P5, D-P5-06).
+ *
+ * A program node does no work of its own: it has no commit, nothing to verify
+ * and nothing to integrate, so none of the job lifecycle's endings describe a
+ * finished one. `succeeded` is its ending, and it is **not a job's**. A job that
+ * worked is `integrated`, reachable only through `verified` (A-05), and a second
+ * way to call a job done is exactly what that invariant exists to prevent.
+ *
+ * So `succeeded` is **not in the table above at all**: no event leads to it, and
+ * `transition` can never produce it, for any kind of node. The job lifecycle is
+ * what P1 proved it to be, its legality still depends on status and event alone
+ * (SC-P1-15), and this one rule, beside it, is the only way in.
+ */
+export const maySucceed = (node: Pick<ExecutionNode, "kind" | "status">): boolean =>
+  node.kind !== "job" && node.status === "running";
+
+/**
+ * The program node's ending, from its run's (P5, D-P5-06).
+ *
+ * `succeeded` is this function's alone. `failed` and `cancelled` are the table's
+ * own edges. A run that was `cancelled` or `interrupted` leaves its program node
+ * `cancelled`: a run's ending is terminal either way, and `interrupted` on a
+ * node means "retry me", which nothing can do to the root of a run that is over.
+ *
+ * A node that is not `running` is returned as it is. The first durable outcome
+ * wins, and a run still `pending` or `running` has no ending to apply.
+ */
+export const finishRun = (
+  programNode: ExecutionNode,
+  runStatus: RunStatus,
+  at: IsoTimestamp,
+  outcomeReason?: string,
+): ExecutionNode => {
+  if (programNode.kind === "job") {
+    throw new IllegalTransitionError(programNode.status, "finish a run on a job node");
+  }
+  if (programNode.status !== "running") return programNode;
+  switch (runStatus) {
+    case "succeeded":
+      return { ...programNode, status: "succeeded", updatedAt: at };
+    case "failed":
+      return withReason(transition(programNode, "fail", at), outcomeReason);
+    case "cancelled":
+    case "interrupted":
+      return withReason(transition(programNode, "cancel", at), outcomeReason);
+    default:
+      return programNode;
+  }
+};
+
+const withReason = (node: ExecutionNode, outcomeReason: string | undefined): ExecutionNode =>
+  outcomeReason === undefined ? node : { ...node, outcomeReason };
 
 /**
  * Statuses that can only be reached by passing through `verified` (A-05).

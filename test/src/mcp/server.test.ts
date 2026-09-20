@@ -35,6 +35,7 @@ import {
   createBaseWorld,
   localPathsIn,
   PROGRAM_BRANCH,
+  workerEnvironmentIn,
 } from "../execution/world.js";
 
 afterEach(cleanupWorlds);
@@ -86,6 +87,7 @@ const start = async (
       ids: world.ids,
       clock: world.clock,
       endpoint: world.plane.url,
+      workerEnvironment: workerEnvironmentIn(world),
       workerLaunch: () => ({
         name: "nightshift",
         command: process.execPath,
@@ -221,6 +223,7 @@ describe("the role split (D-P3-01)", () => {
         ids: world.ids,
         clock: world.clock,
         endpoint: world.plane.url,
+        workerEnvironment: workerEnvironmentIn(world),
         workerLaunch: () => ({ name: "n", command: "node", args: [], env: {} }),
       },
     });

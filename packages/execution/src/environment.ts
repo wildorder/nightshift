@@ -29,6 +29,36 @@ import type { Harness } from "@nightshift/harness";
 import type { GitRunner } from "./git/index.js";
 import type { EventOutbox } from "./outbox.js";
 
+/**
+ * What the worker's MCP server must be told about itself (P3 §4.2, §4.5).
+ *
+ * The identity says *which* agent it is; the token is *how it proves it*. Both
+ * are set by the party that spawns the worker, which is never the worker.
+ */
+export interface WorkerLaunchIdentity {
+  readonly projectId: string;
+  readonly programId: string;
+  readonly runId: string;
+  readonly nodeId: ExecutionNodeId;
+  readonly agentId: AgentId;
+  readonly jobContractId: JobContractId;
+  readonly worktree: string;
+  /**
+   * The worker's only credential (D-P4-06). Bound to this agent, this node and
+   * this run, expiring within the cost policy's wall clock. Never logged, never
+   * written to disk.
+   */
+  readonly executionToken: string;
+}
+
+/** What the worker half needs. A narrower set than the runner's. */
+export interface WorkerEnvironment {
+  readonly stores: ProjectStores;
+  readonly clock: Clock;
+  readonly git: GitRunner;
+  readonly outbox: EventOutbox;
+}
+
 export interface ExecutionEnvironment {
   readonly stores: ProjectStores;
   readonly bodies: ArtifactBodyStore;
@@ -43,6 +73,15 @@ export interface ExecutionEnvironment {
   readonly paths: LocalPaths;
   readonly git: GitRunner;
   readonly outbox: EventOutbox;
+  /**
+   * The environment a worker's four operations run in when an adapter calls them
+   * as functions (`HarnessStartInput.tools`, A-37): stores and an outbox that
+   * hold **the worker's execution token and nothing else**, so a write made on a
+   * worker's behalf is recorded as the worker's (A-35). Supplied by the
+   * composition root, because building an http adapter is not this package's
+   * business.
+   */
+  readonly workerEnvironment: (launch: WorkerLaunchIdentity) => WorkerEnvironment;
   /**
    * How long a verification step may run before its process tree is killed.
    * Per step, not per run.

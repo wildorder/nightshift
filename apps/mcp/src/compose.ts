@@ -20,6 +20,7 @@
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
 import type {
   ArtifactBodyStore,
   ExecutionTokenMinter,
@@ -27,10 +28,11 @@ import type {
   ProjectStores,
 } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
-import type { GitRunner, WorkerLaunchIdentity } from "@nightshift/execution";
-import { nodeGitRunner } from "@nightshift/execution";
-import type { Harness, McpLaunch } from "@nightshift/harness";
+import type { GitRunner, WorkerEnvironment, WorkerLaunchIdentity } from "@nightshift/execution";
+import { createEventOutbox, nodeGitRunner } from "@nightshift/execution";
+import type { Harness, HarnessHandle, McpLaunch } from "@nightshift/harness";
 import { createClaudeHarness } from "@nightshift/harness-claude";
+import { createCodexHarness } from "@nightshift/harness-codex";
 import {
   createFetchTransport,
   createHttpArtifactBodyStore,
@@ -76,6 +78,11 @@ export interface Runtime {
   readonly endpoint: string;
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
+  /**
+   * The same worker, reached without a process (A-37): stores and an outbox over
+   * a transport that holds that worker's execution token and nothing else.
+   */
+  workerEnvironment(identity: WorkerLaunchIdentity): WorkerEnvironment;
 }
 
 /** A worker-role server started without the one credential it is allowed to have. */
@@ -176,10 +183,67 @@ export const harnessModuleSpecifier = (specifier: string): string => {
   return isPath ? pathToFileURL(specifier).href : specifier;
 };
 
-/** The adapter, named here and only here. */
+/**
+ * The adapters, named here and only here (AR-2, D-P3-12).
+ *
+ * One `switch` over the harnesses the compatibility table can route to today.
+ * **Only the adapter a route chose is ever constructed**, and only when the
+ * first job is routed to it: a machine without Codex runs a Claude job without
+ * anything Codex-shaped being built, looked up or complained about.
+ */
+const constructAdapter = (harness: string, env: Env): Harness => {
+  switch (harness) {
+    case "claude":
+      return createClaudeHarness({ env });
+    case "codex":
+      return createCodexHarness({ env });
+    default:
+      // `configuredRoute` refuses a harness with no adapter before anything is
+      // persisted, so this is a bug in the table rather than a user's mistake.
+      throw new Error(`no adapter is wired for the "${harness}" harness`);
+  }
+};
+
+/**
+ * A `Harness` that hands each worker to the adapter its route named.
+ *
+ * The execution layer holds one `Harness` and never learns there are several
+ * (SC-P5-12): `start` reads `input.model.harness`, which routing wrote, and
+ * `cancel` and `status` go back to whichever adapter made the handle.
+ */
+export const createRoutedHarness = (construct: (harness: string) => Harness): Harness => {
+  const adapters = new Map<string, Harness>();
+  const owners = new WeakMap<HarnessHandle, Harness>();
+  const adapterFor = (harness: string): Harness => {
+    const existing = adapters.get(harness);
+    if (existing !== undefined) return existing;
+    const made = construct(harness);
+    adapters.set(harness, made);
+    return made;
+  };
+
+  return {
+    id: "routed",
+    // True of the whole: an adapter that reports none simply attaches none.
+    capabilities: { usage: true },
+    start: async (input) => {
+      const adapter = adapterFor(input.model.harness);
+      const handle = await adapter.start(input);
+      owners.set(handle, adapter);
+      return handle;
+    },
+    cancel: async (handle, grace) => {
+      await owners.get(handle)?.cancel(handle, grace);
+    },
+    status: async (handle) => (await owners.get(handle)?.status(handle)) ?? "created",
+  };
+};
+
 const createHarness = async (env: Env): Promise<Harness> => {
   const specifier = env[HARNESS_MODULE_ENV];
-  if (specifier === undefined || specifier === "") return createClaudeHarness({ env });
+  if (specifier === undefined || specifier === "") {
+    return createRoutedHarness((harness) => constructAdapter(harness, env));
+  }
 
   const module: unknown = await import(harnessModuleSpecifier(specifier));
   const factory = (module as { createHarness?: unknown }).createHarness;
@@ -234,6 +298,43 @@ export const createWorkerLaunch =
  */
 export const createWorkerLaunchForTest = createWorkerLaunch;
 
+/**
+ * The environment a worker's operations run in when an adapter calls them as
+ * functions rather than through a spawned MCP server (A-37, D-P5-01).
+ *
+ * Built exactly as `createWorkerTransport` builds a worker process's: the
+ * execution token, statically, and nothing else. The orchestrator's own
+ * transport is deliberately not reused, because a write made on a worker's
+ * behalf with a human's token would be recorded as the human's (A-35), and would
+ * be allowed things a worker is not.
+ */
+export const createWorkerEnvironment =
+  (endpoint: string) =>
+  (identity: WorkerLaunchIdentity): WorkerEnvironment => {
+    const transport = createFetchTransport({
+      endpoint,
+      tokens: staticTokenProvider(identity.executionToken),
+    });
+    const stores = createHttpStores({ transport });
+    return {
+      stores,
+      clock: systemClock,
+      git: nodeGitRunner,
+      outbox: createEventOutbox({
+        events: stores.events,
+        scope: {
+          projectId: ProjectIdSchema.parse(identity.projectId),
+          programId: ProgramIdSchema.parse(identity.programId),
+          runId: RunIdSchema.parse(identity.runId),
+        },
+        clock: systemClock,
+        ids: createUlidIdGenerator(),
+        // A worker's events are its own writer's (A-30), keyed by its agent id.
+        writerId: identity.agentId,
+      }),
+    };
+  };
+
 export const createRuntime = async (env: Env, role: Role = "orchestrator"): Promise<Runtime> => {
   const { transport, endpoint } = await createTransport(env, role);
   return {
@@ -248,5 +349,6 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     ids: createUlidIdGenerator(),
     clock: systemClock,
     workerLaunch: createWorkerLaunch(env, endpoint),
+    workerEnvironment: createWorkerEnvironment(endpoint),
   };
 };

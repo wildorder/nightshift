@@ -9,6 +9,16 @@
  * assertions.
  */
 
+export {
+  type AdapterConformanceOptions,
+  describeAdapterConformance,
+} from "../conformance/adapter.js";
+export {
+  CANCELLED_JOB,
+  COMPLETING_JOB,
+  type ConformanceJob,
+  FAILING_JOB,
+} from "../conformance/fixture.js";
 export { SCRIPT_NAMES, type ScriptName } from "../harness/scripted.js";
 export {
   assertBuilt,

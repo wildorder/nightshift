@@ -25,6 +25,8 @@
  * from the process lifecycle alone (SC-P3-12).
  */
 import { type ChildProcess, spawn } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentId, AgentStatus } from "@nightshift/contracts";
 import {
@@ -38,30 +40,20 @@ import {
   isHookEventType,
 } from "@nightshift/harness";
 import { sanitizeEnvironment } from "@nightshift/verification";
+import { SCRIPTS, type ScriptName, type WorkerSurface } from "./scripts.js";
 
-/** What a scripted worker does. Chosen per test, or by `NIGHTSHIFT_SCRIPT`. */
-export type ScriptName =
-  /** Read a file, edit it, add a test, report progress twice, complete, exit 0. */
-  | "implement"
-  /** As `implement`, but the added test fails. */
-  | "implement-broken"
-  /** Edit a file outside the job's includes, then complete. */
-  | "out-of-scope"
-  /** Report progress once, then wait until killed. */
-  | "hang"
-  /** Call `job.fail` with a reason, exit 0. */
-  | "fail"
-  /** Edit, then exit 1 without reporting anything at all. */
-  | "silent-exit";
+export { SCRIPT_NAMES, type ScriptName } from "./scripts.js";
 
-export const SCRIPT_NAMES: readonly ScriptName[] = [
-  "implement",
-  "implement-broken",
-  "out-of-scope",
-  "hang",
-  "fail",
-  "silent-exit",
-];
+/**
+ * Which transport carries the worker's four operations (rule 6: exactly one).
+ *
+ * `mcp`, the default, is a child process speaking to a worker-role MCP server
+ * over stdio: what a local adapter does. `functions` runs the same script in
+ * this process and calls `HarnessStartInput.tools` directly: what P9's remote
+ * adapter will do, tested offline now (A-37).
+ */
+export type ScriptedTransport = "mcp" | "functions";
+export const TRANSPORT_ENV = "NIGHTSHIFT_SCRIPTED_TRANSPORT";
 
 export const SCRIPT_ENV = "NIGHTSHIFT_SCRIPT";
 
@@ -75,6 +67,8 @@ export const workerEntry = (): string => fileURLToPath(new URL("./worker.js", im
 
 export interface ScriptedHarnessOptions {
   readonly script: ScriptName;
+  /** `mcp` unless said otherwise. */
+  readonly transport?: ScriptedTransport;
   /** Node executable. The current one unless a test wants otherwise. */
   readonly node?: string;
   readonly entry?: string;
@@ -130,11 +124,111 @@ const exitPayload = (exit: HarnessExit): Record<string, unknown> => {
 const tail = (stderr: string): Record<string, unknown> =>
   stderr === "" ? {} : { stderr: stderr.slice(-500) };
 
+/**
+ * The function transport: the script runs here, over `input.tools`.
+ *
+ * No child and no MCP server, so there is no pid and no stream to parse; the
+ * lifecycle events come from this harness observing its own script, which is as
+ * uncooperative a source as a process exit. `input.mcp` is never launched — one
+ * transport per worker.
+ */
+const createFunctionHarness = (options: ScriptedHarnessOptions): Harness => {
+  interface InProcess {
+    settled: HarnessExit | undefined;
+    cancelling: boolean;
+    release: () => void;
+  }
+  const running = new Map<AgentId, InProcess>();
+
+  return {
+    id: "scripted",
+    capabilities: { usage: false },
+
+    start: async (input: HarnessStartInput): Promise<HarnessHandle> => {
+      const emit = (type: string, payload: Record<string, unknown>): void => {
+        if (!isHookEventType(type)) return;
+        input.sink.emit({ type, occurredAt: new Date().toISOString(), payload });
+      };
+      emit("agent.started", {
+        harness: "scripted",
+        script: options.script,
+        transport: "functions",
+      });
+
+      let release = (): void => {};
+      const cancelled = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const state: InProcess = { settled: undefined, cancelling: false, release };
+      running.set(input.agent.agentId, state);
+
+      const observed = async <T>(tool: string, call: () => Promise<T>): Promise<T> => {
+        emit("tool.called", { tool });
+        const result = await call();
+        emit("tool.completed", { tool, ok: true });
+        return result;
+      };
+      const surface: WorkerSurface = {
+        // A function caller was handed the job; there is nothing to fetch.
+        get: async () => {},
+        progress: (message, percent) =>
+          observed("job.progress", () => input.tools.progress(message, percent)),
+        decide: async (decision) => {
+          await observed("decision.record", () => input.tools.recordDecision(decision));
+        },
+        complete: async (summary) =>
+          (await observed("job.complete", () => input.tools.complete(summary))).kind,
+        fail: (reason) => observed("job.fail", () => input.tools.fail(reason)),
+      };
+
+      const exit = (async (): Promise<HarnessExit> => {
+        let outcome: HarnessExit;
+        let failure = "";
+        try {
+          const code = await SCRIPTS[options.script]({
+            surface,
+            worktree: input.worktree,
+            cancelled,
+            note: (text) => {
+              failure += `${text}\n`;
+            },
+          });
+          outcome = code === 0 ? { kind: "completed" } : { kind: "failed", exitCode: code };
+        } catch (error) {
+          failure += error instanceof Error ? error.message : String(error);
+          outcome = { kind: "failed", exitCode: 1 };
+        }
+        const final = state.cancelling ? ({ kind: "cancelled" } as const) : outcome;
+        state.settled = final;
+        emit(hookTypeForExit(final), { ...exitPayload(final), ...tail(failure) });
+        return final;
+      })();
+
+      return { agentId: input.agent.agentId, exit };
+    },
+
+    cancel: async (handle: HarnessHandle): Promise<void> => {
+      const state = running.get(handle.agentId);
+      if (state === undefined || state.settled !== undefined) return;
+      state.cancelling = true;
+      state.release();
+      await handle.exit;
+    },
+
+    status: async (handle: HarnessHandle): Promise<AgentStatus> => {
+      const state = running.get(handle.agentId);
+      return state?.settled === undefined ? "started" : agentStatusForExit(state.settled);
+    },
+  };
+};
+
 export const createScriptedHarness = (options: ScriptedHarnessOptions): Harness => {
+  if (options.transport === "functions") return createFunctionHarness(options);
   const running = new Map<AgentId, Running>();
 
   return {
     id: "scripted",
+    capabilities: { usage: false },
 
     start: async (input: HarnessStartInput): Promise<HarnessHandle> => {
       const emit = (type: string, payload: Record<string, unknown>): void => {
@@ -183,9 +277,18 @@ export const createScriptedHarness = (options: ScriptedHarnessOptions): Harness 
 
       // The child's stdout is this harness's "output stream": the same place a
       // real adapter reads its provider's events from.
+      // Kept as the transcript too: what the "provider" said, line for line, which
+      // is what a real adapter keeps (SC-P5-09).
+      const transcript: string[] = [];
       readFrames(child, (frame) => {
+        transcript.push(JSON.stringify(frame));
         if (frame.hook !== undefined) emit(frame.hook, frame.payload ?? {});
       });
+      const keepTranscript = async (): Promise<void> => {
+        if (input.transcriptPath === undefined || transcript.length === 0) return;
+        await mkdir(dirname(input.transcriptPath), { recursive: true });
+        await writeFile(input.transcriptPath, `${transcript.join("\n")}\n`, "utf8");
+      };
       // Kept, not printed: a test that fails wants to see what the child said.
       let stderr = "";
       child.stderr?.on("data", (chunk: Buffer) => {
@@ -199,7 +302,12 @@ export const createScriptedHarness = (options: ScriptedHarnessOptions): Harness 
           const final = state.cancelling ? ({ kind: "cancelled" } as const) : outcome;
           state.settled = final;
           emit(hookTypeForExit(final), { ...exitPayload(final), ...tail(stderr) });
-          resolve(final);
+          // Written before `exit` settles, because the execution layer reads it
+          // the moment it does. A transcript that cannot be written is not a
+          // reason for a worker's ending to go unreported.
+          void keepTranscript()
+            .catch(() => {})
+            .then(() => resolve(final));
         };
 
         // A spawn that never happened is a failure, never a rejected promise.
@@ -215,6 +323,7 @@ export const createScriptedHarness = (options: ScriptedHarnessOptions): Harness 
         agentId: input.agent.agentId,
         exit,
         ...(child.pid === undefined ? {} : { pid: child.pid }),
+        ...(input.transcriptPath === undefined ? {} : { transcript: input.transcriptPath }),
       };
     },
 
@@ -271,4 +380,5 @@ export const createHarness = (): Harness =>
     script: (process.env[WORKER_SCRIPT_ENV] ??
       process.env[SCRIPT_ENV] ??
       "implement") as ScriptName,
+    transport: process.env[TRANSPORT_ENV] === "functions" ? "functions" : "mcp",
   });

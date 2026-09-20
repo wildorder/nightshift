@@ -79,6 +79,7 @@ const buildEnvironment = (runtime: Runtime, outbox: EventOutbox): ExecutionEnvir
   paths: runtime.paths,
   git: runtime.git,
   outbox,
+  workerEnvironment: runtime.workerEnvironment,
 });
 
 /**

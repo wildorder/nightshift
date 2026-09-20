@@ -36,7 +36,7 @@ import {
   makeRootNode,
 } from "@nightshift/core";
 import type { Duration, HarnessStartInput, McpLaunch } from "@nightshift/harness";
-import { millis } from "@nightshift/harness";
+import { millis, refusingWorkerTools } from "@nightshift/harness";
 
 /** The variable that opts a machine in to driving the real CLI. */
 export const CLAUDE_CONFORMANCE_ENV = "NIGHTSHIFT_SLICE_HARNESS";
@@ -162,6 +162,9 @@ export const claudeConformanceFixture = (
       worktree: options.worktree,
       model,
       mcp,
+      // A local adapter reaches the worker operations through the MCP launch, and
+      // these inputs describe no real job.
+      tools: refusingWorkerTools("this fixture describes no real job"),
     };
   };
 

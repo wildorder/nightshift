@@ -4,10 +4,10 @@
  * Everything Claude-specific in Nightshift is in this package, and everything in
  * this package is behind `Harness.start`. The execution layer never learns that
  * a worker is a `claude` child process, that its output is newline-delimited
- * JSON, that its tool policy is three comma-separated flags, or that its
+ * JSON, that its git guard is a comma-separated deny flag, or that its
  * cooperative stop is `SIGINT`.
  *
- * The five rules `packages/harness/src/harness.ts` states for an implementer,
+ * The six rules `packages/harness/src/harness.ts` states for an implementer,
  * and where each is honoured:
  *
  * 1. *The identity is given to you.* `handle.agentId` is `input.agent.agentId`,
@@ -24,6 +24,8 @@
  * 4. *Nothing provider-specific escapes.* The exported surface is `Harness`,
  *    plus the injection points a test needs. No Claude type crosses it.
  * 5. *The worker never gets git write access.* `permissions.ts`, unconditionally.
+ * 6. *One transport per worker.* The MCP launch, through `--mcp-config`.
+ *    `input.tools` is never called: a Claude Code worker is a local process.
  *
  * ## EXIT MAPPING
  *
@@ -82,7 +84,12 @@ import { sanitizeClaudeEnvironment } from "./environment.js";
 import { claudeToolPolicy } from "./permissions.js";
 import type { AdapterFileSystem, SpawnedChild, SpawnLike, TranscriptSink } from "./process.js";
 import { killProcessTree, nodeFileSystem, nodeSpawn } from "./process.js";
-import { createStreamInterpreter, optionalField, type StreamInterpreter } from "./stream.js";
+import {
+  createStreamInterpreter,
+  optionalField,
+  type StreamInterpreter,
+  type StreamOutcome,
+} from "./stream.js";
 
 /** `Harness.id`, matching `RouteTarget.harness`. */
 export const CLAUDE_HARNESS_ID = "claude";
@@ -180,7 +187,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
   const runs = new WeakMap<HarnessHandle, RunState>();
 
   const start = async (input: HarnessStartInput): Promise<HarnessHandle> => {
-    const policy = claudeToolPolicy({ scope: input.node.scope, mcpServerName: input.mcp.name });
+    const policy = claudeToolPolicy({ scope: input.node.scope });
     const prompt = claudePrompt(
       renderWorkerBrief({
         job: input.job,
@@ -188,7 +195,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
         program: input.program,
         worktree: input.worktree,
       }),
-      claudeBriefAddendum({ mcpServerName: input.mcp.name, policy }),
+      claudeBriefAddendum({ mcpServerName: input.mcp.name }),
     );
 
     let resolveExit: (exit: HarnessExit) => void = () => {};
@@ -340,21 +347,8 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       interpreter.end();
       transcript?.close();
       fs.removeDir(configDir);
-      const outcome = interpreter.outcome;
       const extra = stderrTail.trim().length === 0 ? {} : { summary: stderrTail.trim() };
-      if (state.cancelRequested) {
-        settle({ kind: "cancelled" }, extra);
-        return;
-      }
-      if (signal !== null) {
-        settle({ kind: "interrupted", signal }, extra);
-        return;
-      }
-      if (code === 0 && outcome.sawResult && !outcome.resultErrored) {
-        settle({ kind: "completed" }, extra);
-        return;
-      }
-      settle({ kind: "failed", exitCode: code ?? UNKNOWN_EXIT_CODE }, extra);
+      settle(exitFor(state.cancelRequested, code, signal, interpreter.outcome), extra);
     });
 
     const handle: HarnessHandle = {
@@ -438,7 +432,24 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
     return settled === undefined ? "started" : agentStatusForExit(settled);
   };
 
-  return { id: CLAUDE_HARNESS_ID, start, cancel, status };
+  return { id: CLAUDE_HARNESS_ID, capabilities: { usage: true }, start, cancel, status };
+};
+
+/** The exit mapping, as the table at the top of this file states it. */
+const exitFor = (
+  cancelRequested: boolean,
+  code: number | null,
+  signal: string | null,
+  outcome: StreamOutcome,
+): HarnessExit => {
+  if (cancelRequested) return { kind: "cancelled" };
+  if (signal !== null) return { kind: "interrupted", signal };
+  // Contract v1: what the run cost rides on the exit, where Claude said.
+  const usage = outcome.usage === undefined ? {} : { usage: outcome.usage };
+  if (code === 0 && outcome.sawResult && !outcome.resultErrored) {
+    return { kind: "completed", ...usage };
+  }
+  return { kind: "failed", exitCode: code ?? UNKNOWN_EXIT_CODE, ...usage };
 };
 
 const messageOf = (error: unknown): string =>

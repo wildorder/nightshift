@@ -27,7 +27,9 @@ export {
   type ExecutionEnvironment,
   type RunSession,
   runIdOf,
+  type WorkerEnvironment,
   type WorkerIdentity,
+  type WorkerLaunchIdentity,
 } from "./environment.js";
 export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";
@@ -46,11 +48,11 @@ export {
   runJob,
   runningChildren,
   type StartedJob,
-  type WorkerLaunchIdentity,
 } from "./runner.js";
 export { checkChangedPaths, describeScopeViolation, type ScopeCheck } from "./scope-check.js";
 export {
   DEFAULT_FLUSH_DEADLINE_MS,
+  endProgramNode,
   type ShutdownInput,
   type ShutdownResult,
   shutdown,
@@ -67,7 +69,9 @@ export { type VerifyInput, type VerifyResult, verifyNode } from "./verify.js";
 export {
   type CompleteJobResult,
   completeJob,
+  createWorkerTools,
   failJob,
+  recordWorkerDecision,
   reportProgress,
-  type WorkerEnvironment,
+  WORKER_FLUSH_DEADLINE_MS,
 } from "./worker.js";

@@ -5,10 +5,12 @@ import { createFixtures, FIXTURE_TIMESTAMP, makeRootNode } from "../testing/fact
 import {
   canTransition,
   EXECUTION_NODE_STATUSES,
+  finishRun,
   isPostVerification,
   isTerminal,
   legalEventsFrom,
   MAY_INTEGRATE,
+  maySucceed,
   nextStatus,
   OCCUPIES_CONCURRENCY_SLOT,
   RETRYABLE_STATUSES,
@@ -180,5 +182,54 @@ describe("status classifications", () => {
       ["begin_examination", "cancel", "seal"].sort(),
     );
     expect(legalEventsFrom("integrated")).toEqual([]);
+  });
+});
+
+describe("a program node's ending (D-P5-06)", () => {
+  const at = "2026-09-19T00:00:00.000Z" as never;
+  const nodeOf = (kind: "program" | "sub-program" | "job", status: ExecutionNodeStatus) => {
+    const fixtures = createFixtures();
+    return makeRootNode(fixtures, { kind, status });
+  };
+
+  it("keeps succeeded out of the table: no event reaches it, from anywhere", () => {
+    for (const status of EXECUTION_NODE_STATUSES) {
+      for (const event of TRANSITION_EVENTS) {
+        expect(nextStatus(status, event), `${status} on ${event}`).not.toBe("succeeded");
+      }
+    }
+    expect(legalEventsFrom("succeeded")).toEqual([]);
+    expect(isTerminal("succeeded")).toBe(true);
+  });
+
+  it("lets only a running program or sub-program node succeed", () => {
+    for (const status of EXECUTION_NODE_STATUSES) {
+      expect(maySucceed(nodeOf("job", status)), `job ${status}`).toBe(false);
+      for (const kind of ["program", "sub-program"] as const) {
+        expect(maySucceed(nodeOf(kind, status)), `${kind} ${status}`).toBe(status === "running");
+      }
+    }
+  });
+
+  it("maps the run's ending onto the program node", () => {
+    const running = nodeOf("program", "running");
+    expect(finishRun(running, "succeeded", at).status).toBe("succeeded");
+    expect(finishRun(running, "failed", at, "it broke")).toMatchObject({
+      status: "failed",
+      outcomeReason: "it broke",
+    });
+    expect(finishRun(running, "cancelled", at, "stopped").status).toBe("cancelled");
+    expect(finishRun(running, "interrupted", at, "session ended").status).toBe("cancelled");
+    // No ending to apply yet.
+    expect(finishRun(running, "running", at)).toBe(running);
+    expect(finishRun(running, "pending", at)).toBe(running);
+  });
+
+  it("leaves a node that already ended as it is, and refuses a job outright", () => {
+    const cancelled = nodeOf("program", "cancelled");
+    expect(finishRun(cancelled, "succeeded", at)).toBe(cancelled);
+    expect(() => finishRun(nodeOf("job", "running"), "succeeded", at)).toThrow(
+      IllegalTransitionError,
+    );
   });
 });

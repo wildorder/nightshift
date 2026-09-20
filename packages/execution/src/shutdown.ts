@@ -20,8 +20,8 @@
  * can both arrive.
  */
 
-import type { ExecutionNodeId } from "@nightshift/contracts";
-import { nowIso, transition, transitionAgent } from "@nightshift/core";
+import type { ExecutionNodeId, RunStatus } from "@nightshift/contracts";
+import { finishRun, nowIso, transition, transitionAgent } from "@nightshift/core";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import type { StartedJob } from "./runner.js";
 
@@ -84,6 +84,7 @@ export const shutdown = async (
       payload: { reason: input.reason },
       executionNodeId: input.session.rootNodeId,
     });
+    await endProgramNode(environment, input.session, "interrupted", input.reason);
   }
 
   // --- The events ----------------------------------------------------------------
@@ -94,6 +95,28 @@ export const shutdown = async (
   const eventsSpilled = await outbox.spill(spoolPath);
 
   return { cancelledJob, eventsSpilled, spoolPath };
+};
+
+/**
+ * The program node's ending, from its run's (D-P5-06): `core`'s `finishRun`,
+ * applied. A root node that is not `running` is left alone, and a failure to
+ * write it never stops a run from ending.
+ */
+export const endProgramNode = async (
+  environment: Pick<ExecutionEnvironment, "stores" | "clock">,
+  session: RunSession,
+  runStatus: RunStatus,
+  reason?: string,
+): Promise<void> => {
+  const { stores, clock } = environment;
+  try {
+    const root = await stores.executionNodes.get(session.scope, session.rootNodeId);
+    if (root === undefined) return;
+    const ended = finishRun(root, runStatus, nowIso(clock), reason);
+    if (ended !== root) await stores.executionNodes.put(ended);
+  } catch {
+    // The run's own record is the authority on how the run ended.
+  }
 };
 
 /**

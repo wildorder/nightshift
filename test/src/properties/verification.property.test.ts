@@ -125,7 +125,9 @@ describe("SC-P1-15: legality depends only on status and event", () => {
 
   it("covers the whole table between the status and event generators", () => {
     // Both generators must be exhaustive for the property above to mean anything.
-    expect(EXECUTION_NODE_STATUSES.length).toBe(14);
+    // 15 since P5: `succeeded`, which no event reaches (D-P5-06). The events are
+    // the 15 P1 shipped with.
+    expect(EXECUTION_NODE_STATUSES.length).toBe(15);
     expect(TRANSITION_EVENTS.length).toBe(15);
   });
 });

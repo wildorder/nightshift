@@ -40,6 +40,7 @@ import type {
   JobContract,
   JobContractId,
   RouteChoice,
+  RouteUsage,
   RoutingDecision,
   Scope,
 } from "@nightshift/contracts";
@@ -47,6 +48,7 @@ import {
   ConcurrencyLimitExceededError,
   nowIso,
   OCCUPIES_CONCURRENCY_SLOT,
+  routeOutcomeForNodeStatus,
   transition,
   transitionAgent,
 } from "@nightshift/core";
@@ -63,6 +65,7 @@ import {
   DEFAULT_CANCEL_GRACE_MS,
   type ExecutionEnvironment,
   type RunSession,
+  type WorkerLaunchIdentity,
 } from "./environment.js";
 import {
   addWorktree,
@@ -75,6 +78,7 @@ import {
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
 import { verifyNode } from "./verify.js";
+import { createWorkerTools } from "./worker.js";
 
 /**
  * P3 allows exactly one running child under the root, whatever the program's
@@ -104,28 +108,6 @@ export interface RunJobInput {
   readonly route: RouteChoice;
   /** Builds the worker's MCP server launch, given the identity it must carry. */
   readonly mcp: (identity: WorkerLaunchIdentity) => McpLaunch;
-}
-
-/**
- * What the worker's MCP server must be told about itself (contract §4.2, §4.5).
- *
- * The identity says *which* agent it is; the token is *how it proves it*. Both
- * are set by the party that spawns the worker, which is never the worker.
- */
-export interface WorkerLaunchIdentity {
-  readonly projectId: string;
-  readonly programId: string;
-  readonly runId: string;
-  readonly nodeId: ExecutionNodeId;
-  readonly agentId: AgentId;
-  readonly jobContractId: JobContractId;
-  readonly worktree: string;
-  /**
-   * The worker's only credential (D-P4-06). Bound to this agent, this node and
-   * this run, expiring within the cost policy's wall clock. Never logged, never
-   * written to disk.
-   */
-  readonly executionToken: string;
 }
 
 export interface StartedJob {
@@ -308,6 +290,32 @@ export const runJob = async (
   const transcript = environment.paths.transcript(session.scope.runId, agentId);
   await mkdir(dirname(transcript), { recursive: true });
 
+  // One identity, two transports (A-37). The launch is for an adapter that can be
+  // handed a process to spawn; the tools are the same four operations as
+  // functions, over stores that hold this worker's token and nothing else. Which
+  // one a worker's calls arrive through is the adapter's business, and never both.
+  const launch: WorkerLaunchIdentity = {
+    projectId: session.scope.projectId,
+    programId: session.scope.programId,
+    runId: session.scope.runId,
+    nodeId,
+    agentId,
+    jobContractId: input.job.jobContractId,
+    worktree,
+    executionToken,
+  };
+  const tools = createWorkerTools(
+    environment.workerEnvironment(launch),
+    {
+      scope: session.scope,
+      executionNodeId: nodeId,
+      jobContractId: input.job.jobContractId,
+      agentId,
+      worktree,
+    },
+    ids,
+  );
+
   let handle: HarnessHandle;
   try {
     handle = await environment.harness.start({
@@ -317,16 +325,8 @@ export const runJob = async (
       program: session.program,
       worktree,
       model: input.route.target,
-      mcp: input.mcp({
-        projectId: session.scope.projectId,
-        programId: session.scope.programId,
-        runId: session.scope.runId,
-        nodeId,
-        agentId,
-        jobContractId: input.job.jobContractId,
-        worktree,
-        executionToken,
-      }),
+      mcp: input.mcp(launch),
+      tools,
       sink,
       transcriptPath: transcript,
     });
@@ -374,6 +374,8 @@ export const runJob = async (
     handle,
     sink,
     stopMode: () => stopMode,
+    routingDecision,
+    startedAtMs: clock.now(),
   });
 
   const stop = async (mode: "cancelled" | "interrupted"): Promise<void> => {
@@ -412,6 +414,9 @@ interface FinishInput {
   readonly sink: RecordingHookSink;
   /** Why we asked the worker to stop, when we did. See `StartedJob.stop`. */
   stopMode(): "cancelled" | "interrupted" | undefined;
+  /** As recorded before the work began: `usage` empty, `outcome` pending (A-13). */
+  readonly routingDecision: RoutingDecision;
+  readonly startedAtMs: number;
 }
 
 /**
@@ -425,8 +430,13 @@ interface FinishInput {
  */
 const finishJob = async (environment: ExecutionEnvironment, input: FinishInput): Promise<void> => {
   const { stores, clock, outbox } = environment;
+  let usage: RouteUsage | undefined;
   try {
-    const { exit, reason } = observed(input, await input.handle.exit);
+    const settledExit = await input.handle.exit;
+    if (settledExit.kind === "completed" || settledExit.kind === "failed") {
+      usage = settledExit.usage;
+    }
+    const { exit, reason } = observed(input, settledExit);
     await recordAgentEnd(environment, input, exit, reason);
     await uploadTranscript(environment, input);
 
@@ -482,6 +492,39 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
     // Nothing above should throw, but a bug here must not leave a node running
     // and a promise rejected into the void.
     await failHard(environment, input, error);
+  } finally {
+    await recordRouteResult(environment, input, usage);
+  }
+};
+
+/**
+ * What the route cost and how it ended, written once the node has settled
+ * (D-P5-06, SC-P5-14).
+ *
+ * The wall clock is Nightshift's own measurement, so every adapter has one; the
+ * tokens and cost are the adapter's, where it reports them. One write, because
+ * `core` lets `usage` be set once and `outcome` move once. It never throws: a
+ * route whose result could not be recorded is still a finished job.
+ */
+const recordRouteResult = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+  reported: RouteUsage | undefined,
+): Promise<void> => {
+  try {
+    const node = await environment.stores.executionNodes.get(input.session.scope, input.nodeId);
+    const outcome = routeOutcomeForNodeStatus(node?.status ?? "failed");
+    if (outcome === "pending") return;
+    await environment.stores.routingDecisions.put({
+      ...input.routingDecision,
+      usage: {
+        wallClockMs: Math.max(0, Math.round(environment.clock.now() - input.startedAtMs)),
+        ...reported,
+      },
+      outcome,
+    });
+  } catch {
+    // The decision stays `pending`, which is what it truthfully is: unrecorded.
   }
 };
 

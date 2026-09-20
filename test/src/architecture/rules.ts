@@ -129,8 +129,8 @@ export const PERMITTED_REFERENCES: Readonly<Record<string, readonly string[]>> =
   // that function lives there", and it does, because creating the initial
   // checkpoint is a git operation and the CLI holds no domain logic of its own.
   "apps/cli": ["packages/contracts", "packages/core", "packages/persistence", "packages/execution"],
-  // P3 (D-P3-12): `apps/mcp` is a composition root and names the Claude adapter
-  // in exactly one module, which AR-2 permits by path.
+  // P3 (D-P3-12): `apps/mcp` is a composition root and names the adapters in
+  // exactly one module, which AR-2 permits by path. P5 adds Codex beside Claude.
   "apps/mcp": [
     "packages/contracts",
     "packages/core",
@@ -140,6 +140,7 @@ export const PERMITTED_REFERENCES: Readonly<Record<string, readonly string[]>> =
     "packages/verification",
     "packages/harness",
     "packages/harness-claude",
+    "packages/harness-codex",
   ],
   "infra/cdk": [],
   // P3 (D-P3-12): the slice suite drives the real server, the real execution

@@ -26,6 +26,7 @@ import {
   ArtifactUploadResponseSchema,
   type Event,
   EventPageSchema,
+  type ExecutionNode,
   MAX_INLINE_PAYLOAD_BYTES,
   ProgramContractSchema,
   ProgramIdSchema,
@@ -47,6 +48,7 @@ import {
   makeDecision,
   makeEvent,
   makeJobContract,
+  makeNode,
   makeProgramContract,
   makeRootNode,
   makeRun,
@@ -617,6 +619,72 @@ describe("phase 3: live-only assertions", () => {
       items: { programId: string }[];
     };
     expect(listedPrograms.items.map((p) => p.programId)).toEqual([programId]);
+  });
+
+  it("ends a program node succeeded, never a job, and fills a routing decision in once (P5, D-P5-06)", async () => {
+    const nodePath = (nodeId: string) => `${lifecycleRunPath}/nodes/${nodeId}`;
+    const step = async (node: ExecutionNode, status: ExecutionNode["status"]) => {
+      const next = { ...node, status, updatedAt: new Date().toISOString() };
+      expectStatus(await api.put(nodePath(node.executionNodeId), next), 200);
+      return next;
+    };
+
+    let root: ExecutionNode = rootNodeFor(lifecycleWorld);
+    root = await step(await step(root, "queued"), "running");
+
+    let job: ExecutionNode = makeNode(lifecycleWorld, lifecycleRootNodeId, {
+      jobContractId: ids.next("job"),
+    });
+    expectStatus(await api.put(nodePath(job.executionNodeId), job), 201);
+    job = await step(await step(job, "queued"), "running");
+
+    // A job is never `succeeded`: its only way to done is through `verified`.
+    const asJob = await api.put(nodePath(job.executionNodeId), {
+      ...job,
+      status: "succeeded",
+      updatedAt: new Date().toISOString(),
+    });
+    expectStatus(asJob, 409);
+    expect((asJob.body as { error: { code: string } }).error.code).toBe("illegal_transition");
+
+    root = await step(root, "succeeded");
+    expectStatus(await api.put(nodePath(root.executionNodeId), { ...root, status: "failed" }), 409);
+
+    // The routing decision: written before the work, completed once after it.
+    const decision: RoutingDecision = {
+      schemaVersion: 1,
+      ...lifecycleScope,
+      routingDecisionId: ids.next("route"),
+      executionNodeId: job.executionNodeId,
+      attempt: 1,
+      eligibleOptions: [
+        { target: { harness: "codex", provider: "openai", model: "smoke" }, eligible: true },
+      ],
+      chosen: { harness: "codex", provider: "openai", model: "smoke" },
+      ruleId: "p5-configured",
+      wasOverride: false,
+      usage: {},
+      outcome: "pending",
+      previousRouteId: null,
+      createdAt: new Date().toISOString(),
+    };
+    const routePath = `${lifecycleRunPath}/routing-decisions/${decision.routingDecisionId}`;
+    expectStatus(await api.put(routePath, decision), 201);
+    const finished = {
+      ...decision,
+      usage: { inputTokens: 1200, outputTokens: 340, wallClockMs: 9000 },
+      outcome: "verified",
+    };
+    expectStatus(await api.put(routePath, finished), 200);
+    expectStatus(await api.put(routePath, finished), 200);
+    expectStatus(await api.put(routePath, { ...finished, usage: { inputTokens: 1 } }), 409);
+    expectStatus(await api.put(routePath, { ...finished, outcome: "failed" }), 409);
+    expectStatus(await api.put(routePath, { ...finished, ruleId: "rewritten" }), 409);
+
+    const listed = (await api.get(`${nodePath(job.executionNodeId)}/routing-decisions`)).body as {
+      items: RoutingDecision[];
+    };
+    expect(listed.items).toEqual([finished]);
   });
 
   it("signs an upload the client completes, then records the Artifact (A-08, T2)", async () => {

@@ -134,6 +134,8 @@ describe("AR-2 negative fixtures: no harness or provider SDK above the adapter l
       makeRepo({
         sources: [
           staticImport("apps/mcp/src/compose.ts", "@nightshift/harness-claude"),
+          // P5: the second adapter is named in the same one module.
+          staticImport("apps/mcp/src/compose.ts", "@nightshift/harness-codex"),
           staticImport("apps/mcp/src/compose.ts", "@nightshift/persistence/http"),
         ],
       }),

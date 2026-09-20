@@ -42,7 +42,7 @@ const argsFor = (permissions: readonly string[], prompt = "BRIEF") =>
     model: MODEL,
     mcpConfigPath: "/tmp/ns/mcp.json",
     settingsPath: "/tmp/ns/settings.json",
-    policy: claudeToolPolicy({ scope: scope(permissions), mcpServerName: MCP.name }),
+    policy: claudeToolPolicy({ scope: scope(permissions) }),
   });
 
 /** The index of a flag, or -1. */
@@ -78,13 +78,7 @@ describe("the command line, against Claude Code 2.1.273", () => {
       "--setting-sources",
       "",
       "--permission-mode",
-      "acceptEdits",
-      "--permission-prompts",
-      "none",
-      "--tools",
-      "Read,Glob,Grep,TodoWrite,Task,Edit,Write,NotebookEdit,Bash,BashOutput,KillShell",
-      "--allowedTools",
-      "Read,Glob,Grep,TodoWrite,Task,Edit,Write,NotebookEdit,Bash,BashOutput,KillShell,mcp__nightshift",
+      "bypassPermissions",
       "--disallowedTools",
       expect.stringContaining("Bash(git commit:*)"),
       "--no-session-persistence",
@@ -92,25 +86,20 @@ describe("the command line, against Claude Code 2.1.273", () => {
   });
 
   it("puts the brief before every variadic flag, so none of them swallows it", () => {
-    // `--tools`, `--allowedTools`, `--disallowedTools` and `--mcp-config` are
-    // all `<value...>` in this release. A positional argument after one of them
-    // becomes another of its values.
+    // `--disallowedTools` and `--mcp-config` are `<value...>` in this release. A
+    // positional argument after one of them becomes another of its values.
     expect(args[0]).toBe("-p");
     expect(args[1]).toBe("BRIEF");
-    for (const variadic of ["--tools", "--allowedTools", "--disallowedTools", "--mcp-config"]) {
+    for (const variadic of ["--disallowedTools", "--mcp-config"]) {
       expect(at(args, variadic)).toBeGreaterThan(1);
     }
   });
 
-  it("gives each list flag exactly one comma-separated value", () => {
-    for (const flag of ["--tools", "--allowedTools", "--disallowedTools"]) {
-      const index = at(args, flag);
-      const value = args[index + 1];
-      expect(typeof value).toBe("string");
-      // The value after the value must be the next flag, not another list entry.
-      expect(args[index + 2]?.startsWith("--")).toBe(true);
-      expect(value).not.toContain(" \t");
-    }
+  it("gives the deny flag exactly one comma-separated value", () => {
+    const index = at(args, "--disallowedTools");
+    expect(typeof args[index + 1]).toBe("string");
+    // The value after the value must be the next flag, not another list entry.
+    expect(args[index + 2]?.startsWith("--")).toBe(true);
   });
 
   it("passes the model routing chose, unchanged and with no list of its own", () => {
@@ -125,11 +114,13 @@ describe("the command line, against Claude Code 2.1.273", () => {
     expect(flagValue(args, "--setting-sources")).toBe("");
   });
 
-  it("never asks a human to answer a prompt, and never skips permissions", () => {
-    expect(flagValue(args, "--permission-prompts")).toBe("none");
-    expect(args).not.toContain("--dangerously-skip-permissions");
-    expect(args).not.toContain("--allow-dangerously-skip-permissions");
-    expect(flagValue(args, "--permission-mode")).not.toBe("bypassPermissions");
+  it("can never stop for approval, and passes no list of what a worker may use", () => {
+    expect(flagValue(args, "--permission-mode")).toBe("bypassPermissions");
+    // An allow-list is a guess at everything a worker will need; the first miss
+    // is a denied tool with nobody there to fix it. The owner ruled them out.
+    for (const flag of ["--tools", "--allowedTools", "--allowed-tools", "--permission-prompts"]) {
+      expect(args, flag).not.toContain(flag);
+    }
   });
 
   it("carries no flag that would resume another conversation", () => {
@@ -146,13 +137,9 @@ describe("the command line, against Claude Code 2.1.273", () => {
     expect(args).toContain("--verbose");
   });
 
-  it("gives a worker with no permissions an empty built-in tool set", () => {
-    // Verified: `--tools ""` disables the built-ins and leaves the `--mcp-config`
-    // server's tools in place, which is what keeps `job.complete` reachable.
-    const bare = argsFor([]);
-    expect(flagValue(bare, "--tools")).toBe("");
-    expect(flagValue(bare, "--permission-mode")).toBe("manual");
-    expect(flagValue(bare, "--allowedTools")).toBe("mcp__nightshift");
+  it("is the same command line whatever the scope's permissions say", () => {
+    expect(argsFor([])).toEqual(args);
+    expect(argsFor(["fs.read"])).toEqual(args);
   });
 });
 
@@ -192,28 +179,24 @@ describe("the settings file", () => {
 });
 
 describe("the Claude-specific brief addendum", () => {
-  const addendum = (permissions: readonly string[]) =>
-    claudeBriefAddendum({
-      mcpServerName: MCP.name,
-      policy: claudeToolPolicy({ scope: scope(permissions), mcpServerName: MCP.name }),
-    });
+  const addendum = () => claudeBriefAddendum({ mcpServerName: MCP.name });
 
   it("tells the model the name it must actually call to end the job", () => {
-    const text = addendum(["fs.read"]);
+    const text = addendum();
     expect(text).toContain("mcp__nightshift__job_complete");
     expect(text).toContain("mcp__nightshift__job_fail");
   });
 
   it("says that git writes are denied at the point of use, not escalated", () => {
-    expect(addendum(["shell.exec"])).toContain("denied");
+    expect(addendum()).toContain("denied");
   });
 
-  it("tells a worker with no tools that it has none, rather than leaving it to discover that", () => {
-    expect(addendum([])).toContain("no built-in tools");
+  it("tells the worker nothing will ask for approval, so it does not wait for any", () => {
+    expect(addendum()).toContain("nothing will ask for");
   });
 
   it("repeats nothing from T1's brief: no scope, no acceptance, no commit instructions", () => {
-    const text = addendum(["fs.read", "fs.write", "shell.exec"]);
+    const text = addendum();
     expect(text).not.toContain("ACCEPTANCE CRITERIA");
     expect(text).not.toContain("SCOPE —");
     expect(text).not.toContain("VERIFICATION —");

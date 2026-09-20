@@ -466,6 +466,7 @@ describe("the harness itself failing to start", () => {
     const world = await createWorld({
       harness: {
         id: "broken",
+        capabilities: { usage: false },
         start: async () => {
           throw new Error("claude: command not found");
         },

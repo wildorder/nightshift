@@ -540,6 +540,47 @@ describe("recording run-scoped records", () => {
     expect((await call(w, "PUT", path, { ...decision, ruleId: "other" })).status).toBe(409);
   });
 
+  it("fills in a routing decision's usage and outcome once, and nothing else (D-P5-06)", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const decision: RoutingDecision = {
+      ...(AGGREGATE_EXAMPLES.RoutingDecision as RoutingDecision),
+      ...w.a.scope,
+      routingDecisionId: w.a.ids.next("route"),
+      executionNodeId: w.a.rootNodeId,
+      usage: {},
+      outcome: "pending",
+    };
+    const path = `${paths(w.a).run}/routing-decisions/${decision.routingDecisionId}`;
+    expect((await call(w, "PUT", path, decision)).status).toBe(201);
+
+    const finished = {
+      ...decision,
+      usage: { inputTokens: 1200, wallClockMs: 9000 },
+      outcome: "verified",
+    };
+    expect((await call(w, "PUT", path, finished)).status).toBe(200);
+    // A retry of the same update is a confirmation.
+    expect((await call(w, "PUT", path, finished)).status).toBe(200);
+
+    // Evidence is not revised, an ending does not move, and the unfinished
+    // record cannot be put back.
+    for (const change of [
+      { ...finished, usage: { inputTokens: 1 } },
+      { ...finished, outcome: "failed" },
+      decision,
+    ]) {
+      const refused = await call(w, "PUT", path, change);
+      expect(refused.status).toBe(409);
+      expect((refused.body as { error: { code: string } }).error.code).toBe("conflict");
+    }
+
+    const listed = (
+      await call(w, "GET", `${paths(w.a).run}/nodes/${w.a.rootNodeId}/routing-decisions`)
+    ).body as { items: RoutingDecision[] };
+    expect(listed.items).toEqual([finished]);
+  });
+
   it("records an artifact reference and refuses inline content (A-08)", async () => {
     const w = await setup();
     await seedRun(w, w.a);

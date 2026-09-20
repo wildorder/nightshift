@@ -67,8 +67,14 @@ consequences worth internalising:
 things that are checkable rather than as adjectives. "Handles empty input" is
 worth more than "robust".
 
+You may also pass `harness` (`claude` or `codex`) and `model` to pin where a job
+runs, but the Program Contract decides: Nightshift picks the worker's harness and
+model from the program's model policy, a pin is honoured only inside that policy,
+and one outside it is refused with the reason.
+
 `delegate` returns as soon as the worker is running. You get back `jobId`,
-`nodeId`, `agentId` and the worktree path.
+`nodeId`, `agentId`, the worktree path, and the `harness`, `provider` and `model`
+the job was routed to.
 
 ## Wait, and read the result
 

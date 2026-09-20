@@ -12,13 +12,14 @@ import {
   VerificationSchema,
 } from "@nightshift/contracts";
 import {
+  explainRoutingUpdate,
   isSuperseded,
   type NightshiftStores,
   overrideDecision,
   type RunScope,
   recordDecision,
 } from "@nightshift/core";
-import { HttpError, parseBody } from "../http.js";
+import { HttpError, parseBody, sameRecord } from "../http.js";
 import {
   assertChainMatches,
   assertIdentifierMatches,
@@ -121,7 +122,16 @@ export const putRoutingDecision: Handler = async ({ deps, request, params }) => 
   const existing = (
     await deps.stores.routingDecisions.listByNode(scope, decision.executionNodeId)
   ).find((candidate) => candidate.routingDecisionId === decision.routingDecisionId);
-  return createOrConfirm(existing, decision, () => deps.stores.routingDecisions.put(decision));
+  if (existing === undefined || sameRecord(existing, decision)) {
+    return createOrConfirm(existing, decision, () => deps.stores.routingDecisions.put(decision));
+  }
+
+  // An update. `core` says what may change: usage once from empty, outcome once
+  // from pending, and nothing else (D-P5-06).
+  const problems = explainRoutingUpdate(existing, decision);
+  if (problems.length > 0) throw new HttpError(409, "conflict", problems.join("; "));
+  await deps.stores.routingDecisions.put(decision);
+  return { status: 200, body: decision };
 };
 
 export const putArtifact: Handler = async ({ deps, request, params }) => {

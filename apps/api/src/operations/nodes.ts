@@ -24,6 +24,7 @@ import {
   markImplemented,
   markVerificationFailed,
   markVerified,
+  maySucceed,
   type NightshiftStores,
   nextStatus,
   type RunScope,
@@ -63,6 +64,12 @@ const createNode = async (
     throw new VerificationEvidenceError(
       `a node cannot be created as "${node.status}"; it reaches that status only through verification`,
     );
+  }
+
+  // Nor as `succeeded`: that is a running program node's ending (D-P5-06), and a
+  // node created there would be a job, or a program, that never ran.
+  if (node.status === "succeeded") {
+    throw new IllegalTransitionError("(not yet created)", "create as succeeded");
   }
 
   const stored = await readAll((cursor) => stores.executionNodes.listByRun(scope, pageAt(cursor)));
@@ -134,6 +141,16 @@ const updateNode = async (
 ): Promise<void> => {
   const workChanged = assertMutableChangesOnly(existing, node);
   if (existing.status === node.status) return;
+
+  // A program node's ending (D-P5-06). Not in the transition table, so that no
+  // job can reach it by any event: `core` says which node may, and nothing else
+  // about the job lifecycle applies to a node that does no work of its own.
+  if (node.status === "succeeded") {
+    if (!maySucceed(existing)) {
+      throw new IllegalTransitionError(existing.status, "transition to succeeded");
+    }
+    return;
+  }
 
   // Each target status is reached by at most one event from a given status.
   const event = legalEventsFrom(existing.status).find(
