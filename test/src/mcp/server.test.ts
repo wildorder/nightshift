@@ -179,6 +179,7 @@ describe("the role split (D-P3-01)", () => {
       "execution.status",
       "job.cancel",
       "job.get",
+      "job.retry",
       "job.wait",
       "program.get",
       "program.status",

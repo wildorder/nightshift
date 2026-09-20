@@ -25,6 +25,7 @@ import type { RouteOutcome, RoutingDecision } from "@nightshift/contracts";
 /** The outcomes a decision can end in. `pending` is the only one that is not an ending. */
 export const ROUTE_TERMINAL_OUTCOMES: readonly RouteOutcome[] = [
   "verified",
+  "succeeded",
   "verification_failed",
   "failed",
   "escalated",
@@ -112,6 +113,8 @@ export const routeOutcomeForNodeStatus = (status: string): RouteOutcome => {
     case "sealed":
     case "integrated":
       return "verified";
+    case "succeeded":
+      return "succeeded";
     case "verification_failed":
       return "verification_failed";
     case "cancelled":

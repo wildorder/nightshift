@@ -40,6 +40,7 @@ import {
   type WorkerLaunchIdentity,
 } from "@nightshift/execution";
 import type { McpLaunch } from "@nightshift/harness";
+import { configuredRoute } from "@nightshift/routing";
 import type { Runtime } from "./compose.js";
 import { ToolRefusal } from "./results.js";
 
@@ -326,6 +327,9 @@ export const attachRun = async (
       environment,
       session,
       mcp: (identity) => state.workerLaunch(identity),
+      // For what a sub-program's orchestrator delegates (D-P6-01): routed here,
+      // by the same rule and the same contract as the root's own delegations.
+      route: (job) => configuredRoute({ program, job }),
     }),
     outbox,
     replayed,

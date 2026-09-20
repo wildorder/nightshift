@@ -345,7 +345,11 @@ export const ORCHESTRATOR_WRITABLE_NODE_STATUSES: Readonly<
   Record<NodeRelation, readonly ExecutionNodeStatus[]>
 > = {
   new_child: ["validated"],
-  descendant: ["cancelled"],
+  // `cancelled` asks the engine to stop it. `queued` is how a retry is asked for
+  // (D-P6-03's `job.retry`): the table's own `retry` edge, legal only from a
+  // retryable status, and **not a start** — the engine starts a queued node, when
+  // its parent has a slot, and nothing else does.
+  descendant: ["cancelled", "queued"],
   self: ["succeeded", "failed"],
   outside: [],
 };

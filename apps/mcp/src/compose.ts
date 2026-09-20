@@ -163,7 +163,9 @@ const createTransport = async (
   env: Env,
   role: Role,
 ): Promise<{ transport: Transport; endpoint: string }> =>
-  role === "worker" ? createWorkerTransport(env) : createOrchestratorTransport(env);
+  // Only the human's orchestrator reads the operator's session. Every role that
+  // Nightshift launched holds an execution token and nothing else (D-P4-06).
+  role === "orchestrator" ? createOrchestratorTransport(env) : createWorkerTransport(env);
 
 /**
  * What `await import()` is actually given for {@link HARNESS_MODULE_ENV}.

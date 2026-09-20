@@ -53,7 +53,12 @@ export const ROLE_ENV = "NIGHTSHIFT_ROLE";
  */
 export const EXECUTION_TOKEN_ENV = "NIGHTSHIFT_EXECUTION_TOKEN";
 
-export type Role = "orchestrator" | "worker";
+/**
+ * `sub-orchestrator` is P6's (D-P6-03): a sub-program's orchestrator. Like a
+ * worker it holds only an execution token and an identity; unlike one, the token
+ * delegates, and the tool surface is an orchestrator's, narrowed to its subtree.
+ */
+export type Role = "orchestrator" | "worker" | "sub-orchestrator";
 
 /**
  * The seven variables a worker's identity is made of (§4.2).
@@ -91,8 +96,10 @@ export class MissingWorkerIdentityError extends Error {
 export const roleFrom = (env: Env): Role => {
   const value = env[ROLE_ENV];
   if (value === undefined || value === "") return "orchestrator";
-  if (value === "orchestrator" || value === "worker") return value;
-  throw new Error(`${ROLE_ENV} must be "orchestrator" or "worker", not "${value}"`);
+  if (value === "orchestrator" || value === "worker" || value === "sub-orchestrator") return value;
+  throw new Error(
+    `${ROLE_ENV} must be "orchestrator", "worker" or "sub-orchestrator", not "${value}"`,
+  );
 };
 
 /**
@@ -132,8 +139,9 @@ export const workerLaunchEnv = (identity: {
   readonly jobContractId: string;
   readonly worktree: string;
   readonly executionToken: string;
+  readonly role?: "worker" | "sub-orchestrator";
 }): Record<string, string> => ({
-  [ROLE_ENV]: "worker",
+  [ROLE_ENV]: identity.role ?? "worker",
   [EXECUTION_TOKEN_ENV]: identity.executionToken,
   [WORKER_IDENTITY_ENV.projectId]: identity.projectId,
   [WORKER_IDENTITY_ENV.programId]: identity.programId,

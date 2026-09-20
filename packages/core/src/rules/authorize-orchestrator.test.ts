@@ -166,7 +166,7 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
   it("may ask a node to become exactly what its place allows, over every status and place", () => {
     expect(ORCHESTRATOR_WRITABLE_NODE_STATUSES).toEqual({
       new_child: ["validated"],
-      descendant: ["cancelled"],
+      descendant: ["cancelled", "queued"],
       self: ["succeeded", "failed"],
       outside: [],
     });
@@ -183,7 +183,6 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
 
   it("can never start, verify, seal, integrate, or mint: those are the engine's", () => {
     for (const status of [
-      "queued",
       "running",
       "implemented",
       "verifying",
@@ -195,6 +194,10 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
         expect(authorize(orchestrator, "node.put", at(relation, status)).allowed).toBe(false);
       }
     }
+    // `queued` is a retry request, for something it delegated, and nowhere else.
+    expect(authorize(orchestrator, "node.put", at("descendant", "queued")).allowed).toBe(true);
+    expect(authorize(orchestrator, "node.put", at("self", "queued")).allowed).toBe(false);
+    expect(authorize(orchestrator, "node.put", at("new_child", "queued")).allowed).toBe(false);
     for (const operation of [
       "agent.mintToken",
       "agent.put",

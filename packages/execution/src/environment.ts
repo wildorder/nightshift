@@ -44,6 +44,12 @@ export interface WorkerLaunchIdentity {
   readonly jobContractId: JobContractId;
   readonly worktree: string;
   /**
+   * Which Nightshift MCP role the launch is for. `worker` for a job;
+   * `sub-orchestrator` for a sub-program's orchestrator (P6, D-P6-03), whose
+   * server holds a delegating token and a different tool surface.
+   */
+  readonly role: "worker" | "sub-orchestrator";
+  /**
    * The worker's only credential (D-P4-06). Bound to this agent, this node and
    * this run, expiring within the cost policy's wall clock. Never logged, never
    * written to disk.

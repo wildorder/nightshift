@@ -53,6 +53,7 @@ import {
   hookTypeForExit,
   type McpLaunch,
   millis,
+  refusingWorkerTools,
 } from "@nightshift/harness";
 import {
   DEFAULT_CANCEL_GRACE_MS,
@@ -61,6 +62,7 @@ import {
   type WorkerLaunchIdentity,
 } from "./environment.js";
 import {
+  addDetachedWorktree,
   addWorktree,
   baseRef,
   jobBranch,
@@ -110,10 +112,11 @@ export interface IntegrationCandidate {
 export type IntegrateCandidate = (candidate: IntegrationCandidate) => Promise<void>;
 
 /** What it takes to record a delegation: the first half of {@link runJob}. */
-export type DelegateJobInput = Pick<
-  RunJobInput,
-  "session" | "job" | "scope" | "depth" | "parentNodeId"
->;
+export interface DelegateJobInput
+  extends Pick<RunJobInput, "session" | "job" | "scope" | "depth" | "parentNodeId"> {
+  /** `job` unless said otherwise. A sub-program is delegated the same way (D-P6-03). */
+  readonly kind?: "job" | "sub-program";
+}
 
 /** What it takes to start a delegated job: the second half. */
 export interface StartJobInput
@@ -184,7 +187,7 @@ export const delegateJob = async (
     schemaVersion: 1,
     ...session.scope,
     executionNodeId: nodeId,
-    kind: "job",
+    kind: input.kind ?? "job",
     parentNodeId: input.parentNodeId,
     depth: input.depth,
     scope: input.scope,
@@ -230,6 +233,12 @@ export const startJob = async (
   const queued = input.node;
   const nodeId = queued.executionNodeId;
   const agentId = ids.next("agent");
+  // A sub-program's node is started the same way as a job's, by the same
+  // adapters (D-P6-03). What differs is what its agent is: an orchestrator,
+  // with a delegating token, a checkout to read rather than a worktree to
+  // change, and nothing to verify or integrate when it ends.
+  const orchestrates = queued.kind === "sub-program";
+  const role = orchestrates ? "orchestrator" : "worker";
 
   // --- 2a. The slot, claimed first (D-P6-02) --------------------------------------
   //
@@ -256,7 +265,7 @@ export const startJob = async (
       ...session.scope,
       agentId,
       executionNodeId: nodeId,
-      role: "worker",
+      role,
       harness: input.route.target.harness,
       provider: input.route.target.provider,
       model: input.route.target.model,
@@ -267,7 +276,7 @@ export const startJob = async (
     outbox.emit({
       type: "agent.created",
       source: "control-plane",
-      payload: { role: "worker", ...input.route.target },
+      payload: { role, ...input.route.target },
       executionNodeId: nodeId,
       agentId,
     });
@@ -333,7 +342,11 @@ export const startJob = async (
       );
       await pruneWorktrees(environment.git, session.repoPath);
     }
-    await addWorktree(environment.git, { repo: session.repoPath, path: worktree, branch, base });
+    if (orchestrates) {
+      await addDetachedWorktree(environment.git, { repo: session.repoPath, path: worktree, base });
+    } else {
+      await addWorktree(environment.git, { repo: session.repoPath, path: worktree, branch, base });
+    }
     // The base, recorded in the repository rather than carried through three
     // processes. `completeJob` reads it back to parent the snapshot.
     await updateRef(environment.git, session.repoPath, baseRef(nodeId), base);
@@ -366,19 +379,27 @@ export const startJob = async (
       agentId,
       jobContractId: input.job.jobContractId,
       worktree,
+      role: orchestrates ? "sub-orchestrator" : "worker",
       executionToken,
     };
-    const tools = createWorkerTools(
-      environment.workerEnvironment(identity),
-      {
-        scope: session.scope,
-        executionNodeId: nodeId,
-        jobContractId: input.job.jobContractId,
-        agentId,
-        worktree,
-      },
-      ids,
-    );
+    // The function transport is a worker's four operations. A sub-orchestrator's
+    // surface is a different one, and it reaches it through its MCP launch, as
+    // every local harness does (rule 6).
+    const tools = orchestrates
+      ? refusingWorkerTools(
+          "a sub-program's orchestrator reaches Nightshift through its MCP launch",
+        )
+      : createWorkerTools(
+          environment.workerEnvironment(identity),
+          {
+            scope: session.scope,
+            executionNodeId: nodeId,
+            jobContractId: input.job.jobContractId,
+            agentId,
+            worktree,
+          },
+          ids,
+        );
 
     let handle: HarnessHandle;
     try {
@@ -417,7 +438,7 @@ export const startJob = async (
     });
 
     let stopMode: "cancelled" | "interrupted" | undefined;
-    const completion = finishJob(environment, {
+    const completion = (orchestrates ? finishSubProgram : finishJob)(environment, {
       session,
       job: input.job,
       nodeId,
@@ -475,6 +496,65 @@ export const startJob = async (
     } catch {
       // The control plane is unreachable. Shutdown's fallback is what is left.
     }
+  }
+};
+
+/**
+ * A sub-program's orchestrator has stopped (P6, D-P6-03).
+ *
+ * There is nothing to verify and nothing to integrate: it wrote no code, and
+ * whatever is in its checkout is discarded with it. What is left to settle is
+ * its node. It ends its own node through `subprogram.complete` or
+ * `subprogram.fail`; one that stopped without doing either, or was stopped, is
+ * ended here, because a sub-program left `running` with nobody orchestrating it
+ * is the state D-P6-08 exists to prevent. Its children are the engine's to stop.
+ *
+ * Never rejects.
+ */
+const finishSubProgram = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+): Promise<void> => {
+  const { stores, clock, outbox } = environment;
+  let usage: RouteUsage | undefined;
+  try {
+    const settledExit = await input.handle.exit;
+    if (settledExit.kind === "completed" || settledExit.kind === "failed")
+      usage = settledExit.usage;
+    const { exit, reason } = observed(input, settledExit);
+    await recordAgentEnd(environment, input, exit, reason);
+    await uploadTranscript(environment, input);
+
+    const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
+    if (node !== undefined && node.status === "running") {
+      const stopped = exit.kind === "cancelled" ? "cancel" : "fail";
+      const why =
+        exit.kind === "completed"
+          ? "the sub-program's orchestrator exited without ending its sub-program"
+          : reason;
+      await stores.executionNodes.put({
+        ...transition(node, stopped, nowIso(clock)),
+        outcomeReason: why,
+      });
+      outbox.emit({
+        type: stopped === "cancel" ? "node.cancelled" : "node.failed",
+        source: "control-plane",
+        payload: { reason: why },
+        executionNodeId: input.nodeId,
+        agentId: input.agentId,
+      });
+    }
+  } catch (error) {
+    await failHard(environment, input, error);
+  } finally {
+    await removeWorktree(
+      environment.git,
+      input.session.repoPath,
+      input.worktree,
+      input.branch,
+      input.nodeId,
+    ).catch(() => {});
+    await recordRouteResult(environment, input, usage);
   }
 };
 

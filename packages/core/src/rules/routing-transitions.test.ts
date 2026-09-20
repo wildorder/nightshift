@@ -94,12 +94,14 @@ describe("routing decision updates (D-P5-06)", () => {
   });
 
   it("gives every settled node status an ending, and only those", () => {
-    const unsettled = ["validated", "queued", "running", "implemented", "verifying", "succeeded"];
+    const unsettled = ["validated", "queued", "running", "implemented", "verifying"];
     for (const status of EXECUTION_NODE_STATUSES) {
       const outcome = routeOutcomeForNodeStatus(status);
       expect(outcome === "pending", status).toBe(unsettled.includes(status));
     }
     expect(routeOutcomeForNodeStatus("integrated")).toBe("verified");
+    // A sub-program's orchestrator is never verified: it produced no commit.
+    expect(routeOutcomeForNodeStatus("succeeded")).toBe("succeeded");
     expect(routeOutcomeForNodeStatus("interrupted")).toBe("failed");
   });
 });

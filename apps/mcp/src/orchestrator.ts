@@ -48,7 +48,7 @@ import { endProgramNode } from "@nightshift/execution";
 import { configuredRoute, RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
 import type { RefusalCode } from "./results.js";
-import { guarded, ok, ToolRefusal } from "./results.js";
+import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 import type { AttachedRun, OrchestratorSession } from "./session.js";
 import { attachRun, createCheckpointAt, describeNodeLine, startNewRun } from "./session.js";
 
@@ -101,7 +101,7 @@ const requireAttached = (state: OrchestratorSession) => {
   return attached;
 };
 
-const jobWaitCap = (env: OrchestratorDeps["env"]): number => {
+export const jobWaitCap = (env: OrchestratorDeps["env"]): number => {
   const raw = env[JOB_WAIT_CAP_ENV];
   const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_JOB_WAIT_CAP_SECONDS;
@@ -180,6 +180,41 @@ const describeJob = (report: Readonly<Record<string, unknown>>): string => {
   const verified =
     verification === null ? "" : ` Verification ${verification.outcome ?? "unknown"}.`;
   return `Job ${String(report.jobContractId)} is ${status}.${commit}${verified}${reason}`;
+};
+
+/** The jobs a `job.wait` named, one way or the other, without repeats. */
+const jobsNamed = (jobId: string | undefined, jobIds: readonly string[] | undefined): string[] => {
+  const wanted = [...new Set([...(jobIds ?? []), ...(jobId === undefined ? [] : [jobId])])];
+  if (wanted.length === 0) {
+    throw new ToolRefusal("validation_failed", "name a job with jobId, or several with jobIds");
+  }
+  return wanted;
+};
+
+/** The run's tree, one line a node, indented by depth: read at a glance. */
+const renderTree = (nodes: readonly ExecutionNode[]): readonly string[] => {
+  const children = new Map<string | null, ExecutionNode[]>();
+  for (const node of nodes) {
+    const siblings = children.get(node.parentNodeId) ?? [];
+    siblings.push(node);
+    children.set(node.parentNodeId, siblings);
+  }
+  const lines: string[] = [];
+  const walk = (parent: string | null): void => {
+    const level = [...(children.get(parent) ?? [])].sort((a, b) =>
+      a.executionNodeId < b.executionNodeId ? -1 : 1,
+    );
+    for (const node of level) {
+      const reason =
+        node.outcomeReason === undefined ? "" : ` — ${node.outcomeReason.slice(0, 120)}`;
+      lines.push(
+        `${"  ".repeat(node.depth)}${node.kind} ${node.executionNodeId} ${node.status}${reason}`,
+      );
+      walk(node.executionNodeId);
+    }
+  };
+  walk(null);
+  return lines;
 };
 
 /** A run does not end while its work is still going (D-P6-08). */
@@ -366,6 +401,11 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           {
             run,
             nodes: nodes.items,
+            // What the engine holds (D-P6-09): what is running, what waits for a
+            // slot and in which order, what the merge queue is on, and how much
+            // wall clock is left.
+            engine: attached.engine.snapshot(),
+            tree: renderTree(nodes.items),
             latestCheckpoint: latest ?? null,
             highestSequence: highestSequence(events.items) ?? null,
             pendingEvents: pendingCount(events.items),
@@ -412,6 +452,9 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         dependencies: z.array(z.string().min(1)).optional(),
         risk: RiskLevelSchema.optional(),
         ambiguity: RiskLevelSchema.optional(),
+        // `sub-program` hands a bounded region of the program to an orchestrator
+        // of its own, which delegates within it (D-P6-03).
+        kind: z.enum(["job", "sub-program"]).optional(),
         harness: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
       },
@@ -445,6 +488,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           depth: check.depth,
           parentNodeId: attached.session.rootNodeId,
           route,
+          ...(input.kind === undefined ? {} : { kind: input.kind }),
         });
         const started = submitted.started;
 
@@ -492,30 +536,70 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       description:
         "Block until the job settles or the cap elapses, then answer exactly what job.get would. " +
         "Always returns: `timedOut` says whether the job settled or the wait did.",
-      inputSchema: { jobId: z.string().min(1), timeoutSeconds: z.number().int().min(1).optional() },
+      inputSchema: {
+        jobId: z.string().min(1).optional(),
+        // Several at once (D-P6-09): an orchestrator that can only wait on one
+        // job serialises itself, whatever the engine can do.
+        jobIds: z.array(z.string().min(1)).min(1).optional(),
+        timeoutSeconds: z.number().int().min(1).optional(),
+      },
     },
-    async ({ jobId, timeoutSeconds }) =>
+    async ({ jobId, jobIds, timeoutSeconds }) =>
       guarded(async () => {
+        const wanted = jobsNamed(jobId, jobIds);
         const cap = jobWaitCap(deps.env);
         const limit = Math.min(timeoutSeconds ?? cap, cap);
-        const deadline = Date.now() + limit * 1000;
 
-        let report = await jobReport(deps, jobId);
-        while (report.settled !== true && Date.now() < deadline) {
-          await new Promise((resolve_) => setTimeout(resolve_, JOB_WAIT_POLL_MS));
-          // Polls the control plane, not this process's memory: the answer must
-          // be the one `GET …/state` would give.
-          report = await jobReport(deps, jobId);
-        }
-
-        const timedOut = report.settled !== true;
+        // Polls the control plane, not this process's memory: the answer must be
+        // the one `GET …/state` would give.
+        const { reports, first, timedOut } = await waitForFirstSettled(
+          () => Promise.all(wanted.map((id) => jobReport(deps, id))),
+          limit,
+          JOB_WAIT_POLL_MS,
+        );
+        // The first to settle, or the first named when none has. One job in,
+        // exactly what `job.get` would answer out, as it always was.
+        const report = first ?? reports[0];
+        if (report === undefined) throw new ToolRefusal("not_found", "no such job");
         return ok(
           timedOut
             ? `${describeJob(report)} Still running after ${limit}s — this wait is capped below ` +
                 "the harness's own tool timeout, so call job.wait again."
             : describeJob(report),
-          { ...report, timedOut, waitedSeconds: limit },
+          {
+            ...report,
+            timedOut,
+            waitedSeconds: limit,
+            ...(wanted.length > 1 ? { jobs: reports } : {}),
+          },
         );
+      }),
+  );
+
+  server.registerTool(
+    "job.retry",
+    {
+      title: "Retry a job that failed",
+      description:
+        "Runs it again from the current program head as a new attempt: fresh worktree, new agent. " +
+        "For a job that ended failed (an integration_conflict, say), verification_failed or " +
+        "interrupted. Read its outcomeReason first: a retry repeats the delegation as written.",
+      inputSchema: { jobId: z.string().min(1) },
+    },
+    async ({ jobId }) =>
+      guarded(async () => {
+        const attached = requireAttached(state);
+        if (!(await attached.engine.retry(jobId as never))) {
+          const report = await jobReport(deps, jobId);
+          throw new ToolRefusal(
+            "validation_failed",
+            `job ${jobId} is ${String(report.status)}, and only a job this session delegated that ` +
+              "ended failed, verification_failed or interrupted can be retried.",
+            { status: report.status },
+          );
+        }
+        const report = await jobReport(deps, jobId);
+        return ok(`Job ${jobId} is going round again. ${describeJob(report)}`, report);
       }),
   );
 
@@ -646,6 +730,7 @@ interface DelegateInput {
   readonly risk?: "low" | "medium" | "high" | undefined;
   readonly ambiguity?: "low" | "medium" | "high" | undefined;
   readonly model?: string | undefined;
+  readonly kind?: "job" | "sub-program" | undefined;
 }
 
 /** The contract, validated. An invalid one never becomes a node. */

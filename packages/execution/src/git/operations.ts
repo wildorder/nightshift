@@ -70,6 +70,18 @@ export const addWorktree = async (runner: GitRunner, input: WorktreeInput): Prom
 };
 
 /**
+ * A worktree on a **detached** `base`, with no branch: somewhere to read the
+ * program from, for a sub-program's orchestrator (P6, D-P6-03). Nothing in it
+ * is ever snapshotted, so it needs no branch to carry a commit.
+ */
+export const addDetachedWorktree = async (
+  runner: GitRunner,
+  input: Omit<WorktreeInput, "branch">,
+): Promise<void> => {
+  await git(runner, ["worktree", "add", "--detach", input.path, input.base], { cwd: input.repo });
+};
+
+/**
  * Removes a worktree and its branch.
  *
  * Only ever called after the work is sealed, so the commit stays reachable

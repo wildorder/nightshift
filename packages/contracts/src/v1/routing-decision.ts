@@ -32,6 +32,12 @@ export type RouteOption = z.infer<typeof RouteOptionSchema>;
 export const RouteOutcomeSchema = z.enum([
   "pending",
   "verified",
+  /**
+   * Added in P6. The route ran a **sub-program's orchestrator**, which produces
+   * no commit and so is never verified: its node ends `succeeded` (D-P5-06), and
+   * calling that `verified` would say something happened that did not.
+   */
+  "succeeded",
   "verification_failed",
   "failed",
   "escalated",

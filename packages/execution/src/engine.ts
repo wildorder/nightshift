@@ -32,6 +32,7 @@ import type {
 import {
   buildTree,
   ConcurrencyLimitExceededError,
+  descendantsOf,
   type ExecutionTree,
   isSettled,
   maySlotStart,
@@ -51,7 +52,18 @@ export interface EngineOptions {
   readonly mcp: (identity: WorkerLaunchIdentity) => McpLaunch;
   /** The run's merge queue. One is made when none is given; a test gives its own. */
   readonly mergeQueue?: MergeQueue;
+  /**
+   * Routes a node the engine did not delegate itself: one a sub-program's
+   * orchestrator wrote through the control plane (D-P6-01). Routing is not this
+   * package's, so it is handed in. Without it such a node fails, with the reason.
+   */
+  readonly route?: (job: JobContract) => RouteChoice;
+  /** How often the run's nodes are read while a sub-orchestrator is running. */
+  readonly discoveryIntervalMs?: number;
 }
+
+/** A second, which is D-P6-01's stated cost of having no second channel. */
+export const DEFAULT_DISCOVERY_INTERVAL_MS = 1_000;
 
 export interface Submission {
   /** Validated by the caller, not yet persisted. */
@@ -61,6 +73,8 @@ export interface Submission {
   readonly depth: number;
   readonly parentNodeId: ExecutionNodeId;
   readonly route: RouteChoice;
+  /** `job` unless said otherwise (D-P6-03). */
+  readonly kind?: "job" | "sub-program";
 }
 
 export interface Submitted {
@@ -116,6 +130,8 @@ export interface Engine {
   close(reason: string): Promise<readonly ExecutionNodeId[]>;
   /** Settles when the pump is idle. For tests, and for nothing else. */
   settled(): Promise<void>;
+  /** One discovery pass, now. The timer calls it; a test may. */
+  discover(): Promise<void>;
 }
 
 interface Pending {
@@ -242,10 +258,19 @@ export const createEngine = (options: EngineOptions): Engine => {
       });
       remove(entry);
       active.set(started.nodeId, started);
+      const orchestrates = entry.node.kind === "sub-program";
+      if (orchestrates) orchestrators.add(started.nodeId);
+      watch();
       void started.completion
         .catch(() => {})
+        .then(async () => {
+          // An orchestrator that has gone leaves nobody to answer for what it
+          // delegated: whatever is still in flight under it stops (D-P6-08).
+          if (orchestrates) await cancelSubtree(started.nodeId).catch(() => {});
+        })
         .finally(() => {
           active.delete(started.nodeId);
+          orchestrators.delete(started.nodeId);
           void pump();
         });
       return true;
@@ -262,6 +287,132 @@ export const createEngine = (options: EngineOptions): Engine => {
       // A launch that failed has already ended its node durably (`startJob`).
       remove(entry);
       return true;
+    }
+  };
+
+  // --- Discovery: what a sub-program's orchestrator asked for (D-P6-01) ----------------
+  //
+  // A sub-orchestrator has no channel to this process. It writes records with its
+  // delegating token, and this reads them: a `validated` node nobody here holds
+  // is a delegation, a `queued` one is a retry, and a node this engine is running
+  // that the record says is `cancelled` is a request to stop. Only while an
+  // orchestrator is running, because nothing else writes such records.
+  const orchestrators = new Set<ExecutionNodeId>();
+  let watching: ReturnType<typeof setTimeout> | undefined;
+
+  const watch = (): void => {
+    if (watching !== undefined || closed || orchestrators.size === 0) return;
+    watching = setTimeout(() => {
+      watching = undefined;
+      void discover()
+        .catch(() => {})
+        .finally(watch);
+    }, options.discoveryIntervalMs ?? DEFAULT_DISCOVERY_INTERVAL_MS);
+    watching.unref?.();
+  };
+
+  const held = (nodeId: ExecutionNodeId): boolean =>
+    active.has(nodeId) || pending.some((entry) => entry.node.executionNodeId === nodeId);
+
+  const discover = async (): Promise<void> => {
+    if (closed) return;
+    let found = false;
+    for (const node of await readNodes()) found = (await consider(node)) || found;
+    if (found) await pump();
+  };
+
+  /** What one stored node asks of the engine, if anything. True when it was adopted. */
+  const consider = async (node: ExecutionNode): Promise<boolean> => {
+    const id = node.executionNodeId;
+    if (node.status === "cancelled") {
+      void active
+        .get(id)
+        ?.cancel()
+        .catch(() => {});
+      return false;
+    }
+    if (node.parentNodeId === null || held(id)) return false;
+    return node.status === "validated" || node.status === "queued" ? adopt(node) : false;
+  };
+
+  /** Takes on a node somebody else delegated. False when it could not be. */
+  const adopt = async (node: ExecutionNode): Promise<boolean> => {
+    const id = node.executionNodeId;
+    const job =
+      node.jobContractId === null
+        ? undefined
+        : await stores.jobContracts.get(session.scope, node.jobContractId);
+    if (job === undefined) {
+      await refuse(node, "this node was delegated without a Job Contract the engine can read");
+      return false;
+    }
+    let route: RouteChoice;
+    try {
+      if (options.route === undefined) throw new Error("this engine was given no way to route it");
+      route = options.route(job);
+    } catch (error) {
+      await refuse(node, `the delegation could not be routed: ${messageOf(error)}`);
+      return false;
+    }
+
+    let queued = node;
+    if (node.status === "validated") {
+      queued = transition(node, "enqueue", nowIso(clock));
+      await stores.executionNodes.put(queued);
+      outbox.emit({
+        type: "node.queued",
+        source: "control-plane",
+        payload: { jobContractId: job.jobContractId, delegatedBy: node.parentNodeId },
+        executionNodeId: id,
+      });
+    }
+    const submission: Submission = {
+      job,
+      scope: node.scope,
+      depth: node.depth,
+      parentNodeId: node.parentNodeId as ExecutionNodeId,
+      route,
+      kind: node.kind === "sub-program" ? "sub-program" : "job",
+    };
+    submissions.set(job.jobContractId, submission);
+    nodeOfJob.set(job.jobContractId, id);
+    pending.push({ submission, node: queued, waiting: undefined });
+    return true;
+  };
+
+  const refuse = async (node: ExecutionNode, reason: string): Promise<void> => {
+    await stores.executionNodes.put({
+      ...transition(node, "cancel", nowIso(clock)),
+      outcomeReason: reason,
+    });
+    outbox.emit({
+      type: "node.cancelled",
+      source: "control-plane",
+      payload: { reason },
+      executionNodeId: node.executionNodeId,
+    });
+  };
+
+  /** Stops everything in flight under `nodeId`: running jobs, queued ones, and records. */
+  const cancelSubtree = async (nodeId: ExecutionNodeId): Promise<void> => {
+    const tree = buildTree(await readNodes());
+    if (!tree.nodes.has(nodeId)) return;
+    const reason = `its sub-program ${nodeId} ended`;
+    for (const id of descendantsOf(tree, nodeId)) {
+      const running = active.get(id);
+      if (running !== undefined) {
+        await running.cancel().catch(() => {});
+        continue;
+      }
+      const entry = pending.find((candidate) => candidate.node.executionNodeId === id);
+      if (entry !== undefined) {
+        await withdraw(entry, reason).catch(() => {});
+        continue;
+      }
+      const node = tree.nodes.get(id);
+      if (node !== undefined && !isSettled(node.status) && node.status !== "implemented") {
+        await refuse(node, reason).catch(() => {});
+      }
     }
   };
 
@@ -284,7 +435,14 @@ export const createEngine = (options: EngineOptions): Engine => {
   return {
     submit: async (submission) => {
       if (closed) throw new Error("this run's engine has stopped and takes no more work");
-      const node = await delegateJob(environment, { session, ...submission });
+      const node = await delegateJob(environment, {
+        session,
+        job: submission.job,
+        scope: submission.scope,
+        depth: submission.depth,
+        parentNodeId: submission.parentNodeId,
+        ...(submission.kind === undefined ? {} : { kind: submission.kind }),
+      });
       const entry: Pending = { submission, node, waiting: undefined };
       pending.push(entry);
       submissions.set(submission.job.jobContractId, submission);
@@ -312,6 +470,8 @@ export const createEngine = (options: EngineOptions): Engine => {
       if (nodeId === undefined) return false;
       const started = active.get(nodeId);
       if (started !== undefined) {
+        // A sub-program's subtree goes with it (D-P6-08).
+        if (orchestrators.has(nodeId)) await cancelSubtree(nodeId).catch(() => {});
         await started.cancel();
         return true;
       }
@@ -361,6 +521,8 @@ export const createEngine = (options: EngineOptions): Engine => {
 
     close: async (reason) => {
       closed = true;
+      if (watching !== undefined) clearTimeout(watching);
+      watching = undefined;
       const withdrawn: ExecutionNodeId[] = [];
       for (const entry of [...pending]) {
         withdrawn.push(entry.node.executionNodeId);
@@ -372,5 +534,10 @@ export const createEngine = (options: EngineOptions): Engine => {
     settled: async () => {
       while (pumping !== undefined) await pumping;
     },
+
+    discover,
   };
 };
+
+const messageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);

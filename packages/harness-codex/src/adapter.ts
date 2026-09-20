@@ -55,7 +55,12 @@ import type {
   HarnessHandle,
   HarnessStartInput,
 } from "@nightshift/harness";
-import { agentStatusForExit, hookTypeForExit, renderWorkerBrief } from "@nightshift/harness";
+import {
+  agentStatusForExit,
+  hookTypeForExit,
+  nightshiftToolNames,
+  renderWorkerBrief,
+} from "@nightshift/harness";
 import {
   buildCodexArgs,
   buildGitGuard,
@@ -154,7 +159,10 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
         program: input.program,
         worktree: input.worktree,
       }),
-      codexBriefAddendum({ mcpServerName: input.mcp.name }),
+      codexBriefAddendum({
+        mcpServerName: input.mcp.name,
+        tools: nightshiftToolNames(input.node.kind),
+      }),
     );
 
     let resolveExit: (exit: HarnessExit) => void = () => {};

@@ -23,6 +23,7 @@
  */
 export {
   createEngine,
+  DEFAULT_DISCOVERY_INTERVAL_MS,
   type Engine,
   type EngineOptions,
   type EngineSnapshot,

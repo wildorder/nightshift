@@ -38,6 +38,8 @@ export const EventTypeSchema = z.enum([
   "node.cancelled",
   "node.interrupted",
   "node.integrated",
+  /** Added in P6 (D-P6-03). A sub-program's orchestrator ended it, its work done. */
+  "node.succeeded",
   /**
    * Added in P6 (D-P6-06). The merge queue replayed a node's snapshot onto a
    * program head that had moved since its worktree was cut: a stale base,
