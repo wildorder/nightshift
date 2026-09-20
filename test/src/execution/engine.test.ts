@@ -111,8 +111,13 @@ interface Rig {
   readonly world: World;
   readonly engine: Engine;
   readonly queue: MergeQueue;
-  /** Lets the merge queue see what has finished. Closed until called. */
-  releaseQueue(): void;
+  /**
+   * Lets the merge queue see what has finished, once `candidates` of them are
+   * waiting at the gate. A node being `implemented` is not enough: its candidate
+   * reaches the queue only after its worker's exit has been recorded, and "both
+   * were ready when the queue looked" has to be a fact on a slow machine too.
+   */
+  releaseQueue(candidates: number): Promise<void>;
   submit(
     objective: string,
   ): Promise<{ jobId: JobContract["jobContractId"]; nodeId: ExecutionNodeId }>;
@@ -134,9 +139,11 @@ const rig = async (
   const real = createMergeQueue(made.environment);
   const gate = barrier();
   if (options.gated !== true) gate.open();
+  let atGate = 0;
   const queue: MergeQueue = {
     ...real,
     integrate: async (candidate) => {
+      atGate += 1;
       await gate.opened;
       return real.integrate(candidate);
     },
@@ -155,7 +162,12 @@ const rig = async (
     world: made,
     engine,
     queue,
-    releaseQueue: gate.open,
+    releaseQueue: async (candidates) => {
+      await vi.waitFor(() => expect(atGate).toBeGreaterThanOrEqual(candidates), {
+        timeout: 30_000,
+      });
+      gate.open();
+    },
     submit: async (objective) => {
       const job = JobContractSchema.parse({
         schemaVersion: 1,
@@ -344,7 +356,7 @@ describe("the merge queue (D-P6-05, D-P6-06)", () => {
     await r.until(b.nodeId, (status) => status === "implemented");
     aMayFinish.open();
     await r.until(a.nodeId, (status) => status === "implemented");
-    r.releaseQueue();
+    await r.releaseQueue(2);
 
     expect(await r.until(a.nodeId, settled)).toBe("integrated");
     expect(await r.until(b.nodeId, settled)).toBe("integrated");
@@ -379,7 +391,7 @@ describe("the merge queue (D-P6-05, D-P6-06)", () => {
     const b = await r.submit("strict rewrite of sum");
     await r.until(a.nodeId, (status) => status === "implemented");
     await r.until(b.nodeId, (status) => status === "implemented");
-    r.releaseQueue();
+    await r.releaseQueue(2);
 
     expect(await r.until(a.nodeId, settled)).toBe("integrated");
     expect(await r.until(b.nodeId, settled)).toBe("failed");
@@ -437,7 +449,7 @@ describe("the merge queue (D-P6-05, D-P6-06)", () => {
     const b = await r.submit("caller of sum");
     await r.until(a.nodeId, (status) => status === "implemented");
     await r.until(b.nodeId, (status) => status === "implemented");
-    r.releaseQueue();
+    await r.releaseQueue(2);
 
     // SC-P6-11: no textual conflict at all, so the replay is clean; verification,
     // on the head it would land on, is what finds it.
