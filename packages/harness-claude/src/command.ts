@@ -21,10 +21,7 @@
  *   --strict-mcp-config                 ignore every other MCP configuration on the machine
  *   --settings <file>                   Nightshift's own settings; see below
  *   --setting-sources ""                load no user, project or local settings
- *   --permission-mode manual|acceptEdits    from Scope.permissions (D-P3-15)
- *   --permission-prompts none           nobody answers a prompt; a prompt is a denial
- *   --tools <csv>                       the built-in tools the scope granted
- *   --allowedTools <csv>                pre-approved, so a granted tool never prompts
+ *   --permission-mode bypassPermissions every tool, never a prompt (see `permissions.ts`)
  *   --disallowedTools <csv>             git writes, always (A-29)
  *   --no-session-persistence            nothing resumable is written to disk
  * ```
@@ -32,17 +29,17 @@
  * Four things about that ordering and shape are load-bearing rather than taste:
  *
  * 1. **The brief comes immediately after `-p`, before every other flag.**
- *    `--tools`, `--allowedTools`, `--disallowedTools` and `--mcp-config` are all
+ *    `--disallowedTools` and `--mcp-config` are
  *    *variadic* (`<tools...>`) in this release, so a positional argument placed
  *    after one of them is swallowed as another value for it. `-p` is a boolean,
  *    so the brief lands where it belongs.
- * 2. **Each list flag gets exactly one comma-separated value.** The help text
+ * 2. **The list flag gets exactly one comma-separated value.** The help text
  *    allows comma or space separation; a deny pattern such as
  *    `Bash(git commit:*)` contains a space, and space separation would split it.
  * 3. **`--setting-sources ""`** is what stops the *operator's* `~/.claude`
- *    settings from reaching the worker. Without it a user-level `permissions`
- *    block or a user-level hook would widen the authority Nightshift narrowed,
- *    which is exactly the inheritance rule this repository refuses to soften.
+ *    settings from reaching the worker. Without it a user-level hook or a
+ *    user-level `permissions` block would change how a worker behaves from one
+ *    operator's machine to the next.
  *    The worktree's own `CLAUDE.md` is still discovered, which is intended: that
  *    is the target repository's guidance to anyone working in it.
  * 4. **`--strict-mcp-config`** keeps the operator's other MCP servers out. A
@@ -51,9 +48,10 @@
  *
  * Deliberately *not* passed, each for a reason:
  *
- * - `--dangerously-skip-permissions` / `--permission-mode bypassPermissions` —
- *   they are the opposite of D-P3-15.
- * - `--allow-dangerously-skip-permissions` — same.
+ * - `--tools` and `--allowedTools` — an allow-list is a guess at everything a
+ *   worker will need, and the first miss is a denied tool with nobody there to
+ *   fix it. The owner ruled them out on 2026-09-19 (`permissions.ts`).
+ * - `--permission-prompts none` — nothing prompts in `bypassPermissions`.
  * - `--add-dir` — the worktree is the only directory a worker works in.
  * - `--include-partial-messages` — the complete assistant message always
  *   follows, and partial frames would multiply the stream for no event.
@@ -117,14 +115,10 @@ export const buildClaudeArgs = (input: ClaudeCommandInput): readonly string[] =>
   input.settingsPath,
   "--setting-sources",
   "",
+  // Every tool, never a prompt, and no list of what a worker might need
+  // (`permissions.ts`). The denials are the git write guard and nothing else.
   "--permission-mode",
   input.policy.permissionMode,
-  "--permission-prompts",
-  "none",
-  "--tools",
-  list(input.policy.tools),
-  "--allowedTools",
-  list(input.policy.allowed),
   "--disallowedTools",
   list(input.policy.denied),
   "--no-session-persistence",
@@ -184,10 +178,7 @@ export const buildSettings = (): string =>
  * is, what may be touched, and that Nightshift collects the work, is T1's and
  * is not repeated.
  */
-export const claudeBriefAddendum = (input: {
-  readonly mcpServerName: string;
-  readonly policy: ClaudeToolPolicy;
-}): string => {
+export const claudeBriefAddendum = (input: { readonly mcpServerName: string }): string => {
   const name = (tool: string): string => claudeMcpToolName(input.mcpServerName, tool);
   const lines = [
     "HOW THE NIGHTSHIFT TOOLS ARE NAMED TO YOU",
@@ -202,16 +193,15 @@ export const claudeBriefAddendum = (input: {
     "",
     "  They are always available to you, whatever else your scope granted.",
     "",
-    "YOUR TOOL POLICY — already decided, not negotiable",
+    "YOUR TOOLS",
     "",
-    input.policy.tools.length === 0
-      ? "  You have no built-in tools. You cannot read, write or run anything; report\n  through the Nightshift tools above."
-      : `  Built-in tools available to you: ${input.policy.tools.join(", ")}.`,
+    "  You have every tool your environment offers, and nothing will ask for",
+    "  approval: nobody is watching, so nothing is ever escalated.",
     "",
-    "  Every git command that writes state is denied at the point of use. Do not",
-    "  spend a turn trying one: nobody is watching to approve it, an unapproved",
-    "  tool call is denied rather than escalated, and Nightshift is the one that",
-    "  commits your work.",
+    "  The one exception: every git command that writes state is denied at the",
+    "  point of use. Do not spend a turn trying one or working around it.",
+    "  Nightshift is the one that commits your work, from whatever is in your",
+    "  working directory when you report completion.",
   ];
   return lines.join("\n");
 };

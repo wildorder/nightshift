@@ -305,8 +305,13 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   one-to-one provider→harness map. The human picks the orchestrator's model;
   Nightshift picks workers'; an orchestrator's request is an override within
   policy.
-- Codex runs as `codex exec --json` with `approval_policy=never` and the
-  `workspace-write` sandbox; `--approve-for-me` is not used.
+- **Workers run with permissions bypassed, and no adapter passes a list of
+  allowed tools** (owner's ruling, 2026-09-19, amending D-P3-15 and D-P5-02).
+  Claude: `--permission-mode bypassPermissions`, no `--tools`, no
+  `--allowedTools`. Codex: `--dangerously-bypass-approvals-and-sandbox`. A worker
+  must never stop for approval or be denied a tool nobody listed. Do not
+  reintroduce an allow-list, a sandbox mode or an approval policy in an adapter.
+  `--approve-for-me` is not used.
 - `ExecutionNodeStatus.succeeded` is legal for `program` and `sub-program`
   nodes only. A job node's table, and the A-05 property tests, are untouched.
 - The AgentCore harness worker, Bedrock, and anything that runs on a runtime
@@ -337,15 +342,21 @@ program needs and cannot derive; full account in
   excludes cache reads; Codex's includes cached input and carries no cost on a
   ChatGPT login. `RouteUsage` records what each harness said. Normalising is
   P7's job.
-- Codex, measured on 0.154.0: `approval_policy="never"` alone refuses every MCP
-  call, so the Nightshift server (only) gets
-  `default_tools_approval_mode="approve"`; `workspace-write` does **not** stop
-  `git commit` in a worktree, so a `git` guard rides on
+- What bounds a worker is **not** the harness: A-29 (Nightshift owns every
+  commit and checks every changed path against scope before integrating), the
+  execution token, and the environment allowlist. `Scope.permissions` is told to
+  the worker and reported, not enforced. A worker can write outside its worktree
+  and reach the network; on the operator's machine it is trusted as the operator
+  is, until P9.
+- The one list that remains is a **deny** of git write commands, on both
+  adapters: Claude's `--disallowedTools` patterns (verified to hold in
+  `bypassPermissions`), and for Codex a `git` guard script on
   `shell_environment_policy.set` with `allow_login_shell=false`. **Never put the
   guard on the Codex process's own `PATH`**: the worker's MCP server inherits it
-  and `job.complete` needs the real `git`. A `SIGTERM`ed `codex exec` exits 0, so
-  completion is exit 0 **and** `turn.completed`. A-29 is the enforcement; the
-  guard is a courtesy.
+  and `job.complete` needs the real `git`. It is a courtesy; A-29 is the
+  enforcement.
+- Codex, measured on 0.154.0: a `SIGTERM`ed `codex exec` exits 0, so completion
+  is exit 0 **and** `turn.completed`.
 - `apps/mcp/src/compose.ts` names both adapters and builds one only when a route
   first chooses it (`createRoutedHarness`). `NIGHTSHIFT_HARNESS_MODULE` still
   replaces the lot, for the scripted harness.

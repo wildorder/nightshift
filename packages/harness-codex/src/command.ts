@@ -1,42 +1,52 @@
 /**
- * The `codex exec` command line (P5, T3, D-P5-02).
+ * The `codex exec` command line (P5, T3; D-P5-02 as amended by the owner on
+ * 2026-09-19).
  *
  * ## THE EXACT COMMAND LINE
  *
  * Every flag below was checked against the installed CLI's `codex exec --help`
- * and then against a real run. **Verified on 0.154.0** (the task was written
- * against 0.149.0; the machine had moved on, and every flag still stands):
+ * and then against a real run. **Verified on 0.154.0.**
  *
  * ```text
  * codex exec --json
  *   -C <worktree>
- *   --sandbox workspace-write            (read-only when fs.write is not granted)
- *   -c approval_policy="never"
+ *   --dangerously-bypass-approvals-and-sandbox
  *   -c allow_login_shell=false
  *   -c shell_environment_policy.set={"PATH" = "<guard dir>:<PATH>"}
  *   -c mcp_servers.<name>.command="…"
  *   -c mcp_servers.<name>.args=["…"]
  *   -c mcp_servers.<name>.env={…}
- *   -c mcp_servers.<name>.default_tools_approval_mode="approve"
  *   --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
  *   -m <model>
  *   <brief>
  * ```
  *
- * ## What each one is for, and what was measured
+ * ## A worker is never stopped, and never starved of a tool
+ *
+ * `--dangerously-bypass-approvals-and-sandbox` is Codex's equivalent of Claude
+ * Code's `bypassPermissions`: no approval is ever requested, of anyone, and
+ * nothing is refused for want of one. The owner's ruling, and the reason is
+ * experience rather than taste: a worker that can be stopped for approval, or
+ * denied a tool nobody thought to list, fails jobs with no one there to help.
+ *
+ * It replaces D-P5-02's `--sandbox workspace-write -c approval_policy="never"`,
+ * and with it two things that arrangement needed (both measured):
+ * `approval_policy="never"` refused every MCP tool call until the Nightshift
+ * server was separately pre-approved, and the sandbox has no network, so a job
+ * that must install a dependency could not. Neither setting exists any more.
+ * **`--approve-for-me` is still not used**: it puts a second model in charge of
+ * approvals, and there are none to decide.
+ *
+ * What bounds a Codex worker is therefore what bounds a Claude one, and none of
+ * it is the harness: Nightshift owns every commit and checks every changed path
+ * against the node's scope before anything integrates (A-29); the worker's only
+ * Nightshift credential is its execution token (A-35); its environment is an
+ * allowlist. **Its effects outside its worktree are not contained by Nightshift
+ * at all**, until P9 gives workers a machine of their own.
+ *
+ * ## The rest
  *
  * - `--json`: newline-delimited events on stdout (`stream.ts`).
- * - `approval_policy="never"`: nothing is ever escalated to a human who is not
- *   there, and no model decides an approval either. **`--approve-for-me` is not
- *   used** (D-P5-02): it routes approvals through an automatic reviewer, which is
- *   a second model making authority decisions Nightshift did not make.
- * - `default_tools_approval_mode="approve"`, **on the Nightshift server only**.
- *   Measured, and not in the task spec: with `approval_policy="never"` alone,
- *   every MCP tool call fails with "MCP tool call requires approval, but approval
- *   policy is never", so a worker could neither report progress nor finish.
- *   Pre-approving the one server Nightshift itself supplies is the same decision
- *   the Claude adapter makes with `--allowedTools mcp__nightshift__*`, made ahead
- *   of time by Nightshift rather than at run time by anything.
  * - `allow_login_shell=false`: Codex otherwise runs commands as `zsh -lc`, and a
  *   login shell rebuilds `PATH` from the operator's profile, which would put the
  *   real `git` back in front of the guard below.
@@ -49,12 +59,12 @@
  *
  * ## THE GIT GUARD
  *
- * Measured on 0.154.0: `workspace-write` **does not stop `git commit` in a job
- * worktree** — the commit succeeded, exit 0. Codex has no per-command deny list
- * that can be supplied on the command line, so the adapter puts a small `git`
+ * Nothing in Codex stops `git commit` in a job worktree, and it takes no
+ * per-command deny list on its command line, so the adapter puts a small `git`
  * script first on the `PATH` **of the commands the model runs** that refuses
  * every subcommand that writes state and hands the rest to the real `git`
- * (rule 5, D-P3-15).
+ * (rule 5, D-P3-15). A deny of one family of commands cannot starve a worker of
+ * a tool it needs, which is the difference between this and an allow-list.
  *
  * `shell_environment_policy.set`, not the Codex process's own `PATH`, and the
  * first real worker is why: the worker's Nightshift MCP server is a child of
@@ -70,24 +80,13 @@
  * worktree into one Nightshift-authored commit parented on the base, so anything
  * a worker committed is squashed away and never becomes history.
  */
-import type { RouteTarget, Scope } from "@nightshift/contracts";
-import { grantsPermission, type McpLaunch, PERMISSION_FS_WRITE } from "@nightshift/harness";
+import type { RouteTarget } from "@nightshift/contracts";
+import type { McpLaunch } from "@nightshift/harness";
 
 /** The CLI version every flag and every stream shape here was verified against. */
 export const VERIFIED_CODEX_VERSION = "0.154.0";
 
 export const CODEX_COMMAND = "codex";
-
-export type CodexSandbox = "read-only" | "workspace-write";
-
-/**
- * The sandbox for a scope. `fs.write` is what separates the two; Codex has no
- * way to withhold its shell, so a scope without `shell.exec` still has one,
- * bounded by the sandbox (a stated non-guarantee of D-P5-02: Codex's sandbox is
- * Codex's).
- */
-export const codexSandboxFor = (scope: Scope): CodexSandbox =>
-  grantsPermission(scope, PERMISSION_FS_WRITE) ? "workspace-write" : "read-only";
 
 /**
  * A TOML basic string. JSON's escapes are a subset of TOML's for every character
@@ -122,8 +121,6 @@ export const mcpOverrides = (mcp: McpLaunch): readonly string[] => {
     `${prefix}.args=${tomlArray(mcp.args)}`,
     "-c",
     `${prefix}.env=${tomlInlineTable(mcp.env)}`,
-    "-c",
-    `${prefix}.default_tools_approval_mode="approve"`,
   ];
 };
 
@@ -131,7 +128,6 @@ export interface CodexCommandInput {
   readonly prompt: string;
   readonly model: RouteTarget;
   readonly worktree: string;
-  readonly sandbox: CodexSandbox;
   readonly mcp: McpLaunch;
   /** The `PATH` for commands the model runs, with the git guard first. Absent on Windows. */
   readonly shellPath?: string | undefined;
@@ -142,10 +138,7 @@ export const buildCodexArgs = (input: CodexCommandInput): readonly string[] => [
   "--json",
   "-C",
   input.worktree,
-  "--sandbox",
-  input.sandbox,
-  "-c",
-  'approval_policy="never"',
+  "--dangerously-bypass-approvals-and-sandbox",
   "-c",
   "allow_login_shell=false",
   ...(input.shellPath === undefined
@@ -236,27 +229,23 @@ export const buildGitGuard = (realGit: string): string =>
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** What only a Codex worker needs to be told. The shared brief says the rest. */
-export const codexBriefAddendum = (input: {
-  readonly mcpServerName: string;
-  readonly sandbox: CodexSandbox;
-}): string =>
+export const codexBriefAddendum = (input: { readonly mcpServerName: string }): string =>
   [
     "HOW THE NIGHTSHIFT TOOLS REACH YOU",
     "",
     `  They are the tools of the MCP server named ${input.mcpServerName}: job.get, job.progress,`,
-    "  job.complete, job.fail and decision.record. They are already approved; call",
-    "  them directly. They are the only way to report anything, and replying in",
-    "  prose does not finish the job.",
+    "  job.complete, job.fail and decision.record. Call them directly. They are the",
+    "  only way to report anything, and replying in prose does not finish the job.",
     "",
-    "YOUR SANDBOX — already decided, not negotiable",
+    "YOUR TOOLS",
     "",
-    input.sandbox === "workspace-write"
-      ? "  You may read anywhere and write inside your working directory. Nothing will\n  be escalated for approval: nobody is watching, and a command the sandbox\n  refuses stays refused."
-      : "  You may read, and you may not write. Nothing will be escalated for approval.",
+    "  Nothing will ask for approval: nobody is watching, so nothing is ever",
+    "  escalated, and no command is refused for want of permission.",
     "",
-    "  Every git command that writes state is refused. Do not spend a turn trying",
-    "  one, or looking for a way around it: Nightshift is the one that commits your",
-    "  work, from whatever is in your working directory when you call job.complete.",
+    "  The one exception: every git command that writes state is refused. Do not",
+    "  spend a turn trying one, or looking for a way around it: Nightshift is the",
+    "  one that commits your work, from whatever is in your working directory when",
+    "  you call job.complete.",
   ].join("\n");
 
 export const codexPrompt = (briefText: string, addendum: string): string =>

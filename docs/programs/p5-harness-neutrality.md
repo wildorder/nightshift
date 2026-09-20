@@ -60,7 +60,7 @@ Ratified by the human on 2026-09-16. D-P5-01 and D-P5-04 are recorded in
 | ID | Decision | Rationale |
 |----|----------|-----------|
 | D-P5-01 | **Adapter contract, version 1.** `HarnessStartInput` gains `tools: WorkerTools`, the four worker operations (`progress`, `complete`, `fail`, `recordDecision`) as in-process functions the execution layer supplies, beside the existing `mcp: McpLaunch`. A local-process adapter keeps handing the worker the stdio MCP server, which calls the same functions; an adapter whose harness can call back directly (P9's) may use them without MCP. `Harness` gains `capabilities` (`usage: boolean`), and `HarnessExit` carries optional `usage` (tokens, cost, latency). Everything else in version 0 stands. | One implementation of "what a completed job is" (`packages/execution/src/worker.ts`) behind whichever transport a harness can use. The source plan says the abstraction must not flatten every harness to the least capable feature set; this is the seam that lets P9's adapter differ without the execution layer knowing. *Reinterpretation, stated:* Stage 4's "Nightshift MCP access" is read as "Nightshift tool access"; both local adapters still reach it through MCP, and a hosted MCP endpoint for remote agents is P9's, built over these same functions. |
-| D-P5-02 | **Codex adapter**: `codex exec --json` as a child process in the worktree, `--sandbox workspace-write` with approval policy `never` (deterministic, no model deciding approvals), `--ephemeral`, `--ignore-user-config`, the worker MCP server through `-c mcp_servers.nightshift.*`, the model from routing. Provider `openai`, authenticated by the ChatGPT login already on the machine; only `CODEX_HOME` passes through from the operator's environment. Hook events from the JSONL stream; cancel by `SIGINT`, then `SIGTERM`, then `SIGKILL`. | The same shape as the Claude adapter with a different stream grammar. `--approve-for-me` was considered and rejected: it routes approvals through an automatic review, which is a second opinion rather than a policy. |
+| D-P5-02 | **Codex adapter**: `codex exec --json` as a child process in the worktree, `--sandbox workspace-write` with approval policy `never` (deterministic, no model deciding approvals), `--ephemeral`, `--ignore-user-config`, the worker MCP server through `-c mcp_servers.nightshift.*`, the model from routing. Provider `openai`, authenticated by the ChatGPT login already on the machine; only `CODEX_HOME` passes through from the operator's environment. Hook events from the JSONL stream; cancel by `SIGINT`, then `SIGTERM`, then `SIGKILL`. | The same shape as the Claude adapter with a different stream grammar. `--approve-for-me` was considered and rejected: it routes approvals through an automatic review, which is a second opinion rather than a policy. **Amended by the owner 2026-09-19 (§12): the sandbox and approval policy are replaced by `--dangerously-bypass-approvals-and-sandbox`; the rest stands.** |
 | D-P5-03 | **The conformance fixture** is one Job Contract on the P3 fixture repository that requires repository exploration, modifying a source file, modifying a test, running the tests (shell), reporting progress at least once, recording at least one decision, and completing; plus a deterministic-failure fixture (the tests cannot pass) and a cancellation fixture (the worker is told to wait). The suite proves the nine Stage 4 items per adapter. It runs offline against the scripted harness in `npm test`, and opt-in against each real adapter via `npm run conformance`. | Verbatim from the source plan's Stage 4. The scripted harness runs the suite in CI so the suite itself is proven before any model is asked to pass it, and P9's adapter inherits a suite that two adapters already pass. |
 | D-P5-04 | **Harness and model are independent axes chosen from a compatibility table.** `packages/routing` holds `HARNESS_COMPATIBILITY`: for each harness, the providers and model families it can run and how each is authenticated (Claude Code: Anthropic direct or through Bedrock; Codex: OpenAI direct; the AgentCore harness, added in P9: any Bedrock model). `configuredRoute` takes the Program Contract's model policy, intersects it with the table, honours a `delegate { harness?, model? }` request within that intersection and records it as an override, and otherwise picks the first compatible pair in the policy's provider order. Rule id `p5-configured`. No cost reasoning. | A provider is not a harness: Claude Code runs Bedrock-hosted Claude models, and the AgentCore harness runs anything. The earlier draft's one-to-one map was wrong. P7 replaces the *choice* with a policy that reasons about cost and risk over this same table. |
 | D-P5-05 | **Who picks models.** The human picks the orchestrator's model by launching the orchestrator; `run.start` records it and, in P9, the dispatch request names it. Nightshift picks worker models within the Program Contract's policy; the orchestrator may request a harness or a model for a delegation, and the request is honoured only if compatible and allowed, recorded as an override. | The vision's sentence, made operational: "Nightshift, not the orchestrator, decides harness, model", with the orchestrator's request as the one permitted input. |
@@ -69,8 +69,11 @@ Ratified by the human on 2026-09-16. D-P5-01 and D-P5-04 are recorded in
 
 ### Non-guarantees
 
-- **Codex's sandbox is Codex's.** `workspace-write` is enforced by Codex, not by
-  Nightshift; scope containment is still enforced at commit time (A-29).
+- **No harness contains a worker** (as amended 2026-09-19, §12). Both adapters
+  run with every permission check bypassed; what a worker does outside its
+  worktree is not contained by Nightshift until P9 gives workers a machine of
+  their own. Scope containment is enforced where it always was, at commit time
+  (A-29).
 - **The compatibility table describes what an adapter can run, not what is
   cheapest.** Until P7, the first compatible pair in policy order wins.
 
@@ -263,6 +266,7 @@ Specs live in `tasks/p5-harness-neutrality/`.
 | 2026-09-19 | **D-P5-02 amended by measurement: the Nightshift MCP server's tools are pre-approved.** With `approval_policy="never"` alone, Codex refuses every MCP tool call ("MCP tool call requires approval, but approval policy is never"), so a worker could neither report nor finish. The adapter passes `mcp_servers.<name>.default_tools_approval_mode="approve"` for the one server Nightshift supplies. This is the decision the Claude adapter makes with `--allowedTools mcp__nightshift__*`: made ahead of time by Nightshift, not at run time by a model or a human, which is what D-P5-02 forbids. `--approve-for-me` is still not used. | Agent, within D-P5-02 |
 | 2026-09-19 | **The `workspace-write` sandbox does not stop `git commit` in a job worktree** (measured on 0.154.0: exit 0, commit made). Codex takes no per-command deny list on its command line, so the adapter writes a `git` guard script and puts it first on the `PATH` of **model-run commands only** (`shell_environment_policy.set`, with `allow_login_shell=false` so a login shell cannot rebuild `PATH`). It is a guard at the point of use, as strong as the Claude adapter's `Bash(git commit:*)` denials and no stronger; the enforcement is A-29, because `completeJob` parents its snapshot on the base and a worker's own commits never become history. Not installed on Windows. | Agent, within D-P3-15 |
 | 2026-09-19 | **Verified against codex-cli 0.154.0, not 0.149.0.** The machine's Codex had moved on since the contract was written. Every flag in D-P5-02 still exists; `--ignore-rules` was added so the operator's execpolicy rules cannot vary a worker's behaviour. | Agent |
+| 2026-09-19 | **Workers run with permissions bypassed, and no adapter passes a list of allowed tools.** The owner's ruling, on reviewing this log: a worker must never stop for approval and must never be denied a tool because nobody listed it in advance; earlier iterations of Nightshift failed exactly that way. The Claude adapter now runs `--permission-mode bypassPermissions` with no `--tools`, no `--allowedTools` and no `--permission-prompts`; the Codex adapter runs `--dangerously-bypass-approvals-and-sandbox`. This **amends D-P5-02** (the `workspace-write` sandbox and `approval_policy=never` are gone) and **amends D-P3-15** (`Scope.permissions` is still told to the worker and reported on `agent.started`, but no harness flag enforces it). It **supersedes the second entry above**: with approvals bypassed the Nightshift MCP server needs no pre-approval, and that setting is removed. `--approve-for-me` is still not used. The git write guard stays on both adapters, because a deny of one family of commands cannot starve a worker of a tool; verified that Claude's denials hold in `bypassPermissions` and Codex's guard holds with the sandbox off. What bounds a worker is A-29 (Nightshift owns every commit, and checks every changed path against scope before integrating), the execution token (A-35) and the environment allowlist. **What is given up, stated plainly:** a worker can now write outside its worktree and reach the network (both measured), so on the operator's machine a worker is trusted as the operator is. Conformance re-run for both adapters against the deployed plane afterwards: passed. | **Human** |
 
 ## 13. As built
 
@@ -286,18 +290,16 @@ measured or run, against codex-cli 0.154.0, Claude Code 2.1.273 and the deployed
 claude -p <brief> --output-format stream-json --verbose --model claude-sonnet-5
        --mcp-config <tmp>/mcp.json --strict-mcp-config
        --settings <tmp>/settings.json --setting-sources ""
-       --permission-mode <mode> --permission-prompts none
-       --tools <list> --allowedTools <list> --disallowedTools <list>
-       --no-session-persistence                                  (unchanged from P3)
+       --permission-mode bypassPermissions
+       --disallowedTools <the git write denials>
+       --no-session-persistence
 
-codex exec --json -C <worktree> --sandbox workspace-write
-      -c approval_policy="never"
+codex exec --json -C <worktree> --dangerously-bypass-approvals-and-sandbox
       -c allow_login_shell=false
       -c shell_environment_policy.set={"PATH" = "<guard dir>:<PATH>"}
       -c mcp_servers.nightshift.command="<node>"
       -c mcp_servers.nightshift.args=["<…>/nightshift-mcp.js"]
       -c mcp_servers.nightshift.env={…seven identity variables, the endpoint, the execution token…}
-      -c mcp_servers.nightshift.default_tools_approval_mode="approve"
       --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
       -m gpt-5.5 <brief>
 ```
@@ -329,6 +331,10 @@ of a Claude Code run's input; Codex's `input_tokens` includes its cached tokens
 cost on a ChatGPT login. `RouteUsage` records what each harness said, faithfully;
 normalising it is routing's problem, not the adapter's.
 
+After the owner's ruling on permissions (§12, last entry) both adapters were
+changed and the gate was run a third time, in bypass mode: all six jobs ended as
+the table says (Claude 25.3 s / 17.3 s / 6.8 s; Codex 76.4 s / 45.1 s / 8.7 s).
+
 `npm run slice` then ran its three phases (scripted 5.5 s, Claude 20.7 s, Codex
 63.5 s), the Codex phase differing from the Claude one **only in the program's
 model policy**. `npm run smoke`: 83 passed, three times, after the one redeploy.
@@ -339,7 +345,8 @@ As T5's notes predicted, and none of it was findable with the scripted harness.
 Each is a brief or enforcement change; the suite was not edited for any of them.
 
 1. **`approval_policy="never"` refuses every MCP tool call.** §12, second entry.
-   Found before any job ran, by a probe.
+   Found before any job ran, by a probe. Moot since the owner's ruling (§12,
+   last entry): approvals are bypassed altogether.
 2. **The sandbox allows `git commit` in a worktree.** §12, third entry.
 3. **The git guard, first version, broke `job.complete`.** It was put on the
    Codex *process's* `PATH`. The worker's Nightshift MCP server is a child of
@@ -394,8 +401,9 @@ fake them. The lifecycle never depends on the stream.
 - **T2.** The runner writes Nightshift's own `wallClockMs` on every route, so an
   adapter that reports no usage still leaves a measured one. `escalated` counts
   as an ending of a route.
-- **T3.** `--ignore-rules`, `allow_login_shell=false`, the pre-approval and the
-  guard are all additions to D-P5-02's command line, each measured. §12.
+- **T3.** `--ignore-rules`, `allow_login_shell=false` and the guard are additions
+  to D-P5-02's command line, each measured; the sandbox and approval policy were
+  then replaced outright by the owner's ruling. §12.
 - **T4.** "Constructing only the adapter the route chose" is a `Harness` in the
   composition root (`createRoutedHarness`) that builds an adapter the first time
   a route names it. The execution layer still holds exactly one `Harness`.

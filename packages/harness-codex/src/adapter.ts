@@ -62,7 +62,6 @@ import {
   CODEX_COMMAND,
   codexBriefAddendum,
   codexPrompt,
-  codexSandboxFor,
   VERIFIED_CODEX_VERSION,
 } from "./command.js";
 import { sanitizeCodexEnvironment } from "./environment.js";
@@ -148,7 +147,6 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
   };
 
   const start = async (input: HarnessStartInput): Promise<HarnessHandle> => {
-    const sandbox = codexSandboxFor(input.node.scope);
     const prompt = codexPrompt(
       renderWorkerBrief({
         job: input.job,
@@ -156,7 +154,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
         program: input.program,
         worktree: input.worktree,
       }),
-      codexBriefAddendum({ mcpServerName: input.mcp.name, sandbox }),
+      codexBriefAddendum({ mcpServerName: input.mcp.name }),
     );
 
     let resolveExit: (exit: HarnessExit) => void = () => {};
@@ -236,7 +234,6 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       prompt,
       model: input.model,
       worktree: input.worktree,
-      sandbox,
       mcp: input.mcp,
       shellPath,
     });

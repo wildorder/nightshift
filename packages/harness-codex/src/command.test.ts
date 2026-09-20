@@ -2,14 +2,12 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Scope } from "@nightshift/contracts";
 import type { McpLaunch } from "@nightshift/harness";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   buildCodexArgs,
   buildGitGuard,
   codexBriefAddendum,
-  codexSandboxFor,
   FORBIDDEN_GIT_SUBCOMMANDS,
   mcpOverrides,
   tomlInlineTable,
@@ -23,19 +21,11 @@ const MCP: McpLaunch = {
   env: { NIGHTSHIFT_ROLE: "worker", NIGHTSHIFT_EXECUTION_TOKEN: 'a.b"c\\d' },
 };
 
-const scopeWith = (permissions: readonly string[]): Scope => ({
-  includes: ["src/**"],
-  excludes: [],
-  permissions: [...permissions],
-  forbiddenActions: [],
-});
-
 describe("the command line (D-P5-02)", () => {
   const args = buildCodexArgs({
     prompt: "-- a brief that starts like a flag",
     model: { harness: "codex", provider: "openai", model: "gpt-5.5" },
     worktree: "/state/wt/1",
-    sandbox: "workspace-write",
     mcp: MCP,
   });
 
@@ -45,10 +35,7 @@ describe("the command line (D-P5-02)", () => {
       "--json",
       "-C",
       "/state/wt/1",
-      "--sandbox",
-      "workspace-write",
-      "-c",
-      'approval_policy="never"',
+      "--dangerously-bypass-approvals-and-sandbox",
       "-c",
       "allow_login_shell=false",
       "-c",
@@ -57,8 +44,6 @@ describe("the command line (D-P5-02)", () => {
       'mcp_servers.nightshift.args=["/opt/nightshift/bin/nightshift-mcp.js"]',
       "-c",
       'mcp_servers.nightshift.env={"NIGHTSHIFT_ROLE" = "worker", "NIGHTSHIFT_EXECUTION_TOKEN" = "a.b\\"c\\\\d"}',
-      "-c",
-      'mcp_servers.nightshift.default_tools_approval_mode="approve"',
       "--ephemeral",
       "--ignore-user-config",
       "--ignore-rules",
@@ -69,15 +54,12 @@ describe("the command line (D-P5-02)", () => {
     ]);
   });
 
-  it("never lets a model or a human decide an approval at run time", () => {
-    expect(args).not.toContain("--approve-for-me");
-    expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
-    expect(args.join(" ")).not.toContain("danger-full-access");
-  });
-
-  it("pre-approves the Nightshift server's tools and no other server's", () => {
-    const approvals = args.filter((arg) => arg.includes("approval_mode"));
-    expect(approvals).toEqual(['mcp_servers.nightshift.default_tools_approval_mode="approve"']);
+  it("can never stop for approval, and passes no list of what a worker may use", () => {
+    expect(args).toContain("--dangerously-bypass-approvals-and-sandbox");
+    const joined = args.join(" ");
+    for (const absent of ["--sandbox", "approval_policy", "approval_mode", "--approve-for-me"]) {
+      expect(joined, absent).not.toContain(absent);
+    }
   });
 
   it("passes the launch through unchanged, quoting a name that needs it", () => {
@@ -91,25 +73,12 @@ describe("the command line (D-P5-02)", () => {
   });
 });
 
-describe("the sandbox", () => {
-  it("is workspace-write only when fs.write is granted", () => {
-    expect(codexSandboxFor(scopeWith(["fs.read", "fs.write", "shell.exec"]))).toBe(
-      "workspace-write",
-    );
-    expect(codexSandboxFor(scopeWith(["fs.read"]))).toBe("read-only");
-    expect(codexSandboxFor(scopeWith([]))).toBe("read-only");
-  });
-
-  it("tells the worker which one it has, and that nothing will be approved", () => {
-    const writable = codexBriefAddendum({
-      mcpServerName: "nightshift",
-      sandbox: "workspace-write",
-    });
-    expect(writable).toContain("write inside your working directory");
-    expect(writable).toContain("job.complete");
-    expect(codexBriefAddendum({ mcpServerName: "nightshift", sandbox: "read-only" })).toContain(
-      "you may not write",
-    );
+describe("what a Codex worker is told", () => {
+  it("that nothing asks for approval, and that git writes are the one exception", () => {
+    const addendum = codexBriefAddendum({ mcpServerName: "nightshift" });
+    expect(addendum).toContain("Nothing will ask for approval");
+    expect(addendum).toContain("git command that writes state is refused");
+    expect(addendum).toContain("job.complete");
   });
 });
 

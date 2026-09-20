@@ -4,7 +4,7 @@
  * Everything Claude-specific in Nightshift is in this package, and everything in
  * this package is behind `Harness.start`. The execution layer never learns that
  * a worker is a `claude` child process, that its output is newline-delimited
- * JSON, that its tool policy is three comma-separated flags, or that its
+ * JSON, that its git guard is a comma-separated deny flag, or that its
  * cooperative stop is `SIGINT`.
  *
  * The six rules `packages/harness/src/harness.ts` states for an implementer,
@@ -187,7 +187,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
   const runs = new WeakMap<HarnessHandle, RunState>();
 
   const start = async (input: HarnessStartInput): Promise<HarnessHandle> => {
-    const policy = claudeToolPolicy({ scope: input.node.scope, mcpServerName: input.mcp.name });
+    const policy = claudeToolPolicy({ scope: input.node.scope });
     const prompt = claudePrompt(
       renderWorkerBrief({
         job: input.job,
@@ -195,7 +195,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
         program: input.program,
         worktree: input.worktree,
       }),
-      claudeBriefAddendum({ mcpServerName: input.mcp.name, policy }),
+      claudeBriefAddendum({ mcpServerName: input.mcp.name }),
     );
 
     let resolveExit: (exit: HarnessExit) => void = () => {};

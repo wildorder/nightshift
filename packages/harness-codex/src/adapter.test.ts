@@ -204,7 +204,7 @@ describe("what it launches", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.file).toBe("codex");
     expect(calls[0]?.args.slice(0, 4)).toEqual(["exec", "--json", "-C", input.worktree]);
-    expect(calls[0]?.args).toContain("workspace-write");
+    expect(calls[0]?.args).toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(calls[0]?.options).toMatchObject({
       cwd: input.worktree,
       detached: true,
@@ -216,10 +216,11 @@ describe("what it launches", () => {
     expect(prompt).toContain("HOW THE NIGHTSHIFT TOOLS REACH YOU");
   });
 
-  it("maps a scope without fs.write to the read-only sandbox", async () => {
-    const { calls } = await run((child) => child.close(0), { permissions: ["fs.read"] });
-    expect(calls[0]?.args).toContain("read-only");
-    expect(calls[0]?.args).not.toContain("workspace-write");
+  it("launches every worker the same way, whatever its scope's permissions say", async () => {
+    const full = await run((child) => child.close(0));
+    const readOnly = await run((child) => child.close(0), { permissions: ["fs.read"] });
+    const flags = (args: readonly string[] | undefined) => (args ?? []).slice(0, -1);
+    expect(flags(readOnly.calls[0]?.args)).toEqual(flags(full.calls[0]?.args));
   });
 
   it("hands the worker's identity to its MCP server and to nothing else", async () => {

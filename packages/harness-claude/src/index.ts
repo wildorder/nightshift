@@ -58,11 +58,6 @@ export {
   claudeToolPolicy,
   FORBIDDEN_GIT_SUBCOMMANDS,
   gitWriteDenials,
-  PLANNING_TOOLS,
-  READ_TOOLS,
-  SHELL_TOOLS,
-  SUBAGENT_TOOLS,
-  WRITE_TOOLS,
 } from "./permissions.js";
 export {
   type AdapterFileSystem,
