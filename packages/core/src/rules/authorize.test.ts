@@ -290,8 +290,11 @@ describe("the principal schema", () => {
     expect(PrincipalSchema.safeParse({ kind: "service" }).success).toBe(false);
   });
 
-  it("refuses an execution principal with a role P4 does not mint", () => {
-    expect(PrincipalSchema.safeParse({ ...execution, role: "orchestrator" }).success).toBe(false);
+  it("accepts the two roles a token is minted for, and no other (D-P6-04)", () => {
+    expect(PrincipalSchema.safeParse({ ...execution, role: "orchestrator" }).success).toBe(true);
+    for (const role of ["examiner", "user", ""]) {
+      expect(PrincipalSchema.safeParse({ ...execution, role }).success, role).toBe(false);
+    }
   });
 
   it("refuses a user principal carrying a run", () => {

@@ -13,8 +13,9 @@ import {
 } from "@nightshift/contracts";
 import {
   addChild,
-  assertDelegationAllowed,
+  assertAuthority,
   buildTree,
+  ConcurrencyLimitExceededError,
   explainEvidenceMismatch,
   explainWidening,
   IllegalTransitionError,
@@ -24,6 +25,8 @@ import {
   markImplemented,
   markVerificationFailed,
   markVerified,
+  mayEndProgramNode,
+  maySlotStart,
   maySucceed,
   type NightshiftStores,
   nextStatus,
@@ -95,7 +98,9 @@ const createNode = async (
   }
   const tree = buildTree(stored);
   // Delegation authority, depth and concurrency limits, and scope narrowing (A-11).
-  const { depth } = assertDelegationAllowed(tree, parentId, program.delegationLimits, node.scope);
+  // Authority, depth and scope. Not concurrency: P6 applies that limit when a
+  // node *starts* (D-P6-02), so excess work queues instead of being refused.
+  const { depth } = assertAuthority(tree, parentId, program.delegationLimits, node.scope);
   if (node.depth !== depth) throw depthMismatch(node, depth);
   // Cycles, duplicates and the ownership chain.
   addChild(tree, parentId, node);
@@ -149,6 +154,18 @@ const updateNode = async (
     if (!maySucceed(existing)) {
       throw new IllegalTransitionError(existing.status, "transition to succeeded");
     }
+    // Nor while anything under it is still in flight (D-P6-03).
+    const tree = buildTree(await readAll((c) => stores.executionNodes.listByRun(scope, pageAt(c))));
+    const ending = mayEndProgramNode(tree, existing.executionNodeId);
+    if (!ending.allowed) {
+      throw new HttpError(
+        409,
+        "conflict",
+        `node ${existing.executionNodeId} cannot end while ${ending.unsettled.join(", ")} ${
+          ending.unsettled.length === 1 ? "is" : "are"
+        } unsettled`,
+      );
+    }
     return;
   }
 
@@ -159,7 +176,25 @@ const updateNode = async (
   if (event === undefined) {
     throw new IllegalTransitionError(existing.status, `transition to ${node.status}`);
   }
+  if (event === "start") await assertSlotFree(stores, scope, existing);
   await assertTransitionAllowed(stores, scope, existing, node, event, workChanged);
+};
+
+/**
+ * The concurrency limit, at the one edge it governs (D-P6-02). The engine asks
+ * the same question of `core` before it tries; this is what makes the limit hold
+ * whatever asks, and a 429 here means "not yet", never "no".
+ */
+const assertSlotFree = async (
+  stores: NightshiftStores,
+  scope: RunScope,
+  existing: ExecutionNode,
+): Promise<void> => {
+  if (existing.parentNodeId === null) return;
+  const program = await requireProgram(stores, scope);
+  const tree = buildTree(await readAll((c) => stores.executionNodes.listByRun(scope, pageAt(c))));
+  const slot = maySlotStart(tree, existing.executionNodeId, program.delegationLimits);
+  if (!slot.free) throw new ConcurrencyLimitExceededError(slot.running, slot.maxConcurrency);
 };
 
 /** Applies the core rule for `event`; the rules throw when the transition is not allowed. */

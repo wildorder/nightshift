@@ -575,3 +575,144 @@ describe("SC-P4-05 — the authorizer refuses what it should, before the handler
     expect(result.status).toBe(AUTHORIZER_DENIED);
   });
 });
+
+/**
+ * P6, live (D-P6-02, D-P6-04; SC-P6-13, SC-P6-14). Appended rather than woven in:
+ * everything above is P4's and is unchanged. It reuses A's world, so the cleanup
+ * above already covers every record written here.
+ */
+describe("P6 — a delegating token, and the limit at the start edge", () => {
+  const base = () => run(world.scope);
+  const now = () => new Date().toISOString();
+  const code = (result: ApiResult): string | undefined =>
+    (result.body as { error?: { code?: string } }).error?.code;
+
+  let sub: ExecutionNode;
+  let delegating: SmokeApiClient;
+
+  /** A node walked `validated → queued → running` by A, as the engine would. */
+  const started = async (node: ExecutionNode): Promise<ExecutionNode> => {
+    created(await a.api.put(`${base()}/nodes/${node.executionNodeId}`, node), "create");
+    let current = node;
+    for (const status of ["queued", "running"] as const) {
+      current = { ...current, status, updatedAt: now() };
+      created(await a.api.put(`${base()}/nodes/${current.executionNodeId}`, current), status);
+    }
+    return current;
+  };
+
+  it("mints an orchestrator token only for an orchestrator on a sub-program node", async () => {
+    const f = { ids, scope: world.scope, rootNodeId: world.rootNodeId };
+    sub = await started(
+      makeNode(f, world.rootNodeId, { kind: "sub-program", status: "validated" }),
+    );
+    const orchestrator = makeAgent(f, sub.executionNodeId, { role: "orchestrator" });
+    created(await a.api.put(`${base()}/agents/${orchestrator.agentId}`, orchestrator), "agent");
+
+    const minted = await a.api.post(`${base()}/agents/${orchestrator.agentId}/token`, undefined);
+    expect(minted.status, JSON.stringify(minted.body)).toBe(201);
+    const token = (minted.body as { token: string }).token;
+    const claims = JSON.parse(
+      Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"),
+    ) as { role?: string; node?: string };
+    expect(claims.role).toBe("orchestrator");
+    delegating = smokeApiClient(endpoint, token);
+
+    // The same role on a job node is delegation authority where there is none.
+    const misplaced = makeAgent(f, world.node.executionNodeId, { role: "orchestrator" });
+    created(await a.api.put(`${base()}/agents/${misplaced.agentId}`, misplaced), "misplaced agent");
+    expect((await a.api.post(`${base()}/agents/${misplaced.agentId}/token`, undefined)).status).toBe(422);
+  });
+
+  it("delegates under its own node, and nowhere else", async () => {
+    const f = { ids, scope: world.scope, rootNodeId: world.rootNodeId };
+    const job = makeJobContract(f);
+    expect((await delegating.put(`${base()}/jobs/${job.jobContractId}`, job)).status).toBe(201);
+
+    const child = makeNode(f, sub.executionNodeId, {
+      status: "validated",
+      depth: 2,
+      jobContractId: job.jobContractId,
+    });
+    const delegated = await delegating.put(`${base()}/nodes/${child.executionNodeId}`, child);
+    expect(delegated.status, JSON.stringify(delegated.body)).toBe(201);
+    expect((await delegating.get(`${base()}/nodes/${child.executionNodeId}`)).status).toBe(200);
+
+    // Under the root, which is not its node.
+    const stray = makeNode(f, world.rootNodeId, { status: "validated" });
+    const refused = await delegating.put(`${base()}/nodes/${stray.executionNodeId}`, stray);
+    expect(refused.status).toBe(403);
+    expect(code(refused)).toBe("execution_out_of_scope");
+
+    // A sibling's node, read or written.
+    expect((await delegating.get(`${base()}/nodes/${world.node.executionNodeId}`)).status).toBe(
+      403,
+    );
+
+    // Starting what it delegated is the engine's, not its.
+    const start = await delegating.put(`${base()}/nodes/${child.executionNodeId}`, {
+      ...child,
+      status: "queued",
+      updatedAt: now(),
+    });
+    expect(start.status).toBe(403);
+    expect(code(start)).toBe("execution_forbidden_operation");
+
+    // Asking it to stop is.
+    const cancel = await delegating.put(`${base()}/nodes/${child.executionNodeId}`, {
+      ...child,
+      status: "cancelled",
+      updatedAt: now(),
+    });
+    expect(cancel.status, JSON.stringify(cancel.body)).toBe(200);
+
+    // And no token mints a token.
+    const mint = await delegating.post(`${base()}/agents/${world.agent.agentId}/token`, undefined);
+    expect(mint.status).toBe(403);
+    expect(code(mint)).toBe("execution_forbidden_operation");
+  });
+
+  it("accepts delegation past the concurrency limit and refuses the start, until a slot frees", async () => {
+    const f = { ids, scope: world.scope, rootNodeId: world.rootNodeId };
+    const limit = makeProgramContract(f).delegationLimits.maxConcurrency;
+    const running: ExecutionNode[] = [];
+    for (let index = 0; index < limit; index += 1) {
+      running.push(
+        await started(makeNode(f, sub.executionNodeId, { status: "validated", depth: 2 })),
+      );
+    }
+
+    const extra = makeNode(f, sub.executionNodeId, { status: "validated", depth: 2 });
+    created(
+      await a.api.put(`${base()}/nodes/${extra.executionNodeId}`, extra),
+      "excess delegation",
+    );
+    const queued = { ...extra, status: "queued" as const, updatedAt: now() };
+    created(await a.api.put(`${base()}/nodes/${extra.executionNodeId}`, queued), "excess queued");
+
+    const early = await a.api.put(`${base()}/nodes/${extra.executionNodeId}`, {
+      ...queued,
+      status: "running",
+      updatedAt: now(),
+    });
+    expect(early.status).toBe(429);
+    expect(code(early)).toBe("concurrency_limit_exceeded");
+
+    const first = running[0] as ExecutionNode;
+    created(
+      await a.api.put(`${base()}/nodes/${first.executionNodeId}`, {
+        ...first,
+        status: "failed",
+        updatedAt: now(),
+      }),
+      "free a slot",
+    );
+    const later = await a.api.put(`${base()}/nodes/${extra.executionNodeId}`, {
+      ...queued,
+      status: "running",
+      updatedAt: now(),
+    });
+    expect(later.status, JSON.stringify(later.body)).toBe(200);
+    say(`the start edge held at ${limit} and released when a slot freed`);
+  });
+});

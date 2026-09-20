@@ -38,6 +38,17 @@ export const EventTypeSchema = z.enum([
   "node.cancelled",
   "node.interrupted",
   "node.integrated",
+  /**
+   * Added in P6 (D-P6-06). The merge queue replayed a node's snapshot onto a
+   * program head that had moved since its worktree was cut: a stale base,
+   * detected and recorded rather than refused. Payload: both commits.
+   */
+  "node.rebased",
+  /**
+   * Added in P6 (D-P6-06). That replay conflicted. Nightshift resolves nothing:
+   * the node fails, the paths are named, and an orchestrator decides.
+   */
+  "integration.conflict",
   // Agent lifecycle — hook ground truth (architecture §5).
   "agent.created",
   "agent.started",
