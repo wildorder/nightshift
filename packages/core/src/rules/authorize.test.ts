@@ -122,6 +122,11 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "program.list": "forbidden",
   "program.put": "forbidden",
   "program.get": "forbidden",
+  "program.ratify": "forbidden",
+  "program.createPlanUploadUrl": "forbidden",
+  "program.getPlanDocument": "forbidden",
+  "prerequisite.list": "own_program",
+  "prerequisite.put": "forbidden",
   "run.list": "forbidden",
   "run.put": "forbidden",
   "run.get": "own_run",
@@ -191,8 +196,8 @@ describe("an execution principal", () => {
     (operation) => {
       const access = EXPECTED_ACCESS[operation];
       const result = authorize(execution, operation, siblingTarget);
-      if (access === "own_run") {
-        // Run-scoped reads do not care which node the path happens to name.
+      if (access === "own_run" || access === "own_program") {
+        // Run- and program-scoped reads do not care which node the path happens to name.
         expect(result).toEqual({ allowed: true });
         return;
       }
@@ -248,6 +253,37 @@ describe("an execution principal", () => {
       "program.get",
       "program.list",
       "run.getState",
+    ] as const) {
+      expect(authorize(execution, operation, ownTarget)).toMatchObject({
+        allowed: false,
+        reason: "execution_forbidden_operation",
+      });
+    }
+  });
+
+  it("reads its own program's prerequisites from any run of it, and no other program's (P7)", () => {
+    // The route is program scoped, so the target names no run, node or agent.
+    const program = { projectId: here.scope.projectId, programId: here.scope.programId };
+    expect(authorize(execution, "prerequisite.list", program)).toEqual({ allowed: true });
+    expect(
+      authorize(execution, "prerequisite.list", {
+        projectId: elsewhere.scope.projectId,
+        programId: elsewhere.scope.programId,
+      }),
+    ).toMatchObject({ allowed: false, reason: "execution_out_of_scope" });
+    expect(
+      authorize(execution, "prerequisite.list", {
+        ...program,
+        programId: elsewhere.scope.programId,
+      }),
+    ).toMatchObject({ allowed: false, reason: "execution_out_of_scope" });
+  });
+
+  it("can write nothing of a plan: not a ratification, a document or a prerequisite (P7)", () => {
+    for (const operation of [
+      "program.ratify",
+      "program.createPlanUploadUrl",
+      "prerequisite.put",
     ] as const) {
       expect(authorize(execution, operation, ownTarget)).toMatchObject({
         allowed: false,

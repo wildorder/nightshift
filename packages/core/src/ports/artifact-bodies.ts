@@ -19,7 +19,7 @@
  * reference is only written once the bytes are durable.
  */
 import type { ArtifactId } from "@nightshift/contracts";
-import type { RunScope } from "../rules/ownership.js";
+import type { ProgramScope, RunScope } from "../rules/ownership.js";
 
 /** What a caller learns once the bytes are durable. */
 export interface StoredBody {
@@ -86,3 +86,36 @@ export interface ArtifactUploadSigner {
 /** The object key for one artifact: `<projectId>/<programId>/<runId>/<artifactId>` (D-P2-08). */
 export const artifactObjectKey = (scope: RunScope, artifactId: ArtifactId): string =>
   `${scope.projectId}/${scope.programId}/${scope.runId}/${artifactId}`;
+
+/**
+ * Where ratified plan documents live (P7, D-P7-02).
+ *
+ * Program scoped, under a prefix of its own, and named by the document's own
+ * SHA-256: `plans/<projectId>/<programId>/<sha256>.md`. The prefix is what lets
+ * the API be granted a read of plan documents and of nothing else in the bucket.
+ *
+ * Unlike an artifact body, the control plane **reads** this one: at ratification
+ * it hashes the stored bytes itself, so the record holds exactly what was
+ * approved rather than what a client said it uploaded.
+ */
+export interface PlanDocumentStore {
+  signUpload(request: PlanDocumentUploadRequest): Promise<ArtifactUploadTarget>;
+  /** `undefined` when nothing has been uploaded under this hash. */
+  get(scope: ProgramScope, sha256: string): Promise<StoredPlanDocument | undefined>;
+}
+
+export interface StoredPlanDocument {
+  /** `s3://<bucket>/<key>`, the form `PlanDocumentRef.uri` records. */
+  readonly uri: string;
+  readonly body: Uint8Array;
+}
+
+export interface PlanDocumentUploadRequest {
+  readonly scope: ProgramScope;
+  readonly sha256: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+}
+
+export const planDocumentObjectKey = (scope: ProgramScope, sha256: string): string =>
+  `plans/${scope.projectId}/${scope.programId}/${sha256}.md`;

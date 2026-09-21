@@ -88,11 +88,15 @@ const createNode = async (
     // The root's authority is the program contract's scope, narrowed or inherited.
     const widenings = explainWidening(program.scope, node.scope);
     if (widenings.length > 0) throw new ScopeWideningError(widenings);
+    assertPlanReference(program, node);
     buildTree([...stored, node]);
     if (node.depth !== 0) throw depthMismatch(node, 0);
     return;
   }
 
+  if (node.plan !== undefined) {
+    throw new HttpError(422, "plan_reference", "only a run's program node carries its plan");
+  }
   const parentId = node.parentNodeId;
   if (!stored.some((candidate) => candidate.executionNodeId === parentId)) {
     throw new HttpError(404, "not_found", `parent node ${parentId} does not exist in this run`);
@@ -108,7 +112,30 @@ const createNode = async (
 };
 
 /** Fixed at creation. Reparenting is not an API operation. */
-const IMMUTABLE_FIELDS = ["kind", "parentNodeId", "depth", "scope", "createdAt"] as const;
+/**
+ * A run of a ratified plan names the plan it runs on its program node, exactly
+ * as the contract holds it now (P7, D-P7-02). The contract may be ratified again
+ * tomorrow; the node is what keeps this run reconstructable from the control
+ * plane alone. A run of an unplanned contract has no plan to name.
+ */
+const assertPlanReference = (program: ProgramContract, node: ExecutionNode): void => {
+  const expected =
+    program.status === "ratified" &&
+    program.planHash !== undefined &&
+    program.planDocument !== undefined
+      ? { planHash: program.planHash, planDocument: program.planDocument }
+      : undefined;
+  if (sameRecord(expected, node.plan)) return;
+  throw new HttpError(
+    422,
+    "plan_reference",
+    expected === undefined
+      ? "this program has no ratified plan, so its program node cannot carry one"
+      : `the program node of a run of a ratified plan must carry plan ${expected.planHash} and its document, as the contract records them`,
+  );
+};
+
+const IMMUTABLE_FIELDS = ["kind", "parentNodeId", "depth", "scope", "plan", "createdAt"] as const;
 
 /**
  * Refuses changes to fields fixed at creation, and to the commit or job once the

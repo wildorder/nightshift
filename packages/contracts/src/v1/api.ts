@@ -15,7 +15,7 @@
  * themselves, and a successful write responds with the stored record.
  */
 import { z } from "zod";
-import { ArtifactIdSchema } from "../ids.js";
+import { ArtifactIdSchema, RunIdSchema } from "../ids.js";
 import { AgentSchema } from "./agent.js";
 import { ArtifactKindSchema, ArtifactSchema, ArtifactUriSchema } from "./artifact.js";
 import { CheckpointSchema } from "./checkpoint.js";
@@ -25,6 +25,12 @@ import { EventSchema, inlinePayloadBytes, MAX_INLINE_PAYLOAD_BYTES } from "./eve
 import { ExaminationSchema } from "./examination.js";
 import { ExecutionNodeSchema } from "./execution-node.js";
 import { JobContractSchema } from "./job-contract.js";
+import {
+  MAX_PLAN_DOCUMENT_BYTES,
+  PlanDocumentRefSchema,
+  PlanHashSchema,
+  PrerequisiteSchema,
+} from "./plan.js";
 import { ProgramContractSchema } from "./program-contract.js";
 import { ProjectSchema } from "./project.js";
 import { RoutingDecisionSchema } from "./routing-decision.js";
@@ -186,3 +192,82 @@ export const ArtifactUploadResponseSchema = z.strictObject({
   expiresAt: IsoTimestampSchema,
 });
 export type ArtifactUploadResponse = z.infer<typeof ArtifactUploadResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Planning (P7, T1; D-P7-02, D-P7-05, D-P7-10)
+// ---------------------------------------------------------------------------
+
+/** The one content type a plan document is stored under. It is markdown, and the signature pins it. */
+export const PLAN_DOCUMENT_CONTENT_TYPE = "text/markdown; charset=utf-8";
+
+/**
+ * `POST …/programs/{programId}/plan-documents/{sha256}/upload-url`.
+ *
+ * Program scoped, where an artifact upload is run scoped: at ratification there
+ * is no run yet. The document is named by its own SHA-256, so one is stored per
+ * ratified plan and an upload can only ever put the bytes its name promises.
+ */
+export const PlanDocumentUploadRequestBodySchema = z.strictObject({
+  sizeBytes: z.int().min(1).max(MAX_PLAN_DOCUMENT_BYTES),
+});
+export type PlanDocumentUploadRequestBody = z.infer<typeof PlanDocumentUploadRequestBodySchema>;
+
+export const PlanDocumentUploadResponseSchema = z.strictObject({
+  sha256: PlanHashSchema,
+  uri: z.string().min(1),
+  uploadUrl: z.string().min(1),
+  key: z.string().min(1),
+  contentType: z.string().min(1),
+  expiresAt: IsoTimestampSchema,
+});
+export type PlanDocumentUploadResponse = z.infer<typeof PlanDocumentUploadResponseSchema>;
+
+/** `GET …/programs/{programId}/plan-documents/{sha256}`: the document, byte for byte (SC-P7-04). */
+export const PlanDocumentResponseSchema = z.strictObject({
+  planDocument: PlanDocumentRefSchema,
+  text: z.string(),
+});
+export type PlanDocumentResponse = z.infer<typeof PlanDocumentResponseSchema>;
+
+/**
+ * `POST …/programs/{programId}/ratifications`.
+ *
+ * The contract as approved, the hash the client computed over it and the plan
+ * document, and the SHA-256 of the document it uploaded. The control plane
+ * recomputes all of it from the contract and the stored bytes, so what it
+ * records is what it holds, not what it was told.
+ */
+export const RatificationRequestBodySchema = z.strictObject({
+  contract: ProgramContractSchema,
+  planHash: PlanHashSchema,
+  planSha256: PlanHashSchema,
+});
+export type RatificationRequestBody = z.infer<typeof RatificationRequestBodySchema>;
+
+/**
+ * `PUT …/programs/{programId}/prerequisites/{prerequisiteId}`, one of:
+ *
+ * - `check`: the deterministic preflight ran the `verifyCommand` and this is
+ *   its exit code. Zero satisfies the prerequisite; anything else leaves or
+ *   returns it to `pending`. There is no way to say "satisfied" without one.
+ * - `discovered`: the engine met a hurdle nobody planned for (D-P7-10).
+ */
+export const PrerequisiteWriteBodySchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("check"),
+    exitCode: z.int(),
+  }),
+  z.strictObject({
+    kind: z.literal("discovered"),
+    runId: RunIdSchema,
+    description: z.string().min(1),
+    remediation: z.string(),
+    verifyCommand: z.string(),
+  }),
+]);
+export type PrerequisiteWriteBody = z.infer<typeof PrerequisiteWriteBodySchema>;
+
+export const PrerequisiteListResponseSchema = z.strictObject({
+  items: z.array(PrerequisiteSchema),
+});
+export type PrerequisiteListResponse = z.infer<typeof PrerequisiteListResponseSchema>;

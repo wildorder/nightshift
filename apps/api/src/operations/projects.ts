@@ -3,6 +3,7 @@
  */
 import {
   type OrgId,
+  type ProgramContract,
   ProgramContractSchema,
   ProjectBodySchema,
   ProjectSchema,
@@ -13,6 +14,7 @@ import {
   explainRunEnding,
   explainRunUpdate,
   IllegalTransitionError,
+  mayRunContract,
   OwnershipViolationError,
   runEventFor,
   transitionRun,
@@ -82,14 +84,59 @@ export const listProjects: Handler = async (context) => {
   return { status: 200, body: pageBody(result) };
 };
 
+/**
+ * What a plain `PUT` may do to a program (P7, D-P7-02).
+ *
+ * A contract that was never planned is what it always was: create, or confirm.
+ * A `planning` contract is a draft and is replaced freely, by another draft.
+ * **Ratification never arrives this way**: a body may not say `ratified` or
+ * carry a plan hash, a plan document or a ratification history, because the
+ * ratification route is the one place those are computed rather than accepted.
+ * And a ratified contract changes only by being ratified again.
+ */
+const assertProgramPutAllowed = (
+  existing: ProgramContract | undefined,
+  program: ProgramContract,
+): void => {
+  const claimsRatification =
+    program.status === "ratified" ||
+    program.planHash !== undefined ||
+    program.planDocument !== undefined ||
+    program.ratifications !== undefined;
+  if (claimsRatification) {
+    throw new HttpError(
+      409,
+      "conflict",
+      "a plan is ratified through the ratifications route, never by writing the contract as ratified",
+    );
+  }
+  if (existing === undefined) return;
+  if (existing.status === "ratified") {
+    throw new HttpError(
+      409,
+      "conflict",
+      "this contract is ratified; it changes only by being ratified again",
+    );
+  }
+  if (existing.status !== "planning" || program.status !== "planning") {
+    throw new HttpError(409, "conflict", "a different record already exists under this identifier");
+  }
+};
+
 export const putProgram: Handler = async ({ deps, request, params }) => {
   const program = parseBody(ProgramContractSchema, request.body);
   const scope = programScopeFrom(params);
   assertChainMatches(scope, program);
-
   await requireProject(deps.stores, scope.projectId);
+
   const existing = await deps.stores.programContracts.get(scope.projectId, scope.programId);
-  return createOrConfirm(existing, program, () => deps.stores.programContracts.put(program));
+  // A retry of exactly what is stored is always a confirmation, ratified or not.
+  if (existing !== undefined && sameRecord(existing, program)) {
+    return { status: 200, body: existing };
+  }
+  assertProgramPutAllowed(existing, program);
+  await deps.stores.programContracts.put(program);
+  return { status: existing === undefined ? 201 : 200, body: program };
 };
 
 export const getProgram: Handler = async ({ deps, params }) => ({
@@ -153,9 +200,18 @@ export const putRun: Handler = async ({ deps, request, params }) => {
   const scope = runScopeFrom(params);
   assertChainMatches(scope, run);
 
-  await requireProgram(deps.stores, scope);
+  const program = await requireProgram(deps.stores, scope);
   const existing = await deps.stores.runs.get(scope, scope.runId);
   if (existing === undefined) {
+    // The gate (D-P7-02): nothing executes for a planned program until a human
+    // has ratified it. A contract with no strands is not planned and runs as ever.
+    if (!mayRunContract(program)) {
+      throw new HttpError(
+        409,
+        "plan_not_ratified",
+        `program ${scope.programId} is planned and not ratified; ratify the plan before running it`,
+      );
+    }
     assertRunComplete(run);
     await deps.stores.runs.put(run);
     return { status: 201, body: run };
