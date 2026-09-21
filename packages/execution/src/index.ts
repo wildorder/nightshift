@@ -27,6 +27,8 @@ export {
   type Engine,
   type EngineOptions,
   type EngineSnapshot,
+  StrandBlockedError,
+  StrandDelegationError,
   type Submission,
   type Submitted,
   type WaitingReason,

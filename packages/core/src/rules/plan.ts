@@ -17,6 +17,7 @@
  * scope, either of which is a better plan, while a missed one costs a night.
  */
 import type {
+  ExecutionNodeStatus,
   PlannedDecision,
   Prerequisite,
   ProgramContract,
@@ -225,6 +226,40 @@ const outcomeOf = (outcomes: StrandOutcomes, id: string): StrandOutcome =>
 const isParked = (outcome: StrandOutcome): boolean =>
   outcome === "failed" || outcome === "cancelled";
 
+/** One attempt at a strand: the node that ran it, as the control plane records it. */
+export interface StrandAttempt {
+  readonly strandId: string;
+  readonly status: ExecutionNodeStatus;
+  readonly createdAt: string;
+}
+
+const outcomeOfStatus = (status: ExecutionNodeStatus): StrandOutcome => {
+  if (status === "succeeded" || status === "integrated") return "succeeded";
+  if (status === "cancelled") return "cancelled";
+  // `interrupted` and the failed verdicts are all "did not succeed, may be tried again".
+  if (status === "failed" || status === "interrupted") return "failed";
+  if (status === "verification_failed" || status === "examination_failed") return "failed";
+  return "running";
+};
+
+/**
+ * Where every strand stands, from the run's own records. A strand tried twice
+ * stands where its **latest** attempt does, so one that failed and was delegated
+ * again is running again, and its cone is no longer blocked by it.
+ */
+export const strandOutcomes = (attempts: readonly StrandAttempt[]): StrandOutcomes => {
+  const latest = new Map<string, StrandAttempt>();
+  for (const attempt of attempts) {
+    const seen = latest.get(attempt.strandId);
+    if (seen === undefined || seen.createdAt <= attempt.createdAt) {
+      latest.set(attempt.strandId, attempt);
+    }
+  }
+  return Object.fromEntries(
+    [...latest].map(([strandId, attempt]) => [strandId, outcomeOfStatus(attempt.status)]),
+  );
+};
+
 const requireStrand = (contract: ProgramContract, id: string): Strand => {
   const strand = strandsOf(contract).find((candidate) => candidate.id === id);
   if (strand === undefined) throw new RangeError(`the contract has no strand ${id}`);
@@ -236,6 +271,14 @@ export type StrandStart =
   /** `waitingFor` names the strands it depends on that have not succeeded yet. */
   | { readonly start: false; readonly waitingFor: readonly string[] };
 
+/** The strands `id` depends on that have not succeeded. Empty means nothing holds it. */
+export const strandWaitingFor = (
+  contract: ProgramContract,
+  outcomes: StrandOutcomes,
+  id: string,
+): readonly string[] =>
+  requireStrand(contract, id).dependsOn.filter((dep) => outcomeOf(outcomes, dep) !== "succeeded");
+
 /**
  * Whether the engine may start a strand: never before every strand it depends
  * on has succeeded, under any finishing order (SC-P7-07). A strand that is
@@ -246,8 +289,7 @@ export const mayStartStrand = (
   outcomes: StrandOutcomes,
   id: string,
 ): StrandStart => {
-  const strand = requireStrand(contract, id);
-  const waitingFor = strand.dependsOn.filter((dep) => outcomeOf(outcomes, dep) !== "succeeded");
+  const waitingFor = strandWaitingFor(contract, outcomes, id);
   if (waitingFor.length > 0) return { start: false, waitingFor };
   if (outcomeOf(outcomes, id) !== "pending") return { start: false, waitingFor: [] };
   return { start: true };

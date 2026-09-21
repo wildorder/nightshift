@@ -15,6 +15,7 @@ import {
   type JobContract,
   JobContractSchema,
   type RouteChoice,
+  type Strand,
 } from "@nightshift/contracts";
 import { isSettled, nowIso } from "@nightshift/core";
 import {
@@ -26,9 +27,12 @@ import {
   git,
   type MergeQueue,
   revParse,
+  StrandBlockedError,
+  StrandDelegationError,
   shutdown,
   startJob,
 } from "@nightshift/execution";
+import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakeHarness, type ScriptContext } from "./fake-harness.js";
 import { cleanupWorlds, createWorld, eventsOf, PROGRAM_BRANCH, type World } from "./world.js";
@@ -120,6 +124,7 @@ interface Rig {
   releaseQueue(candidates: number): Promise<void>;
   submit(
     objective: string,
+    strandId?: string,
   ): Promise<{ jobId: JobContract["jobContractId"]; nodeId: ExecutionNodeId }>;
   status(nodeId: ExecutionNodeId): Promise<string>;
   until(nodeId: ExecutionNodeId, predicate: (status: string) => boolean): Promise<string>;
@@ -127,7 +132,7 @@ interface Rig {
 
 const rig = async (
   work: Readonly<Record<string, Work>>,
-  options: { maxConcurrency?: number; gated?: boolean } = {},
+  options: { maxConcurrency?: number; gated?: boolean; strands?: readonly Strand[] } = {},
 ): Promise<Rig> => {
   let world: World | undefined;
   const made = await createWorld({
@@ -148,12 +153,20 @@ const rig = async (
       return real.integrate(candidate);
     },
   };
-  const engine = createEngine({
-    environment: made.environment,
-    session: made.session,
-    mcp,
-    mergeQueue: queue,
-  });
+  // A planned run is the same run with strands on its contract: the engine reads
+  // the plan from its session, and ratification is the API's and the CLI's to prove.
+  const session =
+    options.strands === undefined
+      ? made.session
+      : {
+          ...made.session,
+          program: {
+            ...made.session.program,
+            status: "planning" as const,
+            strands: [...options.strands],
+          },
+        };
+  const engine = createEngine({ environment: made.environment, session, mcp, mergeQueue: queue });
 
   const status = async (nodeId: ExecutionNodeId): Promise<string> =>
     (await made.stores.executionNodes.get(made.scope, nodeId))?.status ?? "missing";
@@ -168,7 +181,7 @@ const rig = async (
       });
       gate.open();
     },
-    submit: async (objective) => {
+    submit: async (objective, strandId) => {
       const job = JobContractSchema.parse({
         schemaVersion: 1,
         ...made.scope,
@@ -179,6 +192,7 @@ const rig = async (
         dependencies: [],
         risk: "low",
         ambiguity: "low",
+        ...(strandId === undefined ? {} : { strandId }),
         createdAt: nowIso(made.environment.clock),
       });
       const submitted = await engine.submit({
@@ -529,4 +543,185 @@ describe("shutdown covers the whole tree (D-P6-08, SC-P6-16)", () => {
     );
     await expect(r.submit("four module")).rejects.toThrow(/takes no more work/);
   });
+});
+
+// --- P7: strands ---------------------------------------------------------------------------
+
+const strandOf = (id: string, dependsOn: readonly string[] = []): Strand => ({
+  id,
+  name: `Strand ${id}`,
+  // Disjoint by construction: each strand's module is its own.
+  scope: { summary: id, includes: ["src/**", "test/**"], excludes: [] },
+  acceptance: ["node --test passes"],
+  successCriteria: [],
+  dependsOn: [...dependsOn],
+  prerequisites: [],
+});
+
+/** The module a strand adds, named after it: `S-01` writes `src/s01.js`. */
+const moduleOf = (strandId: string): string => strandId.replace("-", "").toLowerCase();
+
+/** A job that cannot land: it changes a path outside its scope, which fails it (A-29). */
+const outOfScope: Work = async ({ worktree }) => {
+  await edit(worktree, "README.md", (text) => `${text}\nnot mine to change\n`);
+};
+
+/** Index of the first event of `type` on `nodeId`, which must exist. */
+const indexOfEvent = (
+  events: readonly { type: string; executionNodeId: string }[],
+  type: string,
+  nodeId: string,
+): number => {
+  const index = events.findIndex(
+    (event) => event.type === type && event.executionNodeId === nodeId,
+  );
+  expect(index, `${type} on ${nodeId}`).toBeGreaterThanOrEqual(0);
+  return index;
+};
+
+/** Opens every gate, in an order drawn by the property: a held strand's gate opening early changes nothing. */
+const openInOrder = (
+  ids: readonly string[],
+  order: readonly number[],
+  gates: ReadonlyMap<string, { open(): void }>,
+): void => {
+  const remaining = [...ids];
+  for (const pick of order) {
+    if (remaining.length === 0) break;
+    const [next] = remaining.splice(pick % remaining.length, 1);
+    gates.get(next as string)?.open();
+  }
+  for (const id of remaining) gates.get(id)?.open();
+};
+
+/** From the record, never from timing: each strand started after every dependency had landed. */
+const expectStartedAfterDependencies = (
+  events: readonly { type: string; executionNodeId: string }[],
+  strands: readonly Strand[],
+  nodes: ReadonlyMap<string, ExecutionNodeId>,
+): void => {
+  for (const strand of strands) {
+    const started = indexOfEvent(events, "node.started", nodes.get(strand.id) as string);
+    for (const dependency of strand.dependsOn) {
+      expect(started).toBeGreaterThan(
+        indexOfEvent(events, "node.integrated", nodes.get(dependency) as string),
+      );
+    }
+  }
+};
+
+describe("strands are gated and parked (P7, D-P7-04, §4.4)", () => {
+  it("holds a strand until what it depends on has succeeded, and runs the rest meanwhile", async () => {
+    const first = barrier();
+    const r = await rig(
+      { s01: addModule("s01", first.opened), s02: addModule("s02"), s03: addModule("s03") },
+      { strands: [strandOf("S-01"), strandOf("S-02", ["S-01"]), strandOf("S-03")] },
+    );
+    const s01 = await r.submit("s01", "S-01");
+    const s02 = await r.submit("s02", "S-02");
+    const s03 = await r.submit("s03", "S-03");
+
+    // S-03 owes S-01 nothing and lands while S-01 is still working.
+    await r.until(s03.nodeId, (status) => status === "integrated");
+    expect(await r.status(s02.nodeId)).toBe("queued");
+    expect(r.engine.waiting(s02.jobId)).toEqual({ kind: "strands", waitingFor: ["S-01"] });
+
+    first.open();
+    await r.until(s02.nodeId, (status) => status === "integrated");
+
+    // From the record, never from timing: S-02 started after S-01 had landed.
+    await r.world.outbox.flush();
+    const events = await eventsOf(r.world);
+    expect(indexOfEvent(events, "node.started", s02.nodeId)).toBeGreaterThan(
+      indexOfEvent(events, "node.integrated", s01.nodeId),
+    );
+  }, 60_000);
+
+  it("parks a failed strand with exactly its cone, names the blocker, and finishes the rest", async () => {
+    const r = await rig(
+      { s01: outOfScope, s02: addModule("s02"), s03: addModule("s03"), s04: addModule("s04") },
+      {
+        strands: [
+          strandOf("S-01"),
+          strandOf("S-02", ["S-01"]),
+          strandOf("S-03"),
+          strandOf("S-04", ["S-02"]),
+        ],
+      },
+    );
+    const s01 = await r.submit("s01", "S-01");
+    const s02 = await r.submit("s02", "S-02");
+    const s03 = await r.submit("s03", "S-03");
+    const s04 = await r.submit("s04", "S-04");
+
+    expect(await r.until(s01.nodeId, settled)).toBe("failed");
+    expect(await r.until(s02.nodeId, settled)).toBe("cancelled");
+    expect(await r.until(s04.nodeId, settled)).toBe("cancelled");
+    expect(await r.until(s03.nodeId, settled)).toBe("integrated");
+
+    const blocked = await r.world.stores.executionNodes.get(r.world.scope, s04.nodeId);
+    expect(blocked?.outcomeReason).toBe("blocked by S-01, which did not succeed");
+
+    await r.world.outbox.flush();
+    const strandEvents = (await eventsOf(r.world))
+      .filter((event) => event.type.startsWith("strand."))
+      .map((event) => [event.type, event.payload]);
+    expect(strandEvents).toEqual([
+      ["strand.parked", { strandId: "S-01", outcome: "failed" }],
+      ["strand.blocked", { strandId: "S-02", blockedBy: ["S-01"] }],
+      ["strand.blocked", { strandId: "S-04", blockedBy: ["S-01"] }],
+    ]);
+
+    // Nothing in the cone can be slipped back in while its blocker stands.
+    await expect(r.submit("s02", "S-02")).rejects.toBeInstanceOf(StrandBlockedError);
+    expect(await log(r.world)).not.toContain("s02");
+  }, 60_000);
+
+  it("refuses a strand the plan does not have, one not at the top, and a second live attempt", async () => {
+    const held = barrier();
+    const r = await rig({ s01: addModule("s01", held.opened) }, { strands: [strandOf("S-01")] });
+    await expect(r.submit("s09", "S-09")).rejects.toBeInstanceOf(StrandDelegationError);
+    const s01 = await r.submit("s01", "S-01");
+    await expect(r.submit("s01", "S-01")).rejects.toBeInstanceOf(StrandDelegationError);
+    held.open();
+    await r.until(s01.nodeId, (status) => status === "integrated");
+    await expect(r.submit("s01", "S-01")).rejects.toThrow(/already done/);
+  }, 60_000);
+
+  it("never starts a strand before its dependencies, over random plans and finishing orders (SC-P7-07)", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.array(fc.nat(), { maxLength: 2 }), { minLength: 2, maxLength: 4 }),
+        fc.array(fc.nat(), { minLength: 4, maxLength: 4 }),
+        async (picks, order) => {
+          const ids = picks.map((_, index) => `S-${String(index + 1).padStart(2, "0")}`);
+          const strands = picks.map((deps, index) =>
+            strandOf(
+              ids[index] as string,
+              index === 0 ? [] : [...new Set(deps.map((dep) => ids[dep % index] as string))],
+            ),
+          );
+          const gates = new Map(ids.map((id) => [id, barrier()]));
+          const r = await rig(
+            Object.fromEntries(
+              ids.map((id) => [moduleOf(id), addModule(moduleOf(id), gates.get(id)?.opened)]),
+            ),
+            { strands, maxConcurrency: 4 },
+          );
+          const nodes = new Map<string, ExecutionNodeId>();
+          for (const id of ids) nodes.set(id, (await r.submit(moduleOf(id), id)).nodeId);
+
+          openInOrder(ids, order, gates);
+          for (const id of ids) {
+            await r.until(nodes.get(id) as ExecutionNodeId, (status) => status === "integrated");
+          }
+
+          await r.world.outbox.flush();
+          const events = await eventsOf(r.world);
+          expectStartedAfterDependencies(events, strands, nodes);
+        },
+      ),
+      { numRuns: 6 },
+    );
+  }, 240_000);
 });

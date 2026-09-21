@@ -30,14 +30,20 @@ import type {
   Scope,
 } from "@nightshift/contracts";
 import {
+  blockedBy,
   buildTree,
   ConcurrencyLimitExceededError,
   descendantsOf,
   type ExecutionTree,
+  isPlanned,
   isSettled,
   maySlotStart,
   nowIso,
   RETRYABLE_STATUSES,
+  type StrandOutcomes,
+  strandOutcomes,
+  strandsOf,
+  strandWaitingFor,
   transition,
 } from "@nightshift/core";
 import type { McpLaunch } from "@nightshift/harness";
@@ -60,6 +66,26 @@ export interface EngineOptions {
   readonly route?: (job: JobContract) => RouteChoice;
   /** How often the run's nodes are read while a sub-orchestrator is running. */
   readonly discoveryIntervalMs?: number;
+}
+
+/** A strand in a parked strand's cone. It is not started, and delegating it again is refused. */
+export class StrandBlockedError extends Error {
+  override readonly name = "StrandBlockedError";
+
+  constructor(
+    readonly strandId: string,
+    readonly blockers: readonly string[],
+  ) {
+    super(
+      `strand ${strandId} is blocked by ${blockers.join(", ")}, which did not succeed; ` +
+        "it is parked with everything downstream of it",
+    );
+  }
+}
+
+/** A submission that names a strand wrongly: unknown, not top-level, or already in hand. */
+export class StrandDelegationError extends Error {
+  override readonly name = "StrandDelegationError";
 }
 
 /** A second, which is D-P6-01's stated cost of having no second channel. */
@@ -89,6 +115,8 @@ export interface Submitted {
 /** Why a queued node is not running yet. For `job.get`, and for a human. */
 export type WaitingReason =
   | { readonly kind: "parent_full"; readonly running: number; readonly maxConcurrency: number }
+  /** A strand held until the strands it depends on have succeeded (P7, D-P7-04). */
+  | { readonly kind: "strands"; readonly waitingFor: readonly string[] }
   | { readonly kind: "wall_clock_spent"; readonly maxWallClockSeconds: number };
 
 export interface EngineSnapshot {
@@ -218,22 +246,132 @@ export const createEngine = (options: EngineOptions): Engine => {
     return pumping;
   };
 
+  /** True when the run's wall clock is spent, which every queued node is then told. */
+  const wallClockSpent = (): boolean => {
+    const remaining = wallClockRemainingSeconds();
+    if (remaining === undefined || remaining > 0 || maxWallClockSeconds === undefined) return false;
+    for (const entry of pending) entry.waiting = { kind: "wall_clock_spent", maxWallClockSeconds };
+    return true;
+  };
+
   /** Starts the first queued node that may start. False when none could. */
   const startNext = async (): Promise<boolean> => {
     if (closed || pending.length === 0) return false;
 
-    const remaining = wallClockRemainingSeconds();
-    if (remaining !== undefined && remaining <= 0 && maxWallClockSeconds !== undefined) {
-      for (const entry of pending)
-        entry.waiting = { kind: "wall_clock_spent", maxWallClockSeconds };
-      return false;
-    }
+    if (wallClockSpent()) return false;
 
-    const tree = buildTree(await readNodes());
+    const nodes = await readNodes();
+    const tree = buildTree(nodes);
+    const outcomes = planned ? await readStrandOutcomes(nodes) : {};
     for (const entry of [...pending]) {
-      if (mayStartNow(tree, entry) && (await start(entry))) return true;
+      const free = !heldByStrands(entry, outcomes) && mayStartNow(tree, entry);
+      if (free && (await start(entry))) return true;
     }
     return false;
+  };
+
+  // --- Strands: the plan's seams, gated and parked (P7, D-P7-04, §4.4) ---------------
+  //
+  // A strand is a sub-program directly under the program node whose Job Contract
+  // names it. Where every strand stands is read from the run's records each time,
+  // never remembered, so an engine that attaches to a run already under way
+  // gates exactly as the one that started it did.
+  const planned = isPlanned(session.program);
+  const announced = new Set<string>();
+
+  const readStrandOutcomes = async (nodes: readonly ExecutionNode[]): Promise<StrandOutcomes> => {
+    const strandOfJob = new Map<JobContractId, string>();
+    let cursor: string | undefined;
+    do {
+      const page = await stores.jobContracts.listByRun(
+        session.scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      for (const job of page.items) {
+        if (job.strandId !== undefined) strandOfJob.set(job.jobContractId, job.strandId);
+      }
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return strandOutcomes(
+      nodes.flatMap((node) => {
+        const strandId =
+          node.jobContractId === null ? undefined : strandOfJob.get(node.jobContractId);
+        return strandId === undefined
+          ? []
+          : [{ strandId, status: node.status, createdAt: node.createdAt }];
+      }),
+    );
+  };
+
+  /** True while a strand's dependencies have not all succeeded. Records what it waits for. */
+  const heldByStrands = (entry: Pending, outcomes: StrandOutcomes): boolean => {
+    const strandId = entry.submission.job.strandId;
+    if (strandId === undefined) return false;
+    const waitingFor = strandWaitingFor(session.program, outcomes, strandId);
+    if (waitingFor.length === 0) return false;
+    entry.waiting = { kind: "strands", waitingFor };
+    return true;
+  };
+
+  /**
+   * Parks what can no longer run (§4.4): a strand that settled without
+   * succeeding, and every queued strand in its cone, withdrawn with a reason that
+   * names the blocker. Everything outside the cone is left alone and runs on.
+   */
+  const park = async (): Promise<void> => {
+    if (!planned || closed) return;
+    const outcomes = await readStrandOutcomes(await readNodes());
+    const blocked = blockedBy(session.program, outcomes);
+    for (const [strandId, outcome] of Object.entries(outcomes)) {
+      const broke = outcome === "failed" || outcome === "cancelled";
+      // A strand cancelled because it was blocked is a casualty, reported below.
+      if (broke && !blocked.has(strandId)) announce("strand.parked", strandId, { outcome });
+    }
+    for (const [strandId, blockers] of blocked) {
+      const entry = pending.find((candidate) => candidate.submission.job.strandId === strandId);
+      const reason = `blocked by ${blockers.join(", ")}, which did not succeed`;
+      if (entry !== undefined) await withdraw(entry, reason).catch(() => {});
+      announce("strand.blocked", strandId, { blockedBy: blockers });
+    }
+  };
+
+  /** Once per strand per kind: parking is a fact about the run, not about each pass. */
+  const announce = (
+    type: "strand.parked" | "strand.blocked",
+    strandId: string,
+    payload: Record<string, unknown>,
+  ): void => {
+    if (announced.has(`${type}:${strandId}`)) return;
+    announced.add(`${type}:${strandId}`);
+    outbox.emit({
+      type,
+      source: "control-plane",
+      payload: { strandId, ...payload },
+      executionNodeId: session.rootNodeId,
+    });
+  };
+
+  /** Refuses a strand submission the plan does not allow, before anything is written. */
+  const assertStrandMayBeDelegated = async (submission: Submission): Promise<void> => {
+    const strandId = submission.job.strandId;
+    if (strandId === undefined) return;
+    if (!strandsOf(session.program).some((strand) => strand.id === strandId)) {
+      throw new StrandDelegationError(`the ratified plan has no strand ${strandId}`);
+    }
+    if (submission.parentNodeId !== session.rootNodeId) {
+      throw new StrandDelegationError(
+        `strand ${strandId} must be delegated directly under the program node`,
+      );
+    }
+    const outcomes = await readStrandOutcomes(await readNodes());
+    const blockers = blockedBy(session.program, outcomes).get(strandId);
+    if (blockers !== undefined) throw new StrandBlockedError(strandId, blockers);
+    const standing = outcomes[strandId];
+    if (standing === "running" || standing === "succeeded") {
+      throw new StrandDelegationError(
+        `strand ${strandId} is already ${standing === "running" ? "in hand" : "done"}; a strand has one live attempt`,
+      );
+    }
   };
 
   /** Whether `entry` has a free slot in `tree`. Records why not, or drops it if withdrawn. */
@@ -283,6 +421,7 @@ export const createEngine = (options: EngineOptions): Engine => {
           // An orchestrator that has gone leaves nobody to answer for what it
           // delegated: whatever is still in flight under it stops (D-P6-08).
           if (orchestrates) await cancelSubtree(started.nodeId).catch(() => {});
+          await park().catch(() => {});
         })
         .finally(() => {
           active.delete(started.nodeId);
@@ -453,6 +592,7 @@ export const createEngine = (options: EngineOptions): Engine => {
   return {
     submit: async (submission) => {
       if (closed) throw new Error("this run's engine has stopped and takes no more work");
+      await assertStrandMayBeDelegated(submission);
       const node = await delegateJob(environment, {
         session,
         job: submission.job,

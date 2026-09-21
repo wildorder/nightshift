@@ -47,6 +47,16 @@ export const EventTypeSchema = z.enum([
    */
   "node.rebased",
   /**
+   * Added in P7 (D-P7-09, §4.4). A strand settled without succeeding, so it is
+   * parked. Payload: the strand id and why.
+   */
+  "strand.parked",
+  /**
+   * Added in P7. A strand in a parked strand's downstream cone will not be
+   * started. Payload: the strand id and the strands that blocked it.
+   */
+  "strand.blocked",
+  /**
    * Added in P6 (D-P6-06). That replay conflicted. Nightshift resolves nothing:
    * the node fails, the paths are named, and an orchestrator decides.
    */
