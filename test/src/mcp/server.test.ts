@@ -179,6 +179,7 @@ describe("the role split (D-P3-01)", () => {
       "execution.status",
       "job.cancel",
       "job.get",
+      "job.retry",
       "job.wait",
       "program.get",
       "program.status",
@@ -505,17 +506,23 @@ describe("delegate's refusals are typed (§4.5)", () => {
     await mcp.stop();
   });
 
-  it("refuses a second job while one is running, and says P6 lifts it", async () => {
+  it("queues a second job past the limit instead of refusing it, and says why it waits (D-P6-02)", async () => {
     const world = await createBaseWorld();
     const mcp = await attached(world);
     const first = await mcp.call("delegate", DELEGATION);
     expect(first.ok, JSON.stringify(first)).toBe(true);
+    expect(first.status).toBe("running");
 
+    // The fixture program allows one job at a time. The second is accepted.
     const second = await mcp.call("delegate", DELEGATION);
-    expect(second.ok).toBe(false);
-    expect(second.code).toBe("concurrency_limit_exceeded");
-    expect(String(second.message)).toContain("P6");
+    expect(second.ok, JSON.stringify(second)).toBe(true);
+    expect(second.status).toBe("queued");
+    const waiting = await mcp.call("job.get", { jobId: second.jobId });
+    expect(waiting.status).toBe("queued");
+    expect(waiting.waitingFor).toMatchObject({ kind: "parent_full", maxConcurrency: 1 });
 
+    // Either can be cancelled: a queued job is withdrawn, a running one stopped.
+    expect((await mcp.call("job.cancel", { jobId: second.jobId })).status).toBe("cancelled");
     await mcp.call("job.cancel", { jobId: first.jobId });
     await mcp.stop();
   });

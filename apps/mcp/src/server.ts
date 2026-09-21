@@ -26,10 +26,11 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { WorkerIdentity } from "@nightshift/execution";
 import { createEventOutbox, shutdown, type WorkerEnvironment } from "@nightshift/execution";
 import { createRuntime, type Runtime } from "./compose.js";
-import { registerOrchestratorTools } from "./orchestrator.js";
+import { jobWaitCap, registerOrchestratorTools } from "./orchestrator.js";
 import type { Env, Role } from "./role.js";
 import { roleFrom, workerIdentityFrom } from "./role.js";
 import { createCheckpointAt, DEFAULT_CONTRACT_FILE, type OrchestratorSession } from "./session.js";
+import { registerSubOrchestratorTools } from "./sub-orchestrator.js";
 import { registerWorkerTools } from "./worker.js";
 
 export const SERVER_NAME = "nightshift";
@@ -66,18 +67,31 @@ export const createNightshiftServer = async (
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
-      instructions:
-        role === "worker"
-          ? "You are a Nightshift worker. Read your job with job.get, and finish with " +
-            "job.complete or job.fail. Never commit: Nightshift collects your work."
-          : "Nightshift: delegate bounded jobs, wait for verified results, record decisions. " +
-            "Start with run.start or run.attach.",
+      instructions: INSTRUCTIONS[role],
     },
   );
 
-  return role === "worker"
-    ? buildWorker(server, runtime, input)
-    : buildOrchestrator(server, runtime, input);
+  switch (role) {
+    case "worker":
+      return buildWorker(server, runtime, input);
+    case "sub-orchestrator":
+      return buildSubOrchestrator(server, runtime, input);
+    default:
+      return buildOrchestrator(server, runtime, input);
+  }
+};
+
+const INSTRUCTIONS: Readonly<Record<Role, string>> = {
+  worker:
+    "You are a Nightshift worker. Read your job with job.get, and finish with " +
+    "job.complete or job.fail. Never commit: Nightshift collects your work.",
+  "sub-orchestrator":
+    "You orchestrate one Nightshift sub-program. Read it with subprogram.get, delegate bounded " +
+    "jobs with delegate, wait with job.wait, and finish with subprogram.complete or " +
+    "subprogram.fail. You do not write code: your jobs do.",
+  orchestrator:
+    "Nightshift: delegate bounded jobs, wait for verified results, record decisions. " +
+    "Start with run.start or run.attach.",
 };
 
 const buildWorker = (
@@ -121,6 +135,54 @@ const buildWorker = (
   };
 };
 
+/**
+ * A sub-program's orchestrator (P6, D-P6-03). Built like a worker, because it is
+ * launched like one: an identity and an execution token in its environment, and
+ * nothing of the operator's. What differs is the tool surface, and that the
+ * token delegates.
+ */
+const buildSubOrchestrator = (
+  server: McpServer,
+  runtime: Runtime,
+  input: CreateServerInput,
+): NightshiftServer => {
+  const identity: WorkerIdentity = workerIdentityFrom(input.env);
+  const outbox = createEventOutbox({
+    events: runtime.stores.events,
+    scope: identity.scope,
+    clock: runtime.clock,
+    ids: runtime.ids,
+    writerId: identity.agentId,
+  });
+  const environment: WorkerEnvironment = {
+    stores: runtime.stores,
+    clock: runtime.clock,
+    git: runtime.git,
+    outbox,
+  };
+  registerSubOrchestratorTools(server, {
+    identity,
+    environment,
+    ids: runtime.ids,
+    waitCapSeconds: jobWaitCap(input.env),
+  });
+
+  let stopped = false;
+  return {
+    role: "sub-orchestrator",
+    server,
+    endpoint: runtime.endpoint,
+    connect: (transport) => server.connect(transport),
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      await outbox.flush(SHUTDOWN_DEADLINE_MS);
+      await outbox.spill(runtime.paths.spool(identity.scope.runId));
+      await server.close();
+    },
+  };
+};
+
 const buildOrchestrator = (
   server: McpServer,
   runtime: Runtime,
@@ -153,9 +215,12 @@ const buildOrchestrator = (
       stopped = true;
       const attached = state.current;
       if (attached !== undefined) {
+        // Nothing new starts, everything queued is withdrawn, and then every
+        // worker in flight is interrupted together (D-P6-08).
+        await attached.engine.close(`the run was interrupted: ${reason}`).catch(() => []);
         await shutdown(attached.environment, {
           session: attached.session,
-          job: attached.job,
+          jobs: attached.engine.jobs(),
           reason,
           flushDeadlineMs: SHUTDOWN_DEADLINE_MS,
         }).catch(() => {

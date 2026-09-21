@@ -38,17 +38,18 @@ import {
 } from "@nightshift/contracts";
 import {
   buildTree,
-  checkDelegation,
+  checkAuthority,
   type DelegationRejection,
   highestSequence,
+  isSettled,
   nowIso,
   pendingCount,
 } from "@nightshift/core";
-import { endProgramNode, runJob, type StartedJob } from "@nightshift/execution";
+import { endProgramNode } from "@nightshift/execution";
 import { configuredRoute, RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
 import type { RefusalCode } from "./results.js";
-import { guarded, ok, ToolRefusal } from "./results.js";
+import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 import type { AttachedRun, OrchestratorSession } from "./session.js";
 import { attachRun, createCheckpointAt, describeNodeLine, startNewRun } from "./session.js";
 
@@ -73,16 +74,8 @@ import { attachRun, createCheckpointAt, describeNodeLine, startNewRun } from "./
 export const DEFAULT_JOB_WAIT_CAP_SECONDS = 55;
 export const JOB_WAIT_CAP_ENV = "NIGHTSHIFT_JOB_WAIT_CAP_SECONDS";
 const JOB_WAIT_POLL_MS = 500;
-
-/** Statuses from which nothing further will happen without someone asking. */
-const SETTLED: readonly ExecutionNode["status"][] = [
-  "integrated",
-  "failed",
-  "cancelled",
-  "interrupted",
-  "verification_failed",
-  "examination_failed",
-];
+/** How long a process may outlive its node's ending before `run.finish` stops it. */
+const SETTLED_PROCESS_GRACE_MS = 15_000;
 
 export interface OrchestratorDeps {
   readonly state: OrchestratorSession;
@@ -101,7 +94,7 @@ const requireAttached = (state: OrchestratorSession) => {
   return attached;
 };
 
-const jobWaitCap = (env: OrchestratorDeps["env"]): number => {
+export const jobWaitCap = (env: OrchestratorDeps["env"]): number => {
   const raw = env[JOB_WAIT_CAP_ENV];
   const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_JOB_WAIT_CAP_SECONDS;
@@ -130,17 +123,22 @@ const jobReport = async (
   const checkpoint = checkpoints.items.find(
     (candidate) => candidate.commitSha === node.commitSha && node.commitSha !== null,
   );
-  const running = attached.job?.nodeId === node.executionNodeId ? attached.job : undefined;
+  const running = attached.engine.running(jobContractId as never);
+  const waiting = attached.engine.waiting(jobContractId as never);
 
   return {
     jobContractId,
     nodeId: node.executionNodeId,
     status: node.status,
-    settled: SETTLED.includes(node.status),
+    // `core`'s own list, so a status added there (`succeeded`, for a sub-program)
+    // is settled here too rather than waited on for ever.
+    settled: isSettled(node.status),
     commitSha: node.commitSha,
     outcomeReason: node.outcomeReason ?? null,
     worktree: running?.worktree ?? null,
     pid: running?.pid ?? null,
+    // Why a queued job is not running yet: a full parent, or a spent wall clock.
+    waitingFor: node.status === "queued" ? (waiting ?? null) : null,
     agent:
       agent === undefined
         ? null
@@ -179,17 +177,57 @@ const describeJob = (report: Readonly<Record<string, unknown>>): string => {
   return `Job ${String(report.jobContractId)} is ${status}.${commit}${verified}${reason}`;
 };
 
-/** A run does not end while its work is still going. */
-const assertNoJobRunning = async (deps: OrchestratorDeps, attached: AttachedRun): Promise<void> => {
-  const job = attached.job;
-  if (job === undefined) return;
-  const report = await jobReport(deps, job.jobContractId);
-  if (report.settled === true) return;
+/** The jobs a `job.wait` named, one way or the other, without repeats. */
+const jobsNamed = (jobId: string | undefined, jobIds: readonly string[] | undefined): string[] => {
+  const wanted = [...new Set([...(jobIds ?? []), ...(jobId === undefined ? [] : [jobId])])];
+  if (wanted.length === 0) {
+    throw new ToolRefusal("validation_failed", "name a job with jobId, or several with jobIds");
+  }
+  return wanted;
+};
+
+/** The run's tree, one line a node, indented by depth: read at a glance. */
+const renderTree = (nodes: readonly ExecutionNode[]): readonly string[] => {
+  const children = new Map<string | null, ExecutionNode[]>();
+  for (const node of nodes) {
+    const siblings = children.get(node.parentNodeId) ?? [];
+    siblings.push(node);
+    children.set(node.parentNodeId, siblings);
+  }
+  const lines: string[] = [];
+  const walk = (parent: string | null): void => {
+    const level = [...(children.get(parent) ?? [])].sort((a, b) =>
+      a.executionNodeId < b.executionNodeId ? -1 : 1,
+    );
+    for (const node of level) {
+      const reason =
+        node.outcomeReason === undefined ? "" : ` — ${node.outcomeReason.slice(0, 120)}`;
+      lines.push(
+        `${"  ".repeat(node.depth)}${node.kind} ${node.executionNodeId} ${node.status}${reason}`,
+      );
+      walk(node.executionNodeId);
+    }
+  };
+  walk(null);
+  return lines;
+};
+
+/** A run does not end while its work is still going (D-P6-08). */
+const assertNoJobRunning = async (
+  _deps: OrchestratorDeps,
+  attached: AttachedRun,
+): Promise<void> => {
+  if (attached.engine.idle()) return;
+  // A process whose node has already settled is not work in flight: it is a
+  // model finishing its sentence. It gets a moment, and then it is stopped.
+  await attached.engine.releaseSettled(SETTLED_PROCESS_GRACE_MS);
+  if (attached.engine.idle()) return;
+  const { running, queued } = attached.engine.snapshot();
   throw new ToolRefusal(
     "job_running",
-    `job ${job.jobContractId} is ${String(report.status)}. Wait for it with job.wait, or stop it ` +
-      "with job.cancel, before finishing the run.",
-    { jobContractId: job.jobContractId, status: report.status },
+    `${running.length} job${running.length === 1 ? " is" : "s are"} running and ${queued.length} queued. ` +
+      "Wait for them with job.wait, or stop them with job.cancel, before finishing the run.",
+    { running, queued },
   );
 };
 
@@ -362,6 +400,11 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           {
             run,
             nodes: nodes.items,
+            // What the engine holds (D-P6-09): what is running, what waits for a
+            // slot and in which order, what the merge queue is on, and how much
+            // wall clock is left.
+            engine: attached.engine.snapshot(),
+            tree: renderTree(nodes.items),
             latestCheckpoint: latest ?? null,
             highestSequence: highestSequence(events.items) ?? null,
             pendingEvents: pendingCount(events.items),
@@ -408,6 +451,9 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         dependencies: z.array(z.string().min(1)).optional(),
         risk: RiskLevelSchema.optional(),
         ambiguity: RiskLevelSchema.optional(),
+        // `sub-program` hands a bounded region of the program to an orchestrator
+        // of its own, which delegates within it (D-P6-03).
+        kind: z.enum(["job", "sub-program"]).optional(),
         harness: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
       },
@@ -432,31 +478,33 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           model: input.model,
         });
 
-        // 5. The runner persists everything before the harness starts.
-        const started: StartedJob = await runJob(attached.environment, {
-          session: attached.session,
+        // 5. The delegation is recorded, and the engine starts it when its parent
+        //    has a free slot: at once, usually (D-P6-01, D-P6-02). The lifecycle
+        //    continues in the background of this process (D-P3-04).
+        const submitted = await attached.engine.submit({
           job,
           scope: check.scope,
           depth: check.depth,
           parentNodeId: attached.session.rootNodeId,
           route,
-          mcp: (identity) => state.workerLaunch(identity),
+          ...(input.kind === undefined ? {} : { kind: input.kind }),
         });
-        attached.job = started;
-        // The lifecycle continues in the background of this process (D-P3-04).
-        // Failures are durable statuses, never rejections, so nothing is lost by
-        // not awaiting — but an unobserved rejection would be, hence the catch.
-        void started.completion.catch(() => {});
+        const started = submitted.started;
 
         return ok(
-          `Delegated job ${job.jobContractId} as node ${started.nodeId}. A ${route.target.model} ` +
-            `worker on the ${route.target.harness} harness is running in ${started.worktree}. ` +
-            "Wait for it with job.wait.",
+          started === undefined
+            ? `Delegated job ${job.jobContractId} as node ${submitted.nodeId}. It is queued: its ` +
+                "parent's concurrency limit is full, and it starts when a slot frees. Wait for it " +
+                "with job.wait."
+            : `Delegated job ${job.jobContractId} as node ${submitted.nodeId}. A ${route.target.model} ` +
+                `worker on the ${route.target.harness} harness is running in ${started.worktree}. ` +
+                "Wait for it with job.wait.",
           {
             jobId: job.jobContractId,
-            nodeId: started.nodeId,
-            agentId: started.agentId,
-            worktree: started.worktree,
+            nodeId: submitted.nodeId,
+            status: submitted.status,
+            agentId: started?.agentId ?? null,
+            worktree: started?.worktree ?? null,
             harness: route.target.harness,
             provider: route.target.provider,
             model: route.target.model,
@@ -487,30 +535,70 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       description:
         "Block until the job settles or the cap elapses, then answer exactly what job.get would. " +
         "Always returns: `timedOut` says whether the job settled or the wait did.",
-      inputSchema: { jobId: z.string().min(1), timeoutSeconds: z.number().int().min(1).optional() },
+      inputSchema: {
+        jobId: z.string().min(1).optional(),
+        // Several at once (D-P6-09): an orchestrator that can only wait on one
+        // job serialises itself, whatever the engine can do.
+        jobIds: z.array(z.string().min(1)).min(1).optional(),
+        timeoutSeconds: z.number().int().min(1).optional(),
+      },
     },
-    async ({ jobId, timeoutSeconds }) =>
+    async ({ jobId, jobIds, timeoutSeconds }) =>
       guarded(async () => {
+        const wanted = jobsNamed(jobId, jobIds);
         const cap = jobWaitCap(deps.env);
         const limit = Math.min(timeoutSeconds ?? cap, cap);
-        const deadline = Date.now() + limit * 1000;
 
-        let report = await jobReport(deps, jobId);
-        while (report.settled !== true && Date.now() < deadline) {
-          await new Promise((resolve_) => setTimeout(resolve_, JOB_WAIT_POLL_MS));
-          // Polls the control plane, not this process's memory: the answer must
-          // be the one `GET …/state` would give.
-          report = await jobReport(deps, jobId);
-        }
-
-        const timedOut = report.settled !== true;
+        // Polls the control plane, not this process's memory: the answer must be
+        // the one `GET …/state` would give.
+        const { reports, first, timedOut } = await waitForFirstSettled(
+          () => Promise.all(wanted.map((id) => jobReport(deps, id))),
+          limit,
+          JOB_WAIT_POLL_MS,
+        );
+        // The first to settle, or the first named when none has. One job in,
+        // exactly what `job.get` would answer out, as it always was.
+        const report = first ?? reports[0];
+        if (report === undefined) throw new ToolRefusal("not_found", "no such job");
         return ok(
           timedOut
             ? `${describeJob(report)} Still running after ${limit}s — this wait is capped below ` +
                 "the harness's own tool timeout, so call job.wait again."
             : describeJob(report),
-          { ...report, timedOut, waitedSeconds: limit },
+          {
+            ...report,
+            timedOut,
+            waitedSeconds: limit,
+            ...(wanted.length > 1 ? { jobs: reports } : {}),
+          },
         );
+      }),
+  );
+
+  server.registerTool(
+    "job.retry",
+    {
+      title: "Retry a job that failed",
+      description:
+        "Runs it again from the current program head as a new attempt: fresh worktree, new agent. " +
+        "For a job that ended failed (an integration_conflict, say), verification_failed or " +
+        "interrupted. Read its outcomeReason first: a retry repeats the delegation as written.",
+      inputSchema: { jobId: z.string().min(1) },
+    },
+    async ({ jobId }) =>
+      guarded(async () => {
+        const attached = requireAttached(state);
+        if (!(await attached.engine.retry(jobId as never))) {
+          const report = await jobReport(deps, jobId);
+          throw new ToolRefusal(
+            "validation_failed",
+            `job ${jobId} is ${String(report.status)}, and only a job this session delegated that ` +
+              "ended failed, verification_failed or interrupted can be retried.",
+            { status: report.status },
+          );
+        }
+        const report = await jobReport(deps, jobId);
+        return ok(`Job ${jobId} is going round again. ${describeJob(report)}`, report);
       }),
   );
 
@@ -524,15 +612,13 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     async ({ jobId }) =>
       guarded(async () => {
         const attached = requireAttached(state);
-        const job = attached.job;
-        if (job === undefined || job.jobContractId !== jobId) {
+        if (!(await attached.engine.cancel(jobId as never))) {
           throw new ToolRefusal(
             "not_found",
-            `job ${jobId} is not the one running in this session. Only a job this server started ` +
-              "can be cancelled by it.",
+            `job ${jobId} is neither running nor queued in this session. Only a job this server ` +
+              "holds can be cancelled by it.",
           );
         }
-        await job.cancel();
         const report = await jobReport(deps, jobId);
         return ok(`Cancelled job ${jobId}. ${describeJob(report)}`, report);
       }),
@@ -637,12 +723,13 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
 
 interface DelegateInput {
   readonly objective: string;
-  readonly scope: Parameters<typeof checkDelegation>[3] & object;
+  readonly scope: Parameters<typeof checkAuthority>[3] & object;
   readonly acceptance: readonly string[];
   readonly dependencies?: readonly string[] | undefined;
   readonly risk?: "low" | "medium" | "high" | undefined;
   readonly ambiguity?: "low" | "medium" | "high" | undefined;
   readonly model?: string | undefined;
+  readonly kind?: "job" | "sub-program" | undefined;
 }
 
 /** The contract, validated. An invalid one never becomes a node. */
@@ -691,7 +778,8 @@ const checkDelegationOrRefuse = async (
 ): Promise<{ readonly depth: number; readonly scope: Scope }> => {
   const nodes = await state.runtime.stores.executionNodes.listByRun(attached.session.scope);
   const tree = buildTree([...nodes.items]);
-  const check = checkDelegation(
+  // Authority, depth and scope. Not concurrency: excess work queues (D-P6-02).
+  const check = checkAuthority(
     tree,
     attached.session.rootNodeId,
     attached.session.program.delegationLimits,

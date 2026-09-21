@@ -81,7 +81,7 @@
  * a worker committed is squashed away and never becomes history.
  */
 import type { RouteTarget } from "@nightshift/contracts";
-import type { McpLaunch } from "@nightshift/harness";
+import { type McpLaunch, nightshiftToolNames } from "@nightshift/harness";
 
 /** The CLI version every flag and every stream shape here was verified against. */
 export const VERIFIED_CODEX_VERSION = "0.154.0";
@@ -229,13 +229,18 @@ export const buildGitGuard = (realGit: string): string =>
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** What only a Codex worker needs to be told. The shared brief says the rest. */
-export const codexBriefAddendum = (input: { readonly mcpServerName: string }): string =>
+export const codexBriefAddendum = (input: {
+  readonly mcpServerName: string;
+  /** The node's Nightshift tools, from `nightshiftToolNames`. A worker's by default. */
+  readonly tools?: readonly string[];
+}): string =>
   [
     "HOW THE NIGHTSHIFT TOOLS REACH YOU",
     "",
-    `  They are the tools of the MCP server named ${input.mcpServerName}: job.get, job.progress,`,
-    "  job.complete, job.fail and decision.record. Call them directly. They are the",
-    "  only way to report anything, and replying in prose does not finish the job.",
+    `  They are the tools of the MCP server named ${input.mcpServerName}:`,
+    `  ${(input.tools ?? nightshiftToolNames("job")).join(", ")}.`,
+    "  Call them directly. They are the only way to report anything, and replying in",
+    "  prose does not finish your work.",
     "",
     "YOUR TOOLS",
     "",
@@ -244,8 +249,8 @@ export const codexBriefAddendum = (input: { readonly mcpServerName: string }): s
     "",
     "  The one exception: every git command that writes state is refused. Do not",
     "  spend a turn trying one, or looking for a way around it: Nightshift is the",
-    "  one that commits your work, from whatever is in your working directory when",
-    "  you call job.complete.",
+    "  one that commits work, from whatever is in a worker's directory when it reports",
+    "  completion.",
   ].join("\n");
 
 export const codexPrompt = (briefText: string, addendum: string): string =>

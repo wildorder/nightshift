@@ -152,6 +152,7 @@ describe("enforce", () => {
       params: { projectId: w.project.projectId },
       body: undefined,
       memberships: w.stores.memberships,
+      nodes: w.stores.executionNodes,
       projectOrgs: w.projectOrgs,
     });
     expect(principal).toEqual({ kind: "user", userId: w.userId, orgId: w.orgId });
@@ -167,6 +168,7 @@ describe("enforce", () => {
         params: { projectId: w.project.projectId },
         body: undefined,
         memberships: w.stores.memberships,
+        nodes: w.stores.executionNodes,
         projectOrgs: w.projectOrgs,
       }),
     ).rejects.toMatchObject({ status: 403, code: "no_membership" });
@@ -200,6 +202,7 @@ describe("enforce", () => {
         },
         body: undefined,
         memberships: w.stores.memberships,
+        nodes: w.stores.executionNodes,
         projectOrgs: unusable,
       }),
     ).resolves.toEqual(principal);
@@ -214,6 +217,7 @@ describe("enforce", () => {
       params: { projectId: w.project.projectId },
       body: undefined,
       memberships: other.stores.memberships,
+      nodes: other.stores.executionNodes,
       projectOrgs: w.projectOrgs,
     }).catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(HttpError);

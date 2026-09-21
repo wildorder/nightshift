@@ -134,12 +134,19 @@ const assertChain = (input: MintExecutionTokenInput): void => {
       `program ${program.programId} is not the program run ${run.runId} belongs to`,
     );
   }
-  if (agent.role !== "worker") {
-    // D-P4-06: the orchestrator keeps the human's session in P4, and an examiner
-    // has no runtime. `ExecutionRoleSchema` would refuse this anyway; refusing
-    // here names the reason instead of failing schema validation three lines on.
+  if (agent.role === "examiner") {
     throw new ExecutionTokenChainError(
-      `agent ${agent.agentId} has role ${agent.role}; P4 mints tokens for workers only (D-P4-06)`,
+      `agent ${agent.agentId} is an examiner, which has no runtime yet and gets no token`,
+    );
+  }
+  // D-P4-06 keeps the **root** orchestrator on the human's session. The only
+  // orchestrator that holds a token is a sub-program's (D-P6-04), and a worker
+  // is only ever on a job: the role and the node's kind must agree, or a token
+  // could carry delegation authority onto a node that has none.
+  const expectedKind = agent.role === "orchestrator" ? "sub-program" : "job";
+  if (node.kind !== expectedKind) {
+    throw new ExecutionTokenChainError(
+      `agent ${agent.agentId} is a ${agent.role} on a ${node.kind} node; a ${agent.role}'s token is minted only on a ${expectedKind} node`,
     );
   }
 };
@@ -171,7 +178,7 @@ export const mintExecutionToken = async (
       runId: agent.runId,
       nodeId: node.executionNodeId,
       agentId: agent.agentId,
-      role: "worker",
+      role: agent.role === "orchestrator" ? "orchestrator" : "worker",
     },
     iat: issuedAt,
     exp: expiresAt,

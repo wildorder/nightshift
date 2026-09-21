@@ -133,7 +133,8 @@ export const configuredUrls = (context: SliceContext): readonly string[] =>
  * The offline pair: the production handler over loopback, in-memory stores with
  * deferred numbering, and a fixture repository in a temporary directory.
  */
-export interface LocalContextOptions extends Pick<MaterialiseOptions, "modelPolicy"> {
+export interface LocalContextOptions
+  extends Pick<MaterialiseOptions, "modelPolicy" | "delegationLimits"> {
   /**
    * Real time rather than the stepping clock. The stepping clock advances a
    * second per reading, which makes a scripted run's records deterministic and
@@ -176,9 +177,12 @@ export const createLocalContext = async (
   });
 
   // The authored identifiers, so a local run's records read the same every time.
-  const fixture = await materialiseFixtureRepo(
-    options.modelPolicy === undefined ? {} : { modelPolicy: options.modelPolicy },
-  );
+  const fixture = await materialiseFixtureRepo({
+    ...(options.modelPolicy === undefined ? {} : { modelPolicy: options.modelPolicy }),
+    ...(options.delegationLimits === undefined
+      ? {}
+      : { delegationLimits: options.delegationLimits }),
+  });
   await stores.projects.put({
     schemaVersion: 1,
     projectId: fixture.program.projectId,

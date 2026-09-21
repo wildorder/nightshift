@@ -64,7 +64,7 @@
  *   the tool set in ways that would silently contradict the policy above.
  */
 import type { RouteTarget } from "@nightshift/contracts";
-import type { McpLaunch } from "@nightshift/harness";
+import { type McpLaunch, nightshiftToolNames } from "@nightshift/harness";
 import { type ClaudeToolPolicy, claudeMcpToolName } from "./permissions.js";
 
 /**
@@ -178,18 +178,19 @@ export const buildSettings = (): string =>
  * is, what may be touched, and that Nightshift collects the work, is T1's and
  * is not repeated.
  */
-export const claudeBriefAddendum = (input: { readonly mcpServerName: string }): string => {
+export const claudeBriefAddendum = (input: {
+  readonly mcpServerName: string;
+  /** The node's Nightshift tools, from `nightshiftToolNames`. A worker's by default. */
+  readonly tools?: readonly string[];
+}): string => {
+  const tools = input.tools ?? nightshiftToolNames("job");
   const name = (tool: string): string => claudeMcpToolName(input.mcpServerName, tool);
   const lines = [
     "HOW THE NIGHTSHIFT TOOLS ARE NAMED TO YOU",
     "",
     "  The tools described above reach you through MCP, so they are prefixed and",
     "  their dots become underscores:",
-    `    job.complete       -> ${name("job.complete")}`,
-    `    job.fail           -> ${name("job.fail")}`,
-    `    job.progress       -> ${name("job.progress")}`,
-    `    job.get            -> ${name("job.get")}`,
-    `    decision.record    -> ${name("decision.record")}`,
+    ...tools.map((tool) => `    ${tool.padEnd(22)} -> ${name(tool)}`),
     "",
     "  They are always available to you, whatever else your scope granted.",
     "",

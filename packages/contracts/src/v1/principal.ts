@@ -45,12 +45,13 @@ export type UserPrincipal = z.infer<typeof UserPrincipalSchema>;
 /**
  * The only role P4 mints an execution token for.
  *
- * Not `AgentRoleSchema`. D-P4-06 keeps the orchestrator on the human's session —
- * a remote orchestrator's token is P9's change, and an examiner has no runtime
- * yet. A literal means P4 *cannot* mint either by accident, and widening it later
- * is a deliberate edit rather than an oversight.
+ * Not `AgentRoleSchema`. D-P4-06 keeps the **root** orchestrator on the human's
+ * session, and an examiner has no runtime yet. P4 made this a literal `worker`
+ * so that widening it would be a deliberate edit; P6 is that edit (D-P6-04):
+ * `orchestrator` is a **sub-program's** orchestrator, whose token may delegate
+ * within the subtree under its own node and do nothing else a worker cannot.
  */
-export const ExecutionRoleSchema = z.literal("worker");
+export const ExecutionRoleSchema = z.enum(["worker", "orchestrator"]);
 export type ExecutionRole = z.infer<typeof ExecutionRoleSchema>;
 
 /**

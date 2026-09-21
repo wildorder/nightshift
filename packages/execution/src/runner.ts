@@ -44,14 +44,7 @@ import type {
   RoutingDecision,
   Scope,
 } from "@nightshift/contracts";
-import {
-  ConcurrencyLimitExceededError,
-  nowIso,
-  OCCUPIES_CONCURRENCY_SLOT,
-  routeOutcomeForNodeStatus,
-  transition,
-  transitionAgent,
-} from "@nightshift/core";
+import { nowIso, routeOutcomeForNodeStatus, transition, transitionAgent } from "@nightshift/core";
 import {
   agentStatusForExit,
   describeExit,
@@ -60,6 +53,7 @@ import {
   hookTypeForExit,
   type McpLaunch,
   millis,
+  refusingWorkerTools,
 } from "@nightshift/harness";
 import {
   DEFAULT_CANCEL_GRACE_MS,
@@ -68,10 +62,12 @@ import {
   type WorkerLaunchIdentity,
 } from "./environment.js";
 import {
+  addDetachedWorktree,
   addWorktree,
   baseRef,
   jobBranch,
   pruneWorktrees,
+  removeWorktree,
   revParse,
   updateRef,
 } from "./git/index.js";
@@ -79,23 +75,6 @@ import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
 import { verifyNode } from "./verify.js";
 import { createWorkerTools } from "./worker.js";
-
-/**
- * P3 allows exactly one running child under the root, whatever the program's
- * `delegationLimits.maxConcurrency` says (contract §5). A second is refused with
- * a typed reason that names P6, so an orchestrator knows to wait rather than to
- * restructure.
- */
-export const P3_MAX_CONCURRENT_CHILDREN = 1;
-
-export class ConcurrencyRefusedError extends ConcurrencyLimitExceededError {
-  constructor(running: number) {
-    super(running, P3_MAX_CONCURRENT_CHILDREN);
-    this.message =
-      `P3 runs one job at a time, and ${running} is already running. Wait for it with ` +
-      "job.wait, or cancel it. More than one job in flight arrives in P6.";
-  }
-}
 
 export interface RunJobInput {
   readonly session: RunSession;
@@ -108,6 +87,42 @@ export interface RunJobInput {
   readonly route: RouteChoice;
   /** Builds the worker's MCP server launch, given the identity it must carry. */
   readonly mcp: (identity: WorkerLaunchIdentity) => McpLaunch;
+  /**
+   * How an `implemented` node reaches the program branch. Absent, it is verified
+   * and integrated inline, which is only safe with one job in flight; the engine
+   * supplies its merge queue (P6, D-P6-05), the one route to the branch when
+   * there are several.
+   */
+  readonly integrate?: IntegrateCandidate;
+}
+
+/** What a finished worker hands on: everything the merge queue needs, and no more. */
+export interface IntegrationCandidate {
+  readonly session: RunSession;
+  readonly job: JobContract;
+  readonly nodeId: ExecutionNodeId;
+  readonly agentId: AgentId;
+  readonly worktree: string;
+  readonly branch: string;
+  /** The commit the worktree was cut from. */
+  readonly base: CommitSha;
+}
+
+/** Settles when the candidate is integrated, or durably is not. Never rejects. */
+export type IntegrateCandidate = (candidate: IntegrationCandidate) => Promise<void>;
+
+/** What it takes to record a delegation: the first half of {@link runJob}. */
+export interface DelegateJobInput
+  extends Pick<RunJobInput, "session" | "job" | "scope" | "depth" | "parentNodeId"> {
+  /** `job` unless said otherwise. A sub-program is delegated the same way (D-P6-03). */
+  readonly kind?: "job" | "sub-program";
+}
+
+/** What it takes to start a delegated job: the second half. */
+export interface StartJobInput
+  extends Pick<RunJobInput, "session" | "job" | "route" | "mcp" | "integrate"> {
+  /** The node as {@link delegateJob} left it: `queued`. */
+  readonly node: ExecutionNode;
 }
 
 export interface StartedJob {
@@ -136,30 +151,32 @@ export interface StartedJob {
   cancel(): Promise<void>;
 }
 
-/** How many children of the root currently hold a concurrency slot. */
-export const runningChildren = async (
-  environment: ExecutionEnvironment,
-  session: RunSession,
-): Promise<number> => {
-  const children = await environment.stores.executionNodes.listChildren(
-    session.scope,
-    session.rootNodeId,
-  );
-  return children.filter((child) => OCCUPIES_CONCURRENCY_SLOT.includes(child.status)).length;
-};
-
+/**
+ * Delegate and start in one step: what P3 did, and what a caller with exactly
+ * one job still wants. The engine calls the two halves separately, because
+ * between them a node may wait in the queue for as long as it has to (P6,
+ * D-P6-02).
+ */
 export const runJob = async (
   environment: ExecutionEnvironment,
   input: RunJobInput,
 ): Promise<StartedJob> => {
+  const node = await delegateJob(environment, input);
+  return startJob(environment, { ...input, node });
+};
+
+/**
+ * Records a delegation: the Job Contract, then its node, `validated` and then
+ * `queued`. Nothing runs, and nothing that could run exists yet: a queued node
+ * has no agent, no token and no worktree until it starts.
+ */
+export const delegateJob = async (
+  environment: ExecutionEnvironment,
+  input: DelegateJobInput,
+): Promise<ExecutionNode> => {
   const { stores, clock, ids, outbox } = environment;
   const { session } = input;
-
-  const running = await runningChildren(environment, session);
-  if (running >= P3_MAX_CONCURRENT_CHILDREN) throw new ConcurrencyRefusedError(running);
-
   const nodeId = ids.next("node");
-  const agentId = ids.next("agent");
 
   // --- 1. The Job Contract, before anything exists to execute it (A-03) --------
   await stores.jobContracts.put(input.job);
@@ -170,7 +187,7 @@ export const runJob = async (
     schemaVersion: 1,
     ...session.scope,
     executionNodeId: nodeId,
-    kind: "job",
+    kind: input.kind ?? "job",
     parentNodeId: input.parentNodeId,
     depth: input.depth,
     scope: input.scope,
@@ -197,208 +214,381 @@ export const runJob = async (
     payload: { jobContractId: input.job.jobContractId },
     executionNodeId: nodeId,
   });
+  return queued;
+};
 
-  // --- 3. The execution identity, before any process exists (A-04) -------------
-  const agent: Agent = {
-    schemaVersion: 1,
-    ...session.scope,
-    agentId,
-    executionNodeId: nodeId,
-    role: "worker",
-    harness: input.route.target.harness,
-    provider: input.route.target.provider,
-    model: input.route.target.model,
-    status: "created",
-    createdAt: nowIso(clock),
-  };
-  await stores.agents.put(agent);
-  outbox.emit({
-    type: "agent.created",
-    source: "control-plane",
-    payload: { role: "worker", ...input.route.target },
-    executionNodeId: nodeId,
-    agentId,
-  });
+/**
+ * Starts a queued job: claims its slot, then identity, credential, route,
+ * worktree and worker, in that order.
+ *
+ * Throws `ConcurrencyLimitExceededError` when the API refuses the slot, having
+ * written nothing: the node is still `queued`, and "not yet" is the whole of it.
+ */
+export const startJob = async (
+  environment: ExecutionEnvironment,
+  input: StartJobInput,
+): Promise<StartedJob> => {
+  const { stores, clock, ids, outbox } = environment;
+  const { session } = input;
+  const queued = input.node;
+  const nodeId = queued.executionNodeId;
+  const agentId = ids.next("agent");
+  // A sub-program's node is started the same way as a job's, by the same
+  // adapters (D-P6-03). What differs is what its agent is: an orchestrator,
+  // with a delegating token, a checkout to read rather than a worktree to
+  // change, and nothing to verify or integrate when it ends.
+  const orchestrates = queued.kind === "sub-program";
+  const role = orchestrates ? "orchestrator" : "worker";
 
-  // --- 3a. Its credential, minted the moment the identity exists (D-P4-06) -----
+  // --- 2a. The slot, claimed first (D-P6-02) --------------------------------------
   //
-  // Before the worktree, before the process, and — critically — before anything
-  // the worker could act with. A-04 says nothing executes without a Nightshift
-  // execution identity; P4 makes that a credential rather than a convention.
-  // The token is held in this frame and handed to the launch; it is never
-  // stored, never logged, and never reaches an event payload.
-  const { token: executionToken } = await environment.tokens.mint(session.scope, agentId);
-
-  // --- 4. Why it runs where it runs (A-13) -------------------------------------
-  const routingDecision: RoutingDecision = {
-    schemaVersion: 1,
-    ...session.scope,
-    routingDecisionId: ids.next("route"),
-    executionNodeId: nodeId,
-    attempt: 1,
-    eligibleOptions: [...input.route.eligibleOptions],
-    chosen: input.route.target,
-    ruleId: input.route.ruleId,
-    wasOverride: input.route.wasOverride,
-    usage: {},
-    outcome: "pending",
-    previousRouteId: null,
-    createdAt: nowIso(clock),
-  };
-  await stores.routingDecisions.put(routingDecision);
-  outbox.emit({
-    type: "routing.decided",
-    source: "control-plane",
-    payload: {
-      ruleId: routingDecision.ruleId,
-      wasOverride: routingDecision.wasOverride,
-      chosen: routingDecision.chosen,
-    },
-    executionNodeId: nodeId,
-  });
-
-  // --- 5. The worktree, cut from the program branch head ------------------------
-  const base = await revParse(
-    environment.git,
-    session.repoPath,
-    session.program.repository.programBranch,
-  );
-  const worktree = environment.paths.worktree(session.scope.runId, nodeId);
-  const branch = jobBranch(session.scope.runId, nodeId);
-  await mkdir(dirname(worktree), { recursive: true });
-  await pruneWorktrees(environment.git, session.repoPath);
-  await addWorktree(environment.git, { repo: session.repoPath, path: worktree, branch, base });
-  // The base, recorded in the repository rather than carried through three
-  // processes. `completeJob` reads it back to parent the snapshot.
-  await updateRef(environment.git, session.repoPath, baseRef(nodeId), base);
-
-  // --- 6. Running, before the process exists -----------------------------------
-  //
-  // The record leads the process, deliberately. The alternative — start, then
-  // write `running` — leaves a window in which a worker is working and the
-  // control plane says it is merely queued, and a worker fast enough to report
-  // inside that window would be refused by the transition table. So the node is
-  // `running` and the agent `started` the moment Nightshift commits to starting
-  // one, and a launch that then fails is recorded as a failure (below) rather
-  // than avoided by writing late.
+  // The record leads the process, as it always has, and it now leads the agent
+  // and the worktree too. The API decides whether a slot is free, so this is the
+  // one write that can be refused for a reason that is not a failure; making it
+  // first means a refusal leaves nothing behind to clean up.
   const started = transition(queued, "start", nowIso(clock));
   await stores.executionNodes.put(started);
-  const startedAgent = transitionAgent(agent, "start", { at: nowIso(clock) });
-  await stores.agents.put(startedAgent);
 
-  const sink = createHookSink({ outbox, executionNodeId: nodeId, agentId });
-  const transcript = environment.paths.transcript(session.scope.runId, agentId);
-  await mkdir(dirname(transcript), { recursive: true });
-
-  // One identity, two transports (A-37). The launch is for an adapter that can be
-  // handed a process to spawn; the tools are the same four operations as
-  // functions, over stores that hold this worker's token and nothing else. Which
-  // one a worker's calls arrive through is the adapter's business, and never both.
-  const launch: WorkerLaunchIdentity = {
-    projectId: session.scope.projectId,
-    programId: session.scope.programId,
-    runId: session.scope.runId,
-    nodeId,
-    agentId,
-    jobContractId: input.job.jobContractId,
-    worktree,
-    executionToken,
-  };
-  const tools = createWorkerTools(
-    environment.workerEnvironment(launch),
-    {
-      scope: session.scope,
-      executionNodeId: nodeId,
-      jobContractId: input.job.jobContractId,
-      agentId,
-      worktree,
-    },
-    ids,
-  );
-
-  let handle: HarnessHandle;
   try {
-    handle = await environment.harness.start({
-      agent: startedAgent,
-      node: started,
-      job: input.job,
-      program: session.program,
-      worktree,
-      model: input.route.target,
-      mcp: input.mcp(launch),
-      tools,
-      sink,
-      transcriptPath: transcript,
-    });
+    return await launch();
   } catch (error) {
-    // The adapter could not even attempt a launch. The node and agent already
-    // exist and already say `running`, so this ends durably rather than leaving
-    // them that way forever.
-    const reason = `the harness could not start the worker: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-    await stores.agents.put(
-      transitionAgent(startedAgent, "fail", { at: nowIso(clock), outcomeReason: reason }),
-    );
-    await stores.executionNodes.put({
-      ...transition(started, "fail", nowIso(clock)),
-      outcomeReason: reason,
-    });
-    outbox.emit({
-      type: "node.failed",
-      source: "control-plane",
-      payload: { reason },
-      executionNodeId: nodeId,
-      agentId,
-    });
+    await failStart(error);
     throw error;
   }
 
-  outbox.emit({
-    type: "node.started",
-    source: "control-plane",
-    payload: { worktree, branch, base, pid: handle.pid ?? null },
-    executionNodeId: nodeId,
-    agentId,
-  });
+  // Everything after the slot. A throw from here ends the node durably, because
+  // it already says `running` and nothing else will ever move it.
+  async function launch(): Promise<StartedJob> {
+    // --- 3. The execution identity, before any process exists (A-04) -------------
+    const agent: Agent = {
+      schemaVersion: 1,
+      ...session.scope,
+      agentId,
+      executionNodeId: nodeId,
+      role,
+      harness: input.route.target.harness,
+      provider: input.route.target.provider,
+      model: input.route.target.model,
+      status: "created",
+      createdAt: nowIso(clock),
+    };
+    await stores.agents.put(agent);
+    outbox.emit({
+      type: "agent.created",
+      source: "control-plane",
+      payload: { role, ...input.route.target },
+      executionNodeId: nodeId,
+      agentId,
+    });
 
-  let stopMode: "cancelled" | "interrupted" | undefined;
-  const completion = finishJob(environment, {
-    session,
-    job: input.job,
-    nodeId,
-    agentId,
-    worktree,
-    branch,
-    base,
-    handle,
-    sink,
-    stopMode: () => stopMode,
-    routingDecision,
-    startedAtMs: clock.now(),
-  });
+    // --- 3a. Its credential, minted the moment the identity exists (D-P4-06) -----
+    //
+    // Before the worktree, before the process, and — critically — before anything
+    // the worker could act with. A-04 says nothing executes without a Nightshift
+    // execution identity; P4 makes that a credential rather than a convention.
+    // The token is held in this frame and handed to the launch; it is never
+    // stored, never logged, and never reaches an event payload.
+    const { token: executionToken } = await environment.tokens.mint(session.scope, agentId);
 
-  const stop = async (mode: "cancelled" | "interrupted"): Promise<void> => {
-    // Set before the cancel, so the lifecycle knows why the process stopped by
-    // the time it observes the exit.
-    stopMode ??= mode;
-    await environment.harness.cancel(
-      handle,
-      millis(environment.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS),
+    // --- 4. Why it runs where it runs (A-13) -------------------------------------
+    // A retry is a new attempt at the same node (D-P6-06): its decision says
+    // which it is and links the one before, so the record reads as a chain.
+    const earlier = [...(await stores.routingDecisions.listByNode(session.scope, nodeId))].sort(
+      (a, b) => a.attempt - b.attempt,
     );
-    await completion;
-  };
+    const routingDecision: RoutingDecision = {
+      schemaVersion: 1,
+      ...session.scope,
+      routingDecisionId: ids.next("route"),
+      executionNodeId: nodeId,
+      attempt: earlier.length + 1,
+      eligibleOptions: [...input.route.eligibleOptions],
+      chosen: input.route.target,
+      ruleId: input.route.ruleId,
+      wasOverride: input.route.wasOverride,
+      usage: {},
+      outcome: "pending",
+      previousRouteId: earlier.at(-1)?.routingDecisionId ?? null,
+      createdAt: nowIso(clock),
+    };
+    await stores.routingDecisions.put(routingDecision);
+    outbox.emit({
+      type: "routing.decided",
+      source: "control-plane",
+      payload: {
+        ruleId: routingDecision.ruleId,
+        wasOverride: routingDecision.wasOverride,
+        chosen: routingDecision.chosen,
+      },
+      executionNodeId: nodeId,
+    });
 
-  return {
-    jobContractId: input.job.jobContractId,
-    nodeId,
-    agentId,
-    worktree,
-    pid: handle.pid,
-    completion,
-    stop,
-    cancel: () => stop("cancelled"),
-  };
+    // --- 5. The worktree, cut from the program branch head ------------------------
+    const base = await revParse(
+      environment.git,
+      session.repoPath,
+      session.program.repository.programBranch,
+    );
+    const worktree = environment.paths.worktree(session.scope.runId, nodeId);
+    const branch = jobBranch(session.scope.runId, nodeId);
+    await mkdir(dirname(worktree), { recursive: true });
+    await pruneWorktrees(environment.git, session.repoPath);
+    if (earlier.length > 0) {
+      // The last attempt's worktree was kept for whoever had to read a failure.
+      // This attempt starts clean from the current head, so it goes now, and
+      // not before.
+      await removeWorktree(environment.git, session.repoPath, worktree, branch, nodeId).catch(
+        () => {},
+      );
+      await pruneWorktrees(environment.git, session.repoPath);
+    }
+    if (orchestrates) {
+      await addDetachedWorktree(environment.git, { repo: session.repoPath, path: worktree, base });
+    } else {
+      await addWorktree(environment.git, { repo: session.repoPath, path: worktree, branch, base });
+    }
+    // The base, recorded in the repository rather than carried through three
+    // processes. `completeJob` reads it back to parent the snapshot.
+    await updateRef(environment.git, session.repoPath, baseRef(nodeId), base);
+
+    // --- 6. Running, before the process exists -----------------------------------
+    //
+    // The record leads the process, deliberately. The alternative — start, then
+    // write `running` — leaves a window in which a worker is working and the
+    // control plane says it is merely queued, and a worker fast enough to report
+    // inside that window would be refused by the transition table. So the node is
+    // `running` and the agent `started` the moment Nightshift commits to starting
+    // one, and a launch that then fails is recorded as a failure (below) rather
+    // than avoided by writing late. The node took `running` with its slot, above.
+    const startedAgent = transitionAgent(agent, "start", { at: nowIso(clock) });
+    await stores.agents.put(startedAgent);
+
+    const sink = createHookSink({ outbox, executionNodeId: nodeId, agentId });
+    const transcript = environment.paths.transcript(session.scope.runId, agentId);
+    await mkdir(dirname(transcript), { recursive: true });
+
+    // One identity, two transports (A-37). The launch is for an adapter that can be
+    // handed a process to spawn; the tools are the same four operations as
+    // functions, over stores that hold this worker's token and nothing else. Which
+    // one a worker's calls arrive through is the adapter's business, and never both.
+    const identity: WorkerLaunchIdentity = {
+      projectId: session.scope.projectId,
+      programId: session.scope.programId,
+      runId: session.scope.runId,
+      nodeId,
+      agentId,
+      jobContractId: input.job.jobContractId,
+      worktree,
+      role: orchestrates ? "sub-orchestrator" : "worker",
+      executionToken,
+    };
+    // The function transport is a worker's four operations. A sub-orchestrator's
+    // surface is a different one, and it reaches it through its MCP launch, as
+    // every local harness does (rule 6).
+    const tools = orchestrates
+      ? refusingWorkerTools(
+          "a sub-program's orchestrator reaches Nightshift through its MCP launch",
+        )
+      : createWorkerTools(
+          environment.workerEnvironment(identity),
+          {
+            scope: session.scope,
+            executionNodeId: nodeId,
+            jobContractId: input.job.jobContractId,
+            agentId,
+            worktree,
+          },
+          ids,
+        );
+
+    let handle: HarnessHandle;
+    try {
+      handle = await environment.harness.start({
+        agent: startedAgent,
+        node: started,
+        job: input.job,
+        program: session.program,
+        worktree,
+        model: input.route.target,
+        mcp: input.mcp(identity),
+        tools,
+        sink,
+        transcriptPath: transcript,
+      });
+    } catch (error) {
+      // The adapter could not even attempt a launch. The node and agent already
+      // exist and already say `running`, so this ends durably rather than leaving
+      // them that way forever.
+      const reason = `the harness could not start the worker: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      await stores.agents.put(
+        transitionAgent(startedAgent, "fail", { at: nowIso(clock), outcomeReason: reason }),
+      );
+      // The node is ended by `failStart`, like every other failure to launch.
+      throw new Error(reason, { cause: error });
+    }
+
+    outbox.emit({
+      type: "node.started",
+      source: "control-plane",
+      payload: { worktree, branch, base, pid: handle.pid ?? null },
+      executionNodeId: nodeId,
+      agentId,
+    });
+
+    let stopMode: "cancelled" | "interrupted" | undefined;
+    const completion = (orchestrates ? finishSubProgram : finishJob)(environment, {
+      session,
+      job: input.job,
+      nodeId,
+      agentId,
+      worktree,
+      branch,
+      base,
+      handle,
+      sink,
+      stopMode: () => stopMode,
+      routingDecision,
+      startedAtMs: clock.now(),
+      ...(input.integrate === undefined ? {} : { integrate: input.integrate }),
+    });
+
+    const stop = async (mode: "cancelled" | "interrupted"): Promise<void> => {
+      // Set before the cancel, so the lifecycle knows why the process stopped by
+      // the time it observes the exit.
+      stopMode ??= mode;
+      await environment.harness.cancel(
+        handle,
+        millis(environment.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS),
+      );
+      await completion;
+    };
+
+    return {
+      jobContractId: input.job.jobContractId,
+      nodeId,
+      agentId,
+      worktree,
+      pid: handle.pid,
+      completion,
+      stop,
+      cancel: () => stop("cancelled"),
+    };
+  }
+
+  /** A launch that failed after the slot was taken: the node ends, durably. */
+  async function failStart(error: unknown): Promise<void> {
+    const reason = error instanceof Error ? error.message : String(error);
+    try {
+      const node = await stores.executionNodes.get(session.scope, nodeId);
+      if (node === undefined || node.status !== "running") return;
+      await stores.executionNodes.put({
+        ...transition(node, "fail", nowIso(clock)),
+        outcomeReason: reason,
+      });
+      outbox.emit({
+        type: "node.failed",
+        source: "control-plane",
+        payload: { reason },
+        executionNodeId: nodeId,
+      });
+    } catch {
+      // The control plane is unreachable. Shutdown's fallback is what is left.
+    }
+  }
+};
+
+/**
+ * A sub-program's orchestrator has stopped (P6, D-P6-03).
+ *
+ * There is nothing to verify and nothing to integrate: it wrote no code, and
+ * whatever is in its checkout is discarded with it. What is left to settle is
+ * its node. It ends its own node through `subprogram.complete` or
+ * `subprogram.fail`; one that stopped without doing either, or was stopped, is
+ * ended here, because a sub-program left `running` with nobody orchestrating it
+ * is the state D-P6-08 exists to prevent. Its children are the engine's to stop.
+ *
+ * Never rejects.
+ */
+const finishSubProgram = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+): Promise<void> => {
+  const { stores, clock, outbox } = environment;
+  let usage: RouteUsage | undefined;
+  try {
+    const settledExit = await input.handle.exit;
+    if (settledExit.kind === "completed" || settledExit.kind === "failed")
+      usage = settledExit.usage;
+    const { exit, reason } = observed(input, settledExit);
+    await recordAgentEnd(environment, input, exit, reason);
+    await uploadTranscript(environment, input);
+
+    const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
+    if (node !== undefined && node.status === "running") {
+      const stopped = exit.kind === "cancelled" ? "cancel" : "fail";
+      const why =
+        exit.kind === "completed"
+          ? "the sub-program's orchestrator exited without ending its sub-program"
+          : reason;
+      await stores.executionNodes.put({
+        ...transition(node, stopped, nowIso(clock)),
+        outcomeReason: why,
+      });
+      outbox.emit({
+        type: stopped === "cancel" ? "node.cancelled" : "node.failed",
+        source: "control-plane",
+        payload: { reason: why },
+        executionNodeId: input.nodeId,
+        agentId: input.agentId,
+      });
+    }
+  } catch (error) {
+    await failHard(environment, input, error);
+  } finally {
+    await removeWorktree(
+      environment.git,
+      input.session.repoPath,
+      input.worktree,
+      input.branch,
+      input.nodeId,
+    ).catch(() => {});
+    await recordRouteResult(environment, input, usage);
+  }
+};
+
+/**
+ * P3's route to the branch: verify the node where it stands, then seal,
+ * fast-forward and checkpoint. Correct with one job in flight, because then the
+ * base cannot have moved. With several it is the merge queue's job (P6).
+ */
+export const verifyAndIntegrate = async (
+  environment: ExecutionEnvironment,
+  candidate: IntegrationCandidate,
+): Promise<void> => {
+  const node = await environment.stores.executionNodes.get(
+    candidate.session.scope,
+    candidate.nodeId,
+  );
+  if (node === undefined || node.status !== "implemented") return;
+  const verified = await verifyNode(environment, {
+    session: candidate.session,
+    node,
+    job: candidate.job,
+    agentId: candidate.agentId,
+    worktree: candidate.worktree,
+  });
+  if (!verified.passed) return;
+  await integrateNode(environment, {
+    session: candidate.session,
+    nodeId: candidate.nodeId,
+    agentId: candidate.agentId,
+    worktree: candidate.worktree,
+    branch: candidate.branch,
+    base: candidate.base,
+    commitSha: verified.commitSha,
+  });
 };
 
 interface FinishInput {
@@ -417,6 +607,7 @@ interface FinishInput {
   /** As recorded before the work began: `usage` empty, `outcome` pending (A-13). */
   readonly routingDecision: RoutingDecision;
   readonly startedAtMs: number;
+  readonly integrate?: IntegrateCandidate;
 }
 
 /**
@@ -470,23 +661,31 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
       return;
     }
 
-    const verified = await verifyNode(environment, {
-      session: input.session,
-      node,
-      job: input.job,
-      agentId: input.agentId,
-      worktree: input.worktree,
-    });
-    if (!verified.passed) return;
+    // With several jobs in flight the branch has one door, and it is the
+    // engine's merge queue (D-P6-05). Its promise settles when this node is
+    // integrated or durably is not, so `completion` still means the whole
+    // lifecycle, and the route's result below still sees the final status.
+    if (input.integrate !== undefined) {
+      await input.integrate({
+        session: input.session,
+        job: input.job,
+        nodeId: input.nodeId,
+        agentId: input.agentId,
+        worktree: input.worktree,
+        branch: input.branch,
+        base: input.base,
+      });
+      return;
+    }
 
-    await integrateNode(environment, {
+    await verifyAndIntegrate(environment, {
       session: input.session,
+      job: input.job,
       nodeId: input.nodeId,
       agentId: input.agentId,
       worktree: input.worktree,
       branch: input.branch,
       base: input.base,
-      commitSha: verified.commitSha,
     });
   } catch (error) {
     // Nothing above should throw, but a bug here must not leave a node running

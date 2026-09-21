@@ -40,7 +40,7 @@ import {
   isHookEventType,
 } from "@nightshift/harness";
 import { sanitizeEnvironment } from "@nightshift/verification";
-import { SCRIPTS, type ScriptName, type WorkerSurface } from "./scripts.js";
+import { SCRIPTS, type ScriptName, taggedScript, type WorkerSurface } from "./scripts.js";
 
 export { SCRIPT_NAMES, type ScriptName } from "./scripts.js";
 
@@ -61,6 +61,26 @@ export const SCRIPT_ENV = "NIGHTSHIFT_SCRIPT";
 export const WORKER_SCRIPT_ENV = "NIGHTSHIFT_WORKER_SCRIPT";
 export const WORKER_MCP_ENV = "NIGHTSHIFT_WORKER_MCP";
 export const WORKER_WORKTREE_ENV = "NIGHTSHIFT_WORKER_WORKTREE";
+/** The arguments of the objective's tag, as JSON. */
+export const WORKER_ARGS_ENV = "NIGHTSHIFT_WORKER_ARGS";
+/** `job` or `sub-program`: which Nightshift role the child's MCP server plays. */
+export const WORKER_KIND_ENV = "NIGHTSHIFT_WORKER_KIND";
+
+/**
+ * Which script a start input gets (P6): a sub-program is orchestrated; a job
+ * whose objective carries a tag does what the tag says; anything else does what
+ * this harness was configured to do, as it always has.
+ */
+export const scriptFor = (
+  input: HarnessStartInput,
+  fallback: ScriptName,
+): { readonly script: ScriptName; readonly args: readonly string[] } => {
+  if (input.node.kind === "sub-program") {
+    return { script: "orchestrate", args: taggedScript(input.job.objective)?.args ?? [] };
+  }
+  const fromLaunch = input.mcp.env[WORKER_SCRIPT_ENV] as ScriptName | undefined;
+  return taggedScript(input.job.objective) ?? { script: fromLaunch ?? fallback, args: [] };
+};
 
 /** The built child entry point, resolved from this module's own location. */
 export const workerEntry = (): string => fileURLToPath(new URL("./worker.js", import.meta.url));
@@ -149,11 +169,8 @@ const createFunctionHarness = (options: ScriptedHarnessOptions): Harness => {
         if (!isHookEventType(type)) return;
         input.sink.emit({ type, occurredAt: new Date().toISOString(), payload });
       };
-      emit("agent.started", {
-        harness: "scripted",
-        script: options.script,
-        transport: "functions",
-      });
+      const { script, args } = scriptFor(input, options.script);
+      emit("agent.started", { harness: "scripted", script, transport: "functions" });
 
       let release = (): void => {};
       const cancelled = new Promise<void>((resolve) => {
@@ -185,10 +202,11 @@ const createFunctionHarness = (options: ScriptedHarnessOptions): Harness => {
         let outcome: HarnessExit;
         let failure = "";
         try {
-          const code = await SCRIPTS[options.script]({
+          const code = await SCRIPTS[script]({
             surface,
             worktree: input.worktree,
             cancelled,
+            args,
             note: (text) => {
               failure += `${text}\n`;
             },
@@ -236,17 +254,9 @@ export const createScriptedHarness = (options: ScriptedHarnessOptions): Harness 
         input.sink.emit({ type, occurredAt: new Date().toISOString(), payload });
       };
 
+      const { script, args } = scriptFor(input, options.script);
       // Before anything the child does, and without its cooperation.
-      emit("agent.started", {
-        harness: "scripted",
-        script: (input.mcp.env[WORKER_SCRIPT_ENV] as string | undefined) ?? options.script,
-      });
-
-      // The script is this harness's, unless the start input names one. A real
-      // adapter's behaviour is fixed by the CLI it drives; this harness is asked
-      // to play several parts, and the per-start override is how the conformance
-      // fixture gets a completing worker and a hanging one from one harness.
-      const script = (input.mcp.env[WORKER_SCRIPT_ENV] as ScriptName | undefined) ?? options.script;
+      emit("agent.started", { harness: "scripted", script });
 
       const child = spawn(options.node ?? process.execPath, [options.entry ?? workerEntry()], {
         cwd: input.worktree,
@@ -261,6 +271,8 @@ export const createScriptedHarness = (options: ScriptedHarnessOptions): Harness 
             extra: undefined,
           }),
           [WORKER_SCRIPT_ENV]: script,
+          [WORKER_ARGS_ENV]: JSON.stringify(args),
+          [WORKER_KIND_ENV]: input.node.kind,
           [WORKER_WORKTREE_ENV]: input.worktree,
           // The worker's own MCP server: command, args and the seven identity
           // variables, passed through byte for byte.

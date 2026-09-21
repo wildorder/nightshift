@@ -46,6 +46,7 @@ import type {
   AgentId,
   ExecutionNodeId,
   ExecutionNodeStatus,
+  ExecutionRole,
   OrgId,
   Principal,
   ProgramId,
@@ -121,8 +122,11 @@ export type Operation =
  * - `own_run` — allowed when the target's chain is the execution's own run.
  * - `own_node` — `own_run`, and the target names the execution's own node.
  * - `own_agent` — `own_run`, and the target names the execution's own agent.
+ * - `own_subtree` — `own_run`, and the target node is the execution's own node,
+ *   one of its descendants, or a node being created directly under it. Only an
+ *   `orchestrator` token's table uses it (P6, D-P6-04).
  */
-export type ExecutionAccess = "forbidden" | "own_run" | "own_node" | "own_agent";
+export type ExecutionAccess = "forbidden" | "own_run" | "own_node" | "own_agent" | "own_subtree";
 
 /**
  * The §4.4 table for an execution principal, exhaustive over `Operation`.
@@ -211,6 +215,102 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
 };
 
 /**
+ * The table for a **sub-program's orchestrator** (P6, D-P6-04), exhaustive over
+ * `Operation` like the worker's.
+ *
+ * "Sub-program agents receive delegation authority" (Stage 5), and nothing more.
+ * Within the subtree under its own node it may write a Job Contract, create a
+ * child, read what it delegated, ask for a cancellation, record decisions and
+ * end its own node. Everything that *runs* work is absent, because only the
+ * engine does it, under the human's session: minting a token, creating an
+ * agent, a routing decision, a verification, a checkpoint or an artifact.
+ *
+ * It is narrower than a worker's table on the read side where a worker's reach
+ * was the run: a sub-orchestrator cannot list the run's nodes or jobs, so it
+ * learns nothing of a sibling through this table.
+ */
+export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
+  "project.list": "forbidden",
+  "project.put": "forbidden",
+  "project.get": "forbidden",
+  "program.list": "forbidden",
+  "program.put": "forbidden",
+  // Above the run, like a worker. What it delegates under reaches it as its own
+  // node's scope; limits and policy are the API's and the engine's to apply.
+  "program.get": "forbidden",
+
+  "run.list": "forbidden",
+  "run.put": "forbidden",
+  "run.get": "own_run",
+  "run.getState": "forbidden",
+
+  // Its own node and what is under it. `node.put` is further held to
+  // `orchestratorMayWriteNode`: a new `validated` child, a descendant's
+  // cancellation, or its own ending.
+  "node.list": "forbidden",
+  "node.put": "own_subtree",
+  "node.get": "own_subtree",
+  "node.listChildren": "own_subtree",
+
+  // A Job Contract exists before its node does (A-03), so it cannot be placed
+  // in a subtree yet; the API's create-or-confirm means a put can only ever add
+  // one, never change another's.
+  "job.list": "forbidden",
+  "job.put": "own_run",
+  "job.get": "own_run",
+
+  "agent.put": "forbidden",
+  "agent.get": "own_agent",
+  "agent.listByNode": "own_subtree",
+  "agent.mintToken": "forbidden",
+
+  // `node.delegated` is the delegator's to say, about the child it delegated.
+  "event.append": "own_subtree",
+  "event.list": "own_run",
+
+  "decision.list": "own_run",
+  "decision.put": "own_node",
+  "decision.get": "own_run",
+  "checkpoint.list": "own_run",
+  "checkpoint.put": "forbidden",
+  "checkpoint.get": "own_run",
+
+  // How its children ended is what it decides a retry on.
+  "verification.put": "forbidden",
+  "verification.get": "own_run",
+  "verification.listByNode": "own_subtree",
+  "examination.put": "forbidden",
+  "examination.get": "own_run",
+  "examination.listByNode": "own_subtree",
+
+  "routingDecision.put": "forbidden",
+  "routingDecision.listByNode": "own_subtree",
+
+  "artifact.list": "own_run",
+  "artifact.put": "forbidden",
+  "artifact.get": "own_run",
+  "artifact.createUploadUrl": "forbidden",
+};
+
+/** The table for a role. Exhaustive over `ExecutionRole` by construction. */
+export const ACCESS_BY_ROLE: Readonly<
+  Record<ExecutionRole, Readonly<Record<Operation, ExecutionAccess>>>
+> = {
+  worker: EXECUTION_ACCESS,
+  orchestrator: ORCHESTRATOR_ACCESS,
+};
+
+/**
+ * Where the target node stands relative to the execution's own node. A **stored
+ * fact**, resolved by the API from the run's tree and never from the request: a
+ * token that could state its own ancestry could state anyone's.
+ *
+ * `new_child` is a node that does not exist yet and whose parent, as the request
+ * names it, is the execution's own node.
+ */
+export type NodeRelation = "self" | "descendant" | "new_child" | "outside";
+
+/**
  * What the request is about, as much of it as the route names.
  *
  * `orgId` is the organisation that owns the target project, which only the
@@ -231,7 +331,28 @@ export interface AuthorizationTarget {
    * unknown value is simply not one an execution may write.
    */
   readonly requestedNodeStatus?: string;
+  /** For an `orchestrator` execution only. Absent means unresolved, which refuses. */
+  readonly nodeRelation?: NodeRelation;
 }
+
+/**
+ * What an orchestrator token may ask a node to become, by where the node stands
+ * (D-P6-04): a child it is delegating is `validated`; a descendant may be asked
+ * to stop; its own node may be ended. Nothing else, and in particular nothing
+ * that starts, verifies or integrates work.
+ */
+export const ORCHESTRATOR_WRITABLE_NODE_STATUSES: Readonly<
+  Record<NodeRelation, readonly ExecutionNodeStatus[]>
+> = {
+  new_child: ["validated"],
+  // `cancelled` asks the engine to stop it. `queued` is how a retry is asked for
+  // (D-P6-03's `job.retry`): the table's own `retry` edge, legal only from a
+  // retryable status, and **not a start** — the engine starts a queued node, when
+  // its parent has a slot, and nothing else does.
+  descendant: ["cancelled", "queued"],
+  self: ["succeeded", "failed"],
+  outside: [],
+};
 
 /**
  * The only statuses an execution may ask its own node to take: what a worker
@@ -283,6 +404,20 @@ const inOwnRun = (
   target.programId === principal.programId &&
   target.runId === principal.runId;
 
+const inOwnSubtree = (target: AuthorizationTarget): boolean =>
+  target.nodeRelation === "self" ||
+  target.nodeRelation === "descendant" ||
+  target.nodeRelation === "new_child";
+
+const mayWriteNodeStatus = (role: ExecutionRole, target: AuthorizationTarget): boolean => {
+  const requested = target.requestedNodeStatus ?? "";
+  const writable: readonly string[] =
+    role === "worker"
+      ? EXECUTION_WRITABLE_NODE_STATUSES
+      : ORCHESTRATOR_WRITABLE_NODE_STATUSES[target.nodeRelation ?? "outside"];
+  return writable.includes(requested);
+};
+
 /**
  * The one place a principal's reach is decided (D-P4-05).
  *
@@ -303,7 +438,7 @@ export const authorize = (
     return refuse("wrong_org", `${operation} targets a project owned by another organisation`);
   }
 
-  const access = EXECUTION_ACCESS[operation];
+  const access = ACCESS_BY_ROLE[principal.role][operation];
   if (access === "forbidden") {
     return refuse("execution_forbidden_operation", `an execution token may not ${operation}`);
   }
@@ -325,18 +460,20 @@ export const authorize = (
       `an execution token may only ${operation} for the agent it was issued for`,
     );
   }
-  // Fail closed: a `node.put` that names no status, or one that is not a
-  // worker's to write, is refused before the operation parses anything.
-  if (
-    operation === "node.put" &&
-    !(EXECUTION_WRITABLE_NODE_STATUSES as readonly string[]).includes(
-      target.requestedNodeStatus ?? "",
-    )
-  ) {
+  if (access === "own_subtree" && !inOwnSubtree(target)) {
+    return refuse(
+      "execution_out_of_scope",
+      `an orchestrator's token may only ${operation} within the subtree under its own node`,
+    );
+  }
+  // Fail closed: a `node.put` that names no status, or one that is not this
+  // role's to write where the node stands, is refused before anything is parsed.
+  if (operation === "node.put" && !mayWriteNodeStatus(principal.role, target)) {
     return refuse(
       "execution_forbidden_operation",
-      `an execution token may only report its node ${EXECUTION_WRITABLE_NODE_STATUSES.join(" or ")}; ` +
-        `"${target.requestedNodeStatus ?? "(no status)"}" is Nightshift's to assert`,
+      `a ${principal.role}'s token may not ask for this node to be "${
+        target.requestedNodeStatus ?? "(no status)"
+      }"`,
     );
   }
   return ALLOWED;

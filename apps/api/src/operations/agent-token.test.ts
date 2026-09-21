@@ -107,6 +107,57 @@ describe("POST …/agents/{agentId}/token", () => {
     });
   });
 
+  it("mints a delegating token for a sub-program's orchestrator, and for no other pairing (D-P6-04)", async () => {
+    const w = await setup();
+    const put = async (path: string, body: unknown) =>
+      expect((await w.call("PUT", `${w.run}/${path}`, body)).status).toBe(201);
+
+    const sub = makeNode(w.f, w.root.executionNodeId, { kind: "sub-program" });
+    const orchestrator = makeAgent(w.f, sub.executionNodeId, {
+      role: "orchestrator",
+      status: "created",
+    });
+    await put(`nodes/${sub.executionNodeId}`, sub);
+    await put(`agents/${orchestrator.agentId}`, orchestrator);
+
+    const response = await w.call("POST", `${w.run}/agents/${orchestrator.agentId}/token`);
+    expect(response.status).toBe(201);
+    const verified = verifyExecutionToken(
+      MintExecutionTokenResponseSchema.parse(response.body).token,
+      {
+        publicKey,
+        issuer: ISSUER,
+        now: Date.parse(NOW),
+      },
+    );
+    expect(verified).toMatchObject({
+      ok: true,
+      principal: {
+        role: "orchestrator",
+        nodeId: sub.executionNodeId,
+        agentId: orchestrator.agentId,
+      },
+    });
+
+    // The role and the node's kind must agree: delegation authority on a job
+    // node, or a worker's token on a node with nothing to collect, is refused.
+    const onJob = makeAgent(w.f, w.node.executionNodeId, {
+      role: "orchestrator",
+      status: "created",
+    });
+    const workerOnSub = makeAgent(w.f, sub.executionNodeId, { role: "worker", status: "created" });
+    const examiner = makeAgent(w.f, w.node.executionNodeId, {
+      role: "examiner",
+      status: "created",
+    });
+    for (const agent of [onJob, workerOnSub, examiner]) {
+      await put(`agents/${agent.agentId}`, agent);
+      const refused = await w.call("POST", `${w.run}/agents/${agent.agentId}/token`);
+      expect(refused.status, agent.role).toBe(422);
+      expect(errorCode(refused)).toBe("incomplete_record");
+    }
+  });
+
   it("mints for a started agent too", async () => {
     const w = await setup();
     const started = { ...w.agent, status: "started" as const, startedAt: NOW };

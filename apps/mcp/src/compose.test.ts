@@ -67,6 +67,7 @@ describe("the worker's launch environment", () => {
     agentId: "agent_00000000000000000000000001" as AgentId,
     jobContractId: "job_00000000000000000000000001" as JobContractId,
     worktree: "/tmp/worktree",
+    role: "worker",
     executionToken: "a.execution.token",
   };
 

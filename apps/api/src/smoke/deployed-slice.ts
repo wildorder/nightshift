@@ -11,7 +11,7 @@
  * (AR-4).
  */
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import type { ModelPolicy, ProjectId } from "@nightshift/contracts";
+import type { DelegationLimits, ModelPolicy, ProjectId } from "@nightshift/contracts";
 import { createUlidIdGenerator, nowIso, type RunScope, systemClock } from "@nightshift/core";
 import {
   createAwsClients,
@@ -35,6 +35,8 @@ export interface DeployedSliceOptions {
   readonly label: string;
   /** Replaces the fixture program's model policy. See `materialiseFixtureRepo`. */
   readonly modelPolicy?: ModelPolicy;
+  /** Replaces the fixture program's limits, for a run that needs a tree (P6). */
+  readonly delegationLimits?: DelegationLimits;
 }
 
 export interface DeployedSlice {
@@ -113,6 +115,9 @@ export const openDeployedSlice = async (options: DeployedSliceOptions): Promise<
     projectId,
     programId: ids.next("prog"),
     ...(options.modelPolicy === undefined ? {} : { modelPolicy: options.modelPolicy }),
+    ...(options.delegationLimits === undefined
+      ? {}
+      : { delegationLimits: options.delegationLimits }),
   });
   say(`fixture at ${fixture.repo}; program ${fixture.program.programId}`);
 

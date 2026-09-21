@@ -124,14 +124,39 @@ describe("creating execution nodes", () => {
     expect(code(response)).toBe("depth_limit_exceeded");
   });
 
-  it("refuses delegation past the concurrency limit with 429", async () => {
+  it("accepts delegation past the concurrency limit, and refuses the *start* with 429 (D-P6-02)", async () => {
     const w = await setup({ maxDepth: 3, maxConcurrency: 1 });
-    expect((await putNode(w, makeNode(w.f, w.f.rootNodeId, { status: "running" }))).status).toBe(
-      201,
-    );
-    const response = await putNode(w, makeNode(w.f, w.f.rootNodeId));
-    expect(response.status).toBe(429);
-    expect(code(response)).toBe("concurrency_limit_exceeded");
+    const first = makeNode(w.f, w.f.rootNodeId, { status: "running" });
+    expect((await putNode(w, first)).status).toBe(201);
+
+    // Excess work queues: the node exists, and may wait as long as it has to.
+    const second = makeNode(w.f, w.f.rootNodeId);
+    expect((await putNode(w, second)).status).toBe(201);
+    const queued = next(second, { status: "queued" });
+    expect((await putNode(w, queued)).status).toBe(200);
+
+    // The limit is the start edge's, whatever asks.
+    const early = await putNode(w, next(queued, { status: "running" }));
+    expect(early.status).toBe(429);
+    expect(code(early)).toBe("concurrency_limit_exceeded");
+
+    // A slot frees, and the same request is accepted.
+    expect((await putNode(w, next(first, { status: "failed" }))).status).toBe(200);
+    expect((await putNode(w, next(queued, { status: "running" }))).status).toBe(200);
+  });
+
+  it("counts slots per parent: a running sub-program never blocks its own children", async () => {
+    const w = await setup({ maxDepth: 3, maxConcurrency: 1 });
+    const sub = makeNode(w.f, w.f.rootNodeId, { kind: "sub-program", status: "running" });
+    expect((await putNode(w, sub)).status).toBe(201);
+    const child = makeNode(w.f, sub.executionNodeId, {
+      depth: 2,
+      jobContractId: w.f.ids.next("job"),
+    });
+    expect((await putNode(w, child)).status).toBe(201);
+    const queued = next(child, { status: "queued" });
+    expect((await putNode(w, queued)).status).toBe(200);
+    expect((await putNode(w, next(queued, { status: "running" }))).status).toBe(200);
   });
 
   it("refuses a child whose scope widens its parent's", async () => {
@@ -224,8 +249,17 @@ describe("updating execution nodes", () => {
     expect(asJob.status).toBe(409);
     expect(code(asJob)).toBe("illegal_transition");
 
+    // Not while anything under it is still in flight (D-P6-03).
+    const busy = await putNode(w, next(root, { status: "succeeded" }));
+    expect(busy.status).toBe(409);
+    expect(code(busy)).toBe("conflict");
+    await advance(w, job, { status: "failed" });
+    await advance(w, queuedChild, { status: "cancelled" });
+
     root = await advance(w, root, { status: "succeeded" });
     // Terminal: nothing leaves it.
+    // And a finished program takes no further children.
+    expect((await putNode(w, makeNode(w.f, w.f.rootNodeId))).status).toBe(403);
     for (const status of ["running", "failed", "cancelled"] as const) {
       expect((await putNode(w, next(root, { status }))).status, status).toBe(409);
     }

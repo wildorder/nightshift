@@ -140,3 +140,35 @@ export const guarded = async (body: () => Promise<ToolResult>): Promise<ToolResu
     return refused(asRefusal(error));
   }
 };
+
+/** What `job.wait` needs to know about a job to decide whether to keep waiting. */
+export interface Settleable extends Readonly<Record<string, unknown>> {
+  readonly settled?: unknown;
+}
+
+/**
+ * Polls `read` until one of the reports has settled or `limitSeconds` elapses
+ * (P6, D-P6-09). Returns every report, and whether the wait is what ended.
+ *
+ * One implementation for both orchestrator roles: waiting on several jobs and
+ * answering with the first to settle is what lets an orchestrator run work in
+ * parallel rather than serialise itself behind its own `job.wait`.
+ */
+export const waitForFirstSettled = async <T extends Settleable>(
+  read: () => Promise<readonly T[]>,
+  limitSeconds: number,
+  pollMs: number,
+): Promise<{
+  readonly reports: readonly T[];
+  readonly first: T | undefined;
+  readonly timedOut: boolean;
+}> => {
+  const deadline = Date.now() + limitSeconds * 1000;
+  let reports = await read();
+  while (!reports.some((report) => report.settled === true) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    reports = await read();
+  }
+  const first = reports.find((report) => report.settled === true);
+  return { reports, first, timedOut: first === undefined };
+};

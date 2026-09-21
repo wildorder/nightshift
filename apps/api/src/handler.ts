@@ -266,6 +266,7 @@ export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise
       params: match.params,
       body: request.body,
       memberships: deps.stores.memberships,
+      nodes: deps.stores.executionNodes,
       projectOrgs:
         deps.projectOrgs ??
         createProjectOrgCache({ projects: deps.stores.projects, clock: deps.clock }),

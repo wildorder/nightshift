@@ -647,6 +647,17 @@ describe("phase 3: live-only assertions", () => {
     expectStatus(asJob, 409);
     expect((asJob.body as { error: { code: string } }).error.code).toBe("illegal_transition");
 
+    // Nor may a program node end while anything under it is in flight (D-P6-03).
+    expectStatus(
+      await api.put(nodePath(root.executionNodeId), {
+        ...root,
+        status: "succeeded",
+        updatedAt: new Date().toISOString(),
+      }),
+      409,
+    );
+    job = await step(job, "failed");
+
     root = await step(root, "succeeded");
     expectStatus(await api.put(nodePath(root.executionNodeId), { ...root, status: "failed" }), 409);
 

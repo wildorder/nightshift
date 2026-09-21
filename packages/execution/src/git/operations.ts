@@ -70,6 +70,18 @@ export const addWorktree = async (runner: GitRunner, input: WorktreeInput): Prom
 };
 
 /**
+ * A worktree on a **detached** `base`, with no branch: somewhere to read the
+ * program from, for a sub-program's orchestrator (P6, D-P6-03). Nothing in it
+ * is ever snapshotted, so it needs no branch to carry a commit.
+ */
+export const addDetachedWorktree = async (
+  runner: GitRunner,
+  input: Omit<WorktreeInput, "branch">,
+): Promise<void> => {
+  await git(runner, ["worktree", "add", "--detach", input.path, input.base], { cwd: input.repo });
+};
+
+/**
  * Removes a worktree and its branch.
  *
  * Only ever called after the work is sealed, so the commit stays reachable
@@ -270,6 +282,77 @@ export const cleanCheckout = async (
 ): Promise<void> => {
   await git(runner, ["reset", "--hard", sha], { cwd: worktree });
   await git(runner, ["clean", "-fd"], { cwd: worktree });
+};
+
+export type ReplayResult =
+  | { readonly ok: true; readonly commitSha: CommitSha }
+  | { readonly ok: false; readonly conflicts: readonly string[]; readonly detail: string };
+
+export interface ReplayInput {
+  readonly worktree: string;
+  /** The snapshot to replay: one Nightshift-authored commit on the old base. */
+  readonly commit: CommitSha;
+  /** The program head it must now sit on. */
+  readonly onto: CommitSha;
+  readonly atMs: number;
+}
+
+/**
+ * Replays one snapshot commit onto a moved program head (P6, D-P6-06).
+ *
+ * A cherry-pick, because a snapshot is exactly one commit and its message and
+ * trailers are the worker's summary and Nightshift's provenance: both survive.
+ * `Nightshift-Rebased-From` is added so the commit says what it was before.
+ *
+ * **A conflict is never resolved.** The pick is aborted, the worktree is put
+ * back on the snapshot exactly as the worker left it, and the conflicting paths
+ * are returned for an orchestrator to read. Nightshift picking a side would be
+ * unverifiable intent.
+ *
+ * `--allow-empty --keep-redundant-commits`: a snapshot whose changes are already
+ * upstream replays to an empty commit rather than an error, for the reason
+ * `snapshotCommit` allows one.
+ */
+export const replayCommit = async (
+  runner: GitRunner,
+  input: ReplayInput,
+): Promise<ReplayResult> => {
+  const options: GitOptions = { cwd: input.worktree, atMs: input.atMs };
+  await git(runner, ["reset", "--hard", input.onto], options);
+  await git(runner, ["clean", "-fd"], options);
+
+  const picked = await tryGit(
+    runner,
+    ["cherry-pick", "--allow-empty", "--keep-redundant-commits", input.commit],
+    options,
+  );
+  if (picked.exitCode !== 0) {
+    const unmerged = await tryGit(
+      runner,
+      ["diff", "--name-only", "--diff-filter=U", "-z"],
+      options,
+    );
+    const conflicts = unmerged.stdout.split("\0").filter((path) => path !== "");
+    await tryGit(runner, ["cherry-pick", "--abort"], options);
+    await git(runner, ["reset", "--hard", input.commit], options);
+    await git(runner, ["clean", "-fd"], options);
+    return { ok: false, conflicts, detail: trimmed(picked.stderr) || trimmed(picked.stdout) };
+  }
+
+  await git(
+    runner,
+    [
+      "commit",
+      "--amend",
+      "--allow-empty",
+      "--no-verify",
+      "--no-edit",
+      "--trailer",
+      `Nightshift-Rebased-From: ${input.commit}`,
+    ],
+    options,
+  );
+  return { ok: true, commitSha: await revParse(runner, input.worktree, "HEAD") };
 };
 
 /** The refs D-P3-05 names, plus the base ref. One place, so a reader finds them all. */

@@ -26,7 +26,9 @@ import {
   type AuthorizationTarget,
   authorize,
   type Clock,
+  type ExecutionNodeStore,
   type MembershipStore,
+  type NodeRelation,
   type Operation,
   type ProjectStore,
 } from "@nightshift/core";
@@ -147,7 +149,59 @@ export interface EnforceOptions {
   readonly body: unknown;
   readonly memberships: MembershipStore;
   readonly projectOrgs: ProjectOrgCache;
+  /** The run's nodes, read only to place a target in an orchestrator's subtree. */
+  readonly nodes: Pick<ExecutionNodeStore, "get">;
 }
+
+/** How far up a parent chain is followed before the answer is "outside". */
+const MAX_ANCESTRY_STEPS = 64;
+
+/**
+ * Where the target node stands relative to an orchestrator execution's own node
+ * (P6, D-P6-04), **from the stored tree and never from the request**.
+ *
+ * The one thing taken from the body is the parent of a node that does not exist
+ * yet, and it is only ever compared for equality with the token's own node: a
+ * request can claim to be creating a child of the caller, and the operation then
+ * validates that claim against the stored parent like any other creation.
+ *
+ * Walks the parent chain rather than reading the whole run: a tree is a few
+ * levels deep, and the common answers (`self`, a direct child) take no read or
+ * one.
+ */
+export const resolveNodeRelation = async (
+  principal: Extract<Principal, { kind: "execution" }>,
+  target: AuthorizationTarget,
+  body: unknown,
+  nodes: Pick<ExecutionNodeStore, "get">,
+): Promise<NodeRelation> => {
+  const { nodeId } = target;
+  if (nodeId === undefined) return "outside";
+  if (nodeId === principal.nodeId) return "self";
+
+  const scope = {
+    projectId: principal.projectId,
+    programId: principal.programId,
+    runId: principal.runId,
+  };
+  let current = await nodes.get(scope, nodeId);
+  if (current === undefined) {
+    const parent =
+      body !== null && typeof body === "object"
+        ? (body as { parentNodeId?: unknown }).parentNodeId
+        : undefined;
+    return parent === principal.nodeId ? "new_child" : "outside";
+  }
+  for (let step = 0; step < MAX_ANCESTRY_STEPS; step += 1) {
+    const parentId = current.parentNodeId;
+    if (parentId === null) return "outside";
+    if (parentId === principal.nodeId) return "descendant";
+    const parent = await nodes.get(scope, parentId);
+    if (parent === undefined) return "outside";
+    current = parent;
+  }
+  return "outside";
+};
 
 /**
  * The complete principal the operation runs as.
@@ -173,7 +227,16 @@ export const enforce = async (options: EnforceOptions): Promise<Principal> => {
   };
 
   if (!isUserToken(principal)) {
-    const decision = authorize(principal, operation, target);
+    // Only an orchestrator's table has a reach that depends on the tree, and
+    // only a request inside its own run is worth a read to place.
+    const placed: AuthorizationTarget =
+      principal.role === "orchestrator" && target.runId === principal.runId
+        ? {
+            ...target,
+            nodeRelation: await resolveNodeRelation(principal, target, options.body, options.nodes),
+          }
+        : target;
+    const decision = authorize(principal, operation, placed);
     if (!decision.allowed) throw new HttpError(403, decision.reason, decision.detail);
     return principal;
   }

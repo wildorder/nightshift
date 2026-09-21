@@ -44,6 +44,10 @@ const numbered = (items: readonly string[]): string =>
  * `job.complete`.
  */
 export const renderWorkerBrief = (input: WorkerBriefInput): string => {
+  // A sub-program's node is started by the same adapters with the same input
+  // (D-P6-03). What it is told is different, and that difference belongs here,
+  // where no adapter has to know there is one.
+  if (input.node.kind === "sub-program") return renderSubOrchestratorBrief(input);
   const { job, node, program, worktree } = input;
   const scope = node.scope;
   const permissions = grantedPermissions(scope);
@@ -174,4 +178,128 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
   );
 
   return `${sections.join("\n\n")}\n`;
+};
+
+/**
+ * The Nightshift tools a node's agent is given, by what kind of node it is. An
+ * adapter that has to tell its model how those names are spelled to it (Claude
+ * Code prefixes and rewrites them) maps this list, and never keeps its own.
+ */
+export const nightshiftToolNames = (kind: ExecutionNode["kind"]): readonly string[] =>
+  kind === "sub-program"
+    ? [
+        "subprogram.get",
+        "delegate",
+        "job.wait",
+        "job.get",
+        "job.cancel",
+        "job.retry",
+        "decision.record",
+        "subprogram.progress",
+        "subprogram.refresh",
+        "subprogram.complete",
+        "subprogram.fail",
+      ]
+    : ["job.complete", "job.fail", "job.progress", "job.get", "decision.record"];
+
+/**
+ * The brief for a sub-program's orchestrator (P6, D-P6-03).
+ *
+ * Provider-neutral like the worker's. The thing it has to get across, above all,
+ * is a role a coding model does not assume by default: **it is not here to write
+ * the code.** It decides how the work divides, delegates each piece, reads what
+ * came back, and says when the whole is done.
+ */
+export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
+  const { job, node, program, worktree } = input;
+  const scope = node.scope;
+  return `${[
+    [
+      "You are a Nightshift orchestrator for one sub-program: a bounded region of a larger",
+      "program, handed to you to get done by delegating it.",
+      "",
+      "OBJECTIVE",
+      `  ${job.objective}`,
+    ].join("\n"),
+    ["ACCEPTANCE CRITERIA", numbered(job.acceptance)].join("\n"),
+    ["THE PROGRAM THIS IS PART OF", `  ${program.objective}`].join("\n"),
+    [
+      "YOU DO NOT WRITE THE CODE",
+      "",
+      "  You plan, delegate, and judge. Every change to the repository is made by a job",
+      "  you delegate: a separate worker, in its own isolated worktree, whose work",
+      "  Nightshift verifies and integrates. There is no other way for anything to reach",
+      "  the program, and nothing you edit yourself is ever collected.",
+      "",
+      "  Your working directory is a checkout to READ:",
+      `    ${worktree}`,
+      "  Read it to understand the code before you divide the work. Call",
+      "  subprogram.refresh to see what your jobs have integrated since.",
+    ].join("\n"),
+    [
+      "WHAT YOU MAY DELEGATE — authority, not advice",
+      "",
+      "  Every job's scope must sit inside yours:",
+      bullets(scope.includes.map((pattern) => `may change: ${pattern}`)),
+      ...(scope.excludes.length === 0
+        ? []
+        : [bullets(scope.excludes.map((pattern) => `never: ${pattern}`))]),
+      "",
+      "  Ask for more and the delegation is refused, listing what was not covered. Scope",
+      "  each job to what it needs, and give it what it needs: a job that must add a",
+      "  test needs the test directory.",
+    ].join("\n"),
+    [
+      "HOW TO DELEGATE WELL",
+      "",
+      "  - One bounded outcome per job, with acceptance criteria somebody could check.",
+      "  - Delegate independent jobs together, then wait for them together: they run at",
+      "    the same time, as many as the program's concurrency limit allows, and the rest",
+      "    queue.",
+      "  - Jobs that change the same lines will conflict. Give overlapping work to one",
+      "    job, or run it one after the other.",
+      "  - Every job is verified by these commands, on top of everything integrated",
+      "    before it. Two jobs that each pass alone and break each other cannot both land:",
+      bullets(program.verification.map((step) => `${step.id}: ${step.command}`)),
+    ].join("\n"),
+    [
+      "WHEN A JOB DOES NOT INTEGRATE",
+      "",
+      "  job.get tells you why, in outcomeReason.",
+      "    integration_conflict  its changes conflict with work integrated since it",
+      "                          started. Nothing was resolved for you. job.retry runs it",
+      "                          again from the current code, which is usually right.",
+      "    verification_failed   it broke the program's checks, alone or together with",
+      "                          what landed before it. Retry it as it was, or delegate a",
+      "                          better-specified job instead.",
+      "    failed                read the reason. A scope violation means the job needed",
+      "                          more than you gave it.",
+    ].join("\n"),
+    [
+      "HOW TO FINISH — you must call exactly one of these",
+      "",
+      "  nightshift subprogram.complete { summary }",
+      "    When your objective is met. Refused while anything you delegated is still in",
+      "    flight: wait for it, or cancel it, first.",
+      "",
+      "  nightshift subprogram.fail { reason }",
+      "    When it cannot be met. Whatever is still running under you is cancelled. A",
+      "    clear reason is worth far more than a guess: a human reads it.",
+      "",
+      "  While you work:",
+      "    nightshift subprogram.get            — your objective, scope, and what you have delegated.",
+      "    nightshift delegate { objective, scope, acceptance }",
+      "    nightshift job.wait { jobIds }       — returns when the first of them settles.",
+      "    nightshift job.get / job.cancel / job.retry { jobId }",
+      "    nightshift subprogram.progress { message }",
+      "    nightshift decision.record { ... }   — how you divided the work, and why.",
+      "",
+      "  These are Nightshift's operations, and they are the same however they reach",
+      "  you: as the tools of a server named nightshift, under whatever prefix your",
+      "  environment gives a server's tools, or as functions with these names.",
+      "",
+      "  Exiting without calling subprogram.complete or subprogram.fail fails the",
+      "  sub-program and cancels its jobs, with no explanation attached.",
+    ].join("\n"),
+  ].join("\n\n")}\n`;
 };

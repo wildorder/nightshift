@@ -4,6 +4,7 @@ export * from "./decisions.js";
 export * from "./delegation.js";
 export * from "./event-stream.js";
 export * from "./execution-tree.js";
+export * from "./integration.js";
 export * from "./ownership.js";
 export * from "./permissions.js";
 export * from "./routing-transitions.js";

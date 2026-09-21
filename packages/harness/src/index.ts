@@ -21,7 +21,12 @@ export {
   WORKER_PERMISSIONS,
   type WorkerPermission,
 } from "@nightshift/core";
-export { renderWorkerBrief, type WorkerBriefInput } from "./brief.js";
+export {
+  nightshiftToolNames,
+  renderSubOrchestratorBrief,
+  renderWorkerBrief,
+  type WorkerBriefInput,
+} from "./brief.js";
 export {
   agentStatusForExit,
   type Duration,

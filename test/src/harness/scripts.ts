@@ -11,7 +11,7 @@
  * A script's return value is the process's exit code.
  */
 import { execFile } from "node:child_process";
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /** What a scripted worker does. Chosen per test, or by `NIGHTSHIFT_SCRIPT`. */
@@ -31,7 +31,19 @@ export type ScriptName =
   /** The conformance job: explore, edit source and test, run the tests, decide, complete. */
   | "conform"
   /** The deterministic-failure job: do what was asked, which the fixture's tests contradict. */
-  | "conform-broken";
+  | "conform-broken"
+  // --- P6: the tree fixture. Chosen by a tag on the job's objective, because one
+  // --- run now holds jobs that must each do something different.
+  /** `[add-module <name> wait=<n> delay=<ms>]`: a new module and its test, touching nothing shared. */
+  | "add-module"
+  /** `[rewrite-sum <variant>]`: rewrites the same line as every other variant, to conflict. */
+  | "rewrite-sum"
+  /** `[rename-sum]`: renames `sum` everywhere it is used. Green alone. */
+  | "rename-sum"
+  /** `[call-sum]`: a new module that calls `sum`. Green alone, broken after `rename-sum`. */
+  | "call-sum"
+  /** A sub-program's orchestrator: delegates `[add-module c1]` and `[add-module c2]`, waits, completes. */
+  | "orchestrate";
 
 export const SCRIPT_NAMES: readonly ScriptName[] = [
   "implement",
@@ -42,7 +54,40 @@ export const SCRIPT_NAMES: readonly ScriptName[] = [
   "silent-exit",
   "conform",
   "conform-broken",
+  "add-module",
+  "rewrite-sum",
+  "rename-sum",
+  "call-sum",
+  "orchestrate",
 ];
+
+/**
+ * The script a job's objective asks for, and its arguments: `[name a b k=v] …`.
+ *
+ * A real model reads an objective; the scripted harness reads a tag at the
+ * front of one. It is how a single run gives different jobs different work,
+ * which P6's fixture needs and one script per server could not.
+ */
+export const taggedScript = (
+  objective: string,
+): { readonly script: ScriptName; readonly args: readonly string[] } | undefined => {
+  const tag = /^\[([^\]]+)\]/.exec(objective)?.[1];
+  if (tag === undefined) return undefined;
+  const [name, ...args] = tag.trim().split(/\s+/);
+  return (SCRIPT_NAMES as readonly string[]).includes(name ?? "")
+    ? { script: name as ScriptName, args }
+    : undefined;
+};
+
+/** What a sub-orchestrator script drives: the sub-orchestrator role's tools. */
+export interface OrchestratorSurface {
+  delegate(objective: string, includes: readonly string[]): Promise<string>;
+  /** Waits until every one of `jobIds` has settled; answers each one's final status. */
+  waitAll(jobIds: readonly string[]): Promise<Readonly<Record<string, string>>>;
+  progress(message: string): Promise<void>;
+  complete(summary: string): Promise<void>;
+  fail(reason: string): Promise<void>;
+}
 
 export interface SurfaceDecision {
   readonly context: string;
@@ -68,6 +113,12 @@ export interface ScriptContext {
   /** Settles when the harness has been asked to stop. Never, for a child that is simply killed. */
   readonly cancelled: Promise<void>;
   note(text: string): void;
+  /** The arguments of the objective's tag, positional then `key=value`. */
+  readonly args?: readonly string[];
+  /** Somewhere every worker of this run can see, for barriers between processes. */
+  readonly sharedDir?: string;
+  /** Present when the node is a sub-program's. */
+  readonly orchestrator?: OrchestratorSurface;
 }
 
 /** The helper every `implement` script adds. Correct, and its test passes. */
@@ -118,6 +169,37 @@ const runTests = (worktree: string): Promise<boolean> =>
       resolve(error === null);
     });
   });
+
+const option = (args: readonly string[] | undefined, key: string): string | undefined =>
+  args?.find((arg) => arg.startsWith(`${key}=`))?.slice(key.length + 1);
+
+/**
+ * A barrier between worker **processes**: says "I am here", then waits until
+ * `count` workers have. Overlap becomes a fact the test can rely on rather than
+ * a race it hopes to win. Files, because the workers share nothing else.
+ */
+const meetAt = async (
+  dir: string | undefined,
+  group: string,
+  name: string,
+  count: number,
+): Promise<void> => {
+  if (dir === undefined || count <= 1) return;
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, `${group}.${name}.here`), "", "utf8");
+  for (;;) {
+    const here = (await readdir(dir)).filter(
+      (file) => file.startsWith(`${group}.`) && file.endsWith(".here"),
+    ).length;
+    if (here >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+const replaceIn = async (worktree: string, path: string, change: (text: string) => string) => {
+  const file = join(worktree, path);
+  await writeFile(file, change(await readFile(file, "utf8").catch(() => "")), "utf8");
+};
 
 export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Promise<number>>> = {
   implement: async ({ surface, worktree, note }) => {
@@ -216,6 +298,117 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
       note(`job.complete answered ${outcome}`);
       return 1;
     }
+    return 0;
+  },
+
+  "add-module": async ({ surface, worktree, args, sharedDir }) => {
+    const name = args?.[0] ?? "extra";
+    await surface.get();
+    await surface.progress(`adding src/${name}.js`);
+    // `group` keeps one pair's barrier from being satisfied by another's.
+    await meetAt(
+      sharedDir,
+      option(args, "group") ?? "all",
+      name,
+      Number(option(args, "wait") ?? "1"),
+    );
+    const delay = Number(option(args, "delay") ?? "0");
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    await writeFile(
+      join(worktree, "src", `${name}.js`),
+      `export const ${name} = () => "${name}";\n`,
+      "utf8",
+    );
+    await writeFile(
+      join(worktree, "test", `${name}.test.js`),
+      `import assert from "node:assert/strict";\nimport { test } from "node:test";\n` +
+        `import { ${name} } from "../src/${name}.js";\n\n` +
+        `test("${name}", () => {\n  assert.equal(${name}(), "${name}");\n});\n`,
+      "utf8",
+    );
+    return (await surface.complete(`Added the ${name} module and its test.`)) === "implemented"
+      ? 0
+      : 1;
+  },
+
+  "rewrite-sum": async ({ surface, worktree, args }) => {
+    const bodies: Readonly<Record<string, string>> = {
+      loop: "values.reduce((t, v) => t + v, 0)",
+      strict: "values.reduce((total, value) => total + Number(value), 0)",
+    };
+    await surface.get();
+    await replaceIn(worktree, "src/math.js", (text) =>
+      text.replace(
+        /export const sum = .*;/,
+        `export const sum = (values) => ${bodies[args?.[0] ?? "loop"] ?? bodies.loop};`,
+      ),
+    );
+    await surface.complete(`Rewrote sum (${args?.[0] ?? "loop"}).`);
+    return 0;
+  },
+
+  "rename-sum": async ({ surface, worktree }) => {
+    await surface.get();
+    await replaceIn(worktree, "src/math.js", (text) => text.replaceAll("sum", "total"));
+    await replaceIn(worktree, "src/index.js", () => 'export { mean, total } from "./math.js";\n');
+    await replaceIn(worktree, "test/math.test.js", (text) => text.replaceAll("sum", "total"));
+    // The program's own `shape` step insists `sum` is still exported, so keep an alias there.
+    await replaceIn(
+      worktree,
+      "src/index.js",
+      (text) => `${text}export { total as sum } from "./math.js";\n`,
+    );
+    await surface.complete(
+      "Renamed sum to total in src/math.js, keeping the entry point's export.",
+    );
+    return 0;
+  },
+
+  "call-sum": async ({ surface, worktree }) => {
+    await surface.get();
+    await writeFile(
+      join(worktree, "src", "range.js"),
+      'import { sum } from "./math.js";\n\nexport const range = (values) => sum(values) - 2 * Math.min(...values);\n',
+      "utf8",
+    );
+    await writeFile(
+      join(worktree, "test", "range.test.js"),
+      'import assert from "node:assert/strict";\nimport { test } from "node:test";\n' +
+        'import { range } from "../src/range.js";\n\ntest("range", () => {\n  assert.equal(range([1, 5]), 4);\n});\n',
+      "utf8",
+    );
+    await surface.complete("Added range, which uses sum from src/math.js.");
+    return 0;
+  },
+
+  orchestrate: async ({ orchestrator, worktree, note, args }) => {
+    if (orchestrator === undefined) {
+      note("the orchestrate script needs a sub-orchestrator surface");
+      return 1;
+    }
+    await orchestrator.progress("dividing the sub-program into two independent jobs");
+    // Something an orchestrator must not do, and a real model might: edit its own
+    // checkout. Nothing collects it, which the tree test asserts.
+    await writeFile(join(worktree, "src", "orchestrator-was-here.js"), "export {};\n", "utf8");
+    // Its children's tag is its own, passed down: `[orchestrate delay=500]` makes a
+    // benchmark's tree, and no tag makes the barrier pair the tree test forces.
+    const how = args?.length ? args.join(" ") : "wait=2 group=c";
+    const jobs = [
+      await orchestrator.delegate(`[add-module c1 ${how}] Add the c1 module and its test.`, [
+        "src/**",
+        "test/**",
+      ]),
+      await orchestrator.delegate(`[add-module c2 ${how}] Add the c2 module and its test.`, [
+        "src/**",
+        "test/**",
+      ]),
+    ];
+    const statuses = await orchestrator.waitAll(jobs);
+    if (Object.values(statuses).every((status) => status === "integrated")) {
+      await orchestrator.complete("Both modules are integrated.");
+      return 0;
+    }
+    await orchestrator.fail(`not every job integrated: ${JSON.stringify(statuses)}`);
     return 0;
   },
 

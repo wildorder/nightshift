@@ -20,7 +20,7 @@ import {
 } from "../errors.js";
 import { childrenOf, depthOfChildOf, type ExecutionTree, getNode } from "./execution-tree.js";
 import { explainWidening, narrow } from "./scope.js";
-import { OCCUPIES_CONCURRENCY_SLOT } from "./transitions.js";
+import { isTerminal, OCCUPIES_CONCURRENCY_SLOT } from "./transitions.js";
 
 export type DelegationRejection =
   | { readonly kind: "depth_limit_exceeded"; readonly depth: number; readonly maxDepth: number }
@@ -75,7 +75,9 @@ export const checkDelegation = (
     return { allowed: false, reason: { kind: "parent_cannot_delegate", parentKind: parent.kind } };
   }
 
-  if (parent.status === "integrated" || parent.status === "cancelled") {
+  // Every terminal status, from the table's own list: P5 added `succeeded` after
+  // this rule was written, and a finished program takes no further children.
+  if (isTerminal(parent.status)) {
     return { allowed: false, reason: { kind: "parent_is_terminal", parentStatus: parent.status } };
   }
 
@@ -141,4 +143,60 @@ export const assertDelegationAllowed = (
         `parent ${parentId} is a ${reason.parentKind} and holds no delegation authority`,
       );
   }
+};
+
+/** A concurrency limit wide enough never to be the reason. See {@link checkAuthority}. */
+const OPEN_CONCURRENCY = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Whether a child may **exist** under `parentId`: delegation authority, depth and
+ * scope, with concurrency left out (P6, D-P6-02).
+ *
+ * P6 applies the concurrency limit when a node *starts*, not when it is
+ * delegated, so that excess work queues instead of being refused. This is
+ * `checkDelegation` asked with the limit held open, not a second rule: the P1
+ * rule and its properties are exactly what they were.
+ */
+export const checkAuthority = (
+  tree: ExecutionTree,
+  parentId: ExecutionNodeId,
+  limits: DelegationLimits,
+  request?: ScopeRequest,
+): DelegationCheck =>
+  checkDelegation(tree, parentId, { ...limits, maxConcurrency: OPEN_CONCURRENCY }, request);
+
+/** {@link checkAuthority}, throwing the typed domain error on refusal. */
+export const assertAuthority = (
+  tree: ExecutionTree,
+  parentId: ExecutionNodeId,
+  limits: DelegationLimits,
+  request?: ScopeRequest,
+): { readonly depth: number; readonly scope: Scope } =>
+  assertDelegationAllowed(tree, parentId, { ...limits, maxConcurrency: OPEN_CONCURRENCY }, request);
+
+export type SlotCheck =
+  | { readonly free: true }
+  | { readonly free: false; readonly running: number; readonly maxConcurrency: number };
+
+/**
+ * Whether `nodeId` may take a concurrency slot **now** (P6, D-P6-02).
+ *
+ * Counted per parent, by P1's own `runningChildCount`: a node may start when
+ * fewer than `maxConcurrency` of its siblings hold a slot. "No" here means "not
+ * yet", and the node stays `queued`. The root has no parent and no limit.
+ *
+ * Per parent cannot deadlock: a running sub-program holds one of its *parent's*
+ * slots, never one of its own children's.
+ */
+export const maySlotStart = (
+  tree: ExecutionTree,
+  nodeId: ExecutionNodeId,
+  limits: DelegationLimits,
+): SlotCheck => {
+  const node = getNode(tree, nodeId);
+  if (node.parentNodeId === null) return { free: true };
+  const running = runningChildCount(tree, node.parentNodeId);
+  return running < limits.maxConcurrency
+    ? { free: true }
+    : { free: false, running, maxConcurrency: limits.maxConcurrency };
 };
