@@ -25,6 +25,12 @@ where one of these is true:
 Stages are merged only when neither produces a standalone demo on its own, or when
 they share a fixture and a theme so closely that splitting duplicates setup.
 
+> **Restaged 2026-09-21.** *Planning* was inserted as P7 after the first
+> real-repository trial. Routing & Examination is now **P8**, Decision Graph &
+> Replay **P9**, Remote Runner **P10**, Realtime **P11**. Until P7's T1 sweeps
+> them, other documents, code comments and messages still use the old numbers
+> for those four (for example "remote execution arrives in P9").
+
 ## The programs
 
 | # | Program | Stages | Exit capability | Blocking decisions | State |
@@ -35,10 +41,11 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 | **P4** | Identity and Tenancy | — (inserted) | A second user in a second org cannot see, write to or execute in the first user's project; a worker holds a credential that can do exactly its four operations; A-04 is enforced by the API | amends A-19, A-21, A-27 | complete |
 | **P5** | Harness Neutrality | 4 | The identical Job Contract executes through the Claude Code and Codex adapters against one conformance suite; the adapter contract is final; harness and model are chosen from a compatibility table by configuration | — | complete |
 | **P6** | Parallel & Recursive Execution | 5 | Recursive execution graphs run concurrently in isolated worktrees with deterministic, stale-base-aware integration | — | complete |
-| **P7** | Routing & Examination | 6, 7 | Cheap bounded jobs route to inexpensive models and still integrate only when verified; risk policy drives independent examination without code changes | — | |
-| **P8** | Decision Graph & Replay | 8 | Reversing a human-overridden decision invalidates the minimum execution cone and replays back to verified | — | |
-| **P9** | Remote Runner | 9 | Dispatch, close the laptop, come back to a completed or partial run; the whole execution layer runs on one AgentCore runtime instance per program run; the AgentCore harness worker with a Bedrock model completes the conformance fixture there | O-03 instance sizing/lifecycle; O-05 harness credential transport; O-06 git remote/integration policy; who pays for Bedrock tokens | |
-| **P10** | Realtime & Analytics Surface | 10 | Full run state and history reconstructable from centralized APIs alone, observable live | O-02 realtime transport | |
+| **P7** | Planning | — (inserted) | A program is planned with the human in three consistent artifacts (program document, manifest, a spec per workstream), with seams and human prerequisites found at planning time; checked deterministically, ratified, and then run end to end with nobody watching | — | drafted |
+| **P8** | Routing & Examination | 6, 7 | Cheap bounded jobs route to inexpensive models and still integrate only when verified; risk policy drives independent examination without code changes | — | |
+| **P9** | Decision Graph & Replay | 8 | Reversing a human-overridden decision invalidates the minimum execution cone and replays back to verified | — | |
+| **P10** | Remote Runner | 9 | Dispatch, close the laptop, come back to a completed or partial run; the whole execution layer runs on one AgentCore runtime instance per program run; the AgentCore harness worker with a Bedrock model completes the conformance fixture there | O-03 instance sizing/lifecycle; O-05 harness credential transport; O-06 git remote/integration policy; who pays for Bedrock tokens | |
+| **P11** | Realtime & Analytics Surface | 10 | Full run state and history reconstructable from centralized APIs alone, observable live | O-02 realtime transport | |
 
 Open decision IDs refer to `docs/architecture.md` §3.
 
@@ -57,13 +64,15 @@ P5 Harness Neutrality
    ↓
 P6 Parallel & Recursive Execution
    ↓
-P7 Routing & Examination
+P7 Planning                      ← inserted 2026-09-21
    ↓
-P8 Decision Graph & Replay
+P8 Routing & Examination
    ↓
-P9 Remote Runner
+P9 Decision Graph & Replay
    ↓
-P10 Realtime & Analytics Surface
+P10 Remote Runner
+   ↓
+P11 Realtime & Analytics Surface
 ```
 
 Strictly sequential. This mirrors the source plan's preferred progression and its
