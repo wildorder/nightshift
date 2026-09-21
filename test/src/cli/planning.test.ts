@@ -1,0 +1,296 @@
+/**
+ * The planning commands through the real CLI, against the real handler, over a
+ * real git repository (P7, T3): `plan check`, `plan ratify`, `preflight`, and
+ * `run {id}` as far as T3 takes it (SC-P7-03, SC-P7-04, SC-P7-05).
+ */
+import { execFileSync } from "node:child_process";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createProject, runCli } from "@nightshift/cli";
+import type { ProgramContract } from "@nightshift/contracts";
+import {
+  createFetchTransport,
+  createHttpPlanning,
+  createHttpStores,
+  staticTokenProvider,
+} from "@nightshift/persistence/http";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  authoredProgram,
+  type MaterialisedRepo,
+  materialiseFixtureRepo,
+} from "../slice/fixture-repo.js";
+import { type Operator, signIn } from "./operator.js";
+
+const PROGRAM = "p1-demo";
+const PLAN = [
+  "# Demo",
+  "",
+  "## Strands",
+  "",
+  "### S-01 The module",
+  "",
+  "A module exists, with its test.",
+  "",
+].join("\n");
+
+let op: Operator;
+let fixture: MaterialisedRepo;
+let contract: ProgramContract;
+
+const git = (...args: string[]): string =>
+  execFileSync("git", args, { cwd: fixture.repo, encoding: "utf8" });
+
+const programPath = (...parts: string[]): string =>
+  join(fixture.repo, "docs", "programs", PROGRAM, ...parts);
+
+/**
+ * Writes the program's two files. The contract on disk states no `projectId`,
+ * `verification`, `modelPolicy`, `delegationLimits` or `costPolicy`: those come
+ * from `nightshift.config.json`, which is the point of having one.
+ */
+const writeProgram = async (
+  patch: Partial<ProgramContract> = {},
+  plan: string = PLAN,
+): Promise<void> => {
+  const {
+    projectId: _projectId,
+    verification: _verification,
+    modelPolicy: _modelPolicy,
+    delegationLimits: _delegationLimits,
+    costPolicy: _costPolicy,
+    ...authored
+  } = { ...contract, ...patch };
+  await mkdir(programPath(), { recursive: true });
+  await writeFile(programPath("contract.json"), `${JSON.stringify(authored, null, 2)}\n`);
+  await writeFile(programPath("plan.md"), plan);
+};
+
+const commit = (message: string): void => {
+  git("add", "-A");
+  git("-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", message);
+};
+
+const cli = async (...argv: string[]): Promise<number> => {
+  op.out.length = 0;
+  op.err.length = 0;
+  return runCli(op.environment, [...argv, "--repo", fixture.repo]);
+};
+
+const stores = () =>
+  createHttpStores({
+    transport: createFetchTransport({
+      endpoint: op.plane.url,
+      tokens: staticTokenProvider("ignored-by-the-local-plane"),
+    }),
+    actingOrg: op.orgId,
+  });
+
+beforeEach(async () => {
+  op = await signIn();
+  const created = await createProject(op.environment, { name: "planning-demo" });
+  fixture = await materialiseFixtureRepo({ projectId: created.projectId as never });
+  const base = await authoredProgram();
+  contract = {
+    ...base,
+    projectId: created.projectId as never,
+    status: "planning",
+    strands: [
+      {
+        id: "S-01",
+        name: "The module",
+        scope: { summary: "the source tree", includes: base.scope.includes, excludes: [] },
+        acceptance: ["its tests pass"],
+        successCriteria: base.successCriteria.map((criterion) => criterion.id),
+        dependsOn: [],
+        prerequisites: ["HP-01"],
+      },
+    ],
+    prerequisites: [
+      {
+        id: "HP-01",
+        description: "The release token is in place.",
+        remediation: "Create the file `release-token` at the repository root.",
+        // Flipped by the test: present or absent, the same on Windows and Linux.
+        verifyCommand: `node -e "require('fs').accessSync('release-token')"`,
+        status: "pending",
+      },
+    ],
+  };
+  await writeFile(
+    join(fixture.repo, "nightshift.config.json"),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        projectId: created.projectId,
+        contextDocs: [],
+        verification: base.verification,
+        modelPolicy: base.modelPolicy,
+        delegationLimits: base.delegationLimits,
+        costPolicy: base.costPolicy,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  await writeProgram();
+  commit("plan the demo program");
+});
+
+afterEach(async () => {
+  await op.cleanup();
+  await fixture.remove();
+  await op.plane.close();
+});
+
+describe("nightshift plan check", () => {
+  it("answers READY, inheriting what the contract does not state from the config", async () => {
+    expect(await cli("plan", "check", PROGRAM)).toBe(0);
+    expect(op.out[0]).toBe("READY");
+    expect(op.out[1]).toContain("1 strands, 1 prerequisites");
+  });
+
+  it("answers every reason, and the exit code is the answer", async () => {
+    await writeProgram(
+      {
+        strands: [
+          { ...(contract.strands?.[0] as never), successCriteria: [], dependsOn: ["S-02"] },
+        ],
+      },
+      "# Demo\n\nNo strand sections at all.\n",
+    );
+    expect(await cli("plan", "check", PROGRAM)).toBe(1);
+    const said = op.err.join("\n");
+    expect(op.err[0]).toMatch(/^NOT READY: \d+ reasons$/);
+    expect(said).toContain("is claimed by no strand");
+    expect(said).toContain("depends on S-02");
+    expect(said).toContain("S-01 has no section in the plan document");
+  });
+
+  it("refuses an id that is not a program here, as a usage error", async () => {
+    expect(await cli("plan", "check", "p9-nothing")).toBe(2);
+    expect(op.err.join("\n")).toContain("there is no program `p9-nothing` here");
+    expect(await cli("plan", "check", "../escape")).toBe(2);
+  });
+});
+
+describe("nightshift plan ratify", () => {
+  it("refuses a plan that is not ready, and ratifies nothing", async () => {
+    await writeProgram({ prerequisites: [] });
+    commit("break the plan");
+    expect(await cli("plan", "ratify", PROGRAM)).toBe(1);
+    expect(op.err.join("\n")).toContain("Nothing was ratified");
+    expect(
+      await stores().programContracts.get(contract.projectId, contract.programId),
+    ).toBeUndefined();
+  });
+
+  it("refuses uncommitted changes: the hash must name something git can reproduce", async () => {
+    await writeFile(programPath("plan.md"), `${PLAN}\nAn afterthought.\n`);
+    expect(await cli("plan", "ratify", PROGRAM)).toBe(1);
+    expect(op.err.join("\n")).toContain(`docs/programs/${PROGRAM}/plan.md`);
+    expect(
+      await stores().programContracts.get(contract.projectId, contract.programId),
+    ).toBeUndefined();
+  });
+
+  it("uploads the plan, records the hash, and the document reads back byte for byte", async () => {
+    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
+    expect(op.out[0]).toBe(`ratified docs/programs/${PROGRAM}`);
+
+    const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(recorded?.status).toBe("ratified");
+    // The merged contract is what was ratified: the control plane depends on no file.
+    expect(recorded?.verification).toEqual(contract.verification);
+    expect(op.out.join("\n")).toContain(recorded?.planHash ?? "(no hash)");
+
+    const planning = createHttpPlanning({
+      transport: createFetchTransport({
+        endpoint: op.plane.url,
+        tokens: staticTokenProvider("ignored"),
+      }),
+    });
+    const document = await planning.planDocument(
+      { projectId: contract.projectId, programId: contract.programId },
+      recorded?.planDocument?.sha256 ?? "",
+    );
+    expect(document?.text).toBe(PLAN);
+  });
+});
+
+describe("nightshift preflight (SC-P7-05)", () => {
+  it("refuses a program that is not ratified", async () => {
+    expect(await cli("preflight", PROGRAM)).toBe(2);
+    expect(op.err.join("\n")).toContain("is not ratified");
+  });
+
+  it("prints the remediation for what is unmet, and marks only what passed", async () => {
+    await cli("plan", "ratify", PROGRAM);
+
+    expect(await cli("preflight", PROGRAM)).toBe(1);
+    const said = op.err.join("\n");
+    expect(said).toContain("UNMET HP-01");
+    expect(said).toContain("Create the file `release-token` at the repository root.");
+    const before = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(before?.prerequisites?.[0]).toMatchObject({ status: "pending" });
+    expect(before?.prerequisites?.[0]?.lastCheck?.exitCode).not.toBe(0);
+
+    // The human does it. Untracked, so the plan is unchanged.
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("preflight", PROGRAM)).toBe(0);
+    expect(op.out.at(-1)).toBe("all prerequisites satisfied");
+    const after = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(after?.prerequisites?.[0]).toMatchObject({
+      status: "satisfied",
+      lastCheck: { exitCode: 0 },
+    });
+    // Checking a prerequisite is not an edit: the plan is still the ratified one.
+    expect(after?.planHash).toBe(before?.planHash);
+
+    // Satisfied is what the last check said.
+    await rm(join(fixture.repo, "release-token"));
+    expect(await cli("preflight", PROGRAM)).toBe(0);
+    expect(await cli("preflight", PROGRAM, "--recheck")).toBe(1);
+  });
+});
+
+describe("nightshift run {id} (SC-P7-04)", () => {
+  it("refuses a planned program that is not ratified, before writing anything", async () => {
+    expect(await cli("run", PROGRAM)).toBe(1);
+    expect(op.err.join("\n")).toContain("has not been ratified");
+    expect(
+      await stores().programContracts.get(contract.projectId, contract.programId),
+    ).toBeUndefined();
+  });
+
+  it("starts a run of the ratified plan, whose program node carries it", async () => {
+    await cli("plan", "ratify", PROGRAM);
+    expect(await cli("run", PROGRAM)).toBe(0);
+    const runId = op.out[0] as never;
+    const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
+    const scope = { projectId: contract.projectId, programId: contract.programId, runId };
+    const run = await stores().runs.get(scope, runId);
+    const root = await stores().executionNodes.get(scope, run?.rootNodeId as never);
+    expect(root?.plan).toEqual({
+      planHash: recorded?.planHash,
+      planDocument: recorded?.planDocument,
+    });
+  });
+
+  it("refuses a plan edited after ratification until it is ratified again", async () => {
+    await cli("plan", "ratify", PROGRAM);
+    await writeFile(programPath("plan.md"), `${PLAN}\nA quiet change of mind.\n`);
+    expect(await cli("run", PROGRAM)).toBe(1);
+    expect(op.err.join("\n")).toContain("has changed since it was ratified");
+
+    commit("change the plan");
+    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
+    expect(await cli("run", PROGRAM)).toBe(0);
+    const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(recorded?.ratifications).toHaveLength(2);
+  });
+
+  it("still runs a contract by its path", async () => {
+    expect(await cli("run", join(fixture.repo, "nightshift.program.json"))).toBe(0);
+  });
+});

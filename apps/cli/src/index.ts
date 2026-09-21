@@ -26,6 +26,13 @@ export {
   resolveProfile,
 } from "./commands/login.js";
 export { type LogoutOptions, type LogoutResult, logout } from "./commands/logout.js";
+export {
+  type PlanCheckResult,
+  type PlanOptions,
+  planCheck,
+  planRatify,
+} from "./commands/plan.js";
+export { type PreflightOptions, preflight } from "./commands/preflight.js";
 export { createProject, type ProjectCreateOptions } from "./commands/project-create.js";
 export { REMOTE_REFUSAL, type RunOptions, type RunResult, run } from "./commands/run.js";
 export { ACTIVE_ORG_CLAIM, type WhoamiOrg, type WhoamiResult, whoami } from "./commands/whoami.js";
@@ -83,4 +90,12 @@ export {
   VERIFIER_MAX_LENGTH,
   VERIFIER_MIN_LENGTH,
 } from "./pkce.js";
+export {
+  CONTRACT_FILE,
+  isProgramDirectoryName,
+  PLAN_FILE,
+  type ProgramFiles,
+  readConfig,
+  readProgramFiles,
+} from "./program-files.js";
 export { type FreshSession, openFreshSession, openSession, type Session } from "./session.js";
