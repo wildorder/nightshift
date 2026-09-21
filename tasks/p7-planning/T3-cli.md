@@ -19,7 +19,8 @@
    exit code is the answer.
 4. **`nightshift plan ratify {id}`**: refuses unless `READY`; refuses a plan with
    uncommitted changes, because the hash has to name something git can
-   reproduce; records the hash; prints what was ratified.
+   reproduce; uploads `plan.md`, then records the hash with the document's
+   reference; prints what was ratified. If the upload fails, nothing is ratified.
 5. **`nightshift preflight {id}`**: runs every pending `verifyCommand` as a
    subprocess with the verification runner's sanitised environment and a
    timeout, records each result, and prints the remediation for each failure.

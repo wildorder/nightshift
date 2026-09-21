@@ -37,7 +37,14 @@ and what the engine will schedule by. The rules are pure; the API applies them.
    a Windows checkout and a Linux one agree. The contract's own `status` and
    prerequisite statuses are excluded, or ratifying would change the hash.
 6. **`apps/api`**: `PUT program` accepts the grown contract; `planning →
-   ratified` only with a plan hash, kept with a short history; a ratified
+   ratified` only with a plan hash, kept with a short history, **and with the plan
+   document stored in the control plane**: a program-scoped presigned upload
+   (A-08; today's artifacts are run-scoped, and at ratification there is no run
+   yet), recorded on the contract as `planDocument { uri, sha256, sizeBytes }`,
+   its `sha256` checked against the hash's plan component so the record holds
+   exactly what was approved, and readable back by a user in the owning org. A
+   run copies the reference onto its program node, so a run is reconstructable
+   from the control plane alone (P10, P11). A ratified
    contract's plan fields are immutable. `PUT run` for a contract that has
    strands is refused unless ratified; one with none runs as today.
    `ExecutionNodeStatus.awaiting_human`, reached from and left to `queued`, off
