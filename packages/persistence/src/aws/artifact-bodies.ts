@@ -170,6 +170,27 @@ export const createArtifactUploadSigner = (
   };
 };
 
+/**
+ * A missing object, read by a role that holds `s3:GetObject` and **not**
+ * `s3:ListBucket`, is `AccessDenied` rather than `NoSuchKey`: S3 will not
+ * confirm a key's absence to a caller who may not list. Found by the smoke suite
+ * on 2026-09-21, as a 500 where a 404 belonged. The API role is deliberately not
+ * given `ListBucket`, so here a denial on a plan document's key reads as "not
+ * there". The cost is that a broken grant looks like a missing upload; the smoke
+ * suite ratifies against the deployed stack, which is what would catch that.
+ */
+const readIfPresent = async (
+  objects: ObjectClient,
+  input: GetObjectInput,
+): Promise<Uint8Array | undefined> => {
+  try {
+    return await objects.getObject(input);
+  } catch (error) {
+    if (error instanceof Error && error.name === "AccessDenied") return undefined;
+    throw error;
+  }
+};
+
 export interface PlanDocumentStoreConfig {
   readonly bucketName: string;
   readonly s3: S3Client;
@@ -226,7 +247,7 @@ export const createPlanDocumentStore = (config: PlanDocumentStoreConfig): PlanDo
     },
     get: async (scope, sha256) => {
       const key = planDocumentObjectKey(scope, sha256);
-      const body = await objects.getObject({ Bucket: config.bucketName, Key: key });
+      const body = await readIfPresent(objects, { Bucket: config.bucketName, Key: key });
       return body === undefined ? undefined : { uri: `s3://${config.bucketName}/${key}`, body };
     },
   };

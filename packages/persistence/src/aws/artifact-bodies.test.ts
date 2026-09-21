@@ -103,4 +103,23 @@ describe("plan documents (P7, D-P7-02)", () => {
     });
     expect(await store.get(scope, sha)).toEqual({ uri: `s3://bucket/${key}`, body });
   });
+
+  it("reads S3's AccessDenied for a missing key as absent, and rethrows anything else", async () => {
+    const f = createFixtures();
+    const scope = { projectId: f.scope.projectId, programId: f.scope.programId };
+    const failing = (name: string) =>
+      createPlanDocumentStore({
+        bucketName: "bucket",
+        s3: {} as S3Client,
+        objects: {
+          putObject: async () => undefined,
+          getObject: async () => {
+            throw Object.assign(new Error(name), { name });
+          },
+        },
+      });
+    // Without s3:ListBucket, S3 will not say NoSuchKey.
+    expect(await failing("AccessDenied").get(scope, sha)).toBeUndefined();
+    await expect(failing("SlowDown").get(scope, sha)).rejects.toThrow("SlowDown");
+  });
 });
