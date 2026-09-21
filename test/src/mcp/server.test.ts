@@ -186,6 +186,8 @@ describe("the role split (D-P3-01)", () => {
       "run.attach",
       "run.finish",
       "run.start",
+      // P7: a strand of the ratified plan, named and nothing else (D-P7-04).
+      "strand.delegate",
     ]);
     await mcp.stop();
   });
