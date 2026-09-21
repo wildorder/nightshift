@@ -28,7 +28,7 @@
  */
 import type { AgentId, CheckpointId, CommitSha, ExecutionNodeId } from "@nightshift/contracts";
 import { nowIso, transition } from "@nightshift/core";
-import type { ExecutionEnvironment, RunSession } from "./environment.js";
+import type { LandingEnvironment, RunSession } from "./environment.js";
 import {
   checkpointRef,
   currentBranch,
@@ -57,7 +57,7 @@ export type IntegrateResult =
 
 /** Every reason the program checkout is not in a state to be fast-forwarded. */
 const blockingReason = async (
-  environment: ExecutionEnvironment,
+  environment: LandingEnvironment,
   input: IntegrateInput,
 ): Promise<string | undefined> => {
   const repo = input.session.repoPath;
@@ -80,7 +80,7 @@ const blockingReason = async (
 };
 
 export const integrateNode = async (
-  environment: ExecutionEnvironment,
+  environment: LandingEnvironment,
   input: IntegrateInput,
 ): Promise<IntegrateResult> => {
   const { stores, clock, outbox, git: runner } = environment;
@@ -166,7 +166,7 @@ export const integrateNode = async (
  * survives, so P6 can pick the commit up and reconcile it.
  */
 const failSealed = async (
-  environment: ExecutionEnvironment,
+  environment: LandingEnvironment,
   input: IntegrateInput,
   reason: string,
 ): Promise<void> => {

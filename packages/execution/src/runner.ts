@@ -832,7 +832,7 @@ const uploadTranscript = async (
 
 /** Uploads bytes and records the reference, in that order (A-08). */
 export const recordArtifact = async (
-  environment: ExecutionEnvironment,
+  environment: Pick<ExecutionEnvironment, "stores" | "bodies" | "clock" | "ids" | "outbox">,
   input: {
     readonly scope: RunSession["scope"];
     readonly nodeId: ExecutionNodeId;

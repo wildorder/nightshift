@@ -47,7 +47,7 @@ import {
 import { runVerificationSteps, toVerificationCommands } from "@nightshift/verification";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
-  type ExecutionEnvironment,
+  type LandingEnvironment,
   type RunSession,
 } from "./environment.js";
 import { cleanCheckout } from "./git/index.js";
@@ -87,7 +87,7 @@ export type VerifyResult =
  * environment can ask it, and from the run's own contract when it cannot.
  */
 const unmetPrerequisites = async (
-  environment: ExecutionEnvironment,
+  environment: LandingEnvironment,
   input: VerifyInput,
 ): Promise<ReadonlySet<string>> => {
   const { program } = input.session;
@@ -107,7 +107,7 @@ const unmetPrerequisites = async (
 };
 
 export const verifyNode = async (
-  environment: ExecutionEnvironment,
+  environment: LandingEnvironment,
   input: VerifyInput,
 ): Promise<VerifyResult> => {
   const { stores, clock, outbox } = environment;
@@ -206,16 +206,10 @@ export const verifyNode = async (
   if (nothingFailed && (waitingOn.length > 0 || input.onProvisionalLine === true)) {
     // Not a verdict. A step that ran and failed never gets here: that is a
     // failure, below, whatever else was deferred.
-    const reason =
-      waitingOn.length > 0
-        ? `deferred: ${waitingOn.join(", ")} ${waitingOn.length === 1 ? "is" : "are"} not yet satisfied, so ` +
-          `${commands
-            .filter((command) => command.deferred !== undefined)
-            .map((command) => command.stepId)
-            .join(", ")} could not run`
-        : "deferred: every check ran and passed, on top of work whose own checks are deferred";
-    const { outcomeReason: _earlier, ...deferred } = transition(verifying, "defer", at);
-    await stores.executionNodes.put({ ...deferred, outcomeReason: reason });
+    // No `outcomeReason`: a deferral is not an outcome, and a node's reason is
+    // written once. Why it waits is in the Verification (each deferred command
+    // names its prerequisite) and on the `node.deferred` event.
+    await stores.executionNodes.put(transition(verifying, "defer", at));
     outbox.emit({
       type: "verification.completed",
       source: "control-plane",

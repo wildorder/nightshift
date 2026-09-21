@@ -106,6 +106,24 @@ export interface ExecutionEnvironment {
   readonly prerequisites?: PrerequisiteBook;
 }
 
+/**
+ * What verifying and integrating a commit need, and no more: no harness, no
+ * token minter, no worker environment. `nightshift resume` has exactly this
+ * (P7, D-P7-10): it runs checks and lands commits, and starts no agent.
+ */
+export type LandingEnvironment = Pick<
+  ExecutionEnvironment,
+  | "stores"
+  | "bodies"
+  | "clock"
+  | "ids"
+  | "paths"
+  | "git"
+  | "outbox"
+  | "verificationTimeoutMs"
+  | "prerequisites"
+>;
+
 /** Reads the program's prerequisites. Satisfied by `persistence/http`'s planning client. */
 export interface PrerequisiteBook {
   prerequisites(scope: ProgramScope): Promise<readonly Prerequisite[]>;

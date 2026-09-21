@@ -37,6 +37,7 @@ export {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExecutionEnvironment,
+  type LandingEnvironment,
   type PrerequisiteBook,
   type RunSession,
   runIdOf,
@@ -69,6 +70,12 @@ export {
   renderReport,
   type StrandReport,
 } from "./report.js";
+export {
+  deferredLine,
+  type ResumeResult,
+  type ResumeSession,
+  resumeDeferred,
+} from "./resume.js";
 export {
   type DelegateJobInput,
   delegateJob,
