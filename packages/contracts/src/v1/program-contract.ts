@@ -7,6 +7,16 @@
  */
 import { z } from "zod";
 import { IsoTimestampSchema, programScoped, RiskLevelSchema, ScopeSchema } from "./common.js";
+import {
+  MAX_RATIFICATION_HISTORY,
+  PlanDocumentRefSchema,
+  PlanHashSchema,
+  PlannedDecisionSchema,
+  PlanStatusSchema,
+  PrerequisiteSchema,
+  RatificationSchema,
+  StrandSchema,
+} from "./plan.js";
 
 /** A program-level outcome the run is judged against. */
 export const SuccessCriterionSchema = z.strictObject({
@@ -102,6 +112,22 @@ export const ProgramContractSchema = z
     /** Default risk when a Job Contract does not state one. */
     defaultRisk: RiskLevelSchema,
     createdAt: IsoTimestampSchema,
+    /**
+     * The planned part (P7, `./plan.ts`). Every field is optional and absent
+     * means empty, so a contract written before P7 parses to exactly what it
+     * was, and one with no strands runs exactly as it always did.
+     */
+    status: PlanStatusSchema.optional(),
+    strands: z.array(StrandSchema).optional(),
+    prerequisites: z.array(PrerequisiteSchema).optional(),
+    decisions: z.array(PlannedDecisionSchema).optional(),
+    /** What this program deliberately does not deliver. Prose, for the human and the orchestrator. */
+    outOfScope: z.array(z.string().min(1)).optional(),
+    /** `planHash` in `core` over this contract and the plan document, as ratified (D-P7-02). */
+    planHash: PlanHashSchema.optional(),
+    planDocument: PlanDocumentRefSchema.optional(),
+    /** Every ratification so far, oldest first, the current one last. Written by the control plane. */
+    ratifications: z.array(RatificationSchema).max(MAX_RATIFICATION_HISTORY).optional(),
   })
   /**
    * Step identifiers are what a `Verification` attaches an exit code and a log
@@ -116,5 +142,31 @@ export const ProgramContractSchema = z
   .refine((value) => uniqueIds(value.successCriteria), {
     message: "success criterion ids must be unique within a program contract",
     path: ["successCriteria"],
-  });
+  })
+  /**
+   * Ids are how the plan document, the engine and the report refer to these, so
+   * a duplicate is a broken reference rather than an unready plan.
+   */
+  .refine((value) => uniqueIds(value.strands ?? []), {
+    message: "strand ids must be unique within a program contract",
+    path: ["strands"],
+  })
+  .refine((value) => uniqueIds(value.prerequisites ?? []), {
+    message: "prerequisite ids must be unique within a program contract",
+    path: ["prerequisites"],
+  })
+  .refine((value) => uniqueIds(value.decisions ?? []), {
+    message: "planned decision ids must be unique within a program contract",
+    path: ["decisions"],
+  })
+  /** A gate that can be recorded without what was approved is not a gate (D-P7-02). */
+  .refine(
+    (value) =>
+      value.status !== "ratified" ||
+      (value.planHash !== undefined && value.planDocument !== undefined),
+    {
+      message: "a ratified contract carries its plan hash and its plan document",
+      path: ["status"],
+    },
+  );
 export type ProgramContract = z.infer<typeof ProgramContractSchema>;

@@ -7,6 +7,7 @@ export * from "./execution-tree.js";
 export * from "./integration.js";
 export * from "./ownership.js";
 export * from "./permissions.js";
+export * from "./plan.js";
 export * from "./routing-transitions.js";
 export * from "./run-transitions.js";
 export * from "./scope.js";

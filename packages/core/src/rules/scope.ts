@@ -226,7 +226,7 @@ const matchFrom = (
 };
 
 /** `*` matches any run of characters within one segment; `?` matches exactly one. */
-const singleSegmentMatches = (pattern: string, segment: string): boolean => {
+export const singleSegmentMatches = (pattern: string, segment: string): boolean => {
   if (pattern === "*") return true;
   if (!pattern.includes("*") && !pattern.includes("?")) return pattern === segment;
 
