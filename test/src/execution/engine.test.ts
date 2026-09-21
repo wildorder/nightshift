@@ -568,7 +568,7 @@ const outOfScope: Work = async ({ worktree }) => {
 
 /** Index of the first event of `type` on `nodeId`, which must exist. */
 const indexOfEvent = (
-  events: readonly { type: string; executionNodeId: string }[],
+  events: readonly { type: string; executionNodeId: string | null }[],
   type: string,
   nodeId: string,
 ): number => {
@@ -596,7 +596,7 @@ const openInOrder = (
 
 /** From the record, never from timing: each strand started after every dependency had landed. */
 const expectStartedAfterDependencies = (
-  events: readonly { type: string; executionNodeId: string }[],
+  events: readonly { type: string; executionNodeId: string | null }[],
   strands: readonly Strand[],
   nodes: ReadonlyMap<string, ExecutionNodeId>,
 ): void => {
