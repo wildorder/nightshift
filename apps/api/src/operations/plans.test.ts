@@ -3,7 +3,7 @@
  * plan document, and who may say a prerequisite is met (SC-P7-04, SC-P7-05).
  */
 import { createHash } from "node:crypto";
-import type { ProgramContract, Strand } from "@nightshift/contracts";
+import type { Prerequisite, ProgramContract, Strand } from "@nightshift/contracts";
 import {
   createFixedClock,
   createFixtures,
@@ -188,7 +188,9 @@ describe("ratification (D-P7-02)", () => {
     expect(second.prerequisites?.[0]?.status).toBe("satisfied");
 
     const changedCommand = planned(w, {
-      prerequisites: [{ ...(edited.prerequisites?.[0] as never), verifyCommand: "test -n y" }],
+      prerequisites: [
+        { ...(edited.prerequisites?.[0] as Prerequisite), verifyCommand: "test -n y" },
+      ],
     });
     const third = await ratify(w, changedCommand);
     expect(third.prerequisites?.[0]).toMatchObject({ status: "pending" });
@@ -201,7 +203,7 @@ describe("ratification (D-P7-02)", () => {
     const claimed = planned(w, {
       prerequisites: [
         {
-          ...(contract.prerequisites?.[0] as never),
+          ...(contract.prerequisites?.[0] as Prerequisite),
           status: "satisfied",
           lastCheck: { exitCode: 0, checkedAt: NOW },
         },
