@@ -80,6 +80,8 @@ export {
   shutdown,
 } from "./shutdown.js";
 export {
+  PlanChangedError,
+  PlanNotRatifiedError,
   ProgramContractChangedError,
   ProjectMissingError,
   type StartedRun,

@@ -13,11 +13,11 @@
  * server attaches. Authorizing work is a human act at a terminal, so the last
  * line this prints is an instruction to a person, not a process.
  */
-import { readFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { readFile, stat } from "node:fs/promises";
 import { startRun } from "@nightshift/execution";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
+import { isProgramDirectoryName, readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession } from "../session.js";
 
 /** What `--remote` says until P10 turns it on. */
@@ -39,8 +39,59 @@ export interface RunResult {
   readonly baseCommit: string;
 }
 
-const resolveFrom = (cwd: string, path: string): string =>
-  isAbsolute(path) ? path : resolve(cwd, path);
+const isFile = async (path: string): Promise<boolean> => {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/** What `startRun` is given: a contract, and for a planned program its plan document. */
+interface RunSource {
+  readonly program: unknown;
+  readonly planText?: string;
+}
+
+/**
+ * `nightshift run <contract path>` keeps working; `nightshift run {id}` names a
+ * program's directory under `docs/programs/` (D-P7-03). A path that exists wins,
+ * so a contract file that happens to be named like an id is still a file.
+ */
+const readSource = async (
+  environment: CliEnvironment,
+  options: RunOptions,
+  repoPath: string,
+): Promise<RunSource> => {
+  const contractPath = resolveFrom(environment.cwd, options.contract);
+  if (isProgramDirectoryName(options.contract) && !(await isFile(contractPath))) {
+    const files = await readProgramFiles(repoPath, options.contract);
+    return { program: files.contract, planText: files.planText };
+  }
+  return { program: await readContractFile(contractPath) };
+};
+
+const readContractFile = async (contractPath: string): Promise<unknown> => {
+  let text: string;
+  try {
+    text = await readFile(contractPath, "utf8");
+  } catch (cause) {
+    throw new UsageError(
+      `could not read the Program Contract at ${contractPath}`,
+      `Pass a program id, for example \`nightshift run p1-billing\`, or the path to an authored contract. (${
+        cause instanceof Error ? cause.message : String(cause)
+      })`,
+    );
+  }
+  try {
+    return JSON.parse(text);
+  } catch (cause) {
+    throw new UsageError(
+      `${contractPath} is not valid JSON`,
+      cause instanceof Error ? cause.message : String(cause),
+    );
+  }
+};
 
 export const run = async (environment: CliEnvironment, options: RunOptions): Promise<RunResult> => {
   if (options.remote) {
@@ -54,30 +105,8 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
     );
   }
 
-  const contractPath = resolveFrom(environment.cwd, options.contract);
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-
-  let text: string;
-  try {
-    text = await readFile(contractPath, "utf8");
-  } catch (cause) {
-    throw new UsageError(
-      `could not read the Program Contract at ${contractPath}`,
-      `Pass the path to the authored contract, for example \`nightshift run ./nightshift.program.json\`. (${
-        cause instanceof Error ? cause.message : String(cause)
-      })`,
-    );
-  }
-
-  let program: unknown;
-  try {
-    program = JSON.parse(text);
-  } catch (cause) {
-    throw new UsageError(
-      `${contractPath} is not valid JSON`,
-      cause instanceof Error ? cause.message : String(cause),
-    );
-  }
+  const source = await readSource(environment, options, repoPath);
 
   const session = await openSession(environment);
 
@@ -90,7 +119,7 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
       ids: environment.ids,
       git: environment.git,
     },
-    { program, repoPath },
+    { ...source, repoPath },
   );
 
   environment.out(started.run.runId);
