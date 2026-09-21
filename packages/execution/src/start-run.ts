@@ -150,7 +150,7 @@ const sha256Hex = (text: string): string => createHash("sha256").update(text).di
  * contract is never written from here; ratification is the only thing that
  * writes one.
  */
-const ratifiedContractFor = async (
+export const requireRatifiedPlan = async (
   stores: ProjectStores,
   program: ProgramContract,
   planText: string | undefined,
@@ -180,7 +180,7 @@ export const startRun = async (
   if (project === undefined) throw new ProjectMissingError(authored.projectId);
 
   const program = isPlanned(authored)
-    ? await ratifiedContractFor(stores, authored, input.planText)
+    ? await requireRatifiedPlan(stores, authored, input.planText)
     : await confirmContract(stores, authored);
 
   const baseCommit = await revParse(

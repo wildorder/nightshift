@@ -14,24 +14,38 @@
  * line this prints is an instruction to a person, not a process.
  */
 import { readFile, stat } from "node:fs/promises";
+import { isPlanned } from "@nightshift/core";
 import { startRun } from "@nightshift/execution";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { isProgramDirectoryName, readProgramFiles, resolveFrom } from "../program-files.js";
+import {
+  isProgramDirectoryName,
+  type ProgramFiles,
+  readProgramFiles,
+  resolveFrom,
+} from "../program-files.js";
 import { openSession } from "../session.js";
+import { runProgram } from "./run-program.js";
 
 /** What `--remote` says until P10 turns it on. */
 export const REMOTE_REFUSAL = "remote execution arrives in P10";
 
 export interface RunOptions {
-  /** Path to the authored Program Contract, relative to the working directory. */
+  /** A program id under `docs/programs/`, or the path to an authored Program Contract. */
   readonly contract: string;
   /** The operator's clone. Defaults to the working directory. */
   readonly repo?: string;
   readonly remote: boolean;
+  /** A planned program only: create the run and let a human's own session orchestrate it. */
+  readonly attended?: boolean;
+  /** A planned program only: the human's choice of orchestrator (A-38). */
+  readonly harness?: string;
+  readonly model?: string;
 }
 
 export interface RunResult {
+  /** 0 unless a planned program was run to its end and did not succeed, or was refused by preflight. */
+  readonly exitCode: number;
   readonly runId: string;
   readonly programId: string;
   readonly projectId: string;
@@ -51,6 +65,8 @@ const isFile = async (path: string): Promise<boolean> => {
 interface RunSource {
   readonly program: unknown;
   readonly planText?: string;
+  /** Set when the source is a program directory, which is what a planned program is run from. */
+  readonly files?: ProgramFiles;
 }
 
 /**
@@ -66,7 +82,7 @@ const readSource = async (
   const contractPath = resolveFrom(environment.cwd, options.contract);
   if (isProgramDirectoryName(options.contract) && !(await isFile(contractPath))) {
     const files = await readProgramFiles(repoPath, options.contract);
-    return { program: files.contract, planText: files.planText };
+    return { program: files.contract, planText: files.planText, files };
   }
   return { program: await readContractFile(contractPath) };
 };
@@ -110,6 +126,23 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
 
   const session = await openSession(environment);
 
+  if (source.files !== undefined && isPlanned(source.files.contract)) {
+    const planned = await runProgram(environment, session, source.files, {
+      repoPath,
+      attended: options.attended === true,
+      ...(options.harness === undefined ? {} : { harness: options.harness }),
+      ...(options.model === undefined ? {} : { model: options.model }),
+    });
+    return {
+      exitCode: planned.exitCode,
+      runId: planned.started?.run.runId ?? "",
+      programId: source.files.contract.programId,
+      projectId: source.files.contract.projectId,
+      rootNodeId: planned.started?.rootNode.executionNodeId ?? "",
+      baseCommit: planned.started?.baseCommit ?? "",
+    };
+  }
+
   // Validation, the program write, the run, its root node, the initial
   // checkpoint and the two events — all of it, in there.
   const started = await startRun(
@@ -119,7 +152,11 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
       ids: environment.ids,
       git: environment.git,
     },
-    { ...source, repoPath },
+    {
+      program: source.program,
+      repoPath,
+      ...(source.planText === undefined ? {} : { planText: source.planText }),
+    },
   );
 
   environment.out(started.run.runId);
@@ -132,6 +169,7 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
   );
 
   return {
+    exitCode: 0,
     runId: started.run.runId,
     programId: started.program.programId,
     projectId: started.program.projectId,

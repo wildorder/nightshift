@@ -94,6 +94,7 @@ export {
   PlanNotRatifiedError,
   ProgramContractChangedError,
   ProjectMissingError,
+  requireRatifiedPlan,
   type StartedRun,
   type StartRunEnvironment,
   type StartRunInput,

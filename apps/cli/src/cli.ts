@@ -40,13 +40,17 @@ Usage:
   nightshift plan check <program> [--repo <path>]
   nightshift plan ratify <program> [--repo <path>]
   nightshift preflight <program> [--repo <path>] [--recheck]
-  nightshift run <program | contract> [--repo <path>] [--remote]
+  nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--repo <path>]
+  nightshift run <contract> [--repo <path>] [--remote]
   nightshift id <prefix>
   nightshift --help | --version
 
 A <program> is the name of its directory under docs/programs/, which holds its
 plan.md and contract.json. \`plan check\` answers READY or every reason, and its
 exit code is the answer; nothing runs until \`plan ratify\` has recorded the plan.
+\`run <program>\` then takes it to docs/programs/<program>/report.md with nobody
+watching, and exits non-zero when anything was parked. --attended only creates
+the run, for your own orchestrator session to attach to.
 
 \`nightshift login\` needs no flags: the CLI knows where the control plane is.
 Over SSH, add --no-browser and paste the address your browser lands on.
@@ -165,12 +169,18 @@ const doProject = async (environment: CliEnvironment, args: readonly string[]): 
   });
 };
 
-const doRun = async (environment: CliEnvironment, args: readonly string[]): Promise<void> => {
+const doRun = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage = "nightshift run <program | contract> [--repo <path>] [--remote]";
   const { values, positionals } = parse(
     {
       args: [...args],
-      options: { repo: { type: "string" }, remote: { type: "boolean", default: false } },
+      options: {
+        repo: { type: "string" },
+        remote: { type: "boolean", default: false },
+        attended: { type: "boolean", default: false },
+        harness: { type: "string" },
+        model: { type: "string" },
+      },
       allowPositionals: true,
       strict: true,
     },
@@ -187,11 +197,17 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
     throw new UsageError(`unexpected argument \`${positionals[1]}\``, usage);
   }
   const repo = optional(values, "repo");
-  await run(environment, {
+  const harness = optional(values, "harness");
+  const model = optional(values, "model");
+  const result = await run(environment, {
     contract,
     ...(repo === undefined ? {} : { repo }),
     remote: values.remote === true,
+    attended: values.attended === true,
+    ...(harness === undefined ? {} : { harness }),
+    ...(model === undefined ? {} : { model }),
   });
+  return result.exitCode;
 };
 
 /** One positional, the program id, and the flags every program command shares. */
@@ -318,8 +334,7 @@ const dispatch = async (
     case "preflight":
       return doPreflight(environment, args);
     case "run":
-      await doRun(environment, args);
-      return undefined;
+      return doRun(environment, args);
     case "id":
       doId(environment, args);
       return undefined;

@@ -263,8 +263,25 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     ).toBeUndefined();
   });
 
+  it("stops at preflight when a first strand's prerequisite is unmet, and starts nothing", async () => {
+    await cli("plan", "ratify", PROGRAM);
+    expect(await cli("run", PROGRAM)).toBe(1);
+    const said = op.err.join("\n");
+    expect(said).toContain("UNMET HP-01");
+    expect(said).toContain("Create the file `release-token` at the repository root.");
+    expect(said).toContain("nothing was started");
+    const runs = await stores().runs.listByProgram(
+      { projectId: contract.projectId, programId: contract.programId },
+      {},
+    );
+    expect(runs.items).toEqual([]);
+  });
+
   it("starts a run of the ratified plan, whose program node carries it", async () => {
     await cli("plan", "ratify", PROGRAM);
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    // This suite's environment can start no process, so the run is left for an
+    // orchestrator to attach to, as `--attended` asks for. T5 runs it to a report.
     expect(await cli("run", PROGRAM)).toBe(0);
     const runId = op.out[0] as never;
     const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
@@ -285,7 +302,8 @@ describe("nightshift run {id} (SC-P7-04)", () => {
 
     commit("change the plan");
     expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
-    expect(await cli("run", PROGRAM)).toBe(0);
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended")).toBe(0);
     const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
     expect(recorded?.ratifications).toHaveLength(2);
   });

@@ -107,6 +107,12 @@ export interface CliAssets {
   readonly skillsDir: string;
   /** The Nightshift MCP server's entry point. */
   readonly mcpServerPath: string;
+  /**
+   * The headless root orchestrator's entry point (P7, D-P7-09). The CLI starts
+   * it as a process and never imports it: constructing a harness adapter is the
+   * MCP app's composition root's alone.
+   */
+  readonly orchestratePath?: string;
 }
 
 export interface CliEnvironment {
@@ -175,5 +181,6 @@ export const createCliEnvironment = (): CliEnvironment => ({
   assets: {
     skillsDir: join(REPO_ROOT, "skills"),
     mcpServerPath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-mcp.js"),
+    orchestratePath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-orchestrate.js"),
   },
 });
