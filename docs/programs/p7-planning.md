@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p7-planning` |
 | Source stage | — (inserted 2026-09-21; not in the source plan, which assumes the orchestrator plans for itself) |
-| Status | **Contract ratified 2026-09-21** (D-P7-01 … D-P7-10), including D-P7-10's `deferred` status in P1's transition table. Tasks T1 … T5 drafted. Implementation not started. |
+| Status | **Built 2026-09-21: T1 … T4 done, T5 done bar the exit gate.** Contract ratified 2026-09-21 (D-P7-01 … D-P7-10). SC-P7-01 … SC-P7-13 are met and proven offline and, where they touch the control plane, live. **SC-P7-14 (the exit gate) is open**: it needs a repository the owner names and a plan the owner edits. Four build decisions in §12 await the owner. See §13. |
 | Depends on | P6 Parallel and Recursive Execution (the engine, the merge queue, sub-programs) |
 | Blocking decisions | none |
 
@@ -317,6 +317,7 @@ Specs live in `tasks/p7-planning/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-21 | **Build decisions in T4, provisional until the owner ratifies or reverses them.** (1) **No automatic fix job or cone replay at `resume`.** D-P7-10 says a check that fails at resume "gets a fix job at that point and its downstream cone is replayed onto the fix, or discarded if the fix invalidates it". Built: the failure is recorded as one, and what was built on it is **discarded**, each node saying which node it stood on; the fix is the next program, planned with the report in hand. A fix is model work, which means an orchestrator at resume, a second brief and a replay the merge queue does not have; discard is the branch D-P7-10 already allows, and it is the one that cannot make things worse unattended. (2) **A run that ends with deferred work is recorded as run status `interrupted`**, through `run.finish { outcome: "deferred" }`, and the CLI exits 3. The run table has no `deferred` and D-P7-10 authorised a change to the *node* table only. (3) **Once anything is deferred, every later node is deferred too**, even when all of its own steps ran and passed, because it sits on the provisional line and is not yet known to be the commit that lands. The API therefore accepts a `defer` on a verification at that commit in which nothing failed (`deferred` or `passed`), never one that failed. (4) **`mayEndProgramNode`, a P6 rule, treats `deferred` as done for now**, or no strand could ever finish with a check deferred under it; its P6 test gained that one status. (5) **A verification step names the prerequisites it cannot run without** (`VerificationStep.requires`), which the contract implied and did not spell. A hurdle *discovered* mid-run has its record and its route (`prerequisite.put { kind: "discovered" }`), but nothing in the engine detects one yet: there is no honest deterministic signal for "this step could not run" short of a convention every verification command would have to follow, and that convention is the owner's to choose. | Agent, for human ratification |
 | 2026-09-21 | **Build decision in T1, provisional until the owner ratifies or reverses it.** D-P7-10's `deferred` met two existing tests. (1) P1's table law, and its test, make `cancel` legal from every non-terminal status, so `deferred` has **three** edges, not two: `verifying → deferred` (`defer`), `deferred → verifying` (`resume_verification`) and `deferred → cancelled`. (2) The exhaustiveness pin in `test/src/properties/verification.property.test.ts` counts statuses and events, so it moves from 15/15 to 16/17, as P5 moved it for `succeeded`; no property changed, and a new table test proves no path from `deferred` reaches `sealed` or `integrated` except through `verified`. P5's list of unsettled statuses in `routing-transitions.test.ts` gains `deferred`. The owner was asked and was not there to answer; §8's "no P1 property test changes" is read as "no property weakened". Also in T1: the API role gains `s3:GetObject` on `plans/*` only, because ratification hashes the stored plan document itself (D-P7-02, SC-P7-04), and the P3 test that pinned "exactly `s3:PutObject`" now pins the pair. | Agent, for human ratification |
 | 2026-09-21 | Program inserted after the first real-repository trial showed that a program of success criteria alone gives the developer nothing to review and leaves every structural choice to be made mid-run. Restaged: Routing & Examination → P8, Decision Graph → P9, Remote Runner → P10, Realtime → P11. Contract drafted. | Human (direction) and agent (draft) |
 | 2026-09-21 | **D-P7-10 added on the owner's proposal**: a hurdle defers a check rather than parking the work; provisional line; checks, fix and cone replay when the human returns. It replaces `awaiting_human`. It is the one place P7 touches P1's transition table, and only ratification authorises that. | Human (proposal) and agent (draft) |
@@ -326,4 +327,66 @@ Specs live in `tasks/p7-planning/`.
 
 ## 13. As built
 
-Not yet.
+Built 2026-09-21 in one sitting, on `program/p7-planning`.
+
+### Task states
+
+| Task | State | Notes |
+|------|-------|-------|
+| T1 | **done**, deployed | `npm run smoke` green twice (87). Found live: S3 answers a missing key with `AccessDenied` when the role has no `ListBucket`, which reached the caller as a 500 |
+| T2 | **done**, with a gap | The skill and template are written from this contract and the record of the keyart trial. **H-P7-03's other half did not happen**: the owner was asked what they observed in that run and had not answered when T2 was built. Nothing in the skill contradicts the trial; what it lacks is whatever only the owner saw |
+| T3 | **done** | `init`, `plan check`, `plan ratify`, `preflight`, `run {id}`, `nightshift.config.json` |
+| T4 | **done**, less one branch of D-P7-10 | No fix job or cone replay at resume (§12). Discovered hurdles have a record and a route and no detector (§12) |
+| T5 | **done bar the exit gate** | The planned fixture runs end to end through the real CLI. Deployed; smoke twice, conformance and slice as below. **The live trial on a repository the owner names (SC-P7-14) has not been run** |
+
+### What was proven, and where
+
+| SC | State | By |
+|----|-------|----|
+| SC-P7-01, -02 | met | `skills/plan-program`; `test/src/skills/plan-program.test.ts` holds the template to `checkPlan`. Proven with a real model only by SC-P7-14 |
+| SC-P7-03 | met | `packages/core/src/rules/plan.test.ts`, one test per reason and all at once; `test/src/properties/plan.property.test.ts` (the overlap rule is symmetric, cleared by a dependency either way and by an exclude, and never misses two scopes that both allow a path); through the CLI in `test/src/cli/planning.test.ts`; and again by the control plane at ratification |
+| SC-P7-04 | met, **live** | `apps/api/src/operations/plans.test.ts`; smoke ratifies against the deployed stack with a real S3 upload and reads the document back byte for byte |
+| SC-P7-05 | met, **live** | `packages/execution/src/preflight.test.ts` over real subprocesses; smoke proves no body can say "satisfied" |
+| SC-P7-06 | met | `test/src/planning/unattended.test.ts`, `cli-e2e.test.ts`: the real launcher, MCP server, engine, merge queue and git; the models scripted |
+| SC-P7-07 | met | A property over random plans and finishing orders, pure (`plan.property.test.ts`) and through the engine with real git (`test/src/execution/engine.test.ts`), asserted from the event sequence |
+| SC-P7-08 | met | Engine and unattended tests: exactly the cone is parked, the blocker is named, the rest finishes |
+| SC-P7-08a | met, **less the fix branch** | Engine tests and the CLI end to end: a step defers, the rest run, six commits land on the provisional line and none on the program branch, `resume` refuses while the prerequisite is unmet and then lands the very commits that were deferred; a check that fails at resume discards what stood on it; a step that ran and failed is never deferred |
+| SC-P7-09 | met | Decisions are recorded with authority `human` by `startRun`, before the first `node.started`, and reach exactly the strands they touch |
+| SC-P7-10 | met | `strandBrief` in `core`; the unattended test compares the strand's objective with the ratified document byte for byte |
+| SC-P7-11 | met | `packages/execution/src/report.ts`, gathered from the control plane alone; a departure leads its strand |
+| SC-P7-12 | met, **live** | P1 properties, the P4 isolation suites, P5 conformance and the P6 tree pass; what changed in them is listed below |
+| SC-P7-13 | met | `test/src/cli/init.test.ts`, with a recorded `claude` and a temporary home |
+| **SC-P7-14** | **open** | Needs the owner |
+
+### What changed in earlier programs' suites, and why
+
+Nothing was weakened. Each change admits a status, an access level or a grant
+that P7's ratified decisions add.
+
+- **P1** `verification.property.test.ts`: the exhaustiveness pin is 16 statuses
+  and 17 events (§12). `deferred` has a third edge, `cancel`, because P1's own
+  table law and its test require it of every non-terminal status.
+- **P3** `api-stack.test.ts`: the API role's S3 grant was pinned as exactly
+  `s3:PutObject`. It is now that, plus `s3:GetObject` on `plans/*` and nothing
+  else, asserted as its own statement.
+- **P4** the two `authorize` suites and both isolation suites: five operations
+  and the `own_program` access level, with cells in both tables.
+- **P5** `routing-transitions.test.ts` lists `deferred` among the unsettled
+  statuses. The adapters pass the contract to `nightshiftToolNames`.
+- **P6** `integration.test.ts`: `mayEndProgramNode` allows a `deferred` descendant.
+
+### What the run departed from, what was parked, how long it took
+
+Not yet known: these are SC-P7-14's to answer, from a real plan the owner edits
+and a real run. The scripted runs take five to eight seconds and say nothing
+about either.
+
+### For the owner
+
+1. Ratify or reverse the build decisions in §12.
+2. Name a repository. Then: `nightshift init`, plan a real program with
+   `plan-program`, edit it, `nightshift plan check`, `plan ratify`, `preflight`,
+   `run`. That is the exit gate, and the measure is yours: did the plan tell you
+   roughly what was coming, did you get to make the decisions you wanted to make,
+   and did the run finish without you.
+3. Say what you saw in the keyart run, so the skill can be held to it.

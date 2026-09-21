@@ -58,7 +58,10 @@ of provider or harness.
 See `docs/vision.md` for the full product vision.
 See `docs/architecture.md` for settled and open architectural decisions.
 See `docs/programs/staging.md` for how v1 is split into programs.
-See `docs/programs/` for program plans and manifests.
+See `docs/programs/` for program plans and manifests. From P7 on a *product's*
+programs are planned as `docs/programs/{id}/plan.md` + `contract.json`
+(`skills/plan-program`); Nightshift's own programs stay single contract documents
+planned by a human, because v1 does not dogfood itself.
 See `tasks/{program-id}/` for task specs.
 
 ### Greenfield Boundary — read first
@@ -318,6 +321,90 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
 - The AgentCore harness worker, Bedrock, and anything that runs on a runtime
   instance belong to P10. Nightshift never runs a worker as a per-job hosted
   environment.
+
+**As built for P7 (Planning), 2026-09-21.** The details a later program needs and
+cannot derive; full account in `docs/programs/p7-planning.md` §13. The lasting
+decisions are A-42, A-43 and A-44.
+
+- **A plan is two files and a gate.** `docs/programs/{id}/plan.md` and
+  `contract.json`; a contract inherits what it does not state from
+  `nightshift.config.json` (`inheritFromConfig` in `contracts`), and the **merged**
+  contract is what is checked, hashed, ratified and run. The planned fields on
+  `ProgramContract` are `.optional()` with no zod defaults, so a contract written
+  before P7 parses to exactly what it was: read them through `strandsOf`,
+  `prerequisitesOf`, `isPlanned` and `mayRunContract` in `core`, never directly.
+- **`planHash` takes its SHA-256 as a parameter**, because `core` imports no
+  `node:crypto`. It leaves out `status`, `planHash`, `planDocument`,
+  `ratifications`, each prerequisite's `status` and `lastCheck`, and prerequisites
+  with `discoveredInRunId`, or ratifying and preflight would move the hash. The
+  plan component is the SHA-256 of the **LF-normalised** text, and that text is
+  what is uploaded.
+- **Ratification is its own route**, `POST …/programs/{id}/ratifications`, and the
+  control plane trusts none of it: it reads the document from its own store,
+  rehashes, recomputes the hash and runs `checkPlan` itself. A plain `PUT program`
+  never accepts `ratified`, a hash, a document or a history, and a ratified
+  contract changes only by being ratified again. `startRun` never writes a planned
+  contract; it holds what is on disk to the ratified hash (`PlanNotRatifiedError`,
+  `PlanChangedError`) and stamps `plan` on the program node, which the API
+  requires of a run of a ratified plan and refuses of any other node.
+- **Nobody says "satisfied".** A prerequisite write is `{kind: "check", exitCode}`
+  or `{kind: "discovered", …}`, and the status follows from the exit code.
+  Executions have a new access level, `own_program`, for `prerequisite.list` and
+  nothing else. Add an operation and you still decide it in both tables.
+- **Plan documents live under `plans/<projectId>/<programId>/<sha256>.md`**, and
+  the API role holds `s3:GetObject` on `plans/*` **only**, its one S3 read. S3
+  answers a missing key with `AccessDenied` when the role lacks `ListBucket`; the
+  plan store reads that as absent. Do not "fix" it by granting `ListBucket`.
+- **`splitPlanSections` and `strandBrief` are `core`'s**, because the API, the
+  CLI and the MCP server all need them. A strand's heading begins with its id. A
+  strand's Job Contract is built by `strand.delegate` from the ratified plan **as
+  the control plane holds it**, from nothing the caller says but the strand id:
+  the section verbatim, then the answered decisions that touch it, then the other
+  strands' scopes. Do not let a root orchestrator write a strand's objective.
+- **The root of a planned run delegates strands only** (`plan_fixes_strands`),
+  and `run.finish succeeded` is refused unless every strand succeeded. The engine
+  reads where strands stand from the run's records on every pass
+  (`strandAttempts`, `strandOutcomes`), never from memory, so an engine that
+  attaches to a run under way gates as the first one did.
+- **The headless root is `apps/mcp`'s** (`headless.ts`,
+  `bin/nightshift-orchestrate.js`), spawned as a process by the CLI, because only
+  `compose.ts` may construct an adapter. It is an agent like any other, started
+  with a synthetic, unpersisted Job Contract whose objective is the plan, in a
+  **detached checkout to read**; its MCP server is told the program checkout in
+  `NIGHTSHIFT_REPO_PATH` and adopts the launcher's agent through
+  `NIGHTSHIFT_ROOT_AGENT_ID`. The root brief and tool list apply only to a
+  `program` node **of a contract with strands**: P5's adapter tests start a
+  program node as a worker.
+- **`deferred` is done for now, not settled.** `isDoneForNow` (settled, or
+  deferred) is what `job.wait`, `mayEndProgramNode`, a sub-orchestrator's
+  completion and the engine's cleanup ask; `isSettled` still means what it did.
+  The table gained `verifying → deferred` (`defer`), `deferred → verifying`
+  (`resume_verification`) and `deferred → cancelled`, the last because P1's own
+  law makes `cancel` legal from every non-terminal status. **A deferral sets no
+  `outcomeReason`**: the API lets a node's reason be written once, and a deferral
+  is not an outcome. Why a node waits is in its `Verification` (a deferred command
+  has no exit code and names its prerequisite) and on the `node.deferred` event.
+- **Once anything is deferred, everything is.** The merge queue reconciles onto
+  `effectiveHead` (the provisional ref when there is one) and new worktrees are
+  cut from it, so a node on the provisional line is `deferred` even when every
+  one of its steps ran and passed: it is not yet known to be the commit that
+  lands. A run that ends that way is `run.finish deferred`, recorded as run status
+  `interrupted` because P7 was not authorised to touch the run table; the CLI
+  exits 3.
+- **`nightshift resume` discards only on a verdict.** It checks the checkout
+  before touching any node (`checkoutBlocked`), and only a check that *ran and
+  failed* discards what was built on it; a refused landing leaves the rest
+  deferred. There is **no automatic fix job or cone replay** at resume: the fix is
+  the next program, planned with the report in hand.
+- `isDirty` lists untracked files individually and ignores an untracked
+  `docs/programs/*/report.md`, which `nightshift run` leaves in the checkout.
+- A suite that runs **real worker processes** needs the real clock
+  (`signIn({ realTime: true })`, `createLocalContext({ realTime: true })`). The
+  stepping clock advances a second per reading, a worker's execution token expires
+  inside one run, and the symptom is a hang, not a failure.
+- The scripted harness has a `follow-plan` root script and
+  `[orchestrate prefix= fail=1 depart=1]` for strands, whose tag is a line of the
+  plan section. `test/src/planning/` is the planned fixture, end to end.
 
 **As built for P6 (Parallel and Recursive Execution), 2026-09-20.** The details
 a later program needs and cannot derive; full account in
