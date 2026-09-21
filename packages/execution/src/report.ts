@@ -35,6 +35,7 @@ import {
   type RunScope,
   type StrandOutcome,
   type StrandOutcomes,
+  strandAttempts,
   strandOutcomes,
   strandsOf,
 } from "@nightshift/core";
@@ -218,11 +219,14 @@ const readRecords = async (
     })
     .sort((a, b) => a.node.createdAt.localeCompare(b.node.createdAt));
   const outcomes = strandOutcomes(
-    strandNodes.map(({ strandId, node }) => ({
-      strandId,
-      status: node.status,
-      createdAt: node.createdAt,
-    })),
+    strandAttempts(
+      nodes,
+      new Map(
+        jobs.flatMap((job) =>
+          job.strandId === undefined ? [] : [[job.jobContractId, job.strandId]],
+        ),
+      ),
+    ),
   );
   return { program, tree: buildTree(nodes), jobOf, decisions, routesOf, strandNodes, outcomes };
 };
@@ -266,6 +270,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
 
 const OUTCOME_WORD: Readonly<Record<StrandReport["outcome"], string>> = {
   succeeded: "succeeded",
+  provisional: "PROVISIONAL (checks deferred for a human prerequisite; not on the program branch)",
   failed: "PARKED (failed)",
   cancelled: "PARKED (cancelled)",
   running: "unfinished",

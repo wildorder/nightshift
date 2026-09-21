@@ -99,6 +99,7 @@ const buildEnvironment = (runtime: Runtime, outbox: EventOutbox): ExecutionEnvir
   git: runtime.git,
   outbox,
   workerEnvironment: runtime.workerEnvironment,
+  ...(runtime.prerequisites === undefined ? {} : { prerequisites: runtime.prerequisites }),
 });
 
 /**

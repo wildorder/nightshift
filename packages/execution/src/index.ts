@@ -37,6 +37,7 @@ export {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExecutionEnvironment,
+  type PrerequisiteBook,
   type RunSession,
   runIdOf,
   type WorkerEnvironment,

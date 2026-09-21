@@ -375,3 +375,57 @@ export const checkpointRef = (checkpointId: string): string =>
   `refs/nightshift/checkpoints/${checkpointId}`;
 /** The branch a job's worktree sits on. */
 export const jobBranch = (runId: string, nodeId: string): string => `nightshift/${runId}/${nodeId}`;
+
+/**
+ * The run's **provisional line** (P7, D-P7-10): where work lands whose checks
+ * could not all run, and everything built on it. Never the program branch, which
+ * still receives nothing that has not passed every check on the commit that
+ * lands (A-05).
+ */
+export const provisionalRef = (runId: string): string => `refs/nightshift/provisional/${runId}`;
+
+/** The provisional line's head, or `undefined` while nothing has been deferred. */
+export const provisionalHead = (
+  runner: GitRunner,
+  repo: string,
+  runId: string,
+): Promise<CommitSha | undefined> => tryRevParse(runner, repo, provisionalRef(runId));
+
+/**
+ * What new work is cut from and reconciled onto: the provisional head once
+ * anything has been deferred, the program branch's until then.
+ */
+export const effectiveHead = async (
+  runner: GitRunner,
+  repo: string,
+  programBranch: string,
+  runId: string,
+): Promise<{ readonly head: CommitSha; readonly provisional: boolean }> => {
+  const provisional = await provisionalHead(runner, repo, runId);
+  return provisional === undefined
+    ? { head: await revParse(runner, repo, programBranch), provisional: false }
+    : { head: provisional, provisional: true };
+};
+
+/** The commits on the provisional line that the program branch does not have, oldest first. */
+export const provisionalCommits = async (
+  runner: GitRunner,
+  repo: string,
+  programBranch: string,
+  runId: string,
+): Promise<readonly CommitSha[]> => {
+  if ((await provisionalHead(runner, repo, runId)) === undefined) return [];
+  const listed = await git(
+    runner,
+    ["rev-list", "--reverse", `${programBranch}..${provisionalRef(runId)}`],
+    { cwd: repo },
+  );
+  return listed
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map(asSha);
+};
+
+export const deleteRef = async (runner: GitRunner, repo: string, ref: string): Promise<void> => {
+  await git(runner, ["update-ref", "-d", ref], { cwd: repo });
+};

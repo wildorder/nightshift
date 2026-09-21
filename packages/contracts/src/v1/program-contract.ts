@@ -13,6 +13,7 @@ import {
   PlanHashSchema,
   PlannedDecisionSchema,
   PlanStatusSchema,
+  PrerequisiteIdSchema,
   PrerequisiteSchema,
   RatificationSchema,
   StrandSchema,
@@ -34,6 +35,14 @@ export const VerificationStepSchema = z.strictObject({
   id: z.string().min(1),
   command: z.string().min(1),
   description: z.string().optional(),
+  /**
+   * The human prerequisites this step cannot run without (P7, D-P7-10): a
+   * deploy check that needs a credential, say. While one of them is unmet the
+   * step is **deferred**, not failed, every other step still runs, and the work
+   * carries on a provisional line that never reaches the program branch until
+   * the step has run and passed.
+   */
+  requires: z.array(PrerequisiteIdSchema).optional(),
 });
 export type VerificationStep = z.infer<typeof VerificationStepSchema>;
 

@@ -34,10 +34,17 @@ import type {
   ExecutionNode,
   JobContract,
   Verification,
+  VerificationStep,
 } from "@nightshift/contracts";
-import { VerificationSchema } from "@nightshift/contracts";
-import { markVerificationFailed, markVerified, nowIso, transition } from "@nightshift/core";
-import { outcomeOf, runVerificationSteps, toVerificationCommands } from "@nightshift/verification";
+import { outcomeOfCommands, VerificationSchema } from "@nightshift/contracts";
+import {
+  markVerificationFailed,
+  markVerified,
+  nowIso,
+  prerequisitesOf,
+  transition,
+} from "@nightshift/core";
+import { runVerificationSteps, toVerificationCommands } from "@nightshift/verification";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExecutionEnvironment,
@@ -52,11 +59,52 @@ export interface VerifyInput {
   readonly job: JobContract;
   readonly agentId: AgentId;
   readonly worktree: string;
+  /**
+   * True when the commit under verification sits on the run's provisional line
+   * (P7, D-P7-10): on top of work whose own checks are still deferred. Such a
+   * commit is not yet known to be the one that will land, so even when every
+   * step runs and passes, the node is deferred rather than verified.
+   */
+  readonly onProvisionalLine?: boolean;
+  /** `nightshift resume`: the node is `deferred`, not `implemented`, and every step now runs. */
+  readonly resuming?: boolean;
 }
 
 export type VerifyResult =
   | { readonly passed: true; readonly commitSha: CommitSha; readonly verification: Verification }
-  | { readonly passed: false; readonly verification?: Verification };
+  | {
+      readonly passed: false;
+      readonly verification?: Verification;
+      /**
+       * Set when nothing failed and the node is `deferred`: the commit belongs on
+       * the provisional line, with the prerequisites its checks wait on.
+       */
+      readonly deferred?: { readonly commitSha: CommitSha; readonly waitingOn: readonly string[] };
+    };
+
+/**
+ * The prerequisites that are unmet **now**, from the control plane when this
+ * environment can ask it, and from the run's own contract when it cannot.
+ */
+const unmetPrerequisites = async (
+  environment: ExecutionEnvironment,
+  input: VerifyInput,
+): Promise<ReadonlySet<string>> => {
+  const { program } = input.session;
+  if ((program.verification ?? []).every((step) => (step.requires ?? []).length === 0)) {
+    return new Set();
+  }
+  const current =
+    environment.prerequisites === undefined
+      ? prerequisitesOf(program)
+      : await environment.prerequisites.prerequisites({
+          projectId: program.projectId,
+          programId: program.programId,
+        });
+  return new Set(
+    current.filter((prerequisite) => prerequisite.status !== "satisfied").map((p) => p.id),
+  );
+};
 
 export const verifyNode = async (
   environment: ExecutionEnvironment,
@@ -70,7 +118,11 @@ export const verifyNode = async (
     throw new Error(`node ${input.node.executionNodeId} is implemented but carries no commit`);
   }
 
-  const verifying = transition(input.node, "begin_verification", nowIso(clock));
+  const verifying = transition(
+    input.node,
+    input.resuming === true ? "resume_verification" : "begin_verification",
+    nowIso(clock),
+  );
   await stores.executionNodes.put(verifying);
   const startedAt = nowIso(clock);
   outbox.emit({
@@ -87,8 +139,18 @@ export const verifyNode = async (
   // Exactly what would integrate, and nothing the worker left behind.
   await cleanCheckout(environment.git, input.worktree, commitSha);
 
+  // A step that needs a human prerequisite nobody has met **cannot run**, and is
+  // deferred; every other step runs (D-P7-10). When resuming, the preflight has
+  // already passed, and every step runs.
+  const unmet =
+    input.resuming === true ? new Set<string>() : await unmetPrerequisites(environment, input);
+  const waitingOf = (step: VerificationStep): readonly string[] =>
+    (step.requires ?? []).filter((id) => unmet.has(id));
+  const steps = input.session.program.verification;
+  const runnable = steps.filter((step) => waitingOf(step).length === 0);
+
   const results = await runVerificationSteps({
-    steps: input.session.program.verification,
+    steps: runnable,
     cwd: input.worktree,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
   });
@@ -106,6 +168,22 @@ export const verifyNode = async (
     logArtifactIds.set(result.stepId, artifactId as ArtifactId);
   }
 
+  // In the contract's own order, so a record reads like the contract it ran.
+  const ran = new Map(
+    toVerificationCommands(results, logArtifactIds).map((command) => [command.stepId, command]),
+  );
+  const commands = steps.map(
+    (step) =>
+      ran.get(step.id) ?? {
+        stepId: step.id,
+        command: step.command,
+        durationMs: 0,
+        // The first unmet one: a record names what it waits on, the node's reason names them all.
+        deferred: { prerequisiteId: waitingOf(step)[0] as string },
+      },
+  );
+  const waitingOn = [...new Set(steps.flatMap(waitingOf))];
+
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
     ...input.session.scope,
@@ -116,14 +194,46 @@ export const verifyNode = async (
     // verifies, in the sense of an agent. A command does.
     agentId: input.agentId,
     commitSha,
-    commands: toVerificationCommands(results, logArtifactIds),
-    outcome: outcomeOf(results),
+    commands,
+    outcome: outcomeOfCommands(commands),
     startedAt,
     endedAt: nowIso(clock),
   } satisfies Record<string, unknown>) as Verification;
   await stores.verifications.put(verification);
 
   const at = nowIso(clock);
+  const nothingFailed = verification.outcome !== "failed";
+  if (nothingFailed && (waitingOn.length > 0 || input.onProvisionalLine === true)) {
+    // Not a verdict. A step that ran and failed never gets here: that is a
+    // failure, below, whatever else was deferred.
+    const reason =
+      waitingOn.length > 0
+        ? `deferred: ${waitingOn.join(", ")} ${waitingOn.length === 1 ? "is" : "are"} not yet satisfied, so ` +
+          `${commands
+            .filter((command) => command.deferred !== undefined)
+            .map((command) => command.stepId)
+            .join(", ")} could not run`
+        : "deferred: every check ran and passed, on top of work whose own checks are deferred";
+    const { outcomeReason: _earlier, ...deferred } = transition(verifying, "defer", at);
+    await stores.executionNodes.put({ ...deferred, outcomeReason: reason });
+    outbox.emit({
+      type: "verification.completed",
+      source: "control-plane",
+      payload: {
+        verificationId: verification.verificationId,
+        outcome: verification.outcome,
+        commitSha,
+        deferredSteps: commands
+          .filter((command) => command.deferred !== undefined)
+          .map((command) => command.stepId),
+        waitingOn,
+      },
+      executionNodeId: input.node.executionNodeId,
+      agentId: input.agentId,
+    });
+    return { passed: false, verification, deferred: { commitSha, waitingOn } };
+  }
+
   if (verification.outcome === "passed") {
     // `markVerified` refuses evidence that does not match the work: a different
     // commit, a different job, a different run. It is the rule, not this module.
@@ -147,7 +257,9 @@ export const verifyNode = async (
     return { passed: true, commitSha, verification };
   }
 
-  const failing = verification.commands.filter((command) => command.exitCode !== 0);
+  const failing = verification.commands.filter(
+    (command) => command.deferred === undefined && command.exitCode !== 0,
+  );
   await stores.executionNodes.put({
     ...markVerificationFailed(verifying, verification, at),
     outcomeReason: `verification failed: ${failing

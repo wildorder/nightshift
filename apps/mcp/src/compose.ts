@@ -29,7 +29,12 @@ import type {
   ProjectStores,
 } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
-import type { GitRunner, WorkerEnvironment, WorkerLaunchIdentity } from "@nightshift/execution";
+import type {
+  GitRunner,
+  PrerequisiteBook,
+  WorkerEnvironment,
+  WorkerLaunchIdentity,
+} from "@nightshift/execution";
 import { createEventOutbox, nodeGitRunner } from "@nightshift/execution";
 import type { Harness, HarnessHandle, McpLaunch } from "@nightshift/harness";
 import { createClaudeHarness } from "@nightshift/harness-claude";
@@ -85,6 +90,8 @@ export interface Runtime {
    * suite that runs no planned program need not supply one.
    */
   readonly planText?: (scope: ProgramScope, sha256: string) => Promise<string | undefined>;
+  /** The program's prerequisites as they stand now, for deferring a check that needs one (D-P7-10). */
+  readonly prerequisites?: PrerequisiteBook;
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
   /**
@@ -353,6 +360,7 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     endpoint,
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
+    prerequisites: createHttpPlanning({ transport }),
     stores: createHttpStores({ transport }),
     bodies: createHttpArtifactBodyStore({ transport }),
     tokens: createHttpExecutionTokenMinter({ transport }),

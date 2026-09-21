@@ -45,7 +45,7 @@ import {
   checkAuthority,
   type DelegationRejection,
   highestSequence,
-  isSettled,
+  isDoneForNow,
   nowIso,
   pendingCount,
   type StrandBrief,
@@ -149,7 +149,8 @@ const jobReport = async (
     status: node.status,
     // `core`'s own list, so a status added there (`succeeded`, for a sub-program)
     // is settled here too rather than waited on for ever.
-    settled: isSettled(node.status),
+    // Done for now: settled, or deferred for a human (D-P7-10). Nothing to wait for either way.
+    settled: isDoneForNow(node.status),
     commitSha: node.commitSha,
     outcomeReason: node.outcomeReason ?? null,
     worktree: running?.worktree ?? null,
@@ -269,6 +270,23 @@ const assertEveryStrandSucceeded = async (attached: AttachedRun): Promise<void> 
   );
 };
 
+/** What a planned run says of itself has to be what its records say. */
+const assertEndingIsTrue = async (attached: AttachedRun, outcome: string): Promise<void> => {
+  if (outcome === "succeeded") await assertEveryStrandSucceeded(attached);
+  if (outcome === "deferred") await assertSomethingIsDeferred(attached);
+};
+
+/** `deferred` is a claim about the run's records, so the records have to agree. */
+const assertSomethingIsDeferred = async (attached: AttachedRun): Promise<void> => {
+  const outcomes = await attached.engine.strands();
+  if (Object.values(outcomes).includes("provisional")) return;
+  throw new ToolRefusal(
+    "validation_failed",
+    "nothing in this run is deferred: no strand has work on the provisional line. Finish it as " +
+      '"succeeded" or "failed".',
+  );
+};
+
 const assertEndingExplained = (outcome: string, reason: string | undefined): void => {
   if (outcome === "succeeded") return;
   if (reason !== undefined && reason !== "") return;
@@ -366,9 +384,12 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     "run.finish",
     {
       title: "Finish the run",
-      description: "Give the run a terminal status. Refused while a job is running.",
+      description:
+        "Give the run a terminal status. Refused while a job is running. `deferred` is for a " +
+        "planned run whose remaining work waits on a human prerequisite: the run is recorded as " +
+        "interrupted, its provisional work is kept, and `nightshift resume` takes it from there.",
       inputSchema: {
-        outcome: z.enum(["succeeded", "failed", "cancelled"]),
+        outcome: z.enum(["succeeded", "failed", "cancelled", "deferred"]),
         reason: z.string().min(1).optional(),
       },
     },
@@ -377,22 +398,22 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         const attached = requireAttached(state);
         await assertNoJobRunning(deps, attached);
         assertEndingExplained(outcome, reason);
-        if (outcome === "succeeded") await assertEveryStrandSucceeded(attached);
+        await assertEndingIsTrue(attached, outcome);
+        // The run table has no `deferred`, and P7 was not authorised to give it
+        // one. `interrupted` is the honest fit: stopped short, durably, waiting to
+        // be taken up again.
+        const status = outcome === "deferred" ? "interrupted" : outcome;
 
         const { stores, clock } = state.runtime;
         const run = await stores.runs.get(attached.session.scope, attached.session.scope.runId);
         if (run === undefined) throw new ToolRefusal("not_found", "this run no longer exists");
-        await stores.runs.put({
-          ...run,
-          status: outcome,
-          endedAt: nowIso(clock),
-          ...(reason === undefined ? {} : { outcomeReason: reason }),
-        });
+        const why = reason === undefined ? {} : { outcomeReason: reason };
+        await stores.runs.put({ ...run, status, endedAt: nowIso(clock), ...why });
         // The program node follows its run (D-P5-06): `succeeded`, never
         // `integrated`, because a program node integrates nothing.
-        await endProgramNode(state.runtime, attached.session, outcome, reason);
+        await endProgramNode(state.runtime, attached.session, status, reason);
         attached.outbox.emit({
-          type: outcome === "succeeded" ? "run.completed" : `run.${outcome}`,
+          type: status === "succeeded" ? "run.completed" : `run.${status}`,
           source: "control-plane",
           payload: reason === undefined ? {} : { reason },
           executionNodeId: attached.session.rootNodeId,

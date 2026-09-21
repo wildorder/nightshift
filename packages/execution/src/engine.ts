@@ -35,12 +35,14 @@ import {
   ConcurrencyLimitExceededError,
   descendantsOf,
   type ExecutionTree,
+  isDoneForNow,
   isPlanned,
   isSettled,
   maySlotStart,
   nowIso,
   RETRYABLE_STATUSES,
   type StrandOutcomes,
+  strandAttempts,
   strandOutcomes,
   strandsOf,
   strandWaitingFor,
@@ -297,15 +299,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       }
       cursor = page.cursor;
     } while (cursor !== undefined);
-    return strandOutcomes(
-      nodes.flatMap((node) => {
-        const strandId =
-          node.jobContractId === null ? undefined : strandOfJob.get(node.jobContractId);
-        return strandId === undefined
-          ? []
-          : [{ strandId, status: node.status, createdAt: node.createdAt }];
-      }),
-    );
+    return strandOutcomes(strandAttempts(nodes, strandOfJob));
   };
 
   /** True while a strand's dependencies have not all succeeded. Records what it waits for. */
@@ -677,7 +671,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       await Promise.all(
         [...active.entries()].map(async ([nodeId, started]) => {
           const node = stored.get(nodeId);
-          if (node === undefined || !isSettled(node.status)) return;
+          if (node === undefined || !isDoneForNow(node.status)) return;
           let timer: ReturnType<typeof setTimeout> | undefined;
           const leaving = departures.get(nodeId) ?? started.completion.catch(() => {});
           const exited = await Promise.race([

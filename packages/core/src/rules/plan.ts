@@ -17,6 +17,7 @@
  * scope, either of which is a better plan, while a missed one costs a night.
  */
 import type {
+  ExecutionNode,
   ExecutionNodeStatus,
   PlannedDecision,
   Prerequisite,
@@ -24,6 +25,7 @@ import type {
   Strand,
   StrandScope,
 } from "@nightshift/contracts";
+import { buildTree, descendantsOf } from "./execution-tree.js";
 import { explainWidening, globContains, singleSegmentMatches } from "./scope.js";
 
 // --- the planned part of a contract, absent meaning empty ---------------------
@@ -216,12 +218,27 @@ export const independentOverlaps = (strands: readonly Strand[]): readonly Strand
  * How a strand stands, as the engine sees it. `succeeded` is the only outcome a
  * dependent may build on; `failed` and `cancelled` park it (§4.4).
  */
-export type StrandOutcome = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+export type StrandOutcome =
+  | "pending"
+  | "running"
+  | "succeeded"
+  /**
+   * Done, on the run's provisional line (D-P7-10): a check is deferred for a
+   * human prerequisite. A dependent may build on it, which is the bet the owner
+   * chose; the program branch has none of it until the deferred checks pass.
+   */
+  | "provisional"
+  | "failed"
+  | "cancelled";
 
 export type StrandOutcomes = Readonly<Record<string, StrandOutcome | undefined>>;
 
 const outcomeOf = (outcomes: StrandOutcomes, id: string): StrandOutcome =>
   outcomes[id] ?? "pending";
+
+/** What a dependent strand may start on: work that landed, or that stands on the provisional line. */
+const canBuildOn = (outcome: StrandOutcome): boolean =>
+  outcome === "succeeded" || outcome === "provisional";
 
 const isParked = (outcome: StrandOutcome): boolean =>
   outcome === "failed" || outcome === "cancelled";
@@ -231,10 +248,17 @@ export interface StrandAttempt {
   readonly strandId: string;
   readonly status: ExecutionNodeStatus;
   readonly createdAt: string;
+  /**
+   * True when something under the strand's node is `deferred` (D-P7-10). Its
+   * orchestrator may well have finished; its work has not reached the program
+   * branch, and saying "succeeded" of it would be the report's first lie.
+   */
+  readonly hasDeferredWork?: boolean;
 }
 
 const outcomeOfStatus = (status: ExecutionNodeStatus): StrandOutcome => {
   if (status === "succeeded" || status === "integrated") return "succeeded";
+  if (status === "deferred") return "provisional";
   if (status === "cancelled") return "cancelled";
   // `interrupted` and the failed verdicts are all "did not succeed, may be tried again".
   if (status === "failed" || status === "interrupted") return "failed";
@@ -256,8 +280,34 @@ export const strandOutcomes = (attempts: readonly StrandAttempt[]): StrandOutcom
     }
   }
   return Object.fromEntries(
-    [...latest].map(([strandId, attempt]) => [strandId, outcomeOfStatus(attempt.status)]),
+    [...latest].map(([strandId, attempt]) => {
+      const outcome = outcomeOfStatus(attempt.status);
+      return [
+        strandId,
+        outcome === "succeeded" && attempt.hasDeferredWork === true ? "provisional" : outcome,
+      ];
+    }),
   );
+};
+
+/**
+ * Every attempt at every strand, from a run's nodes and the strand each node's
+ * Job Contract names. One definition, for the engine that gates by it and the
+ * report that tells a human about it.
+ */
+export const strandAttempts = (
+  nodes: readonly ExecutionNode[],
+  strandOfJob: ReadonlyMap<string, string>,
+): readonly StrandAttempt[] => {
+  const tree = buildTree(nodes);
+  return nodes.flatMap((node) => {
+    const strandId = node.jobContractId === null ? undefined : strandOfJob.get(node.jobContractId);
+    if (strandId === undefined) return [];
+    const hasDeferredWork = descendantsOf(tree, node.executionNodeId).some(
+      (id) => tree.nodes.get(id)?.status === "deferred",
+    );
+    return [{ strandId, status: node.status, createdAt: node.createdAt, hasDeferredWork }];
+  });
 };
 
 const requireStrand = (contract: ProgramContract, id: string): Strand => {
@@ -277,7 +327,7 @@ export const strandWaitingFor = (
   outcomes: StrandOutcomes,
   id: string,
 ): readonly string[] =>
-  requireStrand(contract, id).dependsOn.filter((dep) => outcomeOf(outcomes, dep) !== "succeeded");
+  requireStrand(contract, id).dependsOn.filter((dep) => !canBuildOn(outcomeOf(outcomes, dep)));
 
 /**
  * Whether the engine may start a strand: never before every strand it depends
@@ -441,6 +491,12 @@ export type PlanReason =
       readonly message: string;
     }
   | {
+      readonly kind: "unknown_step_prerequisite";
+      readonly stepId: string;
+      readonly prerequisiteId: string;
+      readonly message: string;
+    }
+  | {
       readonly kind: "unused_prerequisite";
       readonly prerequisiteId: string;
       readonly message: string;
@@ -551,6 +607,23 @@ const strandReasons = (
   return reasons;
 };
 
+/** A verification step that waits on a prerequisite the contract does not have. */
+const stepReasons = (contract: ProgramContract): PlanReason[] => {
+  const known = new Set(prerequisitesOf(contract).map((prerequisite) => prerequisite.id));
+  return contract.verification.flatMap((step) =>
+    (step.requires ?? [])
+      .filter((id) => !known.has(id))
+      .map(
+        (prerequisiteId): PlanReason => ({
+          kind: "unknown_step_prerequisite",
+          stepId: step.id,
+          prerequisiteId,
+          message: `verification step ${step.id} requires ${prerequisiteId}, which the contract does not have`,
+        }),
+      ),
+  );
+};
+
 const prerequisiteReasons = (
   prerequisite: Prerequisite,
   used: ReadonlySet<string>,
@@ -614,7 +687,12 @@ const decisionReasons = (
 export const checkPlan = (contract: ProgramContract, planSections: PlanSections): PlanReadiness => {
   const strands = strandsOf(contract);
   const strandIds = new Set(strands.map((strand) => strand.id));
-  const used = new Set(strands.flatMap((strand) => strand.prerequisites));
+  // A prerequisite is used by a strand that needs it, or by a verification step
+  // that cannot run without it (D-P7-10).
+  const used = new Set([
+    ...strands.flatMap((strand) => strand.prerequisites),
+    ...contract.verification.flatMap((step) => step.requires ?? []),
+  ]);
   const cycle = findDependencyCycle(strands);
 
   const reasons: PlanReason[] = [
@@ -637,6 +715,7 @@ export const checkPlan = (contract: ProgramContract, planSections: PlanSections)
             message: `dependsOn has a cycle: ${cycle.join(" → ")}`,
           } as const,
         ]),
+    ...stepReasons(contract),
     ...prerequisitesOf(contract).flatMap((prerequisite) => prerequisiteReasons(prerequisite, used)),
     ...(contract.decisions ?? []).flatMap((decision) => decisionReasons(decision, strandIds)),
     ...independentOverlaps(strands).map(

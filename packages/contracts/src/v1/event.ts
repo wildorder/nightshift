@@ -57,6 +57,14 @@ export const EventTypeSchema = z.enum([
    */
   "strand.blocked",
   /**
+   * Added in P7 (D-P7-10). A node's checks could not all run, or it was built on
+   * work whose checks could not: it sits on the run's provisional line, not the
+   * program branch. Payload: the commit, the provisional ref, and what it waits on.
+   */
+  "node.deferred",
+  /** Added in P7. A deferred node was dropped at resume because work under it failed its checks. */
+  "node.discarded",
+  /**
    * Added in P6 (D-P6-06). That replay conflicted. Nightshift resolves nothing:
    * the node fails, the paths are named, and an orchestrator decides.
    */

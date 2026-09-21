@@ -12,6 +12,7 @@ import type {
   AgentId,
   ExecutionNodeId,
   JobContractId,
+  Prerequisite,
   ProgramContract,
   Run,
   RunId,
@@ -22,6 +23,7 @@ import type {
   ExecutionTokenMinter,
   IdGenerator,
   LocalPaths,
+  ProgramScope,
   ProjectStores,
   RunScope,
 } from "@nightshift/core";
@@ -95,6 +97,18 @@ export interface ExecutionEnvironment {
   readonly verificationTimeoutMs?: number;
   /** How long `cancel` waits for a cooperative stop before killing. */
   readonly cancelGraceMs?: number;
+  /**
+   * The program's human prerequisites as the control plane holds them **now**
+   * (P7, D-P7-10): a verification step that requires an unmet one is deferred.
+   * Absent for a run with no plan, where nothing can be deferred and the
+   * contract's own copy is the only one there is.
+   */
+  readonly prerequisites?: PrerequisiteBook;
+}
+
+/** Reads the program's prerequisites. Satisfied by `persistence/http`'s planning client. */
+export interface PrerequisiteBook {
+  prerequisites(scope: ProgramScope): Promise<readonly Prerequisite[]>;
 }
 
 /**
