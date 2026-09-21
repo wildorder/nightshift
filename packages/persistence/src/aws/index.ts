@@ -14,7 +14,9 @@ export {
   type ArtifactUploadSignerConfig,
   createArtifactBodyStore,
   createArtifactUploadSigner,
+  createPlanDocumentStore,
   type ObjectClient,
+  type PlanDocumentStoreConfig,
   s3ObjectClient,
   UPLOAD_URL_TTL_SECONDS,
 } from "./artifact-bodies.js";
