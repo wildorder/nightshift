@@ -14,6 +14,40 @@ whether the tests pass. Nightshift runs the Program Contract's verification
 steps on a clean checkout of the worker's commit, and only a passing run
 integrates anything.
 
+## A program with a ratified plan
+
+Some programs are **planned**: a human worked out the seams, the approach and the
+expensive decisions in `docs/programs/{id}/plan.md` and `contract.json` (the
+`plan-program` skill), and ratified them with `nightshift plan ratify {id}`.
+**A ratified plan is what you execute.** You do not re-plan it.
+
+- The usual way to run one is unattended: `nightshift run {id}` checks the plan
+  is the one that was ratified, runs preflight, starts an orchestrator with
+  nobody watching, and writes `docs/programs/{id}/report.md`.
+- If the human would rather you orchestrate it from this session, they run
+  `nightshift run {id} --attended` and you `run.attach` as below. Then:
+  - Delegate **each strand, and nothing else**, with
+    `strand.delegate { strandId }`. You say which strand; its orchestrator is
+    handed its section of the plan word for word, the human's decisions that
+    touch it, and the other strands' scopes. Plain `delegate` is refused to you
+    (`plan_fixes_strands`): how a strand divides into jobs is its own
+    orchestrator's decision, one level down.
+  - Delegate every strand at once. Nightshift holds a strand until the strands it
+    depends on have succeeded.
+  - A strand that fails is **parked** with everything that depends on it
+    (`strand_blocked`). Leave those; let the rest finish.
+  - A job that ends `deferred` is done for now: one of its checks needs something
+    only a human can supply. It is not a failure. Its work is kept on a
+    provisional line, and `nightshift resume {id}` lands it when they are back.
+  - Finish `succeeded` only if every strand succeeded; `deferred` if nothing
+    failed and some work is deferred; otherwise `failed`, naming what was parked.
+- If the plan on disk was edited after it was ratified, the run is refused until
+  it is ratified again. That is the gate working. Tell the human; do not work
+  around it.
+
+The rest of this document is the unplanned case: a Program Contract with no
+strands, which you cut into jobs yourself.
+
 ## Start a run
 
 A run needs a Program Contract: the objective, the repository and its program
@@ -22,7 +56,8 @@ authored by a human and it is the stable authority for the run. **Do not edit
 it.** If it is wrong, say so and stop; a contract quietly revised to make an
 implementation pass is the one failure this system exists to prevent.
 
-Either the human has already run `nightshift run <contract>`, in which case:
+Either the human has already run `nightshift run <contract>` (or
+`nightshift run {id} --attended` for a planned program), in which case:
 
 ```
 run.attach { model: "<the model you are running as>" }
