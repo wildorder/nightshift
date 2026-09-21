@@ -25,6 +25,7 @@ import type {
   ArtifactBodyStore,
   ExecutionTokenMinter,
   LocalPaths,
+  ProgramScope,
   ProjectStores,
 } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
@@ -37,6 +38,7 @@ import {
   createFetchTransport,
   createHttpArtifactBodyStore,
   createHttpExecutionTokenMinter,
+  createHttpPlanning,
   createHttpStores,
   createLocalPaths,
   createTokenProvider,
@@ -76,6 +78,13 @@ export interface Runtime {
   readonly clock: typeof systemClock;
   /** The control plane this runtime talks to, for a diagnostic line. */
   readonly endpoint: string;
+  /**
+   * The ratified plan document, by its hash, **from the control plane** (P7,
+   * D-P7-02): a run reads the plan it was ratified with, never whatever is on
+   * disk by now. `undefined` when the control plane holds none. Optional so a
+   * suite that runs no planned program need not supply one.
+   */
+  readonly planText?: (scope: ProgramScope, sha256: string) => Promise<string | undefined>;
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
   /**
@@ -342,6 +351,8 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
   return {
     transport,
     endpoint,
+    planText: async (scope, sha256) =>
+      (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
     stores: createHttpStores({ transport }),
     bodies: createHttpArtifactBodyStore({ transport }),
     tokens: createHttpExecutionTokenMinter({ transport }),

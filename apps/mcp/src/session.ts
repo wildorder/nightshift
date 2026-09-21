@@ -25,7 +25,13 @@ import type {
   RunId,
 } from "@nightshift/contracts";
 import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
-import { nowIso, type RunScope } from "@nightshift/core";
+import {
+  isPlanned,
+  nowIso,
+  type PlanSections,
+  type RunScope,
+  splitPlanSections,
+} from "@nightshift/core";
 import {
   checkpointRef,
   createEngine,
@@ -57,6 +63,11 @@ export interface AttachedRun {
   readonly replayed: number;
   /** Whether the authored file disagrees with the stored contract. */
   readonly contractDrifted: boolean;
+  /**
+   * A planned run's strand sections, split from the **ratified** plan document
+   * as the control plane holds it (P7, D-P7-02). Absent for a run with no plan.
+   */
+  readonly planSections?: PlanSections;
 }
 
 export interface OrchestratorSession {
@@ -263,6 +274,36 @@ export interface AttachInput {
   readonly runId?: string;
 }
 
+/**
+ * The plan a planned run executes, read from the control plane by the hash its
+ * program node carries. Not from the checkout: what is on disk may have been
+ * edited since, and a strand's orchestrator is told what was ratified.
+ */
+const readPlanSections = async (
+  state: OrchestratorSession,
+  program: ProgramContract,
+  rootNode: ExecutionNode,
+): Promise<PlanSections | undefined> => {
+  if (!isPlanned(program)) return undefined;
+  const sha256 = rootNode.plan?.planDocument.sha256;
+  const text =
+    sha256 === undefined
+      ? undefined
+      : await state.runtime.planText?.(
+          { projectId: program.projectId, programId: program.programId },
+          sha256,
+        );
+  if (text === undefined) {
+    throw new ToolRefusal(
+      "plan_unavailable",
+      "this run is of a planned program, and the control plane could not supply the plan " +
+        "document it was ratified with, so no strand can be briefed. Ratify the plan again with " +
+        "`nightshift plan ratify` and start a new run.",
+    );
+  }
+  return splitPlanSections(text);
+};
+
 export const attachRun = async (
   state: OrchestratorSession,
   input: AttachInput,
@@ -319,6 +360,7 @@ export const attachRun = async (
     orchestratorAgentId: agentId,
     repoPath: state.repoPath,
   };
+  const planSections = await readPlanSections(state, program, rootNode);
   const environment = buildEnvironment(runtime, outbox);
   const attached: AttachedRun = {
     session,
@@ -334,6 +376,7 @@ export const attachRun = async (
     outbox,
     replayed,
     contractDrifted: await contractDrifted(state, program),
+    ...(planSections === undefined ? {} : { planSections }),
   };
   state.current = attached;
   return attached;
@@ -343,6 +386,8 @@ export interface StartRunInput {
   readonly program: unknown;
   readonly repoPath: string;
   readonly model: string;
+  /** The plan document on disk, for a planned program: held to the ratified hash. */
+  readonly planText?: string;
 }
 
 /**
@@ -359,7 +404,11 @@ export const startNewRun = async (
   const { runtime } = state;
   const started = await startRun(
     { stores: runtime.stores, clock: runtime.clock, ids: runtime.ids, git: runtime.git },
-    { program: input.program, repoPath: input.repoPath },
+    {
+      program: input.program,
+      repoPath: input.repoPath,
+      ...(input.planText === undefined ? {} : { planText: input.planText }),
+    },
   );
   const attached = await attachRun(state, { model: input.model, runId: started.run.runId });
   return { ...attached, baseCommit: started.baseCommit };

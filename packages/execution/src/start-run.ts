@@ -23,6 +23,7 @@
 import { createHash } from "node:crypto";
 import type {
   Checkpoint,
+  Decision,
   ExecutionNode,
   ProgramContract,
   Project,
@@ -241,6 +242,41 @@ export const startRun = async (
     createdAt: at,
   };
   await stores.checkpoints.put(checkpoint);
+
+  // The human's decisions, before any work exists to be built on the alternative
+  // (D-P7-06, SC-P7-09). Deterministic ids are not available, so a retried
+  // `nightshift run` is a new run with its own; these belong to this run.
+  for (const planned of program.decisions ?? []) {
+    if (planned.answer === undefined) continue;
+    const others = planned.options.filter((option) => option !== planned.answer);
+    const decision: Decision = {
+      schemaVersion: 1,
+      ...scope,
+      decisionId: ids.next("dec"),
+      executionNodeId: rootNodeId,
+      agentId: null,
+      context: `${planned.id}: ${planned.question}`,
+      alternatives:
+        others.length > 0
+          ? others.map((summary) => ({ summary }))
+          : [
+              {
+                summary: "Leave it to the run",
+                rejectedBecause: "a human chose to decide it up front",
+              },
+            ],
+      choice: planned.answer,
+      rationale: planned.rationale ?? "Decided by a human at planning, before the run.",
+      // Nothing has been built on it yet, which is the point of deciding it first.
+      reversibility: "reversible",
+      checkpointBefore: checkpointId,
+      affectedNodes: [],
+      authority: "human",
+      supersedesDecisionId: null,
+      createdAt: at,
+    };
+    await stores.decisions.put(decision);
+  }
 
   // Written directly rather than through an outbox: the outbox is created per
   // run by the server that attaches, and this runs before there is one. The keys
