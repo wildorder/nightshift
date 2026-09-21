@@ -14,8 +14,9 @@
  * 4. the headless root orchestrator, as a process, waited for;
  * 5. `report.md`, from the control plane alone.
  *
- * The exit code is 0 only when the run succeeded: anything parked is non-zero,
- * so a script chaining programs stops where a human would want to look.
+ * The exit code is 0 only when the run succeeded: anything parked is 1, and a
+ * run whose only shortfall is deferred work is 3, so a script chaining programs
+ * stops where a human would want to look and can tell which kind of stop it is.
  */
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -23,6 +24,7 @@ import type { ProgramContract } from "@nightshift/contracts";
 import { prerequisitesOf, strandsOf } from "@nightshift/core";
 import {
   gatherReport,
+  type RunReport,
   renderReport,
   requireRatifiedPlan,
   runPreflight,
@@ -132,6 +134,18 @@ const launchOrchestrator = async (
   }
 };
 
+/** Deferred work and nothing worse: its own code, so a script can tell "come back" from "it broke". */
+export const EXIT_DEFERRED = 3;
+
+/** 0 only when the run succeeded. Anything parked or failed is 1; only-deferred is {@link EXIT_DEFERRED}. */
+const exitCodeFor = (report: RunReport): number => {
+  if (report.run.status === "succeeded") return 0;
+  const broke = report.strands.some(
+    (strand) => strand.outcome !== "succeeded" && strand.outcome !== "provisional",
+  );
+  return broke ? 1 : EXIT_DEFERRED;
+};
+
 export const runProgram = async (
   environment: CliEnvironment,
   session: Session,
@@ -188,5 +202,16 @@ export const runProgram = async (
     `run ${report.run.runId} is ${report.run.status}: ${succeeded} of ${report.strands.length} strands succeeded`,
   );
   environment.out(`report: ${reportPath}`);
-  return { started, exitCode: report.run.status === "succeeded" ? 0 : 1 };
+
+  const deferred = report.strands.filter((strand) => strand.outcome === "provisional");
+  if (deferred.length > 0) {
+    const waitingOn = [...new Set(deferred.flatMap((strand) => strand.waitingOn))];
+    environment.out(
+      `deferred: ${deferred.map((strand) => strand.id).join(", ")} ${deferred.length === 1 ? "is" : "are"} done on the ` +
+        `provisional line, waiting on ${waitingOn.length === 0 ? "a human prerequisite" : waitingOn.join(", ")}. ` +
+        `Nothing of ${deferred.length === 1 ? "it" : "them"} is on the program branch. When it is done: ` +
+        `\`nightshift preflight ${files.id}\`, then \`nightshift resume ${files.id}\`.`,
+    );
+  }
+  return { started, exitCode: exitCodeFor(report) };
 };

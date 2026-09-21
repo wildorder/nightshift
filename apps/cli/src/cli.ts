@@ -24,6 +24,7 @@ import { logout } from "./commands/logout.js";
 import { planCheck, planRatify } from "./commands/plan.js";
 import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
+import { resume } from "./commands/resume.js";
 import { run } from "./commands/run.js";
 import { whoami } from "./commands/whoami.js";
 import type { CliEnvironment } from "./environment.js";
@@ -42,6 +43,7 @@ Usage:
   nightshift preflight <program> [--repo <path>] [--recheck]
   nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--repo <path>]
   nightshift run <contract> [--repo <path>] [--remote]
+  nightshift resume <program> [--run <id>] [--repo <path>]
   nightshift id <prefix>
   nightshift --help | --version
 
@@ -50,7 +52,9 @@ plan.md and contract.json. \`plan check\` answers READY or every reason, and its
 exit code is the answer; nothing runs until \`plan ratify\` has recorded the plan.
 \`run <program>\` then takes it to docs/programs/<program>/report.md with nobody
 watching, and exits non-zero when anything was parked. --attended only creates
-the run, for your own orchestrator session to attach to.
+the run, for your own orchestrator session to attach to. A check that needs
+something only you can supply does not stop the night: the work carries on a
+provisional line, and \`resume\` runs those checks and lands it when you are back.
 
 \`nightshift login\` needs no flags: the CLI knows where the control plane is.
 Over SSH, add --no-browser and paste the address your browser lands on.
@@ -292,6 +296,28 @@ const doPreflight = async (
   });
 };
 
+const doResume = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage = "nightshift resume <program> [--run <id>] [--repo <path>]";
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: { repo: { type: "string" }, run: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  const id = positionals[0];
+  if (id === undefined) throw new UsageError("a program id is required", usage);
+  const repo = optional(values, "repo");
+  const run = optional(values, "run");
+  return resume(environment, {
+    id,
+    ...(repo === undefined ? {} : { repo }),
+    ...(run === undefined ? {} : { run }),
+  });
+};
+
 const doId = (environment: CliEnvironment, args: readonly string[]): void => {
   const usage = "nightshift id <prefix>";
   const { positionals } = parse(
@@ -335,6 +361,8 @@ const dispatch = async (
       return doPreflight(environment, args);
     case "run":
       return doRun(environment, args);
+    case "resume":
+      return doResume(environment, args);
     case "id":
       doId(environment, args);
       return undefined;

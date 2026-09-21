@@ -35,14 +35,29 @@ import {
   pruneWorktrees,
   revParse,
 } from "./git/index.js";
-import { integrateNode } from "./integrate.js";
+import { checkoutBlocked, integrateNode } from "./integrate.js";
 import { verifyNode } from "./verify.js";
 
 export interface ResumeResult {
   /** Landed on the program branch, in order. */
   readonly landed: readonly ExecutionNodeId[];
-  /** The node whose deferred checks failed, or which could not be landed. */
-  readonly stoppedAt?: { readonly nodeId: ExecutionNodeId; readonly reason: string };
+  /**
+   * Nothing could be landed on this checkout, so **nothing was touched**: every
+   * deferred node is still deferred and the provisional line is intact. Fix the
+   * checkout and resume again.
+   */
+  readonly blocked?: string;
+  /**
+   * Where it stopped. `failed` means the node's deferred checks ran and did not
+   * pass: a verdict, and what was built on it is discarded. `refused` means its
+   * checks passed and the landing itself was refused, which is no verdict on
+   * anything after it: those stay deferred, on the line, for the next resume.
+   */
+  readonly stoppedAt?: {
+    readonly nodeId: ExecutionNodeId;
+    readonly kind: "failed" | "refused";
+    readonly reason: string;
+  };
   /** Dropped because they were built on `stoppedAt`. */
   readonly discarded: readonly ExecutionNodeId[];
 }
@@ -101,12 +116,14 @@ export const deferredLine = async (
   });
 };
 
+type Stopped = { readonly kind: "failed" | "refused"; readonly reason: string };
+
 /** Runs one deferred node's checks in full and lands it. `undefined` when it landed. */
 const landOne = async (
   environment: LandingEnvironment,
   session: RunSession,
   node: ExecutionNode,
-): Promise<string | undefined> => {
+): Promise<Stopped | undefined> => {
   const { stores, git: runner } = environment;
   const job =
     node.jobContractId === null
@@ -114,7 +131,10 @@ const landOne = async (
       : await stores.jobContracts.get(session.scope, node.jobContractId);
   const agent = (await stores.agents.listByNode(session.scope, node.executionNodeId)).at(-1);
   if (job === undefined || agent === undefined || node.commitSha === null) {
-    return "its job, agent or commit is missing from the control plane";
+    return {
+      kind: "refused",
+      reason: "its job, agent or commit is missing from the control plane",
+    };
   }
 
   // The worktree was kept for this. If somebody tidied it away, a detached
@@ -140,7 +160,7 @@ const landOne = async (
   });
   if (!verified.passed) {
     const after = await stores.executionNodes.get(session.scope, node.executionNodeId);
-    return after?.outcomeReason ?? "its deferred checks did not pass";
+    return { kind: "failed", reason: after?.outcomeReason ?? "its deferred checks did not pass" };
   }
 
   const landed = await integrateNode(environment, {
@@ -152,16 +172,20 @@ const landOne = async (
     base: await revParse(runner, session.repoPath, session.program.repository.programBranch),
     commitSha: verified.commitSha,
   });
-  return landed.kind === "integrated" ? undefined : landed.reason;
+  return landed.kind === "integrated" ? undefined : { kind: "refused", reason: landed.reason };
 };
 
 export const resumeDeferred = async (
   environment: LandingEnvironment,
   resumed: ResumeSession,
 ): Promise<ResumeResult> => {
-  const { stores, clock, outbox } = environment;
   const line = await deferredLine(environment, resumed);
   if (line.length === 0) return { landed: [], discarded: [] };
+
+  // Before any node is touched: a landing refused after sealing ends the node,
+  // and a dirty checkout is nobody's verdict on anybody's work.
+  const blocked = await checkoutBlocked(environment, resumed);
+  if (blocked !== undefined) return { landed: [], blocked, discarded: [] };
 
   // `verifyNode` and `integrateNode` take a whole session; resuming has no
   // orchestrator, and neither of them reads the two fields it lacks.
@@ -175,30 +199,44 @@ export const resumeDeferred = async (
       landed.push(node.executionNodeId);
       continue;
     }
+    const stoppedAt = { nodeId: node.executionNodeId, ...stopped };
+    // Only a verdict discards. A refused landing leaves the rest deferred, on a
+    // line that still holds them, for a resume that can land.
+    if (stopped.kind === "refused") return { landed, stoppedAt, discarded: [] };
 
-    const discarded: ExecutionNodeId[] = [];
-    for (const later of line.slice(index + 1)) {
-      const reason =
-        `discarded: built on ${node.executionNodeId}, which did not pass its deferred checks ` +
-        `(${stopped}). Its commit ${later.commitSha} is kept under its job branch for reference.`;
-      const { outcomeReason: _deferredFor, ...cancelled } = transition(
-        later,
-        "cancel",
-        nowIso(clock),
-      );
-      await stores.executionNodes.put({ ...cancelled, outcomeReason: reason });
-      outbox.emit({
-        type: "node.discarded",
-        source: "control-plane",
-        payload: { builtOn: node.executionNodeId, commitSha: later.commitSha, reason },
-        executionNodeId: later.executionNodeId,
-      });
-      discarded.push(later.executionNodeId);
-    }
+    const discarded = await discard(environment, node, stopped.reason, line.slice(index + 1));
     await deleteRef(environment.git, resumed.repoPath, ref);
-    return { landed, stoppedAt: { nodeId: node.executionNodeId, reason: stopped }, discarded };
+    return { landed, stoppedAt, discarded };
   }
 
   await deleteRef(environment.git, resumed.repoPath, ref);
   return { landed, discarded: [] };
+};
+
+/** Drops what was built on a node whose deferred checks failed, each saying which node that was. */
+const discard = async (
+  environment: LandingEnvironment,
+  failed: ExecutionNode,
+  why: string,
+  later: readonly ExecutionNode[],
+): Promise<ExecutionNodeId[]> => {
+  const { stores, clock, outbox } = environment;
+  const discarded: ExecutionNodeId[] = [];
+  for (const node of later) {
+    const reason =
+      `discarded: built on ${failed.executionNodeId}, which did not pass its deferred checks ` +
+      `(${why}). Its commit ${node.commitSha} is kept under its job branch for reference.`;
+    await stores.executionNodes.put({
+      ...transition(node, "cancel", nowIso(clock)),
+      outcomeReason: reason,
+    });
+    outbox.emit({
+      type: "node.discarded",
+      source: "control-plane",
+      payload: { builtOn: failed.executionNodeId, commitSha: node.commitSha, reason },
+      executionNodeId: node.executionNodeId,
+    });
+    discarded.push(node.executionNodeId);
+  }
+  return discarded;
 };

@@ -35,6 +35,7 @@ export {
 } from "./commands/plan.js";
 export { type PreflightOptions, preflight } from "./commands/preflight.js";
 export { createProject, type ProjectCreateOptions } from "./commands/project-create.js";
+export { type ResumeOptions, resume } from "./commands/resume.js";
 export { REMOTE_REFUSAL, type RunOptions, type RunResult, run } from "./commands/run.js";
 export { ACTIVE_ORG_CLAIM, type WhoamiOrg, type WhoamiResult, whoami } from "./commands/whoami.js";
 export {

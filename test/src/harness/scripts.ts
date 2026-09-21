@@ -104,7 +104,7 @@ export interface RootSurface {
   /** `strand.delegate`. Answers the job id, or the refusal's code when it was refused. */
   delegateStrand(strandId: string): Promise<{ jobId?: string; refused?: string }>;
   waitAll(jobIds: readonly string[]): Promise<Readonly<Record<string, string>>>;
-  finish(outcome: "succeeded" | "failed", reason?: string): Promise<boolean>;
+  finish(outcome: "succeeded" | "failed" | "deferred", reason?: string): Promise<boolean>;
 }
 
 export interface SurfaceDecision {
@@ -455,7 +455,10 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
       ),
     ];
     const statuses = await orchestrator.waitAll(jobs);
-    if (Object.values(statuses).every((status) => status === "integrated")) {
+    // `deferred` (P7, D-P7-10) is done for now: on the provisional line, waiting on a human.
+    if (
+      Object.values(statuses).every((status) => status === "integrated" || status === "deferred")
+    ) {
       await orchestrator.complete("Both modules are integrated.");
       return 0;
     }
@@ -482,11 +485,13 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
       const jobId = jobs.get(strandId);
       return jobId === undefined || statuses[jobId] !== "succeeded";
     });
-    const finished =
-      unfinished.length === 0
-        ? await root.finish("succeeded")
-        : await root.finish("failed", `parked: ${unfinished.join(", ")}`);
-    return finished ? 0 : 1;
+    if (unfinished.length > 0) {
+      return (await root.finish("failed", `parked: ${unfinished.join(", ")}`)) ? 0 : 1;
+    }
+    // Every strand's orchestrator finished. If the run still may not be called
+    // succeeded, some of their work is deferred, and that is how it ends.
+    if (await root.finish("succeeded")) return 0;
+    return (await root.finish("deferred", "checks are deferred for a human prerequisite")) ? 0 : 1;
   },
 
   "conform-broken": async ({ surface, worktree }) => {

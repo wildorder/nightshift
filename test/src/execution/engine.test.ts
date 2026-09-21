@@ -8,7 +8,7 @@
  * "B finished before A" and "both were ready when the queue looked" are facts
  * rather than races.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type ExecutionNodeId,
@@ -891,6 +891,7 @@ describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
     expect(result.landed).toEqual([good.nodeId]);
     expect(result.stoppedAt).toEqual({
       nodeId: bad.nodeId,
+      kind: "failed",
       reason: "verification failed: gate exited 1",
     });
     expect(result.discarded).toEqual([later.nodeId]);
@@ -904,5 +905,34 @@ describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
     expect(await headOf(r.world)).not.toBe(before);
     expect(await log(r.world)).not.toContain("bad");
     expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeUndefined();
+  }, 60_000);
+
+  it("touches nothing when the checkout cannot be landed on, and ignores Nightshift's own report", async () => {
+    const { r, meet } = await deferredRig({ one: addModule("one"), two: addModule("two") });
+    const one = await r.submit("one");
+    await r.until(one.nodeId, (status) => status === "deferred");
+    const two = await r.submit("two");
+    await r.until(two.nodeId, (status) => status === "deferred");
+    meet();
+
+    // Somebody's work in progress: a refusal, and no verdict on anybody's work.
+    await writeFile(join(r.world.repo, "scratch.txt"), "mine", "utf8");
+    const blocked = await resumeDeferred(r.world.environment, r.world.session);
+    expect(blocked.blocked).toContain("program_checkout_dirty");
+    expect(blocked).toMatchObject({ landed: [], discarded: [] });
+    expect(await r.status(one.nodeId)).toBe("deferred");
+    expect(await r.status(two.nodeId)).toBe("deferred");
+    expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeDefined();
+
+    // The report `nightshift run` leaves behind is not dirt, or no run could ever be resumed.
+    await rm(join(r.world.repo, "scratch.txt"));
+    await mkdir(join(r.world.repo, "docs", "programs", "p1"), { recursive: true });
+    await writeFile(
+      join(r.world.repo, "docs", "programs", "p1", "report.md"),
+      "# Report\n",
+      "utf8",
+    );
+    const landed = await resumeDeferred(r.world.environment, r.world.session);
+    expect(landed).toEqual({ landed: [one.nodeId, two.nodeId], discarded: [] });
   }, 60_000);
 });

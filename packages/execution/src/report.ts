@@ -63,6 +63,8 @@ export interface StrandReport {
   readonly departures: readonly Decision[];
   /** How many times the strand itself was attempted. */
   readonly attempts: number;
+  /** The human prerequisites its deferred work waits on (D-P7-10). Empty unless provisional. */
+  readonly waitingOn: readonly string[];
 }
 
 export interface UsageRow {
@@ -121,6 +123,8 @@ interface Records {
   readonly jobOf: ReadonlyMap<string, JobContract>;
   readonly decisions: readonly Decision[];
   readonly routesOf: ReadonlyMap<string, readonly RoutingDecision[]>;
+  /** Node id → the prerequisites its deferred checks wait on. */
+  readonly waitingOf: ReadonlyMap<string, readonly string[]>;
   /** Every attempt at every strand, oldest first. */
   readonly strandNodes: readonly { readonly strandId: string; readonly node: ExecutionNode }[];
   readonly outcomes: StrandOutcomes;
@@ -155,6 +159,7 @@ const strandReportOf = (
     reason: latest?.outcomeReason,
     blockedBy: blocked.get(strand.id) ?? [],
     attempts: attempts.length,
+    waitingOn: [...new Set([...inStrand].flatMap((id) => records.waitingOf.get(id) ?? []))].sort(),
     jobs: under
       .map((id) => records.tree.nodes.get(id))
       .filter((node): node is ExecutionNode => node !== undefined && node.kind === "job")
@@ -211,6 +216,19 @@ const readRecords = async (
     );
   }
 
+  // Why a deferred node waits is in its Verification, not on the node: a
+  // deferral is not an outcome.
+  const waitingOf = new Map<string, readonly string[]>();
+  for (const node of nodes.filter((candidate) => candidate.status === "deferred")) {
+    const latest = (await stores.verifications.listByNode(scope, node.executionNodeId)).at(-1);
+    waitingOf.set(
+      node.executionNodeId,
+      (latest?.commands ?? []).flatMap((command) =>
+        command.deferred === undefined ? [] : [command.deferred.prerequisiteId],
+      ),
+    );
+  }
+
   const strandNodes = nodes
     .flatMap((node) => {
       const strandId =
@@ -228,7 +246,16 @@ const readRecords = async (
       ),
     ),
   );
-  return { program, tree: buildTree(nodes), jobOf, decisions, routesOf, strandNodes, outcomes };
+  return {
+    program,
+    tree: buildTree(nodes),
+    jobOf,
+    decisions,
+    routesOf,
+    waitingOf,
+    strandNodes,
+    outcomes,
+  };
 };
 
 export const gatherReport = async (stores: ProjectStores, scope: RunScope): Promise<RunReport> => {
@@ -327,6 +354,12 @@ const renderStrand = (strand: StrandReport): string[] => {
           "",
         ]),
     ...(strand.reason === undefined ? [] : [`Why: ${strand.reason}`, ""]),
+    ...(strand.outcome !== "provisional"
+      ? []
+      : [
+          `Waiting on: ${strand.waitingOn.length === 0 ? "work it was built on, whose own checks are deferred" : strand.waitingOn.join(", ")}`,
+          "",
+        ]),
     "Acceptance, as planned:",
     ...strand.acceptance.map((item) => `- ${item}`),
     "",
@@ -353,6 +386,22 @@ const renderParked = (strands: readonly StrandReport[]): string[] => {
   ];
 };
 
+const renderDeferred = (strands: readonly StrandReport[]): string[] => {
+  const provisional = strands.filter((strand) => strand.outcome === "provisional");
+  if (provisional.length === 0) return ["Nothing was deferred.", ""];
+  const waitingOn = [...new Set(provisional.flatMap((strand) => strand.waitingOn))].sort();
+  return [
+    `${provisional.map((strand) => strand.id).join(", ")} ${provisional.length === 1 ? "is" : "are"} done, on the run's provisional line, ` +
+      "and **not on the program branch**: some checks could not run without a human.",
+    "",
+    `1. Do what is pending below${waitingOn.length === 0 ? "" : ` (${waitingOn.join(", ")})`}.`,
+    "2. `nightshift preflight <program>` until it passes.",
+    "3. `nightshift resume <program>`: the deferred checks run in order, what passes lands on the",
+    "   program branch unchanged, and anything built on a check that fails is discarded, saying so.",
+    "",
+  ];
+};
+
 const renderPrerequisites = (pending: readonly Prerequisite[]): string[] =>
   pending.length === 0
     ? ["None.", ""]
@@ -369,6 +418,7 @@ const renderPrerequisites = (pending: readonly Prerequisite[]): string[] =>
 export const renderReport = (report: RunReport): string => {
   const { program, run, strands } = report;
   const succeeded = strands.filter((strand) => strand.outcome === "succeeded").length;
+  const provisional = strands.filter((strand) => strand.outcome === "provisional").length;
   const lines: string[] = [
     `# Report: ${firstLine(program.objective)}`,
     "",
@@ -376,7 +426,7 @@ export const renderReport = (report: RunReport): string => {
       run.outcomeReason === undefined ? "" : `. ${run.outcomeReason}`
     }`,
     "",
-    `${succeeded} of ${strands.length} strands succeeded; ${strands.filter(isParked).length} parked. Wall clock ${duration(run)}.`,
+    `${succeeded} of ${strands.length} strands succeeded; ${provisional} deferred; ${strands.filter(isParked).length} parked. Wall clock ${duration(run)}.`,
     "",
     "## Strands",
     "",
@@ -393,6 +443,9 @@ export const renderReport = (report: RunReport): string => {
     "## Parked",
     "",
     ...renderParked(strands),
+    "## Deferred",
+    "",
+    ...renderDeferred(strands),
     "## Human prerequisites still pending",
     "",
     ...renderPrerequisites(report.pendingPrerequisites),

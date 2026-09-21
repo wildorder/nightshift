@@ -56,6 +56,27 @@ export type IntegrateResult =
   | { readonly kind: "refused"; readonly reason: string };
 
 /** Every reason the program checkout is not in a state to be fast-forwarded. */
+/**
+ * Why nothing can be landed on this checkout right now, whatever the commit:
+ * the wrong branch, or somebody's uncommitted work. Asked **before** a resume
+ * touches any node, because a refusal after sealing ends the node.
+ */
+export const checkoutBlocked = async (
+  environment: Pick<LandingEnvironment, "git">,
+  session: Pick<RunSession, "repoPath" | "program">,
+): Promise<string | undefined> => {
+  const repo = session.repoPath;
+  const programBranch = session.program.repository.programBranch;
+  const branch = await currentBranch(environment.git, repo);
+  if (branch !== programBranch) {
+    return `program_checkout_wrong_branch: the checkout at ${repo} is on "${branch}", not the program branch "${programBranch}"`;
+  }
+  if (await isDirty(environment.git, repo)) {
+    return `program_checkout_dirty: the checkout at ${repo} has uncommitted changes, and Nightshift will not fast-forward over them`;
+  }
+  return undefined;
+};
+
 const blockingReason = async (
   environment: LandingEnvironment,
   input: IntegrateInput,

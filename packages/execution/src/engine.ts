@@ -566,7 +566,9 @@ export const createEngine = (options: EngineOptions): Engine => {
         continue;
       }
       const node = tree.nodes.get(id);
-      if (node !== undefined && !isSettled(node.status) && node.status !== "implemented") {
+      // Deferred work is not in flight: it waits on a human, on the provisional
+      // line, and outlives the orchestrator that delegated it (D-P7-10).
+      if (node !== undefined && !isDoneForNow(node.status) && node.status !== "implemented") {
         await refuse(node, reason).catch(() => {});
       }
     }

@@ -15,6 +15,7 @@ import {
   type IdGenerator,
   makeMembership,
   nowIso,
+  systemClock,
 } from "@nightshift/core";
 import { nodeGitRunner } from "@nightshift/execution";
 import type { FetchLike } from "@nightshift/persistence/http";
@@ -52,9 +53,18 @@ export interface Operator {
  * A signed-in operator: a real config directory holding a real profile and real
  * credentials, pointed at a real control plane.
  */
-export const signIn = async (): Promise<Operator> => {
+export interface SignInOptions {
+  /**
+   * The system clock rather than the stepping one. A suite that runs real
+   * worker processes needs it: the stepping clock advances a second per reading,
+   * and a worker's execution token expires within one run's worth of readings.
+   */
+  readonly realTime?: boolean;
+}
+
+export const signIn = async (options: SignInOptions = {}): Promise<Operator> => {
   const ids = createUlidIdGenerator();
-  const clock = createSteppingClock(START_MS, 1_000);
+  const clock = options.realTime === true ? systemClock : createSteppingClock(START_MS, 1_000);
   const backing: InMemoryStores = createInMemoryStores({ deferSequencing: true });
   const orgId = ids.next("org") as OrgId;
   await backing.memberships.put(makeMembership(SUBJECT as never, orgId));
@@ -92,7 +102,12 @@ export const signIn = async (): Promise<Operator> => {
     // Cognito's token endpoint, and only it.
     mints += 1;
     const body = JSON.stringify({
-      id_token: idTokenFor({ sub: SUBJECT, email: "operator@example.test" }),
+      id_token: idTokenFor({
+        sub: SUBJECT,
+        email: "operator@example.test",
+        // Valid on whichever clock the suite runs by.
+        exp: Math.floor(clock.now() / 1000) + 3600,
+      }),
       access_token: "unused",
       expires_in: 3600,
       token_type: "Bearer",

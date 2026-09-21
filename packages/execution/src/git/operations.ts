@@ -53,7 +53,23 @@ export const currentBranch = async (runner: GitRunner, repo: string): Promise<st
  * halfway, which is the worst of both outcomes.
  */
 export const isDirty = async (runner: GitRunner, repo: string): Promise<boolean> =>
-  trimmed(await git(runner, ["status", "--porcelain"], { cwd: repo })) !== "";
+  // Every untracked file by name: by default git folds a new directory into one
+  // line (`?? docs/`), which would hide what is in it.
+  trimmed(await git(runner, ["status", "--porcelain", "--untracked-files=all"], { cwd: repo }))
+    .split("\n")
+    .some((line) => line.trim() !== "" && !isNightshiftReport(line));
+
+/**
+ * `nightshift run` writes `docs/programs/{id}/report.md` into the checkout (P7,
+ * D-P7-03), and it is the one thing Nightshift leaves there. Untracked, it is
+ * not the operator's work in progress and must not stop the next landing: found
+ * when the first `nightshift resume` was refused by the report of the run it was
+ * resuming. Only while **untracked** (`??`): once a human commits it, a change
+ * to it is a change like any other.
+ */
+const NIGHTSHIFT_REPORT = /^\?\? "?docs\/programs\/[^/]+\/report\.md"?$/;
+const isNightshiftReport = (porcelainLine: string): boolean =>
+  NIGHTSHIFT_REPORT.test(porcelainLine.trimEnd());
 
 export interface WorktreeInput {
   readonly repo: string;

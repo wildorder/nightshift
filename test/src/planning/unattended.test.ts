@@ -82,7 +82,11 @@ const plan = (tags: Readonly<Record<string, string>>): string =>
   ].join("\n");
 
 /** Ratifies the three-strand plan, starts a run of it, and runs the launcher to its end. */
-const runUnattended = async (tags: Readonly<Record<string, string>> = {}) => {
+const runUnattended = async (
+  tags: Readonly<Record<string, string>> = {},
+  /** Adds a verification step that needs a human prerequisite nobody has met (D-P7-10). */
+  gated = false,
+) => {
   const ctx = await createLocalContext({
     delegationLimits: { maxDepth: 2, maxConcurrency: 3 },
     realTime: true,
@@ -97,6 +101,23 @@ const runUnattended = async (tags: Readonly<Record<string, string>> = {}) => {
       strand("S-02", "b", ["S-01"], []),
       strand("S-03", "c", [], []),
     ],
+    ...(gated
+      ? {
+          verification: [
+            ...ctx.program.verification,
+            { id: "release-check", command: 'node -e "process.exit(0)"', requires: ["HP-01"] },
+          ],
+          prerequisites: [
+            {
+              id: "HP-01",
+              description: "The release token is in place.",
+              remediation: "Ask the owner.",
+              verifyCommand: 'node -e "process.exit(1)"',
+              status: "pending" as const,
+            },
+          ],
+        }
+      : {}),
     decisions: [
       {
         id: "D-01",
@@ -262,6 +283,29 @@ describe("nightshift run {id}, unattended (SC-P7-06)", () => {
       text.indexOf("Acceptance, as planned:", s02At),
     );
     expect(text).toContain("Nothing was parked.");
+  }, 180_000);
+
+  it("carries on past a check that cannot run, on the provisional line, and ends deferred (SC-P7-08a)", async () => {
+    const { ctx, scope, answer, report, log } = await runUnattended({}, true);
+    const nodes = (await ctx.stores.executionNodes.listByRun(scope, { limit: 100 })).items;
+    const seen: unknown[] = [
+      (await ctx.stores.programContracts.get(scope.projectId, scope.programId))?.verification,
+    ];
+    for (const node of nodes.filter((candidate) => candidate.kind === "job")) {
+      const verifications = await ctx.stores.verifications.listByNode(scope, node.executionNodeId);
+      seen.push([
+        node.status,
+        verifications.map((v) => [v.outcome, v.commands.map((c) => c.stepId)]),
+      ]);
+    }
+    expect(answer.runStatus, JSON.stringify(seen)).toBe("interrupted");
+    expect(report.strands.map((s) => [s.id, s.outcome, s.waitingOn])).toEqual([
+      ["S-01", "provisional", ["HP-01"]],
+      ["S-02", "provisional", ["HP-01"]],
+      ["S-03", "provisional", ["HP-01"]],
+    ]);
+    // The program branch received none of it.
+    expect(log).toBe("");
   }, 180_000);
 
   it("parks a strand that fails with exactly its cone, finishes the rest, and says so (SC-P7-08)", async () => {
