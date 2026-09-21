@@ -114,6 +114,9 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       examinationId: f.ids.next("exam"),
       routingDecisionId: f.ids.next("route"),
       artifactId: f.ids.next("art"),
+      // Program-scoped planning routes (P7): named by a digest and an `HP-nn`, not by an id.
+      sha256: "a".repeat(64),
+      prerequisiteId: "HP-01",
     },
     execution: {
       kind: "execution",

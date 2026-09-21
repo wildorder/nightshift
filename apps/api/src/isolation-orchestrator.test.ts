@@ -87,6 +87,9 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       examinationId: f.ids.next("exam"),
       routingDecisionId: f.ids.next("route"),
       artifactId: f.ids.next("art"),
+      // Program-scoped planning routes (P7): named by a digest and an `HP-nn`, not by an id.
+      sha256: "a".repeat(64),
+      prerequisiteId: "HP-01",
       agentId: agent.agentId,
       siblingAgentId: siblingAgent.agentId,
     },
@@ -181,7 +184,8 @@ describe("a delegating token reaches a node it delegated only where the table sa
       status: "cancelled",
     });
     const access = ORCHESTRATOR_ACCESS[operation];
-    if (access === "own_subtree" || access === "own_run") {
+    // `own_program` is like `own_run` here: a reach that names no node (P7).
+    if (access === "own_subtree" || access === "own_run" || access === "own_program") {
       expect(answer.status, `${route.method} ${route.path} answered ${answer.code}`).not.toBe(403);
       return;
     }
@@ -190,20 +194,21 @@ describe("a delegating token reaches a node it delegated only where the table sa
 });
 
 describe("a delegating token reaches nothing on a sibling's node", () => {
-  it.each(eachRoute.filter(([operation]) => ORCHESTRATOR_ACCESS[operation] !== "own_run"))(
-    "%s",
-    async (operation, route) => {
-      for (const nodeId of [w.sibling, w.root]) {
-        const answer = await ask(w.orchestrator, route.method, route.path, w, nodeId, {
-          status: "cancelled",
-        });
-        expect(answer, nodeId).toEqual({
-          status: 403,
-          code: refusalFor(ORCHESTRATOR_ACCESS[operation]),
-        });
-      }
-    },
-  );
+  it.each(
+    eachRoute.filter(
+      ([operation]) => !["own_run", "own_program"].includes(ORCHESTRATOR_ACCESS[operation]),
+    ),
+  )("%s", async (operation, route) => {
+    for (const nodeId of [w.sibling, w.root]) {
+      const answer = await ask(w.orchestrator, route.method, route.path, w, nodeId, {
+        status: "cancelled",
+      });
+      expect(answer, nodeId).toEqual({
+        status: 403,
+        code: refusalFor(ORCHESTRATOR_ACCESS[operation]),
+      });
+    }
+  });
 });
 
 describe("a delegating token reaches nothing in another run", () => {
