@@ -94,7 +94,8 @@ describe("routing decision updates (D-P5-06)", () => {
   });
 
   it("gives every settled node status an ending, and only those", () => {
-    const unsettled = ["validated", "queued", "running", "implemented", "verifying"];
+    // `deferred` (P7, D-P7-10) is a check waiting on a human, not an ending.
+    const unsettled = ["validated", "queued", "running", "implemented", "verifying", "deferred"];
     for (const status of EXECUTION_NODE_STATUSES) {
       const outcome = routeOutcomeForNodeStatus(status);
       expect(outcome === "pending", status).toBe(unsettled.includes(status));

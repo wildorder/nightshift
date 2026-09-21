@@ -292,6 +292,23 @@ const assertTransitionAllowed = async (
       markVerificationFailed(existing, failure, at);
       return;
     }
+    case "defer": {
+      // Deferral is evidence too (D-P7-10): a recorded verification, at this
+      // commit, whose every step that ran passed and which names the
+      // prerequisite the rest wait on. A failure can never be filed as one.
+      const verifications = await stores.verifications.listByNode(scope, id);
+      const deferral = verifications.find(
+        (candidate) =>
+          candidate.outcome === "deferred" && candidate.commitSha === existing.commitSha,
+      );
+      if (deferral === undefined) {
+        throw new VerificationEvidenceError(
+          `no deferred verification is recorded for node ${id} at its current commit`,
+        );
+      }
+      transition(existing, event, at);
+      return;
+    }
     default:
       transition(existing, event, at);
   }

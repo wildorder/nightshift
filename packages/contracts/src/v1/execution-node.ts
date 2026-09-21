@@ -26,6 +26,13 @@ export const ExecutionNodeStatusSchema = z.enum([
   "running",
   "implemented",
   "verifying",
+  /**
+   * A verification step **could not run** for want of something only a human
+   * can supply (P7, D-P7-10). Not a verdict: the only ways out are back to
+   * `verifying` once the prerequisite is met, or `cancelled`, so nothing reaches
+   * `sealed` or `integrated` from here except through `verified` (A-05).
+   */
+  "deferred",
   "verified",
   "verification_failed",
   "examining",
