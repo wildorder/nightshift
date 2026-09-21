@@ -56,7 +56,7 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
   // where no adapter has to know there is one.
   if (input.node.kind === "sub-program") return renderSubOrchestratorBrief(input);
   // The program node itself, run headless from a ratified plan (P7, D-P7-09).
-  if (input.node.kind === "program") return renderPlanFollowingBrief(input);
+  if (isPlanRoot(input.node.kind, input.program)) return renderPlanFollowingBrief(input);
   const { job, node, program, worktree } = input;
   const scope = node.scope;
   const permissions = grantedPermissions(scope);
@@ -194,8 +194,12 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
  * adapter that has to tell its model how those names are spelled to it (Claude
  * Code prefixes and rewrites them) maps this list, and never keeps its own.
  */
-export const nightshiftToolNames = (kind: ExecutionNode["kind"]): readonly string[] => {
-  if (kind === "program") return ROOT_ORCHESTRATOR_TOOLS;
+export const nightshiftToolNames = (
+  kind: ExecutionNode["kind"],
+  /** The run's contract. Only the program node **of a planned run** is a root orchestrator. */
+  program?: ProgramContract,
+): readonly string[] => {
+  if (isPlanRoot(kind, program)) return ROOT_ORCHESTRATOR_TOOLS;
   return kind === "sub-program"
     ? [
         "subprogram.get",
@@ -212,6 +216,14 @@ export const nightshiftToolNames = (kind: ExecutionNode["kind"]): readonly strin
       ]
     : ["job.complete", "job.fail", "job.progress", "job.get", "decision.record"];
 };
+
+/**
+ * Whether a node is the root orchestrator of a planned run: the program node of
+ * a contract that has strands. A program node is started as an agent in no other
+ * case, and anything else keeps the brief and the tools it always had.
+ */
+const isPlanRoot = (kind: ExecutionNode["kind"], program: ProgramContract | undefined): boolean =>
+  kind === "program" && (program?.strands?.length ?? 0) > 0;
 
 /** What the headless root of a planned run is given: strands in, a finished run out. */
 const ROOT_ORCHESTRATOR_TOOLS: readonly string[] = [

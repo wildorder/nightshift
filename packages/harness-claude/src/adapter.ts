@@ -202,7 +202,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       }),
       claudeBriefAddendum({
         mcpServerName: input.mcp.name,
-        tools: nightshiftToolNames(input.node.kind),
+        tools: nightshiftToolNames(input.node.kind, input.program),
       }),
     );
 

@@ -29,6 +29,7 @@ import {
 } from "./scripted.js";
 import {
   type OrchestratorSurface,
+  type RootSurface,
   SCRIPTS,
   type ScriptName,
   type WorkerSurface,
@@ -143,6 +144,48 @@ const orchestratorOver = (worker: Worker): OrchestratorSurface => ({
   fail: async (reason) => {
     await worker.call("subprogram.fail", { reason });
   },
+  decide: async (decision) => {
+    await worker.call("decision.record", { ...decision });
+  },
+});
+
+/** The root of a planned run (P7): the orchestrator role's tools, each a real tool call. */
+const rootOver = (worker: Worker): RootSurface => ({
+  attach: async (runId) => {
+    const result = await worker.call("run.attach", { runId, model: "scripted" });
+    if (result.ok !== true) throw new Error(`run.attach was refused: ${JSON.stringify(result)}`);
+  },
+  delegateStrand: async (strandId) => {
+    const result = await worker.call("strand.delegate", { strandId });
+    return result.ok === true
+      ? { jobId: String(result.jobId) }
+      : { refused: String((result.error as { code?: unknown } | undefined)?.code ?? "refused") };
+  },
+  waitAll: async (jobIds) => {
+    const statuses: Record<string, string> = {};
+    let remaining = [...jobIds];
+    while (remaining.length > 0) {
+      const result = await worker.call("job.wait", { jobIds: remaining, timeoutSeconds: 10 });
+      // The root's `job.wait` answers one job as the report itself, several as `jobs`.
+      for (const job of (result.jobs ?? [result]) as {
+        jobContractId: string;
+        status: string;
+        settled: boolean;
+      }[]) {
+        if (job.settled) statuses[job.jobContractId] = job.status;
+      }
+      remaining = remaining.filter((jobId) => statuses[jobId] === undefined);
+    }
+    return statuses;
+  },
+  finish: async (outcome, reason) => {
+    const result = await worker.call("run.finish", {
+      outcome,
+      ...(reason === undefined ? {} : { reason }),
+    });
+    if (result.ok !== true) note(`run.finish answered ${JSON.stringify(result)}`);
+    return result.ok === true;
+  },
 });
 
 /** A surface for the one script that must never speak to anything. */
@@ -183,6 +226,7 @@ const main = async (): Promise<number> => {
       ...(process.env[WORKER_KIND_ENV] === "sub-program"
         ? { orchestrator: orchestratorOver(worker) }
         : {}),
+      ...(process.env[WORKER_KIND_ENV] === "program" ? { root: rootOver(worker) } : {}),
     });
   } finally {
     await worker.close().catch(() => {});

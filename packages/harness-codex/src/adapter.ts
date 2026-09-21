@@ -161,7 +161,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       }),
       codexBriefAddendum({
         mcpServerName: input.mcp.name,
-        tools: nightshiftToolNames(input.node.kind),
+        tools: nightshiftToolNames(input.node.kind, input.program),
       }),
     );
 

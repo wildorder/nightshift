@@ -75,8 +75,16 @@ export const scriptFor = (
   input: HarnessStartInput,
   fallback: ScriptName,
 ): { readonly script: ScriptName; readonly args: readonly string[] } => {
+  if (input.node.kind === "program") {
+    // The root of a planned run (P7): told which run, and which strands the plan has.
+    return {
+      script: "follow-plan",
+      args: [input.node.runId, ...(input.program.strands ?? []).map((strand) => strand.id)],
+    };
+  }
   if (input.node.kind === "sub-program") {
-    return { script: "orchestrate", args: taggedScript(input.job.objective)?.args ?? [] };
+    const anywhere = input.job.strandId !== undefined;
+    return { script: "orchestrate", args: taggedScript(input.job.objective, anywhere)?.args ?? [] };
   }
   const fromLaunch = input.mcp.env[WORKER_SCRIPT_ENV] as ScriptName | undefined;
   return taggedScript(input.job.objective) ?? { script: fromLaunch ?? fallback, args: [] };
