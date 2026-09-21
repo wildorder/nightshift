@@ -764,7 +764,7 @@ const assertExaminable = (program: ProgramContract, job: JobContract): void => {
   throw new ToolRefusal(
     "examination_unavailable",
     `this program's examination policy requires an examiner for ${job.risk}-risk work, and ` +
-      "examination arrives in P7. Lower the job's risk if that is honest, or change the " +
+      "examination arrives in P8. Lower the job's risk if that is honest, or change the " +
       "program's policy — do not pretend the work was examined.",
     { risk: job.risk, requirement },
   );

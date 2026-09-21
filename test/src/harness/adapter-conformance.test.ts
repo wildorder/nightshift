@@ -5,7 +5,7 @@
  * Before any real adapter is asked to pass the suite, the suite has to be shown
  * passable, offline and with no model. And the function transport, which no
  * local adapter uses, has to be shown working now rather than discovered broken
- * in P9: `functions` runs the same scripts over `HarnessStartInput.tools`.
+ * in P10: `functions` runs the same scripts over `HarnessStartInput.tools`.
  */
 import { writeFile } from "node:fs/promises";
 import { it } from "vitest";

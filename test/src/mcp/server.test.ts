@@ -492,7 +492,7 @@ describe("delegate's refusals are typed (§4.5)", () => {
     expect(result.ok).toBe(false);
     expect(result.code).toBe("examination_unavailable");
     // Refused loudly, and it says what to do instead of pretending.
-    expect(String(result.message)).toContain("P7");
+    expect(String(result.message)).toContain("P8");
     await mcp.stop();
   });
 

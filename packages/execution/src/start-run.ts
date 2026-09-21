@@ -9,7 +9,7 @@
  * It does the half that is identical whether the run will execute locally or
  * remotely: validate the authored contract, persist the program, create the run,
  * its root node and an initial checkpoint. The local form then prints a run id
- * for an orchestrator to attach to; `--remote` adds a dispatch call in P9 and is
+ * for an orchestrator to attach to; `--remote` adds a dispatch call in P10 and is
  * refused until then.
  *
  * ## Why there is an initial checkpoint

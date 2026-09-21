@@ -49,7 +49,7 @@ export { SCRIPT_NAMES, type ScriptName } from "./scripts.js";
  *
  * `mcp`, the default, is a child process speaking to a worker-role MCP server
  * over stdio: what a local adapter does. `functions` runs the same script in
- * this process and calls `HarnessStartInput.tools` directly: what P9's remote
+ * this process and calls `HarnessStartInput.tools` directly: what P10's remote
  * adapter will do, tested offline now (A-37).
  */
 export type ScriptedTransport = "mcp" | "functions";

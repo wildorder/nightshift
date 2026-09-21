@@ -11,6 +11,8 @@
 | Depends on | P3 First Vertical Slice (complete, `v1` at `7627045`) |
 | Blocking decisions | none open in `architecture.md` §3. Amends A-19, A-21 and A-27. |
 
+> **Restaging note (2026-09-21).** P7 *Planning* was inserted after this contract was written. Where this document names a later program, read Routing & Examination as P8, Decision Graph as P9, Remote Runner as P10 and Realtime as P11 (`docs/programs/staging.md`).
+
 This contract is the stable authority for P4. The implementation plan may be
 revised continuously; this contract may not be revised to make an implementation
 pass. Amend it only through a human decision recorded in §11.

@@ -11,7 +11,7 @@
  *
  * Version 0 (P3) existed so the execution layer was written against an
  * interface rather than a process. Version 1 (P5) is that contract finalised
- * against two local adapters and the shape P9's remote one needs. Two things
+ * against two local adapters and the shape P10's remote one needs. Two things
  * were added and nothing removed: the worker operations arrive as functions
  * (`tools`, see `tools.ts`) beside the MCP launch, and an adapter says whether
  * it reports `usage` and carries it on the exit.
@@ -179,7 +179,7 @@ export interface Harness {
    * The agent's current status.
    *
    * In P3 this is answered from the handle, which is why it looks redundant. It
-   * exists because P9 asks a remote runner about an agent this process did not
+   * exists because P10 asks a remote runner about an agent this process did not
    * spawn, and adding the method later would mean changing every adapter. It
    * must agree with `exit`: once `exit` settles, `status` reports the matching
    * terminal status forever.

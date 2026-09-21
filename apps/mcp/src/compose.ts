@@ -131,7 +131,7 @@ const createWorkerTransport = (env: Env): { transport: Transport; endpoint: stri
  * the control plane is and a refresh token that mints ID tokens. The server
  * holds no AWS credentials and never will (A-28). The orchestrator keeps the
  * human's session in P4 by decision (D-P4-06): it is the human's proxy, and a
- * remote orchestrator's own token is P9's change.
+ * remote orchestrator's own token is P10's change.
  *
  * The environment pair is for a caller that already holds a token: the deployed
  * slice suite, which uses the machine client's credentials grant rather than an

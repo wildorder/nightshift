@@ -2,7 +2,7 @@
  * Routing, P5: harness choice is configuration (D-P5-04, D-P5-05, SC-P5-16).
  *
  * P3's rule was fixed: one harness, one provider. This one is still not
- * *reasoning* — no cost, no capability, no history; that is P7 — but it chooses
+ * *reasoning* — no cost, no capability, no history; that is P8 — but it chooses
  * among real alternatives, by intersecting two things and nothing else:
  *
  * - the **Program Contract's model policy**: which providers and models this

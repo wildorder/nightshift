@@ -42,7 +42,7 @@
  * against the node's scope before anything integrates (A-29); the worker's only
  * Nightshift credential is its execution token (A-35); its environment is an
  * allowlist. **Its effects outside its worktree are not contained by Nightshift
- * at all**, until P9 gives workers a machine of their own.
+ * at all**, until P10 gives workers a machine of their own.
  *
  * ## The rest
  *

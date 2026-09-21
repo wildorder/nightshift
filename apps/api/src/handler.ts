@@ -70,7 +70,7 @@ const RUN = `${PROGRAM}/runs/{runId}`;
 const NODE = `${RUN}/nodes/{nodeId}`;
 
 /**
- * The API surface, grouped by aggregate. P10 will read this table, so it is kept
+ * The API surface, grouped by aggregate. P11 will read this table, so it is kept
  * readable and nothing is added that the slice does not use (T2).
  */
 export const ROUTES: readonly Route[] = [

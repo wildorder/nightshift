@@ -30,6 +30,8 @@ moved, the note is here rather than a silent edit in the stage text.
   eleven stages into programs and was adjusted on 2026-09-16: a program for
   identity and tenancy was inserted as P4, and the numbering after it shifted
   by one (Harness Neutrality is P5, the Remote Runner is P9, Realtime is P10).
+  It was adjusted again on 2026-09-21: Planning was inserted as P7, so Routing &
+  Examination is P8, Decision Graph P9, the Remote Runner P10 and Realtime P11.
 * **Multi-user identity is in v1.** "Single-user/private v1 is settled" below
   described the assumption P2 was built on; P4 replaces it with enforced
   organisation isolation and per-execution credentials. See `docs/vision.md`,

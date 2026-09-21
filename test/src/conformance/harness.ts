@@ -13,9 +13,9 @@
  *    status; a second settlement would be a second terminal write.
  * 3. `cancel` on a running agent settles `exit` as `cancelled`. Shutdown depends
  *    on this (contract §4.3, last failure path).
- * 4. `status` agrees with `exit`, forever. P9 asks `status` about an agent this
+ * 4. `status` agrees with `exit`, forever. P10 asks `status` about an agent this
  *    process did not spawn; an adapter whose two answers can disagree is not one
- *    P9 can build on.
+ *    P10 can build on.
  * 5. Every event that reached the sink carries a hook-sourced `EventType`, and a
  *    completed run produced both a start and an end (D-P3-09).
  *
@@ -117,7 +117,7 @@ export const describeHarnessConformance = (
       const exit = await withTimeout(handle.exit, completionTimeout, "exit");
       const expected = agentStatusForExit(exit);
       expect(await harness.status(handle)).toBe(expected);
-      // Asked again, long after settlement: P9 reads this from a different place
+      // Asked again, long after settlement: P10 reads this from a different place
       // in the lifecycle than the runner does, and must get the same answer.
       expect(await harness.status(handle)).toBe(expected);
     });

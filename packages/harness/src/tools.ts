@@ -11,7 +11,7 @@
  * the MCP launch. A local-process adapter ignores these and passes the launch
  * through, and the worker-role MCP server it spawns calls this same
  * implementation. An adapter whose harness can call back into the adapter's own
- * process (P9's) uses these directly. **Exactly one transport per worker**: an
+ * process (P10's) uses these directly. **Exactly one transport per worker**: an
  * adapter that offered a worker both would let one job be reported twice.
  *
  * There is one implementation, in `@nightshift/execution`, and it is built over

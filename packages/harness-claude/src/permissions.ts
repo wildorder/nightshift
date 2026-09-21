@@ -21,7 +21,7 @@
  * worker in its brief and still reported on `agent.started`, but **no harness
  * flag enforces it any more**. A worker's effects outside its worktree are not
  * contained by Nightshift at all; that is the operator's machine's business
- * until the remote runner (P9) gives workers a machine of their own.
+ * until the remote runner (P10) gives workers a machine of their own.
  *
  * ## The one list that remains, and why it is not the same thing
  *

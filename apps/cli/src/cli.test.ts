@@ -151,7 +151,7 @@ describe("nightshift run --remote", () => {
     await signIn(created.environment);
 
     expect(await runCli(created.environment, ["run", "contract.json", "--remote"])).toBe(2);
-    expect(created.err.join("\n")).toContain("remote execution arrives in P9");
+    expect(created.err.join("\n")).toContain("remote execution arrives in P10");
   });
 
   it("needs a contract path", async () => {

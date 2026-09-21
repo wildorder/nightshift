@@ -244,7 +244,7 @@ the lasting ones are A-27 … A-32 in `docs/architecture.md`.
   and never have a human answering prompts.
 - Starting a run is `nightshift run <contract> [--remote]`; the MCP `run.start`
   calls the same function. `--remote` is refused until the remote-runner
-  program (P9 after the 2026-09-16 restaging in `docs/programs/staging.md`).
+  program (P10 after the 2026-09-21 restaging in `docs/programs/staging.md`).
 - Public hostnames (D-P3-18): one account-wide, unstaged stack `nightshift-dns`
   holds the hosted zone `nightshift.wildorder.dev` (retained, termination
   protection on). The API is `api.<stage>.nightshift.wildorder.dev`, an alias
@@ -316,7 +316,7 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
 - `ExecutionNodeStatus.succeeded` is legal for `program` and `sub-program`
   nodes only. A job node's table, and the A-05 property tests, are untouched.
 - The AgentCore harness worker, Bedrock, and anything that runs on a runtime
-  instance belong to P9. Nightshift never runs a worker as a per-job hosted
+  instance belong to P10. Nightshift never runs a worker as a per-job hosted
   environment.
 
 **As built for P6 (Parallel and Recursive Execution), 2026-09-20.** The details
@@ -359,7 +359,7 @@ A-40 and A-41.
   both tables, with a cell in both `authorize*.test.ts` files.
 - **A sub-orchestrator has no channel to the engine but the control plane.** The
   engine reads the run's nodes once a second while one is running and adopts what
-  it finds. Do not add a socket, a port or an IPC path: P9 and P10 depend on this
+  it finds. Do not add a socket, a port or an IPC path: P10 and P11 depend on this
   being the only channel.
 - No program or sub-program node may end `succeeded` while anything under it is
   unsettled (`mayEndProgramNode`, enforced by the API). `core`'s `isSettled` is
@@ -402,13 +402,13 @@ program needs and cannot derive; full account in
 - **Token counts are not comparable across harnesses.** Claude's `inputTokens`
   excludes cache reads; Codex's includes cached input and carries no cost on a
   ChatGPT login. `RouteUsage` records what each harness said. Normalising is
-  P7's job.
+  P8's job.
 - What bounds a worker is **not** the harness: A-29 (Nightshift owns every
   commit and checks every changed path against scope before integrating), the
   execution token, and the environment allowlist. `Scope.permissions` is told to
   the worker and reported, not enforced. A worker can write outside its worktree
   and reach the network; on the operator's machine it is trusted as the operator
-  is, until P9.
+  is, until P10.
 - The one list that remains is a **deny** of git write commands, on both
   adapters: Claude's `--disallowedTools` patterns (verified to hold in
   `bypassPermissions`), and for Codex a `git` guard script on
