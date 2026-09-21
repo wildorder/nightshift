@@ -29,6 +29,18 @@ export const routes = {
   program: (projectId: ProjectId, programId: ProgramId) =>
     `/projects/${projectId}/programs/${programId}`,
 
+  // Planning (P7).
+  ratifications: (scope: ProgramScope) =>
+    `${routes.program(scope.projectId, scope.programId)}/ratifications`,
+  planDocument: (scope: ProgramScope, sha256: string) =>
+    `${routes.program(scope.projectId, scope.programId)}/plan-documents/${sha256}`,
+  planDocumentUploadUrl: (scope: ProgramScope, sha256: string) =>
+    `${routes.planDocument(scope, sha256)}/upload-url`,
+  prerequisites: (scope: ProgramScope) =>
+    `${routes.program(scope.projectId, scope.programId)}/prerequisites`,
+  prerequisite: (scope: ProgramScope, prerequisiteId: string) =>
+    `${routes.prerequisites(scope)}/${prerequisiteId}`,
+
   runs: (scope: ProgramScope) => `${routes.program(scope.projectId, scope.programId)}/runs`,
   run: (scope: ProgramScope, runId: RunId) => `${routes.runs(scope)}/${runId}`,
 
