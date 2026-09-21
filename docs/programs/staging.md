@@ -27,9 +27,9 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 
 > **Restaged 2026-09-21.** *Planning* was inserted as P7 after the first
 > real-repository trial. Routing & Examination is now **P8**, Decision Graph &
-> Replay **P9**, Remote Runner **P10**, Realtime **P11**. Until P7's T1 sweeps
-> them, other documents, code comments and messages still use the old numbers
-> for those four (for example "remote execution arrives in P9").
+> Replay **P9**, Remote Runner **P10**, Realtime **P11**. P7's T1 swept every
+> other document, code comment and message to these numbers on the same day; the
+> contracts of P1 … P6 carry a restaging note rather than a rewrite.
 
 ## The programs
 
@@ -77,10 +77,10 @@ P11 Realtime & Analytics Surface
 
 Strictly sequential. This mirrors the source plan's preferred progression and its
 instruction not to build ahead of the verified execution path. The only defensible
-parallelism is late: **P10 could begin alongside P9**, since the analytics surface
-reads state P8 already produces — but only if P9's open decisions are already
+parallelism is late: **P11 could begin alongside P10**, since the analytics surface
+reads state P9 already produces — but only if P10's open decisions are already
 settled, and it costs the ability to reconstruct a *remote* run from APIs alone as
-P10's exit demo. Recommendation: keep it sequential.
+P11's exit demo. Recommendation: keep it sequential.
 
 ## Restaging, 2026-09-16
 
@@ -97,7 +97,7 @@ problem larger, so it is fixed first, as its own program with its own exit gate:
 a second user who cannot see the first. The vision's "after v1" paragraph is
 amended accordingly.
 
-**The third harness adapter moved to P9.** The vision's "AgentCore Harness" is a
+**The third harness adapter moved to P10.** The vision's "AgentCore Harness" is a
 real product, Amazon Bedrock AgentCore harness, generally available since June
 2026: a managed agent loop that can also be exported to Strands code and run as a
 process. It only makes sense where that process has Bedrock access and where
@@ -107,8 +107,8 @@ AgentCore *session* per job and the worktree shuttled across as a tarball; that
 was a cloud VM per leaf job, which the source plan's non-goals exclude, and it
 contradicted A-14 and SC-15, which put the orchestrator and its worktrees on one
 runtime instance. So P5 finalises the adapter contract with two local adapters
-and the shared suite, and P9 adds the third adapter in the environment it is
-for. SC-04 is therefore discharged across P5 and P9, and SC-05 belongs to P9.
+and the shared suite, and P10 adds the third adapter in the environment it is
+for. SC-04 is therefore discharged across P5 and P10, and SC-05 belongs to P10.
 
 ## Boundary rationale
 
@@ -148,19 +148,19 @@ adapter has moved out. P6 is depth and the riskiest single stage in the plan: it
 changes scheduling and integration semantics, and introduces stale-base
 detection, conflict recovery, and whole-program verification.
 
-**P7 merges Stages 6 and 7.** Both are policy layers over an already-working
+**P8 merges Stages 6 and 7.** Both are policy layers over an already-working
 engine, both are configuration-driven with table-driven determinism tests, and
 both depend on the same precondition — multiple harnesses and models actually
 available, which P5 delivers for local harnesses. They share fixtures heavily.
 This is the largest merged program; if it runs long, Stage 7 splits off cleanly
 at the point where routing decisions are persisted. Note that the cheap Bedrock
-route itself lands in P9; P7 routes among what exists when it runs and its
+route itself lands in P10; P8 routes among what exists when it runs and its
 policy must not assume a harness that has not been built.
 
-**P8, P9, P10 each stand alone.** P8 is a distinct correctness property (minimum
-cone, nothing unrelated replayed). P9 is a distinct execution location with
+**P9, P10, P11 each stand alone.** P9 is a distinct correctness property (minimum
+cone, nothing unrelated replayed). P10 is a distinct execution location with
 three unsettled decisions, the third adapter, and an extensive failure matrix.
-P10 is a distinct consumer contract — the test is reconstructing everything
+P11 is a distinct consumer contract — the test is reconstructing everything
 *without* runner filesystem access.
 
 > **AgentCore, as understood on 2026-09-16.** Amazon Bedrock AgentCore is a suite:
@@ -178,7 +178,7 @@ P10 is a distinct consumer contract — the test is reconstructing everything
 > any Bedrock, OpenAI or Gemini model with built-in shell and file tools, remote
 > MCP servers and inline functions; it can be exported to Strands code. The
 > vision's "AgentCore harness" worker is that loop running as a process on the
-> program's runtime instance with a Bedrock model, built in P9.
+> program's runtime instance with a Bedrock model, built in P10.
 
 ## Success-criteria coverage
 
@@ -190,10 +190,11 @@ P10 is a distinct consumer contract — the test is reconstructing everything
 | P4 | SC-02 and SC-03 made enforceable for a second user; no source SC is owned, since the source plan deferred identity |
 | P5 | **SC-04** (Claude Code and Codex halves) |
 | P6 | **SC-06**, **SC-07** |
-| P7 | **SC-09**, **SC-10**, **SC-11** |
-| P8 | **SC-12**, **SC-13** |
-| P9 | **SC-14**, **SC-15**, **SC-16**, SC-04 (AgentCore half), **SC-05** |
-| P10 | **SC-17**, **SC-18** |
+| P7 | none: the source plan assumes the orchestrator plans for itself, and has no criterion for a human planning first |
+| P8 | **SC-09**, **SC-10**, **SC-11** |
+| P9 | **SC-12**, **SC-13** |
+| P10 | **SC-14**, **SC-15**, **SC-16**, SC-04 (AgentCore half), **SC-05** |
+| P11 | **SC-17**, **SC-18** |
 
 Every program-level success criterion in the source plan is claimed by a program
 as its primary owner; SC-04 is the one split across two, and both halves are
