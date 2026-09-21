@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p6-parallel-recursive` |
 | Source stage | Stage 5 (Parallel and Recursive Execution) |
-| Status | **Contract ratified 2026-09-19** (D-P6-01 … D-P6-09). **Built 2026-09-20**: T1 … T7 done, deployed, and the exit gate passed with real adapters against the deployed control plane (§13). Eight build-time decisions in §12 await ratification. |
+| Status | **Contract ratified 2026-09-19** (D-P6-01 … D-P6-09). **Built 2026-09-20**: T1 … T7 done, deployed, and the exit gate passed with real adapters against the deployed control plane (§13). **Closed and merged into `v1` 2026-09-21** (PR #18); the eight build-time decisions in §12 ratified provisionally, to be revisited after more testing. |
 | Depends on | P5 Harness Neutrality (two adapters, contract v1, `succeeded` for program nodes) |
 | Blocking decisions | none. O-05 is untouched: everything still runs on the operator's machine. |
 
@@ -273,6 +273,7 @@ Specs live in `tasks/p6-parallel-recursive/`.
 | 2026-09-20 | **A job's slot is claimed before its agent exists.** `startJob` writes `queued → running` first, because that is the one write the API may refuse for a reason that is not a failure, and refusing it first leaves nothing to clean up. The agent, its token, its route and its worktree follow. A-04 is unaffected: the identity still exists before any process does. | Agent, within D-P6-02 |
 | 2026-09-20 | **A branch moved from outside between verification and the fast-forward is a durable `stale_base`, not a second reconcile.** T3's spec had the queue re-enter reconcile on a lost compare-and-swap. By then the node is verified, and P1 forbids moving a verified node's commit, rightly. The queue is the only thing in Nightshift that moves the branch, so this can only be the operator's own doing, and saying so beats quietly re-verifying. | Agent, departing from T3 deliverable 4 |
 | 2026-09-20 | **`run.finish` lets a process whose node has settled finish, briefly, then stops it.** Found by the first real sub-orchestrator: it called `subprogram.complete`, its node was `succeeded`, and its model was still composing a closing message when the root tried to finish the run, which was refused for work in flight. A settled node's process is given fifteen seconds and then stopped; a process whose node is still in flight is never touched. | Agent, within D-P6-08 |
+| 2026-09-21 | **Build-time decisions ratified, provisionally.** The eight entries above stand; the owner will revisit them after more testing on real work. P6 closed; merged into `v1` (PR #18). | **Human** |
 
 ## 13. As built
 
