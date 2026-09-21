@@ -3,6 +3,7 @@ export * from "./api.js";
 export * from "./artifact.js";
 export * from "./checkpoint.js";
 export * from "./common.js";
+export * from "./config.js";
 export * from "./decision.js";
 export * from "./event.js";
 export * from "./examination.js";

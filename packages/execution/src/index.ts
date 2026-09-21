@@ -52,6 +52,13 @@ export {
   type OutboxOptions,
 } from "./outbox.js";
 export {
+  PREFLIGHT_TIMEOUT_MS,
+  type PreflightCheck,
+  type PreflightInput,
+  type PreflightResult,
+  runPreflight,
+} from "./preflight.js";
+export {
   type DelegateJobInput,
   delegateJob,
   type IntegrateCandidate,
