@@ -157,46 +157,67 @@ describe("independentOverlaps", () => {
   });
 });
 
+type Outcomes = Record<string, StrandOutcomes[string]>;
+
+/**
+ * One move of a scheduler that starts and finishes strands in an arbitrary
+ * order. Returns the strand it failed, if it failed one; `false` when stuck.
+ */
+const step = (
+  contract: ProgramContract,
+  strands: readonly Strand[],
+  outcomes: Outcomes,
+  pick: number,
+  fail: boolean,
+): string | boolean => {
+  const running = strands.filter((s) => outcomes[s.id] === "running");
+  const startable = strands.filter((s) => mayStartStrand(contract, outcomes, s.id).start);
+  const moves = [...running, ...startable];
+  const strand = moves[pick % Math.max(moves.length, 1)];
+  if (strand === undefined) return false;
+
+  if (outcomes[strand.id] === "running") {
+    outcomes[strand.id] = fail ? "failed" : "succeeded";
+    return fail ? strand.id : true;
+  }
+  // The property: whatever order things finished in, its dependencies succeeded first.
+  for (const dependency of strand.dependsOn) expect(outcomes[dependency]).toBe("succeeded");
+  outcomes[strand.id] = "running";
+  return true;
+};
+
+/** Blocked is exactly the cone of what failed, and none of it ever started. */
+const expectExactlyTheConesParked = (
+  contract: ProgramContract,
+  outcomes: Outcomes,
+  failed: readonly string[],
+): void => {
+  const cones = new Set(failed.flatMap((id) => downstreamCone(contract, id)));
+  const blocked = blockedBy(contract, outcomes);
+  expect([...blocked.keys()].sort()).toEqual([...cones].sort());
+  for (const [id, blockers] of blocked) {
+    expect(outcomes[id]).toBeUndefined();
+    for (const blocker of blockers) expect(failed).toContain(blocker);
+  }
+};
+
 describe("SC-P7-07: a strand never starts before what it depends on has succeeded", () => {
   it("holds under any finishing order, and parks exactly the cone of what fails", () => {
     fc.assert(
       fc.property(
         dag(),
-        fc.array(fc.nat(), { minLength: 40, maxLength: 40 }),
-        fc.array(fc.boolean(), { minLength: 40, maxLength: 40 }),
-        (strands, picks, fails) => {
+        fc.array(fc.tuple(fc.nat(), fc.boolean()), { minLength: 40, maxLength: 40 }),
+        (strands, moves) => {
           const contract = contractOf(strands);
-          const outcomes: Record<string, StrandOutcomes[string]> = {};
+          const outcomes: Outcomes = {};
           const failed: string[] = [];
-
-          // A scheduler that starts and finishes strands in an arbitrary order.
-          for (const [step, pick] of picks.entries()) {
-            const running = strands.filter((s) => outcomes[s.id] === "running");
-            const startable = strands.filter((s) => mayStartStrand(contract, outcomes, s.id).start);
-            const moves = [...running, ...startable];
-            const strand = moves[pick % Math.max(moves.length, 1)];
-            if (strand === undefined) break;
-
-            if (outcomes[strand.id] === "running") {
-              const fail = fails[step] === true;
-              outcomes[strand.id] = fail ? "failed" : "succeeded";
-              if (fail) failed.push(strand.id);
-              continue;
-            }
-            for (const dependency of strand.dependsOn) {
-              expect(outcomes[dependency]).toBe("succeeded");
-            }
-            outcomes[strand.id] = "running";
+          for (const [pick, fail] of moves) {
+            const moved = step(contract, strands, outcomes, pick, fail);
+            if (moved === false) break;
+            if (typeof moved === "string") failed.push(moved);
           }
 
-          const cones = new Set(failed.flatMap((id) => downstreamCone(contract, id)));
-          const blocked = blockedBy(contract, outcomes);
-          // Blocked is exactly the cone of what failed, and none of it ever started.
-          expect([...blocked.keys()].sort()).toEqual([...cones].sort());
-          for (const [id, blockers] of blocked) {
-            expect(outcomes[id]).toBeUndefined();
-            for (const blocker of blockers) expect(failed).toContain(blocker);
-          }
+          expectExactlyTheConesParked(contract, outcomes, failed);
         },
       ),
     );

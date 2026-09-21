@@ -16,7 +16,13 @@
  * overlap is an overlap**: a false alarm costs a `dependsOn` or a narrower
  * scope, either of which is a better plan, while a missed one costs a night.
  */
-import type { Prerequisite, ProgramContract, Strand, StrandScope } from "@nightshift/contracts";
+import type {
+  PlannedDecision,
+  Prerequisite,
+  ProgramContract,
+  Strand,
+  StrandScope,
+} from "@nightshift/contracts";
 import { explainWidening, globContains, singleSegmentMatches } from "./scope.js";
 
 // --- the planned part of a contract, absent meaning empty ---------------------
@@ -301,9 +307,8 @@ const FENCE = /^\s*(```|~~~)/;
  * block are text. A strand's orchestrator is handed this, verbatim (D-P7-04).
  */
 export const splitPlanSections = (planText: string): PlanSections => {
-  const lines = planText.replace(/\r\n?/g, "\n").split("\n");
   const sections: Record<string, string> = {};
-  let open: { id: string; level: number; lines: string[] } | undefined;
+  let open: OpenSection | undefined;
   let fenced = false;
 
   const close = (): void => {
@@ -314,22 +319,35 @@ export const splitPlanSections = (planText: string): PlanSections => {
     open = undefined;
   };
 
-  for (const line of lines) {
+  for (const line of normalizePlanText(planText).split("\n")) {
     if (FENCE.test(line)) fenced = !fenced;
-    const heading = fenced ? null : HEADING.exec(line);
-    if (heading !== null) {
-      const level = (heading[1] ?? "").length;
-      if (open !== undefined && level <= open.level) close();
-      const id = STRAND_HEADING.exec(heading[2] ?? "")?.[1];
-      if (open === undefined && id !== undefined) {
-        open = { id, level, lines: [line] };
-        continue;
-      }
+    const heading = fenced ? undefined : headingOf(line);
+    if (heading !== undefined && open !== undefined && heading.level <= open.level) close();
+    if (heading?.strandId !== undefined && open === undefined) {
+      open = { id: heading.strandId, level: heading.level, lines: [line] };
+    } else {
+      open?.lines.push(line);
     }
-    open?.lines.push(line);
   }
   close();
   return sections;
+};
+
+interface OpenSection {
+  readonly id: string;
+  readonly level: number;
+  readonly lines: string[];
+}
+
+const headingOf = (
+  line: string,
+): { readonly level: number; readonly strandId: string | undefined } | undefined => {
+  const heading = HEADING.exec(line);
+  if (heading === null) return undefined;
+  return {
+    level: (heading[1] ?? "").length,
+    strandId: STRAND_HEADING.exec(heading[2] ?? "")?.[1],
+  };
 };
 
 /** Whether a section says anything: some line that is neither blank nor a heading. */
@@ -420,6 +438,132 @@ const overlapMessage = (overlap: StrandOverlap): string =>
     "  Add a dependsOn between them, or narrow a scope (an exclude that covers the other's include clears it).",
   ].join("\n");
 
+const criteriaReasons = (contract: ProgramContract, strands: readonly Strand[]): PlanReason[] => {
+  const known = new Set(contract.successCriteria.map((criterion) => criterion.id));
+  const claimed = new Set(strands.flatMap((strand) => strand.successCriteria));
+  const unclaimed = contract.successCriteria
+    .filter((criterion) => !claimed.has(criterion.id))
+    .map(
+      (criterion): PlanReason => ({
+        kind: "unclaimed_criterion",
+        criterionId: criterion.id,
+        message: `success criterion ${criterion.id} is claimed by no strand`,
+      }),
+    );
+  const unknown = strands.flatMap((strand) =>
+    strand.successCriteria
+      .filter((criterionId) => !known.has(criterionId))
+      .map(
+        (criterionId): PlanReason => ({
+          kind: "unknown_criterion",
+          strandId: strand.id,
+          criterionId,
+          message: `${strand.id} claims success criterion ${criterionId}, which the contract does not have`,
+        }),
+      ),
+  );
+  return [...unclaimed, ...unknown];
+};
+
+const strandReasons = (
+  contract: ProgramContract,
+  strand: Strand,
+  planSections: PlanSections,
+): PlanReason[] => {
+  const strandIds = new Set(strandsOf(contract).map((candidate) => candidate.id));
+  const prerequisiteIds = new Set(prerequisitesOf(contract).map((candidate) => candidate.id));
+  const reasons: PlanReason[] = [];
+
+  // Excludes are inherited from the program, so only the includes can widen.
+  const widenings = explainWidening(contract.scope, { includes: strand.scope.includes });
+  if (widenings.length > 0) {
+    reasons.push({
+      kind: "scope_outside_program",
+      strandId: strand.id,
+      message: `${strand.id}'s scope is outside the program's: ${widenings.join("; ")}`,
+    });
+  }
+  for (const dependsOn of strand.dependsOn.filter((id) => !strandIds.has(id))) {
+    reasons.push({
+      kind: "unknown_dependency",
+      strandId: strand.id,
+      dependsOn,
+      message: `${strand.id} depends on ${dependsOn}, which is not a strand of this program`,
+    });
+  }
+  if (!sectionHasBody(planSections[strand.id])) {
+    reasons.push({
+      kind: "missing_section",
+      strandId: strand.id,
+      message: `${strand.id} has no section in the plan document (a heading starting "${strand.id}" with text under it)`,
+    });
+  }
+  for (const prerequisiteId of strand.prerequisites.filter((id) => !prerequisiteIds.has(id))) {
+    reasons.push({
+      kind: "unknown_prerequisite",
+      strandId: strand.id,
+      prerequisiteId,
+      message: `${strand.id} needs ${prerequisiteId}, which the contract does not have`,
+    });
+  }
+  return reasons;
+};
+
+const prerequisiteReasons = (
+  prerequisite: Prerequisite,
+  used: ReadonlySet<string>,
+): PlanReason[] => {
+  // A hurdle the engine found mid-run is not the plan's to account for.
+  if (prerequisite.discoveredInRunId !== undefined) return [];
+  const reasons: PlanReason[] = [];
+  if (prerequisite.remediation.trim() === "") {
+    reasons.push({
+      kind: "prerequisite_without_remediation",
+      prerequisiteId: prerequisite.id,
+      message: `${prerequisite.id} has no remediation: the exact commands or console steps a human follows`,
+    });
+  }
+  if (prerequisite.verifyCommand.trim() === "") {
+    reasons.push({
+      kind: "prerequisite_without_verify_command",
+      prerequisiteId: prerequisite.id,
+      message: `${prerequisite.id} has no verifyCommand: a command that exits zero iff it is done`,
+    });
+  }
+  if (!used.has(prerequisite.id)) {
+    reasons.push({
+      kind: "unused_prerequisite",
+      prerequisiteId: prerequisite.id,
+      message: `${prerequisite.id} is needed by no strand`,
+    });
+  }
+  return reasons;
+};
+
+const decisionReasons = (
+  decision: PlannedDecision,
+  strandIds: ReadonlySet<string>,
+): PlanReason[] => {
+  const reasons: PlanReason[] = [];
+  if (decision.answer === undefined) {
+    reasons.push({
+      kind: "unanswered_decision",
+      decisionId: decision.id,
+      message: `decision ${decision.id} has no answer: "${decision.question}"`,
+    });
+  }
+  const touched = decision.touches === "all" ? [] : decision.touches;
+  for (const strandId of touched.filter((id) => !strandIds.has(id))) {
+    reasons.push({
+      kind: "unknown_decision_strand",
+      decisionId: decision.id,
+      strandId,
+      message: `decision ${decision.id} touches ${strandId}, which is not a strand of this program`,
+    });
+  }
+  return reasons;
+};
+
 /**
  * Whether a plan can be ratified (D-P7-07): `READY`, or every reason at once so
  * a plan is fixed in one pass. `contract` has already parsed; `planSections` is
@@ -427,149 +571,41 @@ const overlapMessage = (overlap: StrandOverlap): string =>
  */
 export const checkPlan = (contract: ProgramContract, planSections: PlanSections): PlanReadiness => {
   const strands = strandsOf(contract);
-  const prerequisites = prerequisitesOf(contract);
-  const reasons: PlanReason[] = [];
-
-  if (strands.length === 0) {
-    reasons.push({
-      kind: "no_strands",
-      message: "the contract has no strands; a plan has at least one (one is fine)",
-    });
-  }
-
-  const criterionIds = new Set(contract.successCriteria.map((criterion) => criterion.id));
-  const claimed = new Set(strands.flatMap((strand) => strand.successCriteria));
-  for (const criterion of contract.successCriteria) {
-    if (!claimed.has(criterion.id)) {
-      reasons.push({
-        kind: "unclaimed_criterion",
-        criterionId: criterion.id,
-        message: `success criterion ${criterion.id} is claimed by no strand`,
-      });
-    }
-  }
-
   const strandIds = new Set(strands.map((strand) => strand.id));
-  const prerequisiteIds = new Set(prerequisites.map((prerequisite) => prerequisite.id));
-
-  for (const strand of strands) {
-    for (const criterionId of strand.successCriteria) {
-      if (!criterionIds.has(criterionId)) {
-        reasons.push({
-          kind: "unknown_criterion",
-          strandId: strand.id,
-          criterionId,
-          message: `${strand.id} claims success criterion ${criterionId}, which the contract does not have`,
-        });
-      }
-    }
-
-    // Excludes are inherited from the program, so only the includes can widen.
-    const widenings = explainWidening(contract.scope, { includes: strand.scope.includes });
-    if (widenings.length > 0) {
-      reasons.push({
-        kind: "scope_outside_program",
-        strandId: strand.id,
-        message: `${strand.id}'s scope is outside the program's: ${widenings.join("; ")}`,
-      });
-    }
-
-    for (const dependsOn of strand.dependsOn) {
-      if (!strandIds.has(dependsOn)) {
-        reasons.push({
-          kind: "unknown_dependency",
-          strandId: strand.id,
-          dependsOn,
-          message: `${strand.id} depends on ${dependsOn}, which is not a strand of this program`,
-        });
-      }
-    }
-
-    if (!sectionHasBody(planSections[strand.id])) {
-      reasons.push({
-        kind: "missing_section",
-        strandId: strand.id,
-        message: `${strand.id} has no section in the plan document (a heading starting "${strand.id}" with text under it)`,
-      });
-    }
-
-    for (const prerequisiteId of strand.prerequisites) {
-      if (!prerequisiteIds.has(prerequisiteId)) {
-        reasons.push({
-          kind: "unknown_prerequisite",
-          strandId: strand.id,
-          prerequisiteId,
-          message: `${strand.id} needs ${prerequisiteId}, which the contract does not have`,
-        });
-      }
-    }
-  }
-
-  const cycle = findDependencyCycle(strands);
-  if (cycle !== undefined) {
-    reasons.push({
-      kind: "dependency_cycle",
-      cycle,
-      message: `dependsOn has a cycle: ${cycle.join(" → ")}`,
-    });
-  }
-
   const used = new Set(strands.flatMap((strand) => strand.prerequisites));
-  for (const prerequisite of prerequisites) {
-    // A hurdle the engine found mid-run is not the plan's to account for.
-    if (prerequisite.discoveredInRunId !== undefined) continue;
-    if (prerequisite.remediation.trim() === "") {
-      reasons.push({
-        kind: "prerequisite_without_remediation",
-        prerequisiteId: prerequisite.id,
-        message: `${prerequisite.id} has no remediation: the exact commands or console steps a human follows`,
-      });
-    }
-    if (prerequisite.verifyCommand.trim() === "") {
-      reasons.push({
-        kind: "prerequisite_without_verify_command",
-        prerequisiteId: prerequisite.id,
-        message: `${prerequisite.id} has no verifyCommand: a command that exits zero iff it is done`,
-      });
-    }
-    if (!used.has(prerequisite.id)) {
-      reasons.push({
-        kind: "unused_prerequisite",
-        prerequisiteId: prerequisite.id,
-        message: `${prerequisite.id} is needed by no strand`,
-      });
-    }
-  }
+  const cycle = findDependencyCycle(strands);
 
-  for (const decision of contract.decisions ?? []) {
-    if (decision.answer === undefined) {
-      reasons.push({
-        kind: "unanswered_decision",
-        decisionId: decision.id,
-        message: `decision ${decision.id} has no answer: "${decision.question}"`,
-      });
-    }
-    if (decision.touches === "all") continue;
-    for (const strandId of decision.touches) {
-      if (!strandIds.has(strandId)) {
-        reasons.push({
-          kind: "unknown_decision_strand",
-          decisionId: decision.id,
-          strandId,
-          message: `decision ${decision.id} touches ${strandId}, which is not a strand of this program`,
-        });
-      }
-    }
-  }
-
-  for (const overlap of independentOverlaps(strands)) {
-    reasons.push({
-      kind: "scope_overlap",
-      strandIds: [overlap.a.id, overlap.b.id],
-      intersections: overlap.intersections,
-      message: overlapMessage(overlap),
-    });
-  }
+  const reasons: PlanReason[] = [
+    ...(strands.length === 0
+      ? [
+          {
+            kind: "no_strands",
+            message: "the contract has no strands; a plan has at least one (one is fine)",
+          } as const,
+        ]
+      : []),
+    ...criteriaReasons(contract, strands),
+    ...strands.flatMap((strand) => strandReasons(contract, strand, planSections)),
+    ...(cycle === undefined
+      ? []
+      : [
+          {
+            kind: "dependency_cycle",
+            cycle,
+            message: `dependsOn has a cycle: ${cycle.join(" → ")}`,
+          } as const,
+        ]),
+    ...prerequisitesOf(contract).flatMap((prerequisite) => prerequisiteReasons(prerequisite, used)),
+    ...(contract.decisions ?? []).flatMap((decision) => decisionReasons(decision, strandIds)),
+    ...independentOverlaps(strands).map(
+      (overlap): PlanReason => ({
+        kind: "scope_overlap",
+        strandIds: [overlap.a.id, overlap.b.id],
+        intersections: overlap.intersections,
+        message: overlapMessage(overlap),
+      }),
+    ),
+  ];
 
   return reasons.length === 0 ? { ready: true } : { ready: false, reasons };
 };
