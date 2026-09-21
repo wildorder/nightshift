@@ -354,7 +354,7 @@ Built 2026-09-21 in one sitting, on `program/p7-planning`.
 | SC-P7-09 | met | Decisions are recorded with authority `human` by `startRun`, before the first `node.started`, and reach exactly the strands they touch |
 | SC-P7-10 | met | `strandBrief` in `core`; the unattended test compares the strand's objective with the ratified document byte for byte |
 | SC-P7-11 | met | `packages/execution/src/report.ts`, gathered from the control plane alone; a departure leads its strand |
-| SC-P7-12 | met, **live** | P1 properties, the P4 isolation suites, P5 conformance and the P6 tree pass; what changed in them is listed below |
+| SC-P7-12 | met, **live** | 2026-09-21, against the deployed plane after T4's redeploy: `npm run smoke` twice (87 each); `npm run conformance -- --harness all` passed 3/3 for claude and 3/3 for codex (the deterministic failure fixture `verification_failed` after 19.4 s and 42.2 s, as it should); `npm run slice` passed every phase, the real two-harness tree with a real sub-orchestrator in 55.4 s at `maxConcurrency` 2. What changed in those suites is listed below |
 | SC-P7-13 | met | `test/src/cli/init.test.ts`, with a recorded `claude` and a temporary home |
 | **SC-P7-14** | **open** | Needs the owner |
 
