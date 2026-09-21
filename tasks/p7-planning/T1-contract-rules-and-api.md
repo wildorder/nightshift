@@ -47,8 +47,11 @@ and what the engine will schedule by. The rules are pure; the API applies them.
    from the control plane alone (P10, P11). A ratified
    contract's plan fields are immutable. `PUT run` for a contract that has
    strands is refused unless ratified; one with none runs as today.
-   `ExecutionNodeStatus.awaiting_human`, reached from and left to `queued`, off
-   the path to `verified`, not settled. A prerequisite-status write for user
+   `ExecutionNodeStatus.deferred` (D-P7-10): `verifying → deferred → verifying`,
+   with a table test that no path from it reaches `sealed` or `integrated` except
+   through `verified`; a `Verification` command may be `deferred`, naming the
+   prerequisite it waits on; the engine may record a prerequisite discovered at
+   run time. A prerequisite-status write for user
    principals only, carrying the command's exit code; execution tokens may read
    prerequisites and write none, in both access tables.
 7. Tests for each; the isolation suites gain the new routes; smoke covers ratify,

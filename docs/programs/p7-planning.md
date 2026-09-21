@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p7-planning` |
 | Source stage | — (inserted 2026-09-21; not in the source plan, which assumes the orchestrator plans for itself) |
-| Status | **Drafted 2026-09-21**, revised the same day after review; for human ratification. D-P7-01 … D-P7-09 proposed; tasks T1 … T5 drafted. |
+| Status | **Drafted 2026-09-21**, revised the same day after review; for human ratification. D-P7-01 … D-P7-10 proposed; tasks T1 … T5 drafted. |
 | Depends on | P6 Parallel and Recursive Execution (the engine, the merge queue, sub-programs) |
 | Blocking decisions | none |
 
@@ -65,7 +65,7 @@ Everything from P3 … P6 stands.
 
 | # | Prerequisite | Status |
 |---|--------------|--------|
-| H-P7-01 | Ratify D-P7-01 … D-P7-09 | open |
+| H-P7-01 | Ratify D-P7-01 … D-P7-10 | open |
 | H-P7-02 | P6 merged | **satisfied 2026-09-21** (PR #18) |
 | H-P7-03 | The keyart trial run has finished, so its observations can shape T2's skill and template | open; not blocking T1 |
 
@@ -83,7 +83,8 @@ Everything from P3 … P6 stands.
 | D-P7-06 | **Decisions the human wants are made before the run.** The plan lists the choices that can be seen coming, each with the options, a leaning and a reason, and the human answers the ones that matter. At ratification each answer is recorded as a `Decision` with authority `human` on the program node, and every orchestrator and worker whose scope it touches is handed it. | A decision made up front is a constraint, not a fork: nothing is built on the alternative, so there is nothing to replay. It shrinks the decision graph P9 has to manage rather than feeding it. |
 | D-P7-07 | **A deterministic readiness check decides whether a plan can be ratified.** `nightshift plan check`, no model: the contract is valid; every success criterion is claimed by a strand; every strand's scope is inside the program's; `dependsOn` is acyclic; every strand has a non-empty section in the plan; every prerequisite has a remediation and a `verifyCommand` and is used by a strand; every listed decision has an answer; and **two strands with no dependency path between them whose scopes overlap are flagged**, because P6 will run them at once. It answers `READY` or every reason. | Ratifying is a judgement; whether a plan is *executable* is not. The overlap rule turns P6's likeliest failure into a planning-time finding, at the level where a human can fix it by moving a boundary. |
 | D-P7-08 | **One skill, with the human, writing files.** `plan-program` reads the vision, the as-built, `AGENTS.md`, the context documents, the backlog and any prior report; **reads the code** to write each strand's approach; runs the actor audit; proposes the seams and the decisions; and writes `plan.md` and `contract.json` straight to disk as the review surface, revising them in place for as many rounds as it takes. The human edits anything by hand. `nightshift plan ratify` closes the stage. | The files are the review surface, not the chat window. The plan is written in the conversation where the human's understanding forms, because that understanding is the product of the stage. |
-| D-P7-09 | **Execution follows the ratified plan with no human in the loop, and reports against it.** `nightshift run {program-id}` runs preflight, records the human's decisions, and starts a **headless root orchestrator** through the routed adapters whose brief is the plan. The engine enforces `dependsOn` between strands. A strand that cannot finish is **parked** with everything downstream of it while the rest of the program continues. A prerequisite still unmet at run time leaves its strand `awaiting_human` without blocking anything outside its cone, which a good plan never needs. `report.md` states each strand's outcome against its section, each success criterion, what was parked and why, and the decisions the run took; the next `plan-program` reads it. The human's own Claude Code session can still orchestrate; this adds the unattended path. | "Go off and build autonomously e2e." A failure that stops the whole run wastes the night; one that parks a cone wastes only the cone. |
+| D-P7-09 | **Execution follows the ratified plan with no human in the loop, and reports against it.** `nightshift run {program-id}` runs preflight, records the human's decisions, and starts a **headless root orchestrator** through the routed adapters whose brief is the plan. The engine enforces `dependsOn` between strands. A strand that cannot finish is **parked** with everything downstream of it while the rest of the program continues. A prerequisite still unmet at run time defers the checks that need it and the work carries on provisionally (D-P7-10). `report.md` states each strand's outcome against its section, each success criterion, what was parked and why, and the decisions the run took; the next `plan-program` reads it. The human's own Claude Code session can still orchestrate; this adds the unattended path. | "Go off and build autonomously e2e." A failure that stops the whole run wastes the night; one that parks a cone wastes only the cone. |
+| D-P7-10 | **A hurdle defers a check; it does not stop the work.** When a verification step *cannot run* for want of something only a human can supply (a declared prerequisite still unmet, or a hurdle nobody saw coming), Nightshift (1) records the hurdle as a prerequisite, with a proposed remediation and `verifyCommand` when it was discovered mid-run, (2) **defers** that step and runs every other one, (3) carries on, best effort, on a **provisional line**, and (4) tees it up for the human. Deferred work lands on `refs/nightshift/provisional/{run}`, never on the program branch, and downstream strands build on the provisional head. When the human returns and preflight passes, the deferred steps run over the provisional commits in order: what passes fast-forwards onto the program branch; what fails gets a fix job at that point and **its downstream cone is replayed** onto the fix, or discarded if the fix invalidates it. **Only a step that could not run is deferred. A step that ran and failed is a failure.** Parking (D-P7-09) remains for real failures, where there is nothing for dependents to build on; `awaiting_human` is replaced by this. | The owner's proposal, 2026-09-21. Parking a cone for a missing credential wastes the night on the chance the work was wrong; carrying on bets the work was right, which it usually is, and loses only the cone when it was not. A-05 holds by construction: the program branch still receives nothing that has not passed every one of its checks on the commit that lands, so claiming a hurdle to dodge a failing test buys provisional progress and nothing else. The cone replayed here is the one P9 replays for a reversed decision, so P7 builds the smaller half of P9's machinery early. |
 
 ### Non-guarantees
 
@@ -146,7 +147,7 @@ Risks
 | strand | sub-program node; its orchestrator's brief is its plan section. A single job when that is all it is |
 | `dependsOn` | the engine holds a strand `queued` until the strands it depends on have succeeded |
 | jobs inside a strand | the strand's orchestrator's own; not in the plan |
-| prerequisite | preflight, before the run; unmet at run time leaves the strand `awaiting_human` |
+| prerequisite | preflight, before the run; unmet at run time defers the checks that need it, and the work continues on the provisional line |
 | decision | a `Decision`, authority `human`, recorded at the start of the run |
 
 ### 4.4 Parking
@@ -162,7 +163,7 @@ blocked, naming the strand that blocked it. Everything else runs to the end.
 |--------|-----|
 | `ProgramContract` gains `status`, `strands`, `prerequisites`, `decisions`, `outOfScope`, all optional; the ratified plan hash; the plan document stored at ratification through a program-scoped presigned upload and referenced from the contract (`planDocument`), one per ratified hash | D-P7-02 … D-P7-06. A contract with no strands runs exactly as today |
 | A run of a contract that has strands is refused unless it is ratified | D-P7-02 |
-| `ExecutionNodeStatus.awaiting_human` | D-P7-09. Off the path to `verified`; no job-table edge leads through it |
+| `ExecutionNodeStatus.deferred`, between `verifying` and a later return to `verifying`; `Verification` commands may be `deferred` with the prerequisite they wait on; a run-time prerequisite write for the engine | D-P7-10. No edge from `deferred` reaches `sealed` or `integrated` except back through `verified`, so the A-05 properties hold unchanged. **This adds edges to P1's table and needs the owner's explicit say-so, which ratifying D-P7-10 is** |
 | Prerequisite status is written by user principals only, with the command's exit code | D-P7-05 |
 
 ## 5. Scope
@@ -218,6 +219,12 @@ blocked, naming the strand that blocked it. Everything else runs to the end.
   succeeded, under any finishing order.
 - **SC-P7-08** A strand that fails is parked with its downstream cone, named as
   the blocker, and every strand outside the cone still finishes.
+- **SC-P7-08a** A verification step that cannot run for an unmet prerequisite is
+  deferred, the rest run, the work continues on the provisional line, and the
+  program branch receives none of it. When the prerequisite is met the deferred
+  steps run in order: passing work reaches the program branch; a failure gets a
+  fix and its cone is replayed or discarded. A step that ran and failed is never
+  deferred.
 - **SC-P7-09** The human's decisions are recorded with authority `human` before
   any work starts and reach every agent whose scope they touch.
 - **SC-P7-10** A strand's orchestrator is handed its plan section verbatim, and
@@ -252,7 +259,9 @@ Plus, from a developer machine: `npm run deploy`, `npm run smoke` (twice),
 - The readiness check and the preflight are deterministic. No model decides
   whether a plan is ready or a prerequisite is met.
 - One home per fact.
-- No P1 rule, property test or job-table edge changes.
+- No P1 property test changes, and A-05 holds as P1 proved it. The one table
+  change is D-P7-10's `deferred`, which no path to `integrated` can use to skip
+  `verified`.
 - The plan does not name jobs, and nothing in the engine requires it to.
 - A-39: no adapter gains an allow-list, a sandbox or an approval policy.
 - Pins exact; scripts run on Windows and Linux.
@@ -307,6 +316,7 @@ Specs live in `tasks/p7-planning/`.
 | Date | Decision | By |
 |------|----------|----|
 | 2026-09-21 | Program inserted after the first real-repository trial showed that a program of success criteria alone gives the developer nothing to review and leaves every structural choice to be made mid-run. Restaged: Routing & Examination → P8, Decision Graph → P9, Remote Runner → P10, Realtime → P11. Contract drafted. | Human (direction) and agent (draft) |
+| 2026-09-21 | **D-P7-10 added on the owner's proposal**: a hurdle defers a check rather than parking the work; provisional line; checks, fix and cone replay when the human returns. It replaces `awaiting_human`. It is the one place P7 touches P1's transition table, and only ratification authorises that. | Human (proposal) and agent (draft) |
 | 2026-09-21 | **The plan document goes to the control plane at ratification**, as an artifact named by the plan hash, not only its hash. The owner's call, on the agent's note that P10 and P11 both need a run reconstructable without the repository. Added to D-P7-02, §4.5, SC-P7-04 and T1. | Human |
 | 2026-09-21 | **First draft revised on review.** It had carried the earlier Nightshift's planning apparatus over whole: a manifest beside the contract, a task file per workstream written by isolated agents, sizes, an atomic or orchestrated mode, a fixed roster. The owner's correction: keep the planning *stage*, in the spirit of v1. That apparatus existed because the old runner could not decide anything at run time; v1's orchestrator and merge queue can, and recover when they are wrong. So planning now ends where a wrong choice becomes cheap (D-P7-01): strands, approach, decisions and prerequisites are the plan's; jobs are the run's. And on program boundaries the owner's rule is D-P7-05's: hoist a human step to a prerequisite and keep the program whole, splitting only when the step depends on an output of the run. D-P7-01 … D-P7-09 proposed; tasks T1 … T5 drafted. | Human (direction) and agent (draft), for human ratification |
 

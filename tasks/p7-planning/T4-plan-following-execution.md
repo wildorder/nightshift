@@ -19,9 +19,16 @@
    computes `blockedBy`, cancels the cone's queued strands with a reason naming
    the blocker, emits `strand.parked` and `strand.blocked`, and keeps scheduling
    everything else.
-3. **`awaiting_human`**: a strand whose prerequisite is still `pending` when it
-   would start goes there instead; a later preflight that satisfies it requeues
-   it.
+3. **Deferral and the provisional line** (D-P7-10). A verification step whose
+   prerequisite is unmet, or that reports it *cannot run* for a hurdle the engine
+   then records as a new prerequisite, is `deferred`; the others run. A node with
+   a deferred step lands on `refs/nightshift/provisional/{run}` through the same
+   merge queue, never on the program branch, and later work is cut from the
+   provisional head. `nightshift resume {id}`, after preflight passes: run the
+   deferred steps over the provisional commits in order; fast-forward the program
+   branch through what passes; on a failure, delegate a fix at that commit and
+   replay its downstream cone onto it, discarding what no longer applies and
+   saying so. A step that ran and failed is a failure, never a deferral.
 4. **`nightshift run {id}`**: refuses an unratified or edited plan; runs
    preflight and stops with the remediations if anything the *first* strands need
    is unmet; starts the run; records the plan's decisions as `Decision`s with
