@@ -16,6 +16,7 @@
  * first, so a half-cleaned run can be finished by hand. Two smoke runs must not
  * overlap: the conformance phase uses deterministic identifiers.
  */
+import { createHash } from "node:crypto";
 import { resolveNs } from "node:dns/promises";
 import { HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import {
@@ -28,6 +29,7 @@ import {
   EventPageSchema,
   type ExecutionNode,
   MAX_INLINE_PAYLOAD_BYTES,
+  PlanDocumentUploadResponseSchema,
   ProgramContractSchema,
   ProgramIdSchema,
   ProjectIdSchema,
@@ -54,6 +56,7 @@ import {
   makeRun,
   makeVerification,
   pendingCount,
+  planHash,
   type RunScope,
 } from "@nightshift/core";
 import {
@@ -167,6 +170,22 @@ const lifecycleScope: RunScope = { ...worldA.scope, runId: lifecycleRunId };
 const lifecycleWorld: Fixtures = { ids, scope: lifecycleScope, rootNodeId: lifecycleRootNodeId };
 const lifecycleRunPath = `${programPath(worldA)}/runs/${lifecycleRunId}`;
 
+/**
+ * A planned program under project A (P7, T1), with a run of its own. Separate
+ * from `programId` so ratifying it never touches the contract every other
+ * assertion here shares.
+ */
+const plannedScope: RunScope = {
+  projectId: worldA.scope.projectId,
+  programId: ids.next("prog"),
+  runId: ids.next("run"),
+};
+const plannedRootNodeId = ids.next("node");
+const plannedWorld: Fixtures = { ids, scope: plannedScope, rootNodeId: plannedRootNodeId };
+const plannedProgramPath = `${projectPath(worldA)}/programs/${plannedScope.programId}`;
+const sha256Hex = (input: string | Uint8Array): string =>
+  createHash("sha256").update(input).digest("hex");
+
 // --- Conformance bookkeeping (phase 2) ------------------------------------------------
 // The suite expects fresh stores per test, and its identifiers repeat between tests,
 // so every partition a test writes is remembered and emptied before the next.
@@ -274,12 +293,21 @@ afterAll(async () => {
     keys.run(lifecycleScope, lifecycleRunId).PK,
     keys.runRecord(lifecycleScope, "NODE", lifecycleRootNodeId).PK,
     keys.event(lifecycleScope, lifecycleRootNodeId).PK,
+    // P7: the planned program's run. Its contract sits in project A's partition.
+    keys.run(plannedScope, plannedScope.runId).PK,
+    keys.runRecord(plannedScope, "NODE", plannedRootNodeId).PK,
+    keys.event(plannedScope, plannedRootNodeId).PK,
   ];
   await step("smoke partitions", () => deletePartitions(clients.table, tableName, partitions));
   for (const f of [worldA, worldB]) {
     const prefix = `${f.scope.projectId}/`;
     await step(`S3 prefix ${prefix}`, () => deleteObjectsUnder(s3, context.bucketName, prefix));
   }
+  // P7: ratified plan documents live under their own prefix, not the project's.
+  const planPrefix = `plans/${worldA.scope.projectId}/`;
+  await step(`S3 prefix ${planPrefix}`, () =>
+    deleteObjectsUnder(s3, context.bucketName, planPrefix),
+  );
   await step("conformance litter", () => deleteConformanceLitter(clients.table, tableName));
 
   say(
@@ -696,6 +724,117 @@ describe("phase 3: live-only assertions", () => {
       items: RoutingDecision[];
     };
     expect(listed.items).toEqual([finished]);
+  });
+
+  it("ratifies a plan it holds byte for byte, gates the run on it, and takes a prerequisite only from an exit code (P7, SC-P7-04, SC-P7-05)", async () => {
+    const plan = `# ${runLabel}\n\n## Strands\n\n### S-01 The only strand\n\nA module exists.\n`;
+    const contract = makeProgramContract(plannedWorld, {
+      status: "planning",
+      strands: [
+        {
+          id: "S-01",
+          name: "The only strand",
+          scope: { summary: "the source tree", includes: ["src/**"], excludes: [] },
+          acceptance: ["its tests pass"],
+          successCriteria: ["SC-01"],
+          dependsOn: [],
+          prerequisites: ["HP-01"],
+        },
+      ],
+      prerequisites: [
+        {
+          id: "HP-01",
+          description: "A registry token exists.",
+          remediation: "npm login",
+          verifyCommand: "npm whoami",
+          status: "pending",
+        },
+      ],
+    });
+    const runPathPlanned = `${plannedProgramPath}/runs/${plannedScope.runId}`;
+    const run = makeRun(plannedWorld, { status: "pending" });
+
+    // The gate: a planned program that nobody ratified does not run.
+    expectStatus(await api.put(plannedProgramPath, contract), 201);
+    const refused = await api.put(runPathPlanned, run);
+    expectStatus(refused, 409);
+    expect((refused.body as { error: { code: string } }).error.code).toBe("plan_not_ratified");
+    // And ratification never arrives by writing the contract as ratified.
+    expectStatus(await api.put(plannedProgramPath, { ...contract, status: "ratified" }), 400);
+
+    // Upload the document, program scoped, named by its own digest.
+    const hash = planHash(contract, plan, sha256Hex);
+    const sizeBytes = Buffer.byteLength(plan);
+    const signed = await api.post(`${plannedProgramPath}/plan-documents/${hash.plan}/upload-url`, {
+      sizeBytes,
+    });
+    expectStatus(signed, 200);
+    const target = PlanDocumentUploadResponseSchema.parse(signed.body);
+    expect(target.key).toBe(
+      `plans/${plannedScope.projectId}/${plannedScope.programId}/${hash.plan}.md`,
+    );
+
+    // Ratifying before the bytes are there is refused: the plane reads its own store.
+    const request = { contract, planHash: hash.hash, planSha256: hash.plan };
+    expectStatus(await api.post(`${plannedProgramPath}/ratifications`, request), 404);
+
+    const uploaded = await fetch(target.uploadUrl, {
+      method: "PUT",
+      headers: { "content-type": target.contentType, "content-length": String(sizeBytes) },
+      body: plan,
+    });
+    expect(uploaded.status, await uploaded.text()).toBe(200);
+
+    // A hash of some other contract is refused; the right one ratifies.
+    const wrong = await api.post(`${plannedProgramPath}/ratifications`, {
+      ...request,
+      planHash: "0".repeat(64),
+    });
+    expectStatus(wrong, 422);
+    const ratifiedResponse = await api.post(`${plannedProgramPath}/ratifications`, request);
+    expectStatus(ratifiedResponse, 200);
+    const ratified = ProgramContractSchema.parse(ratifiedResponse.body);
+    expect(ratified.status).toBe("ratified");
+    expect(ratified.planHash).toBe(hash.hash);
+    expect(ratified.planDocument).toEqual({
+      uri: `s3://${context.bucketName}/${target.key}`,
+      sha256: hash.plan,
+      sizeBytes,
+    });
+    expect(ratified.ratifications).toHaveLength(1);
+
+    // Readable from the control plane alone, byte for byte, by its hash (SC-P7-04).
+    const document = await api.get(`${plannedProgramPath}/plan-documents/${hash.plan}`);
+    expectStatus(document, 200);
+    const text = (document.body as { text: string }).text;
+    expect(text).toBe(plan);
+    expect(sha256Hex(text)).toBe(hash.plan);
+
+    // Only an exit code moves a prerequisite, and it does not move the plan hash.
+    const prerequisite = `${plannedProgramPath}/prerequisites/HP-01`;
+    expectStatus(await api.put(prerequisite, { status: "satisfied" }), 400);
+    const failed = await api.put(prerequisite, { kind: "check", exitCode: 1 });
+    expect(failed.body).toMatchObject({ status: "pending", lastCheck: { exitCode: 1 } });
+    const passed = await api.put(prerequisite, { kind: "check", exitCode: 0 });
+    expect(passed.body).toMatchObject({ status: "satisfied", lastCheck: { exitCode: 0 } });
+    const listed = await api.get(`${plannedProgramPath}/prerequisites`);
+    expect((listed.body as { items: { id: string; status: string }[] }).items).toMatchObject([
+      { id: "HP-01", status: "satisfied" },
+    ]);
+    const after = ProgramContractSchema.parse((await api.get(plannedProgramPath)).body);
+    expect(planHash(after, plan, sha256Hex).hash).toBe(hash.hash);
+
+    // Ratified, it runs, and its program node carries the plan it runs.
+    expectStatus(await api.put(runPathPlanned, run), 201);
+    const root = makeRootNode(plannedWorld, { status: "validated", scope: contract.scope });
+    const nodePath = `${runPathPlanned}/nodes/${plannedRootNodeId}`;
+    expectStatus(await api.put(nodePath, root), 422);
+    const withPlan = {
+      ...root,
+      plan: { planHash: ratified.planHash, planDocument: ratified.planDocument },
+    };
+    expectStatus(await api.put(nodePath, withPlan), 201);
+    expect((await api.get(nodePath)).body).toEqual(withPlan);
   });
 
   it("signs an upload the client completes, then records the Artifact (A-08, T2)", async () => {
