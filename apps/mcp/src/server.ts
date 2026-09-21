@@ -23,6 +23,7 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { AgentIdSchema } from "@nightshift/contracts";
 import type { WorkerIdentity } from "@nightshift/execution";
 import { createEventOutbox, shutdown, type WorkerEnvironment } from "@nightshift/execution";
 import { createRuntime, type Runtime } from "./compose.js";
@@ -188,10 +189,14 @@ const buildOrchestrator = (
   runtime: Runtime,
   input: CreateServerInput,
 ): NightshiftServer => {
-  const cwd = input.cwd ?? process.cwd();
+  // A headless root's agent works in a checkout to read, so its server is told
+  // where the program checkout is rather than inferring it from where it started.
+  const cwd = input.cwd ?? input.env.NIGHTSHIFT_REPO_PATH ?? process.cwd();
+  const rootAgentId = AgentIdSchema.safeParse(input.env.NIGHTSHIFT_ROOT_AGENT_ID);
   const state: OrchestratorSession = {
     runtime,
     repoPath: cwd,
+    ...(rootAgentId.success ? { rootAgentId: rootAgentId.data } : {}),
     contractFile: input.env.NIGHTSHIFT_CONTRACT_FILE ?? DEFAULT_CONTRACT_FILE,
     // The MCP client's own name and version, from the initialize handshake.
     // This is what is actually orchestrating, so it is what the orchestrator's

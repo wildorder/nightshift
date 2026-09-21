@@ -249,6 +249,26 @@ const assertNoJobRunning = async (
 };
 
 /** A run that ended badly says why. Killing work must never leave silence. */
+/**
+ * A planned run succeeded when every strand of its plan did (D-P7-09). Parked
+ * and never-delegated strands are settled, so nothing else would refuse this;
+ * and "succeeded" with half the plan parked is the lie the report must not tell.
+ */
+const assertEveryStrandSucceeded = async (attached: AttachedRun): Promise<void> => {
+  if (attached.planSections === undefined) return;
+  const outcomes = await attached.engine.strands();
+  const unfinished = strandsOf(attached.session.program)
+    .filter((strand) => outcomes[strand.id] !== "succeeded")
+    .map((strand) => `${strand.id} (${outcomes[strand.id] ?? "never delegated"})`);
+  if (unfinished.length === 0) return;
+  throw new ToolRefusal(
+    "validation_failed",
+    `this run follows a plan, and these strands have not succeeded: ${unfinished.join(", ")}. ` +
+      'Delegate what was never delegated, or finish the run as "failed" with a reason that names them.',
+    { unfinished },
+  );
+};
+
 const assertEndingExplained = (outcome: string, reason: string | undefined): void => {
   if (outcome === "succeeded") return;
   if (reason !== undefined && reason !== "") return;
@@ -357,6 +377,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         const attached = requireAttached(state);
         await assertNoJobRunning(deps, attached);
         assertEndingExplained(outcome, reason);
+        if (outcome === "succeeded") await assertEveryStrandSucceeded(attached);
 
         const { stores, clock } = state.runtime;
         const run = await stores.runs.get(attached.session.scope, attached.session.scope.runId);

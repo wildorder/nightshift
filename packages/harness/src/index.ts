@@ -23,8 +23,10 @@ export {
 } from "@nightshift/core";
 export {
   nightshiftToolNames,
+  renderPlanFollowingBrief,
   renderSubOrchestratorBrief,
   renderWorkerBrief,
+  STRAND_DEPARTURE_PREFIX,
   type WorkerBriefInput,
 } from "./brief.js";
 export {

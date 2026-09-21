@@ -168,6 +168,11 @@ export interface Engine {
    * one grace period); this only guarantees nothing new starts.
    */
   close(reason: string): Promise<readonly ExecutionNodeId[]>;
+  /**
+   * Where every strand of a planned run stands, from the run's own records.
+   * Empty for a run with no plan. A strand nobody has delegated is absent.
+   */
+  strands(): Promise<StrandOutcomes>;
   /** Settles when the pump is idle. For tests, and for nothing else. */
   settled(): Promise<void>;
   /** One discovery pass, now. The timer calls it; a test may. */
@@ -716,6 +721,8 @@ export const createEngine = (options: EngineOptions): Engine => {
       }
       return withdrawn;
     },
+
+    strands: async () => (planned ? readStrandOutcomes(await readNodes()) : {}),
 
     settled: async () => {
       while (pumping !== undefined) await pumping;

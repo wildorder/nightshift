@@ -79,6 +79,12 @@ export interface OrchestratorSession {
   clientInfo(): { readonly name: string; readonly version: string };
   /** Builds the launch for a worker's own MCP server (§4.2). */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
+  /**
+   * Set when this server was launched **for** a headless root orchestrator (P7,
+   * D-P7-09): the agent that launcher started. `run.attach` adopts it rather
+   * than recording a second orchestrator for one process.
+   */
+  readonly rootAgentId?: AgentId;
   current?: AttachedRun | undefined;
 }
 
@@ -139,6 +145,17 @@ const createOrchestratorAgent = async (
 ): Promise<AgentId> => {
   const client = state.clientInfo();
   const { stores, clock, ids } = state.runtime;
+  if (state.rootAgentId !== undefined) {
+    const launched = await stores.agents.get(scope, state.rootAgentId);
+    // Only the agent the launcher made, for this node: anything else is a stale
+    // or foreign id, and the ordinary path below is the honest answer to it.
+    if (launched?.executionNodeId === rootNodeId && launched.role === "orchestrator") {
+      if (launched.status === "created") {
+        await stores.agents.put({ ...launched, status: "started", startedAt: nowIso(clock) });
+      }
+      return launched.agentId;
+    }
+  }
   const agent: Agent = {
     schemaVersion: 1,
     ...scope,

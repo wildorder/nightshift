@@ -61,6 +61,14 @@ export {
   runPreflight,
 } from "./preflight.js";
 export {
+  DEPARTURE_PREFIX,
+  gatherReport,
+  type JobReport,
+  type RunReport,
+  renderReport,
+  type StrandReport,
+} from "./report.js";
+export {
   type DelegateJobInput,
   delegateJob,
   type IntegrateCandidate,
