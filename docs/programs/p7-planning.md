@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p7-planning` |
 | Source stage | — (inserted 2026-09-21; not in the source plan, which assumes the orchestrator plans for itself) |
-| Status | **Drafted 2026-09-21**, revised the same day after review; for human ratification. D-P7-01 … D-P7-10 proposed; tasks T1 … T5 drafted. |
+| Status | **Contract ratified 2026-09-21** (D-P7-01 … D-P7-10), including D-P7-10's `deferred` status in P1's transition table. Tasks T1 … T5 drafted. Implementation not started. |
 | Depends on | P6 Parallel and Recursive Execution (the engine, the merge queue, sub-programs) |
 | Blocking decisions | none |
 
@@ -65,13 +65,15 @@ Everything from P3 … P6 stands.
 
 | # | Prerequisite | Status |
 |---|--------------|--------|
-| H-P7-01 | Ratify D-P7-01 … D-P7-10 | open |
+| H-P7-01 | Ratify D-P7-01 … D-P7-10 | **satisfied 2026-09-21** |
 | H-P7-02 | P6 merged | **satisfied 2026-09-21** (PR #18) |
-| H-P7-03 | The keyart trial run has finished, so its observations can shape T2's skill and template | open; not blocking T1 |
+| H-P7-03 | The keyart trial run has finished, so its observations can shape T2's skill and template | **satisfied 2026-09-21** (11 jobs landed, gate green); T2 still has to ask the owner what they observed |
 
 **Explicitly not required.** No new AWS resource. The API gains a little (§4.5).
 
-## 3. Proposed decisions
+## 3. Ratified decisions
+
+Ratified by the human on 2026-09-21.
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
@@ -317,6 +319,7 @@ Specs live in `tasks/p7-planning/`.
 |------|----------|----|
 | 2026-09-21 | Program inserted after the first real-repository trial showed that a program of success criteria alone gives the developer nothing to review and leaves every structural choice to be made mid-run. Restaged: Routing & Examination → P8, Decision Graph → P9, Remote Runner → P10, Realtime → P11. Contract drafted. | Human (direction) and agent (draft) |
 | 2026-09-21 | **D-P7-10 added on the owner's proposal**: a hurdle defers a check rather than parking the work; provisional line; checks, fix and cone replay when the human returns. It replaces `awaiting_human`. It is the one place P7 touches P1's transition table, and only ratification authorises that. | Human (proposal) and agent (draft) |
+| 2026-09-21 | **Contract ratified**, D-P7-01 … D-P7-10 as drafted. Ratifying D-P7-10 is the owner's explicit authorisation to add the `deferred` status and its two edges to P1's transition table, and nothing else in it. | **Human** |
 | 2026-09-21 | **The plan document goes to the control plane at ratification**, as an artifact named by the plan hash, not only its hash. The owner's call, on the agent's note that P10 and P11 both need a run reconstructable without the repository. Added to D-P7-02, §4.5, SC-P7-04 and T1. | Human |
 | 2026-09-21 | **First draft revised on review.** It had carried the earlier Nightshift's planning apparatus over whole: a manifest beside the contract, a task file per workstream written by isolated agents, sizes, an atomic or orchestrated mode, a fixed roster. The owner's correction: keep the planning *stage*, in the spirit of v1. That apparatus existed because the old runner could not decide anything at run time; v1's orchestrator and merge queue can, and recover when they are wrong. So planning now ends where a wrong choice becomes cheap (D-P7-01): strands, approach, decisions and prerequisites are the plan's; jobs are the run's. And on program boundaries the owner's rule is D-P7-05's: hoist a human step to a prerequisite and keep the program whole, splitting only when the step depends on an output of the run. D-P7-01 … D-P7-09 proposed; tasks T1 … T5 drafted. | Human (direction) and agent (draft), for human ratification |
 
