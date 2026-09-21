@@ -18,6 +18,7 @@
  */
 import { parseArgs } from "node:util";
 import { mintId } from "./commands/id.js";
+import { init } from "./commands/init.js";
 import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
 import { planCheck, planRatify } from "./commands/plan.js";
@@ -35,6 +36,7 @@ Usage:
   nightshift logout [--no-revoke]
   nightshift whoami
   nightshift project create --name <name> [--description <text>]
+  nightshift init [--project <id> | --name <name>] [--yes] [--repo <path>]
   nightshift plan check <program> [--repo <path>]
   nightshift plan ratify <program> [--repo <path>]
   nightshift preflight <program> [--repo <path>] [--recheck]
@@ -216,6 +218,33 @@ const programArgs = (
   return { id, ...(repo === undefined ? {} : { repo }), values };
 };
 
+const doInit = async (environment: CliEnvironment, args: readonly string[]): Promise<void> => {
+  const usage = "nightshift init [--project <id> | --name <name>] [--yes] [--repo <path>]";
+  const { values } = parse(
+    {
+      args: [...args],
+      options: {
+        repo: { type: "string" },
+        project: { type: "string" },
+        name: { type: "string" },
+        yes: { type: "boolean", default: false },
+      },
+      allowPositionals: false,
+      strict: true,
+    },
+    usage,
+  );
+  const repo = optional(values, "repo");
+  const project = optional(values, "project");
+  const name = optional(values, "name");
+  await init(environment, {
+    ...(repo === undefined ? {} : { repo }),
+    ...(project === undefined ? {} : { project }),
+    ...(name === undefined ? {} : { name }),
+    yes: values.yes === true,
+  });
+};
+
 const doPlan = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const [subcommand, ...rest] = args;
   const usage = "nightshift plan check|ratify <program> [--repo <path>]";
@@ -280,6 +309,9 @@ const dispatch = async (
     }
     case "project":
       await doProject(environment, args);
+      return undefined;
+    case "init":
+      await doInit(environment, args);
       return undefined;
     case "plan":
       return doPlan(environment, args);

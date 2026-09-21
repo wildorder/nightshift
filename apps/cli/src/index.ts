@@ -17,6 +17,7 @@
 export { openBrowser, openerFor } from "./browser.js";
 export { runCli, USAGE, VERSION } from "./cli.js";
 export { mintId } from "./commands/id.js";
+export { detectVerification, type InitOptions, type InitResult, init } from "./commands/init.js";
 export {
   DEFAULT_STAGE,
   type LoginFlags,
@@ -38,8 +39,10 @@ export { REMOTE_REFUSAL, type RunOptions, type RunResult, run } from "./commands
 export { ACTIVE_ORG_CLAIM, type WhoamiOrg, type WhoamiResult, whoami } from "./commands/whoami.js";
 export {
   type BrowserOpener,
+  type CliAssets,
   type CliEnvironment,
   createCliEnvironment,
+  type Exec,
   type Write,
 } from "./environment.js";
 export {
