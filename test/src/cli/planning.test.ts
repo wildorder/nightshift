@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createProject, runCli } from "@nightshift/cli";
-import type { ProgramContract } from "@nightshift/contracts";
+import type { ProgramContract, Strand } from "@nightshift/contracts";
 import {
   createFetchTransport,
   createHttpPlanning,
@@ -154,7 +154,7 @@ describe("nightshift plan check", () => {
     await writeProgram(
       {
         strands: [
-          { ...(contract.strands?.[0] as never), successCriteria: [], dependsOn: ["S-02"] },
+          { ...(contract.strands?.[0] as Strand), successCriteria: [], dependsOn: ["S-02"] },
         ],
       },
       "# Demo\n\nNo strand sections at all.\n",
