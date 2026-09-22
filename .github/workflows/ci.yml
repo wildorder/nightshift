@@ -24,13 +24,14 @@ jobs:
     name: verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
-      # The dev machine is Windows and CI is Linux; both legs must pass, and a
-      # failure on one must not hide the result on the other.
+      # Both legs must pass, and a failure on one must not hide the result on the
+      # other. The Windows leg runs the whole suite unchanged, but only on `v1`:
+      # it takes three times as long (process creation and NTFS), and its job is
+      # to prove the scripts and paths hold on Git Bash, which a merge does as
+      # well as every push to a PR. A pull request is verified on Linux.
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
 
     steps:
       - name: Checkout
