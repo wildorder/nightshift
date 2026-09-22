@@ -39,7 +39,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(cwd, { recursive: true, force: true });
+  // On Windows a killed process tree can hold the directory for a moment.
+  await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 describe("runPreflight (D-P7-05)", () => {

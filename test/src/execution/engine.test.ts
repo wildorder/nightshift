@@ -675,8 +675,19 @@ describe("strands are gated and parked (P7, D-P7-04, §4.4)", () => {
   }, 60_000);
 
   it("parks a failed strand with exactly its cone, names the blocker, and finishes the rest", async () => {
+    // S-01 is held until every strand is submitted: otherwise it can fail, and
+    // park its cone, before S-04 is delegated, and the engine rightly refuses S-04.
+    const all = barrier();
     const r = await rig(
-      { s01: outOfScope, s02: addModule("s02"), s03: addModule("s03"), s04: addModule("s04") },
+      {
+        s01: async (context) => {
+          await all.opened;
+          await outOfScope(context);
+        },
+        s02: addModule("s02"),
+        s03: addModule("s03"),
+        s04: addModule("s04"),
+      },
       {
         strands: [
           strandOf("S-01"),
@@ -690,6 +701,7 @@ describe("strands are gated and parked (P7, D-P7-04, §4.4)", () => {
     const s02 = await r.submit("s02", "S-02");
     const s03 = await r.submit("s03", "S-03");
     const s04 = await r.submit("s04", "S-04");
+    all.open();
 
     expect(await r.until(s01.nodeId, settled)).toBe("failed");
     expect(await r.until(s02.nodeId, settled)).toBe("cancelled");
@@ -918,7 +930,10 @@ describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
 
     meet();
     const result = await resumeDeferred(r.world.environment, r.world.session);
-    expect(result).toEqual({ landed: [one.nodeId, two.nodeId], discarded: [] });
+    expect(result, JSON.stringify(result)).toEqual({
+      landed: [one.nodeId, two.nodeId],
+      discarded: [],
+    });
     expect(await r.status(one.nodeId)).toBe("integrated");
     expect(await r.status(two.nodeId)).toBe("integrated");
     // A verified commit is never moved: what landed is what was deferred.
