@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { ExecutionNodeIdSchema, JobContractIdSchema } from "../ids.js";
 import { CommitShaSchema, IsoTimestampSchema, runScoped, ScopeSchema } from "./common.js";
+import { PlanDocumentRefSchema, PlanHashSchema } from "./plan.js";
 
 /** `sub-program` carries its own orchestrator and its own delegation authority. */
 export const ExecutionNodeKindSchema = z.enum(["program", "sub-program", "job"]);
@@ -25,6 +26,13 @@ export const ExecutionNodeStatusSchema = z.enum([
   "running",
   "implemented",
   "verifying",
+  /**
+   * A verification step **could not run** for want of something only a human
+   * can supply (P7, D-P7-10). Not a verdict: the only ways out are back to
+   * `verifying` once the prerequisite is met, or `cancelled`, so nothing reaches
+   * `sealed` or `integrated` from here except through `verified` (A-05).
+   */
+  "deferred",
   "verified",
   "verification_failed",
   "examining",
@@ -77,6 +85,16 @@ export const ExecutionNodeSchema = z.strictObject({
    * because it is ever optional on a failure.
    */
   outcomeReason: z.string().min(1).optional(),
+  /**
+   * On the **program node of a run of a ratified plan** only (P7, D-P7-02): the
+   * plan this run executes, copied from the contract when the node is created.
+   * A contract can be ratified again later; this is what makes a run
+   * reconstructable from the control plane alone (A-06), plan document
+   * included, whatever the contract says by then.
+   */
+  plan: z
+    .strictObject({ planHash: PlanHashSchema, planDocument: PlanDocumentRefSchema })
+    .optional(),
   createdAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
 });

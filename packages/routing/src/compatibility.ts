@@ -5,16 +5,16 @@
  * **A harness is not a provider.** P3 had one adapter and one provider and could
  * treat the two as the same word; they are not. Claude Code runs Anthropic's
  * models directly on the operator's subscription, and the same models through
- * Bedrock on an instance role. Codex runs OpenAI's. P9's AgentCore harness runs
+ * Bedrock on an instance role. Codex runs OpenAI's. P10's AgentCore harness runs
  * whatever Bedrock offers. So the table is `harness → [provider × model family]`
  * and never a 1:1 map, and a route is a `(harness, provider, model)` triple the
  * table allows *and* the Program Contract's policy allows.
  *
  * It describes what an adapter **can** run, not what is cheapest or best. Until
- * P7, the first compatible pair in the policy's own order wins (a stated
+ * P8, the first compatible pair in the policy's own order wins (a stated
  * non-guarantee of P5).
  *
- * Rows marked `availableFrom` are here so P9 fills in a row rather than changing
+ * Rows marked `availableFrom` are here so P10 fills in a row rather than changing
  * a shape. A route through one is refused, by name, until then.
  */
 
@@ -22,7 +22,7 @@
 export type RouteAuthentication =
   /** The operator's own signed-in CLI, on the operator's machine (D-P5-07). */
   | "operator-login"
-  /** The role of the runtime instance the harness runs on (P9, A-14). */
+  /** The role of the runtime instance the harness runs on (P10, A-14). */
   | "instance-role";
 
 export interface CompatibleProvider {
@@ -55,7 +55,7 @@ export const HARNESS_COMPATIBILITY: readonly HarnessCompatibility[] = [
         provider: "bedrock",
         models: ["anthropic.*", "*.anthropic.*"],
         authentication: "instance-role",
-        availableFrom: "P9",
+        availableFrom: "P10",
       },
     ],
   },
@@ -71,14 +71,14 @@ export const HARNESS_COMPATIBILITY: readonly HarnessCompatibility[] = [
     ],
   },
   {
-    // The row P9 implements. Its shape is fixed here; its adapter is not written.
+    // The row P10 implements. Its shape is fixed here; its adapter is not written.
     harness: "agentcore",
     providers: [
       {
         provider: "bedrock",
         models: ["*"],
         authentication: "instance-role",
-        availableFrom: "P9",
+        availableFrom: "P10",
       },
     ],
   },

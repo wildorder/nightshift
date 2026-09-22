@@ -28,7 +28,7 @@
  */
 import type { AgentId, CheckpointId, CommitSha, ExecutionNodeId } from "@nightshift/contracts";
 import { nowIso, transition } from "@nightshift/core";
-import type { ExecutionEnvironment, RunSession } from "./environment.js";
+import type { LandingEnvironment, RunSession } from "./environment.js";
 import {
   checkpointRef,
   currentBranch,
@@ -56,8 +56,29 @@ export type IntegrateResult =
   | { readonly kind: "refused"; readonly reason: string };
 
 /** Every reason the program checkout is not in a state to be fast-forwarded. */
+/**
+ * Why nothing can be landed on this checkout right now, whatever the commit:
+ * the wrong branch, or somebody's uncommitted work. Asked **before** a resume
+ * touches any node, because a refusal after sealing ends the node.
+ */
+export const checkoutBlocked = async (
+  environment: Pick<LandingEnvironment, "git">,
+  session: Pick<RunSession, "repoPath" | "program">,
+): Promise<string | undefined> => {
+  const repo = session.repoPath;
+  const programBranch = session.program.repository.programBranch;
+  const branch = await currentBranch(environment.git, repo);
+  if (branch !== programBranch) {
+    return `program_checkout_wrong_branch: the checkout at ${repo} is on "${branch}", not the program branch "${programBranch}"`;
+  }
+  if (await isDirty(environment.git, repo)) {
+    return `program_checkout_dirty: the checkout at ${repo} has uncommitted changes, and Nightshift will not fast-forward over them`;
+  }
+  return undefined;
+};
+
 const blockingReason = async (
-  environment: ExecutionEnvironment,
+  environment: LandingEnvironment,
   input: IntegrateInput,
 ): Promise<string | undefined> => {
   const repo = input.session.repoPath;
@@ -80,7 +101,7 @@ const blockingReason = async (
 };
 
 export const integrateNode = async (
-  environment: ExecutionEnvironment,
+  environment: LandingEnvironment,
   input: IntegrateInput,
 ): Promise<IntegrateResult> => {
   const { stores, clock, outbox, git: runner } = environment;
@@ -166,7 +187,7 @@ export const integrateNode = async (
  * survives, so P6 can pick the commit up and reconcile it.
  */
 const failSealed = async (
-  environment: ExecutionEnvironment,
+  environment: LandingEnvironment,
   input: IntegrateInput,
   reason: string,
 ): Promise<void> => {

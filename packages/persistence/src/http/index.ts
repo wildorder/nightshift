@@ -25,6 +25,13 @@ export {
   createHttpExecutionTokenMinter,
   type HttpExecutionTokenMinterOptions,
 } from "./execution-tokens.js";
+export {
+  createHttpPlanning,
+  type DiscoveredPrerequisite,
+  type HttpPlanningOptions,
+  type PlanningClient,
+  sha256Hex,
+} from "./planning.js";
 export { routes } from "./routes.js";
 export * from "./session/index.js";
 export { createHttpStores, type HttpStoresOptions } from "./stores.js";

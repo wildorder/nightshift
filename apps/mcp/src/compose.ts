@@ -25,10 +25,16 @@ import type {
   ArtifactBodyStore,
   ExecutionTokenMinter,
   LocalPaths,
+  ProgramScope,
   ProjectStores,
 } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
-import type { GitRunner, WorkerEnvironment, WorkerLaunchIdentity } from "@nightshift/execution";
+import type {
+  GitRunner,
+  PrerequisiteBook,
+  WorkerEnvironment,
+  WorkerLaunchIdentity,
+} from "@nightshift/execution";
 import { createEventOutbox, nodeGitRunner } from "@nightshift/execution";
 import type { Harness, HarnessHandle, McpLaunch } from "@nightshift/harness";
 import { createClaudeHarness } from "@nightshift/harness-claude";
@@ -37,6 +43,7 @@ import {
   createFetchTransport,
   createHttpArtifactBodyStore,
   createHttpExecutionTokenMinter,
+  createHttpPlanning,
   createHttpStores,
   createLocalPaths,
   createTokenProvider,
@@ -76,6 +83,15 @@ export interface Runtime {
   readonly clock: typeof systemClock;
   /** The control plane this runtime talks to, for a diagnostic line. */
   readonly endpoint: string;
+  /**
+   * The ratified plan document, by its hash, **from the control plane** (P7,
+   * D-P7-02): a run reads the plan it was ratified with, never whatever is on
+   * disk by now. `undefined` when the control plane holds none. Optional so a
+   * suite that runs no planned program need not supply one.
+   */
+  readonly planText?: (scope: ProgramScope, sha256: string) => Promise<string | undefined>;
+  /** The program's prerequisites as they stand now, for deferring a check that needs one (D-P7-10). */
+  readonly prerequisites?: PrerequisiteBook;
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
   /**
@@ -131,7 +147,7 @@ const createWorkerTransport = (env: Env): { transport: Transport; endpoint: stri
  * the control plane is and a refresh token that mints ID tokens. The server
  * holds no AWS credentials and never will (A-28). The orchestrator keeps the
  * human's session in P4 by decision (D-P4-06): it is the human's proxy, and a
- * remote orchestrator's own token is P9's change.
+ * remote orchestrator's own token is P10's change.
  *
  * The environment pair is for a caller that already holds a token: the deployed
  * slice suite, which uses the machine client's credentials grant rather than an
@@ -342,6 +358,9 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
   return {
     transport,
     endpoint,
+    planText: async (scope, sha256) =>
+      (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
+    prerequisites: createHttpPlanning({ transport }),
     stores: createHttpStores({ transport }),
     bodies: createHttpArtifactBodyStore({ transport }),
     tokens: createHttpExecutionTokenMinter({ transport }),

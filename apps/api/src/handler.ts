@@ -25,6 +25,13 @@ import { appendEvent, getRunState, listEvents } from "./operations/events.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
 import {
+  createPlanUploadUrl,
+  getPlanDocument,
+  listPrerequisites,
+  putPrerequisite,
+  ratifyProgram,
+} from "./operations/plans.js";
+import {
   getProgram,
   getProject,
   getRun,
@@ -63,7 +70,7 @@ const RUN = `${PROGRAM}/runs/{runId}`;
 const NODE = `${RUN}/nodes/{nodeId}`;
 
 /**
- * The API surface, grouped by aggregate. P10 will read this table, so it is kept
+ * The API surface, grouped by aggregate. P11 will read this table, so it is kept
  * readable and nothing is added that the slice does not use (T2).
  */
 export const ROUTES: readonly Route[] = [
@@ -79,6 +86,38 @@ export const ROUTES: readonly Route[] = [
   },
   { method: "PUT", path: PROGRAM, operation: "program.put", handler: putProgram },
   { method: "GET", path: PROGRAM, operation: "program.get", handler: getProgram },
+
+  // Planning (P7): ratification, the plan document, human prerequisites.
+  {
+    method: "POST",
+    path: `${PROGRAM}/ratifications`,
+    operation: "program.ratify",
+    handler: ratifyProgram,
+  },
+  {
+    method: "POST",
+    path: `${PROGRAM}/plan-documents/{sha256}/upload-url`,
+    operation: "program.createPlanUploadUrl",
+    handler: createPlanUploadUrl,
+  },
+  {
+    method: "GET",
+    path: `${PROGRAM}/plan-documents/{sha256}`,
+    operation: "program.getPlanDocument",
+    handler: getPlanDocument,
+  },
+  {
+    method: "GET",
+    path: `${PROGRAM}/prerequisites`,
+    operation: "prerequisite.list",
+    handler: listPrerequisites,
+  },
+  {
+    method: "PUT",
+    path: `${PROGRAM}/prerequisites/{prerequisiteId}`,
+    operation: "prerequisite.put",
+    handler: putPrerequisite,
+  },
 
   // Runs. `PUT` on an existing run applies the run table in `core` (T2).
   { method: "GET", path: `${PROGRAM}/runs`, operation: "run.list", handler: listRuns },

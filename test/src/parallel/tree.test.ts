@@ -276,7 +276,13 @@ describe("the Stage 5 tree", () => {
         }
       }
     }
-    expect((await run.ctx.stores.runs.get(run.scope, run.scope.runId))?.status).toBe("interrupted");
+    // The run is written after its nodes: waited for, like them, rather than read
+    // once, or a slow runner reads it a moment before shutdown gets there.
+    const status = await waitFor("the run to be interrupted", async () => {
+      const stored = await run.ctx.stores.runs.get(run.scope, run.scope.runId);
+      return stored?.status === "interrupted" ? stored.status : undefined;
+    });
+    expect(status).toBe("interrupted");
   });
 
   it("refuses depth and scope from a sub-orchestrator exactly as from the root (SC-P6-04, SC-P6-06)", async () => {

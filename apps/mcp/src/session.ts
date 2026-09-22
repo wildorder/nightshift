@@ -25,7 +25,13 @@ import type {
   RunId,
 } from "@nightshift/contracts";
 import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
-import { nowIso, type RunScope } from "@nightshift/core";
+import {
+  isPlanned,
+  nowIso,
+  type PlanSections,
+  type RunScope,
+  splitPlanSections,
+} from "@nightshift/core";
 import {
   checkpointRef,
   createEngine,
@@ -57,6 +63,11 @@ export interface AttachedRun {
   readonly replayed: number;
   /** Whether the authored file disagrees with the stored contract. */
   readonly contractDrifted: boolean;
+  /**
+   * A planned run's strand sections, split from the **ratified** plan document
+   * as the control plane holds it (P7, D-P7-02). Absent for a run with no plan.
+   */
+  readonly planSections?: PlanSections;
 }
 
 export interface OrchestratorSession {
@@ -68,6 +79,12 @@ export interface OrchestratorSession {
   clientInfo(): { readonly name: string; readonly version: string };
   /** Builds the launch for a worker's own MCP server (§4.2). */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
+  /**
+   * Set when this server was launched **for** a headless root orchestrator (P7,
+   * D-P7-09): the agent that launcher started. `run.attach` adopts it rather
+   * than recording a second orchestrator for one process.
+   */
+  readonly rootAgentId?: AgentId;
   current?: AttachedRun | undefined;
 }
 
@@ -82,6 +99,7 @@ const buildEnvironment = (runtime: Runtime, outbox: EventOutbox): ExecutionEnvir
   git: runtime.git,
   outbox,
   workerEnvironment: runtime.workerEnvironment,
+  ...(runtime.prerequisites === undefined ? {} : { prerequisites: runtime.prerequisites }),
 });
 
 /**
@@ -128,6 +146,17 @@ const createOrchestratorAgent = async (
 ): Promise<AgentId> => {
   const client = state.clientInfo();
   const { stores, clock, ids } = state.runtime;
+  if (state.rootAgentId !== undefined) {
+    const launched = await stores.agents.get(scope, state.rootAgentId);
+    // Only the agent the launcher made, for this node: anything else is a stale
+    // or foreign id, and the ordinary path below is the honest answer to it.
+    if (launched?.executionNodeId === rootNodeId && launched.role === "orchestrator") {
+      if (launched.status === "created") {
+        await stores.agents.put({ ...launched, status: "started", startedAt: nowIso(clock) });
+      }
+      return launched.agentId;
+    }
+  }
   const agent: Agent = {
     schemaVersion: 1,
     ...scope,
@@ -263,6 +292,36 @@ export interface AttachInput {
   readonly runId?: string;
 }
 
+/**
+ * The plan a planned run executes, read from the control plane by the hash its
+ * program node carries. Not from the checkout: what is on disk may have been
+ * edited since, and a strand's orchestrator is told what was ratified.
+ */
+const readPlanSections = async (
+  state: OrchestratorSession,
+  program: ProgramContract,
+  rootNode: ExecutionNode,
+): Promise<PlanSections | undefined> => {
+  if (!isPlanned(program)) return undefined;
+  const sha256 = rootNode.plan?.planDocument.sha256;
+  const text =
+    sha256 === undefined
+      ? undefined
+      : await state.runtime.planText?.(
+          { projectId: program.projectId, programId: program.programId },
+          sha256,
+        );
+  if (text === undefined) {
+    throw new ToolRefusal(
+      "plan_unavailable",
+      "this run is of a planned program, and the control plane could not supply the plan " +
+        "document it was ratified with, so no strand can be briefed. Ratify the plan again with " +
+        "`nightshift plan ratify` and start a new run.",
+    );
+  }
+  return splitPlanSections(text);
+};
+
 export const attachRun = async (
   state: OrchestratorSession,
   input: AttachInput,
@@ -319,6 +378,7 @@ export const attachRun = async (
     orchestratorAgentId: agentId,
     repoPath: state.repoPath,
   };
+  const planSections = await readPlanSections(state, program, rootNode);
   const environment = buildEnvironment(runtime, outbox);
   const attached: AttachedRun = {
     session,
@@ -334,6 +394,7 @@ export const attachRun = async (
     outbox,
     replayed,
     contractDrifted: await contractDrifted(state, program),
+    ...(planSections === undefined ? {} : { planSections }),
   };
   state.current = attached;
   return attached;
@@ -343,6 +404,8 @@ export interface StartRunInput {
   readonly program: unknown;
   readonly repoPath: string;
   readonly model: string;
+  /** The plan document on disk, for a planned program: held to the ratified hash. */
+  readonly planText?: string;
 }
 
 /**
@@ -359,7 +422,11 @@ export const startNewRun = async (
   const { runtime } = state;
   const started = await startRun(
     { stores: runtime.stores, clock: runtime.clock, ids: runtime.ids, git: runtime.git },
-    { program: input.program, repoPath: input.repoPath },
+    {
+      program: input.program,
+      repoPath: input.repoPath,
+      ...(input.planText === undefined ? {} : { planText: input.planText }),
+    },
   );
   const attached = await attachRun(state, { model: input.model, runId: started.run.runId });
   return { ...attached, baseCommit: started.baseCommit };

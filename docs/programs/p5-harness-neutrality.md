@@ -11,6 +11,8 @@
 | Depends on | P4 Identity and Tenancy (workers on execution tokens) |
 | Blocking decisions | none. O-05 is untouched: every adapter runs on the operator's machine. |
 
+> **Restaging note (2026-09-21).** P7 *Planning* was inserted after this contract was written. Where this document names a later program, read Routing & Examination as P8, Decision Graph as P9, Remote Runner as P10 and Realtime as P11 (`docs/programs/staging.md`).
+
 This contract is the stable authority for P5. The implementation plan may be
 revised continuously; this contract may not be revised to make an implementation
 pass. Amend it only through a human decision recorded in §12.

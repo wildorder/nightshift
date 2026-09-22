@@ -49,7 +49,22 @@ control plane.
 A capable top-level orchestrator — Claude Code, Codex, or an AgentCore harness —
 runs continuously and owns the program. It plans, decomposes, implements, revises
 its plan, and decides what to delegate. Nightshift never prescribes that reasoning
-workflow. What Nightshift provides beneath it:
+workflow.
+
+**A human plans first, and only as far as it pays.** Before anything runs, a
+developer and an agent work a program out together in a document: the outcomes,
+the seams (a few **strands**), each strand's approach at the fidelity a developer
+wants before saying yes, the decisions that are expensive to reverse, and
+everything only a human can do, done *before* the run with a command that proves
+it. Planning ends where a wrong choice becomes cheap: would undoing it throw away
+more than one job's work, or need a human? Then it is the plan's. Otherwise it is
+the run's, and no plan names a job. The human ratifies the plan, and only then
+does an orchestrator run it end to end with nobody watching, and report against
+it. A strand that fails costs its own cone and not the night; a check that needs
+something only a human can supply is deferred, and the work carries on beside
+the program branch until they are back.
+
+What Nightshift provides beneath it:
 
 1. **Controlled delegation.** Every delegated unit passes through Nightshift as a
    validated, persisted contract. Nothing executes without a Nightshift identity.
@@ -116,6 +131,17 @@ connectivity loss and must replay idempotently.
 orchestrator and its own delegation authority.
 
 **Job** — a bounded unit of execution, governed by a Job Contract.
+
+**Plan** — a program's `plan.md` and `contract.json`, written with the human and
+ratified by them before anything runs. It fixes the seams and the expensive
+choices, never the jobs.
+
+**Strand** — a seam chosen by a human: a sub-program with a scope, acceptance and
+an approach, whose orchestrator is handed its section of the plan word for word
+and decides its own jobs.
+
+**Human prerequisite** — something only a human can do, found at planning time,
+done before the run, and proven by a deterministic command.
 
 Execution is recursive. Children may narrow inherited authority; they may never
 widen it.

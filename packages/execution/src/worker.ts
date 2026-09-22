@@ -193,7 +193,7 @@ export const failJob = async (
  * A decision on the worker's own node, against the run's latest checkpoint.
  *
  * On its own node, not the run's root: this is the worker's decision, and the
- * replay cone (P8) is computed from where a decision was made.
+ * replay cone (P9) is computed from where a decision was made.
  */
 export const recordWorkerDecision = async (
   environment: WorkerEnvironment,

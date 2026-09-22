@@ -135,6 +135,40 @@ describe("implemented is not verified", () => {
   });
 });
 
+describe("deferred is not a verdict (P7, D-P7-10)", () => {
+  it("is entered only from verifying, and left only for verifying or cancelled", () => {
+    const sources = EXECUTION_NODE_STATUSES.filter((status) =>
+      Object.values(TRANSITIONS[status]).includes("deferred"),
+    );
+    expect(sources).toEqual(["verifying"]);
+    expect(TRANSITIONS.deferred).toEqual({ resume_verification: "verifying", cancel: "cancelled" });
+  });
+
+  it("reaches sealed or integrated by no path that avoids verified", () => {
+    // Walk everything reachable from `deferred` with `verified` removed from the graph.
+    const seen = new Set<ExecutionNodeStatus>(["deferred"]);
+    const queue: ExecutionNodeStatus[] = ["deferred"];
+    while (queue.length > 0) {
+      const from = queue.shift() as ExecutionNodeStatus;
+      for (const to of Object.values(TRANSITIONS[from])) {
+        if (to === "verified" || seen.has(to)) continue;
+        seen.add(to);
+        queue.push(to);
+      }
+    }
+    expect(seen.has("sealed")).toBe(false);
+    expect(seen.has("integrated")).toBe(false);
+    expect(seen.has("examining")).toBe(false);
+  });
+
+  it("is neither terminal, retryable, post-verification nor a concurrency slot", () => {
+    expect(isTerminal("deferred")).toBe(false);
+    expect(RETRYABLE_STATUSES).not.toContain("deferred");
+    expect(isPostVerification("deferred")).toBe(false);
+    expect(OCCUPIES_CONCURRENCY_SLOT).not.toContain("deferred");
+  });
+});
+
 describe("transition", () => {
   it("returns a new node rather than mutating", () => {
     const node = nodeAt("validated");

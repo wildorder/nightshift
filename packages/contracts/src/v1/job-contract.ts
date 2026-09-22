@@ -16,6 +16,7 @@ import {
   runScoped,
   ScopeRequestSchema,
 } from "./common.js";
+import { StrandIdSchema } from "./plan.js";
 
 export const JobContractSchema = z.strictObject({
   ...runScoped,
@@ -28,6 +29,14 @@ export const JobContractSchema = z.strictObject({
   dependencies: z.array(JobContractIdSchema),
   risk: RiskLevelSchema,
   ambiguity: AmbiguityLevelSchema,
+  /**
+   * Set when this contract **is a strand** of a ratified plan (P7, D-P7-04): a
+   * sub-program directly under the program node, whose objective carries its
+   * section of the plan verbatim. The engine gates it on the strands it depends
+   * on and parks its cone when it fails. Never set on a job inside a strand:
+   * those are the run's, and the plan does not name them.
+   */
+  strandId: StrandIdSchema.optional(),
   createdAt: IsoTimestampSchema,
 });
 export type JobContract = z.infer<typeof JobContractSchema>;

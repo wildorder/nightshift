@@ -69,6 +69,12 @@ export type Operation =
   | "program.list"
   | "program.put"
   | "program.get"
+  // Planning (P7): ratification, the plan document, human prerequisites.
+  | "program.ratify"
+  | "program.createPlanUploadUrl"
+  | "program.getPlanDocument"
+  | "prerequisite.list"
+  | "prerequisite.put"
   // Runs.
   | "run.list"
   | "run.put"
@@ -119,6 +125,9 @@ export type Operation =
  *
  * - `forbidden` — never, whatever the target. Every write that is not one of the
  *   three a worker makes, and every read above the run.
+ * - `own_program` — allowed when the target is the program the execution's run
+ *   belongs to. The one reach above the run, for the one thing an execution
+ *   needs from there: which human prerequisites are still unmet (P7, D-P7-10).
  * - `own_run` — allowed when the target's chain is the execution's own run.
  * - `own_node` — `own_run`, and the target names the execution's own node.
  * - `own_agent` — `own_run`, and the target names the execution's own agent.
@@ -126,7 +135,13 @@ export type Operation =
  *   one of its descendants, or a node being created directly under it. Only an
  *   `orchestrator` token's table uses it (P6, D-P6-04).
  */
-export type ExecutionAccess = "forbidden" | "own_run" | "own_node" | "own_agent" | "own_subtree";
+export type ExecutionAccess =
+  | "forbidden"
+  | "own_program"
+  | "own_run"
+  | "own_node"
+  | "own_agent"
+  | "own_subtree";
 
 /**
  * The §4.4 table for an execution principal, exhaustive over `Operation`.
@@ -144,6 +159,16 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "program.list": "forbidden",
   "program.put": "forbidden",
   "program.get": "forbidden",
+
+  // Planning is a human's (D-P7-02, D-P7-05). An execution may see which
+  // prerequisites are unmet, because a check that cannot run is deferred rather
+  // than failed (D-P7-10), and may write none: only the preflight, under a
+  // human's session, ever marks one satisfied.
+  "program.ratify": "forbidden",
+  "program.createPlanUploadUrl": "forbidden",
+  "program.getPlanDocument": "forbidden",
+  "prerequisite.list": "own_program",
+  "prerequisite.put": "forbidden",
 
   // Its own run is readable; it may not list a program's runs, or write one.
   "run.list": "forbidden",
@@ -238,6 +263,13 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   // Above the run, like a worker. What it delegates under reaches it as its own
   // node's scope; limits and policy are the API's and the engine's to apply.
   "program.get": "forbidden",
+
+  // As for a worker: prerequisites are readable, and nothing of a plan is writable.
+  "program.ratify": "forbidden",
+  "program.createPlanUploadUrl": "forbidden",
+  "program.getPlanDocument": "forbidden",
+  "prerequisite.list": "own_program",
+  "prerequisite.put": "forbidden",
 
   "run.list": "forbidden",
   "run.put": "forbidden",
@@ -419,6 +451,35 @@ const mayWriteNodeStatus = (role: ExecutionRole, target: AuthorizationTarget): b
 };
 
 /**
+ * A user may do anything within their own organisation.
+ *
+ * No target org means no project to be wrong about: `project.list` filters by
+ * the acting org and `project.put` assigns it. Every other project-scoped route
+ * resolves the owning org before asking.
+ */
+const authorizeUser = (
+  principal: Extract<Principal, { kind: "user" }>,
+  operation: Operation,
+  target: AuthorizationTarget,
+): Authorization =>
+  target.orgId === undefined || target.orgId === principal.orgId
+    ? ALLOWED
+    : refuse("wrong_org", `${operation} targets a project owned by another organisation`);
+
+/** Program scoped: the path names no run, so there is none to compare. */
+const authorizeOwnProgram = (
+  principal: Extract<Principal, { kind: "execution" }>,
+  operation: Operation,
+  target: AuthorizationTarget,
+): Authorization =>
+  target.projectId === principal.projectId && target.programId === principal.programId
+    ? ALLOWED
+    : refuse(
+        "execution_out_of_scope",
+        `an execution token may only ${operation} for the program its run belongs to`,
+      );
+
+/**
  * The one place a principal's reach is decided (D-P4-05).
  *
  * Pure and total: same inputs, same answer, no I/O, no clock. A user may do
@@ -430,18 +491,13 @@ export const authorize = (
   operation: Operation,
   target: AuthorizationTarget,
 ): Authorization => {
-  if (principal.kind === "user") {
-    // No target org means no project to be wrong about: `project.list` filters
-    // by the acting org and `project.put` assigns it. Every other project-scoped
-    // route resolves the owning org before asking.
-    if (target.orgId === undefined || target.orgId === principal.orgId) return ALLOWED;
-    return refuse("wrong_org", `${operation} targets a project owned by another organisation`);
-  }
+  if (principal.kind === "user") return authorizeUser(principal, operation, target);
 
   const access = ACCESS_BY_ROLE[principal.role][operation];
   if (access === "forbidden") {
     return refuse("execution_forbidden_operation", `an execution token may not ${operation}`);
   }
+  if (access === "own_program") return authorizeOwnProgram(principal, operation, target);
   if (!inOwnRun(principal, target)) {
     return refuse(
       "execution_out_of_scope",

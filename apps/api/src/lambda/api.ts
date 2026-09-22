@@ -13,6 +13,7 @@ import {
   createArtifactUploadSigner,
   createAwsClients,
   createAwsStores,
+  createPlanDocumentStore,
 } from "@nightshift/persistence/aws";
 import { loadConfig, loadTokenConfig } from "../config.js";
 import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
@@ -28,12 +29,17 @@ const stores = createAwsStores({ tableName: config.tableName, table: createAwsCl
 /**
  * Signs presigned artifact uploads (T2). A separate S3 client from the one the
  * artifact body store would use, because this one only ever signs: the function
- * holds `s3:PutObject` and makes no S3 call at all.
+ * holds `s3:PutObject` and makes no S3 call for an artifact at all.
  */
-const uploads = createArtifactUploadSigner({
-  bucketName: config.bucketName,
-  s3: new S3Client({}),
-});
+const s3 = new S3Client({});
+const uploads = createArtifactUploadSigner({ bucketName: config.bucketName, s3 });
+
+/**
+ * Ratified plan documents (P7, D-P7-02). The one place this function reads S3:
+ * ratification hashes the stored plan rather than trusting the digest it was
+ * sent. The role's `s3:GetObject` covers the `plans/` prefix and nothing else.
+ */
+const plans = createPlanDocumentStore({ bucketName: config.bucketName, s3 });
 
 /**
  * Mints execution tokens (P4, T2, D-P4-03). The function holds `kms:Sign` on one
@@ -52,5 +58,6 @@ export const handler = createApiLambdaHandler(() => ({
   stores,
   clock: systemClock,
   uploads,
+  plans,
   tokens,
 }));

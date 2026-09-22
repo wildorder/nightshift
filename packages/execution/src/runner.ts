@@ -65,10 +65,10 @@ import {
   addDetachedWorktree,
   addWorktree,
   baseRef,
+  effectiveHead,
   jobBranch,
   pruneWorktrees,
   removeWorktree,
-  revParse,
   updateRef,
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
@@ -324,10 +324,14 @@ export const startJob = async (
     });
 
     // --- 5. The worktree, cut from the program branch head ------------------------
-    const base = await revParse(
+    // The provisional head once anything has been deferred (D-P7-10), so a
+    // dependent builds on the work it depends on rather than on a branch that
+    // does not have it yet.
+    const { head: base } = await effectiveHead(
       environment.git,
       session.repoPath,
       session.program.repository.programBranch,
+      session.scope.runId,
     );
     const worktree = environment.paths.worktree(session.scope.runId, nodeId);
     const branch = jobBranch(session.scope.runId, nodeId);
@@ -828,7 +832,7 @@ const uploadTranscript = async (
 
 /** Uploads bytes and records the reference, in that order (A-08). */
 export const recordArtifact = async (
-  environment: ExecutionEnvironment,
+  environment: Pick<ExecutionEnvironment, "stores" | "bodies" | "clock" | "ids" | "outbox">,
   input: {
     readonly scope: RunSession["scope"];
     readonly nodeId: ExecutionNodeId;

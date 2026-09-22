@@ -3,7 +3,12 @@
  * Gateway. Tests speak these; only `lambda/api-handler.ts` knows the Lambda event.
  */
 import type { ErrorResponse } from "@nightshift/contracts";
-import type { ArtifactUploadSigner, Clock, NightshiftStores } from "@nightshift/core";
+import type {
+  ArtifactUploadSigner,
+  Clock,
+  NightshiftStores,
+  PlanDocumentStore,
+} from "@nightshift/core";
 import type { z } from "zod";
 import type { ProjectOrgCache } from "./auth/enforce.js";
 import type { RequestPrincipal } from "./auth/principal.js";
@@ -42,6 +47,11 @@ export interface ApiDeps {
    * misconfiguration names itself instead of looking like a crash.
    */
   readonly uploads?: ArtifactUploadSigner;
+  /**
+   * Ratified plan documents (P7, D-P7-02). Optional like `uploads`, and for the
+   * same reason: the routes that need it answer 501 when it is absent.
+   */
+  readonly plans?: PlanDocumentStore;
   /**
    * Signs execution tokens (T2, D-P4-03). Optional for the same reason `uploads`
    * is: most tests drive the handler with no KMS at all, and the one route that

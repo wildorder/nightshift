@@ -22,6 +22,15 @@ export const isSettled = (status: ExecutionNodeStatus): boolean =>
   SETTLED_STATUSES.includes(status);
 
 /**
+ * Settled, **or deferred** (P7, D-P7-10): nothing further happens to the node in
+ * this sitting. A deferred node waits on a human, on the run's provisional line,
+ * so whoever is waiting for it stops waiting and whoever delegated it may end;
+ * it is still not settled, because `nightshift resume` has checks left to run.
+ */
+export const isDoneForNow = (status: ExecutionNodeStatus): boolean =>
+  isSettled(status) || status === "deferred";
+
+/**
  * The next node the merge queue takes (D-P6-05): among **job** nodes that are
  * `implemented`, the one delegated first.
  *
@@ -68,7 +77,7 @@ export const mayEndProgramNode = (
   if (node.kind === "job") return { allowed: false, reason: "is_a_job", unsettled: [] };
   if (node.status !== "running") return { allowed: false, reason: "not_running", unsettled: [] };
   const unsettled = descendantsOf(tree, nodeId).filter(
-    (descendant) => !isSettled(getNode(tree, descendant).status),
+    (descendant) => !isDoneForNow(getNode(tree, descendant).status),
   );
   return unsettled.length === 0
     ? { allowed: true }

@@ -12,6 +12,8 @@
 
 > **Restaging note (2026-09-16).** Program numbers after P3 shifted by one when Identity and Tenancy was inserted as P4 (`staging.md`, "Restaging, 2026-09-16"). Forward references in this document predate that: read P4 as P5 (Harness Neutrality), P5 as P6, P6 as P7, P8 as P9 (Remote Runner), P9 as P10. The text is left as ratified.
 
+> **Restaging note (2026-09-21).** P7 *Planning* was inserted after this contract was written. Where this document names a later program, read Routing & Examination as P8, Decision Graph as P9, Remote Runner as P10 and Realtime as P11 (`docs/programs/staging.md`).
+
 This contract is the stable authority for P2. The implementation plan may be
 revised continuously; this contract may not be revised to make an implementation
 pass. Amend it only through a human decision recorded in §12.

@@ -14,6 +14,8 @@ import {
   type ArtifactUploadSigner,
   type ArtifactUploadTarget,
   artifactObjectKey,
+  type PlanDocumentStore,
+  planDocumentObjectKey,
 } from "@nightshift/core";
 
 export interface PutObjectInput {
@@ -164,6 +166,89 @@ export const createArtifactUploadSigner = (
         contentType: request.contentType,
         expiresAt: new Date(now() + UPLOAD_URL_TTL_SECONDS * 1000).toISOString(),
       };
+    },
+  };
+};
+
+/**
+ * A missing object, read by a role that holds `s3:GetObject` and **not**
+ * `s3:ListBucket`, is `AccessDenied` rather than `NoSuchKey`: S3 will not
+ * confirm a key's absence to a caller who may not list. Found by the smoke suite
+ * on 2026-09-21, as a 500 where a 404 belonged. The API role is deliberately not
+ * given `ListBucket`, so here a denial on a plan document's key reads as "not
+ * there". The cost is that a broken grant looks like a missing upload; the smoke
+ * suite ratifies against the deployed stack, which is what would catch that.
+ */
+const readIfPresent = async (
+  objects: ObjectClient,
+  input: GetObjectInput,
+): Promise<Uint8Array | undefined> => {
+  try {
+    return await objects.getObject(input);
+  } catch (error) {
+    if (error instanceof Error && error.name === "AccessDenied") return undefined;
+    throw error;
+  }
+};
+
+export interface PlanDocumentStoreConfig {
+  readonly bucketName: string;
+  readonly s3: S3Client;
+  /** The read half. Defaults to `s3ObjectClient(s3)`; injected so a test reaches no AWS. */
+  readonly objects?: ObjectClient;
+  readonly sign?: ArtifactUploadSignerConfig["sign"];
+  readonly now?: () => number;
+}
+
+/**
+ * Ratified plan documents in S3 (P7, D-P7-02), under `plans/<projectId>/<programId>/<sha256>.md`.
+ *
+ * The upload is signed exactly as an artifact body's is, with the content type
+ * and the byte count inside the signature. Unlike an artifact body, the API
+ * **reads this object back**: ratification hashes the stored bytes rather than
+ * trusting the digest it was sent. That needs `s3:GetObject`, which the API role
+ * holds on the `plans/` prefix and nowhere else, so a signed URL for an artifact
+ * still conveys no read of anything.
+ */
+export const createPlanDocumentStore = (config: PlanDocumentStoreConfig): PlanDocumentStore => {
+  const now = config.now ?? Date.now;
+  const objects = config.objects ?? s3ObjectClient(config.s3);
+  const sign =
+    config.sign ??
+    (({ bucket, key, contentType, sizeBytes, expiresIn }) =>
+      getSignedUrl(
+        config.s3,
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          ContentType: contentType,
+          ContentLength: sizeBytes,
+        }),
+        { expiresIn, signableHeaders: new Set(["content-type", "content-length"]) },
+      ));
+
+  return {
+    signUpload: async (request): Promise<ArtifactUploadTarget> => {
+      const key = planDocumentObjectKey(request.scope, request.sha256);
+      const uploadUrl = await sign({
+        bucket: config.bucketName,
+        key,
+        contentType: request.contentType,
+        sizeBytes: request.sizeBytes,
+        expiresIn: UPLOAD_URL_TTL_SECONDS,
+      });
+      return {
+        uri: `s3://${config.bucketName}/${key}`,
+        uploadUrl,
+        key,
+        contentType: request.contentType,
+        expiresAt: new Date(now() + UPLOAD_URL_TTL_SECONDS * 1000).toISOString(),
+      };
+    },
+    get: async (scope, sha256) => {
+      const key = planDocumentObjectKey(scope, sha256);
+      const body = await readIfPresent(objects, { Bucket: config.bucketName, Key: key });
+      return body === undefined ? undefined : { uri: `s3://${config.bucketName}/${key}`, body };
     },
   };
 };

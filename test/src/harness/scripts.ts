@@ -43,7 +43,9 @@ export type ScriptName =
   /** `[call-sum]`: a new module that calls `sum`. Green alone, broken after `rename-sum`. */
   | "call-sum"
   /** A sub-program's orchestrator: delegates `[add-module c1]` and `[add-module c2]`, waits, completes. */
-  | "orchestrate";
+  | "orchestrate"
+  /** P7: the root of a planned run. Attaches, delegates every strand, waits, finishes truthfully. */
+  | "follow-plan";
 
 export const SCRIPT_NAMES: readonly ScriptName[] = [
   "implement",
@@ -59,6 +61,7 @@ export const SCRIPT_NAMES: readonly ScriptName[] = [
   "rename-sum",
   "call-sum",
   "orchestrate",
+  "follow-plan",
 ];
 
 /**
@@ -70,8 +73,13 @@ export const SCRIPT_NAMES: readonly ScriptName[] = [
  */
 export const taggedScript = (
   objective: string,
+  /**
+   * A strand's objective opens with its plan section, verbatim (P7), so its tag
+   * is a line of that section rather than the objective's first characters.
+   */
+  anywhere = false,
 ): { readonly script: ScriptName; readonly args: readonly string[] } | undefined => {
-  const tag = /^\[([^\]]+)\]/.exec(objective)?.[1];
+  const tag = (anywhere ? /^\[([^\]]+)\]/m : /^\[([^\]]+)\]/).exec(objective)?.[1];
   if (tag === undefined) return undefined;
   const [name, ...args] = tag.trim().split(/\s+/);
   return (SCRIPT_NAMES as readonly string[]).includes(name ?? "")
@@ -87,6 +95,16 @@ export interface OrchestratorSurface {
   progress(message: string): Promise<void>;
   complete(summary: string): Promise<void>;
   fail(reason: string): Promise<void>;
+  decide(decision: SurfaceDecision): Promise<void>;
+}
+
+/** What the root of a planned run drives (P7): the orchestrator role's tools, strands only. */
+export interface RootSurface {
+  attach(runId: string): Promise<void>;
+  /** `strand.delegate`. Answers the job id, or the refusal's code when it was refused. */
+  delegateStrand(strandId: string): Promise<{ jobId?: string; refused?: string }>;
+  waitAll(jobIds: readonly string[]): Promise<Readonly<Record<string, string>>>;
+  finish(outcome: "succeeded" | "failed" | "deferred", reason?: string): Promise<boolean>;
 }
 
 export interface SurfaceDecision {
@@ -119,6 +137,8 @@ export interface ScriptContext {
   readonly sharedDir?: string;
   /** Present when the node is a sub-program's. */
   readonly orchestrator?: OrchestratorSurface;
+  /** Present when the node is the program's own, run headless from a plan (P7). */
+  readonly root?: RootSurface;
 }
 
 /** The helper every `implement` script adds. Correct, and its test passes. */
@@ -392,24 +412,86 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
     await writeFile(join(worktree, "src", "orchestrator-was-here.js"), "export {};\n", "utf8");
     // Its children's tag is its own, passed down: `[orchestrate delay=500]` makes a
     // benchmark's tree, and no tag makes the barrier pair the tree test forces.
-    const how = args?.length ? args.join(" ") : "wait=2 group=c";
+    // A strand's tag (P7): `prefix=` names its modules so strands running at once
+    // touch different files, `fail=1` is a strand that cannot be done, `depart=1`
+    // one that leaves the plan's approach and says so.
+    const prefix = option(args, "prefix");
+    if (option(args, "depart") === "1") {
+      await orchestrator.decide({
+        context: "DEPARTURE: the plan said one module; the code wants two",
+        alternatives: [
+          { summary: "One module, as planned", rejectedBecause: "it would not divide" },
+        ],
+        choice: "Two modules",
+        rationale: "They are independent and verify separately.",
+        reversibility: "reversible",
+      });
+    }
+    if (option(args, "fail") === "1") {
+      await orchestrator.fail("this strand's objective cannot be met as planned");
+      return 0;
+    }
+    const passed = (args ?? []).filter((arg) => !/^(prefix|fail|depart)=/.test(arg));
+    const how =
+      prefix === undefined
+        ? passed.length
+          ? passed.join(" ")
+          : "wait=2 group=c"
+        : passed.join(" ");
+    const [first, second] = prefix === undefined ? ["c1", "c2"] : [`${prefix}1`, `${prefix}2`];
+    // A strand's jobs ask for the strand's own paths: anything wider is refused (A-11).
+    const includes =
+      prefix === undefined
+        ? ["src/**", "test/**"]
+        : [`src/${prefix}*.js`, `test/${prefix}*.test.js`];
     const jobs = [
-      await orchestrator.delegate(`[add-module c1 ${how}] Add the c1 module and its test.`, [
-        "src/**",
-        "test/**",
-      ]),
-      await orchestrator.delegate(`[add-module c2 ${how}] Add the c2 module and its test.`, [
-        "src/**",
-        "test/**",
-      ]),
+      await orchestrator.delegate(
+        `[add-module ${first} ${how}] Add the ${first} module and its test.`,
+        includes,
+      ),
+      await orchestrator.delegate(
+        `[add-module ${second} ${how}] Add the ${second} module and its test.`,
+        includes,
+      ),
     ];
     const statuses = await orchestrator.waitAll(jobs);
-    if (Object.values(statuses).every((status) => status === "integrated")) {
+    // `deferred` (P7, D-P7-10) is done for now: on the provisional line, waiting on a human.
+    if (
+      Object.values(statuses).every((status) => status === "integrated" || status === "deferred")
+    ) {
       await orchestrator.complete("Both modules are integrated.");
       return 0;
     }
     await orchestrator.fail(`not every job integrated: ${JSON.stringify(statuses)}`);
     return 0;
+  },
+
+  "follow-plan": async ({ root, args, note }) => {
+    if (root === undefined) {
+      note("the follow-plan script needs the root orchestrator's surface");
+      return 1;
+    }
+    const [runId, ...strandIds] = args ?? [];
+    if (runId === undefined) return 1;
+    await root.attach(runId);
+    // Every strand, at once: the engine holds what must wait (D-P7-04).
+    const jobs = new Map<string, string>();
+    for (const strandId of strandIds) {
+      const delegated = await root.delegateStrand(strandId);
+      if (delegated.jobId !== undefined) jobs.set(strandId, delegated.jobId);
+    }
+    const statuses = await root.waitAll([...jobs.values()]);
+    const unfinished = strandIds.filter((strandId) => {
+      const jobId = jobs.get(strandId);
+      return jobId === undefined || statuses[jobId] !== "succeeded";
+    });
+    if (unfinished.length > 0) {
+      return (await root.finish("failed", `parked: ${unfinished.join(", ")}`)) ? 0 : 1;
+    }
+    // Every strand's orchestrator finished. If the run still may not be called
+    // succeeded, some of their work is deferred, and that is how it ends.
+    if (await root.finish("succeeded")) return 0;
+    return (await root.finish("deferred", "checks are deferred for a human prerequisite")) ? 0 : 1;
   },
 
   "conform-broken": async ({ surface, worktree }) => {

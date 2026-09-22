@@ -41,6 +41,51 @@ describe("Verification", () => {
     expect(VerificationSchema.safeParse(record).success).toBe(true);
   });
 
+  describe("a step that could not run (P7, D-P7-10)", () => {
+    const withDeferred = (patch: Record<string, unknown> = {}) => {
+      const record = clone(AGGREGATE_EXAMPLES.Verification);
+      const commands = record.commands as Record<string, unknown>[];
+      const { exitCode: _exitCode, ...step } = commands[1] as Record<string, unknown>;
+      commands[1] = { ...step, deferred: { prerequisiteId: "HP-01" }, ...patch };
+      return { record, commands };
+    };
+
+    it("is deferred, never passed: a deferral verifies nothing", () => {
+      const { record } = withDeferred();
+      record.outcome = "deferred";
+      expect(VerificationSchema.safeParse(record).success).toBe(true);
+      record.outcome = "passed";
+      expect(VerificationSchema.safeParse(record).success).toBe(false);
+    });
+
+    it("never hides a step that ran and failed", () => {
+      const { record, commands } = withDeferred();
+      commands[0] = { ...commands[0], exitCode: 1 };
+      record.outcome = "deferred";
+      expect(VerificationSchema.safeParse(record).success).toBe(false);
+      record.outcome = "failed";
+      expect(VerificationSchema.safeParse(record).success).toBe(true);
+    });
+
+    it("has no exit code, and a step that ran cannot also be deferred", () => {
+      const both = withDeferred({ exitCode: 0 });
+      both.record.outcome = "deferred";
+      expect(VerificationSchema.safeParse(both.record).success).toBe(false);
+
+      const neither = clone(AGGREGATE_EXAMPLES.Verification);
+      const commands = neither.commands as Record<string, unknown>[];
+      const { exitCode: _exitCode, ...step } = commands[0] as Record<string, unknown>;
+      commands[0] = step;
+      expect(VerificationSchema.safeParse(neither).success).toBe(false);
+    });
+
+    it("names a prerequisite by its id", () => {
+      const { record } = withDeferred({ deferred: { prerequisiteId: "the token" } });
+      record.outcome = "deferred";
+      expect(VerificationSchema.safeParse(record).success).toBe(false);
+    });
+  });
+
   it("requires at least one command, so a verification cannot be vacuously green", () => {
     const record = clone(AGGREGATE_EXAMPLES.Verification);
     record.commands = [];

@@ -13,7 +13,10 @@
  * ambient anything. It is called by the binary and by nothing else.
  */
 
+import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import type { Clock, IdGenerator } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import type { GitRunner } from "@nightshift/execution";
@@ -91,6 +94,27 @@ export const pasteSourceFor =
 /** Reads one line from the process's terminal, if there is one. */
 export const terminalPaste: PasteSource = () => pasteSourceFor(process.stdin)();
 
+/** Runs one program and waits for it. `init` registers the MCP server with Claude Code through it. */
+export type Exec = (
+  file: string,
+  args: readonly string[],
+  options: { readonly cwd: string },
+) => Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }>;
+
+/** What this build of the CLI carries besides itself, for `nightshift init` to hand over. */
+export interface CliAssets {
+  /** A directory of skills, one subdirectory each. */
+  readonly skillsDir: string;
+  /** The Nightshift MCP server's entry point. */
+  readonly mcpServerPath: string;
+  /**
+   * The headless root orchestrator's entry point (P7, D-P7-09). The CLI starts
+   * it as a process and never imports it: constructing a harness adapter is the
+   * MCP app's composition root's alone.
+   */
+  readonly orchestratePath?: string;
+}
+
 export interface CliEnvironment {
   /** Ordinary output. */
   readonly out: Write;
@@ -109,9 +133,34 @@ export interface CliEnvironment {
   readonly git: GitRunner;
   /** Starts the one-request callback listener. Injected so a test binds no port it did not choose. */
   readonly startLoopback: (options: LoopbackOptions) => Promise<Loopback>;
+  /** Absent in suites that run no program; `init` then says what to run by hand. */
+  readonly exec?: Exec;
+  readonly assets?: CliAssets;
 }
 
 /** The ambient environment. Called by `bin/nightshift.ts`, and nowhere else. */
+const nodeExec: Exec = (file, args, options) =>
+  new Promise((resolve, reject) => {
+    // `shell` on Windows only, where `claude` is a `.cmd` shim a bare spawn cannot find.
+    const child = spawn(file, [...args], { cwd: options.cwd, shell: process.platform === "win32" });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+  });
+
+/**
+ * In the workspace the CLI sits at `apps/cli/{src,dist}`, beside the skills and
+ * the server it hands over. Publishing the package is not in v1 (P7 §5).
+ */
+const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+
 export const createCliEnvironment = (): CliEnvironment => ({
   out: (line) => {
     process.stdout.write(`${line}\n`);
@@ -128,4 +177,10 @@ export const createCliEnvironment = (): CliEnvironment => ({
   ids: createUlidIdGenerator(),
   git: nodeGitRunner,
   startLoopback,
+  exec: nodeExec,
+  assets: {
+    skillsDir: join(REPO_ROOT, "skills"),
+    mcpServerPath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-mcp.js"),
+    orchestratePath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-orchestrate.js"),
+  },
 });

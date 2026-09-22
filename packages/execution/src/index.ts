@@ -27,6 +27,8 @@ export {
   type Engine,
   type EngineOptions,
   type EngineSnapshot,
+  StrandBlockedError,
+  StrandDelegationError,
   type Submission,
   type Submitted,
   type WaitingReason,
@@ -35,6 +37,8 @@ export {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExecutionEnvironment,
+  type LandingEnvironment,
+  type PrerequisiteBook,
   type RunSession,
   runIdOf,
   type WorkerEnvironment,
@@ -51,6 +55,27 @@ export {
   type EventOutbox,
   type OutboxOptions,
 } from "./outbox.js";
+export {
+  PREFLIGHT_TIMEOUT_MS,
+  type PreflightCheck,
+  type PreflightInput,
+  type PreflightResult,
+  runPreflight,
+} from "./preflight.js";
+export {
+  DEPARTURE_PREFIX,
+  gatherReport,
+  type JobReport,
+  type RunReport,
+  renderReport,
+  type StrandReport,
+} from "./report.js";
+export {
+  deferredLine,
+  type ResumeResult,
+  type ResumeSession,
+  resumeDeferred,
+} from "./resume.js";
 export {
   type DelegateJobInput,
   delegateJob,
@@ -73,8 +98,11 @@ export {
   shutdown,
 } from "./shutdown.js";
 export {
+  PlanChangedError,
+  PlanNotRatifiedError,
   ProgramContractChangedError,
   ProjectMissingError,
+  requireRatifiedPlan,
   type StartedRun,
   type StartRunEnvironment,
   type StartRunInput,

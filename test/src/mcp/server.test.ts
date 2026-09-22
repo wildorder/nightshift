@@ -186,6 +186,8 @@ describe("the role split (D-P3-01)", () => {
       "run.attach",
       "run.finish",
       "run.start",
+      // P7: a strand of the ratified plan, named and nothing else (D-P7-04).
+      "strand.delegate",
     ]);
     await mcp.stop();
   });
@@ -492,7 +494,7 @@ describe("delegate's refusals are typed (§4.5)", () => {
     expect(result.ok).toBe(false);
     expect(result.code).toBe("examination_unavailable");
     // Refused loudly, and it says what to do instead of pretending.
-    expect(String(result.message)).toContain("P7");
+    expect(String(result.message)).toContain("P8");
     await mcp.stop();
   });
 

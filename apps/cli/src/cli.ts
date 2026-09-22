@@ -18,9 +18,13 @@
  */
 import { parseArgs } from "node:util";
 import { mintId } from "./commands/id.js";
+import { init } from "./commands/init.js";
 import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
+import { planCheck, planRatify } from "./commands/plan.js";
+import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
+import { resume } from "./commands/resume.js";
 import { run } from "./commands/run.js";
 import { whoami } from "./commands/whoami.js";
 import type { CliEnvironment } from "./environment.js";
@@ -33,9 +37,24 @@ Usage:
   nightshift logout [--no-revoke]
   nightshift whoami
   nightshift project create --name <name> [--description <text>]
+  nightshift init [--project <id> | --name <name>] [--yes] [--repo <path>]
+  nightshift plan check <program> [--repo <path>]
+  nightshift plan ratify <program> [--repo <path>]
+  nightshift preflight <program> [--repo <path>] [--recheck]
+  nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--repo <path>]
   nightshift run <contract> [--repo <path>] [--remote]
+  nightshift resume <program> [--run <id>] [--repo <path>]
   nightshift id <prefix>
   nightshift --help | --version
+
+A <program> is the name of its directory under docs/programs/, which holds its
+plan.md and contract.json. \`plan check\` answers READY or every reason, and its
+exit code is the answer; nothing runs until \`plan ratify\` has recorded the plan.
+\`run <program>\` then takes it to docs/programs/<program>/report.md with nobody
+watching, and exits non-zero when anything was parked. --attended only creates
+the run, for your own orchestrator session to attach to. A check that needs
+something only you can supply does not stop the night: the work carries on a
+provisional line, and \`resume\` runs those checks and lands it when you are back.
 
 \`nightshift login\` needs no flags: the CLI knows where the control plane is.
 Over SSH, add --no-browser and paste the address your browser lands on.
@@ -154,12 +173,18 @@ const doProject = async (environment: CliEnvironment, args: readonly string[]): 
   });
 };
 
-const doRun = async (environment: CliEnvironment, args: readonly string[]): Promise<void> => {
-  const usage = "nightshift run <contract> [--repo <path>] [--remote]";
+const doRun = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage = "nightshift run <program | contract> [--repo <path>] [--remote]";
   const { values, positionals } = parse(
     {
       args: [...args],
-      options: { repo: { type: "string" }, remote: { type: "boolean", default: false } },
+      options: {
+        repo: { type: "string" },
+        remote: { type: "boolean", default: false },
+        attended: { type: "boolean", default: false },
+        harness: { type: "string" },
+        model: { type: "string" },
+      },
       allowPositionals: true,
       strict: true,
     },
@@ -167,16 +192,129 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
   );
   const contract = positionals[0];
   if (contract === undefined) {
-    throw new UsageError("`nightshift run` needs the path to a Program Contract", usage);
+    throw new UsageError(
+      "`nightshift run` needs a program id or the path to a Program Contract",
+      usage,
+    );
   }
   if (positionals.length > 1) {
     throw new UsageError(`unexpected argument \`${positionals[1]}\``, usage);
   }
   const repo = optional(values, "repo");
-  await run(environment, {
+  const harness = optional(values, "harness");
+  const model = optional(values, "model");
+  const result = await run(environment, {
     contract,
     ...(repo === undefined ? {} : { repo }),
     remote: values.remote === true,
+    attended: values.attended === true,
+    ...(harness === undefined ? {} : { harness }),
+    ...(model === undefined ? {} : { model }),
+  });
+  return result.exitCode;
+};
+
+/** One positional, the program id, and the flags every program command shares. */
+const programArgs = (
+  args: readonly string[],
+  usage: string,
+  flags: Record<string, { type: "boolean" }> = {},
+): { readonly id: string; readonly repo?: string; readonly values: Record<string, unknown> } => {
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: { repo: { type: "string" }, ...flags },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  const id = positionals[0];
+  if (id === undefined) throw new UsageError("a program id is required", usage);
+  if (positionals.length > 1) {
+    throw new UsageError(`unexpected argument \`${positionals[1]}\``, usage);
+  }
+  const repo = optional(values, "repo");
+  return { id, ...(repo === undefined ? {} : { repo }), values };
+};
+
+const doInit = async (environment: CliEnvironment, args: readonly string[]): Promise<void> => {
+  const usage = "nightshift init [--project <id> | --name <name>] [--yes] [--repo <path>]";
+  const { values } = parse(
+    {
+      args: [...args],
+      options: {
+        repo: { type: "string" },
+        project: { type: "string" },
+        name: { type: "string" },
+        yes: { type: "boolean", default: false },
+      },
+      allowPositionals: false,
+      strict: true,
+    },
+    usage,
+  );
+  const repo = optional(values, "repo");
+  const project = optional(values, "project");
+  const name = optional(values, "name");
+  await init(environment, {
+    ...(repo === undefined ? {} : { repo }),
+    ...(project === undefined ? {} : { project }),
+    ...(name === undefined ? {} : { name }),
+    yes: values.yes === true,
+  });
+};
+
+const doPlan = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const [subcommand, ...rest] = args;
+  const usage = "nightshift plan check|ratify <program> [--repo <path>]";
+  if (subcommand !== "check" && subcommand !== "ratify") {
+    throw new UsageError(
+      subcommand === undefined
+        ? "`nightshift plan` needs a subcommand"
+        : `unknown subcommand \`plan ${subcommand}\``,
+      usage,
+    );
+  }
+  const { id, repo } = programArgs(rest, usage);
+  const options = { id, ...(repo === undefined ? {} : { repo }) };
+  return subcommand === "check"
+    ? planCheck(environment, options)
+    : planRatify(environment, options);
+};
+
+const doPreflight = async (
+  environment: CliEnvironment,
+  args: readonly string[],
+): Promise<number> => {
+  const usage = "nightshift preflight <program> [--repo <path>] [--recheck]";
+  const { id, repo, values } = programArgs(args, usage, { recheck: { type: "boolean" } });
+  return preflight(environment, {
+    id,
+    ...(repo === undefined ? {} : { repo }),
+    recheck: values.recheck === true,
+  });
+};
+
+const doResume = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage = "nightshift resume <program> [--run <id>] [--repo <path>]";
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: { repo: { type: "string" }, run: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  const id = positionals[0];
+  if (id === undefined) throw new UsageError("a program id is required", usage);
+  const repo = optional(values, "repo");
+  const run = optional(values, "run");
+  return resume(environment, {
+    id,
+    ...(repo === undefined ? {} : { repo }),
+    ...(run === undefined ? {} : { run }),
   });
 };
 
@@ -194,26 +332,40 @@ const doId = (environment: CliEnvironment, args: readonly string[]): void => {
   mintId(environment, prefix);
 };
 
+/** A command's own exit code, when its answer is one (`plan check`); otherwise nothing, meaning 0. */
 const dispatch = async (
   environment: CliEnvironment,
   command: string,
   args: readonly string[],
-): Promise<void> => {
+): Promise<number | undefined> => {
   switch (command) {
     case "login":
-      return doLogin(environment, args);
+      await doLogin(environment, args);
+      return undefined;
     case "logout":
-      return doLogout(environment, args);
+      await doLogout(environment, args);
+      return undefined;
     case "whoami": {
       await whoami(environment);
-      return;
+      return undefined;
     }
     case "project":
-      return doProject(environment, args);
+      await doProject(environment, args);
+      return undefined;
+    case "init":
+      await doInit(environment, args);
+      return undefined;
+    case "plan":
+      return doPlan(environment, args);
+    case "preflight":
+      return doPreflight(environment, args);
     case "run":
       return doRun(environment, args);
+    case "resume":
+      return doResume(environment, args);
     case "id":
-      return doId(environment, args);
+      doId(environment, args);
+      return undefined;
     default:
       throw new UsageError(`unknown command \`${command}\``, USAGE);
   }
@@ -241,8 +393,7 @@ export const runCli = async (
   }
 
   try {
-    await dispatch(environment, command, args);
-    return 0;
+    return (await dispatch(environment, command, args)) ?? 0;
   } catch (error) {
     const failure = describeFailure(error);
     for (const line of failureLines(failure)) environment.err(line);

@@ -329,6 +329,43 @@ describe("updating execution nodes", () => {
     await advance(w, node, { status: "verification_failed" });
   });
 
+  it("defers only with a deferred verification, and verifies only through verifying (D-P7-10)", async () => {
+    const w = await setup();
+    let node = await advance(w, await jobIn(w), { status: "queued" });
+    node = await advance(w, node, { status: "running" });
+    node = await advance(w, node, { status: "implemented", commitSha: COMMIT });
+    node = await advance(w, node, { status: "verifying" });
+
+    const unevidenced = await putNode(w, next(node, { status: "deferred" }));
+    expect(code(unevidenced)).toBe("verification_evidence");
+
+    const commands = [
+      { stepId: "test", command: "npm test", exitCode: 0, durationMs: 1 },
+      {
+        stepId: "e2e",
+        command: "npm run e2e",
+        durationMs: 0,
+        deferred: { prerequisiteId: "HP-01" },
+      },
+    ];
+    const deferral = makeVerification(w.f, node, { commands, outcome: "deferred" });
+    await w.call("PUT", `${w.runPath}/verifications/${deferral.verificationId}`, deferral);
+    node = await advance(w, node, { status: "deferred" });
+
+    // A deferral is not evidence: nothing leads from here but back, or out.
+    for (const status of ["verified", "sealed", "integrated", "queued"] as const) {
+      const skipped = await putNode(w, next(node, { status }));
+      expect(skipped.status, status).toBe(409);
+    }
+    node = await advance(w, node, { status: "verifying" });
+    const still = await putNode(w, next(node, { status: "verified" }));
+    expect(code(still)).toBe("verification_evidence");
+
+    const passed = makeVerification(w.f, node);
+    await w.call("PUT", `${w.runPath}/verifications/${passed.verificationId}`, passed);
+    await advance(w, node, { status: "verified" });
+  });
+
   it("reads a node back", async () => {
     const w = await setup();
     const response = await w.call("GET", `${w.runPath}/nodes/${w.f.rootNodeId}`);

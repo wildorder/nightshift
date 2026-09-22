@@ -58,6 +58,14 @@ import {
 } from "./stack-props.js";
 
 /**
+ * Where ratified plan documents live in the artifact bucket (P7, D-P7-02).
+ * Restates `planDocumentObjectKey` in `@nightshift/core`, which this package does
+ * not import; the smoke suite ratifies against the deployed stack, so a drift
+ * between the two is a failed read there rather than a silent one.
+ */
+export const PLAN_DOCUMENT_PREFIX = "plans/";
+
+/**
  * The repository root, resolved from this module. `src/lib` and `dist/lib` sit at
  * the same depth, so the path holds for the assertion tests and for `cdk synth`.
  */
@@ -170,6 +178,17 @@ export class NightshiftApiStack extends Stack {
       new iam.PolicyStatement({
         actions: ["s3:PutObject"],
         resources: [`${imported("BucketArn")}/*`],
+      }),
+      // `s3:GetObject` on ratified plan documents, `plans/*`, and on nothing
+      // else (P7, D-P7-02). Ratification reads the uploaded plan back and hashes
+      // it, so the record holds what was approved rather than what a client
+      // said it uploaded, and a run is reconstructable from the control plane
+      // alone. The prefix is the whole point: artifact bodies live under
+      // `<projectId>/…`, which no `proj_` id can spell `plans`, so the reasoning
+      // above still holds for every artifact a signed URL could name.
+      new iam.PolicyStatement({
+        actions: ["s3:GetObject"],
+        resources: [`${imported("BucketArn")}/${PLAN_DOCUMENT_PREFIX}*`],
       }),
       // `kms:Sign` on exactly one key, and no other KMS action on any key
       // (T2 deliverable 2). The function mints execution tokens; it never

@@ -12,6 +12,7 @@ import type {
   AgentId,
   ExecutionNodeId,
   JobContractId,
+  Prerequisite,
   ProgramContract,
   Run,
   RunId,
@@ -22,6 +23,7 @@ import type {
   ExecutionTokenMinter,
   IdGenerator,
   LocalPaths,
+  ProgramScope,
   ProjectStores,
   RunScope,
 } from "@nightshift/core";
@@ -95,6 +97,47 @@ export interface ExecutionEnvironment {
   readonly verificationTimeoutMs?: number;
   /** How long `cancel` waits for a cooperative stop before killing. */
   readonly cancelGraceMs?: number;
+  /**
+   * The program's human prerequisites as the control plane holds them **now**
+   * (P7, D-P7-10): a verification step that requires an unmet one is deferred.
+   * Absent for a run with no plan, where nothing can be deferred and the
+   * contract's own copy is the only one there is.
+   */
+  readonly prerequisites?: PrerequisiteBook;
+}
+
+/**
+ * What verifying and integrating a commit need, and no more: no harness, no
+ * token minter, no worker environment. `nightshift resume` has exactly this
+ * (P7, D-P7-10): it runs checks and lands commits, and starts no agent.
+ */
+export type LandingEnvironment = Pick<
+  ExecutionEnvironment,
+  | "stores"
+  | "bodies"
+  | "clock"
+  | "ids"
+  | "paths"
+  | "git"
+  | "outbox"
+  | "verificationTimeoutMs"
+  | "prerequisites"
+>;
+
+/** Reads the program's prerequisites. Satisfied by `persistence/http`'s planning client. */
+export interface PrerequisiteBook {
+  prerequisites(scope: ProgramScope): Promise<readonly Prerequisite[]>;
+  /** Records a hurdle a verification command declared mid-run (D-P7-10). */
+  recordDiscovered(
+    scope: ProgramScope,
+    prerequisiteId: string,
+    hurdle: {
+      readonly runId: RunId;
+      readonly description: string;
+      readonly remediation: string;
+      readonly verifyCommand: string;
+    },
+  ): Promise<Prerequisite>;
 }
 
 /**

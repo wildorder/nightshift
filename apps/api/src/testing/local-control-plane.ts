@@ -42,8 +42,13 @@ import { createHash, generateKeyPairSync, sign as signWith } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PrincipalSchema } from "@nightshift/contracts";
-import type { ArtifactUploadSigner, Clock, NightshiftStores } from "@nightshift/core";
-import { systemClock } from "@nightshift/core";
+import type {
+  ArtifactUploadSigner,
+  Clock,
+  NightshiftStores,
+  PlanDocumentStore,
+} from "@nightshift/core";
+import { planDocumentObjectKey, systemClock } from "@nightshift/core";
 import type { RequestPrincipal } from "../auth/principal.js";
 import { UserTokenLikeSchema } from "../auth/principal.js";
 import { handleRequest } from "../handler.js";
@@ -240,6 +245,39 @@ export const startLocalControlPlane = async (
     },
   };
 
+  /**
+   * Plan documents (P7): signed and stored exactly as artifact bodies are, under
+   * their own prefix, and read back by the ratification route as S3 would be.
+   */
+  const plans: PlanDocumentStore = {
+    signUpload: async (request) => {
+      const key = planDocumentObjectKey(request.scope, request.sha256);
+      nextToken += 1;
+      const token = `t${nextToken}`;
+      const expiresAtMs = clock.now() + UPLOAD_TTL_SECONDS * 1000;
+      issued.set(token, {
+        key,
+        contentType: request.contentType,
+        sizeBytes: request.sizeBytes,
+        expiresAtMs,
+      });
+      return {
+        uri: `s3://${LOCAL_BUCKET}/${key}`,
+        uploadUrl: `${origin}${UPLOAD_PATH_PREFIX}${token}`,
+        key,
+        contentType: request.contentType,
+        expiresAt: new Date(expiresAtMs).toISOString(),
+      };
+    },
+    get: async (scope, sha256) => {
+      const key = planDocumentObjectKey(scope, sha256);
+      const found = objects.get(key);
+      return found === undefined
+        ? undefined
+        : { uri: `s3://${LOCAL_BUCKET}/${key}`, body: found.body };
+    },
+  };
+
   const uploads: ArtifactUploadSigner = {
     sign: async (request) => {
       const key = `${request.scope.projectId}/${request.scope.programId}/${request.scope.runId}/${request.artifactId}`;
@@ -271,6 +309,7 @@ export const startLocalControlPlane = async (
     stores: options.stores,
     clock,
     uploads,
+    plans,
     tokens: {
       issuer: LOCAL_TOKEN_ISSUER,
       signer: { sign: async (input) => signWith("sha256", input, localKeys.privateKey) },

@@ -35,10 +35,10 @@ describe("the compatibility table (D-P5-04)", () => {
     expect(bedrock.map((pair) => pair.harness)).toEqual(["claude", "agentcore"]);
   });
 
-  it("holds the agentcore row's shape for P9, and marks it not yet routable", () => {
+  it("holds the agentcore row's shape for P10, and marks it not yet routable", () => {
     const row = HARNESS_COMPATIBILITY.find((candidate) => candidate.harness === "agentcore");
     expect(row?.providers).toEqual([
-      { provider: "bedrock", models: ["*"], authentication: "instance-role", availableFrom: "P9" },
+      { provider: "bedrock", models: ["*"], authentication: "instance-role", availableFrom: "P10" },
     ]);
   });
 
@@ -151,7 +151,7 @@ describe("the record it leaves (A-13)", () => {
     for (const option of choice.eligibleOptions) {
       if (!option.eligible) expect(option.reason).toBeTruthy();
     }
-    expect(choice.eligibleOptions.at(-1)?.reason).toContain("P9");
+    expect(choice.eligibleOptions.at(-1)?.reason).toContain("P10");
   });
 });
 
@@ -268,7 +268,7 @@ describe("programs nothing can route", () => {
       }),
     );
     expect(error.code).toBe("route_not_yet_available");
-    expect(error.message).toContain("P9");
+    expect(error.message).toContain("P10");
   });
 
   it("refuses a policy that forbids everything it allows", () => {

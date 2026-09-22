@@ -25,6 +25,8 @@ export type TransitionEvent =
   | "begin_verification"
   | "verification_passed"
   | "verification_failed"
+  | "defer"
+  | "resume_verification"
   | "begin_examination"
   | "examination_passed"
   | "examination_failed"
@@ -42,6 +44,8 @@ export const TRANSITION_EVENTS: readonly TransitionEvent[] = [
   "begin_verification",
   "verification_passed",
   "verification_failed",
+  "defer",
+  "resume_verification",
   "begin_examination",
   "examination_passed",
   "examination_failed",
@@ -59,6 +63,7 @@ export const EXECUTION_NODE_STATUSES: readonly ExecutionNodeStatus[] = [
   "running",
   "implemented",
   "verifying",
+  "deferred",
   "verified",
   "verification_failed",
   "examining",
@@ -125,9 +130,15 @@ export const TRANSITIONS: TransitionTable = {
   verifying: {
     verification_passed: "verified",
     verification_failed: "verification_failed",
+    // A step could not run for an unmet human prerequisite (P7, D-P7-10).
+    defer: "deferred",
     interrupt: "interrupted",
     cancel: "cancelled",
   },
+  // Not a verdict, so it leads nowhere but back: the checks run when the human
+  // returns, and only `verification_passed` from `verifying` reaches `verified`
+  // (A-05). `cancel` is the table's law for every non-terminal status.
+  deferred: { resume_verification: "verifying", cancel: "cancelled" },
   // The only two ways out of `verified` both lead through examination policy.
   verified: { begin_examination: "examining", seal: "sealed", cancel: "cancelled" },
   verification_failed: { retry: "queued", fail: "failed", cancel: "cancelled" },

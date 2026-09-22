@@ -32,6 +32,7 @@ import {
 import {
   explainWidening,
   type IdGenerator,
+  isDoneForNow,
   isSettled,
   narrow,
   nowIso,
@@ -113,7 +114,7 @@ export const registerSubOrchestratorTools = (
       nodeId: node.executionNodeId,
       kind: node.kind,
       status: node.status,
-      settled: isSettled(node.status),
+      settled: isDoneForNow(node.status),
       commitSha: node.commitSha,
       outcomeReason: node.outcomeReason ?? null,
       agent:
@@ -449,7 +450,7 @@ export const registerSubOrchestratorTools = (
     },
     async ({ summary }) =>
       guarded(async () => {
-        const unsettled = (await descendants()).filter((child) => !isSettled(child.status));
+        const unsettled = (await descendants()).filter((child) => !isDoneForNow(child.status));
         if (unsettled.length > 0) {
           throw new ToolRefusal(
             "job_running",

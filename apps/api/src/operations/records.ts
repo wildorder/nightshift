@@ -244,10 +244,10 @@ export const listArtifacts: Handler = async ({ deps, request, params }) => {
 // ---------------------------------------------------------------------------
 //
 // Create and read only, and **nothing in P3 writes one**: examination is
-// unavailable until P7 (D-P3-07), and a delegation whose risk requires it is
+// unavailable until P8 (D-P3-07), and a delegation whose risk requires it is
 // refused up front. These routes exist for port completeness, so the http
 // adapter implements every project-scoped port rather than most of them, and so
-// that P7 adds an examiner rather than an API.
+// that P8 adds an examiner rather than an API.
 
 export const putExamination: Handler = async ({ deps, request, params }) => {
   const examination = parseBody(ExaminationSchema, request.body);

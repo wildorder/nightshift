@@ -20,7 +20,12 @@
  * for exactly that reason.
  */
 import { isDomainError } from "@nightshift/core";
-import { ProgramContractChangedError, ProjectMissingError } from "@nightshift/execution";
+import {
+  PlanChangedError,
+  PlanNotRatifiedError,
+  ProgramContractChangedError,
+  ProjectMissingError,
+} from "@nightshift/execution";
 import {
   ControlPlaneError,
   ControlPlaneUnreachableError,
@@ -41,6 +46,8 @@ export type FailureCode =
   | "invalid_contract"
   | "project_missing"
   | "program_contract_changed"
+  | "plan_not_ratified"
+  | "plan_changed"
   | "control_plane_refused"
   | "control_plane_unreachable"
   | "domain_rule"
@@ -116,10 +123,12 @@ const TABLE: readonly Entry<unknown>[] = [
   entry(ZodError, (error) => ({
     code: "invalid_contract",
     summary: `the Program Contract is not valid:\n${describeIssues(error)}`,
-    advice: "Fix the contract and run `nightshift run` again. Nothing was written.",
+    advice: "Fix the contract and try again. Nothing was written.",
   })),
   entry(ProjectMissingError, asIs("project_missing")),
   entry(ProgramContractChangedError, asIs("program_contract_changed")),
+  entry(PlanNotRatifiedError, asIs("plan_not_ratified")),
+  entry(PlanChangedError, asIs("plan_changed")),
   entry(PortUnavailableError, asIs("port_unavailable")),
   entry(StateMismatchError, asIs("state_mismatch")),
   entry(AuthorizationRefusedError, asIs("authorization_refused")),

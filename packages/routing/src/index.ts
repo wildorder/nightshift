@@ -3,10 +3,10 @@
  *
  * P5 has one rule, `configuredRoute` (D-P5-04): the Program Contract's model
  * policy intersected with the harness compatibility table. It is still
- * deliberately dull, with no cost and no capability reasoning; P7 replaces the
+ * deliberately dull, with no cost and no capability reasoning; P8 replaces the
  * rule. What is not dull is the record it produces: every option considered,
  * whether it was eligible, why not when it was not, and whether an orchestrator
- * pinned the choice. That shape is what P7 inherits.
+ * pinned the choice. That shape is what P8 inherits.
  *
  * Depends on `@nightshift/contracts` and `@nightshift/core` only. It knows which
  * harnesses exist by name, and nothing about how one is started.

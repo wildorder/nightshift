@@ -1,10 +1,12 @@
 name: CI
 
+# A program branch is verified by its pull request, and `v1` by the push that
+# merges it. Listing `program/**` under `push` as well ran every commit twice
+# per OS once its PR was open.
 on:
   push:
     branches:
       - v1
-      - "program/**"
   pull_request:
     branches:
       - v1
@@ -22,13 +24,14 @@ jobs:
     name: verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
-      # The dev machine is Windows and CI is Linux; both legs must pass, and a
-      # failure on one must not hide the result on the other.
+      # Both legs must pass, and a failure on one must not hide the result on the
+      # other. The Windows leg runs the whole suite unchanged, but only on `v1`:
+      # it takes three times as long (process creation and NTFS), and its job is
+      # to prove the scripts and paths hold on Git Bash, which a merge does as
+      # well as every push to a PR. A pull request is verified on Linux.
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
 
     steps:
       - name: Checkout
@@ -59,8 +62,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # The integration suites each spawn git, workers, MCP servers and the
+      # verification runner. Windows creates processes and touches NTFS several
+      # times slower than Linux, and the hosted runner has four cores: run all of
+      # those suites at once and each starves, and a different one times out on
+      # every push. Two workers keeps the Windows leg honest without hiding a
+      # real failure; Linux is fast enough to run flat out.
       - name: Test
-        run: npm test
+        run: npm test ${{ runner.os == 'Windows' && '-- --maxWorkers 2' || '' }}
 
       # No AWS credentials are configured anywhere in this workflow, and none are
       # needed: the P1 stack is environment-agnostic and defines no resources.

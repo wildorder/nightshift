@@ -8,13 +8,16 @@
  * "B finished before A" and "both were ready when the queue looked" are facts
  * rather than races.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type ExecutionNodeId,
   type JobContract,
   JobContractSchema,
+  type Prerequisite,
+  type ProgramContract,
   type RouteChoice,
+  type Strand,
 } from "@nightshift/contracts";
 import { isSettled, nowIso } from "@nightshift/core";
 import {
@@ -23,12 +26,19 @@ import {
   createEventOutbox,
   createMergeQueue,
   type Engine,
+  type ExecutionEnvironment,
   git,
   type MergeQueue,
+  type PrerequisiteBook,
+  provisionalHead,
+  resumeDeferred,
   revParse,
+  StrandBlockedError,
+  StrandDelegationError,
   shutdown,
   startJob,
 } from "@nightshift/execution";
+import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFakeHarness, type ScriptContext } from "./fake-harness.js";
 import { cleanupWorlds, createWorld, eventsOf, PROGRAM_BRANCH, type World } from "./world.js";
@@ -120,23 +130,55 @@ interface Rig {
   releaseQueue(candidates: number): Promise<void>;
   submit(
     objective: string,
+    strandId?: string,
   ): Promise<{ jobId: JobContract["jobContractId"]; nodeId: ExecutionNodeId }>;
   status(nodeId: ExecutionNodeId): Promise<string>;
   until(nodeId: ExecutionNodeId, predicate: (status: string) => boolean): Promise<string>;
 }
 
+/** What verification commands declared mid-run, across the current rig. */
+let discoveredHurdles: { id: string; description: string; remediation: string }[] = [];
+
 const rig = async (
   work: Readonly<Record<string, Work>>,
-  options: { maxConcurrency?: number; gated?: boolean } = {},
+  options: {
+    maxConcurrency?: number;
+    gated?: boolean;
+    strands?: readonly Strand[];
+    program?: Partial<ProgramContract>;
+    /** The prerequisites as the control plane would answer them, read on every verification. */
+    prerequisites?: () => readonly Prerequisite[];
+  } = {},
 ): Promise<Rig> => {
   let world: World | undefined;
   const made = await createWorld({
     harness: harnessFor(() => world as World, work),
-    program: { delegationLimits: { maxDepth: 2, maxConcurrency: options.maxConcurrency ?? 3 } },
+    program: {
+      delegationLimits: { maxDepth: 2, maxConcurrency: options.maxConcurrency ?? 3 },
+      ...options.program,
+    },
   });
   world = made;
+  const book: PrerequisiteBook = {
+    prerequisites: async () => options.prerequisites?.() ?? [],
+    recordDiscovered: async (_scope, id, hurdle) => {
+      discoveredHurdles.push({ id, ...hurdle });
+      return {
+        id,
+        description: hurdle.description,
+        remediation: hurdle.remediation,
+        verifyCommand: hurdle.verifyCommand,
+        status: "pending",
+        discoveredInRunId: hurdle.runId,
+      };
+    },
+  };
+  const environment: ExecutionEnvironment =
+    options.prerequisites === undefined
+      ? made.environment
+      : { ...made.environment, prerequisites: book };
 
-  const real = createMergeQueue(made.environment);
+  const real = createMergeQueue(environment);
   const gate = barrier();
   if (options.gated !== true) gate.open();
   let atGate = 0;
@@ -148,12 +190,20 @@ const rig = async (
       return real.integrate(candidate);
     },
   };
-  const engine = createEngine({
-    environment: made.environment,
-    session: made.session,
-    mcp,
-    mergeQueue: queue,
-  });
+  // A planned run is the same run with strands on its contract: the engine reads
+  // the plan from its session, and ratification is the API's and the CLI's to prove.
+  const session =
+    options.strands === undefined
+      ? made.session
+      : {
+          ...made.session,
+          program: {
+            ...made.session.program,
+            status: "planning" as const,
+            strands: [...options.strands],
+          },
+        };
+  const engine = createEngine({ environment, session, mcp, mergeQueue: queue });
 
   const status = async (nodeId: ExecutionNodeId): Promise<string> =>
     (await made.stores.executionNodes.get(made.scope, nodeId))?.status ?? "missing";
@@ -168,7 +218,7 @@ const rig = async (
       });
       gate.open();
     },
-    submit: async (objective) => {
+    submit: async (objective, strandId) => {
       const job = JobContractSchema.parse({
         schemaVersion: 1,
         ...made.scope,
@@ -179,6 +229,7 @@ const rig = async (
         dependencies: [],
         risk: "low",
         ambiguity: "low",
+        ...(strandId === undefined ? {} : { strandId }),
         createdAt: nowIso(made.environment.clock),
       });
       const submitted = await engine.submit({
@@ -529,4 +580,440 @@ describe("shutdown covers the whole tree (D-P6-08, SC-P6-16)", () => {
     );
     await expect(r.submit("four module")).rejects.toThrow(/takes no more work/);
   });
+});
+
+// --- P7: strands ---------------------------------------------------------------------------
+
+const strandOf = (id: string, dependsOn: readonly string[] = []): Strand => ({
+  id,
+  name: `Strand ${id}`,
+  // Disjoint by construction: each strand's module is its own.
+  scope: { summary: id, includes: ["src/**", "test/**"], excludes: [] },
+  acceptance: ["node --test passes"],
+  successCriteria: [],
+  dependsOn: [...dependsOn],
+  prerequisites: [],
+});
+
+/** The module a strand adds, named after it: `S-01` writes `src/s01.js`. */
+const moduleOf = (strandId: string): string => strandId.replace("-", "").toLowerCase();
+
+/** A job that cannot land: it changes a path outside its scope, which fails it (A-29). */
+const outOfScope: Work = async ({ worktree }) => {
+  await edit(worktree, "README.md", (text) => `${text}\nnot mine to change\n`);
+};
+
+/** Index of the first event of `type` on `nodeId`, which must exist. */
+const indexOfEvent = (
+  events: readonly { type: string; executionNodeId: string | null }[],
+  type: string,
+  nodeId: string,
+): number => {
+  const index = events.findIndex(
+    (event) => event.type === type && event.executionNodeId === nodeId,
+  );
+  expect(index, `${type} on ${nodeId}`).toBeGreaterThanOrEqual(0);
+  return index;
+};
+
+/** Opens every gate, in an order drawn by the property: a held strand's gate opening early changes nothing. */
+const openInOrder = (
+  ids: readonly string[],
+  order: readonly number[],
+  gates: ReadonlyMap<string, { open(): void }>,
+): void => {
+  const remaining = [...ids];
+  for (const pick of order) {
+    if (remaining.length === 0) break;
+    const [next] = remaining.splice(pick % remaining.length, 1);
+    gates.get(next as string)?.open();
+  }
+  for (const id of remaining) gates.get(id)?.open();
+};
+
+/** From the record, never from timing: each strand started after every dependency had landed. */
+const expectStartedAfterDependencies = (
+  events: readonly { type: string; executionNodeId: string | null }[],
+  strands: readonly Strand[],
+  nodes: ReadonlyMap<string, ExecutionNodeId>,
+): void => {
+  for (const strand of strands) {
+    const started = indexOfEvent(events, "node.started", nodes.get(strand.id) as string);
+    for (const dependency of strand.dependsOn) {
+      expect(started).toBeGreaterThan(
+        indexOfEvent(events, "node.integrated", nodes.get(dependency) as string),
+      );
+    }
+  }
+};
+
+describe("strands are gated and parked (P7, D-P7-04, §4.4)", () => {
+  it("holds a strand until what it depends on has succeeded, and runs the rest meanwhile", async () => {
+    const first = barrier();
+    const r = await rig(
+      { s01: addModule("s01", first.opened), s02: addModule("s02"), s03: addModule("s03") },
+      { strands: [strandOf("S-01"), strandOf("S-02", ["S-01"]), strandOf("S-03")] },
+    );
+    const s01 = await r.submit("s01", "S-01");
+    const s02 = await r.submit("s02", "S-02");
+    const s03 = await r.submit("s03", "S-03");
+
+    // S-03 owes S-01 nothing and lands while S-01 is still working.
+    await r.until(s03.nodeId, (status) => status === "integrated");
+    expect(await r.status(s02.nodeId)).toBe("queued");
+    expect(r.engine.waiting(s02.jobId)).toEqual({ kind: "strands", waitingFor: ["S-01"] });
+
+    first.open();
+    await r.until(s02.nodeId, (status) => status === "integrated");
+
+    // From the record, never from timing: S-02 started after S-01 had landed.
+    await r.world.outbox.flush();
+    const events = await eventsOf(r.world);
+    expect(indexOfEvent(events, "node.started", s02.nodeId)).toBeGreaterThan(
+      indexOfEvent(events, "node.integrated", s01.nodeId),
+    );
+  }, 60_000);
+
+  it("parks a failed strand with exactly its cone, names the blocker, and finishes the rest", async () => {
+    // S-01 is held until every strand is submitted: otherwise it can fail, and
+    // park its cone, before S-04 is delegated, and the engine rightly refuses S-04.
+    const all = barrier();
+    const r = await rig(
+      {
+        s01: async (context) => {
+          await all.opened;
+          await outOfScope(context);
+        },
+        s02: addModule("s02"),
+        s03: addModule("s03"),
+        s04: addModule("s04"),
+      },
+      {
+        strands: [
+          strandOf("S-01"),
+          strandOf("S-02", ["S-01"]),
+          strandOf("S-03"),
+          strandOf("S-04", ["S-02"]),
+        ],
+      },
+    );
+    const s01 = await r.submit("s01", "S-01");
+    const s02 = await r.submit("s02", "S-02");
+    const s03 = await r.submit("s03", "S-03");
+    const s04 = await r.submit("s04", "S-04");
+    all.open();
+
+    expect(await r.until(s01.nodeId, settled)).toBe("failed");
+    expect(await r.until(s02.nodeId, settled)).toBe("cancelled");
+    expect(await r.until(s04.nodeId, settled)).toBe("cancelled");
+    expect(await r.until(s03.nodeId, settled)).toBe("integrated");
+
+    const blocked = await r.world.stores.executionNodes.get(r.world.scope, s04.nodeId);
+    expect(blocked?.outcomeReason).toBe("blocked by S-01, which did not succeed");
+
+    await r.world.outbox.flush();
+    const strandEvents = (await eventsOf(r.world))
+      .filter((event) => event.type.startsWith("strand."))
+      .map((event) => [event.type, event.payload]);
+    expect(strandEvents).toEqual([
+      ["strand.parked", { strandId: "S-01", outcome: "failed" }],
+      ["strand.blocked", { strandId: "S-02", blockedBy: ["S-01"] }],
+      ["strand.blocked", { strandId: "S-04", blockedBy: ["S-01"] }],
+    ]);
+
+    // Nothing in the cone can be slipped back in while its blocker stands.
+    await expect(r.submit("s02", "S-02")).rejects.toBeInstanceOf(StrandBlockedError);
+    expect(await log(r.world)).not.toContain("s02");
+  }, 60_000);
+
+  it("refuses a strand the plan does not have, one not at the top, and a second live attempt", async () => {
+    const held = barrier();
+    const r = await rig({ s01: addModule("s01", held.opened) }, { strands: [strandOf("S-01")] });
+    await expect(r.submit("s09", "S-09")).rejects.toBeInstanceOf(StrandDelegationError);
+    const s01 = await r.submit("s01", "S-01");
+    await expect(r.submit("s01", "S-01")).rejects.toBeInstanceOf(StrandDelegationError);
+    held.open();
+    await r.until(s01.nodeId, (status) => status === "integrated");
+    await expect(r.submit("s01", "S-01")).rejects.toThrow(/already done/);
+  }, 60_000);
+
+  it("never starts a strand before its dependencies, over random plans and finishing orders (SC-P7-07)", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.array(fc.nat(), { maxLength: 2 }), { minLength: 2, maxLength: 4 }),
+        fc.array(fc.nat(), { minLength: 4, maxLength: 4 }),
+        async (picks, order) => {
+          const ids = picks.map((_, index) => `S-${String(index + 1).padStart(2, "0")}`);
+          const strands = picks.map((deps, index) =>
+            strandOf(
+              ids[index] as string,
+              index === 0 ? [] : [...new Set(deps.map((dep) => ids[dep % index] as string))],
+            ),
+          );
+          const gates = new Map(ids.map((id) => [id, barrier()]));
+          const r = await rig(
+            Object.fromEntries(
+              ids.map((id) => [moduleOf(id), addModule(moduleOf(id), gates.get(id)?.opened)]),
+            ),
+            { strands, maxConcurrency: 4 },
+          );
+          const nodes = new Map<string, ExecutionNodeId>();
+          for (const id of ids) nodes.set(id, (await r.submit(moduleOf(id), id)).nodeId);
+
+          openInOrder(ids, order, gates);
+          for (const id of ids) {
+            await r.until(nodes.get(id) as ExecutionNodeId, (status) => status === "integrated");
+          }
+
+          await r.world.outbox.flush();
+          const events = await eventsOf(r.world);
+          expectStartedAfterDependencies(events, strands, nodes);
+        },
+      ),
+      { numRuns: 6 },
+    );
+  }, 240_000);
+});
+
+// --- P7: a check that cannot run is deferred (D-P7-10, SC-P7-08a) --------------------------
+
+const HP01 = (status: "pending" | "satisfied"): Prerequisite => ({
+  id: "HP-01",
+  description: "The deploy credential is in place.",
+  remediation: "Ask the owner.",
+  verifyCommand: "true",
+  status,
+  ...(status === "satisfied"
+    ? { lastCheck: { exitCode: 0, checkedAt: "2026-09-21T00:00:00.000Z" } }
+    : {}),
+});
+
+/** `gate` needs HP-01, and fails once it can run if a module named `bad` is present. */
+const GATED: Partial<ProgramContract> = {
+  verification: [
+    { id: "test", command: "node --test" },
+    {
+      id: "gate",
+      command: `node -e "process.exit(require('fs').existsSync('src/bad.js') ? 1 : 0)"`,
+      requires: ["HP-01"],
+    },
+  ],
+  prerequisites: [HP01("pending")],
+};
+
+const headOf = (world: World): Promise<string> => revParse(world.git, world.repo, PROGRAM_BRANCH);
+
+describe("a hurdle nobody planned (D-P7-10): exit 75 and a NIGHTSHIFT_DEFER line", () => {
+  const declaring = (script: string): Partial<ProgramContract> => ({
+    verification: [
+      { id: "test", command: "node --test" },
+      { id: "deploy", command: `node -e "${script}"` },
+    ],
+  });
+  const withBook = (program: Partial<ProgramContract>) =>
+    rig({ one: addModule("one") }, { program, maxConcurrency: 1, prerequisites: () => [] });
+
+  it("defers the step and records the prerequisite it declared", async () => {
+    discoveredHurdles = [];
+    const r = await withBook(
+      declaring(
+        "console.log('NIGHTSHIFT_DEFER HP-03 The deploy key is missing');console.log('NIGHTSHIFT_REMEDIATION run aws sso login');process.exit(75)",
+      ),
+    );
+    const one = await r.submit("one");
+    expect(await r.until(one.nodeId, (status) => status === "deferred")).toBe("deferred");
+    expect(discoveredHurdles).toEqual([
+      expect.objectContaining({
+        id: "HP-03",
+        description: "The deploy key is missing",
+        remediation: "run aws sso login",
+      }),
+    ]);
+    const [verification] = await r.world.stores.verifications.listByNode(r.world.scope, one.nodeId);
+    expect(verification?.commands.at(-1)?.deferred).toEqual({ prerequisiteId: "HP-03" });
+    // The node is `deferred` a moment before the merge queue moves the ref.
+    await vi.waitFor(
+      async () =>
+        expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeDefined(),
+      { timeout: 10_000 },
+    );
+  }, 60_000);
+
+  it("fails a step that exits 75 without the line, or prints the line without exiting 75", async () => {
+    for (const script of [
+      "process.exit(75)",
+      "console.log('NIGHTSHIFT_DEFER HP-03 missing');process.exit(1)",
+    ]) {
+      discoveredHurdles = [];
+      const r = await withBook(declaring(script));
+      const one = await r.submit("one");
+      expect(await r.until(one.nodeId, settled), script).toBe("verification_failed");
+      expect(discoveredHurdles).toEqual([]);
+    }
+  }, 60_000);
+});
+
+describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
+  const deferredRig = async (work: Readonly<Record<string, Work>>) => {
+    let met = false;
+    const r = await rig(work, {
+      program: GATED,
+      maxConcurrency: 1,
+      prerequisites: () => [HP01(met ? "satisfied" : "pending")],
+    });
+    return { r, meet: () => (met = true) };
+  };
+
+  it("defers the step, runs the rest, lands on the provisional line and not the program branch", async () => {
+    const { r } = await deferredRig({ one: addModule("one"), two: addModule("two") });
+    const before = await headOf(r.world);
+
+    const one = await r.submit("one");
+    expect(await r.until(one.nodeId, (status) => status === "deferred")).toBe("deferred");
+    const first = await r.world.stores.executionNodes.get(r.world.scope, one.nodeId);
+    // A deferral is not an outcome, so the node carries no reason: why it waits
+    // is in the Verification below and on the `node.deferred` event.
+    expect(first?.outcomeReason).toBeUndefined();
+
+    // The step that could run did, and passed; the one that could not has no exit code.
+    const [verification] = await r.world.stores.verifications.listByNode(r.world.scope, one.nodeId);
+    expect(verification?.outcome).toBe("deferred");
+    expect(verification?.commands.map((c) => [c.stepId, c.exitCode, c.deferred])).toEqual([
+      ["test", 0, undefined],
+      ["gate", undefined, { prerequisiteId: "HP-01" }],
+    ]);
+
+    // The program branch has none of it; the provisional line has the commit.
+    expect(await headOf(r.world)).toBe(before);
+    expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBe(
+      first?.commitSha,
+    );
+
+    // Later work is cut from the provisional head, and lands on it in turn.
+    const two = await r.submit("two");
+    await r.until(two.nodeId, (status) => status === "deferred");
+    const second = await r.world.stores.executionNodes.get(r.world.scope, two.nodeId);
+    const parent = await git(r.world.git, ["rev-parse", `${second?.commitSha}^`], {
+      cwd: r.world.repo,
+    });
+    expect(parent.trim()).toBe(first?.commitSha);
+    expect(await headOf(r.world)).toBe(before);
+
+    await r.world.outbox.flush();
+    const deferrals = (await eventsOf(r.world)).filter((event) => event.type === "node.deferred");
+    expect(deferrals.map((event) => event.executionNodeId)).toEqual([one.nodeId, two.nodeId]);
+    expect(deferrals[0]?.payload).toMatchObject({
+      waitingOn: ["HP-01"],
+      provisionalRef: `refs/nightshift/provisional/${r.world.scope.runId}`,
+    });
+  }, 60_000);
+
+  it("never defers a step that ran and failed", async () => {
+    const { r } = await deferredRig({
+      broken: async ({ worktree }) => {
+        await edit(
+          worktree,
+          "test/broken.test.js",
+          () =>
+            `import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("no", () => assert.equal(1, 2));\n`,
+        );
+      },
+    });
+    const broken = await r.submit("broken");
+    expect(await r.until(broken.nodeId, settled)).toBe("verification_failed");
+    expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeUndefined();
+  }, 60_000);
+
+  it("resume runs the deferred checks in order and lands the very commits that were deferred", async () => {
+    const { r, meet } = await deferredRig({ one: addModule("one"), two: addModule("two") });
+    const one = await r.submit("one");
+    await r.until(one.nodeId, (status) => status === "deferred");
+    const two = await r.submit("two");
+    await r.until(two.nodeId, (status) => status === "deferred");
+    const deferredCommit = (await r.world.stores.executionNodes.get(r.world.scope, two.nodeId))
+      ?.commitSha;
+
+    meet();
+    const result = await resumeDeferred(r.world.environment, r.world.session);
+    expect(result, JSON.stringify(result)).toEqual({
+      landed: [one.nodeId, two.nodeId],
+      discarded: [],
+    });
+    expect(await r.status(one.nodeId)).toBe("integrated");
+    expect(await r.status(two.nodeId)).toBe("integrated");
+    // A verified commit is never moved: what landed is what was deferred.
+    expect(await headOf(r.world)).toBe(deferredCommit);
+    expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeUndefined();
+
+    // Each reached `verified` through a passed Verification in which every step ran (A-05).
+    const evidence = (await r.world.stores.verifications.listByNode(r.world.scope, two.nodeId)).at(
+      -1,
+    );
+    expect(evidence?.outcome).toBe("passed");
+    expect(evidence?.commands.map((c) => c.exitCode)).toEqual([0, 0]);
+  }, 60_000);
+
+  it("resume stops at a deferred check that fails, and discards what was built on it", async () => {
+    const { r, meet } = await deferredRig({
+      good: addModule("good"),
+      bad: addModule("bad"),
+      later: addModule("later"),
+    });
+    const before = await headOf(r.world);
+    const good = await r.submit("good");
+    await r.until(good.nodeId, (status) => status === "deferred");
+    const bad = await r.submit("bad");
+    await r.until(bad.nodeId, (status) => status === "deferred");
+    const later = await r.submit("later");
+    await r.until(later.nodeId, (status) => status === "deferred");
+
+    meet();
+    const result = await resumeDeferred(r.world.environment, r.world.session);
+    expect(result.landed).toEqual([good.nodeId]);
+    expect(result.stoppedAt).toEqual({
+      nodeId: bad.nodeId,
+      kind: "failed",
+      reason: "verification failed: gate exited 1",
+    });
+    expect(result.discarded).toEqual([later.nodeId]);
+
+    // What passed is on the branch; the failure is a failure; what stood on it is gone, and says why.
+    expect(await r.status(good.nodeId)).toBe("integrated");
+    expect(await r.status(bad.nodeId)).toBe("verification_failed");
+    const dropped = await r.world.stores.executionNodes.get(r.world.scope, later.nodeId);
+    expect(dropped?.status).toBe("cancelled");
+    expect(dropped?.outcomeReason).toContain(`discarded: built on ${bad.nodeId}`);
+    expect(await headOf(r.world)).not.toBe(before);
+    expect(await log(r.world)).not.toContain("bad");
+    expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeUndefined();
+  }, 60_000);
+
+  it("touches nothing when the checkout cannot be landed on, and ignores Nightshift's own report", async () => {
+    const { r, meet } = await deferredRig({ one: addModule("one"), two: addModule("two") });
+    const one = await r.submit("one");
+    await r.until(one.nodeId, (status) => status === "deferred");
+    const two = await r.submit("two");
+    await r.until(two.nodeId, (status) => status === "deferred");
+    meet();
+
+    // Somebody's work in progress: a refusal, and no verdict on anybody's work.
+    await writeFile(join(r.world.repo, "scratch.txt"), "mine", "utf8");
+    const blocked = await resumeDeferred(r.world.environment, r.world.session);
+    expect(blocked.blocked).toContain("program_checkout_dirty");
+    expect(blocked).toMatchObject({ landed: [], discarded: [] });
+    expect(await r.status(one.nodeId)).toBe("deferred");
+    expect(await r.status(two.nodeId)).toBe("deferred");
+    expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeDefined();
+
+    // The report `nightshift run` leaves behind is not dirt, or no run could ever be resumed.
+    await rm(join(r.world.repo, "scratch.txt"));
+    await mkdir(join(r.world.repo, "docs", "programs", "p1"), { recursive: true });
+    await writeFile(
+      join(r.world.repo, "docs", "programs", "p1", "report.md"),
+      "# Report\n",
+      "utf8",
+    );
+    const landed = await resumeDeferred(r.world.environment, r.world.session);
+    expect(landed).toEqual({ landed: [one.nodeId, two.nodeId], discarded: [] });
+  }, 60_000);
 });

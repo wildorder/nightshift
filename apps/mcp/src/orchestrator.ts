@@ -19,7 +19,7 @@
  * (D-P3-07) and a delegation that would need it is refused up front.
  */
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   Checkpoint,
@@ -31,21 +31,29 @@ import type {
 } from "@nightshift/contracts";
 import {
   ExecutionNodeIdSchema,
+  inheritFromConfig,
   JobContractSchema,
+  NIGHTSHIFT_CONFIG_FILE,
+  NightshiftConfigSchema,
   ReversibilitySchema,
   RiskLevelSchema,
   ScopeRequestSchema,
+  StrandIdSchema,
 } from "@nightshift/contracts";
 import {
   buildTree,
   checkAuthority,
   type DelegationRejection,
   highestSequence,
-  isSettled,
+  isDoneForNow,
   nowIso,
   pendingCount,
+  type StrandBrief,
+  StrandBriefError,
+  strandBrief,
+  strandsOf,
 } from "@nightshift/core";
-import { endProgramNode } from "@nightshift/execution";
+import { endProgramNode, StrandBlockedError, StrandDelegationError } from "@nightshift/execution";
 import { configuredRoute, RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
 import type { RefusalCode } from "./results.js";
@@ -81,6 +89,15 @@ export interface OrchestratorDeps {
   readonly state: OrchestratorSession;
   readonly env: Readonly<Record<string, string | undefined>>;
 }
+
+const readIfPresent = async (path: string): Promise<string | undefined> => {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+};
 
 const requireAttached = (state: OrchestratorSession) => {
   const attached = state.current;
@@ -132,7 +149,8 @@ const jobReport = async (
     status: node.status,
     // `core`'s own list, so a status added there (`succeeded`, for a sub-program)
     // is settled here too rather than waited on for ever.
-    settled: isSettled(node.status),
+    // Done for now: settled, or deferred for a human (D-P7-10). Nothing to wait for either way.
+    settled: isDoneForNow(node.status),
     commitSha: node.commitSha,
     outcomeReason: node.outcomeReason ?? null,
     worktree: running?.worktree ?? null,
@@ -232,6 +250,43 @@ const assertNoJobRunning = async (
 };
 
 /** A run that ended badly says why. Killing work must never leave silence. */
+/**
+ * A planned run succeeded when every strand of its plan did (D-P7-09). Parked
+ * and never-delegated strands are settled, so nothing else would refuse this;
+ * and "succeeded" with half the plan parked is the lie the report must not tell.
+ */
+const assertEveryStrandSucceeded = async (attached: AttachedRun): Promise<void> => {
+  if (attached.planSections === undefined) return;
+  const outcomes = await attached.engine.strands();
+  const unfinished = strandsOf(attached.session.program)
+    .filter((strand) => outcomes[strand.id] !== "succeeded")
+    .map((strand) => `${strand.id} (${outcomes[strand.id] ?? "never delegated"})`);
+  if (unfinished.length === 0) return;
+  throw new ToolRefusal(
+    "validation_failed",
+    `this run follows a plan, and these strands have not succeeded: ${unfinished.join(", ")}. ` +
+      'Delegate what was never delegated, or finish the run as "failed" with a reason that names them.',
+    { unfinished },
+  );
+};
+
+/** What a planned run says of itself has to be what its records say. */
+const assertEndingIsTrue = async (attached: AttachedRun, outcome: string): Promise<void> => {
+  if (outcome === "succeeded") await assertEveryStrandSucceeded(attached);
+  if (outcome === "deferred") await assertSomethingIsDeferred(attached);
+};
+
+/** `deferred` is a claim about the run's records, so the records have to agree. */
+const assertSomethingIsDeferred = async (attached: AttachedRun): Promise<void> => {
+  const outcomes = await attached.engine.strands();
+  if (Object.values(outcomes).includes("provisional")) return;
+  throw new ToolRefusal(
+    "validation_failed",
+    "nothing in this run is deferred: no strand has work on the provisional line. Finish it as " +
+      '"succeeded" or "failed".',
+  );
+};
+
 const assertEndingExplained = (outcome: string, reason: string | undefined): void => {
   if (outcome === "succeeded") return;
   if (reason !== undefined && reason !== "") return;
@@ -263,8 +318,21 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       guarded(async () => {
         const repo = resolve(repoPath ?? process.cwd());
         const path = resolve(repo, programContractPath);
-        const contract: unknown = JSON.parse(await readFile(path, "utf8"));
-        const started = await startNewRun(state, { program: contract, repoPath: repo, model });
+        const authored: unknown = JSON.parse(await readFile(path, "utf8"));
+        // A planned program's two files sit together (D-P7-03), and its contract
+        // inherits the project's defaults, exactly as `nightshift run {id}` reads it.
+        const planText = await readIfPresent(resolve(dirname(path), "plan.md"));
+        const configText = await readIfPresent(resolve(repo, NIGHTSHIFT_CONFIG_FILE));
+        const contract =
+          configText === undefined
+            ? authored
+            : inheritFromConfig(authored, NightshiftConfigSchema.parse(JSON.parse(configText)));
+        const started = await startNewRun(state, {
+          program: contract,
+          repoPath: repo,
+          model,
+          ...(planText === undefined ? {} : { planText }),
+        });
         return ok(
           `Run ${started.session.scope.runId} started for program ${started.session.scope.programId}, ` +
             `on branch ${started.session.program.repository.programBranch} at ${started.baseCommit}. ` +
@@ -316,9 +384,12 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     "run.finish",
     {
       title: "Finish the run",
-      description: "Give the run a terminal status. Refused while a job is running.",
+      description:
+        "Give the run a terminal status. Refused while a job is running. `deferred` is for a " +
+        "planned run whose remaining work waits on a human prerequisite: the run is recorded as " +
+        "interrupted, its provisional work is kept, and `nightshift resume` takes it from there.",
       inputSchema: {
-        outcome: z.enum(["succeeded", "failed", "cancelled"]),
+        outcome: z.enum(["succeeded", "failed", "cancelled", "deferred"]),
         reason: z.string().min(1).optional(),
       },
     },
@@ -327,21 +398,22 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         const attached = requireAttached(state);
         await assertNoJobRunning(deps, attached);
         assertEndingExplained(outcome, reason);
+        await assertEndingIsTrue(attached, outcome);
+        // The run table has no `deferred`, and P7 was not authorised to give it
+        // one. `interrupted` is the honest fit: stopped short, durably, waiting to
+        // be taken up again.
+        const status = outcome === "deferred" ? "interrupted" : outcome;
 
         const { stores, clock } = state.runtime;
         const run = await stores.runs.get(attached.session.scope, attached.session.scope.runId);
         if (run === undefined) throw new ToolRefusal("not_found", "this run no longer exists");
-        await stores.runs.put({
-          ...run,
-          status: outcome,
-          endedAt: nowIso(clock),
-          ...(reason === undefined ? {} : { outcomeReason: reason }),
-        });
+        const why = reason === undefined ? {} : { outcomeReason: reason };
+        await stores.runs.put({ ...run, status, endedAt: nowIso(clock), ...why });
         // The program node follows its run (D-P5-06): `succeeded`, never
         // `integrated`, because a program node integrates nothing.
-        await endProgramNode(state.runtime, attached.session, outcome, reason);
+        await endProgramNode(state.runtime, attached.session, status, reason);
         attached.outbox.emit({
-          type: outcome === "succeeded" ? "run.completed" : `run.${outcome}`,
+          type: status === "succeeded" ? "run.completed" : `run.${status}`,
           source: "control-plane",
           payload: reason === undefined ? {} : { reason },
           executionNodeId: attached.session.rootNodeId,
@@ -438,6 +510,54 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
   // --- Delegation --------------------------------------------------------------
 
   server.registerTool(
+    "strand.delegate",
+    {
+      title: "Delegate one strand of the ratified plan",
+      description:
+        "Hand a strand of the ratified plan to an orchestrator of its own. You name the strand " +
+        "and nothing else: its objective is its section of the plan verbatim, with the human's " +
+        "decisions that touch it and the other strands' scopes, and its scope and acceptance are " +
+        "the contract's. It stays queued until the strands it depends on have succeeded.",
+      inputSchema: {
+        strandId: StrandIdSchema,
+        // `job` when the strand is one bounded change and an orchestrator would
+        // have a single thing to do (D-P7-04). The plan is handed over either way.
+        kind: z.enum(["job", "sub-program"]).optional(),
+        harness: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+      },
+    },
+    async (input) =>
+      guarded(async () => {
+        const attached = requireAttached(state);
+        const job = buildStrandJob(state, attached, input.strandId);
+        const { program } = attached.session;
+        assertExaminable(program, job);
+        const check = await checkDelegationOrRefuse(state, attached, job.scope);
+        const route = chooseRoute(program, job, { harness: input.harness, model: input.model });
+        const submitted = await submitStrand(attached, {
+          job,
+          scope: check.scope,
+          depth: check.depth,
+          parentNodeId: attached.session.rootNodeId,
+          route,
+          kind: input.kind ?? "sub-program",
+        });
+
+        const waiting = attached.engine.waiting(job.jobContractId);
+        return ok(describeStrandSubmission(input.strandId, submitted, waiting), {
+          strandId: input.strandId,
+          jobId: job.jobContractId,
+          nodeId: submitted.nodeId,
+          status: submitted.status,
+          waitingFor: waiting?.kind === "strands" ? waiting.waitingFor : [],
+          harness: route.target.harness,
+          model: route.target.model,
+        });
+      }),
+  );
+
+  server.registerTool(
     "delegate",
     {
       title: "Delegate one bounded job",
@@ -461,6 +581,18 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     async (input) =>
       guarded(async () => {
         const attached = requireAttached(state);
+        if (attached.planSections !== undefined) {
+          // A ratified plan fixed the seams (D-P7-04). The root of a planned run
+          // delegates strands and nothing else: how a strand divides is its own
+          // orchestrator's, one level down.
+          throw new ToolRefusal(
+            "plan_fixes_strands",
+            "this run follows a ratified plan, so the program node delegates its strands and " +
+              "nothing else. Use strand.delegate { strandId }; a strand's own orchestrator " +
+              "decides its jobs. A strand cannot be added or dropped without ratifying the plan again.",
+            { strands: strandsOf(attached.session.program).map((strand) => strand.id) },
+          );
+        }
 
         // 1. A valid Job Contract before anything else (A-03). An invalid one
         //    never becomes a node, so nothing is persisted on this path.
@@ -733,6 +865,82 @@ interface DelegateInput {
 }
 
 /** The contract, validated. An invalid one never becomes a node. */
+/**
+ * A strand's Job Contract, built from the ratified plan and from nothing the
+ * caller says but the strand's id (SC-P7-10): its objective is `strandBrief`'s.
+ */
+const buildStrandJob = (
+  state: OrchestratorSession,
+  attached: AttachedRun,
+  strandId: string,
+): JobContract => {
+  const { program } = attached.session;
+  if (attached.planSections === undefined) {
+    throw new ToolRefusal(
+      "validation_failed",
+      "this run has no ratified plan, so it has no strands. Use delegate.",
+    );
+  }
+  let brief: StrandBrief;
+  try {
+    brief = strandBrief(program, attached.planSections, strandId);
+  } catch (error) {
+    if (!(error instanceof StrandBriefError)) throw error;
+    throw new ToolRefusal("validation_failed", error.message, {
+      strands: strandsOf(program).map((strand) => strand.id),
+    });
+  }
+  return JobContractSchema.parse({
+    schemaVersion: 1,
+    ...attached.session.scope,
+    jobContractId: state.runtime.ids.next("job"),
+    objective: brief.objective,
+    scope: brief.scope,
+    acceptance: brief.acceptance,
+    dependencies: [],
+    risk: program.defaultRisk,
+    ambiguity: program.defaultRisk,
+    strandId,
+    createdAt: nowIso(state.runtime.clock),
+  });
+};
+
+/** The engine's own refusals of a strand, in the orchestrator's vocabulary. */
+const submitStrand = async (
+  attached: AttachedRun,
+  submission: Parameters<AttachedRun["engine"]["submit"]>[0],
+): ReturnType<AttachedRun["engine"]["submit"]> => {
+  try {
+    return await attached.engine.submit(submission);
+  } catch (error) {
+    if (error instanceof StrandBlockedError) {
+      throw new ToolRefusal("strand_blocked", error.message, {
+        strandId: error.strandId,
+        blockedBy: error.blockers,
+      });
+    }
+    if (error instanceof StrandDelegationError) {
+      throw new ToolRefusal("validation_failed", error.message);
+    }
+    throw error;
+  }
+};
+
+const describeStrandSubmission = (
+  strandId: string,
+  submitted: { readonly status: string; readonly nodeId: string },
+  waiting: ReturnType<AttachedRun["engine"]["waiting"]>,
+): string => {
+  if (submitted.status === "running") {
+    return `Strand ${strandId} is running as node ${submitted.nodeId}.`;
+  }
+  if (waiting?.kind !== "strands") {
+    return `Strand ${strandId} is queued as node ${submitted.nodeId}; it starts when a slot frees.`;
+  }
+  const verb = waiting.waitingFor.length === 1 ? "has" : "have";
+  return `Strand ${strandId} is queued as node ${submitted.nodeId}: it starts when ${waiting.waitingFor.join(", ")} ${verb} succeeded.`;
+};
+
 const buildJobContract = (
   state: OrchestratorSession,
   attached: AttachedRun,
@@ -764,7 +972,7 @@ const assertExaminable = (program: ProgramContract, job: JobContract): void => {
   throw new ToolRefusal(
     "examination_unavailable",
     `this program's examination policy requires an examiner for ${job.risk}-risk work, and ` +
-      "examination arrives in P7. Lower the job's risk if that is honest, or change the " +
+      "examination arrives in P8. Lower the job's risk if that is honest, or change the " +
       "program's policy — do not pretend the work was examined.",
     { risk: job.risk, requirement },
   );

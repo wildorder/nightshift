@@ -202,7 +202,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       }),
       claudeBriefAddendum({
         mcpServerName: input.mcp.name,
-        tools: nightshiftToolNames(input.node.kind),
+        tools: nightshiftToolNames(input.node.kind, input.program),
       }),
     );
 
@@ -429,7 +429,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
   const status = async (handle: HarnessHandle): Promise<AgentStatus> => {
     const state = runs.get(handle);
     if (state === undefined) {
-      // A handle this adapter did not create. P9 answers this from the control
+      // A handle this adapter did not create. P10 answers this from the control
       // plane; in P3 the honest answer is that nothing here started it.
       return "created";
     }

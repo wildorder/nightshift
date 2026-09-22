@@ -21,6 +21,13 @@
 import type { ExecutionNode, JobContract, ProgramContract } from "@nightshift/contracts";
 import { grantedPermissions, PERMISSION_SHELL_EXEC } from "@nightshift/core";
 
+/**
+ * How a strand's orchestrator marks a decision as a departure from its plan
+ * section's approach. `@nightshift/execution`'s report restates it as
+ * `DEPARTURE_PREFIX` and finds departures by it; a test holds the two equal.
+ */
+export const STRAND_DEPARTURE_PREFIX = "DEPARTURE:";
+
 export interface WorkerBriefInput {
   readonly job: JobContract;
   /** The node whose `scope` is the effective authority, after narrowing (A-11). */
@@ -48,6 +55,8 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
   // (D-P6-03). What it is told is different, and that difference belongs here,
   // where no adapter has to know there is one.
   if (input.node.kind === "sub-program") return renderSubOrchestratorBrief(input);
+  // The program node itself, run headless from a ratified plan (P7, D-P7-09).
+  if (isPlanRoot(input.node.kind, input.program)) return renderPlanFollowingBrief(input);
   const { job, node, program, worktree } = input;
   const scope = node.scope;
   const permissions = grantedPermissions(scope);
@@ -185,8 +194,13 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
  * adapter that has to tell its model how those names are spelled to it (Claude
  * Code prefixes and rewrites them) maps this list, and never keeps its own.
  */
-export const nightshiftToolNames = (kind: ExecutionNode["kind"]): readonly string[] =>
-  kind === "sub-program"
+export const nightshiftToolNames = (
+  kind: ExecutionNode["kind"],
+  /** The run's contract. Only the program node **of a planned run** is a root orchestrator. */
+  program?: ProgramContract,
+): readonly string[] => {
+  if (isPlanRoot(kind, program)) return ROOT_ORCHESTRATOR_TOOLS;
+  return kind === "sub-program"
     ? [
         "subprogram.get",
         "delegate",
@@ -201,6 +215,31 @@ export const nightshiftToolNames = (kind: ExecutionNode["kind"]): readonly strin
         "subprogram.fail",
       ]
     : ["job.complete", "job.fail", "job.progress", "job.get", "decision.record"];
+};
+
+/**
+ * Whether a node is the root orchestrator of a planned run: the program node of
+ * a contract that has strands. A program node is started as an agent in no other
+ * case, and anything else keeps the brief and the tools it always had.
+ */
+const isPlanRoot = (kind: ExecutionNode["kind"], program: ProgramContract | undefined): boolean =>
+  kind === "program" && (program?.strands?.length ?? 0) > 0;
+
+/** What the headless root of a planned run is given: strands in, a finished run out. */
+const ROOT_ORCHESTRATOR_TOOLS: readonly string[] = [
+  "run.attach",
+  "program.get",
+  "program.status",
+  "execution.status",
+  "strand.delegate",
+  "job.wait",
+  "job.get",
+  "job.cancel",
+  "job.retry",
+  "decision.record",
+  "checkpoint.create",
+  "run.finish",
+];
 
 /**
  * The brief for a sub-program's orchestrator (P6, D-P6-03).
@@ -222,6 +261,24 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       `  ${job.objective}`,
     ].join("\n"),
     ["ACCEPTANCE CRITERIA", numbered(job.acceptance)].join("\n"),
+    ...(job.strandId === undefined
+      ? []
+      : [
+          [
+            `YOU ARE STRAND ${job.strandId} OF A PLAN A HUMAN RATIFIED`,
+            "",
+            "  Your objective above opens with your section of that plan, word for word. What it",
+            "  says will exist, and your scope, hold. HOW is medium fidelity on purpose: with the",
+            "  code in front of you, you may find the approach is wrong. Then depart from it, and",
+            "  say so, before you build on the departure:",
+            "",
+            `    nightshift decision.record { context: "${STRAND_DEPARTURE_PREFIX} <what the plan said, and what you are doing instead>", ... }`,
+            "",
+            "  The report a human reads in the morning lists every departure first. How the strand",
+            "  divides into jobs is yours alone: the plan names none, and nobody will check them",
+            "  against one.",
+          ].join("\n"),
+        ]),
     ["THE PROGRAM THIS IS PART OF", `  ${program.objective}`].join("\n"),
     [
       "YOU DO NOT WRITE THE CODE",
@@ -300,6 +357,116 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "",
       "  Exiting without calling subprogram.complete or subprogram.fail fails the",
       "  sub-program and cancels its jobs, with no explanation attached.",
+    ].join("\n"),
+  ].join("\n\n")}\n`;
+};
+
+const describeStrand = (strand: NonNullable<ProgramContract["strands"]>[number]): string =>
+  [
+    `  ${strand.id} ${strand.name}`,
+    `    depends on: ${strand.dependsOn.length === 0 ? "nothing" : strand.dependsOn.join(", ")}`,
+    `    needs: ${strand.prerequisites.length === 0 ? "no human prerequisite" : strand.prerequisites.join(", ")}`,
+  ].join("\n");
+
+/**
+ * The brief for the **root orchestrator of a planned run**, started headless by
+ * `nightshift run {id}` with nobody watching (P7, D-P7-09).
+ *
+ * Its job is narrow on purpose. A human already fixed the seams, the approach
+ * and the expensive decisions, and each strand's own orchestrator decides that
+ * strand's jobs. What is left for the root is to get every strand delegated,
+ * wait, retry what is worth retrying, and end the run truthfully. The rules that
+ * matter are structural as well as stated: the root of a planned run *cannot*
+ * delegate anything but a strand, and a strand's brief is built from the plan,
+ * not from anything the root writes.
+ *
+ * `job.objective` carries the plan document, so the adapter contract is the one
+ * every other node is started through.
+ */
+export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
+  const { job, program, worktree, node } = input;
+  const strands = program.strands ?? [];
+  const decisions = (program.decisions ?? []).filter((decision) => decision.answer !== undefined);
+  return `${[
+    [
+      "You are the Nightshift orchestrator for a whole program. A human planned it with care,",
+      "ratified the plan, and has gone. Nobody is watching and nobody will answer a question:",
+      "run the plan to the end, and leave a truthful record.",
+      "",
+      "THE PROGRAM",
+      `  ${program.objective}`,
+    ].join("\n"),
+    [
+      "START HERE",
+      "",
+      `  nightshift run.attach { runId: "${node.runId}", model: "<the model you are>" }`,
+      "    Binds you to the run that was started for you. Do this first; nothing else works",
+      "    until you have.",
+    ].join("\n"),
+    [
+      "THE STRANDS — fixed by the plan; you neither add nor drop one",
+      "",
+      strands.map(describeStrand).join("\n\n"),
+    ].join("\n"),
+    [
+      "WHAT YOU DO",
+      "",
+      "  1. Delegate EVERY strand, now, all of them, in any order:",
+      "       nightshift strand.delegate { strandId }",
+      "     You say which strand and nothing else. Its orchestrator is handed its section of",
+      "     the plan verbatim, the human's decisions that touch it, and the other strands'",
+      "     scopes. Nightshift holds a strand until the strands it depends on have succeeded,",
+      "     and runs as many at once as the program's limits allow, so you do not sequence them.",
+      '     A strand that is one small bounded change may be delegated with kind: "job".',
+      "  2. Wait:  nightshift job.wait { jobIds }  returns when the first of them settles. Call",
+      "     it again for the rest.",
+      "  3. When a strand does not succeed, read why with job.get. Retry it with job.retry when",
+      "     the reason is one a second attempt from the current code can fix (a conflict, a",
+      "     flaky check, a worker that gave up early). Do not retry more than twice, and do not",
+      "     retry a strand whose own orchestrator said the objective cannot be met.",
+      "  4. A strand that stays failed is PARKED, with every strand that depends on it.",
+      "     strand.delegate refuses those as strand_blocked. That is correct: leave them, and",
+      "     let every other strand finish. A parked cone costs the cone, not the night.",
+      "  5. A job whose status is DEFERRED is done for now: one of its checks needs something only",
+      "     a human can supply. It is not a failure and there is nothing to retry. Its work is",
+      "     kept on a provisional line, later strands build on it, and job.wait treats it as",
+      "     settled. Carry on with everything else.",
+      "  6. When every strand has succeeded, is deferred, or is parked:",
+      "       nightshift run.finish { outcome, reason }",
+      '     "succeeded" only if every strand succeeded. "deferred" when nothing failed and some',
+      '     work is deferred: name the prerequisites it waits on. Otherwise "failed", with a',
+      "     reason that names what was parked and why. A human reads it in the morning.",
+    ].join("\n"),
+    [
+      "YOU DO NOT WRITE CODE, AND YOU DO NOT PLAN JOBS",
+      "",
+      "  Every change is made by a worker a strand's orchestrator delegates. Nothing you edit",
+      "  is ever collected, and the plain delegate tool is refused to you. Your working",
+      `  directory is a checkout to read: ${worktree}`,
+      "",
+      "  Record what you decide (a retry, giving up on a strand) with decision.record: the",
+      "  report lists the run's own decisions.",
+    ].join("\n"),
+    ...(decisions.length === 0
+      ? []
+      : [
+          [
+            "DECISIONS A HUMAN ALREADY MADE — settled; each reaches the strands it touches",
+            "",
+            bullets(
+              decisions.map(
+                (decision) => `${decision.id}: ${decision.question} → ${decision.answer}`,
+              ),
+            ),
+          ].join("\n"),
+        ]),
+    ["THE PLAN, AS RATIFIED", "", job.objective].join("\n"),
+    [
+      "These are Nightshift's operations, and they are the same however they reach you: as the",
+      "tools of a server named nightshift, under whatever prefix your environment gives a",
+      "server's tools, or as functions with these names.",
+      "",
+      "Exiting without calling run.finish leaves the run interrupted, with no explanation.",
     ].join("\n"),
   ].join("\n\n")}\n`;
 };

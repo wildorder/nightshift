@@ -329,6 +329,8 @@ describe("NightshiftApiStack", () => {
           "dynamodb:PutItem",
           "dynamodb:Query",
           "s3:PutObject",
+          // P7 (D-P7-02): ratification reads the uploaded plan document back.
+          "s3:GetObject",
           "kms:Sign",
         ]),
       );
@@ -365,15 +367,35 @@ describe("NightshiftApiStack", () => {
      */
     it("grants exactly s3:PutObject, on the artifact bucket's objects and nothing else", () => {
       const statements = statementsOf(synth().template);
-      const s3Statements = statements.filter((statement) =>
-        actionsOf(statement).some((action) => action.startsWith("s3:")),
+      const writes = statements.filter((statement) =>
+        actionsOf(statement).some(
+          (action) => action.startsWith("s3:") && action !== "s3:GetObject",
+        ),
       );
-      expect(s3Statements).toHaveLength(1);
-      expect(s3Statements.flatMap(actionsOf)).toEqual(["s3:PutObject"]);
+      expect(writes).toHaveLength(1);
+      expect(writes.flatMap(actionsOf)).toEqual(["s3:PutObject"]);
 
-      const resources = JSON.stringify(s3Statements[0]?.Resource);
+      const resources = JSON.stringify(writes[0]?.Resource);
       expect(resources).toContain("BucketArn");
       expect(resources).toContain("/*");
+    });
+
+    /**
+     * P7 (D-P7-02) is the decision that brings a read: ratification hashes the
+     * stored plan document itself. The reasoning above survives because the read
+     * is confined to `plans/`, where no artifact body is ever written, and it is
+     * its own statement so it can never ride along with the signing grant.
+     */
+    it("grants s3:GetObject on ratified plan documents, and on no other object", () => {
+      const reads = statementsOf(synth().template).filter((statement) =>
+        actionsOf(statement).includes("s3:GetObject"),
+      );
+      expect(reads).toHaveLength(1);
+      expect(reads.flatMap(actionsOf)).toEqual(["s3:GetObject"]);
+
+      const resources = JSON.stringify(reads[0]?.Resource);
+      expect(resources).toContain("BucketArn");
+      expect(resources).toContain("/plans/*");
     });
 
     /**

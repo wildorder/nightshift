@@ -53,7 +53,23 @@ export const currentBranch = async (runner: GitRunner, repo: string): Promise<st
  * halfway, which is the worst of both outcomes.
  */
 export const isDirty = async (runner: GitRunner, repo: string): Promise<boolean> =>
-  trimmed(await git(runner, ["status", "--porcelain"], { cwd: repo })) !== "";
+  // Every untracked file by name: by default git folds a new directory into one
+  // line (`?? docs/`), which would hide what is in it.
+  trimmed(await git(runner, ["status", "--porcelain", "--untracked-files=all"], { cwd: repo }))
+    .split("\n")
+    .some((line) => line.trim() !== "" && !isNightshiftReport(line));
+
+/**
+ * `nightshift run` writes `docs/programs/{id}/report.md` into the checkout (P7,
+ * D-P7-03), and it is the one thing Nightshift leaves there. Untracked, it is
+ * not the operator's work in progress and must not stop the next landing: found
+ * when the first `nightshift resume` was refused by the report of the run it was
+ * resuming. Only while **untracked** (`??`): once a human commits it, a change
+ * to it is a change like any other.
+ */
+const NIGHTSHIFT_REPORT = /^\?\? "?docs\/programs\/[^/]+\/report\.md"?$/;
+const isNightshiftReport = (porcelainLine: string): boolean =>
+  NIGHTSHIFT_REPORT.test(porcelainLine.trimEnd());
 
 export interface WorktreeInput {
   readonly repo: string;
@@ -375,3 +391,57 @@ export const checkpointRef = (checkpointId: string): string =>
   `refs/nightshift/checkpoints/${checkpointId}`;
 /** The branch a job's worktree sits on. */
 export const jobBranch = (runId: string, nodeId: string): string => `nightshift/${runId}/${nodeId}`;
+
+/**
+ * The run's **provisional line** (P7, D-P7-10): where work lands whose checks
+ * could not all run, and everything built on it. Never the program branch, which
+ * still receives nothing that has not passed every check on the commit that
+ * lands (A-05).
+ */
+export const provisionalRef = (runId: string): string => `refs/nightshift/provisional/${runId}`;
+
+/** The provisional line's head, or `undefined` while nothing has been deferred. */
+export const provisionalHead = (
+  runner: GitRunner,
+  repo: string,
+  runId: string,
+): Promise<CommitSha | undefined> => tryRevParse(runner, repo, provisionalRef(runId));
+
+/**
+ * What new work is cut from and reconciled onto: the provisional head once
+ * anything has been deferred, the program branch's until then.
+ */
+export const effectiveHead = async (
+  runner: GitRunner,
+  repo: string,
+  programBranch: string,
+  runId: string,
+): Promise<{ readonly head: CommitSha; readonly provisional: boolean }> => {
+  const provisional = await provisionalHead(runner, repo, runId);
+  return provisional === undefined
+    ? { head: await revParse(runner, repo, programBranch), provisional: false }
+    : { head: provisional, provisional: true };
+};
+
+/** The commits on the provisional line that the program branch does not have, oldest first. */
+export const provisionalCommits = async (
+  runner: GitRunner,
+  repo: string,
+  programBranch: string,
+  runId: string,
+): Promise<readonly CommitSha[]> => {
+  if ((await provisionalHead(runner, repo, runId)) === undefined) return [];
+  const listed = await git(
+    runner,
+    ["rev-list", "--reverse", `${programBranch}..${provisionalRef(runId)}`],
+    { cwd: repo },
+  );
+  return listed
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map(asSha);
+};
+
+export const deleteRef = async (runner: GitRunner, repo: string, ref: string): Promise<void> => {
+  await git(runner, ["update-ref", "-d", ref], { cwd: repo });
+};
