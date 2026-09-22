@@ -39,34 +39,35 @@ Check, and say what you find, without fixing anything the human did not ask for:
   two full gates running together. Say it once, and let the human choose
   `--model` or lower the limit in `nightshift.config.json` if they want.
 
-## 2. Start it, detached
+## 2. Start it, in this session
 
-The run takes minutes to hours and `nightshift run` blocks until it ends. Do not
-hold a tool call open for it. Start it in the background with its output going to
-a file next to the report, and return at once:
+The run takes minutes to hours and `nightshift run` blocks until it ends, so a
+plain tool call would time out on it. Start it as a **background command** of
+this session (the Bash tool's `run_in_background`), which keeps its output in a
+file, lets you read that file whenever the human asks, and notifies you the
+moment the process exits. Nothing is delegated: the run is this session's, and
+you are told when it ends.
 
 ```sh
-mkdir -p docs/programs/{id}/runs
-nohup nightshift run {id} > docs/programs/{id}/runs/$(date +%Y%m%dT%H%M%S).log 2>&1 &
-echo $!
+nightshift run {id}
 ```
 
-Then say, in a few lines: the run id from the log's first line (it appears
-within seconds; read the file), where the log is, where the report will be, and
-that the human can close the laptop lid only if this machine stays awake — the
-orchestrator and every worker run here. Flags the human may want:
-`--harness claude|codex` and `--model <name>` choose the root orchestrator
-(workers are routed by the contract's policy); `--attended` creates the run and
-stops, for a session that will orchestrate it itself with the `nightshift`
-skill.
+Then say, in a few lines: the run id from the output's first line (it appears
+within seconds; read it), where the report will be, and that this machine must
+stay awake, because the orchestrator and every worker run here. Flags the human
+may want: `--harness claude|codex` and `--model <name>` choose the root
+orchestrator (workers are routed by the contract's policy); `--attended` only
+creates the run, for a session that will orchestrate it itself with the
+`nightshift` skill.
+
+If the harness has no background mode, fall back to
+`nohup nightshift run {id} > docs/programs/{id}/runs/<timestamp>.log 2>&1 &`
+and read that log.
 
 ## 3. While it runs
 
-When asked how it is going, read the log's tail and the control plane's view, and
+When asked how it is going, read the background command's output so far and
 report in the plan's terms, strand by strand, never job by job:
-
-- `nightshift` prints a line per strand event in the log; `program.status` from
-  an attached session shows the tree.
 - A strand **parked** is one that failed with everything downstream of it; the
   rest carries on. That is by design, and the report will say why.
 - A job **deferred** is waiting on a human prerequisite, on the provisional
@@ -75,13 +76,13 @@ report in the plan's terms, strand by strand, never job by job:
   commit, do not run the tests yourself in that checkout: a worktree per job
   keeps workers apart, but the program checkout is where every landing goes.
 
-Stop a run only when the human asks: `kill <pid>` of the `nightshift run`
-process interrupts it cleanly, every node and agent is recorded, and the report
-is still written.
+Stop a run only when the human asks: stopping the background command (or
+`kill <pid>`) interrupts it cleanly, every node and agent is recorded, and the
+report is still written.
 
 ## 4. When it ends
 
-`nightshift run` exits 0 when every strand succeeded, 3 when nothing failed but
+You are notified when the command exits. `nightshift run` exits 0 when every strand succeeded, 3 when nothing failed but
 some work is deferred, 1 otherwise, and always writes
 `docs/programs/{id}/report.md`. Read the report and give the human the shape of
 it, in this order:

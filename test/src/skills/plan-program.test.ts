@@ -90,7 +90,7 @@ describe("the run-program skill", () => {
       "utf8",
     );
     for (const phrase of [
-      "nohup nightshift run {id}",
+      "run_in_background",
       "Every **departure** from the plan's approach, first",
       "nightshift resume {id}",
       "Edit the plan or the contract to get past a refusal",
