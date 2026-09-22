@@ -39,6 +39,14 @@ base. What is *not* cheaply recoverable is a wrong boundary, a wrong
 architectural call, or a run that stops at 3 a.m. for a credential. Spend the
 human's attention there.
 
+## 0. Make sure it is Nightshift v1 you are talking to
+
+Run `nightshift --help` once. It must list `plan check`, `plan ratify`,
+`preflight`, `run` and `resume`. If it does not, the `nightshift` on the PATH is
+an older tool with the same name, and nothing below will work: stop and say so
+(the fix on this machine is `npm link` from the Nightshift repository's
+`apps/cli`), rather than checking anything by hand.
+
 ## 1. Load the context
 
 Read, in this order, whatever exists:
@@ -270,6 +278,15 @@ states `schemaVersion`, `programId` (mint one with `nightshift id prog`),
 }
 ```
 
+Those are **all** the fields. A strand has exactly `id`, `name`, `scope
+{summary, includes, excludes}`, `acceptance`, `successCriteria`, `dependsOn`,
+`prerequisites`; a prerequisite `id`, `description`, `remediation`,
+`verifyCommand`, `status: "pending"`; a decision `id`, `question`, `options`,
+`leaning`, `answer`, `rationale`, `touches` (strand ids, or `"all"`). The
+contract is strict: a key it does not know (an `authority`, a `priority`, a
+`notes`) is refused by `plan check` rather than ignored. Who answered a decision
+is recorded when the run starts, not here.
+
 Every success criterion is claimed by at least one strand. A strand's heading in
 `plan.md` **begins with its id** (`### S-01 The ledger`): that is how its section
 is found, checked, and handed to its orchestrator.
@@ -296,18 +313,37 @@ yours to fix; bring the human what is theirs (an unanswered decision, a boundary
 to move). For an overlap it shows both scopes and the globs that intersect: the
 fix is a narrower scope, an `excludes`, or an honest `dependsOn`.
 
-When it says `READY` and the human is happy, the rest is theirs:
+When it says `READY`, tell the human, and ask one question: **"Ratify this
+plan and hand it to the run?"** Ratifying is their judgement that this is the
+plan they want run; your job is to make saying yes cost nothing. When they say
+yes, do all of this yourself and stop at the run:
 
-```
-git add docs/programs/{id} && git commit      # a plan is ratified from a commit
-nightshift plan ratify {id}                   # the gate: records the hash, uploads the plan
-nightshift preflight {id}                     # their prerequisites, checked deterministically
-nightshift run {id}                           # unattended, to docs/programs/{id}/report.md
-```
+1. **The program branch.** The contract's `repository.programBranch` (say
+   `program/{id}`) must exist and be **checked out**: Nightshift integrates by
+   fast-forwarding the branch the checkout is on, and refuses any other. Create it
+   from the base branch if it does not exist, and check it out:
+   `git checkout -b program/{id} main` (or `git checkout program/{id}` if it does).
+   The working tree must be otherwise clean; if it is not, stop and say what is
+   in the way.
+2. **Commit the plan on that branch.** `nightshift.config.json`, if it is new,
+   and `docs/programs/{id}/`, and nothing else:
+   `git add nightshift.config.json docs/programs/{id} && git commit -m "plan: {id}"`.
+   A plan is ratified from a commit, so its hash names something git can
+   reproduce.
+3. **Ratify.** `nightshift plan ratify {id}`. It refuses a plan that is not
+   READY or has uncommitted changes; if it refuses, fix that and run it again,
+   never work around it.
+4. **Preflight.** `nightshift preflight {id}` when the contract has any
+   prerequisite. Print what is unmet, with its remediation, and stop there: those
+   are the human's to do before anything runs.
+5. **Hand over.** Say the plan is ratified, name the plan hash it printed, and
+   say the next step is `/run-program {id}`, which starts the unattended run from
+   this session, or `nightshift run {id}` from a terminal. Do not start the run
+   yourself; that is the other skill's, and the human may want to read the
+   commit first.
 
-**You never ratify.** Ratifying is the human's judgement that this is the plan
-they want run. And you never mark a prerequisite satisfied: only
-`nightshift preflight` does, from the exit code of its `verifyCommand`.
+You never mark a prerequisite satisfied: only `nightshift preflight` does, from
+the exit code of its `verifyCommand`.
 
 ## What you must not do
 
@@ -317,5 +353,7 @@ they want run. And you never mark a prerequisite satisfied: only
   awkward to verify.
 - Split a program because a human step exists. Hoist it.
 - Answer a decision on the human's behalf and record it as theirs.
+- Ratify without the human's explicit yes, or start the run: ratifying is their
+  judgement, and the run is `/run-program`'s.
 - Edit a ratified plan and expect it to run: it is refused until ratified again,
   and that is the point of the gate.

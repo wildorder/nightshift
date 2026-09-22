@@ -21,9 +21,10 @@ expensive decisions in `docs/programs/{id}/plan.md` and `contract.json` (the
 `plan-program` skill), and ratified them with `nightshift plan ratify {id}`.
 **A ratified plan is what you execute.** You do not re-plan it.
 
-- The usual way to run one is unattended: `nightshift run {id}` checks the plan
-  is the one that was ratified, runs preflight, starts an orchestrator with
-  nobody watching, and writes `docs/programs/{id}/report.md`.
+- The usual way to run one is unattended: `nightshift run {id}` (or the
+  `run-program` skill, from a session) checks the plan is the one that was
+  ratified, runs preflight, starts an orchestrator with nobody watching, and
+  writes `docs/programs/{id}/report.md`.
 - If the human would rather you orchestrate it from this session, they run
   `nightshift run {id} --attended` and you `run.attach` as below. Then:
   - Delegate **each strand, and nothing else**, with
