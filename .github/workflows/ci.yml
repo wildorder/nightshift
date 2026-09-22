@@ -61,8 +61,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # The integration suites each spawn git, workers, MCP servers and the
+      # verification runner. Windows creates processes and touches NTFS several
+      # times slower than Linux, and the hosted runner has four cores: run all of
+      # those suites at once and each starves, and a different one times out on
+      # every push. Two workers keeps the Windows leg honest without hiding a
+      # real failure; Linux is fast enough to run flat out.
       - name: Test
-        run: npm test
+        run: npm test ${{ runner.os == 'Windows' && '-- --maxWorkers 2' || '' }}
 
       # No AWS credentials are configured anywhere in this workflow, and none are
       # needed: the P1 stack is environment-agnostic and defines no resources.
