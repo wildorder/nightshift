@@ -163,6 +163,26 @@ Attach a prerequisite where it bites:
   until the human is back. A missing deploy credential then costs a check, not
   the night.
 
+**Hurdles nobody planned.** The audit will miss some. A verification step that
+discovers, when it runs, that it needs something only a human can supply says so
+in the one way Nightshift accepts, and is deferred instead of failed:
+
+```sh
+# exit 75 (EX_TEMPFAIL), and a line naming the prerequisite
+if ! aws sts get-caller-identity >/dev/null 2>&1; then
+  echo "NIGHTSHIFT_DEFER HP-03 The deploy role cannot be assumed"
+  echo "NIGHTSHIFT_REMEDIATION run \`aws sso login --profile deploy\`"
+  exit 75
+fi
+npm run deploy:check
+```
+
+Both the exit code and the line, or it is a failure like any other; Nightshift
+never guesses. Wrap any step that touches a credential, a network service or an
+account this way, with an `HP-nn` id the plan does not already use. The
+prerequisite is recorded as discovered, every other check runs, and the work
+carries on the provisional line until `nightshift resume`.
+
 **Hoist first.** Every human step becomes a prerequisite done *before* the run,
 and the program stays whole. Propose **splitting the program in two only when
 the human's step depends on something the run itself produces** — name that

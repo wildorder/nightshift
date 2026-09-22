@@ -127,6 +127,17 @@ export type LandingEnvironment = Pick<
 /** Reads the program's prerequisites. Satisfied by `persistence/http`'s planning client. */
 export interface PrerequisiteBook {
   prerequisites(scope: ProgramScope): Promise<readonly Prerequisite[]>;
+  /** Records a hurdle a verification command declared mid-run (D-P7-10). */
+  recordDiscovered(
+    scope: ProgramScope,
+    prerequisiteId: string,
+    hurdle: {
+      readonly runId: RunId;
+      readonly description: string;
+      readonly remediation: string;
+      readonly verifyCommand: string;
+    },
+  ): Promise<Prerequisite>;
 }
 
 /**

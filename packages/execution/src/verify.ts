@@ -44,7 +44,12 @@ import {
   prerequisitesOf,
   transition,
 } from "@nightshift/core";
-import { runVerificationSteps, toVerificationCommands } from "@nightshift/verification";
+import {
+  type DeferSignal,
+  deferSignalOf,
+  runVerificationSteps,
+  toVerificationCommands,
+} from "@nightshift/verification";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type LandingEnvironment,
@@ -104,6 +109,39 @@ const unmetPrerequisites = async (
   return new Set(
     current.filter((prerequisite) => prerequisite.status !== "satisfied").map((p) => p.id),
   );
+};
+
+/**
+ * A hurdle a command declared, written to the control plane once. A second step
+ * declaring the same id is the same hurdle; the API confirms rather than
+ * duplicates, and without a book to write to the deferral still holds locally.
+ */
+const recordDiscovered = async (
+  environment: LandingEnvironment,
+  input: VerifyInput,
+  stepId: string,
+  signal: DeferSignal,
+): Promise<void> => {
+  if (environment.prerequisites === undefined) return;
+  const { program, scope } = input.session;
+  const step = program.verification.find((candidate) => candidate.id === stepId);
+  await environment.prerequisites
+    .recordDiscovered(
+      { projectId: program.projectId, programId: program.programId },
+      signal.prerequisiteId,
+      {
+        runId: scope.runId,
+        description: signal.description,
+        remediation: signal.remediation,
+        // The command that declared it is, until a human writes a better one,
+        // the check that it is done: it exits 0 once the hurdle is gone.
+        verifyCommand: step?.command ?? "",
+      },
+    )
+    .catch(() => {
+      // A prerequisite that already exists (planned, or discovered by another
+      // step) is a 409 the book turns into an error. The deferral stands.
+    });
 };
 
 export const verifyNode = async (
@@ -168,21 +206,35 @@ export const verifyNode = async (
     logArtifactIds.set(result.stepId, artifactId as ArtifactId);
   }
 
+  // A step that ran and *declared* it could not (exit 75 and a NIGHTSHIFT_DEFER
+  // line) is a hurdle nobody planned: recorded as a discovered prerequisite, and
+  // deferred exactly as a planned one is. Anything else non-zero is a failure.
+  const discovered = new Map<string, string>();
+  for (const result of results) {
+    const signal = deferSignalOf(result.exitCode, new TextDecoder().decode(result.output));
+    if (signal === undefined) continue;
+    await recordDiscovered(environment, input, result.stepId, signal);
+    discovered.set(result.stepId, signal.prerequisiteId);
+  }
+
   // In the contract's own order, so a record reads like the contract it ran.
   const ran = new Map(
     toVerificationCommands(results, logArtifactIds).map((command) => [command.stepId, command]),
   );
-  const commands = steps.map(
-    (step) =>
-      ran.get(step.id) ?? {
-        stepId: step.id,
-        command: step.command,
-        durationMs: 0,
-        // The first unmet one: a record names what it waits on, the node's reason names them all.
-        deferred: { prerequisiteId: waitingOf(step)[0] as string },
-      },
-  );
-  const waitingOn = [...new Set(steps.flatMap(waitingOf))];
+  const commands = steps.map((step) => {
+    const found = ran.get(step.id);
+    const declared = discovered.get(step.id);
+    if (found !== undefined && declared === undefined) return found;
+    return {
+      stepId: step.id,
+      command: step.command,
+      durationMs: found?.durationMs ?? 0,
+      ...(found?.logArtifactId === undefined ? {} : { logArtifactId: found.logArtifactId }),
+      // The first unmet one: a record names what it waits on, the node's reason names them all.
+      deferred: { prerequisiteId: declared ?? (waitingOf(step)[0] as string) },
+    };
+  });
+  const waitingOn = [...new Set([...steps.flatMap(waitingOf), ...discovered.values()])];
 
   const verification = VerificationSchema.parse({
     schemaVersion: 1,

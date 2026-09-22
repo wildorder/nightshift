@@ -26,8 +26,10 @@ import {
   createEventOutbox,
   createMergeQueue,
   type Engine,
+  type ExecutionEnvironment,
   git,
   type MergeQueue,
+  type PrerequisiteBook,
   provisionalHead,
   resumeDeferred,
   revParse,
@@ -134,6 +136,9 @@ interface Rig {
   until(nodeId: ExecutionNodeId, predicate: (status: string) => boolean): Promise<string>;
 }
 
+/** What verification commands declared mid-run, across the current rig. */
+let discoveredHurdles: { id: string; description: string; remediation: string }[] = [];
+
 const rig = async (
   work: Readonly<Record<string, Work>>,
   options: {
@@ -154,13 +159,24 @@ const rig = async (
     },
   });
   world = made;
-  const environment =
+  const book: PrerequisiteBook = {
+    prerequisites: async () => options.prerequisites?.() ?? [],
+    recordDiscovered: async (_scope, id, hurdle) => {
+      discoveredHurdles.push({ id, ...hurdle });
+      return {
+        id,
+        description: hurdle.description,
+        remediation: hurdle.remediation,
+        verifyCommand: hurdle.verifyCommand,
+        status: "pending",
+        discoveredInRunId: hurdle.runId,
+      };
+    },
+  };
+  const environment: ExecutionEnvironment =
     options.prerequisites === undefined
       ? made.environment
-      : {
-          ...made.environment,
-          prerequisites: { prerequisites: async () => options.prerequisites?.() ?? [] },
-        };
+      : { ...made.environment, prerequisites: book };
 
   const real = createMergeQueue(environment);
   const gate = barrier();
@@ -774,6 +790,51 @@ const GATED: Partial<ProgramContract> = {
 };
 
 const headOf = (world: World): Promise<string> => revParse(world.git, world.repo, PROGRAM_BRANCH);
+
+describe("a hurdle nobody planned (D-P7-10): exit 75 and a NIGHTSHIFT_DEFER line", () => {
+  const declaring = (script: string): Partial<ProgramContract> => ({
+    verification: [
+      { id: "test", command: "node --test" },
+      { id: "deploy", command: `node -e "${script}"` },
+    ],
+  });
+  const withBook = (program: Partial<ProgramContract>) =>
+    rig({ one: addModule("one") }, { program, maxConcurrency: 1, prerequisites: () => [] });
+
+  it("defers the step and records the prerequisite it declared", async () => {
+    discoveredHurdles = [];
+    const r = await withBook(
+      declaring(
+        "console.log('NIGHTSHIFT_DEFER HP-03 The deploy key is missing');console.log('NIGHTSHIFT_REMEDIATION run aws sso login');process.exit(75)",
+      ),
+    );
+    const one = await r.submit("one");
+    expect(await r.until(one.nodeId, (status) => status === "deferred")).toBe("deferred");
+    expect(discoveredHurdles).toEqual([
+      expect.objectContaining({
+        id: "HP-03",
+        description: "The deploy key is missing",
+        remediation: "run aws sso login",
+      }),
+    ]);
+    const [verification] = await r.world.stores.verifications.listByNode(r.world.scope, one.nodeId);
+    expect(verification?.commands.at(-1)?.deferred).toEqual({ prerequisiteId: "HP-03" });
+    expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeDefined();
+  }, 60_000);
+
+  it("fails a step that exits 75 without the line, or prints the line without exiting 75", async () => {
+    for (const script of [
+      "process.exit(75)",
+      "console.log('NIGHTSHIFT_DEFER HP-03 missing');process.exit(1)",
+    ]) {
+      discoveredHurdles = [];
+      const r = await withBook(declaring(script));
+      const one = await r.submit("one");
+      expect(await r.until(one.nodeId, settled), script).toBe("verification_failed");
+      expect(discoveredHurdles).toEqual([]);
+    }
+  }, 60_000);
+});
 
 describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
   const deferredRig = async (work: Readonly<Record<string, Work>>) => {
