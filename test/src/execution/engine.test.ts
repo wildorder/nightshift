@@ -831,7 +831,12 @@ describe("a hurdle nobody planned (D-P7-10): exit 75 and a NIGHTSHIFT_DEFER line
     ]);
     const [verification] = await r.world.stores.verifications.listByNode(r.world.scope, one.nodeId);
     expect(verification?.commands.at(-1)?.deferred).toEqual({ prerequisiteId: "HP-03" });
-    expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeDefined();
+    // The node is `deferred` a moment before the merge queue moves the ref.
+    await vi.waitFor(
+      async () =>
+        expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeDefined(),
+      { timeout: 10_000 },
+    );
   }, 60_000);
 
   it("fails a step that exits 75 without the line, or prints the line without exiting 75", async () => {
