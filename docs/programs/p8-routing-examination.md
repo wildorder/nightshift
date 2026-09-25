@@ -74,7 +74,6 @@ Everything from P3 … P7 stands.
 | H-P8-01 | Ratify D-P8-01 … D-P8-15 | **satisfied 2026-09-25** |
 | H-P8-02 | P7 merged | **satisfied 2026-09-24** (PRs #19, #20) |
 | H-P8-03 | Claude Code and Codex signed in on the operator's machine, with every model on the org's ladders reachable on those subscriptions | **satisfied 2026-09-25** for all six models on the owner's ladders: each answered a one-line prompt headless (`claude -p --model`, `codex exec -m`). Rechecked by `npm run routing`'s preflight before every live run |
-| H-P8-04 | A repository for the exit gate's trial, and a program to plan on it (SC-P8-18) | open, needed by T5 only |
 
 **Explicitly not required.** No new AWS resource: organisation configuration is a
 record in the existing table. The API gains routes, roles and fields (§4.6) and is
@@ -90,7 +89,7 @@ redeployed.
 | Q2 | What is the ladder? | **Configurable per organisation**, with a ladder per provider. The owner's own: Claude `claude-haiku-4-5-20251001 → claude-sonnet-5 → claude-opus-5-5`; Codex, as amended the same day from Codex's own model catalog: `gpt-6-luna → gpt-6-sol → gpt-6-astra`. The repository and the contract may **narrow** the org's configuration, never widen it (D-P8-02, D-P8-03) |
 | Q3 | Enforce `maxUsd` and `maxTokens` now? | **Yes**, with estimated dollars labelled as estimates (D-P8-08) |
 | Q4 | A blocking finding the orchestrator disputes, unattended | **An independent arbiter rules, and the ruling stands**: overturned lands, upheld fails and parks. The ruling is a recorded decision the owner can reverse (D-P8-13) |
-| Q5 | The exit gate | **The live suite and a real planned program** on a repository the owner names (SC-P8-17, SC-P8-18) |
+| Q5 | The exit gate | **The live suite and a real planned program** (SC-P8-17, SC-P8-18). Amended the same day: the owner runs the real program **themself**, on the deployed stack, after T5; the build agent does not |
 | Q6 | How many fixes does a blocking finding get? | **Two.** After the second, the arbiter rules whether or not the orchestrator disputed; the ruling is recorded against a checkpoint and becomes a rollback point, and the run moves on (D-P8-13) |
 | Q7 | Where does work go when a route cannot start? | **Another model on the rung, then the other provider's ladder at the same tier, then one rung up**, as drafted (D-P8-06) |
 | Q8 | Does a retry climb? | **One rung on every real failure**, as drafted (D-P8-07) |
@@ -278,7 +277,7 @@ to be trained on.
 - The report's routing and examination sections; `nightshift routes export`.
 - The `plan-program`, `run-program` and `nightshift` skills: how to classify a
   job, what a finding means, how to fix or dispute one, how to reverse a ruling.
-- The live suite `npm run routing`; the exit gate's trial.
+- The live suite `npm run routing`. The owner's trial follows T5 (SC-P8-18).
 
 ### Out of scope
 
@@ -356,8 +355,9 @@ to be trained on.
   defect is found with evidence and fixed before it lands; an examiner's question is
   answered by the builder's resumed session; a disputed finding is ruled on by an
   arbiter.
-- **SC-P8-18** A real program, planned with `plan-program` on a repository the
-  owner names and run with the owner's org configuration: it finishes, the report
+- **SC-P8-18** The owner's own trial, after T5 has deployed everything and the
+  live suite has passed: a real program, planned with `plan-program` on a
+  repository of the owner's choosing and run with the owner's org configuration: it finishes, the report
   shows every route and examination, and the owner judges whether the ladders
   saved anything and whether the findings were worth the time.
 
@@ -392,8 +392,8 @@ Plus, from a developer machine: `npm run deploy`, `npm run smoke` (twice),
 Permitted: editing the repository; deploying the API stack for §4.6; writing the
 owner's org configuration to Q2's ladders; running the smoke, slice, conformance
 and routing suites; running Claude Code and Codex headless on the operator's
-subscriptions, on the models the org's ladders name; running SC-P8-18's trial on
-the repository the owner names.
+subscriptions, on the models the org's ladders name. SC-P8-18's trial is the
+owner's to run, not the build agent's.
 
 Forbidden:
 
@@ -414,7 +414,7 @@ Forbidden:
 | T2 | Routing: rules, ladders and tiers, overrides, fallback and adapter start-failure classes, escalation, usage and cost, budgets | T1 | — |
 | T3 | Examination: the examiner, its brief and route, beside-the-queue placement, carry-over, the examiner's questions and session resume, findings, the fix limit, the arbiter and its checkpoints, reversal | T1, T2 | — |
 | T4 | Orchestrator tools, skills, `init` and `org config`, the report, `routes export` | T2, T3 | — |
-| T5 | Fixture proofs; the live suite; the exit gate's trial; as-built | T4 | AWS, Claude Code, Codex, H-P8-03, H-P8-04 |
+| T5 | Fixture proofs; the live suite; as-built; ready for the owner's trial | T4 | AWS, Claude Code, Codex, H-P8-03 |
 
 ```text
 T1 ── T2 ── T3 ── T4 ── T5
@@ -439,6 +439,7 @@ Specs live in `tasks/p8-routing-examination/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-25 | **The owner runs the exit gate's trial.** SC-P8-18 is the owner's own run on the deployed stack after T5, as P7's was; H-P8-04 is dropped. P8 closes when the owner has run it. | **Human** |
 | 2026-09-25 | **Contract ratified.** Ten decisions the owner judged low-risk, ratified as drafted: D-P8-01 … D-P8-05, -08, -09, -10, -12, -14. Five put to the owner one by one (Q6 … Q10): D-P8-06 and -07 as drafted; D-P8-13 amended to two fixes, then an arbiter that rules whether or not the finding is disputed, its ruling a checkpointed rollback point; D-P8-11 amended and **D-P8-15 added on the owner's proposal**, the examiner's direct questions to the resumed builder; the default examination policy as drafted. | **Human** |
 | 2026-09-25 | **A route may carry a reasoning effort.** Both harnesses take one, and every model on the owner's ladders offers several; a rung may be a model at a higher effort. Unset on the owner's ladders for now: each harness's default applies. Task specs T1 … T5 drafted. | Human (on the agent's offer) |
 | 2026-09-25 | **The owner's answers to Q1 … Q5** (§3.1): examination beside the queue; ladders configured per org, a ladder per provider, narrowed never widened below the org; budgets enforced now; a disputed blocking finding goes to an independent arbiter whose ruling stands and which the owner can reverse, on the owner's proposal of a decision agent from a different provider; the exit gate is the live suite and a real planned program. The Codex ladder was first given as `gpt-5.5 → astra`; the owner asked for the real model names, and Codex's catalog (`codex debug models`, CLI 0.156.1) gave `gpt-6-luna` ("fast and affordable"), `gpt-6-sol` ("workhorse") and `gpt-6-astra` ("frontier"), all three probed live. D-P8-02, -03, -06, -09, -10 and -13 written to them. | **Human** |

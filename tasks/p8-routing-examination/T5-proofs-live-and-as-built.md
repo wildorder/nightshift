@@ -1,8 +1,8 @@
-# T5 — Fixture proofs; the live suite; the exit gate's trial; as-built
+# T5 — Fixture proofs; the live suite; as-built; ready for the owner's trial
 
 **Program:** `p8-routing-examination`
 **Depends on:** T4
-**Decisions applied:** SC-P8-01 … SC-P8-18
+**Decisions applied:** SC-P8-01 … SC-P8-17; SC-P8-18 is the owner's
 
 ## Deliverables
 
@@ -27,12 +27,16 @@
    read back.
 4. `npm run smoke` twice, `npm run conformance -- --harness all`,
    `npm run slice`, to show P4 … P7 still hold.
-5. **The trial** (SC-P8-18), on the repository the owner names (H-P8-04): plan a
-   program with `plan-program`, ratify, run with the owner's org configuration,
-   to a report. Record per rule how often the cheap rung reached verified, what
-   escalated, what examinations found and what the arbiter ruled, and the cost.
+5. **Ready for the owner's trial** (SC-P8-18). Do **not** run it: the owner
+   plans and runs a real program themself on the deployed stack. Leave
+   everything it needs in place (the API deployed, the owner's org configured,
+   the skills installed by `nightshift init`), and say in the as-built what the
+   owner should look for in the report: per rule how often the cheap rung reached
+   verified, what escalated, what examinations found, what the arbiter ruled, and
+   the cost.
 6. **As-built** in the contract §13: task states; the SC table; what changed in
-   earlier suites and why; the trial's numbers; build decisions for ratification.
+   earlier suites and why; build decisions for ratification; SC-P8-18 left open
+   for the owner.
    `AGENTS.md` conventions and as-built; `docs/architecture.md` entries for the
    lasting decisions (D-P8-02/03, D-P8-06/07, D-P8-09, D-P8-13) on ratification;
    the stale "P7" references to routing in P5's and P6's contracts get a note.
