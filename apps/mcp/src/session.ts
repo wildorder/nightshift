@@ -11,7 +11,7 @@
  * `program.status` go to the control plane, so an orchestrator and a human
  * reading `GET …/state` never disagree.
  */
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type {
   Agent,
@@ -24,7 +24,13 @@ import type {
   Run,
   RunId,
 } from "@nightshift/contracts";
-import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
+import {
+  NIGHTSHIFT_CONFIG_FILE,
+  PROGRAMS_DIRECTORY,
+  ProgramIdSchema,
+  ProjectIdSchema,
+  RunIdSchema,
+} from "@nightshift/contracts";
 import {
   isPlanned,
   nowIso,
@@ -102,32 +108,127 @@ const buildEnvironment = (runtime: Runtime, outbox: EventOutbox): ExecutionEnvir
   ...(runtime.prerequisites === undefined ? {} : { prerequisites: runtime.prerequisites }),
 });
 
+interface ProgramRef {
+  readonly projectId: ProjectId;
+  readonly programId: ProgramId;
+}
+
+const readJson = async (path: string): Promise<unknown> => {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+};
+
+/** The ids a contract names, with `projectId` inherited from the config when it states none. */
+const refOf = (raw: unknown, config: unknown): ProgramRef | undefined => {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const authored = raw as { projectId?: unknown; programId?: unknown };
+  const projectId = ProjectIdSchema.safeParse(
+    authored.projectId ?? (config as { projectId?: unknown } | undefined)?.projectId,
+  );
+  const programId = ProgramIdSchema.safeParse(authored.programId);
+  return projectId.success && programId.success
+    ? { projectId: projectId.data, programId: programId.data }
+    : undefined;
+};
+
 /**
- * Which program this repository belongs to, from its authored contract.
+ * Every program this repository holds a contract for: the single authored
+ * contract file of an unplanned program, and each planned program's
+ * `docs/programs/{id}/contract.json` (P7, D-P7-03), whose `projectId` may come
+ * from `nightshift.config.json`. Only the identifiers are taken from the files;
+ * the **record** is the authority for the contract's content (§4.5).
  *
- * Only the identifiers are taken from the file. The **record** is the authority
- * for the contract's content (§4.5), and `attachRun` reports when the two have
- * drifted rather than quietly preferring either.
+ * Found by the first real planned run (foodfly, 2026-09-22): this read the
+ * contract file alone, which a planned program does not have, and the headless
+ * root got past it by writing one by hand, which dirtied the checkout.
+ */
+const repositoryPrograms = async (state: OrchestratorSession): Promise<ProgramRef[]> => {
+  const config = await readJson(resolve(state.repoPath, NIGHTSHIFT_CONFIG_FILE));
+  const refs: ProgramRef[] = [];
+  const single = refOf(await readJson(resolve(state.repoPath, state.contractFile)), config);
+  if (single !== undefined) refs.push(single);
+  const programsDir = resolve(state.repoPath, PROGRAMS_DIRECTORY);
+  let entries: string[] = [];
+  try {
+    entries = await readdir(programsDir);
+  } catch {
+    // No planned programs here.
+  }
+  for (const entry of entries.sort()) {
+    const ref = refOf(await readJson(resolve(programsDir, entry, "contract.json")), config);
+    if (ref !== undefined && !refs.some((known) => known.programId === ref.programId)) {
+      refs.push(ref);
+    }
+  }
+  return refs;
+};
+
+/**
+ * The directory under `docs/programs/` whose contract names `programId`, for
+ * writing that program's `report.md` beside its plan. `undefined` for a program
+ * with no planned directory.
+ */
+export const programDirectoryOf = async (
+  state: OrchestratorSession,
+  programId: ProgramId,
+): Promise<string | undefined> => {
+  const programsDir = resolve(state.repoPath, PROGRAMS_DIRECTORY);
+  let entries: string[] = [];
+  try {
+    entries = await readdir(programsDir);
+  } catch {
+    return undefined;
+  }
+  for (const entry of entries.sort()) {
+    const raw = await readJson(resolve(programsDir, entry, "contract.json"));
+    if ((raw as { programId?: unknown } | undefined)?.programId === programId) {
+      return resolve(programsDir, entry);
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Which of this repository's programs a run belongs to: the one that holds the
+ * named run, or the only one with a pending run. A repository with many planned
+ * programs attaches without being told which, as long as that is unambiguous.
  */
 const repositoryProgram = async (
   state: OrchestratorSession,
-): Promise<{ projectId: ProjectId; programId: ProgramId }> => {
-  const path = resolve(state.repoPath, state.contractFile);
-  let raw: unknown;
-  try {
-    raw = JSON.parse(await readFile(path, "utf8"));
-  } catch (error) {
+  runId: string | undefined,
+): Promise<ProgramRef> => {
+  const refs = await repositoryPrograms(state);
+  if (refs.length === 0) {
     throw new ToolRefusal(
       "not_found",
-      `this repository has no readable program contract at ${path}, so there is no way to know ` +
-        `which program it belongs to: ${error instanceof Error ? error.message : String(error)}`,
+      `this repository has no program contract (neither ${state.contractFile} nor ` +
+        `${PROGRAMS_DIRECTORY}/<id>/contract.json), so there is no way to know which program it belongs to`,
     );
   }
-  const authored = raw as { projectId?: unknown; programId?: unknown };
-  return {
-    projectId: ProjectIdSchema.parse(authored.projectId),
-    programId: ProgramIdSchema.parse(authored.programId),
-  };
+  if (refs.length === 1) return refs[0] as ProgramRef;
+
+  const { stores } = state.runtime;
+  const holding: ProgramRef[] = [];
+  for (const ref of refs) {
+    if (runId !== undefined) {
+      if ((await stores.runs.get(ref, RunIdSchema.parse(runId))) !== undefined) return ref;
+      continue;
+    }
+    const runs = await stores.runs.listByProgram(ref).catch(() => ({ items: [] }));
+    if (runs.items.some((run) => run.status === "pending")) holding.push(ref);
+  }
+  if (runId === undefined && holding.length === 1) return holding[0] as ProgramRef;
+  throw new ToolRefusal(
+    "validation_failed",
+    runId === undefined
+      ? `this repository has ${refs.length} programs and ${holding.length} of them have a pending run. ` +
+          "Name the run with runId."
+      : `run ${runId} belongs to none of this repository's programs`,
+    { programs: refs.map((ref) => ref.programId) },
+  );
 };
 
 /**
@@ -215,7 +316,7 @@ const locateRun = async (
   runId: string | undefined,
 ): Promise<Located> => {
   const { stores } = state.runtime;
-  const { projectId, programId } = await repositoryProgram(state);
+  const { projectId, programId } = await repositoryProgram(state, runId);
   const program = await stores.programContracts.get(projectId, programId);
   if (program === undefined) {
     throw new ToolRefusal(

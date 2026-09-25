@@ -83,6 +83,23 @@ describe("the plan template", () => {
   });
 });
 
+describe("the run-program skill", () => {
+  it("starts the run detached, reads the report departures first, and never edits the plan", async () => {
+    const text = await readFile(
+      fileURLToPath(new URL("../../../skills/run-program/SKILL.md", import.meta.url)),
+      "utf8",
+    );
+    for (const phrase of [
+      "run_in_background",
+      "Every **departure** from the plan's approach, first",
+      "nightshift resume {id}",
+      "Edit the plan or the contract to get past a refusal",
+    ]) {
+      expect(text, phrase).toContain(phrase);
+    }
+  });
+});
+
 describe("the skill", () => {
   it("states the line, the audit's tests and the gate, and never offers to ratify", async () => {
     const text = await readFile(skill("SKILL.md"), "utf8");
@@ -94,7 +111,11 @@ describe("the skill", () => {
       "**Hoist first.**",
       "expand → migrate → contract",
       "nightshift plan check {id}",
-      "**You never ratify.**",
+      "plan and hand it to the run?",
+      "git checkout -b program/{id} main",
+      "nightshift plan ratify {id}",
+      "/run-program {id}",
+      "Those are **all** the fields.",
     ]) {
       expect(text, phrase).toContain(phrase);
     }

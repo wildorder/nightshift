@@ -18,7 +18,7 @@
  * belongs to the execution layer (D-P3-06); examination does not exist yet
  * (D-P3-07) and a delegation that would need it is refused up front.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
@@ -47,19 +47,33 @@ import {
   highestSequence,
   isDoneForNow,
   nowIso,
+  type ProjectStores,
   pendingCount,
   type StrandBrief,
   StrandBriefError,
   strandBrief,
   strandsOf,
 } from "@nightshift/core";
-import { endProgramNode, StrandBlockedError, StrandDelegationError } from "@nightshift/execution";
+import {
+  endProgramNode,
+  gatherReport,
+  renderReport,
+  StrandBlockedError,
+  StrandDelegationError,
+} from "@nightshift/execution";
 import { configuredRoute, RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
+import { type ActivityFeed, createActivityFeed, renderActivity } from "./activity.js";
 import type { RefusalCode } from "./results.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 import type { AttachedRun, OrchestratorSession } from "./session.js";
-import { attachRun, createCheckpointAt, describeNodeLine, startNewRun } from "./session.js";
+import {
+  attachRun,
+  createCheckpointAt,
+  describeNodeLine,
+  programDirectoryOf,
+  startNewRun,
+} from "./session.js";
 
 /**
  * How long `job.wait` will block before answering `timedOut: true`.
@@ -255,6 +269,77 @@ const assertNoJobRunning = async (
  * and never-delegated strands are settled, so nothing else would refuse this;
  * and "succeeded" with half the plan parked is the lie the report must not tell.
  */
+/** The run's ending, its program node's, and the event that says so. */
+const endRun = async (
+  state: OrchestratorSession,
+  attached: AttachedRun,
+  outcome: "succeeded" | "failed" | "cancelled" | "deferred",
+  reason: string | undefined,
+): Promise<void> => {
+  // The run table has no `deferred`, and P7 was not authorised to give it one.
+  // `interrupted` is the honest fit: stopped short, durably, to be taken up again.
+  const status = outcome === "deferred" ? "interrupted" : outcome;
+  const { stores, clock } = state.runtime;
+  const run = await stores.runs.get(attached.session.scope, attached.session.scope.runId);
+  if (run === undefined) throw new ToolRefusal("not_found", "this run no longer exists");
+  const why = reason === undefined ? {} : { outcomeReason: reason };
+  await stores.runs.put({ ...run, status, endedAt: nowIso(clock), ...why });
+  // The program node follows its run (D-P5-06): `succeeded`, never
+  // `integrated`, because a program node integrates nothing.
+  await endProgramNode(state.runtime, attached.session, status, reason);
+  attached.outbox.emit({
+    type: status === "succeeded" ? "run.completed" : `run.${status}`,
+    source: "control-plane",
+    payload: reason === undefined ? {} : { reason },
+    executionNodeId: attached.session.rootNodeId,
+  });
+  await attached.outbox.flush(5_000);
+};
+
+/** `docs/programs/{id}/report.md` for a planned run; nothing for any other. */
+const writeReport = async (
+  state: OrchestratorSession,
+  attached: AttachedRun,
+): Promise<string | undefined> => {
+  if (attached.planSections === undefined) return undefined;
+  const directory = await programDirectoryOf(state, attached.session.scope.programId);
+  if (directory === undefined) return undefined;
+  const path = resolve(directory, "report.md");
+  await writeFile(
+    path,
+    renderReport(await gatherReport(state.runtime.stores, attached.session.scope)),
+  );
+  return path;
+};
+
+/** One feed per attached run, so each call answers "since the last one". */
+const feeds = new WeakMap<AttachedRun, ActivityFeed>();
+
+const feedFor = (attached: AttachedRun, stores: ProjectStores): ActivityFeed => {
+  let feed = feeds.get(attached);
+  if (feed === undefined) {
+    feed = createActivityFeed(stores, attached.session.scope);
+    feeds.set(attached, feed);
+  }
+  return feed;
+};
+
+/** At most this many lines per wait; the rest are a `run.activity` away. */
+const ACTIVITY_PER_WAIT = 40;
+
+const activitySince = async (attached: AttachedRun, stores: ProjectStores): Promise<string[]> => {
+  const lines = renderActivity(
+    await feedFor(attached, stores)
+      .since()
+      .catch(() => []),
+  );
+  if (lines.length <= ACTIVITY_PER_WAIT) return lines;
+  return [
+    `(${lines.length - ACTIVITY_PER_WAIT} earlier lines left out; run.activity has them all)`,
+    ...lines.slice(-ACTIVITY_PER_WAIT),
+  ];
+};
+
 const assertEveryStrandSucceeded = async (attached: AttachedRun): Promise<void> => {
   if (attached.planSections === undefined) return;
   const outcomes = await attached.engine.strands();
@@ -399,30 +484,19 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         await assertNoJobRunning(deps, attached);
         assertEndingExplained(outcome, reason);
         await assertEndingIsTrue(attached, outcome);
-        // The run table has no `deferred`, and P7 was not authorised to give it
-        // one. `interrupted` is the honest fit: stopped short, durably, waiting to
-        // be taken up again.
-        const status = outcome === "deferred" ? "interrupted" : outcome;
-
-        const { stores, clock } = state.runtime;
-        const run = await stores.runs.get(attached.session.scope, attached.session.scope.runId);
-        if (run === undefined) throw new ToolRefusal("not_found", "this run no longer exists");
-        const why = reason === undefined ? {} : { outcomeReason: reason };
-        await stores.runs.put({ ...run, status, endedAt: nowIso(clock), ...why });
-        // The program node follows its run (D-P5-06): `succeeded`, never
-        // `integrated`, because a program node integrates nothing.
-        await endProgramNode(state.runtime, attached.session, status, reason);
-        attached.outbox.emit({
-          type: status === "succeeded" ? "run.completed" : `run.${status}`,
-          source: "control-plane",
-          payload: reason === undefined ? {} : { reason },
-          executionNodeId: attached.session.rootNodeId,
-        });
-        await attached.outbox.flush(5_000);
-        return ok(`Run ${attached.session.scope.runId} is ${outcome}.`, {
-          runId: attached.session.scope.runId,
-          outcome,
-        });
+        await endRun(state, attached, outcome, reason);
+        // A planned run's report, beside its plan, as `nightshift run` writes it
+        // for a run nobody watched: written from the control plane alone.
+        const reportPath = await writeReport(state, attached);
+        return ok(
+          `Run ${attached.session.scope.runId} is ${outcome}.` +
+            (reportPath === undefined ? "" : ` The report is at ${reportPath}.`),
+          {
+            ...(reportPath === undefined ? {} : { reportPath }),
+            runId: attached.session.scope.runId,
+            outcome,
+          },
+        );
       }),
   );
 
@@ -692,18 +766,43 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         // exactly what `job.get` would answer out, as it always was.
         const report = first ?? reports[0];
         if (report === undefined) throw new ToolRefusal("not_found", "no such job");
-        return ok(
-          timedOut
-            ? `${describeJob(report)} Still running after ${limit}s — this wait is capped below ` +
-                "the harness's own tool timeout, so call job.wait again."
-            : describeJob(report),
-          {
-            ...report,
-            timedOut,
-            waitedSeconds: limit,
-            ...(wanted.length > 1 ? { jobs: reports } : {}),
-          },
+        // What everything under the root did meanwhile, so the session can keep
+        // a human in the loop instead of going quiet until the wait returns.
+        const activity = await activitySince(requireAttached(state), state.runtime.stores);
+        const said = timedOut
+          ? `${describeJob(report)} Still running after ${limit}s — this wait is capped below ` +
+            "the harness's own tool timeout, so call job.wait again."
+          : describeJob(report);
+        return ok(activity.length === 0 ? said : `${said}\n\nMeanwhile:\n${activity.join("\n")}`, {
+          ...report,
+          timedOut,
+          waitedSeconds: limit,
+          ...(wanted.length > 1 ? { jobs: reports } : {}),
+          activity,
+        });
+      }),
+  );
+
+  server.registerTool(
+    "run.activity",
+    {
+      title: "What is happening in the run",
+      description:
+        "What every strand's orchestrator and every worker has done, as short lines labelled by " +
+        "strand and job: delegations, their own progress notes and decisions, verification, " +
+        "landings, failures, and a tool-call count as a heartbeat. job.wait already returns what " +
+        "happened since the last call; this replays the last `limit` lines of the whole run.",
+      inputSchema: { limit: z.number().int().min(1).max(500).optional() },
+    },
+    async ({ limit }) =>
+      guarded(async () => {
+        const attached = requireAttached(state);
+        const lines = renderActivity(
+          await feedFor(attached, state.runtime.stores).all(limit ?? 100),
         );
+        return ok(lines.length === 0 ? "Nothing has happened yet." : lines.join("\n"), {
+          activity: lines,
+        });
       }),
   );
 

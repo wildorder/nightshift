@@ -398,6 +398,13 @@ decisions are A-42, A-43 and A-44.
   the next program, planned with the report in hand.
 - `isDirty` lists untracked files individually and ignores an untracked
   `docs/programs/*/report.md`, which `nightshift run` leaves in the checkout.
+- **A planned repository has no `nightshift.program.json`.** `run.attach` finds
+  the program under `docs/programs/`, by the run named or the only pending run.
+  `run.finish` writes a planned run's `report.md`, attended or not. An attended
+  session sees below the root through `job.wait`, which returns the record's
+  lines since the last call labelled by strand and job, and `run.activity`,
+  which replays the run (`apps/mcp/src/activity.ts`). `run-program` is attended
+  by default; dark is the opt-in. Found by the exit gate on `foodfly`.
 - A suite that runs **real worker processes** needs the real clock
   (`signIn({ realTime: true })`, `createLocalContext({ realTime: true })`). The
   stepping clock advances a second per reading, a worker's execution token expires

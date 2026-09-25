@@ -1,3 +1,9 @@
+export {
+  type ActivityFeed,
+  type ActivityLine,
+  createActivityFeed,
+  renderActivity,
+} from "./activity.js";
 /**
  * `@nightshift/mcp` — the Nightshift MCP server.
  *
