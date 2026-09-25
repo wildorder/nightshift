@@ -40,6 +40,8 @@ import {
   JobContractSchema,
   type Membership,
   MembershipSchema,
+  type OrgConfig,
+  OrgConfigSchema,
   type OrgId,
   type ProgramContract,
   ProgramContractSchema,
@@ -71,6 +73,7 @@ import {
   type JobContractStore,
   type MembershipStore,
   type NightshiftStores,
+  type OrgConfigStore,
   OwnershipViolationError,
   type Page,
   type PageRequest,
@@ -81,6 +84,7 @@ import {
   type RunScope,
   type RunStore,
   type SequenceLedger,
+  StaleWriteError,
   type StampOutcome,
   type UserStore,
   type VerificationStore,
@@ -143,6 +147,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const artifacts = new ScopedMap<Artifact>();
   const users = new ScopedMap<User>();
   const memberships = new ScopedMap<Membership>();
+  const orgConfigs = new ScopedMap<OrgConfig>();
 
   const all = [
     projects,
@@ -162,6 +167,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     artifacts,
     users,
     memberships,
+    orgConfigs,
   ];
 
   /** Sequence counters, one per run. Never reused, so ordering is total. */
@@ -397,6 +403,22 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     listByUser: async (userId: UserId) => memberships.scan(userPrefix(userId)),
   };
 
+  const orgConfigStore: OrgConfigStore = {
+    get: async (orgId: OrgId) => orgConfigs.get(orgId),
+    put: async (config) => {
+      const parsed = OrgConfigSchema.parse(config);
+      const stored = orgConfigs.get(parsed.orgId)?.version ?? 0;
+      if (stored !== parsed.version - 1) {
+        throw new StaleWriteError(
+          `the configuration of ${parsed.orgId}`,
+          parsed.version - 1,
+          stored,
+        );
+      }
+      orgConfigs.set(parsed.orgId, parsed);
+    },
+  };
+
   return {
     projects: projectStore,
     programContracts: programContractStore,
@@ -413,6 +435,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     artifacts: artifactStore,
     users: userStore,
     memberships: membershipStore,
+    orgConfigs: orgConfigStore,
     sequenceLedger: {
       stamp: async (scope, eventId) => stampStored(`${runPrefix(scope)}${eventId}`),
     },

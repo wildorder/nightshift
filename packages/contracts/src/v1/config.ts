@@ -14,10 +14,17 @@ import { RiskLevelSchema } from "./common.js";
 import {
   CostPolicySchema,
   DelegationLimitsSchema,
+  type ExaminationPolicy,
   ExaminationPolicySchema,
   ModelPolicySchema,
+  stricterExaminationPolicy,
   VerificationStepSchema,
 } from "./program-contract.js";
+import {
+  combineNarrowings,
+  type RoutingNarrowing,
+  RoutingNarrowingSchema,
+} from "./routing-policy.js";
 
 export const NIGHTSHIFT_CONFIG_FILE = "nightshift.config.json";
 
@@ -41,6 +48,8 @@ export const NightshiftConfigSchema = z.strictObject({
    */
   examinationPolicy: ExaminationPolicySchema.optional(),
   defaultRisk: RiskLevelSchema.optional(),
+  /** P8 (D-P8-03): how this repository narrows its org's routing. Only ever less. */
+  routing: RoutingNarrowingSchema.optional(),
 });
 export type NightshiftConfig = z.infer<typeof NightshiftConfigSchema>;
 
@@ -53,6 +62,7 @@ export const INHERITED_CONTRACT_FIELDS = [
   "costPolicy",
   "examinationPolicy",
   "defaultRisk",
+  "routing",
 ] as const;
 
 /**
@@ -68,5 +78,24 @@ export const inheritFromConfig = (contract: unknown, config: NightshiftConfig): 
   for (const field of INHERITED_CONTRACT_FIELDS) {
     if (stated[field] === undefined && config[field] !== undefined) defaults[field] = config[field];
   }
-  return { ...defaults, ...stated };
+  const merged: Record<string, unknown> = { ...defaults, ...stated };
+  // P8 (D-P8-03): for these two the contract does not simply win. Each can only
+  // narrow what its org allows, so the repository's narrowing and the program's
+  // both apply, and neither can undo the other's.
+  if (stated.examinationPolicy !== undefined && config.examinationPolicy !== undefined) {
+    const parsed = ExaminationPolicySchema.safeParse(stated.examinationPolicy);
+    if (parsed.success) {
+      merged.examinationPolicy = stricterExaminationPolicy(
+        config.examinationPolicy,
+        parsed.data as ExaminationPolicy,
+      );
+    }
+  }
+  if (stated.routing !== undefined && config.routing !== undefined) {
+    const parsed = RoutingNarrowingSchema.safeParse(stated.routing);
+    if (parsed.success) {
+      merged.routing = combineNarrowings(config.routing, parsed.data as RoutingNarrowing);
+    }
+  }
+  return merged;
 };

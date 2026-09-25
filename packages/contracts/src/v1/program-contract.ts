@@ -18,6 +18,7 @@ import {
   RatificationSchema,
   StrandSchema,
 } from "./plan.js";
+import { RoutingNarrowingSchema } from "./routing-policy.js";
 
 /** A program-level outcome the run is judged against. */
 export const SuccessCriterionSchema = z.strictObject({
@@ -79,6 +80,33 @@ export const ExaminationPolicySchema = z.strictObject({
 });
 export type ExaminationPolicy = z.infer<typeof ExaminationPolicySchema>;
 
+const stricterRequirement = (
+  a: ExaminationRequirement,
+  b: ExaminationRequirement,
+): ExaminationRequirement => ({
+  required: a.required || b.required,
+  mustDifferModel: a.mustDifferModel || b.mustDifferModel,
+  mustDifferProvider: a.mustDifferProvider || b.mustDifferProvider,
+  blockOnMaterialFindings: a.blockOnMaterialFindings || b.blockOnMaterialFindings,
+});
+
+/**
+ * The stricter of two policies, level by level and field by field (P8,
+ * D-P8-03). A repository or a contract can add scrutiny to what its org
+ * requires and can never take any away: a looser setting simply has no effect.
+ */
+export const stricterExaminationPolicy = (
+  a: ExaminationPolicy,
+  b: ExaminationPolicy | undefined,
+): ExaminationPolicy =>
+  b === undefined
+    ? a
+    : {
+        low: stricterRequirement(a.low, b.low),
+        medium: stricterRequirement(a.medium, b.medium),
+        high: stricterRequirement(a.high, b.high),
+      };
+
 export const DelegationLimitsSchema = z.strictObject({
   maxDepth: z.int().min(1),
   maxConcurrency: z.int().min(1),
@@ -120,6 +148,11 @@ export const ProgramContractSchema = z
     costPolicy: CostPolicySchema,
     /** Default risk when a Job Contract does not state one. */
     defaultRisk: RiskLevelSchema,
+    /**
+     * P8 (D-P8-03): how this program narrows its org's routing policy. Only
+     * ever less; `effectivePolicy` in `core` refuses a widening by name.
+     */
+    routing: RoutingNarrowingSchema.optional(),
     createdAt: IsoTimestampSchema,
     /**
      * The planned part (P7, `./plan.ts`). Every field is optional and absent

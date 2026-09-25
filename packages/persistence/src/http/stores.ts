@@ -39,6 +39,7 @@ import {
   ExecutionNodeSchema,
   type JobContractId,
   JobContractSchema,
+  OrgConfigSchema,
   type OrgId,
   ProgramContractSchema,
   type ProgramId,
@@ -60,6 +61,7 @@ import type {
   ExaminationStore,
   ExecutionNodeStore,
   JobContractStore,
+  OrgConfigStore,
   Page,
   PageRequest,
   ProgramContractStore,
@@ -439,7 +441,31 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
       ),
   };
 
+  const orgConfigs: OrgConfigStore = {
+    /**
+     * The org's stored configuration. The route answers the seeded default,
+     * version 0, when nobody has written one; the port says `undefined` for
+     * that, as every other adapter does.
+     */
+    get: async (orgId) => {
+      const config = await getOrUndefined(transport, OrgConfigSchema, routes.orgConfig(orgId));
+      return config === undefined || config.version === 0 ? undefined : config;
+    },
+    put: async (config) => {
+      await send(transport, {
+        method: "PUT",
+        path: routes.orgConfig(config.orgId),
+        body: {
+          routingPolicy: config.routingPolicy,
+          examinationPolicy: config.examinationPolicy,
+          replacesVersion: config.version - 1,
+        },
+      });
+    },
+  };
+
   return {
+    orgConfigs,
     projects,
     programContracts,
     runs,

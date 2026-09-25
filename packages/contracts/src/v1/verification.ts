@@ -71,6 +71,13 @@ export const VerificationSchema = z
     /** The agent whose work is under verification, not a verifying agent. */
     agentId: AgentIdSchema,
     commitSha: CommitShaSchema,
+    /**
+     * P8 (D-P8-09): `candidate` is the check an examined job's snapshot gets on
+     * its own base, beside the merge queue, before it is examined. It verifies
+     * nothing on its own: only a `queue` verification on the program head can
+     * make a node `verified`. Absent reads as `queue`.
+     */
+    phase: z.enum(["candidate", "queue"]).optional(),
     /** Set when this verification evidences a specific program success criterion. */
     criterionId: z.string().min(1).optional(),
     commands: z.array(VerificationCommandResultSchema).min(1),

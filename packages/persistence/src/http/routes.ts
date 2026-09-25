@@ -14,6 +14,7 @@ import type {
   ExaminationId,
   ExecutionNodeId,
   JobContractId,
+  OrgId,
   ProgramId,
   ProjectId,
   RoutingDecisionId,
@@ -23,6 +24,9 @@ import type {
 import type { ProgramScope, RunScope } from "@nightshift/core";
 
 export const routes = {
+  /** An org's routing and examination policy (P8). */
+  orgConfig: (orgId: OrgId) => `/orgs/${orgId}/config`,
+
   projects: () => "/projects",
   project: (projectId: ProjectId) => `/projects/${projectId}`,
   programs: (projectId: ProjectId) => `/projects/${projectId}/programs`,

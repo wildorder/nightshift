@@ -120,12 +120,16 @@ export const createProjectOrgCache = (options: ProjectOrgCacheOptions): ProjectO
  */
 export const targetFrom = (params: PathParams, body: unknown): AuthorizationTarget => {
   const target: {
+    orgId?: string;
     projectId?: string;
     programId?: string;
     runId?: string;
     nodeId?: string;
     agentId?: string;
   } = {};
+  // P8: `/orgs/{orgId}/…` names the org itself, and `authorize` holds it to the
+  // caller's acting org as it does a project's owner.
+  if (params.orgId !== undefined) target.orgId = params.orgId;
   if (params.projectId !== undefined) target.projectId = params.projectId;
   if (params.programId !== undefined) target.programId = params.programId;
   if (params.runId !== undefined) target.runId = params.runId;

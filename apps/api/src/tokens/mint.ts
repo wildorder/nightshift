@@ -35,6 +35,7 @@
 import type {
   Agent,
   ExecutionNode,
+  ExecutionRole,
   ExecutionTokenClaims,
   ProgramContract,
   Run,
@@ -134,20 +135,37 @@ const assertChain = (input: MintExecutionTokenInput): void => {
       `program ${program.programId} is not the program run ${run.runId} belongs to`,
     );
   }
-  if (agent.role === "examiner") {
+  // P8 (D-P8-15): a builder's session resumed to answer an examiner's
+  // questions reaches nothing in Nightshift, so it is given nothing to reach it with.
+  if (agent.role === "answerer") {
     throw new ExecutionTokenChainError(
-      `agent ${agent.agentId} is an examiner, which has no runtime yet and gets no token`,
+      `agent ${agent.agentId} is an answerer, which calls no Nightshift tool and gets no token`,
     );
   }
   // D-P4-06 keeps the **root** orchestrator on the human's session. The only
-  // orchestrator that holds a token is a sub-program's (D-P6-04), and a worker
-  // is only ever on a job: the role and the node's kind must agree, or a token
-  // could carry delegation authority onto a node that has none.
+  // orchestrator that holds a token is a sub-program's (D-P6-04), and a worker,
+  // an examiner and an arbiter are only ever on a job (P8): the role and the
+  // node's kind must agree, or a token could carry delegation authority onto a
+  // node that has none.
   const expectedKind = agent.role === "orchestrator" ? "sub-program" : "job";
   if (node.kind !== expectedKind) {
     throw new ExecutionTokenChainError(
       `agent ${agent.agentId} is a ${agent.role} on a ${node.kind} node; a ${agent.role}'s token is minted only on a ${expectedKind} node`,
     );
+  }
+};
+
+/** The token's role for an agent's role. An answerer has none (`assertChain`). */
+const executionRoleOf = (role: Agent["role"]): ExecutionRole => {
+  switch (role) {
+    case "orchestrator":
+      return "orchestrator";
+    case "examiner":
+      return "examiner";
+    case "arbiter":
+      return "arbiter";
+    default:
+      return "worker";
   }
 };
 
@@ -178,7 +196,7 @@ export const mintExecutionToken = async (
       runId: agent.runId,
       nodeId: node.executionNodeId,
       agentId: agent.agentId,
-      role: agent.role === "orchestrator" ? "orchestrator" : "worker",
+      role: executionRoleOf(agent.role),
     },
     iat: issuedAt,
     exp: expiresAt,

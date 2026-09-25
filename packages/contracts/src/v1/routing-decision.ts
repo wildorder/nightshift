@@ -12,12 +12,15 @@
 import { z } from "zod";
 import { ExecutionNodeIdSchema, RoutingDecisionIdSchema } from "../ids.js";
 import { IsoTimestampSchema, runScoped } from "./common.js";
+import { ClassificationSchema, EffortSchema, TierSchema } from "./routing-policy.js";
 
 /** A harness, provider and model triple Nightshift can dispatch to. */
 export const RouteTargetSchema = z.strictObject({
   harness: z.string().min(1),
   provider: z.string().min(1),
   model: z.string().min(1),
+  /** P8: the reasoning effort the route runs at, when its rung names one. */
+  effort: EffortSchema.optional(),
 });
 export type RouteTarget = z.infer<typeof RouteTargetSchema>;
 
@@ -42,12 +45,29 @@ export const RouteOutcomeSchema = z.enum([
   "failed",
   "escalated",
   "cancelled",
+  /**
+   * Added in P8 (D-P8-06). The route **could not start**: not signed in, the
+   * model not offered, rate-limited before any work began. Not a failure of the
+   * model, so the next attempt falls back sideways rather than climbing.
+   */
+  "unavailable",
 ]);
 export type RouteOutcome = z.infer<typeof RouteOutcomeSchema>;
+
+/**
+ * Where a dollar figure came from (P8, D-P8-08). A reported figure and an
+ * estimate are never added together silently: every total says which it is.
+ */
+export const CostSourceSchema = z.enum(["reported", "estimated", "unknown"]);
+export type CostSource = z.infer<typeof CostSourceSchema>;
 
 export const RouteUsageSchema = z.strictObject({
   inputTokens: z.int().min(0).optional(),
   outputTokens: z.int().min(0).optional(),
+  /** P8: tokens read from or written to the provider's prompt cache, where reported. */
+  cacheReadTokens: z.int().min(0).optional(),
+  cacheWriteTokens: z.int().min(0).optional(),
+  costSource: CostSourceSchema.optional(),
   estimatedCostUsd: z.number().min(0).optional(),
   actualCostUsd: z.number().min(0).optional(),
   latencyMs: z.int().min(0).optional(),
@@ -72,7 +92,21 @@ export interface RouteChoice {
   readonly ruleId: string;
   /** True when an orchestrator pinned the target rather than policy selecting it. */
   readonly wasOverride: boolean;
+  /** P8: where on the org's ladders the route sits, when a ladder chose it. */
+  readonly ladder?: string;
+  readonly rung?: RungPosition;
+  /** P8: the classification the rule matched, defaults filled in. */
+  readonly classification?: z.infer<typeof ClassificationSchema>;
+  /** P8: the org configuration version the effective policy was narrowed from. */
+  readonly policyVersion?: number;
 }
+
+/** A rung by tier and by its index on its ladder (0 is the cheapest). */
+export const RungPositionSchema = z.strictObject({
+  tier: TierSchema,
+  index: z.int().min(0),
+});
+export type RungPosition = z.infer<typeof RungPositionSchema>;
 
 export const RoutingDecisionSchema = z
   .strictObject({
@@ -92,6 +126,14 @@ export const RoutingDecisionSchema = z
     outcome: RouteOutcomeSchema,
     /** The attempt this one escalated from; `null` for a first attempt. */
     previousRouteId: RoutingDecisionIdSchema.nullable(),
+    /**
+     * P8 (D-P8-02 … D-P8-07). Optional, so a decision recorded before P8 parses
+     * as it did. Set on every decision a ladder made.
+     */
+    ladder: z.string().min(1).optional(),
+    rung: RungPositionSchema.optional(),
+    classification: ClassificationSchema.optional(),
+    policyVersion: z.int().min(0).optional(),
     createdAt: IsoTimestampSchema,
   })
   .refine(

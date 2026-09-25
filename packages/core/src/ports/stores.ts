@@ -33,6 +33,7 @@ import type {
   JobContract,
   JobContractId,
   Membership,
+  OrgConfig,
   OrgId,
   ProgramContract,
   ProgramId,
@@ -213,6 +214,21 @@ export interface MembershipStore {
 }
 
 /**
+ * An organisation's routing and examination policy (P8, D-P8-02). Above every
+ * project, like a membership, and in {@link ProjectStores} anyway: a run reads
+ * its org's policy when it starts, through whichever adapter it has.
+ */
+export interface OrgConfigStore {
+  /** The stored configuration, or `undefined` when nobody has written one. */
+  get(orgId: OrgId): Promise<OrgConfig | undefined>;
+  /**
+   * Stores `config` only if the stored one is at `config.version - 1` (absent
+   * counts as 0). Throws `StaleWriteError` otherwise and changes nothing.
+   */
+  put(config: OrgConfig): Promise<void>;
+}
+
+/**
  * Everything a *run* persists (T2).
  *
  * Split out from {@link NightshiftStores} in P3 because the two halves have
@@ -237,6 +253,7 @@ export interface ProjectStores {
   readonly examinations: ExaminationStore;
   readonly routingDecisions: RoutingDecisionStore;
   readonly artifacts: ArtifactStore;
+  readonly orgConfigs: OrgConfigStore;
 }
 
 /**

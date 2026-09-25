@@ -11,8 +11,10 @@ import { describe, expect, it } from "vitest";
 import { createFixturePair } from "../testing/factories.js";
 import {
   ACCESS_BY_ROLE,
+  ARBITER_ACCESS,
   type AuthorizationTarget,
   authorize,
+  EXAMINER_ACCESS,
   EXECUTION_ACCESS,
   type ExecutionAccess,
   type NodeRelation,
@@ -74,7 +76,9 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "verification.put": "forbidden",
   "verification.get": "own_run",
   "verification.listByNode": "own_subtree",
-  "examination.put": "forbidden",
+  // P8 (D-P8-13): a dispute of a finding on work it delegated, and the API
+  // holds the body to exactly that.
+  "examination.put": "own_subtree",
   "examination.get": "own_run",
   "examination.listByNode": "own_subtree",
   "routingDecision.put": "forbidden",
@@ -83,6 +87,8 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
   "artifact.createUploadUrl": "forbidden",
+  "orgConfig.get": "forbidden",
+  "orgConfig.put": "forbidden",
 };
 const ALL_OPERATIONS = Object.keys(EXPECTED) as Operation[];
 
@@ -107,7 +113,12 @@ const LEGITIMATE: Readonly<Record<NodeRelation, string>> = {
 describe("an orchestrator execution principal (D-P6-04)", () => {
   it("matches the table restated in this test, cell for cell", () => {
     expect(ORCHESTRATOR_ACCESS).toEqual(EXPECTED);
-    expect(ACCESS_BY_ROLE).toEqual({ worker: EXECUTION_ACCESS, orchestrator: ORCHESTRATOR_ACCESS });
+    expect(ACCESS_BY_ROLE).toEqual({
+      worker: EXECUTION_ACCESS,
+      orchestrator: ORCHESTRATOR_ACCESS,
+      examiner: EXAMINER_ACCESS,
+      arbiter: ARBITER_ACCESS,
+    });
   });
 
   it.each(ALL_OPERATIONS)("decides %s on its own node as the table says", (operation) => {

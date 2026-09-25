@@ -24,6 +24,7 @@ import { getAgent, listAgentsByNode, mintAgentToken, putAgent } from "./operatio
 import { appendEvent, getRunState, listEvents } from "./operations/events.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
+import { getOrgConfig, putOrgConfig } from "./operations/org-config.js";
 import {
   createPlanUploadUrl,
   getPlanDocument,
@@ -74,6 +75,20 @@ const NODE = `${RUN}/nodes/{nodeId}`;
  * readable and nothing is added that the slice does not use (T2).
  */
 export const ROUTES: readonly Route[] = [
+  // An organisation's routing and examination policy (P8, D-P8-02).
+  {
+    method: "GET",
+    path: "/orgs/{orgId}/config",
+    operation: "orgConfig.get",
+    handler: getOrgConfig,
+  },
+  {
+    method: "PUT",
+    path: "/orgs/{orgId}/config",
+    operation: "orgConfig.put",
+    handler: putOrgConfig,
+  },
+
   // Projects and programs.
   { method: "GET", path: "/projects", operation: "project.list", handler: listProjects },
   { method: "PUT", path: PROJECT, operation: "project.put", handler: putProject },
@@ -225,7 +240,8 @@ export const ROUTES: readonly Route[] = [
     handler: listVerificationsByNode,
   },
 
-  // Examination: port completeness only; nothing in P3 writes one (D-P3-07).
+  // Examination (P8): the examiner writes its verdict; the execution layer, and
+  // an orchestrator disputing, move a finding's resolution forward.
   {
     method: "PUT",
     path: `${RUN}/examinations/{examinationId}`,

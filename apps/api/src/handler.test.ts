@@ -972,7 +972,7 @@ describe("node and record listings (T2)", () => {
   });
 });
 
-describe("examinations (port completeness; nothing in P3 writes one)", () => {
+describe("examinations (P8: the execution layer's write, as a user)", () => {
   it("round trips an examination and lists it by node", async () => {
     const w = await setup();
     await seedRun(w, w.a);
@@ -988,9 +988,14 @@ describe("examinations (port completeness; nothing in P3 writes one)", () => {
       executionNodeId: w.a.rootNodeId,
       verificationId: verification.verificationId,
       commitSha: verification.commitSha,
+      patchId: "0".repeat(40),
       implementerAgentId: w.a.ids.next("agent"),
       examinerAgentId: w.a.ids.next("agent"),
+      examinerRoute: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
       requiredByRisk: "high",
+      blocking: true,
+      fixAttempt: 0,
+      questions: [],
       outcome: "passed",
       findings: [],
       createdAt: NOW,
@@ -1027,9 +1032,14 @@ describe("examinations (port completeness; nothing in P3 writes one)", () => {
       executionNodeId: w.a.rootNodeId,
       verificationId: w.a.ids.next("ver"),
       commitSha: "1111111111111111111111111111111111111111",
+      patchId: "0".repeat(40),
       implementerAgentId: agentId,
       examinerAgentId: agentId,
+      examinerRoute: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
       requiredByRisk: "high",
+      blocking: true,
+      fixAttempt: 0,
+      questions: [],
       outcome: "passed",
       findings: [],
       createdAt: NOW,

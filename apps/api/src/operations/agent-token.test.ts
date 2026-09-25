@@ -146,15 +146,40 @@ describe("POST …/agents/{agentId}/token", () => {
       status: "created",
     });
     const workerOnSub = makeAgent(w.f, sub.executionNodeId, { role: "worker", status: "created" });
-    const examiner = makeAgent(w.f, w.node.executionNodeId, {
+    // P8: an examiner or an arbiter on a sub-program would judge work nobody
+    // wrote there, and an answerer reaches no Nightshift tool at all.
+    const examinerOnSub = makeAgent(w.f, sub.executionNodeId, {
       role: "examiner",
       status: "created",
     });
-    for (const agent of [onJob, workerOnSub, examiner]) {
+    const answerer = makeAgent(w.f, w.node.executionNodeId, {
+      role: "answerer",
+      status: "created",
+    });
+    for (const agent of [onJob, workerOnSub, examinerOnSub, answerer]) {
       await put(`agents/${agent.agentId}`, agent);
       const refused = await w.call("POST", `${w.run}/agents/${agent.agentId}/token`);
       expect(refused.status, agent.role).toBe(422);
       expect(errorCode(refused)).toBe("incomplete_record");
+    }
+  });
+
+  it("mints an examiner's and an arbiter's token on a job node, each with its own role (P8)", async () => {
+    const w = await setup();
+    for (const role of ["examiner", "arbiter"] as const) {
+      const agent = makeAgent(w.f, w.node.executionNodeId, { role, status: "created" });
+      expect((await w.call("PUT", `${w.run}/agents/${agent.agentId}`, agent)).status).toBe(201);
+      const response = await w.call("POST", `${w.run}/agents/${agent.agentId}/token`);
+      expect(response.status, role).toBe(201);
+      const verified = verifyExecutionToken(
+        MintExecutionTokenResponseSchema.parse(response.body).token,
+        {
+          publicKey,
+          issuer: ISSUER,
+          now: Date.parse(NOW),
+        },
+      );
+      expect(verified).toMatchObject({ ok: true, principal: { role, agentId: agent.agentId } });
     }
   });
 
