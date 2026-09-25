@@ -99,7 +99,7 @@ Proposed 2026-09-24, revised to §3.1's answers 2026-09-25, for ratification.
 | ID | Decision | Rationale |
 |----|----------|-----------|
 | D-P8-01 | **A job says what it is; the policy says where that goes.** The Job Contract gains two classification fields beside `risk` and `ambiguity`: `testability` (`strong`: the contract's checks exercise the change; `weak`; `none`) and `kind` (`implement`, `fix`, `refactor`, `test`, `docs`, `orchestrate`). Scope breadth is derived from `scope.includes`, never declared. The delegating orchestrator sets them; anything left unset takes the **conservative** default (`defaultRisk`, `medium` ambiguity, `weak` testability), so an unclassified job never lands on the cheapest rung by accident. Sub-orchestrators default to `defaultRisk` like the root. | Stage 6's inputs, cut to what an orchestrator can state honestly and a rule can match on. Blast radius is `risk`; a context requirement is what `scope` and the context documents already say. A field that can be derived is not a second home for the same fact. |
-| D-P8-02 | **Routing policy belongs to the organisation.** `routingPolicy` is stored in the control plane per org, read and written by the org's members (`nightshift org config`). It holds **ladders**, one or more, each an ordered list of rungs, and each rung one or more `(harness, model)` routes in preference order. Rungs carry a **tier** (`cheap`, `standard`, `frontier`) so rules and examiners can speak across ladders. It also holds the **rules**, the price table, routes marked unavailable, and the default `examinationPolicy`. A new org is seeded with a working default, which the owner's org then replaces with Q2's ladders. | The owner's answer to Q2. Ladders and prices are a team's standing choice, not a repository's; a second project should not have to restate them. Tiers let ladders of different lengths be compared without pretending they are the same, and name the rung another provider's work falls back to. |
+| D-P8-02 | **Routing policy belongs to the organisation.** `routingPolicy` is stored in the control plane per org, read and written by the org's members (`nightshift org config`). It holds **ladders**, one or more, each an ordered list of rungs, and each rung one or more routes in preference order. A route is a `(harness, model)` pair with an optional **`effort`** (`low`, `medium`, `high`, `xhigh`, `max`), which the adapter passes to its harness (`claude --effort`, Codex's `model_reasoning_effort`); absent, the harness's own default applies. A rung may therefore be the same model as the rung below at a higher effort. Rungs carry a **tier** (`cheap`, `standard`, `frontier`) so rules and examiners can speak across ladders. It also holds the **rules**, the price table, routes marked unavailable, and the default `examinationPolicy`. A new org is seeded with a working default, which the owner's org then replaces with Q2's ladders. | The owner's answer to Q2. Ladders and prices are a team's standing choice, not a repository's; a second project should not have to restate them. Tiers let ladders of different lengths be compared without pretending they are the same, and name the rung another provider's work falls back to. |
 | D-P8-03 | **The repository and the contract may only narrow.** `nightshift.config.json` and the Program Contract inherit the org's policy and may forbid a route, drop a ladder, raise a rule's starting tier or tighten an examination requirement. They may not add a model, a harness or a ladder the org does not have, or loosen examination. The effective policy is computed in `core`, and what it was is recorded on the run. | A-11 applied to configuration: children narrow, never widen. It is also the only reading of "configurable by org" in which the org's choice means anything. |
 | D-P8-04 | **Routing is a first-match rule table.** Each rule matches on classification and names a starting **ladder** and **tier**. The first rule that matches wins; the last has no conditions. A ladder without the named tier starts at its lowest rung at or above it. `modelPolicy` still intersects everything. The rule id, the ladder, the rung and the classification matched are recorded on every decision. No model, no randomness and no clock take part. | Deterministic, explainable, overrideable (SC-10). A table is how "changing policy changes behaviour without code changes" is literally true, and first-match is the simplest thing a human can read top to bottom and predict. |
 | D-P8-05 | **An override is a pin within policy, as in P5.** An orchestrator may pin a harness, a model, a ladder or a tier on `delegate`. The pin must be eligible under the effective policy and is recorded as `wasOverride`. A pin does not exempt the job from escalation, fallback or examination. | A-38 unchanged. An override that could escape examination would make risk a suggestion. |
@@ -242,7 +242,7 @@ to be trained on.
 | An org configuration record (`routingPolicy`, default `examinationPolicy`), read by the org's members and executions in its projects, written by its members; seeded for a new org | D-P8-02 |
 | The run records the effective policy it ran under | D-P8-03 |
 | `JobContract` gains `testability`, `kind` (optional, defaulted conservatively) | D-P8-01. A contract written before P8 parses to what it was |
-| `RoutingDecision` gains `classification`, `ladder`, `rung`, outcome `unavailable`; `usage` gains cache tokens and `costSource` | D-P8-04 … D-P8-08 |
+| `RoutingDecision` gains `classification`, `ladder`, `rung`, the route's `effort`, outcome `unavailable`; `usage` gains cache tokens and `costSource` | D-P8-04 … D-P8-08 |
 | `Examination` gains `patchId`, `examinerRoute`, evidence, resolutions | D-P8-12, D-P8-13 |
 | Two execution roles, **examiner** and **arbiter**, each able to write its own record and read its run, nothing else; the independence checks of §4.4 at write time | D-P8-10, D-P8-13. New cells in both `authorize` tables |
 | No change to P1's transition table | D-P8-09 |
@@ -285,7 +285,7 @@ to be trained on.
   policy and availability always give the same route, proven table-driven and by
   property over random policies.
 - **SC-P8-02** Every routing decision records its eligible options, the rule,
-  ladder and rung responsible, the classification it matched, whether it was an
+  ladder and rung responsible, the effort it ran at, the classification it matched, whether it was an
   override, and, once known, its usage, latency, outcome and the attempt it
   replaced.
 - **SC-P8-03** An org's routing configuration is the default for every project in
@@ -403,7 +403,7 @@ Forbidden:
 T1 ── T2 ── T3 ── T4 ── T5
 ```
 
-Specs will live in `tasks/p8-routing-examination/`.
+Specs live in `tasks/p8-routing-examination/`.
 
 ## 11. Risks
 
@@ -422,6 +422,7 @@ Specs will live in `tasks/p8-routing-examination/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-25 | **A route may carry a reasoning effort.** Both harnesses take one, and every model on the owner's ladders offers several; a rung may be a model at a higher effort. Unset on the owner's ladders for now: each harness's default applies. Task specs T1 … T5 drafted. | Human (on the agent's offer) |
 | 2026-09-25 | **The owner's answers to Q1 … Q5** (§3.1): examination beside the queue; ladders configured per org, a ladder per provider, narrowed never widened below the org; budgets enforced now; a disputed blocking finding goes to an independent arbiter whose ruling stands and which the owner can reverse, on the owner's proposal of a decision agent from a different provider; the exit gate is the live suite and a real planned program. The Codex ladder was first given as `gpt-5.5 → astra`; the owner asked for the real model names, and Codex's catalog (`codex debug models`, CLI 0.156.1) gave `gpt-6-luna` ("fast and affordable"), `gpt-6-sol` ("workhorse") and `gpt-6-astra` ("frontier"), all three probed live. D-P8-02, -03, -06, -09, -10 and -13 written to them. | **Human** |
 | 2026-09-24 | Contract drafted after P7 closed. D-P8-01 … D-P8-11 proposed; Q1 … Q5 put to the owner. | Agent, for human ratification |
 
