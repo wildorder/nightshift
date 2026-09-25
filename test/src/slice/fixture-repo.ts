@@ -69,6 +69,10 @@ export interface MaterialiseOptions {
   readonly modelPolicy?: ModelPolicy;
   /** Replace the authored limits (one deep, one at a time) for a run that needs a tree (P6). */
   readonly delegationLimits?: DelegationLimits;
+  /** P8: replace the verification steps, for a run that needs a check of its own. */
+  readonly verification?: ProgramContract["verification"];
+  /** P8: files added to the fixture before its first commit, path to content. */
+  readonly files?: Readonly<Record<string, string>>;
   readonly git?: GitRunner;
 }
 
@@ -98,11 +102,16 @@ export const materialiseFixtureRepo = async (
     ...(options.delegationLimits === undefined
       ? {}
       : { delegationLimits: options.delegationLimits }),
+    ...(options.verification === undefined ? {} : { verification: [...options.verification] }),
     // The contract's repository is where it actually is, now that it is
     // somewhere. The authored value is a placeholder.
     repository: { ...authored.repository, url: repo },
   };
   await writeFile(join(repo, CONTRACT_FILE), `${JSON.stringify(program, null, 2)}\n`, "utf8");
+  for (const [path, content] of Object.entries(options.files ?? {})) {
+    await mkdir(dirname(join(repo, path)), { recursive: true });
+    await writeFile(join(repo, path), content, "utf8");
+  }
 
   const runner = options.git ?? nodeGitRunner;
   const run = (args: readonly string[]) => git(runner, args, { cwd: repo, atMs: AUTHORED_AT });

@@ -29,7 +29,6 @@ import type {
   Scope,
 } from "@nightshift/contracts";
 import {
-  defaultOrgConfig,
   type Effort,
   EffortSchema,
   ExecutionNodeIdSchema,
@@ -58,7 +57,6 @@ import {
   nowIso,
   type ProjectStores,
   pendingCount,
-  policyOfRun,
   type StrandBrief,
   StrandBriefError,
   strandBrief,
@@ -637,7 +635,6 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         const attached = requireAttached(state);
         const kind = input.kind ?? "sub-program";
         const job = buildStrandJob(state, attached, input.strandId, kind);
-        assertExaminable(attached, job);
         const check = await checkDelegationOrRefuse(state, attached, job.scope);
         const pins = pinsOf(input);
         const route = chooseRoute(attached, job, pins);
@@ -715,17 +712,14 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         //    never becomes a node, so nothing is persisted on this path.
         const job = buildJobContract(state, attached, input);
 
-        // 2. Examination policy, before the expensive part (D-P3-07).
-        assertExaminable(attached, job);
-
-        // 3. Depth, concurrency and scope narrowing, all from `core` (A-11).
+        // 2. Depth, concurrency and scope narrowing, all from `core` (A-11).
         const check = await checkDelegationOrRefuse(state, attached, input.scope);
 
-        // 4. Where it runs, and why: the run's rules over its ladders (D-P8-04).
+        // 3. Where it runs, and why: the run's rules over its ladders (D-P8-04).
         const pins = pinsOf(input);
         const route = chooseRoute(attached, job, pins);
 
-        // 5. The delegation is recorded, and the engine starts it when its parent
+        // 4. The delegation is recorded, and the engine starts it when its parent
         //    has a free slot: at once, usually (D-P6-01, D-P6-02). The lifecycle
         //    continues in the background of this process (D-P3-04).
         const submitted = await attached.engine.submit({
@@ -1191,26 +1185,6 @@ const buildJobContract = (
     createdAt: nowIso(state.runtime.clock),
   });
 
-/**
- * D-P3-07, checked before the expensive part.
- *
- * Refusing loudly beats silently skipping a step the contract asked for — a job
- * that quietly ran without the scrutiny its risk demanded would look identical
- * to one that had it.
- */
-const assertExaminable = (attached: AttachedRun, job: JobContract): void => {
-  const { run, program } = attached.session;
-  const requirement = policyOfRun(run, program, SEEDED_ORG).examinationPolicy[job.risk];
-  if (!requirement.required) return;
-  throw new ToolRefusal(
-    "examination_unavailable",
-    `this program's examination policy requires an examiner for ${job.risk}-risk work, and ` +
-      "examination arrives in P8. Lower the job's risk if that is honest, or change the " +
-      "program's policy — do not pretend the work was examined.",
-    { risk: job.risk, requirement },
-  );
-};
-
 /** Depth, concurrency and scope narrowing, from `core`'s own rule. */
 const checkDelegationOrRefuse = async (
   state: OrchestratorSession,
@@ -1254,12 +1228,6 @@ const chooseRoute = (attached: AttachedRun, job: JobContract, pins: RoutePins): 
     throw error;
   }
 };
-
-/** What a run that recorded no policy is read against: the seeded org default (a run from before P8). */
-const SEEDED_ORG = defaultOrgConfig(
-  "org_00000000000000000000000000" as never,
-  "1970-01-01T00:00:00.000Z",
-);
 
 /** A refusal a model can act on, rather than a rule's internal vocabulary. */
 const describeRejection = (reason: DelegationRejection): string => {

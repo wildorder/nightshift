@@ -94,7 +94,8 @@ export interface OrchestratorSession {
   current?: AttachedRun | undefined;
 }
 
-const buildEnvironment = (
+/** The execution environment a run is worked in: the runtime's, with the run's own examiners. */
+export const buildEnvironment = (
   runtime: Runtime,
   outbox: EventOutbox,
   run: Run,

@@ -38,6 +38,7 @@ export {
   workerIdentityFrom,
   workerLaunchEnv,
 } from "./role.js";
+export { examinationServices, routeJob } from "./routing.js";
 export {
   type CreateServerInput,
   createNightshiftServer,

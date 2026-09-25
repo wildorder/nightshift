@@ -15,6 +15,8 @@ import {
   ExaminationSchema,
   type ExecutionNodeId,
   JobContractSchema,
+  type Prerequisite,
+  type ProgramContract,
   type RiskLevel,
   type RouteChoice,
   type RouteTarget,
@@ -27,10 +29,13 @@ import {
   EXAMINATION_CONTEXT_ENV,
   type ExaminationContext,
   type ExaminationServices,
+  type ExecutionEnvironment,
   FixLimitError,
+  type PrerequisiteBook,
   patchIdOf,
   RULING_CONTEXT_ENV,
   type RulingContext,
+  resumeDeferred,
 } from "@nightshift/execution";
 import type { HarnessExit, HarnessStartInput } from "@nightshift/harness";
 import {
@@ -237,11 +242,18 @@ const arbiter = async (
   return { kind: "completed" };
 };
 
-const rig = async (scenario: Scenario) => {
+interface RigOptions {
+  readonly program?: Partial<ProgramContract>;
+  /** The prerequisites as the control plane would answer them, read on every verification. */
+  readonly prerequisites?: () => readonly Prerequisite[];
+}
+
+const rig = async (scenario: Scenario, options: RigOptions = {}) => {
   let world: World | undefined;
   const seen: Seen = { roles: [], tasks: [], resumes: [] };
   const made = await createWorld({
     harness: createFakeHarness({ script: play(() => world as World, scenario, seen) }),
+    ...(options.program === undefined ? {} : { program: options.program }),
   });
   world = made;
   const services: ExaminationServices = {
@@ -258,7 +270,20 @@ const rig = async (scenario: Scenario) => {
       },
     }),
   };
-  const environment = { ...made.environment, examination: services };
+  const book: PrerequisiteBook | undefined =
+    options.prerequisites === undefined
+      ? undefined
+      : {
+          prerequisites: async () => options.prerequisites?.() ?? [],
+          recordDiscovered: async () => {
+            throw new Error("nothing is discovered here");
+          },
+        };
+  const environment: ExecutionEnvironment = {
+    ...made.environment,
+    examination: services,
+    ...(book === undefined ? {} : { prerequisites: book }),
+  };
   const engine = createEngine({
     environment,
     session: made.session,
@@ -284,7 +309,14 @@ const rig = async (scenario: Scenario) => {
     parentNodeId: made.session.rootNodeId,
     route: choice(BUILDER),
   });
-  return { world: made, engine, seen, jobId: job.jobContractId, nodeId: submitted.nodeId };
+  return {
+    world: made,
+    environment,
+    engine,
+    seen,
+    jobId: job.jobContractId,
+    nodeId: submitted.nodeId,
+  };
 };
 
 const settledIdle = async (
@@ -501,4 +533,66 @@ describe("the patch id (D-P8-09, D-P8-12)", () => {
     expect(patchIdOf(diffAt(3, "const c = 3;"))).toBe(patchIdOf(diffAt(40, "const c = 3;")));
     expect(patchIdOf(diffAt(3, "const c = 3;"))).not.toBe(patchIdOf(diffAt(3, "const c = 4;")));
   });
+});
+
+describe("examination and deferral compose, in that order (D-P8-14)", () => {
+  const HP01 = (status: "pending" | "satisfied"): Prerequisite => ({
+    id: "HP-01",
+    description: "The deploy credential is in place.",
+    remediation: "Ask the owner.",
+    verifyCommand: "true",
+    status,
+    ...(status === "satisfied"
+      ? { lastCheck: { exitCode: 0, checkedAt: "2026-09-25T00:00:00.000Z" } }
+      : {}),
+  });
+  const GATED: Partial<ProgramContract> = {
+    verification: [
+      { id: "test", command: "node --test" },
+      { id: "gate", command: 'node -e "process.exit(0)"', requires: ["HP-01"] },
+    ],
+    prerequisites: [HP01("pending")],
+  };
+  const deferred = async () => {
+    let met = false;
+    const r = await rig(
+      { risk: "high" },
+      { program: GATED, prerequisites: () => [HP01(met ? "satisfied" : "pending")] },
+    );
+    expect(await settledIdle(r.world, r.engine, r.nodeId, "deferred")).toBe("deferred");
+    return { ...r, meet: () => (met = true) };
+  };
+
+  it("examines nothing while the checks are deferred, and examines at resume once they pass", async () => {
+    const r = await deferred();
+    // Never examined on unverified work: nothing yet.
+    expect(await examinationsOf(r.world, r.nodeId)).toEqual([]);
+    expect(r.seen.roles).not.toContain("examiner");
+
+    r.meet();
+    const result = await resumeDeferred(r.environment, r.world.session);
+    expect(result, JSON.stringify(result)).toEqual({ landed: [r.nodeId], discarded: [] });
+    expect(await r.world.stores.executionNodes.get(r.world.scope, r.nodeId)).toMatchObject({
+      status: "integrated",
+    });
+    const [examination] = await examinationsOf(r.world, r.nodeId);
+    expect(examination).toMatchObject({
+      outcome: "passed",
+      blocking: true,
+      examinerRoute: { provider: "openai" },
+    });
+  }, 60_000);
+
+  it("leaves it deferred, saying why, when the resume has no examiner to run", async () => {
+    const r = await deferred();
+    r.meet();
+    const { examination: _none, ...without } = r.environment;
+    const result = await resumeDeferred(without, r.world.session);
+    expect(result.landed).toEqual([]);
+    expect(result.stoppedAt).toMatchObject({ nodeId: r.nodeId, kind: "refused" });
+    expect(result.stoppedAt?.reason).toMatch(/^awaiting_examination: /);
+    expect(await r.world.stores.executionNodes.get(r.world.scope, r.nodeId)).toMatchObject({
+      status: "deferred",
+    });
+  }, 60_000);
 });

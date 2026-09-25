@@ -36,7 +36,6 @@ export type RefusalCode =
   | "scope_widening"
   | "depth_limit_exceeded"
   | "concurrency_limit_exceeded"
-  | "examination_unavailable"
   /** P7: a planned run. The plan names the strands; the root neither adds nor drops one. */
   | "plan_fixes_strands"
   | "strand_blocked"

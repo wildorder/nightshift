@@ -322,6 +322,61 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   instance belong to P10. Nightshift never runs a worker as a per-job hosted
   environment.
 
+**As built for P8 (Routing & Examination), 2026-09-25.** The details a later
+program needs and cannot derive; full account in
+`docs/programs/p8-routing-examination.md` §13. The lasting decisions are A-45 and
+A-46.
+
+- **Routing policy is the org's record, not code.** `OrgConfig` (in `contracts`,
+  an identity record like a membership) lives at `ORG#{orgId}/CONFIG` behind
+  `GET|PUT /orgs/{orgId}/config`; a write names `replacesVersion` and a stale one
+  is `StaleWriteError` (409). An org nobody configured reads as
+  `defaultOrgConfig` at version 0, whose ladders are the owner's. Read a run's
+  policy with `policyOfRun` (the recorded `run.policy`, or the seeded default
+  for a run from before P8), never from the org's current config: a run's policy
+  is fixed at `startRun`. `effectivePolicy` narrows; examination is
+  stricter-of per field.
+- **`ruleRoute` in `packages/routing` is the only router.** P5's
+  `configuredRoute` is gone. `apps/mcp/src/routing.ts` (`routeJob`,
+  `examinationServices`) is the one place the app composes it; `api` and
+  `execution` still may not import `routing`, so the engine takes a `route`
+  callback and `ExaminationServices`. Whether a retry climbs is `core`'s
+  `failureClimbs`, keyed on the node's status and the reason's prefix
+  (`NO_CLIMB_REASON_PREFIXES`): keep new reasons prefixed if they say nothing
+  about the model.
+- **An adapter reports a route that could not start as `unavailable`** on the
+  exit (Claude: `api_error` with its status before any work; Codex: the JSON
+  error's status), and the runner falls back on the **same node** without a
+  failure. Adapters keep sessions now (no `--no-session-persistence`, no
+  `--ephemeral`), carry `sessionId` and the final message on the exit, and take
+  `resume`, because the examiner's questions resume the builder.
+- **Examination is `packages/execution/src/examine.ts`.** A candidate
+  verification has `phase: "candidate"` and is never evidence for landing. An
+  examination binds `commitSha` and `patchIdOf` (what `git patch-id --stable`
+  computes, done in-process), and the queue carries it over only for the same
+  patch id. Examiner and arbiter are
+  execution roles with tables of their own; the orchestrator may write an
+  examination only to dispute (`finding.dispute`), and a resolution moves only
+  forward (`explainExaminationUpdate`). A ruling's `checkpointAfter` may be set
+  once, after it lands. `answerer` is an agent role with no token: an answer
+  runs with no MCP server at all.
+- **A job an examiner stops beside the queue ends `failed`**, its reason
+  beginning `examination_failed:` (`describeBlocking`), because the node is still
+  `implemented` and P1's table lets it only `fail`; one stopped *in* the queue
+  (a changed patch id) ends in the status `examination_failed`. Read both through
+  the reason's prefix. A retry of either is a fix (`fixAttemptOf`), and the
+  engine refuses a third with `FixLimitError`.
+- **`nightshift resume` lands through `apps/mcp`'s `nightshift-resume`** (a
+  process, like `nightshift-orchestrate`), because deferred work the run's
+  policy says to examine is examined there once its checks pass (D-P8-14) and
+  the CLI may not start an agent (A-31). `resumeDeferred` handed an environment
+  with no `examination` refuses such work with `awaiting_examination` and leaves
+  it deferred; a CLI built without `assets.resumePath` lands in process that
+  way.
+- The live suite is `npm run routing` (`apps/api/src/smoke/routing.smoke.ts`); it
+  writes the throwaway org's config to make a route unavailable and puts it
+  back.
+
 **As built for P7 (Planning), 2026-09-21.** The details a later program needs and
 cannot derive; full account in `docs/programs/p7-planning.md` §13. The lasting
 decisions are A-42, A-43 and A-44.

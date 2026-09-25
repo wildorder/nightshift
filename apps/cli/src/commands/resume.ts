@@ -12,8 +12,13 @@
  * 3. on a failure, records it as one, discards what was built on it and says so;
  * 4. rewrites `report.md` from the control plane.
  *
- * No agent is started and no model is asked anything. The exit code is 0 when
- * everything deferred has landed.
+ * Step 2 runs in `apps/mcp`'s `nightshift-resume`, a process of its own, because
+ * deferred work the run's policy says to examine is examined there once its
+ * checks pass (P8, D-P8-14), and an examiner is an agent the CLI may not start
+ * (A-31). No orchestrator is started, and no model is asked anything but an
+ * examiner or an arbiter. A CLI built without that entry point lands in
+ * process, and refuses examined work rather than land it unexamined. The exit
+ * code is 0 when everything deferred has landed.
  */
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -92,6 +97,43 @@ const printUnmet = (environment: CliEnvironment, pending: readonly Prerequisite[
   );
 };
 
+/**
+ * The deferred line landed by `nightshift-resume`, which can start an examiner,
+ * or in process by `inProcess` when this CLI has no entry point for it.
+ */
+const landDeferred = async (
+  environment: CliEnvironment,
+  run: Run,
+  repoPath: string,
+  inProcess: () => Promise<ResumeResult>,
+): Promise<ResumeResult> => {
+  const entry = environment.assets?.resumePath;
+  if (environment.exec === undefined || entry === undefined) return inProcess();
+  const result = await environment.exec(
+    process.execPath,
+    [
+      entry,
+      "--project",
+      run.projectId,
+      "--program",
+      run.programId,
+      "--run",
+      run.runId,
+      "--repo",
+      repoPath,
+    ],
+    { cwd: repoPath },
+  );
+  const last = result.stdout.trim().split("\n").at(-1) ?? "";
+  if (result.exitCode !== 0 || last === "") {
+    const said = result.stderr.trim().split("\n").slice(-5).join("\n");
+    throw new Error(
+      `the resume process exited ${result.exitCode}${said === "" ? "" : `:\n${said}`}`,
+    );
+  }
+  return JSON.parse(last) as ResumeResult;
+};
+
 export const resume = async (
   environment: CliEnvironment,
   options: ResumeOptions,
@@ -163,9 +205,14 @@ export const resume = async (
     return 1;
   }
 
-  const landing = landingFor(chosen);
-  const result = await resumeDeferred(landing, sessionFor(chosen));
-  await landing.outbox.flush(5_000).catch(() => {});
+  const result = await landDeferred(environment, chosen, repoPath, async () => {
+    const landing = landingFor(chosen as Run);
+    try {
+      return await resumeDeferred(landing, sessionFor(chosen as Run));
+    } finally {
+      await landing.outbox.flush(5_000).catch(() => {});
+    }
+  });
 
   if (result.blocked !== undefined) {
     environment.err(result.blocked);

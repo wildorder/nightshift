@@ -11,7 +11,13 @@
  * (AR-4).
  */
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import type { DelegationLimits, ModelPolicy, ProjectId } from "@nightshift/contracts";
+import type {
+  DelegationLimits,
+  ModelPolicy,
+  OrgId,
+  ProgramContract,
+  ProjectId,
+} from "@nightshift/contracts";
 import { createUlidIdGenerator, nowIso, type RunScope, systemClock } from "@nightshift/core";
 import {
   createAwsClients,
@@ -37,12 +43,18 @@ export interface DeployedSliceOptions {
   readonly modelPolicy?: ModelPolicy;
   /** Replaces the fixture program's limits, for a run that needs a tree (P6). */
   readonly delegationLimits?: DelegationLimits;
+  /** P8: replaces the fixture's verification steps. */
+  readonly verification?: ProgramContract["verification"];
+  /** P8: files added to the fixture before its first commit. */
+  readonly files?: Readonly<Record<string, string>>;
 }
 
 export interface DeployedSlice {
   readonly context: SliceContext;
   readonly apiEndpoint: string;
   readonly projectId: ProjectId;
+  /** The throwaway org the machine principal acts for: its configuration is the suite's to set (P8). */
+  readonly orgId: OrgId;
   /** Tell the slice about a run, so `settle` waits for it and cleanup removes it. */
   track(scope: RunScope): void;
   say(line: string): void;
@@ -118,6 +130,8 @@ export const openDeployedSlice = async (options: DeployedSliceOptions): Promise<
     ...(options.delegationLimits === undefined
       ? {}
       : { delegationLimits: options.delegationLimits }),
+    ...(options.verification === undefined ? {} : { verification: options.verification }),
+    ...(options.files === undefined ? {} : { files: options.files }),
   });
   say(`fixture at ${fixture.repo}; program ${fixture.program.programId}`);
 
@@ -214,6 +228,7 @@ export const openDeployedSlice = async (options: DeployedSliceOptions): Promise<
     context,
     apiEndpoint: environment.apiEndpoint,
     projectId,
+    orgId: orgId as OrgId,
     track: (scope) => {
       runScopes.push(scope);
     },

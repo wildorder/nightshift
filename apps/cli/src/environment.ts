@@ -113,6 +113,11 @@ export interface CliAssets {
    * MCP app's composition root's alone.
    */
   readonly orchestratePath?: string;
+  /**
+   * `nightshift resume`'s landing, with an examiner (P8, D-P8-14). Started as a
+   * process for the same reason: an examiner is an agent.
+   */
+  readonly resumePath?: string;
 }
 
 export interface CliEnvironment {
@@ -182,5 +187,6 @@ export const createCliEnvironment = (): CliEnvironment => ({
     skillsDir: join(REPO_ROOT, "skills"),
     mcpServerPath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-mcp.js"),
     orchestratePath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-orchestrate.js"),
+    resumePath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-resume.js"),
   },
 });

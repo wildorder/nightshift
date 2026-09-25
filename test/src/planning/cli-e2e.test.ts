@@ -30,6 +30,10 @@ const PROGRAM = "p1-modules";
 const ORCHESTRATE = fileURLToPath(
   new URL("../../../apps/mcp/dist/bin/nightshift-orchestrate.js", import.meta.url),
 );
+/** `nightshift resume`'s landing runs here, where an examiner can be started (P8, D-P8-14). */
+const RESUME = fileURLToPath(
+  new URL("../../../apps/mcp/dist/bin/nightshift-resume.js", import.meta.url),
+);
 
 let op: Operator;
 let fixture: MaterialisedRepo;
@@ -142,7 +146,12 @@ beforeEach(async () => {
 
   environment = {
     ...op.environment,
-    assets: { skillsDir: "", mcpServerPath: "", orchestratePath: ORCHESTRATE },
+    assets: {
+      skillsDir: "",
+      mcpServerPath: "",
+      orchestratePath: ORCHESTRATE,
+      resumePath: RESUME,
+    },
     // The launcher reaches the control plane with a machine token, as a script
     // would: this suite's operator has no real identity provider to refresh with.
     exec: (file, args, options) =>

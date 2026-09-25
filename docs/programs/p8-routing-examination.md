@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p8-routing-examination` |
 | Source stage | Stage 6 (Model/Harness Routing) and Stage 7 (Risk-Based Examination) |
-| Status | **Contract ratified 2026-09-25** (D-P8-01 … D-P8-15; §3.1, §12). Not started; build from T1. |
+| Status | **Built 2026-09-25** (T1 … T5; §13). Deployed; the live suite passed. **Open: SC-P8-18, the owner's own trial**; P8 closes after it. Four build decisions await ratification (§12). |
 | Depends on | P4 (organisations), P5 (the compatibility table, `RoutingDecision`, usage on exit), P6 (the engine, the merge queue, retries), P7 (strands, the report, the provisional line) |
 | Blocking decisions | none |
 
@@ -439,6 +439,7 @@ Specs live in `tasks/p8-routing-examination/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-25 | **Build decisions, provisional until the owner ratifies or reverses them.** (1) **A job an examiner stops beside the queue ends `failed`, not `examination_failed`.** Beside the queue the node is still `implemented`, and P1's table lets it only `fail`; the reason begins `examination_failed:` and names the findings, the retry climbs as D-P8-07 says, and it is a fix. A job stopped *in* the queue (its patch id changed) ends in the status `examination_failed` through the table's own edges. Nothing in P1's table changed. (2) **The arbiter is the frontier model neither side used when there is one, and otherwise the highest tier that has one.** D-P8-13 says frontier. With two providers, a high-risk job built on Claude's frontier and examined on Codex's has no frontier model left, and the live suite's arbiter was `gpt-6-sol`; refusing would leave every such dispute unruled. Its decision records the ladder and rung it ran on; its rule id still reads `arbiter-frontier`. A third provider (P10's Bedrock route) makes this rare. (3) **An answerer has no token and no MCP server.** D-P8-15's resumed builder answers in text and calls no Nightshift tool, so the role is minted nothing, and the token route refuses it. (4) **Adapters keep their sessions.** Claude runs without `--no-session-persistence` and Codex without `--ephemeral`, because D-P8-15 resumes the builder's session to answer; sessions therefore accumulate in the operator's own Claude Code and Codex history. | Agent, for human ratification |
 | 2026-09-25 | **The owner runs the exit gate's trial.** SC-P8-18 is the owner's own run on the deployed stack after T5, as P7's was; H-P8-04 is dropped. P8 closes when the owner has run it. | **Human** |
 | 2026-09-25 | **Contract ratified.** Ten decisions the owner judged low-risk, ratified as drafted: D-P8-01 … D-P8-05, -08, -09, -10, -12, -14. Five put to the owner one by one (Q6 … Q10): D-P8-06 and -07 as drafted; D-P8-13 amended to two fixes, then an arbiter that rules whether or not the finding is disputed, its ruling a checkpointed rollback point; D-P8-11 amended and **D-P8-15 added on the owner's proposal**, the examiner's direct questions to the resumed builder; the default examination policy as drafted. | **Human** |
 | 2026-09-25 | **A route may carry a reasoning effort.** Both harnesses take one, and every model on the owner's ladders offers several; a rung may be a model at a higher effort. Unset on the owner's ladders for now: each harness's default applies. Task specs T1 … T5 drafted. | Human (on the agent's offer) |
@@ -447,4 +448,119 @@ Specs live in `tasks/p8-routing-examination/`.
 
 ## 13. As built
 
-Not started.
+Built 2026-09-25 on `program/p8-routing-examination`, T1 … T5 in one sitting.
+
+### Task states
+
+| Task | State | Notes |
+|------|-------|-------|
+| T1 | **done**, deployed | `npm run smoke` 90 of 90, twice |
+| T2 | **done** | `ruleRoute` replaced P5's `configuredRoute` (and its tests) |
+| T3 | **done**, deployed | `npm run smoke` 90 of 90, twice |
+| T4 | **done** | No API change |
+| T5 | **done**, less SC-P8-18 | Redeployed, because T4 changed a contract the API validates; smoke 90 of 90 twice; conformance, slice and routing below. SC-P8-18 is the owner's |
+
+### What was proven, and where
+
+| SC | State | By |
+|----|-------|----|
+| SC-P8-01 | met | `packages/routing/src/rules.test.ts`, table-driven and by property over random policies |
+| SC-P8-02 | met, **live** | Every live decision carried its ladder, rung, rule, classification, effort and outcome; `routing-transitions.test.ts` |
+| SC-P8-03 | met | `packages/core/src/rules/policy.test.ts` (narrowing, widening refused by name, stricter-of); `startRun` records `run.policy`; `apps/api/src/operations/org-config` through the handler; `test/src/cli/org-config.test.ts` |
+| SC-P8-04 | met, **live** | `rules.test.ts`; live, a pin to `gpt-6-sol` landed as an override |
+| SC-P8-05 | met, **live** | `test/src/execution/routing.test.ts`; live, a Claude cheap rung that does not exist (`claude-nonexistent-9`) was recorded `unavailable` and the job landed on Codex's cheap rung (`gpt-6-luna`), same node, no failure |
+| SC-P8-06 | met, **live** | `rules.test.ts`, `routing.test.ts`; live, a verification that fails once on purpose failed Haiku and the retry landed on Sonnet, one rung up |
+| SC-P8-07 | met | `routing.test.ts` (a spent budget starts nothing new, and says so); Claude reports dollars, Codex's are estimated from the price table and marked `*` in the report (`report.test.ts`) |
+| SC-P8-08 | met | `test/src/execution/examination.test.ts` |
+| SC-P8-09 | met, **live** | `examiners.test.ts`; live, medium-risk work built on `claude-sonnet-5` was examined by `gpt-6-sol` (advisory, passed), high-risk work built on `claude-opus-5-5` by `gpt-6-astra` |
+| SC-P8-10 | met | `core`'s `mayExamine`/`mayArbitrate` and the API, `apps/api/src/operations/examination.test.ts`, `authorize-examiner.test.ts` |
+| SC-P8-11 | met, **live** | Contract invariants; `examination.test.ts` (carry-over only for the same patch id); live, `gpt-6-astra`'s finding carried three pieces of evidence |
+| SC-P8-12 | met, **live** | `examination.test.ts` (advisory lands; blocking fails; a fix is re-examined; a third is refused; two fixes go to the arbiter; overturn lands). Live: the planted defect (a divider with no zero check against a clause requiring `RangeError`) was found by `gpt-6-astra` and stopped the job; the retry, a fix carrying the finding, was examined again, passed and integrated |
+| SC-P8-12a | met **offline only** | `examination.test.ts` (resumed session, and the transcript fallback, each saying which). In four live runs no examiner chose to ask a question, so the live suite did not exercise it; the owner's trial may |
+| SC-P8-13 | met, **live** | `examination.test.ts`, `test/src/cli/ruling.test.ts`, `report.test.ts`. Live: a disputed finding went to an arbiter (`gpt-6-sol`, build decision 2 in §12), which upheld it; the ruling is a `Decision` with authority `agent` and `checkpointBefore`, and no `checkpointAfter` because nothing landed |
+| SC-P8-14 | met | `test/src/execution/org-policy.test.ts`: one fixture, started under the seeded default and again after the org's configuration changes through the handler, routes `R-bounded` to Claude's cheap rung and then `R-codex` to `gpt-6-sol`, and is not examined and then examined and blocking |
+| SC-P8-15 | met | `test/src/cli/org-config.test.ts` |
+| SC-P8-16 | met | Below; nothing weakened |
+| SC-P8-17 | met, **live**, 2026-09-25 | `npm run routing`, all 8 phases, 384.9 s, below |
+| SC-P8-18 | **open** | The owner's. Below: what to look for |
+
+D-P8-14 (examination and deferral compose) is proven in `examination.test.ts`:
+deferred high-risk work is not examined while its checks are deferred, is
+examined at resume once they pass and then lands, and a resume with no examiner
+leaves it deferred with `awaiting_examination`. `nightshift resume` lands through
+`apps/mcp`'s `nightshift-resume` so that it has one; `test/src/planning/cli-e2e.test.ts`
+drives that binary.
+
+### The live suite, 2026-09-25
+
+`npm run routing` against the deployed stack, real Claude Code and Codex on the
+operator's subscriptions, the org's default ladders:
+
+| Phase | Result |
+|-------|--------|
+| Preflight | All six routes on the ladders answered headless |
+| Fallback (run A) | `claude-nonexistent-9` unavailable → `gpt-6-luna` verified; integrated in 26 s |
+| Cheap rung | `claude-haiku-4-5` verified, $0.06; integrated in 26 s |
+| Pinned override | `gpt-6-sol` verified; integrated in 37 s |
+| Escalation | Haiku `verification_failed` ($0.05) → Sonnet verified ($0.06); integrated in 38 s from the retry |
+| Medium, examined | Sonnet built, `gpt-6-sol` examined: passed, no findings; integrated in 40 s |
+| High, planted defect | Opus built ($0.13), `gpt-6-astra` examined: F-01 material, 3 evidence, "divide does not throw RangeError for a zero divisor"; failed. The fix (Opus, $0.11) examined again: passed; integrated, 87 s in all |
+| Dispute | Same defect; `finding.dispute`; arbiter `gpt-6-sol` upheld it: "src/ratio.js performs unguarded JavaScript division, so ratio(6, 0) returns Infinity…" |
+
+The suite took four runs to pass. What the first three found:
+
+- **The `delegate` tool still refused any risk its policy said to examine**
+  (`examination_unavailable`, "examination arrives in P8"), a P3 guard T3 and T4
+  should have removed. The offline suites drive the engine directly and never
+  reached it. Removed, with its refusal code; its P3 test now proves the
+  opposite.
+- **The planted defect was first written as the implementation to build**, and
+  Opus failed the job as self-contradictory before any examiner saw it. The
+  builder is now told what the job is for.
+- The suite's own `codex exec` preflight held stdin open and hung; and it read a
+  route's outcome before the worker's process had written it. Both were the
+  suite's.
+
+### What changed in earlier programs' suites, and why
+
+Nothing was weakened. Each change admits a role, a field or an operation P8's
+ratified decisions add.
+
+- **P2/P3** `handler.test.ts` and `http-adapter.test.ts`: an examination has a
+  patch id, a route, `blocking`, a fix attempt and questions; evidence is a
+  list, not a string (`invariants.test.ts`).
+- **P3** `test/src/mcp/server.test.ts`: D-P3-07's refusal of examined risk is
+  now its acceptance (above).
+- **P4** both `authorize` suites and both isolation suites: `orgConfig.get|put`
+  cells, the examiner and arbiter tables, the orchestrator's `examination.put`
+  as `own_subtree` (dispute only), and `orgId` in the isolation params. The
+  token route mints examiner and arbiter tokens and refuses an answerer
+  (`agent-token.test.ts`).
+- **P5** `configured.test.ts` is gone with `configuredRoute`; `rules.test.ts`
+  replaces it. The adapters' command and stream tests gain effort, resume,
+  session ids, cache tokens and the `unavailable` exit. `routing-transitions.test.ts`
+  carries P8's fields. `test/src/slice/integrated.test.ts` expects `R-default`
+  where it expected `p5-configured`.
+- **P7** `plan-program.test.ts`: the skill reads rulings before departures.
+
+Live, after T5's redeploy: `npm run smoke` 90 of 90 twice; `npm run conformance
+-- --harness all` 3 of 3 for claude and 3 of 3 for codex; `npm run slice`
+passed every leg (scripted, claude, codex, and the real two-harness tree with a
+sub-orchestrator in 51.6 s); `npm run verify` green (3,083 tests, 2 skipped as before).
+
+### For the owner's trial (SC-P8-18)
+
+Everything is deployed and your org reads the seeded default, which is your
+ladders (Claude Haiku → Sonnet → Opus; Codex `gpt-6-luna` → `gpt-6-sol` →
+`gpt-6-astra`; medium examined advisory, high examined and blocking).
+`nightshift org config get` shows it; nothing needs setting. Plan and run as for
+P7 (`plan-program`, then `run-program`). In the run's `report.md`, look for:
+
+- **Arbiter rulings**, first, if any: each with the finding, the ruling and how
+  to reverse it.
+- **Routes per job**: how often the cheap rung reached `verified`, and what
+  climbed. A job that climbed twice started too low; the rule that placed it is
+  on the decision (`nightshift routes export {id}` gives every attempt as a line).
+- **Examinations per job**: what the examiners found, whether a finding held up,
+  and whether any examiner asked the builder a question (never exercised live).
+- **Cost**, with Codex's estimated and marked `*`, against any budget.
