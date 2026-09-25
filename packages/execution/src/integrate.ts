@@ -26,7 +26,14 @@
  * checkout, and it refuses when the checkout is dirty rather than fast-forwarding
  * over someone's work in progress.
  */
-import type { AgentId, CheckpointId, CommitSha, ExecutionNodeId } from "@nightshift/contracts";
+import type {
+  AgentId,
+  CheckpointId,
+  CommitSha,
+  Examination,
+  ExecutionNode,
+  ExecutionNodeId,
+} from "@nightshift/contracts";
 import { nowIso, transition } from "@nightshift/core";
 import type { LandingEnvironment, RunSession } from "./environment.js";
 import {
@@ -49,6 +56,12 @@ export interface IntegrateInput {
   /** The commit the worktree was cut from. Integration requires it unmoved. */
   readonly base: CommitSha;
   readonly commitSha: CommitSha;
+  /**
+   * P8 (D-P8-09): the examination that lets this commit land. Present, the node
+   * goes `verified → examining → sealed` through the table's examination edges;
+   * absent, `verified → sealed` directly, as before P8.
+   */
+  readonly examination?: Examination;
 }
 
 export type IntegrateResult =
@@ -114,7 +127,15 @@ export const integrateNode = async (
 
   // --- Seal: the commit becomes addressable, whatever happens next -------------
   await updateRef(runner, repo, sealedRef(input.nodeId), input.commitSha);
-  const sealed = transition(node, "seal", nowIso(clock));
+  let sealed: ExecutionNode;
+  if (input.examination === undefined) {
+    sealed = transition(node, "seal", nowIso(clock));
+  } else {
+    // The examination that cleared it, carried or made here (D-P8-09).
+    const examining = transition(node, "begin_examination", nowIso(clock));
+    await stores.executionNodes.put(examining);
+    sealed = transition(examining, "examination_passed", nowIso(clock));
+  }
   await stores.executionNodes.put(sealed);
 
   // --- Integrate ---------------------------------------------------------------

@@ -70,6 +70,8 @@ export interface StreamOutcome {
   readonly failure?: string;
   /** Codex's own session identifier, from `thread.started`. */
   readonly threadId?: string;
+  /** The last `agent_message`'s text: the model's final word (P8, an answerer's answers). */
+  readonly lastMessage?: string;
   /**
    * P8 (D-P8-06): why the route could not start, when a turn failed with a
    * provider error before any tool item began. `routeUnavailableReason` draws
@@ -142,6 +144,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let threadId: string | undefined;
   let usage: RouteUsage | undefined;
   let unavailable: string | undefined;
+  let lastMessage: string | undefined;
   let workItems = 0;
   let startEmitted = false;
   let unparseableLines = 0;
@@ -254,6 +257,12 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
       MAX_SUMMARY_CHARS,
     );
 
+  /** A finished item: the model's last words, kept for the exit (P8), or a tool's ending. */
+  const handleCompleted = (item: Frame): void => {
+    if (str(item.type) === "agent_message") lastMessage = str(item.text);
+    handleItem("completed", item);
+  };
+
   const handleLine = (line: string): void => {
     const frame = parse(line);
     if (frame === undefined) return;
@@ -267,7 +276,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         if (isRecord(frame.item)) handleItem("started", frame.item);
         return;
       case "item.completed":
-        if (isRecord(frame.item)) handleItem("completed", frame.item);
+        if (isRecord(frame.item)) handleCompleted(frame.item);
         return;
       case "turn.completed":
         turnCompleted = true;
@@ -307,6 +316,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         ...optionalField("threadId", threadId),
         ...optionalField("usage", usage),
         ...optionalField("unavailable", unavailable),
+        ...optionalField("lastMessage", lastMessage),
         startEmitted,
         unparseableLines,
       } as StreamOutcome;

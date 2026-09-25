@@ -81,7 +81,6 @@ describe("the command line, against Claude Code 2.1.273", () => {
       "bypassPermissions",
       "--disallowedTools",
       expect.stringContaining("Bash(git commit:*)"),
-      "--no-session-persistence",
     ]);
   });
 
@@ -98,8 +97,8 @@ describe("the command line, against Claude Code 2.1.273", () => {
   it("gives the deny flag exactly one comma-separated value", () => {
     const index = at(args, "--disallowedTools");
     expect(typeof args[index + 1]).toBe("string");
-    // The value after the value must be the next flag, not another list entry.
-    expect(args[index + 2]?.startsWith("--")).toBe(true);
+    // The value after the value must be the next flag, or the end: never another list entry.
+    expect(args[index + 2] === undefined || args[index + 2]?.startsWith("--")).toBe(true);
   });
 
   it("passes the model routing chose, unchanged and with no list of its own", () => {
@@ -108,8 +107,10 @@ describe("the command line, against Claude Code 2.1.273", () => {
     expect(flagValue(alias, "--model")).toBe("claude-sonnet-5");
   });
 
-  it("turns session persistence off and refuses every other configuration source", () => {
-    expect(args).toContain("--no-session-persistence");
+  it("keeps sessions (P8, D-P8-15) and refuses every other configuration source", () => {
+    // Kept so an examiner's question can resume the builder's own session.
+    expect(args).not.toContain("--no-session-persistence");
+    expect(args).not.toContain("--resume");
     expect(args).toContain("--strict-mcp-config");
     expect(flagValue(args, "--setting-sources")).toBe("");
   });
@@ -222,5 +223,20 @@ describe("a rung's reasoning effort (P8)", () => {
     });
     expect(flagValue(withEffort, "--effort")).toBe("high");
     expect(at(argsFor([]), "--effort")).toBe(-1);
+  });
+});
+
+describe("resuming a session (P8, D-P8-15)", () => {
+  it("continues the session named, after every other flag", () => {
+    const args = buildClaudeArgs({
+      prompt: "ANSWER",
+      model: MODEL,
+      mcpConfigPath: "/tmp/ns/mcp.json",
+      settingsPath: "/tmp/ns/settings.json",
+      policy: claudeToolPolicy({ scope: scope([]) }),
+      resumeSessionId: "15e34857-26e0-46ae-89c0-bdac582c50a7",
+    });
+    expect(args.slice(-2)).toEqual(["--resume", "15e34857-26e0-46ae-89c0-bdac582c50a7"]);
+    expect(args.slice(0, 2)).toEqual(["-p", "ANSWER"]);
   });
 });

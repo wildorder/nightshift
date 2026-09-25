@@ -1,0 +1,1289 @@
+/**
+ * Examination (P8, D-P8-09 … D-P8-15): an independent examiner judges a job's
+ * verified work against evidence before it lands, and an arbiter rules on a
+ * finding nobody could settle.
+ *
+ * ## Where it runs
+ *
+ * **Beside the merge queue** (D-P8-09). When a worker reports a job that the
+ * run's policy says must be examined, its snapshot is checked on its own base
+ * (a `candidate` verification, which is evidence for the examiner and never for
+ * landing) and examined there, while other work lands. The node stays
+ * `implemented` throughout, so P1's table is untouched. The queue then verifies
+ * it on the program head as always, and if the replayed diff is the one that
+ * was examined (the same patch id), the examination carries over; if the replay
+ * changed the diff, it is examined again, in the queue.
+ *
+ * ## Who is involved
+ *
+ * - The **examiner**: an agent of its own on the job's node, with its own token
+ *   and role, in a detached checkout of exactly the commit it judges, given
+ *   evidence and none of the builder's reasoning (D-P8-10, D-P8-11). It may ask
+ *   the builder up to three questions once (D-P8-15): it ends its turn, the
+ *   builder's own session is resumed to answer (or, when it cannot be, the
+ *   builder's route reads its transcript), and the examiner's session is resumed
+ *   with the answers to submit.
+ * - The **arbiter**: a fresh frontier invocation of a model neither side used,
+ *   given the finding, its evidence, the questions and answers, the dispute and
+ *   the diff (D-P8-13). Its ruling is a `Decision`, authority `agent`, whose
+ *   `checkpointBefore` is the program head it ruled against: a rollback point.
+ *
+ * Every route here is recorded as a routing decision with its `purpose`, so it
+ * counts against the run's budget and is in the dataset, and none of them is
+ * one of the job's attempts.
+ */
+import { createHash } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+import type {
+  Agent,
+  AgentId,
+  CommitSha,
+  Decision,
+  Examination,
+  ExaminationFinding,
+  ExaminationId,
+  ExaminationQuestion,
+  ExecutionNode,
+  ExecutionNodeId,
+  JobContract,
+  RouteChoice,
+  RoutingDecision,
+  Verification,
+  VerificationStep,
+} from "@nightshift/contracts";
+import {
+  defaultOrgConfig,
+  isOpenMaterialFinding,
+  MAX_EXAMINATION_QUESTIONS,
+  MAX_FIX_ATTEMPTS,
+  outcomeOfCommands,
+  VerificationSchema,
+} from "@nightshift/contracts";
+import {
+  examinationBlocks,
+  examinationRequirementFor,
+  labelCost,
+  nowIso,
+  policyOfRun,
+  transition,
+  transitionAgent,
+} from "@nightshift/core";
+import {
+  type AgentTask,
+  type ExaminationEvidence,
+  type HarnessExit,
+  type McpLaunch,
+  refusingWorkerTools,
+} from "@nightshift/harness";
+import { runVerificationSteps, toVerificationCommands } from "@nightshift/verification";
+import {
+  DEFAULT_VERIFICATION_TIMEOUT_MS,
+  type ExaminationServices,
+  type ExecutionEnvironment,
+  type RunSession,
+} from "./environment.js";
+import {
+  addDetachedWorktree,
+  changedPaths,
+  checkpointRef,
+  effectiveHead,
+  git,
+  pruneWorktrees,
+  updateRef,
+} from "./git/index.js";
+import { createHookSink } from "./hook-sink.js";
+import { recordArtifact } from "./runner.js";
+
+/** The environment variable an examiner's server reads its examination's frame from. */
+export const EXAMINATION_CONTEXT_ENV = "NIGHTSHIFT_EXAMINATION";
+/** The environment variable an arbiter's server reads what it rules on from. */
+export const RULING_CONTEXT_ENV = "NIGHTSHIFT_RULING";
+
+/** The frame of an examination, fixed before the examiner starts; the examiner supplies the verdict. */
+export interface ExaminationContext {
+  readonly examinationId: ExaminationId;
+  readonly verificationId: Verification["verificationId"];
+  readonly commitSha: CommitSha;
+  readonly patchId: string;
+  readonly implementerAgentId: AgentId;
+  readonly examinerRoute: RoutingDecision["chosen"];
+  readonly requiredByRisk: JobContract["risk"];
+  readonly blocking: boolean;
+  readonly fixAttempt: number;
+  readonly round: 1 | 2;
+  readonly questions: readonly ExaminationQuestion[];
+}
+
+/** What an arbiter rules on. */
+export interface RulingContext {
+  readonly examinationId: ExaminationId;
+  readonly findingId: string;
+  readonly checkpointBefore: Decision["checkpointBefore"];
+}
+
+/** The decision an arbiter records: `choice` is exactly one of these. */
+export const RULING_CHOICES = { overturn: "overturn", uphold: "uphold" } as const;
+
+export type ExaminationOutcome =
+  | { readonly kind: "not_required" }
+  /** Nothing stops it landing: passed, advisory findings only, or every blocking one overturned. */
+  | { readonly kind: "cleared"; readonly examination: Examination }
+  /** A material finding stands under a blocking policy, and a fix may still be tried. */
+  | { readonly kind: "blocked"; readonly examination: Examination; readonly reason: string }
+  /** The arbiter upheld a finding: the job fails and does not climb again on it. */
+  | { readonly kind: "upheld"; readonly examination: Examination; readonly reason: string }
+  /** The check on its own base failed: a verification failure, as the queue's would have been. */
+  | { readonly kind: "candidate_failed"; readonly verification: Verification }
+  /** Some check needs a human prerequisite: examined at resume, after its checks pass (D-P8-14). */
+  | { readonly kind: "postponed" }
+  /** Nothing to judge with: no examiner could be routed or it gave no verdict. Not the work's failure. */
+  | { readonly kind: "examiner_failed"; readonly reason: string };
+
+export interface ExamineInput {
+  readonly session: RunSession;
+  readonly job: JobContract;
+  readonly node: ExecutionNode;
+  /** The commit under examination, and the one it was cut from. */
+  readonly commitSha: CommitSha;
+  readonly base: CommitSha;
+  /** Called before the examiner starts; the queue passes nothing, the beside-queue path its own. */
+  readonly phase: "candidate" | "queue";
+  /** In the queue, the verification already run on the head, which is the evidence. */
+  readonly verification?: Verification;
+}
+
+const MAX_DIFF_CHARS = 120_000;
+const MAX_LOG_TAIL_CHARS = 2_000;
+const MAX_TRANSCRIPT_CHARS = 200_000;
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * A stable identity for a change, whatever it sits on (D-P8-09, D-P8-12): the
+ * diff with its line positions and blob ids stripped, hashed. The same change
+ * replayed onto a newer head has the same one; a changed change does not. What
+ * `git patch-id --stable` computes, done here because this package's git runner
+ * takes no standard input.
+ */
+export const patchIdOf = (diff: string): string => {
+  const normalised = diff
+    .split("\n")
+    .filter((line) => !line.startsWith("index ") && !line.startsWith("diff --git "))
+    .map((line) => (line.startsWith("@@") ? "@@" : line.replace(/\s+/g, "")))
+    .join("\n");
+  return createHash("sha1").update(normalised).digest("hex");
+};
+
+const looksLikeTest = (path: string): boolean =>
+  /(^|\/)(test|tests|__tests__|spec)\/|\.(test|spec)\.[a-z]+$/i.test(path);
+
+/** What a run that recorded no policy is read against: the seeded org default (a run from before P8). */
+const SEEDED_ORG = defaultOrgConfig(
+  "org_00000000000000000000000000" as never,
+  "1970-01-01T00:00:00.000Z",
+);
+
+/**
+ * The requirement for this run and job, and whether it says to examine at all.
+ * From the policy the run recorded when it started (D-P8-03); a session that
+ * does not carry its run is read against the seeded default, narrowed by its
+ * contract, which is what such a run would have recorded.
+ */
+export const requirementOf = (
+  session: Pick<RunSession, "program"> & { readonly run?: RunSession["run"] | undefined },
+  job: JobContract,
+) =>
+  examinationRequirementFor(
+    policyOfRun(session.run ?? {}, session.program, SEEDED_ORG).examinationPolicy,
+    job.risk,
+  );
+
+/**
+ * Which fix this attempt is (D-P8-13): one more than the last examination's when
+ * that one blocked, the same otherwise. An attempt retried for a conflict is not
+ * a fix.
+ */
+export const fixAttemptOf = (examinations: readonly Examination[]): number => {
+  const last = [...examinations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
+  if (last === undefined) return 0;
+  return examinationBlocks(last)
+    ? Math.min(last.fixAttempt + 1, MAX_FIX_ATTEMPTS)
+    : last.fixAttempt;
+};
+
+/** An examination that lets this exact change land, found among the node's (D-P8-09). */
+export const carriedExamination = (
+  examinations: readonly Examination[],
+  patchId: string,
+): Examination | undefined =>
+  [...examinations]
+    .filter((examination) => examination.patchId === patchId && !examinationBlocks(examination))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .at(-1);
+
+/** Why a blocked examination blocks, in a sentence a human and an orchestrator can act on. */
+export const describeBlocking = (examination: Examination): string => {
+  const open = examination.findings.filter(isOpenMaterialFinding);
+  return (
+    `examination_failed: ${open.length} material finding(s) by an independent examiner ` +
+    `(${examination.examinerRoute.model}): ${open.map((finding) => `${finding.id} ${finding.summary}`).join("; ")}`
+  ).slice(0, 1_900);
+};
+
+/** The answers an answering builder gave, from its final message, or `undefined` when it gave none usable. */
+export const parseAnswers = (
+  text: string | undefined,
+  questions: readonly string[],
+  answeredBy: ExaminationQuestion["answeredBy"],
+): readonly ExaminationQuestion[] | undefined => {
+  if (text === undefined) return undefined;
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start < 0 || end <= start) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(text.slice(start, end + 1));
+    if (!Array.isArray(parsed)) return undefined;
+    const answers = questions.map((question, index) => {
+      const entry = parsed[index] as { answer?: unknown } | undefined;
+      const answer =
+        typeof entry?.answer === "string" && entry.answer.trim() !== "" ? entry.answer : undefined;
+      return answer === undefined ? undefined : { question, answer, answeredBy };
+    });
+    return answers.every((answer) => answer !== undefined)
+      ? (answers as ExaminationQuestion[])
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// The examination
+// ---------------------------------------------------------------------------
+
+/**
+ * Examines one job's work, when the run's policy says to (D-P8-09 … D-P8-15).
+ * Never moves the node: what its outcome means for the node is the caller's.
+ */
+export const examine = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+): Promise<ExaminationOutcome> => {
+  const requirement = requirementOf(input.session, input.job);
+  if (!requirement.required) return { kind: "not_required" };
+  const services = environment.examination;
+  if (services === undefined) {
+    return {
+      kind: "examiner_failed",
+      reason:
+        "examiner_failed: this run's policy requires an examiner, and this execution environment has none",
+    };
+  }
+  const builder = await builderOf(environment, input);
+  if (builder === undefined) {
+    return {
+      kind: "examiner_failed",
+      reason: "examiner_failed: the work's own route and agent are not on the record",
+    };
+  }
+
+  const checkout = await examinationCheckout(environment, input);
+  try {
+    const gathered = await gatherEvidence(environment, input, checkout, requirement);
+    if ("kind" in gathered) return gathered;
+
+    let route: RouteChoice;
+    try {
+      route = services.examinerRoute({
+        job: input.job,
+        implementer: builder.route,
+        mustDifferModel: requirement.mustDifferModel,
+        mustDifferProvider: requirement.mustDifferProvider,
+      });
+    } catch (error) {
+      return {
+        kind: "examiner_failed",
+        reason: `examiner_failed: no examiner could be routed: ${messageOf(error)}`,
+      };
+    }
+
+    const frame: Omit<ExaminationContext, "round" | "questions"> = {
+      examinationId: environment.ids.next("exam"),
+      verificationId: gathered.verification.verificationId,
+      commitSha: input.commitSha,
+      patchId: gathered.patchId,
+      implementerAgentId: builder.agent.agentId,
+      examinerRoute: route.target,
+      requiredByRisk: input.job.risk,
+      blocking: requirement.blockOnMaterialFindings,
+      fixAttempt: gathered.evidence.fixAttempt,
+    };
+    const examination = await runExaminer(environment, services, input, {
+      checkout,
+      route,
+      evidence: gathered.evidence,
+      frame,
+      implementer: builder.agent,
+    });
+    if (typeof examination === "string") return { kind: "examiner_failed", reason: examination };
+    announceVerdict(environment, input, examination);
+    return verdictOf(environment, services, input, examination, {
+      checkout,
+      diff: gathered.evidence.diff,
+    });
+  } finally {
+    await removeCheckout(environment, input, checkout);
+  }
+};
+
+/** The builder's agent and the route its attempt ran on. */
+const builderOf = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+): Promise<{ readonly agent: Agent; readonly route: RoutingDecision["chosen"] } | undefined> => {
+  const decisions = await environment.stores.routingDecisions.listByNode(
+    input.session.scope,
+    input.node.executionNodeId,
+  );
+  const last = decisions
+    .filter((decision) => decision.purpose === undefined)
+    .sort((a, b) => a.attempt - b.attempt)
+    .at(-1);
+  const agent = await implementerOf(environment, input);
+  return last === undefined || agent === undefined ? undefined : { agent, route: last.chosen };
+};
+
+/**
+ * What the examiner is given (D-P8-11): the diff and its patch id, the checks,
+ * and on a fix what the last examination found. Or why there is nothing to
+ * examine yet: a check waits on a human, or the candidate check failed.
+ */
+const gatherEvidence = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  checkout: string,
+  requirement: ReturnType<typeof requirementOf>,
+): Promise<
+  | {
+      readonly evidence: ExaminationEvidence;
+      readonly verification: Verification;
+      readonly patchId: string;
+    }
+  | Extract<ExaminationOutcome, { kind: "postponed" | "candidate_failed" }>
+> => {
+  const diff = await git(
+    environment.git,
+    ["diff", "--no-color", "--no-ext-diff", input.base, input.commitSha],
+    { cwd: checkout },
+  );
+  let verification = input.verification;
+  if (verification === undefined) {
+    const checked = await candidateVerification(environment, input, checkout);
+    if (checked === "postponed") return { kind: "postponed" };
+    if (checked.outcome === "failed") return { kind: "candidate_failed", verification: checked };
+    verification = checked;
+  }
+  const examinations = await environment.stores.examinations.listByNode(
+    input.session.scope,
+    input.node.executionNodeId,
+  );
+  const paths = await changedPaths(environment.git, checkout, input.base, input.commitSha);
+  const fixAttempt = fixAttemptOf(examinations);
+  const previous = [...examinations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
+  return {
+    verification,
+    patchId: patchIdOf(diff),
+    evidence: {
+      diff: diff.slice(0, MAX_DIFF_CHARS),
+      diffTruncated: diff.length > MAX_DIFF_CHARS,
+      changedTests: paths.filter(looksLikeTest),
+      verification: await verificationEvidence(environment, verification),
+      risk: input.job.risk,
+      blocking: requirement.blockOnMaterialFindings,
+      fixAttempt,
+      ...(previous !== undefined && fixAttempt > 0 ? { previousFindings: previous.findings } : {}),
+    },
+  };
+};
+
+const announceVerdict = (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  examination: Examination,
+): void => {
+  environment.outbox.emit({
+    type: "examination.completed",
+    source: "control-plane",
+    payload: {
+      examinationId: examination.examinationId,
+      outcome: examination.outcome,
+      blocking: examination.blocking,
+      findings: examination.findings.map((finding) => ({
+        id: finding.id,
+        severity: finding.severity,
+      })),
+      examiner: examination.examinerRoute.model,
+    },
+    executionNodeId: input.node.executionNodeId,
+    agentId: examination.examinerAgentId,
+  });
+};
+
+/**
+ * What the verdict means (D-P8-13): cleared; blocked while a fix may still be
+ * tried; and after two fixes, whatever the arbiter rules, and the run moves on
+ * (the owner's answer to Q6).
+ */
+const verdictOf = (
+  environment: ExecutionEnvironment,
+  services: ExaminationServices,
+  input: ExamineInput,
+  examination: Examination,
+  context: { readonly checkout: string; readonly diff: string },
+): Promise<ExaminationOutcome> | ExaminationOutcome => {
+  if (!examinationBlocks(examination)) return { kind: "cleared", examination };
+  if (examination.fixAttempt < MAX_FIX_ATTEMPTS) {
+    return { kind: "blocked", examination, reason: describeBlocking(examination) };
+  }
+  return arbitrateAll(environment, services, input, examination, {
+    ...context,
+    dispute: "Two fixes have not resolved this finding; it goes to an arbiter without a dispute.",
+  });
+};
+
+/** The worker whose work this is: the node's last worker agent. */
+const implementerOf = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+): Promise<Agent | undefined> =>
+  [...(await environment.stores.agents.listByNode(input.session.scope, input.node.executionNodeId))]
+    .filter((agent) => agent.role === "worker")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .at(-1);
+
+/**
+ * Removes an examination's checkout and nothing else: not the job's branch, and
+ * not its base ref, which the job's own worktree still needs.
+ */
+const removeCheckout = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  path: string,
+): Promise<void> => {
+  await git(environment.git, ["worktree", "remove", "--force", path], {
+    cwd: input.session.repoPath,
+  }).catch(() => {});
+  await pruneWorktrees(environment.git, input.session.repoPath).catch(() => {});
+};
+
+/** A detached checkout of exactly the commit, under the state directory, that nothing kept. */
+const examinationCheckout = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+): Promise<string> => {
+  const worktree = environment.paths.worktree(
+    input.session.scope.runId,
+    input.node.executionNodeId,
+  );
+  const path = `${worktree}-examined-${environment.ids.next("exam").slice(-8).toLowerCase()}`;
+  await mkdir(dirname(path), { recursive: true });
+  await pruneWorktrees(environment.git, input.session.repoPath);
+  await addDetachedWorktree(environment.git, {
+    repo: input.session.repoPath,
+    path,
+    base: input.commitSha,
+  });
+  return path;
+};
+
+/**
+ * The snapshot checked on its own base, as evidence for the examiner (D-P8-09).
+ * `postponed` when a step needs a human prerequisite nobody has met: that work
+ * is examined at resume, once its checks pass (D-P8-14).
+ */
+const candidateVerification = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  checkout: string,
+): Promise<Verification | "postponed"> => {
+  const steps: readonly VerificationStep[] = input.session.program.verification;
+  if (steps.some((step) => (step.requires ?? []).length > 0)) {
+    const current =
+      environment.prerequisites === undefined
+        ? []
+        : await environment.prerequisites.prerequisites({
+            projectId: input.session.program.projectId,
+            programId: input.session.program.programId,
+          });
+    const unmet = new Set(
+      current.filter((prerequisite) => prerequisite.status !== "satisfied").map((p) => p.id),
+    );
+    if (steps.some((step) => (step.requires ?? []).some((id) => unmet.has(id)))) return "postponed";
+  }
+
+  const startedAt = nowIso(environment.clock);
+  const results = await runVerificationSteps({
+    steps,
+    cwd: checkout,
+    timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+  });
+  const logs = new Map<string, Verification["commands"][number]["logArtifactId"]>();
+  for (const result of results) {
+    const artifactId = await recordArtifact(environment, {
+      scope: input.session.scope,
+      nodeId: input.node.executionNodeId,
+      kind: "verification-log",
+      contentType: "text/plain; charset=utf-8",
+      bytes: result.output,
+    });
+    logs.set(result.stepId, artifactId as never);
+  }
+  const commands = toVerificationCommands(results, logs as never);
+  const workerId = (await implementerOf(environment, input))?.agentId;
+  const verification = VerificationSchema.parse({
+    schemaVersion: 1,
+    ...input.session.scope,
+    verificationId: environment.ids.next("ver"),
+    executionNodeId: input.node.executionNodeId,
+    jobContractId: input.job.jobContractId,
+    agentId: workerId,
+    commitSha: input.commitSha,
+    phase: "candidate",
+    commands,
+    outcome: outcomeOfCommands(commands),
+    startedAt,
+    endedAt: nowIso(environment.clock),
+  }) as Verification;
+  await environment.stores.verifications.put(verification);
+  return verification;
+};
+
+/** Each step, with the tail of what it printed, for the examiner. */
+const verificationEvidence = async (
+  environment: ExecutionEnvironment,
+  verification: Verification,
+): Promise<ExaminationEvidence["verification"]> => {
+  const steps: ExaminationEvidence["verification"][number][] = [];
+  for (const command of verification.commands) {
+    let logTail: string | undefined;
+    if (command.logArtifactId !== undefined) {
+      const body = await environment.bodies
+        .get(verification, command.logArtifactId)
+        .catch(() => undefined);
+      if (body !== undefined) logTail = new TextDecoder().decode(body).slice(-MAX_LOG_TAIL_CHARS);
+    }
+    steps.push({
+      stepId: command.stepId,
+      command: command.command,
+      ...(command.exitCode === undefined ? {} : { exitCode: command.exitCode }),
+      ...(logTail === undefined ? {} : { logTail }),
+    });
+  }
+  return steps;
+};
+
+// ---------------------------------------------------------------------------
+// Agents that are not the job's own
+// ---------------------------------------------------------------------------
+
+interface HelperAgent {
+  readonly agent: Agent;
+  readonly decision: RoutingDecision;
+  readonly token: string | undefined;
+}
+
+/** An agent on the job's node for an examiner, an answerer or an arbiter: record, route, token. */
+const createHelper = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  role: "examiner" | "answerer" | "arbiter",
+  route: RouteChoice,
+): Promise<HelperAgent> => {
+  const { stores, clock, ids, outbox } = environment;
+  const scope = input.session.scope;
+  const nodeId = input.node.executionNodeId;
+  const agent: Agent = {
+    schemaVersion: 1,
+    ...scope,
+    agentId: ids.next("agent"),
+    executionNodeId: nodeId,
+    role,
+    harness: route.target.harness,
+    provider: route.target.provider,
+    model: route.target.model,
+    status: "created",
+    createdAt: nowIso(clock),
+  };
+  await stores.agents.put(agent);
+  outbox.emit({
+    type: "agent.created",
+    source: "control-plane",
+    payload: { role, ...route.target },
+    executionNodeId: nodeId,
+    agentId: agent.agentId,
+  });
+  // An answerer reaches no Nightshift tool, so it is given no credential.
+  const token =
+    role === "answerer" ? undefined : (await environment.tokens.mint(scope, agent.agentId)).token;
+  const purpose = role === "examiner" ? "examine" : role === "answerer" ? "answer" : "arbitrate";
+  const decision: RoutingDecision = {
+    schemaVersion: 1,
+    ...scope,
+    routingDecisionId: ids.next("route"),
+    executionNodeId: nodeId,
+    attempt: 1,
+    eligibleOptions: [...route.eligibleOptions],
+    chosen: route.target,
+    ruleId: route.ruleId,
+    wasOverride: route.wasOverride,
+    usage: {},
+    outcome: "pending",
+    previousRouteId: null,
+    ...(route.ladder === undefined ? {} : { ladder: route.ladder }),
+    ...(route.rung === undefined ? {} : { rung: route.rung }),
+    ...(route.policyVersion === undefined ? {} : { policyVersion: route.policyVersion }),
+    purpose,
+    createdAt: nowIso(clock),
+  };
+  await stores.routingDecisions.put(decision);
+  outbox.emit({
+    type: "routing.decided",
+    source: "control-plane",
+    payload: { purpose, ruleId: decision.ruleId, chosen: decision.chosen },
+    executionNodeId: nodeId,
+  });
+  const started = transitionAgent(agent, "start", { at: nowIso(clock) });
+  await stores.agents.put(started);
+  return { agent: started, decision, token };
+};
+
+/** One run of a helper's harness process. */
+const runHelper = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  helper: HelperAgent,
+  launch: {
+    readonly worktree: string;
+    readonly task: AgentTask;
+    readonly mcp?: McpLaunch | undefined;
+    readonly resume?: string | undefined;
+  },
+): Promise<HarnessExit> => {
+  const transcript = environment.paths.transcript(input.session.scope.runId, helper.agent.agentId);
+  await mkdir(dirname(transcript), { recursive: true });
+  try {
+    const handle = await environment.harness.start({
+      agent: helper.agent,
+      node: input.node,
+      job: input.job,
+      program: input.session.program,
+      worktree: launch.worktree,
+      model: helper.decision.chosen,
+      ...(launch.mcp === undefined ? {} : { mcp: launch.mcp }),
+      tools: refusingWorkerTools(
+        "an examiner, an arbiter or an answerer reaches Nightshift through its MCP launch",
+      ),
+      sink: createHookSink({
+        outbox: environment.outbox,
+        executionNodeId: input.node.executionNodeId,
+        agentId: helper.agent.agentId,
+      }),
+      transcriptPath: transcript,
+      task: launch.task,
+      ...(launch.resume === undefined ? {} : { resume: { sessionId: launch.resume } }),
+    });
+    return await handle.exit;
+  } catch {
+    // The adapter could not even attempt a launch: the helper did not run.
+    return { kind: "failed", exitCode: 127 };
+  }
+};
+
+/** What every run of a helper cost, added up: an examiner can run twice (D-P8-15). */
+const sumUsage = (exits: readonly HarnessExit[]): RoutingDecision["usage"] => {
+  const add = (a: number | undefined, b: number | undefined) =>
+    a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
+  return exits.reduce<RoutingDecision["usage"]>((total, exit) => {
+    if (exit.kind !== "completed" && exit.kind !== "failed") return total;
+    const reported = exit.usage ?? {};
+    const sum = {
+      inputTokens: add(total.inputTokens, reported.inputTokens),
+      outputTokens: add(total.outputTokens, reported.outputTokens),
+      cacheReadTokens: add(total.cacheReadTokens, reported.cacheReadTokens),
+      cacheWriteTokens: add(total.cacheWriteTokens, reported.cacheWriteTokens),
+      actualCostUsd: add(total.actualCostUsd, reported.actualCostUsd),
+    };
+    return Object.fromEntries(Object.entries(sum).filter(([, value]) => value !== undefined));
+  }, {});
+};
+
+/** A helper agent's ending, with the session it kept, once. */
+const endAgent = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  helper: HelperAgent,
+  last: HarnessExit | undefined,
+  succeeded: boolean,
+): Promise<void> => {
+  const { stores, clock } = environment;
+  const current = await stores.agents.get(input.session.scope, helper.agent.agentId);
+  if (current === undefined || current.status !== "started") return;
+  const failedReason = last === undefined ? "it never ran" : `its harness ended ${last.kind}`;
+  const ended = transitionAgent(current, succeeded ? "complete" : "fail", {
+    at: nowIso(clock),
+    ...(succeeded
+      ? {}
+      : { outcomeReason: `the ${helper.agent.role} did not finish: ${failedReason}` }),
+    ...(last?.kind === "failed" ? { exitCode: last.exitCode } : {}),
+  });
+  const sessionId =
+    last?.kind === "completed" || last?.kind === "failed" ? last.sessionId : undefined;
+  await stores.agents
+    .put(sessionId === undefined ? ended : { ...ended, sessionId })
+    .catch(() => {});
+};
+
+/** A helper's ending, its usage and its route's outcome, once, however it went. */
+const endHelper = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  helper: HelperAgent,
+  exits: readonly HarnessExit[],
+  succeeded: boolean,
+): Promise<void> => {
+  await endAgent(environment, input, helper, exits.at(-1), succeeded);
+  const prices = input.session.run?.policy?.routingPolicy.prices ?? {};
+  await environment.stores.routingDecisions
+    .put({
+      ...helper.decision,
+      usage: labelCost(sumUsage(exits), prices[helper.decision.chosen.model]),
+      outcome: succeeded ? "succeeded" : "failed",
+    })
+    .catch(() => {});
+};
+
+// ---------------------------------------------------------------------------
+// The examiner, its questions, and the builder's answers
+// ---------------------------------------------------------------------------
+
+interface ExaminerRun {
+  readonly checkout: string;
+  readonly route: RouteChoice;
+  readonly evidence: ExaminationEvidence;
+  readonly frame: Omit<ExaminationContext, "round" | "questions">;
+  readonly implementer: Agent;
+}
+
+/** The examiner's verdict as it recorded it, or why there is none. */
+const runExaminer = async (
+  environment: ExecutionEnvironment,
+  services: ExaminationServices,
+  input: ExamineInput,
+  run: ExaminerRun,
+): Promise<Examination | string> => {
+  const helper = await createHelper(environment, input, "examiner", run.route);
+  const launchFor = (round: 1 | 2, questions: readonly ExaminationQuestion[]): McpLaunch =>
+    services.mcp({
+      projectId: input.session.scope.projectId,
+      programId: input.session.scope.programId,
+      runId: input.session.scope.runId,
+      nodeId: input.node.executionNodeId,
+      agentId: helper.agent.agentId,
+      jobContractId: input.job.jobContractId,
+      worktree: run.checkout,
+      role: "examiner",
+      executionToken: helper.token ?? "",
+      extraEnv: {
+        [EXAMINATION_CONTEXT_ENV]: JSON.stringify({
+          ...run.frame,
+          round,
+          questions,
+        } satisfies ExaminationContext),
+      },
+    });
+  environment.outbox.emit({
+    type: "examination.requested",
+    source: "control-plane",
+    payload: {
+      examinationId: run.frame.examinationId,
+      examiner: run.route.target,
+      risk: input.job.risk,
+      blocking: run.frame.blocking,
+      fixAttempt: run.frame.fixAttempt,
+    },
+    executionNodeId: input.node.executionNodeId,
+    agentId: helper.agent.agentId,
+  });
+
+  const exits: HarnessExit[] = [];
+  const first = await runHelper(environment, input, helper, {
+    worktree: run.checkout,
+    task: { kind: "examine", evidence: run.evidence, round: 1 },
+    mcp: launchFor(1, []),
+  });
+  exits.push(first);
+  let examination = await environment.stores.examinations.get(
+    input.session.scope,
+    run.frame.examinationId,
+  );
+
+  if (examination === undefined) {
+    const questions = await askedBy(environment, input, helper.agent.agentId);
+    const session =
+      first.kind === "completed" || first.kind === "failed" ? first.sessionId : undefined;
+    if (questions.length > 0 && session !== undefined) {
+      const answers = await answer(environment, input, run, questions);
+      environment.outbox.emit({
+        type: "examination.answered",
+        source: "control-plane",
+        payload: { examinationId: run.frame.examinationId, answers },
+        executionNodeId: input.node.executionNodeId,
+        agentId: helper.agent.agentId,
+      });
+      const second = await runHelper(environment, input, helper, {
+        worktree: run.checkout,
+        task: { kind: "examine", evidence: run.evidence, round: 2, answers },
+        mcp: launchFor(2, answers),
+        resume: session,
+      });
+      exits.push(second);
+      examination = await environment.stores.examinations.get(
+        input.session.scope,
+        run.frame.examinationId,
+      );
+    }
+  }
+
+  await endHelper(environment, input, helper, exits, examination !== undefined);
+  return examination ?? "examiner_failed: the examiner ended without submitting a verdict";
+};
+
+/** The questions an `examination.asked` payload carries. */
+const questionsIn = (payload: Readonly<Record<string, unknown>>): readonly string[] => {
+  const questions = payload.questions;
+  return Array.isArray(questions)
+    ? questions.filter((question): question is string => typeof question === "string")
+    : [];
+};
+
+/** The questions an examiner put, from the event its server wrote. */
+const askedBy = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  agentId: AgentId,
+): Promise<readonly string[]> => {
+  // The examiner's server flushed its event before its process ended.
+  const found: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await environment.stores.events.listByRun(
+      input.session.scope,
+      cursor === undefined ? {} : { cursor },
+    );
+    for (const event of page.items) {
+      if (event.type === "examination.asked" && event.agentId === agentId) {
+        found.push(...questionsIn(event.payload));
+      }
+    }
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  return found.slice(0, MAX_EXAMINATION_QUESTIONS);
+};
+
+/**
+ * The builder's answers (D-P8-15): its own session resumed in the examiner's
+ * read-only checkout; when that cannot be done or gives nothing usable, its route
+ * started fresh with its transcript. The answer says which.
+ */
+const answer = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  run: ExaminerRun,
+  questions: readonly string[],
+): Promise<readonly ExaminationQuestion[]> => {
+  const builder = run.implementer;
+  const route: RouteChoice = {
+    target: { harness: builder.harness, provider: builder.provider, model: builder.model },
+    eligibleOptions: [
+      {
+        target: { harness: builder.harness, provider: builder.provider, model: builder.model },
+        eligible: true,
+      },
+    ],
+    ruleId: "the builder's own route",
+    wasOverride: false,
+  };
+
+  if (builder.sessionId !== undefined) {
+    const helper = await createHelper(environment, input, "answerer", route);
+    const exit = await runHelper(environment, input, helper, {
+      worktree: run.checkout,
+      task: { kind: "answer", questions },
+      resume: builder.sessionId,
+    });
+    const answers = parseAnswers(
+      exit.kind === "completed" ? exit.result : undefined,
+      questions,
+      "resumed_session",
+    );
+    await endHelper(environment, input, helper, [exit], answers !== undefined);
+    if (answers !== undefined) return answers;
+  }
+
+  const transcript = await readTranscript(environment, input, builder.agentId);
+  const helper = await createHelper(environment, input, "answerer", route);
+  const exit = await runHelper(environment, input, helper, {
+    worktree: run.checkout,
+    task: { kind: "answer", questions, transcript },
+  });
+  const answers = parseAnswers(
+    exit.kind === "completed" ? exit.result : undefined,
+    questions,
+    "transcript",
+  );
+  await endHelper(environment, input, helper, [exit], answers !== undefined);
+  return (
+    answers ??
+    questions.map((question) => ({
+      question,
+      answer:
+        "The builder could not be reached to answer this: neither its session nor its transcript gave an answer.",
+      answeredBy: "transcript" as const,
+    }))
+  );
+};
+
+const readTranscript = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  agentId: AgentId,
+): Promise<string> => {
+  const { readFile } = await import("node:fs/promises");
+  const text = await readFile(
+    environment.paths.transcript(input.session.scope.runId, agentId),
+    "utf8",
+  ).catch(() => "(no transcript was kept)");
+  return text.slice(-MAX_TRANSCRIPT_CHARS);
+};
+
+// ---------------------------------------------------------------------------
+// The arbiter
+// ---------------------------------------------------------------------------
+
+/**
+ * Rules on every open material finding of `examination`, one arbiter each
+ * (D-P8-13). All overturned: the work may land. Any upheld, or any not ruled
+ * on: the job fails, naming them.
+ */
+export const arbitrateAll = async (
+  environment: ExecutionEnvironment,
+  services: ExaminationServices,
+  input: ExamineInput,
+  examination: Examination,
+  context: { readonly checkout?: string; readonly diff: string; readonly dispute: string },
+): Promise<ExaminationOutcome> => {
+  const { stores, clock } = environment;
+  const scope = input.session.scope;
+  let current = examination;
+  const open = current.findings.filter(isOpenMaterialFinding);
+  // Mark each disputed first, on the orchestrator's (or the two fixes') say-so.
+  const disputedAt = nowIso(clock);
+  current = {
+    ...current,
+    findings: current.findings.map((finding) =>
+      finding.resolution === "unresolved" && open.some((candidate) => candidate.id === finding.id)
+        ? {
+            ...finding,
+            resolution: "disputed",
+            resolvedBy: { authority: "agent", reason: context.dispute, at: disputedAt },
+          }
+        : finding,
+    ),
+  };
+  await stores.examinations.put(current);
+
+  const checkout = context.checkout ?? (await examinationCheckout(environment, input));
+  const checkpointBefore = await checkpointHead(environment, input);
+  const implementer = await stores.agents.get(scope, current.implementerAgentId);
+  const upheld: string[] = [];
+  try {
+    for (const finding of open) {
+      const ruling = await rule(environment, services, input, {
+        examination: current,
+        finding,
+        checkout,
+        diff: context.diff,
+        dispute: context.dispute,
+        checkpointBefore,
+        implementer,
+      });
+      const resolution =
+        ruling?.choice === RULING_CHOICES.overturn
+          ? "overturned"
+          : ruling === undefined
+            ? undefined
+            : "upheld";
+      if (ruling === undefined || resolution === undefined) {
+        upheld.push(`${finding.id} (the arbiter did not rule)`);
+        continue;
+      }
+      current = {
+        ...current,
+        findings: current.findings.map((candidate) =>
+          candidate.id === finding.id
+            ? {
+                ...candidate,
+                resolution,
+                resolvedBy: {
+                  authority: "agent",
+                  decisionId: ruling.decisionId,
+                  reason: ruling.rationale,
+                  at: nowIso(clock),
+                },
+              }
+            : candidate,
+        ),
+      };
+      await stores.examinations.put(current);
+      environment.outbox.emit({
+        type: "finding.ruled",
+        source: "control-plane",
+        payload: {
+          examinationId: current.examinationId,
+          findingId: finding.id,
+          ruling: resolution,
+          decisionId: ruling.decisionId,
+          checkpointBefore,
+        },
+        executionNodeId: input.node.executionNodeId,
+      });
+      if (resolution === "upheld") upheld.push(`${finding.id} ${finding.summary}`);
+    }
+  } finally {
+    if (context.checkout === undefined) await removeCheckout(environment, input, checkout);
+  }
+  if (upheld.length === 0) return { kind: "cleared", examination: current };
+  return {
+    kind: "upheld",
+    examination: current,
+    reason: `examination_upheld: an arbiter upheld ${upheld.join("; ")}`.slice(0, 1_900),
+  };
+};
+
+/** A checkpoint at the program head the ruling is made against: the rollback point (D-P8-13). */
+const checkpointHead = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+): Promise<Decision["checkpointBefore"]> => {
+  const { head } = await effectiveHead(
+    environment.git,
+    input.session.repoPath,
+    input.session.program.repository.programBranch,
+    input.session.scope.runId,
+  );
+  const checkpointId = environment.ids.next("ckpt");
+  const ref = checkpointRef(checkpointId);
+  await updateRef(environment.git, input.session.repoPath, ref, head);
+  await environment.stores.checkpoints.put({
+    schemaVersion: 1,
+    ...input.session.scope,
+    checkpointId,
+    executionNodeId: input.node.executionNodeId,
+    commitSha: head,
+    ref,
+    label: `before an arbiter's ruling on ${input.node.executionNodeId}`,
+    createdAt: nowIso(environment.clock),
+  });
+  environment.outbox.emit({
+    type: "checkpoint.created",
+    source: "control-plane",
+    payload: { checkpointId, ref, commitSha: head, purpose: "ruling" },
+    executionNodeId: input.node.executionNodeId,
+  });
+  return checkpointId;
+};
+
+/** One arbiter on one finding: its decision, or `undefined` when it did not rule. */
+const rule = async (
+  environment: ExecutionEnvironment,
+  services: ExaminationServices,
+  input: ExamineInput,
+  ruling: {
+    readonly examination: Examination;
+    readonly finding: ExaminationFinding;
+    readonly checkout: string;
+    readonly diff: string;
+    readonly dispute: string;
+    readonly checkpointBefore: Decision["checkpointBefore"];
+    readonly implementer: Agent | undefined;
+  },
+): Promise<Decision | undefined> => {
+  let route: RouteChoice;
+  try {
+    route = services.arbiterRoute({
+      job: input.job,
+      implementer:
+        ruling.implementer === undefined
+          ? ruling.examination.examinerRoute
+          : {
+              harness: ruling.implementer.harness,
+              provider: ruling.implementer.provider,
+              model: ruling.implementer.model,
+            },
+      examiner: ruling.examination.examinerRoute,
+    });
+  } catch {
+    return undefined;
+  }
+  const helper = await createHelper(environment, input, "arbiter", route);
+  const exit = await runHelper(environment, input, helper, {
+    worktree: ruling.checkout,
+    task: {
+      kind: "arbitrate",
+      finding: ruling.finding,
+      dispute: ruling.dispute,
+      questions: ruling.examination.questions,
+      diff: ruling.diff,
+    },
+    mcp: services.mcp({
+      projectId: input.session.scope.projectId,
+      programId: input.session.scope.programId,
+      runId: input.session.scope.runId,
+      nodeId: input.node.executionNodeId,
+      agentId: helper.agent.agentId,
+      jobContractId: input.job.jobContractId,
+      worktree: ruling.checkout,
+      role: "arbiter",
+      executionToken: helper.token ?? "",
+      extraEnv: {
+        [RULING_CONTEXT_ENV]: JSON.stringify({
+          examinationId: ruling.examination.examinationId,
+          findingId: ruling.finding.id,
+          checkpointBefore: ruling.checkpointBefore,
+        } satisfies RulingContext),
+      },
+    }),
+  });
+  const decision = [...(await environment.stores.decisions.listByRun(input.session.scope)).items]
+    .filter((candidate) => candidate.agentId === helper.agent.agentId)
+    .at(-1);
+  await endHelper(environment, input, helper, [exit], decision !== undefined);
+  return decision;
+};
+
+/** The rest of a ruled-on decision, once the work it let land has a checkpoint (D-P8-13). */
+export const recordRulingLanded = async (
+  environment: Pick<ExecutionEnvironment, "stores">,
+  scope: RunSession["scope"],
+  examination: Examination,
+  checkpointAfter: Decision["checkpointBefore"],
+): Promise<void> => {
+  for (const finding of examination.findings) {
+    const decisionId =
+      finding.resolution === "overturned" ? finding.resolvedBy?.decisionId : undefined;
+    if (decisionId === undefined) continue;
+    const decision = await environment.stores.decisions.get(scope, decisionId);
+    if (decision === undefined || decision.checkpointAfter !== undefined) continue;
+    await environment.stores.decisions.put({ ...decision, checkpointAfter }).catch(() => {});
+  }
+};
+
+/** What a retry after `examination` is: a fix with its findings, a refusal, or neither. */
+export const fixOf = (
+  examination: Examination | undefined,
+): { readonly task?: AgentTask; readonly refused?: string } => {
+  if (examination === undefined) return {};
+  const upheld = examination.findings.filter((finding) => finding.resolution === "upheld");
+  if (upheld.length > 0) {
+    return {
+      refused:
+        `an arbiter upheld ${upheld.map((finding) => finding.id).join(", ")} on this job's last ` +
+        "attempt, and the ruling stands: it is not retried. A human may reverse the ruling.",
+    };
+  }
+  if (!examinationBlocks(examination)) return {};
+  if (examination.fixAttempt >= MAX_FIX_ATTEMPTS) {
+    return {
+      refused: `this job has had ${MAX_FIX_ATTEMPTS} fixes of its blocking findings; a third is not tried. Dispute a finding to send it to an arbiter.`,
+    };
+  }
+  return { task: { kind: "fix", findings: examination.findings.filter(isOpenMaterialFinding) } };
+};
+
+/** Where an examined job's node stands: its latest examination. */
+export const latestExamination = async (
+  environment: Pick<ExecutionEnvironment, "stores">,
+  scope: RunSession["scope"],
+  nodeId: ExecutionNodeId,
+): Promise<Examination | undefined> =>
+  [...(await environment.stores.examinations.listByNode(scope, nodeId))]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .at(-1);
+
+const messageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/**
+ * The examination gate in the merge queue (D-P8-09), after the node is
+ * `verified` on the program head: nothing to do when the policy asks for no
+ * examination; the examination of the same change when there is one that lets
+ * it land; otherwise an examination here, now, against the commit that would
+ * land. `stopped` when that one stops it, with the node ended `examination_failed`.
+ */
+export const examineInQueue = async (
+  environment: ExecutionEnvironment,
+  input: Omit<ExamineInput, "phase"> & { readonly verification: Verification },
+): Promise<
+  { readonly kind: "land"; readonly examination?: Examination } | { readonly kind: "stopped" }
+> => {
+  if (!requirementOf(input.session, input.job).required) return { kind: "land" };
+  const diff = await git(
+    environment.git,
+    ["diff", "--no-color", "--no-ext-diff", input.base, input.commitSha],
+    { cwd: input.session.repoPath },
+  );
+  const examinations = await environment.stores.examinations.listByNode(
+    input.session.scope,
+    input.node.executionNodeId,
+  );
+  const carried = carriedExamination(examinations, patchIdOf(diff));
+  if (carried !== undefined) return { kind: "land", examination: carried };
+
+  const outcome = await examine(environment, { ...input, phase: "queue" });
+  switch (outcome.kind) {
+    case "not_required":
+    case "postponed":
+      return { kind: "land" };
+    case "cleared":
+      return { kind: "land", examination: outcome.examination };
+    case "candidate_failed":
+    case "blocked":
+    case "upheld":
+    case "examiner_failed": {
+      const reason =
+        outcome.kind === "candidate_failed"
+          ? "examination_failed: its checks failed"
+          : outcome.reason;
+      const { stores, clock, outbox } = environment;
+      const node = await stores.executionNodes.get(input.session.scope, input.node.executionNodeId);
+      if (node !== undefined && node.status === "verified") {
+        const examining = transition(node, "begin_examination", nowIso(clock));
+        await stores.executionNodes.put(examining);
+        await stores.executionNodes.put({
+          ...transition(examining, "examination_failed", nowIso(clock)),
+          outcomeReason: reason,
+        });
+        outbox.emit({
+          type: "node.failed",
+          source: "control-plane",
+          payload: { reason, examined: "in the merge queue" },
+          executionNodeId: input.node.executionNodeId,
+        });
+      }
+      return { kind: "stopped" };
+    }
+  }
+};

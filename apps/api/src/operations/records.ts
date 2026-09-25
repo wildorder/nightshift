@@ -86,12 +86,32 @@ export const putDecision: Handler = async ({ deps, request, params, principal })
   assertIdentifierMatches("decisionId", pathId("dec", params, "decisionId"), decision.decisionId);
   await requireRun(deps.stores, scope);
 
+  const existing = await deps.stores.decisions.get(scope, decision.decisionId);
+  // P8 (D-P8-13): a decision's `checkpointAfter` is absent until the work it
+  // governs has been checkpointed, and is then set once. Nothing else changes.
+  if (existing !== undefined && addsOnlyCheckpointAfter(existing, decision)) {
+    if (principal.kind === "execution") {
+      throw new HttpError(
+        403,
+        "execution_forbidden_operation",
+        "only the execution layer completes a decision's checkpoints",
+      );
+    }
+    await deps.stores.decisions.put(decision);
+    return { status: 200, body: decision };
+  }
   if (principal.kind === "execution" && principal.role === "arbiter") {
     await assertArbiterMayRule(deps.stores, scope, principal, decision);
   }
   await validateDecision(deps.stores, scope, decision);
-  const existing = await deps.stores.decisions.get(scope, decision.decisionId);
   return createOrConfirm(existing, decision, () => deps.stores.decisions.put(decision));
+};
+
+/** Whether `next` is `existing` with `checkpointAfter` set where it was absent, and nothing else. */
+const addsOnlyCheckpointAfter = (existing: Decision, next: Decision): boolean => {
+  if (existing.checkpointAfter !== undefined || next.checkpointAfter === undefined) return false;
+  const { checkpointAfter: _added, ...rest } = next;
+  return sameRecord(existing, rest as Decision);
 };
 
 export const putCheckpoint: Handler = async ({ deps, request, params }) => {

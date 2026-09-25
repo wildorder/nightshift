@@ -11,9 +11,12 @@
 import type {
   AgentId,
   ExecutionNodeId,
+  JobContract,
   JobContractId,
   Prerequisite,
   ProgramContract,
+  RouteChoice,
+  RoutingDecision,
   Run,
   RunId,
 } from "@nightshift/contracts";
@@ -27,7 +30,7 @@ import type {
   ProjectStores,
   RunScope,
 } from "@nightshift/core";
-import type { Harness } from "@nightshift/harness";
+import type { Harness, McpLaunch } from "@nightshift/harness";
 import type { GitRunner } from "./git/index.js";
 import type { EventOutbox } from "./outbox.js";
 
@@ -50,7 +53,12 @@ export interface WorkerLaunchIdentity {
    * `sub-orchestrator` for a sub-program's orchestrator (P6, D-P6-03), whose
    * server holds a delegating token and a different tool surface.
    */
-  readonly role: "worker" | "sub-orchestrator";
+  readonly role: "worker" | "sub-orchestrator" | "examiner" | "arbiter";
+  /**
+   * P8: variables the server of an examiner or an arbiter reads the frame of
+   * its task from. Never a credential: that is `executionToken`, alone.
+   */
+  readonly extraEnv?: Readonly<Record<string, string>>;
   /**
    * The worker's only credential (D-P4-06). Bound to this agent, this node and
    * this run, expiring within the cost policy's wall clock. Never logged, never
@@ -104,6 +112,34 @@ export interface ExecutionEnvironment {
    * contract's own copy is the only one there is.
    */
   readonly prerequisites?: PrerequisiteBook;
+  /**
+   * P8: who examines and who arbitrates, supplied by the composition root,
+   * because routing is not this package's. Absent, a job whose risk requires
+   * examination is not examined and does not land: it fails, saying so.
+   */
+  readonly examination?: ExaminationServices;
+}
+
+/**
+ * What only the composition root can supply (P8): who examines and who
+ * arbitrates is routing's, and routing is not this package's.
+ */
+export interface ExaminationServices {
+  /** The examiner's route for a job whose implementer ran on `implementer` (D-P8-10). */
+  examinerRoute(input: {
+    readonly job: JobContract;
+    readonly implementer: RoutingDecision["chosen"];
+    readonly mustDifferModel: boolean;
+    readonly mustDifferProvider: boolean;
+  }): RouteChoice;
+  /** A frontier route whose model neither side used (D-P8-13). */
+  arbiterRoute(input: {
+    readonly job: JobContract;
+    readonly implementer: RoutingDecision["chosen"];
+    readonly examiner: RoutingDecision["chosen"];
+  }): RouteChoice;
+  /** The MCP launch for an examiner's or an arbiter's server, carrying its identity. */
+  mcp(identity: WorkerLaunchIdentity): McpLaunch;
 }
 
 /**

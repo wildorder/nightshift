@@ -21,17 +21,20 @@
  * Scheduling is a single loop that re-runs when asked while running, never two
  * loops: two passes reading the same tree would both see the same free slot.
  */
-import type {
-  Effort,
-  ExecutionNode,
-  ExecutionNodeId,
-  JobContract,
-  JobContractId,
-  RouteChoice,
-  RouteTarget,
-  RouteUsage,
-  Scope,
-  Tier,
+import {
+  type CommitSha,
+  type Effort,
+  type Examination,
+  type ExecutionNode,
+  type ExecutionNodeId,
+  isOpenMaterialFinding,
+  type JobContract,
+  type JobContractId,
+  type RouteChoice,
+  type RouteTarget,
+  type RouteUsage,
+  type Scope,
+  type Tier,
 } from "@nightshift/contracts";
 import {
   blockedBy,
@@ -44,6 +47,7 @@ import {
   isDoneForNow,
   isPlanned,
   isSettled,
+  markImplemented,
   maySlotStart,
   nowIso,
   RETRYABLE_STATUSES,
@@ -56,10 +60,12 @@ import {
   strandWaitingFor,
   transition,
 } from "@nightshift/core";
-import type { McpLaunch } from "@nightshift/harness";
+import type { AgentTask, McpLaunch } from "@nightshift/harness";
 import type { ExecutionEnvironment, RunSession, WorkerLaunchIdentity } from "./environment.js";
+import { arbitrateAll, fixOf, latestExamination } from "./examine.js";
+import { baseRef, git, jobBranch, revParse } from "./git/index.js";
 import { createMergeQueue, type MergeQueue } from "./merge-queue.js";
-import { delegateJob, type StartedJob, startJob } from "./runner.js";
+import { attemptsOf, delegateJob, type StartedJob, startJob } from "./runner.js";
 
 export interface EngineOptions {
   readonly environment: ExecutionEnvironment;
@@ -106,6 +112,14 @@ export interface RoutePins {
   readonly effort?: Effort | undefined;
 }
 
+/**
+ * A retry the fix limit refuses (D-P8-13): two fixes of blocking findings were
+ * tried, or an arbiter upheld one. The work does not climb again on it.
+ */
+export class FixLimitError extends Error {
+  override readonly name = "FixLimitError";
+}
+
 /** A strand in a parked strand's cone. It is not started, and delegating it again is refused. */
 export class StrandBlockedError extends Error {
   override readonly name = "StrandBlockedError";
@@ -139,6 +153,8 @@ export interface Submission {
   readonly route: RouteChoice;
   /** What the delegator pinned, kept so a retry and a fallback honour it too (D-P8-05). */
   readonly pins?: RoutePins | undefined;
+  /** P8 (D-P8-13): a fix of blocking findings, carried into the worker's brief. */
+  readonly task?: AgentTask | undefined;
   /** `job` unless said otherwise (D-P6-03). */
   readonly kind?: "job" | "sub-program";
 }
@@ -167,6 +183,12 @@ export type WaitingReason =
       readonly estimated: boolean;
     };
 
+/** What an arbiter made of a dispute (D-P8-13). */
+export type DisputeResult =
+  | { readonly kind: "overturned"; readonly nodeId: ExecutionNodeId }
+  | { readonly kind: "upheld"; readonly reason: string }
+  | { readonly kind: "refused"; readonly reason: string };
+
 export interface EngineSnapshot {
   readonly running: readonly ExecutionNodeId[];
   /** In the order they will be tried, which is the order they were delegated. */
@@ -193,6 +215,13 @@ export interface Engine {
    * node is not retryable.
    */
   retry(jobContractId: JobContractId): Promise<boolean>;
+  /**
+   * Sends the open material findings of a job's last examination to an arbiter
+   * (P8, D-P8-13), for a job the examination stopped. When every one is
+   * overturned, the work that was examined goes to the merge queue as it is: it
+   * is not built again. `reason` is the dispute, as the orchestrator put it.
+   */
+  dispute(jobContractId: JobContractId, reason: string): Promise<DisputeResult>;
   /** True when nothing is running and nothing is queued. */
   idle(): boolean;
   /**
@@ -524,6 +553,7 @@ export const createEngine = (options: EngineOptions): Engine => {
         mcp: options.mcp,
         integrate,
         reroute: rerouteFor(entry.submission),
+        ...(entry.submission.task === undefined ? {} : { task: entry.submission.task }),
       });
       remove(entry);
       active.set(started.nodeId, started);
@@ -601,6 +631,20 @@ export const createEngine = (options: EngineOptions): Engine => {
   /** What one stored node asks of the engine, if anything. True when it was adopted. */
   const consider = async (node: ExecutionNode): Promise<boolean> => {
     const id = node.executionNodeId;
+    // P8 (D-P8-13): a sub-program's orchestrator disputes by writing the finding
+    // `disputed`; the arbiter is the engine's to start.
+    if (node.status === "failed" && node.kind === "job" && !arbitrating.has(id)) {
+      const examination = await latestExamination(environment, session.scope, id).catch(
+        () => undefined,
+      );
+      const disputed = examination?.findings.find((finding) => finding.resolution === "disputed");
+      if (disputed !== undefined) {
+        void disputeNode(id, disputed.resolvedBy?.reason ?? "disputed by its orchestrator").catch(
+          () => {},
+        );
+      }
+      return false;
+    }
     if (node.status === "cancelled") {
       void active
         .get(id)
@@ -610,6 +654,37 @@ export const createEngine = (options: EngineOptions): Engine => {
     }
     if (node.parentNodeId === null || held(id)) return false;
     return node.status === "validated" || node.status === "queued" ? adopt(node) : false;
+  };
+
+  /**
+   * A `queued` node with attempts behind it is a retry a sub-program's
+   * orchestrator asked for (P8): routed as a retry, one rung up after a failure
+   * of the work (D-P8-07), and a fix when its examination blocked (D-P8-13).
+   */
+  const retryOf = async (
+    node: ExecutionNode,
+  ): Promise<{ readonly previous?: RouteContext["previous"]; readonly task?: AgentTask }> => {
+    if (node.status !== "queued") return {};
+    const previous = await previousAttempt(node.executionNodeId);
+    if (previous === undefined) return {};
+    const task = fixOf(
+      await latestExamination(environment, session.scope, node.executionNodeId),
+    ).task;
+    return task === undefined ? { previous } : { previous, task };
+  };
+
+  /** A delegated node, queued: as it is when it already is, through the table's edge when it is not. */
+  const enqueued = async (node: ExecutionNode, job: JobContract): Promise<ExecutionNode> => {
+    if (node.status !== "validated") return node;
+    const queued = transition(node, "enqueue", nowIso(clock));
+    await stores.executionNodes.put(queued);
+    outbox.emit({
+      type: "node.queued",
+      source: "control-plane",
+      payload: { jobContractId: job.jobContractId, delegatedBy: node.parentNodeId },
+      executionNodeId: node.executionNodeId,
+    });
+    return queued;
   };
 
   /** Takes on a node somebody else delegated. False when it could not be. */
@@ -623,26 +698,17 @@ export const createEngine = (options: EngineOptions): Engine => {
       await refuse(node, "this node was delegated without a Job Contract the engine can read");
       return false;
     }
+    const { previous, task } = await retryOf(node);
     let route: RouteChoice;
     try {
       if (options.route === undefined) throw new Error("this engine was given no way to route it");
-      route = options.route(job, { unavailable: [...unavailable] });
+      route = options.route(job, { unavailable: [...unavailable], previous });
     } catch (error) {
       await refuse(node, `the delegation could not be routed: ${messageOf(error)}`);
       return false;
     }
 
-    let queued = node;
-    if (node.status === "validated") {
-      queued = transition(node, "enqueue", nowIso(clock));
-      await stores.executionNodes.put(queued);
-      outbox.emit({
-        type: "node.queued",
-        source: "control-plane",
-        payload: { jobContractId: job.jobContractId, delegatedBy: node.parentNodeId },
-        executionNodeId: id,
-      });
-    }
+    const queued = await enqueued(node, job);
     const submission: Submission = {
       job,
       scope: node.scope,
@@ -650,6 +716,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       parentNodeId: node.parentNodeId as ExecutionNodeId,
       route,
       kind: node.kind === "sub-program" ? "sub-program" : "job",
+      ...(task === undefined ? {} : { task }),
     };
     submissions.set(job.jobContractId, submission);
     nodeOfJob.set(job.jobContractId, id);
@@ -664,8 +731,7 @@ export const createEngine = (options: EngineOptions): Engine => {
     nodeId: ExecutionNodeId,
   ): Promise<RouteChoice> => {
     if (options.route === undefined) return submission.route;
-    const decisions = await stores.routingDecisions.listByNode(session.scope, nodeId);
-    const last = [...decisions].sort((a, b) => a.attempt - b.attempt).at(-1);
+    const last = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId)).at(-1);
     try {
       return options.route(submission.job, {
         pins: submission.pins,
@@ -684,6 +750,182 @@ export const createEngine = (options: EngineOptions): Engine => {
       // Nothing is eligible now. The route it had is still the honest one to retry.
       return submission.route;
     }
+  };
+
+  // --- Disputes (P8, D-P8-13) ----------------------------------------------------------
+  //
+  // A job its examination stopped is `failed`. When an arbiter overturns every
+  // blocking finding, the work that was examined is put back through the table's
+  // own edges (`retry`, `start`, `report_implemented` with the examined commit)
+  // and handed to the merge queue as it is: no worker runs again.
+  const arbitrating = new Set<ExecutionNodeId>();
+
+  /** What a dispute needs, or why there can be none. */
+  const disputable = async (
+    nodeId: ExecutionNodeId,
+  ): Promise<
+    | {
+        readonly node: ExecutionNode;
+        readonly examination: Examination;
+        readonly job: JobContract;
+        readonly services: NonNullable<ExecutionEnvironment["examination"]>;
+      }
+    | { readonly refused: string }
+  > => {
+    if (arbitrating.has(nodeId)) return { refused: "an arbiter is already ruling on it" };
+    const services = environment.examination;
+    if (services === undefined) return { refused: "this run has no arbiter to rule" };
+    const node = await stores.executionNodes.get(session.scope, nodeId);
+    const examination = await latestExamination(environment, session.scope, nodeId);
+    if (
+      node === undefined ||
+      examination === undefined ||
+      !examination.findings.some(isOpenMaterialFinding)
+    ) {
+      return { refused: "its last examination has no open material finding to dispute" };
+    }
+    if (node.status !== "failed" || node.jobContractId === null) {
+      return {
+        refused: `only a job its examination stopped can be disputed; this one is ${node.status}`,
+      };
+    }
+    const job = await stores.jobContracts.get(session.scope, node.jobContractId);
+    if (job === undefined) return { refused: "its Job Contract is not readable" };
+    return { node, examination, job, services };
+  };
+
+  const disputeNode = async (nodeId: ExecutionNodeId, reason: string): Promise<DisputeResult> => {
+    const found = await disputable(nodeId);
+    if ("refused" in found) return { kind: "refused", reason: found.refused };
+    const { node, examination, job, services } = found;
+
+    arbitrating.add(nodeId);
+    try {
+      const base = await revParse(environment.git, session.repoPath, baseRef(nodeId));
+      const diff = await git(
+        environment.git,
+        ["diff", "--no-color", "--no-ext-diff", base, examination.commitSha],
+        {
+          cwd: session.repoPath,
+        },
+      );
+      environment.outbox.emit({
+        type: "finding.disputed",
+        source: "control-plane",
+        payload: {
+          examinationId: examination.examinationId,
+          findings: examination.findings.filter(isOpenMaterialFinding).map((finding) => finding.id),
+          reason,
+        },
+        executionNodeId: nodeId,
+      });
+      const outcome = await arbitrateAll(
+        environment,
+        services,
+        { session, job, node, commitSha: examination.commitSha, base, phase: "queue" },
+        examination,
+        { diff, dispute: reason },
+      );
+      if (outcome.kind !== "cleared") {
+        return {
+          kind: "upheld",
+          reason: outcome.kind === "upheld" ? outcome.reason : "the arbiter did not rule",
+        };
+      }
+      return await readmit(node, job, examination, base);
+    } finally {
+      arbitrating.delete(nodeId);
+    }
+  };
+
+  /** The examined work, back through the table's own edges and into the queue (D-P8-13). */
+  const readmit = async (
+    node: ExecutionNode,
+    job: JobContract,
+    examination: Examination,
+    base: CommitSha,
+  ): Promise<DisputeResult> => {
+    const nodeId = node.executionNodeId;
+    const worktree = environment.paths.worktree(session.scope.runId, nodeId);
+    const { outcomeReason: _reason, ...rest } = transition(node, "retry", nowIso(clock));
+    const queued: ExecutionNode = { ...rest, commitSha: null };
+    await stores.executionNodes.put(queued);
+    const running = transition(queued, "start", nowIso(clock));
+    try {
+      await stores.executionNodes.put(running);
+    } catch (error) {
+      if (error instanceof ConcurrencyLimitExceededError) {
+        return {
+          kind: "refused",
+          reason: "its parent has no free slot now; the ruling stands, dispute again to land it",
+        };
+      }
+      throw error;
+    }
+    await stores.executionNodes.put(markImplemented(running, examination.commitSha, nowIso(clock)));
+    outbox.emit({
+      type: "node.implemented",
+      source: "control-plane",
+      payload: {
+        commitSha: examination.commitSha,
+        jobContractId: job.jobContractId,
+        readmitted:
+          "an arbiter overturned every blocking finding; the examined work lands as it is",
+      },
+      executionNodeId: nodeId,
+    });
+    void queue
+      .integrate({
+        session,
+        job,
+        nodeId,
+        agentId: examination.implementerAgentId,
+        worktree,
+        branch: jobBranch(session.scope.runId, nodeId),
+        base,
+      })
+      .finally(() => void pump());
+    return { kind: "overturned", nodeId };
+  };
+
+  /**
+   * The attempt a discovered retry replaces, and whether its ending climbs. A
+   * sub-program's orchestrator requeues a node itself, so the ending is read back
+   * from the record: the last attempt's route, and the last failure event's reason.
+   */
+  const previousAttempt = async (nodeId: ExecutionNodeId): Promise<RouteContext["previous"]> => {
+    const last = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId)).at(-1);
+    if (last === undefined) return undefined;
+    const reason = await lastFailureReason(nodeId);
+    const climb =
+      last.outcome === "verification_failed" ||
+      (last.outcome === "failed" &&
+        failureClimbs({ status: "failed", outcomeReason: reason ?? "" }));
+    return { target: last.chosen, ladder: last.ladder, rungIndex: last.rung?.index, climb };
+  };
+
+  /** Why a node last failed, as its `node.failed` event said. */
+  const lastFailureReason = async (nodeId: ExecutionNodeId): Promise<string | undefined> => {
+    let reason: string | undefined;
+    let cursor: string | undefined;
+    do {
+      const page = await stores.events.listByRun(
+        session.scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      for (const event of page.items) {
+        const said = (event.payload as { reason?: unknown }).reason;
+        if (
+          event.executionNodeId === nodeId &&
+          event.type === "node.failed" &&
+          typeof said === "string"
+        ) {
+          reason = said;
+        }
+      }
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return reason;
   };
 
   const refuse = async (node: ExecutionNode, reason: string): Promise<void> => {
@@ -800,11 +1042,22 @@ export const createEngine = (options: EngineOptions): Engine => {
       const node = await stores.executionNodes.get(session.scope, nodeId);
       if (node === undefined || !RETRYABLE_STATUSES.includes(node.status)) return false;
 
+      // A fix of blocking findings (D-P8-13): at most two, and none once an
+      // arbiter has upheld one. Refused with the reason, before anything moves.
+      const examination = await latestExamination(environment, session.scope, nodeId);
+      const fix = fixOf(examination);
+      if (fix.refused !== undefined) throw new FixLimitError(fix.refused);
+
       // Where the retry goes (D-P8-07): one rung up after a failure of the model,
       // the same route after one that was not. The router decides; the
       // orchestrator only decided to retry.
       const route = rerouteForRetry(submission, node, nodeId);
-      const retried: Submission = { ...submission, route: await route };
+      const { task: _previousTask, ...rest0 } = submission;
+      const retried: Submission = {
+        ...rest0,
+        route: await route,
+        ...(fix.task === undefined ? {} : { task: fix.task }),
+      };
       submissions.set(jobContractId, retried);
 
       // The table's own edge. Why the last attempt ended stays on the record of
@@ -823,7 +1076,14 @@ export const createEngine = (options: EngineOptions): Engine => {
       return true;
     },
 
-    idle: () => active.size === 0 && pending.length === 0,
+    dispute: async (jobContractId, reason) => {
+      const nodeId = nodeOfJob.get(jobContractId);
+      if (nodeId === undefined)
+        return { kind: "refused", reason: "this engine does not hold that job" };
+      return disputeNode(nodeId, reason);
+    },
+
+    idle: () => active.size === 0 && pending.length === 0 && arbitrating.size === 0,
 
     releaseSettled: async (graceMs) => {
       const stored = new Map((await readNodes()).map((node) => [node.executionNodeId, node]));

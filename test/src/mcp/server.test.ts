@@ -177,6 +177,8 @@ describe("the role split (D-P3-01)", () => {
       "decision.record",
       "delegate",
       "execution.status",
+      // P8: a job an examiner stopped may be disputed, and an arbiter rules (D-P8-13).
+      "finding.dispute",
       "job.cancel",
       "job.get",
       "job.retry",
@@ -280,7 +282,10 @@ describe("the role split (D-P3-01)", () => {
     expect(roleFrom({})).toBe("orchestrator");
     expect(roleFrom({ NIGHTSHIFT_ROLE: "" })).toBe("orchestrator");
     expect(roleFrom({ NIGHTSHIFT_ROLE: "worker" })).toBe("worker");
-    expect(() => roleFrom({ NIGHTSHIFT_ROLE: "examiner" })).toThrow(/orchestrator/);
+    // P8: an examiner and an arbiter are roles of their own (D-P8-10, D-P8-13).
+    expect(roleFrom({ NIGHTSHIFT_ROLE: "examiner" })).toBe("examiner");
+    expect(roleFrom({ NIGHTSHIFT_ROLE: "arbiter" })).toBe("arbiter");
+    expect(() => roleFrom({ NIGHTSHIFT_ROLE: "answerer" })).toThrow(/orchestrator/);
   });
 });
 

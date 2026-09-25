@@ -38,6 +38,10 @@ const RECORDED_USAGE = {
 /** The recording's own session, which every exit now carries (P8, D-P8-15). */
 const RECORDED_SESSION = "9cb83dd4-77b4-4d5d-91f4-b44452cfeb3a";
 
+/** The recording's final message, which a completed exit now carries (P8, an answerer's answers). */
+const RECORDED_RESULT =
+  "Done. Added `farewell` to greet.js, confirmed README.md's first line is `# sample`, and reported progress/completion to nightshift.";
+
 const RECORDING = readFileSync(
   new URL("./__fixtures__/claude-stream-success.jsonl", import.meta.url),
   "utf8",
@@ -249,7 +253,6 @@ describe("the launch, against a fake spawn", () => {
       "bypassPermissions",
       "--disallowedTools",
       expect.stringContaining("Bash(git push:*)"),
-      "--no-session-persistence",
     ]);
   });
 
@@ -374,6 +377,7 @@ describe("the transcript", () => {
       kind: "completed",
       usage: RECORDED_USAGE,
       sessionId: RECORDED_SESSION,
+      result: RECORDED_RESULT,
     });
     // Exactly one start, and the reason is on the ending rather than lost.
     expect(events.filter((event) => event.type === "agent.started")).toHaveLength(1);
@@ -414,7 +418,12 @@ describe("the exit mapping", () => {
       child.emitStdout(RECORDING);
       child.close(0);
     });
-    expect(exit).toEqual({ kind: "completed", usage: RECORDED_USAGE, sessionId: RECORDED_SESSION });
+    expect(exit).toEqual({
+      kind: "completed",
+      usage: RECORDED_USAGE,
+      sessionId: RECORDED_SESSION,
+      result: RECORDED_RESULT,
+    });
   });
 
   it("maps a stream that ends without a result to failed, even on exit 0", async () => {

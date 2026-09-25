@@ -77,6 +77,7 @@ describe("routing decision updates (D-P5-06)", () => {
       rung: { tier: "standard", index: 1 },
       classification: { risk: "low", ambiguity: "low", testability: "weak" },
       policyVersion: 1,
+      purpose: "examine",
     };
     const changes: Partial<RoutingDecision> = {
       attempt: 2,

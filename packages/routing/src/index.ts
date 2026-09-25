@@ -25,6 +25,7 @@ export {
   type RouteAuthentication,
 } from "./compatibility.js";
 export { type RoutingRefusalCode, RoutingRefusedError } from "./errors.js";
+export { arbiterRoute, examinerRoute, type HelperRouteInput } from "./examiners.js";
 export {
   firstMatchingRule,
   type PreviousAttempt,

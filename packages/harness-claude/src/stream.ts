@@ -244,6 +244,8 @@ export interface StreamOutcome {
   readonly terminalReason?: string;
   /** Claude's own session identifier, from the `init` frame. */
   readonly sessionId?: string;
+  /** The `result` frame's text: the model's final message (P8, an answerer's answers). */
+  readonly resultText?: string;
   /**
    * P8 (D-P8-06): why the route could not start, when the `result` frame was a
    * provider error (`terminal_reason: "api_error"` with an `api_error_status`)
@@ -315,6 +317,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let sessionId: string | undefined;
   let usage: RouteUsage | undefined;
   let unavailable: string | undefined;
+  let resultText: string | undefined;
   let toolCalls = 0;
   let startEmitted = false;
   let unparseableLines = 0;
@@ -451,6 +454,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     resultErrored = frame.is_error === true || str(frame.subtype) !== "success";
     resultSubtype = str(frame.subtype);
     terminalReason = str(frame.terminal_reason);
+    resultText = str(frame.result);
     if (resultErrored && terminalReason === "api_error") {
       unavailable = routeUnavailableReason({
         status: tokenCount(frame.api_error_status),
@@ -551,6 +555,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         ...optionalField("sessionId", sessionId),
         ...optionalField("usage", usage),
         ...optionalField("unavailable", unavailable),
+        ...optionalField("resultText", resultText),
         startEmitted,
         unparseableLines,
       };

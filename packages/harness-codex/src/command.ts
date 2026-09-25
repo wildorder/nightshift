@@ -16,7 +16,7 @@
  *   -c mcp_servers.<name>.command="…"
  *   -c mcp_servers.<name>.args=["…"]
  *   -c mcp_servers.<name>.env={…}
- *   --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check
+ *   --ignore-user-config --ignore-rules --skip-git-repo-check
  *   -m <model>
  *   <brief>
  * ```
@@ -53,8 +53,8 @@
  * - `--ignore-user-config` and `--ignore-rules`: the operator's `config.toml`
  *   and execpolicy rules are theirs, for their own sessions. A worker's
  *   behaviour must not vary with them. Authentication still uses `CODEX_HOME`.
- * - `--ephemeral`: no session files. The transcript Nightshift keeps is the
- *   stream itself.
+ * - `--ephemeral` is not passed (P8, D-P8-15): an examiner's question resumes the
+ *   builder's own thread, so threads are kept.
  * - `--skip-git-repo-check`: a job worktree's `.git` is a file, not a directory.
  *
  * ## THE GIT GUARD
@@ -128,24 +128,32 @@ export interface CodexCommandInput {
   readonly prompt: string;
   readonly model: RouteTarget;
   readonly worktree: string;
-  readonly mcp: McpLaunch;
+  /** Absent for an agent that reaches no Nightshift tool: an answering builder (D-P8-15). */
+  readonly mcp?: McpLaunch;
   /** The `PATH` for commands the model runs, with the git guard first. Absent on Windows. */
   readonly shellPath?: string | undefined;
+  /** P8 (D-P8-15): the thread to continue, for an answering builder or an examiner's second round. */
+  readonly resumeSessionId?: string;
 }
 
+/**
+ * `codex exec`, or `codex exec resume <thread>` to continue one (P8, D-P8-15).
+ * `resume` takes no `-C`: the process's own working directory is the
+ * worktree, which the adapter spawns it in either way. Sessions are kept (no
+ * `--ephemeral`) so a thread can be resumed at all.
+ */
 export const buildCodexArgs = (input: CodexCommandInput): readonly string[] => [
   "exec",
+  ...(input.resumeSessionId === undefined ? [] : ["resume"]),
   "--json",
-  "-C",
-  input.worktree,
+  ...(input.resumeSessionId === undefined ? ["-C", input.worktree] : []),
   "--dangerously-bypass-approvals-and-sandbox",
   "-c",
   "allow_login_shell=false",
   ...(input.shellPath === undefined
     ? []
     : ["-c", `shell_environment_policy.set=${tomlInlineTable({ PATH: input.shellPath })}`]),
-  ...mcpOverrides(input.mcp),
-  "--ephemeral",
+  ...(input.mcp === undefined ? [] : mcpOverrides(input.mcp)),
   "--ignore-user-config",
   "--ignore-rules",
   "--skip-git-repo-check",
@@ -155,7 +163,9 @@ export const buildCodexArgs = (input: CodexCommandInput): readonly string[] => [
   ...(input.model.effort === undefined
     ? []
     : ["-c", `model_reasoning_effort=${tomlString(input.model.effort)}`]),
-  // Last, and after every option, so a brief can never be read as one.
+  // The thread to continue, then the brief: positional, after every option, so
+  // a brief can never be read as one.
+  ...(input.resumeSessionId === undefined ? [] : [input.resumeSessionId]),
   input.prompt,
 ];
 

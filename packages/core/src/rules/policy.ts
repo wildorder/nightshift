@@ -195,8 +195,8 @@ export const examinationRequirementFor = (
 export const failureClimbs = (node: Pick<ExecutionNode, "status" | "outcomeReason">): boolean => {
   switch (node.status) {
     case "verification_failed":
-    case "examination_failed":
       return true;
+    case "examination_failed":
     case "failed": {
       const reason = node.outcomeReason ?? "";
       return !NO_CLIMB_REASON_PREFIXES.some((prefix) => reason.startsWith(prefix));
@@ -214,6 +214,8 @@ export const NO_CLIMB_REASON_PREFIXES: readonly string[] = [
   "integration_conflict:",
   "stale_base:",
   "route_unavailable:",
+  // No examiner could be had, or it gave no verdict: nothing was learnt of the work.
+  "examiner_failed:",
 ];
 
 /**

@@ -15,8 +15,13 @@ import {
   type Run,
 } from "@nightshift/contracts";
 import { classificationOf, policyOfRun } from "@nightshift/core";
-import type { RouteContext } from "@nightshift/execution";
-import { ruleRoute } from "@nightshift/routing";
+import type {
+  ExaminationServices,
+  RouteContext,
+  WorkerLaunchIdentity,
+} from "@nightshift/execution";
+import type { McpLaunch } from "@nightshift/harness";
+import { arbiterRoute, examinerRoute, ruleRoute } from "@nightshift/routing";
 
 /** The seeded default a run that recorded no policy is read against (a run started before P8). */
 const SEEDED = defaultOrgConfig(
@@ -40,4 +45,23 @@ export const routeJob = (
     unavailable: context.unavailable,
     previous: context.previous,
   });
+};
+
+/** Who examines and who arbitrates, over the run's own ladders (D-P8-10, D-P8-13). */
+export const examinationServices = (
+  run: Pick<Run, "policy">,
+  program: ProgramContract,
+  mcp: (identity: WorkerLaunchIdentity) => McpLaunch,
+): ExaminationServices => {
+  const policy = policyOfRun(run, program, SEEDED);
+  const base = {
+    policy: policy.routingPolicy,
+    policyVersion: policy.orgConfigVersion,
+    modelPolicy: program.modelPolicy,
+  };
+  return {
+    examinerRoute: (input) => examinerRoute({ ...base, ...input }),
+    arbiterRoute: (input) => arbiterRoute({ ...base, ...input }),
+    mcp,
+  };
 };

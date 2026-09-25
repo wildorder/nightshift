@@ -45,15 +45,18 @@ import type {
   RouteUsage,
   RoutingDecision,
   Scope,
+  Verification,
 } from "@nightshift/contracts";
 import {
   labelCost,
+  markVerificationFailed,
   nowIso,
   routeOutcomeForNodeStatus,
   transition,
   transitionAgent,
 } from "@nightshift/core";
 import {
+  type AgentTask,
   agentStatusForExit,
   describeExit,
   type HarnessExit,
@@ -69,6 +72,7 @@ import {
   type RunSession,
   type WorkerLaunchIdentity,
 } from "./environment.js";
+import { examine } from "./examine.js";
 import {
   addDetachedWorktree,
   addWorktree,
@@ -159,6 +163,8 @@ export interface StartJobInput
   readonly node: ExecutionNode;
   /** P8 (D-P8-06): where to go when the route cannot start. Absent, the job fails. */
   readonly reroute?: Reroute;
+  /** P8 (D-P8-13): a fix, carrying what the examiner found into the worker's brief. */
+  readonly task?: AgentTask;
 }
 
 export interface StartedJob {
@@ -186,6 +192,16 @@ export interface StartedJob {
   /** `stop("cancelled")`, for the `job.cancel` tool. */
   cancel(): Promise<void>;
 }
+
+/**
+ * A node's own attempts, in order: the routes its work ran on. An examiner's,
+ * an answerer's or an arbiter's route (P8) is recorded beside them and is not
+ * one of them.
+ */
+export const attemptsOf = (decisions: readonly RoutingDecision[]): RoutingDecision[] =>
+  decisions
+    .filter((decision) => decision.purpose === undefined)
+    .sort((a, b) => a.attempt - b.attempt);
 
 /**
  * Delegate and start in one step: what P3 did, and what a caller with exactly
@@ -295,9 +311,7 @@ export const startJob = async (
   // it already says `running` and nothing else will ever move it.
   async function launch(): Promise<StartedJob> {
     // --- 3 … 4. The first attempt's identity, credential and route (A-04, A-13) ---
-    const earlier = [...(await stores.routingDecisions.listByNode(session.scope, nodeId))].sort(
-      (a, b) => a.attempt - b.attempt,
-    );
+    const earlier = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId));
     const first = await createAttempt(
       input.route,
       earlier.length + 1,
@@ -367,8 +381,9 @@ export const startJob = async (
       if (input.reroute === undefined || stopMode !== undefined) return undefined;
       const next = input.reroute(failed);
       if (next === undefined) return undefined;
-      const decisions = await stores.routingDecisions.listByNode(session.scope, nodeId);
-      const last = [...decisions].sort((a, b) => a.attempt - b.attempt).at(-1);
+      const last = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId)).at(
+        -1,
+      );
       const identity = await createAttempt(
         next,
         (last?.attempt ?? 0) + 1,
@@ -548,6 +563,7 @@ export const startJob = async (
         tools,
         sink,
         transcriptPath: transcript,
+        ...(input.task === undefined ? {} : { task: input.task }),
       });
     } catch (error) {
       // The adapter could not even attempt a launch. The node and agent already
@@ -696,6 +712,85 @@ interface FinishInput {
 }
 
 /**
+ * Examination beside the merge queue (P8, D-P8-09, D-P8-13). True when the work
+ * may go on to the queue: nothing was required, it cleared, or its checks wait on
+ * a human and it is examined at resume. Otherwise the node has been ended here,
+ * with the examination's reason, and nothing else sees it.
+ */
+const examinedBesideQueue = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+  node: ExecutionNode,
+): Promise<boolean> => {
+  if (node.commitSha === null) return true;
+  const outcome = await examine(environment, {
+    session: input.session,
+    job: input.job,
+    node,
+    commitSha: node.commitSha,
+    base: input.base,
+    phase: "candidate",
+  });
+  switch (outcome.kind) {
+    case "not_required":
+    case "cleared":
+    case "postponed":
+      return true;
+    case "candidate_failed":
+      await endExamined(environment, input, "verification_failed", undefined, outcome.verification);
+      return false;
+    case "blocked":
+    case "upheld":
+    case "examiner_failed":
+      await endExamined(environment, input, "fail", outcome.reason);
+      return false;
+  }
+};
+
+/** An implemented node the examination stopped, ended durably (D-P8-13). */
+const endExamined = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+  how: "fail" | "verification_failed",
+  reason: string | undefined,
+  verification?: Verification,
+): Promise<void> => {
+  const { stores, clock, outbox } = environment;
+  const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
+  if (node === undefined || node.status !== "implemented") return;
+  if (how === "verification_failed" && verification !== undefined) {
+    // The check on its own base failed, as it would have in the queue.
+    const verifying = transition(node, "begin_verification", nowIso(clock));
+    await stores.executionNodes.put(verifying);
+    await stores.executionNodes.put(markVerificationFailed(verifying, verification, nowIso(clock)));
+    outbox.emit({
+      type: "verification.completed",
+      source: "control-plane",
+      payload: {
+        verificationId: verification.verificationId,
+        outcome: "failed",
+        phase: "candidate",
+      },
+      executionNodeId: input.nodeId,
+      agentId: input.current().agentId,
+    });
+    return;
+  }
+  const why = reason ?? "examination_failed";
+  await stores.executionNodes.put({
+    ...transition(node, "fail", nowIso(clock)),
+    outcomeReason: why,
+  });
+  outbox.emit({
+    type: "node.failed",
+    source: "control-plane",
+    payload: { reason: why },
+    executionNodeId: input.nodeId,
+    agentId: input.current().agentId,
+  });
+};
+
+/**
  * The exit of the last attempt, after every fallback (P8, D-P8-06). A route that
  * could not start is not how the job ended: its attempt is recorded
  * `unavailable` and the next route starts on the same node, until one starts or
@@ -787,6 +882,10 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
       });
       return;
     }
+
+    // P8 (D-P8-09): examined beside the queue, when the run's policy says so,
+    // before anything else sees it. A job the examination stops ends here.
+    if (!(await examinedBesideQueue(environment, input, node))) return;
 
     // With several jobs in flight the branch has one door, and it is the
     // engine's merge queue (D-P6-05). Its promise settles when this node is

@@ -70,14 +70,10 @@ import type {
   HarnessHandle,
   HarnessStartInput,
 } from "@nightshift/harness";
-import {
-  agentStatusForExit,
-  hookTypeForExit,
-  nightshiftToolNames,
-  renderWorkerBrief,
-} from "@nightshift/harness";
+import { agentStatusForExit, hookTypeForExit, promptFor } from "@nightshift/harness";
 import {
   buildClaudeArgs,
+  buildEmptyMcpConfig,
   buildMcpConfig,
   buildSettings,
   CLAUDE_COMMAND,
@@ -193,17 +189,8 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
 
   const start = async (input: HarnessStartInput): Promise<HarnessHandle> => {
     const policy = claudeToolPolicy({ scope: input.node.scope });
-    const prompt = claudePrompt(
-      renderWorkerBrief({
-        job: input.job,
-        node: input.node,
-        program: input.program,
-        worktree: input.worktree,
-      }),
-      claudeBriefAddendum({
-        mcpServerName: input.mcp.name,
-        tools: nightshiftToolNames(input.node.kind, input.program),
-      }),
+    const prompt = promptFor(input, (brief, mcpServerName, tools) =>
+      claudePrompt(brief, claudeBriefAddendum({ mcpServerName, tools })),
     );
 
     let resolveExit: (exit: HarnessExit) => void = () => {};
@@ -282,7 +269,10 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       configDir = fs.makeTempDir("nightshift-claude-");
       mcpConfigPath = join(configDir, "mcp.json");
       settingsPath = join(configDir, "settings.json");
-      fs.writeConfigFile(mcpConfigPath, buildMcpConfig(input.mcp));
+      fs.writeConfigFile(
+        mcpConfigPath,
+        input.mcp === undefined ? buildEmptyMcpConfig() : buildMcpConfig(input.mcp),
+      );
       fs.writeConfigFile(settingsPath, buildSettings());
     } catch (error) {
       return failToLaunch(`could not write the Claude configuration: ${messageOf(error)}`);
@@ -307,6 +297,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       mcpConfigPath,
       settingsPath,
       policy,
+      ...(input.resume === undefined ? {} : { resumeSessionId: input.resume.sessionId }),
     });
 
     let child: SpawnedChild;
@@ -460,7 +451,11 @@ const exitFor = (
     ...(outcome.sessionId === undefined ? {} : { sessionId: outcome.sessionId }),
   };
   if (code === 0 && outcome.sawResult && !outcome.resultErrored) {
-    return { kind: "completed", ...said };
+    return {
+      kind: "completed",
+      ...said,
+      ...(outcome.resultText === undefined ? {} : { result: outcome.resultText }),
+    };
   }
   return {
     kind: "failed",

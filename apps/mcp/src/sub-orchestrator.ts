@@ -45,7 +45,9 @@ import {
   transition,
 } from "@nightshift/core";
 import {
+  fixOf,
   git,
+  latestExamination,
   recordWorkerDecision,
   reportProgress,
   type WorkerEnvironment,
@@ -382,9 +384,75 @@ export const registerSubOrchestratorTools = (
             `job ${jobId} is ${node.status}, which is not retryable`,
           );
         }
+        // Two fixes of blocking findings, or an upheld one, and no third (D-P8-13).
+        const examination = await latestExamination(environment, scope, node.executionNodeId);
+        const refused = fixOf(examination).refused;
+        if (refused !== undefined) throw new ToolRefusal("validation_failed", refused);
         const { outcomeReason: _previous, ...requeued } = transition(node, "retry", nowIso(clock));
         await stores.executionNodes.put({ ...requeued, commitSha: null });
         return ok(`Job ${jobId} is queued again. Wait for it with job.wait.`, await report(jobId));
+      }),
+  );
+
+  server.registerTool(
+    "finding.dispute",
+    {
+      title: "Dispute an examiner's finding",
+      description:
+        "For a job an independent examiner stopped: say why its blocking findings are wrong, and " +
+        "an arbiter (a model neither the builder nor the examiner used) rules on them. Overturned, " +
+        "the work that was examined lands as it is; upheld, the job stays failed. Wait for it with " +
+        "job.wait. Fix it instead with job.retry when the examiner is right.",
+      inputSchema: { jobId: z.string().min(1), reason: z.string().min(1) },
+    },
+    async ({ jobId, reason }) =>
+      guarded(async () => {
+        const node = await nodeOf(jobId);
+        const examination = await latestExamination(environment, scope, node.executionNodeId);
+        if (node.status !== "failed" || examination === undefined) {
+          throw new ToolRefusal(
+            "validation_failed",
+            `job ${jobId} was not stopped by an examination`,
+          );
+        }
+        const open = examination.findings.filter(
+          (finding) => finding.severity === "material" && finding.resolution === "unresolved",
+        );
+        if (open.length === 0) {
+          throw new ToolRefusal(
+            "validation_failed",
+            "its last examination has no unresolved material finding",
+          );
+        }
+        const at = nowIso(clock);
+        // Written as a dispute and nothing else; the engine starts the arbiter.
+        await stores.examinations.put({
+          ...examination,
+          findings: examination.findings.map((finding) =>
+            open.includes(finding)
+              ? {
+                  ...finding,
+                  resolution: "disputed",
+                  resolvedBy: { authority: "agent", reason, at },
+                }
+              : finding,
+          ),
+        });
+        outbox.emit({
+          type: "finding.disputed",
+          source: "mcp",
+          payload: {
+            examinationId: examination.examinationId,
+            findings: open.map((finding) => finding.id),
+            reason,
+          },
+          executionNodeId: node.executionNodeId,
+          agentId: identity.agentId,
+        });
+        return ok(
+          `Disputed ${open.map((finding) => finding.id).join(", ")}. An arbiter rules on them; wait for job ${jobId} with job.wait.`,
+          { findings: open.map((finding) => finding.id) },
+        );
       }),
   );
 

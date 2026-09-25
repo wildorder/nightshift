@@ -101,7 +101,7 @@ export const firstMatchingRule = (
 };
 
 /** One route in the search order, and where it sits. */
-interface Candidate {
+export interface Candidate {
   readonly ladder: string;
   readonly rungIndex: number;
   readonly tier: Tier;
@@ -138,7 +138,7 @@ const searchOrder = (policy: RoutingPolicy, ladder: string, from: number): reado
 };
 
 /** Every route on every ladder, cheapest first within each ladder, ladders in policy order. */
-const everyRoute = (policy: RoutingPolicy): readonly Candidate[] =>
+export const everyRoute = (policy: RoutingPolicy): readonly Candidate[] =>
   Object.entries(policy.ladders).flatMap(([ladder, rungs]) =>
     rungs.flatMap((rung, rungIndex) =>
       rung.routes.map((route) => ({ ladder, rungIndex, tier: rung.tier, route })),
@@ -166,7 +166,7 @@ const providerFor = (
 };
 
 /** Why a candidate may not be chosen, or its target when it may. */
-const judge = (
+export const judge = (
   input: RuleRouteInput,
   candidate: Candidate,
 ): { readonly target: RouteTarget } | { readonly target: RouteTarget; readonly reason: string } => {

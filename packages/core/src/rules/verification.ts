@@ -26,6 +26,13 @@ export const explainEvidenceMismatch = (
 ): readonly string[] => {
   const reasons: string[] = [];
 
+  // P8 (D-P8-09): the check an examined job's snapshot gets on its own base is
+  // what the examiner reads, not what lets it land. Only a verification on the
+  // program head, in the merge queue, is evidence.
+  if (verification.phase === "candidate") {
+    reasons.push("a candidate verification, on the job's own base, is not evidence for landing");
+  }
+
   if (!sameRun(node, verification)) {
     reasons.push(
       `verification belongs to a different ownership chain (${verification.projectId}/${verification.programId}/${verification.runId})`,

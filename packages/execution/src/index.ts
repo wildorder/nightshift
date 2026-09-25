@@ -21,12 +21,15 @@
  * - `outbox.ts` — ordered, retrying, spilling event delivery (D-P3-10).
  * - `start-run.ts` — the one function `nightshift run` and `run.start` share.
  */
+
 export {
   createEngine,
   DEFAULT_DISCOVERY_INTERVAL_MS,
+  type DisputeResult,
   type Engine,
   type EngineOptions,
   type EngineSnapshot,
+  FixLimitError,
   type RouteContext,
   type RoutePins,
   StrandBlockedError,
@@ -38,6 +41,7 @@ export {
 export {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
+  type ExaminationServices,
   type ExecutionEnvironment,
   type LandingEnvironment,
   type PrerequisiteBook,
@@ -47,6 +51,24 @@ export {
   type WorkerIdentity,
   type WorkerLaunchIdentity,
 } from "./environment.js";
+export {
+  arbitrateAll,
+  carriedExamination,
+  describeBlocking,
+  EXAMINATION_CONTEXT_ENV,
+  type ExaminationContext,
+  type ExaminationOutcome,
+  examine,
+  examineInQueue,
+  fixAttemptOf,
+  fixOf,
+  latestExamination,
+  parseAnswers,
+  patchIdOf,
+  RULING_CHOICES,
+  RULING_CONTEXT_ENV,
+  type RulingContext,
+} from "./examine.js";
 export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";
 export { type IntegrateInput, type IntegrateResult, integrateNode } from "./integrate.js";

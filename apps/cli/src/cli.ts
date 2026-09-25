@@ -25,6 +25,7 @@ import { planCheck, planRatify } from "./commands/plan.js";
 import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
 import { resume } from "./commands/resume.js";
+import { reverseRuling } from "./commands/ruling.js";
 import { run } from "./commands/run.js";
 import { whoami } from "./commands/whoami.js";
 import type { CliEnvironment } from "./environment.js";
@@ -44,6 +45,7 @@ Usage:
   nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--repo <path>]
   nightshift run <contract> [--repo <path>] [--remote]
   nightshift resume <program> [--run <id>] [--repo <path>]
+  nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
   nightshift id <prefix>
   nightshift --help | --version
 
@@ -318,6 +320,33 @@ const doResume = async (environment: CliEnvironment, args: readonly string[]): P
   });
 };
 
+const doRuling = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage =
+    "nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]";
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: { reason: { type: "string" }, run: { type: "string" }, repo: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  const [verb, id, decisionId] = positionals;
+  if (verb !== "reverse" || id === undefined || decisionId === undefined) {
+    throw new UsageError("`nightshift ruling` takes `reverse <program> <decisionId>`", usage);
+  }
+  const run = optional(values, "run");
+  const repo = optional(values, "repo");
+  return reverseRuling(environment, {
+    id,
+    decisionId,
+    reason: required(values, "reason", usage),
+    ...(run === undefined ? {} : { run }),
+    ...(repo === undefined ? {} : { repo }),
+  });
+};
+
 const doId = (environment: CliEnvironment, args: readonly string[]): void => {
   const usage = "nightshift id <prefix>";
   const { positionals } = parse(
@@ -363,6 +392,8 @@ const dispatch = async (
       return doRun(environment, args);
     case "resume":
       return doResume(environment, args);
+    case "ruling":
+      return doRuling(environment, args);
     case "id":
       doId(environment, args);
       return undefined;

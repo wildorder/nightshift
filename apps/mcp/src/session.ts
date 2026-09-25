@@ -54,7 +54,7 @@ import {
 import type { McpLaunch } from "@nightshift/harness";
 import type { Runtime } from "./compose.js";
 import { ToolRefusal } from "./results.js";
-import { routeJob } from "./routing.js";
+import { examinationServices, routeJob } from "./routing.js";
 
 /** Where a repository declares which program it belongs to. */
 export const DEFAULT_CONTRACT_FILE = "nightshift.program.json";
@@ -94,7 +94,12 @@ export interface OrchestratorSession {
   current?: AttachedRun | undefined;
 }
 
-const buildEnvironment = (runtime: Runtime, outbox: EventOutbox): ExecutionEnvironment => ({
+const buildEnvironment = (
+  runtime: Runtime,
+  outbox: EventOutbox,
+  run: Run,
+  program: ProgramContract,
+): ExecutionEnvironment => ({
   stores: runtime.stores,
   bodies: runtime.bodies,
   tokens: runtime.tokens,
@@ -106,6 +111,8 @@ const buildEnvironment = (runtime: Runtime, outbox: EventOutbox): ExecutionEnvir
   outbox,
   workerEnvironment: runtime.workerEnvironment,
   ...(runtime.prerequisites === undefined ? {} : { prerequisites: runtime.prerequisites }),
+  // P8: who examines and who arbitrates, by the run's own policy (D-P8-10, D-P8-13).
+  examination: examinationServices(run, program, (identity) => runtime.workerLaunch(identity)),
 });
 
 interface ProgramRef {
@@ -480,7 +487,7 @@ export const attachRun = async (
     repoPath: state.repoPath,
   };
   const planSections = await readPlanSections(state, program, rootNode);
-  const environment = buildEnvironment(runtime, outbox);
+  const environment = buildEnvironment(runtime, outbox, started, program);
   const attached: AttachedRun = {
     session,
     environment,

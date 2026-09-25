@@ -278,6 +278,7 @@ describe("the exit mapping, as measured on 0.154.0", () => {
       kind: "completed",
       usage: { inputTokens: 14028, outputTokens: 5, cacheReadTokens: 11520 },
       sessionId: "01a0b9e2-a874-71d2-8293-67ec5bcf67fb",
+      result: "READY",
     });
     expect(harness.capabilities.usage).toBe(true);
   });

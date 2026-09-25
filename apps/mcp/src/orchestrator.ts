@@ -66,6 +66,7 @@ import {
 } from "@nightshift/core";
 import {
   endProgramNode,
+  FixLimitError,
   gatherReport,
   type RoutePins,
   renderReport,
@@ -840,7 +841,13 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     async ({ jobId }) =>
       guarded(async () => {
         const attached = requireAttached(state);
-        if (!(await attached.engine.retry(jobId as never))) {
+        const retried = await attached.engine.retry(jobId as never).catch((error: unknown) => {
+          // Two fixes of blocking findings, or an upheld one (D-P8-13): not a third.
+          if (error instanceof FixLimitError)
+            throw new ToolRefusal("validation_failed", error.message);
+          throw error;
+        });
+        if (!retried) {
           const report = await jobReport(deps, jobId);
           throw new ToolRefusal(
             "validation_failed",
@@ -851,6 +858,32 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         }
         const report = await jobReport(deps, jobId);
         return ok(`Job ${jobId} is going round again. ${describeJob(report)}`, report);
+      }),
+  );
+
+  server.registerTool(
+    "finding.dispute",
+    {
+      title: "Dispute an examiner's finding",
+      description:
+        "For a job an independent examiner stopped: say why its blocking findings are wrong, and " +
+        "an arbiter (a model neither the builder nor the examiner used) rules on them. Overturned, " +
+        "the work that was examined lands as it is; upheld, the job stays failed. Either way the " +
+        "ruling is recorded as a decision a human can reverse. Fix it instead with job.retry when " +
+        "the examiner is right.",
+      inputSchema: { jobId: z.string().min(1), reason: z.string().min(1) },
+    },
+    async ({ jobId, reason }) =>
+      guarded(async () => {
+        const attached = requireAttached(state);
+        const result = await attached.engine.dispute(jobId as never, reason);
+        if (result.kind === "refused") throw new ToolRefusal("validation_failed", result.reason);
+        return ok(
+          result.kind === "overturned"
+            ? `The arbiter overturned the findings. Job ${jobId}'s examined work is going to the merge queue; wait for it with job.wait.`
+            : `The arbiter upheld the finding: ${result.reason}. The job stays failed.`,
+          { ruling: result.kind },
+        );
       }),
   );
 

@@ -27,6 +27,7 @@ import { AgentIdSchema } from "@nightshift/contracts";
 import type { WorkerIdentity } from "@nightshift/execution";
 import { createEventOutbox, shutdown, type WorkerEnvironment } from "@nightshift/execution";
 import { createRuntime, type Runtime } from "./compose.js";
+import { registerArbiterTools, registerExaminerTools } from "./examiner.js";
 import { jobWaitCap, registerOrchestratorTools } from "./orchestrator.js";
 import type { Env, Role } from "./role.js";
 import { roleFrom, workerIdentityFrom } from "./role.js";
@@ -77,12 +78,67 @@ export const createNightshiftServer = async (
       return buildWorker(server, runtime, input);
     case "sub-orchestrator":
       return buildSubOrchestrator(server, runtime, input);
+    case "examiner":
+    case "arbiter":
+      return buildHelper(role, server, runtime, input);
     default:
       return buildOrchestrator(server, runtime, input);
   }
 };
 
+/**
+ * An examiner's or an arbiter's server (P8, D-P8-10, D-P8-13). Launched like a
+ * worker's, with an identity and an execution token of its own role; its tools
+ * are its verdict and nothing else.
+ */
+const buildHelper = (
+  role: "examiner" | "arbiter",
+  server: McpServer,
+  runtime: Runtime,
+  input: CreateServerInput,
+): NightshiftServer => {
+  const identity: WorkerIdentity = workerIdentityFrom(input.env);
+  const outbox = createEventOutbox({
+    events: runtime.stores.events,
+    scope: identity.scope,
+    clock: runtime.clock,
+    ids: runtime.ids,
+    writerId: identity.agentId,
+  });
+  const environment: WorkerEnvironment = {
+    stores: runtime.stores,
+    clock: runtime.clock,
+    git: runtime.git,
+    outbox,
+  };
+  const deps = { identity, environment, ids: runtime.ids, env: input.env };
+  if (role === "examiner") registerExaminerTools(server, deps);
+  else registerArbiterTools(server, deps);
+
+  let stopped = false;
+  return {
+    role,
+    server,
+    endpoint: runtime.endpoint,
+    connect: (transport) => server.connect(transport),
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      await outbox.flush(SHUTDOWN_DEADLINE_MS);
+      await outbox.spill(runtime.paths.spool(identity.scope.runId));
+      await server.close();
+    },
+  };
+};
+
 const INSTRUCTIONS: Readonly<Record<Role, string>> = {
+  examiner:
+    "You are a Nightshift examiner. Judge the work in your working directory against the " +
+    "evidence in your brief, and finish with examination.submit. You may ask the builder once " +
+    "with examination.ask. Change nothing.",
+  arbiter:
+    "You are a Nightshift arbiter. Rule on the one disputed finding in your brief with " +
+    "finding.rule, and say why. Change nothing.",
   worker:
     "You are a Nightshift worker. Read your job with job.get, and finish with " +
     "job.complete or job.fail. Never commit: Nightshift collects your work.",

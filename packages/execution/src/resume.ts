@@ -23,12 +23,27 @@
  */
 import { mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { CommitSha, ExecutionNode, ExecutionNodeId } from "@nightshift/contracts";
+import type {
+  AgentId,
+  CommitSha,
+  Examination,
+  ExecutionNode,
+  ExecutionNodeId,
+  JobContract,
+} from "@nightshift/contracts";
 import { nowIso, transition } from "@nightshift/core";
-import type { LandingEnvironment, RunSession } from "./environment.js";
+import type { ExecutionEnvironment, LandingEnvironment, RunSession } from "./environment.js";
+import {
+  carriedExamination,
+  examineInQueue,
+  patchIdOf,
+  recordRulingLanded,
+  requirementOf,
+} from "./examine.js";
 import {
   addDetachedWorktree,
   deleteRef,
+  git,
   jobBranch,
   provisionalCommits,
   provisionalRef,
@@ -120,7 +135,7 @@ type Stopped = { readonly kind: "failed" | "refused"; readonly reason: string };
 
 /** Runs one deferred node's checks in full and lands it. `undefined` when it landed. */
 const landOne = async (
-  environment: LandingEnvironment,
+  environment: LandingEnvironment | ExecutionEnvironment,
   session: RunSession,
   node: ExecutionNode,
 ): Promise<Stopped | undefined> => {
@@ -137,17 +152,21 @@ const landOne = async (
     };
   }
 
-  // The worktree was kept for this. If somebody tidied it away, a detached
-  // checkout of the same commit is the same thing to a verification step.
-  const worktree = environment.paths.worktree(session.scope.runId, node.executionNodeId);
-  if (!(await exists(worktree))) {
-    await mkdir(dirname(worktree), { recursive: true });
-    await pruneWorktrees(runner, session.repoPath);
-    await addDetachedWorktree(runner, {
-      repo: session.repoPath,
-      path: worktree,
-      base: node.commitSha,
-    });
+  const worktree = await worktreeFor(environment, session, node, node.commitSha);
+
+  // P8 (D-P8-14): deferred work whose risk requires examination is examined
+  // now, once its checks pass, never on unverified work. A resume with no
+  // examiner leaves it deferred, saying why, rather than landing it unexamined.
+  const head = await revParse(runner, session.repoPath, session.program.repository.programBranch);
+  const examiner = examinerOf(environment);
+  const carried = await carriedAtResume(environment, session, job, node, head);
+  if (carried === "awaiting" && examiner === undefined) {
+    return {
+      kind: "refused",
+      reason:
+        "awaiting_examination: its risk requires an independent examiner, and this resume has " +
+        "none to run; it stays deferred, and nothing after it lands until it is examined",
+    };
   }
 
   const verified = await verifyNode(environment, {
@@ -163,20 +182,131 @@ const landOne = async (
     return { kind: "failed", reason: after?.outcomeReason ?? "its deferred checks did not pass" };
   }
 
+  let examination = carried === "awaiting" || carried === "not_required" ? undefined : carried;
+  if (carried === "awaiting" && examiner !== undefined) {
+    const examined = await examineAtResume(examiner, session, job, node, head, verified);
+    if ("kind" in examined) return examined;
+    examination = examined.examination;
+  }
+
+  return land(environment, session, node, {
+    agentId: agent.agentId,
+    worktree,
+    head,
+    commitSha: verified.commitSha,
+    examination,
+  });
+};
+
+/** Seal, fast-forward, checkpoint; and an arbiter's ruling that let it land gets its rollback point. */
+const land = async (
+  environment: LandingEnvironment | ExecutionEnvironment,
+  session: RunSession,
+  node: ExecutionNode,
+  landing: {
+    readonly agentId: AgentId;
+    readonly worktree: string;
+    readonly head: CommitSha;
+    readonly commitSha: CommitSha;
+    readonly examination: Examination | undefined;
+  },
+): Promise<Stopped | undefined> => {
   const landed = await integrateNode(environment, {
     session,
     nodeId: node.executionNodeId,
-    agentId: agent.agentId,
-    worktree,
+    agentId: landing.agentId,
+    worktree: landing.worktree,
     branch: jobBranch(session.scope.runId, node.executionNodeId),
-    base: await revParse(runner, session.repoPath, session.program.repository.programBranch),
-    commitSha: verified.commitSha,
+    base: landing.head,
+    commitSha: landing.commitSha,
+    ...(landing.examination === undefined ? {} : { examination: landing.examination }),
   });
+  if (landed.kind === "integrated" && landing.examination !== undefined) {
+    await recordRulingLanded(environment, session.scope, landing.examination, landed.checkpointId);
+  }
   return landed.kind === "integrated" ? undefined : { kind: "refused", reason: landed.reason };
 };
 
+/** The worktree kept for this; when somebody tidied it away, a detached checkout of the same commit. */
+const worktreeFor = async (
+  environment: LandingEnvironment | ExecutionEnvironment,
+  session: RunSession,
+  node: ExecutionNode,
+  commitSha: CommitSha,
+): Promise<string> => {
+  const worktree = environment.paths.worktree(session.scope.runId, node.executionNodeId);
+  if (await exists(worktree)) return worktree;
+  await mkdir(dirname(worktree), { recursive: true });
+  await pruneWorktrees(environment.git, session.repoPath);
+  await addDetachedWorktree(environment.git, {
+    repo: session.repoPath,
+    path: worktree,
+    base: commitSha,
+  });
+  return worktree;
+};
+
+/** The examination made at resume, once the deferred checks passed (D-P8-14), or why it stopped the work. */
+const examineAtResume = async (
+  examiner: ExecutionEnvironment,
+  session: RunSession,
+  job: JobContract,
+  node: ExecutionNode,
+  head: CommitSha,
+  verified: Extract<Awaited<ReturnType<typeof verifyNode>>, { passed: true }>,
+): Promise<{ readonly examination: Examination | undefined } | Stopped> => {
+  const verifiedNode = await examiner.stores.executionNodes.get(
+    session.scope,
+    node.executionNodeId,
+  );
+  if (verifiedNode === undefined) return { kind: "refused", reason: "its node is gone" };
+  const gate = await examineInQueue(examiner, {
+    session,
+    job,
+    node: verifiedNode,
+    commitSha: verified.commitSha,
+    base: head,
+    verification: verified.verification,
+  });
+  if (gate.kind === "land") return { examination: gate.examination };
+  const after = await examiner.stores.executionNodes.get(session.scope, node.executionNodeId);
+  return { kind: "failed", reason: after?.outcomeReason ?? "its examination stopped it" };
+};
+
+/**
+ * What examination a deferred node brings to its landing (D-P8-14): none needed,
+ * the examination of this exact change, or one it is still awaiting.
+ */
+const carriedAtResume = async (
+  environment: LandingEnvironment | ExecutionEnvironment,
+  session: RunSession,
+  job: JobContract,
+  node: ExecutionNode,
+  head: CommitSha,
+): Promise<Examination | "not_required" | "awaiting"> => {
+  if (!requirementOf(session, job).required || node.commitSha === null) return "not_required";
+  const diff = await git(
+    environment.git,
+    ["diff", "--no-color", "--no-ext-diff", head, node.commitSha],
+    {
+      cwd: session.repoPath,
+    },
+  );
+  const carried = carriedExamination(
+    await environment.stores.examinations.listByNode(session.scope, node.executionNodeId),
+    patchIdOf(diff),
+  );
+  return carried ?? "awaiting";
+};
+
+/** The full environment, when this resume was given one that can start an examiner. */
+const examinerOf = (
+  environment: LandingEnvironment | ExecutionEnvironment,
+): ExecutionEnvironment | undefined =>
+  "harness" in environment && environment.examination !== undefined ? environment : undefined;
+
 export const resumeDeferred = async (
-  environment: LandingEnvironment,
+  environment: LandingEnvironment | ExecutionEnvironment,
   resumed: ResumeSession,
 ): Promise<ResumeResult> => {
   const line = await deferredLine(environment, resumed);
@@ -188,8 +318,10 @@ export const resumeDeferred = async (
   if (blocked !== undefined) return { landed: [], blocked, discarded: [] };
 
   // `verifyNode` and `integrateNode` take a whole session; resuming has no
-  // orchestrator, and neither of them reads the two fields it lacks.
-  const session = resumed as RunSession;
+  // orchestrator, and neither of them reads the two fields it lacks. The run is
+  // read for the policy it recorded (P8, D-P8-03): what examination it requires.
+  const run = await environment.stores.runs.get(resumed.scope, resumed.scope.runId);
+  const session = { ...resumed, ...(run === undefined ? {} : { run }) } as RunSession;
   const ref = provisionalRef(resumed.scope.runId);
   const landed: ExecutionNodeId[] = [];
 

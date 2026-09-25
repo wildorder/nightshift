@@ -132,6 +132,13 @@ export const RoutingDecisionSchema = z
      */
     ladder: z.string().min(1).optional(),
     rung: RungPositionSchema.optional(),
+    /**
+     * P8: what the route was for, when it was not the job's own work: an
+     * examiner, a builder answering an examiner's questions, or an arbiter. Absent
+     * for the job's attempts, which alone make the attempt chain; every route
+     * counts against the run's budget (D-P8-08).
+     */
+    purpose: z.enum(["examine", "answer", "arbitrate"]).optional(),
     classification: ClassificationSchema.optional(),
     policyVersion: z.int().min(0).optional(),
     createdAt: IsoTimestampSchema,

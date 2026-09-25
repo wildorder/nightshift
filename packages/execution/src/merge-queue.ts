@@ -30,9 +30,15 @@
  * `core`'s `nextToIntegrate`: among the nodes ready *now*, the one delegated
  * first. The queue never waits for unfinished work.
  */
-import type { CommitSha, ExecutionNode, ExecutionNodeId } from "@nightshift/contracts";
+import type {
+  CommitSha,
+  ExecutionNode,
+  ExecutionNodeId,
+  Verification,
+} from "@nightshift/contracts";
 import { nextToIntegrate, nowIso, transition } from "@nightshift/core";
 import type { ExecutionEnvironment } from "./environment.js";
+import { examineInQueue, recordRulingLanded } from "./examine.js";
 import {
   changedPaths,
   effectiveHead,
@@ -172,7 +178,34 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
       return;
     }
 
-    await integrateNode(environment, {
+    await examineAndLand(candidate, head, verified.commitSha, verified.verification);
+  };
+
+  /**
+   * The examination of this exact change, carried over or made here when the
+   * replay changed it or none was made (P8, D-P8-09); then seal, fast-forward,
+   * checkpoint. An arbiter's ruling that let it land gets its rollback point on
+   * both sides.
+   */
+  const examineAndLand = async (
+    candidate: IntegrationCandidate,
+    head: CommitSha,
+    commitSha: CommitSha,
+    verification: Verification,
+  ): Promise<void> => {
+    const verifiedNode = await stores.executionNodes.get(candidate.session.scope, candidate.nodeId);
+    if (verifiedNode === undefined) return;
+    const gate = await examineInQueue(environment, {
+      session: candidate.session,
+      job: candidate.job,
+      node: verifiedNode,
+      commitSha,
+      base: head,
+      verification,
+    });
+    if (gate.kind === "stopped") return;
+
+    const result = await integrateNode(environment, {
       session: candidate.session,
       nodeId: candidate.nodeId,
       agentId: candidate.agentId,
@@ -182,8 +215,17 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
       // Nightshift moves the branch between here and the fast-forward, the
       // refusal is P3's `stale_base`, durably: a verified commit is never moved.
       base: head,
-      commitSha: verified.commitSha,
+      commitSha,
+      ...(gate.examination === undefined ? {} : { examination: gate.examination }),
     });
+    if (result.kind === "integrated" && gate.examination !== undefined) {
+      await recordRulingLanded(
+        environment,
+        candidate.session.scope,
+        gate.examination,
+        result.checkpointId,
+      );
+    }
   };
 
   /** The node on its replayed commit, or `undefined` when it conflicted and failed. */

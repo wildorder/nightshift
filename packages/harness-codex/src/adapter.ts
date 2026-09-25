@@ -55,12 +55,7 @@ import type {
   HarnessHandle,
   HarnessStartInput,
 } from "@nightshift/harness";
-import {
-  agentStatusForExit,
-  hookTypeForExit,
-  nightshiftToolNames,
-  renderWorkerBrief,
-} from "@nightshift/harness";
+import { agentStatusForExit, hookTypeForExit, promptFor } from "@nightshift/harness";
 import {
   buildCodexArgs,
   buildGitGuard,
@@ -152,17 +147,8 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
   };
 
   const start = async (input: HarnessStartInput): Promise<HarnessHandle> => {
-    const prompt = codexPrompt(
-      renderWorkerBrief({
-        job: input.job,
-        node: input.node,
-        program: input.program,
-        worktree: input.worktree,
-      }),
-      codexBriefAddendum({
-        mcpServerName: input.mcp.name,
-        tools: nightshiftToolNames(input.node.kind, input.program),
-      }),
+    const prompt = promptFor(input, (brief, mcpServerName, tools) =>
+      codexPrompt(brief, codexBriefAddendum({ mcpServerName, tools })),
     );
 
     let resolveExit: (exit: HarnessExit) => void = () => {};
@@ -242,8 +228,9 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       prompt,
       model: input.model,
       worktree: input.worktree,
-      mcp: input.mcp,
+      ...(input.mcp === undefined ? {} : { mcp: input.mcp }),
       shellPath,
+      ...(input.resume === undefined ? {} : { resumeSessionId: input.resume.sessionId }),
     });
 
     let child: SpawnedChild;
@@ -381,7 +368,11 @@ const exitFor = (
     ...(outcome.threadId === undefined ? {} : { sessionId: outcome.threadId }),
   };
   if (code === 0 && outcome.turnCompleted && outcome.failure === undefined) {
-    return { kind: "completed", ...said };
+    return {
+      kind: "completed",
+      ...said,
+      ...(outcome.lastMessage === undefined ? {} : { result: outcome.lastMessage }),
+    };
   }
   return {
     kind: "failed",
