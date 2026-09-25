@@ -7,6 +7,8 @@
  * does what a tag in its own plan section says.
  */
 import { spawn } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ProgramContract, Strand } from "@nightshift/contracts";
 import { isSequenced, type RunScope, systemClock } from "@nightshift/core";
@@ -19,6 +21,7 @@ import {
   startRun,
 } from "@nightshift/execution";
 import { STRAND_DEPARTURE_PREFIX } from "@nightshift/harness";
+import { createActivityFeed, renderActivity } from "@nightshift/mcp";
 import { createHttpPlanning } from "@nightshift/persistence/http";
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterEach, describe, expect, it } from "vitest";
@@ -131,6 +134,18 @@ const runUnattended = async (
   };
   const planText = plan(tags);
   await createHttpPlanning({ transport: ctx.transport }).ratify(contract, planText);
+  // The program's directory, committed, as a planned repository has it: the
+  // orchestrator finds the program there and writes the report beside it.
+  const directory = join(ctx.fixture.repo, "docs", "programs", "three-strands");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "contract.json"), `${JSON.stringify(contract, null, 2)}\n`);
+  await writeFile(join(directory, "plan.md"), planText);
+  await git(nodeGitRunner, ["add", "-A"], { cwd: ctx.fixture.repo });
+  await git(
+    nodeGitRunner,
+    ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", "plan"],
+    { cwd: ctx.fixture.repo },
+  );
 
   const started = await startRun(
     { stores: ctx.stores, clock: systemClock, ids: ctx.ids, git: nodeGitRunner },
@@ -283,6 +298,29 @@ describe("nightshift run {id}, unattended (SC-P7-06)", () => {
       text.indexOf("Acceptance, as planned:", s02At),
     );
     expect(text).toContain("Nothing was parked.");
+    // The orchestrator's run.finish wrote it: nothing else in this test writes one.
+    const written = await readFile(
+      join(ctx.fixture.repo, "docs", "programs", "three-strands", "report.md"),
+      "utf8",
+    );
+    expect(written).toContain("3 of 3 strands succeeded");
+
+    // What a session orchestrating this run would have been told as it went:
+    // every strand's work, in the plan's terms, from the record alone.
+    const feed = createActivityFeed(ctx.stores, scope);
+    const lines = renderActivity(await feed.since());
+    const said = lines.join("\n");
+    for (const strandId of ["S-01", "S-02", "S-03"]) {
+      expect(said).toContain(`${strandId} — started`);
+      expect(said).toContain(`${strandId} — succeeded`);
+    }
+    // A job inside a strand is named under it, and its landing is on the record.
+    expect(said).toMatch(/S-02 › Add the b1 module and its test\. — landed [0-9a-f]{8}/);
+    expect(said).toContain("S-02 — decided: Two modules — DEPARTURE:");
+    expect(said).toMatch(/S-0\d › .* — working: \d+ tool calls? \(/);
+    // Each call answers "since the last one".
+    expect(await feed.since()).toEqual([]);
+    expect((await feed.all(5)).length).toBe(5);
   }, 180_000);
 
   it("carries on past a check that cannot run, on the provisional line, and ends deferred (SC-P7-08a)", async () => {

@@ -1,15 +1,24 @@
 ---
 name: run-program
-description: Start a ratified Nightshift program's unattended run from this session, watch it to the report, and read the report back — the step after plan-program, without going to a terminal. Use when someone says "run the program", "start the run", "kick off {id}", "resume the run", or asks how a run is going.
+description: Run a ratified Nightshift program from this session — by default with this session as the orchestrator, delegating each strand through the Nightshift MCP server and keeping the human in the loop as it goes; or, when asked to run it dark, unattended to a report. The step after plan-program. Use when someone says "run the program", "start the run", "kick off {id}", "run it dark", "resume the run", or asks how a run is going.
 ---
 
 # Running a ratified program
 
-The plan is ratified; this is the night. `nightshift run {id}` does everything:
-holds the plan on disk to the ratified hash, runs preflight for what the first
-strands need, starts a headless orchestrator through the routed adapters, and
-writes `docs/programs/{id}/report.md` when the run has ended. Your job is to
-start it right, stay out of its way, and read the report to the human.
+The plan is ratified. There are two ways to run it, and **the default is the
+one where the human can watch**:
+
+- **Attended (default).** This session is the root orchestrator. It creates the
+  run with `nightshift run {id} --attended`, attaches through the Nightshift MCP
+  server, hands each strand to an orchestrator of its own with
+  `strand.delegate`, and waits with `job.wait`, which comes back at least every
+  minute with what every strand and job did meanwhile. You relay that, decide
+  retries, and finish the run. The human sees the run as it happens and can
+  interject.
+- **Dark.** Only when the human says so ("run it dark", "run it unattended",
+  "I'm going to bed"): `nightshift run {id}` starts a headless orchestrator of
+  its own and returns hours later with a report. Nothing of it reaches this
+  conversation until then.
 
 ## 0. Make sure it is Nightshift v1
 
@@ -39,50 +48,58 @@ Check, and say what you find, without fixing anything the human did not ask for:
   two full gates running together. Say it once, and let the human choose
   `--model` or lower the limit in `nightshift.config.json` if they want.
 
-## 2. Start it, in this session
+## 2. Attended: this session orchestrates
 
-The run takes minutes to hours and `nightshift run` blocks until it ends, so a
-plain tool call would time out on it. Start it as a **background command** of
-this session (the Bash tool's `run_in_background`), which keeps its output in a
-file, lets you read that file whenever the human asks, and notifies you the
-moment the process exits. Nothing is delegated: the run is this session's, and
-you are told when it ends.
+1. `nightshift run {id} --attended` creates the run and prints its id. It runs
+   preflight first and stops with remediations if a first strand's prerequisite
+   is unmet.
+2. `run.attach { runId, model: "<the model you are>" }`.
+3. `strand.delegate { strandId }` for **every** strand, at once. You name the
+   strand and nothing else: its orchestrator is handed its plan section
+   verbatim, the human's decisions that touch it, and the other strands'
+   scopes. Nightshift holds a strand until what it depends on has succeeded, so
+   do not sequence them yourself. Plain `delegate` is refused: the plan fixes
+   the strands, and how each divides into jobs is its orchestrator's call.
+4. Loop on `job.wait { jobIds }` over the strands still in flight. **Every
+   return carries `Meanwhile:`, the lines since the last one** — strands
+   starting, their orchestrators' own notes on how they divided the work and
+   why, jobs landing, verification failing, retries, a tool-call count as a
+   heartbeat. After each wait, tell the human what changed **in a sentence or
+   three, in the plan's terms**: which strand did what, what landed, what went
+   wrong and what you are doing about it. Do not paste the lines; do not stay
+   silent across waits either. When nothing changed but heartbeats, say so in
+   five words or not at all. `run.activity` replays the whole run if the human
+   asks what happened.
+5. When a strand comes back failed, read why with `job.get`. Retry it
+   (`job.retry`) when a second attempt from the current code can fix it — a
+   conflict, a flaky check, a worker that gave up early — at most twice, and
+   record the decision with `decision.record`. A strand that stays failed is
+   **parked** with everything that depends on it; `strand.delegate` refuses
+   those as `strand_blocked`. Leave them; let the rest finish.
+6. A job that ends **deferred** is done for now, waiting on a human
+   prerequisite, on the provisional line. Not a failure; nothing to retry.
+7. When every strand has succeeded, is deferred, or is parked:
+   `run.finish { outcome, reason }` — `succeeded` only if every strand did;
+   `deferred` when nothing failed and some work waits; otherwise `failed`,
+   naming what was parked. Then read the report (section 4).
 
-```sh
-nightshift run {id}
-```
+You do not write code during the run, and you do not touch the checkout: every
+landing fast-forwards the branch it is on.
 
-Then say, in a few lines: the run id from the output's first line (it appears
-within seconds; read it), where the report will be, and that this machine must
-stay awake, because the orchestrator and every worker run here. Flags the human
-may want: `--harness claude|codex` and `--model <name>` choose the root
-orchestrator (workers are routed by the contract's policy); `--attended` only
-creates the run, for a session that will orchestrate it itself with the
-`nightshift` skill.
+## 3. Dark: nightshift runs it alone
 
-If the harness has no background mode, fall back to
-`nohup nightshift run {id} > docs/programs/{id}/runs/<timestamp>.log 2>&1 &`
-and read that log.
-
-## 3. While it runs
-
-When asked how it is going, read the background command's output so far and
-report in the plan's terms, strand by strand, never job by job:
-- A strand **parked** is one that failed with everything downstream of it; the
-  rest carries on. That is by design, and the report will say why.
-- A job **deferred** is waiting on a human prerequisite, on the provisional
-  line. Not a failure; nothing to do until the run ends.
-- Do not touch the repository while it runs. Do not `git checkout`, do not
-  commit, do not run the tests yourself in that checkout: a worktree per job
-  keeps workers apart, but the program checkout is where every landing goes.
-
-Stop a run only when the human asks: stopping the background command (or
-`kill <pid>`) interrupts it cleanly, every node and agent is recorded, and the
-report is still written.
+Only when asked. `nightshift run {id}` blocks until the run ends, minutes to
+hours, so start it as a **background command** of this session (the Bash tool's
+`run_in_background`), which keeps its output and tells you when it exits. Say
+the run id (the output's first line), where the report will be, and that this
+machine must stay awake. `--harness` and `--model` choose the headless
+orchestrator. When the human asks how it is going, read the output so far and
+answer in strands, not jobs.
 
 ## 4. When it ends
 
-You are notified when the command exits. `nightshift run` exits 0 when every strand succeeded, 3 when nothing failed but
+Attended: `run.finish` writes `docs/programs/{id}/report.md` and names it; read
+it. Dark: you are notified when the command exits. `nightshift run` exits 0 when every strand succeeded, 3 when nothing failed but
 some work is deferred, 1 otherwise, and always writes
 `docs/programs/{id}/report.md`. Read the report and give the human the shape of
 it, in this order:

@@ -133,6 +133,10 @@ beforeEach(async () => {
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "contract.json"), `${JSON.stringify(contract, null, 2)}\n`);
   await writeFile(join(directory, "plan.md"), PLAN);
+  // A planned repository has no single root contract file: its contracts are
+  // under docs/programs. The first real planned run found that run.attach looked
+  // only for the old file, and the headless root wrote one by hand to get past it.
+  git("rm", "-q", "nightshift.program.json");
   git("add", "-A");
   git("-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", "plan the modules");
 

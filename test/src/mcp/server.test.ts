@@ -183,6 +183,8 @@ describe("the role split (D-P3-01)", () => {
       "job.wait",
       "program.get",
       "program.status",
+      // What every strand and job has done, for the session to relay (2026-09-24).
+      "run.activity",
       "run.attach",
       "run.finish",
       "run.start",
