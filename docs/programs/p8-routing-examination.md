@@ -7,9 +7,9 @@
 | Base branch | `v1` |
 | Program branch | `program/p8-routing-examination` |
 | Source stage | Stage 6 (Model/Harness Routing) and Stage 7 (Risk-Based Examination) |
-| Status | **Draft, 2026-09-24.** Five questions for the owner in §3.1; D-P8-01 … D-P8-11 proposed. Not ratified; nothing is built. |
-| Depends on | P5 Harness Neutrality (the compatibility table, `RoutingDecision`, usage on exit), P6 (the engine, the merge queue, retries), P7 (strands, the report, deferral) |
-| Blocking decisions | the five questions in §3.1 |
+| Status | **Draft.** Drafted 2026-09-24; the owner answered the design questions 2026-09-25 (§3.1), and D-P8-01 … D-P8-14 are written to those answers. Not ratified; nothing is built. |
+| Depends on | P4 (organisations), P5 (the compatibility table, `RoutingDecision`, usage on exit), P6 (the engine, the merge queue, retries), P7 (strands, the report, the provisional line) |
+| Blocking decisions | ratification of D-P8-01 … D-P8-14 |
 
 This contract is the stable authority for P8. The implementation plan may be
 revised continuously; this contract may not be revised to make an implementation
@@ -21,22 +21,24 @@ Two policy layers over the engine that already works, both driven by
 configuration and neither by code:
 
 - **Routing.** Each job goes to the cheapest route likely to reach a *verified*
-  result (A-13), chosen deterministically from what the job says about itself.
-  A route that cannot start falls back. A route that fails climbs a ladder. Every
-  attempt is recorded with enough of the job and its outcome to train a router
-  on later (SC-11), and what the run cost is known and bounded.
-- **Examination.** Where a job's risk warrants it, a different model, or a
-  different provider, examines the verified work against evidence before it
-  lands (A-12). Its findings go back to the orchestrator that delegated the job.
-  A material finding nobody resolved does not land when the policy says so.
-  Low risk lands on deterministic verification alone.
+  result (A-13), chosen deterministically from what the job says about itself,
+  over **ladders** an organisation configures. A route that cannot start falls
+  back. A route that fails climbs its ladder. Every attempt is recorded with
+  enough of the job and its outcome to train a router on later (SC-11), and what
+  a run costs is known and bounded.
+- **Examination.** Where a job's risk warrants it, a different model or a
+  different provider examines the verified work against evidence before it lands
+  (A-12). Its findings go to the orchestrator that delegated the job. A blocking
+  finding is closed by a fix, or, when the orchestrator disputes it, by an
+  independent **arbiter**, whose ruling the owner can reverse. Low risk lands on
+  deterministic verification alone.
 
 **What P8 is not.** The cheap Bedrock route is P10's: P8 routes among what exists
 (Claude Code on Anthropic models, Codex on OpenAI's) and its policy must not
 assume a harness that has not been built (`staging.md`). Stage 6's first proof,
 "low-risk job routes through AgentCore Harness to a cheaper Bedrock model", is
-therefore proven here with the cheapest route that exists and again in P10 with
-Bedrock. SC-05 stays P10's. Learned routing is after v1: P8 captures the data only.
+proven here with the cheapest rung that exists, and again in P10 with Bedrock.
+SC-05 stays P10's. Learned routing is after v1: P8 captures the data only.
 
 ### What exists today
 
@@ -56,6 +58,8 @@ Bedrock. SC-05 stays P10's. Learned routing is after v1: P8 captures the data on
   Nothing normalises them. Only `maxWallClockSeconds` is enforced (D-P6-07, which
   gave `maxUsd`, `maxTokens` and usage normalisation to this program, then
   numbered P7).
+- Configuration exists per repository (`nightshift.config.json`) and per program
+  contract. An organisation holds nothing but its members and projects.
 - A sub-orchestrator's `delegate` defaults risk and ambiguity to `low`, not to the
   program's `defaultRisk`. That is a defect and P8 fixes it: examination keyed on
   a risk nobody chose would be the ceremony A-12 rejects, in reverse.
@@ -66,55 +70,61 @@ Everything from P3 … P7 stands.
 
 | # | Prerequisite | Status |
 |---|--------------|--------|
-| H-P8-01 | Ratify D-P8-01 … D-P8-11 and answer Q1 … Q5 | open |
+| H-P8-01 | Ratify D-P8-01 … D-P8-14 | open |
 | H-P8-02 | P7 merged | **satisfied 2026-09-24** (PRs #19, #20) |
-| H-P8-03 | Claude Code and Codex signed in on the operator's machine, with the models Q2 names reachable on those subscriptions | open until Q2 is answered; checked by the live suite's own preflight |
+| H-P8-03 | Claude Code and Codex signed in on the operator's machine, with every model on the org's ladders reachable on those subscriptions. `astra` is recorded as the owner typed it; the live suite's preflight is what proves the id | open; checked by `npm run routing`'s preflight |
+| H-P8-04 | A repository for the exit gate's trial, and a program to plan on it (SC-P8-18) | open, needed by T5 only |
 
-**Explicitly not required.** No new AWS resource. The API gains a role and some
-fields (§4.6) and is redeployed.
+**Explicitly not required.** No new AWS resource: organisation configuration is a
+record in the existing table. The API gains routes, roles and fields (§4.6) and is
+redeployed.
 
 ## 3. Decisions
 
-### 3.1 Questions for the owner
+### 3.1 The owner's answers, 2026-09-25
 
-Each has a leaning. None is settled until the owner answers.
-
-| # | Question | Options | Leaning, and why |
-|---|----------|---------|------------------|
-| **Q1** | **Where does examination run?** | (a) **In the merge queue**, between verification on the program head and the seal. Simple, and the examined commit is exactly the one that lands, but the queue is serial (A-41), so every medium- and high-risk job holds every other job's landing for the minutes an examiner takes. (b) **Beside the queue.** When the worker finishes, its snapshot is verified in its own worktree and examined there while other work lands. The node enters the queue only once examination has passed or its findings are resolved. The queue replays and verifies as it does today. If the replayed diff (its `git patch-id`) matches the examined one, the examination carries over; if the replay changed the diff, it is examined again, in the queue. | **(b).** Examination is the slowest step P8 adds, and (a) puts it on the one serial path P6 exists to keep short. The cost of (b) is one extra verification run per examined job, and none for a job that is not examined. P1's table is untouched: the node stays `implemented` while it is examined beside the queue, and in the queue `verified → examining → sealed` passes at once by citing the examination of the same patch. |
-| **Q2** | **What is the ladder?** Which models are the cheap, standard and frontier rungs, and which is the cross-provider examiner? | Any models the two harnesses can run on your subscriptions. | Cheap `claude-haiku-4-5-20251001`, standard `claude-sonnet-5`, frontier `claude-opus-5-5` (all Claude Code). Codex `gpt-5.5` as the frontier alternative and as the different-provider examiner. On subscriptions the difference between rungs is mostly rate limits, not dollars; the ladder still matters because P10 adds Bedrock beneath it and what we learn here carries over. |
-| **Q3** | **Budgets: enforce `maxUsd` and `maxTokens` now?** | (a) Yes. Tokens are normalised across harnesses. Dollars are what the harness reports, or failing that an **estimate** from a price table in `nightshift.config.json`, always marked as an estimate. When a budget is spent, the engine starts nothing new and says why, as it does for wall clock. (b) Capture and normalise usage only, and enforce budgets in P10 when real money is spent. | **(a).** It is small, it completes what D-P6-07 deferred, and a cap on a cheap-route run is how a ladder that climbs too eagerly shows up before the bill does. Estimates are labelled, so nothing pretends a subscription run cost what the table says. |
-| **Q4** | **A material finding the orchestrator disputes, in an unattended run.** Policy blocks on it, the fix attempts are spent, and the orchestrator says the finding is wrong. | (a) The node **fails** and its strand parks, with the finding in the report. (b) The dispute is a **human hurdle**: the node is `deferred` and lands on the provisional line (D-P7-10); work continues on it. At `nightshift resume` you accept the risk, uphold the finding (which discards what stood on it), or reject the finding. (c) The orchestrator's rejection resolves the finding. | **(b).** It is your defer-don't-park rule applied to a judgement only you can make, and it reuses the provisional line rather than inventing a second one. (c) lets an agent grade its own dispute, which is the self-grading A-12 exists to prevent. (a) wastes the night on a disagreement that is usually about wording. Where policy does **not** block, the orchestrator's rejection with a reason stands and is recorded. |
-| **Q5** | **The exit gate.** | (a) A live suite only (`npm run routing`, beside `slice` and `conformance`), with real models on the deployed plane. (b) That, **and** a real planned program on a repository you name, with routing and examination on. | **(b)**, as P7's was. The live suite proves the mechanics. Only a real run says whether the ladder saves anything and whether the examiner's findings are worth the time. Name a repository (foodfly again is fine) when you have one. |
+| # | Question | Answer |
+|---|----------|--------|
+| Q1 | Where does examination run? | **Beside the merge queue**, not in it (D-P8-09) |
+| Q2 | What is the ladder? | **Configurable per organisation**, with a ladder per provider. The owner's own: Claude `claude-haiku-4-5-20251001 → claude-sonnet-5 → claude-opus-5-5`; Codex `gpt-5.5 → astra`, two rungs until a cheaper Codex model is chosen. The repository and the contract may **narrow** the org's configuration, never widen it (D-P8-02, D-P8-03) |
+| Q3 | Enforce `maxUsd` and `maxTokens` now? | **Yes**, with estimated dollars labelled as estimates (D-P8-08) |
+| Q4 | A blocking finding the orchestrator disputes, unattended | **An independent arbiter rules, and the ruling stands**: overturned lands, upheld fails and parks. The ruling is a recorded decision the owner can reverse (D-P8-13) |
+| Q5 | The exit gate | **The live suite and a real planned program** on a repository the owner names (SC-P8-17, SC-P8-18) |
 
 ### 3.2 Proposed decisions
 
-Proposed 2026-09-24, for ratification with §3.1's answers.
+Proposed 2026-09-24, revised to §3.1's answers 2026-09-25, for ratification.
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
 | D-P8-01 | **A job says what it is; the policy says where that goes.** The Job Contract gains two classification fields beside `risk` and `ambiguity`: `testability` (`strong`: the contract's checks exercise the change; `weak`; `none`) and `kind` (`implement`, `fix`, `refactor`, `test`, `docs`, `orchestrate`). Scope breadth is derived from `scope.includes`, never declared. The delegating orchestrator sets them; anything left unset takes the **conservative** default (`defaultRisk`, `medium` ambiguity, `weak` testability), so an unclassified job never lands on the cheapest rung by accident. Sub-orchestrators default to `defaultRisk` like the root. | Stage 6's inputs, cut to what an orchestrator can state honestly and a rule can match on. Blast radius is `risk`; a context requirement is what `scope` and the context documents already say. A field that can be derived is not a second home for the same fact. |
-| D-P8-02 | **Routing is a first-match rule table in configuration.** `routingPolicy` in `nightshift.config.json` (inherited by the contract, as in P7): the ladder, **rungs** each naming one or more `(harness, model)` routes in preference order, and **rules**, each matching on classification and naming a starting rung. The first rule that matches wins. The last rule has no conditions. `modelPolicy` still intersects everything: a rung route that policy forbids is not eligible. The rule id and the matched classification are recorded on every decision. No model, no randomness and no clock take part. | Deterministic, explainable, overrideable (SC-10). A table in config is how "changing policy changes behaviour without code changes" is literally true. First-match is the simplest thing a human can read top to bottom and predict. |
-| D-P8-03 | **An override is a pin within policy, as in P5.** An orchestrator may pin a harness, a model or a rung on `delegate`. The pin must be eligible under `modelPolicy` and is recorded as `wasOverride`. A pin does not exempt the job from escalation, fallback or examination. | A-38 unchanged. An override that could escape examination would make risk a suggestion. |
-| D-P8-04 | **Fallback is sideways, then up; never down.** A route is **unavailable** when configuration marks it so, or when the adapter reports it could not start on that route: not signed in, model not offered, rate-limited before any work began. Each adapter classifies its own start failures into `route_unavailable`. The decision is recorded with outcome `unavailable`, and the next route **on the same rung** is tried, then the next rung up. A route found unavailable is skipped for the rest of the run. | Stage 6's "unavailable model falls back correctly". Rate limits on subscriptions are a real cause of this and the likeliest one. Falling *down* a rung would trade a verified result for a cheap attempt, the opposite of A-13. Only the adapter can tell "could not start" from "started and failed", so the classification lives there, behind the harness boundary. |
-| D-P8-05 | **A retry after a real failure climbs one rung.** When an orchestrator retries a job that ended `verification_failed`, `failed`, or `examination_failed`, the retry routes one rung above the last attempt (the top rung stays the top rung). A job that ended in a stale base, a conflict, an interrupt or an unavailable route retries on the **same** route: those failures say nothing about the model. Each attempt is a new `RoutingDecision` linked by `previousRouteId`; the one it replaced gets outcome `escalated`. The orchestrator still decides *whether* to retry. Routing only decides *where* the retry goes. | "Failures may escalate" (source plan), with the line drawn at failures that are evidence about capability. The chain of decisions is SC-11's dataset: a cheap attempt that failed and a stronger one that passed is exactly what a learned router needs. |
-| D-P8-06 | **Usage is normalised, and dollars are either reported or estimated, never blended.** `usage` gains `cacheReadTokens` and `cacheWriteTokens` where a harness reports them, and `costSource: reported \| estimated \| unknown`. An estimate comes from a per-model price table in configuration. The report and any budget use `reported` where there is one and `estimated` otherwise, and say which. Budgets as Q3 decides. | Codex reports no cost; Claude does. Summing a reported figure with nothing, silently, is how D-P6-07 said a budget becomes a budget in name only. |
-| D-P8-07 | **The examiner is an agent like any other, with its own role and nothing else.** It runs through the routed adapters with its own execution identity (A-04). `NIGHTSHIFT_ROLE=examiner` registers one tool, `examination.submit`, and its token may write only its own `Examination`. It works in a **detached checkout** of the commit it examines (A-39: its reach is bounded by where it runs, not by a list). Its route comes from the policy's requirement: a different model from the implementer's when `mustDifferModel`, a different provider when `mustDifferProvider`, and at high risk the **frontier rung**. | Stage 7's "examiner differs from the implementer invocation" is enforced by identity and route, not by prompt. A detached checkout means the examiner can run the tests itself and has nothing to commit. |
-| D-P8-08 | **The examiner is given evidence, not the implementer's reasoning.** Its brief carries the Program Contract, the Job Contract, the diff, the changed tests, the verification results and logs, and the interfaces the scope touches. It is **not** given the worker's summary, transcript or commit message. | "Where practical, do not initially expose the implementer's rationale" (source plan). The commit message is the worker's summary (P3), so it is withheld too. |
-| D-P8-09 | **A finding without evidence is refused.** Each finding names its severity (`material` or `minor`) and at least one piece of evidence: a file and line range in the examined commit, a test or command with its output, or a contract clause the diff contradicts. The examination is bound to the commit and to the diff's `patch-id`, and its full report goes to S3 (A-08). | "Examiner findings are evidence-backed" and "remain attached to exact commit/diff" (Stage 7), as schema rather than hope. Without the patch id, Q1(b)'s carry-over would be a guess. |
-| D-P8-10 | **Findings go to the orchestrator that delegated the job, and only a fix or a human closes a blocking one.** A material finding reaches the delegating orchestrator through `job.wait` as the node's outcome. It may **fix** it (a retry that carries the findings in its brief, climbing per D-P8-05, and examined again) or **dispute** it with a reason. Where the policy blocks on material findings, a dispute does not resolve the finding: Q4 decides what happens instead. `risk_accepted` has authority `human`, always. | Stage 7's "the originating orchestrator receives material findings for resolution", with the self-grading hole closed. An agent may argue; it may not rule on its own argument. |
-| D-P8-11 | **Examination and deferral compose, in that order.** A node whose checks are deferred (D-P7-10) is examined when its deferred checks pass at `resume`, never on unverified work. A node deferred on a disputed finding (Q4(b)) has passed every check and waits only for the human's ruling. | "Examination occurs against verified artifacts" (Stage 7), with A-05 intact. |
+| D-P8-02 | **Routing policy belongs to the organisation.** `routingPolicy` is stored in the control plane per org, read and written by the org's members (`nightshift org config`). It holds **ladders**, one or more, each an ordered list of rungs, and each rung one or more `(harness, model)` routes in preference order. Rungs carry a **tier** (`cheap`, `standard`, `frontier`) so rules and examiners can speak across ladders. It also holds the **rules**, the price table, routes marked unavailable, and the default `examinationPolicy`. A new org is seeded with a working default, which the owner's org then replaces with Q2's ladders. | The owner's answer to Q2. Ladders and prices are a team's standing choice, not a repository's; a second project should not have to restate them. Tiers let a Codex ladder of two rungs and a Claude ladder of three be compared without pretending they are the same length. |
+| D-P8-03 | **The repository and the contract may only narrow.** `nightshift.config.json` and the Program Contract inherit the org's policy and may forbid a route, drop a ladder, raise a rule's starting tier or tighten an examination requirement. They may not add a model, a harness or a ladder the org does not have, or loosen examination. The effective policy is computed in `core`, and what it was is recorded on the run. | A-11 applied to configuration: children narrow, never widen. It is also the only reading of "configurable by org" in which the org's choice means anything. |
+| D-P8-04 | **Routing is a first-match rule table.** Each rule matches on classification and names a starting **ladder** and **tier**. The first rule that matches wins; the last has no conditions. A ladder without the named tier starts at its lowest rung at or above it. `modelPolicy` still intersects everything. The rule id, the ladder, the rung and the classification matched are recorded on every decision. No model, no randomness and no clock take part. | Deterministic, explainable, overrideable (SC-10). A table is how "changing policy changes behaviour without code changes" is literally true, and first-match is the simplest thing a human can read top to bottom and predict. |
+| D-P8-05 | **An override is a pin within policy, as in P5.** An orchestrator may pin a harness, a model, a ladder or a tier on `delegate`. The pin must be eligible under the effective policy and is recorded as `wasOverride`. A pin does not exempt the job from escalation, fallback or examination. | A-38 unchanged. An override that could escape examination would make risk a suggestion. |
+| D-P8-06 | **Fallback is sideways, then up; never down.** A route is **unavailable** when policy marks it so, or when the adapter reports it could not start on that route: not signed in, model not offered, rate-limited before any work began. Each adapter classifies its own start failures into `route_unavailable`. The attempt is recorded with outcome `unavailable`, and the next route is tried in this order: the next route on the same rung; the rung of the **same tier on another ladder**; the next rung up the job's own ladder. A route found unavailable is skipped for the rest of the run. | Stage 6's "unavailable model falls back correctly". Rate limits on one subscription are the likeliest cause, and a second provider's ladder at the same tier is the natural place to go. Falling *down* would trade a verified result for a cheap attempt, the opposite of A-13. Only the adapter can tell "could not start" from "started and failed", so the classification lives there. |
+| D-P8-07 | **A retry after a real failure climbs one rung of its ladder.** When an orchestrator retries a job that ended `verification_failed`, `failed` or `examination_failed`, the retry routes one rung above the last attempt on the same ladder; the top rung stays the top rung. A job that ended in a stale base, a conflict, an interrupt or an unavailable route retries on the **same** route: those failures say nothing about the model. Each attempt is a new `RoutingDecision` linked by `previousRouteId`; the one it replaced gets outcome `escalated`. The orchestrator still decides *whether* to retry; routing decides *where*. | "Failures may escalate" (source plan), with the line drawn at failures that are evidence about capability. The chain of decisions is SC-11's dataset: a cheap attempt that failed and a stronger one that passed is exactly what a learned router needs. |
+| D-P8-08 | **Usage is normalised, dollars are reported or estimated and never blended, and budgets are enforced.** `usage` gains `cacheReadTokens` and `cacheWriteTokens` where a harness reports them, and `costSource: reported \| estimated \| unknown`. An estimate comes from the org's price table. Budgets use `reported` where there is one and `estimated` otherwise. Once `maxUsd` or `maxTokens` is spent the engine starts nothing new and says why, as it does for wall clock (D-P6-07); work already running finishes. The report says which figures are estimates. | The owner's answer to Q3. Codex reports no cost; Claude does. Summing a reported figure with nothing, silently, is how D-P6-07 said a budget becomes a budget in name only. |
+| D-P8-09 | **Examination runs beside the merge queue.** When a worker finishes a job that needs examining, the execution layer verifies its snapshot in its own worktree and an examiner examines that verified snapshot, while other work lands. The node enters the queue only once examination has passed or its findings are resolved. The queue replays and verifies as it does today. If the replayed diff's `git patch-id` matches the examined one, the examination carries over and `verified → examining → sealed` passes at once, citing it; if the replay changed the diff, the node is examined again, in the queue. The node stays `implemented` while it is examined beside the queue: **P1's table is unchanged**. | The owner's answer to Q1. Examination is the slowest step P8 adds; in the queue it would sit on the one serial path P6 exists to keep short. The cost is one extra verification run per examined job, and none for a job that is not examined. |
+| D-P8-10 | **The examiner is an agent like any other, with its own role and nothing else.** It runs through the routed adapters with its own execution identity (A-04). `NIGHTSHIFT_ROLE=examiner` registers one tool, `examination.submit`, and its token may write only its own `Examination`. It works in a **detached checkout** of the commit it examines (A-39: its reach is bounded by where it runs, not by a list). Its route: a different model from the implementer's when `mustDifferModel`; a route from **another provider's ladder** when `mustDifferProvider`; at high risk, that ladder's **frontier** tier. | Stage 7's "examiner differs from the implementer invocation", enforced by identity and route, not by prompt. With a ladder per provider, "different provider" is simply "another ladder". |
+| D-P8-11 | **The examiner is given evidence, not the implementer's reasoning.** Its brief carries the Program Contract, the Job Contract, the diff, the changed tests, the verification results and logs, and the interfaces the scope touches. It is **not** given the worker's summary, transcript or commit message. | "Where practical, do not initially expose the implementer's rationale" (source plan). The commit message is the worker's summary (P3), so it is withheld too. |
+| D-P8-12 | **A finding without evidence is refused.** Each finding names its severity (`material` or `minor`) and at least one piece of evidence: a file and line range in the examined commit, a test or command with its output, or a contract clause the diff contradicts. The examination is bound to the commit and the diff's `patch-id`, and its full report goes to S3 (A-08). | "Examiner findings are evidence-backed" and "remain attached to exact commit/diff" (Stage 7), as schema rather than hope. The patch id is what makes D-P8-09's carry-over exact. |
+| D-P8-13 | **Findings go to the delegating orchestrator; a dispute goes to an arbiter; the owner can reverse the arbiter.** A material finding reaches the orchestrator that delegated the job, through `job.wait`, as the node's outcome. It may **fix** it: a retry that carries the findings in its brief, climbs per D-P8-07, and is examined again. Or it may **dispute** it with a reason. Where the policy does not block on material findings, a dispute stands and is recorded. Where it blocks, the dispute goes to an **arbiter**: a fresh frontier-tier invocation of a model that neither the implementer nor the examiner used (and from a third provider when the org has one), with its own role (`NIGHTSHIFT_ROLE=arbiter`, one tool, `finding.rule`), given the finding, its evidence, the dispute and the diff. It **overturns** the finding, and the work proceeds to land, or **upholds** it, and the job fails and its strand parks with its cone (D-P7-09). Each ruling is recorded as a `Decision` with authority `agent`, made by the arbiter, naming the finding, flagged first in the report, and reversible by the owner: a reversal is recorded as a `human` decision superseding it. `risk_accepted` has authority `human`, always. | The owner's answer to Q4. The orchestrator no longer grades its own dispute; a third party does, and the owner has the last word after the night. With two providers the arbiter cannot differ in provider from both sides; it differs in model and invocation from both, which is the most independence two providers allow, and the report says which it was. **Before P9, reversing a ruling is recorded and reported but replays nothing**: reversing an overturn does not unland the work, and reversing an uphold does not restart the strand. The minimum-cone replay a reversal needs is P9's (SC-13). |
+| D-P8-14 | **Examination and deferral compose, in that order.** A node whose checks are deferred (D-P7-10) is examined when its deferred checks pass at `resume`, never on unverified work. | "Examination occurs against verified artifacts" (Stage 7), with A-05 intact. |
 
 ### Non-guarantees
 
-- **A route that is cheapest by the ladder is not cheapest in fact.** The ladder
-  is the owner's judgement, recorded. Measuring it is what SC-11's data is for.
-- **An examiner can be wrong both ways.** A pass is evidence, not proof;
-  deterministic verification still decides whether anything integrates.
+- **A route that is cheapest by the ladder is not cheapest in fact.** The ladders
+  are the org's judgement, recorded. Measuring them is what SC-11's data is for.
+- **An examiner, and an arbiter, can be wrong both ways.** A pass is evidence,
+  not proof; deterministic verification still decides whether anything
+  integrates, and the owner can reverse any ruling.
+- **With two providers, the arbiter shares a provider with one side.** It never
+  shares a model or an invocation with either.
 - **Estimated cost is an estimate** from a table someone typed in. It is labelled
   wherever it appears.
-- **Workers and examiners are still not contained** on the operator's machine
-  (A-39, P10).
+- **Workers, examiners and arbiters are still not contained** on the operator's
+  machine (A-39, P10).
 
 ## 4. Design
 
@@ -122,86 +132,118 @@ Proposed 2026-09-24, for ratification with §3.1's answers.
 
 ```text
 delegate { classification, pins? }
-   └─ route      rules → starting rung → first available route on it   (RoutingDecision #1)
-        └─ worker  implements                                           (usage recorded)
-             ├─ examination not required ─────────────────────────────┐
-             └─ required: verify snapshot, examine beside the queue    │  (Q1 b)
+   └─ route      effective policy → first matching rule → ladder, tier → first available route
+        └─ worker  implements                                          (RoutingDecision, usage)
+             ├─ no examination required ───────────────────────────────┐
+             └─ required: verify snapshot, examine beside the queue    │
                    passed ────────────────────────────────────────────┤
-                   material findings → orchestrator: fix | dispute    │
-                                                                      ▼
-                                   merge queue: replay, verify on head,
-                                   examined patch unchanged? → seal → integrate
-                                   changed? → examine again, in the queue
-   failure → orchestrator retries → one rung up                         (RoutingDecision #2, previousRouteId)
-   could not start → same rung, next route; then up                     (outcome: unavailable)
+                   material finding → orchestrator
+                        fix      → retry, one rung up, examined again  │
+                        dispute  → (blocking) arbiter
+                                     overturned ───────────────────────┤
+                                     upheld → failed, strand parks      │
+                                                                       ▼
+                     merge queue: replay, verify on head
+                       examined patch unchanged → seal → integrate
+                       changed                   → examine again, in the queue
+   failure → orchestrator retries → one rung up its ladder
+   could not start → next route on rung → same tier, other ladder → one rung up
 ```
 
 ### 4.2 Configuration
 
+```text
+org (control plane)          ladders, tiers, rules, prices, unavailable, examinationPolicy
+  └─ nightshift.config.json  may narrow: forbid routes, drop a ladder, raise a starting tier,
+       │                     tighten examination
+       └─ Program Contract   may narrow further (modelPolicy, examinationPolicy)
+            = effective policy, computed in core, recorded on the run
+```
+
+The owner's org, as answered:
+
 ```jsonc
-// nightshift.config.json (inherited by every program's contract, P7)
 "routingPolicy": {
-  "rungs": {
-    "cheap":    [{ "harness": "claude", "model": "…" }],
-    "standard": [{ "harness": "claude", "model": "…" }],
-    "frontier": [{ "harness": "claude", "model": "…" }, { "harness": "codex", "model": "…" }]
+  "ladders": {
+    "claude": [
+      { "tier": "cheap",    "routes": [{ "harness": "claude", "model": "claude-haiku-4-5-20251001" }] },
+      { "tier": "standard", "routes": [{ "harness": "claude", "model": "claude-sonnet-5" }] },
+      { "tier": "frontier", "routes": [{ "harness": "claude", "model": "claude-opus-5-5" }] }
+    ],
+    "codex": [
+      { "tier": "standard", "routes": [{ "harness": "codex", "model": "gpt-5.5" }] },
+      { "tier": "frontier", "routes": [{ "harness": "codex", "model": "astra" }] }
+    ]
   },
-  "ladder": ["cheap", "standard", "frontier"],
   "rules": [
-    { "id": "R-orchestrate", "when": { "kind": ["orchestrate"] }, "start": "frontier" },
-    { "id": "R-high",        "when": { "risk": ["high"] },        "start": "frontier" },
-    { "id": "R-bounded",     "when": { "risk": ["low"], "ambiguity": ["low"], "testability": ["strong"] }, "start": "cheap" },
-    { "id": "R-default",     "when": {},                          "start": "standard" }
+    { "id": "R-orchestrate", "when": { "kind": ["orchestrate"] }, "start": { "ladder": "claude", "tier": "frontier" } },
+    { "id": "R-high",        "when": { "risk": ["high"] },        "start": { "ladder": "claude", "tier": "frontier" } },
+    { "id": "R-bounded",     "when": { "risk": ["low"], "ambiguity": ["low"], "testability": ["strong"] },
+                             "start": { "ladder": "claude", "tier": "cheap" } },
+    { "id": "R-default",     "when": {},                          "start": { "ladder": "claude", "tier": "standard" } }
   ],
   "unavailable": [],
   "prices": { "<model>": { "inputPerMTok": 0, "outputPerMTok": 0 } }
 },
-"examinationPolicy": { "low": {…}, "medium": {…}, "high": {…} }   // P5's shape, now honoured
+"examinationPolicy": {
+  "low":    { "required": false, … },
+  "medium": { "required": true, "mustDifferModel": true, … },
+  "high":   { "required": true, "mustDifferProvider": true, "blockOnMaterialFindings": true }
+}
 ```
 
-`nightshift init` writes this with Q2's models and examination **on** for
-medium and high (today it writes examination off at every level, because none
-existed).
+The rules above are a starting point, not a decision; they live in the org's
+configuration and change without code. `nightshift init` no longer writes a
+ladder into a repository: it writes a config that inherits the org's, with
+examination on for medium and high (today it writes examination off at every
+level, because no examiner existed).
 
 ### 4.3 Where the code goes
 
 | Concern | Home |
 |---------|------|
-| Rule matching, the ladder, fallback and escalation choice, examiner route choice, the self-examination rule | `packages/routing` and `core`'s rules: pure, table-tested, offline |
+| Effective policy (narrowing), rule matching, ladders and tiers, fallback and escalation choice, examiner and arbiter route choice, the independence rules | `packages/routing` and `core`'s rules: pure, table-tested, offline |
 | Classifying a start failure as `route_unavailable` | each `harness-*` adapter, behind the adapter contract |
 | Beside-the-queue verification and examination, carry-over by patch id | `packages/execution` |
-| The examiner role, its brief, `examination.submit` | `apps/mcp`, `packages/harness` (brief) |
+| The examiner and arbiter roles, their briefs, `examination.submit`, `finding.rule` | `apps/mcp`, `packages/harness` (briefs) |
 | Budgets | the engine, beside wall clock |
 | Usage normalisation and cost estimation | `packages/routing` (price table), recorded by the runner |
+| Org configuration | `contracts` (schema), the API (one record per org), `apps/cli` (`nightshift org config`) |
 
 ### 4.4 The examination record
 
 P5's `Examination` stands, gaining `patchId`, `examinerRoute`, per-finding
-`evidence[]`, and a resolution per finding with its authority. The rule that
-examiner ≠ implementer (already in the schema) gains the model and provider
-checks the policy requires. They are checked in `core` and **again by the API**
-when the examination is written, so an examiner that should not have been chosen
-cannot record a verdict.
+`evidence[]`, and per finding a resolution (`fixed`, `disputed`, `overturned`,
+`upheld`, `risk_accepted`) with its authority and, for an arbiter's ruling, the
+`Decision` that made it. The rule that examiner ≠ implementer (already in the
+schema) gains the model and provider checks the policy requires, and the arbiter
+gets its own: a different model from both sides. They are checked in `core` and
+**again by the API** when the examination or the ruling is written, so an
+examiner or arbiter that should not have been chosen cannot record a verdict.
 
 ### 4.5 The report and the dataset
 
-`report.md` gains, per strand: the routes tried and why (rule, rung, fallbacks,
-escalations), what it cost (reported or estimated, labelled), each examination
-and its findings with their resolution. `nightshift routes export <run>` (and
-`--project`) writes the run's routing decisions as JSON Lines. Each line is
-self-contained: the classification, eligible options, rule, route, attempt chain,
-usage, verification outcome and examination outcome. That is SC-11: nothing
-needs a join to be trained on.
+`report.md` gains, per strand: the routes tried and why (rule, ladder, rung,
+fallbacks, escalations), what it cost (reported or estimated, labelled), and
+each examination with its findings and their resolution. **Arbiter rulings lead
+the report**, before departures, each with what reversing it would mean.
+`nightshift routes export <run>` (and `--project`) writes the run's routing
+decisions as JSON Lines, each self-contained: classification, effective policy
+version, eligible options, rule, ladder, rung, route, attempt chain, usage,
+verification outcome, examination outcome. That is SC-11: nothing needs a join
+to be trained on.
 
 ### 4.6 Control-plane changes
 
 | Change | Why |
 |--------|-----|
+| An org configuration record (`routingPolicy`, default `examinationPolicy`), read by the org's members and executions in its projects, written by its members; seeded for a new org | D-P8-02 |
+| The run records the effective policy it ran under | D-P8-03 |
 | `JobContract` gains `testability`, `kind` (optional, defaulted conservatively) | D-P8-01. A contract written before P8 parses to what it was |
-| `RoutingDecision` gains `classification`, `rung`, outcome `unavailable`; `usage` gains cache tokens and `costSource` | D-P8-04 … D-P8-06 |
-| `Examination` gains `patchId`, `examinerRoute`, evidence, resolutions | D-P8-09, D-P8-10 |
-| An **examiner** execution role: may write its own `Examination`, read its run, nothing else; the checks in §4.4 at write time | D-P8-07. A new cell in both `authorize` tables |
-| A deferral whose reason is a disputed finding (Q4 b) | Reuses `deferred` and its edges; **no change to P1's table** |
+| `RoutingDecision` gains `classification`, `ladder`, `rung`, outcome `unavailable`; `usage` gains cache tokens and `costSource` | D-P8-04 … D-P8-08 |
+| `Examination` gains `patchId`, `examinerRoute`, evidence, resolutions | D-P8-12, D-P8-13 |
+| Two execution roles, **examiner** and **arbiter**, each able to write its own record and read its run, nothing else; the independence checks of §4.4 at write time | D-P8-10, D-P8-13. New cells in both `authorize` tables |
+| No change to P1's transition table | D-P8-09 |
 
 ## 5. Scope
 
@@ -209,19 +251,21 @@ needs a join to be trained on.
 
 - Classification on the Job Contract and `delegate`; the sub-orchestrator's
   risk default fixed.
-- `routingPolicy`: rules, rungs, ladder, unavailable routes, prices; its schema in
-  `contracts`, inherited through `nightshift.config.json`; `nightshift init`
-  writes a working one.
+- Org routing configuration: schema, storage, API, `nightshift org config`,
+  narrowing through `nightshift.config.json` and the contract; the owner's org
+  set to Q2's ladders; `nightshift init` updated.
 - Deterministic rule routing, overrides, fallback, escalation, all recorded.
 - Start-failure classification in both adapters.
-- Usage normalisation, cost estimation, budgets per Q3.
-- The examiner: role, brief, route choice, `examination.submit`, placement per Q1,
-  carry-over by patch id, resolution per D-P8-10 and Q4.
+- Usage normalisation, cost estimation, `maxUsd` and `maxTokens` enforced.
+- The examiner: role, brief, route choice, `examination.submit`, beside-the-queue
+  placement, carry-over by patch id.
+- Findings to the orchestrator; fix and dispute; the arbiter; the owner's
+  reversal recorded.
 - Retiring `assertExaminable`'s refusal.
 - The report's routing and examination sections; `nightshift routes export`.
-- The `plan-program`, `run-program` and `nightshift` skills: how to classify a job,
-  what a finding means, how to fix or dispute one.
-- The live suite `npm run routing`; the exit gate per Q5.
+- The `plan-program`, `run-program` and `nightshift` skills: how to classify a
+  job, what a finding means, how to fix or dispute one, how to reverse a ruling.
+- The live suite `npm run routing`; the exit gate's trial.
 
 ### Out of scope
 
@@ -229,57 +273,75 @@ needs a join to be trained on.
 - Learned routing, or any routing input that is not in the job's own record.
 - Examining whole programs or strands (program verification is P6's and stays
   deterministic).
-- Replaying a cone after a finding is upheld at `resume` beyond what P7's discard
-  does (P9).
+- Replaying anything when the owner reverses a ruling, or when a finding upheld
+  at `resume` discards work (P9).
+- A cheaper Codex rung (the owner's to add later, in configuration).
 - A Studio view of any of it (P11 ships the data surface).
 
 ## 6. Success criteria
 
-- **SC-P8-01** Routing is deterministic: the same classification, policy and
-  availability always give the same route, proven table-driven and by property
-  over random policies.
-- **SC-P8-02** Every routing decision records its eligible options, the rule and
-  rung responsible, the classification it matched, whether it was an override,
-  and, once known, its usage, latency, outcome and the attempt it replaced.
-- **SC-P8-03** An override within policy selects a different model or harness
-  and is recorded as one; an override outside policy is refused, by name.
-- **SC-P8-04** An unavailable route falls back to the next route on its rung,
-  then up, never down; the unavailable attempt is recorded; a route found
-  unavailable is not tried again in the run.
-- **SC-P8-05** A retry after a verification, worker or examination failure
+- **SC-P8-01** Routing is deterministic: the same classification, effective
+  policy and availability always give the same route, proven table-driven and by
+  property over random policies.
+- **SC-P8-02** Every routing decision records its eligible options, the rule,
+  ladder and rung responsible, the classification it matched, whether it was an
+  override, and, once known, its usage, latency, outcome and the attempt it
+  replaced.
+- **SC-P8-03** An org's routing configuration is the default for every project in
+  it. A repository or contract can narrow it and cannot widen it: a widening is
+  refused, by name, and the effective policy is recorded on the run.
+- **SC-P8-04** An override within policy selects a different model, harness,
+  ladder or tier and is recorded as one; an override outside policy is refused,
+  by name.
+- **SC-P8-05** An unavailable route falls back to the next route on its rung,
+  then the same tier on another ladder, then up, never down; the unavailable
+  attempt is recorded; a route found unavailable is not tried again in the run.
+- **SC-P8-06** A retry after a verification, worker or examination failure
   climbs one rung; a retry after a stale base, conflict, interrupt or unavailable
   route does not; the final outcome lists every attempted route.
-- **SC-P8-06** Usage is captured from both harnesses in one normalised shape;
-  cost is reported or estimated and says which; budgets behave per Q3.
-- **SC-P8-07** A low-risk job integrates with no examiner when the policy says
+- **SC-P8-07** Usage is captured from both harnesses in one normalised shape;
+  cost is reported or estimated and says which; once `maxUsd` or `maxTokens` is
+  spent, nothing new starts and the run says why.
+- **SC-P8-08** A low-risk job integrates with no examiner when the policy says
   so.
-- **SC-P8-08** A medium-risk job is examined by a different model; a high-risk
-  job by a different-provider frontier examiner.
-- **SC-P8-09** Self-examination is refused: the same agent always; the same
-  model or provider when the policy requires a difference. Refused in `core` and
-  again by the API.
-- **SC-P8-10** Every examination is bound to a commit and a patch id; every
-  finding carries evidence, and one without is refused.
-- **SC-P8-11** A material finding reaches the delegating orchestrator; a fix is
-  re-examined; under a blocking policy nothing but a fix or a human ruling lets
-  the work integrate, and in an unattended run the outcome is Q4's.
-- **SC-P8-12** Changing `routingPolicy` or `examinationPolicy` changes behaviour
-  with no code change: one fixture, run under two configurations, takes two
-  different paths.
-- **SC-P8-13** `nightshift routes export` produces self-contained lines, one per
+- **SC-P8-09** A medium-risk job is examined by a different model; a high-risk
+  job by the frontier tier of another provider's ladder.
+- **SC-P8-10** Self-examination is refused: the same agent always; the same
+  model or provider when the policy requires a difference. An arbiter sharing a
+  model with either side is refused. Refused in `core` and again by the API.
+- **SC-P8-11** Every examination is bound to a commit and a patch id; every
+  finding carries evidence, and one without is refused. An examination carries
+  over through the queue only for an identical patch id.
+- **SC-P8-12** A material finding reaches the delegating orchestrator; a fix is
+  re-examined; under a blocking policy a dispute goes to the arbiter, an overturn
+  lands, an upheld finding fails the job and parks its strand, and nothing else
+  lets the work integrate.
+- **SC-P8-13** Every arbiter ruling is a `Decision` with authority `agent`,
+  leads the report, and can be reversed by the owner as a superseding `human`
+  decision, which is recorded and reported.
+- **SC-P8-14** Changing the org's `routingPolicy` or `examinationPolicy` changes
+  behaviour with no code change: one fixture, run under two configurations, takes
+  two different paths.
+- **SC-P8-15** `nightshift routes export` produces self-contained lines, one per
   decision, covering every attempt of a run.
-- **SC-P8-14** The P1 property tests, the P4 isolation suites, the P5 conformance
-  suite, the P6 tree and the P7 planned fixture pass unchanged, except where a
-  ratified decision adds a status, a role or a field, listed in the as-built.
+- **SC-P8-16** The P1 property tests, the P4 isolation suites, the P5
+  conformance suite, the P6 tree and the P7 planned fixture pass unchanged,
+  except where a ratified decision adds a role or a field, listed in the
+  as-built.
 
 **Exit gate**
 
-- **SC-P8-15** Live, with real adapters against the deployed control plane:
-  a bounded job on the cheap rung integrates; a job whose cheap attempt fails
-  escalates and integrates; a pinned override takes effect; a route made
-  unavailable falls back; a medium-risk job is examined by a different model and
-  a high-risk one by Codex, whose planted defect is found with evidence and fixed
-  before it lands. Plus Q5's trial, if (b).
+- **SC-P8-17** Live, `npm run routing`, with real adapters against the deployed
+  control plane: a bounded job on the cheap rung integrates; a job whose cheap
+  attempt fails escalates and integrates; a pinned override takes effect; a route
+  made unavailable falls back across ladders; a medium-risk job is examined by a
+  different model; a high-risk job is examined by the Codex ladder, whose planted
+  defect is found with evidence and fixed before it lands; a disputed finding is
+  ruled on by an arbiter.
+- **SC-P8-18** A real program, planned with `plan-program` on a repository the
+  owner names and run with the owner's org configuration: it finishes, the report
+  shows every route and examination, and the owner judges whether the ladders
+  saved anything and whether the findings were worth the time.
 
 ## 7. Deterministic verification
 
@@ -294,29 +356,33 @@ Plus, from a developer machine: `npm run deploy`, `npm run smoke` (twice),
 ## 8. Constraints
 
 - No model decides a route, whether a job needs examining, or whether a finding
-  has evidence. The examiner judges the work; everything around it is
-  deterministic.
+  has evidence. Examiners judge the work and arbiters judge disputes; everything
+  around them is deterministic.
 - A-05 holds: examination never substitutes for verification, and nothing it
   does lets unverified work integrate.
-- One home per fact: the ladder and rules live in configuration, not in code and
-  not in a prompt.
+- A-11 holds for configuration: a repository and a contract narrow the org's
+  policy, never widen it.
+- One home per fact: ladders and rules live in the org's configuration, not in
+  code and not in a prompt.
 - P1's transition table is not changed.
-- A-39: no adapter or examiner gains an allow-list, a sandbox or an approval
-  policy.
+- A-39: no adapter, examiner or arbiter gains an allow-list, a sandbox or an
+  approval policy.
 - Pins exact; scripts run on Windows and Linux.
 
 ## 9. Permissions and forbidden actions
 
-Permitted: editing the repository; deploying the API stack for §4.6; running the
-smoke, slice, conformance and routing suites; running Claude Code and Codex
-headless on the operator's subscriptions, on the models Q2 names; running Q5's
-trial on the repository the owner names.
+Permitted: editing the repository; deploying the API stack for §4.6; writing the
+owner's org configuration to Q2's ladders; running the smoke, slice, conformance
+and routing suites; running Claude Code and Codex headless on the operator's
+subscriptions, on the models the org's ladders name; running SC-P8-18's trial on
+the repository the owner names.
 
 Forbidden:
 
 - Letting a model choose a route or waive an examination.
-- Letting an agent record `risk_accepted`, or resolve a blocking finding by
-  disputing it.
+- Letting an agent record `risk_accepted`, resolve a blocking finding by its own
+  dispute, or reverse an arbiter's ruling.
+- A repository or contract widening the org's policy, by any path.
 - Weakening the P1, P4, P5, P6 or P7 suites.
 - Rebuilding this checkout's `dist/` while the owner's run is using it.
 - Anything remote or on Bedrock (P10). Settling O-02, O-03, O-05 or O-06.
@@ -324,15 +390,13 @@ Forbidden:
 
 ## 10. Tasks
 
-Drafted after §3.1 is answered: Q1 and Q4 change T3's shape.
-
 | Task | Title | Depends on | Needs |
 |------|-------|------------|-------|
-| T1 | Contracts, rules and the API: classification, `routingPolicy`, the examiner role, the examination record, `authorize`; deploy | — | AWS |
-| T2 | Routing: rules, overrides, fallback and adapter start-failure classes, escalation, usage and cost, budgets | T1 | — |
-| T3 | Examination: the examiner, its brief and route, placement, carry-over, findings to the orchestrator, resolution and deferral | T1, T2 | — |
-| T4 | Orchestrator tools, skills, `init`, the report, `routes export` | T2, T3 | — |
-| T5 | Fixture proofs; the live suite; the exit gate; as-built | T4 | AWS, Claude Code, Codex, Q5's repository |
+| T1 | Contracts, rules and the API: classification, org configuration and narrowing, the examiner and arbiter roles, the examination record, `authorize`; deploy | — | AWS |
+| T2 | Routing: rules, ladders and tiers, overrides, fallback and adapter start-failure classes, escalation, usage and cost, budgets | T1 | — |
+| T3 | Examination: the examiner, its brief and route, beside-the-queue placement, carry-over, findings to the orchestrator, the arbiter, reversal | T1, T2 | — |
+| T4 | Orchestrator tools, skills, `init` and `org config`, the report, `routes export` | T2, T3 | — |
+| T5 | Fixture proofs; the live suite; the exit gate's trial; as-built | T4 | AWS, Claude Code, Codex, H-P8-03, H-P8-04 |
 
 ```text
 T1 ── T2 ── T3 ── T4 ── T5
@@ -344,18 +408,21 @@ Specs will live in `tasks/p8-routing-examination/`.
 
 | Risk | Handling |
 |------|----------|
-| The cheap rung fails so often the ladder costs more than starting higher | SC-11's data shows it per rule; the rule table is config, so the fix is one line. The exit gate's trial is the first real measure |
-| Orchestrators classify everything as low risk to get cheap routes and skip examination | Unset means conservative (D-P8-01); the classification is recorded on every decision and shown in the report, so a pattern is visible |
-| Examiners raise noise, and material findings stall runs | Evidence is required; the severity split is the examiner's, but only material findings block, and only where the policy says so; Q4 decides what a dispute costs |
-| Beside-the-queue examination is stale by the time the job lands | Carry-over only on an identical patch id; otherwise examined again in the queue (Q1 b) |
-| Subscription rate limits make "unavailable" flap | A route found unavailable stays skipped for the run (D-P8-04); the report says so |
+| The cheap rung fails so often the ladder costs more than starting higher | SC-11's data shows it per rule; rules are org configuration, so the fix is one line. SC-P8-18 is the first real measure |
+| Orchestrators classify everything as low risk to get cheap routes and skip examination | Unset means conservative (D-P8-01); the classification is on every decision and in the report, so a pattern is visible |
+| Examiners raise noise, and material findings stall runs | Evidence is required; only material findings block, and only where the policy says so; a dispute costs one arbiter call, not the night |
+| An arbiter overturns a real defect and it lands | The ruling leads the report and the owner can reverse it; until P9 a reversal is a record and a follow-up, not a replay (D-P8-13) |
+| Beside-the-queue examination is stale by the time the job lands | Carry-over only on an identical patch id; otherwise examined again in the queue (D-P8-09) |
+| Subscription rate limits make routes flap | A route found unavailable stays skipped for the run, and the other provider's ladder at the same tier takes the work (D-P8-06) |
+| `astra` is not the model id Codex expects | H-P8-03: the live suite's preflight starts every route on the owner's ladders before anything else |
 | The program runs long | Staging's split point stands: Stage 7 (T3) splits off after T2, where routing decisions are persisted |
 
 ## 12. Decision log
 
 | Date | Decision | By |
 |------|----------|----|
-| 2026-09-24 | Contract drafted after P7 closed. D-P8-01 … D-P8-11 proposed; Q1 … Q5 put to the owner. Tasks to be drafted once they are answered. | Agent, for human ratification |
+| 2026-09-25 | **The owner's answers to Q1 … Q5** (§3.1): examination beside the queue; ladders configured per org, a ladder per provider, narrowed never widened below the org; budgets enforced now; a disputed blocking finding goes to an independent arbiter whose ruling stands and which the owner can reverse, on the owner's proposal of a decision agent from a different provider; the exit gate is the live suite and a real planned program. D-P8-02, -03, -06, -09, -10 and -13 written to them. | **Human** |
+| 2026-09-24 | Contract drafted after P7 closed. D-P8-01 … D-P8-11 proposed; Q1 … Q5 put to the owner. | Agent, for human ratification |
 
 ## 13. As built
 
