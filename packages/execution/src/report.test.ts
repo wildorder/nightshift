@@ -1,0 +1,137 @@
+/**
+ * The report's P8 sections, rendered from a built report (the gathering is the
+ * planning suite's): arbiter rulings lead, each job shows its routes and its
+ * examinations, and estimated cost is marked.
+ */
+import {
+  AGGREGATE_EXAMPLES,
+  type Decision,
+  DecisionSchema,
+  type Examination,
+  ExaminationSchema,
+  type ProgramContract,
+  ProgramContractSchema,
+  type RoutingDecision,
+  RoutingDecisionSchema,
+  type Run,
+  RunSchema,
+} from "@nightshift/contracts";
+import { describe, expect, it } from "vitest";
+import { type RunReport, renderReport } from "./report.js";
+
+const program = ProgramContractSchema.parse(
+  structuredClone(AGGREGATE_EXAMPLES.ProgramContract) as Record<string, unknown>,
+) as ProgramContract;
+const run = RunSchema.parse({
+  ...(structuredClone(AGGREGATE_EXAMPLES.Run) as Record<string, unknown>),
+  status: "succeeded",
+}) as Run;
+const route = (patch: Partial<RoutingDecision>): RoutingDecision =>
+  RoutingDecisionSchema.parse({
+    ...(structuredClone(AGGREGATE_EXAMPLES.RoutingDecision) as Record<string, unknown>),
+    ...patch,
+  }) as RoutingDecision;
+const ruling = DecisionSchema.parse({
+  ...(structuredClone(AGGREGATE_EXAMPLES.Decision) as Record<string, unknown>),
+  choice: "overturn",
+  rationale: "the retry is bounded by its caller",
+  authority: "agent",
+}) as Decision;
+const examination = ExaminationSchema.parse(
+  structuredClone(AGGREGATE_EXAMPLES.Examination) as Record<string, unknown>,
+) as Examination;
+
+const report = (patch: Partial<RunReport> = {}): RunReport => ({
+  program: { ...program, strands: [] },
+  run,
+  strands: [],
+  criteria: [],
+  pendingPrerequisites: [],
+  decisions: [],
+  humanDecisions: [],
+  usage: [],
+  rulings: [],
+  ...patch,
+});
+
+describe("the report's routing and examination (P8)", () => {
+  it("leads with the arbiter's rulings, and how to reverse one", () => {
+    const text = renderReport(
+      report({
+        rulings: [{ ruling, nodeId: "node_x", finding: "F-01 the retry loop never ends" }],
+      }),
+    );
+    const rulingsAt = text.indexOf("## Arbiter rulings");
+    expect(rulingsAt).toBeGreaterThan(0);
+    expect(rulingsAt).toBeLessThan(text.indexOf("## Strands"));
+    expect(text).toContain("**Overturned** F-01 the retry loop never ends on node_x");
+    expect(text).toContain("nightshift ruling reverse");
+    expect(text).toContain("replays nothing");
+  });
+
+  it("shows every route a job ran on and every examination of it", () => {
+    const strand = {
+      id: "S-01",
+      name: "The module",
+      outcome: "succeeded" as const,
+      acceptance: ["It works."],
+      reason: undefined,
+      blockedBy: [],
+      departures: [],
+      attempts: 1,
+      waitingOn: [],
+      jobs: [
+        {
+          nodeId: "node_j",
+          objective: "Add the module",
+          status: "integrated",
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
+          attempts: 2,
+          reason: undefined,
+          routes: [
+            route({
+              attempt: 1,
+              outcome: "unavailable",
+              ladder: "claude",
+              rung: { tier: "cheap", index: 0 },
+            }),
+            route({
+              attempt: 2,
+              outcome: "verified",
+              ladder: "codex",
+              rung: { tier: "cheap", index: 0 },
+            }),
+          ],
+          examinations: [examination],
+        },
+      ],
+    };
+    const text = renderReport(report({ strands: [strand] }));
+    expect(text).toContain("a fallback is `unavailable`");
+    expect(text).toMatch(/1\. .* unavailable/);
+    expect(text).toContain("Examined by gpt-6-sol");
+    expect(text).toContain("Asked: Is the index meant to be irreversible?");
+  });
+
+  it("marks an estimated cost, and totals the run against its budget", () => {
+    const text = renderReport(
+      report({
+        program: { ...program, strands: [], costPolicy: { maxUsd: 10 } },
+        usage: [
+          {
+            harness: "codex",
+            model: "gpt-6-sol",
+            purpose: "work",
+            attempts: 1,
+            inputTokens: 100,
+            outputTokens: 10,
+            costUsd: 1.5,
+            estimated: true,
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("| 1.50* |");
+    expect(text).toContain("Budget: $1.50 (partly estimated) of $10.");
+  });
+});

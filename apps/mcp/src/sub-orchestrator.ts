@@ -220,8 +220,15 @@ export const registerSubOrchestratorTools = (
         ambiguity: RiskLevelSchema.optional(),
         // P8 (D-P8-01): what the job says about itself, so routing can place it.
         // Unset is the conservative choice, not the cheap one.
-        testability: TestabilitySchema.optional(),
-        jobKind: JobKindSchema.optional(),
+        testability: TestabilitySchema.optional().describe(
+          "strong: the program's own checks exercise this change, so a cheap model's mistake is caught; " +
+            "weak: they touch it only in passing; none: nothing checks it. Leave it unset if unsure: " +
+            "unset is treated as weak, the conservative choice, not the cheap one.",
+        ),
+        jobKind: JobKindSchema.optional().describe(
+          "What kind of work it is: implement, fix, refactor, test, docs. Routing rules may start " +
+            "some kinds lower or higher on the ladder.",
+        ),
       },
     },
     async (input) =>

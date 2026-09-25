@@ -84,9 +84,11 @@ export const detectVerification = async (repoPath: string): Promise<Verification
 };
 
 /**
- * Defaults a human is expected to edit. Examination is off at every risk level
- * because nothing can examine until P8, and a contract that required it would be
- * refused at the first delegation.
+ * The repository's floor for examination: nothing beyond what its org requires
+ * (P8, D-P8-03). A run's examination is the stricter of the org's and this, field
+ * by field, so this adds nothing and takes nothing away; a repository that wants
+ * more scrutiny than its org raises it here. Routing is the org's too
+ * (`nightshift org config`); a repository only narrows it, with `routing`.
  */
 const NO_EXAMINATION = {
   required: false,
@@ -246,6 +248,10 @@ export const init = async (
         : "registered the Nightshift MCP server for this directory (local scope; nothing written to the repository)",
     );
   }
+  environment.out(
+    "Routing and examination are your org's: its ladders, rules and prices, and what each risk " +
+      "is examined by. See them with `nightshift org config get`; this repository only narrows them.",
+  );
   environment.out(
     "Next: plan a program with the plan-program skill, in Claude Code, in this directory.",
   );

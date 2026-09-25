@@ -135,6 +135,35 @@ const RENDER: Readonly<Record<string, Render>> = {
   "node.discarded": (p) => `discarded: ${short(p.reason)}`,
   "strand.parked": (p) => `${String(p.strandId)} parked (${String(p.outcome)})`,
   "strand.blocked": (p) => `${String(p.strandId)} blocked by ${listOf(p.blockedBy)}`,
+  // P8: where work ran and why, and what its examiner found.
+  "routing.decided": (p) => routedText(p),
+  "examination.requested": (p) => {
+    const examiner = (p.examiner ?? {}) as { model?: unknown };
+    return `examining with ${String(examiner.model ?? "an examiner")}${p.blocking === true ? " (blocking)" : ""}`;
+  },
+  "examination.asked": (p) => `the examiner asks the builder: ${listOf(p.questions)}`,
+  "examination.completed": (p) => {
+    const findings = Array.isArray(p.findings) ? p.findings.length : 0;
+    return `examined: ${String(p.outcome)}${findings === 0 ? "" : `, ${findings} finding(s)`}`;
+  },
+  "finding.disputed": (p) => `disputed ${listOf(p.findings)}: ${short(p.reason)}`,
+  "finding.ruled": (p) => `the arbiter ${String(p.ruling)} ${String(p.findingId)}`,
+  "run.budget_spent": (p) =>
+    `budget spent: ${String(p.budget)} ${String(p.spent)} of ${String(p.limit)}; nothing new starts`,
+};
+
+/** A routing decision, told as a reader wants it: a fallback, a climb, or where a job started. */
+const routedText = (p: Record<string, unknown>): string => {
+  const chosen = (p.chosen ?? {}) as { model?: unknown };
+  const model = String(chosen.model ?? "a model");
+  if (p.purpose !== undefined) return `${String(p.purpose)} route: ${model}`;
+  const attempt = typeof p.attempt === "number" ? p.attempt : 1;
+  const rung = (p.rung ?? {}) as { tier?: unknown };
+  const where =
+    p.ladder === undefined ? model : `${model} (${String(p.ladder)}, ${String(rung.tier ?? "?")})`;
+  return attempt > 1
+    ? `attempt ${attempt} on ${where}`
+    : `routed to ${where} by ${String(p.ruleId ?? "its rule")}`;
 };
 
 interface Tally {

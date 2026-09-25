@@ -18,6 +18,7 @@
  */
 import type {
   Decision,
+  Examination,
   ExecutionNode,
   JobContract,
   Prerequisite,
@@ -49,6 +50,18 @@ export interface JobReport {
   readonly commitSha: string | null;
   readonly attempts: number;
   readonly reason: string | undefined;
+  /** P8: every route the job's work ran on, in order, and why (D-P8-04 … D-P8-07). */
+  readonly routes: readonly RoutingDecision[];
+  /** P8: every examination of it, with its questions and findings (D-P8-09 … D-P8-15). */
+  readonly examinations: readonly Examination[];
+}
+
+/** An arbiter's ruling (D-P8-13), and the owner's reversal of it when there is one. */
+export interface RulingReport {
+  readonly ruling: Decision;
+  readonly nodeId: string;
+  readonly finding: string;
+  readonly reversedBy?: Decision;
 }
 
 export interface StrandReport {
@@ -70,10 +83,14 @@ export interface StrandReport {
 export interface UsageRow {
   readonly harness: string;
   readonly model: string;
+  /** What the routes were for: the work, or an examiner, answerer or arbiter (P8). */
+  readonly purpose: string;
   readonly attempts: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly costUsd: number;
+  /** True when any of `costUsd` is an estimate from the price table (D-P8-08). */
+  readonly estimated: boolean;
 }
 
 export interface RunReport {
@@ -91,6 +108,8 @@ export interface RunReport {
   readonly decisions: readonly Decision[];
   readonly humanDecisions: readonly Decision[];
   readonly usage: readonly UsageRow[];
+  /** P8: the arbiter's rulings, which lead the report (D-P8-13). */
+  readonly rulings: readonly RulingReport[];
 }
 
 interface PageOf<T> {
@@ -123,6 +142,7 @@ interface Records {
   readonly jobOf: ReadonlyMap<string, JobContract>;
   readonly decisions: readonly Decision[];
   readonly routesOf: ReadonlyMap<string, readonly RoutingDecision[]>;
+  readonly examinationsOf: ReadonlyMap<string, readonly Examination[]>;
   /** Node id → the prerequisites its deferred checks wait on. */
   readonly waitingOf: ReadonlyMap<string, readonly string[]>;
   /** Every attempt at every strand, oldest first. */
@@ -138,9 +158,15 @@ const jobReportOf = (records: Records, node: ExecutionNode): JobReport => ({
   ),
   status: node.status,
   commitSha: node.commitSha,
-  attempts: Math.max(1, records.routesOf.get(node.executionNodeId)?.length ?? 1),
+  attempts: Math.max(1, workRoutes(records.routesOf.get(node.executionNodeId) ?? []).length),
   reason: node.outcomeReason,
+  routes: workRoutes(records.routesOf.get(node.executionNodeId) ?? []),
+  examinations: records.examinationsOf.get(node.executionNodeId) ?? [],
 });
+
+/** A node's own attempts, in order: not its examiner's, answerer's or arbiter's routes. */
+const workRoutes = (routes: readonly RoutingDecision[]): RoutingDecision[] =>
+  routes.filter((route) => route.purpose === undefined).sort((a, b) => a.attempt - b.attempt);
 
 const strandReportOf = (
   records: Records,
@@ -175,14 +201,17 @@ const strandReportOf = (
 const usageOf = (routes: readonly RoutingDecision[]): UsageRow[] => {
   const rows = new Map<string, UsageRow>();
   for (const route of routes) {
-    const key = `${route.chosen.harness} / ${route.chosen.model}`;
+    const purpose = route.purpose ?? "work";
+    const key = `${route.chosen.harness} / ${route.chosen.model} / ${purpose}`;
     const so = rows.get(key) ?? {
       harness: route.chosen.harness,
       model: route.chosen.model,
+      purpose,
       attempts: 0,
       inputTokens: 0,
       outputTokens: 0,
       costUsd: 0,
+      estimated: false,
     };
     rows.set(key, {
       ...so,
@@ -190,9 +219,40 @@ const usageOf = (routes: readonly RoutingDecision[]): UsageRow[] => {
       inputTokens: so.inputTokens + (route.usage.inputTokens ?? 0),
       outputTokens: so.outputTokens + (route.usage.outputTokens ?? 0),
       costUsd: so.costUsd + (route.usage.actualCostUsd ?? route.usage.estimatedCostUsd ?? 0),
+      estimated:
+        so.estimated ||
+        (route.usage.actualCostUsd === undefined && route.usage.estimatedCostUsd !== undefined),
     });
   }
   return [...rows.values()];
+};
+
+/** The arbiter's rulings, from the examinations that cite them, with any human reversal (D-P8-13). */
+const rulingsOf = (records: Records): RulingReport[] => {
+  const byId = new Map(
+    records.decisions.map((decision) => [decision.decisionId as string, decision]),
+  );
+  const cited = [...records.examinationsOf].flatMap(([nodeId, examinations]) =>
+    examinations.flatMap((examination) =>
+      examination.findings.map((finding) => ({ nodeId, finding })),
+    ),
+  );
+  return cited.flatMap(({ nodeId, finding }) => {
+    const decisionId = finding.resolvedBy?.decisionId;
+    const ruling = decisionId === undefined ? undefined : byId.get(decisionId);
+    if (ruling === undefined || ruling.authority !== "agent") return [];
+    const reversedBy = records.decisions.find(
+      (decision) => decision.supersedesDecisionId === ruling.decisionId,
+    );
+    return [
+      {
+        ruling,
+        nodeId,
+        finding: `${finding.id} ${finding.summary}`,
+        ...(reversedBy === undefined ? {} : { reversedBy }),
+      },
+    ];
+  });
 };
 
 const readRecords = async (
@@ -208,12 +268,21 @@ const readRecords = async (
   const jobOf = new Map(jobs.map((job) => [job.jobContractId as string, job]));
 
   const routesOf = new Map<string, readonly RoutingDecision[]>();
+  const examinationsOf = new Map<string, readonly Examination[]>();
   for (const node of nodes) {
     if (node.parentNodeId === null) continue;
     routesOf.set(
       node.executionNodeId,
       await stores.routingDecisions.listByNode(scope, node.executionNodeId),
     );
+    if (node.kind !== "job") continue;
+    const examinations = await stores.examinations.listByNode(scope, node.executionNodeId);
+    if (examinations.length > 0) {
+      examinationsOf.set(
+        node.executionNodeId,
+        [...examinations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+      );
+    }
   }
 
   // Why a deferred node waits is in its Verification, not on the node: a
@@ -252,6 +321,7 @@ const readRecords = async (
     jobOf,
     decisions,
     routesOf,
+    examinationsOf,
     waitingOf,
     strandNodes,
     outcomes,
@@ -268,6 +338,8 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   const blocked = blockedBy(program, records.outcomes);
   const strands = strandsOf(program).map((strand) => strandReportOf(records, strand, blocked));
   const departed = new Set(strands.flatMap((strand) => strand.departures.map((d) => d.decisionId)));
+  const rulings = rulingsOf(records);
+  const ruled = new Set(rulings.map((ruling) => ruling.ruling.decisionId as string));
 
   return {
     program,
@@ -286,10 +358,14 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
     }),
     pendingPrerequisites: prerequisitesOf(program).filter((p) => p.status !== "satisfied"),
     decisions: records.decisions.filter(
-      (decision) => decision.authority === "agent" && !departed.has(decision.decisionId),
+      (decision) =>
+        decision.authority === "agent" &&
+        !departed.has(decision.decisionId) &&
+        !ruled.has(decision.decisionId),
     ),
     humanDecisions: records.decisions.filter((decision) => decision.authority === "human"),
     usage: usageOf([...records.routesOf.values()].flat()),
+    rulings,
   };
 };
 
@@ -320,6 +396,37 @@ const duration = (run: Run): string => {
   return minutes === 0 ? `${seconds} s` : `${minutes} min ${seconds % 60} s`;
 };
 
+/** One route, as a reader wants it: where, by which rule, and how it ended. */
+const describeRoute = (route: RoutingDecision): string => {
+  const where =
+    route.ladder === undefined
+      ? route.chosen.model
+      : `${route.chosen.model} (${route.ladder}, ${route.rung?.tier ?? "?"}${route.chosen.effort === undefined ? "" : `, ${route.chosen.effort} effort`})`;
+  const how = route.wasOverride ? "pinned" : route.ruleId;
+  return `${where} by ${how}: ${route.outcome}`;
+};
+
+const renderRoutes = (job: JobReport): string[] =>
+  job.routes.length <= 1 && job.routes.every((route) => route.outcome !== "unavailable")
+    ? job.routes.map((route) => `  - Route: ${describeRoute(route)}`)
+    : [
+        "  - Routes, in order (a fallback is `unavailable`; a climb follows a failure):",
+        ...job.routes.map((route, index) => `    ${index + 1}. ${describeRoute(route)}`),
+      ];
+
+const renderExaminations = (job: JobReport): string[] =>
+  job.examinations.flatMap((examination) => [
+    `  - Examined by ${examination.examinerRoute.model}${examination.fixAttempt > 0 ? ` (fix ${examination.fixAttempt})` : ""}: ${examination.outcome}${examination.blocking ? ", blocking" : ", advisory"}`,
+    ...examination.questions.map(
+      (qa) =>
+        `    - Asked: ${qa.question} Answered (${qa.answeredBy === "resumed_session" ? "resumed session" : "from its transcript"}): ${qa.answer}`,
+    ),
+    ...examination.findings.map(
+      (finding) =>
+        `    - ${finding.id} ${finding.severity}: ${finding.summary} (${finding.resolution})`,
+    ),
+  ]);
+
 const renderJobs = (strand: StrandReport): string[] => {
   if (strand.jobs.length === 0) {
     return [
@@ -327,6 +434,10 @@ const renderJobs = (strand: StrandReport): string[] => {
       "",
     ];
   }
+  const detail = strand.jobs.flatMap((job) => {
+    const lines = [...renderRoutes(job), ...renderExaminations(job)];
+    return lines.length === 0 ? [] : [`- ${cell(job.objective)}`, ...lines];
+  });
   return [
     "| Job | Status | Commit | Attempts |",
     "|---|---|---|---|",
@@ -335,8 +446,33 @@ const renderJobs = (strand: StrandReport): string[] => {
       return `| ${cell(job.objective)} | ${job.status}${why} | ${job.commitSha?.slice(0, 8) ?? ""} | ${job.attempts} |`;
     }),
     "",
+    ...(detail.length === 0 ? [] : [...detail, ""]),
   ];
 };
+
+/**
+ * The arbiter's rulings, first in the report (D-P8-13): each is a decision an
+ * agent made that the owner can reverse, and before P9 reversing one replays
+ * nothing.
+ */
+const renderRulings = (rulings: readonly RulingReport[]): string[] =>
+  rulings.length === 0
+    ? []
+    : [
+        "## Arbiter rulings — read these first",
+        "",
+        "An arbiter ruled on these disputed findings. Each ruling is yours to reverse with",
+        "`nightshift ruling reverse <program> <decisionId> --reason …`. Reversing one records",
+        "your decision and replays nothing: an overturn's work stays landed and an uphold's job",
+        "stays failed until the decision graph (P9); roll back by hand from the checkpoint named.",
+        "",
+        ...rulings.flatMap(({ ruling, nodeId, finding, reversedBy }) => [
+          `- **${ruling.choice === "overturn" ? "Overturned" : "Upheld"}** ${finding} on ${nodeId}: ${ruling.rationale}`,
+          `  Decision \`${ruling.decisionId}\`, made against checkpoint \`${ruling.checkpointBefore}\`${ruling.checkpointAfter === undefined ? "" : `, landed at \`${ruling.checkpointAfter}\``}.`,
+          ...(reversedBy === undefined ? [] : [`  Reversed by you: ${reversedBy.rationale}`]),
+        ]),
+        "",
+      ];
 
 const renderStrand = (strand: StrandReport): string[] => {
   const blockedNote =
@@ -414,6 +550,21 @@ const renderPrerequisites = (pending: readonly Prerequisite[]): string[] =>
         "",
       ];
 
+/** The run's totals against its budgets (D-P8-08). */
+const renderBudget = (report: RunReport): string[] => {
+  const { maxUsd, maxTokens } = report.program.costPolicy;
+  if (maxUsd === undefined && maxTokens === undefined) return [];
+  const usd = report.usage.reduce((total, row) => total + row.costUsd, 0);
+  const tokens = report.usage.reduce((total, row) => total + row.inputTokens + row.outputTokens, 0);
+  const estimated = report.usage.some((row) => row.estimated);
+  return [
+    "",
+    `Budget: ${maxUsd === undefined ? "" : `$${usd.toFixed(2)}${estimated ? " (partly estimated)" : ""} of $${maxUsd}`}${
+      maxUsd !== undefined && maxTokens !== undefined ? "; " : ""
+    }${maxTokens === undefined ? "" : `${tokens} of ${maxTokens} tokens`}.`,
+  ];
+};
+
 /** The report as markdown. Pure: the same records always give the same document. */
 export const renderReport = (report: RunReport): string => {
   const { program, run, strands } = report;
@@ -428,6 +579,7 @@ export const renderReport = (report: RunReport): string => {
     "",
     `${succeeded} of ${strands.length} strands succeeded; ${provisional} deferred; ${strands.filter(isParked).length} parked. Wall clock ${duration(run)}.`,
     "",
+    ...renderRulings(report.rulings),
     "## Strands",
     "",
     ...strands.flatMap(renderStrand),
@@ -457,13 +609,15 @@ export const renderReport = (report: RunReport): string => {
     "## Usage",
     "",
     "Token counts are what each harness reported and are not comparable across harnesses.",
+    "A cost marked * is estimated from the price table, not reported by the harness.",
     "",
-    "| Harness | Model | Attempts | Input tokens | Output tokens | Cost (USD) |",
-    "|---|---|---|---|---|---|",
+    "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost (USD) |",
+    "|---|---|---|---|---|---|---|",
     ...report.usage.map(
       (row) =>
-        `| ${row.harness} | ${row.model} | ${row.attempts} | ${row.inputTokens} | ${row.outputTokens} | ${row.costUsd.toFixed(2)} |`,
+        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${row.inputTokens} | ${row.outputTokens} | ${row.costUsd.toFixed(2)}${row.estimated ? "*" : ""} |`,
     ),
+    ...renderBudget(report),
   ];
   return `${lines.join("\n").trimEnd()}\n`;
 };

@@ -84,14 +84,17 @@ describe("the plan template", () => {
 });
 
 describe("the run-program skill", () => {
-  it("starts the run detached, reads the report departures first, and never edits the plan", async () => {
+  it("starts the run detached, reads the report rulings then departures first, and never edits the plan", async () => {
     const text = await readFile(
       fileURLToPath(new URL("../../../skills/run-program/SKILL.md", import.meta.url)),
       "utf8",
     );
     for (const phrase of [
       "run_in_background",
-      "Every **departure** from the plan's approach, first",
+      // P8: an arbiter's ruling is read out before anything, with how to reverse it.
+      "Every **arbiter ruling**, before anything else",
+      "nightshift ruling reverse {id} <decisionId>",
+      "Every **departure** from the plan's approach",
       "nightshift resume {id}",
       "Edit the plan or the contract to get past a refusal",
     ]) {
@@ -130,5 +133,24 @@ describe("the skill", () => {
     const contract = ProgramContractSchema.parse({ ...base, ...JSON.parse(json ?? "{}") });
     expect(contract.strands?.[0]?.id).toBe("S-01");
     expect(contract.prerequisites?.[0]?.verifyCommand).toContain("gh secret list");
+  });
+});
+
+describe("the nightshift skill (P8)", () => {
+  it("names the classification, the fix limit, the dispute and every tool it names by its real name", async () => {
+    const text = await readFile(
+      fileURLToPath(new URL("../../../skills/nightshift/SKILL.md", import.meta.url)),
+      "utf8",
+    );
+    for (const phrase of [
+      "**Leaving a field unset is the conservative choice, not the cheap one**",
+      "`testability`",
+      "At most **two** fixes",
+      "finding.dispute { jobId, reason }",
+      "climbs one rung",
+    ]) {
+      expect(text, phrase).toContain(phrase);
+    }
+    expect(text).not.toContain("examination_unavailable");
   });
 });

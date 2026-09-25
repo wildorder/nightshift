@@ -21,10 +21,12 @@ import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
 import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
+import { getOrgConfig, setOrgConfig } from "./commands/org-config.js";
 import { planCheck, planRatify } from "./commands/plan.js";
 import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
 import { resume } from "./commands/resume.js";
+import { exportRoutes } from "./commands/routes.js";
 import { reverseRuling } from "./commands/ruling.js";
 import { run } from "./commands/run.js";
 import { whoami } from "./commands/whoami.js";
@@ -46,6 +48,10 @@ Usage:
   nightshift run <contract> [--repo <path>] [--remote]
   nightshift resume <program> [--run <id>] [--repo <path>]
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
+  nightshift org config get [--org <id>]
+  nightshift org config set <file> [--org <id>]
+  nightshift routes export <program> [--run <id>] [--repo <path>]
+  nightshift routes export --project <id>
   nightshift id <prefix>
   nightshift --help | --version
 
@@ -347,6 +353,47 @@ const doRuling = async (environment: CliEnvironment, args: readonly string[]): P
   });
 };
 
+const doOrg = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage =
+    "nightshift org config get [--org <id>] | nightshift org config set <file> [--org <id>]";
+  const { values, positionals } = parse(
+    { args: [...args], options: { org: { type: "string" } }, allowPositionals: true, strict: true },
+    usage,
+  );
+  const [noun, verb, file] = positionals;
+  const org = optional(values, "org");
+  if (noun !== "config")
+    throw new UsageError("`nightshift org` takes `config get` or `config set <file>`", usage);
+  if (verb === "get") return getOrgConfig(environment, org);
+  if (verb === "set" && file !== undefined) return setOrgConfig(environment, file, org);
+  throw new UsageError("`nightshift org config` takes `get` or `set <file>`", usage);
+};
+
+const doRoutes = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage =
+    "nightshift routes export <program> [--run <id>] [--repo <path>] | nightshift routes export --project <id>";
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: { run: { type: "string" }, project: { type: "string" }, repo: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  const [verb, id] = positionals;
+  if (verb !== "export") throw new UsageError("`nightshift routes` takes `export`", usage);
+  const run = optional(values, "run");
+  const project = optional(values, "project");
+  const repo = optional(values, "repo");
+  return exportRoutes(environment, {
+    ...(id === undefined ? {} : { id }),
+    ...(run === undefined ? {} : { run }),
+    ...(project === undefined ? {} : { project }),
+    ...(repo === undefined ? {} : { repo }),
+  });
+};
+
 const doId = (environment: CliEnvironment, args: readonly string[]): void => {
   const usage = "nightshift id <prefix>";
   const { positionals } = parse(
@@ -394,6 +441,10 @@ const dispatch = async (
       return doResume(environment, args);
     case "ruling":
       return doRuling(environment, args);
+    case "org":
+      return doOrg(environment, args);
+    case "routes":
+      return doRoutes(environment, args);
     case "id":
       doId(environment, args);
       return undefined;

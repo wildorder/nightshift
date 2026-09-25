@@ -201,6 +201,20 @@ waits.
 A program with no human-only step has no prerequisites and no section for them.
 The audit discovers; it never blocks.
 
+## 6a. Say how much each strand could hurt
+
+Every strand's work is routed and examined by its **risk**, under the org's
+policy (`nightshift org config get` shows it): usually low is not examined, medium
+is examined by a different model and its findings are advisory, and high is
+examined by another provider's frontier model and a material finding stops it
+landing. The contract's `defaultRisk` is what a strand's jobs get when nobody
+says otherwise, so set it to what this program actually risks, and say in a
+strand's section when part of it is riskier than the rest: its orchestrator will
+mark those jobs high. Do not lower risk to make a run cheaper; the cost of a
+wrong answer is the point of the setting. A repository or a contract may ask for
+**more** scrutiny than the org (`examinationPolicy`) and **fewer** models
+(`routing`), never less and never more.
+
 ## 7. Surface the decisions
 
 List the choices you can see coming. For each: the question, the options, your

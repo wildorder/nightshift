@@ -219,7 +219,26 @@ const describeJob = (report: Readonly<Record<string, unknown>>): string => {
   const verification = report.verification as { outcome?: string } | null;
   const verified =
     verification === null ? "" : ` Verification ${verification.outcome ?? "unknown"}.`;
-  return `Job ${String(report.jobContractId)} is ${status}.${commit}${verified}${reason}`;
+  return `Job ${String(report.jobContractId)} is ${status}.${commit}${verified}${reason}${nextStepFor(report)}`;
+};
+
+/**
+ * What an orchestrator can do about a job an examination stopped (P8, D-P8-13):
+ * fix it, which is a retry with the findings, or dispute it before an arbiter.
+ */
+const nextStepFor = (report: Readonly<Record<string, unknown>>): string => {
+  const reason = typeof report.outcomeReason === "string" ? report.outcomeReason : "";
+  if (reason.startsWith("examination_failed:")) {
+    return (
+      " An independent examiner stopped it. Fix it with job.retry (the findings go into the " +
+      "worker's brief, and it climbs a rung; at most two fixes), or, if the examiner is wrong, " +
+      "dispute it with finding.dispute and an arbiter rules."
+    );
+  }
+  if (reason.startsWith("examination_upheld:")) {
+    return " An arbiter upheld the finding: it is not retried. The owner may reverse the ruling.";
+  }
+  return "";
 };
 
 /** The jobs a `job.wait` named, one way or the other, without repeats. */
@@ -661,8 +680,15 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         ambiguity: RiskLevelSchema.optional(),
         // P8 (D-P8-01): what the job says about itself, so routing can place it.
         // Unset is the conservative choice, not the cheap one.
-        testability: TestabilitySchema.optional(),
-        jobKind: JobKindSchema.optional(),
+        testability: TestabilitySchema.optional().describe(
+          "strong: the program's own checks exercise this change, so a cheap model's mistake is caught; " +
+            "weak: they touch it only in passing; none: nothing checks it. Leave it unset if unsure: " +
+            "unset is treated as weak, the conservative choice, not the cheap one.",
+        ),
+        jobKind: JobKindSchema.optional().describe(
+          "What kind of work it is: implement, fix, refactor, test, docs. Routing rules may start " +
+            "some kinds lower or higher on the ladder.",
+        ),
         // `sub-program` hands a bounded region of the program to an orchestrator
         // of its own, which delegates within it (D-P6-03).
         kind: z.enum(["job", "sub-program"]).optional(),
@@ -1025,11 +1051,23 @@ interface DelegateInput {
  * override. A pin never skips examination or escalation.
  */
 const PIN_INPUTS = {
-  ladder: z.string().min(1).optional(),
-  tier: TierSchema.optional(),
-  harness: z.string().min(1).optional(),
-  model: z.string().min(1).optional(),
-  effort: EffortSchema.optional(),
+  ladder: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Pin a ladder of the org's (a provider's): only when you know better than the rules.",
+    ),
+  tier: TierSchema.optional().describe(
+    "Pin where on the ladder to start: cheap, standard or frontier.",
+  ),
+  harness: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Pin a harness. Must be one the org's ladders use."),
+  model: z.string().min(1).optional().describe("Pin a model. Must be on the org's ladders."),
+  effort: EffortSchema.optional().describe("Pin a reasoning effort for the route."),
 };
 
 const pinsOf = (input: {

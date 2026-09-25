@@ -153,3 +153,45 @@ export const RoutingDecisionSchema = z
     path: ["previousRouteId"],
   });
 export type RoutingDecision = z.infer<typeof RoutingDecisionSchema>;
+
+/**
+ * One line of `nightshift routes export` (P8, SC-P8-15, SC-11): a routing
+ * decision with everything a learned router needs to train on, so nothing needs
+ * a join. JSON Lines, one per decision, every attempt of every job included.
+ */
+export const RoutingDatasetLineSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  projectId: z.string().min(1),
+  programId: z.string().min(1),
+  runId: z.string().min(1),
+  executionNodeId: z.string().min(1),
+  jobContractId: z.string().min(1).nullable(),
+  strandId: z.string().min(1).nullable(),
+  routingDecisionId: z.string().min(1),
+  /** `work` for the job's own attempts; otherwise what the route was for. */
+  purpose: z.enum(["work", "examine", "answer", "arbitrate"]),
+  attempt: z.int().min(1),
+  previousRouteId: z.string().min(1).nullable(),
+  ruleId: z.string().min(1),
+  wasOverride: z.boolean(),
+  ladder: z.string().min(1).nullable(),
+  rung: RungPositionSchema.nullable(),
+  classification: ClassificationSchema.nullable(),
+  policyVersion: z.int().min(0).nullable(),
+  chosen: RouteTargetSchema,
+  eligibleOptions: z.array(RouteOptionSchema),
+  usage: RouteUsageSchema,
+  outcome: RouteOutcomeSchema,
+  /** The node's last verification, when it had one: what the work was judged by. */
+  verification: z.enum(["passed", "failed", "deferred"]).nullable(),
+  /** The node's last examination, when it had one: its outcome, and whether it blocked. */
+  examination: z
+    .strictObject({
+      outcome: z.enum(["passed", "findings_raised", "failed"]),
+      blocking: z.boolean(),
+      fixAttempt: z.int().min(0),
+    })
+    .nullable(),
+  createdAt: IsoTimestampSchema,
+});
+export type RoutingDatasetLine = z.infer<typeof RoutingDatasetLineSchema>;

@@ -22,6 +22,7 @@
  * - `start-run.ts` — the one function `nightshift run` and `run.start` share.
  */
 
+export { routingDataset } from "./dataset.js";
 export {
   createEngine,
   DEFAULT_DISCOVERY_INTERVAL_MS,

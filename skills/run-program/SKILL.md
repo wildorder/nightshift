@@ -105,14 +105,22 @@ some work is deferred, 1 otherwise, and always writes
 it, in this order:
 
 1. The one line: succeeded, deferred, or failed, and how many strands each way.
-2. Every **departure** from the plan's approach, first, strand by strand: that
-   is the code telling the human the plan was wrong about something, and it is
-   what they most need to know.
-3. What was **parked**, what blocked it, and the reason on the strand that broke.
-4. What is **deferred**, what it waits on, and the two commands to land it when
+2. Every **arbiter ruling**, before anything else: an agent decided a disputed
+   finding, the work moved on because of it, and the human has the last word.
+   Name the finding, the ruling and why, and say how to reverse it:
+   `nightshift ruling reverse {id} <decisionId> --reason "…"`. Say plainly that
+   reversing one records their decision and replays nothing yet; the checkpoint
+   the report names is where to roll back to by hand.
+3. Every **departure** from the plan's approach, strand by strand: that is the
+   code telling the human the plan was wrong about something.
+4. What was **parked**, what blocked it, and the reason on the strand that broke.
+5. What is **deferred**, what it waits on, and the two commands to land it when
    the prerequisite is done: `nightshift preflight {id}`, then
    `nightshift resume {id}`.
-5. The success criteria table, and the run's own decisions.
+6. What the examiners found that did not stop anything (advisory findings), and
+   where the routes climbed or fell back: the report's per-job lines.
+7. The success criteria table, the run's own decisions, and what it cost, saying
+   which figures are estimates.
 
 Then the human's choices, plainly: review the branch and merge it; do the
 prerequisites and resume; or re-plan (`/plan-program {id}` reads this report
