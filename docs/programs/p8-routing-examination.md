@@ -58,6 +58,7 @@ SC-05 stays P10's. Learned routing is after v1: P8 captures the data only.
   Nothing normalises them. Only `maxWallClockSeconds` is enforced (D-P6-07, which
   gave `maxUsd`, `maxTokens` and usage normalisation to this program, then
   numbered P7).
+- The compatibility table's Codex default is `gpt-5.5`, which Codex's own catalog now lists as a legacy model. P8 moves defaults into the org's ladders, so the table keeps only what each harness *can* run.
 - Configuration exists per repository (`nightshift.config.json`) and per program
   contract. An organisation holds nothing but its members and projects.
 - A sub-orchestrator's `delegate` defaults risk and ambiguity to `low`, not to the
@@ -72,7 +73,7 @@ Everything from P3 … P7 stands.
 |---|--------------|--------|
 | H-P8-01 | Ratify D-P8-01 … D-P8-14 | open |
 | H-P8-02 | P7 merged | **satisfied 2026-09-24** (PRs #19, #20) |
-| H-P8-03 | Claude Code and Codex signed in on the operator's machine, with every model on the org's ladders reachable on those subscriptions. `astra` is recorded as the owner typed it; the live suite's preflight is what proves the id | open; checked by `npm run routing`'s preflight |
+| H-P8-03 | Claude Code and Codex signed in on the operator's machine, with every model on the org's ladders reachable on those subscriptions | **satisfied 2026-09-25** for all six models on the owner's ladders: each answered a one-line prompt headless (`claude -p --model`, `codex exec -m`). Rechecked by `npm run routing`'s preflight before every live run |
 | H-P8-04 | A repository for the exit gate's trial, and a program to plan on it (SC-P8-18) | open, needed by T5 only |
 
 **Explicitly not required.** No new AWS resource: organisation configuration is a
@@ -86,7 +87,7 @@ redeployed.
 | # | Question | Answer |
 |---|----------|--------|
 | Q1 | Where does examination run? | **Beside the merge queue**, not in it (D-P8-09) |
-| Q2 | What is the ladder? | **Configurable per organisation**, with a ladder per provider. The owner's own: Claude `claude-haiku-4-5-20251001 → claude-sonnet-5 → claude-opus-5-5`; Codex `gpt-5.5 → astra`, two rungs until a cheaper Codex model is chosen. The repository and the contract may **narrow** the org's configuration, never widen it (D-P8-02, D-P8-03) |
+| Q2 | What is the ladder? | **Configurable per organisation**, with a ladder per provider. The owner's own: Claude `claude-haiku-4-5-20251001 → claude-sonnet-5 → claude-opus-5-5`; Codex, as amended the same day from Codex's own model catalog: `gpt-6-luna → gpt-6-sol → gpt-6-astra`. The repository and the contract may **narrow** the org's configuration, never widen it (D-P8-02, D-P8-03) |
 | Q3 | Enforce `maxUsd` and `maxTokens` now? | **Yes**, with estimated dollars labelled as estimates (D-P8-08) |
 | Q4 | A blocking finding the orchestrator disputes, unattended | **An independent arbiter rules, and the ruling stands**: overturned lands, upheld fails and parks. The ruling is a recorded decision the owner can reverse (D-P8-13) |
 | Q5 | The exit gate | **The live suite and a real planned program** on a repository the owner names (SC-P8-17, SC-P8-18) |
@@ -98,7 +99,7 @@ Proposed 2026-09-24, revised to §3.1's answers 2026-09-25, for ratification.
 | ID | Decision | Rationale |
 |----|----------|-----------|
 | D-P8-01 | **A job says what it is; the policy says where that goes.** The Job Contract gains two classification fields beside `risk` and `ambiguity`: `testability` (`strong`: the contract's checks exercise the change; `weak`; `none`) and `kind` (`implement`, `fix`, `refactor`, `test`, `docs`, `orchestrate`). Scope breadth is derived from `scope.includes`, never declared. The delegating orchestrator sets them; anything left unset takes the **conservative** default (`defaultRisk`, `medium` ambiguity, `weak` testability), so an unclassified job never lands on the cheapest rung by accident. Sub-orchestrators default to `defaultRisk` like the root. | Stage 6's inputs, cut to what an orchestrator can state honestly and a rule can match on. Blast radius is `risk`; a context requirement is what `scope` and the context documents already say. A field that can be derived is not a second home for the same fact. |
-| D-P8-02 | **Routing policy belongs to the organisation.** `routingPolicy` is stored in the control plane per org, read and written by the org's members (`nightshift org config`). It holds **ladders**, one or more, each an ordered list of rungs, and each rung one or more `(harness, model)` routes in preference order. Rungs carry a **tier** (`cheap`, `standard`, `frontier`) so rules and examiners can speak across ladders. It also holds the **rules**, the price table, routes marked unavailable, and the default `examinationPolicy`. A new org is seeded with a working default, which the owner's org then replaces with Q2's ladders. | The owner's answer to Q2. Ladders and prices are a team's standing choice, not a repository's; a second project should not have to restate them. Tiers let a Codex ladder of two rungs and a Claude ladder of three be compared without pretending they are the same length. |
+| D-P8-02 | **Routing policy belongs to the organisation.** `routingPolicy` is stored in the control plane per org, read and written by the org's members (`nightshift org config`). It holds **ladders**, one or more, each an ordered list of rungs, and each rung one or more `(harness, model)` routes in preference order. Rungs carry a **tier** (`cheap`, `standard`, `frontier`) so rules and examiners can speak across ladders. It also holds the **rules**, the price table, routes marked unavailable, and the default `examinationPolicy`. A new org is seeded with a working default, which the owner's org then replaces with Q2's ladders. | The owner's answer to Q2. Ladders and prices are a team's standing choice, not a repository's; a second project should not have to restate them. Tiers let ladders of different lengths be compared without pretending they are the same, and name the rung another provider's work falls back to. |
 | D-P8-03 | **The repository and the contract may only narrow.** `nightshift.config.json` and the Program Contract inherit the org's policy and may forbid a route, drop a ladder, raise a rule's starting tier or tighten an examination requirement. They may not add a model, a harness or a ladder the org does not have, or loosen examination. The effective policy is computed in `core`, and what it was is recorded on the run. | A-11 applied to configuration: children narrow, never widen. It is also the only reading of "configurable by org" in which the org's choice means anything. |
 | D-P8-04 | **Routing is a first-match rule table.** Each rule matches on classification and names a starting **ladder** and **tier**. The first rule that matches wins; the last has no conditions. A ladder without the named tier starts at its lowest rung at or above it. `modelPolicy` still intersects everything. The rule id, the ladder, the rung and the classification matched are recorded on every decision. No model, no randomness and no clock take part. | Deterministic, explainable, overrideable (SC-10). A table is how "changing policy changes behaviour without code changes" is literally true, and first-match is the simplest thing a human can read top to bottom and predict. |
 | D-P8-05 | **An override is a pin within policy, as in P5.** An orchestrator may pin a harness, a model, a ladder or a tier on `delegate`. The pin must be eligible under the effective policy and is recorded as `wasOverride`. A pin does not exempt the job from escalation, fallback or examination. | A-38 unchanged. An override that could escape examination would make risk a suggestion. |
@@ -171,8 +172,9 @@ The owner's org, as answered:
       { "tier": "frontier", "routes": [{ "harness": "claude", "model": "claude-opus-5-5" }] }
     ],
     "codex": [
-      { "tier": "standard", "routes": [{ "harness": "codex", "model": "gpt-5.5" }] },
-      { "tier": "frontier", "routes": [{ "harness": "codex", "model": "astra" }] }
+      { "tier": "cheap",    "routes": [{ "harness": "codex", "model": "gpt-6-luna" }] },
+      { "tier": "standard", "routes": [{ "harness": "codex", "model": "gpt-6-sol" }] },
+      { "tier": "frontier", "routes": [{ "harness": "codex", "model": "gpt-6-astra" }] }
     ]
   },
   "rules": [
@@ -275,7 +277,6 @@ to be trained on.
   deterministic).
 - Replaying anything when the owner reverses a ruling, or when a finding upheld
   at `resume` discards work (P9).
-- A cheaper Codex rung (the owner's to add later, in configuration).
 - A Studio view of any of it (P11 ships the data surface).
 
 ## 6. Success criteria
@@ -414,14 +415,14 @@ Specs will live in `tasks/p8-routing-examination/`.
 | An arbiter overturns a real defect and it lands | The ruling leads the report and the owner can reverse it; until P9 a reversal is a record and a follow-up, not a replay (D-P8-13) |
 | Beside-the-queue examination is stale by the time the job lands | Carry-over only on an identical patch id; otherwise examined again in the queue (D-P8-09) |
 | Subscription rate limits make routes flap | A route found unavailable stays skipped for the run, and the other provider's ladder at the same tier takes the work (D-P8-06) |
-| `astra` is not the model id Codex expects | H-P8-03: the live suite's preflight starts every route on the owner's ladders before anything else |
+| A provider renames or retires a model on a ladder | The live suite's preflight starts every route on the org's ladders first; at run time a route that cannot start is `unavailable` and falls back (D-P8-06) |
 | The program runs long | Staging's split point stands: Stage 7 (T3) splits off after T2, where routing decisions are persisted |
 
 ## 12. Decision log
 
 | Date | Decision | By |
 |------|----------|----|
-| 2026-09-25 | **The owner's answers to Q1 … Q5** (§3.1): examination beside the queue; ladders configured per org, a ladder per provider, narrowed never widened below the org; budgets enforced now; a disputed blocking finding goes to an independent arbiter whose ruling stands and which the owner can reverse, on the owner's proposal of a decision agent from a different provider; the exit gate is the live suite and a real planned program. D-P8-02, -03, -06, -09, -10 and -13 written to them. | **Human** |
+| 2026-09-25 | **The owner's answers to Q1 … Q5** (§3.1): examination beside the queue; ladders configured per org, a ladder per provider, narrowed never widened below the org; budgets enforced now; a disputed blocking finding goes to an independent arbiter whose ruling stands and which the owner can reverse, on the owner's proposal of a decision agent from a different provider; the exit gate is the live suite and a real planned program. The Codex ladder was first given as `gpt-5.5 → astra`; the owner asked for the real model names, and Codex's catalog (`codex debug models`, CLI 0.156.1) gave `gpt-6-luna` ("fast and affordable"), `gpt-6-sol` ("workhorse") and `gpt-6-astra` ("frontier"), all three probed live. D-P8-02, -03, -06, -09, -10 and -13 written to them. | **Human** |
 | 2026-09-24 | Contract drafted after P7 closed. D-P8-01 … D-P8-11 proposed; Q1 … Q5 put to the owner. | Agent, for human ratification |
 
 ## 13. As built
