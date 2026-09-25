@@ -7,7 +7,7 @@
 ## Deliverables
 
 1. **`test/src/routing/`**: one test per success criterion SC-P8-01 …
-   SC-P8-15, through the real MCP server binary, engine, merge queue and git with
+   SC-P8-15 (with SC-P8-12a), through the real MCP server binary, engine, merge queue and git with
    the scripted harness, reading the control plane. **SC-P8-14's fixture** runs one
    program under two org configurations and asserts the two different paths, with
    no code between them.
@@ -19,7 +19,9 @@
    a pinned override; a route marked unavailable falls back across ladders; a
    medium-risk job examined by a different model; a high-risk job examined by the
    Codex ladder, with a **planted defect** the examiner finds with evidence and a
-   fix removes before it lands; a disputed finding ruled on by an arbiter. Each
+   fix removes before it lands; an examiner's question answered by the builder's
+   resumed session; a disputed finding ruled on by an arbiter, its checkpoints
+   recorded. Each
    phase prints its routes, cost and timings.
 3. **The owner's org** set to §4.2's ladders with `nightshift org config set`,
    read back.

@@ -7,9 +7,9 @@
 | Base branch | `v1` |
 | Program branch | `program/p8-routing-examination` |
 | Source stage | Stage 6 (Model/Harness Routing) and Stage 7 (Risk-Based Examination) |
-| Status | **Draft.** Drafted 2026-09-24; the owner answered the design questions 2026-09-25 (§3.1), and D-P8-01 … D-P8-14 are written to those answers. Not ratified; nothing is built. |
+| Status | **Contract ratified 2026-09-25** (D-P8-01 … D-P8-15; §3.1, §12). Not started; build from T1. |
 | Depends on | P4 (organisations), P5 (the compatibility table, `RoutingDecision`, usage on exit), P6 (the engine, the merge queue, retries), P7 (strands, the report, the provisional line) |
-| Blocking decisions | ratification of D-P8-01 … D-P8-14 |
+| Blocking decisions | none |
 
 This contract is the stable authority for P8. The implementation plan may be
 revised continuously; this contract may not be revised to make an implementation
@@ -71,7 +71,7 @@ Everything from P3 … P7 stands.
 
 | # | Prerequisite | Status |
 |---|--------------|--------|
-| H-P8-01 | Ratify D-P8-01 … D-P8-14 | open |
+| H-P8-01 | Ratify D-P8-01 … D-P8-15 | **satisfied 2026-09-25** |
 | H-P8-02 | P7 merged | **satisfied 2026-09-24** (PRs #19, #20) |
 | H-P8-03 | Claude Code and Codex signed in on the operator's machine, with every model on the org's ladders reachable on those subscriptions | **satisfied 2026-09-25** for all six models on the owner's ladders: each answered a one-line prompt headless (`claude -p --model`, `codex exec -m`). Rechecked by `npm run routing`'s preflight before every live run |
 | H-P8-04 | A repository for the exit gate's trial, and a program to plan on it (SC-P8-18) | open, needed by T5 only |
@@ -91,10 +91,15 @@ redeployed.
 | Q3 | Enforce `maxUsd` and `maxTokens` now? | **Yes**, with estimated dollars labelled as estimates (D-P8-08) |
 | Q4 | A blocking finding the orchestrator disputes, unattended | **An independent arbiter rules, and the ruling stands**: overturned lands, upheld fails and parks. The ruling is a recorded decision the owner can reverse (D-P8-13) |
 | Q5 | The exit gate | **The live suite and a real planned program** on a repository the owner names (SC-P8-17, SC-P8-18) |
+| Q6 | How many fixes does a blocking finding get? | **Two.** After the second, the arbiter rules whether or not the orchestrator disputed; the ruling is recorded against a checkpoint and becomes a rollback point, and the run moves on (D-P8-13) |
+| Q7 | Where does work go when a route cannot start? | **Another model on the rung, then the other provider's ladder at the same tier, then one rung up**, as drafted (D-P8-06) |
+| Q8 | Does a retry climb? | **One rung on every real failure**, as drafted (D-P8-07) |
+| Q9 | What does the examiner see? | **Evidence only, and it may ask the builder direct questions**: up to three, one round, answered by resuming the builder's own session (the owner's proposal; D-P8-11, D-P8-15) |
+| Q10 | The default examination policy | **Low not examined; medium examined by a different model, advisory; high examined by the other provider's frontier model, blocking**, as drafted (§4.2) |
 
-### 3.2 Proposed decisions
+### 3.2 Ratified decisions
 
-Proposed 2026-09-24, revised to §3.1's answers 2026-09-25, for ratification.
+Proposed 2026-09-24; revised to §3.1's answers and ratified by the owner 2026-09-25.
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
@@ -107,10 +112,11 @@ Proposed 2026-09-24, revised to §3.1's answers 2026-09-25, for ratification.
 | D-P8-07 | **A retry after a real failure climbs one rung of its ladder.** When an orchestrator retries a job that ended `verification_failed`, `failed` or `examination_failed`, the retry routes one rung above the last attempt on the same ladder; the top rung stays the top rung. A job that ended in a stale base, a conflict, an interrupt or an unavailable route retries on the **same** route: those failures say nothing about the model. Each attempt is a new `RoutingDecision` linked by `previousRouteId`; the one it replaced gets outcome `escalated`. The orchestrator still decides *whether* to retry; routing decides *where*. | "Failures may escalate" (source plan), with the line drawn at failures that are evidence about capability. The chain of decisions is SC-11's dataset: a cheap attempt that failed and a stronger one that passed is exactly what a learned router needs. |
 | D-P8-08 | **Usage is normalised, dollars are reported or estimated and never blended, and budgets are enforced.** `usage` gains `cacheReadTokens` and `cacheWriteTokens` where a harness reports them, and `costSource: reported \| estimated \| unknown`. An estimate comes from the org's price table. Budgets use `reported` where there is one and `estimated` otherwise. Once `maxUsd` or `maxTokens` is spent the engine starts nothing new and says why, as it does for wall clock (D-P6-07); work already running finishes. The report says which figures are estimates. | The owner's answer to Q3. Codex reports no cost; Claude does. Summing a reported figure with nothing, silently, is how D-P6-07 said a budget becomes a budget in name only. |
 | D-P8-09 | **Examination runs beside the merge queue.** When a worker finishes a job that needs examining, the execution layer verifies its snapshot in its own worktree and an examiner examines that verified snapshot, while other work lands. The node enters the queue only once examination has passed or its findings are resolved. The queue replays and verifies as it does today. If the replayed diff's `git patch-id` matches the examined one, the examination carries over and `verified → examining → sealed` passes at once, citing it; if the replay changed the diff, the node is examined again, in the queue. The node stays `implemented` while it is examined beside the queue: **P1's table is unchanged**. | The owner's answer to Q1. Examination is the slowest step P8 adds; in the queue it would sit on the one serial path P6 exists to keep short. The cost is one extra verification run per examined job, and none for a job that is not examined. |
-| D-P8-10 | **The examiner is an agent like any other, with its own role and nothing else.** It runs through the routed adapters with its own execution identity (A-04). `NIGHTSHIFT_ROLE=examiner` registers one tool, `examination.submit`, and its token may write only its own `Examination`. It works in a **detached checkout** of the commit it examines (A-39: its reach is bounded by where it runs, not by a list). Its route: a different model from the implementer's when `mustDifferModel`; a route from **another provider's ladder** when `mustDifferProvider`; at high risk, that ladder's **frontier** tier. | Stage 7's "examiner differs from the implementer invocation", enforced by identity and route, not by prompt. With a ladder per provider, "different provider" is simply "another ladder". |
-| D-P8-11 | **The examiner is given evidence, not the implementer's reasoning.** Its brief carries the Program Contract, the Job Contract, the diff, the changed tests, the verification results and logs, and the interfaces the scope touches. It is **not** given the worker's summary, transcript or commit message. | "Where practical, do not initially expose the implementer's rationale" (source plan). The commit message is the worker's summary (P3), so it is withheld too. |
+| D-P8-10 | **The examiner is an agent like any other, with its own role and nothing else.** It runs through the routed adapters with its own execution identity (A-04). `NIGHTSHIFT_ROLE=examiner` registers two tools, `examination.ask` (D-P8-15) and `examination.submit`, and its token may write only its own `Examination`. It works in a **detached checkout** of the commit it examines (A-39: its reach is bounded by where it runs, not by a list). Its route: a different model from the implementer's when `mustDifferModel`; a route from **another provider's ladder** when `mustDifferProvider`; at high risk, that ladder's **frontier** tier. | Stage 7's "examiner differs from the implementer invocation", enforced by identity and route, not by prompt. With a ladder per provider, "different provider" is simply "another ladder". |
+| D-P8-11 | **The examiner is given evidence, not the implementer's reasoning.** Its brief carries the Program Contract, the Job Contract, the diff, the changed tests, the verification results and logs, and the interfaces the scope touches. It is **not** given the worker's summary, transcript or commit message; where it needs intent, it asks (D-P8-15). | "Where practical, do not initially expose the implementer's rationale" (source plan). The commit message is the worker's summary (P3), so it is withheld too. A question gets the one answer the examiner needed, not the reasoning that would talk it round. |
 | D-P8-12 | **A finding without evidence is refused.** Each finding names its severity (`material` or `minor`) and at least one piece of evidence: a file and line range in the examined commit, a test or command with its output, or a contract clause the diff contradicts. The examination is bound to the commit and the diff's `patch-id`, and its full report goes to S3 (A-08). | "Examiner findings are evidence-backed" and "remain attached to exact commit/diff" (Stage 7), as schema rather than hope. The patch id is what makes D-P8-09's carry-over exact. |
-| D-P8-13 | **Findings go to the delegating orchestrator; a dispute goes to an arbiter; the owner can reverse the arbiter.** A material finding reaches the orchestrator that delegated the job, through `job.wait`, as the node's outcome. It may **fix** it: a retry that carries the findings in its brief, climbs per D-P8-07, and is examined again. Or it may **dispute** it with a reason. Where the policy does not block on material findings, a dispute stands and is recorded. Where it blocks, the dispute goes to an **arbiter**: a fresh frontier-tier invocation of a model that neither the implementer nor the examiner used (and from a third provider when the org has one), with its own role (`NIGHTSHIFT_ROLE=arbiter`, one tool, `finding.rule`), given the finding, its evidence, the dispute and the diff. It **overturns** the finding, and the work proceeds to land, or **upholds** it, and the job fails and its strand parks with its cone (D-P7-09). Each ruling is recorded as a `Decision` with authority `agent`, made by the arbiter, naming the finding, flagged first in the report, and reversible by the owner: a reversal is recorded as a `human` decision superseding it. `risk_accepted` has authority `human`, always. | The owner's answer to Q4. The orchestrator no longer grades its own dispute; a third party does, and the owner has the last word after the night. With two providers the arbiter cannot differ in provider from both sides; it differs in model and invocation from both, which is the most independence two providers allow, and the report says which it was. **Before P9, reversing a ruling is recorded and reported but replays nothing**: reversing an overturn does not unland the work, and reversing an uphold does not restart the strand. The minimum-cone replay a reversal needs is P9's (SC-13). |
+| D-P8-13 | **Findings go to the delegating orchestrator; two fixes, then an arbiter; the owner can reverse the arbiter.** Under a **non-blocking** requirement (the default for medium), findings are recorded and handed to the delegating orchestrator, and the work lands; the orchestrator may delegate a follow-up fix. Under a **blocking** requirement (the default for high), a material finding ends the node `examination_failed` and reaches the orchestrator through `job.wait`. It may **fix** it (a retry that carries the findings in its brief, climbs per D-P8-07, and is examined again), at most **twice** per job, a limit the engine enforces; or **dispute** it with a reason at any point. A dispute, or a material finding still standing after the second fix, goes to an **arbiter**: a fresh frontier-tier invocation of a model that neither the implementer nor the examiner used (a third provider's ladder when the org has one), with its own role (`NIGHTSHIFT_ROLE=arbiter`, one tool, `finding.rule`), given the finding, its evidence, the examiner's questions and answers, any dispute, and the diff. It **overturns** the finding, and the work proceeds to land, or **upholds** it, and the job fails and its strand parks with its cone (D-P7-09). Either way the run moves on. Each ruling is a `Decision` with authority `agent`, made by the arbiter, naming the finding, with **`checkpointBefore`** the program head before the ruled work could land and **`checkpointAfter`** the head after it landed, so it is a rollback point; it is flagged first in the report and reversible by the owner, as a `human` decision superseding it. `risk_accepted` has authority `human`, always. | The owner's answers to Q4 and Q6. The orchestrator never grades its own dispute, a disagreement costs at most three builds and an arbiter call, and the owner has the last word after the night. With two providers the arbiter cannot differ in provider from both sides; it differs in model and invocation from both, and the report says which. **Before P9, reversing a ruling is recorded and reported and replays nothing**: the checkpoints make the rollback addressable (`git reset` to `checkpointBefore` by hand), and the minimum-cone replay is P9's (SC-13). |
+| D-P8-15 | **The examiner may ask the builder.** Before it submits, the examiner may put up to **three** questions, in **one** round, through `examination.ask`. They are answered by **resuming the builder's own session** (both harnesses can), told only to answer; when the session cannot be resumed, by a fresh invocation of the builder's route given its saved transcript, and the answer says which. The questions and answers are recorded on the examination, shown to the arbiter, and printed in the report. A resumed builder can change nothing: it answers in a read-only detached checkout and its answer is text. | The owner's proposal. A blind examiner flags deliberate choices it cannot see a reason for; showing it the builder's reasoning would talk it round. A direct question gets exactly the intent it needed and nothing else, and one bounded round keeps an examination's time and cost predictable. Resuming the session answers from memory of the work, not a reconstruction. |
 | D-P8-14 | **Examination and deferral compose, in that order.** A node whose checks are deferred (D-P7-10) is examined when its deferred checks pass at `resume`, never on unverified work. | "Examination occurs against verified artifacts" (Stage 7), with A-05 intact. |
 
 ### Non-guarantees
@@ -138,10 +144,12 @@ delegate { classification, pins? }
              ├─ no examination required ───────────────────────────────┐
              └─ required: verify snapshot, examine beside the queue    │
                    passed ────────────────────────────────────────────┤
-                   material finding → orchestrator
-                        fix      → retry, one rung up, examined again  │
-                        dispute  → (blocking) arbiter
-                                     overturned ───────────────────────┤
+                   (may ask the builder ≤3 questions, one round)          │
+                   advisory findings → recorded, work lands ──────────┤
+                   blocking finding → orchestrator
+                        fix (≤2) → retry, one rung up, examined again  │
+                        dispute, or still failing after 2 → arbiter
+                                     overturned (rollback point) ──────┤
                                      upheld → failed, strand parks      │
                                                                        ▼
                      merge queue: replay, verify on head
@@ -189,8 +197,8 @@ The owner's org, as answered:
 },
 "examinationPolicy": {
   "low":    { "required": false, … },
-  "medium": { "required": true, "mustDifferModel": true, … },
-  "high":   { "required": true, "mustDifferProvider": true, "blockOnMaterialFindings": true }
+  "medium": { "required": true, "mustDifferModel": true, "blockOnMaterialFindings": false },   // advisory
+  "high":   { "required": true, "mustDifferProvider": true, "blockOnMaterialFindings": true }      // blocking
 }
 ```
 
@@ -215,8 +223,9 @@ level, because no examiner existed).
 ### 4.4 The examination record
 
 P5's `Examination` stands, gaining `patchId`, `examinerRoute`, per-finding
-`evidence[]`, and per finding a resolution (`fixed`, `disputed`, `overturned`,
-`upheld`, `risk_accepted`) with its authority and, for an arbiter's ruling, the
+`evidence[]`, and `questions[]` (each with its answer and whether it came from the resumed
+session or the transcript), `fixAttempt`, and per finding a resolution (`fixed`,
+`disputed`, `overturned`, `upheld`, `risk_accepted`) with its authority and, for an arbiter's ruling, the
 `Decision` that made it. The rule that examiner ≠ implementer (already in the
 schema) gains the model and provider checks the policy requires, and the arbiter
 gets its own: a different model from both sides. They are checked in `core` and
@@ -244,6 +253,7 @@ to be trained on.
 | `JobContract` gains `testability`, `kind` (optional, defaulted conservatively) | D-P8-01. A contract written before P8 parses to what it was |
 | `RoutingDecision` gains `classification`, `ladder`, `rung`, the route's `effort`, outcome `unavailable`; `usage` gains cache tokens and `costSource` | D-P8-04 … D-P8-08 |
 | `Examination` gains `patchId`, `examinerRoute`, evidence, resolutions | D-P8-12, D-P8-13 |
+| Harness adapters record the builder's session id, and can resume a session to answer a question (an optional capability; conformance gains a case) | D-P8-15 |
 | Two execution roles, **examiner** and **arbiter**, each able to write its own record and read its run, nothing else; the independence checks of §4.4 at write time | D-P8-10, D-P8-13. New cells in both `authorize` tables |
 | No change to P1's transition table | D-P8-09 |
 
@@ -261,8 +271,9 @@ to be trained on.
 - Usage normalisation, cost estimation, `maxUsd` and `maxTokens` enforced.
 - The examiner: role, brief, route choice, `examination.submit`, beside-the-queue
   placement, carry-over by patch id.
-- Findings to the orchestrator; fix and dispute; the arbiter; the owner's
-  reversal recorded.
+- The examiner's questions to the builder, answered by resuming its session.
+- Findings to the orchestrator; two fixes, dispute; the arbiter and its
+  checkpoints; the owner's reversal recorded.
 - Retiring `assertExaminable`'s refusal.
 - The report's routing and examination sections; `nightshift routes export`.
 - The `plan-program`, `run-program` and `nightshift` skills: how to classify a
@@ -313,12 +324,17 @@ to be trained on.
 - **SC-P8-11** Every examination is bound to a commit and a patch id; every
   finding carries evidence, and one without is refused. An examination carries
   over through the queue only for an identical patch id.
-- **SC-P8-12** A material finding reaches the delegating orchestrator; a fix is
-  re-examined; under a blocking policy a dispute goes to the arbiter, an overturn
-  lands, an upheld finding fails the job and parks its strand, and nothing else
-  lets the work integrate.
-- **SC-P8-13** Every arbiter ruling is a `Decision` with authority `agent`,
-  leads the report, and can be reversed by the owner as a superseding `human`
+- **SC-P8-12** Under an advisory requirement, findings are recorded and handed to
+  the orchestrator and the work lands. Under a blocking one, a material finding
+  reaches the delegating orchestrator; a fix is re-examined; a third fix is
+  refused; a dispute, or a finding standing after two fixes, goes to the arbiter;
+  an overturn lands, an upheld finding fails the job and parks its strand, and
+  nothing else lets the work integrate.
+- **SC-P8-12a** An examiner's questions (at most three, one round) are answered by
+  the builder's resumed session, or from its transcript when it cannot resume,
+  saying which; they are recorded and reach the arbiter.
+- **SC-P8-13** Every arbiter ruling is a `Decision` with authority `agent` and
+  `checkpointBefore` and `checkpointAfter` set, leads the report, and can be reversed by the owner as a superseding `human`
   decision, which is recorded and reported.
 - **SC-P8-14** Changing the org's `routingPolicy` or `examinationPolicy` changes
   behaviour with no code change: one fixture, run under two configurations, takes
@@ -337,8 +353,9 @@ to be trained on.
   attempt fails escalates and integrates; a pinned override takes effect; a route
   made unavailable falls back across ladders; a medium-risk job is examined by a
   different model; a high-risk job is examined by the Codex ladder, whose planted
-  defect is found with evidence and fixed before it lands; a disputed finding is
-  ruled on by an arbiter.
+  defect is found with evidence and fixed before it lands; an examiner's question is
+  answered by the builder's resumed session; a disputed finding is ruled on by an
+  arbiter.
 - **SC-P8-18** A real program, planned with `plan-program` on a repository the
   owner names and run with the owner's org configuration: it finishes, the report
   shows every route and examination, and the owner judges whether the ladders
@@ -395,7 +412,7 @@ Forbidden:
 |------|-------|------------|-------|
 | T1 | Contracts, rules and the API: classification, org configuration and narrowing, the examiner and arbiter roles, the examination record, `authorize`; deploy | — | AWS |
 | T2 | Routing: rules, ladders and tiers, overrides, fallback and adapter start-failure classes, escalation, usage and cost, budgets | T1 | — |
-| T3 | Examination: the examiner, its brief and route, beside-the-queue placement, carry-over, findings to the orchestrator, the arbiter, reversal | T1, T2 | — |
+| T3 | Examination: the examiner, its brief and route, beside-the-queue placement, carry-over, the examiner's questions and session resume, findings, the fix limit, the arbiter and its checkpoints, reversal | T1, T2 | — |
 | T4 | Orchestrator tools, skills, `init` and `org config`, the report, `routes export` | T2, T3 | — |
 | T5 | Fixture proofs; the live suite; the exit gate's trial; as-built | T4 | AWS, Claude Code, Codex, H-P8-03, H-P8-04 |
 
@@ -422,6 +439,7 @@ Specs live in `tasks/p8-routing-examination/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-25 | **Contract ratified.** Ten decisions the owner judged low-risk, ratified as drafted: D-P8-01 … D-P8-05, -08, -09, -10, -12, -14. Five put to the owner one by one (Q6 … Q10): D-P8-06 and -07 as drafted; D-P8-13 amended to two fixes, then an arbiter that rules whether or not the finding is disputed, its ruling a checkpointed rollback point; D-P8-11 amended and **D-P8-15 added on the owner's proposal**, the examiner's direct questions to the resumed builder; the default examination policy as drafted. | **Human** |
 | 2026-09-25 | **A route may carry a reasoning effort.** Both harnesses take one, and every model on the owner's ladders offers several; a rung may be a model at a higher effort. Unset on the owner's ladders for now: each harness's default applies. Task specs T1 … T5 drafted. | Human (on the agent's offer) |
 | 2026-09-25 | **The owner's answers to Q1 … Q5** (§3.1): examination beside the queue; ladders configured per org, a ladder per provider, narrowed never widened below the org; budgets enforced now; a disputed blocking finding goes to an independent arbiter whose ruling stands and which the owner can reverse, on the owner's proposal of a decision agent from a different provider; the exit gate is the live suite and a real planned program. The Codex ladder was first given as `gpt-5.5 → astra`; the owner asked for the real model names, and Codex's catalog (`codex debug models`, CLI 0.156.1) gave `gpt-6-luna` ("fast and affordable"), `gpt-6-sol` ("workhorse") and `gpt-6-astra` ("frontier"), all three probed live. D-P8-02, -03, -06, -09, -10 and -13 written to them. | **Human** |
 | 2026-09-24 | Contract drafted after P7 closed. D-P8-01 … D-P8-11 proposed; Q1 … Q5 put to the owner. | Agent, for human ratification |

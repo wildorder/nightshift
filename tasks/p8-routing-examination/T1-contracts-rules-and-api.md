@@ -3,7 +3,7 @@
 **Program:** `p8-routing-examination` (see `docs/programs/p8-routing-examination.md`)
 **Depends on:** nothing
 **Unblocks:** T2, T3, T4
-**Decisions applied:** D-P8-01, D-P8-02, D-P8-03, D-P8-04, D-P8-10, D-P8-12, D-P8-13
+**Decisions applied:** D-P8-01, D-P8-02, D-P8-03, D-P8-04, D-P8-10, D-P8-12, D-P8-13, D-P8-15
 
 ## Objective
 
@@ -32,7 +32,8 @@ API applies them. Deploy once at the end.
 3. **`OrgConfig`** record: `{ orgId, routingPolicy, examinationPolicy,
    schemaVersion, updatedAt, version }`. A seeded default for a new org: one ladder
    per operator-login harness in `HARNESS_COMPATIBILITY`, built from the table's
-   default models, and examination on for medium and high.
+   default models, and examination on for medium (advisory) and high
+   (blocking), as §4.2.
 4. **Narrowing** (`core/src/rules/effective-policy.ts`):
    `effectivePolicy(org, config, contract)` returning the policy or every
    **widening** by name (a model, harness, ladder or rung the org does not have; an
@@ -52,7 +53,9 @@ API applies them. Deploy once at the end.
    exitCode, outputArtifactId } | { kind: "contract", clause }`, at least one), and
    per-finding `resolution` (`fixed | disputed | overturned | upheld |
    risk_accepted`) with `authority` and, for an arbiter's, `decisionId`. A finding
-   with no evidence does not parse. `Verification` gains `phase: candidate | queue`
+   with no evidence does not parse. It also gains `questions[]` (at most three:
+   `{ question, answer, answeredBy: resumed_session | transcript }`) and
+   `fixAttempt` (0, 1 or 2). `Verification` gains `phase: candidate | queue`
    (absent reads as `queue`), for T3's beside-the-queue check. The event registry
    gains `finding.disputed` and `finding.ruled`.
 7. **Independence rules** (`core/src/rules/examination.ts`):
@@ -64,7 +67,8 @@ API applies them. Deploy once at the end.
 8. **Execution roles**: `ExecutionRoleSchema` gains `examiner` and `arbiter`.
    `authorize` gains `examination.put` (examiner, its own examination only;
    the execution layer as today) and `finding.rule` (arbiter, one finding of the
-   examination it was minted for). Both read their run. Nothing else. The root
+   examination it was minted for). The examiner also gets `examination.ask`
+   (its own examination, once). Both read their run. Nothing else. The root
    and sub-orchestrators gain `finding.dispute` on findings of jobs they delegated. Cells in
    **both** access tables. `risk_accepted` and a reversal are written by user
    principals only.
