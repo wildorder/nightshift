@@ -123,3 +123,23 @@ describe.skipIf(process.platform === "win32")("the git guard (rule 5)", () => {
     expect(run(["--no-pager", "-C", "/somewhere", "push"]).code).toBe(126);
   });
 });
+
+describe("a rung's reasoning effort (P8)", () => {
+  it("is passed as model_reasoning_effort when the route names one, and not otherwise", () => {
+    const base = {
+      prompt: "BRIEF",
+      worktree: "/state/wt/1",
+      mcp: MCP,
+    };
+    const withEffort = buildCodexArgs({
+      ...base,
+      model: { harness: "codex", provider: "openai", model: "gpt-6-sol", effort: "xhigh" },
+    });
+    expect(withEffort).toContain('model_reasoning_effort="xhigh"');
+    const without = buildCodexArgs({
+      ...base,
+      model: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
+    });
+    expect(without.some((arg) => arg.startsWith("model_reasoning_effort"))).toBe(false);
+  });
+});

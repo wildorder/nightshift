@@ -22,26 +22,34 @@
  * loops: two passes reading the same tree would both see the same free slot.
  */
 import type {
+  Effort,
   ExecutionNode,
   ExecutionNodeId,
   JobContract,
   JobContractId,
   RouteChoice,
+  RouteTarget,
+  RouteUsage,
   Scope,
+  Tier,
 } from "@nightshift/contracts";
 import {
   blockedBy,
+  budgetSpent,
   buildTree,
   ConcurrencyLimitExceededError,
   descendantsOf,
   type ExecutionTree,
+  failureClimbs,
   isDoneForNow,
   isPlanned,
   isSettled,
   maySlotStart,
   nowIso,
   RETRYABLE_STATUSES,
+  type Spend,
   type StrandOutcomes,
+  spendOf,
   strandAttempts,
   strandOutcomes,
   strandsOf,
@@ -61,13 +69,41 @@ export interface EngineOptions {
   /** The run's merge queue. One is made when none is given; a test gives its own. */
   readonly mergeQueue?: MergeQueue;
   /**
-   * Routes a node the engine did not delegate itself: one a sub-program's
-   * orchestrator wrote through the control plane (D-P6-01). Routing is not this
-   * package's, so it is handed in. Without it such a node fails, with the reason.
+   * The router (P8). Routing is not this package's, so it is handed in. It
+   * routes a node the engine did not delegate itself (D-P6-01), a retry, which
+   * climbs or keeps its route by why the last attempt ended (D-P8-07), and a
+   * fallback when a route could not start (D-P8-06). Without it a discovered
+   * node fails with the reason, a retry keeps its route, and nothing falls back.
    */
-  readonly route?: (job: JobContract) => RouteChoice;
+  readonly route?: (job: JobContract, context: RouteContext) => RouteChoice;
   /** How often the run's nodes are read while a sub-orchestrator is running. */
   readonly discoveryIntervalMs?: number;
+}
+
+/** What the router is told beyond the job itself (P8). Structural, so this package names no router. */
+export interface RouteContext {
+  /** What the delegator pinned (D-P8-05). */
+  readonly pins?: RoutePins | undefined;
+  /** The attempt a retry replaces, and whether its ending says anything about the model (D-P8-07). */
+  readonly previous?:
+    | {
+        readonly target: RouteTarget;
+        readonly ladder?: string | undefined;
+        readonly rungIndex?: number | undefined;
+        readonly climb: boolean;
+      }
+    | undefined;
+  /** Routes found unable to start in this run (D-P8-06). */
+  readonly unavailable: readonly Pick<RouteTarget, "harness" | "model">[];
+}
+
+/** The pins a delegation may carry (D-P8-05). */
+export interface RoutePins {
+  readonly ladder?: string | undefined;
+  readonly tier?: Tier | undefined;
+  readonly harness?: string | undefined;
+  readonly model?: string | undefined;
+  readonly effort?: Effort | undefined;
 }
 
 /** A strand in a parked strand's cone. It is not started, and delegating it again is refused. */
@@ -101,6 +137,8 @@ export interface Submission {
   readonly depth: number;
   readonly parentNodeId: ExecutionNodeId;
   readonly route: RouteChoice;
+  /** What the delegator pinned, kept so a retry and a fallback honour it too (D-P8-05). */
+  readonly pins?: RoutePins | undefined;
   /** `job` unless said otherwise (D-P6-03). */
   readonly kind?: "job" | "sub-program";
 }
@@ -119,7 +157,15 @@ export type WaitingReason =
   | { readonly kind: "parent_full"; readonly running: number; readonly maxConcurrency: number }
   /** A strand held until the strands it depends on have succeeded (P7, D-P7-04). */
   | { readonly kind: "strands"; readonly waitingFor: readonly string[] }
-  | { readonly kind: "wall_clock_spent"; readonly maxWallClockSeconds: number };
+  | { readonly kind: "wall_clock_spent"; readonly maxWallClockSeconds: number }
+  /** P8 (D-P8-08): the run has spent its dollars or its tokens. Nothing new starts. */
+  | {
+      readonly kind: "budget_spent";
+      readonly budget: "maxUsd" | "maxTokens";
+      readonly limit: number;
+      readonly spent: number;
+      readonly estimated: boolean;
+    };
 
 export interface EngineSnapshot {
   readonly running: readonly ExecutionNodeId[];
@@ -261,11 +307,83 @@ export const createEngine = (options: EngineOptions): Engine => {
     return true;
   };
 
+  // --- Dollars and tokens (P8, D-P8-08) ------------------------------------------------
+  //
+  // What the run has spent is read from its routing decisions, never kept in
+  // memory, so an engine that attaches to a run under way agrees with the one that
+  // started it. Read when the engine first pumps and whenever an attempt settles,
+  // and only when the program sets a budget at all.
+  const costPolicy = session.program.costPolicy;
+  const budgeted = costPolicy.maxUsd !== undefined || costPolicy.maxTokens !== undefined;
+  let spend: Spend | undefined;
+  let budgetAnnounced = false;
+
+  const readSpend = async (): Promise<Spend> => {
+    const usages: RouteUsage[] = [];
+    for (const node of await readNodes()) {
+      for (const decision of await stores.routingDecisions.listByNode(
+        session.scope,
+        node.executionNodeId,
+      )) {
+        usages.push(decision.usage);
+      }
+    }
+    return spendOf(usages);
+  };
+
+  /** True when a budget is spent, which every queued node is then told, once on the record. */
+  const budgetExhausted = async (): Promise<boolean> => {
+    if (!budgeted) return false;
+    spend ??= await readSpend();
+    const spent = budgetSpent(spend, costPolicy);
+    if (spent === undefined) return false;
+    const reason: WaitingReason = { kind: "budget_spent", ...spent, estimated: spend.estimated };
+    for (const entry of pending) entry.waiting = reason;
+    if (!budgetAnnounced) {
+      budgetAnnounced = true;
+      outbox.emit({
+        type: "run.budget_spent",
+        source: "control-plane",
+        payload: { ...spent, estimated: spend.estimated },
+        executionNodeId: session.rootNodeId,
+      });
+    }
+    return true;
+  };
+
+  // --- Fallback (P8, D-P8-06) ------------------------------------------------------------
+  //
+  // A route that could not start is skipped for the rest of the run, by every job.
+  const unavailable: Pick<RouteTarget, "harness" | "model">[] = [];
+
+  const rerouteFor =
+    (submission: Submission) =>
+    (failed: RouteTarget): RouteChoice | undefined => {
+      if (
+        !unavailable.some(
+          (route) => route.harness === failed.harness && route.model === failed.model,
+        )
+      ) {
+        unavailable.push({ harness: failed.harness, model: failed.model });
+      }
+      if (options.route === undefined) return undefined;
+      try {
+        return options.route(submission.job, {
+          pins: submission.pins,
+          unavailable: [...unavailable],
+        });
+      } catch {
+        return undefined;
+      }
+    };
+
+  /** True when nothing may start at all: closed, idle, or out of time or money. */
+  const holding = async (): Promise<boolean> =>
+    closed || pending.length === 0 || wallClockSpent() || (await budgetExhausted());
+
   /** Starts the first queued node that may start. False when none could. */
   const startNext = async (): Promise<boolean> => {
-    if (closed || pending.length === 0) return false;
-
-    if (wallClockSpent()) return false;
+    if (await holding()) return false;
 
     const nodes = await readNodes();
     const tree = buildTree(nodes);
@@ -405,6 +523,7 @@ export const createEngine = (options: EngineOptions): Engine => {
         route: entry.submission.route,
         mcp: options.mcp,
         integrate,
+        reroute: rerouteFor(entry.submission),
       });
       remove(entry);
       active.set(started.nodeId, started);
@@ -426,6 +545,8 @@ export const createEngine = (options: EngineOptions): Engine => {
           active.delete(started.nodeId);
           departures.delete(started.nodeId);
           orchestrators.delete(started.nodeId);
+          // What this attempt spent is on the record now; read it again (D-P8-08).
+          spend = undefined;
           void pump();
         });
       departures.set(started.nodeId, departure);
@@ -505,7 +626,7 @@ export const createEngine = (options: EngineOptions): Engine => {
     let route: RouteChoice;
     try {
       if (options.route === undefined) throw new Error("this engine was given no way to route it");
-      route = options.route(job);
+      route = options.route(job, { unavailable: [...unavailable] });
     } catch (error) {
       await refuse(node, `the delegation could not be routed: ${messageOf(error)}`);
       return false;
@@ -534,6 +655,35 @@ export const createEngine = (options: EngineOptions): Engine => {
     nodeOfJob.set(job.jobContractId, id);
     pending.push({ submission, node: queued, waiting: undefined });
     return true;
+  };
+
+  /** The route for a retry of `node`, from the attempt it replaces (D-P8-07). */
+  const rerouteForRetry = async (
+    submission: Submission,
+    node: ExecutionNode,
+    nodeId: ExecutionNodeId,
+  ): Promise<RouteChoice> => {
+    if (options.route === undefined) return submission.route;
+    const decisions = await stores.routingDecisions.listByNode(session.scope, nodeId);
+    const last = [...decisions].sort((a, b) => a.attempt - b.attempt).at(-1);
+    try {
+      return options.route(submission.job, {
+        pins: submission.pins,
+        unavailable: [...unavailable],
+        previous:
+          last === undefined
+            ? undefined
+            : {
+                target: last.chosen,
+                ladder: last.ladder,
+                rungIndex: last.rung?.index,
+                climb: failureClimbs(node),
+              },
+      });
+    } catch {
+      // Nothing is eligible now. The route it had is still the honest one to retry.
+      return submission.route;
+    }
   };
 
   const refuse = async (node: ExecutionNode, reason: string): Promise<void> => {
@@ -650,6 +800,13 @@ export const createEngine = (options: EngineOptions): Engine => {
       const node = await stores.executionNodes.get(session.scope, nodeId);
       if (node === undefined || !RETRYABLE_STATUSES.includes(node.status)) return false;
 
+      // Where the retry goes (D-P8-07): one rung up after a failure of the model,
+      // the same route after one that was not. The router decides; the
+      // orchestrator only decided to retry.
+      const route = rerouteForRetry(submission, node, nodeId);
+      const retried: Submission = { ...submission, route: await route };
+      submissions.set(jobContractId, retried);
+
       // The table's own edge. Why the last attempt ended stays on the record of
       // that attempt: its events and its routing decision.
       const { outcomeReason: _previous, ...rest } = transition(node, "retry", nowIso(clock));
@@ -661,7 +818,7 @@ export const createEngine = (options: EngineOptions): Engine => {
         payload: { jobContractId, retryOf: node.status },
         executionNodeId: nodeId,
       });
-      pending.push({ submission, node: requeued, waiting: undefined });
+      pending.push({ submission: retried, node: requeued, waiting: undefined });
       await pump();
       return true;
     },

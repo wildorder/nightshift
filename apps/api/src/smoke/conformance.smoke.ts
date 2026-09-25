@@ -26,7 +26,7 @@ export const CONFORMANCE_HARNESS_ENV = "NIGHTSHIFT_CONFORMANCE_HARNESS";
 /** What each real adapter claims, and which model its workers run. */
 const ADAPTERS = {
   claude: { model: "claude-sonnet-5", usage: true, transcript: true },
-  codex: { model: "gpt-5.5", usage: true, transcript: true },
+  codex: { model: "gpt-6-sol", usage: true, transcript: true },
 } as const;
 
 const POLICY: ModelPolicy = {

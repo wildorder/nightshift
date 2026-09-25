@@ -52,9 +52,9 @@ import {
   type WorkerLaunchIdentity,
 } from "@nightshift/execution";
 import type { McpLaunch } from "@nightshift/harness";
-import { configuredRoute } from "@nightshift/routing";
 import type { Runtime } from "./compose.js";
 import { ToolRefusal } from "./results.js";
+import { routeJob } from "./routing.js";
 
 /** Where a repository declares which program it belongs to. */
 export const DEFAULT_CONTRACT_FILE = "nightshift.program.json";
@@ -488,9 +488,10 @@ export const attachRun = async (
       environment,
       session,
       mcp: (identity) => state.workerLaunch(identity),
-      // For what a sub-program's orchestrator delegates (D-P6-01): routed here,
-      // by the same rule and the same contract as the root's own delegations.
-      route: (job) => configuredRoute({ program, job }),
+      // For what a sub-program's orchestrator delegates (D-P6-01), for a retry
+      // and for a fallback: routed here, by the same rules over the same ladders
+      // as the root's own delegations (D-P8-04).
+      route: (job, context) => routeJob(started, program, job, context),
     }),
     outbox,
     replayed,

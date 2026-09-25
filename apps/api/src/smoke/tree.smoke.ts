@@ -43,7 +43,7 @@ beforeAll(async () => {
     delegationLimits: { maxDepth: 2, maxConcurrency: MAX_CONCURRENCY },
     modelPolicy: {
       allowedProviders: ["anthropic", "openai"],
-      allowedModels: ["claude-sonnet-5", "gpt-5.5"],
+      allowedModels: ["claude-sonnet-5", "gpt-6-sol"],
       forbiddenModels: [],
     },
   });

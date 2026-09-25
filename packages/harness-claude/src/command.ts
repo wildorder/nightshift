@@ -108,6 +108,8 @@ export const buildClaudeArgs = (input: ClaudeCommandInput): readonly string[] =>
   "--verbose",
   "--model",
   input.model.model,
+  // P8: a rung may name a reasoning effort; absent, Claude's own default applies.
+  ...(input.model.effort === undefined ? [] : ["--effort", input.model.effort]),
   "--mcp-config",
   input.mcpConfigPath,
   "--strict-mcp-config",

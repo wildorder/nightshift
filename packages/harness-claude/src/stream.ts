@@ -69,7 +69,12 @@
 import { MAX_INLINE_PAYLOAD_BYTES, type RouteUsage } from "@nightshift/contracts";
 import type { Clock } from "@nightshift/core";
 import { nowIso } from "@nightshift/core";
-import type { HookEvent, HookEventType, HookSink } from "@nightshift/harness";
+import {
+  type HookEvent,
+  type HookEventType,
+  type HookSink,
+  routeUnavailableReason,
+} from "@nightshift/harness";
 
 /**
  * The ceiling this adapter holds its own payloads to.
@@ -240,6 +245,12 @@ export interface StreamOutcome {
   /** Claude's own session identifier, from the `init` frame. */
   readonly sessionId?: string;
   /**
+   * P8 (D-P8-06): why the route could not start, when the `result` frame was a
+   * provider error (`terminal_reason: "api_error"` with an `api_error_status`)
+   * before any tool was called. `routeUnavailableReason` draws the line.
+   */
+  readonly unavailable?: string;
+  /**
    * What the `result` frame said the run cost (contract v1, D-P5-01):
    * `usage.input_tokens`, `usage.output_tokens`, `total_cost_usd` and
    * `duration_ms`, each only when the frame carried it. An interrupted run's
@@ -303,6 +314,8 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let terminalReason: string | undefined;
   let sessionId: string | undefined;
   let usage: RouteUsage | undefined;
+  let unavailable: string | undefined;
+  let toolCalls = 0;
   let startEmitted = false;
   let unparseableLines = 0;
 
@@ -385,6 +398,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   const handleToolUse = (block: Frame): void => {
     const tool = str(block.name);
     if (tool === undefined) return;
+    toolCalls += 1;
     const toolUseId = str(block.id);
     if (toolUseId !== undefined) openToolCalls.set(toolUseId, tool);
     const summary = summariseToolInput(tool, block.input);
@@ -437,11 +451,20 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     resultErrored = frame.is_error === true || str(frame.subtype) !== "success";
     resultSubtype = str(frame.subtype);
     terminalReason = str(frame.terminal_reason);
+    if (resultErrored && terminalReason === "api_error") {
+      unavailable = routeUnavailableReason({
+        status: tokenCount(frame.api_error_status),
+        message: str(frame.result) ?? "the provider refused the request",
+        workBegan: toolCalls > 0,
+      });
+    }
 
     const reported = isRecord(frame.usage) ? frame.usage : {};
     const found: RouteUsage = {
       ...optionalField("inputTokens", tokenCount(reported.input_tokens)),
       ...optionalField("outputTokens", tokenCount(reported.output_tokens)),
+      ...optionalField("cacheReadTokens", tokenCount(reported.cache_read_input_tokens)),
+      ...optionalField("cacheWriteTokens", tokenCount(reported.cache_creation_input_tokens)),
       ...optionalField(
         "actualCostUsd",
         typeof frame.total_cost_usd === "number" && frame.total_cost_usd >= 0
@@ -527,6 +550,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         ...optionalField("terminalReason", terminalReason),
         ...optionalField("sessionId", sessionId),
         ...optionalField("usage", usage),
+        ...optionalField("unavailable", unavailable),
         startEmitted,
         unparseableLines,
       };

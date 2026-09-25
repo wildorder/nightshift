@@ -526,7 +526,13 @@ describe("usage, from the result frame (contract v1)", () => {
         total_cost_usd: 0.25,
         usage: { input_tokens: 40, output_tokens: 7, cache_read_input_tokens: 9000 },
       }),
-    ).toEqual({ inputTokens: 40, outputTokens: 7, actualCostUsd: 0.25, latencyMs: 1200 });
+    ).toEqual({
+      inputTokens: 40,
+      outputTokens: 7,
+      cacheReadTokens: 9000,
+      actualCostUsd: 0.25,
+      latencyMs: 1200,
+    });
     expect(usageOf({ type: "result", subtype: "success", total_cost_usd: 0.5 })).toEqual({
       actualCostUsd: 0.5,
     });
@@ -548,5 +554,41 @@ describe("usage, from the result frame (contract v1)", () => {
         usage: { input_tokens: 3, output_tokens: 1 },
       }),
     ).toEqual({ inputTokens: 3, outputTokens: 1 });
+  });
+});
+
+describe("a route that could not start (P8, D-P8-06)", () => {
+  // Recorded on 2.1.282 with `--model claude-nonexistent-9`: an error result,
+  // `terminal_reason: "api_error"` and the provider's status, before any tool.
+  const refusal = (status: number) =>
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      terminal_reason: "api_error",
+      api_error_status: status,
+      result:
+        "There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it.",
+    });
+
+  it("is read from a provider refusal before any tool was called", () => {
+    const { interpreter } = play(`${refusal(404)}\n`);
+    expect(interpreter.outcome.unavailable).toBe(
+      "the provider answered 404 before any work began: There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it.",
+    );
+  });
+
+  it("is not claimed once a tool has been called: that run started, and failed", () => {
+    const toolUse = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }],
+      },
+    });
+    expect(play(`${toolUse}\n${refusal(429)}\n`).interpreter.outcome.unavailable).toBeUndefined();
+  });
+
+  it("is not claimed for an error that is not the route's", () => {
+    expect(play(`${refusal(500)}\n`).interpreter.outcome.unavailable).toBeUndefined();
   });
 });

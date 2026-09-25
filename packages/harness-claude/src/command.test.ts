@@ -210,3 +210,17 @@ describe("the full prompt", () => {
     expect(prompt.indexOf("NEUTRAL")).toBeLessThan(prompt.indexOf("ADDENDUM"));
   });
 });
+
+describe("a rung's reasoning effort (P8)", () => {
+  it("is passed as --effort when the route names one, and not otherwise", () => {
+    const withEffort = buildClaudeArgs({
+      prompt: "BRIEF",
+      model: { ...MODEL, effort: "high" },
+      mcpConfigPath: "/tmp/ns/mcp.json",
+      settingsPath: "/tmp/ns/settings.json",
+      policy: claudeToolPolicy({ scope: scope([]) }),
+    });
+    expect(flagValue(withEffort, "--effort")).toBe("high");
+    expect(at(argsFor([]), "--effort")).toBe(-1);
+  });
+});

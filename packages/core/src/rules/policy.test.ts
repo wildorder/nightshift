@@ -6,12 +6,17 @@ import {
 } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  budgetSpent,
   classificationOf,
   conservativeDefaults,
   effectivePolicy,
+  estimateCost,
   examinationRequirementFor,
+  failureClimbs,
+  labelCost,
   PolicyWideningError,
   requireEffectivePolicy,
+  spendOf,
 } from "./policy.js";
 
 const org: Pick<OrgConfig, "routingPolicy" | "examinationPolicy" | "version"> = {
@@ -164,5 +169,62 @@ describe("examinationRequirementFor", () => {
       examinationRequirementFor(DEFAULT_EXAMINATION_POLICY, "high").blockOnMaterialFindings,
     ).toBe(true);
     expect(examinationRequirementFor(DEFAULT_EXAMINATION_POLICY, "low").required).toBe(false);
+  });
+});
+
+describe("failureClimbs (D-P8-07)", () => {
+  it("climbs after a failure of the model's work", () => {
+    expect(failureClimbs({ status: "verification_failed" })).toBe(true);
+    expect(failureClimbs({ status: "examination_failed" })).toBe(true);
+    expect(failureClimbs({ status: "failed", outcomeReason: "the tests would not pass" })).toBe(
+      true,
+    );
+  });
+
+  it("keeps the route after a failure that is not the model's", () => {
+    for (const outcomeReason of [
+      "integration_conflict: this job's changes conflict with work integrated since it started",
+      "stale_base: the worktree was cut from a and the branch is now at b",
+      "route_unavailable: the provider answered 429 before any work began",
+    ]) {
+      expect(failureClimbs({ status: "failed", outcomeReason }), outcomeReason).toBe(false);
+    }
+    expect(failureClimbs({ status: "interrupted" })).toBe(false);
+  });
+});
+
+describe("cost (D-P8-08)", () => {
+  const price = { inputPerMTok: 3, outputPerMTok: 15 };
+
+  it("estimates from the price table, and not from nothing", () => {
+    expect(estimateCost({ inputTokens: 1_000_000, outputTokens: 100_000 }, price)).toBeCloseTo(4.5);
+    expect(estimateCost({ inputTokens: 1_000_000 }, undefined)).toBeUndefined();
+  });
+
+  it("labels where every dollar came from", () => {
+    expect(labelCost({ actualCostUsd: 0.2 }, price)).toEqual({
+      actualCostUsd: 0.2,
+      costSource: "reported",
+    });
+    expect(labelCost({ inputTokens: 1_000_000 }, price)).toEqual({
+      inputTokens: 1_000_000,
+      estimatedCostUsd: 3,
+      costSource: "estimated",
+    });
+    expect(labelCost({ inputTokens: 10 }, undefined)).toEqual({
+      inputTokens: 10,
+      costSource: "unknown",
+    });
+  });
+
+  it("sums a run's spend, says when any of it is an estimate, and names the budget it spent", () => {
+    const spend = spendOf([
+      { actualCostUsd: 1, inputTokens: 100, outputTokens: 50 },
+      { estimatedCostUsd: 2, inputTokens: 10 },
+    ]);
+    expect(spend).toEqual({ usd: 3, tokens: 160, estimated: true });
+    expect(budgetSpent(spend, { maxUsd: 3 })).toEqual({ budget: "maxUsd", limit: 3, spent: 3 });
+    expect(budgetSpent(spend, { maxTokens: 200 })).toBeUndefined();
+    expect(budgetSpent(spend, {})).toBeUndefined();
   });
 });

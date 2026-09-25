@@ -452,12 +452,22 @@ const exitFor = (
 ): HarnessExit => {
   if (cancelRequested) return { kind: "cancelled" };
   if (signal !== null) return { kind: "interrupted", signal };
-  // Contract v1: what the run cost rides on the exit, where Claude said.
-  const usage = outcome.usage === undefined ? {} : { usage: outcome.usage };
+  // Contract v1: what the run cost rides on the exit, where Claude said. P8: so
+  // do the session a question can resume (D-P8-15) and, when the provider
+  // refused before any work, that the route could not start (D-P8-06).
+  const said = {
+    ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+    ...(outcome.sessionId === undefined ? {} : { sessionId: outcome.sessionId }),
+  };
   if (code === 0 && outcome.sawResult && !outcome.resultErrored) {
-    return { kind: "completed", ...usage };
+    return { kind: "completed", ...said };
   }
-  return { kind: "failed", exitCode: code ?? UNKNOWN_EXIT_CODE, ...usage };
+  return {
+    kind: "failed",
+    exitCode: code ?? UNKNOWN_EXIT_CODE,
+    ...said,
+    ...(outcome.unavailable === undefined ? {} : { unavailable: outcome.unavailable }),
+  };
 };
 
 const messageOf = (error: unknown): string =>

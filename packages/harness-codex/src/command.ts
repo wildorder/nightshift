@@ -151,6 +151,10 @@ export const buildCodexArgs = (input: CodexCommandInput): readonly string[] => [
   "--skip-git-repo-check",
   "-m",
   input.model.model,
+  // P8: a rung may name a reasoning effort; absent, Codex's own default applies.
+  ...(input.model.effort === undefined
+    ? []
+    : ["-c", `model_reasoning_effort=${tomlString(input.model.effort)}`]),
   // Last, and after every option, so a brief can never be read as one.
   input.prompt,
 ];

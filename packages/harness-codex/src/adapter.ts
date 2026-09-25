@@ -374,11 +374,21 @@ const exitFor = (
 ): HarnessExit => {
   if (cancelRequested) return { kind: "cancelled" };
   if (signal !== null) return { kind: "interrupted", signal };
-  const usage = outcome.usage === undefined ? {} : { usage: outcome.usage };
+  // P8: the thread a question can resume (D-P8-15), and whether the route could
+  // not start at all (D-P8-06).
+  const said = {
+    ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+    ...(outcome.threadId === undefined ? {} : { sessionId: outcome.threadId }),
+  };
   if (code === 0 && outcome.turnCompleted && outcome.failure === undefined) {
-    return { kind: "completed", ...usage };
+    return { kind: "completed", ...said };
   }
-  return { kind: "failed", exitCode: code ?? UNKNOWN_EXIT_CODE, ...usage };
+  return {
+    kind: "failed",
+    exitCode: code ?? UNKNOWN_EXIT_CODE,
+    ...said,
+    ...(outcome.unavailable === undefined ? {} : { unavailable: outcome.unavailable }),
+  };
 };
 
 const messageOf = (error: unknown): string =>

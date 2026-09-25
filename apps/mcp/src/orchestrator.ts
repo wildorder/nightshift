@@ -25,30 +25,40 @@ import type {
   Checkpoint,
   ExecutionNode,
   JobContract,
-  ProgramContract,
   RouteChoice,
   Scope,
 } from "@nightshift/contracts";
 import {
+  defaultOrgConfig,
+  type Effort,
+  EffortSchema,
   ExecutionNodeIdSchema,
   inheritFromConfig,
   JobContractSchema,
+  type JobKind,
+  JobKindSchema,
   NIGHTSHIFT_CONFIG_FILE,
   NightshiftConfigSchema,
   ReversibilitySchema,
   RiskLevelSchema,
   ScopeRequestSchema,
   StrandIdSchema,
+  type Testability,
+  TestabilitySchema,
+  type Tier,
+  TierSchema,
 } from "@nightshift/contracts";
 import {
   buildTree,
   checkAuthority,
+  conservativeDefaults,
   type DelegationRejection,
   highestSequence,
   isDoneForNow,
   nowIso,
   type ProjectStores,
   pendingCount,
+  policyOfRun,
   type StrandBrief,
   StrandBriefError,
   strandBrief,
@@ -57,15 +67,17 @@ import {
 import {
   endProgramNode,
   gatherReport,
+  type RoutePins,
   renderReport,
   StrandBlockedError,
   StrandDelegationError,
 } from "@nightshift/execution";
-import { configuredRoute, RoutingRefusedError } from "@nightshift/routing";
+import { RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
 import { type ActivityFeed, createActivityFeed, renderActivity } from "./activity.js";
 import type { RefusalCode } from "./results.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
+import { routeJob } from "./routing.js";
 import type { AttachedRun, OrchestratorSession } from "./session.js";
 import {
   attachRun,
@@ -597,25 +609,26 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         // `job` when the strand is one bounded change and an orchestrator would
         // have a single thing to do (D-P7-04). The plan is handed over either way.
         kind: z.enum(["job", "sub-program"]).optional(),
-        harness: z.string().min(1).optional(),
-        model: z.string().min(1).optional(),
+        ...PIN_INPUTS,
       },
     },
     async (input) =>
       guarded(async () => {
         const attached = requireAttached(state);
-        const job = buildStrandJob(state, attached, input.strandId);
-        const { program } = attached.session;
-        assertExaminable(program, job);
+        const kind = input.kind ?? "sub-program";
+        const job = buildStrandJob(state, attached, input.strandId, kind);
+        assertExaminable(attached, job);
         const check = await checkDelegationOrRefuse(state, attached, job.scope);
-        const route = chooseRoute(program, job, { harness: input.harness, model: input.model });
+        const pins = pinsOf(input);
+        const route = chooseRoute(attached, job, pins);
         const submitted = await submitStrand(attached, {
           job,
           scope: check.scope,
           depth: check.depth,
           parentNodeId: attached.session.rootNodeId,
           route,
-          kind: input.kind ?? "sub-program",
+          pins,
+          kind,
         });
 
         const waiting = attached.engine.waiting(job.jobContractId);
@@ -645,11 +658,14 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         dependencies: z.array(z.string().min(1)).optional(),
         risk: RiskLevelSchema.optional(),
         ambiguity: RiskLevelSchema.optional(),
+        // P8 (D-P8-01): what the job says about itself, so routing can place it.
+        // Unset is the conservative choice, not the cheap one.
+        testability: TestabilitySchema.optional(),
+        jobKind: JobKindSchema.optional(),
         // `sub-program` hands a bounded region of the program to an orchestrator
         // of its own, which delegates within it (D-P6-03).
         kind: z.enum(["job", "sub-program"]).optional(),
-        harness: z.string().min(1).optional(),
-        model: z.string().min(1).optional(),
+        ...PIN_INPUTS,
       },
     },
     async (input) =>
@@ -673,16 +689,14 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         const job = buildJobContract(state, attached, input);
 
         // 2. Examination policy, before the expensive part (D-P3-07).
-        assertExaminable(attached.session.program, job);
+        assertExaminable(attached, job);
 
         // 3. Depth, concurrency and scope narrowing, all from `core` (A-11).
         const check = await checkDelegationOrRefuse(state, attached, input.scope);
 
-        // 4. Where it runs, and why (D-P3-08).
-        const route = chooseRoute(attached.session.program, job, {
-          harness: input.harness,
-          model: input.model,
-        });
+        // 4. Where it runs, and why: the run's rules over its ladders (D-P8-04).
+        const pins = pinsOf(input);
+        const route = chooseRoute(attached, job, pins);
 
         // 5. The delegation is recorded, and the engine starts it when its parent
         //    has a free slot: at once, usually (D-P6-01, D-P6-02). The lifecycle
@@ -693,6 +707,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           depth: check.depth,
           parentNodeId: attached.session.rootNodeId,
           route,
+          pins,
           ...(input.kind === undefined ? {} : { kind: input.kind }),
         });
         const started = submitted.started;
@@ -715,6 +730,9 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
             provider: route.target.provider,
             model: route.target.model,
             wasOverride: route.wasOverride,
+            ruleId: route.ruleId,
+            ladder: route.ladder ?? null,
+            tier: route.rung?.tier ?? null,
           },
         );
       }),
@@ -813,7 +831,10 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       description:
         "Runs it again from the current program head as a new attempt: fresh worktree, new agent. " +
         "For a job that ended failed (an integration_conflict, say), verification_failed or " +
-        "interrupted. Read its outcomeReason first: a retry repeats the delegation as written.",
+        "interrupted. Read its outcomeReason first: a retry repeats the delegation as written. " +
+        "Where it runs is Nightshift's: after a failure of the work (verification, a worker's " +
+        "own failure, an examination) it climbs one rung of its ladder; after a conflict, a stale " +
+        "base or an interrupt it keeps the model it had, because those say nothing about the model.",
       inputSchema: { jobId: z.string().min(1) },
     },
     async ({ jobId }) =>
@@ -959,9 +980,38 @@ interface DelegateInput {
   readonly dependencies?: readonly string[] | undefined;
   readonly risk?: "low" | "medium" | "high" | undefined;
   readonly ambiguity?: "low" | "medium" | "high" | undefined;
+  readonly testability?: Testability | undefined;
+  readonly jobKind?: JobKind | undefined;
   readonly model?: string | undefined;
   readonly kind?: "job" | "sub-program" | undefined;
 }
+
+/**
+ * What a delegation may pin (D-P8-05): a ladder, a tier, a harness, a model, an
+ * effort. Each is honoured only within the run's policy, and recorded as an
+ * override. A pin never skips examination or escalation.
+ */
+const PIN_INPUTS = {
+  ladder: z.string().min(1).optional(),
+  tier: TierSchema.optional(),
+  harness: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  effort: EffortSchema.optional(),
+};
+
+const pinsOf = (input: {
+  readonly ladder?: string | undefined;
+  readonly tier?: Tier | undefined;
+  readonly harness?: string | undefined;
+  readonly model?: string | undefined;
+  readonly effort?: Effort | undefined;
+}): RoutePins => ({
+  ladder: input.ladder,
+  tier: input.tier,
+  harness: input.harness,
+  model: input.model,
+  effort: input.effort,
+});
 
 /** The contract, validated. An invalid one never becomes a node. */
 /**
@@ -972,6 +1022,7 @@ const buildStrandJob = (
   state: OrchestratorSession,
   attached: AttachedRun,
   strandId: string,
+  kind: "job" | "sub-program",
 ): JobContract => {
   const { program } = attached.session;
   if (attached.planSections === undefined) {
@@ -997,8 +1048,10 @@ const buildStrandJob = (
     scope: brief.scope,
     acceptance: brief.acceptance,
     dependencies: [],
+    // A strand's risk is the plan's to state (D-P8-01): the program's default.
     risk: program.defaultRisk,
-    ambiguity: program.defaultRisk,
+    ambiguity: "medium",
+    ...(kind === "sub-program" ? { kind: "orchestrate" } : {}),
     strandId,
     createdAt: nowIso(state.runtime.clock),
   });
@@ -1053,8 +1106,17 @@ const buildJobContract = (
     scope: input.scope,
     acceptance: input.acceptance,
     dependencies: input.dependencies ?? [],
-    risk: input.risk ?? attached.session.program.defaultRisk,
-    ambiguity: input.ambiguity ?? attached.session.program.defaultRisk,
+    // Unstated means conservative (D-P8-01): the program's risk, medium
+    // ambiguity, weak testability. Never the cheapest rung by omission.
+    ...conservativeDefaults(attached.session.program),
+    ...(input.risk === undefined ? {} : { risk: input.risk }),
+    ...(input.ambiguity === undefined ? {} : { ambiguity: input.ambiguity }),
+    ...(input.testability === undefined ? {} : { testability: input.testability }),
+    ...(input.kind === "sub-program"
+      ? { kind: "orchestrate" }
+      : input.jobKind === undefined
+        ? {}
+        : { kind: input.jobKind }),
     createdAt: nowIso(state.runtime.clock),
   });
 
@@ -1065,8 +1127,9 @@ const buildJobContract = (
  * that quietly ran without the scrutiny its risk demanded would look identical
  * to one that had it.
  */
-const assertExaminable = (program: ProgramContract, job: JobContract): void => {
-  const requirement = program.examinationPolicy[job.risk];
+const assertExaminable = (attached: AttachedRun, job: JobContract): void => {
+  const { run, program } = attached.session;
+  const requirement = policyOfRun(run, program, SEEDED_ORG).examinationPolicy[job.risk];
   if (!requirement.required) return;
   throw new ToolRefusal(
     "examination_unavailable",
@@ -1107,13 +1170,9 @@ const checkDelegationOrRefuse = async (
 };
 
 /** Routing, with its own refusal surfaced as a validation failure. */
-const chooseRoute = (
-  program: ProgramContract,
-  job: JobContract,
-  override: { readonly harness?: string | undefined; readonly model?: string | undefined },
-): RouteChoice => {
+const chooseRoute = (attached: AttachedRun, job: JobContract, pins: RoutePins): RouteChoice => {
   try {
-    return configuredRoute({ program, job, override });
+    return routeJob(attached.session.run, attached.session.program, job, { pins, unavailable: [] });
   } catch (error) {
     if (error instanceof RoutingRefusedError) {
       throw new ToolRefusal("validation_failed", error.message, {
@@ -1124,6 +1183,12 @@ const chooseRoute = (
     throw error;
   }
 };
+
+/** What a run that recorded no policy is read against: the seeded org default (a run from before P8). */
+const SEEDED_ORG = defaultOrgConfig(
+  "org_00000000000000000000000000" as never,
+  "1970-01-01T00:00:00.000Z",
+);
 
 /** A refusal a model can act on, rather than a rule's internal vocabulary. */
 const describeRejection = (reason: DelegationRejection): string => {

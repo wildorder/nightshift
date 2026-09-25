@@ -41,6 +41,7 @@ export {
   hookTypeForExit,
   type McpLaunch,
   millis,
+  routeUnavailableReason,
 } from "./harness.js";
 export {
   HOOK_EVENT_TYPES,

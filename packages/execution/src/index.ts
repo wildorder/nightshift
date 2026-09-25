@@ -27,6 +27,8 @@ export {
   type Engine,
   type EngineOptions,
   type EngineSnapshot,
+  type RouteContext,
+  type RoutePins,
   StrandBlockedError,
   StrandDelegationError,
   type Submission,

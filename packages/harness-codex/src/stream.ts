@@ -35,7 +35,12 @@
  */
 import { MAX_INLINE_PAYLOAD_BYTES, type RouteUsage } from "@nightshift/contracts";
 import { type Clock, nowIso } from "@nightshift/core";
-import type { HookEvent, HookEventType, HookSink } from "@nightshift/harness";
+import {
+  type HookEvent,
+  type HookEventType,
+  type HookSink,
+  routeUnavailableReason,
+} from "@nightshift/harness";
 
 const MAX_SUMMARY_CHARS = 300;
 const MAX_NAME_CHARS = 120;
@@ -65,6 +70,12 @@ export interface StreamOutcome {
   readonly failure?: string;
   /** Codex's own session identifier, from `thread.started`. */
   readonly threadId?: string;
+  /**
+   * P8 (D-P8-06): why the route could not start, when a turn failed with a
+   * provider error before any tool item began. `routeUnavailableReason` draws
+   * the line.
+   */
+  readonly unavailable?: string;
   /** Token counts, summed over every completed turn. Absent until one reports. */
   readonly usage?: RouteUsage;
   readonly startEmitted: boolean;
@@ -96,6 +107,33 @@ const bound = (payload: Readonly<Record<string, unknown>>): Readonly<Record<stri
   return size <= MAX_HOOK_PAYLOAD_BYTES ? payload : { truncated: true, originalBytes: size };
 };
 
+/**
+ * The provider's status and words inside a failed turn. Codex carries the API's
+ * error as a JSON string in the message (`{"type":"error","status":400,
+ * "error":{"message":"The '…' model is not supported …"}}`, recorded on 0.156.1);
+ * a usage-limit message without one is read as the 429 it is.
+ */
+const providerErrorOf = (
+  frame: Frame,
+): { readonly status: number | undefined; readonly message: string } => {
+  const raw = (isRecord(frame.error) ? str(frame.error.message) : str(frame.message)) ?? "";
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (isRecord(parsed)) {
+      const inner = isRecord(parsed.error) ? str(parsed.error.message) : undefined;
+      return { status: count(parsed.status), message: inner ?? raw };
+    }
+  } catch {
+    // Not JSON: the words are all there is.
+  }
+  return { status: /usage limit|rate limit/i.test(raw) ? 429 : undefined, message: raw };
+};
+
+const unavailableOf = (frame: Frame, workBegan: boolean): string | undefined => {
+  const { status, message } = providerErrorOf(frame);
+  return routeUnavailableReason({ status, message, workBegan });
+};
+
 export const createStreamInterpreter = (input: StreamInterpreterInput): StreamInterpreter => {
   const decoder = new TextDecoder("utf-8");
   let pending = "";
@@ -103,6 +141,8 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let failure: string | undefined;
   let threadId: string | undefined;
   let usage: RouteUsage | undefined;
+  let unavailable: string | undefined;
+  let workItems = 0;
   let startEmitted = false;
   let unparseableLines = 0;
 
@@ -163,6 +203,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   const handleItem = (phase: "started" | "completed", item: Frame): void => {
     const described = describe(item);
     if (described === undefined) return;
+    workItems += 1;
     const id = optionalField("toolUseId", str(item.id));
     const pairedOnCompletion = str(item.type) === "file_change" || str(item.type) === "web_search";
 
@@ -184,9 +225,13 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     const input_ = count(reported.input_tokens);
     const output = count(reported.output_tokens);
     if (input_ === undefined && output === undefined) return;
+    const cached = count(reported.cached_input_tokens);
     usage = {
       ...optionalField("inputTokens", (usage?.inputTokens ?? 0) + (input_ ?? 0)),
       ...optionalField("outputTokens", (usage?.outputTokens ?? 0) + (output ?? 0)),
+      ...(cached === undefined && usage?.cacheReadTokens === undefined
+        ? {}
+        : { cacheReadTokens: (usage?.cacheReadTokens ?? 0) + (cached ?? 0) }),
     };
   };
 
@@ -230,6 +275,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         return;
       case "turn.failed":
         failure = failureOf(frame);
+        unavailable ??= unavailableOf(frame, workItems > 0);
         return;
       case "error":
         failure ??= failureOf(frame);
@@ -260,6 +306,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         ...optionalField("failure", failure),
         ...optionalField("threadId", threadId),
         ...optionalField("usage", usage),
+        ...optionalField("unavailable", unavailable),
         startEmitted,
         unparseableLines,
       } as StreamOutcome;

@@ -111,12 +111,29 @@ export interface HarnessStartInput {
 /** Why a worker process stopped. Exactly one of these settles `HarnessHandle.exit`. */
 export type HarnessExit =
   /** The process ended cleanly and the provider reported a final result. */
-  | { readonly kind: "completed"; readonly usage?: RouteUsage }
+  | {
+      readonly kind: "completed";
+      readonly usage?: RouteUsage;
+      /** The harness's own session id, when it keeps one (P8, D-P8-15). */
+      readonly sessionId?: string;
+    }
   /**
    * The process ended without completing: a non-zero exit, a stream that ended
    * with no result, or a launch that never got off the ground.
    */
-  | { readonly kind: "failed"; readonly exitCode: number; readonly usage?: RouteUsage }
+  | {
+      readonly kind: "failed";
+      readonly exitCode: number;
+      readonly usage?: RouteUsage;
+      readonly sessionId?: string;
+      /**
+       * P8 (D-P8-06): set when the route **could not start** — not signed in, the
+       * model not offered, rate-limited — before any work began. Only the adapter
+       * can tell that from a run that started and failed, so it says so here, with
+       * the provider's own words. The execution layer falls back on it.
+       */
+      readonly unavailable?: string;
+    }
   /**
    * The process was killed by a signal. Windows reports no signal for a killed
    * process, so an adapter on Windows returns `failed` with the exit code
@@ -229,4 +246,27 @@ export const describeExit = (exit: HarnessExit): string => {
     case "cancelled":
       return "the worker process was cancelled";
   }
+};
+
+/**
+ * Whether a provider error before any work began means the **route** could not
+ * start (P8, D-P8-06): not signed in or not entitled (401, 403), the model not
+ * offered (404, or a 400 that says the model is not supported), or no capacity
+ * for it (429, 529). Shared so every adapter draws the line in the same place;
+ * each finds the status and the message in its own stream. `undefined` when the
+ * error is anything else, or work had already begun: that is a failure.
+ */
+export const routeUnavailableReason = (input: {
+  readonly status: number | undefined;
+  readonly message: string;
+  readonly workBegan: boolean;
+}): string | undefined => {
+  if (input.workBegan || input.status === undefined) return undefined;
+  const always = [401, 403, 404, 429, 529];
+  const aboutTheModel = input.status === 400 && /\bmodel\b/i.test(input.message);
+  if (!always.includes(input.status) && !aboutTheModel) return undefined;
+  return `the provider answered ${input.status} before any work began: ${input.message}`.slice(
+    0,
+    600,
+  );
 };

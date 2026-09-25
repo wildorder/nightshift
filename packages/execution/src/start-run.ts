@@ -29,9 +29,9 @@ import type {
   Project,
   Run,
 } from "@nightshift/contracts";
-import { EventSchema, ProgramContractSchema } from "@nightshift/contracts";
+import { defaultOrgConfig, EventSchema, ProgramContractSchema } from "@nightshift/contracts";
 import type { Clock, IdGenerator, ProjectStores } from "@nightshift/core";
-import { isPlanned, nowIso, planHash } from "@nightshift/core";
+import { isPlanned, nowIso, planHash, requireEffectivePolicy } from "@nightshift/core";
 import { checkpointRef, type GitRunner, revParse, updateRef } from "./git/index.js";
 
 export interface StartRunEnvironment {
@@ -183,6 +183,13 @@ export const startRun = async (
     ? await requireRatifiedPlan(stores, authored, input.planText)
     : await confirmContract(stores, authored);
 
+  // P8 (D-P8-03): the org's routing and examination policy, narrowed by the
+  // contract, fixed for the life of the run. A narrowing that widens is refused
+  // here, before anything exists.
+  const orgConfig =
+    (await stores.orgConfigs.get(project.orgId)) ?? defaultOrgConfig(project.orgId, nowIso(clock));
+  const policy = requireEffectivePolicy(orgConfig, program);
+
   const baseCommit = await revParse(
     environment.git,
     input.repoPath,
@@ -203,6 +210,7 @@ export const startRun = async (
     location: "local",
     rootNodeId,
     startedAt: at,
+    policy,
   };
   await stores.runs.put(run);
 

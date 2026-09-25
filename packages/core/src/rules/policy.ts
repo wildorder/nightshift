@@ -22,13 +22,17 @@ import {
   type EffectivePolicy,
   type ExaminationPolicy,
   type ExaminationRequirement,
+  type ExecutionNode,
   type JobContract,
   type Ladder,
+  type ModelPrice,
   type OrgConfig,
   type ProgramContract,
   type RiskLevel,
+  type RouteUsage,
   type RoutingPolicy,
   type RoutingRule,
+  type Run,
   sameRoute,
   stricterExaminationPolicy,
   type Tier,
@@ -181,3 +185,112 @@ export const examinationRequirementFor = (
   policy: ExaminationPolicy,
   risk: RiskLevel,
 ): ExaminationRequirement => policy[risk];
+
+/**
+ * Whether a retry after this ending should climb a rung (D-P8-07). A
+ * verification, examination or worker failure says something about the model;
+ * a merge conflict, a stale base, an interrupt or an unavailable route says
+ * nothing about it, and the retry keeps the route.
+ */
+export const failureClimbs = (node: Pick<ExecutionNode, "status" | "outcomeReason">): boolean => {
+  switch (node.status) {
+    case "verification_failed":
+    case "examination_failed":
+      return true;
+    case "failed": {
+      const reason = node.outcomeReason ?? "";
+      return !NO_CLIMB_REASON_PREFIXES.some((prefix) => reason.startsWith(prefix));
+    }
+    default:
+      return false;
+  }
+};
+
+/**
+ * The `outcomeReason` prefixes of a failure that is not the model's: the merge
+ * queue's conflict and stale base (P6), and a route that could not start (P8).
+ */
+export const NO_CLIMB_REASON_PREFIXES: readonly string[] = [
+  "integration_conflict:",
+  "stale_base:",
+  "route_unavailable:",
+];
+
+/**
+ * A dollar estimate from token counts and a price table (D-P8-08). `undefined`
+ * when the table has no price for the model: an estimate from nothing is not an
+ * estimate.
+ */
+export const estimateCost = (
+  usage: Pick<RouteUsage, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens">,
+  price: ModelPrice | undefined,
+): number | undefined => {
+  if (price === undefined) return undefined;
+  const perToken = (perMillion: number | undefined, tokens: number | undefined): number =>
+    ((perMillion ?? 0) * (tokens ?? 0)) / 1_000_000;
+  return (
+    perToken(price.inputPerMTok, usage.inputTokens) +
+    perToken(price.outputPerMTok, usage.outputTokens) +
+    perToken(price.cacheReadPerMTok ?? price.inputPerMTok, usage.cacheReadTokens) +
+    perToken(price.cacheWritePerMTok ?? price.inputPerMTok, usage.cacheWriteTokens)
+  );
+};
+
+/**
+ * Usage with its dollars labelled (D-P8-08): what the harness reported, else an
+ * estimate from the price table, else nothing, and `costSource` says which.
+ */
+export const labelCost = (usage: RouteUsage, price: ModelPrice | undefined): RouteUsage => {
+  if (usage.actualCostUsd !== undefined) return { ...usage, costSource: "reported" };
+  const estimate = estimateCost(usage, price);
+  return estimate === undefined
+    ? { ...usage, costSource: "unknown" }
+    : { ...usage, estimatedCostUsd: estimate, costSource: "estimated" };
+};
+
+/** What a run has spent, from its routing decisions (D-P8-08). Tokens are input plus output. */
+export interface Spend {
+  readonly usd: number;
+  readonly tokens: number;
+  /** True when any dollar figure in `usd` is an estimate. */
+  readonly estimated: boolean;
+}
+
+export const spendOf = (usages: readonly RouteUsage[]): Spend =>
+  usages.reduce<Spend>(
+    (total, usage) => ({
+      usd: total.usd + (usage.actualCostUsd ?? usage.estimatedCostUsd ?? 0),
+      tokens: total.tokens + (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
+      estimated:
+        total.estimated ||
+        (usage.actualCostUsd === undefined && usage.estimatedCostUsd !== undefined),
+    }),
+    { usd: 0, tokens: 0, estimated: false },
+  );
+
+/** Which budget, if any, `spend` has used up (D-P8-08). */
+export const budgetSpent = (
+  spend: Spend,
+  costPolicy: Pick<ProgramContract["costPolicy"], "maxUsd" | "maxTokens">,
+):
+  | { readonly budget: "maxUsd" | "maxTokens"; readonly limit: number; readonly spent: number }
+  | undefined => {
+  if (costPolicy.maxUsd !== undefined && spend.usd >= costPolicy.maxUsd) {
+    return { budget: "maxUsd", limit: costPolicy.maxUsd, spent: spend.usd };
+  }
+  if (costPolicy.maxTokens !== undefined && spend.tokens >= costPolicy.maxTokens) {
+    return { budget: "maxTokens", limit: costPolicy.maxTokens, spent: spend.tokens };
+  }
+  return undefined;
+};
+
+/**
+ * The policy a run executes under: what it recorded when it started (D-P8-03),
+ * or, for a run started before P8, the seeded org default narrowed by its
+ * contract, which is what it would have recorded.
+ */
+export const policyOfRun = (
+  run: Pick<Run, "policy">,
+  program: Pick<ProgramContract, "routing" | "examinationPolicy">,
+  seeded: Pick<OrgConfig, "routingPolicy" | "examinationPolicy" | "version">,
+): EffectivePolicy => run.policy ?? requireEffectivePolicy(seeded, program);

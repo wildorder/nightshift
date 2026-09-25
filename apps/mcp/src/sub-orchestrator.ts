@@ -25,9 +25,14 @@ import {
   type ExecutionNodeId,
   type JobContractId,
   JobContractSchema,
+  type JobKind,
+  JobKindSchema,
   ReversibilitySchema,
+  type RiskLevel,
   RiskLevelSchema,
   ScopeRequestSchema,
+  type Testability,
+  TestabilitySchema,
 } from "@nightshift/contracts";
 import {
   explainWidening,
@@ -59,6 +64,30 @@ export interface SubOrchestratorDeps {
 }
 
 const WAIT_POLL_MS = 500;
+
+/**
+ * What a delegated job says about itself (D-P8-01), with the conservative
+ * default for anything left unsaid: this sub-program's own risk, medium
+ * ambiguity, no testability claimed, and `orchestrate` for a sub-program.
+ */
+const classificationFor = (
+  input: {
+    readonly risk?: RiskLevel | undefined;
+    readonly ambiguity?: RiskLevel | undefined;
+    readonly testability?: Testability | undefined;
+    readonly jobKind?: JobKind | undefined;
+    readonly kind?: "job" | "sub-program" | undefined;
+  },
+  inherited: RiskLevel | undefined,
+): Record<string, unknown> => {
+  const kind = input.kind === "sub-program" ? "orchestrate" : input.jobKind;
+  return {
+    risk: input.risk ?? inherited ?? "medium",
+    ambiguity: input.ambiguity ?? "medium",
+    ...(input.testability === undefined ? {} : { testability: input.testability }),
+    ...(kind === undefined ? {} : { kind }),
+  };
+};
 
 export const registerSubOrchestratorTools = (
   server: McpServer,
@@ -187,6 +216,10 @@ export const registerSubOrchestratorTools = (
         acceptance: z.array(z.string().min(1)).min(1),
         risk: RiskLevelSchema.optional(),
         ambiguity: RiskLevelSchema.optional(),
+        // P8 (D-P8-01): what the job says about itself, so routing can place it.
+        // Unset is the conservative choice, not the cheap one.
+        testability: TestabilitySchema.optional(),
+        jobKind: JobKindSchema.optional(),
       },
     },
     async (input) =>
@@ -204,6 +237,14 @@ export const registerSubOrchestratorTools = (
           );
         }
 
+        // Unstated risk is this sub-program's own, which was the program's
+        // default when nobody stated it either: never "low" by omission, which
+        // would route to the cheapest rung and skip examination by accident
+        // (D-P8-01). Unstated ambiguity is medium.
+        const parentJob =
+          parent.jobContractId === null
+            ? undefined
+            : await stores.jobContracts.get(scope, parent.jobContractId);
         const at = nowIso(clock);
         const job = JobContractSchema.parse({
           schemaVersion: 1,
@@ -213,8 +254,7 @@ export const registerSubOrchestratorTools = (
           scope: input.scope,
           acceptance: input.acceptance,
           dependencies: [],
-          risk: input.risk ?? "low",
-          ambiguity: input.ambiguity ?? "low",
+          ...classificationFor(input, parentJob?.risk),
           createdAt: at,
         });
         await stores.jobContracts.put(job);
@@ -329,7 +369,8 @@ export const registerSubOrchestratorTools = (
       title: "Retry a job that failed",
       description:
         "Runs it again from the current program head, as a new attempt. For a job that ended failed, " +
-        "verification_failed or interrupted; read its outcomeReason first.",
+        "verification_failed or interrupted; read its outcomeReason first. After a failure of the " +
+        "work it runs one rung higher on its ladder; after a conflict or an interrupt, on the same model.",
       inputSchema: { jobId: z.string().min(1) },
     },
     async ({ jobId }) =>

@@ -211,3 +211,40 @@ describe("what the recording does not show", () => {
     ).not.toThrow();
   });
 });
+
+describe("a route that could not start (P8, D-P8-06)", () => {
+  // Recorded on 0.156.1 with `-m gpt-nonexistent-9` on a ChatGPT sign-in.
+  const unsupported = JSON.stringify({
+    type: "error",
+    status: 400,
+    error: {
+      type: "invalid_request_error",
+      message:
+        "The 'gpt-nonexistent-9' model is not supported when using Codex with a ChatGPT account.",
+    },
+  });
+
+  it("is read from a failed turn carrying the provider's refusal", () => {
+    const { outcome } = interpret(
+      frames(
+        { type: "thread.started", thread_id: "th" },
+        { type: "turn.started" },
+        { type: "turn.failed", error: { message: unsupported } },
+      ),
+    );
+    expect(outcome.unavailable).toBe(
+      "the provider answered 400 before any work began: The 'gpt-nonexistent-9' model is not supported when using Codex with a ChatGPT account.",
+    );
+  });
+
+  it("is not claimed once a command has run", () => {
+    const { outcome } = interpret(
+      frames(
+        { type: "thread.started", thread_id: "th" },
+        { type: "item.started", item: { id: "i1", type: "command_execution", command: "ls" } },
+        { type: "turn.failed", error: { message: "usage limit reached" } },
+      ),
+    );
+    expect(outcome.unavailable).toBeUndefined();
+  });
+});

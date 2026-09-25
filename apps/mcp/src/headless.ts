@@ -42,9 +42,9 @@ import {
   type McpLaunch,
   refusingWorkerTools,
 } from "@nightshift/harness";
-import { configuredRoute } from "@nightshift/routing";
 import type { Runtime } from "./compose.js";
 import type { Env } from "./role.js";
+import { routeJob } from "./routing.js";
 
 /** Set on the root's MCP server so `run.attach` adopts the agent started here instead of inventing one. */
 export const ROOT_AGENT_ENV = "NIGHTSHIFT_ROOT_AGENT_ID";
@@ -169,13 +169,15 @@ export const runHeadless = async (
     acceptance: ["every strand of the ratified plan has succeeded, or is parked with a reason"],
     dependencies: [],
     risk: program.defaultRisk,
-    ambiguity: program.defaultRisk,
+    ambiguity: "medium",
+    kind: "orchestrate",
     createdAt: nowIso(clock),
   });
-  const route = configuredRoute({
-    program,
-    job: brief,
-    override: { harness: input.harness, model: input.model },
+  // The human picks the orchestrator's model when they say one (D-P5-05);
+  // otherwise the run's rules place an orchestrator, as for any other (D-P8-04).
+  const route = routeJob(run, program, brief, {
+    pins: { harness: input.harness, model: input.model },
+    unavailable: [],
   });
 
   const agent: Agent = {

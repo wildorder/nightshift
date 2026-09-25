@@ -29,9 +29,14 @@ import type { AdapterFileSystem, SpawnedChild, SpawnLike, SpawnOptions } from ".
 const RECORDED_USAGE = {
   inputTokens: 10,
   outputTokens: 900,
+  cacheReadTokens: 71406,
+  cacheWriteTokens: 18486,
   actualCostUsd: 0.1266714,
   latencyMs: 24172,
 };
+
+/** The recording's own session, which every exit now carries (P8, D-P8-15). */
+const RECORDED_SESSION = "9cb83dd4-77b4-4d5d-91f4-b44452cfeb3a";
 
 const RECORDING = readFileSync(
   new URL("./__fixtures__/claude-stream-success.jsonl", import.meta.url),
@@ -365,7 +370,11 @@ describe("the transcript", () => {
     expect(handle.transcript).toBeUndefined();
     children[0]?.emitStdout(RECORDING);
     children[0]?.close(0);
-    expect(await handle.exit).toEqual({ kind: "completed", usage: RECORDED_USAGE });
+    expect(await handle.exit).toEqual({
+      kind: "completed",
+      usage: RECORDED_USAGE,
+      sessionId: RECORDED_SESSION,
+    });
     // Exactly one start, and the reason is on the ending rather than lost.
     expect(events.filter((event) => event.type === "agent.started")).toHaveLength(1);
     expect(endings(events)[0]?.payload.transcriptError).toContain("EROFS");
@@ -405,7 +414,7 @@ describe("the exit mapping", () => {
       child.emitStdout(RECORDING);
       child.close(0);
     });
-    expect(exit).toEqual({ kind: "completed", usage: RECORDED_USAGE });
+    expect(exit).toEqual({ kind: "completed", usage: RECORDED_USAGE, sessionId: RECORDED_SESSION });
   });
 
   it("maps a stream that ends without a result to failed, even on exit 0", async () => {
@@ -413,7 +422,7 @@ describe("the exit mapping", () => {
       child.emitStdout(RECORDING.split("\n").slice(0, 6).join("\n"));
       child.close(0);
     });
-    expect(exit).toEqual({ kind: "failed", exitCode: 0 });
+    expect(exit).toEqual({ kind: "failed", exitCode: 0, sessionId: RECORDED_SESSION });
   });
 
   it("maps exit 0 with an error result to failed — the interrupted-run case", async () => {
