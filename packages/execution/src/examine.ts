@@ -44,6 +44,7 @@ import type {
   ExaminationFinding,
   ExaminationId,
   ExaminationQuestion,
+  ExaminationRuling,
   ExecutionNode,
   ExecutionNodeId,
   JobContract,
@@ -53,10 +54,11 @@ import type {
   VerificationStep,
 } from "@nightshift/contracts";
 import {
+  blockingFindings,
   defaultOrgConfig,
-  isOpenMaterialFinding,
   MAX_EXAMINATION_QUESTIONS,
   MAX_FIX_ATTEMPTS,
+  MAX_RULING_ATTEMPTS,
   outcomeOfCommands,
   VerificationSchema,
 } from "@nightshift/contracts";
@@ -113,6 +115,8 @@ export interface ExaminationContext {
   readonly fixAttempt: number;
   readonly round: 1 | 2;
   readonly questions: readonly ExaminationQuestion[];
+  /** The arbiter's rulings the attempt carried out: the examination checks only these. */
+  readonly followsRulings?: readonly ExaminationRuling[];
 }
 
 /** What an arbiter rules on. */
@@ -131,7 +135,7 @@ export type ExaminationOutcome =
   | { readonly kind: "cleared"; readonly examination: Examination }
   /** A material finding stands under a blocking policy, and a fix may still be tried. */
   | { readonly kind: "blocked"; readonly examination: Examination; readonly reason: string }
-  /** The arbiter upheld a finding: the job fails and does not climb again on it. */
+  /** The arbiter upheld a finding: the job fails, and the next attempt carries the ruling out. */
   | { readonly kind: "upheld"; readonly examination: Examination; readonly reason: string }
   /** The check on its own base failed: a verification failure, as the queue's would have been. */
   | { readonly kind: "candidate_failed"; readonly verification: Verification }
@@ -214,22 +218,84 @@ export const fixAttemptOf = (examinations: readonly Examination[]): number => {
     : last.fixAttempt;
 };
 
+/** The findings of `examination` an arbiter upheld: final, and carried out by the next attempt. */
+const upheldFindings = (examination: Examination): readonly ExaminationFinding[] =>
+  examination.findings.filter((finding) => finding.resolution === "upheld");
+
+/**
+ * Whether `examination` lets its change land: nothing blocks, and no arbiter
+ * upheld a finding against it. An upheld finding is no longer open, and without
+ * the second clause the very change it was upheld against would carry over.
+ */
+const letsLand = (examination: Examination): boolean =>
+  !examinationBlocks(examination) && upheldFindings(examination).length === 0;
+
 /** An examination that lets this exact change land, found among the node's (D-P8-09). */
 export const carriedExamination = (
   examinations: readonly Examination[],
   patchId: string,
 ): Examination | undefined =>
   [...examinations]
-    .filter((examination) => examination.patchId === patchId && !examinationBlocks(examination))
+    .filter((examination) => examination.patchId === patchId && letsLand(examination))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .at(-1);
 
+const latestOf = (examinations: readonly Examination[]): Examination | undefined =>
+  [...examinations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
+
+/**
+ * The arbiter's rulings the next attempt carries out, and the examination of it
+ * checks (D-P8-13, as amended 2026-09-25): the findings the last examination had
+ * upheld, or, when that one was itself a check of a ruling that was not carried
+ * out, the same rulings again. Nothing otherwise.
+ */
+export const rulingsInForce = (
+  examinations: readonly Examination[],
+): readonly ExaminationRuling[] | undefined => {
+  const last = latestOf(examinations);
+  if (last === undefined) return undefined;
+  const upheld = upheldFindings(last).flatMap((finding) =>
+    finding.resolvedBy?.decisionId === undefined
+      ? []
+      : [
+          {
+            findingId: finding.id,
+            decisionId: finding.resolvedBy.decisionId,
+            summary: finding.summary,
+            rationale: finding.resolvedBy.reason ?? finding.summary,
+          },
+        ],
+  );
+  if (upheld.length > 0) return upheld;
+  return last.followsRulings !== undefined && examinationBlocks(last)
+    ? last.followsRulings
+    : undefined;
+};
+
+/**
+ * The rulings an examination of the current attempt checks: those in force, or,
+ * when this attempt's ruling was already found carried out and it is examined
+ * again in the queue (its patch changed on a newer head), the same ones.
+ */
+const rulingsToCheck = (
+  examinations: readonly Examination[],
+): readonly ExaminationRuling[] | undefined =>
+  rulingsInForce(examinations) ?? latestOf(examinations)?.followsRulings;
+
+/** How many attempts have already tried to carry out an arbiter's ruling. */
+const rulingAttemptsOf = (examinations: readonly Examination[]): number =>
+  examinations.filter((examination) => examination.followsRulings !== undefined).length;
+
 /** Why a blocked examination blocks, in a sentence a human and an orchestrator can act on. */
 export const describeBlocking = (examination: Examination): string => {
-  const open = examination.findings.filter(isOpenMaterialFinding);
+  const open = blockingFindings(examination);
+  const what = open.map((finding) => `${finding.id} ${finding.summary}`).join("; ");
   return (
-    `examination_failed: ${open.length} material finding(s) by an independent examiner ` +
-    `(${examination.examinerRoute.model}): ${open.map((finding) => `${finding.id} ${finding.summary}`).join("; ")}`
+    examination.followsRulings === undefined
+      ? `examination_failed: ${open.length} material finding(s) by an independent examiner ` +
+        `(${examination.examinerRoute.model}): ${what}`
+      : `examination_ruling_unmet: this attempt did not carry out the arbiter's ruling, by ` +
+        `${examination.examinerRoute.model}: ${what}`
   ).slice(0, 1_900);
 };
 
@@ -320,6 +386,9 @@ export const examine = async (
       requiredByRisk: input.job.risk,
       blocking: requirement.blockOnMaterialFindings,
       fixAttempt: gathered.evidence.fixAttempt,
+      ...(gathered.evidence.rulings === undefined
+        ? {}
+        : { followsRulings: gathered.evidence.rulings }),
     };
     const examination = await runExaminer(environment, services, input, {
       checkout,
@@ -392,7 +461,8 @@ const gatherEvidence = async (
   );
   const paths = await changedPaths(environment.git, checkout, input.base, input.commitSha);
   const fixAttempt = fixAttemptOf(examinations);
-  const previous = [...examinations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
+  const previous = latestOf(examinations);
+  const rulings = rulingsToCheck(examinations);
   return {
     verification,
     patchId: patchIdOf(diff),
@@ -405,6 +475,7 @@ const gatherEvidence = async (
       blocking: requirement.blockOnMaterialFindings,
       fixAttempt,
       ...(previous !== undefined && fixAttempt > 0 ? { previousFindings: previous.findings } : {}),
+      ...(rulings === undefined ? {} : { rulings }),
     },
   };
 };
@@ -434,8 +505,9 @@ const announceVerdict = (
 
 /**
  * What the verdict means (D-P8-13): cleared; blocked while a fix may still be
- * tried; and after two fixes, whatever the arbiter rules, and the run moves on
- * (the owner's answer to Q6).
+ * tried; after two fixes, whatever the arbiter rules; and on an attempt that
+ * carried out a ruling, only whether it did. An upheld ruling is carried out by
+ * the next attempt, which the engine starts itself (as amended 2026-09-25).
  */
 const verdictOf = (
   environment: ExecutionEnvironment,
@@ -445,7 +517,9 @@ const verdictOf = (
   context: { readonly checkout: string; readonly diff: string },
 ): Promise<ExaminationOutcome> | ExaminationOutcome => {
   if (!examinationBlocks(examination)) return { kind: "cleared", examination };
-  if (examination.fixAttempt < MAX_FIX_ATTEMPTS) {
+  // A ruling not carried out is the work's failure: the ruling is final, and is
+  // not argued again (D-P8-13, as amended 2026-09-25).
+  if (examination.followsRulings !== undefined || examination.fixAttempt < MAX_FIX_ATTEMPTS) {
     return { kind: "blocked", examination, reason: describeBlocking(examination) };
   }
   return arbitrateAll(environment, services, input, examination, {
@@ -988,7 +1062,7 @@ export const arbitrateAll = async (
   const { stores, clock } = environment;
   const scope = input.session.scope;
   let current = examination;
-  const open = current.findings.filter(isOpenMaterialFinding);
+  const open = blockingFindings(current);
   // Mark each disputed first, on the orchestrator's (or the two fixes') say-so.
   const disputedAt = nowIso(clock);
   current = {
@@ -1191,26 +1265,46 @@ export const recordRulingLanded = async (
   }
 };
 
-/** What a retry after `examination` is: a fix with its findings, a refusal, or neither. */
+/**
+ * What a retry after the node's examinations is (D-P8-13, as amended
+ * 2026-09-25): an attempt carrying out an arbiter's upheld ruling; a fix with
+ * the findings; a refusal; or neither.
+ */
 export const fixOf = (
-  examination: Examination | undefined,
+  examinations: readonly Examination[],
 ): { readonly task?: AgentTask; readonly refused?: string } => {
-  if (examination === undefined) return {};
-  const upheld = examination.findings.filter((finding) => finding.resolution === "upheld");
-  if (upheld.length > 0) {
-    return {
-      refused:
-        `an arbiter upheld ${upheld.map((finding) => finding.id).join(", ")} on this job's last ` +
-        "attempt, and the ruling stands: it is not retried. A human may reverse the ruling.",
-    };
+  const last = latestOf(examinations);
+  if (last === undefined) return {};
+  const rulings = rulingsInForce(examinations);
+  if (rulings !== undefined) {
+    const attempts = rulingAttemptsOf(examinations);
+    if (attempts >= MAX_RULING_ATTEMPTS) {
+      return {
+        refused:
+          `${attempts} attempts have not carried out the arbiter's ruling on ` +
+          `${rulings.map((ruling) => ruling.findingId).join(", ")}; the builder could not make ` +
+          "the change it was ruled to make. Delegate it differently, or a human may reverse the ruling.",
+      };
+    }
+    const ruled = new Set(rulings.map((ruling) => ruling.findingId));
+    const findings = examinations
+      .flatMap((examination) => examination.findings)
+      .filter((finding) => ruled.has(finding.id) && finding.resolution === "upheld");
+    return { task: { kind: "fix", findings, rulings } };
   }
-  if (!examinationBlocks(examination)) return {};
-  if (examination.fixAttempt >= MAX_FIX_ATTEMPTS) {
+  if (!examinationBlocks(last)) return {};
+  if (last.fixAttempt >= MAX_FIX_ATTEMPTS) {
     return {
       refused: `this job has had ${MAX_FIX_ATTEMPTS} fixes of its blocking findings; a third is not tried. Dispute a finding to send it to an arbiter.`,
     };
   }
-  return { task: { kind: "fix", findings: examination.findings.filter(isOpenMaterialFinding) } };
+  return { task: { kind: "fix", findings: blockingFindings(last) } };
+};
+
+/** Whether a retry after these examinations carries out an arbiter's ruling: the engine's to start. */
+export const rulingDue = (examinations: readonly Examination[]): boolean => {
+  const fix = fixOf(examinations);
+  return fix.task?.kind === "fix" && fix.task.rulings !== undefined;
 };
 
 /** Where an examined job's node stands: its latest examination. */

@@ -8,7 +8,7 @@
  * rollback point the ruling was made against.
  *
  * **It replays nothing.** Reversing an overturn does not unland the work, and
- * reversing an uphold does not restart the strand; the minimum-cone replay a
+ * reversing an uphold does not undo the attempt that carried the ruling out; the minimum-cone replay a
  * reversal needs is P9's (SC-13). Until then the reversal is recorded and
  * reported, and the checkpoint is where to reset to by hand. The command says so
  * every time it runs.
@@ -102,7 +102,7 @@ export const reverseRuling = async (
       "Nothing is replayed: " +
         (ruling.choice === "overturn"
           ? "the work the ruling let land is still on the program branch."
-          : "the job the ruling failed is not restarted.") +
+          : "the attempt that carried the ruling out stays as it was built.") +
         " Replaying what a reversal changes arrives with the decision graph (P9).",
     );
     if (checkpoint !== undefined) {

@@ -21,6 +21,7 @@
 import type {
   AgentRole,
   ExaminationFinding,
+  ExaminationRuling,
   ExecutionNode,
   FindingEvidence,
   JobContract,
@@ -99,7 +100,13 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
   sections.push(["ACCEPTANCE CRITERIA", numbered(job.acceptance)].join("\n"));
 
   // P8 (D-P8-13): a fix is the job again, with what an independent examiner found.
-  if (input.task?.kind === "fix") sections.push(renderFindingsToFix(input.task.findings));
+  if (input.task?.kind === "fix") {
+    sections.push(
+      input.task.rulings === undefined
+        ? renderFindingsToFix(input.task.findings)
+        : renderRulingsToCarryOut(input.task.rulings),
+    );
+  }
 
   sections.push(
     [
@@ -549,6 +556,36 @@ const renderFindingsToFix = (findings: readonly ExaminationFinding[]): string =>
     ...findings.map(describeFinding),
   ].join("\n");
 
+const describeRuling = (ruling: ExaminationRuling): string =>
+  [`  ${ruling.findingId}: ${ruling.summary}`, `      the ruling: ${ruling.rationale}`].join("\n");
+
+const renderRulingsToCarryOut = (rulings: readonly ExaminationRuling[]): string =>
+  [
+    "AN ARBITER HAS RULED — carry this out",
+    "",
+    "  This job was examined, the finding below was disputed or survived two fixes,",
+    "  and an independent arbiter ruled that it stands. The ruling is final: it is",
+    "  not open to argument, and this attempt exists to carry it out. Start clean",
+    "  from the current program head, do the job again, and make what the ruling",
+    "  says true of what you hand in. The next examination checks only that.",
+    "",
+    ...rulings.map(describeRuling),
+  ].join("\n");
+
+const renderRulingsToCheck = (rulings: readonly ExaminationRuling[]): string =>
+  [
+    "THE ARBITER'S RULING — judge only whether this attempt carries it out",
+    "",
+    "  An arbiter ruled that the findings below stand, and this attempt was built to",
+    "  carry the ruling out. The ruling is final, so this examination is not a",
+    "  fresh review: for each ruling, decide only whether the work now makes it",
+    "  true. For one it does not, raise a material finding with `concerns` set to",
+    "  the ruled finding's id, and evidence. Anything else you notice you may",
+    "  record, without `concerns`; it is reported and does not stop the work.",
+    "",
+    ...rulings.map(describeRuling),
+  ].join("\n");
+
 const evidenceSections = (input: WorkerBriefInput, evidence: ExaminationEvidence): string[] => {
   const { job, program } = input;
   return [
@@ -627,7 +664,9 @@ export const renderExaminerBrief = (
     ].join("\n"),
     ...evidenceSections(input, evidence),
   ];
-  if (evidence.previousFindings !== undefined && evidence.previousFindings.length > 0) {
+  if (evidence.rulings !== undefined && evidence.rulings.length > 0) {
+    sections.push(renderRulingsToCheck(evidence.rulings));
+  } else if (evidence.previousFindings !== undefined && evidence.previousFindings.length > 0) {
     sections.push(
       [
         "WHAT THE LAST EXAMINATION FOUND — say whether each is fixed",
@@ -681,6 +720,9 @@ export const renderExaminerBrief = (
       "  nightshift examination.submit { outcome, findings }",
       "    outcome: passed (no findings), findings_raised, or failed (the work is wrong",
       "    in a way that needs no list). Call it exactly once.",
+      ...(evidence.rulings === undefined
+        ? []
+        : ["    Each finding about a ruling carries `concerns`: the ruled finding's id."]),
       "",
       task.round === 1
         ? [

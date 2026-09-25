@@ -9,10 +9,10 @@
  * says about itself (SC-P8-10).
  */
 import {
+  blockingFindings,
   type Examination,
   type ExaminationRequirement,
   type FindingResolution,
-  isOpenMaterialFinding,
 } from "@nightshift/contracts";
 
 /** Enough of an agent to judge independence: which agent, and what it ran on. */
@@ -127,6 +127,7 @@ const IMMUTABLE_EXAMINATION_FIELDS = [
   "blocking",
   "fixAttempt",
   "questions",
+  "followsRulings",
   "outcome",
   "reportArtifactId",
   "createdAt",
@@ -193,8 +194,9 @@ export const explainExaminationUpdate = (
 
 /**
  * Whether an examination stops its work landing (D-P8-13): a blocking policy
- * and a material finding that still stands.
+ * and a material finding that still stands, about the ruling when the attempt
+ * carried one out.
  */
 export const examinationBlocks = (
-  examination: Pick<Examination, "blocking" | "findings">,
-): boolean => examination.blocking && examination.findings.some(isOpenMaterialFinding);
+  examination: Pick<Examination, "blocking" | "findings" | "followsRulings">,
+): boolean => blockingFindings(examination).length > 0;

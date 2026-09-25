@@ -366,6 +366,16 @@ A-46.
   (a changed patch id) ends in the status `examination_failed`. Read both through
   the reason's prefix. A retry of either is a fix (`fixAttemptOf`), and the
   engine refuses a third with `FixLimitError`.
+- **An upheld ruling is carried out, never a dead end** (D-P8-13 as amended).
+  `fixOf` takes a node's examinations and, after an upheld finding, answers a
+  `fix` task with `rulings`; the engine starts that attempt itself
+  (`continueRuling`, once it has let go of the last one, or the retry finds it
+  still active). Its examination carries `followsRulings` and only a finding
+  that `concerns` a ruled one blocks it (`blockingFindings` in `contracts`, used
+  everywhere blocking is asked); it cannot be disputed. An upheld examination
+  never carries over through the queue, or the very change it was upheld
+  against would land. Two attempts that cannot carry a ruling out end
+  `examination_ruling_unmet:`.
 - **`nightshift resume` lands through `apps/mcp`'s `nightshift-resume`** (a
   process, like `nightshift-orchestrate`), because deferred work the run's
   policy says to examine is examined there once its checks pass (D-P8-14) and

@@ -10,6 +10,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  AGGREGATE_EXAMPLES,
   type Decision,
   type Examination,
   ExaminationSchema,
@@ -23,6 +24,7 @@ import {
 } from "@nightshift/contracts";
 import { isSettled, nowIso } from "@nightshift/core";
 import {
+  carriedExamination,
   completeJob,
   createEngine,
   createEventOutbox,
@@ -77,6 +79,12 @@ interface Scenario {
   /** Whether the builder's session can be resumed. */
   readonly builderSession?: boolean;
   readonly ruling?: "overturn" | "uphold";
+  /**
+   * On an examination of an attempt that carried out a ruling, by ruling
+   * attempt (1, 2): whether it was. It also raises a material finding about
+   * something else, which must not block.
+   */
+  readonly rulingCarried?: (rulingAttempt: number) => boolean;
 }
 
 interface Seen {
@@ -177,6 +185,9 @@ const examiner = async (
     await outbox.flush();
     return { kind: "completed", sessionId: "examiner-session" };
   }
+  if (context.followsRulings !== undefined) {
+    return checkRuling(world, input, scenario, context, stores);
+  }
   const findings = (scenario.findings?.(context.fixAttempt) ?? []).map((finding, index) => ({
     id: `F-0${index + 1}`,
     severity: finding.severity,
@@ -211,6 +222,70 @@ const examiner = async (
   await stores.examinations.put(parsed.data as Examination);
   return { kind: "completed", sessionId: "examiner-session" };
 };
+
+/** The examiner of an attempt that carried out a ruling: judges only the ruling. */
+const checkRuling = async (
+  world: World,
+  input: HarnessStartInput,
+  scenario: Scenario,
+  context: ExaminationContext,
+  stores: ReturnType<typeof helperStores>,
+): Promise<HarnessExit> => {
+  const rulingAttempt = (rulingChecks.get(input.node.executionNodeId) ?? 0) + 1;
+  rulingChecks.set(input.node.executionNodeId, rulingAttempt);
+  const carried = scenario.rulingCarried?.(rulingAttempt) ?? true;
+  const ruled = context.followsRulings?.[0]?.findingId ?? "F-01";
+  const evidence = [{ kind: "contract" as const, clause: "It works." }];
+  const findings = [
+    {
+      id: "F-01",
+      severity: "material" as const,
+      summary: "something the ruling was not about",
+      evidence,
+      resolution: "unresolved" as const,
+    },
+    ...(carried
+      ? []
+      : [
+          {
+            id: "F-02",
+            severity: "material" as const,
+            summary: `the ruling on ${ruled} is not carried out`,
+            evidence,
+            resolution: "unresolved" as const,
+            concerns: ruled,
+          },
+        ]),
+  ];
+  await stores.examinations.put(
+    ExaminationSchema.parse({
+      schemaVersion: 1,
+      projectId: input.node.projectId,
+      programId: input.node.programId,
+      runId: input.node.runId,
+      examinationId: context.examinationId,
+      executionNodeId: input.node.executionNodeId,
+      verificationId: context.verificationId,
+      commitSha: context.commitSha,
+      patchId: context.patchId,
+      implementerAgentId: context.implementerAgentId,
+      examinerAgentId: input.agent.agentId,
+      examinerRoute: context.examinerRoute,
+      requiredByRisk: context.requiredByRisk,
+      blocking: context.blocking,
+      fixAttempt: context.fixAttempt,
+      questions: context.questions,
+      followsRulings: context.followsRulings,
+      outcome: "findings_raised",
+      findings,
+      createdAt: nowIso(world.environment.clock),
+    }) as Examination,
+  );
+  return { kind: "completed", sessionId: "examiner-session" };
+};
+
+/** Ruling checks per node, so a scenario can say what each one finds. */
+const rulingChecks = new Map<string, number>();
 
 const arbiter = async (
   world: World,
@@ -421,8 +496,8 @@ describe("a blocking finding: fixes, the limit, the arbiter (D-P8-13)", () => {
     ]);
   });
 
-  it("after two fixes, sends a finding still standing to an arbiter; upheld, it refuses a third", async () => {
-    const { world, engine, jobId, nodeId } = await rig({
+  it("after two fixes, sends a finding still standing to an arbiter; upheld, it carries the ruling out itself and lands", async () => {
+    const { world, engine, seen, jobId, nodeId } = await rig({
       risk: "high",
       findings: () => [{ severity: "material" }],
       ruling: "uphold",
@@ -430,15 +505,80 @@ describe("a blocking finding: fixes, the limit, the arbiter (D-P8-13)", () => {
     expect(await settledIdle(world, engine, nodeId)).toBe("failed");
     for (const _fix of [1, 2]) {
       expect(await engine.retry(jobId)).toBe(true);
-      expect(await settledIdle(world, engine, nodeId, "failed")).toBe("failed");
+      if (_fix === 1) expect(await settledIdle(world, engine, nodeId, "failed")).toBe("failed");
     }
+    // The arbiter upholds after the second fix, and nobody retries: the engine
+    // starts the attempt that carries the ruling out, and it lands (as amended
+    // 2026-09-25: the arbiter is final, and the run keeps building on it).
+    expect(await settledIdle(world, engine, nodeId, "integrated")).toBe("integrated");
+
     const examinations = await examinationsOf(world, nodeId);
-    expect(examinations.map((examination) => examination.fixAttempt)).toEqual([0, 1, 2]);
-    expect(examinations.at(-1)?.findings[0]?.resolution).toBe("upheld");
-    expect((await world.stores.executionNodes.get(world.scope, nodeId))?.outcomeReason).toMatch(
-      /^examination_upheld: /,
-    );
+    expect(examinations.map((examination) => examination.fixAttempt)).toEqual([0, 1, 2, 2]);
+    const [upheld] = examinations[2]?.findings ?? [];
+    expect(upheld?.resolution).toBe("upheld");
+    const check = examinations[3];
+    expect(check?.followsRulings).toEqual([
+      expect.objectContaining({
+        findingId: upheld?.id,
+        decisionId: upheld?.resolvedBy?.decisionId,
+      }),
+    ]);
+    // A material finding the ruling was not about is recorded and does not block.
+    expect(check?.findings.map((finding) => [finding.severity, finding.concerns])).toEqual([
+      ["material", undefined],
+    ]);
+    const carried = seen.tasks[seen.roles.lastIndexOf("worker")];
+    expect(carried).toMatchObject({ kind: "fix", rulings: [{ findingId: upheld?.id }] });
+    // Whoever retries after it has landed finds nothing to do.
+    expect(await engine.retry(jobId)).toBe(false);
+  });
+
+  it("carries out a ruling on a dispute it upholds, and never takes a dispute of the ruling's check", async () => {
+    const { world, engine, jobId, nodeId } = await rig({
+      risk: "high",
+      findings: () => [{ severity: "material" }],
+      ruling: "uphold",
+      rulingCarried: () => false,
+    });
+    expect(await settledIdle(world, engine, nodeId)).toBe("failed");
+    const result = await engine.dispute(jobId, "the retry loop is bounded by the caller");
+    expect(result.kind).toBe("upheld");
+
+    // Two attempts at the ruling, neither carrying it out: the work's failure.
+    const deadline = Date.now() + 60_000;
+    let examinations = await examinationsOf(world, nodeId);
+    while (
+      examinations.filter((examination) => examination.followsRulings !== undefined).length < 2 ||
+      !engine.idle()
+    ) {
+      if (Date.now() > deadline) throw new Error("the ruling was not carried out twice");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      examinations = await examinationsOf(world, nodeId);
+    }
+    const node = await world.stores.executionNodes.get(world.scope, nodeId);
+    expect(node?.status).toBe("failed");
+    expect(node?.outcomeReason).toMatch(/^examination_ruling_unmet: /);
     await expect(engine.retry(jobId)).rejects.toBeInstanceOf(FixLimitError);
+    // The ruling is final: its check is not argued again.
+    const again = await engine.dispute(jobId, "it is carried out");
+    expect(again).toMatchObject({ kind: "refused" });
+    expect(again.kind === "refused" ? again.reason : "").toMatch(/ruling is final/);
+  });
+
+  it("never carries over an examination whose finding was upheld", () => {
+    const upheld = {
+      ...(structuredClone(AGGREGATE_EXAMPLES.Examination) as Examination),
+      blocking: true,
+    };
+    const withRuling: Examination = {
+      ...upheld,
+      findings: upheld.findings.map((finding) => ({
+        ...finding,
+        severity: "material" as const,
+        resolution: "upheld" as const,
+      })),
+    };
+    expect(carriedExamination([withRuling], withRuling.patchId)).toBeUndefined();
   });
 
   it("lands the examined work as it is when a dispute is overturned, the ruling a rollback point", async () => {

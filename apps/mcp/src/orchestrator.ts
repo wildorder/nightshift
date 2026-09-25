@@ -234,7 +234,16 @@ const nextStepFor = (report: Readonly<Record<string, unknown>>): string => {
     );
   }
   if (reason.startsWith("examination_upheld:")) {
-    return " An arbiter upheld the finding: it is not retried. The owner may reverse the ruling.";
+    return (
+      " An arbiter upheld the finding, and the ruling is final: Nightshift is starting the next " +
+      "attempt to carry it out. Wait for it with job.wait; there is nothing to retry or dispute."
+    );
+  }
+  if (reason.startsWith("examination_ruling_unmet:")) {
+    return (
+      " The attempt did not carry out the arbiter's ruling. Nightshift tries it again, at most " +
+      "twice; after that it is the work's failure, and it is yours to delegate differently."
+    );
   }
   return "";
 };
@@ -888,7 +897,8 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       description:
         "For a job an independent examiner stopped: say why its blocking findings are wrong, and " +
         "an arbiter (a model neither the builder nor the examiner used) rules on them. Overturned, " +
-        "the work that was examined lands as it is; upheld, the job stays failed. Either way the " +
+        "the work that was examined lands as it is; upheld, the ruling is final and the next attempt " +
+        "carries it out, which Nightshift starts itself. Either way the " +
         "ruling is recorded as a decision a human can reverse. Fix it instead with job.retry when " +
         "the examiner is right.",
       inputSchema: { jobId: z.string().min(1), reason: z.string().min(1) },
@@ -901,7 +911,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         return ok(
           result.kind === "overturned"
             ? `The arbiter overturned the findings. Job ${jobId}'s examined work is going to the merge queue; wait for it with job.wait.`
-            : `The arbiter upheld the finding: ${result.reason}. The job stays failed.`,
+            : `The arbiter upheld the finding: ${result.reason}. The ruling is final: Nightshift is starting the next attempt to carry it out; wait for it with job.wait.`,
           { ruling: result.kind },
         );
       }),

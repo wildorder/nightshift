@@ -225,11 +225,16 @@ beginning `examination_failed:` and naming the findings. You have two moves:
   refused.
 - **Dispute it**: `finding.dispute { jobId, reason }`, when the examiner is wrong.
   An **arbiter** (a frontier model neither the worker nor the examiner used) rules.
-  Overturned, the work that was examined lands as it is; upheld, the job stays
-  failed and is not retried. Say why in the reason: the arbiter reads it.
+  Overturned, the work that was examined lands as it is. Upheld, the ruling is
+  final: Nightshift starts the next attempt itself, with the ruling as a binding
+  instruction, and its examination checks only that the ruling was carried out.
+  Wait for it with `job.wait`. Say why in the reason: the arbiter reads it.
 
 After two fixes, a finding still standing goes to the arbiter on its own, and the
-run moves on either way. Every ruling is a decision the human can reverse later.
+work keeps going either way: an overturn lands, an uphold is carried out. A
+ruling cannot be disputed. If two attempts cannot carry a ruling out, the job
+fails as the work's failure (`examination_ruling_unmet:`), and it is yours to
+delegate differently. Every ruling is a decision the human can reverse later.
 Do not dispute a finding to get past it; dispute it when it is wrong.
 
 A failed job is usually a delegation problem, not a worker problem. Ask why

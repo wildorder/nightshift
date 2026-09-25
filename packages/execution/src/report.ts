@@ -463,8 +463,8 @@ const renderRulings = (rulings: readonly RulingReport[]): string[] =>
         "",
         "An arbiter ruled on these disputed findings. Each ruling is yours to reverse with",
         "`nightshift ruling reverse <program> <decisionId> --reason …`. Reversing one records",
-        "your decision and replays nothing: an overturn's work stays landed and an uphold's job",
-        "stays failed until the decision graph (P9); roll back by hand from the checkpoint named.",
+        "your decision and replays nothing: an overturn's work stays landed and an uphold's ruling",
+        "stays carried out until the decision graph (P9); roll back by hand from the checkpoint named.",
         "",
         ...rulings.flatMap(({ ruling, nodeId, finding, reversedBy }) => [
           `- **${ruling.choice === "overturn" ? "Overturned" : "Upheld"}** ${finding} on ${nodeId}: ${ruling.rationale}`,

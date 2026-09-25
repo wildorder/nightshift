@@ -161,4 +161,34 @@ describe("examinationBlocks", () => {
     });
     expect(examinationBlocks({ ...overturned, blocking: true })).toBe(false);
   });
+
+  it("on a check of an arbiter's ruling, blocks only on a finding that the ruling is not carried out", () => {
+    const ruling = {
+      findingId: "F-01",
+      decisionId: "dec_x" as never,
+      summary: "divide does not throw on zero",
+      rationale: "it must throw RangeError",
+    };
+    const material = { ...withFinding(example(), { severity: "material" }), blocking: true };
+    const check = { ...material, followsRulings: [ruling] };
+    // Something the ruling was not about: recorded, and it does not stop the work.
+    expect(examinationBlocks(check)).toBe(false);
+    // The ruling not carried out does.
+    expect(examinationBlocks(withFinding(check, { concerns: "F-01" }))).toBe(true);
+    expect(examinationBlocks(withFinding(check, { concerns: "F-09" }))).toBe(false);
+  });
+
+  it("keeps the rulings an examination checked, once recorded", () => {
+    const ruling = {
+      findingId: "F-01",
+      decisionId: "dec_x" as never,
+      summary: "s",
+      rationale: "r",
+    };
+    const recorded = { ...example(), followsRulings: [ruling] };
+    const { followsRulings: _dropped, ...without } = recorded;
+    expect(explainExaminationUpdate(recorded, without)).toContain(
+      "followsRulings is immutable once an examination is recorded",
+    );
+  });
 });

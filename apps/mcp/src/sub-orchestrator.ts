@@ -388,12 +388,17 @@ export const registerSubOrchestratorTools = (
         if (!RETRYABLE_STATUSES.includes(node.status)) {
           throw new ToolRefusal(
             "validation_failed",
-            `job ${jobId} is ${node.status}, which is not retryable`,
+            node.status === "queued"
+              ? `job ${jobId} is already queued: Nightshift requeues a job itself to carry out an arbiter's ruling`
+              : `job ${jobId} is ${node.status}, which is not retryable`,
           );
         }
-        // Two fixes of blocking findings, or an upheld one, and no third (D-P8-13).
-        const examination = await latestExamination(environment, scope, node.executionNodeId);
-        const refused = fixOf(examination).refused;
+        // Two fixes of blocking findings, then an arbiter's ruling carried out (D-P8-13).
+        const examinations = await environment.stores.examinations.listByNode(
+          scope,
+          node.executionNodeId,
+        );
+        const refused = fixOf(examinations).refused;
         if (refused !== undefined) throw new ToolRefusal("validation_failed", refused);
         const { outcomeReason: _previous, ...requeued } = transition(node, "retry", nowIso(clock));
         await stores.executionNodes.put({ ...requeued, commitSha: null });
@@ -408,7 +413,8 @@ export const registerSubOrchestratorTools = (
       description:
         "For a job an independent examiner stopped: say why its blocking findings are wrong, and " +
         "an arbiter (a model neither the builder nor the examiner used) rules on them. Overturned, " +
-        "the work that was examined lands as it is; upheld, the job stays failed. Wait for it with " +
+        "the work that was examined lands as it is; upheld, the ruling is final and Nightshift starts " +
+        "the next attempt to carry it out. Wait for it with " +
         "job.wait. Fix it instead with job.retry when the examiner is right.",
       inputSchema: { jobId: z.string().min(1), reason: z.string().min(1) },
     },
@@ -420,6 +426,12 @@ export const registerSubOrchestratorTools = (
           throw new ToolRefusal(
             "validation_failed",
             `job ${jobId} was not stopped by an examination`,
+          );
+        }
+        if (examination.followsRulings !== undefined) {
+          throw new ToolRefusal(
+            "validation_failed",
+            "this examination checked an arbiter's ruling, and the ruling is final: it is carried out, not argued again",
           );
         }
         const open = examination.findings.filter(

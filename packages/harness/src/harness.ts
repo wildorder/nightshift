@@ -45,6 +45,7 @@ import type {
   AgentStatus,
   ExaminationFinding,
   ExaminationQuestion,
+  ExaminationRuling,
   ExecutionNode,
   JobContract,
   ProgramContract,
@@ -106,6 +107,11 @@ export interface ExaminationEvidence {
   readonly fixAttempt: number;
   /** A fix's examiner sees what the last examination found, so it can say whether it is fixed. */
   readonly previousFindings?: readonly ExaminationFinding[];
+  /**
+   * The arbiter's rulings this attempt carried out (D-P8-13, as amended
+   * 2026-09-25). Present, the examiner judges only whether each was.
+   */
+  readonly rulings?: readonly ExaminationRuling[];
 }
 
 /**
@@ -135,8 +141,16 @@ export type AgentTask =
       readonly questions: readonly ExaminationQuestion[];
       readonly diff: string;
     }
-  /** A fix: the job again, with what the examiner found (D-P8-13). */
-  | { readonly kind: "fix"; readonly findings: readonly ExaminationFinding[] };
+  /**
+   * A fix: the job again, with what the examiner found (D-P8-13). With
+   * `rulings`, the findings an arbiter upheld: final, and what this attempt
+   * must carry out.
+   */
+  | {
+      readonly kind: "fix";
+      readonly findings: readonly ExaminationFinding[];
+      readonly rulings?: readonly ExaminationRuling[];
+    };
 
 export interface HarnessStartInput {
   /** The execution identity, already persisted as `created` before this call (A-04). */

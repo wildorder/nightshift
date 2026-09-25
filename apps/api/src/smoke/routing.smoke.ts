@@ -229,6 +229,40 @@ const finish = async (started: Started): Promise<void> => {
   await started.mcp.close().catch(() => {});
 };
 
+/**
+ * An upheld ruling, followed to its end (D-P8-13, as amended 2026-09-25): the
+ * engine starts the next attempt itself; its examination checks only the
+ * ruling; the job lands.
+ */
+const rulingCarriedOut = async (
+  started: Started,
+  job: { readonly jobId: string; readonly nodeId: string },
+  ruledId: string | undefined,
+  began: number,
+): Promise<void> => {
+  const deadline = Date.now() + 1_800_000;
+  let check: Examination | undefined;
+  for (;;) {
+    check = (await examinationsOf(started, job.nodeId)).find(
+      (candidate) => candidate.followsRulings !== undefined,
+    );
+    const node = await slice.context.stores.executionNodes.get(started.scope, job.nodeId as never);
+    if (check !== undefined && ["integrated", "failed"].includes(String(node?.status))) break;
+    if (Date.now() > deadline) throw new Error("the ruling was not carried out");
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
+  const after = await settled(started, job.jobId, job.nodeId, "dispute, ruling carried out", began);
+  const findings = check.findings
+    .map(
+      (finding) =>
+        `${finding.id} ${finding.severity}${finding.concerns === undefined ? "" : ` concerns ${finding.concerns}`}: ${finding.summary}`,
+    )
+    .join(" | ");
+  say(`ruling check: ${check.examinerRoute.model}: ${check.outcome}; ${findings || "no findings"}`);
+  expect(check.followsRulings?.[0]?.findingId).toBe(ruledId);
+  expect(after.result.status).toBe("integrated");
+};
+
 // --- the suite ----------------------------------------------------------------------
 
 describe("routing and examination, with real models, against the deployed control plane", () => {
@@ -514,7 +548,11 @@ describe("routing and examination, with real models, against the deployed contro
           began,
         );
         expect(landed.result.status).toBe("integrated");
+        return;
       }
+      // Upheld: the ruling is final and carried out (D-P8-13, as amended
+      // 2026-09-25), by an attempt the engine starts itself.
+      await rulingCarriedOut(started, job, ruled?.id, began);
     });
   });
 });

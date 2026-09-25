@@ -103,8 +103,29 @@ export const ExaminationFindingSchema = z.strictObject({
   evidence: z.array(FindingEvidenceSchema).min(1),
   resolution: FindingResolutionSchema,
   resolvedBy: FindingResolvedBySchema.optional(),
+  /**
+   * On an examination of an attempt that carried out an arbiter's ruling: the
+   * ruled finding this one says is still not fixed. Only such a finding can
+   * block that examination (D-P8-13, as amended 2026-09-25).
+   */
+  concerns: z.string().min(1).optional(),
 });
 export type ExaminationFinding = z.infer<typeof ExaminationFindingSchema>;
+
+/**
+ * An arbiter's ruling that a finding stands, as the attempt after it carries it
+ * out (D-P8-13, as amended 2026-09-25). The ruling is final: the next attempt is
+ * built to it, and its examination checks only that it was.
+ */
+export const ExaminationRulingSchema = z.strictObject({
+  findingId: z.string().min(1),
+  decisionId: DecisionIdSchema,
+  /** What the finding said. */
+  summary: z.string().min(1),
+  /** Why the arbiter upheld it: what the next attempt must make true. */
+  rationale: z.string().min(1),
+});
+export type ExaminationRuling = z.infer<typeof ExaminationRulingSchema>;
 
 /**
  * One question the examiner put to the builder, and its answer (D-P8-15).
@@ -123,6 +144,13 @@ export const MAX_EXAMINATION_QUESTIONS = 3;
 
 /** At most two fixes of one job for a blocking finding (D-P8-13). */
 export const MAX_FIX_ATTEMPTS = 2;
+
+/**
+ * At most two attempts at carrying out an arbiter's upheld ruling (D-P8-13, as
+ * amended 2026-09-25). Past that the builder could not make the change it was
+ * ruled to make: a failure of the work, not a disagreement.
+ */
+export const MAX_RULING_ATTEMPTS = 2;
 
 export const ExaminationOutcomeSchema = z.enum(["passed", "findings_raised", "failed"]);
 export type ExaminationOutcome = z.infer<typeof ExaminationOutcomeSchema>;
@@ -151,6 +179,12 @@ export const ExaminationSchema = z
     /** 0 for the job's first attempt; 1 and 2 for its fixes (D-P8-13). */
     fixAttempt: z.int().min(0).max(MAX_FIX_ATTEMPTS),
     questions: z.array(ExaminationQuestionSchema).max(MAX_EXAMINATION_QUESTIONS),
+    /**
+     * Present when the attempt examined carried out an arbiter's upheld ruling:
+     * this examination judges only whether it did, and only a finding that
+     * `concerns` one of these can block.
+     */
+    followsRulings: z.array(ExaminationRulingSchema).min(1).optional(),
     outcome: ExaminationOutcomeSchema,
     findings: z.array(ExaminationFindingSchema),
     reportArtifactId: ArtifactIdSchema.optional(),
@@ -169,6 +203,22 @@ export const ExaminationSchema = z
     { message: "finding ids must be unique within an examination", path: ["findings"] },
   );
 export type Examination = z.infer<typeof ExaminationSchema>;
+
+/**
+ * The findings that stop this examination's work landing: open material ones,
+ * and on an examination of a ruling carried out, only those about the ruling.
+ */
+export const blockingFindings = (
+  examination: Pick<Examination, "blocking" | "findings" | "followsRulings">,
+): readonly ExaminationFinding[] => {
+  if (!examination.blocking) return [];
+  const ruled = examination.followsRulings?.map((ruling) => ruling.findingId);
+  return examination.findings.filter(
+    (finding) =>
+      isOpenMaterialFinding(finding) &&
+      (ruled === undefined || (finding.concerns !== undefined && ruled.includes(finding.concerns))),
+  );
+};
 
 /** A material finding that still stands: unresolved, or disputed and not yet ruled on. */
 export const isOpenMaterialFinding = (finding: ExaminationFinding): boolean =>

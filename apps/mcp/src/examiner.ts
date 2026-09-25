@@ -108,6 +108,13 @@ export const registerExaminerTools = (server: McpServer, deps: HelperDeps): void
               severity: FindingSeveritySchema,
               summary: z.string().min(1),
               evidence: z.array(FindingEvidenceSchema).min(1),
+              concerns: z
+                .string()
+                .min(1)
+                .optional()
+                .describe(
+                  "Only when you were asked to check an arbiter's ruling: the ruled finding's id this one says is still not carried out.",
+                ),
             }),
           )
           .default([]),
@@ -132,6 +139,9 @@ export const registerExaminerTools = (server: McpServer, deps: HelperDeps): void
           blocking: context.blocking,
           fixAttempt: context.fixAttempt,
           questions: context.questions,
+          ...(context.followsRulings === undefined
+            ? {}
+            : { followsRulings: context.followsRulings }),
           outcome: findings.length === 0 && outcome === "findings_raised" ? "passed" : outcome,
           findings: findings.map((finding, index) => ({
             id: `F-${String(index + 1).padStart(2, "0")}`,
@@ -139,6 +149,7 @@ export const registerExaminerTools = (server: McpServer, deps: HelperDeps): void
             summary: finding.summary,
             evidence: finding.evidence,
             resolution: "unresolved",
+            ...(finding.concerns === undefined ? {} : { concerns: finding.concerns }),
           })),
           createdAt: nowIso(environment.clock),
         });
