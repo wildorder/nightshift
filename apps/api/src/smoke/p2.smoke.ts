@@ -910,7 +910,7 @@ step test: exit 0
     expect(wrongLength.status, await wrongLength.text()).toBe(403);
   });
 
-  it("round trips an examination, which nothing in P3 writes (T2, D-P3-07)", async () => {
+  it("round trips an examination, and moves a finding only forward (P8, D-P8-13)", async () => {
     const node = rootNodeFor(worldA);
     const verification = makeVerification(worldA, { ...node, commitSha: FIXTURE_COMMIT });
     expectStatus(
@@ -929,32 +929,68 @@ step test: exit 0
       executionNodeId: rootNodeId,
       verificationId: verification.verificationId,
       commitSha: verification.commitSha,
+      patchId: "0".repeat(40),
       implementerAgentId: ids.next("agent"),
       examinerAgentId: ids.next("agent"),
+      examinerRoute: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
       requiredByRisk: "high",
+      blocking: true,
+      fixAttempt: 0,
+      questions: [],
       outcome: "findings_raised",
       findings: [
         {
           id: "F-01",
-          severity: "minor",
+          severity: "material",
           summary: "a placeholder finding",
-          evidence: "written by the smoke suite, never by P3",
+          evidence: [{ kind: "contract", clause: "written by the smoke suite" }],
           resolution: "unresolved",
         },
       ],
       createdAt: new Date().toISOString(),
     };
-    expectStatus(
-      await api.put(`${runPath(worldA)}/examinations/${examinationId}`, examination),
-      201,
-    );
-    expect((await api.get(`${runPath(worldA)}/examinations/${examinationId}`)).body).toEqual(
-      examination,
-    );
+    const path = `${runPath(worldA)}/examinations/${examinationId}`;
+    expectStatus(await api.put(path, examination), 201);
+    expect((await api.get(path)).body).toEqual(examination);
     const listed = (await api.get(`${runPath(worldA)}/nodes/${rootNodeId}/examinations`)).body as {
       items: { examinationId: string }[];
     };
     expect(listed.items.map((e) => e.examinationId)).toEqual([examinationId]);
+
+    const at = new Date().toISOString();
+    const moved = (resolution: string, resolvedBy: Record<string, unknown>) => ({
+      ...examination,
+      findings: examination.findings.map((finding) => ({
+        ...finding,
+        resolution,
+        resolvedBy: { at, ...resolvedBy },
+      })),
+    });
+    // Only a human accepts a risk; a softened verdict is refused outright.
+    expectStatus(await api.put(path, moved("risk_accepted", { authority: "agent" })), 409);
+    expectStatus(await api.put(path, { ...examination, outcome: "passed", findings: [] }), 409);
+    expectStatus(
+      await api.put(path, moved("disputed", { authority: "agent", reason: "smoke" })),
+      200,
+    );
+  });
+
+  it("serves an org its configuration and refuses a stale write (P8, D-P8-02)", async () => {
+    const path = `/orgs/${orgId}/config`;
+    const seeded = (await api.get(path)).body as {
+      version: number;
+      routingPolicy: unknown;
+      examinationPolicy: unknown;
+    };
+    expect(seeded.version).toBe(0);
+    const body = {
+      routingPolicy: seeded.routingPolicy,
+      examinationPolicy: seeded.examinationPolicy,
+      replacesVersion: 0,
+    };
+    expect(((await api.put(path, body)).body as { version: number }).version).toBe(1);
+    expectStatus(await api.put(path, body), 409);
+    expectStatus(await api.get(`/orgs/${ids.next("org")}/config`), 403);
   });
 
   it("reads back every remaining list route the http adapter needs (T2)", async () => {

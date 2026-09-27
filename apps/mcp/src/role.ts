@@ -58,7 +58,15 @@ export const EXECUTION_TOKEN_ENV = "NIGHTSHIFT_EXECUTION_TOKEN";
  * worker it holds only an execution token and an identity; unlike one, the token
  * delegates, and the tool surface is an orchestrator's, narrowed to its subtree.
  */
-export type Role = "orchestrator" | "worker" | "sub-orchestrator";
+export type Role = "orchestrator" | "worker" | "sub-orchestrator" | "examiner" | "arbiter";
+
+/** The roles launched with an execution token and an identity, never the operator's session. */
+export const EXECUTION_ROLES: readonly Role[] = [
+  "worker",
+  "sub-orchestrator",
+  "examiner",
+  "arbiter",
+];
 
 /**
  * The seven variables a worker's identity is made of (§4.2).
@@ -96,9 +104,11 @@ export class MissingWorkerIdentityError extends Error {
 export const roleFrom = (env: Env): Role => {
   const value = env[ROLE_ENV];
   if (value === undefined || value === "") return "orchestrator";
-  if (value === "orchestrator" || value === "worker" || value === "sub-orchestrator") return value;
+  if (value === "orchestrator" || (EXECUTION_ROLES as readonly string[]).includes(value)) {
+    return value as Role;
+  }
   throw new Error(
-    `${ROLE_ENV} must be "orchestrator", "worker" or "sub-orchestrator", not "${value}"`,
+    `${ROLE_ENV} must be "orchestrator", "worker", "sub-orchestrator", "examiner" or "arbiter", not "${value}"`,
   );
 };
 
@@ -139,8 +149,11 @@ export const workerLaunchEnv = (identity: {
   readonly jobContractId: string;
   readonly worktree: string;
   readonly executionToken: string;
-  readonly role?: "worker" | "sub-orchestrator";
+  readonly role?: "worker" | "sub-orchestrator" | "examiner" | "arbiter";
+  /** P8: an examiner's or arbiter's frame. Never a credential. */
+  readonly extraEnv?: Readonly<Record<string, string>>;
 }): Record<string, string> => ({
+  ...identity.extraEnv,
   [ROLE_ENV]: identity.role ?? "worker",
   [EXECUTION_TOKEN_ENV]: identity.executionToken,
   [WORKER_IDENTITY_ENV.projectId]: identity.projectId,

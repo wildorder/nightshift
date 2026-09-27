@@ -162,6 +162,8 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
   "artifact.createUploadUrl": "forbidden",
+  "orgConfig.get": "forbidden",
+  "orgConfig.put": "forbidden",
 };
 
 describe("an execution principal", () => {
@@ -326,9 +328,11 @@ describe("the principal schema", () => {
     expect(PrincipalSchema.safeParse({ kind: "service" }).success).toBe(false);
   });
 
-  it("accepts the two roles a token is minted for, and no other (D-P6-04)", () => {
-    expect(PrincipalSchema.safeParse({ ...execution, role: "orchestrator" }).success).toBe(true);
-    for (const role of ["examiner", "user", ""]) {
+  it("accepts the four roles a token is minted for, and no other (D-P6-04, D-P8-10, D-P8-13)", () => {
+    for (const role of ["orchestrator", "examiner", "arbiter"]) {
+      expect(PrincipalSchema.safeParse({ ...execution, role }).success, role).toBe(true);
+    }
+    for (const role of ["answerer", "user", ""]) {
       expect(PrincipalSchema.safeParse({ ...execution, role }).success, role).toBe(false);
     }
   });

@@ -17,7 +17,16 @@
  * Project A query cannot return a Project B record. Running it here means the
  * property is specified before any AWS resource exists to get it wrong.
  */
-import type { Artifact, Event, ProgramId, ProjectId, RunId } from "@nightshift/contracts";
+import {
+  type Artifact,
+  DEFAULT_EXAMINATION_POLICY,
+  DEFAULT_ROUTING_POLICY,
+  type Event,
+  type OrgConfig,
+  type ProgramId,
+  type ProjectId,
+  type RunId,
+} from "@nightshift/contracts";
 import {
   createCountingIdGenerator,
   createFixtures,
@@ -41,6 +50,7 @@ import {
   orderEvents,
   type ProjectStores,
   type RunScope,
+  StaleWriteError,
 } from "@nightshift/core";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -290,6 +300,38 @@ export const describePortConformance = <S extends ProjectStores>(
           expect(await stores.executionNodes.get(scope, node.executionNodeId)).toBeUndefined();
           expect((await stores.executionNodes.listByRun(scope)).items).toHaveLength(0);
         }
+      });
+    });
+
+    describe("an org's configuration (P8, D-P8-02)", () => {
+      const configOf = (orgId: OrgConfig["orgId"], version: number): OrgConfig => ({
+        schemaVersion: 1,
+        orgId,
+        routingPolicy: DEFAULT_ROUTING_POLICY,
+        examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+        version,
+        updatedAt: "2026-09-25T10:00:00.000Z",
+      });
+
+      it("is absent until written, then read back as written", async () => {
+        const orgId = a.ids.next("org");
+        expect(await stores.orgConfigs.get(orgId)).toBeUndefined();
+        await stores.orgConfigs.put(configOf(orgId, 1));
+        expect(await stores.orgConfigs.get(orgId)).toEqual(configOf(orgId, 1));
+        expect(await stores.orgConfigs.get(b.ids.next("org"))).toBeUndefined();
+      });
+
+      it("writes only on top of the version the writer read", async () => {
+        const orgId = a.ids.next("org");
+        await expect(stores.orgConfigs.put(configOf(orgId, 2))).rejects.toBeInstanceOf(
+          StaleWriteError,
+        );
+        await stores.orgConfigs.put(configOf(orgId, 1));
+        await expect(stores.orgConfigs.put(configOf(orgId, 1))).rejects.toBeInstanceOf(
+          StaleWriteError,
+        );
+        await stores.orgConfigs.put(configOf(orgId, 2));
+        expect((await stores.orgConfigs.get(orgId))?.version).toBe(2);
       });
     });
 

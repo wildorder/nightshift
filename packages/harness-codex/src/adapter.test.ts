@@ -274,7 +274,12 @@ describe("the exit mapping, as measured on 0.154.0", () => {
       child.emitStdout(CLEAN_RUN);
       child.close(0);
     });
-    expect(exit).toEqual({ kind: "completed", usage: { inputTokens: 14028, outputTokens: 5 } });
+    expect(exit).toEqual({
+      kind: "completed",
+      usage: { inputTokens: 14028, outputTokens: 5, cacheReadTokens: 11520 },
+      sessionId: "01a0b9e2-a874-71d2-8293-67ec5bcf67fb",
+      result: "READY",
+    });
     expect(harness.capabilities.usage).toBe(true);
   });
 
@@ -283,7 +288,11 @@ describe("the exit mapping, as measured on 0.154.0", () => {
       child.emitStdout(ABANDONED_RUN);
       child.close(0);
     });
-    expect(exit).toEqual({ kind: "failed", exitCode: 0 });
+    expect(exit).toEqual({
+      kind: "failed",
+      exitCode: 0,
+      sessionId: "01a0b9e4-33f5-73d3-b75f-278e14dec33d",
+    });
     expect(endings(events)[0]).toMatchObject({
       type: "agent.failed",
       payload: { turnCompleted: false },
@@ -300,7 +309,13 @@ describe("the exit mapping, as measured on 0.154.0", () => {
       );
       child.close(0);
     });
-    expect(exit).toEqual({ kind: "failed", exitCode: 0 });
+    // P8 (D-P8-06): a usage limit before any work is a route that could not start.
+    expect(exit).toEqual({
+      kind: "failed",
+      exitCode: 0,
+      sessionId: "t",
+      unavailable: "the provider answered 429 before any work began: usage limit reached",
+    });
     expect(endings(events)[0]?.payload.failure).toBe("usage limit reached");
   });
 

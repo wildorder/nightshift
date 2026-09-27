@@ -55,12 +55,7 @@ import type {
   HarnessHandle,
   HarnessStartInput,
 } from "@nightshift/harness";
-import {
-  agentStatusForExit,
-  hookTypeForExit,
-  nightshiftToolNames,
-  renderWorkerBrief,
-} from "@nightshift/harness";
+import { agentStatusForExit, hookTypeForExit, promptFor } from "@nightshift/harness";
 import {
   buildCodexArgs,
   buildGitGuard,
@@ -152,17 +147,8 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
   };
 
   const start = async (input: HarnessStartInput): Promise<HarnessHandle> => {
-    const prompt = codexPrompt(
-      renderWorkerBrief({
-        job: input.job,
-        node: input.node,
-        program: input.program,
-        worktree: input.worktree,
-      }),
-      codexBriefAddendum({
-        mcpServerName: input.mcp.name,
-        tools: nightshiftToolNames(input.node.kind, input.program),
-      }),
+    const prompt = promptFor(input, (brief, mcpServerName, tools) =>
+      codexPrompt(brief, codexBriefAddendum({ mcpServerName, tools })),
     );
 
     let resolveExit: (exit: HarnessExit) => void = () => {};
@@ -242,8 +228,9 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       prompt,
       model: input.model,
       worktree: input.worktree,
-      mcp: input.mcp,
+      ...(input.mcp === undefined ? {} : { mcp: input.mcp }),
       shellPath,
+      ...(input.resume === undefined ? {} : { resumeSessionId: input.resume.sessionId }),
     });
 
     let child: SpawnedChild;
@@ -374,11 +361,25 @@ const exitFor = (
 ): HarnessExit => {
   if (cancelRequested) return { kind: "cancelled" };
   if (signal !== null) return { kind: "interrupted", signal };
-  const usage = outcome.usage === undefined ? {} : { usage: outcome.usage };
+  // P8: the thread a question can resume (D-P8-15), and whether the route could
+  // not start at all (D-P8-06).
+  const said = {
+    ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+    ...(outcome.threadId === undefined ? {} : { sessionId: outcome.threadId }),
+  };
   if (code === 0 && outcome.turnCompleted && outcome.failure === undefined) {
-    return { kind: "completed", ...usage };
+    return {
+      kind: "completed",
+      ...said,
+      ...(outcome.lastMessage === undefined ? {} : { result: outcome.lastMessage }),
+    };
   }
-  return { kind: "failed", exitCode: code ?? UNKNOWN_EXIT_CODE, ...usage };
+  return {
+    kind: "failed",
+    exitCode: code ?? UNKNOWN_EXIT_CODE,
+    ...said,
+    ...(outcome.unavailable === undefined ? {} : { unavailable: outcome.unavailable }),
+  };
 };
 
 const messageOf = (error: unknown): string =>

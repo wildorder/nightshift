@@ -40,12 +40,23 @@ import type {
   JobContract,
   JobContractId,
   RouteChoice,
+  RouteOutcome,
+  RouteTarget,
   RouteUsage,
   RoutingDecision,
   Scope,
+  Verification,
 } from "@nightshift/contracts";
-import { nowIso, routeOutcomeForNodeStatus, transition, transitionAgent } from "@nightshift/core";
 import {
+  labelCost,
+  markVerificationFailed,
+  nowIso,
+  routeOutcomeForNodeStatus,
+  transition,
+  transitionAgent,
+} from "@nightshift/core";
+import {
+  type AgentTask,
   agentStatusForExit,
   describeExit,
   type HarnessExit,
@@ -61,10 +72,12 @@ import {
   type RunSession,
   type WorkerLaunchIdentity,
 } from "./environment.js";
+import { examine } from "./examine.js";
 import {
   addDetachedWorktree,
   addWorktree,
   baseRef,
+  cleanCheckout,
   effectiveHead,
   jobBranch,
   pruneWorktrees,
@@ -111,6 +124,31 @@ export interface IntegrationCandidate {
 /** Settles when the candidate is integrated, or durably is not. Never rejects. */
 export type IntegrateCandidate = (candidate: IntegrationCandidate) => Promise<void>;
 
+/**
+ * Where a job goes next when its route could not start (P8, D-P8-06), or
+ * `undefined` when nothing is left. The engine supplies it: it holds the run's
+ * list of unavailable routes and the router.
+ */
+export type Reroute = (failed: RouteTarget) => RouteChoice | undefined;
+
+/** One attempt's records, before its process exists. */
+interface AttemptIdentity {
+  readonly agent: Agent;
+  readonly executionToken: string;
+  readonly routingDecision: RoutingDecision;
+}
+
+/** One attempt, running: its agent, its process, and its routing decision. */
+interface Attempt {
+  readonly agentId: AgentId;
+  readonly handle: HarnessHandle;
+  /** The sink the adapter was given, so the ending is emitted once. */
+  readonly sink: RecordingHookSink;
+  /** As recorded before the work began: `usage` empty, `outcome` pending (A-13). */
+  readonly routingDecision: RoutingDecision;
+  readonly startedAtMs: number;
+}
+
 /** What it takes to record a delegation: the first half of {@link runJob}. */
 export interface DelegateJobInput
   extends Pick<RunJobInput, "session" | "job" | "scope" | "depth" | "parentNodeId"> {
@@ -123,6 +161,10 @@ export interface StartJobInput
   extends Pick<RunJobInput, "session" | "job" | "route" | "mcp" | "integrate"> {
   /** The node as {@link delegateJob} left it: `queued`. */
   readonly node: ExecutionNode;
+  /** P8 (D-P8-06): where to go when the route cannot start. Absent, the job fails. */
+  readonly reroute?: Reroute;
+  /** P8 (D-P8-13): a fix, carrying what the examiner found into the worker's brief. */
+  readonly task?: AgentTask;
 }
 
 export interface StartedJob {
@@ -150,6 +192,16 @@ export interface StartedJob {
   /** `stop("cancelled")`, for the `job.cancel` tool. */
   cancel(): Promise<void>;
 }
+
+/**
+ * A node's own attempts, in order: the routes its work ran on. An examiner's,
+ * an answerer's or an arbiter's route (P8) is recorded beside them and is not
+ * one of them.
+ */
+export const attemptsOf = (decisions: readonly RoutingDecision[]): RoutingDecision[] =>
+  decisions
+    .filter((decision) => decision.purpose === undefined)
+    .sort((a, b) => a.attempt - b.attempt);
 
 /**
  * Delegate and start in one step: what P3 did, and what a caller with exactly
@@ -232,7 +284,6 @@ export const startJob = async (
   const { session } = input;
   const queued = input.node;
   const nodeId = queued.executionNodeId;
-  const agentId = ids.next("agent");
   // A sub-program's node is started the same way as a job's, by the same
   // adapters (D-P6-03). What differs is what its agent is: an orchestrator,
   // with a delegating token, a checkout to read rather than a worktree to
@@ -259,69 +310,13 @@ export const startJob = async (
   // Everything after the slot. A throw from here ends the node durably, because
   // it already says `running` and nothing else will ever move it.
   async function launch(): Promise<StartedJob> {
-    // --- 3. The execution identity, before any process exists (A-04) -------------
-    const agent: Agent = {
-      schemaVersion: 1,
-      ...session.scope,
-      agentId,
-      executionNodeId: nodeId,
-      role,
-      harness: input.route.target.harness,
-      provider: input.route.target.provider,
-      model: input.route.target.model,
-      status: "created",
-      createdAt: nowIso(clock),
-    };
-    await stores.agents.put(agent);
-    outbox.emit({
-      type: "agent.created",
-      source: "control-plane",
-      payload: { role, ...input.route.target },
-      executionNodeId: nodeId,
-      agentId,
-    });
-
-    // --- 3a. Its credential, minted the moment the identity exists (D-P4-06) -----
-    //
-    // Before the worktree, before the process, and — critically — before anything
-    // the worker could act with. A-04 says nothing executes without a Nightshift
-    // execution identity; P4 makes that a credential rather than a convention.
-    // The token is held in this frame and handed to the launch; it is never
-    // stored, never logged, and never reaches an event payload.
-    const { token: executionToken } = await environment.tokens.mint(session.scope, agentId);
-
-    // --- 4. Why it runs where it runs (A-13) -------------------------------------
-    // A retry is a new attempt at the same node (D-P6-06): its decision says
-    // which it is and links the one before, so the record reads as a chain.
-    const earlier = [...(await stores.routingDecisions.listByNode(session.scope, nodeId))].sort(
-      (a, b) => a.attempt - b.attempt,
+    // --- 3 … 4. The first attempt's identity, credential and route (A-04, A-13) ---
+    const earlier = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId));
+    const first = await createAttempt(
+      input.route,
+      earlier.length + 1,
+      earlier.at(-1)?.routingDecisionId ?? null,
     );
-    const routingDecision: RoutingDecision = {
-      schemaVersion: 1,
-      ...session.scope,
-      routingDecisionId: ids.next("route"),
-      executionNodeId: nodeId,
-      attempt: earlier.length + 1,
-      eligibleOptions: [...input.route.eligibleOptions],
-      chosen: input.route.target,
-      ruleId: input.route.ruleId,
-      wasOverride: input.route.wasOverride,
-      usage: {},
-      outcome: "pending",
-      previousRouteId: earlier.at(-1)?.routingDecisionId ?? null,
-      createdAt: nowIso(clock),
-    };
-    await stores.routingDecisions.put(routingDecision);
-    outbox.emit({
-      type: "routing.decided",
-      source: "control-plane",
-      payload: {
-        ruleId: routingDecision.ruleId,
-        wasOverride: routingDecision.wasOverride,
-        chosen: routingDecision.chosen,
-      },
-      executionNodeId: nodeId,
-    });
 
     // --- 5. The worktree, cut from the program branch head ------------------------
     // The provisional head once anything has been deferred (D-P7-10), so a
@@ -364,6 +359,156 @@ export const startJob = async (
     // `running` and the agent `started` the moment Nightshift commits to starting
     // one, and a launch that then fails is recorded as a failure (below) rather
     // than avoided by writing late. The node took `running` with its slot, above.
+    let current = await startAttempt(first, worktree);
+
+    outbox.emit({
+      type: "node.started",
+      source: "control-plane",
+      payload: { worktree, branch, base, pid: current.handle.pid ?? null },
+      executionNodeId: nodeId,
+      agentId: current.agentId,
+    });
+
+    let stopMode: "cancelled" | "interrupted" | undefined;
+
+    /**
+     * P8 (D-P8-06): the route could not start. The same job, the same node and
+     * the same worktree, cleaned back to its base, on the next route the router
+     * gives; the node stays `running` throughout, so nobody waiting on it sees a
+     * failure that was not the work's. `undefined` when there is nowhere left.
+     */
+    const relaunch = async (failed: RouteTarget): Promise<Attempt | undefined> => {
+      if (input.reroute === undefined || stopMode !== undefined) return undefined;
+      const next = input.reroute(failed);
+      if (next === undefined) return undefined;
+      const last = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId)).at(
+        -1,
+      );
+      const identity = await createAttempt(
+        next,
+        (last?.attempt ?? 0) + 1,
+        last?.routingDecisionId ?? null,
+      );
+      await cleanCheckout(environment.git, worktree, base);
+      current = await startAttempt(identity, worktree);
+      return current;
+    };
+
+    const completion = (orchestrates ? finishSubProgram : finishJob)(environment, {
+      session,
+      job: input.job,
+      nodeId,
+      worktree,
+      branch,
+      base,
+      current: () => current,
+      stopMode: () => stopMode,
+      relaunch,
+      ...(input.integrate === undefined ? {} : { integrate: input.integrate }),
+    });
+
+    const stop = async (mode: "cancelled" | "interrupted"): Promise<void> => {
+      // Set before the cancel, so the lifecycle knows why the process stopped by
+      // the time it observes the exit.
+      stopMode ??= mode;
+      await environment.harness.cancel(
+        current.handle,
+        millis(environment.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS),
+      );
+      await completion;
+    };
+
+    return {
+      jobContractId: input.job.jobContractId,
+      nodeId,
+      agentId: current.agentId,
+      worktree,
+      pid: current.handle.pid,
+      completion,
+      stop,
+      cancel: () => stop("cancelled"),
+    };
+  }
+
+  /**
+   * One attempt's identity (A-04), its credential (D-P4-06) and why it runs
+   * where it runs (A-13), in that order and before any process exists.
+   */
+  async function createAttempt(
+    route: RouteChoice,
+    attempt: number,
+    previousRouteId: RoutingDecision["routingDecisionId"] | null,
+  ): Promise<AttemptIdentity> {
+    const agentId = ids.next("agent");
+    const agent: Agent = {
+      schemaVersion: 1,
+      ...session.scope,
+      agentId,
+      executionNodeId: nodeId,
+      role,
+      harness: route.target.harness,
+      provider: route.target.provider,
+      model: route.target.model,
+      status: "created",
+      createdAt: nowIso(clock),
+    };
+    await stores.agents.put(agent);
+    outbox.emit({
+      type: "agent.created",
+      source: "control-plane",
+      payload: { role, ...route.target },
+      executionNodeId: nodeId,
+      agentId,
+    });
+
+    // Minted the moment the identity exists, and before anything the worker could
+    // act with. Held in this frame and handed to the launch; never stored, never
+    // logged, and never in an event payload.
+    const { token: executionToken } = await environment.tokens.mint(session.scope, agentId);
+
+    // A retry, or a fallback, is a new attempt at the same node (D-P6-06, D-P8-06):
+    // its decision says which it is and links the one before, so the record
+    // reads as a chain.
+    const routingDecision: RoutingDecision = {
+      schemaVersion: 1,
+      ...session.scope,
+      routingDecisionId: ids.next("route"),
+      executionNodeId: nodeId,
+      attempt,
+      eligibleOptions: [...route.eligibleOptions],
+      chosen: route.target,
+      ruleId: route.ruleId,
+      wasOverride: route.wasOverride,
+      usage: {},
+      outcome: "pending",
+      previousRouteId: attempt === 1 ? null : previousRouteId,
+      ...(route.ladder === undefined ? {} : { ladder: route.ladder }),
+      ...(route.rung === undefined ? {} : { rung: route.rung }),
+      ...(route.classification === undefined ? {} : { classification: route.classification }),
+      ...(route.policyVersion === undefined ? {} : { policyVersion: route.policyVersion }),
+      createdAt: nowIso(clock),
+    };
+    await stores.routingDecisions.put(routingDecision);
+    outbox.emit({
+      type: "routing.decided",
+      source: "control-plane",
+      payload: {
+        ruleId: routingDecision.ruleId,
+        wasOverride: routingDecision.wasOverride,
+        chosen: routingDecision.chosen,
+        ...(route.ladder === undefined ? {} : { ladder: route.ladder }),
+        ...(route.rung === undefined ? {} : { rung: route.rung }),
+        attempt,
+      },
+      executionNodeId: nodeId,
+    });
+    return { agent, executionToken, routingDecision };
+  }
+
+  /** The agent started and its process launched, on the worktree already prepared. */
+  async function startAttempt(identity: AttemptIdentity, worktree: string): Promise<Attempt> {
+    const { agent, executionToken, routingDecision } = identity;
+    const agentId = agent.agentId;
     const startedAgent = transitionAgent(agent, "start", { at: nowIso(clock) });
     await stores.agents.put(startedAgent);
 
@@ -375,7 +520,7 @@ export const startJob = async (
     // handed a process to spawn; the tools are the same four operations as
     // functions, over stores that hold this worker's token and nothing else. Which
     // one a worker's calls arrive through is the adapter's business, and never both.
-    const identity: WorkerLaunchIdentity = {
+    const launchIdentity: WorkerLaunchIdentity = {
       projectId: session.scope.projectId,
       programId: session.scope.programId,
       runId: session.scope.runId,
@@ -394,7 +539,7 @@ export const startJob = async (
           "a sub-program's orchestrator reaches Nightshift through its MCP launch",
         )
       : createWorkerTools(
-          environment.workerEnvironment(identity),
+          environment.workerEnvironment(launchIdentity),
           {
             scope: session.scope,
             executionNodeId: nodeId,
@@ -413,11 +558,12 @@ export const startJob = async (
         job: input.job,
         program: session.program,
         worktree,
-        model: input.route.target,
-        mcp: input.mcp(identity),
+        model: routingDecision.chosen,
+        mcp: input.mcp(launchIdentity),
         tools,
         sink,
         transcriptPath: transcript,
+        ...(input.task === undefined ? {} : { task: input.task }),
       });
     } catch (error) {
       // The adapter could not even attempt a launch. The node and agent already
@@ -432,53 +578,7 @@ export const startJob = async (
       // The node is ended by `failStart`, like every other failure to launch.
       throw new Error(reason, { cause: error });
     }
-
-    outbox.emit({
-      type: "node.started",
-      source: "control-plane",
-      payload: { worktree, branch, base, pid: handle.pid ?? null },
-      executionNodeId: nodeId,
-      agentId,
-    });
-
-    let stopMode: "cancelled" | "interrupted" | undefined;
-    const completion = (orchestrates ? finishSubProgram : finishJob)(environment, {
-      session,
-      job: input.job,
-      nodeId,
-      agentId,
-      worktree,
-      branch,
-      base,
-      handle,
-      sink,
-      stopMode: () => stopMode,
-      routingDecision,
-      startedAtMs: clock.now(),
-      ...(input.integrate === undefined ? {} : { integrate: input.integrate }),
-    });
-
-    const stop = async (mode: "cancelled" | "interrupted"): Promise<void> => {
-      // Set before the cancel, so the lifecycle knows why the process stopped by
-      // the time it observes the exit.
-      stopMode ??= mode;
-      await environment.harness.cancel(
-        handle,
-        millis(environment.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS),
-      );
-      await completion;
-    };
-
-    return {
-      jobContractId: input.job.jobContractId,
-      nodeId,
-      agentId,
-      worktree,
-      pid: handle.pid,
-      completion,
-      stop,
-      cancel: () => stop("cancelled"),
-    };
+    return { agentId, handle, sink, routingDecision, startedAtMs: clock.now() };
   }
 
   /** A launch that failed after the slot was taken: the node ends, durably. */
@@ -522,7 +622,7 @@ const finishSubProgram = async (
   const { stores, clock, outbox } = environment;
   let usage: RouteUsage | undefined;
   try {
-    const settledExit = await input.handle.exit;
+    const settledExit = await input.current().handle.exit;
     if (settledExit.kind === "completed" || settledExit.kind === "failed")
       usage = settledExit.usage;
     const { exit, reason } = observed(input, settledExit);
@@ -545,7 +645,7 @@ const finishSubProgram = async (
         source: "control-plane",
         payload: { reason: why },
         executionNodeId: input.nodeId,
-        agentId: input.agentId,
+        agentId: input.current().agentId,
       });
     }
   } catch (error) {
@@ -599,20 +699,127 @@ interface FinishInput {
   readonly session: RunSession;
   readonly job: JobContract;
   readonly nodeId: ExecutionNodeId;
-  readonly agentId: AgentId;
   readonly worktree: string;
   readonly branch: string;
   readonly base: CommitSha;
-  readonly handle: HarnessHandle;
-  /** The sink the adapter was given, so the ending is emitted once. */
-  readonly sink: RecordingHookSink;
+  /** The attempt now running. A fallback replaces it (D-P8-06). */
+  current(): Attempt;
   /** Why we asked the worker to stop, when we did. See `StartedJob.stop`. */
   stopMode(): "cancelled" | "interrupted" | undefined;
-  /** As recorded before the work began: `usage` empty, `outcome` pending (A-13). */
-  readonly routingDecision: RoutingDecision;
-  readonly startedAtMs: number;
+  /** Starts the job again on the next route when this one could not start, or says there is none. */
+  relaunch(failed: RouteTarget): Promise<Attempt | undefined>;
   readonly integrate?: IntegrateCandidate;
 }
+
+/**
+ * Examination beside the merge queue (P8, D-P8-09, D-P8-13). True when the work
+ * may go on to the queue: nothing was required, it cleared, or its checks wait on
+ * a human and it is examined at resume. Otherwise the node has been ended here,
+ * with the examination's reason, and nothing else sees it.
+ */
+const examinedBesideQueue = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+  node: ExecutionNode,
+): Promise<boolean> => {
+  if (node.commitSha === null) return true;
+  const outcome = await examine(environment, {
+    session: input.session,
+    job: input.job,
+    node,
+    commitSha: node.commitSha,
+    base: input.base,
+    phase: "candidate",
+  });
+  switch (outcome.kind) {
+    case "not_required":
+    case "cleared":
+    case "postponed":
+      return true;
+    case "candidate_failed":
+      await endExamined(environment, input, "verification_failed", undefined, outcome.verification);
+      return false;
+    case "blocked":
+    case "upheld":
+    case "examiner_failed":
+      await endExamined(environment, input, "fail", outcome.reason);
+      return false;
+  }
+};
+
+/** An implemented node the examination stopped, ended durably (D-P8-13). */
+const endExamined = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+  how: "fail" | "verification_failed",
+  reason: string | undefined,
+  verification?: Verification,
+): Promise<void> => {
+  const { stores, clock, outbox } = environment;
+  const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
+  if (node === undefined || node.status !== "implemented") return;
+  if (how === "verification_failed" && verification !== undefined) {
+    // The check on its own base failed, as it would have in the queue.
+    const verifying = transition(node, "begin_verification", nowIso(clock));
+    await stores.executionNodes.put(verifying);
+    await stores.executionNodes.put(markVerificationFailed(verifying, verification, nowIso(clock)));
+    outbox.emit({
+      type: "verification.completed",
+      source: "control-plane",
+      payload: {
+        verificationId: verification.verificationId,
+        outcome: "failed",
+        phase: "candidate",
+      },
+      executionNodeId: input.nodeId,
+      agentId: input.current().agentId,
+    });
+    return;
+  }
+  const why = reason ?? "examination_failed";
+  await stores.executionNodes.put({
+    ...transition(node, "fail", nowIso(clock)),
+    outcomeReason: why,
+  });
+  outbox.emit({
+    type: "node.failed",
+    source: "control-plane",
+    payload: { reason: why },
+    executionNodeId: input.nodeId,
+    agentId: input.current().agentId,
+  });
+};
+
+/**
+ * The exit of the last attempt, after every fallback (P8, D-P8-06). A route that
+ * could not start is not how the job ended: its attempt is recorded
+ * `unavailable` and the next route starts on the same node, until one starts or
+ * none is left. `recorded` is true when the last attempt's ending is already on
+ * the record, because nothing was left to fall back to.
+ */
+const throughFallbacks = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+): Promise<{ readonly exit: HarnessExit; readonly recorded: boolean }> => {
+  let exit = await input.current().handle.exit;
+  while (
+    exit.kind === "failed" &&
+    exit.unavailable !== undefined &&
+    input.stopMode() === undefined
+  ) {
+    const refused = input.current();
+    await recordAgentEnd(environment, input, exit, `route_unavailable: ${exit.unavailable}`);
+    await uploadTranscript(environment, input);
+    await recordRouteResult(environment, input, exit.usage, "unavailable");
+    const next = await input.relaunch(refused.routingDecision.chosen).catch(() => undefined);
+    if (next === undefined) {
+      const unavailable = `${exit.unavailable}; and no other route on this run's ladders could start`;
+      return { exit: { ...exit, unavailable }, recorded: true };
+    }
+    exit = await next.handle.exit;
+  }
+  return { exit, recorded: false };
+};
 
 /**
  * Everything after the worker is running: wait for it, record how it ended, and
@@ -626,14 +833,25 @@ interface FinishInput {
 const finishJob = async (environment: ExecutionEnvironment, input: FinishInput): Promise<void> => {
   const { stores, clock, outbox } = environment;
   let usage: RouteUsage | undefined;
+  let recorded = false;
   try {
-    const settledExit = await input.handle.exit;
+    const fallen = await throughFallbacks(environment, input);
+    const settledExit = fallen.exit;
+    recorded = fallen.recorded;
     if (settledExit.kind === "completed" || settledExit.kind === "failed") {
       usage = settledExit.usage;
     }
-    const { exit, reason } = observed(input, settledExit);
-    await recordAgentEnd(environment, input, exit, reason);
-    await uploadTranscript(environment, input);
+    const { exit, reason: described } = observed(input, settledExit);
+    // A route that could not start, and nowhere left to go (D-P8-06): the reason
+    // says so, and a retry of it will not climb (`failureClimbs`).
+    const reason =
+      exit.kind === "failed" && exit.unavailable !== undefined
+        ? `route_unavailable: ${exit.unavailable}`
+        : described;
+    if (!recorded) {
+      await recordAgentEnd(environment, input, exit, reason);
+      await uploadTranscript(environment, input);
+    }
 
     const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
     if (node === undefined) return;
@@ -660,10 +878,14 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
         source: "control-plane",
         payload: { reason },
         executionNodeId: input.nodeId,
-        agentId: input.agentId,
+        agentId: input.current().agentId,
       });
       return;
     }
+
+    // P8 (D-P8-09): examined beside the queue, when the run's policy says so,
+    // before anything else sees it. A job the examination stops ends here.
+    if (!(await examinedBesideQueue(environment, input, node))) return;
 
     // With several jobs in flight the branch has one door, and it is the
     // engine's merge queue (D-P6-05). Its promise settles when this node is
@@ -674,7 +896,7 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
         session: input.session,
         job: input.job,
         nodeId: input.nodeId,
-        agentId: input.agentId,
+        agentId: input.current().agentId,
         worktree: input.worktree,
         branch: input.branch,
         base: input.base,
@@ -686,7 +908,7 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
       session: input.session,
       job: input.job,
       nodeId: input.nodeId,
-      agentId: input.agentId,
+      agentId: input.current().agentId,
       worktree: input.worktree,
       branch: input.branch,
       base: input.base,
@@ -696,7 +918,7 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
     // and a promise rejected into the void.
     await failHard(environment, input, error);
   } finally {
-    await recordRouteResult(environment, input, usage);
+    if (!recorded) await recordRouteResult(environment, input, usage);
   }
 };
 
@@ -713,17 +935,26 @@ const recordRouteResult = async (
   environment: ExecutionEnvironment,
   input: FinishInput,
   reported: RouteUsage | undefined,
+  /** P8: `unavailable` for an attempt whose route could not start (D-P8-06). */
+  ending?: RouteOutcome,
 ): Promise<void> => {
   try {
+    const attempt = input.current();
     const node = await environment.stores.executionNodes.get(input.session.scope, input.nodeId);
-    const outcome = routeOutcomeForNodeStatus(node?.status ?? "failed");
+    const outcome = ending ?? routeOutcomeForNodeStatus(node?.status ?? "failed");
     if (outcome === "pending") return;
+    // Dollars as the harness reported them, else estimated from the run's price
+    // table, and labelled either way (D-P8-08).
+    const prices = input.session.run.policy?.routingPolicy.prices ?? {};
     await environment.stores.routingDecisions.put({
-      ...input.routingDecision,
-      usage: {
-        wallClockMs: Math.max(0, Math.round(environment.clock.now() - input.startedAtMs)),
-        ...reported,
-      },
+      ...attempt.routingDecision,
+      usage: labelCost(
+        {
+          wallClockMs: Math.max(0, Math.round(environment.clock.now() - attempt.startedAtMs)),
+          ...reported,
+        },
+        prices[attempt.routingDecision.chosen.model],
+      ),
       outcome,
     });
   } catch {
@@ -757,6 +988,18 @@ const observed = (input: FinishInput, exit: HarnessExit): Observed => {
   };
 };
 
+/** The agent table's event for an ending status. */
+const AGENT_EVENT_FOR = {
+  completed: "complete",
+  failed: "fail",
+  cancelled: "cancel",
+  interrupted: "interrupt",
+} as const;
+
+/** The harness's own session id, from an exit that can carry one. */
+const sessionOf = (exit: HarnessExit): string | undefined =>
+  exit.kind === "completed" || exit.kind === "failed" ? exit.sessionId : undefined;
+
 const recordAgentEnd = async (
   environment: ExecutionEnvironment,
   input: FinishInput,
@@ -764,25 +1007,19 @@ const recordAgentEnd = async (
   reason: string,
 ): Promise<void> => {
   const { stores, clock, outbox } = environment;
-  const agent = await stores.agents.get(input.session.scope, input.agentId);
+  const agent = await stores.agents.get(input.session.scope, input.current().agentId);
   if (agent === undefined || agent.status !== "started") return;
 
   const status = agentStatusForExit(exit);
-  const event =
-    status === "completed"
-      ? "complete"
-      : status === "failed"
-        ? "fail"
-        : status === "cancelled"
-          ? "cancel"
-          : "interrupt";
-  await stores.agents.put(
-    transitionAgent(agent, event, {
-      at: nowIso(clock),
-      ...(status === "completed" ? {} : { outcomeReason: reason }),
-      ...(exit.kind === "failed" ? { exitCode: exit.exitCode } : {}),
-    }),
-  );
+  const event = AGENT_EVENT_FOR[status as keyof typeof AGENT_EVENT_FOR] ?? "interrupt";
+  const ended = transitionAgent(agent, event, {
+    at: nowIso(clock),
+    ...(status === "completed" ? {} : { outcomeReason: reason }),
+    ...(exit.kind === "failed" ? { exitCode: exit.exitCode } : {}),
+  });
+  // P8 (D-P8-15): the session an examiner's question resumes, where the harness kept one.
+  const sessionId = sessionOf(exit);
+  await stores.agents.put(sessionId === undefined ? ended : { ...ended, sessionId });
   // The agent *record* is always this layer's to write — only the execution
   // layer may — but the ending *event* belongs to whoever observed it. A
   // well-behaved adapter already emitted one, from the same `hookTypeForExit`
@@ -791,7 +1028,7 @@ const recordAgentEnd = async (
   // `agent.completed` events for one agent. So this is a backstop, for the
   // harness that reports nothing at all — which D-P3-09 requires to leave
   // terminal state behind regardless.
-  if (!input.sink.sawEnding()) {
+  if (!input.current().sink.sawEnding()) {
     outbox.emit({
       type: hookTypeForExit(exit),
       source: "hook",
@@ -800,7 +1037,7 @@ const recordAgentEnd = async (
         ...(exit.kind === "interrupted" ? { signal: exit.signal } : {}),
       },
       executionNodeId: input.nodeId,
-      agentId: input.agentId,
+      agentId: input.current().agentId,
     });
   }
 };
@@ -810,7 +1047,7 @@ const uploadTranscript = async (
   environment: ExecutionEnvironment,
   input: FinishInput,
 ): Promise<void> => {
-  const path = input.handle.transcript;
+  const path = input.current().handle.transcript;
   if (path === undefined) return;
   const { readFile } = await import("node:fs/promises");
   let bytes: Uint8Array;
@@ -912,7 +1149,7 @@ const endUnfinished = async (
       worktree: input.worktree,
     },
     executionNodeId: input.nodeId,
-    agentId: input.agentId,
+    agentId: input.current().agentId,
   });
 };
 
@@ -940,7 +1177,7 @@ const failHard = async (
       source: "control-plane",
       payload: { reason },
       executionNodeId: input.nodeId,
-      agentId: input.agentId,
+      agentId: input.current().agentId,
     });
   } catch {
     // The control plane is unreachable too. The outbox holds what it can and

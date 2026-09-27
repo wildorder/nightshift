@@ -14,6 +14,7 @@ import {
   ExecutionNodeSchema,
   JobContractSchema,
   MembershipSchema,
+  OrgConfigSchema,
   ProgramContractSchema,
   ProjectSchema,
   RoutingDecisionSchema,
@@ -28,12 +29,13 @@ import {
   type PageRequest,
   type ProjectStore,
   runScopeOf,
+  StaleWriteError,
 } from "@nightshift/core";
 import { createEventStore } from "./events.js";
 import { fromItem, type Item, type Parser, toItem } from "./items.js";
 import { keys, type NodeIndexKey, type TableKey } from "./keys.js";
 import { type PartitionQuery, queryAll, queryPage } from "./query.js";
-import { conditionFailures, type TableClient } from "./table-client.js";
+import { conditionFailures, isConditionalCheckFailure, type TableClient } from "./table-client.js";
 
 export interface AwsStoresConfig {
   readonly tableName: string;
@@ -312,6 +314,34 @@ export const createAwsStores = ({ tableName, table }: AwsStoresConfig): Nightshi
         await putRecord("Membership", keys.membership(parsed.userId, parsed.orgId), parsed);
       },
       listByUser: (userId) => listAll(MembershipSchema, inTable(keys.membershipPartition(userId))),
+    },
+
+    // A compare-and-swap on `version`, in the table, so two writers cannot both
+    // win (D-P8-02). The first write of an org's config finds no row.
+    orgConfigs: {
+      get: (orgId) => getRecord(OrgConfigSchema, keys.orgConfig(orgId)),
+      put: async (config) => {
+        const parsed = OrgConfigSchema.parse(config);
+        const previous = parsed.version - 1;
+        try {
+          await table.put({
+            TableName: tableName,
+            Item: toItem("OrgConfig", keys.orgConfig(parsed.orgId), parsed),
+            ConditionExpression:
+              previous === 0 ? "attribute_not_exists(#pk)" : "#version = :previous",
+            ExpressionAttributeNames: previous === 0 ? { "#pk": "PK" } : { "#version": "version" },
+            ...(previous === 0 ? {} : { ExpressionAttributeValues: { ":previous": previous } }),
+          });
+        } catch (error) {
+          if (!isConditionalCheckFailure(error)) throw error;
+          const stored = await getRecord(OrgConfigSchema, keys.orgConfig(parsed.orgId));
+          throw new StaleWriteError(
+            `the configuration of ${parsed.orgId}`,
+            previous,
+            stored?.version ?? 0,
+          );
+        }
+      },
     },
   };
 };

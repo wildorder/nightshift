@@ -44,6 +44,7 @@ import type {
   Run,
   Verification,
 } from "@nightshift/contracts";
+import { DEFAULT_EXAMINATION_POLICY, DEFAULT_ROUTING_POLICY } from "@nightshift/contracts";
 import {
   createFixedClock,
   createFixtures,
@@ -67,6 +68,7 @@ import {
   type ProjectStores,
   rejectionOf,
   ScopeWideningError,
+  StaleWriteError,
 } from "@nightshift/core";
 import {
   ControlPlaneError,
@@ -105,6 +107,7 @@ const PORT_METHODS = {
   examinations: ["put", "get", "listByNode"],
   routingDecisions: ["put", "listByNode"],
   artifacts: ["put", "get", "listByRun"],
+  orgConfigs: ["get", "put"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
 /** `store.method` for every entry above. */
@@ -445,7 +448,7 @@ describe("decisions, checkpoints, verifications, examinations and routing", () =
     ]);
   });
 
-  it("round trips an examination, which nothing in P3 writes (D-P3-07)", async () => {
+  it("round trips an examination (P8)", async () => {
     const { root } = await seed();
     const verification = makeVerification(world.f, root);
     await world.http.verifications.put(verification);
@@ -457,9 +460,14 @@ describe("decisions, checkpoints, verifications, examinations and routing", () =
       executionNodeId: root.executionNodeId,
       verificationId: verification.verificationId,
       commitSha: verification.commitSha,
+      patchId: "0".repeat(40),
       implementerAgentId: world.f.ids.next("agent"),
       examinerAgentId: world.f.ids.next("agent"),
+      examinerRoute: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
       requiredByRisk: "high" as const,
+      blocking: true,
+      fixAttempt: 0,
+      questions: [],
       outcome: "passed" as const,
       findings: [],
       createdAt: NOW,
@@ -471,6 +479,26 @@ describe("decisions, checkpoints, verifications, examinations and routing", () =
     expect(await world.http.examinations.listByNode(examination, root.executionNodeId)).toEqual([
       examination,
     ]);
+  });
+
+  it("round trips an org's configuration, and refuses a stale write (P8, D-P8-02)", async () => {
+    expect(await world.http.orgConfigs.get(world.orgId)).toBeUndefined();
+    const first = {
+      schemaVersion: 1 as const,
+      orgId: world.orgId,
+      routingPolicy: DEFAULT_ROUTING_POLICY,
+      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      version: 1,
+      updatedAt: NOW,
+    };
+    await world.http.orgConfigs.put(first);
+    const stored = await world.http.orgConfigs.get(world.orgId);
+    expect(stored?.version).toBe(1);
+    expect(stored?.routingPolicy).toEqual(DEFAULT_ROUTING_POLICY);
+    // Another writer read version 0 too: refused, and nothing changes.
+    await expect(world.http.orgConfigs.put(first)).rejects.toBeInstanceOf(StaleWriteError);
+    await world.http.orgConfigs.put({ ...first, version: 2 });
+    expect((await world.http.orgConfigs.get(world.orgId))?.version).toBe(2);
   });
 
   it("round trips a routing decision and lists a node's routing decisions", async () => {

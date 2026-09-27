@@ -216,7 +216,7 @@ const constructAdapter = (harness: string, env: Env): Harness => {
     case "codex":
       return createCodexHarness({ env });
     default:
-      // `configuredRoute` refuses a harness with no adapter before anything is
+      // `ruleRoute` refuses a harness the compatibility table does not know before anything is
       // persisted, so this is a bug in the table rather than a user's mistake.
       throw new Error(`no adapter is wired for the "${harness}" harness`);
   }

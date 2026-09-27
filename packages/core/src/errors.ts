@@ -19,7 +19,8 @@ export type DomainErrorCode =
   | "outcome_required"
   | "verification_evidence"
   | "decision_authority"
-  | "reversibility_softened";
+  | "reversibility_softened"
+  | "stale_write";
 
 export abstract class DomainError extends Error {
   abstract readonly code: DomainErrorCode;
@@ -182,6 +183,24 @@ export class ReversibilitySoftenedError extends DomainError {
     readonly to: string,
   ) {
     super(`reversibility cannot be softened from "${from}" to "${to}"`);
+  }
+}
+
+/**
+ * A versioned write named a version the stored record is no longer at (P8,
+ * D-P8-02): someone else wrote in between. Read it again and reapply.
+ */
+export class StaleWriteError extends DomainError {
+  readonly code = "stale_write" as const;
+
+  constructor(
+    readonly record: string,
+    readonly expected: number,
+    readonly actual: number,
+  ) {
+    super(
+      `${record} is at version ${actual}, not ${expected}; read it again and reapply the change`,
+    );
   }
 }
 

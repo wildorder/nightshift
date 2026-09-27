@@ -88,6 +88,8 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       routingDecisionId: f.ids.next("route"),
       artifactId: f.ids.next("art"),
       // Program-scoped planning routes (P7): named by a digest and an `HP-nn`, not by an id.
+      // P8: an org's own configuration routes are named by the org.
+      orgId,
       sha256: "a".repeat(64),
       prerequisiteId: "HP-01",
       agentId: agent.agentId,

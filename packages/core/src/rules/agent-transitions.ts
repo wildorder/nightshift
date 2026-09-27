@@ -146,6 +146,9 @@ export const explainAgentUpdate = (existing: Agent, next: Agent): readonly strin
   if (existing.endedAt !== undefined && next.endedAt !== existing.endedAt) {
     reasons.push("endedAt cannot change once it is set");
   }
+  if (existing.sessionId !== undefined && next.sessionId !== existing.sessionId) {
+    reasons.push("sessionId cannot change once it is set");
+  }
   return reasons;
 };
 

@@ -91,6 +91,16 @@ export const EventTypeSchema = z.enum([
   "verification.completed",
   "examination.requested",
   "examination.completed",
+  /** Added in P8 (D-P8-15). The examiner put questions to the builder. Payload: the questions. */
+  "examination.asked",
+  /** Added in P8 (D-P8-15). The builder answered. Payload: the answers, and how. */
+  "examination.answered",
+  /** Added in P8 (D-P8-13). An orchestrator disputed a finding. Payload: which, and why. */
+  "finding.disputed",
+  /** Added in P8 (D-P8-13). An arbiter ruled on a finding. Payload: the ruling and its decision. */
+  "finding.ruled",
+  /** Added in P8 (D-P8-08). A budget is spent; nothing new starts. Payload: which and how much. */
+  "run.budget_spent",
   // Decisions, checkpoints, routing, artifacts.
   "decision.recorded",
   "decision.overridden",

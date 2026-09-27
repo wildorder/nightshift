@@ -253,16 +253,35 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     executionNodeId: EXAMPLE_IDS.jobNodeId,
     verificationId: EXAMPLE_IDS.verificationId,
     commitSha: COMMIT,
+    patchId: "89abcdef0123456789abcdef0123456789abcdef",
     implementerAgentId: EXAMPLE_IDS.workerAgentId,
     examinerAgentId: EXAMPLE_IDS.examinerAgentId,
+    examinerRoute: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
     requiredByRisk: "medium",
+    blocking: false,
+    fixAttempt: 0,
+    questions: [
+      {
+        question: "Is the index meant to be irreversible?",
+        answer: "No; the down path was left out by mistake.",
+        answeredBy: "resumed_session",
+      },
+    ],
     outcome: "findings_raised",
     findings: [
       {
         id: "F-01",
         severity: "minor",
         summary: "Migration lacks a down path for the new index.",
-        evidence: "migrations/0007_tenant_owner.sql defines up only.",
+        evidence: [
+          {
+            kind: "location",
+            path: "migrations/0007_tenant_owner.sql",
+            startLine: 1,
+            endLine: 12,
+            note: "defines up only",
+          },
+        ],
         resolution: "unresolved",
       },
     ],

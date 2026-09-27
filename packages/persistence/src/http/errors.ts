@@ -35,6 +35,7 @@ import {
   OwnershipViolationError,
   ReversibilitySoftenedError,
   ScopeWideningError,
+  StaleWriteError,
   TreeStructureError,
   VerificationEvidenceError,
 } from "@nightshift/core";
@@ -89,6 +90,7 @@ const DOMAIN_ERRORS: Readonly<Record<DomainErrorCode, (message: string) => Domai
   decision_authority: (message) => new DecisionAuthorityError(message),
   reversibility_softened: () => new ReversibilitySoftenedError("", ""),
   outcome_required: () => new OutcomeReasonRequiredError("run", ""),
+  stale_write: () => new StaleWriteError("", 0, 0),
 };
 
 const isDomainErrorCode = (code: string): code is DomainErrorCode =>

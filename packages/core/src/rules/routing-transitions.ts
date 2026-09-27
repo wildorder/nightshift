@@ -30,6 +30,7 @@ export const ROUTE_TERMINAL_OUTCOMES: readonly RouteOutcome[] = [
   "failed",
   "escalated",
   "cancelled",
+  "unavailable",
 ];
 
 export const isRouteOutcomeTerminal = (outcome: RouteOutcome): boolean => outcome !== "pending";
@@ -48,6 +49,11 @@ export const IMMUTABLE_ROUTING_FIELDS = [
   "ruleId",
   "wasOverride",
   "previousRouteId",
+  "ladder",
+  "rung",
+  "classification",
+  "policyVersion",
+  "purpose",
   "createdAt",
 ] as const satisfies readonly (keyof RoutingDecision)[];
 

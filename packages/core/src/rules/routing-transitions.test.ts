@@ -71,7 +71,14 @@ describe("routing decision updates (D-P5-06)", () => {
   });
 
   it("holds every other field immutable, and says which", () => {
-    const decision = recorded();
+    const decision: RoutingDecision = {
+      ...recorded(),
+      ladder: "claude",
+      rung: { tier: "standard", index: 1 },
+      classification: { risk: "low", ambiguity: "low", testability: "weak" },
+      policyVersion: 1,
+      purpose: "examine",
+    };
     const changes: Partial<RoutingDecision> = {
       attempt: 2,
       chosen: { harness: "codex", provider: "openai", model: "x" },

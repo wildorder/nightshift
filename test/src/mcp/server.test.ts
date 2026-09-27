@@ -177,6 +177,8 @@ describe("the role split (D-P3-01)", () => {
       "decision.record",
       "delegate",
       "execution.status",
+      // P8: a job an examiner stopped may be disputed, and an arbiter rules (D-P8-13).
+      "finding.dispute",
       "job.cancel",
       "job.get",
       "job.retry",
@@ -280,7 +282,10 @@ describe("the role split (D-P3-01)", () => {
     expect(roleFrom({})).toBe("orchestrator");
     expect(roleFrom({ NIGHTSHIFT_ROLE: "" })).toBe("orchestrator");
     expect(roleFrom({ NIGHTSHIFT_ROLE: "worker" })).toBe("worker");
-    expect(() => roleFrom({ NIGHTSHIFT_ROLE: "examiner" })).toThrow(/orchestrator/);
+    // P8: an examiner and an arbiter are roles of their own (D-P8-10, D-P8-13).
+    expect(roleFrom({ NIGHTSHIFT_ROLE: "examiner" })).toBe("examiner");
+    expect(roleFrom({ NIGHTSHIFT_ROLE: "arbiter" })).toBe("arbiter");
+    expect(() => roleFrom({ NIGHTSHIFT_ROLE: "answerer" })).toThrow(/orchestrator/);
   });
 });
 
@@ -466,7 +471,7 @@ describe("delegate's refusals are typed (§4.5)", () => {
     await mcp.stop();
   });
 
-  it("refuses a risk whose examination policy requires an examiner (D-P3-07)", async () => {
+  it("delegates work whose risk requires an examiner, now that examination exists (D-P8-09; was D-P3-07's refusal)", async () => {
     const world = await createBaseWorld({
       program: {
         examinationPolicy: {
@@ -493,10 +498,10 @@ describe("delegate's refusals are typed (§4.5)", () => {
     });
     const mcp = await attached(world);
     const result = await mcp.call("delegate", { ...DELEGATION, risk: "high" });
-    expect(result.ok).toBe(false);
-    expect(result.code).toBe("examination_unavailable");
-    // Refused loudly, and it says what to do instead of pretending.
-    expect(String(result.message)).toContain("P8");
+    // P3 refused this until examination existed. The engine examines it beside
+    // the merge queue now; delegation is no longer where the policy bites.
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.jobId).toBeDefined();
     await mcp.stop();
   });
 

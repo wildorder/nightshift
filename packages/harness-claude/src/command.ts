@@ -23,7 +23,7 @@
  *   --setting-sources ""                load no user, project or local settings
  *   --permission-mode bypassPermissions every tool, never a prompt (see `permissions.ts`)
  *   --disallowedTools <csv>             git writes, always (A-29)
- *   --no-session-persistence            nothing resumable is written to disk
+ *   --resume <session>                  P8, D-P8-15: continue a kept session (answers, round 2)
  * ```
  *
  * Four things about that ordering and shape are load-bearing rather than taste:
@@ -59,7 +59,10 @@
  *   with no hook configured (see `stream.ts`) it adds nothing.
  * - `--max-budget-usd` — cost policy lives on the Program Contract and is the
  *   execution layer's to enforce, not a flag this adapter invents.
- * - `--resume` / `--continue` / `--fork-session` — a job is one run.
+ * - `--continue` / `--fork-session` — a job is one run; `--resume` is passed only
+ *   to continue a session by its id, for an examiner's questions (P8, D-P8-15).
+ * - `--no-session-persistence` — dropped in P8: an examiner's question resumes
+ *   the builder's own session, so sessions are kept (D-P8-15).
  * - `--bare` / `--safe-mode` / `--restricted` — each changes authentication or
  *   the tool set in ways that would silently contradict the policy above.
  */
@@ -91,6 +94,8 @@ export interface ClaudeCommandInput {
   /** Absolute path to the `--settings` file this adapter wrote. */
   readonly settingsPath: string;
   readonly policy: ClaudeToolPolicy;
+  /** P8 (D-P8-15): the session to continue, for an answering builder or an examiner's second round. */
+  readonly resumeSessionId?: string;
 }
 
 /**
@@ -108,6 +113,8 @@ export const buildClaudeArgs = (input: ClaudeCommandInput): readonly string[] =>
   "--verbose",
   "--model",
   input.model.model,
+  // P8: a rung may name a reasoning effort; absent, Claude's own default applies.
+  ...(input.model.effort === undefined ? [] : ["--effort", input.model.effort]),
   "--mcp-config",
   input.mcpConfigPath,
   "--strict-mcp-config",
@@ -121,7 +128,9 @@ export const buildClaudeArgs = (input: ClaudeCommandInput): readonly string[] =>
   input.policy.permissionMode,
   "--disallowedTools",
   list(input.policy.denied),
-  "--no-session-persistence",
+  // P8 (D-P8-15): sessions are kept, so an examiner's question can resume the
+  // builder that did the work. Resuming continues one by id; nothing else is.
+  ...(input.resumeSessionId === undefined ? [] : ["--resume", input.resumeSessionId]),
 ];
 
 /**
@@ -146,6 +155,9 @@ export const buildMcpConfig = (mcp: McpLaunch): string =>
     null,
     2,
   )}\n`;
+
+/** A `--mcp-config` with no server: an agent that reaches no Nightshift tool (D-P8-15). */
+export const buildEmptyMcpConfig = (): string => `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`;
 
 /**
  * The `--settings` file's contents.

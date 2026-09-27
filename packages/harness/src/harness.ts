@@ -43,11 +43,16 @@ import type {
   Agent,
   AgentId,
   AgentStatus,
+  ExaminationFinding,
+  ExaminationQuestion,
+  ExaminationRuling,
   ExecutionNode,
   JobContract,
   ProgramContract,
+  RiskLevel,
   RouteTarget,
   RouteUsage,
+  VerificationCommandResult,
 } from "@nightshift/contracts";
 import type { HookSink } from "./hooks.js";
 import type { WorkerTools } from "./tools.js";
@@ -77,6 +82,76 @@ export interface McpLaunch {
   readonly env: Readonly<Record<string, string>>;
 }
 
+/**
+ * The evidence an examiner is given (P8, D-P8-11): what was asked for, what was
+ * changed, and what the checks said. Never the implementer's summary,
+ * transcript or commit message.
+ */
+export interface ExaminationEvidence {
+  /** The diff under examination, from the base the work was cut from. Possibly truncated. */
+  readonly diff: string;
+  readonly diffTruncated: boolean;
+  /** Paths the diff touches that look like tests. */
+  readonly changedTests: readonly string[];
+  /** The candidate verification, step by step, with the tail of each log. */
+  readonly verification: readonly (Pick<
+    VerificationCommandResult,
+    "stepId" | "command" | "exitCode"
+  > & {
+    readonly logTail?: string;
+  })[];
+  readonly risk: RiskLevel;
+  /** Whether a material finding will stop this work landing (D-P8-13). */
+  readonly blocking: boolean;
+  /** 0 for the first attempt; 1 or 2 for a fix. */
+  readonly fixAttempt: number;
+  /** A fix's examiner sees what the last examination found, so it can say whether it is fixed. */
+  readonly previousFindings?: readonly ExaminationFinding[];
+  /**
+   * The arbiter's rulings this attempt carried out (D-P8-13, as amended
+   * 2026-09-25). Present, the examiner judges only whether each was.
+   */
+  readonly rulings?: readonly ExaminationRuling[];
+}
+
+/**
+ * What an agent that is not a plain worker is there to do (P8). The brief is
+ * rendered from it, and the adapter passes nothing else differently.
+ */
+export type AgentTask =
+  /** Round 1: examine and submit, or ask the builder. Round 2: the answers, then submit. */
+  | {
+      readonly kind: "examine";
+      readonly evidence: ExaminationEvidence;
+      readonly round: 1 | 2;
+      readonly answers?: readonly ExaminationQuestion[];
+    }
+  /** Answer an examiner's questions about work this session did (D-P8-15). */
+  | {
+      readonly kind: "answer";
+      readonly questions: readonly string[];
+      /** Present when the session could not be resumed: the builder's own transcript, to answer from. */
+      readonly transcript?: string;
+    }
+  /** Rule on one disputed finding (D-P8-13). */
+  | {
+      readonly kind: "arbitrate";
+      readonly finding: ExaminationFinding;
+      readonly dispute: string;
+      readonly questions: readonly ExaminationQuestion[];
+      readonly diff: string;
+    }
+  /**
+   * A fix: the job again, with what the examiner found (D-P8-13). With
+   * `rulings`, the findings an arbiter upheld: final, and what this attempt
+   * must carry out.
+   */
+  | {
+      readonly kind: "fix";
+      readonly findings: readonly ExaminationFinding[];
+      readonly rulings?: readonly ExaminationRuling[];
+    };
+
 export interface HarnessStartInput {
   /** The execution identity, already persisted as `created` before this call (A-04). */
   readonly agent: Agent;
@@ -90,8 +165,18 @@ export interface HarnessStartInput {
   readonly worktree: string;
   /** Harness, provider and model, as routing chose them (D-P3-08). */
   readonly model: RouteTarget;
-  /** The worker's Nightshift MCP server. Passed through unchanged. */
-  readonly mcp: McpLaunch;
+  /**
+   * The worker's Nightshift MCP server. Passed through unchanged. Absent for an
+   * agent that reaches no Nightshift tool at all: an answering builder (D-P8-15).
+   */
+  readonly mcp?: McpLaunch;
+  /** P8: what an examiner, an arbiter, an answerer or a fix is there to do. Absent for plain work. */
+  readonly task?: AgentTask;
+  /**
+   * P8 (D-P8-15): continue this harness session rather than start one. The
+   * adapter resumes it with the brief as the next message.
+   */
+  readonly resume?: { readonly sessionId: string };
   /**
    * The same four operations that server exposes, as functions, for a harness
    * that cannot be handed a process to spawn (rule 6). Built by the execution
@@ -111,12 +196,31 @@ export interface HarnessStartInput {
 /** Why a worker process stopped. Exactly one of these settles `HarnessHandle.exit`. */
 export type HarnessExit =
   /** The process ended cleanly and the provider reported a final result. */
-  | { readonly kind: "completed"; readonly usage?: RouteUsage }
+  | {
+      readonly kind: "completed";
+      readonly usage?: RouteUsage;
+      /** The harness's own session id, when it keeps one (P8, D-P8-15). */
+      readonly sessionId?: string;
+      /** The model's final message, where the harness reports one: an answerer's answers. */
+      readonly result?: string;
+    }
   /**
    * The process ended without completing: a non-zero exit, a stream that ended
    * with no result, or a launch that never got off the ground.
    */
-  | { readonly kind: "failed"; readonly exitCode: number; readonly usage?: RouteUsage }
+  | {
+      readonly kind: "failed";
+      readonly exitCode: number;
+      readonly usage?: RouteUsage;
+      readonly sessionId?: string;
+      /**
+       * P8 (D-P8-06): set when the route **could not start** — not signed in, the
+       * model not offered, rate-limited — before any work began. Only the adapter
+       * can tell that from a run that started and failed, so it says so here, with
+       * the provider's own words. The execution layer falls back on it.
+       */
+      readonly unavailable?: string;
+    }
   /**
    * The process was killed by a signal. Windows reports no signal for a killed
    * process, so an adapter on Windows returns `failed` with the exit code
@@ -229,4 +333,27 @@ export const describeExit = (exit: HarnessExit): string => {
     case "cancelled":
       return "the worker process was cancelled";
   }
+};
+
+/**
+ * Whether a provider error before any work began means the **route** could not
+ * start (P8, D-P8-06): not signed in or not entitled (401, 403), the model not
+ * offered (404, or a 400 that says the model is not supported), or no capacity
+ * for it (429, 529). Shared so every adapter draws the line in the same place;
+ * each finds the status and the message in its own stream. `undefined` when the
+ * error is anything else, or work had already begun: that is a failure.
+ */
+export const routeUnavailableReason = (input: {
+  readonly status: number | undefined;
+  readonly message: string;
+  readonly workBegan: boolean;
+}): string | undefined => {
+  if (input.workBegan || input.status === undefined) return undefined;
+  const always = [401, 403, 404, 429, 529];
+  const aboutTheModel = input.status === 400 && /\bmodel\b/i.test(input.message);
+  if (!always.includes(input.status) && !aboutTheModel) return undefined;
+  return `the provider answered ${input.status} before any work began: ${input.message}`.slice(
+    0,
+    600,
+  );
 };

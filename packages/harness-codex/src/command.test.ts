@@ -44,7 +44,6 @@ describe("the command line (D-P5-02)", () => {
       'mcp_servers.nightshift.args=["/opt/nightshift/bin/nightshift-mcp.js"]',
       "-c",
       'mcp_servers.nightshift.env={"NIGHTSHIFT_ROLE" = "worker", "NIGHTSHIFT_EXECUTION_TOKEN" = "a.b\\"c\\\\d"}',
-      "--ephemeral",
       "--ignore-user-config",
       "--ignore-rules",
       "--skip-git-repo-check",
@@ -121,5 +120,40 @@ describe.skipIf(process.platform === "win32")("the git guard (rule 5)", () => {
   it("is not fooled by options in front of the subcommand", () => {
     expect(run(["-c", "user.name=x", "commit", "-m", "mine"]).code).toBe(126);
     expect(run(["--no-pager", "-C", "/somewhere", "push"]).code).toBe(126);
+  });
+});
+
+describe("a rung's reasoning effort (P8)", () => {
+  it("is passed as model_reasoning_effort when the route names one, and not otherwise", () => {
+    const base = {
+      prompt: "BRIEF",
+      worktree: "/state/wt/1",
+      mcp: MCP,
+    };
+    const withEffort = buildCodexArgs({
+      ...base,
+      model: { harness: "codex", provider: "openai", model: "gpt-6-sol", effort: "xhigh" },
+    });
+    expect(withEffort).toContain('model_reasoning_effort="xhigh"');
+    const without = buildCodexArgs({
+      ...base,
+      model: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
+    });
+    expect(without.some((arg) => arg.startsWith("model_reasoning_effort"))).toBe(false);
+  });
+});
+
+describe("resuming a thread (P8, D-P8-15)", () => {
+  it("is `exec resume`, with no -C and the thread before the brief", () => {
+    const args = buildCodexArgs({
+      prompt: "ANSWER",
+      model: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
+      worktree: "/state/wt/1",
+      resumeSessionId: "01a0d7e4-2e3c-7c23-9051-e526953d7a48",
+    });
+    expect(args.slice(0, 3)).toEqual(["exec", "resume", "--json"]);
+    expect(args).not.toContain("-C");
+    expect(args.slice(-2)).toEqual(["01a0d7e4-2e3c-7c23-9051-e526953d7a48", "ANSWER"]);
+    expect(args.join(" ")).not.toContain("mcp_servers");
   });
 });

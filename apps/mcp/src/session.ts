@@ -52,9 +52,9 @@ import {
   type WorkerLaunchIdentity,
 } from "@nightshift/execution";
 import type { McpLaunch } from "@nightshift/harness";
-import { configuredRoute } from "@nightshift/routing";
 import type { Runtime } from "./compose.js";
 import { ToolRefusal } from "./results.js";
+import { examinationServices, routeJob } from "./routing.js";
 
 /** Where a repository declares which program it belongs to. */
 export const DEFAULT_CONTRACT_FILE = "nightshift.program.json";
@@ -94,7 +94,13 @@ export interface OrchestratorSession {
   current?: AttachedRun | undefined;
 }
 
-const buildEnvironment = (runtime: Runtime, outbox: EventOutbox): ExecutionEnvironment => ({
+/** The execution environment a run is worked in: the runtime's, with the run's own examiners. */
+export const buildEnvironment = (
+  runtime: Runtime,
+  outbox: EventOutbox,
+  run: Run,
+  program: ProgramContract,
+): ExecutionEnvironment => ({
   stores: runtime.stores,
   bodies: runtime.bodies,
   tokens: runtime.tokens,
@@ -106,6 +112,8 @@ const buildEnvironment = (runtime: Runtime, outbox: EventOutbox): ExecutionEnvir
   outbox,
   workerEnvironment: runtime.workerEnvironment,
   ...(runtime.prerequisites === undefined ? {} : { prerequisites: runtime.prerequisites }),
+  // P8: who examines and who arbitrates, by the run's own policy (D-P8-10, D-P8-13).
+  examination: examinationServices(run, program, (identity) => runtime.workerLaunch(identity)),
 });
 
 interface ProgramRef {
@@ -480,7 +488,7 @@ export const attachRun = async (
     repoPath: state.repoPath,
   };
   const planSections = await readPlanSections(state, program, rootNode);
-  const environment = buildEnvironment(runtime, outbox);
+  const environment = buildEnvironment(runtime, outbox, started, program);
   const attached: AttachedRun = {
     session,
     environment,
@@ -488,9 +496,10 @@ export const attachRun = async (
       environment,
       session,
       mcp: (identity) => state.workerLaunch(identity),
-      // For what a sub-program's orchestrator delegates (D-P6-01): routed here,
-      // by the same rule and the same contract as the root's own delegations.
-      route: (job) => configuredRoute({ program, job }),
+      // For what a sub-program's orchestrator delegates (D-P6-01), for a retry
+      // and for a fallback: routed here, by the same rules over the same ladders
+      // as the root's own delegations (D-P8-04).
+      route: (job, context) => routeJob(started, program, job, context),
     }),
     outbox,
     replayed,

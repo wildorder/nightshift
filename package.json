@@ -30,6 +30,7 @@
     "smoke": "node scripts/smoke.mjs",
     "slice": "node scripts/slice.mjs",
     "conformance": "node scripts/conformance.mjs",
+    "routing": "node scripts/routing.mjs",
     "benchmark:parallel": "npm run build && vitest run test/src/parallel/benchmark.test.ts",
     "admin:user": "node scripts/admin-user.mjs",
     "verify": "npm run build && npm run typecheck && npm run lint && npm test && npm run synth && npm run check:sterility"

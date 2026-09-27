@@ -25,9 +25,11 @@ import {
   type ExecutionNodeId,
   type JobContractId,
   JobContractSchema,
+  type JobKind,
   ReversibilitySchema,
-  RiskLevelSchema,
+  type RiskLevel,
   ScopeRequestSchema,
+  type Testability,
 } from "@nightshift/contracts";
 import {
   explainWidening,
@@ -40,7 +42,9 @@ import {
   transition,
 } from "@nightshift/core";
 import {
+  fixOf,
   git,
+  latestExamination,
   recordWorkerDecision,
   reportProgress,
   type WorkerEnvironment,
@@ -48,6 +52,7 @@ import {
 } from "@nightshift/execution";
 import { NoCheckpointError } from "@nightshift/harness";
 import { z } from "zod";
+import { CLASSIFICATION_INPUTS } from "./classification.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 
 export interface SubOrchestratorDeps {
@@ -59,6 +64,30 @@ export interface SubOrchestratorDeps {
 }
 
 const WAIT_POLL_MS = 500;
+
+/**
+ * What a delegated job says about itself (D-P8-01), with the conservative
+ * default for anything left unsaid: this sub-program's own risk, medium
+ * ambiguity, no testability claimed, and `orchestrate` for a sub-program.
+ */
+const classificationFor = (
+  input: {
+    readonly risk?: RiskLevel | undefined;
+    readonly ambiguity?: RiskLevel | undefined;
+    readonly testability?: Testability | undefined;
+    readonly jobKind?: JobKind | undefined;
+    readonly kind?: "job" | "sub-program" | undefined;
+  },
+  inherited: RiskLevel | undefined,
+): Record<string, unknown> => {
+  const kind = input.kind === "sub-program" ? "orchestrate" : input.jobKind;
+  return {
+    risk: input.risk ?? inherited ?? "medium",
+    ambiguity: input.ambiguity ?? "medium",
+    ...(input.testability === undefined ? {} : { testability: input.testability }),
+    ...(kind === undefined ? {} : { kind }),
+  };
+};
 
 export const registerSubOrchestratorTools = (
   server: McpServer,
@@ -185,8 +214,9 @@ export const registerSubOrchestratorTools = (
         objective: z.string().min(1),
         scope: ScopeRequestSchema,
         acceptance: z.array(z.string().min(1)).min(1),
-        risk: RiskLevelSchema.optional(),
-        ambiguity: RiskLevelSchema.optional(),
+        // P8 (D-P8-01): what the job says about itself, so routing can place it.
+        // Unset is the conservative choice, not the cheap one.
+        ...CLASSIFICATION_INPUTS,
       },
     },
     async (input) =>
@@ -204,6 +234,14 @@ export const registerSubOrchestratorTools = (
           );
         }
 
+        // Unstated risk is this sub-program's own, which was the program's
+        // default when nobody stated it either: never "low" by omission, which
+        // would route to the cheapest rung and skip examination by accident
+        // (D-P8-01). Unstated ambiguity is medium.
+        const parentJob =
+          parent.jobContractId === null
+            ? undefined
+            : await stores.jobContracts.get(scope, parent.jobContractId);
         const at = nowIso(clock);
         const job = JobContractSchema.parse({
           schemaVersion: 1,
@@ -213,8 +251,7 @@ export const registerSubOrchestratorTools = (
           scope: input.scope,
           acceptance: input.acceptance,
           dependencies: [],
-          risk: input.risk ?? "low",
-          ambiguity: input.ambiguity ?? "low",
+          ...classificationFor(input, parentJob?.risk),
           createdAt: at,
         });
         await stores.jobContracts.put(job);
@@ -329,7 +366,8 @@ export const registerSubOrchestratorTools = (
       title: "Retry a job that failed",
       description:
         "Runs it again from the current program head, as a new attempt. For a job that ended failed, " +
-        "verification_failed or interrupted; read its outcomeReason first.",
+        "verification_failed or interrupted; read its outcomeReason first. After a failure of the " +
+        "work it runs one rung higher on its ladder; after a conflict or an interrupt, on the same model.",
       inputSchema: { jobId: z.string().min(1) },
     },
     async ({ jobId }) =>
@@ -338,12 +376,90 @@ export const registerSubOrchestratorTools = (
         if (!RETRYABLE_STATUSES.includes(node.status)) {
           throw new ToolRefusal(
             "validation_failed",
-            `job ${jobId} is ${node.status}, which is not retryable`,
+            node.status === "queued"
+              ? `job ${jobId} is already queued: Nightshift requeues a job itself to carry out an arbiter's ruling`
+              : `job ${jobId} is ${node.status}, which is not retryable`,
           );
         }
+        // Two fixes of blocking findings, then an arbiter's ruling carried out (D-P8-13).
+        const examinations = await environment.stores.examinations.listByNode(
+          scope,
+          node.executionNodeId,
+        );
+        const refused = fixOf(examinations).refused;
+        if (refused !== undefined) throw new ToolRefusal("validation_failed", refused);
         const { outcomeReason: _previous, ...requeued } = transition(node, "retry", nowIso(clock));
         await stores.executionNodes.put({ ...requeued, commitSha: null });
         return ok(`Job ${jobId} is queued again. Wait for it with job.wait.`, await report(jobId));
+      }),
+  );
+
+  server.registerTool(
+    "finding.dispute",
+    {
+      title: "Dispute an examiner's finding",
+      description:
+        "For a job an independent examiner stopped: say why its blocking findings are wrong, and " +
+        "an arbiter (a fresh invocation of the strongest model available) rules on them. Overturned, " +
+        "the work that was examined lands as it is; upheld, the ruling is final and Nightshift starts " +
+        "the next attempt to carry it out. Wait for it with " +
+        "job.wait. Fix it instead with job.retry when the examiner is right.",
+      inputSchema: { jobId: z.string().min(1), reason: z.string().min(1) },
+    },
+    async ({ jobId, reason }) =>
+      guarded(async () => {
+        const node = await nodeOf(jobId);
+        const examination = await latestExamination(environment, scope, node.executionNodeId);
+        if (node.status !== "failed" || examination === undefined) {
+          throw new ToolRefusal(
+            "validation_failed",
+            `job ${jobId} was not stopped by an examination`,
+          );
+        }
+        if (examination.followsRulings !== undefined) {
+          throw new ToolRefusal(
+            "validation_failed",
+            "this examination checked an arbiter's ruling, and the ruling is final: it is carried out, not argued again",
+          );
+        }
+        const open = examination.findings.filter(
+          (finding) => finding.severity === "material" && finding.resolution === "unresolved",
+        );
+        if (open.length === 0) {
+          throw new ToolRefusal(
+            "validation_failed",
+            "its last examination has no unresolved material finding",
+          );
+        }
+        const at = nowIso(clock);
+        // Written as a dispute and nothing else; the engine starts the arbiter.
+        await stores.examinations.put({
+          ...examination,
+          findings: examination.findings.map((finding) =>
+            open.includes(finding)
+              ? {
+                  ...finding,
+                  resolution: "disputed",
+                  resolvedBy: { authority: "agent", reason, at },
+                }
+              : finding,
+          ),
+        });
+        outbox.emit({
+          type: "finding.disputed",
+          source: "mcp",
+          payload: {
+            examinationId: examination.examinationId,
+            findings: open.map((finding) => finding.id),
+            reason,
+          },
+          executionNodeId: node.executionNodeId,
+          agentId: identity.agentId,
+        });
+        return ok(
+          `Disputed ${open.map((finding) => finding.id).join(", ")}. An arbiter rules on them; wait for job ${jobId} with job.wait.`,
+          { findings: open.map((finding) => finding.id) },
+        );
       }),
   );
 

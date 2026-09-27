@@ -51,7 +51,12 @@ export type UserPrincipal = z.infer<typeof UserPrincipalSchema>;
  * `orchestrator` is a **sub-program's** orchestrator, whose token may delegate
  * within the subtree under its own node and do nothing else a worker cannot.
  */
-export const ExecutionRoleSchema = z.enum(["worker", "orchestrator"]);
+/**
+ * P8 adds two (D-P8-10, D-P8-13): an `examiner`, whose token may write its own
+ * examination of its node and nothing else a worker cannot, and an `arbiter`,
+ * whose token may record its ruling on that node.
+ */
+export const ExecutionRoleSchema = z.enum(["worker", "orchestrator", "examiner", "arbiter"]);
 export type ExecutionRole = z.infer<typeof ExecutionRoleSchema>;
 
 /**

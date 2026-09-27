@@ -23,6 +23,10 @@ export {
 } from "@nightshift/core";
 export {
   nightshiftToolNames,
+  promptFor,
+  renderAnswerBrief,
+  renderArbiterBrief,
+  renderExaminerBrief,
   renderPlanFollowingBrief,
   renderSubOrchestratorBrief,
   renderWorkerBrief,
@@ -30,9 +34,11 @@ export {
   type WorkerBriefInput,
 } from "./brief.js";
 export {
+  type AgentTask,
   agentStatusForExit,
   type Duration,
   describeExit,
+  type ExaminationEvidence,
   type Harness,
   type HarnessCapabilities,
   type HarnessExit,
@@ -41,6 +47,7 @@ export {
   hookTypeForExit,
   type McpLaunch,
   millis,
+  routeUnavailableReason,
 } from "./harness.js";
 export {
   HOOK_EVENT_TYPES,

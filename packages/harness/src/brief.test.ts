@@ -184,4 +184,29 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     });
     expect(plain).not.toContain("A PLAN A HUMAN RATIFIED");
   });
+
+  it("tells a sub-program's orchestrator how to classify, and what each examination ending asks of it (P8)", () => {
+    // The owner's first planned runs showed a strand orchestrator never claiming
+    // low ambiguity and redelegating a stopped job: it reads this, not the skill.
+    const brief = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+    });
+    expect(brief).toContain(
+      "delegate { objective, scope, acceptance, risk, ambiguity, testability, jobKind }",
+    );
+    expect(brief).toContain("low when your objective and acceptance say exactly what to change");
+    for (const ending of [
+      "examination_failed",
+      "examination_upheld",
+      "examination_ruling_unmet",
+      "finding.dispute",
+    ]) {
+      expect(brief, ending).toContain(ending);
+    }
+    expect(brief).toContain("Do NOT");
+    expect(brief).toContain("delegate the same work again as a new job");
+  });
 });

@@ -3,7 +3,12 @@
  * (which runs against this adapter from `apps/api`, the one place allowed to
  * import it alongside the suite).
  */
-import type { Event } from "@nightshift/contracts";
+import {
+  DEFAULT_EXAMINATION_POLICY,
+  DEFAULT_ROUTING_POLICY,
+  type Event,
+  type OrgConfig,
+} from "@nightshift/contracts";
 import {
   createFixtures,
   makeAgent,
@@ -13,6 +18,7 @@ import {
   makeProject,
   makeRootNode,
   OwnershipViolationError,
+  StaleWriteError,
 } from "@nightshift/core";
 import { beforeEach, describe, expect, it } from "vitest";
 import { encodeCursor } from "./cursor.js";
@@ -33,6 +39,32 @@ describe("DynamoDB adapter specifics", () => {
     table = new FakeTable({ tableName, pageItemCap: 2 });
     stores = createAwsStores({ tableName, table });
     f = createFixtures();
+  });
+
+  describe("an org's configuration (P8, D-P8-02)", () => {
+    const configOf = (orgId: OrgConfig["orgId"], version: number): OrgConfig => ({
+      schemaVersion: 1,
+      orgId,
+      routingPolicy: DEFAULT_ROUTING_POLICY,
+      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      version,
+      updatedAt: "2026-09-25T10:00:00.000Z",
+    });
+
+    it("is one row under the org's partition, written by compare-and-swap on version", async () => {
+      const orgId = f.ids.next("org");
+      await expect(stores.orgConfigs.put(configOf(orgId, 2))).rejects.toBeInstanceOf(
+        StaleWriteError,
+      );
+      await stores.orgConfigs.put(configOf(orgId, 1));
+      const stored = await table.get({ TableName: tableName, Key: keys.orgConfig(orgId) });
+      expect(stored.Item).toMatchObject({ PK: `ORG#${orgId}`, SK: "CONFIG", version: 1 });
+      await expect(stores.orgConfigs.put(configOf(orgId, 1))).rejects.toBeInstanceOf(
+        StaleWriteError,
+      );
+      await stores.orgConfigs.put(configOf(orgId, 2));
+      expect(await stores.orgConfigs.get(orgId)).toEqual(configOf(orgId, 2));
+    });
   });
 
   describe("events (A-22, D-P2-17)", () => {

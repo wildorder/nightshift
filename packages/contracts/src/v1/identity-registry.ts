@@ -11,15 +11,21 @@
 import type { z } from "zod";
 import { EXAMPLE_IDS } from "./examples.js";
 import { MembershipSchema } from "./membership.js";
+import {
+  DEFAULT_EXAMINATION_POLICY,
+  DEFAULT_ROUTING_POLICY,
+  OrgConfigSchema,
+} from "./org-config.js";
 import { UserSchema } from "./user.js";
 
-export const IDENTITY_RECORD_NAMES = ["User", "Membership"] as const;
+export const IDENTITY_RECORD_NAMES = ["User", "Membership", "OrgConfig"] as const;
 
 export type IdentityRecordName = (typeof IDENTITY_RECORD_NAMES)[number];
 
 export const IDENTITY_SCHEMAS: { readonly [K in IdentityRecordName]: z.ZodType } = {
   User: UserSchema,
   Membership: MembershipSchema,
+  OrgConfig: OrgConfigSchema,
 };
 
 /** A Cognito UUID subject, for fixtures. */
@@ -39,5 +45,13 @@ export const IDENTITY_EXAMPLES: { readonly [K in IdentityRecordName]: unknown } 
     userId: EXAMPLE_USER_ID,
     orgId: EXAMPLE_IDS.orgId,
     createdAt: "2026-09-14T09:00:00.000Z",
+  },
+  OrgConfig: {
+    schemaVersion: 1,
+    orgId: EXAMPLE_IDS.orgId,
+    routingPolicy: DEFAULT_ROUTING_POLICY,
+    examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+    version: 1,
+    updatedAt: "2026-09-25T09:00:00.000Z",
   },
 };

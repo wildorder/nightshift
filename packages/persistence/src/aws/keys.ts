@@ -70,6 +70,9 @@ export const keys = {
 
   orgProjectPartition: (orgId: OrgId) => ({ PK: `ORG#${orgId}`, prefix: "PROJ#" }),
 
+  /** An org's routing and examination policy (P8, D-P8-02). One row per org. */
+  orgConfig: (orgId: OrgId): TableKey => ({ PK: `ORG#${orgId}`, SK: "CONFIG" }),
+
   programContract: (projectId: ProjectId, programId: ProgramId): TableKey => ({
     PK: `PROJ#${projectId}`,
     SK: `PROG#${programId}`,

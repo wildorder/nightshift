@@ -86,7 +86,7 @@ export const scriptFor = (
     const anywhere = input.job.strandId !== undefined;
     return { script: "orchestrate", args: taggedScript(input.job.objective, anywhere)?.args ?? [] };
   }
-  const fromLaunch = input.mcp.env[WORKER_SCRIPT_ENV] as ScriptName | undefined;
+  const fromLaunch = input.mcp?.env[WORKER_SCRIPT_ENV] as ScriptName | undefined;
   return taggedScript(input.job.objective) ?? { script: fromLaunch ?? fallback, args: [] };
 };
 

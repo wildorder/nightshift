@@ -12,12 +12,15 @@
 import { z } from "zod";
 import { ExecutionNodeIdSchema, RoutingDecisionIdSchema } from "../ids.js";
 import { IsoTimestampSchema, runScoped } from "./common.js";
+import { ClassificationSchema, EffortSchema, TierSchema } from "./routing-policy.js";
 
 /** A harness, provider and model triple Nightshift can dispatch to. */
 export const RouteTargetSchema = z.strictObject({
   harness: z.string().min(1),
   provider: z.string().min(1),
   model: z.string().min(1),
+  /** P8: the reasoning effort the route runs at, when its rung names one. */
+  effort: EffortSchema.optional(),
 });
 export type RouteTarget = z.infer<typeof RouteTargetSchema>;
 
@@ -42,12 +45,29 @@ export const RouteOutcomeSchema = z.enum([
   "failed",
   "escalated",
   "cancelled",
+  /**
+   * Added in P8 (D-P8-06). The route **could not start**: not signed in, the
+   * model not offered, rate-limited before any work began. Not a failure of the
+   * model, so the next attempt falls back sideways rather than climbing.
+   */
+  "unavailable",
 ]);
 export type RouteOutcome = z.infer<typeof RouteOutcomeSchema>;
+
+/**
+ * Where a dollar figure came from (P8, D-P8-08). A reported figure and an
+ * estimate are never added together silently: every total says which it is.
+ */
+export const CostSourceSchema = z.enum(["reported", "estimated", "unknown"]);
+export type CostSource = z.infer<typeof CostSourceSchema>;
 
 export const RouteUsageSchema = z.strictObject({
   inputTokens: z.int().min(0).optional(),
   outputTokens: z.int().min(0).optional(),
+  /** P8: tokens read from or written to the provider's prompt cache, where reported. */
+  cacheReadTokens: z.int().min(0).optional(),
+  cacheWriteTokens: z.int().min(0).optional(),
+  costSource: CostSourceSchema.optional(),
   estimatedCostUsd: z.number().min(0).optional(),
   actualCostUsd: z.number().min(0).optional(),
   latencyMs: z.int().min(0).optional(),
@@ -72,7 +92,21 @@ export interface RouteChoice {
   readonly ruleId: string;
   /** True when an orchestrator pinned the target rather than policy selecting it. */
   readonly wasOverride: boolean;
+  /** P8: where on the org's ladders the route sits, when a ladder chose it. */
+  readonly ladder?: string;
+  readonly rung?: RungPosition;
+  /** P8: the classification the rule matched, defaults filled in. */
+  readonly classification?: z.infer<typeof ClassificationSchema>;
+  /** P8: the org configuration version the effective policy was narrowed from. */
+  readonly policyVersion?: number;
 }
+
+/** A rung by tier and by its index on its ladder (0 is the cheapest). */
+export const RungPositionSchema = z.strictObject({
+  tier: TierSchema,
+  index: z.int().min(0),
+});
+export type RungPosition = z.infer<typeof RungPositionSchema>;
 
 export const RoutingDecisionSchema = z
   .strictObject({
@@ -92,6 +126,21 @@ export const RoutingDecisionSchema = z
     outcome: RouteOutcomeSchema,
     /** The attempt this one escalated from; `null` for a first attempt. */
     previousRouteId: RoutingDecisionIdSchema.nullable(),
+    /**
+     * P8 (D-P8-02 … D-P8-07). Optional, so a decision recorded before P8 parses
+     * as it did. Set on every decision a ladder made.
+     */
+    ladder: z.string().min(1).optional(),
+    rung: RungPositionSchema.optional(),
+    /**
+     * P8: what the route was for, when it was not the job's own work: an
+     * examiner, a builder answering an examiner's questions, or an arbiter. Absent
+     * for the job's attempts, which alone make the attempt chain; every route
+     * counts against the run's budget (D-P8-08).
+     */
+    purpose: z.enum(["examine", "answer", "arbitrate"]).optional(),
+    classification: ClassificationSchema.optional(),
+    policyVersion: z.int().min(0).optional(),
     createdAt: IsoTimestampSchema,
   })
   .refine(
@@ -104,3 +153,45 @@ export const RoutingDecisionSchema = z
     path: ["previousRouteId"],
   });
 export type RoutingDecision = z.infer<typeof RoutingDecisionSchema>;
+
+/**
+ * One line of `nightshift routes export` (P8, SC-P8-15, SC-11): a routing
+ * decision with everything a learned router needs to train on, so nothing needs
+ * a join. JSON Lines, one per decision, every attempt of every job included.
+ */
+export const RoutingDatasetLineSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  projectId: z.string().min(1),
+  programId: z.string().min(1),
+  runId: z.string().min(1),
+  executionNodeId: z.string().min(1),
+  jobContractId: z.string().min(1).nullable(),
+  strandId: z.string().min(1).nullable(),
+  routingDecisionId: z.string().min(1),
+  /** `work` for the job's own attempts; otherwise what the route was for. */
+  purpose: z.enum(["work", "examine", "answer", "arbitrate"]),
+  attempt: z.int().min(1),
+  previousRouteId: z.string().min(1).nullable(),
+  ruleId: z.string().min(1),
+  wasOverride: z.boolean(),
+  ladder: z.string().min(1).nullable(),
+  rung: RungPositionSchema.nullable(),
+  classification: ClassificationSchema.nullable(),
+  policyVersion: z.int().min(0).nullable(),
+  chosen: RouteTargetSchema,
+  eligibleOptions: z.array(RouteOptionSchema),
+  usage: RouteUsageSchema,
+  outcome: RouteOutcomeSchema,
+  /** The node's last verification, when it had one: what the work was judged by. */
+  verification: z.enum(["passed", "failed", "deferred"]).nullable(),
+  /** The node's last examination, when it had one: its outcome, and whether it blocked. */
+  examination: z
+    .strictObject({
+      outcome: z.enum(["passed", "findings_raised", "failed"]),
+      blocking: z.boolean(),
+      fixAttempt: z.int().min(0),
+    })
+    .nullable(),
+  createdAt: IsoTimestampSchema,
+});
+export type RoutingDatasetLine = z.infer<typeof RoutingDatasetLineSchema>;

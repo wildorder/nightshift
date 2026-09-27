@@ -123,7 +123,7 @@ describe("Examination", () => {
   it("requires evidence on every finding", () => {
     const record = clone(AGGREGATE_EXAMPLES.Examination);
     const findings = record.findings as Record<string, unknown>[];
-    findings[0] = { ...findings[0], evidence: "" };
+    findings[0] = { ...findings[0], evidence: [] };
     expect(ExaminationSchema.safeParse(record).success).toBe(false);
   });
 });

@@ -31,6 +31,8 @@ export const DOMAIN_ERROR_STATUS: Readonly<Record<DomainErrorCode, number>> = {
   decision_authority: 403,
   // Softening reversibility conflicts with what is already recorded.
   reversibility_softened: 409,
+  // A versioned write that lost a race (P8): the caller reads again and reapplies.
+  stale_write: 409,
 };
 
 export const toErrorResponse = (error: unknown): ApiResponse => {

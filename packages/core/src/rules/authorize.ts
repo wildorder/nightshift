@@ -118,7 +118,10 @@ export type Operation =
   | "artifact.list"
   | "artifact.put"
   | "artifact.get"
-  | "artifact.createUploadUrl";
+  | "artifact.createUploadUrl"
+  // An organisation's routing and examination policy (P8, D-P8-02).
+  | "orgConfig.get"
+  | "orgConfig.put";
 
 /**
  * How far an execution principal reaches for one operation.
@@ -237,6 +240,11 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
   "artifact.createUploadUrl": "forbidden",
+
+  // An org's policy is its members' to read and write (D-P8-02). A run records
+  // the policy it executes under, so nothing running needs the org's own.
+  "orgConfig.get": "forbidden",
+  "orgConfig.put": "forbidden",
 };
 
 /**
@@ -311,7 +319,10 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "verification.put": "forbidden",
   "verification.get": "own_run",
   "verification.listByNode": "own_subtree",
-  "examination.put": "forbidden",
+  // P8 (D-P8-13): an orchestrator may **dispute** a finding on work it
+  // delegated, and nothing else. The API holds the body to exactly that: one
+  // finding moved from unresolved to disputed, on the orchestrator's authority.
+  "examination.put": "own_subtree",
   "examination.get": "own_run",
   "examination.listByNode": "own_subtree",
 
@@ -322,6 +333,40 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
   "artifact.createUploadUrl": "forbidden",
+
+  "orgConfig.get": "forbidden",
+  "orgConfig.put": "forbidden",
+};
+
+/**
+ * The table for an **examiner** (P8, D-P8-10), exhaustive over `Operation`.
+ *
+ * Its token is minted for the node whose work it examines. It may read what a
+ * worker on that node may read, report progress and ask its questions as events
+ * on the node, and write **its own examination** of it: the API holds the body
+ * to the token's agent and runs the independence checks against the agents it
+ * stores. It may not move the node, record a decision, or write anything else.
+ */
+export const EXAMINER_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
+  ...EXECUTION_ACCESS,
+  "node.put": "forbidden",
+  "decision.put": "forbidden",
+  "examination.put": "own_node",
+};
+
+/**
+ * The table for an **arbiter** (P8, D-P8-13), exhaustive over `Operation`.
+ *
+ * Minted for the node under dispute. It may read the node's records and record
+ * **its ruling as a decision** on that node: the API holds the decision to the
+ * token's agent and runs the independence check against the implementer's and
+ * the examiner's stored agents. The finding's resolution is moved by the
+ * execution layer, citing that decision; the arbiter writes no examination.
+ */
+export const ARBITER_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
+  ...EXECUTION_ACCESS,
+  "node.put": "forbidden",
+  "examination.put": "forbidden",
 };
 
 /** The table for a role. Exhaustive over `ExecutionRole` by construction. */
@@ -330,6 +375,8 @@ export const ACCESS_BY_ROLE: Readonly<
 > = {
   worker: EXECUTION_ACCESS,
   orchestrator: ORCHESTRATOR_ACCESS,
+  examiner: EXAMINER_ACCESS,
+  arbiter: ARBITER_ACCESS,
 };
 
 /**
@@ -446,7 +493,9 @@ const mayWriteNodeStatus = (role: ExecutionRole, target: AuthorizationTarget): b
   const writable: readonly string[] =
     role === "worker"
       ? EXECUTION_WRITABLE_NODE_STATUSES
-      : ORCHESTRATOR_WRITABLE_NODE_STATUSES[target.nodeRelation ?? "outside"];
+      : role === "orchestrator"
+        ? ORCHESTRATOR_WRITABLE_NODE_STATUSES[target.nodeRelation ?? "outside"]
+        : [];
   return writable.includes(requested);
 };
 

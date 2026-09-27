@@ -10,9 +10,9 @@
  * and never a 1:1 map, and a route is a `(harness, provider, model)` triple the
  * table allows *and* the Program Contract's policy allows.
  *
- * It describes what an adapter **can** run, not what is cheapest or best. Until
- * P8, the first compatible pair in the policy's own order wins (a stated
- * non-guarantee of P5).
+ * It describes what an adapter **can** run, not what is cheapest or best. Which
+ * model a job gets is the org's ladders' (P8, D-P8-02); this table only says
+ * whether a harness can run it, and through which provider.
  *
  * Rows marked `availableFrom` are here so P10 fills in a row rather than changing
  * a shape. A route through one is refused, by name, until then.
@@ -29,8 +29,6 @@ export interface CompatibleProvider {
   readonly provider: string;
   /** Model name patterns: a literal, or a prefix ending in `*`. */
   readonly models: readonly string[];
-  /** Chosen when the policy allows this provider and names no model for it. */
-  readonly defaultModel?: string;
   readonly authentication: RouteAuthentication;
   /** The program that makes this pair routable. Absent when it already is. */
   readonly availableFrom?: string;
@@ -48,7 +46,6 @@ export const HARNESS_COMPATIBILITY: readonly HarnessCompatibility[] = [
       {
         provider: "anthropic",
         models: ["claude-*", "opus", "sonnet", "haiku"],
-        defaultModel: "claude-sonnet-5",
         authentication: "operator-login",
       },
       {
@@ -65,7 +62,6 @@ export const HARNESS_COMPATIBILITY: readonly HarnessCompatibility[] = [
       {
         provider: "openai",
         models: ["gpt-*", "o1*", "o3*", "o4*", "codex-*"],
-        defaultModel: "gpt-5.5",
         authentication: "operator-login",
       },
     ],

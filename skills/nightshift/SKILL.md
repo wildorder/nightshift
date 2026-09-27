@@ -103,14 +103,44 @@ consequences worth internalising:
 things that are checkable rather than as adjectives. "Handles empty input" is
 worth more than "robust".
 
-You may also pass `harness` (`claude` or `codex`) and `model` to pin where a job
-runs, but the Program Contract decides: Nightshift picks the worker's harness and
-model from the program's model policy, a pin is honoured only inside that policy,
-and one outside it is refused with the reason.
+### Say what the job is, and Nightshift says where it runs
+
+Where a job runs is the org's routing policy, not yours: **ladders** of models
+(one per provider, cheap to frontier), and **rules** that say where a job starts
+from what it says about itself. So say it honestly:
+
+- `risk`: what goes wrong if this is wrong. It also decides **examination**:
+  under the usual policy low is not examined, medium is examined by a different
+  model, high by another provider's frontier model, and at both a material
+  finding stops it landing until it is fixed or an arbiter rules. Minor findings
+  are reported and never stop anything.
+- `ambiguity`: how much of the job is judgement rather than specification. Say
+  `low` when the objective and acceptance say exactly what to change and how to
+  know it is done: a copy change, a rename, a deletion, a function whose behaviour
+  and tests you specified. Split work so the mechanical parts are such jobs.
+- `testability`: `strong` when the program's own checks exercise this change, so a
+  cheap model's mistake would be caught; `weak` when they touch it in passing;
+  `none` when nothing checks it. Only a job that is low risk, unambiguous and
+  strongly tested usually starts on the cheap rung.
+- `jobKind`: `implement`, `fix`, `refactor`, `test` or `docs`.
+
+**Leaving a field unset is the conservative choice, not the cheap one**: unset
+risk is the program's default, ambiguity medium, testability weak. Do not label a
+job low risk to get it a cheaper model or to skip its examiner; the
+classification is on every routing record and in the report.
+
+You may pin `ladder`, `tier`, `harness`, `model` or `effort` when you know
+better than the rules. A pin is honoured only within the run's policy, recorded
+as an override, and never skips examination or escalation. One outside the policy
+is refused with the reason.
+
+A route that cannot start (rate-limited, not signed in) falls back by itself: the
+next model on the same rung, then the same tier on the other provider's ladder,
+then one rung up. You see nothing of it but a line in `job.wait`.
 
 `delegate` returns as soon as the worker is running. You get back `jobId`,
-`nodeId`, `agentId`, the worktree path, and the `harness`, `provider` and `model`
-the job was routed to.
+`nodeId`, `agentId`, the worktree path, the `harness`, `provider` and `model` it
+was routed to, and the rule, ladder and tier that put it there.
 
 ## Delegate work that can run together, together
 
@@ -165,7 +195,7 @@ Read the status carefully, because the words are not interchangeable:
 | `verification_failed` | The commands failed. Nothing integrated. The `Verification` record names the failing step, and its log is an artifact. |
 | `verified` → `sealed` → `integrated` | Passed, addressable, and fast-forwarded into the program branch. |
 | `queued` | Delegated and waiting for a slot. `job.get` says what it is waiting for. Not a problem. |
-| `failed` | The worker failed, exited without reporting, changed something outside its scope, or **conflicted** with work integrated since it started (`integration_conflict`, with the paths). `outcomeReason` says which. |
+| `failed` | The worker failed, exited without reporting, changed something outside its scope, **conflicted** with work integrated since it started (`integration_conflict`, with the paths), or was **stopped by its examiner** (`examination_failed`, with the findings). `outcomeReason` says which. |
 | `succeeded` | A sub-program whose orchestrator reported its objective met. |
 | `interrupted` | Something stopped it that nobody chose. Retryable. |
 
@@ -178,6 +208,38 @@ new attempt. It is usually right for an `integration_conflict`, where the work
 was fine and the ground moved, and for `interrupted`. For `verification_failed`
 it repeats the delegation exactly as written, so ask first whether the delegation
 was the problem. Nightshift never resolves a conflict for you.
+
+Where a retry runs is Nightshift's: after a failure of the work (verification, the
+worker's own failure, an examination) it **climbs one rung** of its ladder; after
+a conflict, a stale base or an interrupt it keeps the model it had, because those
+say nothing about the model.
+
+### When an examiner stops a job
+
+A job whose risk calls for it is **examined** before it lands, by a different
+model or provider that sees the work and the checks but not the worker's account
+of it. It may ask the worker up to three questions. Its findings each point at
+evidence: lines of code, a command and its output, or a clause of the contract.
+
+When a material finding stops a job, it ends `failed` with an `outcomeReason`
+beginning `examination_failed:` and naming the findings. You have two moves:
+
+- **Fix it**: `job.retry { jobId }`. The findings go into the worker's brief and
+  it climbs a rung; the fix is examined again. At most **two** fixes; a third is
+  refused.
+- **Dispute it**: `finding.dispute { jobId, reason }`, when the examiner is wrong.
+  An **arbiter** (a fresh frontier invocation, on a model neither side used when there is one) rules.
+  Overturned, the work that was examined lands as it is. Upheld, the ruling is
+  final: Nightshift starts the next attempt itself, with the ruling as a binding
+  instruction, and its examination checks only that the ruling was carried out.
+  Wait for it with `job.wait`. Say why in the reason: the arbiter reads it.
+
+After two fixes, a finding still standing goes to the arbiter on its own, and the
+work keeps going either way: an overturn lands, an uphold is carried out. A
+ruling cannot be disputed. If two attempts cannot carry a ruling out, the job
+fails as the work's failure (`examination_ruling_unmet:`), and it is yours to
+delegate differently. Every ruling is a decision the human can reverse later.
+Do not dispute a finding to get past it; dispute it when it is wrong.
 
 A failed job is usually a delegation problem, not a worker problem. Ask why
 before you retry: a vague objective, acceptance criteria that did not say what
@@ -213,8 +275,8 @@ Refused while a job is still running. Anything but `succeeded` needs a reason.
 - **Do not treat `implemented` as done.** It is a claim, and claims are exactly
   what verification exists to check. Wait for `integrated`.
 - **Do not work around a refusal.** `scope_widening`, `depth_limit_exceeded`,
-  `depth_limit_exceeded` and `examination_unavailable` are the system
-  telling you something true about the work. Restate the delegation, wait, or
+  a refused third fix and a routing refusal are the system telling you something
+  true about the work. Restate the delegation, wait, or
   tell the human — do not go and do the job yourself to get past it.
 - **Do not finish the run while anything is running or queued.** `run.finish`
   refuses; wait for it or cancel it.
