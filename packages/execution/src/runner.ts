@@ -86,6 +86,7 @@ import {
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
+import { stampSettledDecisions } from "./stamp.js";
 import { verifyNode } from "./verify.js";
 import { createWorkerTools } from "./worker.js";
 
@@ -659,6 +660,9 @@ const finishSubProgram = async (
       input.nodeId,
     ).catch(() => {});
     await recordRouteResult(environment, input, usage);
+    // What the strand's decisions produced, now that its work has all landed
+    // or stopped (P9, D-P9-01).
+    await stampSettledDecisions(environment, input.session, input.nodeId);
   }
 };
 

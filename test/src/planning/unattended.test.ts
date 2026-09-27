@@ -279,7 +279,10 @@ describe("nightshift run {id}, unattended (SC-P7-06)", () => {
     expect(jobs.find((job) => job.strandId === "S-01")?.objective).not.toContain("D-01");
 
     // SC-P7-09: recorded with authority human, before any work started.
-    const human = report.humanDecisions;
+    // P9: the decision graph places it as the plan's (D-P9-08).
+    const human = report.graph
+      .filter((entry) => entry.place === "plan")
+      .map((entry) => entry.decision);
     expect(human.map((d) => [d.choice, d.authority])).toEqual([["yes", "human"]]);
     const firstStart = events.findIndex((event) => event.type === "node.started");
     expect(Date.parse(human[0]?.createdAt ?? "")).toBeLessThanOrEqual(
@@ -298,6 +301,33 @@ describe("nightshift run {id}, unattended (SC-P7-06)", () => {
       text.indexOf("Acceptance, as planned:", s02At),
     );
     expect(text).toContain("Nothing was parked.");
+
+    // P9 (D-P9-01, SC-P9-01): what each decision produced. A strand's own
+    // decision, its strand's commits; the plan's decision, what the strands it
+    // touches landed; nothing from anywhere else.
+    const decisions = (await ctx.stores.decisions.listByRun(scope, { limit: 100 })).items;
+    const landedUnder = (strandIds: readonly string[]): string[] =>
+      nodes
+        .filter(
+          (node) =>
+            strandIds.map(nodeOfStrand).includes(node.parentNodeId ?? "") &&
+            node.status === "integrated",
+        )
+        .map((node) => node.commitSha ?? "")
+        .sort();
+    const departure = decisions.find((decision) =>
+      decision.context.startsWith(STRAND_DEPARTURE_PREFIX),
+    );
+    expect(departure?.executionNodeId).toBe(nodeOfStrand("S-02"));
+    expect([...(departure?.produced?.commits ?? [])].sort()).toEqual(landedUnder(["S-02"]));
+    const planned = report.program.decisions?.find((decision) => decision.id === "D-01");
+    const touched =
+      planned?.touches === "all" ? ["S-01", "S-02", "S-03"] : (planned?.touches ?? []);
+    const d01 = decisions.find((decision) => decision.context.startsWith("D-01: "));
+    expect(d01?.produced?.commits.length).toBeGreaterThan(0);
+    expect([...(d01?.produced?.commits ?? [])].sort()).toEqual(landedUnder(touched));
+    expect(text).toContain("## Decision graph");
+    expect(text).toContain("**Plan:** D-01: One file per module?");
     // The orchestrator's run.finish wrote it: nothing else in this test writes one.
     const written = await readFile(
       join(ctx.fixture.repo, "docs", "programs", "three-strands", "report.md"),

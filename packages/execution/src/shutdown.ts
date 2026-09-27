@@ -24,6 +24,7 @@ import type { ExecutionNodeId, RunStatus } from "@nightshift/contracts";
 import { finishRun, nowIso, transition, transitionAgent } from "@nightshift/core";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import type { StartedJob } from "./runner.js";
+import { stampSettledDecisions } from "./stamp.js";
 
 export interface ShutdownInput {
   readonly session: RunSession;
@@ -110,7 +111,7 @@ export const shutdown = async (
  * write it never stops a run from ending.
  */
 export const endProgramNode = async (
-  environment: Pick<ExecutionEnvironment, "stores" | "clock">,
+  environment: Pick<ExecutionEnvironment, "stores" | "clock" | "git">,
   session: RunSession,
   runStatus: RunStatus,
   reason?: string,
@@ -124,6 +125,8 @@ export const endProgramNode = async (
   } catch {
     // The run's own record is the authority on how the run ended.
   }
+  // What the plan's decisions and the root's own produced (P9, D-P9-01).
+  await stampSettledDecisions(environment, session, session.rootNodeId);
 };
 
 /**

@@ -20,8 +20,14 @@
  */
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ProgramContract } from "@nightshift/contracts";
-import { prerequisitesOf, strandsOf } from "@nightshift/core";
+import type { Decision, ProgramContract } from "@nightshift/contracts";
+import {
+  irreversibleConfirmationContext,
+  nowIso,
+  prerequisitesOf,
+  strandsOf,
+  unconfirmedCorrections,
+} from "@nightshift/core";
 import {
   gatherReport,
   type RunReport,
@@ -33,6 +39,7 @@ import {
 } from "@nightshift/execution";
 import { createHttpPlanning } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
+import { UsageError } from "../failures.js";
 import type { ProgramFiles } from "../program-files.js";
 import type { Session } from "../session.js";
 
@@ -44,6 +51,11 @@ export interface RunProgramOptions {
   readonly attended: boolean;
   readonly harness?: string;
   readonly model?: string;
+  /**
+   * P9 (D-P9-05): the corrected decisions whose effects reach outside the
+   * repository, which the owner confirms this correction may run over.
+   */
+  readonly confirmIrreversible?: readonly string[];
 }
 
 export interface RunProgramResult {
@@ -134,6 +146,69 @@ const launchOrchestrator = async (
   }
 };
 
+/**
+ * The corrected decisions of a class the owner confirms (D-P9-05), refused
+ * unless each is named in `--confirm-irreversible`. Returns those to record.
+ */
+const requireConfirmations = async (
+  session: Session,
+  program: ProgramContract,
+  options: RunProgramOptions,
+): Promise<readonly Decision[]> => {
+  const corrected: Decision[] = [];
+  for (const target of program.corrects ?? []) {
+    const decision = await session.stores.decisions.get(
+      { projectId: program.projectId, programId: target.programId, runId: target.runId },
+      target.decisionId,
+    );
+    if (decision !== undefined) corrected.push(decision);
+  }
+  const confirmed = new Set(options.confirmIrreversible ?? []);
+  const needing = unconfirmedCorrections(corrected, []);
+  const missing = needing.filter((decision) => !confirmed.has(decision.decisionId));
+  if (missing.length > 0) {
+    throw new UsageError(
+      `this correction reverses ${missing.map((decision) => `${decision.decisionId} (${decision.reversibility})`).join(", ")}, ` +
+        "whose effects reach outside the repository. Nothing was started.",
+      `Confirm that the correction may run anyway: ${missing.map((decision) => `--confirm-irreversible ${decision.decisionId}`).join(" ")}`,
+    );
+  }
+  return needing;
+};
+
+/** The owner's go-ahead, recorded on the correction's run (D-P9-05). */
+const recordConfirmations = async (
+  environment: CliEnvironment,
+  session: Session,
+  started: StartedRun,
+  confirmed: readonly Decision[],
+): Promise<void> => {
+  for (const decision of confirmed) {
+    await session.stores.decisions.put({
+      schemaVersion: 1,
+      projectId: started.run.projectId,
+      programId: started.run.programId,
+      runId: started.run.runId,
+      decisionId: environment.ids.next("dec"),
+      executionNodeId: started.rootNode.executionNodeId,
+      agentId: null,
+      context: irreversibleConfirmationContext(decision.decisionId),
+      alternatives: [
+        { summary: "Do not run the correction", rejectedBecause: "the owner confirmed it" },
+      ],
+      choice: "Run the correction",
+      rationale: `Confirmed with --confirm-irreversible ${decision.decisionId}.`,
+      reversibility: decision.reversibility,
+      checkpointBefore: started.checkpoint.checkpointId,
+      affectedNodes: [],
+      authority: "human",
+      supersedesDecisionId: null,
+      createdAt: nowIso(environment.clock),
+    });
+    environment.out(`recorded your confirmation to correct ${decision.decisionId}`);
+  }
+};
+
 /** Deferred work and nothing worse: its own code, so a script can tell "come back" from "it broke". */
 export const EXIT_DEFERRED = 3;
 
@@ -163,11 +238,14 @@ export const runProgram = async (
     return { started: undefined, exitCode: 1 };
   }
 
+  const confirming = await requireConfirmations(session, ratified, options);
+
   const started = await startRun(deps, {
     program: files.contract,
     planText: files.planText,
     repoPath: options.repoPath,
   });
+  await recordConfirmations(environment, session, started, confirming);
   environment.out(started.run.runId);
   environment.out(
     `run ${started.run.runId} of plan ${ratified.planHash?.slice(0, 12)} is pending ` +

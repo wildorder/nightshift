@@ -123,6 +123,12 @@ export {
   shutdown,
 } from "./shutdown.js";
 export {
+  type StampEnvironment,
+  type StampSession,
+  stampJobDecisions,
+  stampSettledDecisions,
+} from "./stamp.js";
+export {
   PlanChangedError,
   PlanNotRatifiedError,
   ProgramContractChangedError,

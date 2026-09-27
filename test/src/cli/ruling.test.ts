@@ -1,7 +1,8 @@
 /**
  * `nightshift ruling reverse` (P8, D-P8-13): the owner's reversal of an
  * arbiter's ruling, recorded as a human decision superseding it, through the
- * real CLI against the real handler. It replays nothing, and says so.
+ * real CLI against the real handler. It changes nothing else, and says how to
+ * plan the correction (P9, D-P9-02).
  */
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -91,7 +92,7 @@ const seed = async () => {
 };
 
 describe("nightshift ruling reverse (D-P8-13)", () => {
-  it("records the owner's reversal as a human decision superseding the ruling, and replays nothing", async () => {
+  it("records the owner's reversal as a human decision superseding the ruling, and changes nothing else (P9: the same verb as any decision)", async () => {
     const { stores, ruling, scope } = await seed();
     const code = await runCli(op.environment, [
       "ruling",
@@ -104,7 +105,8 @@ describe("nightshift ruling reverse (D-P8-13)", () => {
       repo,
     ]);
     expect(code, op.err.join("\n")).toBe(0);
-    expect(op.out.join("\n")).toContain("Nothing is replayed");
+    expect(op.out.join("\n")).toContain("Nothing else changed");
+    expect(op.out.join("\n")).toContain(`nightshift decision brief demo ${ruling.decisionId}`);
     expect(op.out.join("\n")).toContain(
       "git reset --hard refs/nightshift/checkpoints/before-ruling",
     );

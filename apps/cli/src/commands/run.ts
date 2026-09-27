@@ -41,6 +41,8 @@ export interface RunOptions {
   /** A planned program only: the human's choice of orchestrator (A-38). */
   readonly harness?: string;
   readonly model?: string;
+  /** A correction only (P9, D-P9-05): decisions outside the repository the owner confirms. */
+  readonly confirmIrreversible?: readonly string[];
 }
 
 export interface RunResult {
@@ -132,6 +134,9 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
       attended: options.attended === true,
       ...(options.harness === undefined ? {} : { harness: options.harness }),
       ...(options.model === undefined ? {} : { model: options.model }),
+      ...(options.confirmIrreversible === undefined
+        ? {}
+        : { confirmIrreversible: options.confirmIrreversible }),
     });
     return {
       exitCode: planned.exitCode,
