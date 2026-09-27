@@ -56,15 +56,15 @@ describe("mayArbitrate (D-P8-13)", () => {
     expect(mayArbitrate(claudeSonnet, codexAstra, codexSol)).toEqual([]);
   });
 
-  it("refuses an arbiter sharing a model with either side, or being one", () => {
-    expect(
-      mayArbitrate(claudeSonnet, codexAstra, { ...codexAstra, agentId: "agent_z" }).map(
-        (p) => p.reason,
-      ),
-    ).toEqual(["arbiter_shares_a_model"]);
+  it("accepts a fresh invocation of a side's model, and refuses being either side (as amended 2026-09-26)", () => {
+    expect(mayArbitrate(claudeSonnet, codexAstra, { ...codexAstra, agentId: "agent_z" })).toEqual(
+      [],
+    );
     expect(mayArbitrate(claudeSonnet, codexAstra, claudeSonnet).map((p) => p.reason)).toEqual([
       "same_agent",
-      "arbiter_shares_a_model",
+    ]);
+    expect(mayArbitrate(claudeSonnet, codexAstra, codexAstra).map((p) => p.reason)).toEqual([
+      "same_agent",
     ]);
   });
 });

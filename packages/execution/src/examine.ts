@@ -23,8 +23,8 @@
  *   builder's own session is resumed to answer (or, when it cannot be, the
  *   builder's route reads its transcript), and the examiner's session is resumed
  *   with the answers to submit.
- * - The **arbiter**: a fresh frontier invocation of a model neither side used,
- *   given the finding, its evidence, the questions and answers, the dispute and
+ * - The **arbiter**: a fresh invocation on the highest tier, a model neither
+ *   side used when there is one (as amended 2026-09-26), given the finding, its evidence, the questions and answers, the dispute and
  *   the diff (D-P8-13). Its ruling is a `Decision`, authority `agent`, whose
  *   `checkpointBefore` is the program head it ruled against: a rollback point.
  *

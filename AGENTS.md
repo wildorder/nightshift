@@ -382,6 +382,12 @@ A-46.
   claimed low ambiguity, so nothing ran on the cheap rung, and a stopped job was
   redelegated around the fix limit. Guidance an orchestrator needs goes in both;
   the delegate tools share `CLASSIFICATION_INPUTS` (`apps/mcp/src/classification.ts`).
+- **The arbiter never drops a tier** (`arbiterRoute`): the highest tier, a
+  model neither side used, else the examiner's, else the builder's, always a
+  fresh agent. `mayArbitrate` refuses only an arbiter that is a side's agent.
+  The report's rulings section names each arbiter's model and counts how often
+  one on a side's model sided with it (`whoRuled`, from the examination's
+  agents).
 - **A cost nobody reported or priced is unknown** (`UsageRow.unpriced`), never
   $0.00. Budgets (`spendOf`) count only priced routes; the default price table is
   empty until the org fills it.

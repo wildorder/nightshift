@@ -2,7 +2,7 @@
 import { DEFAULT_ROUTING_POLICY, type ModelPolicy } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { RoutingRefusedError } from "./errors.js";
-import { arbiterRoute, examinerRoute } from "./examiners.js";
+import { arbiterRoute, arbiterSharesModelWith, examinerRoute } from "./examiners.js";
 
 const BOTH: ModelPolicy = {
   allowedProviders: ["anthropic", "openai"],
@@ -59,9 +59,24 @@ describe("arbiterRoute (D-P8-13)", () => {
     expect(route.rung?.tier).toBe("frontier");
   });
 
-  it("goes below frontier only when nothing at frontier is free of both sides", () => {
+  it("never goes below frontier: with both frontier models taken, it reuses the examiner's, fresh (as amended 2026-09-26)", () => {
     const opus = { harness: "claude", provider: "anthropic", model: "claude-opus-5-5" };
     const route = arbiterRoute({ ...base, implementer: opus, examiner: ASTRA });
-    expect([opus.model, ASTRA.model]).not.toContain(route.target.model);
+    expect(route.target.model).toBe(ASTRA.model);
+    expect(route.rung?.tier).toBe("frontier");
+    expect(arbiterSharesModelWith(route.target, { implementer: opus, examiner: ASTRA })).toBe(
+      "examiner",
+    );
+  });
+
+  it("takes the implementer's frontier model only when the examiner's cannot run", () => {
+    const opus = { harness: "claude", provider: "anthropic", model: "claude-opus-5-5" };
+    const route = arbiterRoute({
+      ...base,
+      implementer: opus,
+      examiner: ASTRA,
+      unavailable: [{ harness: "codex", model: ASTRA.model }],
+    });
+    expect(route.target.model).toBe(opus.model);
   });
 });

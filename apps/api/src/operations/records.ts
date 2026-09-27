@@ -463,7 +463,8 @@ const assertOnlyDisputes = (existing: Examination, next: Examination): void => {
 /**
  * The arbiter's ruling, held to the dispute it rules on (D-P8-13): its own
  * decision, on its own node, where a finding stands disputed, by an agent that
- * is neither side and shares a model with neither.
+ * is neither side. It may run a side's model as a fresh invocation (as amended
+ * 2026-09-26).
  */
 const assertArbiterMayRule = async (
   stores: NightshiftStores,

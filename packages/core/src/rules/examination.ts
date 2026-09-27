@@ -22,11 +22,7 @@ export interface AgentRoute {
   readonly model: string;
 }
 
-export type IndependenceRefusal =
-  | "same_agent"
-  | "same_model"
-  | "same_provider"
-  | "arbiter_shares_a_model";
+export type IndependenceRefusal = "same_agent" | "same_model" | "same_provider";
 
 export interface IndependenceProblem {
   readonly reason: IndependenceRefusal;
@@ -64,8 +60,10 @@ export const mayExamine = (
 
 /**
  * Why `arbiter` may not rule between `implementer` and `examiner` (D-P8-13).
- * It may be neither of them, and may share a model with neither. With two
- * providers it cannot differ in provider from both, and is not required to.
+ * It may be neither of them. It may share a model with one, as a fresh
+ * invocation, when the highest tier has nothing else (as amended 2026-09-26):
+ * a weaker judge was the worse trade, and the report counts how often such an
+ * arbiter agrees with its sibling.
  */
 export const mayArbitrate = (
   implementer: AgentRoute,
@@ -78,17 +76,6 @@ export const mayArbitrate = (
       reason: "same_agent",
       detail: "an arbiter may not be either side of the dispute",
     });
-  }
-  for (const [side, route] of [
-    ["implementer", implementer],
-    ["examiner", examiner],
-  ] as const) {
-    if (arbiter.model === route.model) {
-      problems.push({
-        reason: "arbiter_shares_a_model",
-        detail: `the arbiter runs ${arbiter.model}, the same model as the ${side}`,
-      });
-    }
   }
   return problems;
 };

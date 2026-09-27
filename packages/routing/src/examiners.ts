@@ -10,8 +10,13 @@
  *   says `mustDifferProvider` (in practice, another provider's ladder). At high
  *   risk it is that ladder's frontier tier; otherwise the standard tier, and
  *   the nearest tier above when there is none.
- * - An **arbiter** is frontier, and runs a model neither the implementer nor the
- *   examiner used; from a third provider when the policy has one.
+ * - An **arbiter** runs on the highest tier the ladders offer, never lower to
+ *   avoid a side's model (the owner's ruling, 2026-09-26). On that tier it
+ *   prefers a third provider's model, then any model neither side used, then
+ *   the examiner's model, then the implementer's: a fresh invocation either way,
+ *   so it is never either side's agent. Sharing the examiner's leans towards
+ *   upholding, the direction the owner can cheaply reverse; the report counts
+ *   how often an arbiter agrees with the side whose model it shares.
  *
  * Deterministic like the rest of routing: the same inputs, the same choice.
  */
@@ -130,20 +135,38 @@ export const examinerRoute = (
   });
 };
 
-/** The arbiter's route (D-P8-13): frontier, a model neither side used, a third provider first. */
+/** Which side of a dispute an arbiter on `target` shares a model with, if either. */
+export const arbiterSharesModelWith = (
+  target: Pick<RouteTarget, "model">,
+  sides: {
+    readonly implementer: Pick<RouteTarget, "model">;
+    readonly examiner: Pick<RouteTarget, "model">;
+  },
+): "examiner" | "implementer" | undefined =>
+  target.model === sides.examiner.model
+    ? "examiner"
+    : target.model === sides.implementer.model
+      ? "implementer"
+      : undefined;
+
+/**
+ * The arbiter's route (D-P8-13, as amended 2026-09-26): the highest tier first,
+ * and on it a third provider, then a model neither side used, then the
+ * examiner's, then the implementer's.
+ */
 export const arbiterRoute = (
   input: HelperRouteInput & { readonly implementer: RouteTarget; readonly examiner: RouteTarget },
 ): RouteChoice => {
   const sides = new Set([input.implementer.provider, input.examiner.provider]);
-  const frontierFirst = byTier(everyRoute(input.policy), "frontier");
-  const third = frontierFirst.filter((c) => {
-    const judged = eligible(input, c);
-    return !sides.has(judged.target.provider);
-  });
-  const ordered = [...third, ...frontierFirst.filter((c) => !third.includes(c))];
-  return choose(input, "arbiter-frontier", ordered, (_candidate, target) =>
-    target.model === input.implementer.model || target.model === input.examiner.model
-      ? `the arbiter may not run ${target.model}: one side of the dispute did`
-      : undefined,
+  const preference = (candidate: Candidate): number => {
+    const target = eligible(input, candidate).target;
+    const shares = arbiterSharesModelWith(target, input);
+    if (shares === "examiner") return 2;
+    if (shares === "implementer") return 3;
+    return sides.has(target.provider) ? 1 : 0;
+  };
+  const ordered = [...everyRoute(input.policy)].sort(
+    (a, b) => tierRank(b.tier) - tierRank(a.tier) || preference(a) - preference(b),
   );
+  return choose(input, "arbiter", ordered, () => undefined);
 };

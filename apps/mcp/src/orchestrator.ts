@@ -884,7 +884,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       title: "Dispute an examiner's finding",
       description:
         "For a job an independent examiner stopped: say why its blocking findings are wrong, and " +
-        "an arbiter (a model neither the builder nor the examiner used) rules on them. Overturned, " +
+        "an arbiter (a fresh invocation of the strongest model available) rules on them. Overturned, " +
         "the work that was examined lands as it is; upheld, the ruling is final and the next attempt " +
         "carries it out, which Nightshift starts itself. Either way the " +
         "ruling is recorded as a decision a human can reverse. Fix it instead with job.retry when " +

@@ -17,6 +17,7 @@
  * that made it can record.
  */
 import type {
+  Agent,
   Decision,
   Examination,
   ExecutionNode,
@@ -62,6 +63,13 @@ export interface RulingReport {
   readonly nodeId: string;
   readonly finding: string;
   readonly reversedBy?: Decision;
+  /** The model the arbiter ran, when its agent is on the record. */
+  readonly arbiterModel?: string;
+  /**
+   * The side whose model the arbiter shared, as a fresh invocation, when the
+   * highest tier had nothing else (D-P8-13, as amended 2026-09-26).
+   */
+  readonly sharesModelWith?: "examiner" | "implementer";
 }
 
 export interface StrandReport {
@@ -149,6 +157,8 @@ interface Records {
   readonly decisions: readonly Decision[];
   readonly routesOf: ReadonlyMap<string, readonly RoutingDecision[]>;
   readonly examinationsOf: ReadonlyMap<string, readonly Examination[]>;
+  /** Agent id → agent, for the nodes an examination touched: who built, and who ruled. */
+  readonly agentOf: ReadonlyMap<string, Agent>;
   /** Node id → the prerequisites its deferred checks wait on. */
   readonly waitingOf: ReadonlyMap<string, readonly string[]>;
   /** Every attempt at every strand, oldest first. */
@@ -239,6 +249,24 @@ const usageOf = (routes: readonly RoutingDecision[]): UsageRow[] => {
   return [...rows.values()];
 };
 
+/** The model an arbiter ran, and which side's it was, when either is on the record. */
+const whoRuled = (
+  records: Records,
+  ruling: Decision,
+  examination: Examination,
+): Pick<RulingReport, "arbiterModel" | "sharesModelWith"> => {
+  const arbiterModel =
+    ruling.agentId === null ? undefined : records.agentOf.get(ruling.agentId)?.model;
+  if (arbiterModel === undefined) return {};
+  if (arbiterModel === examination.examinerRoute.model) {
+    return { arbiterModel, sharesModelWith: "examiner" };
+  }
+  const implementerModel = records.agentOf.get(examination.implementerAgentId)?.model;
+  return arbiterModel === implementerModel
+    ? { arbiterModel, sharesModelWith: "implementer" }
+    : { arbiterModel };
+};
+
 /** The arbiter's rulings, from the examinations that cite them, with any human reversal (D-P8-13). */
 const rulingsOf = (records: Records): RulingReport[] => {
   const byId = new Map(
@@ -246,10 +274,10 @@ const rulingsOf = (records: Records): RulingReport[] => {
   );
   const cited = [...records.examinationsOf].flatMap(([nodeId, examinations]) =>
     examinations.flatMap((examination) =>
-      examination.findings.map((finding) => ({ nodeId, finding })),
+      examination.findings.map((finding) => ({ nodeId, finding, examination })),
     ),
   );
-  return cited.flatMap(({ nodeId, finding }) => {
+  return cited.flatMap(({ nodeId, finding, examination }) => {
     const decisionId = finding.resolvedBy?.decisionId;
     const ruling = decisionId === undefined ? undefined : byId.get(decisionId);
     if (ruling === undefined || ruling.authority !== "agent") return [];
@@ -262,7 +290,8 @@ const rulingsOf = (records: Records): RulingReport[] => {
         nodeId,
         finding: `${finding.id} ${finding.summary}`,
         ...(reversedBy === undefined ? {} : { reversedBy }),
-      },
+        ...whoRuled(records, ruling, examination),
+      } satisfies RulingReport,
     ];
   });
 };
@@ -281,6 +310,7 @@ const readRecords = async (
 
   const routesOf = new Map<string, readonly RoutingDecision[]>();
   const examinationsOf = new Map<string, readonly Examination[]>();
+  const agentOf = new Map<string, Agent>();
   for (const node of nodes) {
     if (node.parentNodeId === null) continue;
     routesOf.set(
@@ -290,6 +320,9 @@ const readRecords = async (
     if (node.kind !== "job") continue;
     const examinations = await stores.examinations.listByNode(scope, node.executionNodeId);
     if (examinations.length > 0) {
+      for (const agent of await stores.agents.listByNode(scope, node.executionNodeId)) {
+        agentOf.set(agent.agentId, agent);
+      }
       examinationsOf.set(
         node.executionNodeId,
         [...examinations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
@@ -334,6 +367,7 @@ const readRecords = async (
     decisions,
     routesOf,
     examinationsOf,
+    agentOf,
     waitingOf,
     strandNodes,
     outcomes,
@@ -467,6 +501,35 @@ const renderJobs = (strand: StrandReport): string[] => {
  * agent made that the owner can reverse, and before P9 reversing one replays
  * nothing.
  */
+/**
+ * How often an arbiter that shared a side's model sided with that side (the
+ * owner's question, 2026-09-26): with the examiner, it upheld; with the builder,
+ * it overturned.
+ */
+const renderAgreement = (rulings: readonly RulingReport[]): string[] => {
+  const sharing = rulings.filter((ruling) => ruling.sharesModelWith !== undefined);
+  if (sharing.length === 0) return [];
+  const agreed = sharing.filter(
+    ({ ruling, sharesModelWith }) =>
+      (sharesModelWith === "examiner") === (ruling.choice === "uphold"),
+  ).length;
+  return [
+    `${sharing.length} of these rulings came from an arbiter on one side's own model, in a fresh`,
+    `context; it sided with that side ${agreed} of ${sharing.length} time(s).`,
+    "",
+  ];
+};
+
+const byWhom = ({
+  arbiterModel,
+  sharesModelWith,
+}: Pick<RulingReport, "arbiterModel" | "sharesModelWith">): string => {
+  if (arbiterModel === undefined) return "";
+  if (sharesModelWith === undefined) return ` by ${arbiterModel}`;
+  const side = sharesModelWith === "examiner" ? "examiner's" : "builder's";
+  return ` by ${arbiterModel}, the ${side} model in a fresh context`;
+};
+
 const renderRulings = (rulings: readonly RulingReport[]): string[] =>
   rulings.length === 0
     ? []
@@ -478,8 +541,9 @@ const renderRulings = (rulings: readonly RulingReport[]): string[] =>
         "your decision and replays nothing: an overturn's work stays landed and an uphold's ruling",
         "stays carried out until the decision graph (P9); roll back by hand from the checkpoint named.",
         "",
-        ...rulings.flatMap(({ ruling, nodeId, finding, reversedBy }) => [
-          `- **${ruling.choice === "overturn" ? "Overturned" : "Upheld"}** ${finding} on ${nodeId}: ${ruling.rationale}`,
+        ...renderAgreement(rulings),
+        ...rulings.flatMap(({ ruling, nodeId, finding, reversedBy, ...who }) => [
+          `- **${ruling.choice === "overturn" ? "Overturned" : "Upheld"}**${byWhom(who)} ${finding} on ${nodeId}: ${ruling.rationale}`,
           `  Decision \`${ruling.decisionId}\`, made against checkpoint \`${ruling.checkpointBefore}\`${ruling.checkpointAfter === undefined ? "" : `, landed at \`${ruling.checkpointAfter}\``}.`,
           ...(reversedBy === undefined ? [] : [`  Reversed by you: ${reversedBy.rationale}`]),
         ]),

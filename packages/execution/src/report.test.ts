@@ -69,6 +69,37 @@ describe("the report's routing and examination (P8)", () => {
     expect(text).toContain("replays nothing");
   });
 
+  it("names the arbiter's model, and counts how often one on a side's model sided with it (2026-09-26)", () => {
+    const upheld = { ...ruling, choice: "uphold" };
+    const text = renderReport(
+      report({
+        rulings: [
+          {
+            ruling: upheld,
+            nodeId: "node_a",
+            finding: "F-01 a",
+            arbiterModel: "gpt-6-astra",
+            sharesModelWith: "examiner",
+          },
+          {
+            ruling,
+            nodeId: "node_b",
+            finding: "F-01 b",
+            arbiterModel: "gpt-6-astra",
+            sharesModelWith: "examiner",
+          },
+          { ruling, nodeId: "node_c", finding: "F-01 c", arbiterModel: "claude-opus-5-5" },
+        ],
+      }),
+    );
+    expect(text).toContain(
+      "**Upheld** by gpt-6-astra, the examiner's model in a fresh context F-01 a",
+    );
+    expect(text).toContain("**Overturned** by claude-opus-5-5 F-01 c");
+    expect(text).toContain("2 of these rulings came from an arbiter on one side's own model");
+    expect(text).toContain("it sided with that side 1 of 2 time(s).");
+  });
+
   it("shows every route a job ran on and every examination of it", () => {
     const strand = {
       id: "S-01",

@@ -311,7 +311,7 @@ describe("resolving a finding (D-P8-13)", () => {
     expect((await w.call("PUT", path, disputed, orchestrator)).status).toBe(200);
   });
 
-  it("accepts an arbiter's ruling only from an arbiter neither side's model", async () => {
+  it("accepts an arbiter's ruling from a fresh arbiter, even on a side's model (as amended 2026-09-26)", async () => {
     const { w, verdict } = await recorded();
     const path = `${w.run}/examinations/${verdict.examinationId}`;
     expect(
@@ -324,18 +324,8 @@ describe("resolving a finding (D-P8-13)", () => {
       ).status,
     ).toBe(200);
 
-    const bad = await w.agent("arbiter", "codex", "openai", "gpt-6-astra");
-    const badRuling = makeDecision(w.f, w.node.executionNodeId, { agentId: bad.record.agentId });
-    const refused = await w.call(
-      "PUT",
-      `${w.run}/decisions/${badRuling.decisionId}`,
-      badRuling,
-      bad.principal,
-    );
-    expect(refused.status).toBe(403);
-    expect(errorCode(refused)).toBe("arbiter_not_independent");
-
-    const good = await w.agent("arbiter", "claude", "anthropic", "claude-opus-5-5");
+    // The examiner's own model, as a fresh arbiter: a different agent, so it rules.
+    const good = await w.agent("arbiter", "codex", "openai", "gpt-6-astra");
     const ruling = makeDecision(w.f, w.node.executionNodeId, { agentId: good.record.agentId });
     expect(
       (await w.call("PUT", `${w.run}/decisions/${ruling.decisionId}`, ruling, good.principal))

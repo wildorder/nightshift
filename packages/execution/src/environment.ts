@@ -132,7 +132,7 @@ export interface ExaminationServices {
     readonly mustDifferModel: boolean;
     readonly mustDifferProvider: boolean;
   }): RouteChoice;
-  /** A frontier route whose model neither side used (D-P8-13). */
+  /** The highest-tier route, a model neither side used when there is one (D-P8-13, as amended). */
   arbiterRoute(input: {
     readonly job: JobContract;
     readonly implementer: RoutingDecision["chosen"];

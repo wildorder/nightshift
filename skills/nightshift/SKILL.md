@@ -228,7 +228,7 @@ beginning `examination_failed:` and naming the findings. You have two moves:
   it climbs a rung; the fix is examined again. At most **two** fixes; a third is
   refused.
 - **Dispute it**: `finding.dispute { jobId, reason }`, when the examiner is wrong.
-  An **arbiter** (a frontier model neither the worker nor the examiner used) rules.
+  An **arbiter** (a fresh frontier invocation, on a model neither side used when there is one) rules.
   Overturned, the work that was examined lands as it is. Upheld, the ruling is
   final: Nightshift starts the next attempt itself, with the ruling as a binding
   instruction, and its examination checks only that the ruling was carried out.
