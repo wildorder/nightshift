@@ -37,6 +37,7 @@ import {
 } from "@nightshift/contracts";
 import {
   checkPlan,
+  explainCorrection,
   isPlanned,
   nowIso,
   type PlanDocumentStore,
@@ -175,6 +176,32 @@ const carryPrerequisites = (
   return all.length === 0 && next.prerequisites === undefined ? undefined : all;
 };
 
+/**
+ * A correction may name only decisions of this project that a human has
+ * reversed (P9, D-P9-04). Read from the project's own partitions: the chain in
+ * the contract is the caller's, and the project was already checked.
+ */
+const assertCorrectable = async (deps: ApiDeps, contract: ProgramContract): Promise<void> => {
+  const problems: string[] = [];
+  for (const target of contract.corrects ?? []) {
+    const scope = {
+      projectId: contract.projectId,
+      programId: target.programId,
+      runId: target.runId,
+    };
+    problems.push(
+      ...explainCorrection({
+        target,
+        decision: await deps.stores.decisions.get(scope, target.decisionId),
+        reversal: await deps.stores.decisions.get(scope, target.reversedBy),
+      }),
+    );
+  }
+  if (problems.length > 0) {
+    throw new HttpError(422, "correction_invalid", problems.join("; "));
+  }
+};
+
 export const ratifyProgram: Handler = async ({ deps, request, params }) => {
   const body = parseBody(RatificationRequestBodySchema, request.body);
   const scope = programScopeFrom(params);
@@ -217,6 +244,8 @@ export const ratifyProgram: Handler = async ({ deps, request, params }) => {
       readiness.reasons,
     );
   }
+
+  await assertCorrectable(deps, body.contract);
 
   const existing = await deps.stores.programContracts.get(scope.projectId, scope.programId);
   // Ratifying what is already ratified is a retry, not a second ratification.

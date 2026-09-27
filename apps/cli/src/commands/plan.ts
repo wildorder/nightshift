@@ -7,7 +7,14 @@
  * because the hash has to name something git can reproduce; then it uploads the
  * plan document and records the hash. If the upload fails, nothing is ratified.
  */
-import { checkPlan, type PlanReason, planHash, splitPlanSections } from "@nightshift/core";
+import {
+  CONFIRMED_CLASSES,
+  checkPlan,
+  explainCorrection,
+  type PlanReason,
+  planHash,
+  splitPlanSections,
+} from "@nightshift/core";
 import { createHttpPlanning, sha256Hex } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
@@ -45,6 +52,40 @@ const printReasons = (environment: CliEnvironment, result: PlanCheckResult): voi
   }
 };
 
+/**
+ * What a correction names, checked against the control plane (P9, D-P9-04,
+ * D-P9-05): problems that make it not ready, and the reversals of decisions
+ * whose effects reach outside the repository, which are flagged, not refused.
+ * Only a correction reaches the control plane; any other plan checks offline.
+ */
+const correctionOf = async (
+  environment: CliEnvironment,
+  files: ProgramFiles,
+): Promise<{ readonly problems: readonly string[]; readonly flags: readonly string[] }> => {
+  const targets = files.contract.corrects ?? [];
+  if (targets.length === 0) return { problems: [], flags: [] };
+  const session = await openSession(environment);
+  const problems: string[] = [];
+  const flags: string[] = [];
+  for (const target of targets) {
+    const scope = {
+      projectId: files.contract.projectId,
+      programId: target.programId,
+      runId: target.runId,
+    };
+    const decision = await session.stores.decisions.get(scope, target.decisionId);
+    const reversal = await session.stores.decisions.get(scope, target.reversedBy);
+    problems.push(...explainCorrection({ target, decision, reversal }));
+    if (decision !== undefined && CONFIRMED_CLASSES.includes(decision.reversibility)) {
+      flags.push(
+        `${decision.decisionId} is ${decision.reversibility}: its effects reach outside the ` +
+          `repository. \`nightshift run\` asks you to confirm it before this correction runs.`,
+      );
+    }
+  }
+  return { problems, flags };
+};
+
 /** Exit code 0 when `READY`, 1 otherwise: the exit code is the answer. */
 export const planCheck = async (
   environment: CliEnvironment,
@@ -52,12 +93,28 @@ export const planCheck = async (
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const files = await readProgramFiles(repoPath, options.id);
-  const result = readinessOf(files);
+  const local = readinessOf(files);
+  const correction = await correctionOf(environment, files);
+  const result: PlanCheckResult =
+    correction.problems.length === 0
+      ? local
+      : {
+          ...local,
+          ready: false,
+          reasons: [
+            ...local.reasons,
+            ...correction.problems.map((message) => ({
+              kind: "correction_invalid" as const,
+              message,
+            })),
+          ],
+        };
   if (!result.ready) {
     printReasons(environment, result);
     return 1;
   }
   environment.out("READY");
+  for (const flag of correction.flags) environment.out(`FLAG ${flag}`);
   environment.out(
     `${files.directory}: ${files.contract.strands?.length ?? 0} strands, ` +
       `${files.contract.prerequisites?.length ?? 0} prerequisites, ` +

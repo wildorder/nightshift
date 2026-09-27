@@ -450,6 +450,12 @@ const sectionHasBody = (section: string | undefined): boolean =>
 
 export type PlanReason =
   | { readonly kind: "no_strands"; readonly message: string }
+  /**
+   * P9 (D-P9-04): a correction names a decision that is not there, or not
+   * reversed by a human. Found against the control plane, never by `checkPlan`,
+   * which reads only the files.
+   */
+  | { readonly kind: "correction_invalid"; readonly message: string }
   | { readonly kind: "unclaimed_criterion"; readonly criterionId: string; readonly message: string }
   | {
       readonly kind: "unknown_criterion";
