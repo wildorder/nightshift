@@ -50,9 +50,11 @@ export const EffectivePolicySchema = z.strictObject({
 export type EffectivePolicy = z.infer<typeof EffectivePolicySchema>;
 
 /**
- * Low risk not examined; medium examined by a different model, advisory; high
- * examined by another provider's frontier model, blocking (P8 §4.2, the owner's
- * answer to Q10).
+ * Low risk not examined; medium examined by a different model; high examined by
+ * another provider's frontier model (P8 §4.2, the owner's answer to Q10). A
+ * material finding blocks at both: the owner's amendment of 2026-09-26, after the
+ * first planned runs on foodfly landed material advisory findings nothing fixed.
+ * Minor findings are reported and never block.
  */
 export const DEFAULT_EXAMINATION_POLICY: ExaminationPolicy = {
   low: {
@@ -65,7 +67,7 @@ export const DEFAULT_EXAMINATION_POLICY: ExaminationPolicy = {
     required: true,
     mustDifferModel: true,
     mustDifferProvider: false,
-    blockOnMaterialFindings: false,
+    blockOnMaterialFindings: true,
   },
   high: {
     required: true,

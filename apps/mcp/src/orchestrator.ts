@@ -35,15 +35,12 @@ import {
   inheritFromConfig,
   JobContractSchema,
   type JobKind,
-  JobKindSchema,
   NIGHTSHIFT_CONFIG_FILE,
   NightshiftConfigSchema,
   ReversibilitySchema,
-  RiskLevelSchema,
   ScopeRequestSchema,
   StrandIdSchema,
   type Testability,
-  TestabilitySchema,
   type Tier,
   TierSchema,
 } from "@nightshift/contracts";
@@ -74,6 +71,7 @@ import {
 import { RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
 import { type ActivityFeed, createActivityFeed, renderActivity } from "./activity.js";
+import { CLASSIFICATION_INPUTS } from "./classification.js";
 import type { RefusalCode } from "./results.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 import { routeJob } from "./routing.js";
@@ -682,19 +680,9 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         scope: ScopeRequestSchema,
         acceptance: z.array(z.string().min(1)).min(1),
         dependencies: z.array(z.string().min(1)).optional(),
-        risk: RiskLevelSchema.optional(),
-        ambiguity: RiskLevelSchema.optional(),
         // P8 (D-P8-01): what the job says about itself, so routing can place it.
         // Unset is the conservative choice, not the cheap one.
-        testability: TestabilitySchema.optional().describe(
-          "strong: the program's own checks exercise this change, so a cheap model's mistake is caught; " +
-            "weak: they touch it only in passing; none: nothing checks it. Leave it unset if unsure: " +
-            "unset is treated as weak, the conservative choice, not the cheap one.",
-        ),
-        jobKind: JobKindSchema.optional().describe(
-          "What kind of work it is: implement, fix, refactor, test, docs. Routing rules may start " +
-            "some kinds lower or higher on the ladder.",
-        ),
+        ...CLASSIFICATION_INPUTS,
         // `sub-program` hands a bounded region of the program to an orchestrator
         // of its own, which delegates within it (D-P6-03).
         kind: z.enum(["job", "sub-program"]).optional(),

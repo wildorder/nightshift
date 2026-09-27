@@ -91,6 +91,12 @@ export interface UsageRow {
   readonly costUsd: number;
   /** True when any of `costUsd` is an estimate from the price table (D-P8-08). */
   readonly estimated: boolean;
+  /**
+   * Routes with no dollar figure at all: the harness reported none and the
+   * price table has no price for the model. Not counted in `costUsd`, so a cost
+   * of 0 with routes unpriced is unknown, not free.
+   */
+  readonly unpriced: number;
 }
 
 export interface RunReport {
@@ -212,6 +218,7 @@ const usageOf = (routes: readonly RoutingDecision[]): UsageRow[] => {
       outputTokens: 0,
       costUsd: 0,
       estimated: false,
+      unpriced: 0,
     };
     rows.set(key, {
       ...so,
@@ -222,6 +229,11 @@ const usageOf = (routes: readonly RoutingDecision[]): UsageRow[] => {
       estimated:
         so.estimated ||
         (route.usage.actualCostUsd === undefined && route.usage.estimatedCostUsd !== undefined),
+      unpriced:
+        so.unpriced +
+        (route.usage.actualCostUsd === undefined && route.usage.estimatedCostUsd === undefined
+          ? 1
+          : 0),
     });
   }
   return [...rows.values()];
@@ -550,6 +562,13 @@ const renderPrerequisites = (pending: readonly Prerequisite[]): string[] =>
         "",
       ];
 
+/** A row's dollars: unknown when no route had any, and saying so when only some did. */
+const costCell = (row: UsageRow): string => {
+  if (row.unpriced === row.attempts) return "unknown";
+  const known = `${row.costUsd.toFixed(2)}${row.estimated ? "*" : ""}`;
+  return row.unpriced === 0 ? known : `${known} + ${row.unpriced} unknown`;
+};
+
 /** The run's totals against its budgets (D-P8-08). */
 const renderBudget = (report: RunReport): string[] => {
   const { maxUsd, maxTokens } = report.program.costPolicy;
@@ -557,9 +576,14 @@ const renderBudget = (report: RunReport): string[] => {
   const usd = report.usage.reduce((total, row) => total + row.costUsd, 0);
   const tokens = report.usage.reduce((total, row) => total + row.inputTokens + row.outputTokens, 0);
   const estimated = report.usage.some((row) => row.estimated);
+  const unpriced = report.usage.reduce((total, row) => total + row.unpriced, 0);
+  const caveats = [
+    ...(estimated ? ["partly estimated"] : []),
+    ...(unpriced > 0 ? [`${unpriced} route(s) unpriced and not counted`] : []),
+  ];
   return [
     "",
-    `Budget: ${maxUsd === undefined ? "" : `$${usd.toFixed(2)}${estimated ? " (partly estimated)" : ""} of $${maxUsd}`}${
+    `Budget: ${maxUsd === undefined ? "" : `$${usd.toFixed(2)}${caveats.length === 0 ? "" : ` (${caveats.join("; ")})`} of $${maxUsd}`}${
       maxUsd !== undefined && maxTokens !== undefined ? "; " : ""
     }${maxTokens === undefined ? "" : `${tokens} of ${maxTokens} tokens`}.`,
   ];
@@ -609,13 +633,14 @@ export const renderReport = (report: RunReport): string => {
     "## Usage",
     "",
     "Token counts are what each harness reported and are not comparable across harnesses.",
-    "A cost marked * is estimated from the price table, not reported by the harness.",
+    "A cost marked * is estimated from the price table, not reported by the harness. A cost",
+    "that is unknown had neither: give the org's price table a price for that model to estimate it.",
     "",
     "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost (USD) |",
     "|---|---|---|---|---|---|---|",
     ...report.usage.map(
       (row) =>
-        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${row.inputTokens} | ${row.outputTokens} | ${row.costUsd.toFixed(2)}${row.estimated ? "*" : ""} |`,
+        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${row.inputTokens} | ${row.outputTokens} | ${costCell(row)} |`,
     ),
     ...renderBudget(report),
   ];

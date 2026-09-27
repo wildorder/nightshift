@@ -5,7 +5,7 @@
  * each verdict and ruling to the agents it stores.
  *
  * The run's policy is the seeded org default: high risk is examined by another
- * provider and blocks; medium is examined by a different model and is advisory.
+ * provider; medium by a different model; a material finding blocks at both.
  */
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -450,14 +450,27 @@ describe("examination beside the merge queue (D-P8-09)", () => {
     expect(await examinationsOf(world, nodeId)).toEqual([]);
   });
 
-  it("lands medium-risk work with its findings recorded, because medium is advisory", async () => {
+  it("stops medium-risk work on a material finding, and a fix lands it (as amended 2026-09-26)", async () => {
+    const { world, engine, jobId, nodeId } = await rig({
+      risk: "medium",
+      findings: (attempt) => (attempt === 0 ? [{ severity: "material" }] : []),
+    });
+    expect(await settledIdle(world, engine, nodeId)).toBe("failed");
+    const [examination] = await examinationsOf(world, nodeId);
+    expect(examination).toMatchObject({ blocking: true, outcome: "findings_raised" });
+    expect(examination?.examinerRoute.model).not.toBe(BUILDER.model);
+    expect(await engine.retry(jobId)).toBe(true);
+    expect(await settledIdle(world, engine, nodeId, "integrated")).toBe("integrated");
+  });
+
+  it("lands medium-risk work with a minor finding recorded: minor findings never block", async () => {
     const { world, engine, nodeId } = await rig({
       risk: "medium",
-      findings: () => [{ severity: "material" }],
+      findings: () => [{ severity: "minor" }],
     });
     expect(await settledIdle(world, engine, nodeId)).toBe("integrated");
     const [examination] = await examinationsOf(world, nodeId);
-    expect(examination).toMatchObject({ blocking: false, outcome: "findings_raised" });
+    expect(examination).toMatchObject({ blocking: true, outcome: "findings_raised" });
     expect(examination?.findings[0]?.resolution).toBe("unresolved");
   });
 

@@ -376,6 +376,15 @@ A-46.
   never carries over through the queue, or the very change it was upheld
   against would land. Two attempts that cannot carry a ruling out end
   `examination_ruling_unmet:`.
+- **In a planned run, strand orchestrators delegate every job, and they read
+  their brief (`renderSubOrchestratorBrief`), never the `nightshift` skill.** P8
+  first taught only the skill, and the owner's foodfly runs showed it: no job
+  claimed low ambiguity, so nothing ran on the cheap rung, and a stopped job was
+  redelegated around the fix limit. Guidance an orchestrator needs goes in both;
+  the delegate tools share `CLASSIFICATION_INPUTS` (`apps/mcp/src/classification.ts`).
+- **A cost nobody reported or priced is unknown** (`UsageRow.unpriced`), never
+  $0.00. Budgets (`spendOf`) count only priced routes; the default price table is
+  empty until the org fills it.
 - **`nightshift resume` lands through `apps/mcp`'s `nightshift-resume`** (a
   process, like `nightshift-orchestrate`), because deferred work the run's
   policy says to examine is examined there once its checks pass (D-P8-14) and

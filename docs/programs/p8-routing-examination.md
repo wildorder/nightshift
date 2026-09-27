@@ -94,7 +94,7 @@ redeployed.
 | Q7 | Where does work go when a route cannot start? | **Another model on the rung, then the other provider's ladder at the same tier, then one rung up**, as drafted (D-P8-06) |
 | Q8 | Does a retry climb? | **One rung on every real failure**, as drafted (D-P8-07) |
 | Q9 | What does the examiner see? | **Evidence only, and it may ask the builder direct questions**: up to three, one round, answered by resuming the builder's own session (the owner's proposal; D-P8-11, D-P8-15) |
-| Q10 | The default examination policy | **Low not examined; medium examined by a different model, advisory; high examined by the other provider's frontier model, blocking**, as drafted (§4.2) |
+| Q10 | The default examination policy | **Low not examined; medium examined by a different model, advisory; high examined by the other provider's frontier model, blocking**, as drafted (§4.2). Amended 2026-09-26: a material finding blocks medium too (§12) |
 
 ### 3.2 Ratified decisions
 
@@ -144,7 +144,7 @@ delegate { classification, pins? }
              └─ required: verify snapshot, examine beside the queue    │
                    passed ────────────────────────────────────────────┤
                    (may ask the builder ≤3 questions, one round)          │
-                   advisory findings → recorded, work lands ──────────┤
+                   minor findings (or advisory policy) → recorded, lands ┤
                    blocking finding → orchestrator
                         fix (≤2) → retry, one rung up, examined again  │
                         dispute, or still failing after 2 → arbiter
@@ -198,7 +198,7 @@ The owner's org, as answered:
 },
 "examinationPolicy": {
   "low":    { "required": false, … },
-  "medium": { "required": true, "mustDifferModel": true, "blockOnMaterialFindings": false },   // advisory
+  "medium": { "required": true, "mustDifferModel": true, "blockOnMaterialFindings": true },    // blocking since 2026-09-26
   "high":   { "required": true, "mustDifferProvider": true, "blockOnMaterialFindings": true }      // blocking
 }
 ```
@@ -442,6 +442,7 @@ Specs live in `tasks/p8-routing-examination/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-26 | **After the owner's first trial runs on foodfly** (`dashboard-team`, `dashboard-multi-org`, both succeeded), three changes. (1) **A material finding blocks medium-risk work too**, amending Q10's default: the examiners were catching real bugs (a 500 on a concurrent-invite race; the switcher reporting success without switching to the new org) and four material advisory findings landed with nothing to fix them. Blocking puts them through the fix, arbiter and ruling path; minor findings stay report-only. An org may still set medium advisory. (2) **The strand orchestrator's brief learns P8.** It had never been updated: it offered `delegate { objective, scope, acceptance }` with no classification guidance, so no job was ever claimed low-ambiguity and nothing ran on the cheap rung in either run; and it said nothing about examination, so one stopped job was delegated again as a new job, around the fix limit and the arbiter. It now says what each classification means and when to say low, what each examination ending asks of it, and not to redelegate a stopped job. This is guidance: nothing can tell a new delegation from the same work redone, so a redelegation is still possible and is visible in the report. (3) **An unknown cost is reported as unknown**, not $0.00. The price table is empty, so every Codex route was unpriced; budgets still count only priced routes, and the report now says how many were not counted. | **Human** (1); agent, on the owner's go-ahead (2, 3) |
 | 2026-09-25 | **The arbiter is final: an upheld ruling is carried out, not abandoned.** Amends D-P8-13 and SC-P8-12. As built, an upheld finding failed the job and parked its strand with its cone, so a disagreement could end a strand for good; the owner's answer to Q6 ("the decision is recorded and becomes a commit/rollback point, and it moves on") had meant the work moves on. Now the engine starts the next attempt itself with the ruling as a binding instruction, its examination checks only the ruling and cannot be disputed, and two attempts that cannot carry it out are a failure of the work. Built the same day (§13). | **Human** |
 | 2026-09-25 | **Build decisions, provisional until the owner ratifies or reverses them.** (1) **A job an examiner stops beside the queue ends `failed`, not `examination_failed`.** Beside the queue the node is still `implemented`, and P1's table lets it only `fail`; the reason begins `examination_failed:` and names the findings, the retry climbs as D-P8-07 says, and it is a fix. A job stopped *in* the queue (its patch id changed) ends in the status `examination_failed` through the table's own edges. Nothing in P1's table changed. (2) **The arbiter is the frontier model neither side used when there is one, and otherwise the highest tier that has one.** D-P8-13 says frontier. With two providers, a high-risk job built on Claude's frontier and examined on Codex's has no frontier model left, and the live suite's arbiter was `gpt-6-sol`; refusing would leave every such dispute unruled. Its decision records the ladder and rung it ran on; its rule id still reads `arbiter-frontier`. A third provider (P10's Bedrock route) makes this rare. (3) **An answerer has no token and no MCP server.** D-P8-15's resumed builder answers in text and calls no Nightshift tool, so the role is minted nothing, and the token route refuses it. (4) **Adapters keep their sessions.** Claude runs without `--no-session-persistence` and Codex without `--ephemeral`, because D-P8-15 resumes the builder's session to answer; sessions therefore accumulate in the operator's own Claude Code and Codex history. | Agent, for human ratification |
 | 2026-09-25 | **The owner runs the exit gate's trial.** SC-P8-18 is the owner's own run on the deployed stack after T5, as P7's was; H-P8-04 is dropped. P8 closes when the owner has run it. | **Human** |
@@ -496,12 +497,14 @@ block), and lands; a ruling upheld on a dispute is carried out the same way; two
 attempts that do not carry it out fail `examination_ruling_unmet:`, a third is
 refused and a dispute of the ruling's check is refused; and an examination with
 an upheld finding never carries over. Redeployed for the new fields; smoke 90 of
-90. **Not yet proven live**: the fifth live run, after the amendment, passed all
-eight phases, but its arbiter (`claude-sonnet-5`, build decision 2) overturned
-the planted defect, reasoning that the objective asked for it, and the work
-landed; so no ruling was upheld to carry out. That run is also the plainest case
-yet for revisiting build decision 2: a standard-tier arbiter let a real defect
-land.
+90. **Proven live** on 2026-09-26, twice: in the owner's
+`dashboard-team` run (one ruling carried out and landed; one not carried out in
+two attempts, `examination_ruling_unmet:`, then delegated differently and landed),
+and in the sixth run of the live suite (arbiter `gpt-6-sol` upheld the planted
+defect; the engine started the next attempt itself; `gpt-6-astra` checked only the
+ruling, passed it, and the job landed). The fifth run's arbiter, `claude-sonnet-5`
+(build decision 2), had instead overturned the planted defect and let it land: the
+plainest case yet for revisiting build decision 2.
 
 D-P8-14 (examination and deferral compose) is proven in `examination.test.ts`:
 deferred high-risk work is not examined while its checks are deferred, is
@@ -571,7 +574,8 @@ sub-orchestrator in 51.6 s); `npm run verify` green (3,083 tests, 2 skipped as b
 
 Everything is deployed and your org reads the seeded default, which is your
 ladders (Claude Haiku → Sonnet → Opus; Codex `gpt-6-luna` → `gpt-6-sol` →
-`gpt-6-astra`; medium examined advisory, high examined and blocking).
+`gpt-6-astra`; medium and high examined, a material finding blocking at both
+since 2026-09-26).
 `nightshift org config get` shows it; nothing needs setting. Plan and run as for
 P7 (`plan-program`, then `run-program`). In the run's `report.md`, look for:
 

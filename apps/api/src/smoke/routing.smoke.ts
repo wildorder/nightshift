@@ -418,7 +418,7 @@ describe("routing and examination, with real models, against the deployed contro
       expect(work[1]?.previousRouteId).toBe(work[0]?.routingDecisionId);
     });
 
-    it("examines medium-risk work by a different model, advisory (SC-P8-09)", async () => {
+    it("examines medium-risk work by a different model (SC-P8-09)", async () => {
       const began = Date.now();
       const job = await delegate(started, {
         objective:
@@ -428,13 +428,25 @@ describe("routing and examination, with real models, against the deployed contro
         ambiguity: "low",
         testability: "strong",
       });
-      const { result, routes } = await settled(
+      let { result, routes } = await settled(
         started,
         job.jobId,
         job.nodeId,
         "medium, examined",
         began,
       );
+      // A material finding blocks medium work too (as amended 2026-09-26): fix it.
+      if (String(result.outcomeReason).startsWith("examination_failed:")) {
+        const retried = await started.mcp.call("job.retry", { jobId: job.jobId });
+        expect(retried.ok, JSON.stringify(retried)).toBe(true);
+        ({ result, routes } = await settled(
+          started,
+          job.jobId,
+          job.nodeId,
+          "medium, fixed",
+          began,
+        ));
+      }
       expect(result.status).toBe("integrated");
       const [examination] = await examinationsOf(started, job.nodeId);
       const builder = routes.find((route) => route.purpose === undefined);
@@ -442,7 +454,7 @@ describe("routing and examination, with real models, against the deployed contro
         `medium examination: ${examination?.examinerRoute.model} on ${builder?.chosen.model}: ${examination?.outcome}, ` +
           `${examination?.findings.length ?? 0} finding(s), ${examination?.questions.length ?? 0} question(s)`,
       );
-      expect(examination?.blocking).toBe(false);
+      expect(examination?.blocking).toBe(true);
       expect(examination?.examinerRoute.model).not.toBe(builder?.chosen.model);
     });
 

@@ -111,9 +111,13 @@ from what it says about itself. So say it honestly:
 
 - `risk`: what goes wrong if this is wrong. It also decides **examination**:
   under the usual policy low is not examined, medium is examined by a different
-  model and its findings are advisory, high is examined by another provider's
-  frontier model and a material finding stops it landing.
-- `ambiguity`: how much of the job is judgement rather than specification.
+  model, high by another provider's frontier model, and at both a material
+  finding stops it landing until it is fixed or an arbiter rules. Minor findings
+  are reported and never stop anything.
+- `ambiguity`: how much of the job is judgement rather than specification. Say
+  `low` when the objective and acceptance say exactly what to change and how to
+  know it is done: a copy change, a rename, a deletion, a function whose behaviour
+  and tests you specified. Split work so the mechanical parts are such jobs.
 - `testability`: `strong` when the program's own checks exercise this change, so a
   cheap model's mistake would be caught; `weak` when they touch it in passing;
   `none` when nothing checks it. Only a job that is low risk, unambiguous and

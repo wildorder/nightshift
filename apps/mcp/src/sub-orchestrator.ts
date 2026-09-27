@@ -26,13 +26,10 @@ import {
   type JobContractId,
   JobContractSchema,
   type JobKind,
-  JobKindSchema,
   ReversibilitySchema,
   type RiskLevel,
-  RiskLevelSchema,
   ScopeRequestSchema,
   type Testability,
-  TestabilitySchema,
 } from "@nightshift/contracts";
 import {
   explainWidening,
@@ -55,6 +52,7 @@ import {
 } from "@nightshift/execution";
 import { NoCheckpointError } from "@nightshift/harness";
 import { z } from "zod";
+import { CLASSIFICATION_INPUTS } from "./classification.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 
 export interface SubOrchestratorDeps {
@@ -216,19 +214,9 @@ export const registerSubOrchestratorTools = (
         objective: z.string().min(1),
         scope: ScopeRequestSchema,
         acceptance: z.array(z.string().min(1)).min(1),
-        risk: RiskLevelSchema.optional(),
-        ambiguity: RiskLevelSchema.optional(),
         // P8 (D-P8-01): what the job says about itself, so routing can place it.
         // Unset is the conservative choice, not the cheap one.
-        testability: TestabilitySchema.optional().describe(
-          "strong: the program's own checks exercise this change, so a cheap model's mistake is caught; " +
-            "weak: they touch it only in passing; none: nothing checks it. Leave it unset if unsure: " +
-            "unset is treated as weak, the conservative choice, not the cheap one.",
-        ),
-        jobKind: JobKindSchema.optional().describe(
-          "What kind of work it is: implement, fix, refactor, test, docs. Routing rules may start " +
-            "some kinds lower or higher on the ladder.",
-        ),
+        ...CLASSIFICATION_INPUTS,
       },
     },
     async (input) =>

@@ -117,7 +117,7 @@ it, in this order:
 5. What is **deferred**, what it waits on, and the two commands to land it when
    the prerequisite is done: `nightshift preflight {id}`, then
    `nightshift resume {id}`.
-6. What the examiners found that did not stop anything (advisory findings), and
+6. What the examiners found that did not stop anything (minor findings), and
    where the routes climbed or fell back: the report's per-job lines.
 7. The success criteria table, the run's own decisions, and what it cost, saying
    which figures are estimates.

@@ -127,11 +127,36 @@ describe("the report's routing and examination (P8)", () => {
             outputTokens: 10,
             costUsd: 1.5,
             estimated: true,
+            unpriced: 0,
           },
         ],
       }),
     );
     expect(text).toContain("| 1.50* |");
     expect(text).toContain("Budget: $1.50 (partly estimated) of $10.");
+  });
+
+  it("says a cost is unknown, never $0.00, when neither the harness nor the price table gave one", () => {
+    const row = {
+      harness: "codex",
+      model: "gpt-6-astra",
+      purpose: "examine",
+      attempts: 2,
+      inputTokens: 900_000,
+      outputTokens: 3_000,
+      costUsd: 0,
+      estimated: false,
+      unpriced: 2,
+    };
+    const text = renderReport(
+      report({
+        program: { ...program, strands: [], costPolicy: { maxUsd: 10 } },
+        usage: [row, { ...row, purpose: "work", attempts: 3, costUsd: 1.25, unpriced: 1 }],
+      }),
+    );
+    expect(text).toContain("| examine | 2 | 900000 | 3000 | unknown |");
+    expect(text).toContain("| work | 3 | 900000 | 3000 | 1.25 + 1 unknown |");
+    expect(text).not.toContain("| 0.00 |");
+    expect(text).toContain("Budget: $1.25 (3 route(s) unpriced and not counted) of $10.");
   });
 });
