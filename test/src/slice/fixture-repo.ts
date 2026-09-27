@@ -73,6 +73,8 @@ export interface MaterialiseOptions {
   readonly verification?: ProgramContract["verification"];
   /** P8: files added to the fixture before its first commit, path to content. */
   readonly files?: Readonly<Record<string, string>>;
+  /** P9: human prerequisites, for a run whose checks defer until one is met. */
+  readonly prerequisites?: ProgramContract["prerequisites"];
   readonly git?: GitRunner;
 }
 
@@ -103,6 +105,7 @@ export const materialiseFixtureRepo = async (
       ? {}
       : { delegationLimits: options.delegationLimits }),
     ...(options.verification === undefined ? {} : { verification: [...options.verification] }),
+    ...(options.prerequisites === undefined ? {} : { prerequisites: [...options.prerequisites] }),
     // The contract's repository is where it actually is, now that it is
     // somewhere. The authored value is a placeholder.
     repository: { ...authored.repository, url: repo },
