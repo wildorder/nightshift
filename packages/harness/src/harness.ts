@@ -150,6 +150,19 @@ export type AgentTask =
       readonly kind: "fix";
       readonly findings: readonly ExaminationFinding[];
       readonly rulings?: readonly ExaminationRuling[];
+    }
+  /**
+   * P9 (D-P9-07): the job again after a check that could not run during the
+   * run ran at `resume` and failed. What failed goes into the brief.
+   */
+  | {
+      readonly kind: "retry_failed_check";
+      readonly failed: readonly {
+        readonly stepId: string;
+        readonly command: string;
+        readonly exitCode: number | null;
+        readonly output: string;
+      }[];
     };
 
 export interface HarnessStartInput {

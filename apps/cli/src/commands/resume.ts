@@ -68,19 +68,19 @@ const runsOf = async (session: Session, program: ProgramContract): Promise<Run[]
 
 const reportStop = (environment: CliEnvironment, result: ResumeResult): void => {
   const stop = result.stoppedAt;
-  if (stop === undefined) return;
-  if (stop.kind === "refused") {
+  if (stop !== undefined) {
     environment.err(`could not land ${stop.nodeId}: ${stop.reason}`);
     environment.err(
       "What follows it is still deferred, on the provisional line. Resume again once that is fixed.",
     );
-    return;
   }
-  environment.err(`${stop.nodeId} did not pass its deferred checks: ${stop.reason}`);
-  if (result.discarded.length > 0) {
+  // P9 (D-P9-07): retried like any failed check; nothing was discarded.
+  for (const failed of result.failed) {
+    environment.err(`${failed.nodeId} did not land: ${failed.reason}`);
+  }
+  if (result.failed.length > 0) {
     environment.err(
-      `discarded ${result.discarded.length} built on it: ${result.discarded.join(", ")}. ` +
-        "Plan the fix as the next program; the report says what was lost.",
+      "Everything else that still verified has landed. What did not is yours to plan a correction for; the report says why each did not.",
     );
   }
 };
@@ -221,12 +221,15 @@ export const resume = async (
     );
     return 1;
   }
-  environment.out(`run ${chosen.runId}: ${result.landed.length} landed on the program branch`);
-  if (result.stoppedAt !== undefined) reportStop(environment, result);
+  environment.out(
+    `run ${chosen.runId}: ${result.landed.length} landed on the program branch` +
+      (result.retried.length === 0 ? "" : `, ${result.retried.length} of them after a retry`),
+  );
+  reportStop(environment, result);
 
   const report = await gatherReport(session.stores, sessionFor(chosen).scope);
   const reportPath = join(repoPath, files.directory, REPORT_FILE);
   await writeFile(reportPath, renderReport(report));
   environment.out(`report: ${reportPath}`);
-  return result.stoppedAt === undefined ? 0 : 1;
+  return result.stoppedAt === undefined && result.failed.length === 0 ? 0 : 1;
 };

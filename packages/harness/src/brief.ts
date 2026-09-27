@@ -100,6 +100,9 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
   sections.push(["ACCEPTANCE CRITERIA", numbered(job.acceptance)].join("\n"));
 
   // P8 (D-P8-13): a fix is the job again, with what an independent examiner found.
+  if (input.task?.kind === "retry_failed_check") {
+    sections.push(renderFailedChecks(input.task.failed));
+  }
   if (input.task?.kind === "fix") {
     sections.push(
       input.task.rulings === undefined
@@ -589,6 +592,25 @@ const renderFindingsToFix = (findings: readonly ExaminationFinding[]): string =>
     "  you hand in. The new work is examined again.",
     "",
     ...findings.map(describeFinding),
+  ].join("\n");
+
+const renderFailedChecks = (
+  failed: Extract<AgentTask, { kind: "retry_failed_check" }>["failed"],
+): string =>
+  [
+    "WHAT FAILED — fix this",
+    "",
+    "  This job was done once, and the run went on without one of its checks,",
+    "  which needed something only a human could supply. The human has supplied it,",
+    "  the check has run, and it failed. This attempt starts clean from the current",
+    "  program head: do the job again so that this check passes as well.",
+    "",
+    ...failed.map((step) =>
+      [
+        `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}`,
+        indent(step.output.slice(-2_000), 6),
+      ].join("\n"),
+    ),
   ].join("\n");
 
 const describeRuling = (ruling: ExaminationRuling): string =>
