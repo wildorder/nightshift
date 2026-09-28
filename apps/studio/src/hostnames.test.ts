@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { apiEndpointFor, authDomainFor, DEV_PORT, studioOriginFor } from "./hostnames.js";
+import {
+  apiEndpointFor,
+  authDomainFor,
+  DEV_PORT,
+  STUDIO_CLIENT_IDS,
+  studioOriginFor,
+} from "./hostnames.js";
 
 describe("hostnames", () => {
   // The literals the CLI and the CDK stacks pin as well; a drift is a red test.
@@ -9,6 +15,10 @@ describe("hostnames", () => {
     expect(authDomainFor("dev")).toBe(
       "nightshift-dev-755348349819.auth.us-west-2.amazoncognito.com",
     );
+  });
+
+  it("bakes the dev Studio client id", () => {
+    expect(STUDIO_CLIENT_IDS.dev).toBe("5ouksqs8o9tnakehqnit7pumig");
   });
 
   it("serves on the port the dev Studio client registers", () => {

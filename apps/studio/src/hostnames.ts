@@ -30,7 +30,9 @@ export const authDomainFor = (stage: string): string =>
  * the way the CLI bakes its interactive client ids. Filled in from the data
  * stack's `StudioClientId` output when a stage is deployed.
  */
-export const STUDIO_CLIENT_IDS: Readonly<Record<string, string>> = {};
+export const STUDIO_CLIENT_IDS: Readonly<Record<string, string>> = {
+  dev: "5ouksqs8o9tnakehqnit7pumig",
+};
 
 export interface StageDefaults {
   readonly stage: string;

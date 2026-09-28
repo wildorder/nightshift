@@ -328,6 +328,7 @@ Specs live in `tasks/p11-studio/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-28 | **T2's build decisions, provisional until the owner ratifies or reverses them.** (1) **The API role's second S3 read is `proj_*`, not `artifacts/*`**: artifact bodies live at `<projectId>/<programId>/<runId>/<artifactId>` (D-P2-08), so the literal prefix in D-P11-06 and §9 named no object; `proj_*` is the bodies and nothing else, `plans/*` excluded by construction, both pinned by test. D-P11-06 and §9 read accordingly. (2) **The certificate stack takes the zone id by context** (`hostedZoneId`, defaulted in `cdk.json`), because CloudFormation exports are regional and `us-east-1` cannot import the `us-west-2` DNS export; §11 anticipated this. (3) **One anonymous route, `OPTIONS /{proxy+}`**: found live, `$default` matched preflight and answered 401, which a browser rejects; the gateway now answers 204 with no authorizer, the stack test names it as the only exception, and the Lambda answers a stray OPTIONS 204 before looking for a principal. | Agent, for human ratification |
 | 2026-09-28 | **Contract ratified.** D-P11-03, D-P11-06, D-P11-07, D-P11-08 and D-P11-10 agreed as written after the owner walked the other five. The owner's forward note on planning from the Studio recorded in §5. Task specs T1 … T6 written. | **Human** |
 | 2026-09-28 | **D-P11-04 and D-P11-09 ratified**: a second app client for the Studio; React, Vite, TanStack Query, Router, Tailwind. Next.js on OpenNext/SST considered and deferred until there is a reason to switch. `studio.` confirmed as the subdomain. | **Human** |
 | 2026-09-28 | **D-P11-02 ratified**: S3 behind CloudFront on `studio.<stage>`, the certificate stack in `us-east-1`. A marketing site later takes the apex or `www`, its own record and stack. | **Human** |
@@ -345,7 +346,7 @@ worktree of its own and merged.
 | Task | State | Notes |
 |------|-------|-------|
 | T1 | **done** | `@nightshift/persistence/http/browser`; the report and decision graph in `core`; `buildReversal` in `core`; `apps/studio` with sign-in, the shell, projects |
-| T2 | _pending merge_ | see below once merged |
+| T2 | **done**, deployed | CORS, `StudioClient` (`5ouksqs8o9tnakehqnit7pumig` on `dev`), `artifact.createDownloadUrl`, `nightshift-dev-studio-cert` and `nightshift-dev-studio`, `npm run studio:smoke`; `us-east-1` bootstrapped once |
 | T3 | **done** | the project page, organisation settings, project and policy settings |
 | T4 | **done** | the run page, live by polling |
 | T5 | **done** | the decision page and reversal |

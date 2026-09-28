@@ -3,7 +3,7 @@
  * stores (D-P11-04, D-P11-07). Everything below `App` is the same tree a test
  * mounts over the memory stores.
  */
-import { ProjectSchema } from "@nightshift/contracts";
+import { ArtifactDownloadResponseSchema, ProjectSchema } from "@nightshift/contracts";
 import { createUlidIdGenerator, nowIso, systemClock } from "@nightshift/core";
 import {
   createFetchTransport,
@@ -14,7 +14,6 @@ import {
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
-import { z } from "zod";
 import { App } from "./app.js";
 import {
   beginSignIn,
@@ -48,18 +47,17 @@ const resolveOrg = async (transport: Transport): Promise<Studio["orgId"]> => {
   return items[0]?.orgId;
 };
 
-/** The download URL the control plane signs (D-P11-06; T2's route). */
-const DownloadUrlResponseSchema = z.object({ url: z.string().url(), expiresAt: z.string() });
+/** The download URL the control plane signs (D-P11-06). */
 const artifactsOver = (transport: Transport): NonNullable<Studio["artifacts"]> => ({
   downloadUrl: async (scope, artifactId) => {
     const response = await transport({
       method: "POST",
-      path: `${routes.artifact(scope, artifactId)}/download-url`,
+      path: routes.artifactDownloadUrl(scope, artifactId),
     });
     if (response.status !== 200) {
       throw new Error(`the control plane would not sign a download (${response.status})`);
     }
-    return DownloadUrlResponseSchema.parse(response.body).url;
+    return ArtifactDownloadResponseSchema.parse(response.body).url;
   },
 });
 
