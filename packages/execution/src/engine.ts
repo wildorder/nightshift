@@ -612,11 +612,18 @@ export const createEngine = (options: EngineOptions): Engine => {
     const submission = submissions.get(jobContractId);
     const nodeId = nodeOfJob.get(jobContractId);
     if (closed || submission === undefined || nodeId === undefined) return false;
-    if (active.has(nodeId) || pending.some((entry) => entry.node.executionNodeId === nodeId)) {
-      return false;
-    }
+    if (pending.some((entry) => entry.node.executionNodeId === nodeId)) return false;
     const node = await stores.executionNodes.get(session.scope, nodeId);
     if (node === undefined || !RETRYABLE_STATUSES.includes(node.status)) return false;
+    // The attempt has ended on the record, but the engine may not have let go
+    // of it yet: its departure (cancelling its subtree, parking its strand) runs
+    // after the worker's terminal write. An observer who has read `failed` and
+    // asks for a retry is owed one, not a refusal that says "still running", so
+    // wait for the departure; it is bounded by the cleanup, never by the job.
+    // (Found by the Windows leg, where the window is wide enough to hit.)
+    const departure = departures.get(nodeId);
+    if (departure !== undefined) await departure;
+    if (active.has(nodeId)) return false;
 
     // A fix of blocking findings (D-P8-13): at most two, and none once an
     // arbiter has upheld one. Refused with the reason, before anything moves.
