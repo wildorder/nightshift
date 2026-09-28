@@ -1,0 +1,61 @@
+{
+  "status": "completed",
+  "probeId": "8536360e-4651-4440-a6c2-3a2642a28b40",
+  "startedAt": "2026-09-28T16:30:19.818Z",
+  "results": [
+    {
+      "name": "architecture",
+      "status": "passed",
+      "ok": true,
+      "architecture": "arm64",
+      "platform": "linux"
+    },
+    {
+      "name": "persistent-mount",
+      "status": "passed",
+      "ok": true,
+      "mountPath": "/mnt/workspace"
+    },
+    {
+      "name": "linux-capabilities",
+      "status": "passed",
+      "ok": true,
+      "output": "Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t2",
+      "mountNamespace": "mnt:[4026532621]",
+      "networkNamespace": "net:[4026532449]",
+      "bootId": "6919017c-fe07-4312-b881-c4cec0262179"
+    },
+    {
+      "name": "docker-daemon",
+      "status": "failed",
+      "ok": false,
+      "output": "time=\"2026-09-28T16:30:19.854620037Z\" level=info msg=\"Starting up\"\ntime=\"2026-09-28T16:30:19.854962609Z\" level=warning msg=\"Error while setting daemon root propagation, this is not generally critical but may cause some functionality to not work or fallback to less desirable behavior\" dir=/tmp/nightshift-probe-uLg12X/docker error=\"could not setup daemon root propagation to shared: mount /tmp/nightshift-probe-uLg12X/docker:/tmp/nightshift-probe-uLg12X/docker, flags: 0x1000: operation not permitted\"\nfailed to load listeners: can't create unix socket /tmp/nightshift-probe-uLg12X/docker.sock: chown /tmp/nightshift-probe-uLg12X/docker.sock: operation not permitted\n"
+    },
+    {
+      "name": "postgres-network-bindmount",
+      "status": "blocked",
+      "reason": "Docker daemon unavailable"
+    },
+    {
+      "name": "cdk-docker-bundling",
+      "status": "blocked",
+      "reason": "Docker daemon unavailable"
+    },
+    {
+      "name": "chromium-sandboxed",
+      "status": "failed",
+      "ok": false,
+      "code": 1,
+      "signal": null,
+      "timedOut": false,
+      "output": "runuser: cannot set groups: Operation not permitted\n"
+    },
+    {
+      "name": "temporary-storage",
+      "status": "observed",
+      "directory": "/tmp/nightshift-probe-uLg12X",
+      "note": "Daemon data retained on ephemeral root disk until compute stops; persistent marker untouched."
+    }
+  ],
+  "finishedAt": "2026-09-28T16:30:20.367Z"
+}

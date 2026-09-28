@@ -33,6 +33,16 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 
 ## The programs
 
+> **Owner's restaging, 2026-09-28.** Defer P10 and plan P11 next, including
+> the Studio UI. The owner is currently the sole user, has an always-on local
+> machine, and prefers attended runs with readable output. The immediate outcome
+> is visibility into local runs and decisions. This supersedes the source plan's
+> Stage 10 exclusion of the Studio UI and the corresponding v1 exclusions in
+> `vision.md` and A-15 in `architecture.md`; Studio remains a client of the
+> centralized APIs. Detailed UI scope and realtime transport remain to be planned.
+> P10's draft and capability evidence are retained as deferred research, not an
+> approved implementation. Program IDs are unchanged.
+
 | # | Program | Stages | Exit capability | Blocking decisions | State |
 |---|---------|--------|-----------------|-------------------|-------|
 | **P1** | Foundation | 0, 1 | Workspace builds, typechecks, lints, `cdk synth` succeeds; the execution/control model exists as a deterministic offline library with its invariants under property test | — | complete |
@@ -44,8 +54,8 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 | **P7** | Planning | — (inserted) | A program is planned with the human in a plan document and its contract, up to the point where a wrong choice becomes cheap: seams, approach, the expensive decisions and human prerequisites hoisted before the run. It is checked deterministically, ratified, and then run end to end with nobody watching | — | complete |
 | **P8** | Routing & Examination | 6, 7 | Cheap bounded jobs route to inexpensive models and still integrate only when verified; risk policy drives independent examination without code changes | — | complete |
 | **P9** | Decision Graph & Correction | 8 | Every decision is tied to the commits it produced; reversing one starts a correction planned from its record with the owner, ratified and run back to verified (reframed by the owner 2026-09-27: re-planning, not cone replay) | — | complete (the owner's trial follows the close) |
-| **P10** | Remote Runner | 9 | Dispatch, close the laptop, come back to a completed or partial run; the whole execution layer runs on one AgentCore runtime instance per program run; the AgentCore harness worker with a Bedrock model completes the conformance fixture there | O-03 instance sizing/lifecycle; O-05 harness credential transport; O-06 git remote/integration policy; who pays for Bedrock tokens | |
-| **P11** | Realtime & Analytics Surface | 10 | Full run state and history reconstructable from centralized APIs alone, observable live | O-02 realtime transport | |
+| **P10** | Remote Runner | 9 | Hosted remote execution; architecture must be revisited against the retained capability evidence before implementation | O-03 instance sizing/lifecycle; O-05 harness credential transport; O-06 git remote/integration policy | deferred by owner, 2026-09-28 |
+| **P11** | Realtime, Analytics & Studio | 10 + Studio UI | Local runs and decisions visible live in Studio; full run state and history reconstructable from centralized APIs alone | O-02 realtime transport; Studio scope and UI design | next to plan |
 
 Open decision IDs refer to `docs/architecture.md` §3.
 
@@ -68,19 +78,17 @@ P7 Planning                      ← inserted 2026-09-21
    ↓
 P8 Routing & Examination
    ↓
-P9 Decision Graph & Replay
+P9 Decision Graph & Correction
    ↓
-P10 Remote Runner
-   ↓
-P11 Realtime & Analytics Surface
+P11 Realtime, Analytics & Studio
+
+P10 Remote Runner                ← deferred; no longer a prerequisite for P11
 ```
 
-Strictly sequential. This mirrors the source plan's preferred progression and its
-instruction not to build ahead of the verified execution path. The only defensible
-parallelism is late: **P11 could begin alongside P10**, since the analytics surface
-reads state P9 already produces — but only if P10's open decisions are already
-settled, and it costs the ability to reconstruct a *remote* run from APIs alone as
-P11's exit demo. Recommendation: keep it sequential.
+P11 now follows P9 directly, per the owner's 2026-09-28 restaging. Its exit demo
+uses attended local execution and centralized APIs; it does not require remote
+dispatch or resolution of P10's infrastructure and credential decisions. Remote
+execution success criteria remain deferred with P10, not discharged by P11.
 
 ## Restaging, 2026-09-16
 
