@@ -12,7 +12,13 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Decision, DecisionId, ProgramContract, Run } from "@nightshift/contracts";
 import { DecisionIdSchema } from "@nightshift/contracts";
-import { CONFIRMED_CLASSES, nowIso, overrideDecision, splitPlanSections } from "@nightshift/core";
+import {
+  buildReversal,
+  CONFIRMED_CLASSES,
+  nowIso,
+  splitPlanSections,
+  whyNotReversible,
+} from "@nightshift/core";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
@@ -109,31 +115,17 @@ export const reverseDecision = async (
 ): Promise<{ readonly exitCode: number; readonly reversal: Decision; readonly found: Found }> => {
   const found = await findDecision(environment, options);
   const { decision, run } = found;
-  if (decision.supersedesDecisionId !== null) {
-    throw new UsageError(
-      `${decision.decisionId} is itself a reversal; reverse the decision it superseded, ${decision.supersedesDecisionId}`,
-    );
-  }
-  const at = nowIso(environment.clock);
-  const reversal = overrideDecision(
-    decision,
-    {
-      ...decision,
-      decisionId: environment.ids.next("dec"),
-      agentId: null,
-      context: `The owner reversed ${decision.decisionId} (${decision.context.trim()})`,
-      alternatives: [{ summary: decision.choice, rejectedBecause: options.reason }],
-      choice: options.choice,
-      rationale: options.reason,
-      authority: "human",
-      checkpointAfter: undefined,
-      produced: undefined,
-      createdAt: at,
-    } as Decision,
-    at,
-  );
-  const { checkpointAfter: _a, produced: _p, ...record } = reversal;
-  await found.session.stores.decisions.put(record as Decision);
+  const refusal = whyNotReversible(decision);
+  if (refusal !== undefined) throw new UsageError(refusal);
+  // One builder for the CLI and the Studio (D-P11-08): what is written here is
+  // what a reversal from the run page writes.
+  const reversal = buildReversal(decision, {
+    decisionId: environment.ids.next("dec"),
+    choice: options.choice,
+    reason: options.reason,
+    at: nowIso(environment.clock),
+  });
+  await found.session.stores.decisions.put(reversal);
 
   environment.out(
     `Recorded ${reversal.decisionId}: ${decision.decisionId} is reversed, on your authority. ` +
@@ -154,7 +146,7 @@ export const reverseDecision = async (
   environment.out(
     "  then, in Claude Code, ask plan-program to plan the correction from that brief.",
   );
-  return { exitCode: 0, reversal: record as Decision, found };
+  return { exitCode: 0, reversal, found };
 };
 
 const gitText = async (

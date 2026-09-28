@@ -334,3 +334,66 @@ Specs live in `tasks/p11-studio/`.
 | 2026-09-28 | **D-P11-01 ratified, reworded on the owner's question**: the Studio is hosted only; running it from the Nightshift repository is for developing the Studio, with the localhost callback on the `dev` client alone. | **Human** |
 | 2026-09-28 | **D-P11-05 ratified**: polling the event cursor; no push transport for now. O-02 is resolved for v1. | **Human** |
 | 2026-09-28 | Contract drafted from the owner's direction (§3.1) and the code: ten decisions proposed for ratification, O-02 resolved by D-P11-05, the Studio built as a client (A-15 to be superseded). | Agent, for human ratification |
+
+## 13. As built
+
+Built 2026-09-28 on `program/p11-studio`, T1 … T6, with T2 built beside T1 in a
+worktree of its own and merged.
+
+### Task states
+
+| Task | State | Notes |
+|------|-------|-------|
+| T1 | **done** | `@nightshift/persistence/http/browser`; the report and decision graph in `core`; `buildReversal` in `core`; `apps/studio` with sign-in, the shell, projects |
+| T2 | _pending merge_ | see below once merged |
+| T3 | **done** | the project page, organisation settings, project and policy settings |
+| T4 | **done** | the run page, live by polling |
+| T5 | **done** | the decision page and reversal |
+| T6 | _in progress_ | the document sweep is done; the live proofs follow T2 |
+
+### Build decisions, provisional until the owner ratifies or reverses them
+
+1. **The browser entry is a subpath, `./http/browser`, not a split of `./http`.**
+   T1's spec had `./http` become browser-safe and the Node parts move to
+   `./http/node`; that renames the import in forty files for no gain. The
+   guarantee the spec wanted (a bundler sees no `node:` import) is the same, and
+   is held by `browser-entry.test.ts` over the new entry.
+2. **The Studio typechecks itself.** The Node-wide typecheck program excludes
+   `apps/studio`: it needs the DOM lib and JSX, and one program cannot have
+   per-file libs. `npm run typecheck` runs both.
+3. **jsdom is pinned to 29.1.1.** 30.x requires Node ≥ 22.22.2; the owner's
+   machine and `.node-version` (22) may resolve lower.
+4. **The organisation editor is forms for the examination policy and the
+   ladders, JSON for rules, unavailable routes and prices.** T3's spec said
+   forms with a JSON view beside; the three JSON parts are where a form buys
+   least and validation by schema catches the same mistakes.
+5. **The timeline's phrasing is restated in the Studio** (`lib/narrate.ts`)
+   from `apps/mcp/src/activity.ts`, not imported: an app may not import another
+   app. A shared home in `core` is the proper fix and is left for when a third
+   reader appears.
+6. **The brief command shows `<program>` as a placeholder.** The CLI names a
+   program by its directory under `docs/programs/`, which the control plane does
+   not know; the page says which contract the directory must name.
+7. **`reversalOf` and `mayReverse` are `buildReversal` and `whyNotReversible`.**
+   The CLI already had a private `reversalOf` meaning "the reversal of", and a
+   boolean would have lost the message the CLI prints.
+8. **A reversal recorded elsewhere between the page's read and its save is not
+   a refusal.** The CLI refuses only a reversal of a reversal; the Studio does
+   the same, writes the owner's word, and shows the latest. Both records stand.
+
+### What changed in earlier programs' suites, and why
+
+Nothing was weakened.
+
+- **P7 … P9**: `gatherReport`, `renderReport`, `DEPARTURE_PREFIX` and the
+  decision graph import from `@nightshift/core` where they imported from
+  `@nightshift/execution`; `packages/execution/src/report.test.ts` moved with
+  them, unchanged. `unattended.test.ts` and `correction.smoke.ts` changed only
+  their import.
+- **P9** `apps/cli/src/commands/decision.ts` builds the reversal through
+  `buildReversal`; `test/src/cli/decision.test.ts` and `ruling.test.ts` pass
+  unchanged, which is SC-P11-07's first half.
+- **P3** `session/tokens.ts` re-exports `tokenClaims` and `tokenExpiry` from
+  `claims.ts`; its tests pass unchanged.
+- **P1** the layer table gains `apps/studio`; the negative fixture gains the
+  Studio referencing `execution`.

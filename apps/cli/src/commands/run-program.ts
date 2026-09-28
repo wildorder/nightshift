@@ -18,20 +18,21 @@
  * run whose only shortfall is deferred work is 3, so a script chaining programs
  * stops where a human would want to look and can tell which kind of stop it is.
  */
+
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Decision, ProgramContract } from "@nightshift/contracts";
 import {
+  gatherReport,
   irreversibleConfirmationContext,
   nowIso,
   prerequisitesOf,
+  type RunReport,
+  renderReport,
   strandsOf,
   unconfirmedCorrections,
 } from "@nightshift/core";
 import {
-  gatherReport,
-  type RunReport,
-  renderReport,
   requireRatifiedPlan,
   runPreflight,
   type StartedRun,

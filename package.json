@@ -16,9 +16,9 @@
     "test"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && npm run build --workspace @nightshift/studio",
     "build:clean": "tsc -b --clean && tsc -b",
-    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json && npm run typecheck --workspace @nightshift/studio",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "test": "vitest run",
@@ -35,7 +35,8 @@
     "correction": "node scripts/correction.mjs",
     "benchmark:parallel": "npm run build && vitest run test/src/parallel/benchmark.test.ts",
     "admin:user": "node scripts/admin-user.mjs",
-    "verify": "npm run build && npm run typecheck && npm run lint && npm test && npm run synth && npm run check:sterility"
+    "verify": "npm run build && npm run typecheck && npm run lint && npm test && npm run synth && npm run check:sterility",
+    "studio": "npm run dev --workspace @nightshift/studio"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.13",

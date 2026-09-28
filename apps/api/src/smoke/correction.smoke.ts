@@ -14,11 +14,12 @@
  *
  * Never part of `npm test`, never in CI.
  */
+
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { Decision, ExecutionNodeId } from "@nightshift/contracts";
 import type { RunScope } from "@nightshift/core";
-import { gatherReport, renderReport } from "@nightshift/execution";
+import { gatherReport, renderReport } from "@nightshift/core";
 import { createHttpPlanning } from "@nightshift/persistence/http";
 import { startOrchestrator } from "@nightshift/test/slice";
 import { sanitizeEnvironment } from "@nightshift/verification";

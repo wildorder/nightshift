@@ -7,18 +7,21 @@ import {
 } from "../errors.js";
 import {
   createFixturePair,
+  createFixtures,
   FIXTURE_TIMESTAMP,
   makeDecision,
   makeRootNode,
 } from "../testing/factories.js";
 import {
   assertReversibilityNotSoftened,
+  buildReversal,
   effectiveDecision,
   isSuperseded,
   outranks,
   overrideDecision,
   recordDecision,
   reversibilitySeverity,
+  whyNotReversible,
 } from "./decisions.js";
 
 const [f, other] = createFixturePair();
@@ -183,5 +186,64 @@ describe("supersession chains", () => {
     const aCycled = { ...a, supersedesDecisionId: b.decisionId };
     const bCycled = { ...b, supersedesDecisionId: a.decisionId };
     expect(() => effectiveDecision(aCycled, [aCycled, bCycled])).toThrow(DecisionAuthorityError);
+  });
+});
+
+describe("buildReversal (P11, D-P11-08)", () => {
+  const f = createFixtures();
+  const root = makeRootNode(f);
+  const original = makeDecision(f, root.executionNodeId, {
+    context: "  Which store?  ",
+    choice: "One table",
+    rationale: "Simplest.",
+    reversibility: "compensatable",
+    checkpointAfter: f.ids.next("ckpt"),
+    produced: { commits: ["a".repeat(40)] },
+  });
+  const at = "2026-09-28T12:00:00.000Z";
+
+  it("writes exactly what `nightshift decision reverse` writes", () => {
+    const reversal = buildReversal(original, {
+      decisionId: f.ids.next("dec"),
+      choice: "Two tables",
+      reason: "Isolation.",
+      at,
+    });
+    expect(reversal).toEqual({
+      ...original,
+      decisionId: reversal.decisionId,
+      agentId: null,
+      context: `The owner reversed ${original.decisionId} (Which store?)`,
+      alternatives: [{ summary: "One table", rejectedBecause: "Isolation." }],
+      choice: "Two tables",
+      rationale: "Isolation.",
+      authority: "human",
+      supersedesDecisionId: original.decisionId,
+      createdAt: at,
+      checkpointAfter: undefined,
+      produced: undefined,
+    });
+    expect("checkpointAfter" in reversal).toBe(false);
+    expect("produced" in reversal).toBe(false);
+    // Beside what it reverses: the same node, class and checkpoint.
+    expect(reversal.executionNodeId).toBe(original.executionNodeId);
+    expect(reversal.reversibility).toBe("compensatable");
+    expect(reversal.checkpointBefore).toBe(original.checkpointBefore);
+  });
+
+  it("refuses to reverse a reversal, naming the decision to reverse instead", () => {
+    const reversal = buildReversal(original, {
+      decisionId: f.ids.next("dec"),
+      choice: "Two tables",
+      reason: "Isolation.",
+      at,
+    });
+    expect(whyNotReversible(original)).toBeUndefined();
+    expect(whyNotReversible(reversal)).toBe(
+      `${reversal.decisionId} is itself a reversal; reverse the decision it superseded, ${original.decisionId}`,
+    );
+    expect(() =>
+      buildReversal(reversal, { decisionId: f.ids.next("dec"), choice: "x", reason: "y", at }),
+    ).toThrow(DecisionAuthorityError);
   });
 });

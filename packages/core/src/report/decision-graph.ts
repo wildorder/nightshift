@@ -15,11 +15,9 @@ import type {
   JobContract,
   ProgramContract,
 } from "@nightshift/contracts";
-import {
-  IRREVERSIBLE_CONFIRMATION_PREFIX,
-  type ProjectStores,
-  type RunScope,
-} from "@nightshift/core";
+import type { ProjectStores } from "../ports/stores.js";
+import { IRREVERSIBLE_CONFIRMATION_PREFIX } from "../rules/corrections.js";
+import type { RunScope } from "../rules/ownership.js";
 
 export type DecisionPlace = "plan" | "run" | "strand" | "job" | "ruling";
 

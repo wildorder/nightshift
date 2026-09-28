@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "//": "Typechecks everything the build deliberately skips, above all *.test.ts. Resolves @nightshift/* through the workspace symlinks, so `npm run build` must run first.",
+  "//": "Typechecks everything the build deliberately skips, above all *.test.ts. Resolves @nightshift/* through the workspace symlinks, so `npm run build` must run first. The Studio typechecks itself (`npm run typecheck --workspace @nightshift/studio`): it needs the DOM lib and JSX, which this Node-wide program must not.",
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
@@ -18,5 +18,5 @@
     "scripts/**/*.mjs",
     "vitest.config.ts"
   ],
-  "exclude": ["**/dist/**", "**/cdk.out/**", "node_modules"]
+  "exclude": ["**/dist/**", "**/cdk.out/**", "node_modules", "apps/studio/**"]
 }

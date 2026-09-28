@@ -6,20 +6,21 @@
  * model is scripted: the root follows the plan, and each strand's orchestrator
  * does what a tag in its own plan section says.
  */
+
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ProgramContract, Strand } from "@nightshift/contracts";
-import { isSequenced, type RunScope, systemClock } from "@nightshift/core";
 import {
   DEPARTURE_PREFIX,
   gatherReport,
-  git,
-  nodeGitRunner,
+  isSequenced,
+  type RunScope,
   renderReport,
-  startRun,
-} from "@nightshift/execution";
+  systemClock,
+} from "@nightshift/core";
+import { git, nodeGitRunner, startRun } from "@nightshift/execution";
 import { STRAND_DEPARTURE_PREFIX } from "@nightshift/harness";
 import { createActivityFeed, renderActivity } from "@nightshift/mcp";
 import { createHttpPlanning } from "@nightshift/persistence/http";
