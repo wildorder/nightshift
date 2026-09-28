@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p11-studio` |
 | Source stage | Stage 10 (Realtime and Analytics Surface), extended by the owner to the Studio UI (§3.1) |
-| Status | **Ratified 2026-09-28** (D-P11-01 … D-P11-10, §12). Not started; build from T1. |
+| Status | **Built 2026-09-28** (T1 … T6, §13), deployed, live suites green; awaiting the owner's trial (SC-P11-12) and their word on the build decisions (§13, §12). |
 | Depends on | P4 (users, orgs, the authorizer), P7 (plans, the report), P8 (org policy, routes, examinations), P9 (the decision graph, reversal). P10 is deferred and nothing here waits on it. |
 | Blocking decisions | none: D-P11-01 … D-P11-10 ratified; O-02 resolved by D-P11-05 |
 
@@ -328,6 +328,7 @@ Specs live in `tasks/p11-studio/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-28 | **Built.** T1 … T6 on `program/p11-studio`, T2 in a worktree beside T1 and merged; deployed; `smoke`, `studio:smoke`, `verify` green. The build decisions of §13 are provisional until the owner ratifies or reverses them. SC-P11-01's hosted sign-in and SC-P11-04's live half need a signed-in browser and are the first steps of the owner's trial (SC-P11-12). | Agent, for human ratification |
 | 2026-09-28 | **T2's build decisions, provisional until the owner ratifies or reverses them.** (1) **The API role's second S3 read is `proj_*`, not `artifacts/*`**: artifact bodies live at `<projectId>/<programId>/<runId>/<artifactId>` (D-P2-08), so the literal prefix in D-P11-06 and §9 named no object; `proj_*` is the bodies and nothing else, `plans/*` excluded by construction, both pinned by test. D-P11-06 and §9 read accordingly. (2) **The certificate stack takes the zone id by context** (`hostedZoneId`, defaulted in `cdk.json`), because CloudFormation exports are regional and `us-east-1` cannot import the `us-west-2` DNS export; §11 anticipated this. (3) **One anonymous route, `OPTIONS /{proxy+}`**: found live, `$default` matched preflight and answered 401, which a browser rejects; the gateway now answers 204 with no authorizer, the stack test names it as the only exception, and the Lambda answers a stray OPTIONS 204 before looking for a principal. | Agent, for human ratification |
 | 2026-09-28 | **Contract ratified.** D-P11-03, D-P11-06, D-P11-07, D-P11-08 and D-P11-10 agreed as written after the owner walked the other five. The owner's forward note on planning from the Studio recorded in §5. Task specs T1 … T6 written. | **Human** |
 | 2026-09-28 | **D-P11-04 and D-P11-09 ratified**: a second app client for the Studio; React, Vite, TanStack Query, Router, Tailwind. Next.js on OpenNext/SST considered and deferred until there is a reason to switch. `studio.` confirmed as the subdomain. | **Human** |
@@ -350,7 +351,53 @@ worktree of its own and merged.
 | T3 | **done** | the project page, organisation settings, project and policy settings |
 | T4 | **done** | the run page, live by polling |
 | T5 | **done** | the decision page and reversal |
-| T6 | _in progress_ | the document sweep is done; the live proofs follow T2 |
+| T6 | **done** | the document sweep (§4.5), the live battery below, this as-built; SC-P11-12 is the owner's |
+
+### What was proven, and where
+
+| SC | State | By |
+|----|-------|----|
+| SC-P11-01 | met offline; **hosted sign-in is the owner's first step** | `auth/session.test.ts` (PKCE, state checked, only the refresh token stored, refresh near expiry, sign-out revokes and clears), `auth/oauth.test.ts`, `auth/pkce.test.ts` (the RFC 7636 vector). The hosted flow needs a human at the hosted UI; the build agent cannot sign in. `studio:smoke` proves the hosted app, its `config.json` and the client id it names |
+| SC-P11-02 | met | `pages/project.test.tsx`: programs with plan state, ratification and a pending prerequisite's remediation; runs across two programs, latest first, with duration and outcome; the name edited and written back |
+| SC-P11-03 | met | `pages/run.test.tsx`: the tree, agents with harness and model, jobs with verifications (step, command, exit code, duration, log), criteria, checkpoints, the timeline in sequence order narrated, the decision graph with alternatives and produced commits; the report's views over `gatherReport` (P7 … P9's own suites hold the computation) |
+| SC-P11-04 | met offline; **live half is the owner's** | `pages/run.test.tsx` "follows a live run": a node delegated and started while the page is mounted appears in the timeline and the tree within one poll interval, over the memory stores. Live, watching a run needs a signed-in browser (SC-P11-01) |
+| SC-P11-05 | met, **live** | `pages/run.test.tsx` opens a verification log through the signed URL; `studio:smoke` phase 3: an artifact uploaded, a download URL issued, the bytes read back, an unrecorded artifact refused, an execution token refused |
+| SC-P11-06 | met | `pages/settings.test.tsx`: the examination policy and a ladder edited and saved as version 1; a save over a newer version refused and shown; an unparseable draft shown. The deployed API's version check is P8's (`npm run smoke`) |
+| SC-P11-07 | met | `pages/decision.test.tsx`: the record written from the page is deep-equal to `buildReversal`'s for the same inputs, which is what the CLI writes (`test/src/cli/decision.test.ts`, `ruling.test.ts`, unchanged); the next step shown; a reversal of a reversal refused by `whyNotReversible` (`core`'s `decisions.test.ts`) |
+| SC-P11-08 | met, **live** | `studio:smoke` phase 2: preflight granted to both Studio origins with the bearer client's methods and headers; nothing granted to another origin; a real request answered with the origin echoed. The stack test pins the origin list per stage |
+| SC-P11-09 | met, **live** | both Studio stacks in `synth`; deployed; `https://studio.dev.nightshift.wildorder.dev` serves the app and a `config.json` naming the stage's API, auth domain and client id (`studio:smoke` phase 1) |
+| SC-P11-10 | met | the Studio's 27 tests over the memory stores; `npm run verify` 3,202 tests; `check:architecture` with the `apps/studio` row and its negative fixture. Nothing weakened |
+| SC-P11-11 | met, **live**, 2026-09-28 | `npm run studio:smoke` 10 of 10 after the deploy that serves the real app; `npm run smoke` 90 of 90 |
+| SC-P11-12 | **the owner's** | below |
+
+### The live battery, 2026-09-28
+
+After T2 merged: `npm run deploy` (five stacks; the Studio stack now serves
+`apps/studio/dist` instead of the placeholder), `npm run smoke` 90 of 90,
+`npm run studio:smoke` 10 of 10, `npm run verify` green (3,202 tests),
+`npm run check:architecture` green. `curl` of the hosted root answers the app's
+`index.html`; `/config.json` names `api.dev`, the pool's hosted domain and
+`5ouksqs8o9tnakehqnit7pumig`; a deep link answers the page.
+
+### For the owner's trial (SC-P11-12)
+
+1. Open `https://studio.dev.nightshift.wildorder.dev` and sign in with the pool
+   user you use for `nightshift login`. You land on your projects.
+2. From a terminal, start a program run on a repository of your choosing
+   (`nightshift run <program>`, or `/run-program`), then open the project in the
+   Studio and the run from its table: the header says *live · following the run*
+   and the timeline advances a few seconds behind the terminal.
+3. When it ends, read the run page: strands and jobs, verifications, cost, the
+   decision graph. Open a transcript or a verification log.
+4. Pick a close call in the decision graph, open it, and record a reversal with
+   your choice and reason. Then, from the terminal, `nightshift decision brief
+   <program> <decisionId> --run <runId> --out docs/programs/<fix>/brief.md` and
+   ask `plan-program` to plan the correction from it.
+5. Settings: read the organisation's policy; change one thing and save; note the
+   version climbs. Open the project's settings for the contract's policies.
+
+Look for: what the run page does not say that you wanted to know; anything the
+timeline narrates badly; whether the reversal form asked enough.
 
 ### Build decisions, provisional until the owner ratifies or reverses them
 
