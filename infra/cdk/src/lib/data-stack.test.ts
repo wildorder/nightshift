@@ -16,6 +16,8 @@ import {
   MACHINE_SCOPE,
   NightshiftDataStack,
   NODE_INDEX_NAME,
+  studioCallbackUrlsFor,
+  studioLogoutUrlsFor,
 } from "./data-stack.js";
 
 interface CfnResource {
@@ -286,13 +288,28 @@ describe("NightshiftDataStack", () => {
       });
     });
 
+    /** The public clients of `template`, keyed by logical id prefix. */
+    const publicClientsOf = (template: Template): Record<string, Record<string, unknown>> =>
+      Object.fromEntries(
+        Object.entries(
+          template.findResources("AWS::Cognito::UserPoolClient", {
+            Properties: { GenerateSecret: false },
+          }),
+        ).map(([id, client]) => [id, client.Properties as Record<string, unknown>]),
+      );
+
+    const publicClient = (template: Template, prefix: string): Record<string, unknown> => {
+      const found = Object.entries(publicClientsOf(template)).filter(([id]) =>
+        id.startsWith(prefix),
+      );
+      expect(found, prefix).toHaveLength(1);
+      return found[0]?.[1] as Record<string, unknown>;
+    };
+
     it("has an interactive public client using the code grant with a loopback redirect", () => {
-      const interactive = dev.template.findResources("AWS::Cognito::UserPoolClient", {
-        Properties: { GenerateSecret: false },
-      });
-      const clients = Object.values(interactive);
-      expect(clients).toHaveLength(1);
-      const props = clients[0]?.Properties as Record<string, unknown>;
+      // Two public clients since P11 (D-P11-04): the CLI's and the Studio's.
+      expect(Object.keys(publicClientsOf(dev.template))).toHaveLength(2);
+      const props = publicClient(dev.template, "UserPoolInteractiveClient");
       expect(props.AllowedOAuthFlows).toEqual(["code"]);
       expect(props.CallbackURLs).toEqual([LOOPBACK_CALLBACK_URL]);
       expect(LOOPBACK_CALLBACK_URL).toMatch(/^http:\/\/localhost:\d+\//);
@@ -300,6 +317,62 @@ describe("NightshiftDataStack", () => {
       expect(props.AllowedOAuthScopes).toEqual(expect.arrayContaining(["openid", "email"]));
       expect(JSON.stringify(props.AllowedOAuthScopes)).toContain("/api");
       expect(props.WriteAttributes).toEqual(["custom:active_org"]);
+    });
+
+    /**
+     * The Studio's client (P11, T2, D-P11-04): the CLI's shape with the
+     * Studio's origins as its URLs. A second client rather than a second
+     * callback on the CLI's, so a browser flow cannot redeem a code meant for a
+     * terminal; asserted against the CLI's client field by field so the two
+     * cannot drift apart in anything but their URLs.
+     */
+    it("has a Studio public client, the interactive client's twin but for its URLs", () => {
+      const studio = publicClient(dev.template, "UserPoolStudioClient");
+      const interactive = publicClient(dev.template, "UserPoolInteractiveClient");
+      for (const field of [
+        "AllowedOAuthFlows",
+        "AllowedOAuthFlowsUserPoolClient",
+        "AllowedOAuthScopes",
+        "ExplicitAuthFlows",
+        "GenerateSecret",
+        "PreventUserExistenceErrors",
+        "ReadAttributes",
+        "WriteAttributes",
+        "SupportedIdentityProviders",
+      ]) {
+        expect(studio[field], field).toEqual(interactive[field]);
+      }
+      expect(studio.AllowedOAuthFlows).toEqual(["code"]);
+      expect(studio.ExplicitAuthFlows).toEqual([...EXPLICIT_AUTH_FLOWS]);
+      expect(studio.CallbackURLs).not.toEqual(interactive.CallbackURLs);
+    });
+
+    it("gives the Studio client the Studio's origins: hosted on every stage, localhost on dev alone (D-P11-01)", () => {
+      const onDev = publicClient(dev.template, "UserPoolStudioClient");
+      expect(onDev.CallbackURLs).toEqual([
+        "https://studio.dev.nightshift.wildorder.dev/callback",
+        "http://localhost:5173/callback",
+      ]);
+      expect(onDev.LogoutURLs).toEqual([
+        "https://studio.dev.nightshift.wildorder.dev/",
+        "http://localhost:5173/",
+      ]);
+      expect(onDev.CallbackURLs).toEqual([...studioCallbackUrlsFor("dev")]);
+      expect(onDev.LogoutURLs).toEqual([...studioLogoutUrlsFor("dev")]);
+
+      const onStaging = publicClient(synth("staging").template, "UserPoolStudioClient");
+      expect(onStaging.CallbackURLs).toEqual([
+        "https://studio.staging.nightshift.wildorder.dev/callback",
+      ]);
+      expect(onStaging.LogoutURLs).toEqual(["https://studio.staging.nightshift.wildorder.dev/"]);
+      expect(JSON.stringify(onStaging)).not.toContain("localhost");
+    });
+
+    it("exports the Studio client id, for the authorizer and for config.json", () => {
+      dev.template.hasOutput("StudioClientId", {
+        Export: { Name: dataExportName("dev", "StudioClientId") },
+      });
+      expect(JSON.stringify(dev.json.Outputs?.StudioClientId)).toContain("UserPoolStudioClient");
     });
 
     it("derives the domain prefix from the stage and account", () => {

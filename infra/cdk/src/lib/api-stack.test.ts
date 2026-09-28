@@ -2,15 +2,24 @@ import { App, Token } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import {
+  ARTIFACT_BODY_PREFIX,
   AUTHORIZER_CACHE_TTL,
+  CORS_ALLOW_HEADERS,
   NightshiftApiStack,
+  PLAN_DOCUMENT_PREFIX,
   STREAM_BATCH_SIZE,
   STREAM_RETRY_ATTEMPTS,
 } from "./api-stack.js";
 import { DATA_EXPORT_KEYS, dataExportName } from "./data-exports.js";
 import { NightshiftDataStack } from "./data-stack.js";
 import { NightshiftDnsStack } from "./dns-stack.js";
-import { apiHostnameFor, type HostnamesMode, ZONE_NAME } from "./hostnames.js";
+import {
+  apiHostnameFor,
+  type HostnamesMode,
+  STUDIO_DEV_ORIGIN,
+  studioOriginsFor,
+  ZONE_NAME,
+} from "./hostnames.js";
 import { DNS_EXPORT_KEYS, dnsExportName } from "./stack-props.js";
 
 /**
@@ -217,7 +226,7 @@ describe("NightshiftApiStack", () => {
       expect(AUTHORIZER_CACHE_TTL.toSeconds()).toBeLessThanOrEqual(3600);
     });
 
-    it("tells the authorizer the pool's issuer and both app clients", () => {
+    it("tells the authorizer the pool's issuer and every app client, the Studio's included", () => {
       const { template } = synth();
       const { Variables: variables } = property<{ Variables: Record<string, unknown> }>(
         resourceNamed(template, "AWS::Lambda::Function", "AuthorizerFunction"),
@@ -231,6 +240,8 @@ describe("NightshiftApiStack", () => {
       expect(audiences).toContain(dataExportName("dev", "InteractiveClientId"));
       expect(audiences).toContain(dataExportName("dev", "MachineClientId"));
       expect(audiences).toContain(dataExportName("dev", "TestPrincipalClientId"));
+      // P11 (D-P11-04): a browser's ID token names the Studio's client.
+      expect(audiences).toContain(dataExportName("dev", "StudioClientId"));
     });
 
     /**
@@ -265,6 +276,58 @@ describe("NightshiftApiStack", () => {
     });
   });
 
+  /**
+   * D-P11-03: the Studio's origins and no other, on the API itself so the
+   * gateway answers a preflight before the authorizer would refuse it for
+   * carrying no token. The origin list per stage is the assertion: the hosted
+   * Studio on every stage, the local development origin on `dev` alone
+   * (D-P11-01), and nothing that could be read as "any".
+   */
+  describe("CORS for the Studio (D-P11-03)", () => {
+    const corsOf = (stage: string): Record<string, unknown> =>
+      property<Record<string, unknown>>(
+        resourcesOf(synth(stage).template, "AWS::ApiGatewayV2::Api")[0],
+        "CorsConfiguration",
+      );
+
+    it("allows the dev Studio's hosted origin and the local development origin, and no other", () => {
+      const cors = corsOf("dev");
+      expect(cors.AllowOrigins).toEqual([
+        "https://studio.dev.nightshift.wildorder.dev",
+        "http://localhost:5173",
+      ]);
+      expect(cors.AllowOrigins).toEqual([...studioOriginsFor("dev")]);
+      expect(STUDIO_DEV_ORIGIN).toBe("http://localhost:5173");
+    });
+
+    it("allows a later stage its hosted origin only: localhost is dev's alone (D-P11-01)", () => {
+      for (const stage of ["staging", "prod"]) {
+        const cors = corsOf(stage);
+        expect(cors.AllowOrigins, stage).toEqual([`https://studio.${stage}.${ZONE_NAME}`]);
+        expect(JSON.stringify(cors), stage).not.toContain("localhost");
+      }
+    });
+
+    it("allows the methods and headers a bearer-token client needs, and never a wildcard or credentials", () => {
+      const cors = corsOf("dev");
+      expect(cors.AllowMethods).toEqual(["GET", "PUT", "POST", "OPTIONS"]);
+      expect(cors.AllowHeaders).toEqual([...CORS_ALLOW_HEADERS]);
+      expect(CORS_ALLOW_HEADERS).toEqual(["authorization", "content-type"]);
+      // Bearer tokens, not cookies: a credentials flag would be a lie about how
+      // the token travels and would forbid the list above being anything but exact.
+      expect(cors.AllowCredentials).toBeUndefined();
+      expect(JSON.stringify(cors)).not.toContain('"*"');
+    });
+
+    it("is the same in zone-only mode: an origin is a string, not a record", () => {
+      const cors = property<Record<string, unknown>>(
+        resourcesOf(synth("dev", "zone-only").template, "AWS::ApiGatewayV2::Api")[0],
+        "CorsConfiguration",
+      );
+      expect(cors.AllowOrigins).toEqual([...studioOriginsFor("dev")]);
+    });
+  });
+
   describe("least privilege", () => {
     it("grants no wildcard action and no wildcard resource beyond a function's own log streams", () => {
       const statements = statementsOf(synth().template);
@@ -284,13 +347,14 @@ describe("NightshiftApiStack", () => {
         //
         //  - CloudFormation's log group ARN, which ends `:*` to name the streams
         //    inside that single group;
-        //  - the artifact bucket's object prefix, `<BucketArn>/*` (T2). S3 offers
-        //    no way to say "every object in this bucket" without it, and the
-        //    statement is still pinned to one bucket.
+        //  - a key prefix inside the artifact bucket, `<BucketArn>/<prefix>*`
+        //    (T2, P7, P11). S3 offers no way to name a bucket's objects without
+        //    it, the statement is still pinned to one bucket, and the prefixes
+        //    themselves are pinned below.
         const tolerated =
           actions.every((action) => action.startsWith("logs:")) ||
           (actions.every((action) => action.startsWith("s3:")) &&
-            wildcarded.every((resource) => resource.endsWith("/*")));
+            wildcarded.every((resource) => /^\/[^*]*\*$/.test(resource)));
         expect(tolerated, `${actions.join()} on ${wildcarded.join()}`).toBe(true);
       }
     });
@@ -382,20 +446,32 @@ describe("NightshiftApiStack", () => {
 
     /**
      * P7 (D-P7-02) is the decision that brings a read: ratification hashes the
-     * stored plan document itself. The reasoning above survives because the read
-     * is confined to `plans/`, where no artifact body is ever written, and it is
-     * its own statement so it can never ride along with the signing grant.
+     * stored plan document itself. P11 (D-P11-06) brings the second and last:
+     * a signed download conveys only a read the signer holds, so the role reads
+     * artifact bodies — under the prefix they actually have, `proj_…`, the
+     * project id P2 put first in every key. The reasoning above survives
+     * because each read is confined to its prefix and is its own statement, so
+     * neither can ride along with the signing grant, and the two prefixes are
+     * pinned here as the whole of what this role may read.
      */
-    it("grants s3:GetObject on ratified plan documents, and on no other object", () => {
+    it("grants s3:GetObject on plan documents and artifact bodies, and on no other object", () => {
       const reads = statementsOf(synth().template).filter((statement) =>
         actionsOf(statement).includes("s3:GetObject"),
       );
-      expect(reads).toHaveLength(1);
-      expect(reads.flatMap(actionsOf)).toEqual(["s3:GetObject"]);
-
-      const resources = JSON.stringify(reads[0]?.Resource);
-      expect(resources).toContain("BucketArn");
-      expect(resources).toContain("/plans/*");
+      expect(reads).toHaveLength(2);
+      for (const read of reads) {
+        expect(actionsOf(read)).toEqual(["s3:GetObject"]);
+        expect(JSON.stringify(read.Resource)).toContain("BucketArn");
+      }
+      const prefixes = reads
+        .flatMap((read) => stringsIn(read.Resource))
+        .filter((value) => value.endsWith("*"))
+        .sort();
+      expect(prefixes).toEqual([`/${PLAN_DOCUMENT_PREFIX}*`, `/${ARTIFACT_BODY_PREFIX}*`].sort());
+      expect(PLAN_DOCUMENT_PREFIX).toBe("plans/");
+      // Artifact keys begin with the project id (D-P2-08), and no `proj_` id
+      // can spell `plans`, so the two reads are disjoint by construction.
+      expect(ARTIFACT_BODY_PREFIX).toBe("proj_");
     });
 
     /**

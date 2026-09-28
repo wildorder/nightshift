@@ -30,6 +30,9 @@ export const DATA_EXPORT_KEYS = [
   // P4 (T5, D-P4-07): the smoke suite's second principal, so the deployed
   // isolation matrix has two callers in two organisations.
   "TestPrincipalClientId",
+  // P11 (T2, D-P11-04): the Studio's own app client. The authorizer lists it
+  // among its audiences and the studio stack writes it into `config.json`.
+  "StudioClientId",
 ] as const;
 export type DataExportKey = (typeof DATA_EXPORT_KEYS)[number];
 export const dataExportName = (stage: string, key: DataExportKey): string =>
