@@ -12,7 +12,7 @@
 │ apps/cli          CLI: nightshift run / run --remote     │
 │ apps/mcp          Nightshift MCP server                  │
 │ apps/api          control-plane HTTP/runtime             │
-│ apps/studio       reserved — not built in v1             │
+│ apps/studio       the Studio: a browser client (P11)     │
 ├──────────────────────────────────────────────────────────┤
 │ packages/routing        model + harness selection        │
 │ packages/verification   deterministic verification       │
@@ -62,7 +62,8 @@
 | A-12 | Examination is risk-based, not universal | Configurable policy maps risk to examiner requirements (different model / different provider). |
 | A-13 | Routing optimizes cheapest path to a *verified* result | Not cheapest token. Every routing decision is persisted with its alternatives and outcome. |
 | A-14 | One AgentCore **runtime instance** per remote program run | Not one environment per leaf job. As understood on 2026-09-16: AgentCore Runtime's serverless sessions are isolated environments capped at eight hours and terminated after fifteen idle minutes, while a runtime instance is managed EC2 capacity that hosts many agents and a shared session, with a common filesystem, for up to fourteen days. The orchestrator and its workers are processes on one instance; the AgentCore harness worker (the vision's cheap Bedrock route) runs there too, as an exported Strands process. Built in P10. |
-| A-15 | The Studio is a client, not a backend | v1 ships the data surface; the UI is out of scope. |
+| A-15 | *Superseded by A-15a:* the Studio is a client, not a backend; v1 ships the data surface and not the UI | Ratified at the start of v1; the owner's restaging of 2026-09-28 (`staging.md`) brought the UI into v1 as P11. The first half stands. |
+| A-15a | **The Studio is built in v1, in P11, and is a client of the control plane and nothing else** (D-P11-01 … D-P11-10). A static single-page app at `studio.<stage>.nightshift.wildorder.dev` (S3 behind CloudFront, its certificate in `us-east-1`), signed in through its own public Cognito client with PKCE, calling `api.<stage>` through the same store ports the CLI uses (`@nightshift/persistence/http/browser`) and rendering `core`'s read models (`gatherReport`, the decision graph, moved there from `execution`). It writes three things: the org's config, a project's name and description, and a human decision reversing another, built by the same `buildReversal` the CLI calls. Nothing starts, cancels or resumes a run from it. Realtime is polling the run's event cursor (resolves O-02 for v1). Artifact bodies are read through a presigned `GET` the control plane signs, its second S3 read after `plans/*`. Running it from this repository is for developing it, never a product mode. | A browser is one more client of the one control plane (A-06, A-16, A-28): every read and write is a route `authorize` already names, and the Lambda stays the only credential holder. The layer table's row for `apps/studio` is `contracts`, `core`, `persistence`. |
 | A-16 | The CLI lives in `apps/cli` and is a thin client | It calls the same control-plane and dispatch APIs a future Studio will call. No domain, routing, or execution logic lives in the CLI. |
 | A-17 | v1 runs in **one** AWS account, `755348349819` (`nightshift-prod`), in `us-west-2` | Deliberate single-account start. The account is treated as a sandbox until Nightshift is launched and supported; a separate development account arrives only if and when that happens. Nothing in v1 may assume a second account exists. |
 | A-18 | v1 does not verify teardown | The persistent stack is never destroyed to satisfy a test, and no throwaway stack is deployed to prove `destroy` works. With one account and one user there is nothing to migrate to, so the check earns less than it costs. Removal policies are still set **explicitly** per resource so retention is chosen rather than inherited from a default. Revisit if a second environment is ever stood up. |
@@ -173,7 +174,7 @@ silently — surface them as decisions for human ratification at the stated poin
 | # | Question | Resolve by |
 |---|----------|-----------|
 | ~~O-01~~ | ~~Control-plane HTTP/runtime implementation and client authentication~~ | **Resolved 2026-09-13 — see A-19.** |
-| O-02 | Realtime transport technology | Before Stage 10 |
+| ~~O-02~~ | ~~Realtime transport technology~~ | **Resolved 2026-09-28 — see A-15a (D-P11-05): polling the event cursor; a push transport is a later decision, when there are several watchers or the poll shows in the bill.** |
 | O-03 | AgentCore runtime instance class, scaling, idle timeout, max lifetime, retention. Known on 2026-09-16: instances are managed EC2 capacity chosen through a capacity provider (for example `c7g.2xlarge`), a shared session lives up to fourteen days, and pricing is EC2 plus a management fee. Still to decide: the class per program size, when an idle instance stops, the maximum lifetime, and what is retained after a run. | During P10 |
 | ~~O-04~~ | ~~Local authentication between an orchestrator and the Nightshift MCP server~~ | **Resolved 2026-09-15 — see A-27.** |
 | O-05 | Which harness subscription credentials may legitimately be transported onto an AgentCore runtime instance vs. API/Bedrock auth; and **who pays for Bedrock tokens** on the cheap route, Nightshift's account or the project's account through A-25 | Provider-specific work during P10 — never assumed |

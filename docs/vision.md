@@ -229,8 +229,10 @@ complete account of what happened and what it cost.
 surface is MCP. Ergonomics for the agent are a product requirement, not an
 implementation detail.
 
-**Future — Studio operators.** Not built in v1, but the control plane is designed
-so that a Studio is a UI over existing APIs rather than a new backend project.
+**Studio operators.** The Studio (P11, built into v1 by the owner's restaging of
+2026-09-28) is a UI over the existing APIs and nothing else: a signed-in user of
+the pool, reading what the control plane records and writing only what a user
+principal may write. It is not a backend project.
 
 ## Technology Stack
 
@@ -238,7 +240,7 @@ so that a Studio is a UI over existing APIs rather than a new backend project.
 
 | Layer | Choice | Rationale |
 |-------|--------|-----------|
-| Language | TypeScript | Shared versioned domain contracts across CLI, MCP, infra, and future Studio |
+| Language | TypeScript | Shared versioned domain contracts across CLI, MCP, infra, and the Studio |
 | Repo layout | Workspace monorepo | Infra, MCP server, runtime libraries, harness adapters and Studio share contracts |
 | Infrastructure | AWS CDK v2 (TypeScript) | Sole IaC system — no SST, Terraform, or Pulumi alongside it without an explicit architectural decision |
 | State | DynamoDB | Project-scoped structured operational state, single-digit-ms reads for run status |
@@ -274,10 +276,9 @@ the v1 stages are grouped into programs, and
 - Risk-based independent examination
 - Decision graph with checkpointed replay over the minimum affected cone
 - AgentCore remote runner and walk-away dispatch
-- Realtime and analytics surface sufficient for a future Studio
+- Realtime and analytics surface, and the Studio over it (P11; amended 2026-09-28)
 
 **Do not build in v1:**
-- Nightshift Studio (its required data surface is in scope; the UI is not)
 - Learned model routing (`expected_cost_to_green`) — v1 captures the dataset only
 - A proprietary general-purpose agent harness
 - v0 execution compatibility, v0 manifests, v0 agent-role configuration, or the
@@ -292,8 +293,10 @@ deliberate human reference.
 
 ## Scope: After v1
 
-Learned routing trained on the v1 outcome dataset; Nightshift Studio as a pure
-client of the v1 APIs; self-service sign-up and org administration. These inform
+Learned routing trained on the v1 outcome dataset; self-service sign-up and org
+administration; planning and starting runs from the Studio, which needs a hosted
+session with a checkout (P10's runner shape). *Amended 2026-09-28:* the Studio
+itself moved into v1 as P11, a pure client of the v1 APIs. These inform
 architectural decisions now — project scoping, API-first state, normalized
 analytics — but nothing is built for them.
 
