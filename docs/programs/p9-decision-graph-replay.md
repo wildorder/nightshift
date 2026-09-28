@@ -7,7 +7,7 @@
 | Base branch | `v1` |
 | Program branch | `program/p9-decision-graph-replay` |
 | Source stage | Stage 8 (Decision Graph and Replay), reframed by the owner (§3.1) |
-| Status | **Ratified 2026-09-27** (D-P9-01 … D-P9-08; §3.1, §12). Not started; build from T1. |
+| Status | **Built 2026-09-27** (T1 … T5; §13). Deployed; the live suite passed. **Open: SC-P9-13, the owner's own trial**; P9 closes after it. Build decisions await ratification (§12). |
 | Depends on | P6 (the engine, the merge queue, sub-programs), P7 (planning, strands, `resume`), P8 (rulings as decisions with checkpoints, `ruling reverse`) |
 | Blocking decisions | none |
 
@@ -281,10 +281,94 @@ Specs live in `tasks/p9-decision-graph-replay/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-27 | **Build decisions, provisional until the owner ratifies or reverses them.** (1) **`plan check` reaches the control plane for a correction**, and only then: whether a decision was reversed is the control plane's to say, so checking a correction needs `nightshift login`; every other plan still checks offline. (2) **A reversal is recorded on the reversed decision's own node**, with its `checkpointBefore` and class copied, so it sits beside what it reverses in the record and the report. (3) **A stamp that cannot be written is left off silently**, not recorded as an event (T2's spec said "recorded"): the report shows such a decision as having produced nothing that landed, and no event type was added for it. (4) **A later node whose replay conflicts at `resume` ends `cancelled`**, with an `integration_conflict:` reason: the only edge out of `deferred` that is not a verification, and P1's table is not changed. It is reported for a correction, as a failed retry is. (5) **A retry at `resume` runs one node at a time through the P3 route** (`startJob` with no merge queue: verify where it stands, seal, fast-forward), because `resume` lands the line in order and nothing else is in flight. (6) **A decision recorded by an earlier attempt of a node is stamped with the retry's landed commit**: it was made on that node, and that node's work is what landed. (7) **The owner confirms an irreversible reversal on every run of the correction**, recorded on that run: a confirmation for one run is not taken as consent for another. | Agent, for human ratification |
 | 2026-09-27 | **Contract ratified**, D-P9-01 … D-P9-08, with D-P9-07 reworded on the owner's question (Q6): a check that fails at `resume` is retried like any failed check, not given a separate "fix". Task specs T1 … T5 written. | **Human** |
 | 2026-09-27 | **Reversal is correction by re-planning, not cone replay.** The first draft computed a minimum cone, reverted it and replayed it, as Stage 8 asks. The owner's direction: a reversal is a new plan with a different decision; the planner reads the history, the original plan and the decision's record, and the correction may reach outside the old decision's work. No downstream tagging, no automatic reverts, no new node status. Corrections are planned with the owner and ratified; irreversible reversals are flagged and confirmed before the correction runs; each decision is tied to the commits it produced ("the cheap fix"); the exit gate is a live suite and the owner's own trial. SC-13's minimum cone is replaced (§1). | **Human** |
 | 2026-09-27 | Contract drafted after P8 closed. | Agent, for human ratification |
 
 ## 13. As built
 
-Not started.
+Built 2026-09-27 on `program/p9-decision-graph-replay`, T1 … T5 in one sitting,
+after the owner reframed the program the same morning (§3.1, §12).
+
+### Task states
+
+| Task | State | Notes |
+|------|-------|-------|
+| T1 | **done**, deployed | `npm run smoke` 90 of 90 (a second run hit one S3 `ECONNRESET` on an upload, then 90 of 90) |
+| T2 | **done** | Stamping at three points: `integrateNode` (a job), `finishSubProgram` (a strand), `endProgramNode` (the plan's and the root's) |
+| T3 | **done** | `decision reverse`, `decision brief`, `report`, `run --confirm-irreversible`, `plan check` on a correction, `plan-program`'s correction mode |
+| T4 | **done** | `resumeDeferred` takes a `ResumeRetry`; `nightshift-resume` supplies it |
+| T5 | **done**, less SC-P9-13 | The fixture, the live suite, the battery below. SC-P9-13 is the owner's |
+
+### What was proven, and where
+
+| SC | State | By |
+|----|-------|----|
+| SC-P9-01 | met, **live** | `test/src/execution/stamping.test.ts` (a job's decision, exactly its landed commit and the landing's checkpoint); `test/src/planning/unattended.test.ts` (a strand's departure with its strand's commits; the plan's D-01 with what the strands it touches landed); live, a real worker's decision stamped with the commit its retry landed |
+| SC-P9-02 | met | `stamping.test.ts`: a job that failed leaves its decision unstamped; the report says "produced nothing that landed" |
+| SC-P9-03 | met | `test/src/cli/decision.test.ts` (an orchestrator's decision), `test/src/cli/ruling.test.ts` (a ruling, the same verb), `correction-e2e.test.ts` (a strand's); the API refuses an execution token's stamp (`records.ts`) |
+| SC-P9-04 | met | `decision.test.ts`: the choice and why, what was weighed and why it lost, what it produced with its files, everything after it, the reversal |
+| SC-P9-05 | met | `packages/core/src/rules/corrections.test.ts`, `apps/api/src/operations/decisions.test.ts` (ratification refuses an unreversed decision), `decision.test.ts` (`plan check`) |
+| SC-P9-06 | met | `correction-e2e.test.ts`: flagged by `plan check`, refused by `run`, run with `--confirm-irreversible`, the confirmation recorded |
+| SC-P9-07 | met | `correction-e2e.test.ts`: the correction's report opens with what it corrects; the original, regenerated by `nightshift report`, shows the reversal and the correction |
+| SC-P9-08 | met | `test/src/planning/correction-e2e.test.ts`: a planned run whose strand departs (a decision marked irreversible), reversed, briefed, corrected by a scripted plan that rewrites a module the decision produced and adds modules it never touched, confirmed, run, verified, both reports linked |
+| SC-P9-09 | met, **live** | `test/src/execution/engine.test.ts`: a failed check at resume retried with what failed in the brief and landed, the later work replayed on top; with no retry available, reported and the later work still landed. Live below |
+| SC-P9-10 | met | `packages/execution/src/report.test.ts`, `decision.test.ts`, `unattended.test.ts` |
+| SC-P9-11 | met | Below; nothing weakened |
+| SC-P9-12 | met, **live**, 2026-09-27 | `npm run correction`, below |
+| SC-P9-13 | **open** | The owner's. Below: what to look for |
+
+### The live suite, 2026-09-27
+
+`npm run correction` against the deployed stack, a real Claude Code worker:
+
+- The job recorded a decision ("a single-line arrow function"), planted a file
+  the gate refuses, and deferred on the gate's human prerequisite: 42 s.
+- The prerequisite met, `nightshift-resume` ran the gate, which failed; it
+  retried the node one rung up with the failure in the brief; the real worker
+  removed the file and the retry landed: `retried` and `landed` both the node,
+  96 s in all.
+- The decision was stamped with exactly the commit the retry landed; the owner's
+  reversal was accepted by the deployed API and a rewrite of the decision was
+  refused; the report showed the decision graph with the reversal.
+
+The first live run found only that an unplanned run cannot `run.finish` as
+deferred (a P7 rule for strands); the suite ends its session instead.
+
+The battery after T5: `npm run smoke` 90 of 90 twice; `npm run conformance --
+--harness all` 3 of 3 for claude and 3 of 3 for codex; `npm run slice` every leg;
+`npm run routing` all 8 phases; `npm run verify` green (3,108 tests).
+
+### What changed in earlier programs' suites, and why
+
+Nothing was weakened.
+
+- **P7** `engine.test.ts`: "resume stops at a deferred check that fails, and
+  discards what was built on it" is replaced by D-P9-07's behaviour (reported,
+  nothing discarded; and a retry that lands). `unattended.test.ts` reads the
+  plan's decision from the report's decision graph, where it read
+  `humanDecisions`. The scripted harness gains `value=` for `add-module` and
+  `class=` for a strand's departure.
+- **P8** `ruling.test.ts`: `ruling reverse` now says "Nothing else changed" and
+  points at the brief, where it said "Nothing is replayed". `examination.test.ts`
+  reads resume's new result shape. The API's ruling-only `checkpointAfter` path
+  is the general stamp (`isDecisionStamp`).
+- The report's "Decisions the run took" is the "Decision graph".
+
+### For the owner's trial (SC-P9-13)
+
+Deploy is current. On foodfly (or any planned repository), after a run:
+
+1. Read the report's **Decision graph**: every decision with what was weighed,
+   its class and the commits it produced. Pick a close call.
+2. `nightshift decision reverse <program> <decisionId> --choice "…" --reason "…"`.
+3. `nightshift decision brief <program> <decisionId> --out docs/programs/<fix>/brief.md`,
+   then ask `plan-program` to plan the correction from it; commit, `plan check`,
+   `plan ratify`, `nightshift run <fix>` (with `--confirm-irreversible` if it
+   asks).
+4. Look for: whether the brief told the planner enough; whether the correction
+   changed what it should and left the rest alone; `nightshift report <program>`
+   on the original, showing the reversal and the correction.
+
+Re-run `nightshift init` in the repository first: the skills changed.
