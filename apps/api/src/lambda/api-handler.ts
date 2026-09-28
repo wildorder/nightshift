@@ -73,6 +73,13 @@ const parseJsonBody = (event: ApiEvent): BodyParse => {
 export const createApiLambdaHandler =
   (getDeps: () => ApiDeps) =>
   async (event: ApiEvent): Promise<APIGatewayProxyStructuredResultV2> => {
+    // A CORS preflight (P11, D-P11-03). The gateway answers these itself from
+    // the API's CORS configuration and adds the headers; one that reaches the
+    // function anyway is answered empty, before a principal is looked for,
+    // because a preflight carries no token and asks nothing of a record. No
+    // other method is answered without a principal.
+    if (event.requestContext.http.method === "OPTIONS") return { statusCode: 204 };
+
     const principal = principalFrom(event);
     if (principal === undefined) {
       return json(401, errorBody("unauthenticated", "the request carries no usable principal"));

@@ -7,6 +7,7 @@ import {
   CORS_ALLOW_HEADERS,
   NightshiftApiStack,
   PLAN_DOCUMENT_PREFIX,
+  PREFLIGHT_ROUTE_PATH,
   STREAM_BATCH_SIZE,
   STREAM_RETRY_ATTEMPTS,
 } from "./api-stack.js";
@@ -195,20 +196,41 @@ describe("NightshiftApiStack", () => {
   });
 
   describe("authentication (A-19 as amended, A-36)", () => {
-    /** The P2 assertion, retargeted (T3 deliverable 2). */
-    it("binds every route to the Nightshift authorizer, leaving none anonymous", () => {
+    /**
+     * The P2 assertion, retargeted (T3 deliverable 2), with P11's one exception
+     * named: the preflight route (D-P11-03) is `OPTIONS` and nothing else, and
+     * it is the only route not behind the authorizer.
+     */
+    it("binds every route but the OPTIONS preflight to the Nightshift authorizer", () => {
       const { template } = synth();
       const routes = resourcesOf(template, "AWS::ApiGatewayV2::Route");
-      expect(routes.length).toBeGreaterThan(0);
+      expect(routes.length).toBeGreaterThan(1);
 
       const authorizers = template.findResources("AWS::ApiGatewayV2::Authorizer");
       expect(Object.keys(authorizers)).toHaveLength(1);
       const [authorizerId] = Object.keys(authorizers) as [string];
 
-      for (const route of routes) {
+      const preflight = routes.filter(
+        (route) => route.Properties?.RouteKey === `OPTIONS ${PREFLIGHT_ROUTE_PATH}`,
+      );
+      expect(preflight).toHaveLength(1);
+      expect(preflight[0]?.Properties?.AuthorizationType).toBe("NONE");
+
+      const guarded = routes.filter((route) => !preflight.includes(route));
+      expect(guarded.map((route) => route.Properties?.RouteKey)).toEqual(["$default"]);
+      for (const route of guarded) {
         expect(route.Properties?.AuthorizationType).toBe("CUSTOM");
         // Bound to *this* authorizer, not merely to some authorizer.
         expect(stringsIn(route.Properties?.AuthorizerId)).toContain(authorizerId);
+      }
+    });
+
+    it("lets no method but OPTIONS past the authorizer", () => {
+      const anonymous = resourcesOf(synth().template, "AWS::ApiGatewayV2::Route").filter(
+        (route) => route.Properties?.AuthorizationType !== "CUSTOM",
+      );
+      for (const route of anonymous) {
+        expect(String(route.Properties?.RouteKey)).toMatch(/^OPTIONS /);
       }
     });
 

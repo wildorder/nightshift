@@ -30,7 +30,14 @@
  */
 import { fileURLToPath } from "node:url";
 import { CfnOutput, Duration, Fn, RemovalPolicy, Stack } from "aws-cdk-lib";
-import { ApiMapping, CorsHttpMethod, DomainName, HttpApi } from "aws-cdk-lib/aws-apigatewayv2";
+import {
+  ApiMapping,
+  CorsHttpMethod,
+  DomainName,
+  HttpApi,
+  HttpMethod,
+  HttpNoneAuthorizer,
+} from "aws-cdk-lib/aws-apigatewayv2";
 import {
   HttpLambdaAuthorizer,
   HttpLambdaResponseType,
@@ -99,6 +106,13 @@ export const CORS_ALLOW_METHODS = [
   CorsHttpMethod.OPTIONS,
 ] as const;
 export const CORS_ALLOW_HEADERS = ["authorization", "content-type"] as const;
+
+/**
+ * The one route not behind the authorizer: `OPTIONS` on every path, so the
+ * gateway answers a preflight rather than refusing it for the token a preflight
+ * never carries. See the note where it is added.
+ */
+export const PREFLIGHT_ROUTE_PATH = "/{proxy+}";
 
 /**
  * The repository root, resolved from this module. `src/lib` and `dist/lib` sit at
@@ -312,12 +326,14 @@ export class NightshiftApiStack extends Stack {
       resultsCacheTtl: AUTHORIZER_CACHE_TTL,
     });
     // One `$default` route carrying the authorizer: the handler owns routing, and
-    // there is no second route that could be authored without authorization. The
-    // `$default` stage keeps `rawPath` unprefixed, which the handler relies on.
+    // there is no second route that could be authored without authorization, but
+    // for the preflight route below. The `$default` stage keeps `rawPath`
+    // unprefixed, which the handler relies on.
+    const integration = new HttpLambdaIntegration("ApiIntegration", apiFunction);
     const httpApi = new HttpApi(this, "HttpApi", {
       description: `Nightshift control plane (${stage})`,
       defaultAuthorizer: authorizer,
-      defaultIntegration: new HttpLambdaIntegration("ApiIntegration", apiFunction),
+      defaultIntegration: integration,
       createDefaultStage: true,
       // The Studio's origins and nothing else (D-P11-03). A preflight from any
       // other origin gets no `Access-Control-Allow-Origin`, and the browser
@@ -327,6 +343,21 @@ export class NightshiftApiStack extends Stack {
         allowMethods: [...CORS_ALLOW_METHODS],
         allowHeaders: [...CORS_ALLOW_HEADERS],
       },
+    });
+    // The preflight route (D-P11-03). A browser's preflight carries no
+    // `Authorization` header, and `$default` matches every method: routed there,
+    // the gateway answered `OPTIONS` with a 401 *with* the CORS headers attached
+    // — a preflight a browser refuses. Found on the first deploy, 2026-09-28.
+    // An `OPTIONS` route more specific than `$default` and bound to no
+    // authorizer is what lets the gateway answer the preflight itself from the
+    // configuration above. It is the one route not behind the authorizer; it
+    // matches `OPTIONS` and nothing else, and an `OPTIONS` that does reach the
+    // handler is answered 204 with no body before a principal is looked for.
+    httpApi.addRoutes({
+      path: PREFLIGHT_ROUTE_PATH,
+      methods: [HttpMethod.OPTIONS],
+      integration,
+      authorizer: new HttpNoneAuthorizer(),
     });
 
     // --- The sequence materializer (T6) ---------------------------------------------

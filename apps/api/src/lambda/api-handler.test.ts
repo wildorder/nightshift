@@ -99,4 +99,24 @@ describe("createApiLambdaHandler", () => {
       expect(JSON.parse(response.body ?? "").error.code).toBe("unauthenticated");
     }
   });
+
+  /**
+   * P11 (D-P11-03): the preflight route carries no authorizer, so an `OPTIONS`
+   * arrives with no principal. It is answered empty and nothing is read; every
+   * other method without a principal is still the 401 above.
+   */
+  it("answers an OPTIONS preflight 204 with no body, principal or none", async () => {
+    let asked = 0;
+    const handler = createApiLambdaHandler(() => {
+      asked += 1;
+      return { stores: createInMemoryStores(), clock: createFixedClock(0) };
+    });
+    for (const principal of [undefined, userPrincipal("someone")]) {
+      const response = await handler(eventFor("OPTIONS", "/projects", principal));
+      expect(response.statusCode).toBe(204);
+      expect(response.body).toBeUndefined();
+    }
+    expect(asked).toBe(0);
+    expect((await handler(eventFor("HEAD", "/projects", undefined))).statusCode).toBe(401);
+  });
 });
