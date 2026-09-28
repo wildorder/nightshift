@@ -28,6 +28,7 @@
     "check:architecture": "vitest run --project test",
     "deploy": "node scripts/deploy.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "studio:smoke": "node scripts/studio-smoke.mjs",
     "slice": "node scripts/slice.mjs",
     "conformance": "node scripts/conformance.mjs",
     "routing": "node scripts/routing.mjs",
