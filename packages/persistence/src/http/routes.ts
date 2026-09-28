@@ -93,4 +93,7 @@ export const routes = {
   artifact: (scope: RunScope, artifactId: ArtifactId) => `${routes.artifacts(scope)}/${artifactId}`,
   artifactUploadUrl: (scope: RunScope, artifactId: ArtifactId) =>
     `${routes.artifact(scope, artifactId)}/upload-url`,
+  /** `POST` only: a signed read of a recorded artifact's bytes (P11, D-P11-06). */
+  artifactDownloadUrl: (scope: RunScope, artifactId: ArtifactId) =>
+    `${routes.artifact(scope, artifactId)}/download-url`,
 } as const;

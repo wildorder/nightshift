@@ -119,6 +119,8 @@ export type Operation =
   | "artifact.put"
   | "artifact.get"
   | "artifact.createUploadUrl"
+  // A signed read of an artifact body (P11, D-P11-06): user principals only.
+  | "artifact.createDownloadUrl"
   // An organisation's routing and examination policy (P8, D-P8-02).
   | "orgConfig.get"
   | "orgConfig.put";
@@ -240,6 +242,11 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
   "artifact.createUploadUrl": "forbidden",
+  // A signed read is a human's (P11, D-P11-06): the Studio opens transcripts
+  // and logs through it. A worker reads the *reference* within its run and
+  // never needed the bytes, so no execution role gets a cell — the examiner's
+  // and arbiter's tables are cut from this one and inherit the refusal.
+  "artifact.createDownloadUrl": "forbidden",
 
   // An org's policy is its members' to read and write (D-P8-02). A run records
   // the policy it executes under, so nothing running needs the org's own.
@@ -333,6 +340,7 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
   "artifact.createUploadUrl": "forbidden",
+  "artifact.createDownloadUrl": "forbidden",
 
   "orgConfig.get": "forbidden",
   "orgConfig.put": "forbidden",

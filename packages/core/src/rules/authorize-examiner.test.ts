@@ -98,8 +98,13 @@ describe("the arbiter's table (D-P8-13)", () => {
     });
   });
 
-  it("may not mint a token or reach its org's configuration", () => {
-    for (const operation of ["agent.mintToken", "orgConfig.get", "orgConfig.put"] as const) {
+  it("may not mint a token, read an artifact's bytes, or reach its org's configuration", () => {
+    for (const operation of [
+      "agent.mintToken",
+      "artifact.createDownloadUrl",
+      "orgConfig.get",
+      "orgConfig.put",
+    ] as const) {
       expect(authorize(principal("arbiter"), operation, target(OWN_NODE)), operation).toMatchObject(
         {
           allowed: false,

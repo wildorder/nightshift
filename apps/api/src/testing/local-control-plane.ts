@@ -43,12 +43,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { PrincipalSchema } from "@nightshift/contracts";
 import type {
+  ArtifactDownloadSigner,
   ArtifactUploadSigner,
   Clock,
   NightshiftStores,
   PlanDocumentStore,
 } from "@nightshift/core";
-import { planDocumentObjectKey, systemClock } from "@nightshift/core";
+import { artifactObjectKey, planDocumentObjectKey, systemClock } from "@nightshift/core";
 import type { RequestPrincipal } from "../auth/principal.js";
 import { UserTokenLikeSchema } from "../auth/principal.js";
 import { handleRequest } from "../handler.js";
@@ -78,6 +79,14 @@ const localKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 /** Where a signed upload lands. Not a Nightshift route: only this server serves it. */
 const UPLOAD_PATH_PREFIX = "/__local-upload/";
+
+/**
+ * Where a signed download is read from (P11, D-P11-06). Like the upload path,
+ * not a Nightshift route: the control plane signs, and "S3" — this server —
+ * serves the bytes, refusing a URL it never signed or one that has expired,
+ * which is what a real presigned GET refuses.
+ */
+const DOWNLOAD_PATH_PREFIX = "/__local-download/";
 
 /** How long a local signature claims to last. Matches the AWS signer's fifteen minutes. */
 const UPLOAD_TTL_SECONDS = 15 * 60;
@@ -199,6 +208,12 @@ interface IssuedUpload {
   readonly expiresAtMs: number;
 }
 
+/** An issued download signature: which key, until when. */
+interface IssuedDownload {
+  readonly key: string;
+  readonly expiresAtMs: number;
+}
+
 const readBody = (request: IncomingMessage): Promise<Buffer> =>
   new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -228,6 +243,7 @@ export const startLocalControlPlane = async (
   const clock = options.clock ?? systemClock;
   const objects = new Map<string, LocalBody>();
   const issued = new Map<string, IssuedUpload>();
+  const issuedDownloads = new Map<string, IssuedDownload>();
   let nextToken = 0;
   /** Assigned once the server is listening; every signed URL needs the port. */
   let origin = "";
@@ -242,6 +258,7 @@ export const startLocalControlPlane = async (
     clear: () => {
       objects.clear();
       issued.clear();
+      issuedDownloads.clear();
     },
   };
 
@@ -299,6 +316,23 @@ export const startLocalControlPlane = async (
     },
   };
 
+  /** The download signer (P11, D-P11-06): a token naming the key, served below. */
+  const downloads: ArtifactDownloadSigner = {
+    sign: async (request) => {
+      nextToken += 1;
+      const token = `d${nextToken}`;
+      const expiresAtMs = clock.now() + UPLOAD_TTL_SECONDS * 1000;
+      issuedDownloads.set(token, {
+        key: artifactObjectKey(request.scope, request.artifactId),
+        expiresAtMs,
+      });
+      return {
+        url: `${origin}${DOWNLOAD_PATH_PREFIX}${token}`,
+        expiresAt: new Date(expiresAtMs).toISOString(),
+      };
+    },
+  };
+
   /**
    * The execution-token signer, wired the way the Lambda's is: through the
    * `ExecutionTokenSigner` port, so `mintExecutionToken` runs here exactly as it
@@ -309,6 +343,7 @@ export const startLocalControlPlane = async (
     stores: options.stores,
     clock,
     uploads,
+    downloads,
     plans,
     tokens: {
       issuer: LOCAL_TOKEN_ISSUER,
@@ -367,6 +402,44 @@ export const startLocalControlPlane = async (
     send(response, 200);
   };
 
+  /** The object-store half of a read: a `GET` of a URL this server signed. */
+  const handleDownload = (
+    request: IncomingMessage,
+    response: ServerResponse,
+    token: string,
+  ): void => {
+    if (request.method !== "GET") {
+      send(response, 405, { error: { code: "method_not_allowed", message: "downloads are GET" } });
+      return;
+    }
+    const promised = issuedDownloads.get(token);
+    if (promised === undefined) {
+      send(response, 403, {
+        error: { code: "signature_unknown", message: "this download URL was never signed" },
+      });
+      return;
+    }
+    if (promised.expiresAtMs < clock.now()) {
+      send(response, 403, {
+        error: { code: "signature_expired", message: "this download URL has expired" },
+      });
+      return;
+    }
+    const found = objects.get(promised.key);
+    if (found === undefined) {
+      // S3 answers a signed GET of a missing key with 404 when the signer may
+      // read the prefix, and that is the case here: the signature was issued for
+      // an artifact whose record exists, so a missing body is the finding.
+      send(response, 404, { error: { code: "no_such_key", message: "no object at this key" } });
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": found.contentType,
+      "content-length": found.body.byteLength,
+    });
+    response.end(Buffer.from(found.body));
+  };
+
   /** The control-plane half: the production handler, verbatim. */
   const handleApi = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const url = new URL(request.url ?? "/", origin === "" ? `http://${host}` : origin);
@@ -412,7 +485,11 @@ export const startLocalControlPlane = async (
     const path = (request.url ?? "/").split("?")[0] ?? "/";
     const work = path.startsWith(UPLOAD_PATH_PREFIX)
       ? handleUpload(request, response, path.slice(UPLOAD_PATH_PREFIX.length))
-      : handleApi(request, response);
+      : path.startsWith(DOWNLOAD_PATH_PREFIX)
+        ? Promise.resolve(
+            handleDownload(request, response, path.slice(DOWNLOAD_PATH_PREFIX.length)),
+          )
+        : handleApi(request, response);
     work.catch((error: unknown) => {
       console.error("local control plane failed", error);
       if (!response.headersSent) {

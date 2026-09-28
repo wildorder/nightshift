@@ -10,6 +10,7 @@ import { KMSClient } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
 import { systemClock } from "@nightshift/core";
 import {
+  createArtifactDownloadSigner,
   createArtifactUploadSigner,
   createAwsClients,
   createAwsStores,
@@ -33,6 +34,12 @@ const stores = createAwsStores({ tableName: config.tableName, table: createAwsCl
  */
 const s3 = new S3Client({});
 const uploads = createArtifactUploadSigner({ bucketName: config.bucketName, s3 });
+/**
+ * Signs presigned artifact downloads (P11, D-P11-06), the same way: a local
+ * computation over the role's credentials, no S3 call. The role's `s3:GetObject`
+ * on the artifact bodies' prefix is what the signature conveys, and nothing else.
+ */
+const downloads = createArtifactDownloadSigner({ bucketName: config.bucketName, s3 });
 
 /**
  * Ratified plan documents (P7, D-P7-02). The one place this function reads S3:
@@ -58,6 +65,7 @@ export const handler = createApiLambdaHandler(() => ({
   stores,
   clock: systemClock,
   uploads,
+  downloads,
   plans,
   tokens,
 }));

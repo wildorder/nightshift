@@ -83,6 +83,38 @@ export interface ArtifactUploadSigner {
   sign(request: ArtifactUploadRequest): Promise<ArtifactUploadTarget>;
 }
 
+/** What the control plane is asked to sign a read of (P11, D-P11-06). */
+export interface ArtifactDownloadRequest {
+  readonly scope: RunScope;
+  readonly artifactId: ArtifactId;
+}
+
+/**
+ * A place to `GET` one artifact body, for a short while.
+ *
+ * `url` is presigned and expires at `expiresAt`; a client fetches it at once
+ * and never stores it, because a stored URL is a stored credential.
+ */
+export interface ArtifactDownloadTarget {
+  readonly url: string;
+  readonly expiresAt: string;
+}
+
+/**
+ * Signs a read without touching the object store (P11, D-P11-06).
+ *
+ * The mirror of {@link ArtifactUploadSigner}: the function signs, the client
+ * fetches, the bytes never pass through the function, and the Lambda stays the
+ * only credential holder (A-19, A-28). Deliberately not a proxied download, for
+ * the reason the upload is not proxied — a payload limit would silently become a
+ * maximum artifact size. Issued to user principals only: `authorize` in `core`
+ * gives no execution role a cell for it, because no worker ever needed to read a
+ * transcript.
+ */
+export interface ArtifactDownloadSigner {
+  sign(request: ArtifactDownloadRequest): Promise<ArtifactDownloadTarget>;
+}
+
 /** The object key for one artifact: `<projectId>/<programId>/<runId>/<artifactId>` (D-P2-08). */
 export const artifactObjectKey = (scope: RunScope, artifactId: ArtifactId): string =>
   `${scope.projectId}/${scope.programId}/${scope.runId}/${artifactId}`;

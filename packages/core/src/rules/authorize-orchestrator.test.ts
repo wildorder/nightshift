@@ -87,6 +87,7 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
   "artifact.createUploadUrl": "forbidden",
+  "artifact.createDownloadUrl": "forbidden",
   "orgConfig.get": "forbidden",
   "orgConfig.put": "forbidden",
 };
@@ -221,6 +222,7 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
       "checkpoint.put",
       "routingDecision.put",
       "artifact.put",
+      "artifact.createDownloadUrl",
       "run.put",
     ] as const) {
       expect(authorize(orchestrator, operation, at("self", "succeeded")).allowed, operation).toBe(

@@ -1,6 +1,15 @@
-import type { Agent, OrgId, RoutingDecision } from "@nightshift/contracts";
-import { AGGREGATE_EXAMPLES, ArtifactUploadResponseSchema } from "@nightshift/contracts";
-import type { ArtifactUploadRequest, ArtifactUploadSigner } from "@nightshift/core";
+import type { Agent, Artifact, OrgId, RoutingDecision } from "@nightshift/contracts";
+import {
+  AGGREGATE_EXAMPLES,
+  ArtifactDownloadResponseSchema,
+  ArtifactUploadResponseSchema,
+} from "@nightshift/contracts";
+import type {
+  ArtifactDownloadRequest,
+  ArtifactDownloadSigner,
+  ArtifactUploadRequest,
+  ArtifactUploadSigner,
+} from "@nightshift/core";
 import {
   createFixedClock,
   createFixtures,
@@ -37,6 +46,8 @@ interface World {
   readonly deps: ApiDeps;
   /** What the fake signer was asked for, newest last. */
   readonly signed: ArtifactUploadRequest[];
+  /** What the fake download signer was asked for, newest last (P11). */
+  readonly signedDownloads: ArtifactDownloadRequest[];
   readonly a: Fixtures;
   readonly b: Fixtures;
   readonly orgId: OrgId;
@@ -67,10 +78,19 @@ const setup = async (options: InMemoryOptions = {}): Promise<World> => {
       };
     },
   };
+  const signedDownloads: ArtifactDownloadRequest[] = [];
+  const downloads: ArtifactDownloadSigner = {
+    sign: async (request) => {
+      signedDownloads.push(request);
+      const key = `${request.scope.projectId}/${request.scope.programId}/${request.scope.runId}/${request.artifactId}`;
+      return { url: `https://signed.invalid/${key}?download`, expiresAt: NOW };
+    },
+  };
   return {
     stores,
-    deps: { stores, clock: createFixedClock(Date.parse(NOW)), uploads },
+    deps: { stores, clock: createFixedClock(Date.parse(NOW)), uploads, downloads },
     signed,
+    signedDownloads,
     a,
     b,
     orgId,
@@ -1127,5 +1147,92 @@ describe("the presigned artifact upload (A-08)", () => {
     });
     expect(response.status).toBe(501);
     expect(errorCode(response)).toBe("uploads_unavailable");
+  });
+});
+
+/**
+ * The mirror of the upload (P11, D-P11-06). Who may ask is `authorize`'s
+ * business and the isolation matrix's proof; these assert what the route does
+ * once a user is past the gate.
+ */
+describe("the presigned artifact download (D-P11-06)", () => {
+  const recordArtifact = async (w: World, f: Fixtures): Promise<Artifact> => {
+    const p = paths(f);
+    const artifactId = f.ids.next("art");
+    const artifact: Artifact = {
+      schemaVersion: 1,
+      ...f.scope,
+      artifactId,
+      executionNodeId: f.rootNodeId,
+      kind: "verification-log",
+      uri: `s3://bucket/${f.scope.projectId}/${f.scope.programId}/${f.scope.runId}/${artifactId}`,
+      sizeBytes: 12,
+      contentType: "text/plain",
+      createdAt: NOW,
+    };
+    expect((await call(w, "PUT", `${p.run}/artifacts/${artifactId}`, artifact)).status).toBe(201);
+    return artifact;
+  };
+
+  it("signs a GET of a recorded artifact and answers the url and its expiry", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const artifact = await recordArtifact(w, w.a);
+
+    const response = await call(
+      w,
+      "POST",
+      `${paths(w.a).run}/artifacts/${artifact.artifactId}/download-url`,
+    );
+    expect(response.status).toBe(200);
+    const target = ArtifactDownloadResponseSchema.parse(response.body);
+    expect(target.url).toContain(artifact.artifactId);
+    expect(target.expiresAt).toBe(NOW);
+
+    // The scope the signer saw came from the path, never from the record (A-23).
+    expect(w.signedDownloads).toEqual([{ scope: w.a.scope, artifactId: artifact.artifactId }]);
+  });
+
+  it("refuses to sign for an artifact nobody recorded, and signs nothing", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const response = await call(
+      w,
+      "POST",
+      `${paths(w.a).run}/artifacts/${w.a.ids.next("art")}/download-url`,
+    );
+    expect(response.status).toBe(404);
+    expect(errorCode(response)).toBe("not_found");
+    expect(w.signedDownloads).toEqual([]);
+  });
+
+  it("finds the artifact in the path's run, not in another run that recorded the same id", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    await seedRun(w, w.b);
+    const artifact = await recordArtifact(w, w.a);
+    const response = await call(
+      w,
+      "POST",
+      `${paths(w.b).run}/artifacts/${artifact.artifactId}/download-url`,
+    );
+    expect(response.status).toBe(404);
+    expect(w.signedDownloads).toEqual([]);
+  });
+
+  it("says so plainly when the control plane was wired without a download signer", async () => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const artifact = await recordArtifact(w, w.a);
+    const { downloads: _downloads, ...withoutSigner } = w.deps;
+    const response = await handleRequest(withoutSigner, {
+      method: "POST",
+      path: `${paths(w.a).run}/artifacts/${artifact.artifactId}/download-url`,
+      query: {},
+      body: undefined,
+      principal: w.principal,
+    });
+    expect(response.status).toBe(501);
+    expect(errorCode(response)).toBe("downloads_unavailable");
   });
 });

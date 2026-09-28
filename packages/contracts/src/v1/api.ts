@@ -193,6 +193,22 @@ export const ArtifactUploadResponseSchema = z.strictObject({
 });
 export type ArtifactUploadResponse = z.infer<typeof ArtifactUploadResponseSchema>;
 
+/**
+ * `POST …/artifacts/{artifactId}/download-url` (P11, D-P11-06).
+ *
+ * The mirror of the upload: the control plane signs a `GET` for an artifact
+ * whose record exists, and the bytes go from object storage to the caller
+ * without passing through the function. The request carries no body — the path
+ * names the artifact and the record says what is there — so there is only a
+ * response shape. `url` is short-lived; a client fetches it at once rather than
+ * storing it.
+ */
+export const ArtifactDownloadResponseSchema = z.strictObject({
+  url: z.string().min(1),
+  expiresAt: IsoTimestampSchema,
+});
+export type ArtifactDownloadResponse = z.infer<typeof ArtifactDownloadResponseSchema>;
+
 // ---------------------------------------------------------------------------
 // Planning (P7, T1; D-P7-02, D-P7-05, D-P7-10)
 // ---------------------------------------------------------------------------

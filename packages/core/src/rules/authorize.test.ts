@@ -11,6 +11,7 @@ import { type OrgId, type Principal, PrincipalSchema, type UserId } from "@night
 import { describe, expect, it } from "vitest";
 import { createFixturePair } from "../testing/factories.js";
 import {
+  ACCESS_BY_ROLE,
   ALL_OPERATIONS,
   type AuthorizationTarget,
   authorize,
@@ -162,6 +163,7 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
   "artifact.createUploadUrl": "forbidden",
+  "artifact.createDownloadUrl": "forbidden",
   "orgConfig.get": "forbidden",
   "orgConfig.put": "forbidden",
 };
@@ -225,10 +227,29 @@ describe("an execution principal", () => {
         (operation.endsWith(".put") ||
           operation.endsWith(".append") ||
           operation.endsWith(".createUploadUrl") ||
+          operation.endsWith(".createDownloadUrl") ||
           operation === "agent.mintToken"),
     );
     expect(writes).toEqual(["node.put", "event.append", "decision.put"]);
     for (const operation of writes) expect(EXECUTION_ACCESS[operation]).toBe("own_node");
+  });
+
+  /**
+   * P11 (D-P11-06): a signed read of an artifact body is a human's. Walked over
+   * every role rather than the worker alone, because the examiner's and
+   * arbiter's tables are cut from the worker's and a cell added to one of them
+   * would be the quiet way to give a running agent a transcript.
+   */
+  it("is refused a signed download of an artifact body, whatever its role", () => {
+    for (const role of ["worker", "orchestrator", "examiner", "arbiter"] as const) {
+      expect(ACCESS_BY_ROLE[role]["artifact.createDownloadUrl"], role).toBe("forbidden");
+      expect(
+        authorize({ ...execution, role }, "artifact.createDownloadUrl", ownTarget),
+        role,
+      ).toMatchObject({ allowed: false, reason: "execution_forbidden_operation" });
+    }
+    // While a user in the owning organisation is allowed, like every other read.
+    expect(authorize(user, "artifact.createDownloadUrl", ownTarget)).toEqual({ allowed: true });
   });
 
   it("can never mint a token, create a node, or write a verification", () => {

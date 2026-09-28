@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { createFixtures } from "@nightshift/core";
 import { describe, expect, it } from "vitest";
-import { createArtifactBodyStore, createPlanDocumentStore } from "./artifact-bodies.js";
+import {
+  createArtifactBodyStore,
+  createArtifactDownloadSigner,
+  createPlanDocumentStore,
+  DOWNLOAD_URL_TTL_SECONDS,
+  UPLOAD_URL_TTL_SECONDS,
+} from "./artifact-bodies.js";
 import { FakeObjectStore } from "./testing/fake-objects.js";
 
 describe("artifact bodies (A-08, D-P2-08)", () => {
@@ -121,5 +127,38 @@ describe("plan documents (P7, D-P7-02)", () => {
     // Without s3:ListBucket, S3 will not say NoSuchKey.
     expect(await failing("AccessDenied").get(scope, sha)).toBeUndefined();
     await expect(failing("SlowDown").get(scope, sha)).rejects.toThrow("SlowDown");
+  });
+});
+
+describe("signed downloads (P11, D-P11-06)", () => {
+  it("signs a GET of the artifact's own key, for the upload's fifteen minutes", async () => {
+    const f = createFixtures();
+    const artifactId = f.ids.next("art");
+    const asked: unknown[] = [];
+    const signer = createArtifactDownloadSigner({
+      bucketName: "bucket",
+      s3: {} as S3Client,
+      sign: async (input) => {
+        asked.push(input);
+        return "https://signed.invalid/download";
+      },
+      now: () => Date.parse("2026-09-28T10:00:00.000Z"),
+    });
+
+    const target = await signer.sign({ scope: f.scope, artifactId });
+    expect(target).toEqual({
+      url: "https://signed.invalid/download",
+      expiresAt: "2026-09-28T10:15:00.000Z",
+    });
+    // The key comes from the run scope, never from anything a caller could
+    // spell, so a signature can name no object outside the run.
+    expect(asked).toEqual([
+      {
+        bucket: "bucket",
+        key: `${f.scope.projectId}/${f.scope.programId}/${f.scope.runId}/${artifactId}`,
+        expiresIn: DOWNLOAD_URL_TTL_SECONDS,
+      },
+    ]);
+    expect(DOWNLOAD_URL_TTL_SECONDS).toBe(UPLOAD_URL_TTL_SECONDS);
   });
 });
