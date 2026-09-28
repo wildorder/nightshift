@@ -2,47 +2,28 @@
  * CDK app entry point. Compiled to `dist/bin/app.js`, which is what
  * `cdk.json` invokes (D-P1-10) — no TypeScript loader is involved.
  *
- * Three stacks: the stateful `nightshift-<stage>-data` and the stateless
- * `nightshift-<stage>-api` (D-P2-07), and the account-wide `nightshift-dns`
- * holding the one hosted zone (D-P3-18). All environment-agnostic, so synth works
- * with no credentials, no profile, and no network.
+ * Five stacks: the stateful `nightshift-<stage>-data` and the stateless
+ * `nightshift-<stage>-api` (D-P2-07), the account-wide `nightshift-dns` holding
+ * the one hosted zone (D-P3-18), and from P11 the Studio's
+ * `nightshift-<stage>-studio-cert` in `us-east-1` and `nightshift-<stage>-studio`
+ * (D-P11-02). The first three are environment-agnostic; the Studio's two carry
+ * an explicit account and region because CloudFront's certificate must live in
+ * `us-east-1` and CDK carries it across regions only between stacks that know
+ * where they are. Synth still works with no credentials, no profile, and no
+ * network: an explicit environment is a constant, not a lookup.
  *
- * `-c hostnames=zone-only` omits the API's certificate and custom domain. It is
- * the first deploy of a new account: land the zone, read its `NameServers`
- * output, delegate, then deploy again without the flag.
+ * `-c hostnames=zone-only` omits the API's certificate and custom domain and
+ * both Studio stacks. It is the first deploy of a new account: land the zone,
+ * read its `NameServers` output, delegate, then deploy again without the flag.
+ * `-c hostedZoneId=…` names the zone for the Studio's certificate (see
+ * `studio-cert-stack.ts` for why an export cannot); `cdk.json` carries the v1
+ * account's. `-c studioAssets=<dir>` deploys a directory other than
+ * `apps/studio/dist` or the placeholder.
+ *
+ * The composition itself is `lib/stacks.ts`, so a test can build it with a
+ * context of its own.
  */
 import { App } from "aws-cdk-lib";
-import { NightshiftApiStack } from "../lib/api-stack.js";
-import { NightshiftDataStack } from "../lib/data-stack.js";
-import { NightshiftDnsStack } from "../lib/dns-stack.js";
-import { parseHostnamesMode } from "../lib/hostnames.js";
+import { composeNightshiftStacks } from "../lib/stacks.js";
 
-/** Stage used when `-c stage=<name>` is not supplied. */
-const DEFAULT_STAGE = "dev";
-
-const app = new App();
-
-const stageContext: unknown = app.node.tryGetContext("stage");
-const stage =
-  typeof stageContext === "string" && stageContext.length > 0 ? stageContext : DEFAULT_STAGE;
-const hostnames = parseHostnamesMode(app.node.tryGetContext("hostnames"));
-
-const dns = new NightshiftDnsStack(app, "NightshiftDns", {
-  description: "Nightshift public DNS: the nightshift.wildorder.dev hosted zone.",
-});
-
-const data = new NightshiftDataStack(app, "NightshiftData", {
-  stage,
-  description: `Nightshift stateful resources (${stage}): table, artifact bucket, user pool, budget.`,
-});
-
-const api = new NightshiftApiStack(app, "NightshiftApi", {
-  stage,
-  hostnames,
-  description: `Nightshift stateless control plane (${stage}): API, functions, stream consumer.`,
-});
-
-// The API stack imports the data and DNS stacks' exports by name, so both must
-// deploy first. This orders deploys; it creates no construct reference.
-api.addStackDependency(data, "imports the data stack's exports by name");
-if (hostnames === "full") api.addStackDependency(dns, "imports the DNS stack's exports by name");
+composeNightshiftStacks(new App());

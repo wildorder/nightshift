@@ -24,6 +24,10 @@
     "./http": {
       "types": "./dist/http/index.d.ts",
       "default": "./dist/http/index.js"
+    },
+    "./http/browser": {
+      "types": "./dist/http/browser/index.d.ts",
+      "default": "./dist/http/browser/index.js"
     }
   },
   "dependencies": {

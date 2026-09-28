@@ -18,6 +18,7 @@
  * belongs to the execution layer (D-P3-06); examination does not exist yet
  * (D-P3-07) and a delegation that would need it is refused up front.
  */
+
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -49,11 +50,13 @@ import {
   checkAuthority,
   conservativeDefaults,
   type DelegationRejection,
+  gatherReport,
   highestSequence,
   isDoneForNow,
   nowIso,
   type ProjectStores,
   pendingCount,
+  renderReport,
   type StrandBrief,
   StrandBriefError,
   strandBrief,
@@ -62,9 +65,7 @@ import {
 import {
   endProgramNode,
   FixLimitError,
-  gatherReport,
   type RoutePins,
-  renderReport,
   StrandBlockedError,
   StrandDelegationError,
 } from "@nightshift/execution";

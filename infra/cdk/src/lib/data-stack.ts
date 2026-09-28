@@ -23,6 +23,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import type { Construct } from "constructs";
 import { MonthlyCostBudget } from "./budget.js";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
+import { studioOriginsFor } from "./hostnames.js";
 import { assertValidStage, type NightshiftStackProps, stackNameFor } from "./stack-props.js";
 
 /** The one GSI (contract §4.2). */
@@ -60,6 +61,18 @@ export const ACTIVE_ORG_ATTRIBUTE = "active_org";
  */
 export const LOOPBACK_CALLBACK_URL = "http://localhost:47821/callback";
 export const LOOPBACK_LOGOUT_URL = "http://localhost:47821/logout";
+
+/**
+ * Where the Studio's app client may send a code, and where sign-out may land
+ * (P11, D-P11-04): `/callback` and `/` on each of the Studio's origins. The
+ * origins are the one list `studioOriginsFor` states, so the client and the
+ * API's CORS grant name the same browsers; on `dev` that includes the local
+ * development origin, on every other stage it does not (D-P11-01).
+ */
+export const studioCallbackUrlsFor = (stage: string): readonly string[] =>
+  studioOriginsFor(stage).map((origin) => `${origin}/callback`);
+export const studioLogoutUrlsFor = (stage: string): readonly string[] =>
+  studioOriginsFor(stage).map((origin) => `${origin}/`);
 
 /** The only direct auth flow either app client allows. */
 export const EXPLICIT_AUTH_FLOWS = ["ALLOW_REFRESH_TOKEN_AUTH"] as const;
@@ -285,12 +298,45 @@ export class NightshiftDataStack extends Stack {
       writeAttributes: new cognito.ClientAttributes().withCustomAttributes(ACTIVE_ORG_ATTRIBUTE),
     });
 
+    /**
+     * The Studio's own app client (P11, T2, D-P11-04).
+     *
+     * A second interactive client rather than a second callback on the CLI's:
+     * a browser callback registered on `InteractiveClient` would let a browser
+     * flow redeem a code meant for a terminal. Otherwise the CLI's shape —
+     * public, authorization code with PKCE, the same four scopes, the same
+     * attributes — with the Studio's origins as its callback and logout URLs.
+     * The browser holds the session (the refresh token in `localStorage`, the
+     * ID token in memory), and sign-out revokes the refresh token through the
+     * hosted domain's `/oauth2/revoke`, which is why revocation stays enabled.
+     */
+    const studioClient = this.userPool.addClient("StudioClient", {
+      generateSecret: false,
+      authFlows: {},
+      preventUserExistenceErrors: true,
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.PROFILE,
+          apiOAuthScope,
+        ],
+        callbackUrls: [...studioCallbackUrlsFor(stage)],
+        logoutUrls: [...studioLogoutUrlsFor(stage)],
+      },
+      readAttributes: new cognito.ClientAttributes()
+        .withStandardAttributes({ email: true, emailVerified: true })
+        .withCustomAttributes(ACTIVE_ORG_ATTRIBUTE),
+      writeAttributes: new cognito.ClientAttributes().withCustomAttributes(ACTIVE_ORG_ATTRIBUTE),
+    });
+
     // An empty `authFlows` emits no ExplicitAuthFlows, and Cognito then enables its
-    // defaults, including SRP and custom auth. Neither client signs in by password
-    // through the API: the machine client uses client credentials and the
-    // interactive client the hosted authorization code flow. Pin both to refresh
-    // tokens only, so no username/password surface exists on either.
-    for (const client of [machineClient, testPrincipalClient, interactiveClient]) {
+    // defaults, including SRP and custom auth. No client signs in by password
+    // through the API: the machine clients use client credentials and the
+    // interactive clients the hosted authorization code flow. Pin every one to
+    // refresh tokens only, so no username/password surface exists on any.
+    for (const client of [machineClient, testPrincipalClient, interactiveClient, studioClient]) {
       const cfn = client.node.defaultChild as cognito.CfnUserPoolClient;
       cfn.explicitAuthFlows = [...EXPLICIT_AUTH_FLOWS];
     }
@@ -385,6 +431,7 @@ export class NightshiftDataStack extends Stack {
       InteractiveClientId: interactiveClient.userPoolClientId,
       MachineClientId: machineClient.userPoolClientId,
       TestPrincipalClientId: testPrincipalClient.userPoolClientId,
+      StudioClientId: studioClient.userPoolClientId,
       TokenEndpoint: `${domain.baseUrl()}/oauth2/token`,
       MachineScope: MACHINE_SCOPE,
       AuthDomain: authDomain,

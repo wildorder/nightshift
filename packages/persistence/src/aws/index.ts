@@ -11,10 +11,13 @@
  */
 export {
   type ArtifactBodyStoreConfig,
+  type ArtifactDownloadSignerConfig,
   type ArtifactUploadSignerConfig,
   createArtifactBodyStore,
+  createArtifactDownloadSigner,
   createArtifactUploadSigner,
   createPlanDocumentStore,
+  DOWNLOAD_URL_TTL_SECONDS,
   type ObjectClient,
   type PlanDocumentStoreConfig,
   s3ObjectClient,

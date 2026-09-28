@@ -142,6 +142,10 @@ export const PERMITTED_REFERENCES: Readonly<Record<string, readonly string[]>> =
     "packages/harness-claude",
     "packages/harness-codex",
   ],
+  // P11 (D-P11-07): the Studio is a client of the control plane and nothing
+  // else: the contracts, `core`'s rules and read models, and the http adapter's
+  // browser entry. Never `execution` (a browser runs nothing) and never a harness.
+  "apps/studio": ["packages/contracts", "packages/core", "packages/persistence"],
   "infra/cdk": [],
   // P3 (D-P3-12): the slice suite drives the real server, the real execution
   // layer and the real local control plane, so `test` references what it drives.

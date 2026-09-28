@@ -296,12 +296,16 @@ describe("AR-5 negative fixtures: tsconfig reference direction", () => {
           // and `execution`, but naming a harness implementation is the
           // composition-root privilege of `apps/mcp` alone.
           tsconfig("apps/cli", ["../../packages/harness-claude"]),
+          // P11 (D-P11-07): the Studio is a client; a reference to the execution
+          // layer would put a browser app above it.
+          tsconfig("apps/studio", ["../../packages/execution"]),
           tsconfig("packages/mystery", []),
         ],
       }),
     );
     expect(offendingPaths(violations)).toEqual([
       "apps/cli/tsconfig.json",
+      "apps/studio/tsconfig.json",
       "packages/core/tsconfig.json",
       "packages/mystery/tsconfig.json",
     ]);

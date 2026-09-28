@@ -12,6 +12,7 @@
 export * from "./errors.js";
 export * from "./ids.js";
 export * from "./ports/index.js";
+export * from "./report/index.js";
 export * from "./rules/index.js";
 export * from "./testing/index.js";
 export * from "./time.js";

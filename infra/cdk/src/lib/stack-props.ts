@@ -2,11 +2,12 @@
  * Props and naming shared by every Nightshift stack.
  *
  * Stacks are named `nightshift-<stage>-<role>` (D-P2-07): `data` for the stateful
- * stack, `api` for the stateless one. `stage` defaults to `dev` in the app entry
- * and is overridden with `-c stage=...`. The one unstaged stack is
- * `nightshift-dns` (D-P3-18): a hosted zone is per account, and two stages
- * creating two zones of the same name would each get different nameservers and
- * only one could be delegated.
+ * stack, `api` for the stateless one, and from P11 (D-P11-02) `studio` for the
+ * hosted console and `studio-cert` for its certificate in `us-east-1`. `stage`
+ * defaults to `dev` in the app entry and is overridden with `-c stage=...`. The
+ * one unstaged stack is `nightshift-dns` (D-P3-18): a hosted zone is per
+ * account, and two stages creating two zones of the same name would each get
+ * different nameservers and only one could be delegated.
  */
 import type { StackProps } from "aws-cdk-lib";
 import { DEFAULT_HOSTNAMES_MODE, type HostnamesMode } from "./hostnames.js";
@@ -40,8 +41,11 @@ export const assertValidStage = (stage: string): void => {
   }
 };
 
+/** The staged stacks' roles. */
+export type StackRole = "data" | "api" | "studio" | "studio-cert";
+
 /** `nightshift-<stage>-<role>`. */
-export const stackNameFor = (stage: string, role: "data" | "api"): string =>
+export const stackNameFor = (stage: string, role: StackRole): string =>
   `nightshift-${stage}-${role}`;
 
 /**

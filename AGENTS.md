@@ -115,7 +115,7 @@ to that layering; if something does not fit, that is a decision to surface, not 
 directory to invent.
 
 ```text
-apps/        api, cli, mcp, studio (reserved — not built in v1)
+apps/        api, cli, mcp, studio (the browser client, P11)
 packages/    contracts, core, persistence, execution, routing,
              verification, harness, harness-claude, harness-codex,
              harness-agentcore
@@ -321,6 +321,47 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
 - The AgentCore harness worker, Bedrock, and anything that runs on a runtime
   instance belong to P10. Nightshift never runs a worker as a per-job hosted
   environment.
+
+**As built for P11 (Studio), 2026-09-28.** The details a later program needs and
+cannot derive; full account in `docs/programs/p11-studio.md` §13. The lasting
+decision is A-15a.
+
+- **The Studio is `apps/studio`**: Vite, React, TanStack Query, React Router,
+  Tailwind; tests in jsdom over `@nightshift/persistence/memory`. It typechecks
+  itself (`npm run typecheck --workspace @nightshift/studio`: it needs the DOM
+  lib and JSX, which the Node-wide typecheck program excludes) and the root
+  `build` runs `vite build` after `tsc -b`. Its layer-table row is `contracts`,
+  `core`, `persistence`; never `execution`, never a harness.
+- **`@nightshift/persistence/http/browser` is the entry a bundler sees**: the
+  transport, routes, errors, stores, the execution-token minter and the JWT
+  claim readers (`claims.ts`, shared with the Node session). No `node:` import
+  and no `Buffer`, held by `browser-entry.test.ts`. The session (`session/`),
+  the plan upload and the artifact body store stay on `./http`.
+- **The report and the decision graph live in `core`** (`packages/core/src/report/`):
+  `gatherReport`, `renderReport`, `gatherDecisionGraph`, `gatherCorrections`.
+  They read records through the store ports and nothing else, which is why they
+  may. `execution` no longer exports them; import from `core`.
+- **One reversal builder.** `buildReversal` and `whyNotReversible` in `core`'s
+  `decisions.ts`; `nightshift decision reverse` and the Studio's decision page
+  both call them. Do not build a reversal by hand anywhere else.
+- **Composition** is `apps/studio/src/main.tsx`: the browser session
+  (`auth/session.ts`: PKCE against the Studio client, the refresh token in
+  `localStorage` under one key and nowhere else, the ID token in memory) over
+  `createFetchTransport` and `createHttpStores`; the acting org is learned as
+  `whoami` learns it, from the projects the token can list. Pages take a
+  `Studio` from context (`studio.tsx`) and are mounted over memory stores by
+  `test-support.tsx`.
+- **Live runs are followed by polling** (`lib/live.ts`): events after the last
+  numbered sequence, a few seconds apart while `run.status` is `pending` or
+  `running`; each new event invalidates the queries `keysNamedBy` maps it to.
+  Unnumbered events never advance the cursor (A-22).
+- **Artifact bodies** open through `POST …/artifacts/{id}/download-url`
+  (`artifact.createDownloadUrl`; user principals only; the API role's second S3
+  read, `artifacts/*`).
+- **Hostnames**: `studio.<stage>.nightshift.wildorder.dev`; the Studio restates
+  the rule in `src/hostnames.ts` and pins the `dev` literals in a test, as the
+  CLI and the CDK do. The `dev` Studio client alone registers
+  `http://localhost:5173/callback` (D-P11-01).
 
 **As built for P9 (Decision Graph & Correction), 2026-09-27.** The details a
 later program needs and cannot derive; full account in

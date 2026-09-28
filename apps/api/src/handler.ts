@@ -21,6 +21,7 @@ import { createProjectOrgCache, enforce } from "./auth/enforce.js";
 import { toErrorResponse } from "./errors.js";
 import { type ApiDeps, type ApiRequest, type ApiResponse, errorBody } from "./http.js";
 import { getAgent, listAgentsByNode, mintAgentToken, putAgent } from "./operations/agents.js";
+import { createArtifactDownloadUrl } from "./operations/downloads.js";
 import { appendEvent, getRunState, listEvents } from "./operations/events.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
@@ -294,6 +295,14 @@ export const ROUTES: readonly Route[] = [
     path: `${RUN}/artifacts/{artifactId}/upload-url`,
     operation: "artifact.createUploadUrl",
     handler: createArtifactUploadUrl,
+  },
+  // The download route signs a read of a recorded artifact's bytes, for user
+  // principals only (P11, D-P11-06); the browser fetches.
+  {
+    method: "POST",
+    path: `${RUN}/artifacts/{artifactId}/download-url`,
+    operation: "artifact.createDownloadUrl",
+    handler: createArtifactDownloadUrl,
   },
 ];
 

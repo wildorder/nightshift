@@ -27,20 +27,18 @@ import type {
   RoutingDecision,
   Run,
 } from "@nightshift/contracts";
+import type { ProjectStores } from "../ports/stores.js";
+import { buildTree, descendantsOf, type ExecutionTree } from "../rules/execution-tree.js";
+import type { RunScope } from "../rules/ownership.js";
 import {
   blockedBy,
-  buildTree,
-  descendantsOf,
-  type ExecutionTree,
-  type ProjectStores,
   prerequisitesOf,
-  type RunScope,
   type StrandOutcome,
   type StrandOutcomes,
   strandAttempts,
   strandOutcomes,
   strandsOf,
-} from "@nightshift/core";
+} from "../rules/plan.js";
 import {
   type CorrectionReport,
   type DecisionReport,

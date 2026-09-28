@@ -7,6 +7,8 @@
     "exclude": ["**/*.d.ts", "**/*.map", "**/*.tsbuildinfo", "cdk.out/**", "node_modules/**"]
   },
   "context": {
+    "//hostedZoneId": "The nightshift-dns stack's HostedZoneId output, for the Studio's certificate in us-east-1, which cannot import a us-west-2 export (P11, studio-cert-stack.ts). Override with -c hostedZoneId=... for another account.",
+    "hostedZoneId": "Z02263141ZW4XX8TRHGR1",
     "@aws-cdk/aws-signer:signingProfileNamePassedToCfn": true,
     "@aws-cdk/aws-ecs-patterns:secGroupsDisablesImplicitOpenListener": true,
     "@aws-cdk/aws-lambda:recognizeLayerVersion": true,

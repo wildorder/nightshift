@@ -30,7 +30,14 @@
  */
 import { fileURLToPath } from "node:url";
 import { CfnOutput, Duration, Fn, RemovalPolicy, Stack } from "aws-cdk-lib";
-import { ApiMapping, DomainName, HttpApi } from "aws-cdk-lib/aws-apigatewayv2";
+import {
+  ApiMapping,
+  CorsHttpMethod,
+  DomainName,
+  HttpApi,
+  HttpMethod,
+  HttpNoneAuthorizer,
+} from "aws-cdk-lib/aws-apigatewayv2";
 import {
   HttpLambdaAuthorizer,
   HttpLambdaResponseType,
@@ -48,7 +55,7 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import type { Construct } from "constructs";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
 import { NODE_INDEX_NAME } from "./data-stack.js";
-import { apiHostnameFor, type HostnamesMode, ZONE_NAME } from "./hostnames.js";
+import { apiHostnameFor, type HostnamesMode, studioOriginsFor, ZONE_NAME } from "./hostnames.js";
 import {
   assertValidStage,
   dnsExportName,
@@ -64,6 +71,48 @@ import {
  * between the two is a failed read there rather than a silent one.
  */
 export const PLAN_DOCUMENT_PREFIX = "plans/";
+
+/**
+ * Where artifact bodies live in the artifact bucket (D-P2-08):
+ * `<projectId>/<programId>/<runId>/<artifactId>`, and a project id is `proj_` +
+ * a ULID. Restates `artifactObjectKey` in `@nightshift/core` the way
+ * `PLAN_DOCUMENT_PREFIX` restates `planDocumentObjectKey`.
+ *
+ * D-P11-06 names the second S3 read "`GetObject` on `artifacts/*`", but no
+ * object has ever been written under `artifacts/`: the layout P2 ratified puts
+ * the project id first, and every `Artifact.uri` in the table says so. A grant
+ * on the literal prefix would sign URLs S3 refuses. So the grant is on the
+ * prefix the bodies actually have, which is the decision's intent — the
+ * artifact bodies and nothing else, `plans/*` in particular excluded, since no
+ * `proj_` id can spell `plans`. Recorded as a departure for the owner (T2
+ * report, contract §12).
+ */
+export const ARTIFACT_BODY_PREFIX = "proj_";
+
+/**
+ * CORS for the Studio (P11, D-P11-03), on the HTTP API itself so a preflight is
+ * answered by the gateway before the authorizer sees it — an `OPTIONS` carries
+ * no `Authorization` header and would otherwise be a 401.
+ *
+ * Bearer tokens, not cookies, so no credentials flag: the browser sends the
+ * token in a header it asked to be allowed. The origins are `studioOriginsFor`,
+ * the same list the Studio's app client trusts, so a browser Cognito will send
+ * a code to is a browser the API will answer, and no other.
+ */
+export const CORS_ALLOW_METHODS = [
+  CorsHttpMethod.GET,
+  CorsHttpMethod.PUT,
+  CorsHttpMethod.POST,
+  CorsHttpMethod.OPTIONS,
+] as const;
+export const CORS_ALLOW_HEADERS = ["authorization", "content-type"] as const;
+
+/**
+ * The one route not behind the authorizer: `OPTIONS` on every path, so the
+ * gateway answers a preflight rather than refusing it for the token a preflight
+ * never carries. See the note where it is added.
+ */
+export const PREFLIGHT_ROUTE_PATH = "/{proxy+}";
 
 /**
  * The repository root, resolved from this module. `src/lib` and `dist/lib` sit at
@@ -190,6 +239,18 @@ export class NightshiftApiStack extends Stack {
         actions: ["s3:GetObject"],
         resources: [`${imported("BucketArn")}/${PLAN_DOCUMENT_PREFIX}*`],
       }),
+      // `s3:GetObject` on artifact bodies, the second read (P11, D-P11-06), for
+      // **signing only**: the download route computes a presigned `GET` from the
+      // credentials the role holds and the function never fetches a body. A
+      // signature conveys only what the signer may do, which is exactly why
+      // this statement had to exist before a download URL could work, and why
+      // it is its own statement on its own prefix rather than a widening of the
+      // upload's: the two prefixes together are the whole of what this role may
+      // read, and the stack test pins both.
+      new iam.PolicyStatement({
+        actions: ["s3:GetObject"],
+        resources: [`${imported("BucketArn")}/${ARTIFACT_BODY_PREFIX}*`],
+      }),
       // `kms:Sign` on exactly one key, and no other KMS action on any key
       // (T2 deliverable 2). The function mints execution tokens; it never
       // decrypts anything, never reads key material, and cannot verify — the
@@ -244,6 +305,9 @@ export class NightshiftApiStack extends Stack {
           imported("InteractiveClientId"),
           imported("MachineClientId"),
           imported("TestPrincipalClientId"),
+          // P11 (D-P11-04): the Studio's client, or every browser call is that
+          // same bare 403.
+          imported("StudioClientId"),
         ]),
       },
       // One JWKS fetch on a cold instance, then signature checks. Short, because
@@ -262,13 +326,38 @@ export class NightshiftApiStack extends Stack {
       resultsCacheTtl: AUTHORIZER_CACHE_TTL,
     });
     // One `$default` route carrying the authorizer: the handler owns routing, and
-    // there is no second route that could be authored without authorization. The
-    // `$default` stage keeps `rawPath` unprefixed, which the handler relies on.
+    // there is no second route that could be authored without authorization, but
+    // for the preflight route below. The `$default` stage keeps `rawPath`
+    // unprefixed, which the handler relies on.
+    const integration = new HttpLambdaIntegration("ApiIntegration", apiFunction);
     const httpApi = new HttpApi(this, "HttpApi", {
       description: `Nightshift control plane (${stage})`,
       defaultAuthorizer: authorizer,
-      defaultIntegration: new HttpLambdaIntegration("ApiIntegration", apiFunction),
+      defaultIntegration: integration,
       createDefaultStage: true,
+      // The Studio's origins and nothing else (D-P11-03). A preflight from any
+      // other origin gets no `Access-Control-Allow-Origin`, and the browser
+      // refuses the request itself. `allowCredentials` is deliberately unset.
+      corsPreflight: {
+        allowOrigins: [...studioOriginsFor(stage)],
+        allowMethods: [...CORS_ALLOW_METHODS],
+        allowHeaders: [...CORS_ALLOW_HEADERS],
+      },
+    });
+    // The preflight route (D-P11-03). A browser's preflight carries no
+    // `Authorization` header, and `$default` matches every method: routed there,
+    // the gateway answered `OPTIONS` with a 401 *with* the CORS headers attached
+    // — a preflight a browser refuses. Found on the first deploy, 2026-09-28.
+    // An `OPTIONS` route more specific than `$default` and bound to no
+    // authorizer is what lets the gateway answer the preflight itself from the
+    // configuration above. It is the one route not behind the authorizer; it
+    // matches `OPTIONS` and nothing else, and an `OPTIONS` that does reach the
+    // handler is answered 204 with no body before a principal is looked for.
+    httpApi.addRoutes({
+      path: PREFLIGHT_ROUTE_PATH,
+      methods: [HttpMethod.OPTIONS],
+      integration,
+      authorizer: new HttpNoneAuthorizer(),
     });
 
     // --- The sequence materializer (T6) ---------------------------------------------

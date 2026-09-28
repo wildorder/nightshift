@@ -11,6 +11,8 @@ import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/clie
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import {
   type ArtifactBodyStore,
+  type ArtifactDownloadSigner,
+  type ArtifactDownloadTarget,
   type ArtifactUploadSigner,
   type ArtifactUploadTarget,
   artifactObjectKey,
@@ -165,6 +167,62 @@ export const createArtifactUploadSigner = (
         key,
         contentType: request.contentType,
         expiresAt: new Date(now() + UPLOAD_URL_TTL_SECONDS * 1000).toISOString(),
+      };
+    },
+  };
+};
+
+/**
+ * How long a signed download URL stays valid (P11, D-P11-06): the upload's TTL,
+ * for the upload's reasons. A browser fetches the URL the moment it is issued,
+ * so the window is for a slow connection, not for keeping.
+ */
+export const DOWNLOAD_URL_TTL_SECONDS = UPLOAD_URL_TTL_SECONDS;
+
+export interface ArtifactDownloadSignerConfig {
+  readonly bucketName: string;
+  readonly s3: S3Client;
+  /** Injected so a test can assert the URL without reaching AWS. */
+  readonly sign?: (input: {
+    readonly bucket: string;
+    readonly key: string;
+    readonly expiresIn: number;
+  }) => Promise<string>;
+  readonly now?: () => number;
+}
+
+/**
+ * Signs a `GET` for one artifact body (P11, D-P11-06).
+ *
+ * The mirror of {@link createArtifactUploadSigner}: a local computation over the
+ * credentials the role holds, no S3 call, and the permission the signature
+ * conveys is exactly what the signer holds. That is why this is only useful once
+ * the API role holds `s3:GetObject` on the artifact bodies' prefix, and why that
+ * grant is the one the stack test pins beside `plans/*`: a signature can convey
+ * a read of a plan document only if the signer may read one, and the signer's
+ * key is built from the run scope, never from a caller's string.
+ */
+export const createArtifactDownloadSigner = (
+  config: ArtifactDownloadSignerConfig,
+): ArtifactDownloadSigner => {
+  const now = config.now ?? Date.now;
+  const sign =
+    config.sign ??
+    (({ bucket, key, expiresIn }) =>
+      getSignedUrl(config.s3, new GetObjectCommand({ Bucket: bucket, Key: key }), {
+        expiresIn,
+      }));
+
+  return {
+    sign: async (request): Promise<ArtifactDownloadTarget> => {
+      const url = await sign({
+        bucket: config.bucketName,
+        key: artifactObjectKey(request.scope, request.artifactId),
+        expiresIn: DOWNLOAD_URL_TTL_SECONDS,
+      });
+      return {
+        url,
+        expiresAt: new Date(now() + DOWNLOAD_URL_TTL_SECONDS * 1000).toISOString(),
       };
     },
   };

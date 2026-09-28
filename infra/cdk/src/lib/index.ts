@@ -6,11 +6,19 @@ export { NightshiftDataStack, NODE_INDEX_NAME } from "./data-stack.js";
 export { NightshiftDnsStack } from "./dns-stack.js";
 export {
   apiHostnameFor,
+  CERTIFICATE_REGION,
   DEFAULT_HOSTNAMES_MODE,
+  DEV_STAGE,
   HOSTNAMES_MODES,
   type HostnamesMode,
+  NIGHTSHIFT_ACCOUNT,
   PARENT_ZONE_NAME,
+  PRIMARY_REGION,
   parseHostnamesMode,
+  STUDIO_DEV_ORIGIN,
+  STUDIO_DEV_PORT,
+  studioHostnameFor,
+  studioOriginsFor,
   ZONE_NAME,
 } from "./hostnames.js";
 export {
@@ -21,5 +29,20 @@ export {
   dnsExportName,
   hostnamesModeOf,
   type NightshiftStackProps,
+  type StackRole,
   stackNameFor,
 } from "./stack-props.js";
+export { composeNightshiftStacks, DEFAULT_STAGE, type NightshiftStacks } from "./stacks.js";
+export {
+  NightshiftStudioCertificateStack,
+  type NightshiftStudioCertificateStackProps,
+} from "./studio-cert-stack.js";
+export {
+  NightshiftStudioStack,
+  type NightshiftStudioStackProps,
+  resolveStudioAssets,
+  STUDIO_CONFIG_KEY,
+  STUDIO_DIST,
+  STUDIO_PLACEHOLDER,
+  type StudioConfig,
+} from "./studio-stack.js";

@@ -586,6 +586,54 @@ describe("artifacts and their bodies", () => {
     );
   });
 
+  it("reads a body back through a download URL the control plane signs (P11, D-P11-06)", async () => {
+    const { root } = await seed();
+    const artifactId = world.f.ids.next("art");
+    const stored = await world.bodies.put(world.f.scope, artifactId, "signed read", "text/plain");
+    const artifact: Artifact = {
+      schemaVersion: 1,
+      ...world.f.scope,
+      artifactId,
+      executionNodeId: root.executionNodeId,
+      kind: "transcript",
+      uri: stored.uri,
+      sizeBytes: stored.sizeBytes,
+      contentType: "text/plain",
+      sha256: stored.sha256,
+      createdAt: NOW,
+    };
+    await world.http.artifacts.put(artifact);
+
+    // The client's copy of the route, driven against the real handler.
+    const target = (await send(
+      world.transport,
+      { method: "POST", path: routes.artifactDownloadUrl(world.f.scope, artifactId) },
+      [200],
+    )) as { url: string; expiresAt: string };
+    expect(target.url).toContain(world.plane.url);
+    expect(Date.parse(target.expiresAt)).toBeGreaterThan(Date.parse(NOW));
+
+    // The bytes come from the signed URL, with the type the upload pinned, and
+    // never through a Nightshift route.
+    const response = await fetch(target.url);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/plain");
+    expect(await response.text()).toBe("signed read");
+
+    // A signature is for one artifact whose record exists: an unrecorded one is
+    // refused before anything is signed.
+    await expect(
+      send(
+        world.transport,
+        {
+          method: "POST",
+          path: routes.artifactDownloadUrl(world.f.scope, world.f.ids.next("art")),
+        },
+        [200],
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
   it("reads a body back through the reader it was given", async () => {
     await seed();
     const artifactId = world.f.ids.next("art");

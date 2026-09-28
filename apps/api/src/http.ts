@@ -4,6 +4,7 @@
  */
 import type { ErrorResponse } from "@nightshift/contracts";
 import type {
+  ArtifactDownloadSigner,
   ArtifactUploadSigner,
   Clock,
   NightshiftStores,
@@ -47,6 +48,12 @@ export interface ApiDeps {
    * misconfiguration names itself instead of looking like a crash.
    */
   readonly uploads?: ArtifactUploadSigner;
+  /**
+   * Signs presigned artifact downloads (P11, D-P11-06). Optional like
+   * `uploads`, and for the same reason: the one route that needs it answers 501
+   * when it is absent.
+   */
+  readonly downloads?: ArtifactDownloadSigner;
   /**
    * Ratified plan documents (P7, D-P7-02). Optional like `uploads`, and for the
    * same reason: the routes that need it answer 501 when it is absent.

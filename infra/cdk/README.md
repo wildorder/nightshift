@@ -20,12 +20,15 @@ npm run build
 npm --workspace @nightshift/cdk run synth -- -c stage=staging
 ```
 
-## Two stacks (D-P2-07, A-24)
+## The stacks (D-P2-07, A-24, D-P3-18, D-P11-02)
 
 | Stack | Holds | Termination protection |
 |-------|-------|------------------------|
+| `nightshift-dns` | The hosted zone `nightshift.wildorder.dev` (unstaged, retained) | **on** |
 | `nightshift-<stage>-data` | DynamoDB table, artifact bucket, Cognito user pool and app clients, account budget | **on** |
-| `nightshift-<stage>-api` | Handler function, HTTP API and JWT authorizer, stream consumer and its dead-letter queue, log groups, IAM | off |
+| `nightshift-<stage>-api` | Handler function, HTTP API (with CORS for the Studio) and the Nightshift authorizer, stream consumer and its dead-letter queue, log groups, IAM | off |
+| `nightshift-<stage>-studio-cert` | The Studio's certificate, in **us-east-1** because CloudFront accepts no other region | off |
+| `nightshift-<stage>-studio` | A private bucket, the CloudFront distribution with an origin access control, the `studio.<stage>` alias record, and a deployment of the app plus `config.json` | off |
 
 `stage` defaults to `dev` and is overridden with `-c stage=...`. It must be 1-20
 lowercase letters, digits or hyphens, because it appears in the Cognito domain
@@ -93,6 +96,34 @@ reason the data stack changes rarely.
 - **Logs.** Explicit log groups with 30-day retention (D-P2-10).
 - **Outputs.** `ApiEndpoint`, both function names, the dead-letter queue URL.
 
+### Studio stacks (P11, T2)
+
+- **Hostname.** `studio.<stage>.nightshift.wildorder.dev` (`studioHostnameFor`),
+  an alias to the distribution in the zone imported by export name. The API
+  grants CORS to the Studio's origins (`studioOriginsFor`): the hosted origin on
+  every stage, plus `http://localhost:5173` on `dev` alone (D-P11-01); the
+  Studio's app client (`StudioClient`, exported as `StudioClientId`) uses the
+  same list for its callback (`/callback`) and logout (`/`) URLs.
+- **Regions.** Both stacks carry an explicit `env` (account `755348349819`;
+  `us-east-1` for the certificate, `us-west-2` for the site) with
+  `crossRegionReferences: true`, so CDK carries the certificate ARN across. An
+  explicit environment is a constant, so synth still needs no credentials.
+- **The zone id.** A CloudFormation export is regional, so the certificate stack
+  cannot `Fn::ImportValue` the DNS stack's `HostedZoneId` from `us-east-1`. It
+  takes the id from the `hostedZoneId` context value, defaulted in `cdk.json` to
+  the v1 account's zone; pass `-c hostedZoneId=…` for another account after its
+  zone-only deploy. `studio-cert-stack.ts` records the alternatives.
+- **What is served.** `apps/studio/dist` when it exists, else the placeholder
+  page in `studio-placeholder/`; `-c studioAssets=<dir>` names any other
+  directory. Every deploy prunes the bucket, writes `config.json`
+  (`apiEndpoint`, `authDomain`, `clientId`, `stage`) from the hostname rule and
+  the data stack's exports, and invalidates the distribution.
+- **Bootstrap.** The CDK toolkit must be bootstrapped in `us-east-1` once
+  (`npx cdk bootstrap aws://755348349819/us-east-1` from this directory); the
+  deploy profile can do it. Done for the v1 account on 2026-09-28.
+- **`zone-only` mode omits both**, as it omits the API's domain: the certificate
+  waits on a zone that is not yet delegated.
+
 ## Bundling
 
 Both functions are `NodejsFunction`s bundled by esbuild, pinned as a
@@ -118,11 +149,15 @@ AWS_PROFILE=nightshift npm run deploy
 `scripts/deploy.mjs` refuses to start unless the profile resolves to account
 `755348349819` in `us-west-2` (A-17), builds the workspace, then runs
 `cdk deploy --all` with `stage=dev` unless another stage is passed after `--`.
-The data stack deploys first because the API stack imports its exports.
+The data stack deploys first because the API stack imports its exports; the
+Studio stacks deploy after the data, DNS and certificate stacks for the same
+reason. `npm run smoke` proves the API afterwards and `npm run studio:smoke`
+the hosted Studio.
 
 ## No credentials required
 
-Both stacks are environment-agnostic: no `env`, no account, no region. Synth
-needs no AWS credentials, no `AWS_PROFILE`, no `~/.aws`, and no network — it runs
-with `--no-lookups`. If synth ever asks for an account or region, a stack has lost
-its environment-agnostic property and that is the bug.
+The DNS, data and API stacks are environment-agnostic: no `env`, no account, no
+region. The two Studio stacks carry an explicit environment, which is a constant
+and not a lookup. Synth needs no AWS credentials, no `AWS_PROFILE`, no `~/.aws`,
+and no network — it runs with `--no-lookups`. If synth ever asks for an account
+or region, a stack has lost that property and that is the bug.

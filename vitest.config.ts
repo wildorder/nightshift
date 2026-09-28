@@ -3,7 +3,15 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     // One root project list so `npm test` at the root runs every suite.
-    projects: ["packages/*", "apps/api", "apps/cli", "apps/mcp", "infra/cdk", "test"],
+    projects: [
+      "packages/*",
+      "apps/api",
+      "apps/cli",
+      "apps/mcp",
+      "apps/studio",
+      "infra/cdk",
+      "test",
+    ],
     // Skeleton packages legitimately hold no tests during P1 (SC-P1-08 requires
     // the empty suite to exit 0). Coverage of the invariants is enforced by the
     // named property tests in T7, not by requiring every package to have a file.

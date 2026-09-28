@@ -118,3 +118,60 @@ export const effectiveDecision = (decision: Decision, all: readonly Decision[]):
     current = next;
   }
 };
+
+/**
+ * Why `decision` cannot be reversed, or `undefined` when it can (P9, D-P9-02;
+ * shared by the CLI and the Studio since P11, D-P11-08).
+ *
+ * One refusal: a decision that is itself a reversal. Reverse the decision it
+ * superseded instead, so the chain stays one deep and the record reads as
+ * "A, then the owner's word on A". Whether the decision has *already* been
+ * reversed is a question over the run's other decisions (`isSuperseded`), and
+ * the caller asks it with those in hand.
+ */
+export const whyNotReversible = (decision: Decision): string | undefined =>
+  decision.supersedesDecisionId === null
+    ? undefined
+    : `${decision.decisionId} is itself a reversal; reverse the decision it superseded, ${decision.supersedesDecisionId}`;
+
+export interface ReversalInput {
+  /** The id the reversal is recorded under. */
+  readonly decisionId: Decision["decisionId"];
+  /** The owner's new choice. */
+  readonly choice: string;
+  /** Why: recorded as the reversal's rationale and as why the old choice lost. */
+  readonly reason: string;
+  readonly at: IsoTimestamp;
+}
+
+/**
+ * The record that reverses `decision` on a human's authority.
+ *
+ * Exactly what `nightshift decision reverse` writes, built in one place so the
+ * CLI and the Studio cannot drift (D-P11-08): the same node, the same class and
+ * `checkpointBefore` (a reversal sits beside what it reverses), the old choice
+ * as the one alternative with the owner's reason against it, no
+ * `checkpointAfter` and no `produced` (those are stamped when work lands, and a
+ * reversal lands nothing). Throws `DecisionAuthorityError` through
+ * `overrideDecision` for anything the authority rules refuse.
+ */
+export const buildReversal = (decision: Decision, input: ReversalInput): Decision => {
+  const refusal = whyNotReversible(decision);
+  if (refusal !== undefined) throw new DecisionAuthorityError(refusal);
+  const { checkpointAfter: _after, produced: _produced, ...rest } = decision;
+  return overrideDecision(
+    decision,
+    {
+      ...rest,
+      decisionId: input.decisionId,
+      agentId: null,
+      context: `The owner reversed ${decision.decisionId} (${decision.context.trim()})`,
+      alternatives: [{ summary: decision.choice, rejectedBecause: input.reason }],
+      choice: input.choice,
+      rationale: input.reason,
+      authority: "human",
+      createdAt: input.at,
+    },
+    input.at,
+  );
+};

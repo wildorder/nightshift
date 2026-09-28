@@ -20,16 +20,16 @@
  * process, and refuses examined work rather than land it unexamined. The exit
  * code is 0 when everything deferred has landed.
  */
+
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Prerequisite, ProgramContract, Run } from "@nightshift/contracts";
+import { gatherReport, renderReport } from "@nightshift/core";
 import {
   createEventOutbox,
   deferredLine,
-  gatherReport,
   type LandingEnvironment,
   type ResumeResult,
-  renderReport,
   resumeDeferred,
   runPreflight,
 } from "@nightshift/execution";

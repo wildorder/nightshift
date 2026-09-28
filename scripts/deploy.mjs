@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Deploys both stacks from a developer machine (D-P2-09). Never run in CI.
+ * Deploys every stack from a developer machine (D-P2-09). Never run in CI.
  *
  *   AWS_PROFILE=nightshift npm run deploy
  *   AWS_PROFILE=nightshift npm run deploy -- -c stage=dev --require-approval never
@@ -10,7 +10,10 @@
  * Refuses to start unless the profile resolves to the v1 account. Builds the
  * workspace first, because synth bundles the functions from compiled output.
  * Arguments after `--` go to `cdk deploy`; the stage defaults to `dev`. Naming a
- * stack deploys that stack alone; otherwise every stack is deployed.
+ * stack deploys that stack alone; otherwise every stack is deployed — the
+ * Studio's certificate stack in `us-east-1` among them (P11, D-P11-02), which
+ * needs that region bootstrapped once: `npx cdk bootstrap aws://755348349819/us-east-1`
+ * from `infra/cdk`.
  */
 import { execFileSync } from "node:child_process";
 import { assertNightshiftAccount, SHELL } from "./aws-account.mjs";

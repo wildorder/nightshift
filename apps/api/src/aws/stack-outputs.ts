@@ -37,6 +37,8 @@ export interface StackEnvironment {
    * membership between runs.
    */
   readonly testPrincipalClientId: string;
+  /** The Studio's app client (P11, D-P11-04), which `config.json` names. */
+  readonly studioClientId: string;
   readonly tokenEndpoint: string;
   readonly machineScope: string;
   /** The Cognito hosted domain, without a scheme: `<prefix>.auth.<region>.amazoncognito.com`. */
@@ -112,10 +114,36 @@ export const loadStackEnvironment = async (
     interactiveClientId: data("InteractiveClientId"),
     machineClientId: data("MachineClientId"),
     testPrincipalClientId: data("TestPrincipalClientId"),
+    studioClientId: data("StudioClientId"),
     tokenEndpoint: data("TokenEndpoint"),
     machineScope: data("MachineScope"),
     authDomain: data("AuthDomain"),
     hostedSignInUrl: data("HostedSignInUrl"),
     executionTokenKeyId: data("ExecutionTokenKeyId"),
+  };
+};
+
+/** Where the hosted Studio is (P11, D-P11-02), from `nightshift-<stage>-studio`'s outputs. */
+export interface StudioEnvironment {
+  readonly stage: string;
+  /** `https://studio.<stage>.nightshift.wildorder.dev`. */
+  readonly studioUrl: string;
+  readonly studioHostname: string;
+  readonly distributionId: string;
+  readonly siteBucketName: string;
+}
+
+export const loadStudioEnvironment = async (
+  stage = process.env.NIGHTSHIFT_STAGE ?? "dev",
+): Promise<StudioEnvironment> => {
+  await assertExpectedAccount();
+  const cfn = new CloudFormationClient({ region: REGION });
+  const studio = await stackOutputs(cfn, `nightshift-${stage}-studio`);
+  return {
+    stage,
+    studioUrl: studio("StudioUrl"),
+    studioHostname: studio("StudioHostname"),
+    distributionId: studio("DistributionId"),
+    siteBucketName: studio("SiteBucketName"),
   };
 };
