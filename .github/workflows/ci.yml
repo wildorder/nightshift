@@ -1,15 +1,15 @@
 name: CI
 
-# A program branch is verified by its pull request, and `v1` by the push that
+# A program branch is verified by its pull request, and `main` by the push that
 # merges it. Listing `program/**` under `push` as well ran every commit twice
 # per OS once its PR was open.
 on:
   push:
     branches:
-      - v1
+      - main
   pull_request:
     branches:
-      - v1
+      - main
 
 # One run per ref. A new push supersedes an in-flight run rather than queueing.
 concurrency:
@@ -25,7 +25,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       # Both legs must pass, and a failure on one must not hide the result on the
-      # other. The Windows leg runs the whole suite unchanged, but only on `v1`:
+      # other. The Windows leg runs the whole suite unchanged, but only on `main`:
       # it takes three times as long (process creation and NTFS), and its job is
       # to prove the scripts and paths hold on Git Bash, which a merge does as
       # well as every push to a PR. A pull request is verified on Linux.

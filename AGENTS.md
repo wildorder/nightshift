@@ -69,11 +69,12 @@ See `tasks/{program-id}/` for task specs.
 **This is a greenfield implementation. Do not inspect legacy branches, tags,
 commits, or prior Nightshift source unless explicitly instructed by a human.**
 
-Nightshift v1 begins from an orphan `v1` branch with a new root commit. It
-deliberately inherits nothing from v0. Concretely, you must not:
+Nightshift v1 began from an orphan `v1` branch with a new root commit, which
+became `main` on 2026-09-28; the legacy tree is the `v0` branch. v1 deliberately
+inherits nothing from v0. Concretely, you must not:
 
 - check out, diff, `git show`, `git log`, or otherwise read any branch other than
-  the current program branch and its base — this includes `main`, `origin/*`,
+  the current program branch and its base — this includes `v0`, `origin/*`,
   `program/*`, `nightshift/*`, and every `v0.*` tag;
 - restore, copy, or "port over" any v0 file, module, schema, config, manifest,
   task spec, skill, or directive;

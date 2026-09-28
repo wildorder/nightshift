@@ -1,7 +1,8 @@
 # Nightshift — Vision Document
 
 > **v1.** This document supersedes all prior Nightshift architecture. Nightshift
-> v1 is a greenfield rebuild on the `v1` branch; nothing in this vision is
+> v1 is a greenfield rebuild, begun on an orphan `v1` branch that became `main` on
+> 2026-09-28 (the legacy tree is the `v0` branch); nothing in this vision is
 > constrained by, or compatible with, the v0 design.
 
 ## What Is Nightshift?
