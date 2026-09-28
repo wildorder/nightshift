@@ -19,10 +19,18 @@ export interface Mounted {
   readonly client: QueryClient;
 }
 
+export interface MountOptions {
+  /** Where to start; a function is evaluated after the seed, with its fixtures. */
+  readonly at?: string | ((f: Fixtures) => string);
+  readonly pollMs?: number;
+  readonly artifacts?: Studio["artifacts"];
+}
+
 export const mountStudio = async (
   seed: (stores: InMemoryStores, f: Fixtures, orgId: OrgId) => Promise<void>,
-  at = "/",
+  options: string | MountOptions = "/",
 ): Promise<Mounted> => {
+  const opts: MountOptions = typeof options === "string" ? { at: options } : options;
   const stores = createInMemoryStores();
   const f = createFixtures();
   const orgId = f.ids.next("org");
@@ -34,7 +42,10 @@ export const mountStudio = async (
     identity: { subject: "u1", email: "tim@example.test", activeOrgClaim: undefined },
     orgId,
     signOut: async () => void signedOut.push(true),
+    ...(opts.artifacts === undefined ? {} : { artifacts: opts.artifacts }),
+    ...(opts.pollMs === undefined ? {} : { pollMs: opts.pollMs }),
   };
+  const at = typeof opts.at === "function" ? opts.at(f) : (opts.at ?? "/");
   render(
     <MemoryRouter initialEntries={[at]}>
       <App studio={studio} client={client} />
@@ -42,3 +53,7 @@ export const mountStudio = async (
   );
   return { stores, f, orgId, signedOut, client };
 };
+
+/** The run page's path for a fixture world's own run. */
+export const runPathOf = (f: Fixtures): string =>
+  `/projects/${f.scope.projectId}/programs/${f.scope.programId}/runs/${f.scope.runId}`;

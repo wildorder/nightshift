@@ -13,6 +13,7 @@ import {
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
+import { z } from "zod";
 import { App } from "./app.js";
 import {
   beginSignIn,
@@ -45,6 +46,21 @@ const resolveOrg = async (transport: Transport): Promise<Studio["orgId"]> => {
   );
   return items[0]?.orgId;
 };
+
+/** The download URL the control plane signs (D-P11-06; T2's route). */
+const DownloadUrlResponseSchema = z.object({ url: z.string().url(), expiresAt: z.string() });
+const artifactsOver = (transport: Transport): NonNullable<Studio["artifacts"]> => ({
+  downloadUrl: async (scope, artifactId) => {
+    const response = await transport({
+      method: "POST",
+      path: `${routes.artifact(scope, artifactId)}/download-url`,
+    });
+    if (response.status !== 200) {
+      throw new Error(`the control plane would not sign a download (${response.status})`);
+    }
+    return DownloadUrlResponseSchema.parse(response.body).url;
+  },
+});
 
 const start = async (): Promise<void> => {
   const config = await loadConfig(async (url) => fetch(url));
@@ -92,6 +108,7 @@ const start = async (): Promise<void> => {
     stores: createHttpStores({ transport, ...(orgId === undefined ? {} : { actingOrg: orgId }) }),
     identity,
     orgId,
+    artifacts: artifactsOver(transport),
     signOut: async () => {
       await signOut(env);
       window.location.assign("/");

@@ -10,6 +10,7 @@ import { Placeholder } from "./pages/placeholder.js";
 import { ProjectPage } from "./pages/project.js";
 import { ProjectSettingsPage } from "./pages/project-settings.js";
 import { ProjectsPage } from "./pages/projects.js";
+import { RunPage } from "./pages/run.js";
 import { OrgSettingsPage } from "./pages/settings.js";
 import { Shell } from "./shell.js";
 import { type Studio, StudioProvider } from "./studio.js";
@@ -28,9 +29,10 @@ export const App = ({
           <Route index element={<ProjectsPage />} />
           <Route path="projects/:projectId" element={<ProjectPage />} />
           <Route path="projects/:projectId/settings" element={<ProjectSettingsPage />} />
+          <Route path="projects/:projectId/programs/:programId/runs/:runId" element={<RunPage />} />
           <Route
-            path="projects/:projectId/programs/:programId/runs/:runId"
-            element={<Placeholder title="Run" />}
+            path="projects/:projectId/programs/:programId/runs/:runId/decisions/:decisionId"
+            element={<Placeholder title="Decision" />}
           />
           <Route path="settings" element={<OrgSettingsPage />} />
         </Route>

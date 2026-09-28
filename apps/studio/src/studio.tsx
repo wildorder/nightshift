@@ -5,8 +5,8 @@
  * lets a test mount them over `@nightshift/persistence/memory` with no browser
  * session and no network: the same pages, the same records.
  */
-import type { OrgId } from "@nightshift/contracts";
-import type { ProjectStores } from "@nightshift/core";
+import type { ArtifactId, OrgId } from "@nightshift/contracts";
+import type { ProjectStores, RunScope } from "@nightshift/core";
 import { createContext, useContext } from "react";
 import type { Identity } from "./auth/session.js";
 
@@ -21,7 +21,16 @@ export interface Studio {
    */
   readonly orgId: OrgId | undefined;
   readonly signOut: () => Promise<void>;
+  /**
+   * How an artifact's bytes are reached (D-P11-06): a short-lived URL the
+   * control plane signs. `undefined` when this composition cannot sign one.
+   */
+  readonly artifacts?: { downloadUrl(scope: RunScope, artifactId: ArtifactId): Promise<string> };
+  /** How often a live run's page asks for new events (D-P11-05). */
+  readonly pollMs?: number;
 }
+
+export const DEFAULT_POLL_MS = 3_000;
 
 const StudioContext = createContext<Studio | undefined>(undefined);
 
