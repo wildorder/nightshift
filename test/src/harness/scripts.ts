@@ -334,16 +334,19 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
     );
     const delay = Number(option(args, "delay") ?? "0");
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    // `value=` (P9): what the module returns, so a correction can rewrite a
+    // module an earlier run added, rather than add the same one again.
+    const value = option(args, "value") ?? name;
     await writeFile(
       join(worktree, "src", `${name}.js`),
-      `export const ${name} = () => "${name}";\n`,
+      `export const ${name} = () => "${value}";\n`,
       "utf8",
     );
     await writeFile(
       join(worktree, "test", `${name}.test.js`),
       `import assert from "node:assert/strict";\nimport { test } from "node:test";\n` +
         `import { ${name} } from "../src/${name}.js";\n\n` +
-        `test("${name}", () => {\n  assert.equal(${name}(), "${name}");\n});\n`,
+        `test("${name}", () => {\n  assert.equal(${name}(), "${value}");\n});\n`,
       "utf8",
     );
     return (await surface.complete(`Added the ${name} module and its test.`)) === "implemented"
@@ -424,14 +427,18 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
         ],
         choice: "Two modules",
         rationale: "They are independent and verify separately.",
-        reversibility: "reversible",
+        // `class=` (P9): how reversible the departure says it is.
+        reversibility: (option(args, "class") ?? "reversible") as
+          | "reversible"
+          | "compensatable"
+          | "irreversible",
       });
     }
     if (option(args, "fail") === "1") {
       await orchestrator.fail("this strand's objective cannot be met as planned");
       return 0;
     }
-    const passed = (args ?? []).filter((arg) => !/^(prefix|fail|depart)=/.test(arg));
+    const passed = (args ?? []).filter((arg) => !/^(prefix|fail|depart|class)=/.test(arg));
     const how =
       prefix === undefined
         ? passed.length

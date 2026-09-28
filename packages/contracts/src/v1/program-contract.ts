@@ -6,6 +6,7 @@
  * why nothing here is writable by a worker.
  */
 import { z } from "zod";
+import { DecisionIdSchema, ProgramIdSchema, RunIdSchema } from "../ids.js";
 import { IsoTimestampSchema, programScoped, RiskLevelSchema, ScopeSchema } from "./common.js";
 import {
   MAX_RATIFICATION_HISTORY,
@@ -131,6 +132,18 @@ export type Repository = z.infer<typeof RepositorySchema>;
 const uniqueIds = (items: readonly { readonly id: string }[]): boolean =>
   new Set(items.map((item) => item.id)).size === items.length;
 
+/**
+ * What a correction corrects (P9, D-P9-04): a decision in a run of a program of
+ * the same project, and the human decision that reversed it.
+ */
+export const CorrectionTargetSchema = z.strictObject({
+  programId: ProgramIdSchema,
+  runId: RunIdSchema,
+  decisionId: DecisionIdSchema,
+  reversedBy: DecisionIdSchema,
+});
+export type CorrectionTarget = z.infer<typeof CorrectionTargetSchema>;
+
 export const ProgramContractSchema = z
   .strictObject({
     ...programScoped,
@@ -163,6 +176,11 @@ export const ProgramContractSchema = z
     strands: z.array(StrandSchema).optional(),
     prerequisites: z.array(PrerequisiteSchema).optional(),
     decisions: z.array(PlannedDecisionSchema).optional(),
+    /**
+     * P9 (D-P9-04): a correction names the decisions it corrects, each with the
+     * human decision that reversed it. Absent for every other program.
+     */
+    corrects: z.array(CorrectionTargetSchema).optional(),
     /** What this program deliberately does not deliver. Prose, for the human and the orchestrator. */
     outOfScope: z.array(z.string().min(1)).optional(),
     /** `planHash` in `core` over this contract and the plan document, as ratified (D-P7-02). */

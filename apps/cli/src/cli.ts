@@ -17,6 +17,7 @@
  * {@link runCli}.
  */
 import { parseArgs } from "node:util";
+import { decisionBrief, reverseDecision } from "./commands/decision.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
 import { login } from "./commands/login.js";
@@ -25,6 +26,7 @@ import { getOrgConfig, setOrgConfig } from "./commands/org-config.js";
 import { planCheck, planRatify } from "./commands/plan.js";
 import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
+import { writeRunReport } from "./commands/report.js";
 import { resume } from "./commands/resume.js";
 import { exportRoutes } from "./commands/routes.js";
 import { reverseRuling } from "./commands/ruling.js";
@@ -44,10 +46,13 @@ Usage:
   nightshift plan check <program> [--repo <path>]
   nightshift plan ratify <program> [--repo <path>]
   nightshift preflight <program> [--repo <path>] [--recheck]
-  nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--repo <path>]
+  nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--repo <path>]
   nightshift run <contract> [--repo <path>] [--remote]
   nightshift resume <program> [--run <id>] [--repo <path>]
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
+  nightshift decision reverse <program> <decisionId> --choice <new> --reason <why> [--run <id>] [--repo <path>]
+  nightshift decision brief <program> <decisionId> [--out <path>] [--run <id>] [--repo <path>]
+  nightshift report <program> [--run <id>] [--repo <path>]
   nightshift org config get [--org <id>]
   nightshift org config set <file> [--org <id>]
   nightshift routes export <program> [--run <id>] [--repo <path>]
@@ -192,6 +197,7 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
         attended: { type: "boolean", default: false },
         harness: { type: "string" },
         model: { type: "string" },
+        "confirm-irreversible": { type: "string", multiple: true },
       },
       allowPositionals: true,
       strict: true,
@@ -218,6 +224,9 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
     attended: values.attended === true,
     ...(harness === undefined ? {} : { harness }),
     ...(model === undefined ? {} : { model }),
+    ...(values["confirm-irreversible"] === undefined
+      ? {}
+      : { confirmIrreversible: values["confirm-irreversible"] as string[] }),
   });
   return result.exitCode;
 };
@@ -353,6 +362,80 @@ const doRuling = async (environment: CliEnvironment, args: readonly string[]): P
   });
 };
 
+const doDecision = async (
+  environment: CliEnvironment,
+  args: readonly string[],
+): Promise<number> => {
+  const usage =
+    "nightshift decision reverse <program> <decisionId> --choice <new> --reason <why> [--run <id>] [--repo <path>]\n" +
+    "nightshift decision brief <program> <decisionId> [--out <path>] [--run <id>] [--repo <path>]";
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: {
+        choice: { type: "string" },
+        reason: { type: "string" },
+        out: { type: "string" },
+        run: { type: "string" },
+        repo: { type: "string" },
+      },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  const [verb, id, decisionId] = positionals;
+  if (id === undefined || decisionId === undefined) {
+    throw new UsageError(
+      "`nightshift decision` takes `reverse` or `brief` <program> <decisionId>",
+      usage,
+    );
+  }
+  const run = optional(values, "run");
+  const repo = optional(values, "repo");
+  const target = {
+    id,
+    decisionId,
+    ...(run === undefined ? {} : { run }),
+    ...(repo === undefined ? {} : { repo }),
+  };
+  if (verb === "reverse") {
+    const reversed = await reverseDecision(environment, {
+      ...target,
+      choice: required(values, "choice", usage),
+      reason: required(values, "reason", usage),
+    });
+    return reversed.exitCode;
+  }
+  if (verb === "brief") {
+    const out = optional(values, "out");
+    return decisionBrief(environment, { ...target, ...(out === undefined ? {} : { out }) });
+  }
+  throw new UsageError("`nightshift decision` takes `reverse` or `brief`", usage);
+};
+
+const doReport = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage = "nightshift report <program> [--run <id>] [--repo <path>]";
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: { run: { type: "string" }, repo: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  const [id] = positionals;
+  if (id === undefined) throw new UsageError("`nightshift report` needs a program", usage);
+  const run = optional(values, "run");
+  const repo = optional(values, "repo");
+  return writeRunReport(environment, {
+    id,
+    ...(run === undefined ? {} : { run }),
+    ...(repo === undefined ? {} : { repo }),
+  });
+};
+
 const doOrg = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage =
     "nightshift org config get [--org <id>] | nightshift org config set <file> [--org <id>]";
@@ -441,6 +524,10 @@ const dispatch = async (
       return doResume(environment, args);
     case "ruling":
       return doRuling(environment, args);
+    case "decision":
+      return doDecision(environment, args);
+    case "report":
+      return doReport(environment, args);
     case "org":
       return doOrg(environment, args);
     case "routes":

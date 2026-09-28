@@ -1,6 +1,6 @@
 ---
 name: plan-program
-description: Plan a Nightshift program with the human, in documents, before anything runs — outcomes, the seams (strands), each strand's approach from the code, the decisions that are expensive to reverse, and the human prerequisites — written to docs/programs/{id}/plan.md and contract.json and revised in place until `nightshift plan check` answers READY. Use when someone wants to plan a program, turn a brief into something Nightshift can run unattended, re-plan after a report, or asks "plan this", "what would the strands be", "is this ready to run".
+description: Plan a Nightshift program with the human, in documents, before anything runs — outcomes, the seams (strands), each strand's approach from the code, the decisions that are expensive to reverse, and the human prerequisites — written to docs/programs/{id}/plan.md and contract.json and revised in place until `nightshift plan check` answers READY. Also plans a correction after the human reverses a decision, from its brief. Use when someone wants to plan a program, turn a brief into something Nightshift can run unattended, re-plan after a report, correct a reversed decision, or asks "plan this", "what would the strands be", "is this ready to run", "correct D-…".
 ---
 
 # Planning a program with the human
@@ -357,6 +357,40 @@ yes, do all of this yourself and stop at the run:
 
 You never mark a prerequisite satisfied: only `nightshift preflight` does, from
 the exit code of its `verifyCommand`.
+
+## Correcting a reversed decision
+
+When the human has reversed a decision (`nightshift decision reverse`) and asks
+you to correct the program under their new one, the correction is a program like
+any other, planned with them from its **brief**:
+
+```text
+nightshift decision brief <program> <decisionId> --out docs/programs/<correction-id>/brief.md
+```
+
+Read the whole brief before proposing anything. It holds the fork in the road:
+what was decided and why, the alternatives weighed and why each was rejected
+(the human's new decision is often one of those, and why it was rejected is
+what to watch for), the human's reason for reversing it, the commits the
+decision produced and the files they touched, everything that landed after it,
+and later decisions it may have shaped.
+
+Then plan as in steps 3 to 10, with these differences:
+
+- **Plan the change the new decision calls for, wherever it reaches.** The
+  commits the decision produced are where to start looking, not a boundary:
+  work that landed after it may depend on the old choice, and the new one may
+  need changes nobody made yet. Say in the plan what the correction keeps, what
+  it changes and why.
+- **Write `corrects` into the contract**, one entry per decision corrected:
+  `{ "programId", "runId", "decisionId", "reversedBy" }`, all from the brief.
+  `plan check` refuses a `corrects` naming a decision the human has not reversed.
+- **A decision whose effects reach outside the repository** (the brief flags it
+  as irreversible or compensatable): say in the plan what happens to those
+  effects. When something must be undone by a human, make it a prerequisite with
+  a remediation, as in step 6. `plan check` flags it, and `nightshift run` asks
+  the human to confirm (`--confirm-irreversible <decisionId>`) before it runs.
+- The human ratifies it as always. Never ratify or run a correction without them.
 
 ## What you must not do
 

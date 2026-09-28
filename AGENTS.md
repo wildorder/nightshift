@@ -322,6 +322,36 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   instance belong to P10. Nightshift never runs a worker as a per-job hosted
   environment.
 
+**As built for P9 (Decision Graph & Correction), 2026-09-27.** The details a
+later program needs and cannot derive; full account in
+`docs/programs/p9-decision-graph-replay.md` §13. The lasting decision is A-47.
+
+- **Reversal is correction, not replay.** Nothing computes a cone, reverts, or
+  tags downstream work (the owner's direction). Do not add it back without them.
+- **A decision changes after it is recorded only by its stamp**: `checkpointAfter`
+  and `produced`, each once, from the operator's session or the engine
+  (`explainDecisionStamp`, `isDecisionStamp` in `core`, used by the API). Stamping
+  is in `packages/execution/src/stamp.ts`, called from `integrateNode`,
+  `finishSubProgram` and `endProgramNode`; a stamp that fails is left off.
+  Reversals and the owner's confirmations are never stamped.
+- **A plan decision is found again by its context**, `D-xx: question`, which
+  `startRun` writes; its `touches` come from the ratified contract.
+- **`ProgramContract.corrects`** names `{ programId, runId, decisionId,
+  reversedBy }`; `explainCorrection` in `core` is the rule, applied by `plan
+  check` (which then needs a login) and again by the API at ratification.
+  `unconfirmedCorrections` and the confirmation's context
+  (`irreversibleConfirmationContext`) are how `run --confirm-irreversible` works.
+- **The report's decision graph** is `packages/execution/src/decision-graph.ts`;
+  `RunReport` has `graph` and `corrections` where it had `decisions` and
+  `humanDecisions`. `nightshift report` writes a report again.
+- **`resumeDeferred(environment, session, retry?)`**: with a `ResumeRetry`
+  (`nightshift-resume` passes the run's `routeJob` and the worker launch) a check
+  that fails is retried one rung up with a `retry_failed_check` task, at most
+  twice; later nodes are replayed onto the head (`replayedOntoHead`); a replay
+  that conflicts ends the node `cancelled`. `ResumeResult` has `retried` and
+  `failed`; nothing is `discarded`.
+- The live suite is `npm run correction`.
+
 **As built for P8 (Routing & Examination), 2026-09-25.** The details a later
 program needs and cannot derive; full account in
 `docs/programs/p8-routing-examination.md` §13. The lasting decisions are A-45 and

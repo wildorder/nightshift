@@ -10,12 +10,14 @@
  * run.
  *
  * No orchestrator is started. The only agents are the examiners (and, after two
- * fixes, arbiters) the deferred work needs; everything else is `resumeDeferred`.
+ * fixes, arbiters) the deferred work needs, and a worker for a check that fails
+ * here, retried as the run would retry it (P9, D-P9-07).
  */
 
 import type { RunScope } from "@nightshift/core";
 import { createEventOutbox, type ResumeResult, resumeDeferred } from "@nightshift/execution";
 import type { Runtime } from "./compose.js";
+import { routeJob } from "./routing.js";
 import { buildEnvironment } from "./session.js";
 
 export interface ResumeInput {
@@ -44,7 +46,16 @@ export const runResume = async (runtime: Runtime, input: ResumeInput): Promise<R
   });
   const environment = buildEnvironment(runtime, outbox, run, program);
   try {
-    return await resumeDeferred(environment, { scope, program, repoPath: input.repoPath });
+    // A check that fails here is retried as the run would retry it (P9,
+    // D-P9-07): routed by the run's own policy, one rung up, a worker of its own.
+    return await resumeDeferred(
+      environment,
+      { scope, program, repoPath: input.repoPath },
+      {
+        route: (job, context) => routeJob(run, program, job, context),
+        mcp: (identity) => runtime.workerLaunch(identity),
+      },
+    );
   } finally {
     await outbox.flush(5_000).catch(() => {});
   }

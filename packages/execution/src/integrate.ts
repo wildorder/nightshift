@@ -46,6 +46,7 @@ import {
   sealedRef,
   updateRef,
 } from "./git/index.js";
+import { stampJobDecisions } from "./stamp.js";
 
 export interface IntegrateInput {
   readonly session: RunSession;
@@ -186,6 +187,15 @@ export const integrateNode = async (
     payload: { checkpointId, ref, commitSha: input.commitSha },
     executionNodeId: input.nodeId,
   });
+
+  // --- What its decisions produced (P9, D-P9-01) ----------------------------------
+  await stampJobDecisions(
+    environment,
+    input.session.scope,
+    { executionNodeId: input.nodeId },
+    input.commitSha,
+    checkpointId,
+  );
 
   // --- The worktree has done its job --------------------------------------------
   // Only on the happy path. Every failure keeps it, because a worktree is the

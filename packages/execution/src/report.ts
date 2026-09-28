@@ -41,6 +41,14 @@ import {
   strandOutcomes,
   strandsOf,
 } from "@nightshift/core";
+import {
+  type CorrectionReport,
+  type DecisionReport,
+  gatherCorrections,
+  gatherDecisionGraph,
+  renderCorrections,
+  renderDecisionGraph,
+} from "./decision-graph.js";
 
 export const DEPARTURE_PREFIX = "DEPARTURE:";
 
@@ -118,9 +126,10 @@ export interface RunReport {
     readonly by: readonly string[];
   }[];
   readonly pendingPrerequisites: readonly Prerequisite[];
-  /** The run's own decisions: authority `agent`, departures excluded (they lead their strand). */
-  readonly decisions: readonly Decision[];
-  readonly humanDecisions: readonly Decision[];
+  /** P9: every decision the run recorded, placed, with its reversal and corrections (D-P9-08). */
+  readonly graph: readonly DecisionReport[];
+  /** P9: what this program corrects, when it is a correction (D-P9-06). */
+  readonly corrections: readonly CorrectionReport[];
   readonly usage: readonly UsageRow[];
   /** P8: the arbiter's rulings, which lead the report (D-P8-13). */
   readonly rulings: readonly RulingReport[];
@@ -383,9 +392,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   const records = await readRecords(stores, scope, program);
   const blocked = blockedBy(program, records.outcomes);
   const strands = strandsOf(program).map((strand) => strandReportOf(records, strand, blocked));
-  const departed = new Set(strands.flatMap((strand) => strand.departures.map((d) => d.decisionId)));
   const rulings = rulingsOf(records);
-  const ruled = new Set(rulings.map((ruling) => ruling.ruling.decisionId as string));
 
   return {
     program,
@@ -403,13 +410,14 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
       };
     }),
     pendingPrerequisites: prerequisitesOf(program).filter((p) => p.status !== "satisfied"),
-    decisions: records.decisions.filter(
-      (decision) =>
-        decision.authority === "agent" &&
-        !departed.has(decision.decisionId) &&
-        !ruled.has(decision.decisionId),
+    graph: await gatherDecisionGraph(
+      stores,
+      scope,
+      records.decisions,
+      records.tree.nodes,
+      records.jobOf,
     ),
-    humanDecisions: records.decisions.filter((decision) => decision.authority === "human"),
+    corrections: await gatherCorrections(stores, program),
     usage: usageOf([...records.routesOf.values()].flat()),
     rulings,
   };
@@ -667,6 +675,7 @@ export const renderReport = (report: RunReport): string => {
     "",
     `${succeeded} of ${strands.length} strands succeeded; ${provisional} deferred; ${strands.filter(isParked).length} parked. Wall clock ${duration(run)}.`,
     "",
+    ...renderCorrections(report.corrections),
     ...renderRulings(report.rulings),
     "## Strands",
     "",
@@ -689,11 +698,7 @@ export const renderReport = (report: RunReport): string => {
     "## Human prerequisites still pending",
     "",
     ...renderPrerequisites(report.pendingPrerequisites),
-    "## Decisions the run took",
-    "",
-    ...(report.decisions.length === 0
-      ? ["None recorded.", ""]
-      : [...report.decisions.flatMap(renderDecision), ""]),
+    ...renderDecisionGraph(report.graph),
     "## Usage",
     "",
     "Token counts are what each harness reported and are not comparable across harnesses.",

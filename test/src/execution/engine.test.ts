@@ -119,6 +119,8 @@ const mcp = () => ({ name: "nightshift", command: process.execPath, args: ["--ve
 
 interface Rig {
   readonly world: World;
+  /** The environment the engine runs in, with the prerequisites book when there is one. */
+  readonly environment: ExecutionEnvironment;
   readonly engine: Engine;
   readonly queue: MergeQueue;
   /**
@@ -210,6 +212,7 @@ const rig = async (
 
   return {
     world: made,
+    environment,
     engine,
     queue,
     releaseQueue: async (candidates) => {
@@ -937,7 +940,8 @@ describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
     const result = await resumeDeferred(r.world.environment, r.world.session);
     expect(result, JSON.stringify(result)).toEqual({
       landed: [one.nodeId, two.nodeId],
-      discarded: [],
+      retried: [],
+      failed: [],
     });
     expect(await r.status(one.nodeId)).toBe("integrated");
     expect(await r.status(two.nodeId)).toBe("integrated");
@@ -953,13 +957,12 @@ describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
     expect(evidence?.commands.map((c) => c.exitCode)).toEqual([0, 0]);
   }, 60_000);
 
-  it("resume stops at a deferred check that fails, and discards what was built on it", async () => {
+  it("resume reports a deferred check that fails, and still lands what was built on it when it verifies (P9, D-P9-07)", async () => {
     const { r, meet } = await deferredRig({
       good: addModule("good"),
       bad: addModule("bad"),
       later: addModule("later"),
     });
-    const before = await headOf(r.world);
     const good = await r.submit("good");
     await r.until(good.nodeId, (status) => status === "deferred");
     const bad = await r.submit("bad");
@@ -968,25 +971,65 @@ describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
     await r.until(later.nodeId, (status) => status === "deferred");
 
     meet();
+    // No retry given: the failure is reported, and nothing is discarded.
     const result = await resumeDeferred(r.world.environment, r.world.session);
-    expect(result.landed).toEqual([good.nodeId]);
-    expect(result.stoppedAt).toEqual({
-      nodeId: bad.nodeId,
-      kind: "failed",
-      reason: "verification failed: gate exited 1",
-    });
-    expect(result.discarded).toEqual([later.nodeId]);
-
-    // What passed is on the branch; the failure is a failure; what stood on it is gone, and says why.
+    expect(result.landed).toEqual([good.nodeId, later.nodeId]);
+    expect(result.failed).toEqual([
+      { nodeId: bad.nodeId, reason: "verification failed: gate exited 1" },
+    ]);
+    expect(result.retried).toEqual([]);
     expect(await r.status(good.nodeId)).toBe("integrated");
     expect(await r.status(bad.nodeId)).toBe("verification_failed");
-    const dropped = await r.world.stores.executionNodes.get(r.world.scope, later.nodeId);
-    expect(dropped?.status).toBe("cancelled");
-    expect(dropped?.outcomeReason).toContain(`discarded: built on ${bad.nodeId}`);
-    expect(await headOf(r.world)).not.toBe(before);
-    expect(await log(r.world)).not.toContain("bad");
+    // Built on the failure, replayed onto the head without it, verified there, landed.
+    expect(await r.status(later.nodeId)).toBe("integrated");
+    const history = await log(r.world);
+    expect(history).toContain("later");
+    expect(history).not.toContain("bad");
     expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeUndefined();
   }, 60_000);
+
+  it("resume retries a deferred check that fails, with what failed in the brief, and lands the rest on top (P9, D-P9-07)", async () => {
+    const tasks: unknown[] = [];
+    const { r, meet } = await deferredRig({
+      good: addModule("good"),
+      // The first attempt plants what the gate refuses; the retry, told what
+      // failed, does not.
+      bad: async (context) => {
+        tasks.push(context.input.task);
+        await addModule(context.input.task === undefined ? "bad" : "mended")(context);
+      },
+      later: addModule("later"),
+    });
+    const good = await r.submit("good");
+    await r.until(good.nodeId, (status) => status === "deferred");
+    const bad = await r.submit("bad");
+    await r.until(bad.nodeId, (status) => status === "deferred");
+    const later = await r.submit("later");
+    await r.until(later.nodeId, (status) => status === "deferred");
+
+    meet();
+    const result = await resumeDeferred(r.environment, r.world.session, {
+      route: () => ROUTE,
+      mcp: () => ({ name: "nightshift", command: process.execPath, args: ["--version"], env: {} }),
+    });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      landed: [good.nodeId, bad.nodeId, later.nodeId],
+      retried: [bad.nodeId],
+      failed: [],
+    });
+    const retryTask = tasks.at(-1) as { kind: string; failed: { stepId: string }[] };
+    expect(retryTask.kind).toBe("retry_failed_check");
+    expect(retryTask.failed.map((step) => step.stepId)).toEqual(["gate"]);
+    // The program branch has the retry's work, not the first attempt's.
+    const tree = await git(r.world.git, ["ls-tree", "-r", "--name-only", PROGRAM_BRANCH], {
+      cwd: r.world.repo,
+    });
+    for (const file of ["src/good.js", "src/mended.js", "src/later.js"]) {
+      expect(tree).toContain(file);
+    }
+    expect(tree).not.toContain("src/bad.js");
+    expect(await r.status(later.nodeId)).toBe("integrated");
+  }, 90_000);
 
   it("touches nothing when the checkout cannot be landed on, and ignores Nightshift's own report", async () => {
     const { r, meet } = await deferredRig({ one: addModule("one"), two: addModule("two") });
@@ -1000,7 +1043,7 @@ describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
     await writeFile(join(r.world.repo, "scratch.txt"), "mine", "utf8");
     const blocked = await resumeDeferred(r.world.environment, r.world.session);
     expect(blocked.blocked).toContain("program_checkout_dirty");
-    expect(blocked).toMatchObject({ landed: [], discarded: [] });
+    expect(blocked).toMatchObject({ landed: [], failed: [] });
     expect(await r.status(one.nodeId)).toBe("deferred");
     expect(await r.status(two.nodeId)).toBe("deferred");
     expect(await provisionalHead(r.world.git, r.world.repo, r.world.scope.runId)).toBeDefined();
@@ -1014,6 +1057,6 @@ describe("a check that cannot run is deferred (P7, D-P7-10, SC-P7-08a)", () => {
       "utf8",
     );
     const landed = await resumeDeferred(r.world.environment, r.world.session);
-    expect(landed).toEqual({ landed: [one.nodeId, two.nodeId], discarded: [] });
+    expect(landed).toEqual({ landed: [one.nodeId, two.nodeId], retried: [], failed: [] });
   }, 60_000);
 });

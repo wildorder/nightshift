@@ -636,7 +636,8 @@ const candidateVerification = async (
 };
 
 /** Each step, with the tail of what it printed, for the examiner. */
-const verificationEvidence = async (
+/** Each step of a verification with the tail of its log: what an examiner, or a retry, is shown. */
+export const verificationEvidence = async (
   environment: ExecutionEnvironment,
   verification: Verification,
 ): Promise<ExaminationEvidence["verification"]> => {

@@ -257,6 +257,12 @@ decision.record { context, alternatives, choice, rationale, reversibility }
 Be honest about `reversibility`. `irreversible` means irreversible. Nothing
 downstream can undo an effect that was recorded as reversible and was not.
 
+Record the alternatives you weighed and why each lost. Nightshift ties each
+decision to the commits it produced, the report shows them all as the run's
+decision graph, and when the human reverses one, the correction is planned from
+exactly this record: the option you rejected is often the one they choose, and
+your reason for rejecting it is what that plan has to watch for.
+
 ## Finish
 
 ```

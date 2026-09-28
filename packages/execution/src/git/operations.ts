@@ -42,6 +42,22 @@ export const tryRevParse = async (
   return result.exitCode === 0 ? asSha(result.stdout) : undefined;
 };
 
+/**
+ * The commits reachable from `to` and not from `from`, oldest first (P9,
+ * D-P9-01): what landed after a decision's checkpoint.
+ */
+export const commitsSince = async (
+  runner: GitRunner,
+  repo: string,
+  from: CommitSha,
+  to: string,
+): Promise<readonly CommitSha[]> =>
+  (await git(runner, ["rev-list", "--reverse", `${from}..${to}`], { cwd: repo }))
+    .split("\n")
+    .map(trimmed)
+    .filter((line) => line !== "")
+    .map(asSha);
+
 export const currentBranch = async (runner: GitRunner, repo: string): Promise<string> =>
   trimmed(await git(runner, ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo }));
 

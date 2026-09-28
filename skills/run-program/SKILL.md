@@ -109,8 +109,8 @@ it, in this order:
    finding, the work moved on because of it, and the human has the last word.
    Name the finding, the ruling and why, and say how to reverse it:
    `nightshift ruling reverse {id} <decisionId> --reason "…"`. Say plainly that
-   reversing one records their decision and replays nothing yet; the checkpoint
-   the report names is where to roll back to by hand.
+   reversing one records their decision and changes nothing else: correcting the
+   work under it is a new plan (below).
 3. Every **departure** from the plan's approach, strand by strand: that is the
    code telling the human the plan was wrong about something.
 4. What was **parked**, what blocked it, and the reason on the strand that broke.
@@ -119,12 +119,24 @@ it, in this order:
    `nightshift resume {id}`.
 6. What the examiners found that did not stop anything (minor findings), and
    where the routes climbed or fell back: the report's per-job lines.
-7. The success criteria table, the run's own decisions, and what it cost, saying
-   which figures are estimates.
+7. The success criteria table and what it cost, saying which figures are
+   estimates.
+8. The **decision graph**: every decision the run recorded, with what was weighed
+   against it and what it produced. Point out the close calls: two strong
+   options, or a rejection reason that looks thin. Those are the ones worth the
+   human's second look.
 
 Then the human's choices, plainly: review the branch and merge it; do the
-prerequisites and resume; or re-plan (`/plan-program {id}` reads this report
-first and starts from the departures and the parked strands).
+prerequisites and resume; re-plan (`/plan-program {id}` reads this report first
+and starts from the departures and the parked strands); or **reverse a
+decision** and correct it:
+
+```text
+nightshift decision reverse {id} <decisionId> --choice "<their choice>" --reason "<why>"
+nightshift decision brief {id} <decisionId> --out docs/programs/<correction-id>/brief.md
+```
+
+then `/plan-program` to plan the correction from the brief, with them.
 
 ## Resuming
 

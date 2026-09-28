@@ -47,6 +47,8 @@ export interface DeployedSliceOptions {
   readonly verification?: ProgramContract["verification"];
   /** P8: files added to the fixture before its first commit. */
   readonly files?: Readonly<Record<string, string>>;
+  /** P9: human prerequisites, for checks that defer until one is met. */
+  readonly prerequisites?: ProgramContract["prerequisites"];
 }
 
 export interface DeployedSlice {
@@ -131,6 +133,7 @@ export const openDeployedSlice = async (options: DeployedSliceOptions): Promise<
       ? {}
       : { delegationLimits: options.delegationLimits }),
     ...(options.verification === undefined ? {} : { verification: options.verification }),
+    ...(options.prerequisites === undefined ? {} : { prerequisites: options.prerequisites }),
     ...(options.files === undefined ? {} : { files: options.files }),
   });
   say(`fixture at ${fixture.repo}; program ${fixture.program.programId}`);

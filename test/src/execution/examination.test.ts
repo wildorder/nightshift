@@ -724,7 +724,7 @@ describe("examination and deferral compose, in that order (D-P8-14)", () => {
 
     r.meet();
     const result = await resumeDeferred(r.environment, r.world.session);
-    expect(result, JSON.stringify(result)).toEqual({ landed: [r.nodeId], discarded: [] });
+    expect(result, JSON.stringify(result)).toEqual({ landed: [r.nodeId], retried: [], failed: [] });
     expect(await r.world.stores.executionNodes.get(r.world.scope, r.nodeId)).toMatchObject({
       status: "integrated",
     });

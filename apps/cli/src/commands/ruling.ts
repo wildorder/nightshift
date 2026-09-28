@@ -7,19 +7,14 @@
  * supersedes it, with the opposite choice and the owner's reason, and prints the
  * rollback point the ruling was made against.
  *
- * **It replays nothing.** Reversing an overturn does not unland the work, and
- * reversing an uphold does not undo the attempt that carried the ruling out; the minimum-cone replay a
- * reversal needs is P9's (SC-13). Until then the reversal is recorded and
- * reported, and the checkpoint is where to reset to by hand. The command says so
- * every time it runs.
+ * It is `nightshift decision reverse` for a ruling (P9, D-P9-02): the reversal
+ * is a record, and changes nothing else. Correcting the work under it is a plan,
+ * started from `nightshift decision brief`. The checkpoint the ruling was made
+ * against is printed as well, for a rollback by hand.
  */
-import type { Decision, DecisionId, Run } from "@nightshift/contracts";
-import { DecisionIdSchema } from "@nightshift/contracts";
-import { nowIso } from "@nightshift/core";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
-import { openSession } from "../session.js";
+import { findDecision, reverseDecision } from "./decision.js";
 
 export interface RulingReverseOptions {
   readonly id: string;
@@ -31,88 +26,39 @@ export interface RulingReverseOptions {
 
 const RULINGS = ["overturn", "uphold"] as const;
 
-/** The run named, or every run of the program, latest first. */
-const runsOf = async (
-  session: Awaited<ReturnType<typeof openSession>>,
-  program: { readonly projectId: Run["projectId"]; readonly programId: Run["programId"] },
-  named: string | undefined,
-): Promise<Run[]> => {
-  const runs: Run[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await session.stores.runs.listByProgram(
-      program,
-      cursor === undefined ? {} : { cursor },
-    );
-    runs.push(...page.items);
-    cursor = page.cursor;
-  } while (cursor !== undefined);
-  return runs
-    .filter((run) => named === undefined || run.runId === named)
-    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-};
-
 export const reverseRuling = async (
   environment: CliEnvironment,
   options: RulingReverseOptions,
 ): Promise<number> => {
-  const parsed = DecisionIdSchema.safeParse(options.decisionId);
-  if (!parsed.success) throw new UsageError(`\`${options.decisionId}\` is not a decision id`);
-  const decisionId: DecisionId = parsed.data;
-  const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
-  const session = await openSession(environment);
-  const program = { projectId: files.contract.projectId, programId: files.contract.programId };
-
-  const candidates = await runsOf(session, program, options.run);
-
-  for (const run of candidates) {
-    const scope = { ...program, runId: run.runId };
-    const ruling = await session.stores.decisions.get(scope, decisionId);
-    if (ruling === undefined) continue;
-    if (ruling.authority !== "agent" || !(RULINGS as readonly string[]).includes(ruling.choice)) {
-      throw new UsageError(
-        `${decisionId} is not an arbiter's ruling: only an arbiter's ruling is reversed here`,
-      );
-    }
-    const reversed = ruling.choice === "overturn" ? "uphold" : "overturn";
-    const reversal: Decision = {
-      schemaVersion: 1,
-      ...scope,
-      decisionId: environment.ids.next("dec"),
-      executionNodeId: ruling.executionNodeId,
-      agentId: null,
-      context: `The owner reversed the arbiter's ruling ${decisionId} (${ruling.context})`,
-      alternatives: [{ summary: ruling.choice, rejectedBecause: options.reason }],
-      choice: reversed,
-      rationale: options.reason,
-      reversibility: "reversible",
-      checkpointBefore: ruling.checkpointBefore,
-      affectedNodes: ruling.affectedNodes,
-      authority: "human",
-      supersedesDecisionId: decisionId,
-      createdAt: nowIso(environment.clock),
-    };
-    await session.stores.decisions.put(reversal);
-    const checkpoint = await session.stores.checkpoints.get(scope, ruling.checkpointBefore);
-    environment.out(
-      `Recorded ${reversal.decisionId}: the arbiter's "${ruling.choice}" is reversed to "${reversed}", on your authority.`,
+  const found = await findDecision(environment, {
+    id: options.id,
+    decisionId: options.decisionId,
+    ...(options.run === undefined ? {} : { run: options.run }),
+    ...(options.repo === undefined ? {} : { repo: options.repo }),
+  });
+  const ruling = found.decision;
+  if (ruling.authority !== "agent" || !(RULINGS as readonly string[]).includes(ruling.choice)) {
+    throw new UsageError(
+      `${ruling.decisionId} is not an arbiter's ruling: reverse any other decision with \`nightshift decision reverse\``,
     );
-    environment.out(
-      "Nothing is replayed: " +
-        (ruling.choice === "overturn"
-          ? "the work the ruling let land is still on the program branch."
-          : "the attempt that carried the ruling out stays as it was built.") +
-        " Replaying what a reversal changes arrives with the decision graph (P9).",
-    );
-    if (checkpoint !== undefined) {
-      environment.out(
-        `The ruling was made against ${checkpoint.ref} (${checkpoint.commitSha}); to roll back by hand: git reset --hard ${checkpoint.ref}`,
-      );
-    }
-    return 0;
   }
-  throw new UsageError(
-    `no run of \`${options.id}\`${options.run === undefined ? "" : ` named ${options.run}`} holds decision ${decisionId}`,
+  // The same verb as any decision (P9, D-P9-02), with the ruling's opposite as the choice.
+  await reverseDecision(environment, {
+    id: options.id,
+    decisionId: options.decisionId,
+    run: found.run.runId,
+    ...(options.repo === undefined ? {} : { repo: options.repo }),
+    choice: ruling.choice === "overturn" ? "uphold" : "overturn",
+    reason: options.reason,
+  });
+  const checkpoint = await found.session.stores.checkpoints.get(
+    { projectId: found.run.projectId, programId: found.run.programId, runId: found.run.runId },
+    ruling.checkpointBefore,
   );
+  if (checkpoint !== undefined) {
+    environment.out(
+      `The ruling was made against ${checkpoint.ref} (${checkpoint.commitSha}); to roll back by hand: git reset --hard ${checkpoint.ref}`,
+    );
+  }
+  return 0;
 };

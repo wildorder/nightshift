@@ -12,7 +12,7 @@ import {
   DecisionIdSchema,
   ExecutionNodeIdSchema,
 } from "../ids.js";
-import { IsoTimestampSchema, ReversibilitySchema, runScoped } from "./common.js";
+import { CommitShaSchema, IsoTimestampSchema, ReversibilitySchema, runScoped } from "./common.js";
 
 /** `human` outranks `agent` everywhere; `core` refuses the reverse. */
 export const DecisionAuthoritySchema = z.enum(["agent", "human"]);
@@ -38,6 +38,13 @@ export const DecisionSchema = z.strictObject({
   checkpointBefore: CheckpointIdSchema,
   /** Absent until the work the decision governs has been checkpointed. */
   checkpointAfter: CheckpointIdSchema.optional(),
+  /**
+   * P9 (D-P9-01): the commits the work of the node this decision was made on
+   * landed, from `checkpointBefore` to its landing, oldest first. Set once, by
+   * the execution layer, when that node lands; absent when it never did. Ties a
+   * choice to its own work and nothing downstream.
+   */
+  produced: z.strictObject({ commits: z.array(CommitShaSchema) }).optional(),
   /**
    * Execution nodes that consumed this decision's output. The replay cone is
    * computed from these edges, which is why they are recorded rather than
