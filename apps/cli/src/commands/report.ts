@@ -5,10 +5,11 @@
  * read before a decision was reversed shows the reversal, and the correction
  * that followed, after it. The latest run by default.
  */
+
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Run } from "@nightshift/contracts";
-import { gatherReport, renderReport } from "@nightshift/execution";
+import { gatherReport, renderReport } from "@nightshift/core";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { readProgramFiles, resolveFrom } from "../program-files.js";

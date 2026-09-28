@@ -21,6 +21,7 @@
  */
 import type { Clock } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
+import { tokenExpiry } from "../claims.js";
 import type { TokenProvider } from "../transport.js";
 import type { PathEnvironment } from "./paths.js";
 import { NotLoggedInError, type Profile, requireCredentials, requireProfile } from "./store.js";
@@ -52,33 +53,9 @@ export interface TokenProviderOptions {
   readonly paths?: PathEnvironment;
 }
 
-/** A JWT's `exp`, in epoch milliseconds, read without verifying the signature. */
-export const tokenExpiry = (token: string): number | undefined => {
-  const payload = token.split(".")[1];
-  if (payload === undefined) return undefined;
-  try {
-    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
-      exp?: unknown;
-    };
-    return typeof claims.exp === "number" ? claims.exp * 1000 : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-/** A JWT's claims, unverified. The gateway verifies; a client only reads. */
-export const tokenClaims = (token: string): Readonly<Record<string, unknown>> => {
-  const payload = token.split(".")[1];
-  if (payload === undefined) return {};
-  try {
-    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
-      string,
-      unknown
-    >;
-  } catch {
-    return {};
-  }
-};
+// The claim readers live in `../claims.ts`, shared with the browser entry, and are
+// re-exported here so every existing importer keeps its path.
+export { tokenClaims, tokenExpiry } from "../claims.js";
 
 export const tokenEndpointFor = (profile: Profile): string =>
   `https://${profile.authDomain}/oauth2/token`;
