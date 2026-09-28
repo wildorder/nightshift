@@ -6,7 +6,7 @@
  * session and no network: the same pages, the same records.
  */
 import type { ArtifactId, OrgId } from "@nightshift/contracts";
-import type { ProjectStores, RunScope } from "@nightshift/core";
+import type { IdGenerator, ProjectStores, RunScope } from "@nightshift/core";
 import { createContext, useContext } from "react";
 import type { Identity } from "./auth/session.js";
 
@@ -21,6 +21,9 @@ export interface Studio {
    */
   readonly orgId: OrgId | undefined;
   readonly signOut: () => Promise<void>;
+  /** Mints the ids the Studio writes under (a reversal's), and the time it writes. */
+  readonly ids: IdGenerator;
+  readonly now: () => string;
   /**
    * How an artifact's bytes are reached (D-P11-06): a short-lived URL the
    * control plane signs. `undefined` when this composition cannot sign one.

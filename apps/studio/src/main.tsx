@@ -4,6 +4,7 @@
  * mounts over the memory stores.
  */
 import { ProjectSchema } from "@nightshift/contracts";
+import { createUlidIdGenerator, nowIso, systemClock } from "@nightshift/core";
 import {
   createFetchTransport,
   createHttpStores,
@@ -108,6 +109,8 @@ const start = async (): Promise<void> => {
     stores: createHttpStores({ transport, ...(orgId === undefined ? {} : { actingOrg: orgId }) }),
     identity,
     orgId,
+    ids: createUlidIdGenerator(),
+    now: () => nowIso(systemClock),
     artifacts: artifactsOver(transport),
     signOut: async () => {
       await signOut(env);

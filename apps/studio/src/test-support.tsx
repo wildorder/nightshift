@@ -3,7 +3,12 @@
  * starts from. Nothing here opens a socket or reads a browser session.
  */
 import type { OrgId } from "@nightshift/contracts";
-import { createFixtures, type Fixtures } from "@nightshift/core";
+import {
+  createCountingIdGenerator,
+  createFixtures,
+  type Fixtures,
+  type IdGenerator,
+} from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { QueryClient } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
@@ -24,6 +29,8 @@ export interface MountOptions {
   readonly at?: string | ((f: Fixtures) => string);
   readonly pollMs?: number;
   readonly artifacts?: Studio["artifacts"];
+  readonly ids?: IdGenerator;
+  readonly now?: () => string;
 }
 
 export const mountStudio = async (
@@ -42,6 +49,8 @@ export const mountStudio = async (
     identity: { subject: "u1", email: "tim@example.test", activeOrgClaim: undefined },
     orgId,
     signOut: async () => void signedOut.push(true),
+    ids: opts.ids ?? createCountingIdGenerator(9000),
+    now: opts.now ?? (() => "2026-09-28T12:00:00.000Z"),
     ...(opts.artifacts === undefined ? {} : { artifacts: opts.artifacts }),
     ...(opts.pollMs === undefined ? {} : { pollMs: opts.pollMs }),
   };

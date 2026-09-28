@@ -6,7 +6,7 @@
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Route, Routes } from "react-router";
-import { Placeholder } from "./pages/placeholder.js";
+import { DecisionPage } from "./pages/decision.js";
 import { ProjectPage } from "./pages/project.js";
 import { ProjectSettingsPage } from "./pages/project-settings.js";
 import { ProjectsPage } from "./pages/projects.js";
@@ -32,7 +32,7 @@ export const App = ({
           <Route path="projects/:projectId/programs/:programId/runs/:runId" element={<RunPage />} />
           <Route
             path="projects/:projectId/programs/:programId/runs/:runId/decisions/:decisionId"
-            element={<Placeholder title="Decision" />}
+            element={<DecisionPage />}
           />
           <Route path="settings" element={<OrgSettingsPage />} />
         </Route>
