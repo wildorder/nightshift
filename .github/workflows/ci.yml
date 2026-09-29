@@ -10,6 +10,8 @@ on:
   pull_request:
     branches:
       - main
+  # By hand, from the Actions tab or `gh workflow run CI`.
+  workflow_dispatch:
 
 # One run per ref. A new push supersedes an in-flight run rather than queueing.
 concurrency:
