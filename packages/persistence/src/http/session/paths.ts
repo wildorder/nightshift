@@ -16,6 +16,14 @@
  * One module, used by the CLI, the MCP server and the execution layer, so the
  * three cannot disagree about where a spool lives.
  */
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { LocalPaths } from "@nightshift/core";
@@ -88,11 +96,94 @@ export const stateDir = (environment: PathEnvironment = {}): string => {
   return join(xdg === undefined || xdg === "" ? join(home, ".local", "state") : xdg, APP);
 };
 
-export const profilePath = (environment: PathEnvironment = {}): string =>
-  join(configDir(environment), "profile.json");
+/**
+ * One profile per stage (P12, D-P12-05):
+ *
+ * ```text
+ * <config>/current                              the stage in use
+ * <config>/profiles/<stage>/profile.json         where that stage's plane is
+ * <config>/profiles/<stage>/credentials.json     its session (Cognito stages)
+ * ```
+ *
+ * `nightshift login` selects the stage it signed into, `nightshift local`
+ * selects `local`, `nightshift use <stage>` switches. The CLI and the MCP server
+ * read the same `current`, so they switch together.
+ */
+const PROFILE_FILE = "profile.json";
+const CREDENTIALS_FILE = "credentials.json";
+const STAGE_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
-export const credentialsPath = (environment: PathEnvironment = {}): string =>
-  join(configDir(environment), "credentials.json");
+export const isStageName = (stage: string): boolean => STAGE_NAME.test(stage);
+
+export const profilesDir = (environment: PathEnvironment = {}): string =>
+  join(configDir(environment), "profiles");
+
+export const currentStagePath = (environment: PathEnvironment = {}): string =>
+  join(configDir(environment), "current");
+
+/**
+ * Moves a pre-P12 flat profile (`<config>/profile.json` and its
+ * `credentials.json`) under `profiles/<its stage>/` and selects it, once. A
+ * move, never a copy then a delete, so a sign-in is never lost halfway.
+ */
+const migrateFlatLayout = (environment: PathEnvironment): void => {
+  const dir = configDir(environment);
+  const flatProfile = join(dir, PROFILE_FILE);
+  if (existsSync(currentStagePath(environment)) || !existsSync(flatProfile)) return;
+  let stage: unknown;
+  try {
+    stage = (JSON.parse(readFileSync(flatProfile, "utf8")) as { stage?: unknown }).stage;
+  } catch {
+    return; // Not a profile this code wrote; the reader will say so.
+  }
+  if (typeof stage !== "string" || !isStageName(stage)) return;
+  const target = join(profilesDir(environment), stage);
+  mkdirSync(target, { recursive: true, mode: 0o700 });
+  renameSync(flatProfile, join(target, PROFILE_FILE));
+  const flatCredentials = join(dir, CREDENTIALS_FILE);
+  if (existsSync(flatCredentials)) renameSync(flatCredentials, join(target, CREDENTIALS_FILE));
+  writeFileSync(currentStagePath(environment), `${stage}\n`, { mode: 0o600 });
+};
+
+/** The stage in use, or `undefined` on a machine that has never signed in anywhere. */
+export const currentStage = (environment: PathEnvironment = {}): string | undefined => {
+  migrateFlatLayout(environment);
+  const path = currentStagePath(environment);
+  if (!existsSync(path)) return undefined;
+  const stage = readFileSync(path, "utf8").trim();
+  return isStageName(stage) ? stage : undefined;
+};
+
+/** Selects `stage` for every command and MCP server that reads the profile after. */
+export const selectStage = (stage: string, environment: PathEnvironment = {}): void => {
+  if (!isStageName(stage)) throw new Error(`not a stage name: ${stage}`);
+  mkdirSync(configDir(environment), { recursive: true, mode: 0o700 });
+  writeFileSync(currentStagePath(environment), `${stage}\n`, { mode: 0o600 });
+};
+
+/** Every stage this machine holds a profile for. */
+export const knownStages = (environment: PathEnvironment = {}): readonly string[] => {
+  migrateFlatLayout(environment);
+  const dir = profilesDir(environment);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((stage) => isStageName(stage) && existsSync(join(dir, stage, PROFILE_FILE)))
+    .sort();
+};
+
+const stageDir = (environment: PathEnvironment, stage: string | undefined): string =>
+  stage === undefined ? configDir(environment) : join(profilesDir(environment), stage);
+
+/**
+ * A stage's profile; with no stage named, the current one's. On a machine with
+ * no current stage this is the flat path, where nothing is: a reader then says
+ * "not signed in", which is true.
+ */
+export const profilePath = (environment: PathEnvironment = {}, stage?: string): string =>
+  join(stageDir(environment, stage ?? currentStage(environment)), PROFILE_FILE);
+
+export const credentialsPath = (environment: PathEnvironment = {}, stage?: string): string =>
+  join(stageDir(environment, stage ?? currentStage(environment)), CREDENTIALS_FILE);
 
 /**
  * Where one run's local state lives.

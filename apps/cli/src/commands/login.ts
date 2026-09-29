@@ -35,8 +35,9 @@
  * in an error message, and never returned by {@link login}.
  */
 import { nowIso } from "@nightshift/core";
-import type { Profile } from "@nightshift/persistence/http";
+import type { CognitoProfile, Profile } from "@nightshift/persistence/http";
 import {
+  isTokenProfile,
   profilePath,
   readProfile,
   tokenClaims,
@@ -59,6 +60,9 @@ import {
 
 export { DEFAULT_STAGE } from "../hostnames.js";
 
+/** The stage `nightshift local` writes; never a hosted one (D-P12-05). */
+export const LOCAL_STAGE = "local";
+
 export interface LoginFlags {
   readonly api?: string;
   readonly authDomain?: string;
@@ -79,7 +83,7 @@ export interface LoginOptions {
 
 /** What `login` learned. Deliberately no token of any kind. */
 export interface LoginResult {
-  readonly profile: Profile;
+  readonly profile: CognitoProfile;
   readonly subject: string;
   readonly email: string | undefined;
 }
@@ -92,7 +96,7 @@ const normalizeAuthDomain = (value: string): string =>
 
 /** What `resolveProfile` decided, and what it wants said about it. */
 export interface ResolvedProfile {
-  readonly profile: Profile;
+  readonly profile: CognitoProfile;
   /** Lines worth telling the operator: a rewritten value, for instance. */
   readonly notes: readonly string[];
 }
@@ -112,9 +116,18 @@ export interface ResolvedProfile {
  * naming one; that failure names the flag and where its value lives.
  */
 export const resolveProfile = (flags: LoginFlags, stored: Profile | undefined): ResolvedProfile => {
-  const stage = flags.stage ?? stored?.stage ?? DEFAULT_STAGE;
+  // A local instance's profile says nothing about where to sign in: it has no
+  // sign-in (D-P12-03), so its stage is not the default for `login`.
+  const signedIn = stored === undefined || isTokenProfile(stored) ? undefined : stored;
+  const stage = flags.stage ?? signedIn?.stage ?? DEFAULT_STAGE;
+  if (stage === LOCAL_STAGE) {
+    throw new UsageError(
+      "the local instance has no sign-in",
+      "Start it with `nightshift local`; it writes its own profile. `nightshift use <stage>` switches back to a hosted one.",
+    );
+  }
   // A stored profile for another stage says nothing about this one.
-  const kept = stored !== undefined && stored.stage === stage ? stored : undefined;
+  const kept = signedIn !== undefined && signedIn.stage === stage ? signedIn : undefined;
   const defaults = defaultsFor(stage);
   const notes: string[] = [];
 
@@ -200,7 +213,13 @@ export const login = async (
   environment: CliEnvironment,
   options: LoginOptions,
 ): Promise<LoginResult> => {
-  const stored = await readProfile(environment.paths);
+  // The profile of the stage being signed into, when there is one; else the
+  // current one, whose stage is the default.
+  const current = await readProfile(environment.paths);
+  const stored =
+    options.flags.stage === undefined
+      ? current
+      : ((await readProfile(environment.paths, options.flags.stage)) ?? current);
   const { profile, notes } = resolveProfile(options.flags, stored);
   for (const note of notes) environment.out(note);
 

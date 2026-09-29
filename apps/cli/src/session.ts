@@ -17,6 +17,8 @@ import {
   createFetchTransport,
   createHttpStores,
   createTokenProvider,
+  isTokenProfile,
+  readLocalToken,
   refreshIdToken,
   requireCredentials,
   requireProfile,
@@ -67,8 +69,14 @@ export interface FreshSession extends Session {
  */
 export const openFreshSession = async (environment: CliEnvironment): Promise<FreshSession> => {
   const profile = await requireProfile(environment.paths);
-  const credentials = await requireCredentials(environment.paths);
-  const idToken = await refreshIdToken(profile, credentials.refreshToken, environment.fetch);
+  // A local instance's bearer is its token file; a hosted stage's is minted now.
+  const idToken = isTokenProfile(profile)
+    ? await readLocalToken(profile.tokenFile)
+    : await refreshIdToken(
+        profile,
+        (await requireCredentials(environment.paths)).refreshToken,
+        environment.fetch,
+      );
   const transport = createFetchTransport({
     endpoint: profile.apiEndpoint,
     tokens: staticTokenProvider(idToken),

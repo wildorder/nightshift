@@ -6,7 +6,8 @@
  *   nightshift-local [--port 47820] [--state <dir>] [--studio <dir>]
  *
  * Started by `nightshift local`, in the foreground; `Ctrl-C` stops it. Prints
- * one line a caller can read, `NIGHTSHIFT_LOCAL_READY <api url> <studio url>`,
+ * one line a caller can read,
+ * `NIGHTSHIFT_LOCAL_READY\t<api url>\t<studio url>\t<token file>`,
  * then the human line.
  */
 import { join } from "node:path";
@@ -102,8 +103,11 @@ export const main = async (argv: readonly string[], env: NodeJS.ProcessEnv): Pro
     state: values.state ?? localStateDir(env),
     ...(values.studio === undefined ? {} : { studio: values.studio }),
   });
-  process.stdout.write(`${READY_LINE} ${instance.apiUrl} ${instance.studioUrl}\n`);
-  process.stdout.write(`Nightshift is running locally. Studio: ${instance.studioUrl}\n`);
+  // Tab-separated: a token file path may hold a space (a Windows home directory).
+  process.stdout.write(
+    `${[READY_LINE, instance.apiUrl, instance.studioUrl, instance.tokenFile].join("\t")}\n`,
+  );
+  process.stdout.write("Nightshift is running locally. Ctrl-C stops it.\n");
   const stop = (): void => {
     instance.close().then(
       () => process.exit(0),
