@@ -72,7 +72,13 @@ const startPlane = async (): Promise<void> => {
 
 const stopPlane = async (): Promise<void> => {
   plane?.kill("SIGTERM");
-  expect(await planeExit).toBe(0);
+  const code = await planeExit;
+  // On POSIX, SIGTERM reaches the plane's handler and it closes cleanly. Windows
+  // has no signals to deliver: Node terminates the child outright, so there is
+  // no clean exit to see, and the restart below then proves the harder thing,
+  // that everything survives a hard stop. (A console Ctrl-C, the product path,
+  // is still a SIGINT on Windows.)
+  if (process.platform !== "win32") expect(code).toBe(0);
   plane = undefined;
   out.length = 0;
 };
