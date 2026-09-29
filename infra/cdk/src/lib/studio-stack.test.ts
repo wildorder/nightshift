@@ -312,10 +312,19 @@ describe("the Studio's stacks (P11, D-P11-02)", () => {
       ) as Record<string, unknown>;
       expect(Object.keys(config).sort()).toEqual([
         "apiEndpoint",
+        "auth",
         "authDomain",
         "clientId",
         "stage",
       ]);
+      // P12 (D-P12-04): the auth block the Studio reads. Each occurrence of a
+      // deploy-time value is its own marker, so the shape is what is asserted;
+      // both come from the same two `Fn.importValue`s in the stack.
+      expect(config.auth).toMatchObject({
+        kind: "cognito",
+        authDomain: expect.stringMatching(/^<<marker:/),
+        clientId: expect.stringMatching(/^<<marker:/),
+      });
       expect(config.apiEndpoint).toBe(`https://${apiHostnameFor("staging")}`);
       expect(config.stage).toBe("staging");
       expect(config.authDomain).toMatch(/^<<marker:/);

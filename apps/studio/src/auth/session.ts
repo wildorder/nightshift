@@ -22,7 +22,7 @@
  */
 import type { TokenProvider } from "@nightshift/persistence/http/browser";
 import { tokenClaims, tokenExpiry } from "@nightshift/persistence/http/browser";
-import type { StudioConfig } from "../config.js";
+import type { CognitoStudioConfig } from "../config.js";
 import {
   authorizeUrl,
   exchangeAuthorizationCode,
@@ -46,7 +46,7 @@ export interface KeyValueStorage {
 }
 
 export interface SessionEnvironment {
-  readonly config: StudioConfig;
+  readonly config: CognitoStudioConfig;
   /** Where the refresh token lives: `localStorage`. */
   readonly durable: KeyValueStorage;
   /** Where a sign-in in progress lives: `sessionStorage`. */

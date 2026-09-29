@@ -10,15 +10,54 @@
 import { z } from "zod";
 import { DEFAULT_STAGE, defaultsFor } from "./hostnames.js";
 
-export const StudioConfigSchema = z.strictObject({
-  stage: z.string().min(1),
-  /** Origin with no trailing slash. */
-  apiEndpoint: z.string().url(),
-  /** The Cognito hosted domain, no scheme. */
+const CognitoAuthSchema = z.strictObject({
+  kind: z.literal("cognito"),
   authDomain: z.string().min(1),
   clientId: z.string().min(1),
 });
-export type StudioConfig = z.infer<typeof StudioConfigSchema>;
+
+/**
+ * What `config.json` may say (P11, D-P11-02; P12, D-P12-04). The hosted stack
+ * wrote `authDomain` and `clientId` flat; since P12 it also writes `auth`, and a
+ * local instance writes `auth: { kind: "token" }` and nothing about Cognito.
+ */
+export const StudioConfigInputSchema = z.strictObject({
+  stage: z.string().min(1),
+  /** Origin with no trailing slash; the local instance adds `/api`. */
+  apiEndpoint: z.string().url(),
+  authDomain: z.string().min(1).optional(),
+  clientId: z.string().min(1).optional(),
+  auth: z.union([CognitoAuthSchema, z.strictObject({ kind: z.literal("token") })]).optional(),
+});
+
+/** A hosted stage: sign in through the pool (D-P11-04). */
+export interface CognitoStudioConfig {
+  readonly kind: "cognito";
+  readonly stage: string;
+  readonly apiEndpoint: string;
+  readonly authDomain: string;
+  readonly clientId: string;
+}
+
+/** A local instance: the bearer is in the start URL (D-P12-04). */
+export interface TokenStudioConfig {
+  readonly kind: "token";
+  readonly stage: string;
+  readonly apiEndpoint: string;
+}
+
+export type StudioConfig = CognitoStudioConfig | TokenStudioConfig;
+
+const normalize = (input: z.infer<typeof StudioConfigInputSchema>): StudioConfig => {
+  const apiEndpoint = input.apiEndpoint.replace(/\/+$/, "");
+  if (input.auth?.kind === "token") return { kind: "token", stage: input.stage, apiEndpoint };
+  const authDomain = input.auth?.authDomain ?? input.authDomain;
+  const clientId = input.auth?.clientId ?? input.clientId;
+  if (authDomain === undefined || clientId === undefined) {
+    throw new StudioConfigError("config.json names neither a Cognito client nor a local token");
+  }
+  return { kind: "cognito", stage: input.stage, apiEndpoint, authDomain, clientId };
+};
 
 export class StudioConfigError extends Error {
   override readonly name = "StudioConfigError";
@@ -46,14 +85,14 @@ export const loadConfig = async (
         `no config.json is served and the ${stage} stage has no baked Studio client id`,
       );
     }
-    return { ...defaults, clientId: defaults.clientId };
+    return { kind: "cognito", ...defaults, clientId: defaults.clientId };
   }
   if (response.status !== 200) {
     throw new StudioConfigError(`config.json answered ${response.status}`);
   }
-  const parsed = StudioConfigSchema.safeParse(JSON.parse(await response.text()));
+  const parsed = StudioConfigInputSchema.safeParse(JSON.parse(await response.text()));
   if (!parsed.success) {
     throw new StudioConfigError(`config.json is not a Studio config: ${parsed.error.message}`);
   }
-  return { ...parsed.data, apiEndpoint: parsed.data.apiEndpoint.replace(/\/+$/, "") };
+  return normalize(parsed.data);
 };
