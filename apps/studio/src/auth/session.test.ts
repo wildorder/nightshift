@@ -1,6 +1,6 @@
 import { webcrypto } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { StudioConfig } from "../config.js";
+import type { CognitoStudioConfig } from "../config.js";
 import {
   beginSignIn,
   completeSignIn,
@@ -12,7 +12,8 @@ import {
   signOut,
 } from "./session.js";
 
-const config: StudioConfig = {
+const config: CognitoStudioConfig = {
+  kind: "cognito",
   stage: "dev",
   apiEndpoint: "https://api.dev.nightshift.wildorder.dev",
   authDomain: "pool.auth.us-west-2.amazoncognito.com",

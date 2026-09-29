@@ -19,12 +19,21 @@
  * one keeps working until it expires or is revoked, which is why nothing here
  * rewrites the credentials file.
  */
+
+import { readFile } from "node:fs/promises";
 import type { Clock } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
 import { tokenExpiry } from "../claims.js";
 import type { TokenProvider } from "../transport.js";
 import type { PathEnvironment } from "./paths.js";
-import { NotLoggedInError, type Profile, requireCredentials, requireProfile } from "./store.js";
+import {
+  type CognitoProfile,
+  isTokenProfile,
+  NotLoggedInError,
+  type Profile,
+  requireCredentials,
+  requireProfile,
+} from "./store.js";
 
 /** The slice of `fetch` the token exchange uses. Injected so a test opens no socket. */
 export type TokenFetch = (
@@ -57,7 +66,7 @@ export interface TokenProviderOptions {
 // re-exported here so every existing importer keeps its path.
 export { tokenClaims, tokenExpiry } from "../claims.js";
 
-export const tokenEndpointFor = (profile: Profile): string =>
+export const tokenEndpointFor = (profile: CognitoProfile): string =>
   `https://${profile.authDomain}/oauth2/token`;
 
 /**
@@ -67,7 +76,7 @@ export const tokenEndpointFor = (profile: Profile): string =>
  * before telling the operator they are signed in.
  */
 export const refreshIdToken = async (
-  profile: Profile,
+  profile: CognitoProfile,
   refreshToken: string,
   doFetch: TokenFetch = globalThis.fetch as unknown as TokenFetch,
 ): Promise<string> => {
@@ -112,6 +121,7 @@ export const createTokenProvider = (options: TokenProviderOptions = {}): TokenPr
 
   const mint = async (): Promise<string> => {
     const profile = options.profile ?? (await requireProfile(options.paths ?? {}));
+    if (isTokenProfile(profile)) return readLocalToken(profile.tokenFile);
     const refreshToken =
       options.refreshToken ?? (await requireCredentials(options.paths ?? {})).refreshToken;
     const token = await refreshIdToken(profile, refreshToken, doFetch);
@@ -124,6 +134,10 @@ export const createTokenProvider = (options: TokenProviderOptions = {}): TokenPr
 
   return {
     idToken: async () => {
+      // A local instance's bearer is read from its file every time: cheap, and a
+      // rotated secret is picked up without restarting anything.
+      const known = options.profile;
+      if (known !== undefined && isTokenProfile(known)) return readLocalToken(known.tokenFile);
       if (cached !== undefined && cached.expiresAtMs - TOKEN_REFRESH_MARGIN_MS > clock.now()) {
         return cached.token;
       }
@@ -133,6 +147,19 @@ export const createTokenProvider = (options: TokenProviderOptions = {}): TokenPr
       return inFlight;
     },
   };
+};
+
+/** A local instance's operator token (D-P12-03), from the file its plane wrote. */
+export const readLocalToken = async (path: string): Promise<string> => {
+  try {
+    const token = (await readFile(path, "utf8")).trim();
+    if (token !== "") return token;
+  } catch {
+    // Fall through to the one message that says what to do.
+  }
+  throw new NotLoggedInError(
+    `the local instance's token is not at ${path}. Start it with \`nightshift local\``,
+  );
 };
 
 /**

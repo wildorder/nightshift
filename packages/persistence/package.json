@@ -28,6 +28,10 @@
     "./http/browser": {
       "types": "./dist/http/browser/index.d.ts",
       "default": "./dist/http/browser/index.js"
+    },
+    "./local": {
+      "types": "./dist/local/index.d.ts",
+      "default": "./dist/local/index.js"
     }
   },
   "dependencies": {
@@ -39,5 +43,6 @@
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
     "zod": "4.6.4"
-  }
+  },
+  "license": "Apache-2.0"
 }

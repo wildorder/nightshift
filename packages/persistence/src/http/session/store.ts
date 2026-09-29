@@ -15,13 +15,13 @@
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { credentialsPath, type PathEnvironment, profilePath } from "./paths.js";
+import { credentialsPath, type PathEnvironment, profilePath, selectStage } from "./paths.js";
 
 /**
  * Where this machine's control plane is, written by `nightshift login` and read
  * by everything else. Nothing here is secret.
  */
-export const ProfileSchema = z.strictObject({
+export const CognitoProfileSchema = z.strictObject({
   /** Origin of the HTTP API, no trailing slash. */
   apiEndpoint: z.string().min(1),
   /** The Cognito hosted domain, without a scheme. */
@@ -29,8 +29,29 @@ export const ProfileSchema = z.strictObject({
   /** The interactive app client. Public: it has no secret (PKCE). */
   clientId: z.string().min(1),
   stage: z.string().min(1),
+  /** Absent in every profile written before P12; a Cognito profile either way. */
+  auth: z.literal("cognito").optional(),
 });
+export type CognitoProfile = z.infer<typeof CognitoProfileSchema>;
+
+/**
+ * A local instance's profile (P12, D-P12-03, D-P12-05): its API and the file
+ * holding its operator's bearer token, which `nightshift-local` wrote owner-only.
+ * There is no sign-in and nothing to refresh.
+ */
+export const TokenProfileSchema = z.strictObject({
+  apiEndpoint: z.string().min(1),
+  stage: z.string().min(1),
+  auth: z.literal("token"),
+  tokenFile: z.string().min(1),
+});
+export type TokenProfile = z.infer<typeof TokenProfileSchema>;
+
+export const ProfileSchema = z.union([TokenProfileSchema, CognitoProfileSchema]);
 export type Profile = z.infer<typeof ProfileSchema>;
+
+export const isTokenProfile = (profile: Profile): profile is TokenProfile =>
+  profile.auth === "token";
 
 /**
  * The operator's session.
@@ -80,8 +101,9 @@ const writeOwnerOnly = async (path: string, value: unknown): Promise<void> => {
 
 export const readProfile = async (
   environment: PathEnvironment = {},
+  stage?: string,
 ): Promise<Profile | undefined> => {
-  const raw = await readJson(profilePath(environment));
+  const raw = await readJson(profilePath(environment, stage));
   return raw === undefined ? undefined : ProfileSchema.parse(raw);
 };
 
@@ -100,7 +122,10 @@ export const writeProfile = async (
   // The profile is not secret, but it sits in the same directory as the
   // credentials, so it inherits the same treatment rather than inviting a
   // second, laxer path.
-  await writeOwnerOnly(profilePath(environment), ProfileSchema.parse(profile));
+  const parsed = ProfileSchema.parse(profile);
+  await writeOwnerOnly(profilePath(environment, parsed.stage), parsed);
+  // Writing a stage's profile selects it: `login` and `local` both mean "use this now".
+  selectStage(parsed.stage, environment);
 };
 
 export const readCredentials = async (

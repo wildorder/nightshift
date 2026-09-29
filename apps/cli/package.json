@@ -19,5 +19,6 @@
   },
   "bin": {
     "nightshift": "./dist/bin/nightshift.js"
-  }
+  },
+  "license": "Apache-2.0"
 }

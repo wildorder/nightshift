@@ -79,8 +79,11 @@ describe("the files and directories underneath", () => {
   const at = { env, platform: "linux" as const, home: HOME };
 
   it("names the profile and credentials inside the config directory", () => {
+    // With no stage selected, the flat path, where nothing is (P12, D-P12-05);
+    // a named stage has its own directory.
     expect(profilePath(at)).toBe(join("/cfg", "profile.json"));
     expect(credentialsPath(at)).toBe(join("/cfg", "credentials.json"));
+    expect(profilePath(at, "dev")).toBe(join("/cfg", "profiles", "dev", "profile.json"));
   });
 
   it("names a run's spool, agent directory and transcript inside the state directory", () => {

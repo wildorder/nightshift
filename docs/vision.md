@@ -285,7 +285,7 @@ the v1 stages are grouped into programs, and
 - v0 execution compatibility, v0 manifests, v0 agent-role configuration, or the
   v0 static author/reviewer/implementer workflow
 - Context-decay mitigation through mandatory fresh agents
-- An independent authoritative local database
+- An independent authoritative local database (the local instance of P12 is not one: it is the one plane, run on one machine; A-48)
 - One cloud VM per leaf job by default
 - Universal examination — examination is risk-based, not blanket ceremony
 

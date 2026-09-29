@@ -118,7 +118,23 @@ export interface CliAssets {
    * process for the same reason: an examiner is an agent.
    */
   readonly resumePath?: string;
+  /** The local instance's entry point, `nightshift-local` (P12, D-P12-01). Spawned, never imported. */
+  readonly localPath?: string;
+  /** A built Studio for the local instance to serve (D-P12-04). */
+  readonly studioDir?: string;
 }
+
+/**
+ * Runs a long-lived program in the foreground (P12): its stderr passes through,
+ * each stdout line is handed to `onLine` and then printed, and the promise is
+ * its exit code. `Ctrl-C` reaches it through the terminal; the CLI waits for it
+ * to finish rather than dying first.
+ */
+export type Launch = (
+  file: string,
+  args: readonly string[],
+  onLine: (line: string) => void | Promise<void>,
+) => Promise<number>;
 
 export interface CliEnvironment {
   /** Ordinary output. */
@@ -140,6 +156,7 @@ export interface CliEnvironment {
   readonly startLoopback: (options: LoopbackOptions) => Promise<Loopback>;
   /** Absent in suites that run no program; `init` then says what to run by hand. */
   readonly exec?: Exec;
+  readonly launch?: Launch;
   readonly assets?: CliAssets;
 }
 
@@ -158,6 +175,24 @@ const nodeExec: Exec = (file, args, options) =>
     });
     child.on("error", reject);
     child.on("close", (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+  });
+
+const nodeLaunch: Launch = (file, args, onLine) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(file, [...args], { stdio: ["inherit", "pipe", "inherit"] });
+    // The terminal's Ctrl-C reaches the child too; the CLI waits for it to close.
+    const ignore = (): void => {};
+    process.on("SIGINT", ignore);
+    const lines = createInterface({ input: child.stdout });
+    let pending: Promise<void> = Promise.resolve();
+    lines.on("line", (line) => {
+      pending = pending.then(() => onLine(line));
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      process.off("SIGINT", ignore);
+      pending.then(() => resolve(code ?? 1), reject);
+    });
   });
 
 /**
@@ -183,10 +218,13 @@ export const createCliEnvironment = (): CliEnvironment => ({
   git: nodeGitRunner,
   startLoopback,
   exec: nodeExec,
+  launch: nodeLaunch,
   assets: {
     skillsDir: join(REPO_ROOT, "skills"),
     mcpServerPath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-mcp.js"),
     orchestratePath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-orchestrate.js"),
     resumePath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-resume.js"),
+    localPath: join(REPO_ROOT, "apps", "api", "dist", "bin", "nightshift-local.js"),
+    studioDir: join(REPO_ROOT, "apps", "studio", "dist"),
   },
 });

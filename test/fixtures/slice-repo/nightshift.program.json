@@ -25,8 +25,8 @@
   "verification": [
     {
       "id": "test",
-      "command": "node --test",
-      "description": "The fixture's own tests, on a clean checkout."
+      "command": "node --test --test-reporter=tap",
+      "description": "The fixture's own tests, on a clean checkout. The reporter is named because the suites read its summary lines (`# pass`, `# fail`), and Node 24 made `spec` the default where Node 22 printed TAP to a pipe."
     },
     {
       "id": "shape",

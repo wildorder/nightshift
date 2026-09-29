@@ -216,7 +216,7 @@ describe("AR-2 negative fixtures: no harness or provider SDK above the adapter l
   });
 });
 
-describe("AR-3 negative fixtures: the memory and http adapters stay offline", () => {
+describe("AR-3 negative fixtures: the memory, http and local adapters stay offline", () => {
   const r = rule("AR-3");
 
   it("reports an AWS SDK import under packages/persistence/src/http", () => {
@@ -237,6 +237,15 @@ describe("AR-3 negative fixtures: the memory and http adapters stay offline", ()
       }),
     );
     expect(offendingPaths(violations)).toEqual(["packages/persistence/src/memory/job-store.ts"]);
+  });
+
+  it("reports an AWS SDK import under packages/persistence/src/local (P12)", () => {
+    const violations = r.check(
+      makeRepo({
+        sources: [staticImport("packages/persistence/src/local/index.ts", "@aws-sdk/client-s3")],
+      }),
+    );
+    expect(offendingPaths(violations)).toEqual(["packages/persistence/src/local/index.ts"]);
   });
 
   it("allows the AWS SDK in the aws adapter directory", () => {

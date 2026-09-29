@@ -23,7 +23,7 @@ import {
   fakeIdToken,
   type RecordedRequest,
 } from "../testing/harness.js";
-import { login, resolveProfile } from "./login.js";
+import { DEFAULT_STAGE, login, resolveProfile } from "./login.js";
 
 const API = "https://4xnsx809u6.execute-api.us-west-2.amazonaws.com";
 const DOMAIN = "nightshift-dev-755348349819.auth.us-west-2.amazoncognito.com";
@@ -341,7 +341,8 @@ describe("the files login writes", () => {
       openBrowser: browserThatSignsIn({}),
     });
     live.push(created);
-    const path = credentialsPath(created.environment.paths);
+    // Where login writes: the default stage's profile directory (P12, D-P12-05).
+    const path = credentialsPath(created.environment.paths, DEFAULT_STAGE);
     await mkdir(dirname(path), { recursive: true });
     // A world-readable leftover from before the rule existed.
     await writeFile(path, "{}", { mode: 0o644 });

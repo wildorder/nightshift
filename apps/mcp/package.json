@@ -25,5 +25,6 @@
   },
   "bin": {
     "nightshift-mcp": "./dist/bin/nightshift-mcp.js"
-  }
+  },
+  "license": "Apache-2.0"
 }

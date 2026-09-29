@@ -86,6 +86,16 @@ export interface StudioConfig {
   /** The Studio's app client id (`StudioClientId`). */
   readonly clientId: string;
   readonly stage: string;
+  /**
+   * The same two values under the key the Studio reads since P12 (D-P12-04),
+   * where a local instance says `{ kind: "token" }` instead. The flat pair stays
+   * for a Studio built before P12.
+   */
+  readonly auth: {
+    readonly kind: "cognito";
+    readonly authDomain: string;
+    readonly clientId: string;
+  };
 }
 
 /** D-P2-10: enough to debug a deploy, cheap, and never infinite. */
@@ -184,11 +194,14 @@ export class NightshiftStudioStack extends Stack {
     });
 
     // --- The app, and its configuration ------------------------------------------
+    const authDomain = Fn.importValue(dataExportName(stage, "AuthDomain"));
+    const clientId = Fn.importValue(dataExportName(stage, "StudioClientId"));
     const config: StudioConfig = {
       apiEndpoint: `https://${apiHostnameFor(stage)}`,
-      authDomain: Fn.importValue(dataExportName(stage, "AuthDomain")),
-      clientId: Fn.importValue(dataExportName(stage, "StudioClientId")),
+      authDomain,
+      clientId,
       stage,
+      auth: { kind: "cognito", authDomain, clientId },
     };
     const deploymentLogs = new logs.LogGroup(this, "SiteDeploymentLogs", {
       retention: STUDIO_DEPLOYMENT_LOG_RETENTION,

@@ -16,6 +16,7 @@
 import {
   credentialsPath,
   deleteCredentials,
+  isTokenProfile,
   readCredentials,
   readProfile,
 } from "@nightshift/persistence/http";
@@ -54,6 +55,8 @@ export const logout = async (
     detail = "not attempted (there was no stored token)";
   } else if (profile === undefined) {
     detail = "not attempted (no profile, so there is no auth domain to revoke against)";
+  } else if (isTokenProfile(profile)) {
+    detail = "not attempted (a local instance has no session to revoke)";
   } else {
     try {
       const outcome = await revokeRefreshToken(

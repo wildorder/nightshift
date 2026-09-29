@@ -20,6 +20,7 @@ import { parseArgs } from "node:util";
 import { decisionBrief, reverseDecision } from "./commands/decision.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
+import { runLocal, useStage } from "./commands/local.js";
 import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
 import { getOrgConfig, setOrgConfig } from "./commands/org-config.js";
@@ -41,6 +42,8 @@ Usage:
   nightshift login [--no-browser]
   nightshift logout [--no-revoke]
   nightshift whoami
+  nightshift local [--port <n>] [--state <dir>] [--no-open]
+  nightshift use <stage>
   nightshift project create --name <name> [--description <text>]
   nightshift init [--project <id> | --name <name>] [--yes] [--repo <path>]
   nightshift plan check <program> [--repo <path>]
@@ -157,6 +160,37 @@ const doLogout = async (environment: CliEnvironment, args: readonly string[]): P
     "nightshift logout [--no-revoke]",
   );
   await logout(environment, { revoke: values["no-revoke"] !== true });
+};
+
+const doLocal = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const { values } = parse(
+    {
+      args: [...args],
+      options: {
+        port: { type: "string" },
+        state: { type: "string" },
+        "no-open": { type: "boolean", default: false },
+      },
+      allowPositionals: false,
+      strict: true,
+    },
+    "nightshift local [--port <n>] [--state <dir>] [--no-open]",
+  );
+  const port = optional(values, "port");
+  const state = optional(values, "state");
+  return runLocal(environment, {
+    ...(port === undefined ? {} : { port }),
+    ...(state === undefined ? {} : { state }),
+    open: values["no-open"] !== true,
+  });
+};
+
+const doUse = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const [stage, ...rest] = args;
+  if (stage === undefined || rest.length > 0) {
+    throw new UsageError("name one stage", "nightshift use <stage>");
+  }
+  return useStage(environment, stage);
 };
 
 const doProject = async (environment: CliEnvironment, args: readonly string[]): Promise<void> => {
@@ -508,6 +542,10 @@ const dispatch = async (
       await whoami(environment);
       return undefined;
     }
+    case "local":
+      return doLocal(environment, args);
+    case "use":
+      return doUse(environment, args);
     case "project":
       await doProject(environment, args);
       return undefined;

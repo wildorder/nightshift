@@ -24,9 +24,10 @@ import {
   type SessionEnvironment,
   signOut,
 } from "./auth/session.js";
-import { loadConfig } from "./config.js";
+import { forgetLocalToken, LOCAL_IDENTITY, takeLocalToken } from "./auth/token-session.js";
+import { type CognitoStudioConfig, loadConfig, type TokenStudioConfig } from "./config.js";
 import "./index.css";
-import { SignInPage } from "./pages/sign-in.js";
+import { LocalStartPage, SignInPage } from "./pages/sign-in.js";
 import type { Studio } from "./studio.js";
 
 const root = createRoot(document.getElementById("root") as HTMLElement);
@@ -61,8 +62,50 @@ const artifactsOver = (transport: Transport): NonNullable<Studio["artifacts"]> =
   },
 });
 
-const start = async (): Promise<void> => {
-  const config = await loadConfig(async (url) => fetch(url));
+/** Everything below the session: the same for a hosted stage and a local instance. */
+const renderStudio = async (
+  transport: Transport,
+  identity: Studio["identity"],
+  signOutAndLeave: () => Promise<void>,
+): Promise<void> => {
+  const orgId = await resolveOrg(transport);
+  const studio: Studio = {
+    stores: createHttpStores({ transport, ...(orgId === undefined ? {} : { actingOrg: orgId }) }),
+    identity,
+    orgId,
+    ids: createUlidIdGenerator(),
+    now: () => nowIso(systemClock),
+    artifacts: artifactsOver(transport),
+    signOut: signOutAndLeave,
+  };
+  render(
+    <BrowserRouter>
+      <App studio={studio} />
+    </BrowserRouter>,
+  );
+};
+
+/** A local instance (D-P12-04): the bearer is the secret from the start URL. */
+const startLocal = async (config: TokenStudioConfig): Promise<void> => {
+  const token = takeLocalToken(window.location, window.sessionStorage, (url) =>
+    window.history.replaceState(null, "", url),
+  );
+  if (token === undefined) {
+    render(<LocalStartPage />);
+    return;
+  }
+  const transport = createFetchTransport({
+    endpoint: config.apiEndpoint,
+    tokens: { idToken: async () => token },
+  });
+  await renderStudio(transport, LOCAL_IDENTITY, async () => {
+    forgetLocalToken(window.sessionStorage);
+    render(<LocalStartPage signedOut />);
+  });
+};
+
+/** A hosted stage (D-P11-04): the pool's hosted UI, PKCE, the refresh token kept. */
+const startHosted = async (config: CognitoStudioConfig): Promise<void> => {
   const env: SessionEnvironment = {
     config,
     durable: window.localStorage,
@@ -102,24 +145,15 @@ const start = async (): Promise<void> => {
     render(<SignInPage onSignIn={signIn} problem={`Your session ended: ${String(error)}`} />);
     return;
   }
-  const orgId = await resolveOrg(transport);
-  const studio: Studio = {
-    stores: createHttpStores({ transport, ...(orgId === undefined ? {} : { actingOrg: orgId }) }),
-    identity,
-    orgId,
-    ids: createUlidIdGenerator(),
-    now: () => nowIso(systemClock),
-    artifacts: artifactsOver(transport),
-    signOut: async () => {
-      await signOut(env);
-      window.location.assign("/");
-    },
-  };
-  render(
-    <BrowserRouter>
-      <App studio={studio} />
-    </BrowserRouter>,
-  );
+  await renderStudio(transport, identity, async () => {
+    await signOut(env);
+    window.location.assign("/");
+  });
+};
+
+const start = async (): Promise<void> => {
+  const config = await loadConfig(async (url) => fetch(url));
+  await (config.kind === "token" ? startLocal(config) : startHosted(config));
 };
 
 start().catch((error: unknown) => {

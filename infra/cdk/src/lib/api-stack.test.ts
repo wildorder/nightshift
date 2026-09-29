@@ -535,11 +535,11 @@ describe("NightshiftApiStack", () => {
   });
 
   describe("functions", () => {
-    it("runs every function on Node 22, arm64", () => {
+    it("runs every function on Node 24, arm64", () => {
       const functions = resourcesOf(synth().template, "AWS::Lambda::Function");
       expect(functions).toHaveLength(3);
       for (const fn of functions) {
-        expect(fn.Properties?.Runtime).toBe("nodejs22.x");
+        expect(fn.Properties?.Runtime).toBe("nodejs24.x");
         expect(fn.Properties?.Architectures).toEqual(["arm64"]);
       }
     });

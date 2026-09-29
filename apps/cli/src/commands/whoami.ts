@@ -20,7 +20,13 @@
  * works — which is half of what is being asked.
  */
 import { ProjectSchema } from "@nightshift/contracts";
-import { credentialsPath, profilePath, routes, tokenClaims } from "@nightshift/persistence/http";
+import {
+  credentialsPath,
+  isTokenProfile,
+  profilePath,
+  routes,
+  tokenClaims,
+} from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { openFreshSession } from "../session.js";
 
@@ -58,14 +64,19 @@ const readRefusal = (body: unknown): { code: string; message: string } => {
 export const whoami = async (environment: CliEnvironment): Promise<WhoamiResult> => {
   const session = await openFreshSession(environment);
   const claims = tokenClaims(session.idToken);
-  const subject = asString(claims.sub);
-  const email = asString(claims.email);
+  // A local instance's bearer is a secret, not a JWT: its operator is the one
+  // it seeded (D-P12-03).
+  const local = isTokenProfile(session.profile);
+  const subject = local ? "local-operator" : asString(claims.sub);
+  const email = local ? "local-operator (a local instance; no sign-in)" : asString(claims.email);
   const activeOrgClaim = asString(claims[ACTIVE_ORG_CLAIM]);
 
   environment.out(`subject ${subject ?? "(the ID token carries no sub claim)"}`);
   environment.out(`email   ${email ?? "(the ID token carries no email claim)"}`);
   environment.out(`profile ${profilePath(environment.paths)}`);
-  environment.out(`session ${credentialsPath(environment.paths)}`);
+  environment.out(
+    `session ${isTokenProfile(session.profile) ? session.profile.tokenFile : credentialsPath(environment.paths)}`,
+  );
   environment.out(`control plane ${session.profile.apiEndpoint} (stage ${session.profile.stage})`);
   if (activeOrgClaim !== undefined) {
     environment.out(`${ACTIVE_ORG_CLAIM} ${activeOrgClaim}`);

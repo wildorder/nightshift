@@ -37,7 +37,7 @@ export const runPrefix = (scope: RunKey): string =>
  * Entries are kept in ascending key order on read, which is what makes list
  * results stable across calls and lets a cursor be a simple offset.
  */
-export class ScopedMap<T> {
+export class ScopedMap<T> implements KeyValueTable<T> {
   private readonly entries = new Map<string, T>();
 
   set(key: string, value: T): void {
@@ -102,3 +102,32 @@ export const paginate = <T>(
 
   return next < items.length ? { items: page, cursor: String(next) } : { items: page };
 };
+
+/**
+ * The storage the memory store's logic runs over (P12, D-P12-02).
+ *
+ * `ScopedMap` is the reference implementation; `@nightshift/persistence/local`
+ * supplies a SQLite table with the same behaviour, held equal to this one by a
+ * property test. Synchronous on purpose: every store method reads and writes
+ * with no `await` between, so a sequence of calls is atomic in JavaScript, and
+ * `atomically` (below) makes it atomic on disk too.
+ */
+export interface KeyValueTable<T> {
+  set(key: string, value: T): void;
+  get(key: string): T | undefined;
+  has(key: string): boolean;
+  delete(key: string): boolean;
+  readonly size: number;
+  /** Every value whose key begins with `prefix`, in ascending key order. */
+  scan(prefix: string): readonly T[];
+  all(): readonly T[];
+  clear(): void;
+}
+
+/** Makes one table per store, by a stable name. */
+export type TableFactory = <T>(name: string) => KeyValueTable<T>;
+
+/** Runs `fn` as one unit of storage: a transaction on disk, a plain call in memory. */
+export type Atomically = <T>(fn: () => T) => T;
+
+export const mapTables: TableFactory = <T>() => new ScopedMap<T>();

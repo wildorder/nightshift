@@ -89,7 +89,15 @@ import {
   type UserStore,
   type VerificationStore,
 } from "@nightshift/core";
-import { paginate, programPrefix, projectPrefix, runPrefix, ScopedMap } from "./scoped-map.js";
+import {
+  type Atomically,
+  mapTables,
+  paginate,
+  programPrefix,
+  projectPrefix,
+  runPrefix,
+  type TableFactory,
+} from "./scoped-map.js";
 
 /** Everything one in-memory control plane holds. Reset between tests. */
 export interface InMemoryState {
@@ -120,6 +128,14 @@ export interface InMemoryOptions {
    * synchronously unless a test is deliberately exercising the lag.
    */
   readonly deferSequencing?: boolean;
+  /**
+   * Where the records live (P12, D-P12-02). One table per store, by name; the
+   * default is a `Map` each, as before. `@nightshift/persistence/local` passes
+   * SQLite tables, and every method below is the same code over either.
+   */
+  readonly tables?: TableFactory;
+  /** Runs a multi-write step as one unit. The default runs it directly. */
+  readonly atomically?: Atomically;
 }
 
 export interface InMemoryStores extends NightshiftStores, InMemoryState {}
@@ -130,24 +146,26 @@ const userPrefix = (userId: UserId): string => `${userId}/`;
 
 export const createInMemoryStores = (options: InMemoryOptions = {}): InMemoryStores => {
   const deferSequencing = options.deferSequencing ?? false;
-  const projects = new ScopedMap<Project>();
-  const projectsByOrg = new ScopedMap<Project>();
-  const programContracts = new ScopedMap<ProgramContract>();
-  const runs = new ScopedMap<Run>();
-  const executionNodes = new ScopedMap<ExecutionNode>();
-  const jobContracts = new ScopedMap<JobContract>();
-  const agents = new ScopedMap<Agent>();
-  const events = new ScopedMap<Event>();
-  const eventsByIdempotencyKey = new ScopedMap<Event>();
-  const decisions = new ScopedMap<Decision>();
-  const checkpoints = new ScopedMap<Checkpoint>();
-  const verifications = new ScopedMap<Verification>();
-  const examinations = new ScopedMap<Examination>();
-  const routingDecisions = new ScopedMap<RoutingDecision>();
-  const artifacts = new ScopedMap<Artifact>();
-  const users = new ScopedMap<User>();
-  const memberships = new ScopedMap<Membership>();
-  const orgConfigs = new ScopedMap<OrgConfig>();
+  const table = options.tables ?? mapTables;
+  const atomically: Atomically = options.atomically ?? ((fn) => fn());
+  const projects = table<Project>("projects");
+  const projectsByOrg = table<Project>("projectsByOrg");
+  const programContracts = table<ProgramContract>("programContracts");
+  const runs = table<Run>("runs");
+  const executionNodes = table<ExecutionNode>("executionNodes");
+  const jobContracts = table<JobContract>("jobContracts");
+  const agents = table<Agent>("agents");
+  const events = table<Event>("events");
+  const eventsByIdempotencyKey = table<Event>("eventsByIdempotencyKey");
+  const decisions = table<Decision>("decisions");
+  const checkpoints = table<Checkpoint>("checkpoints");
+  const verifications = table<Verification>("verifications");
+  const examinations = table<Examination>("examinations");
+  const routingDecisions = table<RoutingDecision>("routingDecisions");
+  const artifacts = table<Artifact>("artifacts");
+  const users = table<User>("users");
+  const memberships = table<Membership>("memberships");
+  const orgConfigs = table<OrgConfig>("orgConfigs");
 
   const all = [
     projects,
@@ -170,9 +188,16 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     orgConfigs,
   ];
 
-  /** Sequence counters, one per run. Never reused, so ordering is total. */
-  const sequences = new Map<string, number>();
-  /** Global append order, for deferred numbering. */
+  /**
+   * Sequence counters, one per run. Never reused, so ordering is total. A table
+   * like the rest, so a durable store keeps numbering where it stopped.
+   */
+  const sequences = table<number>("sequences");
+  /**
+   * Global append order, for deferred numbering only: in memory even over a
+   * durable table, because a durable store never defers (the local plane numbers
+   * on append, as the materializer would).
+   */
   const appendOrder: string[] = [];
 
   /**
@@ -180,7 +205,9 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
    * a number is assigned after the fact, shared by `materializeSequences` and the
    * ledger so the two cannot number differently.
    */
-  const stampStored = (key: string): StampOutcome => {
+  const stampStored = (key: string): StampOutcome => atomically(() => stampStoredNow(key));
+
+  const stampStoredNow = (key: string): StampOutcome => {
     const event = events.get(key);
     if (event === undefined) return { kind: "missing" };
     if (event.sequence !== null) return { kind: "already_numbered", sequence: event.sequence };
@@ -271,27 +298,29 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
 
       // Idempotent on the key within a run: a replayed local spool must converge
       // rather than double-count (A-06).
-      const existing = eventsByIdempotencyKey.get(idempotencyKey);
-      if (existing !== undefined) return { stored: false, event: existing };
+      return atomically((): AppendResult => {
+        const existing = eventsByIdempotencyKey.get(idempotencyKey);
+        if (existing !== undefined) return { stored: false, event: existing };
 
-      const runKey = runPrefix(parsed);
+        const runKey = runPrefix(parsed);
 
-      // Key by the event's ULID, matching the real adapter: the storage key cannot
-      // depend on a sequence that may not exist yet.
-      const key = `${runKey}${parsed.eventId}`;
-      appendOrder.push(key);
+        // Key by the event's ULID, matching the real adapter: the storage key cannot
+        // depend on a sequence that may not exist yet.
+        const key = `${runKey}${parsed.eventId}`;
+        appendOrder.push(key);
 
-      let sequence: number | null = null;
-      if (!deferSequencing) {
-        sequence = sequences.get(runKey) ?? 0;
-        sequences.set(runKey, sequence + 1);
-      }
+        let sequence: number | null = null;
+        if (!deferSequencing) {
+          sequence = sequences.get(runKey) ?? 0;
+          sequences.set(runKey, sequence + 1);
+        }
 
-      // Sequence is assigned by the store, never trusted from the caller.
-      const stored: Event = { ...parsed, sequence };
-      events.set(key, stored);
-      eventsByIdempotencyKey.set(idempotencyKey, stored);
-      return { stored: true, event: stored };
+        // Sequence is assigned by the store, never trusted from the caller.
+        const stored: Event = { ...parsed, sequence };
+        events.set(key, stored);
+        eventsByIdempotencyKey.set(idempotencyKey, stored);
+        return { stored: true, event: stored };
+      });
     },
     listByRun: async (scope: RunScope, options?: PageRequest & { afterSequence?: number }) => {
       // Scan yields ULID order. Numbered events are then ordered by sequence, with
