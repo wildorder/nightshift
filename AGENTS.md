@@ -70,11 +70,13 @@ See `tasks/{program-id}/` for task specs.
 commits, or prior Nightshift source unless explicitly instructed by a human.**
 
 Nightshift v1 began from an orphan `v1` branch with a new root commit, which
-became `main` on 2026-09-28; the legacy tree is the `v0` branch. v1 deliberately
+became `main` on 2026-09-28. The legacy tree is not in this repository: since
+2026-09-29 it lives only in the private `wildorder/nightshift-archive`, and this
+repository holds v1's history alone. v1 deliberately
 inherits nothing from v0. Concretely, you must not:
 
 - check out, diff, `git show`, `git log`, or otherwise read any branch other than
-  the current program branch and its base — this includes `v0`, `origin/*`,
+  the current program branch and its base — this includes the archive's refs,
   `program/*`, `nightshift/*`, and every `v0.*` tag;
 - restore, copy, or "port over" any v0 file, module, schema, config, manifest,
   task spec, skill, or directive;
