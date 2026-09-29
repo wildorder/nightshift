@@ -43,5 +43,6 @@
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
     "zod": "4.6.4"
-  }
+  },
+  "license": "Apache-2.0"
 }

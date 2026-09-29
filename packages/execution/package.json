@@ -15,5 +15,6 @@
     "@nightshift/core": "*",
     "@nightshift/harness": "*",
     "@nightshift/verification": "*"
-  }
+  },
+  "license": "Apache-2.0"
 }

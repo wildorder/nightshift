@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p12-local-instance` |
 | Source stage | none: the owner's direction of 2026-09-28 (§3.1), after the P11 close |
-| Status | **Ratified 2026-09-28** (D-P12-01 … D-P12-09, §12). Not started; build from T1. |
+| Status | **Built 2026-09-28** (T1 … T5, §13); dev redeployed on Node 24, smoke suites green; awaiting the owner's trial (SC-P12-10) and their word on the build decisions (§13). |
 | Depends on | P3 (the local control plane the slice suite runs, the CLI session), P4 (principals, execution tokens), P11 (the Studio, `persistence/http/browser`) |
 | Blocking decisions | none: D-P12-01 … D-P12-09 ratified |
 
@@ -298,9 +298,105 @@ Specs live in `tasks/p12-local-instance/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-28 | **Built.** T1 … T5 on `program/p12-local-instance`; verify green under Node 24 (3,278 tests); `local:e2e` green; dev redeployed (all functions `nodejs24.x`), `smoke` 90 of 90, `studio:smoke` 10 of 10. The build decisions of §13 are provisional until the owner ratifies or reverses them. | Agent, for human ratification |
 | 2026-09-28 | **Contract ratified.** D-P12-01, -04, -06, -08 and -09 agreed as written after the owner walked the other four. | **Human** |
 | 2026-09-28 | **D-P12-07 ratified**: Apache-2.0, knowing it permits closed and commercial forks and competing hosted services; the owner accepts that exposure for a portfolio piece. | **Human** |
 | 2026-09-28 | **D-P12-05 ratified**: profiles per stage, `nightshift use`, the one-time migration. | **Human** |
 | 2026-09-28 | **D-P12-03 ratified**, with the owner's note: a local user may want several orgs one day; the seeded operator is an ordinary user with ordinary memberships so that is a row and the existing acting-org selection, not a redesign. | **Human** |
 | 2026-09-28 | **D-P12-02 ratified**, with the owner's amendment: the workspace moves to Node 24 rather than carrying `node:sqlite`'s experimental status on 22. | **Human** |
 | 2026-09-28 | Contract drafted from the owner's direction (§3.1) and the code: nine decisions proposed for ratification. Hand-written, as P1 … P11; the owner is open to dogfooding later. | Agent, for human ratification |
+
+## 13. As built
+
+Built 2026-09-28 on `program/p12-local-instance`, T1 … T5 in one sitting.
+
+### Task states
+
+| Task | State | Notes |
+|------|-------|-------|
+| T1 | **done** | `KeyValueTable`; the memory store over a `TableFactory`, its sequence counters a table; `@nightshift/persistence/local`; Node 24 everywhere, the Lambda included |
+| T2 | **done** | `apps/api/src/local/` (server, credentials, identity, objects, main); the `nightshift-local` bin; the harness over the same server |
+| T3 | **done** | profiles per stage, the flat-file migration, `nightshift use`, `nightshift local`, `login` refusing `local` |
+| T4 | **done** | the Studio's config union, the token session, the hosted `config.json`'s `auth` block (deployed) |
+| T5 | **done** | `npm run local:e2e`; `LICENSE`, `NOTICE`, `license` in every `package.json`; the README; A-48, AGENTS.md, vision, staging |
+
+### What was proven, and where
+
+| SC | State | By |
+|----|-------|----|
+| SC-P12-01 | met | `test/src/local/local-e2e.test.ts` (through the CLI, port 0); by hand on this machine under Node 22 with the linked binary: 401 without the token, 200 with it, the Studio and `config.json` served, `whoami` answering as the local operator |
+| SC-P12-02 | met | `local-e2e.test.ts`: `project create`, a planned program checked, ratified, run by the real headless root to a report, `report` regenerated, `decision reverse`; no command changed for it |
+| SC-P12-03 | met | the same run: workers hold execution tokens the local plane minted and verified with the real verifier; the harness suites (P4's matrix among them) run over the same server |
+| SC-P12-04 | met | `apps/api/src/local/local-instance.test.ts`: no bearer, a wrong one and a forged `test-principal.` all 401; the token file 0600 |
+| SC-P12-05 | met | `packages/persistence/src/local/sqlite-table.test.ts` (the equivalence property over 200 generated runs; records, sequences, idempotency and config versions across a reopen); `test/src/conformance/local.test.ts` (the port conformance suite over SQLite); `local-e2e.test.ts` (the plane stopped and started, the report rebuilt from it, the plan document read back) |
+| SC-P12-06 | met offline | `apps/studio/src/auth/token-session.test.ts`, `config.test.ts` over all three shapes; the P11 suites unchanged; the hosted `config.json` checked live by `studio:smoke`. The Studio's pages over a local plane in a browser are the owner's trial |
+| SC-P12-07 | met | `packages/persistence/src/http/session/stages.test.ts` (selection, the migration keeping a sign-in, stage names); `apps/cli/src/commands/local.test.ts` (`use`, `local`, `login`'s refusal) |
+| SC-P12-08 | met | the slice, CLI, planning, execution and MCP suites pass over the wrapped harness; `npm run verify` green under Node 24 |
+| SC-P12-09 | met | `LICENSE` (Apache-2.0, verbatim), `NOTICE`, `"license": "Apache-2.0"` in all 17 manifests; the README's quick start in the order `local:e2e` runs it |
+| SC-P12-10 | **the owner's** | below |
+
+### The live battery, 2026-09-28
+
+`npm run deploy` under Node 24: all five stacks; the four Node functions now
+`nodejs24.x`. `npm run smoke` 90 of 90; `npm run studio:smoke` 10 of 10 (its
+`config.json` check now expects the `auth` block). Nothing about the hosted
+stage changed but the runtime and that block.
+
+### Build decisions, provisional until the owner ratifies or reverses them
+
+1. **The local API is served under `/api`, the Studio at `/`.** Same origin was
+   ratified (D-P12-04); the Studio's page paths (`/projects/…`) are also API
+   routes, so one origin cannot answer both at the root. `apiEndpoint` in the
+   local profile and `config.json` is `http://127.0.0.1:47820/api`. The harness
+   keeps the API at the root, so no suite changed.
+2. **A profile is a tagged union with the Cognito shape unchanged**
+   (`auth: "token"` plus `tokenFile`, or no `auth` key), not the nested `auth:
+   { kind, … }` §4.3 sketched. Every profile written before P12 stays valid as it
+   is, so the migration is a move with no rewrite.
+3. **The migration runs lazily**, the first time anything reads the current
+   stage, not at a fixed moment. Your own machine's `~/.config/nightshift/` will
+   move under `profiles/dev/` the first time you run any command after pulling.
+4. **`nightshift local` leaves the local profile selected when it stops.**
+   `nightshift use dev` switches back. The alternative, restoring the previous
+   stage on exit, would surprise a second terminal still pointed at local.
+5. **The fixture names `--test-reporter=tap`.** Node 24 made `spec` the default
+   reporter for a pipe; the P3 suites assert TAP's summary lines. The proper fix
+   is the fixture saying which reporter it means, which is what it now does.
+6. **The launcher is not handed a token by `local:e2e`**; it finds the local
+   profile through the config directory, as a real launcher does. The P7 suite's
+   placeholder token (which the harness ignored) would be refused by the product
+   plane.
+7. **`NOTICE` names the copyright holder as the git author, `Tim OConnell`.**
+   Change it to the spelling or entity you want before the repository is public.
+8. **The dev stage was redeployed**, beyond §9's "no deploy needed", because the
+   Node 24 amendment moved the Lambda runtime; leaving it for a later deploy
+   would have moved the runtime unobserved.
+
+### What changed in earlier programs' suites, and why
+
+Nothing was weakened.
+
+- **P3** `test/fixtures/slice-repo/nightshift.program.json`: the test step names
+  its reporter (build decision 5). `apps/cli/src/commands/login.test.ts`: the
+  0600 leftover is planted where login now writes (D-P12-05).
+  `paths.test.ts` gains the per-stage path.
+- **P1** AR-3 covers the local adapter, with a negative fixture.
+- **P2** the CDK test expects `nodejs24.x`.
+- **P11** the studio stack test and `studio:smoke` expect the `auth` block.
+
+### For the owner's trial (SC-P12-10)
+
+1. Pull, `npm ci`, `npm run build`. Your default Node is 22 and works; `fnm use
+   24` is the supported one.
+2. `nightshift local`. The Studio opens on `127.0.0.1:47820`. Your hosted sign-in
+   is untouched under `profiles/dev/`.
+3. In another repository, `nightshift init` (a new project in the local org),
+   plan something small with `/plan-program`, ratify, `nightshift run`, and
+   watch it in the local Studio.
+4. `Ctrl-C` the plane, start it again, and check the run page and the report are
+   all there.
+5. `nightshift use dev` to go back to the hosted stage.
+
+Look for: anything that still assumed a hosted stage; the Studio's behaviour on
+a token that has expired from `sessionStorage` (a new tab); and whether the
+README's quick start is what you actually typed.

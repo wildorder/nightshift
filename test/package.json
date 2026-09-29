@@ -41,5 +41,6 @@
       "types": "./dist/harness/scripted.d.ts",
       "default": "./dist/harness/scripted.js"
     }
-  }
+  },
+  "license": "Apache-2.0"
 }

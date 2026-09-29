@@ -18,6 +18,7 @@ export { openBrowser, openerFor } from "./browser.js";
 export { runCli, USAGE, VERSION } from "./cli.js";
 export { mintId } from "./commands/id.js";
 export { detectVerification, type InitOptions, type InitResult, init } from "./commands/init.js";
+export { runLocal, useStage } from "./commands/local.js";
 export {
   DEFAULT_STAGE,
   type LoginFlags,
@@ -44,6 +45,7 @@ export {
   type CliEnvironment,
   createCliEnvironment,
   type Exec,
+  type Launch,
   type Write,
 } from "./environment.js";
 export {

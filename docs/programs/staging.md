@@ -56,6 +56,7 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 | **P9** | Decision Graph & Correction | 8 | Every decision is tied to the commits it produced; reversing one starts a correction planned from its record with the owner, ratified and run back to verified (reframed by the owner 2026-09-27: re-planning, not cone replay) | — | complete (the owner's trial follows the close) |
 | **P10** | Remote Runner | 9 | Hosted remote execution; architecture must be revisited against the retained capability evidence before implementation | O-03 instance sizing/lifecycle; O-05 harness credential transport; O-06 git remote/integration policy | deferred by owner, 2026-09-28 |
 | **P11** | Realtime, Analytics & Studio | 10 + Studio UI | Local runs and decisions visible live in Studio; full run state and history reconstructable from centralized APIs alone | O-02 (resolved by D-P11-05) | ratified 2026-09-28, in build (`p11-studio.md`) |
+| **P12** | Local Instance | — (inserted) | Nightshift runs on one machine with no cloud account: `nightshift local`, the same plane over SQLite, the Studio beside it; the repository opened under Apache-2.0 | — | built 2026-09-28 (`p12-local-instance.md`) |
 
 Open decision IDs refer to `docs/architecture.md` §3.
 

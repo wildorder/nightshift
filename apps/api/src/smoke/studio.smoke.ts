@@ -244,7 +244,19 @@ describe("phase 1: the hosted Studio and its configuration (SC-P11-09)", () => {
     const response = await fetch(`${studio.studioUrl}/config.json`);
     expect(response.status).toBe(200);
     const config = (await response.json()) as Record<string, unknown>;
-    expect(Object.keys(config).sort()).toEqual(["apiEndpoint", "authDomain", "clientId", "stage"]);
+    expect(Object.keys(config).sort()).toEqual([
+      "apiEndpoint",
+      "auth",
+      "authDomain",
+      "clientId",
+      "stage",
+    ]);
+    // P12 (D-P12-04): the block the Studio reads, naming the same client.
+    expect(config.auth).toEqual({
+      kind: "cognito",
+      authDomain: context.authDomain,
+      clientId: context.studioClientId,
+    });
     // The hostname the CLI calls (D-P11-03), never the generated endpoint.
     expect(config.apiEndpoint).toBe(`https://api.${context.stage}.nightshift.wildorder.dev`);
     if (context.apiCustomEndpoint !== undefined) {

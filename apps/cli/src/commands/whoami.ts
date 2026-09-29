@@ -74,7 +74,9 @@ export const whoami = async (environment: CliEnvironment): Promise<WhoamiResult>
   environment.out(`subject ${subject ?? "(the ID token carries no sub claim)"}`);
   environment.out(`email   ${email ?? "(the ID token carries no email claim)"}`);
   environment.out(`profile ${profilePath(environment.paths)}`);
-  environment.out(`session ${credentialsPath(environment.paths)}`);
+  environment.out(
+    `session ${isTokenProfile(session.profile) ? session.profile.tokenFile : credentialsPath(environment.paths)}`,
+  );
   environment.out(`control plane ${session.profile.apiEndpoint} (stage ${session.profile.stage})`);
   if (activeOrgClaim !== undefined) {
     environment.out(`${ACTIVE_ORG_CLAIM} ${activeOrgClaim}`);

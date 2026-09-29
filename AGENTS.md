@@ -325,6 +325,35 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   instance belong to P10. Nightshift never runs a worker as a per-job hosted
   environment.
 
+**As built for P12 (Local Instance), 2026-09-28.** The details a later program
+needs and cannot derive; full account in `docs/programs/p12-local-instance.md`
+§13. The lasting decision is A-48.
+
+- **Node 24.** `engines >=24 <25`, `.node-version` 24, the Lambda on
+  `nodejs24.x`. `node:sqlite` is used under `packages/persistence/src/local/`
+  only. The slice fixture names `--test-reporter=tap`: Node 24 prints `spec` to a
+  pipe, and the suites read TAP's summary.
+- **The memory store runs over a `TableFactory`** (`scoped-map.ts`:
+  `KeyValueTable`, `mapTables`, `Atomically`). Its sequence counters are a table
+  like the rest. `createLocalStores({ file })` is the same code over SQLite
+  tables; a multi-write step (an event append, a deferred stamp) is one
+  transaction. Do not add a store method to one adapter only: there is one.
+- **One loopback server**, `apps/api/src/local/server.ts`, for the product and
+  the harness. `authenticate` is injected: the product accepts the operator's
+  secret or an execution token it signed, and nothing else; the harness adds
+  its default principal and `test-principal.`. The product serves the API under
+  `/api` because the Studio's page paths are API paths.
+- **Profiles per stage.** `profilePath(env, stage?)`, `currentStage`,
+  `selectStage`, `knownStages`; `writeProfile` selects its stage; a flat pre-P12
+  profile is moved once. A profile is Cognito (no `auth` key) or
+  `{ auth: "token", tokenFile }`; `createTokenProvider` reads a token profile's
+  file on every request. `login` refuses the `local` stage.
+- **The Studio's `config.json`** is Cognito (flat pair, and since P12 `auth:
+  { kind: "cognito", … }`) or `auth: { kind: "token" }`; a local tab takes its
+  bearer from the start URL's fragment into `sessionStorage`.
+- **`npm run local:e2e`** is the stranger's path end to end; it runs in `npm test`
+  too (`test/src/local/`).
+
 **As built for P11 (Studio), 2026-09-28.** The details a later program needs and
 cannot derive; full account in `docs/programs/p11-studio.md` §13. The lasting
 decision is A-15a.

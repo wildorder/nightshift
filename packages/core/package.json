@@ -13,5 +13,6 @@
   "dependencies": {
     "@nightshift/contracts": "*",
     "ulid": "3.0.2"
-  }
+  },
+  "license": "Apache-2.0"
 }
