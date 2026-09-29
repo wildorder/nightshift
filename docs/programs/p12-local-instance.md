@@ -368,7 +368,11 @@ stage changed but the runtime and that block.
    plane.
 7. **`NOTICE` names the copyright holder as the git author, `Tim OConnell`.**
    Change it to the spelling or entity you want before the repository is public.
-8. **The dev stage was redeployed**, beyond §9's "no deploy needed", because the
+8. **One `jsdom`, 30.1.1, declared at the root.** P11 pinned 29.1.1 in the
+   Studio for Node 22; vitest resolves its environment from the root, where a
+   clean `npm ci` under Node 24's npm left nothing, so every Studio test failed
+   to start in CI. With Node 22 dropped the pin had no reason left.
+9. **The dev stage was redeployed**, beyond §9's "no deploy needed", because the
    Node 24 amendment moved the Lambda runtime; leaving it for a later deploy
    would have moved the runtime unobserved.
 
