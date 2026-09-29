@@ -333,30 +333,38 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
 
   /** The Studio: its files by path, `config.json`, and `index.html` for every page path. */
   const studioRoot = options.studio === undefined ? undefined : resolve(options.studio.dir);
+  /** The file a Studio path answers with: itself when it is a file inside the root, else the app. */
+  const studioFileFor = (root: string, path: string): string => {
+    const candidate = resolve(root, `.${decodeURIComponent(path)}`);
+    const inside = candidate === root || candidate.startsWith(root + sep);
+    return inside && existsSync(candidate) && statSync(candidate).isFile()
+      ? candidate
+      : join(root, "index.html");
+  };
+
   const handleStudio = (request: IncomingMessage, response: ServerResponse, path: string): void => {
     const studio = options.studio;
     if (studio === undefined || studioRoot === undefined) {
-      return refuse(response, 404, "not_found", "no such route");
+      refuse(response, 404, "not_found", "no such route");
+    } else if (request.method !== "GET" && request.method !== "HEAD") {
+      refuse(response, 405, "method_not_allowed", "the Studio's files are read-only");
+    } else if (path === "/config.json") {
+      send(response, 200, studio.config(origin));
+    } else {
+      const file = studioFileFor(studioRoot, path);
+      if (!existsSync(file)) {
+        refuse(response, 404, "not_found", "the Studio is not built");
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream",
+        "cache-control": file.endsWith("index.html")
+          ? "no-cache"
+          : "public, max-age=31536000, immutable",
+      });
+      if (request.method === "HEAD") response.end();
+      else createReadStream(file).pipe(response);
     }
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return refuse(response, 405, "method_not_allowed", "the Studio's files are read-only");
-    }
-    if (path === "/config.json") return send(response, 200, studio.config(origin));
-    const candidate = resolve(studioRoot, `.${decodeURIComponent(path)}`);
-    const inside = candidate === studioRoot || candidate.startsWith(studioRoot + sep);
-    const file =
-      inside && existsSync(candidate) && statSync(candidate).isFile()
-        ? candidate
-        : join(studioRoot, "index.html");
-    if (!existsSync(file)) return refuse(response, 404, "not_found", "the Studio is not built");
-    response.writeHead(200, {
-      "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream",
-      "cache-control": file.endsWith("index.html")
-        ? "no-cache"
-        : "public, max-age=31536000, immutable",
-    });
-    if (request.method === "HEAD") return void response.end();
-    createReadStream(file).pipe(response);
   };
 
   const server: Server = createServer((request, response) => {
