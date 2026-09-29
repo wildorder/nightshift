@@ -6,7 +6,7 @@
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
-    "node": ">=22 <23",
+    "node": ">=24 <25",
     "npm": ">=10"
   },
   "workspaces": [
@@ -40,7 +40,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.13",
-    "@types/node": "22.20.2",
+    "@types/node": "24.19.0",
     "aws-cdk": "2.1141.0",
     "fast-check": "4.10.0",
     "typescript": "7.0.2",

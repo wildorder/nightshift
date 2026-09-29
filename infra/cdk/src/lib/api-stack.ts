@@ -507,7 +507,7 @@ export class NightshiftApiStack extends Stack {
   }
 
   /**
-   * A bundled Node 22 function. `arm64` because nothing here needs x86 and
+   * A bundled Node 24 function. `arm64` because nothing here needs x86 and
    * Graviton is cheaper per millisecond. The AWS SDK is bundled rather than taken
    * from the runtime, so the deployed SDK is the pinned one the tests ran against.
    */
@@ -526,13 +526,13 @@ export class NightshiftApiStack extends Stack {
       // asked, and CDK does not ask on our behalf.
       environment: { ...props.environment, NODE_OPTIONS: "--enable-source-maps" },
       handler: "handler",
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       projectRoot: REPO_ROOT,
       depsLockFilePath: `${REPO_ROOT}package-lock.json`,
       bundling: {
         format: nodejs.OutputFormat.CJS,
-        target: "node22",
+        target: "node24",
         minify: true,
         sourceMap: true,
         externalModules: [],

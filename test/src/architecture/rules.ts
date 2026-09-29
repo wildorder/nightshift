@@ -333,6 +333,10 @@ const AWS_FREE_ADAPTER_PREFIXES: readonly [string, string][] = [
     "packages/persistence/src/http/",
     "the http adapter reaches the control plane over HTTPS and must hold no AWS credentials (A-28)",
   ],
+  [
+    "packages/persistence/src/local/",
+    "the local adapter is the plane's store on one machine, over SQLite, and needs no AWS account (P12, D-P12-02)",
+  ],
 ];
 
 const PERSISTENCE_AWS = "@nightshift/persistence/aws";
@@ -490,7 +494,7 @@ export const ARCHITECTURE_RULES: readonly ArchitectureRule[] = [
   },
   {
     id: "AR-3",
-    name: "the memory and http adapters have no AWS SDK import (SC-P1-21, A-28)",
+    name: "the memory, http and local adapters have no AWS SDK import (SC-P1-21, A-28, D-P12-02)",
     check: (repo) => {
       const violations: Violation[] = [];
       for (const file of repo.sources) {

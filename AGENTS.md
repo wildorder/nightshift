@@ -162,7 +162,9 @@ may not revise a Program Contract to make your implementation pass.
 decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
 
 - Workspace: npm workspaces, TypeScript project references, `strict: true`,
-  Node 22 runtime. Package names are `@nightshift/<dir-name>`.
+  Node 24 runtime (moved from 22 in P12, D-P12-02). Package names are
+  `@nightshift/<dir-name>`. `node:sqlite` is used under `packages/persistence/src/local/`
+  only (P12), the local instance's store.
 - Formatter and linter: Biome, one config at the repo root. No ESLint, no
   Prettier.
 - Tests: vitest; property tests with fast-check. Test files sit beside the code

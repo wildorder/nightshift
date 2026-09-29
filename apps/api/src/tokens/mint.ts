@@ -10,7 +10,7 @@
  * ## Why RSA-2048 and RS256 (T2 deliverable 1)
  *
  * Both RSA-2048 and ECC P-256 are asymmetric sign/verify keys KMS offers and
- * Node 22 handles natively, so library support decides nothing. Three things do:
+ * Node handles natively, so library support decides nothing. Three things do:
  *
  * 1. **Verification is the hot path.** The authorizer verifies on every request;
  *    minting happens once per agent. RSA verification with the standard public

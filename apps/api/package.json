@@ -28,5 +28,8 @@
     "@aws-sdk/client-sts": "3.1131.0",
     "@nightshift/test": "*",
     "@types/aws-lambda": "8.10.163"
+  },
+  "bin": {
+    "nightshift-local": "./dist/bin/nightshift-local.js"
   }
 }
