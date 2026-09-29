@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p12-local-instance` |
 | Source stage | none: the owner's direction of 2026-09-28 (§3.1), after the P11 close |
-| Status | **Built 2026-09-28** (T1 … T5, §13); dev redeployed on Node 24, smoke suites green; awaiting the owner's trial (SC-P12-10) and their word on the build decisions (§13). |
+| Status | **Closed 2026-09-29** on the owner's word; built T1 … T5 (§13), deployed, CI green. SC-P12-10, the owner's trial, follows the close. |
 | Depends on | P3 (the local control plane the slice suite runs, the CLI session), P4 (principals, execution tokens), P11 (the Studio, `persistence/http/browser`) |
 | Blocking decisions | none: D-P12-01 … D-P12-09 ratified |
 
@@ -298,6 +298,7 @@ Specs live in `tasks/p12-local-instance/`.
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-29 | **P12 closed.** The owner ratifies the nine build decisions of §13, names `WildOrder` as copyright holder, and merges. The trial (SC-P12-10) follows the close; what it finds is fixed as follow-ups. | **Human** |
 | 2026-09-28 | **Built.** T1 … T5 on `program/p12-local-instance`; verify green under Node 24 (3,278 tests); `local:e2e` green; dev redeployed (all functions `nodejs24.x`), `smoke` 90 of 90, `studio:smoke` 10 of 10. The build decisions of §13 are provisional until the owner ratifies or reverses them. | Agent, for human ratification |
 | 2026-09-28 | **Contract ratified.** D-P12-01, -04, -06, -08 and -09 agreed as written after the owner walked the other four. | **Human** |
 | 2026-09-28 | **D-P12-07 ratified**: Apache-2.0, knowing it permits closed and commercial forks and competing hosted services; the owner accepts that exposure for a portfolio piece. | **Human** |
@@ -366,8 +367,8 @@ stage changed but the runtime and that block.
    profile through the config directory, as a real launcher does. The P7 suite's
    placeholder token (which the harness ignored) would be refused by the product
    plane.
-7. **`NOTICE` names the copyright holder as the git author, `Tim OConnell`.**
-   Change it to the spelling or entity you want before the repository is public.
+7. **`NOTICE` names the copyright holder `WildOrder`**, on the owner's word
+   (the draft took the git author's name).
 8. **One `jsdom`, 30.1.1, declared at the root.** P11 pinned 29.1.1 in the
    Studio for Node 22; vitest resolves its environment from the root, where a
    clean `npm ci` under Node 24's npm left nothing, so every Studio test failed
