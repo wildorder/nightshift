@@ -6,6 +6,7 @@
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Route, Routes } from "react-router";
+import { ThemeProvider } from "./components/theme-provider.js";
 import { DecisionPage } from "./pages/decision.js";
 import { ProjectPage } from "./pages/project.js";
 import { ProjectSettingsPage } from "./pages/project-settings.js";
@@ -22,21 +23,26 @@ export const App = ({
   readonly studio: Studio;
   readonly client?: QueryClient;
 }) => (
-  <QueryClientProvider client={client ?? new QueryClient()}>
-    <StudioProvider value={studio}>
-      <Routes>
-        <Route element={<Shell />}>
-          <Route index element={<ProjectsPage />} />
-          <Route path="projects/:projectId" element={<ProjectPage />} />
-          <Route path="projects/:projectId/settings" element={<ProjectSettingsPage />} />
-          <Route path="projects/:projectId/programs/:programId/runs/:runId" element={<RunPage />} />
-          <Route
-            path="projects/:projectId/programs/:programId/runs/:runId/decisions/:decisionId"
-            element={<DecisionPage />}
-          />
-          <Route path="settings" element={<OrgSettingsPage />} />
-        </Route>
-      </Routes>
-    </StudioProvider>
-  </QueryClientProvider>
+  <ThemeProvider>
+    <QueryClientProvider client={client ?? new QueryClient()}>
+      <StudioProvider value={studio}>
+        <Routes>
+          <Route element={<Shell />}>
+            <Route index element={<ProjectsPage />} />
+            <Route path="projects/:projectId" element={<ProjectPage />} />
+            <Route path="projects/:projectId/settings" element={<ProjectSettingsPage />} />
+            <Route
+              path="projects/:projectId/programs/:programId/runs/:runId"
+              element={<RunPage />}
+            />
+            <Route
+              path="projects/:projectId/programs/:programId/runs/:runId/decisions/:decisionId"
+              element={<DecisionPage />}
+            />
+            <Route path="settings" element={<OrgSettingsPage />} />
+          </Route>
+        </Routes>
+      </StudioProvider>
+    </QueryClientProvider>
+  </ThemeProvider>
 );

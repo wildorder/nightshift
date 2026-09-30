@@ -1,1 +1,17 @@
+/*
+ * The Studio's stylesheet: imports and a base layer, nothing else. Every design
+ * decision is in `theme.css` (P13, D-P13-02).
+ */
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "@xyflow/react/dist/style.css";
+@import "./theme.css";
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}

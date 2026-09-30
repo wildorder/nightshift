@@ -15,7 +15,10 @@ export const LIVE_STATUSES: ReadonlySet<RunStatus> = new Set(["pending", "runnin
 /** What a new event says has changed, by query key prefix. */
 export const keysNamedBy = (event: Event, runId: string): (readonly unknown[])[] => {
   const node = event.executionNodeId;
-  const keys: (readonly unknown[])[] = [["report", runId]];
+  const keys: (readonly unknown[])[] = [
+    ["report", runId],
+    ["run-status", runId],
+  ];
   if (event.type.startsWith("run.")) keys.push(["run", runId]);
   if (event.type.startsWith("node.") || event.type.startsWith("strand."))
     keys.push(["nodes", runId]);
