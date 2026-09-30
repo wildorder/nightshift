@@ -22,7 +22,7 @@ const walk = (dir: string): string[] =>
 describe("the theme guard (D-P13-02)", () => {
   it("finds no colour in src/ outside theme.css and components/ui/", () => {
     const findings = walk(SRC)
-      .filter((file) => /\.(tsx?|css)$/.test(file) && !file.endsWith("theme-guard.test.ts"))
+      .filter((file) => /\.(tsx?|css)$/.test(file))
       .flatMap((file) =>
         findColours(relative(SRC, file).replace(/\\/g, "/"), readFileSync(file, "utf8")),
       );
@@ -45,5 +45,8 @@ describe("the theme guard (D-P13-02)", () => {
     expect(flagged('href="#why" or "#token=abc"')).toEqual([]);
     expect(findColours("theme.css", "--x: oklch(1 0 0);")).toEqual([]);
     expect(findColours("components/ui/button.tsx", "bg-white")).toEqual([]);
+    expect(findColours("theme-restyle.test.ts", "oklch(0.5 0 0)")).toEqual([]);
+    // A file merely named like the theme is not exempt.
+    expect(findColours("pages/theme-picker.tsx", "bg-white")).toHaveLength(1);
   });
 });

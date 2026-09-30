@@ -20,9 +20,15 @@ const RULES: readonly { readonly name: string; readonly pattern: RegExp }[] = [
   { name: "an arbitrary colour value", pattern: /-\[(?:#|oklch|rgb|hsl|color)/ },
 ];
 
-/** Where colours may live. Paths are relative to `src/`, with forward slashes. */
+/**
+ * Where colours may live. Paths are relative to `src/`, with forward slashes:
+ * the theme itself, the theme's own tests (`theme-*.ts`, which must name
+ * colours to prove anything), and shadcn's generated components.
+ */
 export const EXEMPT = (path: string): boolean =>
-  path === "theme.css" || path.startsWith("components/ui/");
+  path === "theme.css" ||
+  /^theme-[a-z-]+(\.test)?\.ts$/.test(path) ||
+  path.startsWith("components/ui/");
 
 export interface ColourFinding {
   readonly path: string;
