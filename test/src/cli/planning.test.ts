@@ -3,9 +3,10 @@
  * real git repository (P7, T3): `plan check`, `plan ratify`, `preflight`, and
  * `run {id}` as far as T3 takes it (SC-P7-03, SC-P7-04, SC-P7-05).
  */
-import { execFileSync } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createProject, runCli } from "@nightshift/cli";
 import type { ProgramContract, Strand } from "@nightshift/contracts";
 import {
@@ -310,5 +311,114 @@ describe("nightshift run {id} (SC-P7-04)", () => {
 
   it("still runs a contract by its path", async () => {
     expect(await cli("run", join(fixture.repo, "nightshift.program.json"))).toBe(0);
+  });
+});
+
+describe("nightshift plan conversation (P14, SC-P14-03, SC-P14-05, SC-P14-06)", () => {
+  const TRANSCRIPT = fileURLToPath(
+    new URL(
+      "../../../packages/harness-claude/src/__fixtures__/claude-planning-session.jsonl",
+      import.meta.url,
+    ),
+  );
+  const BINARY = fileURLToPath(
+    new URL("../../../apps/mcp/dist/bin/nightshift-transcript.js", import.meta.url),
+  );
+  const QUOTE = "an admin must never see another company's invoices";
+
+  /** The operator's environment, able to start `nightshift-transcript` as the CLI does. */
+  const withTranscripts = () => ({
+    ...op.environment,
+    exec: (file: string, args: readonly string[], options: { readonly cwd: string }) =>
+      new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = spawn(file, [...args], { cwd: options.cwd });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8");
+        });
+        child.stderr.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString("utf8");
+        });
+        child.on("error", reject);
+        child.on("close", (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
+      }),
+    assets: { skillsDir: "", mcpServerPath: "", transcriptPath: BINARY },
+  });
+  const say = async (...argv: string[]): Promise<number> => {
+    op.out.length = 0;
+    op.err.length = 0;
+    return runCli(withTranscripts(), [...argv, "--repo", fixture.repo]);
+  };
+  const quoting = async (words: string): Promise<void> =>
+    writeProgram({
+      stories: (contract.stories ?? []).map((story) =>
+        story.id === "US-01" ? { ...story, words: [words] } : story,
+      ),
+    });
+
+  it("lists the session, keeps the chosen messages word for word, checks the quotes, and ratifies it", async () => {
+    await quoting(QUOTE);
+    expect(await say("plan", "check", PROGRAM)).toBe(1);
+    expect(op.err.join("\n")).toContain("no planning conversation is kept");
+
+    expect(await say("plan", "conversation", PROGRAM, "--session", TRANSCRIPT)).toBe(0);
+    expect(op.out[0]).toMatch(/^\s+1\s+Human\s+let's plan tenant billing/);
+    expect(op.out.at(-1)).toContain("5 messages in this session; 0 kept");
+
+    const summary = join(fixture.repo, "..", "summary.md");
+    await writeFile(summary, "The owner wants tenant isolation with no bypass.\n");
+    expect(
+      await say(
+        "plan",
+        "conversation",
+        PROGRAM,
+        "--session",
+        TRANSCRIPT,
+        "--keep",
+        "1-3",
+        "--summary",
+        summary,
+      ),
+    ).toBe(0);
+    const kept = await readFile(programPath("conversation.md"), "utf8");
+    expect(kept).toContain("The owner wants tenant isolation with no bypass.");
+    expect(kept).toContain("and support staff get no bypass");
+    expect(kept).not.toContain("weather");
+    expect(kept).toContain("*Kept 3 of 5 messages; the rest led to nothing in the plan.*");
+
+    expect(await say("plan", "check", PROGRAM)).toBe(0);
+    commit("keep the conversation");
+    expect(await say("plan", "ratify", PROGRAM)).toBe(0);
+    const ratified = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(ratified?.conversation?.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(ratified?.ratifications?.at(-1)?.conversation).toEqual(ratified?.conversation);
+    expect(op.out.join("\n")).toContain("conversation ");
+  });
+
+  it("refuses a paraphrase, and a quote only the assistant said", async () => {
+    await writeFile(join(fixture.repo, "..", "s.md"), "summary\n");
+    await mkdir(programPath(), { recursive: true });
+    expect(
+      await say("plan", "conversation", PROGRAM, "--session", TRANSCRIPT, "--keep", "1,2"),
+    ).toBe(0);
+    await quoting("admins should not see other companies' invoices");
+    expect(await say("plan", "check", PROGRAM)).toBe(1);
+    expect(op.err.join("\n")).toContain("is not in the human's kept messages word for word");
+    await quoting("Invoices are read with no tenant filter.");
+    expect(await say("plan", "check", PROGRAM)).toBe(1);
+  });
+
+  it("refuses a message number the session does not have, and writes nothing", async () => {
+    expect(await say("plan", "conversation", PROGRAM, "--session", TRANSCRIPT, "--keep", "9")).toBe(
+      2,
+    );
+    expect(op.err.join("\n")).toContain("outside this session's messages, 1 to 5");
+  });
+
+  it("reads and writes nothing when the program keeps no conversation", async () => {
+    await writeProgram({ keepConversation: false });
+    expect(await say("plan", "conversation", PROGRAM, "--session", TRANSCRIPT)).toBe(1);
+    expect(op.err.join("\n")).toContain("keeps no planning conversation");
   });
 });

@@ -36,9 +36,9 @@ import type {
   WorkerLaunchIdentity,
 } from "@nightshift/execution";
 import { createEventOutbox, nodeGitRunner } from "@nightshift/execution";
-import type { Harness, HarnessHandle, McpLaunch } from "@nightshift/harness";
-import { createClaudeHarness } from "@nightshift/harness-claude";
-import { createCodexHarness } from "@nightshift/harness-codex";
+import type { Harness, HarnessHandle, McpLaunch, TranscriptSource } from "@nightshift/harness";
+import { claudeTranscriptSource, createClaudeHarness } from "@nightshift/harness-claude";
+import { codexTranscriptSource, createCodexHarness } from "@nightshift/harness-codex";
 import {
   createFetchTransport,
   createHttpArtifactBodyStore,
@@ -373,3 +373,12 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     workerEnvironment: createWorkerEnvironment(endpoint),
   };
 };
+
+/**
+ * Every harness's reader of a planning session's transcript (P14, D-P14-07),
+ * for `nightshift-transcript`. Named here because it is a harness's code.
+ */
+export const transcriptSources = (): readonly TranscriptSource[] => [
+  claudeTranscriptSource,
+  codexTranscriptSource,
+];

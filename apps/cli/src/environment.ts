@@ -118,6 +118,11 @@ export interface CliAssets {
    * process for the same reason: an examiner is an agent.
    */
   readonly resumePath?: string;
+  /**
+   * `nightshift-transcript` (P14, D-P14-07): reads a planning session's
+   * transcript. Spawned, never imported: reading one is a harness's code.
+   */
+  readonly transcriptPath?: string;
   /** The local instance's entry point, `nightshift-local` (P12, D-P12-01). Spawned, never imported. */
   readonly localPath?: string;
   /** A built Studio for the local instance to serve (D-P12-04). */
@@ -224,6 +229,7 @@ export const createCliEnvironment = (): CliEnvironment => ({
     mcpServerPath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-mcp.js"),
     orchestratePath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-orchestrate.js"),
     resumePath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-resume.js"),
+    transcriptPath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-transcript.js"),
     localPath: join(REPO_ROOT, "apps", "api", "dist", "bin", "nightshift-local.js"),
     studioDir: join(REPO_ROOT, "apps", "studio", "dist"),
   },

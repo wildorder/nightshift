@@ -12,6 +12,7 @@ import {
   checkPlan,
   explainCorrection,
   type PlanReason,
+  parseConversation,
   planHash,
   splitPlanSections,
 } from "@nightshift/core";
@@ -33,7 +34,13 @@ export interface PlanCheckResult {
 }
 
 const readinessOf = (files: ProgramFiles): PlanCheckResult => {
-  const readiness = checkPlan(files.contract, splitPlanSections(files.planText));
+  const readiness = checkPlan(
+    files.contract,
+    splitPlanSections(files.planText),
+    files.conversationText === undefined
+      ? undefined
+      : parseConversation(files.id, files.conversationText),
+  );
   return {
     ready: readiness.ready,
     reasons: readiness.ready ? [] : readiness.reasons,
@@ -116,7 +123,8 @@ export const planCheck = async (
   environment.out("READY");
   for (const flag of correction.flags) environment.out(`FLAG ${flag}`);
   environment.out(
-    `${files.directory}: ${files.contract.strands?.length ?? 0} strands, ` +
+    `${files.directory}: ${files.contract.stories?.length ?? 0} stories, ` +
+      `${files.contract.strands?.length ?? 0} strands, ` +
       `${files.contract.prerequisites?.length ?? 0} prerequisites, ` +
       `${files.contract.decisions?.length ?? 0} decisions; plan ${result.planHash.slice(0, 12)}`,
   );
@@ -173,7 +181,7 @@ export const planRatify = async (
   const session = await openSession(environment);
   const planning = createHttpPlanning({ transport: session.transport });
   // Upload first, then record: if the upload fails this throws, and nothing was asked for.
-  const ratified = await planning.ratify(files.contract, files.planText);
+  const ratified = await planning.ratify(files.contract, files.planText, files.conversationText);
 
   environment.out(`ratified ${files.directory}`);
   environment.out(`  program   ${ratified.programId}`);
@@ -181,6 +189,12 @@ export const planRatify = async (
   environment.out(
     `  document  ${ratified.planDocument?.uri} (${ratified.planDocument?.sizeBytes} bytes, sha256 ${ratified.planDocument?.sha256})`,
   );
+  if (ratified.conversation !== undefined) {
+    environment.out(
+      `  conversation ${ratified.conversation.uri} (${ratified.conversation.sizeBytes} bytes)`,
+    );
+  }
+  environment.out(`  stories   ${(ratified.stories ?? []).map((story) => story.id).join(", ")}`);
   environment.out(`  strands   ${(ratified.strands ?? []).map((strand) => strand.id).join(", ")}`);
   environment.out(
     `An edit to ${files.directory}/ after this is refused by \`nightshift run\` until it is ratified again.`,

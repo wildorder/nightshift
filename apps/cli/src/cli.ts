@@ -17,6 +17,7 @@
  * {@link runCli}.
  */
 import { parseArgs } from "node:util";
+import { planConversation } from "./commands/conversation.js";
 import { decisionBrief, reverseDecision } from "./commands/decision.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
@@ -48,6 +49,7 @@ Usage:
   nightshift init [--project <id> | --name <name>] [--yes] [--repo <path>]
   nightshift plan check <program> [--repo <path>]
   nightshift plan ratify <program> [--repo <path>]
+  nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>]
   nightshift preflight <program> [--repo <path>] [--recheck]
   nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--repo <path>]
   nightshift run <contract> [--repo <path>] [--remote]
@@ -66,6 +68,9 @@ Usage:
 A <program> is the name of its directory under docs/programs/, which holds its
 plan.md and contract.json. \`plan check\` answers READY or every reason, and its
 exit code is the answer; nothing runs until \`plan ratify\` has recorded the plan.
+\`plan conversation\` keeps the planning session's summary and the exchanges that
+shaped the plan, word for word, in conversation.md; the stories' quotes are
+checked against it.
 \`run <program>\` then takes it to docs/programs/<program>/report.md with nobody
 watching, and exits non-zero when anything was parked. --attended only creates
 the run, for your own orchestrator session to attach to. A check that needs
@@ -269,7 +274,7 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
 const programArgs = (
   args: readonly string[],
   usage: string,
-  flags: Record<string, { type: "boolean" }> = {},
+  flags: Record<string, { type: "boolean" | "string" }> = {},
 ): { readonly id: string; readonly repo?: string; readonly values: Record<string, unknown> } => {
   const { values, positionals } = parse(
     {
@@ -316,9 +321,33 @@ const doInit = async (environment: CliEnvironment, args: readonly string[]): Pro
   });
 };
 
+const CONVERSATION_USAGE =
+  "nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>] [--repo <path>]";
+
 const doPlan = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const [subcommand, ...rest] = args;
-  const usage = "nightshift plan check|ratify <program> [--repo <path>]";
+  const usage = "nightshift plan check|ratify|conversation <program> [--repo <path>]";
+  if (subcommand === "conversation") {
+    const { id, repo, values } = programArgs(rest, CONVERSATION_USAGE, {
+      list: { type: "boolean" },
+      keep: { type: "string" },
+      summary: { type: "string" },
+      session: { type: "string" },
+    });
+    const keep = optional(values, "keep");
+    const summary = optional(values, "summary");
+    const session = optional(values, "session");
+    if (values.list === true && (keep !== undefined || summary !== undefined)) {
+      throw new UsageError("--list shows the messages; it keeps nothing", CONVERSATION_USAGE);
+    }
+    return planConversation(environment, {
+      id,
+      ...(repo === undefined ? {} : { repo }),
+      ...(keep === undefined ? {} : { keep }),
+      ...(summary === undefined ? {} : { summary }),
+      ...(session === undefined ? {} : { session }),
+    });
+  }
   if (subcommand !== "check" && subcommand !== "ratify") {
     throw new UsageError(
       subcommand === undefined
