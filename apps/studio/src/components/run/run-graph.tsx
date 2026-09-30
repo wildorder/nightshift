@@ -32,7 +32,7 @@ import { StatusBadge } from "../status-badge.js";
 import { NodeDetail } from "./node-detail.js";
 
 const WIDTH = 240;
-const HEIGHT = 84;
+const HEIGHT = 112;
 
 type Highlight = "produced" | "after" | "origin" | undefined;
 
@@ -57,7 +57,7 @@ export const RunGraphNode = ({ data }: NodeProps<Node<RunNodeData>>) => {
     <div
       data-graph-node={node.id}
       data-highlight={highlight ?? "none"}
-      className={`grid h-full gap-1.5 rounded-lg border bg-card p-2.5 text-card-foreground shadow-xs ${
+      className={`flex h-full flex-col justify-between gap-1 rounded-lg border bg-card p-3 text-card-foreground shadow-xs ${
         selected ? "border-primary" : ""
       } ${highlight === undefined ? "" : HIGHLIGHT_CLASS[highlight]}`}
     >
@@ -66,7 +66,7 @@ export const RunGraphNode = ({ data }: NodeProps<Node<RunNodeData>>) => {
         <StatusBadge status={node.status} />
         <span className="truncate text-xs text-muted-foreground">{node.kind}</span>
       </div>
-      <p className="truncate text-sm font-medium" title={node.label}>
+      <p className="line-clamp-2 text-sm leading-snug font-medium" title={node.label}>
         {node.label}
       </p>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
