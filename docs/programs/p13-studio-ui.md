@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p13-studio-ui` |
 | Source stage | none: the owner's direction of 2026-09-29 (§3.1), after P12 |
-| Status | **Ratified 2026-09-29** (D-P13-01 … D-P13-11, §12). Not started; build from T1. |
+| Status | **Built 2026-09-29** (T1 … T5, §13); Studio redeployed; awaiting the owner's trial (SC-P13-13) and their word on the build decisions (§13). |
 | Depends on | P11 (the Studio and its pages), P12 (the local instance, the token session) |
 | Blocking decisions | none: D-P13-01 … D-P13-11 ratified |
 
@@ -235,6 +235,96 @@ T1 ── T2 ──┬── T3 ─────────┐
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-29 | **Built.** T1 … T5 on `program/p13-studio-ui`; `npm run verify` green under Node 24 (3,309 tests, 58 of them the Studio's); the Studio redeployed. The build decisions of §13 are provisional until the owner ratifies or reverses them. | Agent, for human ratification |
 | 2026-09-29 | **Contract ratified**, D-P13-01 … D-P13-11, as written. | **Human** |
 | 2026-09-29 | Revised with the owner: program status on the run's first tab and each program's card (D-P13-09), the horizontal run graph with a decision's recorded reach (D-P13-10), the node detail docked under the graph (D-P13-11); D-P13-06's first tab renamed *Status*. | Agent, from the owner's direction |
 | 2026-09-29 | Contract drafted from the owner's direction (§3.1) and the Studio's code: eight decisions proposed for ratification. | Agent, for human ratification |
+
+## 13. As built
+
+Built 2026-09-29 on `program/p13-studio-ui`, T1 … T5 in one sitting.
+
+### Task states
+
+| Task | State | Notes |
+|------|-------|-------|
+| T1 | **done** | shadcn/ui in `components/ui/` (22 components); `theme.css` with both themes and the status tones; `lib/status.ts` and `StatusBadge`; the theme guard with a migration ratchet, now empty; bundler resolution and `@/` |
+| T2 | **done** | the sidebar shell, project switcher, navigation, account menu with theme and sign-out, breadcrumbs |
+| T3 | **done** | `programStatus` in `core`; each program's card shows its latest run's status; the runs data table with a status filter; every page but the run and decision pages on the components |
+| T4 | **done** | the run page as six tabs in the URL; the job sheet; the artifacts data table; the decision page |
+| T4b | **done** | the run graph, its markers, a decision's two sets, the node detail beneath |
+| T5 | **done** | the restyle proof, both themes on every page, a look at a seeded run in light and dark, this as-built, the redeploy |
+
+### What was proven, and where
+
+| SC | State | By |
+|----|-------|----|
+| SC-P13-01 | met | `src/theme-guard.test.ts`: no colour in `src/` outside `theme.css`, the theme's own tests and `components/ui/`; its negative fixtures catch a palette class, `bg-white`, a hex, a colour function and an arbitrary value |
+| SC-P13-02 | met | `src/theme-restyle.test.ts`: Tailwind's compiler over the real stylesheet; every utility compiles to a theme variable; a changed primary, radius and danger tone in `theme.css` alone change the output and leave every utility rule byte-identical |
+| SC-P13-03 | met | `src/pages/themes.test.tsx` (six pages × two themes); `components/shell.test.tsx` (the toggle, remembered, the system default) |
+| SC-P13-04 | met | `components/shell.test.tsx`, `app.test.tsx`: the switcher, the account menu and sign-out, the breadcrumbs, the collapse |
+| SC-P13-05 | met | `pages/run.test.tsx`: each tab by its trigger; a job's sheet with its agents, verification and log; the live indicator |
+| SC-P13-06 | met | `pages/project-status.test.tsx`: the runs table filters by status; sorted by start |
+| SC-P13-07 | met | every P11 and P12 Studio assertion kept; the changes are listed below |
+| SC-P13-08 | met | `npm run verify` green; the Studio redeployed and `studio:smoke` green |
+| SC-P13-10 | met | `packages/core/src/report/status.test.ts`; `pages/project-status.test.tsx` (the card) and the Status tab over the same function |
+| SC-P13-11 | met | `lib/run-graph.test.ts` (the model, the markers, the two sets and that an unrelated strand stays unmarked); `components/run/run-graph.test.tsx` (drawn in jsdom, a decision chosen, the marks) |
+| SC-P13-12 | met | `run-graph.test.tsx`: a job's objective, acceptance and verification beneath the graph; a strand's claimed success criteria |
+| SC-P13-13 | **the owner's** | below |
+
+### Build decisions, provisional until the owner ratifies or reverses them
+
+1. **dagre, not elkjs, lays the graph out.** `elkjs` is EPL-2.0 or GPL; bundling
+   it into the Studio's served JavaScript is distribution under the EPL, with
+   notice and source duties in an Apache-2.0 repository. `@dagrejs/dagre` (MIT)
+   does the same layered left-to-right layout, synchronously. D-P13-10 named
+   elkjs; this departs from it.
+2. **The Studio turns `exactOptionalPropertyTypes` off in its own tsconfig.**
+   Radix's types are not written for it, and shadcn's generated components fail
+   it; the rule stays on for every other package, where a missing field and an
+   `undefined` one mean different things. The alternative was editing generated
+   files, which D-P13-01 rules out.
+3. **Existing relative imports keep their `.js`.** D-P13-08 said they would lose
+   it; bundler resolution accepts both, and removing them touched every file for
+   nothing.
+4. **Four lint rules are off for `components/ui/` only**: two accessibility
+   rules in the breadcrumb, a hook-dependency rule and a cookie rule in the
+   sidebar, all in shadcn's generated code. Biome now parses Tailwind's CSS
+   directives (`css.parser.tailwindDirectives`).
+5. **The `cn` helper is shadcn's own package** (`shadcn-ui/cn`, 0.4.0), which the
+   current CLI uses in place of `clsx` plus `tailwind-merge`; pinned exactly.
+6. **The guard exempts the theme's own tests (`theme-*.ts`)** besides
+   `theme.css` and `components/ui/`, because the restyle proof must name colours;
+   a file merely named like the theme is not exempt (tested).
+7. **The restyle proof compiles CSS rather than reading computed styles**, since
+   jsdom does not run Tailwind; `@tailwindcss/node` is a dev dependency.
+8. **The graph tab loads on demand**, splitting React Flow and dagre (276 kB,
+   89 kB gzipped) out of the main bundle.
+9. **Graph nodes are 240 × 112**, found by looking at a seeded run: 84 clipped a
+   two-line label into the marker row.
+10. **`mountStudio` takes `string | MountOptions`**, and that union defeats
+    TypeScript 7's inference of an inline `at: (f) => …`; three tests annotate
+    `Fixtures`. The proper fix is one options shape for every caller, left for
+    when the test helper is next changed.
+
+### What changed in earlier programs' suites, and why
+
+Nothing that is asserted changed; only where it is found.
+
+- `app.test.tsx`: the project switcher and sign-out are found in their menus.
+- `pages/run.test.tsx`: each assertion clicks into the tab or the job sheet that
+  now holds it (D-P13-06, D-P13-11); the live test opens the Timeline and Work
+  tabs.
+- `test-setup.ts` gains `matchMedia`, `ResizeObserver` and pointer capture for
+  jsdom, which Radix and the sidebar need.
+
+### For the owner's trial (SC-P13-13)
+
+1. Open the hosted Studio, or `nightshift local`. Try light, dark and system from
+   the account menu.
+2. Open a project: each program's card leads with its latest run's status.
+3. Open a run: *Status* first; then *Graph*. Choose a decision and see what it
+   produced and what was built after it; select nodes and read their detail
+   beneath.
+4. Restyle: change `--primary` or `--radius` in `apps/studio/src/theme.css`, run
+   `npm run studio`, and watch everything follow.

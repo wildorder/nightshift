@@ -327,6 +327,26 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   instance belong to P10. Nightshift never runs a worker as a per-job hosted
   environment.
 
+**As built for P13 (Studio UI), 2026-09-29.** The details a later program needs
+and cannot derive; full account in `docs/programs/p13-studio-ui.md` §13. The
+lasting decision is A-49.
+
+- **Styling rule.** Every colour, radius and font is a variable in
+  `apps/studio/src/theme.css`. Pages use semantic utilities (`bg-card`,
+  `text-muted-foreground`, `text-status-danger-foreground`) or component
+  variants, never a palette class or a colour literal; `theme-guard.test.ts`
+  fails the build otherwise. A new status is one row in `lib/status.ts`. Add
+  components with `npx shadcn@latest add <name>` (they land in
+  `components/ui/`, which the guard exempts) and do not edit them to set a
+  colour.
+- **The Studio's tsconfig** uses bundler resolution with `@/` for `src/`, and
+  turns `exactOptionalPropertyTypes` off for itself alone (Radix's types).
+- **`programStatus(report)`** in `core` is the one program-status computation;
+  the Studio loads it through `useRunStatus` (query key `run-status`).
+- **The run graph's model is pure** (`lib/run-graph.ts`: `buildRunGraph`,
+  `reachOf`); the canvas is React Flow laid out by dagre, loaded on demand.
+  Never add a "caused by" set to `reachOf` (A-47).
+
 **As built for P12 (Local Instance), 2026-09-28.** The details a later program
 needs and cannot derive; full account in `docs/programs/p12-local-instance.md`
 §13. The lasting decision is A-48.

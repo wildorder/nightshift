@@ -57,6 +57,7 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 | **P10** | Remote Runner | 9 | Hosted remote execution; architecture must be revisited against the retained capability evidence before implementation | O-03 instance sizing/lifecycle; O-05 harness credential transport; O-06 git remote/integration policy | deferred by owner, 2026-09-28 |
 | **P11** | Realtime, Analytics & Studio | 10 + Studio UI | Local runs and decisions visible live in Studio; full run state and history reconstructable from centralized APIs alone | O-02 (resolved by D-P11-05) | ratified 2026-09-28, in build (`p11-studio.md`) |
 | **P12** | Local Instance | — (inserted) | Nightshift runs on one machine with no cloud account: `nightshift local`, the same plane over SQLite, the Studio beside it; the repository opened under Apache-2.0 | — | closed 2026-09-29 (`p12-local-instance.md`) |
+| **P13** | Studio UI | — (inserted) | A SaaS-shaped Studio on shadcn/ui, restyled from one theme file: program status on each card and the run's first tab, the run as a horizontal graph with a decision's recorded reach | — | built 2026-09-29 (`p13-studio-ui.md`) |
 
 Open decision IDs refer to `docs/architecture.md` §3.
 
