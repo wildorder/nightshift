@@ -47,7 +47,7 @@ describe("both themes", () => {
             await stores.decisions.put(decision);
             decisionId = decision.decisionId;
           },
-          { at: (f) => at(f, decisionId) },
+          { at: (f: Fixtures) => at(f, decisionId) },
         );
         await waitFor(() =>
           expect(document.documentElement.classList.contains("dark")).toBe(theme === "dark"),
