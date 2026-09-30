@@ -18,8 +18,9 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
+import { Button } from "@/components/ui/button";
 import { Json } from "../components/json.js";
-import { Status } from "../components/status.js";
+import { StatusBadge } from "../components/status-badge.js";
 import { shortId, when } from "../lib/format.js";
 import { narrate } from "../lib/narrate.js";
 import { readAll } from "../lib/read-all.js";
@@ -34,7 +35,7 @@ const Alternatives = ({ decision }: { readonly decision: Decision }) => (
         {a.rejectedBecause === undefined ? (
           ""
         ) : (
-          <span className="text-slate-600"> — rejected because {a.rejectedBecause}</span>
+          <span className="text-muted-foreground"> — rejected because {a.rejectedBecause}</span>
         )}
       </li>
     ))}
@@ -66,19 +67,19 @@ const ReverseForm = ({
   });
   return (
     <form
-      className="flex flex-col gap-2 rounded border border-slate-300 bg-white p-3"
+      className="grid gap-3 rounded-lg border bg-card p-4 text-card-foreground"
       onSubmit={(event) => {
         event.preventDefault();
         reverse.mutate();
       }}
     >
       <h3 className="font-semibold">Reverse this decision</h3>
-      <p className="text-sm text-slate-600">
+      <p className="text-sm text-muted-foreground">
         It chose <b>{decision.choice}</b>. Your choice replaces it on your authority; nothing else
         moves until a correction is planned and run.
       </p>
       {CONFIRMED_CLASSES.includes(decision.reversibility) ? (
-        <p className="text-sm text-amber-800">
+        <p className="text-sm text-status-warning-foreground">
           It is <b>{decision.reversibility}</b>: its effects reach outside the repository. The
           correction will be flagged, and <code>nightshift run</code> will ask you to confirm.
         </p>
@@ -86,7 +87,7 @@ const ReverseForm = ({
       <label className="text-sm">
         Your choice
         <input
-          className="ml-2 w-96 rounded border border-slate-300 px-2 py-1"
+          className="ml-2 h-9 w-96 max-w-full rounded-md border border-input bg-background px-3 text-sm"
           value={choice}
           onChange={(e) => setChoice(e.target.value)}
           required
@@ -95,25 +96,24 @@ const ReverseForm = ({
       <label className="text-sm">
         Why
         <input
-          className="ml-2 w-96 rounded border border-slate-300 px-2 py-1"
+          className="ml-2 h-9 w-96 max-w-full rounded-md border border-input bg-background px-3 text-sm"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           required
         />
       </label>
       {reverse.isError ? (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-destructive">
           {String(reverse.error)}
         </p>
       ) : null}
       <div>
-        <button
+        <Button
           type="submit"
-          className="rounded bg-slate-900 px-3 py-1 text-white"
           disabled={reverse.isPending || choice.trim() === "" || reason.trim() === ""}
         >
           Record the reversal
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -126,7 +126,10 @@ const NextStep = ({
   readonly decision: Decision;
   readonly reversal: Decision;
 }) => (
-  <div className="rounded border border-green-300 bg-green-50 p-3 text-sm" data-testid="next-step">
+  <div
+    className="rounded-lg border border-status-success-foreground/30 bg-status-success p-4 text-sm text-status-success-foreground"
+    data-testid="next-step"
+  >
     <p>
       <b>Reversed</b> as <code>{reversal.decisionId}</code>: {reversal.choice}. {reversal.rationale}
     </p>
@@ -134,10 +137,10 @@ const NextStep = ({
       Nothing else changed. To correct the program under your decision, write the brief from a
       checkout of the repository and plan the correction from it with the owner:
     </p>
-    <pre className="mt-1 whitespace-pre-wrap rounded bg-white p-2 font-mono text-xs">
+    <pre className="mt-1 rounded-md bg-background p-2 font-mono text-xs whitespace-pre-wrap text-foreground">
       {`nightshift decision brief <program> ${decision.decisionId} --run ${decision.runId} --out docs/programs/<correction>/brief.md`}
     </pre>
-    <p className="mt-1 text-slate-700">
+    <p className="mt-1 text-muted-foreground">
       <code>&lt;program&gt;</code> is the program's directory under <code>docs/programs/</code>{" "}
       whose contract names <code>{decision.programId}</code>. Then, in a coding session, ask{" "}
       <code>plan-program</code> to plan the correction from that brief; it is ratified and run like
@@ -203,20 +206,20 @@ export const DecisionPage = () => {
   return (
     <div className="flex flex-col gap-4">
       <header>
-        <p className="text-sm text-slate-600">
+        <p className="text-sm text-muted-foreground">
           <Link to={runPath} className="underline">
             run {shortId(scope.runId)}
           </Link>{" "}
           · decision
         </p>
-        <h1 className="text-xl font-semibold">{decision.choice}</h1>
-        <p className="text-sm text-slate-600">
-          {entry === undefined ? null : <Status value={entry.place} />} {decision.authority} ·{" "}
+        <h1 className="text-2xl font-semibold tracking-tight">{decision.choice}</h1>
+        <p className="text-sm text-muted-foreground">
+          {entry === undefined ? null : <StatusBadge status={entry.place} />} {decision.authority} ·{" "}
           {decision.reversibility} · {when(decision.createdAt)} · <code>{decision.decisionId}</code>
         </p>
       </header>
 
-      <section className="rounded border border-slate-200 bg-white p-3">
+      <section className="rounded-lg border bg-card p-4 text-card-foreground">
         <p className="mb-2">{decision.context}</p>
         <p className="mb-2 text-sm">
           <b>Chose:</b> {decision.choice}. {decision.rationale}
@@ -239,7 +242,7 @@ export const DecisionPage = () => {
             ? ""
             : `, landed at ${shortId(decision.checkpointAfter)}`}
         </p>
-        <p className="text-sm text-slate-600">
+        <p className="text-sm text-muted-foreground">
           On node <code>{shortId(decision.executionNodeId)}</code>
           {node.data === undefined ? "" : ` (${node.data.kind}, ${node.data.status})`}
           {agent.data === undefined
@@ -257,11 +260,17 @@ export const DecisionPage = () => {
       {reversal !== undefined ? (
         <NextStep decision={decision} reversal={reversal} />
       ) : refusal !== undefined ? (
-        <p role="alert" className="rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+        <p
+          role="alert"
+          className="rounded-md border border-status-warning-foreground/30 bg-status-warning p-3 text-sm text-status-warning-foreground"
+        >
           {refusal}
         </p>
       ) : isSuperseded(decision, all) ? (
-        <p role="alert" className="rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+        <p
+          role="alert"
+          className="rounded-md border border-status-warning-foreground/30 bg-status-warning p-3 text-sm text-status-warning-foreground"
+        >
           {decision.decisionId} has already been superseded.
         </p>
       ) : (
@@ -275,15 +284,16 @@ export const DecisionPage = () => {
         />
       )}
 
-      <section className="rounded border border-slate-200 bg-white p-3">
+      <section className="rounded-lg border bg-card p-4 text-card-foreground">
         <h2 className="mb-1 font-semibold">Around it</h2>
         {around.length === 0 ? (
-          <p className="text-sm text-slate-500">No events on its node.</p>
+          <p className="text-sm text-muted-foreground">No events on its node.</p>
         ) : (
           <ol className="text-xs">
             {around.map((event) => (
               <li key={event.eventId}>
-                <span className="text-slate-500">{when(event.occurredAt)}</span> {narrate(event)}
+                <span className="text-muted-foreground">{when(event.occurredAt)}</span>{" "}
+                {narrate(event)}
               </li>
             ))}
           </ol>

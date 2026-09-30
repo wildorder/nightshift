@@ -127,40 +127,62 @@ describe("the run page", () => {
     expect(screen.getByText("a job failed verification")).toBeTruthy();
     expect(screen.queryByTestId("live")).toBeNull();
 
-    // Jobs, with their agents, verifications and reasons.
-    await waitFor(() => expect(screen.getByText("Persist invoices")).toBeTruthy());
-    const jobs = screen.getByRole("heading", { name: "Jobs" }).parentElement;
-    if (jobs === null) throw new Error("no jobs section");
-    await waitFor(() => expect(within(jobs).getByText(/claude-haiku-4-5-20251001/)).toBeTruthy());
-    expect(within(jobs).getByText("npm test failed")).toBeTruthy();
-    await waitFor(() => expect(within(jobs).getByText("exit 1")).toBeTruthy());
-    expect(within(jobs).getByText("4.2 s")).toBeTruthy();
+    // P13 (D-P13-06): the page is tabs, and a job's detail opens in a sheet.
+    // What is asserted is unchanged; only where it is found.
+    const tab = (name: string) => userEvent.click(screen.getByRole("tab", { name }));
+    const card = (heading: string) => {
+      const found = screen.getByRole("heading", { name: heading }).closest('[data-slot="card"]');
+      if (!(found instanceof HTMLElement)) throw new Error(`no ${heading} card`);
+      return found;
+    };
 
-    // Criteria, unmet on an unplanned run.
-    expect(screen.getByText("Invoices persist")).toBeTruthy();
+    // Criteria, unmet on an unplanned run: on the Status tab, the first.
+    await waitFor(() => expect(screen.getByText("Invoices persist")).toBeTruthy());
+
+    // Jobs and their reasons, on the Work tab.
+    await tab("Work");
+    await waitFor(() => expect(screen.getAllByText("Persist invoices").length).toBeGreaterThan(0));
+    const jobs = card("Jobs");
+    expect(within(jobs).getByText("npm test failed")).toBeTruthy();
 
     // The tree: root and two children.
-    const tree = screen.getByRole("heading", { name: "Execution tree" }).parentElement;
-    if (tree === null) throw new Error("no tree");
-    expect(tree.querySelectorAll("[data-tree-node]")).toHaveLength(3);
+    expect(card("Execution tree").querySelectorAll("[data-tree-node]")).toHaveLength(3);
+
+    // A job's agents, in its sheet.
+    await userEvent.click(within(jobs).getByRole("button", { name: /Persist invoices/ }));
+    const first = await screen.findByRole("dialog");
+    await waitFor(() => expect(within(first).getByText(/claude-haiku-4-5-20251001/)).toBeTruthy());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // The failed job's verification: the step, its exit code and duration, and its log.
+    await userEvent.click(within(jobs).getByRole("button", { name: /Idempotent webhooks/ }));
+    const second = await screen.findByRole("dialog");
+    await waitFor(() => expect(within(second).getByText("exit 1")).toBeTruthy());
+    expect(within(second).getByText("4.2 s")).toBeTruthy();
+    window.open = () => null;
+    await userEvent.click(within(second).getByRole("button", { name: "log" }));
+    await waitFor(() => expect(opened).toEqual(["art_00000000000000000000000009"]));
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     // The timeline, in sequence order, narrated.
-    const timeline = screen.getByTestId("timeline");
+    await tab("Timeline");
+    const timeline = await screen.findByTestId("timeline");
     const lines = within(timeline)
       .getAllByRole("listitem")
       .map((li) => li.textContent ?? "");
     expect(lines[0]).toContain("run started");
     expect(lines[1]).toContain("“writing the migration”");
 
-    // Checkpoints and the decision graph.
-    expect(screen.getByText(/initial/)).toBeTruthy();
-    expect(screen.getByRole("link", { name: "One table per tenant" })).toBeTruthy();
+    // Checkpoints, on the Artifacts tab; the decision graph, on Decisions.
+    await tab("Artifacts");
+    await waitFor(() => expect(screen.getByText(/initial/)).toBeTruthy());
+    await tab("Decisions");
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: "One table per tenant" })).toBeTruthy(),
+    );
     expect(screen.getByText(/One shared table \(isolation\)/)).toBeTruthy();
-
-    // A log opens through the signed URL.
-    window.open = () => null;
-    await userEvent.click(within(jobs).getByRole("button", { name: "log" }));
-    await waitFor(() => expect(opened).toEqual(["art_00000000000000000000000009"]));
   });
 
   it("follows a live run: a new event appears and the node it names is re-read", async () => {
@@ -176,6 +198,8 @@ describe("the run page", () => {
     );
     const { stores, f } = seeded;
     await waitFor(() => expect(screen.getByTestId("live")).toBeTruthy());
+    // P13 (D-P13-06): the timeline is its own tab.
+    await userEvent.click(screen.getByRole("tab", { name: "Timeline" }));
     await waitFor(() =>
       expect(screen.getByTestId("timeline").textContent).toContain("run started"),
     );
@@ -197,7 +221,8 @@ describe("the run page", () => {
     );
 
     await waitFor(() => expect(screen.getByTestId("timeline").textContent).toContain("delegated"));
-    // The tree and the jobs list both re-read the node and its contract.
+    // The tree and the jobs list both re-read the node and its contract: on Work.
+    await userEvent.click(screen.getByRole("tab", { name: "Work" }));
     await waitFor(() => expect(screen.getAllByText("A new job").length).toBeGreaterThanOrEqual(2), {
       timeout: 3000,
     });
