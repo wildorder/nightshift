@@ -47,6 +47,7 @@ import {
   renderCorrections,
   renderDecisionGraph,
 } from "./decision-graph.js";
+import { storyStatuses } from "./stories.js";
 
 export const DEPARTURE_PREFIX = "DEPARTURE:";
 
@@ -88,6 +89,11 @@ export interface StrandReport {
   readonly blockedBy: readonly string[];
   readonly jobs: readonly JobReport[];
   readonly departures: readonly Decision[];
+  /**
+   * P14: every node of the strand, in every attempt, its own and those under
+   * it. How a node is traced to the strand, and so to its stories.
+   */
+  readonly nodeIds: readonly string[];
   /** How many times the strand itself was attempted. */
   readonly attempts: number;
   /** The human prerequisites its deferred work waits on (D-P7-10). Empty unless provisional. */
@@ -218,6 +224,14 @@ const strandReportOf = (
         inStrand.has(decision.executionNodeId) &&
         decision.context.trimStart().startsWith(DEPARTURE_PREFIX),
     ),
+    nodeIds: [
+      ...new Set(
+        attempts.flatMap((attempt) => [
+          attempt.node.executionNodeId,
+          ...descendantsOf(records.tree, attempt.node.executionNodeId),
+        ]),
+      ),
+    ],
   };
 };
 
@@ -659,6 +673,36 @@ const renderBudget = (report: RunReport): string[] => {
   ];
 };
 
+/**
+ * Why the program exists, each story with its criteria met or not (P14,
+ * D-P14-11). Absent for a program planned before stories existed.
+ */
+const renderStories = (report: RunReport): string[] => {
+  const statuses = storyStatuses(report);
+  if (statuses.length === 0) return [];
+  return [
+    "## Stories",
+    "",
+    ...statuses.flatMap(({ story, criteria, met, strands }) => [
+      `### ${story.id} ${firstLine(story.outcome).replace(/\.\s*$/, "")}: ${met ? "done" : "not yet"}`,
+      "",
+      `- **Who:** ${story.who}`,
+      `- **Today:** ${story.problem}`,
+      `- **Afterwards:** ${story.outcome}`,
+      ...(story.words ?? []).map((words) => `> "${words.replace(/\n/g, " ")}"`),
+      "",
+      `Criteria: ${
+        criteria.length === 0
+          ? "none"
+          : criteria
+              .map((criterion) => `${criterion.id} ${criterion.met ? "met" : "NOT met"}`)
+              .join(", ")
+      }. Strands: ${strands.length === 0 ? "none" : strands.join(", ")}.`,
+      "",
+    ]),
+  ];
+};
+
 /** The report as markdown. Pure: the same records always give the same document. */
 export const renderReport = (report: RunReport): string => {
   const { program, run, strands } = report;
@@ -675,6 +719,7 @@ export const renderReport = (report: RunReport): string => {
     "",
     ...renderCorrections(report.corrections),
     ...renderRulings(report.rulings),
+    ...renderStories(report),
     "## Strands",
     "",
     ...strands.flatMap(renderStrand),

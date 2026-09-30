@@ -22,9 +22,11 @@ import type {
   PlannedDecision,
   Prerequisite,
   ProgramContract,
+  Story,
   Strand,
   StrandScope,
 } from "@nightshift/contracts";
+import { humanSaid, type KeptConversation } from "./conversation.js";
 import { buildTree, descendantsOf } from "./execution-tree.js";
 import { explainWidening, globContains, singleSegmentMatches } from "./scope.js";
 
@@ -36,6 +38,13 @@ export const prerequisitesOf = (contract: ProgramContract): readonly Prerequisit
   contract.prerequisites ?? [];
 
 /** A contract with strands is a planned program; one without runs as programs always have. */
+export const programStories = (contract: ProgramContract): readonly Story[] =>
+  contract.stories ?? [];
+
+/** Whether the planning conversation is kept for this program (D-P14-06): on unless turned off. */
+export const keepsConversation = (contract: ProgramContract): boolean =>
+  contract.keepConversation !== false;
+
 export const isPlanned = (contract: ProgramContract): boolean => strandsOf(contract).length > 0;
 
 /**
@@ -508,6 +517,33 @@ export type PlanReason =
       readonly message: string;
     }
   | { readonly kind: "unanswered_decision"; readonly decisionId: string; readonly message: string }
+  /** P14 (D-P14-02, D-P14-04): why the program exists, and the human's words for it. */
+  | { readonly kind: "no_stories"; readonly message: string }
+  | {
+      readonly kind: "story_incomplete";
+      readonly storyId: string;
+      readonly missing: readonly ("who" | "problem" | "outcome")[];
+      readonly message: string;
+    }
+  | { readonly kind: "unserved_story"; readonly storyId: string; readonly message: string }
+  | {
+      readonly kind: "criterion_serves_no_story";
+      readonly criterionId: string;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "unknown_story";
+      readonly criterionId: string;
+      readonly storyId: string;
+      readonly message: string;
+    }
+  | { readonly kind: "conversation_missing"; readonly message: string }
+  | {
+      readonly kind: "quote_not_found";
+      readonly storyId: string;
+      readonly quote: string;
+      readonly message: string;
+    }
   | {
       readonly kind: "unknown_decision_strand";
       readonly decisionId: string;
@@ -685,12 +721,105 @@ const decisionReasons = (
   return reasons;
 };
 
+const STORY_FIELDS = ["who", "problem", "outcome"] as const;
+
+const shortQuote = (quote: string): string =>
+  quote.length <= 80 ? quote : `${quote.slice(0, 77)}…`;
+
+/**
+ * Stories (P14, D-P14-02): at least one; each says who, what is wrong today and
+ * what changes; every criterion serves one and every story is served. Quotes are
+ * the human's own words, held to the kept conversation (D-P14-04).
+ */
+const storyReasons = (
+  contract: ProgramContract,
+  conversation: KeptConversation | undefined,
+): PlanReason[] => {
+  const stories = programStories(contract);
+  if (stories.length === 0) {
+    return [
+      {
+        kind: "no_stories",
+        message:
+          "the contract has no user stories: who the program is for, what goes wrong for them " +
+          "today, and what is different for them afterwards (at least one)",
+      },
+    ];
+  }
+  const known = new Set(stories.map((story) => story.id));
+  const served = new Set(contract.successCriteria.flatMap((criterion) => criterion.serves ?? []));
+  const reasons: PlanReason[] = [];
+  for (const story of stories) {
+    const missing = STORY_FIELDS.filter((field) => story[field].trim() === "");
+    if (missing.length > 0) {
+      reasons.push({
+        kind: "story_incomplete",
+        storyId: story.id,
+        missing,
+        message: `${story.id} does not say ${missing.join(", ")}`,
+      });
+    }
+    if (!served.has(story.id)) {
+      reasons.push({
+        kind: "unserved_story",
+        storyId: story.id,
+        message: `${story.id} is served by no success criterion (a criterion lists it in \`serves\`)`,
+      });
+    }
+  }
+  for (const criterion of contract.successCriteria) {
+    const serves = criterion.serves ?? [];
+    if (serves.length === 0) {
+      reasons.push({
+        kind: "criterion_serves_no_story",
+        criterionId: criterion.id,
+        message: `success criterion ${criterion.id} serves no story: say whose problem it checks, in \`serves\``,
+      });
+    }
+    for (const storyId of serves.filter((id) => !known.has(id))) {
+      reasons.push({
+        kind: "unknown_story",
+        criterionId: criterion.id,
+        storyId,
+        message: `success criterion ${criterion.id} serves ${storyId}, which the contract does not have`,
+      });
+    }
+  }
+  const quoted = stories.filter((story) => (story.words ?? []).length > 0);
+  if (!keepsConversation(contract) || quoted.length === 0) return reasons;
+  if (conversation === undefined) {
+    reasons.push({
+      kind: "conversation_missing",
+      message:
+        "the stories quote the human, and no planning conversation is kept to hold the quotes to: " +
+        "run `nightshift plan conversation` (or set keepConversation to false)",
+    });
+    return reasons;
+  }
+  for (const story of quoted) {
+    for (const quote of (story.words ?? []).filter((words) => !humanSaid(conversation, words))) {
+      reasons.push({
+        kind: "quote_not_found",
+        storyId: story.id,
+        quote,
+        message: `${story.id} quotes "${shortQuote(quote)}", which is not in the human's kept messages word for word`,
+      });
+    }
+  }
+  return reasons;
+};
+
 /**
  * Whether a plan can be ratified (D-P7-07): `READY`, or every reason at once so
  * a plan is fixed in one pass. `contract` has already parsed; `planSections` is
- * {@link splitPlanSections} of the plan document.
+ * {@link splitPlanSections} of the plan document; `conversation` is the kept
+ * planning conversation, when there is one (P14).
  */
-export const checkPlan = (contract: ProgramContract, planSections: PlanSections): PlanReadiness => {
+export const checkPlan = (
+  contract: ProgramContract,
+  planSections: PlanSections,
+  conversation?: KeptConversation,
+): PlanReadiness => {
   const strands = strandsOf(contract);
   const strandIds = new Set(strands.map((strand) => strand.id));
   // A prerequisite is used by a strand that needs it, or by a verification step
@@ -710,6 +839,7 @@ export const checkPlan = (contract: ProgramContract, planSections: PlanSections)
           } as const,
         ]
       : []),
+    ...storyReasons(contract, conversation),
     ...criteriaReasons(contract, strands),
     ...strands.flatMap((strand) => strandReasons(contract, strand, planSections)),
     ...(cycle === undefined
@@ -767,21 +897,31 @@ const canonical = (value: unknown): unknown => {
 
 /**
  * What of a contract is *approved*. Left out: the ratification's own record
- * (`status`, `planHash`, `planDocument`, `ratifications`), or ratifying would
- * change the hash; each prerequisite's `status` and `lastCheck`, which preflight
- * writes; and prerequisites the engine discovered mid-run (D-P7-10). An absent
- * planned field and an empty one are the same plan.
+ * (`status`, `planHash`, `planDocument`, `conversation`, `ratifications`), or
+ * ratifying would change the hash; each prerequisite's `status` and
+ * `lastCheck`, which preflight writes; and prerequisites the engine discovered
+ * mid-run (D-P7-10). An absent planned field and an empty one are the same plan.
+ *
+ * P14's fields are left out when empty rather than normalised to empty, so a
+ * contract ratified before P14 hashes exactly as it did.
  */
 const approvedContent = (contract: ProgramContract): unknown => {
   const {
     status: _status,
     planHash: _planHash,
     planDocument: _planDocument,
+    conversation: _conversation,
     ratifications: _ratifications,
+    stories,
+    successCriteria,
     ...rest
   } = contract;
   return {
     ...rest,
+    ...(stories === undefined || stories.length === 0 ? {} : { stories }),
+    successCriteria: successCriteria.map(({ serves, ...criterion }) =>
+      serves === undefined || serves.length === 0 ? criterion : { ...criterion, serves },
+    ),
     strands: strandsOf(contract),
     decisions: contract.decisions ?? [],
     outOfScope: contract.outOfScope ?? [],

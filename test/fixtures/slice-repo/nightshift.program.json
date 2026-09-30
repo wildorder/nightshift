@@ -8,9 +8,27 @@
     "baseBranch": "main",
     "programBranch": "program/slice"
   },
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "A developer using the fixture's math module",
+      "problem": "There is no median helper, so each caller sorts and indexes a list by hand.",
+      "outcome": "They call median and get the middle value, tested."
+    },
+    {
+      "id": "US-02",
+      "who": "Anyone already calling the math module",
+      "problem": "A change to the module could quietly break a helper they rely on.",
+      "outcome": "Every existing helper behaves exactly as before."
+    }
+  ],
   "successCriteria": [
-    { "id": "SC-01", "outcome": "median returns the middle value of an odd-length list." },
-    { "id": "SC-02", "outcome": "The existing tests still pass." }
+    {
+      "id": "SC-01",
+      "outcome": "median returns the middle value of an odd-length list.",
+      "serves": ["US-01"]
+    },
+    { "id": "SC-02", "outcome": "The existing tests still pass.", "serves": ["US-02"] }
   ],
   "constraints": [
     "Change nothing outside src/ and test/.",

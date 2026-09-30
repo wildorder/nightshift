@@ -26,6 +26,34 @@ export type PlanStatus = z.infer<typeof PlanStatusSchema>;
 export const StrandIdSchema = z.string().regex(/^S-\d{2,}$/, { message: 'must look like "S-01"' });
 export type StrandId = z.infer<typeof StrandIdSchema>;
 
+export const StoryIdSchema = z.string().regex(/^US-\d{2,}$/, { message: 'must look like "US-01"' });
+export type StoryId = z.infer<typeof StoryIdSchema>;
+
+/**
+ * Why a program exists, for the people it is for (P14, D-P14-01). The success
+ * criteria say what is checked; a story says who would notice and why it
+ * matters. Several criteria usually serve one story, each saying so in
+ * `serves`.
+ *
+ * Drafted over many rounds like the rest of a plan, so empty text parses;
+ * `checkPlan` says what is missing.
+ */
+export const StorySchema = z.strictObject({
+  id: StoryIdSchema,
+  /** A role, not a person: "a customer's billing admin". */
+  who: z.string(),
+  /** What goes wrong for them today. */
+  problem: z.string(),
+  /** What is different for them afterwards. */
+  outcome: z.string(),
+  /**
+   * The human's own sentences from the planning conversation, verbatim
+   * (D-P14-04). `checkPlan` holds each to the kept conversation's excerpts.
+   */
+  words: z.array(z.string().min(1)).optional(),
+});
+export type Story = z.infer<typeof StorySchema>;
+
 export const PrerequisiteIdSchema = z
   .string()
   .regex(/^HP-\d{2,}$/, { message: 'must look like "HP-01"' });
@@ -145,6 +173,12 @@ export type PlanDocumentRef = z.infer<typeof PlanDocumentRefSchema>;
 export const RatificationSchema = z.strictObject({
   planHash: Sha256HexSchema,
   planDocument: PlanDocumentRefSchema,
+  /**
+   * P14 (D-P14-06): the kept planning conversation, stored beside the plan
+   * document. Evidence, not plan: it is outside the plan hash. Absent when the
+   * repository keeps none, and for every ratification before P14.
+   */
+  conversation: PlanDocumentRefSchema.optional(),
   ratifiedAt: IsoTimestampSchema,
 });
 export type Ratification = z.infer<typeof RatificationSchema>;

@@ -85,9 +85,26 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
       baseBranch: "main",
       programBranch: "program/tenant-billing",
     },
+    stories: [
+      {
+        id: "US-01",
+        who: "A customer's billing admin",
+        problem:
+          "Invoices are queried without a tenant filter, so a support query can return another company's billing rows.",
+        outcome:
+          "They only ever see their own company's invoices, and a cross-tenant read is refused.",
+        words: ["an admin must never see another company's invoices, not even by accident"],
+      },
+      {
+        id: "US-02",
+        who: "An existing customer",
+        problem: "A schema change to billing could break the invoices they already have.",
+        outcome: "Their past invoices still open and total exactly as before.",
+      },
+    ],
     successCriteria: [
-      { id: "SC-01", outcome: "Tenant billing data is isolated." },
-      { id: "SC-02", outcome: "Existing customers remain compatible." },
+      { id: "SC-01", outcome: "Tenant billing data is isolated.", serves: ["US-01"] },
+      { id: "SC-02", outcome: "Existing customers remain compatible.", serves: ["US-02"] },
     ],
     constraints: ["No production deployment.", "Database migrations must be reversible."],
     scope: projectScope,
