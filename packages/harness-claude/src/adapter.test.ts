@@ -23,6 +23,7 @@ import type { HarnessExit, HarnessStartInput, HookEvent, McpLaunch } from "@nigh
 import { millis, refusingWorkerTools } from "@nightshift/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeHarness, SPAWN_FAILURE_EXIT_CODE } from "./adapter.js";
+import { HEADLESS_CLAUDE_ENV } from "./environment.js";
 import type { AdapterFileSystem, SpawnedChild, SpawnLike, SpawnOptions } from "./process.js";
 
 /** What the recording's `result` frame says the run cost (contract v1, D-P5-01). */
@@ -278,7 +279,12 @@ describe("the launch, against a fake spawn", () => {
     const { fs } = fakeFileSystem();
     await harnessWith(spawn, fs).start(startInput());
 
-    expect(calls[0]?.options.env).toEqual({ PATH: "/usr/bin", HOME: "/home/operator" });
+    expect(calls[0]?.options.env).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/home/operator",
+      // A headless session cannot be woken by a background task, so it has none.
+      ...HEADLESS_CLAUDE_ENV,
+    });
     expect(calls[0]?.options.env.NIGHTSHIFT_ROLE).toBeUndefined();
   });
 

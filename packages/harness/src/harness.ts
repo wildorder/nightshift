@@ -152,6 +152,13 @@ export type AgentTask =
       readonly rulings?: readonly ExaminationRuling[];
     }
   /**
+   * The same session again, because it ended its turn without reporting. A
+   * headless session exits when its turn ends and nothing wakes it, so a worker
+   * that stopped to wait for something, or simply forgot to report, is resumed
+   * with a reminder rather than failed. `reminder` counts from 1.
+   */
+  | { readonly kind: "continue"; readonly reminder: number; readonly of: number }
+  /**
    * P9 (D-P9-07): the job again after a check that could not run during the
    * run ran at `resume` and failed. What failed goes into the brief.
    */
@@ -164,6 +171,27 @@ export type AgentTask =
         readonly output: string;
       }[];
     };
+
+/**
+ * What the last attempt at a job left unfinished, carried into this one. An
+ * attempt that ends without handing its work in (it died, stopped reporting, or
+ * gave up) leaves changes nobody collected; the next attempt starts from them
+ * rather than from nothing.
+ */
+export interface CarriedOverWork {
+  /** The attempt that left it. */
+  readonly fromAttempt: number;
+  /** A ref holding it as one commit on the base that attempt was cut from. */
+  readonly ref: string;
+  /** Every path it changes. */
+  readonly paths: readonly string[];
+  /** True when it is already in the new worktree, uncommitted. */
+  readonly applied: boolean;
+  /** When it could not be applied: the paths that conflicted with the moved program head. */
+  readonly conflicts: readonly string[];
+  /** The whole change as a patch file, outside the worktree, for when it was not applied. */
+  readonly patchPath: string;
+}
 
 export interface HarnessStartInput {
   /** The execution identity, already persisted as `created` before this call (A-04). */
@@ -190,6 +218,8 @@ export interface HarnessStartInput {
    * adapter resumes it with the brief as the next message.
    */
   readonly resume?: { readonly sessionId: string };
+  /** The last attempt's unfinished work, when there was some. See {@link CarriedOverWork}. */
+  readonly carriedOver?: CarriedOverWork;
   /**
    * The same four operations that server exposes, as functions, for a harness
    * that cannot be handed a process to spawn (rule 6). Built by the execution

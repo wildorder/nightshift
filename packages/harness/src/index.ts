@@ -36,6 +36,7 @@ export {
 export {
   type AgentTask,
   agentStatusForExit,
+  type CarriedOverWork,
   type Duration,
   describeExit,
   type ExaminationEvidence,

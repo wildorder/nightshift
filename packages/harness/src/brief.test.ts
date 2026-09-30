@@ -210,3 +210,84 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     expect(brief).toContain("delegate the same work again as a new job");
   });
 });
+
+describe("headless sessions", () => {
+  const f = createFixtures();
+  const program = makeProgramContract(f);
+  const job = makeJobContract(f);
+
+  it("tells every role that its turn ending ends its session, with its own finishing calls", () => {
+    const worker = renderWorkerBrief({
+      job,
+      node: makeNode(f, f.rootNodeId),
+      program,
+      worktree: "/tmp/w",
+    });
+    const orchestrator = renderWorkerBrief({
+      job,
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program,
+      worktree: "/tmp/w",
+    });
+    for (const brief of [worker, orchestrator]) {
+      expect(brief).toContain("YOUR SESSION ENDS WHEN YOUR TURN ENDS");
+      expect(brief).toContain("run every command in the foreground");
+    }
+    expect(worker).toContain("until\n  you have called job.complete or job.fail.");
+    expect(orchestrator).toContain("subprogram.complete or subprogram.fail.");
+  });
+
+  it("resumes a session that stopped without reporting with a reminder, not the whole brief", () => {
+    const brief = renderWorkerBrief({
+      job,
+      node: makeNode(f, f.rootNodeId),
+      program,
+      worktree: "/tmp/w",
+      task: { kind: "continue", reminder: 1, of: 2 },
+    });
+    expect(brief).toContain("you have not reported how your work ended");
+    expect(brief).toContain("run it again, in the foreground");
+    expect(brief).toContain("job.complete or job.fail");
+    expect(brief).toContain("reminder 1 of 2");
+    expect(brief).not.toContain("ACCEPTANCE CRITERIA");
+  });
+
+  it("says where a dead attempt's work is, applied or not", () => {
+    const carried = {
+      fromAttempt: 1,
+      ref: "refs/nightshift/unfinished/n/1",
+      paths: ["src/a.ts"],
+      patchPath: "/state/wt.attempt-1.patch",
+    };
+    const applied = renderWorkerBrief({
+      job,
+      node: makeNode(f, f.rootNodeId),
+      program,
+      worktree: "/tmp/w",
+      carriedOver: { ...carried, applied: true, conflicts: [] },
+    });
+    expect(applied).toContain("THE LAST ATTEMPT'S UNFINISHED WORK");
+    expect(applied).toContain("already in your working directory");
+    expect(applied).toContain("src/a.ts");
+    const conflicted = renderWorkerBrief({
+      job,
+      node: makeNode(f, f.rootNodeId),
+      program,
+      worktree: "/tmp/w",
+      carriedOver: { ...carried, applied: false, conflicts: ["src/a.ts"] },
+    });
+    expect(conflicted).toContain("did not apply cleanly");
+    expect(conflicted).toContain("/state/wt.attempt-1.patch");
+  });
+
+  it("names the setup that prepared the worktree", () => {
+    const brief = renderWorkerBrief({
+      job,
+      node: makeNode(f, f.rootNodeId),
+      program: { ...program, setup: [{ id: "install", command: "npm ci" }] },
+      worktree: "/tmp/w",
+    });
+    expect(brief).toContain("prepared this worktree with the program's");
+    expect(brief).toContain("install: npm ci");
+  });
+});
