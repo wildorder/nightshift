@@ -209,14 +209,14 @@ describe("the why, in the Studio (SC-P14-08)", () => {
     // US-02 is built by S-02 alone, so the decision on S-01 is not behind it.
     expect(within(screen.getByTestId("story-US-02")).getByText("None recorded.")).toBeTruthy();
 
-    const plan = await screen.findByRole("generic", { name: "The plan" });
+    const plan = await screen.findByRole("region", { name: "The plan" });
     await waitFor(() =>
       expect(within(plan).getByText("Every read filters by tenant.")).toBeTruthy(),
     );
     expect(plan.textContent).not.toContain("alert(1)");
     expect(plan.querySelector("script")).toBeNull();
 
-    const conversation = await screen.findByRole("generic", { name: "The planning conversation" });
+    const conversation = await screen.findByRole("region", { name: "The planning conversation" });
     await waitFor(() =>
       expect(
         within(conversation).getByText("The owner wants tenants isolated with no support bypass."),

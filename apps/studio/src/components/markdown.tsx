@@ -48,9 +48,9 @@ const components: Components = {
 };
 
 export const Markdown = ({ text, label }: { readonly text: string; readonly label: string }) => (
-  <div className="grid gap-2" aria-label={label} data-testid="markdown">
+  <section className="grid gap-2" aria-label={label} data-testid="markdown">
     <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={components}>
       {text}
     </ReactMarkdown>
-  </div>
+  </section>
 );
