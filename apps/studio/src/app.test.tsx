@@ -22,11 +22,15 @@ describe("the Studio's shell", () => {
     await waitFor(() => expect(screen.getByRole("link", { name: "keyart" })).toBeTruthy());
     expect(screen.getByRole("link", { name: "foodfly" })).toBeTruthy();
     expect(screen.getByText("The trial")).toBeTruthy();
-    // The selector lists the same projects.
-    const selector = screen.getByRole("combobox", { name: "Project" });
-    expect(selector.textContent).toContain("keyart");
-    expect(selector.textContent).toContain("foodfly");
-    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    // The switcher lists the same projects (P13: a menu in the sidebar, D-P13-05).
+    await userEvent.click(screen.getByRole("button", { name: "Switch project" }));
+    const menu = await screen.findByRole("menu");
+    expect(menu.textContent).toContain("keyart");
+    expect(menu.textContent).toContain("foodfly");
+    await userEvent.keyboard("{Escape}");
+    // Sign-out is in the account menu.
+    await userEvent.click(screen.getByRole("button", { name: "Account" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /Sign out/ }));
     expect(signedOut).toEqual([true]);
   });
 

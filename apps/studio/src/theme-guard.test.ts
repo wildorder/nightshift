@@ -21,7 +21,6 @@ const NOT_YET_MIGRATED: readonly string[] = [
   "pages/run.tsx",
   "pages/settings.tsx",
   "pages/sign-in.tsx",
-  "shell.tsx",
 ];
 
 const walk = (dir: string): string[] =>
