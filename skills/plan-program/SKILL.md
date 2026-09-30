@@ -106,6 +106,14 @@ beside the old, the strands that consume it move over, and a last strand removes
 the old. Each step is green on its own. A strand that changes a shared shape in
 place breaks every strand running beside it.
 
+**Setup is not verification.** Every checkout Nightshift creates starts from
+what is committed: no installed dependencies, no generated code. What makes one
+usable (`npm ci`, a codegen step) goes in `setup`, which Nightshift runs in each
+checkout before an agent works there and before every verification. Never put an
+install into `verification`, and never make a check install conditionally: that
+hides a missing `setup` behind a slower gate. Setup runs often, so prefer a
+command that is quick when there is nothing to do.
+
 Watch the verification's cost against concurrency. Every job is verified on a
 clean checkout, so `maxConcurrency` strands running `maxConcurrency` jobs each
 can mean that many full test suites at once on the human's machine. Say the
@@ -243,7 +251,7 @@ what the contract cannot — why, how, what was considered — and refers to the
 by id. Do not restate a scope or a `verifyCommand` in the plan; it will drift.
 
 The contract inherits from `nightshift.config.json` whatever it does not state
-(`projectId`, `verification`, `modelPolicy`, `delegationLimits`, `costPolicy`,
+(`projectId`, `setup`, `verification`, `modelPolicy`, `delegationLimits`, `costPolicy`,
 `examinationPolicy`, `defaultRisk`), so state only what differs. It always
 states `schemaVersion`, `programId` (mint one with `nightshift id prog`),
 `objective`, `repository`, `successCriteria`, `constraints`, `scope`,

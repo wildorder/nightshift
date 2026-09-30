@@ -22,6 +22,7 @@ import {
   NIGHTSHIFT_CONFIG_FILE,
   type NightshiftConfig,
   NightshiftConfigSchema,
+  type SetupStep,
   type VerificationStep,
 } from "@nightshift/contracts";
 import type { CliEnvironment } from "../environment.js";
@@ -59,11 +60,15 @@ const exists = async (path: string): Promise<boolean> => {
 const VERIFICATION_SCRIPTS = ["build", "typecheck", "lint", "test"] as const;
 
 /**
- * Verification steps read off `package.json`. A clean checkout has no
- * `node_modules`, and verification runs on one, so a lockfile means the first
- * step is `npm ci`: learned on the first real repository, where everything after
- * it failed without it.
+ * Setup read off the repository. Every checkout Nightshift creates starts with
+ * no `node_modules`, so a lockfile means `npm ci` prepares each one: learned on
+ * the first real repository, where every check failed without it. It is setup,
+ * not a verification step, so the checks state only what is checked.
  */
+export const detectSetup = async (repoPath: string): Promise<SetupStep[]> =>
+  (await exists(join(repoPath, "package-lock.json"))) ? [{ id: "install", command: "npm ci" }] : [];
+
+/** Verification steps read off `package.json`'s scripts. */
 export const detectVerification = async (repoPath: string): Promise<VerificationStep[]> => {
   let scripts: Record<string, unknown> = {};
   try {
@@ -74,9 +79,6 @@ export const detectVerification = async (repoPath: string): Promise<Verification
     return [];
   }
   const steps: VerificationStep[] = [];
-  if (await exists(join(repoPath, "package-lock.json"))) {
-    steps.push({ id: "install", command: "npm ci" });
-  }
   for (const name of VERIFICATION_SCRIPTS) {
     if (typeof scripts[name] === "string") steps.push({ id: name, command: `npm run ${name}` });
   }
@@ -97,11 +99,16 @@ const NO_EXAMINATION = {
   blockOnMaterialFindings: false,
 } as const;
 
-const configFor = (projectId: string, verification: VerificationStep[]): NightshiftConfig =>
+const configFor = (
+  projectId: string,
+  setup: SetupStep[],
+  verification: VerificationStep[],
+): NightshiftConfig =>
   NightshiftConfigSchema.parse({
     schemaVersion: 1,
     projectId,
     contextDocs: [],
+    ...(setup.length === 0 ? {} : { setup }),
     verification,
     modelPolicy: {
       allowedProviders: ["anthropic", "openai"],
@@ -127,6 +134,7 @@ const ask = async (environment: CliEnvironment, question: string): Promise<strin
 
 const confirmVerification = async (
   environment: CliEnvironment,
+  setup: SetupStep[],
   detected: VerificationStep[],
   yes: boolean,
 ): Promise<VerificationStep[]> => {
@@ -135,6 +143,10 @@ const confirmVerification = async (
       "no verification commands could be detected: there is no package.json with a build, typecheck, lint or test script",
       `Write ${NIGHTSHIFT_CONFIG_FILE} by hand with the commands that prove this repository works, then run \`nightshift init\` again.`,
     );
+  }
+  if (setup.length > 0) {
+    environment.out("Setup, run in every checkout Nightshift creates, before anything else:");
+    for (const step of setup) environment.out(`  ${step.id.padEnd(10)} ${step.command}`);
   }
   environment.out("Verification, run on a clean checkout of every candidate commit:");
   for (const step of detected) environment.out(`  ${step.id.padEnd(10)} ${step.command}`);
@@ -204,8 +216,10 @@ export const init = async (
   let projectId = existing?.projectId ?? options.project;
   let configWritten = false;
   if (existing === undefined) {
+    const setup = await detectSetup(repoPath);
     const verification = await confirmVerification(
       environment,
+      setup,
       await detectVerification(repoPath),
       options.yes,
     );
@@ -215,7 +229,7 @@ export const init = async (
       });
       projectId = created.projectId;
     }
-    const config = configFor(projectId, verification);
+    const config = configFor(projectId, setup, verification);
     await writeFile(join(repoPath, NIGHTSHIFT_CONFIG_FILE), `${JSON.stringify(config, null, 2)}\n`);
     configWritten = true;
   }

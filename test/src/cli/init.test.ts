@@ -6,7 +6,13 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CliEnvironment, detectVerification, readConfig, runCli } from "@nightshift/cli";
+import {
+  type CliEnvironment,
+  detectSetup,
+  detectVerification,
+  readConfig,
+  runCli,
+} from "@nightshift/cli";
 import {
   createFetchTransport,
   createHttpStores,
@@ -78,17 +84,21 @@ afterEach(async () => {
 describe("nightshift init (SC-P7-13)", () => {
   it("detects verification from package.json, in the order it has to run", async () => {
     expect(await detectVerification(fixture.repo)).toEqual([
-      { id: "install", command: "npm ci" },
       { id: "build", command: "npm run build" },
       { id: "test", command: "npm run test" },
     ]);
+  });
+
+  it("makes installing dependencies setup, not a verification step", async () => {
+    expect(await detectSetup(fixture.repo)).toEqual([{ id: "install", command: "npm ci" }]);
   });
 
   it("takes a repository from nothing to plannable: project, config, skills, MCP", async () => {
     expect(await cli(environment(), "--yes", "--name", "demo")).toBe(0);
 
     const config = await readConfig(fixture.repo);
-    expect(config?.verification.map((step) => step.id)).toEqual(["install", "build", "test"]);
+    expect(config?.setup).toEqual([{ id: "install", command: "npm ci" }]);
+    expect(config?.verification.map((step) => step.id)).toEqual(["build", "test"]);
     // The project it names exists in the control plane, in the operator's org.
     const stores = createHttpStores({
       transport: createFetchTransport({
