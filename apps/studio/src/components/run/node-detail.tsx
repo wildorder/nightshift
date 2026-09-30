@@ -9,13 +9,14 @@
  * what they are. A strand's claimed success criteria are recorded met or not.
  */
 import type { ExecutionNode, JobContract } from "@nightshift/contracts";
-import type { RunReport, RunScope } from "@nightshift/core";
+import { type RunReport, type RunScope, storiesOf } from "@nightshift/core";
 import { useQueries } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { Separator } from "@/components/ui/separator";
 import { shortId, shortSha } from "../../lib/format.js";
 import { useStudio } from "../../studio.js";
 import { StatusBadge } from "../status-badge.js";
+import { Serves } from "../stories.js";
 import { AgentsList, Examinations, Routes_, Verifications } from "./parts.js";
 
 const Block = ({
@@ -72,6 +73,13 @@ export const NodeDetail = ({
   const objective =
     job?.objective ?? (node.parentNodeId === null ? report?.program.objective : undefined);
   const acceptance = strand?.acceptance ?? job?.acceptance ?? [];
+  // P14 (D-P14-09): what the node is for, before what it did.
+  const serves =
+    report === undefined
+      ? []
+      : strandId !== undefined
+        ? storiesOf(report, { strandId })
+        : storiesOf(report, { nodeId: id });
   const attempts = [...(routes.data ?? [])]
     .filter((r) => r.purpose === undefined)
     .sort((a, b) => a.attempt - b.attempt);
@@ -91,6 +99,8 @@ export const NodeDetail = ({
           <p className="text-sm text-status-danger-foreground">{node.outcomeReason}</p>
         )}
       </header>
+
+      <Serves stories={serves} />
 
       <Block title="What it had to do">
         {objective === undefined ? (

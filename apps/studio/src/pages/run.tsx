@@ -5,7 +5,7 @@
  * was; the run's status and the live indicator are on every tab.
  */
 import type { Artifact, Checkpoint, ExecutionNode, Run } from "@nightshift/contracts";
-import type { RunReport, RunScope } from "@nightshift/core";
+import { type RunReport, type RunScope, storyStatuses } from "@nightshift/core";
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Radio } from "lucide-react";
@@ -22,6 +22,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataTable } from "../components/data-table.js";
 import { Json } from "../components/json.js";
+import { Markdown } from "../components/markdown.js";
 import { PageHeader } from "../components/page-header.js";
 import { ProgramStatusSummary } from "../components/program-status.js";
 import { NodeDetail } from "../components/run/node-detail.js";
@@ -36,6 +37,7 @@ import {
   useRunScope,
 } from "../components/run/parts.js";
 import { StatusBadge } from "../components/status-badge.js";
+import { StoryCard, StoryLines } from "../components/stories.js";
 import { between, shortId, shortSha, when } from "../lib/format.js";
 import { useLiveEvents } from "../lib/live.js";
 import { narrate } from "../lib/narrate.js";
@@ -50,7 +52,15 @@ const RunGraph = lazy(() =>
   import("../components/run/run-graph.js").then((module) => ({ default: module.RunGraph })),
 );
 
-export const RUN_TABS = ["status", "graph", "work", "timeline", "decisions", "artifacts"] as const;
+export const RUN_TABS = [
+  "status",
+  "why",
+  "graph",
+  "work",
+  "timeline",
+  "decisions",
+  "artifacts",
+] as const;
 export type RunTab = (typeof RUN_TABS)[number];
 
 const Panel = ({
@@ -79,7 +89,12 @@ const StatusTab = ({
 }) => (
   <div className="grid gap-4">
     <Panel title="Program status">
-      <ProgramStatusSummary status={status} />
+      <div className="grid gap-4">
+        {(report.program.stories ?? []).length === 0 ? null : (
+          <StoryLines statuses={storyStatuses(report)} />
+        )}
+        <ProgramStatusSummary status={status} />
+      </div>
     </Panel>
     {report.rulings.length === 0 ? null : (
       <Panel title="Rulings">
@@ -135,6 +150,79 @@ const StatusTab = ({
     </Panel>
   </div>
 );
+
+/** A stored document of the program's, fetched by its hash. */
+const useProgramDocument = (scope: RunScope, sha256: string | undefined) => {
+  const { documents } = useStudio();
+  return useQuery({
+    queryKey: ["program-document", scope.programId, sha256],
+    queryFn: async () =>
+      sha256 === undefined || documents === undefined
+        ? undefined
+        : ((await documents.planDocument(
+            { projectId: scope.projectId, programId: scope.programId },
+            sha256,
+          )) ?? null),
+    enabled: sha256 !== undefined && documents !== undefined,
+  });
+};
+
+/**
+ * Why the program exists (P14, D-P14-09): each story in full, then the plan as
+ * it was ratified, then the conversation that shaped it.
+ */
+const WhyTab = ({ report, scope }: { readonly report: RunReport; readonly scope: RunScope }) => {
+  const statuses = storyStatuses(report);
+  const plan = useProgramDocument(scope, report.program.planDocument?.sha256);
+  const conversation = useProgramDocument(scope, report.program.conversation?.sha256);
+  return (
+    <div className="grid gap-4">
+      <Panel title="Why this program exists">
+        {statuses.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            This program was planned before Nightshift kept stories. Its plan is below.
+          </p>
+        ) : (
+          <div className="grid gap-3">
+            {statuses.map((status) => (
+              <StoryCard key={status.story.id} status={status} report={report} scope={scope} />
+            ))}
+          </div>
+        )}
+      </Panel>
+      <Panel title="The plan, as ratified">
+        {report.program.planDocument === undefined ? (
+          <p className="text-sm text-muted-foreground">This program has no ratified plan.</p>
+        ) : plan.isPending ? (
+          <p className="text-sm text-muted-foreground">Loading the plan…</p>
+        ) : typeof plan.data === "string" ? (
+          <div className="max-h-[40rem] overflow-y-auto pr-2">
+            <Markdown text={plan.data} label="The plan" />
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">The plan document could not be read.</p>
+        )}
+      </Panel>
+      <Panel title="The planning conversation">
+        {report.program.conversation === undefined ? (
+          <p className="text-sm text-muted-foreground">
+            {report.program.keepConversation === false
+              ? "This program keeps no planning conversation."
+              : "No planning conversation was kept for this plan."}
+          </p>
+        ) : conversation.isPending ? (
+          <p className="text-sm text-muted-foreground">Loading the conversation…</p>
+        ) : typeof conversation.data === "string" ? (
+          <div className="max-h-[40rem] overflow-y-auto pr-2">
+            <Markdown text={conversation.data} label="The planning conversation" />
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">The conversation could not be read.</p>
+        )}
+      </Panel>
+    </div>
+  );
+};
 
 const artifactColumns: ColumnDef<Artifact, unknown>[] = [
   { id: "kind", header: "Kind", accessorFn: (a) => a.kind },
@@ -260,6 +348,7 @@ export const RunPage = () => {
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="status">Status</TabsTrigger>
+          <TabsTrigger value="why">Why</TabsTrigger>
           <TabsTrigger value="graph">Graph</TabsTrigger>
           <TabsTrigger value="work">Work</TabsTrigger>
           <TabsTrigger value="timeline">Timeline</TabsTrigger>
@@ -272,6 +361,14 @@ export const RunPage = () => {
             <p className="text-muted-foreground">Building the report…</p>
           ) : (
             <StatusTab report={report} status={runStatus.data.status} />
+          )}
+        </TabsContent>
+
+        <TabsContent value="why" className="mt-4">
+          {report === undefined ? (
+            <p className="text-muted-foreground">Building the report…</p>
+          ) : (
+            <WhyTab report={report} scope={scope} />
           )}
         </TabsContent>
 

@@ -27,6 +27,7 @@ import { DataTable } from "../components/data-table.js";
 import { PageHeader } from "../components/page-header.js";
 import { ProgramStatusSummary } from "../components/program-status.js";
 import { StatusBadge } from "../components/status-badge.js";
+import { CardStories } from "../components/stories.js";
 import { between, shortId, when } from "../lib/format.js";
 import { readAll } from "../lib/read-all.js";
 import { useRunStatus } from "../lib/run-status.js";
@@ -319,6 +320,7 @@ export const ProjectPage = () => {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-4">
+                  <CardStories program={program} />
                   <LatestRunStatus program={program} runs={runs} />
                   <PlanState program={program} />
                 </CardContent>

@@ -6,7 +6,7 @@
  * session and no network: the same pages, the same records.
  */
 import type { ArtifactId, OrgId } from "@nightshift/contracts";
-import type { IdGenerator, ProjectStores, RunScope } from "@nightshift/core";
+import type { IdGenerator, ProgramScope, ProjectStores, RunScope } from "@nightshift/core";
 import { createContext, useContext } from "react";
 import type { Identity } from "./auth/session.js";
 
@@ -29,6 +29,13 @@ export interface Studio {
    * control plane signs. `undefined` when this composition cannot sign one.
    */
   readonly artifacts?: { downloadUrl(scope: RunScope, artifactId: ArtifactId): Promise<string> };
+  /**
+   * A program's stored documents (P14): the ratified plan and the kept
+   * conversation, by SHA-256. `undefined` text when the control plane holds none.
+   */
+  readonly documents?: {
+    planDocument(scope: ProgramScope, sha256: string): Promise<string | undefined>;
+  };
   /** How often a live run's page asks for new events (D-P11-05). */
   readonly pollMs?: number;
 }

@@ -29,6 +29,8 @@ export interface MountOptions {
   readonly at?: string | ((f: Fixtures) => string);
   readonly pollMs?: number;
   readonly artifacts?: Studio["artifacts"];
+  /** The program's stored documents, by SHA-256 (P14). */
+  readonly documents?: Readonly<Record<string, string>>;
   readonly ids?: IdGenerator;
   readonly now?: () => string;
 }
@@ -52,6 +54,13 @@ export const mountStudio = async (
     ids: opts.ids ?? createCountingIdGenerator(9000),
     now: opts.now ?? (() => "2026-09-28T12:00:00.000Z"),
     ...(opts.artifacts === undefined ? {} : { artifacts: opts.artifacts }),
+    ...(opts.documents === undefined
+      ? {}
+      : {
+          documents: {
+            planDocument: async (_scope, sha256) => opts.documents?.[sha256],
+          },
+        }),
     ...(opts.pollMs === undefined ? {} : { pollMs: opts.pollMs }),
   };
   const at = typeof opts.at === "function" ? opts.at(f) : (opts.at ?? "/");
