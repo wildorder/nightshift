@@ -17,8 +17,8 @@ export const ProjectSettingsPage = () => {
   }
   return (
     <section className="flex flex-col gap-4">
-      <h1 className="text-xl font-semibold">
-        <Link to={`/projects/${projectId}`} className="underline">
+      <h1 className="text-2xl font-semibold tracking-tight">
+        <Link to={`/projects/${projectId}`} className="underline-offset-4 hover:underline">
           {project.data.name}
         </Link>{" "}
         · settings
@@ -26,7 +26,7 @@ export const ProjectSettingsPage = () => {
       <div>
         <h2 className="font-semibold">Cross-account access</h2>
         {project.data.crossAccount === undefined ? (
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-muted-foreground">
             None: this project reaches no AWS account of its own.
           </p>
         ) : (
@@ -34,9 +34,9 @@ export const ProjectSettingsPage = () => {
         )}
       </div>
       {programs.data.map(({ program, runs }) => (
-        <div key={program.programId} className="rounded border border-slate-200 bg-white p-3">
+        <div key={program.programId} className="rounded-lg border bg-card p-4 text-card-foreground">
           <h2 className="font-semibold">{program.objective}</h2>
-          <p className="mb-2 font-mono text-xs text-slate-500">{program.programId}</p>
+          <p className="mb-2 font-mono text-xs text-muted-foreground">{program.programId}</p>
           <h3 className="mt-2 text-sm font-semibold">Contract policies</h3>
           <Json
             label={`policies of ${program.programId}`}

@@ -158,7 +158,7 @@ const start = async (): Promise<void> => {
 
 start().catch((error: unknown) => {
   render(
-    <main className="m-8 rounded border border-red-300 bg-red-50 p-4 text-red-900">
+    <main className="m-8 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-destructive">
       <h1 className="font-semibold">The Studio could not start</h1>
       <pre className="whitespace-pre-wrap text-sm">{String(error)}</pre>
     </main>,

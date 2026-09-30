@@ -11,17 +11,7 @@ const SRC = fileURLToPath(new URL(".", import.meta.url));
  * Files not yet rebuilt on the theme (P13, T3 and T4). A ratchet: each rebuilt
  * page comes off, nothing goes on, and T5 holds the list empty.
  */
-const NOT_YET_MIGRATED: readonly string[] = [
-  "components/json.tsx",
-  "main.tsx",
-  "pages/decision.tsx",
-  "pages/project-settings.tsx",
-  "pages/project.tsx",
-  "pages/projects.tsx",
-  "pages/run.tsx",
-  "pages/settings.tsx",
-  "pages/sign-in.tsx",
-];
+const NOT_YET_MIGRATED: readonly string[] = ["pages/decision.tsx", "pages/run.tsx"];
 
 const walk = (dir: string): string[] =>
   readdirSync(dir).flatMap((name) => {

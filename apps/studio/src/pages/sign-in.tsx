@@ -5,17 +5,17 @@ export const SignInPage = ({
   readonly onSignIn: () => void;
   readonly problem?: string | undefined;
 }) => (
-  <main className="mx-auto mt-24 max-w-sm rounded border border-slate-200 bg-white p-6 text-center">
+  <main className="mx-auto mt-24 max-w-sm rounded-xl border bg-card p-6 text-center text-card-foreground shadow-sm">
     <h1 className="mb-2 text-xl font-semibold">Nightshift Studio</h1>
-    <p className="mb-4 text-sm text-slate-600">Sign in with your Nightshift account.</p>
+    <p className="mb-4 text-sm text-muted-foreground">Sign in with your Nightshift account.</p>
     {problem === undefined ? null : (
-      <p role="alert" className="mb-4 text-sm text-red-700">
+      <p role="alert" className="mb-4 text-sm text-destructive">
         {problem}
       </p>
     )}
     <button
       type="button"
-      className="rounded bg-slate-900 px-4 py-2 text-white hover:bg-slate-700"
+      className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
       onClick={onSignIn}
     >
       Sign in
@@ -25,9 +25,9 @@ export const SignInPage = ({
 
 /** A local instance's tab with no token (D-P12-04): the way in is the printed URL. */
 export const LocalStartPage = ({ signedOut = false }: { readonly signedOut?: boolean }) => (
-  <main className="mx-auto mt-24 max-w-md rounded border border-slate-200 bg-white p-6 text-center">
+  <main className="mx-auto mt-24 max-w-md rounded-xl border bg-card p-6 text-center text-card-foreground shadow-sm">
     <h1 className="mb-2 text-xl font-semibold">Nightshift Studio</h1>
-    <p className="text-sm text-slate-600">
+    <p className="text-sm text-muted-foreground">
       {signedOut ? "Signed out of this tab. " : ""}This is a local instance. Open the Studio URL
       that <code>nightshift local</code> printed; it carries this machine's token.
     </p>

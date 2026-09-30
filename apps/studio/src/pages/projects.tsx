@@ -1,28 +1,49 @@
+import { FolderGit2 } from "lucide-react";
 import { Link } from "react-router";
-import { useProjects } from "../shell.js";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "../components/page-header.js";
+import { useProjects } from "../projects.js";
 
 export const ProjectsPage = () => {
   const projects = useProjects();
-  if (projects.isPending) return <p>Loading projects…</p>;
+  if (projects.isPending) return <p className="text-muted-foreground">Loading projects…</p>;
   if (projects.isError)
     return <p role="alert">Could not list projects: {String(projects.error)}</p>;
   const items = projects.data;
   return (
     <section>
-      <h1 className="mb-3 text-xl font-semibold">Projects</h1>
+      <PageHeader
+        title="Projects"
+        description="Every repository Nightshift works in, for this organisation."
+      />
       {items.length === 0 ? (
-        <p>No projects yet. Create one with `nightshift project create`.</p>
+        <p className="text-muted-foreground">
+          No projects yet. Create one with <code className="font-mono">nightshift init</code> in a
+          repository.
+        </p>
       ) : (
-        <ul className="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
+        <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {items.map((project) => (
-            <li key={project.projectId} className="p-3">
-              <Link to={`/projects/${project.projectId}`} className="font-medium hover:underline">
-                {project.name}
-              </Link>
-              {project.description === undefined ? null : (
-                <p className="text-sm text-slate-600">{project.description}</p>
-              )}
-              <p className="font-mono text-xs text-slate-500">{project.projectId}</p>
+            <li key={project.projectId}>
+              <Card className="h-full transition-colors hover:bg-accent/50">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <FolderGit2 className="size-4 text-muted-foreground" />
+                    <Link
+                      to={`/projects/${project.projectId}`}
+                      className="underline-offset-4 hover:underline"
+                    >
+                      {project.name}
+                    </Link>
+                  </CardTitle>
+                  {project.description === undefined ? null : (
+                    <CardDescription>{project.description}</CardDescription>
+                  )}
+                  <CardDescription className="font-mono text-xs">
+                    {project.projectId}
+                  </CardDescription>
+                </CardHeader>
+              </Card>
             </li>
           ))}
         </ul>

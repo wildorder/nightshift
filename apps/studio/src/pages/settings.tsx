@@ -15,6 +15,7 @@ import {
 import { StaleWriteError } from "@nightshift/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Json } from "../components/json.js";
 import { useStudio } from "../studio.js";
 
@@ -84,19 +85,19 @@ const RouteRow = ({
   <div className="flex items-center gap-1 text-sm">
     <input
       aria-label="harness"
-      className="w-24 rounded border border-slate-300 px-1"
+      className="w-24 h-8 rounded-md border border-input bg-background px-2 text-sm"
       value={route.harness}
       onChange={(e) => onChange({ ...route, harness: e.target.value })}
     />
     <input
       aria-label="model"
-      className="w-56 rounded border border-slate-300 px-1"
+      className="w-56 h-8 rounded-md border border-input bg-background px-2 text-sm"
       value={route.model}
       onChange={(e) => onChange({ ...route, model: e.target.value })}
     />
     <select
       aria-label="effort"
-      className="rounded border border-slate-300 px-1"
+      className="h-8 rounded-md border border-input bg-background px-2 text-sm"
       value={route.effort ?? ""}
       onChange={(e) => {
         const { effort: _effort, ...rest } = route;
@@ -127,7 +128,7 @@ const Ladders = ({
 }) => (
   <div className="flex flex-col gap-3">
     {Object.entries(ladders).map(([name, rungs]) => (
-      <fieldset key={name} className="rounded border border-slate-200 p-2">
+      <fieldset key={name} className="rounded-lg border p-3">
         <legend className="px-1 font-medium">{name}</legend>
         {rungs.map((rung, r) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: rungs are positional and edited by position
@@ -135,7 +136,7 @@ const Ladders = ({
             <div className="flex items-center gap-2 text-sm">
               <select
                 aria-label={`${name} rung ${r + 1} tier`}
-                className="rounded border border-slate-300 px-1"
+                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
                 value={rung.tier}
                 onChange={(e) =>
                   onChange({
@@ -269,7 +270,7 @@ export const OrgSettingsPage = () => {
 
   if (orgId === undefined) {
     return (
-      <p className="text-slate-600">
+      <p className="text-muted-foreground">
         This session acts for no organisation with a project yet, so there is no configuration to
         show.
       </p>
@@ -284,8 +285,8 @@ export const OrgSettingsPage = () => {
   return (
     <section className="flex flex-col gap-4">
       <header>
-        <h1 className="text-xl font-semibold">Organisation settings</h1>
-        <p className="text-sm text-slate-600">
+        <h1 className="text-2xl font-semibold tracking-tight">Organisation settings</h1>
+        <p className="text-sm text-muted-foreground">
           <code>{orgId}</code> · configuration version {base.version}
           {base.version === 0 ? " (the seeded default; nobody has written one yet)" : ""} · signed
           in as {identity.email ?? identity.subject ?? "?"}
@@ -293,7 +294,10 @@ export const OrgSettingsPage = () => {
       </header>
 
       {stale ? (
-        <div role="alert" className="rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+        <div
+          role="alert"
+          className="rounded-md border border-status-warning-foreground/30 bg-status-warning p-3 text-sm text-status-warning-foreground"
+        >
           The configuration changed since you read it (you read version {base.version}). Nothing was
           saved.{" "}
           <button
@@ -309,7 +313,7 @@ export const OrgSettingsPage = () => {
       {problem === undefined ? null : (
         <p
           role="alert"
-          className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900"
+          className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
         >
           {problem}
         </p>
@@ -380,10 +384,10 @@ export const OrgSettingsPage = () => {
         ).map(([key, label, hint]) => (
           <div key={key}>
             <h2 className="mb-1 font-semibold">{label}</h2>
-            <p className="mb-1 text-xs text-slate-600">{hint}</p>
+            <p className="mb-1 text-xs text-muted-foreground">{hint}</p>
             <textarea
               aria-label={label}
-              className="w-full rounded border border-slate-300 p-2 font-mono text-xs"
+              className="w-full rounded-md border border-input bg-background p-2 font-mono text-xs"
               rows={8}
               value={draft[key]}
               onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
@@ -392,21 +396,15 @@ export const OrgSettingsPage = () => {
         ))}
 
         <div className="flex items-center gap-3">
-          <button
-            type="submit"
-            className="rounded bg-slate-900 px-3 py-1 text-white"
-            disabled={save.isPending}
-          >
+          <Button type="submit" disabled={save.isPending}>
             Save as version {base.version + 1}
-          </button>
-          <button
-            type="button"
-            className="rounded border px-3 py-1"
-            onClick={() => setDraft(draftOf(base))}
-          >
+          </Button>
+          <Button type="button" variant="outline" onClick={() => setDraft(draftOf(base))}>
             Discard changes
-          </button>
-          {save.isSuccess && !stale ? <span className="text-sm text-green-800">Saved.</span> : null}
+          </Button>
+          {save.isSuccess && !stale ? (
+            <span className="text-sm text-status-success-foreground">Saved.</span>
+          ) : null}
         </div>
       </form>
 
