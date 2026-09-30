@@ -19,6 +19,13 @@
 <!-- What this program delivers, in a paragraph a developer could repeat. Then what
      it deliberately does not deliver (the contract's `outOfScope`, in prose). -->
 
+## Who it is for
+
+<!-- The stories themselves (who, what is wrong today, what changes, the human's
+     own words) live in the contract, by id. Say here what the contract cannot:
+     how the stories relate, which matters most and why, and what the human said
+     that shaped them. Refer to each by id (US-01); do not restate one. -->
+
 ## Architecture
 
 <!-- What changes from the system as built: new modules, moved boundaries, changed
