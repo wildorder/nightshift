@@ -302,10 +302,9 @@ export const fastForward = async (
  * Returns the worktree to exactly `sha`, discarding everything else.
  *
  * `clean -fd` without `-x`, so **ignored files survive**: `node_modules` and
- * build caches stay, and verification needs no reinstall. What is verified is
- * therefore the tracked tree plus whatever is ignored — which is what a
- * developer running the same commands would get, and is worth knowing when
- * reading a verification log.
+ * build caches stay, and a program's `setup` has less to do when it runs again
+ * before verification. Survival is not relied on: a checkout Nightshift created
+ * has no ignored files until setup makes them (see `verify.ts`).
  */
 export const cleanCheckout = async (
   runner: GitRunner,

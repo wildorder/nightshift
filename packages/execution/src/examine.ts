@@ -78,7 +78,7 @@ import {
   type McpLaunch,
   refusingWorkerTools,
 } from "@nightshift/harness";
-import { runVerificationSteps, toVerificationCommands } from "@nightshift/verification";
+import { runCheckoutSteps, toVerificationCommands } from "@nightshift/verification";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExaminationServices,
@@ -96,6 +96,7 @@ import {
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
 import { recordArtifact } from "./runner.js";
+import { prepareCheckout } from "./setup.js";
 
 /** The environment variable an examiner's server reads its examination's frame from. */
 export const EXAMINATION_CONTEXT_ENV = "NIGHTSHIFT_EXAMINATION";
@@ -449,7 +450,15 @@ const gatherEvidence = async (
     { cwd: checkout },
   );
   let verification = input.verification;
-  if (verification === undefined) {
+  if (verification !== undefined) {
+    // No candidate check runs here to set the checkout up, and the examiner works in it.
+    await prepareCheckout(environment, {
+      session: input.session,
+      nodeId: input.node.executionNodeId,
+      checkout,
+      purpose: "examiner",
+    });
+  } else {
     const checked = await candidateVerification(environment, input, checkout);
     if (checked === "postponed") return { kind: "postponed" };
     if (checked.outcome === "failed") return { kind: "candidate_failed", verification: checked };
@@ -573,6 +582,22 @@ const examinationCheckout = async (
   return path;
 };
 
+/** A new examination checkout with the program's setup already run in it, for an agent that works there. */
+const preparedCheckout = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  purpose: string,
+): Promise<string> => {
+  const checkout = await examinationCheckout(environment, input);
+  await prepareCheckout(environment, {
+    session: input.session,
+    nodeId: input.node.executionNodeId,
+    checkout,
+    purpose,
+  });
+  return checkout;
+};
+
 /**
  * The snapshot checked on its own base, as evidence for the examiner (D-P8-09).
  * `postponed` when a step needs a human prerequisite nobody has met: that work
@@ -599,11 +624,15 @@ const candidateVerification = async (
   }
 
   const startedAt = nowIso(environment.clock);
-  const results = await runVerificationSteps({
+  // The checkout is new and holds only what is committed, so setup comes first;
+  // it also leaves the checkout usable for the examiner who works in it.
+  const ran = await runCheckoutSteps({
+    setup: input.session.program.setup ?? [],
     steps,
     cwd: checkout,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
   });
+  const results = [...ran.setup, ...ran.checks];
   const logs = new Map<string, Verification["commands"][number]["logArtifactId"]>();
   for (const result of results) {
     const artifactId = await recordArtifact(environment, {
@@ -1080,7 +1109,7 @@ export const arbitrateAll = async (
   };
   await stores.examinations.put(current);
 
-  const checkout = context.checkout ?? (await examinationCheckout(environment, input));
+  const checkout = context.checkout ?? (await preparedCheckout(environment, input, "arbiter"));
   const checkpointBefore = await checkpointHead(environment, input);
   const implementer = await stores.agents.get(scope, current.implementerAgentId);
   const upheld: string[] = [];

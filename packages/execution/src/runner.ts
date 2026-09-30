@@ -86,6 +86,7 @@ import {
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
+import { prepareCheckout } from "./setup.js";
 import { stampSettledDecisions } from "./stamp.js";
 import { verifyNode } from "./verify.js";
 import { createWorkerTools } from "./worker.js";
@@ -347,6 +348,14 @@ export const startJob = async (
     } else {
       await addWorktree(environment.git, { repo: session.repoPath, path: worktree, branch, base });
     }
+    // A new worktree holds only what is committed; the program's setup makes it
+    // usable before the agent starts in it.
+    await prepareCheckout(environment, {
+      session,
+      nodeId,
+      checkout: worktree,
+      purpose: orchestrates ? "orchestrator" : "worker",
+    });
     // The base, recorded in the repository rather than carried through three
     // processes. `completeJob` reads it back to parent the snapshot.
     await updateRef(environment.git, session.repoPath, baseRef(nodeId), base);
@@ -1077,7 +1086,7 @@ export const recordArtifact = async (
   input: {
     readonly scope: RunSession["scope"];
     readonly nodeId: ExecutionNodeId;
-    readonly kind: "transcript" | "verification-log";
+    readonly kind: "transcript" | "verification-log" | "build-log";
     readonly contentType: string;
     readonly bytes: Uint8Array;
   },

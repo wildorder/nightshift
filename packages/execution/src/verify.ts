@@ -15,10 +15,12 @@
  * The clean checkout matters more than it looks. `reset --hard` and `clean -fd`
  * discard everything the worker left that is not in the commit — so what is
  * verified is exactly what would integrate. Ignored files survive, because
- * `clean` is run without `-x`: dependencies stay installed and verification
- * needs no reinstall. What is verified is therefore the tracked tree plus
- * whatever is ignored, which is what a developer running the same commands would
- * get.
+ * `clean` is run without `-x`, but nothing guarantees they were ever there: a
+ * worktree Nightshift created starts with none. So the program's `setup` runs
+ * first, every time, and is recorded under `setup:<id>`; a setup that fails
+ * fails the verification without the checks running. What is verified is the
+ * tracked tree plus what setup produced from it, which is what a developer who
+ * cloned the commit and ran the same commands would get.
  *
  * ## Order
  *
@@ -47,7 +49,8 @@ import {
 import {
   type DeferSignal,
   deferSignalOf,
-  runVerificationSteps,
+  runCheckoutSteps,
+  setupAsStep,
   toVerificationCommands,
 } from "@nightshift/verification";
 import {
@@ -168,7 +171,10 @@ export const verifyNode = async (
     source: "control-plane",
     payload: {
       commitSha,
-      steps: input.session.program.verification.map((step) => step.id),
+      steps: [
+        ...(input.session.program.setup ?? []).map((step) => setupAsStep(step).id),
+        ...input.session.program.verification.map((step) => step.id),
+      ],
     },
     executionNodeId: input.node.executionNodeId,
     agentId: input.agentId,
@@ -187,15 +193,20 @@ export const verifyNode = async (
   const steps = input.session.program.verification;
   const runnable = steps.filter((step) => waitingOf(step).length === 0);
 
-  const results = await runVerificationSteps({
+  // Setup first: the checkout holds only what is committed and what an earlier
+  // setup left, and the commit may have changed what setup produces. When setup
+  // fails, nothing is checked, and the record says so with setup's own output.
+  const checkout = await runCheckoutSteps({
+    setup: input.session.program.setup ?? [],
     steps: runnable,
     cwd: input.worktree,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
   });
+  const results = checkout.checks;
 
   // Each step's whole output, in S3 and referenced — never inline (A-08).
   const logArtifactIds = new Map<string, ArtifactId>();
-  for (const result of results) {
+  for (const result of [...checkout.setup, ...results]) {
     const artifactId = await recordArtifact(environment, {
       scope: input.session.scope,
       nodeId: input.node.executionNodeId,
@@ -221,20 +232,24 @@ export const verifyNode = async (
   const ran = new Map(
     toVerificationCommands(results, logArtifactIds).map((command) => [command.stepId, command]),
   );
-  const commands = steps.map((step) => {
-    const found = ran.get(step.id);
-    const declared = discovered.get(step.id);
-    if (found !== undefined && declared === undefined) return found;
-    return {
-      stepId: step.id,
-      command: step.command,
-      durationMs: found?.durationMs ?? 0,
-      ...(found?.logArtifactId === undefined ? {} : { logArtifactId: found.logArtifactId }),
-      // The first unmet one: a record names what it waits on, the node's reason names them all.
-      deferred: { prerequisiteId: declared ?? (waitingOf(step)[0] as string) },
-    };
-  });
-  const waitingOn = [...new Set([...steps.flatMap(waitingOf), ...discovered.values()])];
+  const checked = checkout.setupFailed ? [] : steps;
+  const commands = [
+    ...toVerificationCommands(checkout.setup, logArtifactIds),
+    ...checked.map((step) => {
+      const found = ran.get(step.id);
+      const declared = discovered.get(step.id);
+      if (found !== undefined && declared === undefined) return found;
+      return {
+        stepId: step.id,
+        command: step.command,
+        durationMs: found?.durationMs ?? 0,
+        ...(found?.logArtifactId === undefined ? {} : { logArtifactId: found.logArtifactId }),
+        // The first unmet one: a record names what it waits on, the node's reason names them all.
+        deferred: { prerequisiteId: declared ?? (waitingOf(step)[0] as string) },
+      };
+    }),
+  ];
+  const waitingOn = [...new Set([...checked.flatMap(waitingOf), ...discovered.values()])];
 
   const verification = VerificationSchema.parse({
     schemaVersion: 1,

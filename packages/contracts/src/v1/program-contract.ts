@@ -53,6 +53,35 @@ export const VerificationStepSchema = z.strictObject({
 export type VerificationStep = z.infer<typeof VerificationStepSchema>;
 
 /**
+ * One command that prepares a checkout before anything runs in it: installing
+ * dependencies, generating code, anything the repository needs and does not
+ * commit.
+ *
+ * Nightshift creates checkouts of its own — a job's worktree, the detached
+ * checkout an examiner's evidence is gathered in, the one resume makes when a
+ * worktree was tidied away — and none of them holds a repository's ignored
+ * files. Setup is how a program says what makes one usable, so its
+ * verification states only what is checked. Nightshift runs every setup step,
+ * in order, in each checkout it creates before a worker starts in it, and again
+ * before every verification, because the commit under verification may have
+ * changed what setup produces (a new dependency, say).
+ *
+ * Setup runs often, so it should be cheap when there is nothing to do. It is
+ * recorded in a verification as its own commands, under `setup:<id>`, and a
+ * setup step that fails fails the verification without the checks running: a
+ * test suite run without its dependencies proves nothing.
+ */
+export const SetupStepSchema = z.strictObject({
+  id: z.string().min(1),
+  command: z.string().min(1),
+  description: z.string().optional(),
+});
+export type SetupStep = z.infer<typeof SetupStepSchema>;
+
+/** The prefix a setup step's id carries in a `Verification`, so it cannot collide with a check's. */
+export const SETUP_STEP_ID_PREFIX = "setup:";
+
+/**
  * Which providers and models this program may use. An empty `allowedModels`
  * means "any model offered by an allowed provider"; `forbiddenModels` always
  * wins over both.
@@ -158,6 +187,8 @@ export const ProgramContractSchema = z
     constraints: z.array(z.string().min(1)),
     /** The root authority every execution node inherits from and may only narrow. */
     scope: ScopeSchema,
+    /** What makes a checkout usable before anything runs in it. Absent means nothing does. */
+    setup: z.array(SetupStepSchema).optional(),
     verification: z.array(VerificationStepSchema).min(1),
     modelPolicy: ModelPolicySchema,
     examinationPolicy: ExaminationPolicySchema,
@@ -211,6 +242,10 @@ export const ProgramContractSchema = z
   .refine((value) => uniqueIds(value.verification), {
     message: "verification step ids must be unique within a program contract",
     path: ["verification"],
+  })
+  .refine((value) => uniqueIds(value.setup ?? []), {
+    message: "setup step ids must be unique within a program contract",
+    path: ["setup"],
   })
   .refine((value) => uniqueIds(value.successCriteria), {
     message: "success criterion ids must be unique within a program contract",

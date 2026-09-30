@@ -17,6 +17,7 @@ import {
   type ExaminationPolicy,
   ExaminationPolicySchema,
   ModelPolicySchema,
+  SetupStepSchema,
   stricterExaminationPolicy,
   VerificationStepSchema,
 } from "./program-contract.js";
@@ -38,6 +39,8 @@ export const NightshiftConfigSchema = z.strictObject({
   visionPath: z.string().min(1).optional(),
   /** Other documents every plan should be written in the light of. */
   contextDocs: z.array(z.string().min(1)),
+  /** What makes a checkout of this repository usable; see `SetupStepSchema`. */
+  setup: z.array(SetupStepSchema).optional(),
   verification: z.array(VerificationStepSchema).min(1),
   modelPolicy: ModelPolicySchema,
   delegationLimits: DelegationLimitsSchema,
@@ -62,6 +65,7 @@ export type NightshiftConfig = z.infer<typeof NightshiftConfigSchema>;
 /** The contract fields a config can supply. */
 export const INHERITED_CONTRACT_FIELDS = [
   "projectId",
+  "setup",
   "verification",
   "modelPolicy",
   "delegationLimits",

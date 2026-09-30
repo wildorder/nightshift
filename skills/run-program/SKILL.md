@@ -43,9 +43,15 @@ Check, and say what you find, without fixing anything the human did not ask for:
   carries on a provisional line and the checks that need it are deferred until
   the human is back. Say which kind each unmet one is.
 - **Cost, in plain numbers.** `maxConcurrency` from the merged contract times
-  the verification's cost is what this machine will do at once: with a gate of
-  `npm ci` + build + typecheck + lint + test and `maxConcurrency` 2, expect up to
-  two full gates running together. Say it once, and let the human choose
+  the verification's cost is what this machine will do at once: with a setup of
+  `npm ci`, a gate of build + typecheck + lint + test and `maxConcurrency` 2,
+  expect up to two installs and two full gates running together.
+- **Setup.** Every checkout Nightshift creates starts with nothing that is not
+  committed, and the contract's `setup` is what prepares it. A repository that
+  needs installed dependencies and has no `setup` will fail its checks for
+  reasons that have nothing to do with the work. Say so before starting, and send
+  it back to planning: the fix is a `setup` in `nightshift.config.json` or the
+  contract, never an install folded into the gate. Say it once, and let the human choose
   `--model` or lower the limit in `nightshift.config.json` if they want.
 
 ## 2. Attended: this session orchestrates
