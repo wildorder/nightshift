@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p14-intent` |
 | Source stage | none: the owner's direction of 2026-09-30 (§3.1), after P13 |
-| Status | **Ratified 2026-09-30**, not started |
+| Status | **Built 2026-09-30**, T1 … T5 (§13); deployed; the build decisions of §13 and the owner's trial (SC-P14-11) follow |
 | Depends on | P7 (planning, the contract, ratification), P9 (decisions and their `produced` commits), P13 (the Studio's run page, graph and node detail) |
 | Blocking decisions | none: D-P14-01 … D-P14-12 ratified |
 
@@ -284,10 +284,101 @@ T1 ── T2 ──┬── T3 ──┐
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-30 | **Built.** T1 … T5 on `program/p14-intent`, in the worktree `nightshift-p14`; `npm run verify` green under Node 24 (3,369 tests); the API and Studio stacks deployed; `studio:smoke` and `smoke` green. The build decisions of §13 are provisional until the owner ratifies or reverses them. | Agent, for human ratification |
 | 2026-09-30 | **Contract ratified.** The owner chose D-P14-02 (stories required by `plan check`) and D-P14-09 (a Why tab after Status) as proposed. D-P14-01, -03, -04, -07, -08, -10, -11 and -12 are low-risk and ratified as written, per the owner's review style. | **Human** |
 | 2026-09-30 | **D-P14-06 ratified** as proposed. **D-P14-05 revised** with the owner: a summary and verbatim excerpts, not the whole conversation; an exchange is kept for what it led to, so a tangent that led to a decision stays (the owner's amendment); the skill chooses, the CLI copies. D-P14-04 follows: quotes are checked against the excerpts. | **Human** |
 | 2026-09-30 | Contract drafted from the owner's direction (§3.1): twelve decisions proposed for ratification. | Agent, for human ratification |
 
 ## 13. As built
 
-Not started.
+Built 2026-09-30 on `program/p14-intent`, T1 … T5 in one sitting, in a
+separate worktree so the owner could plan in the main checkout meanwhile.
+
+### Task states
+
+| Task | State | Notes |
+|------|-------|-------|
+| T1 | **done** | `StorySchema`, `serves`, `keepConversation`, the ratification's and contract's `conversation`; seven new `checkPlan` reasons; `storiesOf`, `storyStatuses`; the conversation file's format in `core`; the report's Stories section |
+| T2 | **done** | transcript readers in both harnesses; `nightshift-transcript`; `nightshift plan conversation`; check and ratify read `conversation.md`; the control plane checks the quotes and records the conversation |
+| T3 | **done** | `plan-program`: stories first (§2a), quoting exactly, plain criteria, keep the conversation every round (§8a); the template's "Who it is for" |
+| T4 | **done** | the card's stories, the Status tab's story lines, the Why tab (stories, plan, conversation), Serves on a node's detail and a decision's page, the graph read by story |
+| T5 | **done** | the proofs below, a look at a seeded run in the browser, this as-built, the API and Studio redeploy |
+
+### What was proven, and where
+
+| SC | State | By |
+|----|-------|----|
+| SC-P14-01 | met | `test/src/planning/hash-compat.test.ts`: a pre-P14 contract hashes to main's own golden value, and empty `stories`/`serves` hash the same as absent ones; the P7 … P9 suites unchanged |
+| SC-P14-02 | met | `core/rules/plan.test.ts`: no story; every story reason at once |
+| SC-P14-03 | met | `plan.test.ts` (whitespace, the assistant's words refused, the switch off); `test/src/cli/planning.test.ts` (a paraphrase refused through the CLI); `apps/api/.../plans.test.ts` (refused by the control plane whatever the client checked) |
+| SC-P14-04 | met | `core/report/stories.test.ts`: strand, criterion, job, the program's node, planned decision by strand and by `all`, run-time decision, commit |
+| SC-P14-05 | met | `harness-claude/src/transcript.test.ts` and `harness-codex/src/transcript.test.ts` over recorded sessions with every kind of entry that is not the conversation; `core/rules/conversation.test.ts` (kept exactly, extended, the human's cut kept, masking); the CLI end to end through the real binary |
+| SC-P14-06 | met | `planning.test.ts` (ratified over the test control plane, which is the local instance's server); `apps/api/src/smoke/p2.smoke.ts` against the deployed stage: stored, a paraphrase refused, recorded, served back |
+| SC-P14-07 | met | `test/src/skills/plan-program.test.ts`: the new steps, and a planning round whose stories pass against the conversation it kept, the tangent left out |
+| SC-P14-08 | met | `apps/studio/src/pages/why.test.tsx`: the card, the Status lines, the Why tab (no raw HTML), Serves on a node and a decision, the story picker lighting exactly the strands and jobs built for it |
+| SC-P14-09 | met | `core/report/report.test.ts`: Stories before Strands; none for a program planned before stories |
+| SC-P14-10 | met | `npm run verify` green; `studio:smoke` and `smoke` green against dev |
+| SC-P14-11 | **the owner's** | below |
+
+### Build decisions, provisional until the owner ratifies or reverses them
+
+1. **The CLI reaches the transcript readers through a process,
+   `nightshift-transcript`, in the MCP app.** D-P14-07 put the readers in the
+   harness packages, and the layer table lets only `apps/mcp/src/compose.ts`
+   name a harness. Letting the CLI import them would have widened a rule whose
+   comment warns against exactly that. `nightshift resume` already works this
+   way.
+2. **The conversation is stored as a plan document**: the same program-scoped,
+   content-addressed store and route, named by its own SHA-256. No new route,
+   bucket prefix or IAM grant.
+3. **`keepConversation` is a contract field inherited from the config.** The
+   config alone never reaches the control plane (A-06), and the control plane
+   has to know whether to demand a conversation for the quotes.
+4. **The contract carries the current `conversation` beside `planDocument`**,
+   written by the control plane only. A client's copy is dropped at ratify.
+5. **What a Claude session "said"** is the human's typed prompts, their answers
+   to multiple-choice questions with any note they typed, and all the
+   assistant's text between two human messages as one message. Slash-command
+   echoes, task notifications, interruptions, meta entries, compaction summaries,
+   side chains, tool calls and their output, and injected reminders are dropped.
+   For Codex it is the `response_item` messages, with injected instructions,
+   environment and skill blocks dropped and `event_msg` ignored as a duplicate.
+6. **`remark-gfm` beside `react-markdown`** (both MIT), because plans are full of
+   tables.
+7. **A story card's heading is its outcome**, so the card shows who and today and
+   no separate "afterwards" row, found by looking at a seeded run.
+8. **The program's own node is left unmarked when the graph is read by story.**
+   It serves every story, and lighting it for all of them says nothing.
+9. **`plan conversation` with no flag lists the session.** `--list` exists for
+   clarity and refuses to be combined with `--keep`.
+
+### What changed in earlier programs' suites, and why
+
+Nothing asserted changed.
+
+- **Fixtures gained stories.** The shared factory (`makeProgramContract`), the
+  example contract and the slice fixture's contract now carry stories and
+  `serves`, because every ratified plan needs them now.
+- **`StrandReport` gained `nodeIds`.** Two literal fixtures add it.
+- **`stamp.ts` uses `plannedDecisionIdOf` from `core`.** The regex is unchanged;
+  it moved so `storiesOf` shares it.
+
+### Known and not P14's
+
+- **The dev account's Lambda concurrency limit is 10.** Parallel smoke requests
+  are throttled into occasional 503s: 86 throttles and 0 errors on the API
+  function during this build. The proper fix is a Service Quotas increase for
+  Lambda concurrent executions in us-west-2, which is the owner's to request.
+  Nothing works around it here.
+- **Skills installed on this machine** under `~/.claude/skills` are the P13
+  copies until `nightshift init` runs again after the merge.
+
+### For the owner's trial (SC-P14-11)
+
+1. After the merge, run `nightshift init` in a real repository, which refreshes
+   the skills.
+2. `/plan-program` something real. It should ask who the program is for first,
+   quote you, and keep `conversation.md`. Read that file before committing.
+3. Ratify and run it. The next morning, open the run: Status, then Why, then
+   Graph read by story. Say whether you can tell, from the Studio alone, why each
+   strand and each decision exists.
