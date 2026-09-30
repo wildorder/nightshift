@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p13-studio-ui` |
 | Source stage | none: the owner's direction of 2026-09-29 (§3.1), after P12 |
-| Status | **Built 2026-09-29** (T1 … T5, §13); Studio redeployed; awaiting the owner's trial (SC-P13-13) and their word on the build decisions (§13). |
+| Status | **Closed 2026-09-29** on the owner's word; built T1 … T5 (§13), deployed, CI green. SC-P13-13, the owner's trial, follows the close. |
 | Depends on | P11 (the Studio and its pages), P12 (the local instance, the token session) |
 | Blocking decisions | none: D-P13-01 … D-P13-11 ratified |
 
@@ -235,6 +235,7 @@ T1 ── T2 ──┬── T3 ─────────┐
 
 | Date | Decision | By |
 |------|----------|----|
+| 2026-09-29 | **P13 closed.** The owner ratifies the ten build decisions of §13, dagre in place of elkjs among them, and merges. The trial (SC-P13-13) follows the close. | **Human** |
 | 2026-09-29 | **Built.** T1 … T5 on `program/p13-studio-ui`; `npm run verify` green under Node 24 (3,309 tests, 58 of them the Studio's); the Studio redeployed. The build decisions of §13 are provisional until the owner ratifies or reverses them. | Agent, for human ratification |
 | 2026-09-29 | **Contract ratified**, D-P13-01 … D-P13-11, as written. | **Human** |
 | 2026-09-29 | Revised with the owner: program status on the run's first tab and each program's card (D-P13-09), the horizontal run graph with a decision's recorded reach (D-P13-10), the node detail docked under the graph (D-P13-11); D-P13-06's first tab renamed *Status*. | Agent, from the owner's direction |
