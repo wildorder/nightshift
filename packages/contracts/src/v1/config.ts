@@ -50,6 +50,12 @@ export const NightshiftConfigSchema = z.strictObject({
   defaultRisk: RiskLevelSchema.optional(),
   /** P8 (D-P8-03): how this repository narrows its org's routing. Only ever less. */
   routing: RoutingNarrowingSchema.optional(),
+  /**
+   * P14 (D-P14-06): keep each program's planning conversation, a summary and
+   * verbatim excerpts, in `docs/programs/{id}/conversation.md`, committed and
+   * uploaded at ratification. On unless this says `false`.
+   */
+  keepConversation: z.boolean().optional(),
 });
 export type NightshiftConfig = z.infer<typeof NightshiftConfigSchema>;
 
@@ -63,6 +69,7 @@ export const INHERITED_CONTRACT_FIELDS = [
   "examinationPolicy",
   "defaultRisk",
   "routing",
+  "keepConversation",
 ] as const;
 
 /**

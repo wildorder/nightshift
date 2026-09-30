@@ -27,14 +27,20 @@ import { AlertTriangle, GitCommitHorizontal, GitFork, RotateCw, ShieldCheck } fr
 import { useMemo, useState } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { shortSha } from "../../lib/format.js";
-import { buildRunGraph, type DecisionReach, type GraphNode, reachOf } from "../../lib/run-graph.js";
+import {
+  buildRunGraph,
+  type DecisionReach,
+  type GraphNode,
+  reachOf,
+  storyReachOf,
+} from "../../lib/run-graph.js";
 import { StatusBadge } from "../status-badge.js";
 import { NodeDetail } from "./node-detail.js";
 
 const WIDTH = 240;
 const HEIGHT = 112;
 
-type Highlight = "produced" | "after" | "origin" | undefined;
+type Highlight = "produced" | "after" | "origin" | "serves" | undefined;
 
 interface RunNodeData extends Record<string, unknown> {
   readonly node: GraphNode;
@@ -47,6 +53,7 @@ const HIGHLIGHT_CLASS: Readonly<Record<NonNullable<Highlight>, string>> = {
   origin: "ring-2 ring-primary",
   produced: "ring-2 ring-status-success-foreground",
   after: "outline-2 outline-dashed outline-offset-2 outline-status-info-foreground",
+  serves: "ring-2 ring-primary",
 };
 
 /** One node of the graph: its status, what it is, and its markers. */
@@ -159,7 +166,18 @@ export const RunGraph = ({
   readonly report: RunReport | undefined;
 }) => {
   const [selected, setSelected] = useState<string | undefined>(undefined);
-  const [decisionId, setDecisionId] = useState<string | undefined>(undefined);
+  const [decisionId, setDecisionIdState] = useState<string | undefined>(undefined);
+  const [storyId, setStoryIdState] = useState<string | undefined>(undefined);
+  // A story and a decision are two ways to read the graph; choosing one clears the other.
+  const setDecisionId = (id: string | undefined) => {
+    setDecisionIdState(id);
+    if (id !== undefined) setStoryIdState(undefined);
+  };
+  const setStoryId = (id: string | undefined) => {
+    setStoryIdState(id);
+    if (id !== undefined) setDecisionIdState(undefined);
+  };
+  const stories = report?.program.stories ?? [];
   const graph = useMemo(() => buildRunGraph(nodes, jobs, report), [nodes, jobs, report]);
   const positions = useMemo(() => layoutOf(graph), [graph]);
   const decisions = report?.graph ?? [];
@@ -167,6 +185,10 @@ export const RunGraph = ({
   const reach = useMemo(
     () => (decision === undefined ? undefined : reachOf(decision, nodes, jobs, report)),
     [decision, nodes, jobs, report],
+  );
+  const serving = useMemo(
+    () => (storyId === undefined ? undefined : storyReachOf(storyId, nodes, jobs, report)),
+    [storyId, nodes, jobs, report],
   );
   const onDecision = (nodeId: string) => {
     const first = decisions.find((d) => d.decision.executionNodeId === nodeId);
@@ -181,7 +203,7 @@ export const RunGraph = ({
     height: HEIGHT,
     data: {
       node,
-      highlight: highlightOf(node.id, decision, reach),
+      highlight: serving?.has(node.id) === true ? "serves" : highlightOf(node.id, decision, reach),
       selected: node.id === selected,
       onDecision,
     },
@@ -210,6 +232,30 @@ export const RunGraph = ({
 
   return (
     <div className="grid gap-3">
+      {stories.length === 0 ? null : (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-muted-foreground">Read by story:</span>
+          {stories.map((story) => (
+            <button
+              key={story.id}
+              type="button"
+              aria-pressed={story.id === storyId}
+              title={story.outcome}
+              onClick={() => setStoryId(story.id === storyId ? undefined : story.id)}
+              className="rounded-md border px-2 py-0.5 text-xs hover:bg-accent aria-pressed:border-primary aria-pressed:bg-accent"
+            >
+              {story.id}{" "}
+              {story.outcome.length > 48 ? `${story.outcome.slice(0, 47)}…` : story.outcome}
+            </button>
+          ))}
+          {serving === undefined ? null : (
+            <span className="ml-auto text-xs text-muted-foreground" data-testid="story-legend">
+              <span className="mr-1 inline-block size-3 rounded-sm align-middle ring-2 ring-primary" />
+              built for it ({serving.size})
+            </span>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="text-muted-foreground">Trace a decision:</span>
         {decisions.length === 0 ? (

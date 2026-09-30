@@ -19,7 +19,11 @@ import type {
   ExecutionNode,
   ProgramContract,
 } from "@nightshift/contracts";
-import { IRREVERSIBLE_CONFIRMATION_PREFIX, type RunScope } from "@nightshift/core";
+import {
+  IRREVERSIBLE_CONFIRMATION_PREFIX,
+  plannedDecisionIdOf,
+  type RunScope,
+} from "@nightshift/core";
 import type { ExecutionEnvironment } from "./environment.js";
 import { commitsSince, effectiveHead } from "./git/index.js";
 
@@ -43,10 +47,6 @@ const readAll = async <T>(
   } while (cursor !== undefined);
   return items;
 };
-
-/** The planned decision a recorded one answers (`D-01: …`), when it is one. */
-const plannedIdOf = (decision: Decision): string | undefined =>
-  decision.authority === "human" ? /^(D-[0-9A-Za-z-]+): /.exec(decision.context)?.[1] : undefined;
 
 /** Decisions on `nodeId` that are choices of their own, not yet stamped. */
 const unstamped = (decisions: readonly Decision[], nodeId: string): Decision[] =>
@@ -200,7 +200,7 @@ const rootsFor = (
   program: ProgramContract,
   strandNodes: ReadonlyMap<string, readonly string[]>,
 ): ReadonlySet<string> => {
-  const plannedId = plannedIdOf(decision);
+  const plannedId = plannedDecisionIdOf(decision);
   const planned = program.decisions?.find((candidate) => candidate.id === plannedId);
   if (planned === undefined || planned.touches === "all") return new Set([nodeId]);
   return new Set(planned.touches.flatMap((strandId) => strandNodes.get(strandId) ?? []));

@@ -41,10 +41,12 @@ import {
 } from "@nightshift/contracts";
 import {
   createUlidIdGenerator,
+  emptyConversation,
   FIXTURE_COMMIT,
   type Fixtures,
   findSequenceGaps,
   highestSequence,
+  keepMessages,
   makeAgent,
   makeCheckpoint,
   makeDecision,
@@ -58,6 +60,7 @@ import {
   pendingCount,
   planHash,
   type RunScope,
+  renderConversation,
 } from "@nightshift/core";
 import {
   createArtifactBodyStore,
@@ -835,6 +838,73 @@ describe("phase 3: live-only assertions", () => {
     };
     expectStatus(await api.put(nodePath, withPlan), 201);
     expect((await api.get(nodePath)).body).toEqual(withPlan);
+
+    // P14 (SC-P14-06): the kept conversation is stored beside the plan, the
+    // stories' quotes are held to the bytes the plane holds, and it is served back.
+    const conversation = renderConversation(
+      keepMessages(
+        emptyConversation("smoke"),
+        {
+          harness: "claude",
+          sessionId: runLabel,
+          messages: [{ index: 1, role: "human", text: "never show one tenant another's invoices" }],
+        },
+        [1],
+        "The smoke's owner wants tenants isolated.",
+      ),
+    );
+    const conversationSha256 = sha256Hex(conversation);
+    const conversationBytes = Buffer.byteLength(conversation);
+    const signedConversation = PlanDocumentUploadResponseSchema.parse(
+      (
+        await api.post(`${plannedProgramPath}/plan-documents/${conversationSha256}/upload-url`, {
+          sizeBytes: conversationBytes,
+        })
+      ).body,
+    );
+    const putConversation = await fetch(signedConversation.uploadUrl, {
+      method: "PUT",
+      headers: {
+        "content-type": signedConversation.contentType,
+        "content-length": String(conversationBytes),
+      },
+      body: conversation,
+    });
+    expect(putConversation.status, await putConversation.text()).toBe(200);
+    const quoting = (words: string) => ({
+      ...contract,
+      stories: (contract.stories ?? []).map((story) => ({ ...story, words: [words] })),
+    });
+    const requestFor = (words: string) => {
+      const quoted = quoting(words);
+      const quotedHash = planHash(quoted, plan, sha256Hex);
+      return {
+        contract: quoted,
+        planHash: quotedHash.hash,
+        planSha256: quotedHash.plan,
+        conversationSha256,
+      };
+    };
+    expectStatus(
+      await api.post(
+        `${plannedProgramPath}/ratifications`,
+        requestFor("tenants may share invoices"),
+      ),
+      422,
+    );
+    const withConversation = await api.post(
+      `${plannedProgramPath}/ratifications`,
+      requestFor("never show one tenant another's invoices"),
+    );
+    expectStatus(withConversation, 200);
+    expect(ProgramContractSchema.parse(withConversation.body).conversation).toEqual({
+      uri: `s3://${context.bucketName}/${signedConversation.key}`,
+      sha256: conversationSha256,
+      sizeBytes: conversationBytes,
+    });
+    const served = await api.get(`${plannedProgramPath}/plan-documents/${conversationSha256}`);
+    expectStatus(served, 200);
+    expect((served.body as { text: string }).text).toBe(conversation);
   });
 
   it("signs an upload the client completes, then records the Artifact (A-08, T2)", async () => {

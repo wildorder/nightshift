@@ -81,3 +81,9 @@ export {
   summariseToolInput,
   summariseToolResult,
 } from "./stream.js";
+export {
+  CLAUDE_TRANSCRIPT_HARNESS,
+  claudeTranscriptSource,
+  currentClaudeTranscript,
+  parseClaudeTranscript,
+} from "./transcript.js";

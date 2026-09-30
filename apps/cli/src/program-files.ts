@@ -18,10 +18,13 @@ import {
   type ProgramContract,
   ProgramContractSchema,
 } from "@nightshift/contracts";
+import { CONVERSATION_FILE, keepsConversation } from "@nightshift/core";
 import { UsageError } from "./failures.js";
 
 export const CONTRACT_FILE = "contract.json";
 export const PLAN_FILE = "plan.md";
+/** P14 (D-P14-06): the kept planning conversation, beside the plan. */
+export { CONVERSATION_FILE } from "@nightshift/core";
 
 /** A program id on disk is a directory name: no separators, nothing that climbs. */
 const PROGRAM_DIRECTORY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -69,6 +72,8 @@ export interface ProgramFiles {
   /** The authored contract over the project's defaults, validated. */
   readonly contract: ProgramContract;
   readonly planText: string;
+  /** `conversation.md`, when the program keeps one and it has been written (P14). */
+  readonly conversationText?: string;
 }
 
 /** Reads and validates `docs/programs/{id}/`. A `ZodError` from here is the contract's. */
@@ -103,5 +108,16 @@ export const readProgramFiles = async (repoPath: string, id: string): Promise<Pr
   const contract = ProgramContractSchema.parse(
     config === undefined ? authored : inheritFromConfig(authored, config),
   );
-  return { id, directory, contractPath, planPath, contract, planText };
+  const conversationText = keepsConversation(contract)
+    ? await readText(join(repoPath, PROGRAMS_DIRECTORY, id, CONVERSATION_FILE))
+    : undefined;
+  return {
+    id,
+    directory,
+    contractPath,
+    planPath,
+    contract,
+    planText,
+    ...(conversationText === undefined ? {} : { conversationText }),
+  };
 };

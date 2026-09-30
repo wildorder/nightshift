@@ -7,7 +7,9 @@ import type { Prerequisite, ProgramContract, Strand } from "@nightshift/contract
 import {
   createFixedClock,
   createFixtures,
+  emptyConversation,
   type Fixtures,
+  keepMessages,
   makeMembership,
   makeNode,
   makeProgramContract,
@@ -18,6 +20,7 @@ import {
   type PlanDocumentStore,
   planDocumentObjectKey,
   planHash,
+  renderConversation,
 } from "@nightshift/core";
 import { createInMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it } from "vitest";
@@ -286,6 +289,93 @@ describe("ratification (D-P7-02)", () => {
       principal: w.principal,
     });
     expect(response.status).toBe(501);
+  });
+});
+
+describe("the kept conversation (P14, SC-P14-03, SC-P14-06)", () => {
+  const CONVERSATION = renderConversation(
+    keepMessages(
+      emptyConversation("p1"),
+      {
+        harness: "claude",
+        sessionId: "s-1",
+        messages: [
+          { index: 1, role: "human", text: "an admin must never see another company's invoices" },
+          { index: 2, role: "assistant", text: "Understood: tenants are isolated." },
+        ],
+      },
+      [1, 2],
+      "The owner wants isolation.",
+    ),
+  );
+  const quoting = (w: World, words: string): ProgramContract => {
+    const base = planned(w);
+    return planned(w, {
+      stories: (base.stories ?? []).map((story) => ({ ...story, words: [words] })),
+    });
+  };
+  const withConversation = (w: World, contract: ProgramContract, text = CONVERSATION) => {
+    const conversationSha256 = sha256(text);
+    w.objects.set(
+      planDocumentObjectKey(w.f.scope, conversationSha256),
+      new TextEncoder().encode(text),
+    );
+    return { ...ratification(w, contract), conversationSha256 };
+  };
+
+  it("records the conversation it holds, beside the plan document, and checks the quotes against it", async () => {
+    const w = await setup();
+    const request = withConversation(w, quoting(w, "never see another company's invoices"));
+    const response = await call(w, "POST", `${w.paths.program}/ratifications`, request);
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const ratified = response.body as ProgramContract;
+    const ref = {
+      uri: `s3://bucket/${planDocumentObjectKey(w.f.scope, request.conversationSha256)}`,
+      sha256: request.conversationSha256,
+      sizeBytes: Buffer.byteLength(CONVERSATION),
+    };
+    expect(ratified.conversation).toEqual(ref);
+    expect(ratified.ratifications?.at(-1)?.conversation).toEqual(ref);
+    // Served back like the plan document, to a member of the program's org.
+    const served = await call(
+      w,
+      "GET",
+      `${w.paths.program}/plan-documents/${request.conversationSha256}`,
+    );
+    expect((served.body as { text: string }).text).toBe(CONVERSATION);
+  });
+
+  it("refuses a quote the stored conversation does not hold, whatever the client checked", async () => {
+    const w = await setup();
+    const paraphrase = withConversation(w, quoting(w, "admins must not see other invoices"));
+    const response = await call(w, "POST", `${w.paths.program}/ratifications`, paraphrase);
+    expect(response.status).toBe(422);
+    expect(errorCode(response)).toBe("plan_not_ready");
+    const assistant = withConversation(w, quoting(w, "tenants are isolated"));
+    expect((await call(w, "POST", `${w.paths.program}/ratifications`, assistant)).status).toBe(422);
+  });
+
+  it("refuses quotes with no conversation, unless the program keeps none", async () => {
+    const w = await setup();
+    const bare = ratification(w, quoting(w, "anything"));
+    const response = await call(w, "POST", `${w.paths.program}/ratifications`, bare);
+    expect(response.status).toBe(422);
+    expect(JSON.stringify(response.body)).toContain("conversation_missing");
+    const off = { ...quoting(w, "anything"), keepConversation: false };
+    expect(
+      (await call(w, "POST", `${w.paths.program}/ratifications`, ratification(w, off))).status,
+    ).toBe(201);
+  });
+
+  it("never takes the conversation reference from the client", async () => {
+    const w = await setup();
+    const forged = planned(w, {
+      conversation: { uri: "s3://elsewhere/x", sha256: "d".repeat(64), sizeBytes: 1 },
+    });
+    const ratified = (
+      await call(w, "POST", `${w.paths.program}/ratifications`, ratification(w, forged))
+    ).body as ProgramContract;
+    expect(ratified.conversation).toBeUndefined();
   });
 });
 

@@ -65,3 +65,4 @@ export {
   type WorkerDecisionInput,
   type WorkerTools,
 } from "./tools.js";
+export type { TranscriptLocateInput, TranscriptSource } from "./transcript.js";

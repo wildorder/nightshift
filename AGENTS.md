@@ -327,6 +327,38 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   instance belong to P10. Nightshift never runs a worker as a per-job hosted
   environment.
 
+**As built for P14 (Intent), 2026-09-30.** The details a later program needs and
+cannot derive; full account in `docs/programs/p14-intent.md` §13. The lasting
+decision is A-50.
+
+- **Stories are planned records.** `stories[]` (`US-nn`: who, problem, outcome,
+  optional `words`) and `successCriterion.serves` live in the contract.
+  `checkPlan` requires them. Its optional third argument is the kept
+  conversation, and every quote must be a human's excerpt, word for word. The
+  plan hash leaves empty `stories` and `serves` out, so a pre-P14 contract hashes
+  as it did (`test/src/planning/hash-compat.test.ts` holds main's golden value).
+- **Never tag a record with a story at run time.** `storiesOf(records, target)`
+  in `core/report/stories.ts` derives it: criterion, strand, planned decision
+  (by `touches`), node (by strand), decision, commit. The program's own node
+  reaches every story.
+- **The conversation file's format is `core`'s** (`rules/conversation.ts`):
+  render, parse, `keepMessages`, `maskCredentials`, `humanSaid`. Structure comes
+  from the `nightshift:session` and `nightshift:message` comment markers alone.
+- **Transcript readers are harness code.** They are
+  `claudeTranscriptSource` (`CLAUDE_CODE_SESSION_ID`) and
+  `codexTranscriptSource` (`CODEX_THREAD_ID`), reached only through
+  `apps/mcp/src/compose.ts` by the `nightshift-transcript` binary. The CLI spawns
+  it (`assets.transcriptPath`) and never imports a harness.
+- **The conversation is a plan document.** It is uploaded to the same
+  program-scoped store and route under its own SHA-256 (`conversationSha256` on
+  the ratify request), and recorded on the contract and its ratification as
+  `conversation`. It is outside the plan hash.
+- **Studio.** `components/stories.tsx` (`StoryLines`, `CardStories`,
+  `StoryCard`, `Serves`) and `components/markdown.tsx` (react-markdown with
+  `skipHtml`). The run page's tabs are now
+  `status|why|graph|work|timeline|decisions|artifacts`. `Studio.documents` reads
+  a stored document by hash.
+
 **As built for P13 (Studio UI), 2026-09-29.** The details a later program needs
 and cannot derive; full account in `docs/programs/p13-studio-ui.md` §13. The
 lasting decision is A-49.
@@ -798,6 +830,8 @@ later program needs and cannot derive; full account in
 | @modelcontextprotocol/sdk | 1.30.0 | P3 |
 | @aws-sdk/s3-request-presigner | 3.1131.0 | P3 |
 | @aws-sdk/client-kms | 3.1131.0 | P4 |
+| react-markdown | 10.1.0 | P14 |
+| remark-gfm | 4.0.1 | P14 |
 
 `fast-check` and `vitest` are also declared on `@nightshift/test`, which needs
 them at build time because its generators and conformance suites are built

@@ -77,6 +77,7 @@ const world = () => {
     departures: [],
     attempts: 1,
     waitingOn: [],
+    nodeIds: [jobNode.parentNodeId ?? "", jobNode.executionNodeId],
     jobs: [
       {
         nodeId: jobNode.executionNodeId,

@@ -17,6 +17,8 @@ import {
   PrerequisiteIdSchema,
   PrerequisiteSchema,
   RatificationSchema,
+  StoryIdSchema,
+  StorySchema,
   StrandSchema,
 } from "./plan.js";
 import { RoutingNarrowingSchema } from "./routing-policy.js";
@@ -25,6 +27,8 @@ import { RoutingNarrowingSchema } from "./routing-policy.js";
 export const SuccessCriterionSchema = z.strictObject({
   id: z.string().min(1),
   outcome: z.string().min(1),
+  /** P14 (D-P14-01): the user stories this criterion serves. */
+  serves: z.array(StoryIdSchema).optional(),
 });
 export type SuccessCriterion = z.infer<typeof SuccessCriterionSchema>;
 
@@ -173,6 +177,13 @@ export const ProgramContractSchema = z
      * was, and one with no strands runs exactly as it always did.
      */
     status: PlanStatusSchema.optional(),
+    /** P14 (D-P14-01): why the program exists, for the people it is for. */
+    stories: z.array(StorySchema).optional(),
+    /**
+     * P14 (D-P14-06): whether the planning conversation is kept beside the plan.
+     * Absent means kept; usually inherited from `nightshift.config.json`.
+     */
+    keepConversation: z.boolean().optional(),
     strands: z.array(StrandSchema).optional(),
     prerequisites: z.array(PrerequisiteSchema).optional(),
     decisions: z.array(PlannedDecisionSchema).optional(),
@@ -186,6 +197,8 @@ export const ProgramContractSchema = z
     /** `planHash` in `core` over this contract and the plan document, as ratified (D-P7-02). */
     planHash: PlanHashSchema.optional(),
     planDocument: PlanDocumentRefSchema.optional(),
+    /** P14: the conversation kept at the current ratification. Written by the control plane. */
+    conversation: PlanDocumentRefSchema.optional(),
     /** Every ratification so far, oldest first, the current one last. Written by the control plane. */
     ratifications: z.array(RatificationSchema).max(MAX_RATIFICATION_HISTORY).optional(),
   })
@@ -207,6 +220,10 @@ export const ProgramContractSchema = z
    * Ids are how the plan document, the engine and the report refer to these, so
    * a duplicate is a broken reference rather than an unready plan.
    */
+  .refine((value) => uniqueIds(value.stories ?? []), {
+    message: "story ids must be unique within a program contract",
+    path: ["stories"],
+  })
   .refine((value) => uniqueIds(value.strands ?? []), {
     message: "strand ids must be unique within a program contract",
     path: ["strands"],

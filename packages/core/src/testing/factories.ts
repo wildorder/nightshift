@@ -134,7 +134,15 @@ export const makeProgramContract = (
       baseBranch: "main",
       programBranch: "program/fixture",
     },
-    successCriteria: [{ id: "SC-01", outcome: "It works." }],
+    stories: [
+      {
+        id: "US-01",
+        who: "A fixture user",
+        problem: "Today the fixture does not work for them.",
+        outcome: "Afterwards it does.",
+      },
+    ],
+    successCriteria: [{ id: "SC-01", outcome: "It works.", serves: ["US-01"] }],
     constraints: [],
     scope: FIXTURE_SCOPE,
     verification: [{ id: "test", command: "npm test" }],

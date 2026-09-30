@@ -32,6 +32,7 @@ describe("the plan template", () => {
       .map((line) => line.slice(3));
     expect(headings).toEqual([
       "Overview",
+      "Who it is for",
       "Architecture",
       "Strands",
       "Decisions",
@@ -119,6 +120,12 @@ describe("the skill", () => {
       "nightshift plan ratify {id}",
       "/run-program {id}",
       "Those are **all** the fields.",
+      // P14 (D-P14-08): stories first, quoted exactly, the conversation kept each round.
+      "## 2a. Who is it for: the stories, first",
+      "**copied exactly**",
+      "what it led to, not by\n   how far from the brief it wandered",
+      "nightshift plan conversation {id} --keep 3,7-9 --summary <file>",
+      "read it before it is\ncommitted",
     ]) {
       expect(text, phrase).toContain(phrase);
     }
@@ -132,6 +139,7 @@ describe("the skill", () => {
     // The example states only the planned part; the rest is inherited or authored.
     const contract = ProgramContractSchema.parse({ ...base, ...JSON.parse(json ?? "{}") });
     expect(contract.strands?.[0]?.id).toBe("S-01");
+    expect(contract.stories?.[0]).toMatchObject({ id: "US-01", who: expect.any(String) });
     expect(contract.prerequisites?.[0]?.verifyCommand).toContain("gh secret list");
   });
 });
@@ -152,5 +160,60 @@ describe("the nightshift skill (P8)", () => {
       expect(text, phrase).toContain(phrase);
     }
     expect(text).not.toContain("examination_unavailable");
+  });
+});
+
+describe("a planning round, as the skill leaves it (P14, SC-P14-07)", () => {
+  it("writes stories whose quotes pass the check against the conversation it kept", async () => {
+    const { emptyConversation, keepMessages, parseConversation, renderConversation } = await import(
+      "@nightshift/core"
+    );
+    // The human's words, as the planning session recorded them.
+    const session = {
+      harness: "claude",
+      sessionId: "s-1",
+      messages: [
+        {
+          index: 1,
+          role: "human" as const,
+          text: "i keep sorting lists by hand to get the middle one, can we just have median?",
+        },
+        { index: 2, role: "assistant" as const, text: "Who else calls the math module?" },
+        { index: 3, role: "human" as const, text: "the billing report does, dont break it" },
+        { index: 4, role: "human" as const, text: "also whats the best pizza" },
+      ],
+    };
+    // The skill kept 1–3, which led to both stories, and left out 4, which led nowhere.
+    const kept = renderConversation(
+      keepMessages(emptyConversation("p1-median"), session, [1, 2, 3], "The owner wants a median."),
+    );
+    const base = await authoredProgram();
+    const contract = ProgramContractSchema.parse({
+      ...base,
+      status: "planning",
+      stories: [
+        {
+          ...base.stories?.[0],
+          words: ["i keep sorting lists by hand to get the middle one"],
+        },
+        { ...base.stories?.[1], words: ["dont break it"] },
+      ],
+      strands: [
+        {
+          id: "S-01",
+          name: "The median helper",
+          scope: { summary: "src and its tests", includes: base.scope.includes, excludes: [] },
+          acceptance: ["median is exported and tested"],
+          successCriteria: base.successCriteria.map((criterion) => criterion.id),
+          dependsOn: [],
+          prerequisites: [],
+        },
+      ],
+    });
+    const plan = "# Median\n\n## Strands\n\n### S-01 The median helper\n\nA pure function.\n";
+    expect(
+      checkPlan(contract, splitPlanSections(plan), parseConversation("p1-median", kept)),
+    ).toEqual({ ready: true });
+    expect(kept).not.toContain("pizza");
   });
 });

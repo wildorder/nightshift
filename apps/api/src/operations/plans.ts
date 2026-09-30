@@ -41,6 +41,7 @@ import {
   isPlanned,
   nowIso,
   type PlanDocumentStore,
+  parseConversation,
   planHash,
   prerequisitesOf,
   splitPlanSections,
@@ -235,7 +236,17 @@ export const ratifyProgram: Handler = async ({ deps, request, params }) => {
     );
   }
 
-  const readiness = checkPlan(body.contract, splitPlanSections(document.text));
+  // P14 (D-P14-04, D-P14-06): the kept conversation is read from the store like
+  // the plan, and the stories' quotes are held to the bytes held here.
+  const conversation =
+    body.conversationSha256 === undefined
+      ? undefined
+      : await readPlanDocument(deps, scope, body.conversationSha256);
+  const readiness = checkPlan(
+    body.contract,
+    splitPlanSections(document.text),
+    conversation === undefined ? undefined : parseConversation(scope.programId, conversation.text),
+  );
   if (!readiness.ready) {
     throw new HttpError(
       422,
@@ -248,19 +259,34 @@ export const ratifyProgram: Handler = async ({ deps, request, params }) => {
   await assertCorrectable(deps, body.contract);
 
   const existing = await deps.stores.programContracts.get(scope.projectId, scope.programId);
+  const conversationRef =
+    conversation === undefined || body.conversationSha256 === undefined
+      ? undefined
+      : {
+          uri: conversation.uri,
+          sha256: body.conversationSha256,
+          sizeBytes: conversation.sizeBytes,
+        };
   // Ratifying what is already ratified is a retry, not a second ratification.
-  if (existing?.status === "ratified" && existing.planHash === computed.hash) {
+  if (
+    existing?.status === "ratified" &&
+    existing.planHash === computed.hash &&
+    existing.conversation?.sha256 === conversationRef?.sha256
+  ) {
     return { status: 200, body: existing };
   }
 
   const ratification: Ratification = {
     planHash: computed.hash,
     planDocument: { uri: document.uri, sha256: computed.plan, sizeBytes: document.sizeBytes },
+    ...(conversationRef === undefined ? {} : { conversation: conversationRef }),
     ratifiedAt: nowIso(deps.clock),
   };
   const prerequisites = carryPrerequisites(existing, body.contract);
+  const { conversation: _stale, ...contract } = body.contract;
   const ratified = ProgramContractSchema.parse({
-    ...body.contract,
+    ...contract,
+    ...(conversationRef === undefined ? {} : { conversation: conversationRef }),
     ...(prerequisites === undefined ? {} : { prerequisites }),
     status: "ratified",
     planHash: ratification.planHash,
