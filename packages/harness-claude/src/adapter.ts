@@ -81,7 +81,7 @@ import {
   claudePrompt,
   VERIFIED_CLAUDE_VERSION,
 } from "./command.js";
-import { sanitizeClaudeEnvironment } from "./environment.js";
+import { HEADLESS_CLAUDE_ENV, sanitizeClaudeEnvironment } from "./environment.js";
 import { claudeToolPolicy } from "./permissions.js";
 import type { AdapterFileSystem, SpawnedChild, SpawnLike, TranscriptSink } from "./process.js";
 import { killProcessTree, nodeFileSystem, nodeSpawn } from "./process.js";
@@ -204,7 +204,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       context: { agentId: input.agent.agentId },
     });
 
-    const env = sanitizeClaudeEnvironment({ platform, parentEnv });
+    const env = sanitizeClaudeEnvironment({ platform, parentEnv, extra: HEADLESS_CLAUDE_ENV });
 
     const state: RunState = {
       interpreter,

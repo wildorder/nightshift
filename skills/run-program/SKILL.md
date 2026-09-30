@@ -82,6 +82,11 @@ Check, and say what you find, without fixing anything the human did not ask for:
    record the decision with `decision.record`. A strand that stays failed is
    **parked** with everything that depends on it; `strand.delegate` refuses
    those as `strand_blocked`. Leave them; let the rest finish.
+   A worker that died or stopped without reporting has not lost its work:
+   Nightshift resumes a session that ends its turn unreported, and a retry
+   starts from what a dead attempt left. Do not save a worker's diff yourself,
+   and do not write rules about foreground commands into a job's objective;
+   the worker's brief already carries them.
 6. A job that ends **deferred** is done for now, waiting on a human
    prerequisite, on the provisional line. Not a failure; nothing to retry.
 7. When every strand has succeeded, is deferred, or is parked:

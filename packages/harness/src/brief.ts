@@ -29,7 +29,12 @@ import type {
 } from "@nightshift/contracts";
 import { MAX_EXAMINATION_QUESTIONS } from "@nightshift/contracts";
 import { grantedPermissions, PERMISSION_SHELL_EXEC } from "@nightshift/core";
-import type { AgentTask, ExaminationEvidence, HarnessStartInput } from "./harness.js";
+import type {
+  AgentTask,
+  CarriedOverWork,
+  ExaminationEvidence,
+  HarnessStartInput,
+} from "./harness.js";
 
 /**
  * How a strand's orchestrator marks a decision as a departure from its plan
@@ -46,7 +51,28 @@ export interface WorkerBriefInput {
   readonly worktree: string;
   /** P8: what an examiner, arbiter, answerer or fix is there to do. */
   readonly task?: AgentTask;
+  /** The last attempt's unfinished work, when this attempt starts from it. */
+  readonly carriedOver?: CarriedOverWork;
 }
+
+/**
+ * Every agent Nightshift starts runs headless: one turn, and the process exits
+ * when the turn ends. An agent that ends its turn to wait for a background
+ * command has ended its session, and the command dies with it. Said to every
+ * role that runs commands or waits, in the same words, with the calls that end
+ * that role's work.
+ */
+const headlessSession = (finish: string): string =>
+  [
+    "YOUR SESSION ENDS WHEN YOUR TURN ENDS",
+    "",
+    "  You are running headless. The moment you end your turn, your process exits,",
+    "  and nothing wakes you again: no background task, monitor or notification will",
+    "  resume you, and anything still running in the background is killed with you.",
+    "  So run every command in the foreground and wait for it, however long it takes.",
+    "  Never end your turn to wait for something. Do not end your turn at all until",
+    `  you have called ${finish}.`,
+  ].join("\n");
 
 const bullets = (items: readonly string[]): string =>
   items.length === 0 ? "  (none)" : items.map((item) => `  - ${item}`).join("\n");
@@ -72,6 +98,8 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
       return renderArbiterBrief(input, input.task);
     case "answer":
       return renderAnswerBrief(input.task);
+    case "continue":
+      return renderContinueBrief(input, input.task);
     default:
       break;
   }
@@ -110,6 +138,7 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
         : renderRulingsToCarryOut(input.task.rulings),
     );
   }
+  if (input.carriedOver !== undefined) sections.push(renderCarriedOver(input.carriedOver));
 
   sections.push(
     [
@@ -182,6 +211,14 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
     [
       "VERIFICATION — you do not decide whether the work passed",
       "",
+      ...((program.setup ?? []).length === 0
+        ? []
+        : [
+            "  Before you started, Nightshift prepared this worktree with the program's",
+            "  setup, and it runs setup again before verifying:",
+            bullets((program.setup ?? []).map((step) => `${step.id}: ${step.command}`)),
+            "",
+          ]),
       "  After you report completion, Nightshift runs these commands on a clean",
       "  checkout of your work and the result is what counts:",
       bullets(program.verification.map((step) => `${step.id}: ${step.command}`)),
@@ -191,6 +228,8 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
         : "  You cannot run commands, so you cannot check them yourself. Be correspondingly\n  careful, and say in your summary what you could not verify.",
     ].join("\n"),
   );
+
+  sections.push(headlessSession("job.complete or job.fail"));
 
   sections.push(
     [
@@ -405,7 +444,10 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "    examination_ruling_unmet  two attempts could not carry the ruling out. Now,",
       "                          and only now, delegate the work differently.",
       "    failed                read the reason. A scope violation means the job needed",
-      "                          more than you gave it.",
+      "                          more than you gave it. A worker that died or stopped",
+      "                          without reporting is worth a job.retry: the retry starts",
+      "                          from whatever it left unfinished, kept by Nightshift, so",
+      "                          do not save its work or describe it in a new job.",
       "",
       "  A job that lands can still carry minor findings from its examiner. They are",
       "  reported; decide whether one is worth a follow-up job.",
@@ -448,6 +490,7 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "  Exiting without calling subprogram.complete or subprogram.fail fails the",
       "  sub-program and cancels its jobs, with no explanation attached.",
     ].join("\n"),
+    headlessSession("subprogram.complete or subprogram.fail"),
   ].join("\n\n")}\n`;
 };
 
@@ -558,6 +601,7 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       "",
       "Exiting without calling run.finish leaves the run interrupted, with no explanation.",
     ].join("\n"),
+    headlessSession("run.finish"),
   ].join("\n\n")}\n`;
 };
 
@@ -581,6 +625,56 @@ const describeFinding = (finding: ExaminationFinding): string =>
     `  ${finding.id} (${finding.severity}): ${finding.summary}`,
     ...finding.evidence.map((evidence) => `      evidence: ${describeEvidence(evidence)}`),
   ].join("\n");
+
+/** The last attempt's unfinished work: where it is, and that it is a draft to judge, not a result. */
+const renderCarriedOver = (work: CarriedOverWork): string =>
+  [
+    "THE LAST ATTEMPT'S UNFINISHED WORK — start from it",
+    "",
+    `  Attempt ${work.fromAttempt} at this job ended without handing its work in. What it had`,
+    "  changed was kept, and this attempt starts from it rather than from nothing:",
+    bullets(work.paths),
+    "",
+    ...(work.applied
+      ? [
+          "  Those changes are already in your working directory, uncommitted, on top of",
+          "  the current program head. Review them critically against the acceptance",
+          "  criteria: they are a draft that was never verified. Keep what is right, fix",
+          "  what is not, finish the job, then verify it.",
+        ]
+      : [
+          "  The program head has moved since, and they did not apply cleanly, so your",
+          "  working directory is the current head without them. These paths conflicted:",
+          bullets(work.conflicts),
+          "",
+          `  The whole change is in ${work.patchPath}. Read it, and bring over what is`,
+          "  still right by hand; resolve the conflicting parts against the current code.",
+        ]),
+  ].join("\n");
+
+/** A session resumed because it ended its turn without reporting. */
+const renderContinueBrief = (
+  input: WorkerBriefInput,
+  task: Extract<AgentTask, { kind: "continue" }>,
+): string => {
+  const finish =
+    input.node.kind === "sub-program"
+      ? "subprogram.complete or subprogram.fail"
+      : isPlanRoot(input.node.kind, input.program)
+        ? "run.finish"
+        : "job.complete or job.fail";
+  return `${[
+    "Your turn ended, but you have not reported how your work ended.",
+    "",
+    "You are running headless: when your turn ends your process exits, and nothing wakes",
+    "you. Any command you left running in the background was killed when it did, so its",
+    "result is lost; run it again, in the foreground, and wait for it. Your working",
+    "directory is exactly as you left it.",
+    "",
+    `Carry on from where you were, and do not end your turn until you have called ${finish}.`,
+    `This is reminder ${task.reminder} of ${task.of}; after the last, the work is failed as unreported.`,
+  ].join("\n")}\n`;
+};
 
 const renderFindingsToFix = (findings: readonly ExaminationFinding[]): string =>
   [
@@ -869,7 +963,7 @@ export const renderArbiterBrief = (
 export const promptFor = (
   input: Pick<
     HarnessStartInput,
-    "job" | "node" | "program" | "worktree" | "task" | "mcp" | "agent"
+    "job" | "node" | "program" | "worktree" | "task" | "mcp" | "agent" | "carriedOver"
   >,
   withAddendum: (brief: string, mcpServerName: string, tools: readonly string[]) => string,
 ): string => {
@@ -879,6 +973,7 @@ export const promptFor = (
     program: input.program,
     worktree: input.worktree,
     ...(input.task === undefined ? {} : { task: input.task }),
+    ...(input.carriedOver === undefined ? {} : { carriedOver: input.carriedOver }),
   });
   return input.mcp === undefined
     ? brief

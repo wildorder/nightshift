@@ -29,7 +29,7 @@
  * can wait for it.
  */
 
-import { mkdir } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
   Agent,
@@ -58,9 +58,11 @@ import {
 import {
   type AgentTask,
   agentStatusForExit,
+  type CarriedOverWork,
   describeExit,
   type HarnessExit,
   type HarnessHandle,
+  type HarnessStartInput,
   hookTypeForExit,
   type McpLaunch,
   millis,
@@ -76,12 +78,18 @@ import { examine } from "./examine.js";
 import {
   addDetachedWorktree,
   addWorktree,
+  applyUnfinished,
   baseRef,
   cleanCheckout,
+  collectUnfinished,
   effectiveHead,
   jobBranch,
   pruneWorktrees,
   removeWorktree,
+  tryRevParse,
+  type UnfinishedWork,
+  unfinishedPatch,
+  unfinishedRef,
   updateRef,
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
@@ -139,6 +147,30 @@ interface AttemptIdentity {
   readonly executionToken: string;
   readonly routingDecision: RoutingDecision;
 }
+
+/** An earlier attempt's unfinished work, kept: the commit, and what the next worker is told of it. */
+interface Kept {
+  readonly work: UnfinishedWork;
+  readonly carried: Omit<CarriedOverWork, "applied" | "conflicts">;
+}
+
+/**
+ * What a start adds to the plain launch: a fresh start carries the job's task
+ * and any unfinished work it starts from; a resumed session carries its
+ * reminder and the session to continue.
+ */
+const launchExtras = (
+  task: AgentTask | undefined,
+  resumed: { readonly sessionId: string; readonly task: AgentTask } | undefined,
+  carriedOver: CarriedOverWork | undefined,
+): Pick<HarnessStartInput, "task" | "resume" | "carriedOver"> => {
+  if (resumed !== undefined)
+    return { task: resumed.task, resume: { sessionId: resumed.sessionId } };
+  return {
+    ...(task === undefined ? {} : { task }),
+    ...(carriedOver === undefined ? {} : { carriedOver }),
+  };
+};
 
 /** One attempt, running: its agent, its process, and its routing decision. */
 interface Attempt {
@@ -334,10 +366,13 @@ export const startJob = async (
     const branch = jobBranch(session.scope.runId, nodeId);
     await mkdir(dirname(worktree), { recursive: true });
     await pruneWorktrees(environment.git, session.repoPath);
+    let unfinished: Kept | undefined;
     if (earlier.length > 0) {
+      // What the last attempt left and never handed in is kept first: a worker
+      // that died mid-job did real work, and its worktree is about to go.
+      if (!orchestrates) unfinished = await keepUnfinished(worktree, earlier.at(-1)?.attempt ?? 1);
       // The last attempt's worktree was kept for whoever had to read a failure.
-      // This attempt starts clean from the current head, so it goes now, and
-      // not before.
+      // This attempt starts from the current head, so it goes now, and not before.
       await removeWorktree(environment.git, session.repoPath, worktree, branch, nodeId).catch(
         () => {},
       );
@@ -348,17 +383,29 @@ export const startJob = async (
     } else {
       await addWorktree(environment.git, { repo: session.repoPath, path: worktree, branch, base });
     }
+    // The base, recorded in the repository rather than carried through three
+    // processes. `completeJob` reads it back to parent the snapshot.
+    await updateRef(environment.git, session.repoPath, baseRef(nodeId), base);
+    const carryInto = async (): Promise<CarriedOverWork | undefined> => {
+      if (unfinished === undefined) return undefined;
+      const { applied, conflicts } = await applyUnfinished(
+        environment.git,
+        worktree,
+        unfinished.work.commit,
+        clock.now(),
+      );
+      return { ...unfinished.carried, applied, conflicts };
+    };
+    const carriedOver = await carryInto();
     // A new worktree holds only what is committed; the program's setup makes it
-    // usable before the agent starts in it.
+    // usable before the agent starts in it. After the carried work, which may
+    // change what setup installs.
     await prepareCheckout(environment, {
       session,
       nodeId,
       checkout: worktree,
       purpose: orchestrates ? "orchestrator" : "worker",
     });
-    // The base, recorded in the repository rather than carried through three
-    // processes. `completeJob` reads it back to parent the snapshot.
-    await updateRef(environment.git, session.repoPath, baseRef(nodeId), base);
 
     // --- 6. Running, before the process exists -----------------------------------
     //
@@ -369,7 +416,9 @@ export const startJob = async (
     // `running` and the agent `started` the moment Nightshift commits to starting
     // one, and a launch that then fails is recorded as a failure (below) rather
     // than avoided by writing late. The node took `running` with its slot, above.
-    let current = await startAttempt(first, worktree);
+    let currentIdentity = first;
+    let carried = carriedOver;
+    let current = await startAttempt(first, worktree, undefined, carried);
 
     outbox.emit({
       type: "node.started",
@@ -400,7 +449,28 @@ export const startJob = async (
         last?.routingDecisionId ?? null,
       );
       await cleanCheckout(environment.git, worktree, base);
-      current = await startAttempt(identity, worktree);
+      // The clean took the carried work with it; the next route starts from it too.
+      carried = await carryInto();
+      currentIdentity = identity;
+      current = await startAttempt(identity, worktree, undefined, carried);
+      return current;
+    };
+
+    /**
+     * The same attempt, its session resumed with a reminder, because it ended its
+     * turn without reporting. Same agent, same token, same worktree as it was
+     * left: nothing is cleaned, because what it did so far is the work.
+     */
+    const resumeSession = async (
+      sessionId: string,
+      reminder: number,
+      of: number,
+    ): Promise<Attempt | undefined> => {
+      if (stopMode !== undefined) return undefined;
+      current = await startAttempt(currentIdentity, worktree, {
+        sessionId,
+        task: { kind: "continue", reminder, of },
+      });
       return current;
     };
 
@@ -414,6 +484,7 @@ export const startJob = async (
       current: () => current,
       stopMode: () => stopMode,
       relaunch,
+      resumeSession,
       ...(input.integrate === undefined ? {} : { integrate: input.integrate }),
     });
 
@@ -438,6 +509,58 @@ export const startJob = async (
       stop,
       cancel: () => stop("cancelled"),
     };
+  }
+
+  /**
+   * Keeps what the last attempt left in `worktree` without handing it in: a ref
+   * holding it as one commit, and a patch beside the worktree. Never stands in
+   * the retry's way: when it cannot be kept, the activity says so and the retry
+   * starts from the head as it always did.
+   */
+  async function keepUnfinished(worktree: string, attempt: number): Promise<Kept | undefined> {
+    try {
+      await access(worktree);
+    } catch {
+      return undefined; // Somebody tidied it away; nothing is left to keep.
+    }
+    try {
+      const oldBase = await tryRevParse(environment.git, session.repoPath, baseRef(nodeId));
+      if (oldBase === undefined) return undefined;
+      const work = await collectUnfinished(environment.git, {
+        worktree,
+        base: oldBase,
+        nodeId,
+        attempt,
+        atMs: clock.now(),
+      });
+      if (work === undefined) return undefined;
+      const ref = unfinishedRef(nodeId, attempt);
+      await updateRef(environment.git, session.repoPath, ref, work.commit);
+      const patchPath = `${worktree}.attempt-${attempt}.patch`;
+      await writeFile(patchPath, await unfinishedPatch(environment.git, session.repoPath, work));
+      outbox.emit({
+        type: "node.progress",
+        source: "control-plane",
+        payload: {
+          message: `kept attempt ${attempt}'s unfinished work (${work.paths.length} paths) for the retry`,
+          ref,
+        },
+        executionNodeId: nodeId,
+      });
+      return { work, carried: { fromAttempt: attempt, ref, paths: work.paths, patchPath } };
+    } catch (error) {
+      outbox.emit({
+        type: "node.progress",
+        source: "control-plane",
+        payload: {
+          message: `could not keep attempt ${attempt}'s unfinished work: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+        executionNodeId: nodeId,
+      });
+      return undefined;
+    }
   }
 
   /**
@@ -516,11 +639,21 @@ export const startJob = async (
   }
 
   /** The agent started and its process launched, on the worktree already prepared. */
-  async function startAttempt(identity: AttemptIdentity, worktree: string): Promise<Attempt> {
+  async function startAttempt(
+    identity: AttemptIdentity,
+    worktree: string,
+    resumed?: { readonly sessionId: string; readonly task: AgentTask },
+    carriedOver?: CarriedOverWork,
+  ): Promise<Attempt> {
     const { agent, executionToken, routingDecision } = identity;
     const agentId = agent.agentId;
-    const startedAgent = transitionAgent(agent, "start", { at: nowIso(clock) });
-    await stores.agents.put(startedAgent);
+    // A resumed session is the same agent, already started: its record is not
+    // moved again, and its earlier segment's transcript is already kept.
+    const startedAgent =
+      resumed === undefined
+        ? transitionAgent(agent, "start", { at: nowIso(clock) })
+        : ((await stores.agents.get(session.scope, agentId)) ?? agent);
+    if (resumed === undefined) await stores.agents.put(startedAgent);
 
     const sink = createHookSink({ outbox, executionNodeId: nodeId, agentId });
     const transcript = environment.paths.transcript(session.scope.runId, agentId);
@@ -573,7 +706,7 @@ export const startJob = async (
         tools,
         sink,
         transcriptPath: transcript,
-        ...(input.task === undefined ? {} : { task: input.task }),
+        ...launchExtras(input.task, resumed, carriedOver),
       });
     } catch (error) {
       // The adapter could not even attempt a launch. The node and agent already
@@ -632,9 +765,9 @@ const finishSubProgram = async (
   const { stores, clock, outbox } = environment;
   let usage: RouteUsage | undefined;
   try {
-    const settledExit = await input.current().handle.exit;
-    if (settledExit.kind === "completed" || settledExit.kind === "failed")
-      usage = settledExit.usage;
+    const reported = await untilReported(environment, input, await input.current().handle.exit);
+    const settledExit = reported.exit;
+    usage = reported.usage;
     const { exit, reason } = observed(input, settledExit);
     await recordAgentEnd(environment, input, exit, reason);
     await uploadTranscript(environment, input);
@@ -721,6 +854,8 @@ interface FinishInput {
   stopMode(): "cancelled" | "interrupted" | undefined;
   /** Starts the job again on the next route when this one could not start, or says there is none. */
   relaunch(failed: RouteTarget): Promise<Attempt | undefined>;
+  /** Resumes the current attempt's session with a reminder to report. */
+  resumeSession(sessionId: string, reminder: number, of: number): Promise<Attempt | undefined>;
   readonly integrate?: IntegrateCandidate;
 }
 
@@ -835,6 +970,83 @@ const throughFallbacks = async (
 };
 
 /**
+ * How many times a session that ended its turn without reporting is resumed
+ * before its work is failed as unreported. Two: one to recover a session that
+ * stopped to wait for something, one more for good measure. A session that
+ * ignores both is not going to report.
+ */
+export const MAX_UNREPORTED_RESUMES = 2;
+
+/** Two usages as one: counts summed, the cost's source kept when either says. */
+const addUsage = (a: RouteUsage | undefined, b: RouteUsage | undefined): RouteUsage | undefined => {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  const sum = (x: number | undefined, y: number | undefined): number | undefined =>
+    x === undefined && y === undefined ? undefined : (x ?? 0) + (y ?? 0);
+  const merged: Record<string, unknown> = {
+    inputTokens: sum(a.inputTokens, b.inputTokens),
+    outputTokens: sum(a.outputTokens, b.outputTokens),
+    cacheReadTokens: sum(a.cacheReadTokens, b.cacheReadTokens),
+    cacheWriteTokens: sum(a.cacheWriteTokens, b.cacheWriteTokens),
+    estimatedCostUsd: sum(a.estimatedCostUsd, b.estimatedCostUsd),
+    actualCostUsd: sum(a.actualCostUsd, b.actualCostUsd),
+    latencyMs: sum(a.latencyMs, b.latencyMs),
+    wallClockMs: sum(a.wallClockMs, b.wallClockMs),
+    costSource: b.costSource ?? a.costSource,
+  };
+  return Object.fromEntries(
+    Object.entries(merged).filter(([, value]) => value !== undefined),
+  ) as RouteUsage;
+};
+
+/**
+ * A session that ended its turn cleanly without reporting, resumed with a
+ * reminder until it reports or the reminders run out.
+ *
+ * Every agent runs headless, so a turn that ends is a process that exits, and
+ * nothing wakes it again. A worker that ended its turn to wait for a background
+ * command, or that simply stopped, has not failed at its work; it has failed to
+ * finish its turn. Its session is kept, so it is resumed where it was, in the
+ * worktree as it left it, and told why. Only a clean exit from a session that
+ * can be resumed, that nobody asked to stop, on a node still `running`.
+ */
+const untilReported = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+  first: HarnessExit,
+): Promise<{ readonly exit: HarnessExit; readonly usage: RouteUsage | undefined }> => {
+  let exit = first;
+  let usage: RouteUsage | undefined;
+  for (let reminder = 1; reminder <= MAX_UNREPORTED_RESUMES; reminder += 1) {
+    if (exit.kind !== "completed" || exit.sessionId === undefined) break;
+    if (input.stopMode() !== undefined) break;
+    const node = await environment.stores.executionNodes.get(input.session.scope, input.nodeId);
+    if (node?.status !== "running") break;
+    usage = addUsage(usage, exit.usage);
+    // This segment's transcript, kept before the resumed session writes the next.
+    await uploadTranscript(environment, input);
+    environment.outbox.emit({
+      type: "node.progress",
+      source: "control-plane",
+      payload: {
+        message: `ended its turn without reporting; resumed with a reminder (${reminder} of ${MAX_UNREPORTED_RESUMES})`,
+      },
+      executionNodeId: input.nodeId,
+      agentId: input.current().agentId,
+    });
+    const next = await input
+      .resumeSession(exit.sessionId, reminder, MAX_UNREPORTED_RESUMES)
+      .catch(() => undefined);
+    if (next === undefined) break;
+    exit = await next.handle.exit;
+  }
+  return { exit, usage: addUsage(usage, usageOf(exit)) };
+};
+
+const usageOf = (exit: HarnessExit): RouteUsage | undefined =>
+  exit.kind === "completed" || exit.kind === "failed" ? exit.usage : undefined;
+
+/**
  * Everything after the worker is running: wait for it, record how it ended, and
  * — only if it ended `completed` and reported — verify, seal, integrate,
  * checkpoint.
@@ -849,11 +1061,13 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
   let recorded = false;
   try {
     const fallen = await throughFallbacks(environment, input);
-    const settledExit = fallen.exit;
     recorded = fallen.recorded;
-    if (settledExit.kind === "completed" || settledExit.kind === "failed") {
-      usage = settledExit.usage;
-    }
+    // A last attempt already on the record had no route to start on: nothing to resume.
+    const reported = recorded
+      ? { exit: fallen.exit, usage: usageOf(fallen.exit) }
+      : await untilReported(environment, input, fallen.exit);
+    const settledExit = reported.exit;
+    usage = reported.usage;
     const { exit, reason: described } = observed(input, settledExit);
     // A route that could not start, and nowhere left to go (D-P8-06): the reason
     // says so, and a retry of it will not climb (`failureClimbs`).
