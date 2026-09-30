@@ -58,6 +58,7 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 | **P11** | Realtime, Analytics & Studio | 10 + Studio UI | Local runs and decisions visible live in Studio; full run state and history reconstructable from centralized APIs alone | O-02 (resolved by D-P11-05) | ratified 2026-09-28, in build (`p11-studio.md`) |
 | **P12** | Local Instance | — (inserted) | Nightshift runs on one machine with no cloud account: `nightshift local`, the same plane over SQLite, the Studio beside it; the repository opened under Apache-2.0 | — | closed 2026-09-29 (`p12-local-instance.md`) |
 | **P13** | Studio UI | — (inserted) | A SaaS-shaped Studio on shadcn/ui, restyled from one theme file: program status on each card and the run's first tab, the run as a horizontal graph with a decision's recorded reach | — | closed 2026-09-29 (`p13-studio-ui.md`) |
+| **P14** | Intent | — (inserted) | Every program keeps why it exists: user stories in the owner's own words, the planning conversation as evidence, and every strand, job and decision linked to the story it serves; the Studio and the report lead with them | — | ratified 2026-09-30, not started (`p14-intent.md`) |
 
 Open decision IDs refer to `docs/architecture.md` §3.
 
