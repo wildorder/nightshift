@@ -11,6 +11,7 @@
     "preview": "vite preview --strictPort"
   },
   "dependencies": {
+    "@dagrejs/dagre": "3.1.1",
     "@nightshift/contracts": "*",
     "@nightshift/core": "*",
     "@nightshift/persistence": "*",
@@ -19,7 +20,6 @@
     "@xyflow/react": "12.12.0",
     "class-variance-authority": "0.7.1",
     "cn": "0.4.0",
-    "elkjs": "0.12.0",
     "lucide-react": "1.49.0",
     "radix-ui": "1.6.7",
     "react": "19.3.0",

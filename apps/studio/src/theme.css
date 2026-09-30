@@ -165,3 +165,22 @@
   --color-status-neutral: var(--status-neutral);
   --color-status-neutral-foreground: var(--status-neutral-foreground);
 }
+
+/* The run graph's canvas (D-P13-10): React Flow's own variables, on the tokens above. */
+.react-flow {
+  --xy-background-color: var(--background);
+  --xy-background-pattern-color: var(--border);
+  --xy-edge-stroke: var(--muted-foreground);
+  --xy-edge-stroke-selected: var(--foreground);
+  --xy-edge-label-background-color: var(--background);
+  --xy-edge-label-color: var(--muted-foreground);
+  --xy-node-background-color: transparent;
+  --xy-node-border: none;
+  --xy-node-boxshadow-selected: none;
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--accent);
+  --xy-controls-button-color: var(--foreground);
+  --xy-controls-button-color-hover: var(--accent-foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-box-shadow: none;
+}

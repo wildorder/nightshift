@@ -9,7 +9,7 @@ import type { RunReport, RunScope } from "@nightshift/core";
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Radio } from "lucide-react";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { useSearchParams } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -35,7 +35,6 @@ import {
   Usage,
   useRunScope,
 } from "../components/run/parts.js";
-import { RunGraph } from "../components/run/run-graph.js";
 import { StatusBadge } from "../components/status-badge.js";
 import { between, shortId, shortSha, when } from "../lib/format.js";
 import { useLiveEvents } from "../lib/live.js";
@@ -45,6 +44,11 @@ import { useRunStatus } from "../lib/run-status.js";
 import { DEFAULT_POLL_MS, useStudio } from "../studio.js";
 
 export { useRunScope } from "../components/run/parts.js";
+
+/** The graph pulls in React Flow and dagre; only its tab needs them, so it loads on demand. */
+const RunGraph = lazy(() =>
+  import("../components/run/run-graph.js").then((module) => ({ default: module.RunGraph })),
+);
 
 export const RUN_TABS = ["status", "graph", "work", "timeline", "decisions", "artifacts"] as const;
 export type RunTab = (typeof RUN_TABS)[number];
@@ -272,7 +276,14 @@ export const RunPage = () => {
         </TabsContent>
 
         <TabsContent value="graph" className="mt-4">
-          <RunGraph scope={scope} nodes={nodes.data ?? []} jobs={jobs.data ?? []} report={report} />
+          <Suspense fallback={<p className="text-sm text-muted-foreground">Loading the graph…</p>}>
+            <RunGraph
+              scope={scope}
+              nodes={nodes.data ?? []}
+              jobs={jobs.data ?? []}
+              report={report}
+            />
+          </Suspense>
         </TabsContent>
 
         <TabsContent value="work" className="mt-4 grid gap-4">
