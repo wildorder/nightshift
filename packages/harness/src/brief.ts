@@ -56,22 +56,19 @@ export interface WorkerBriefInput {
 }
 
 /**
- * Every agent Nightshift starts runs headless: one turn, and the process exits
- * when the turn ends. An agent that ends its turn to wait for a background
- * command has ended its session, and the command dies with it. Said to every
- * role that runs commands or waits, in the same words, with the calls that end
- * that role's work.
+ * Every agent Nightshift starts runs unattended: nobody will prompt it again.
+ * Whether a background command can wake it depends on the harness, so that is
+ * the adapter's to say; what holds everywhere is said here, to every role, with
+ * the calls that end that role's work.
  */
 const headlessSession = (finish: string): string =>
   [
-    "YOUR SESSION ENDS WHEN YOUR TURN ENDS",
+    "NOBODY WILL PROMPT YOU AGAIN",
     "",
-    "  You are running headless. The moment you end your turn, your process exits,",
-    "  and nothing wakes you again: no background task, monitor or notification will",
-    "  resume you, and anything still running in the background is killed with you.",
-    "  So run every command in the foreground and wait for it, however long it takes.",
-    "  Never end your turn to wait for something. Do not end your turn at all until",
-    `  you have called ${finish}.`,
+    "  You are running unattended. Do not end your turn until you have called",
+    `  ${finish}: a session that ends without one has not finished, whatever it did.`,
+    "  When your session closes, anything you left running in the background is",
+    "  stopped with it.",
   ].join("\n");
 
 const bullets = (items: readonly string[]): string =>
@@ -664,12 +661,11 @@ const renderContinueBrief = (
         ? "run.finish"
         : "job.complete or job.fail";
   return `${[
-    "Your turn ended, but you have not reported how your work ended.",
+    "Your session ended, but you have not reported how your work ended.",
     "",
-    "You are running headless: when your turn ends your process exits, and nothing wakes",
-    "you. Any command you left running in the background was killed when it did, so its",
-    "result is lost; run it again, in the foreground, and wait for it. Your working",
-    "directory is exactly as you left it.",
+    "Anything you left running in the background was stopped when it did, so its result",
+    "is lost: run it again and wait for it. Your working directory is exactly as you",
+    "left it.",
     "",
     `Carry on from where you were, and do not end your turn until you have called ${finish}.`,
     `This is reminder ${task.reminder} of ${task.of}; after the last, the work is failed as unreported.`,

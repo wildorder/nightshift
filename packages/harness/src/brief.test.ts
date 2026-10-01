@@ -216,7 +216,7 @@ describe("headless sessions", () => {
   const program = makeProgramContract(f);
   const job = makeJobContract(f);
 
-  it("tells every role that its turn ending ends its session, with its own finishing calls", () => {
+  it("tells every role not to end its turn before its own finishing call", () => {
     const worker = renderWorkerBrief({
       job,
       node: makeNode(f, f.rootNodeId),
@@ -230,11 +230,11 @@ describe("headless sessions", () => {
       worktree: "/tmp/w",
     });
     for (const brief of [worker, orchestrator]) {
-      expect(brief).toContain("YOUR SESSION ENDS WHEN YOUR TURN ENDS");
-      expect(brief).toContain("run every command in the foreground");
+      expect(brief).toContain("NOBODY WILL PROMPT YOU AGAIN");
+      expect(brief).toContain("stopped with it");
     }
-    expect(worker).toContain("until\n  you have called job.complete or job.fail.");
-    expect(orchestrator).toContain("subprogram.complete or subprogram.fail.");
+    expect(worker).toContain("job.complete or job.fail: a session that ends");
+    expect(orchestrator).toContain("subprogram.complete or subprogram.fail: a session that ends");
   });
 
   it("resumes a session that stopped without reporting with a reminder, not the whole brief", () => {
@@ -246,7 +246,7 @@ describe("headless sessions", () => {
       task: { kind: "continue", reminder: 1, of: 2 },
     });
     expect(brief).toContain("you have not reported how your work ended");
-    expect(brief).toContain("run it again, in the foreground");
+    expect(brief).toContain("run it again and wait for it");
     expect(brief).toContain("job.complete or job.fail");
     expect(brief).toContain("reminder 1 of 2");
     expect(brief).not.toContain("ACCEPTANCE CRITERIA");

@@ -2,7 +2,7 @@
  * The command line, the MCP configuration file, the settings file, and the
  * Claude-specific half of the worker brief.
  *
- * ## THE COMMAND LINE — verified against Claude Code 2.1.273
+ * ## THE COMMAND LINE — verified against Claude Code 2.1.273, streaming input on 2.1.286
  *
  * The P3 contract was written against 2.1.272; the installed CLI on the
  * operator's machine on 2026-09-15 is **2.1.273**, and every flag below was
@@ -13,7 +13,8 @@
  *
  * ```text
  * claude
- *   -p <brief>                          the rendered worker brief, positional
+ *   -p                                  headless; the brief arrives on stdin
+ *   --input-format stream-json          the brief as the first user message, stdin kept open
  *   --output-format stream-json         the structured event stream (§4.7 rests on it)
  *   --verbose                           mandatory: "--output-format=stream-json requires --verbose"
  *   --model <model>                     RouteTarget.model, passed through unchanged
@@ -28,11 +29,16 @@
  *
  * Four things about that ordering and shape are load-bearing rather than taste:
  *
- * 1. **The brief comes immediately after `-p`, before every other flag.**
- *    `--disallowedTools` and `--mcp-config` are
- *    *variadic* (`<tools...>`) in this release, so a positional argument placed
- *    after one of them is swallowed as another value for it. `-p` is a boolean,
- *    so the brief lands where it belongs.
+ * 1. **The brief is not on the command line at all.** It is written to stdin
+ *    as a `stream-json` user message, and stdin stays open. That is what keeps
+ *    the session alive past the end of a turn: with a positional prompt, or
+ *    with stdin closed, `claude -p` exits the moment its turn ends and kills
+ *    every background command it started (verified on 2.1.286). Held open,
+ *    the session goes idle, and when a background task finishes Claude Code
+ *    starts a turn of its own to tell the model. The adapter closes stdin when
+ *    the session is truly done (see `adapter.ts`). A positional prompt was also
+ *    fragile: `--disallowedTools` and `--mcp-config` are variadic and swallow a
+ *    positional argument placed after them.
  * 2. **The list flag gets exactly one comma-separated value.** The help text
  *    allows comma or space separation; a deny pattern such as
  *    `Bash(git commit:*)` contains a space, and space separation would split it.
@@ -77,7 +83,7 @@ import { type ClaudeToolPolicy, claudeMcpToolName } from "./permissions.js";
  * because the operator upgraded, but a human reading a failure wants to know
  * which release the flags were written for.
  */
-export const VERIFIED_CLAUDE_VERSION = "2.1.273";
+export const VERIFIED_CLAUDE_VERSION = "2.1.286";
 
 /** The executable. Resolved from `PATH`, so an operator's install location is theirs. */
 export const CLAUDE_COMMAND = "claude";
@@ -86,8 +92,6 @@ export const CLAUDE_COMMAND = "claude";
 const list = (values: readonly string[]): string => values.join(",");
 
 export interface ClaudeCommandInput {
-  /** The full prompt: T1's brief plus {@link claudeBriefAddendum}. */
-  readonly prompt: string;
   readonly model: RouteTarget;
   /** Absolute path to the `--mcp-config` file this adapter wrote. */
   readonly mcpConfigPath: string;
@@ -105,9 +109,9 @@ export interface ClaudeCommandInput {
  * whole command line against a fake spawn without a filesystem.
  */
 export const buildClaudeArgs = (input: ClaudeCommandInput): readonly string[] => [
-  // The brief first, because every list flag below is variadic.
   "-p",
-  input.prompt,
+  "--input-format",
+  "stream-json",
   "--output-format",
   "stream-json",
   "--verbose",
@@ -215,9 +219,24 @@ export const claudeBriefAddendum = (input: {
     "  point of use. Do not spend a turn trying one or working around it.",
     "  Nightshift is the one that commits your work, from whatever is in your",
     "  working directory when you report completion.",
+    "",
+    "BACKGROUND COMMANDS",
+    "",
+    "  You may run commands in the background. While one is running, your session",
+    "  stays open even after your turn ends, and you are woken with its result",
+    "  when it finishes. Once you have reported how your work ended and your turn",
+    "  ends, your session closes and anything still running in the background is",
+    "  stopped with it.",
   ];
   return lines.join("\n");
 };
+
+/**
+ * The brief as the one line written to a streaming-input session's stdin: a
+ * user message, newline-terminated.
+ */
+export const claudeInputLine = (prompt: string): string =>
+  `${JSON.stringify({ type: "user", message: { role: "user", content: prompt } })}\n`;
 
 /** The full prompt: T1's brief, then the Claude-specific addendum. */
 export const claudePrompt = (briefText: string, addendum: string): string =>

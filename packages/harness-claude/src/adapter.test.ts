@@ -25,6 +25,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createClaudeHarness, SPAWN_FAILURE_EXIT_CODE } from "./adapter.js";
 import { HEADLESS_CLAUDE_ENV } from "./environment.js";
 import type { AdapterFileSystem, SpawnedChild, SpawnLike, SpawnOptions } from "./process.js";
+import { IDLE_GRACE_MS } from "./session.js";
 
 /** What the recording's `result` frame says the run cost (contract v1, D-P5-01). */
 const RECORDED_USAGE = {
@@ -61,6 +62,17 @@ class FakeChild implements SpawnedChild {
   private readonly closeListeners: ((code: number | null, signal: string | null) => void)[] = [];
   private readonly errorListeners: ((error: Error) => void)[] = [];
   private closed = false;
+
+  /** What the adapter wrote to stdin, and whether it closed it. */
+  readonly written: string[] = [];
+  stdinEnded = false;
+  readonly stdin = {
+    write: (data: string) => this.written.push(data),
+    end: () => {
+      this.stdinEnded = true;
+    },
+    on: (_: "error", _listener: (error: Error) => void) => undefined,
+  };
 
   readonly stdout = {
     on: (_: "data", l: (chunk: Uint8Array) => void) => this.stdoutListeners.push(l),
@@ -237,7 +249,8 @@ describe("the launch, against a fake spawn", () => {
     const call = calls[0];
     expect(call?.file).toBe("claude");
     expect(call?.options.cwd).toBe("/state/nightshift/worktrees/run_1/node_1");
-    expect(call?.args.slice(2)).toEqual([
+    expect(call?.args.slice(0, 3)).toEqual(["-p", "--input-format", "stream-json"]);
+    expect(call?.args.slice(3)).toEqual([
       "--output-format",
       "stream-json",
       "--verbose",
@@ -257,13 +270,15 @@ describe("the launch, against a fake spawn", () => {
     ]);
   });
 
-  it("passes the brief as the positional prompt, carrying both halves of it", async () => {
-    const { spawn, calls } = fakeSpawn();
+  it("writes the brief to stdin as one user message, carrying both halves of it", async () => {
+    const { spawn, children } = fakeSpawn();
     const { fs } = fakeFileSystem();
     await harnessWith(spawn, fs).start(startInput());
 
-    expect(calls[0]?.args[0]).toBe("-p");
-    const prompt = calls[0]?.args[1] ?? "";
+    const written = children[0]?.written ?? [];
+    expect(written).toHaveLength(1);
+    const message = JSON.parse(written[0] ?? "{}") as { message: { content: string } };
+    const prompt = message.message.content;
     // T1's half.
     expect(prompt).toContain("You are a Nightshift worker.");
     expect(prompt).toContain("HOW YOUR WORK IS COLLECTED — do not commit");
@@ -297,11 +312,61 @@ describe("the launch, against a fake spawn", () => {
     expect(config.mcpServers.nightshift.env).toEqual(MCP.env);
   });
 
-  it("ignores the child's stdin, so the CLI does not wait three seconds for input", async () => {
-    const { spawn, calls } = fakeSpawn();
-    const { fs } = fakeFileSystem();
-    await harnessWith(spawn, fs).start(startInput());
-    expect(calls[0]?.options.stdio).toEqual(["ignore", "pipe", "pipe"]);
+  it("keeps stdin open while the session works, and closes it once the session is done", async () => {
+    vi.useFakeTimers();
+    try {
+      const { spawn, calls, children } = fakeSpawn();
+      const { fs } = fakeFileSystem();
+      await harnessWith(spawn, fs).start(startInput());
+      expect(calls[0]?.options.stdio).toEqual(["pipe", "pipe", "pipe"]);
+      const child = children[0] as FakeChild;
+      const frame = (value: unknown) => child.emitStdout(`${JSON.stringify(value)}\n`);
+
+      // A turn that started a background command, then went idle: still open.
+      frame({ type: "system", subtype: "session_state_changed", state: "running" });
+      frame({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "b1" }] });
+      frame({ type: "system", subtype: "session_state_changed", state: "idle" });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(child.stdinEnded).toBe(false);
+
+      // The command finished and the woken turn started at once: still open.
+      frame({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+      frame({ type: "system", subtype: "session_state_changed", state: "running" });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(child.stdinEnded).toBe(false);
+
+      // Idle with nothing left: closed after the grace.
+      frame({ type: "system", subtype: "session_state_changed", state: "idle" });
+      await vi.advanceTimersByTimeAsync(IDLE_GRACE_MS + 1);
+      expect(child.stdinEnded).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes a finished session even with something still running in the background", async () => {
+    vi.useFakeTimers();
+    try {
+      const { spawn, children } = fakeSpawn();
+      const { fs } = fakeFileSystem();
+      await harnessWith(spawn, fs).start(startInput());
+      const child = children[0] as FakeChild;
+      const frame = (value: unknown) => child.emitStdout(`${JSON.stringify(value)}\n`);
+      frame({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "dev" }] });
+      frame({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "t1", name: "mcp__nightshift__job_complete", input: {} },
+          ],
+        },
+      });
+      frame({ type: "system", subtype: "session_state_changed", state: "idle" });
+      await vi.advanceTimersByTimeAsync(IDLE_GRACE_MS + 1);
+      expect(child.stdinEnded).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("detaches on POSIX so cancel can signal the tree, and not on Windows", async () => {

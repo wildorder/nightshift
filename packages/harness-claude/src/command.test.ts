@@ -6,6 +6,7 @@ import {
   buildMcpConfig,
   buildSettings,
   claudeBriefAddendum,
+  claudeInputLine,
   claudePrompt,
   VERIFIED_CLAUDE_VERSION,
 } from "./command.js";
@@ -36,9 +37,8 @@ const scope = (permissions: readonly string[]): Scope => ({
   forbiddenActions: [],
 });
 
-const argsFor = (permissions: readonly string[], prompt = "BRIEF") =>
+const argsFor = (permissions: readonly string[]) =>
   buildClaudeArgs({
-    prompt,
     model: MODEL,
     mcpConfigPath: "/tmp/ns/mcp.json",
     settingsPath: "/tmp/ns/settings.json",
@@ -54,17 +54,18 @@ const flagValue = (args: readonly string[], flag: string): string | undefined =>
   return index === -1 ? undefined : args[index + 1];
 };
 
-describe("the command line, against Claude Code 2.1.273", () => {
+describe("the command line, against Claude Code 2.1.286", () => {
   const args = argsFor(["fs.read", "fs.write", "shell.exec"]);
 
   it("records the version its flags were verified against", () => {
-    expect(VERIFIED_CLAUDE_VERSION).toBe("2.1.273");
+    expect(VERIFIED_CLAUDE_VERSION).toBe("2.1.286");
   });
 
   it("is exactly the documented command line", () => {
     expect(args).toEqual([
       "-p",
-      "BRIEF",
+      "--input-format",
+      "stream-json",
       "--output-format",
       "stream-json",
       "--verbose",
@@ -84,14 +85,15 @@ describe("the command line, against Claude Code 2.1.273", () => {
     ]);
   });
 
-  it("puts the brief before every variadic flag, so none of them swallows it", () => {
-    // `--disallowedTools` and `--mcp-config` are `<value...>` in this release. A
-    // positional argument after one of them becomes another of its values.
-    expect(args[0]).toBe("-p");
-    expect(args[1]).toBe("BRIEF");
-    for (const variadic of ["--disallowedTools", "--mcp-config"]) {
-      expect(at(args, variadic)).toBeGreaterThan(1);
-    }
+  it("puts no prompt on the command line: the brief is a message on stdin", () => {
+    // A positional prompt ends the session with its first turn; stdin held open
+    // keeps it alive for its background tasks (verified on 2.1.286).
+    expect(args.slice(0, 3)).toEqual(["-p", "--input-format", "stream-json"]);
+    expect(JSON.parse(claudeInputLine("BRIEF"))).toEqual({
+      type: "user",
+      message: { role: "user", content: "BRIEF" },
+    });
+    expect(claudeInputLine("BRIEF").endsWith("\n")).toBe(true);
   });
 
   it("gives the deny flag exactly one comma-separated value", () => {
@@ -103,7 +105,7 @@ describe("the command line, against Claude Code 2.1.273", () => {
 
   it("passes the model routing chose, unchanged and with no list of its own", () => {
     expect(flagValue(args, "--model")).toBe(MODEL.model);
-    const alias = argsFor([], "B");
+    const alias = argsFor([]);
     expect(flagValue(alias, "--model")).toBe("claude-sonnet-5");
   });
 
@@ -215,7 +217,6 @@ describe("the full prompt", () => {
 describe("a rung's reasoning effort (P8)", () => {
   it("is passed as --effort when the route names one, and not otherwise", () => {
     const withEffort = buildClaudeArgs({
-      prompt: "BRIEF",
       model: { ...MODEL, effort: "high" },
       mcpConfigPath: "/tmp/ns/mcp.json",
       settingsPath: "/tmp/ns/settings.json",
@@ -229,7 +230,6 @@ describe("a rung's reasoning effort (P8)", () => {
 describe("resuming a session (P8, D-P8-15)", () => {
   it("continues the session named, after every other flag", () => {
     const args = buildClaudeArgs({
-      prompt: "ANSWER",
       model: MODEL,
       mcpConfigPath: "/tmp/ns/mcp.json",
       settingsPath: "/tmp/ns/settings.json",
@@ -237,6 +237,6 @@ describe("resuming a session (P8, D-P8-15)", () => {
       resumeSessionId: "15e34857-26e0-46ae-89c0-bdac582c50a7",
     });
     expect(args.slice(-2)).toEqual(["--resume", "15e34857-26e0-46ae-89c0-bdac582c50a7"]);
-    expect(args.slice(0, 2)).toEqual(["-p", "ANSWER"]);
+    expect(args.slice(0, 3)).toEqual(["-p", "--input-format", "stream-json"]);
   });
 });

@@ -124,7 +124,8 @@ const noPermissions = (): string[] => [];
  *
  * The long-running worker is a long *generation* rather than a `sleep`: a
  * `shell.exec` worker asked to sleep was observed backgrounding the command and
- * finishing immediately, which would make the cancel assertions vacuous. A long
+ * ending its turn at once, which (before sessions were kept open for their
+ * background work) ended the run and made the cancel assertions vacuous. A long
  * essay keeps the process streaming for as long as the suite needs and requires
  * no permission at all.
  */

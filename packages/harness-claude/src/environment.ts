@@ -119,28 +119,21 @@ export const envAllowlistFor = (platform: NodeJS.Platform): readonly string[] =>
   platform === "win32" ? WINDOWS_ENV_ALLOWLIST : POSIX_ENV_ALLOWLIST;
 
 /**
- * What makes a headless session behave like one. Set by Nightshift on every
- * Claude Code process it starts, over whatever the parent had.
+ * Set by Nightshift on every Claude Code process it starts, over whatever the
+ * parent had. Nothing here takes a capability away; background commands stay
+ * on, and the session is kept alive for them (`session.ts`).
  *
- * A worker runs `claude -p`: one turn, and **the process exits when the turn
- * ends**. Nothing ever wakes it again. Claude Code's background tasks assume the
- * opposite, an interactive session that a finished task re-invokes, so a worker
- * that backgrounds a long command (or has one moved to the background for it
- * when it runs long) and ends its turn to wait has ended its job: the command
- * dies with the process, and the work stops unreported. Observed in a real run,
- * where a worker backgrounded its Docker gates and was lost.
- *
- * - `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` — no background tasks at all, asked
- *   for or automatic. Every command runs in the foreground, where the turn
- *   waits for it. Not a tool restriction: the Bash tool is unchanged, only the
- *   one mode that cannot work headless is gone.
- * - `BASH_MAX_TIMEOUT_MS` — two hours, so a gate that runs long in the
- *   foreground is not killed at Claude Code's ten-minute ceiling.
+ * - `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` — the `session_state_changed`
+ *   frames (`running`, `idle`) the adapter ends a session by. Without it Claude
+ *   Code never says it is idle, and a session held open is held forever
+ *   (found by the conformance run on 2.1.286).
+ * - `BASH_MAX_TIMEOUT_MS` — two hours, so a gate a worker chooses to run in
+ *   the foreground is not killed at Claude Code's ten-minute ceiling.
  * - `BASH_DEFAULT_TIMEOUT_MS` — ten minutes when the model names none, so a
  *   test suite is not killed at the two-minute default and run again.
  */
 export const HEADLESS_CLAUDE_ENV: Readonly<Record<string, string>> = Object.freeze({
-  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+  CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
   BASH_MAX_TIMEOUT_MS: String(2 * 60 * 60 * 1000),
   BASH_DEFAULT_TIMEOUT_MS: String(10 * 60 * 1000),
 });
