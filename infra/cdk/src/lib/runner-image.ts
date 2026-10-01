@@ -106,6 +106,9 @@ export const toolchainComponent = (): string =>
         "RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo sh /tmp/rustup.sh -y --profile minimal --default-toolchain stable",
         "ln -sfn /opt/rust/cargo/bin/cargo /usr/local/bin/cargo && ln -sfn /opt/rust/cargo/bin/rustc /usr/local/bin/rustc",
         "chmod -R a+rX /opt/rust",
+        // The rustup proxies find the shared toolchain through RUSTUP_HOME; each
+        // user's own CARGO_HOME (its registry cache) stays in its home.
+        "printf '%s\n' 'export RUSTUP_HOME=/opt/rust/rustup' > /etc/profile.d/nightshift-rust.sh",
         `curl -fsSL https://github.com/astral-sh/uv/releases/download/${RUNNER_TOOLCHAIN.uv}/uv-aarch64-unknown-linux-gnu.tar.gz -o /tmp/uv.tar.gz`,
         "tar -xzf /tmp/uv.tar.gz -C /tmp && install -m 0755 /tmp/uv-aarch64-unknown-linux-gnu/uv /usr/local/bin/uv",
       ]),

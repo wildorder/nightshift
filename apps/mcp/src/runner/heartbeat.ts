@@ -40,6 +40,8 @@ export interface Heartbeat {
   run(): Promise<"stop" | "lost">;
   /** Ends the loop after the current beat. */
   end(): void;
+  /** One more beat carrying `milestone`, after the loop has ended: the runner's last word. */
+  farewell(milestone: HeartbeatReport): Promise<void>;
 }
 
 export class HeartbeatLostError extends Error {
@@ -94,6 +96,16 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     },
     end: () => {
       ended = true;
+    },
+    farewell: async (milestone) => {
+      pending.push(milestone);
+      try {
+        last = await beat();
+      } catch (error) {
+        options.log(
+          `the farewell heartbeat failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     },
     run: async () => {
       while (!ended) {

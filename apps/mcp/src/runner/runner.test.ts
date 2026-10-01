@@ -305,9 +305,11 @@ describe("the runner end to end over fakes (T2)", () => {
       },
     });
     expect(code).toBe(0);
-    expect(bodies).toHaveLength(3);
+    // Three beats, then the farewell carrying `stopped`.
+    expect(bodies).toHaveLength(4);
     expect(bodies[0]).toMatchObject({ report: "ready" });
     expect((bodies[1] as { report?: string }).report).toBeUndefined();
+    expect(bodies[3]).toMatchObject({ report: "stopped" });
   });
 
   it("boots, takes its token, mounts, heartbeats ready, works, reports stopped", async () => {

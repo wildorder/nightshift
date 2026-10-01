@@ -111,6 +111,10 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     log("the control plane is lost; the lease will lapse and a replacement will come");
     return 3;
   }
-  log("stopping as told");
+  // Told to stop (cancelled, a ceiling, or superseded): the work is abandoned
+  // where it stands, and the plane hears `stopped` from the runner itself so
+  // the dispatch settles without waiting for the reconciler's lost lease.
+  log(`stopping as told: the dispatch is ${heartbeat.last?.status ?? "unknown"}`);
+  await heartbeat.farewell("stopped");
   return 0;
 };

@@ -12,6 +12,9 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
@@ -385,6 +388,10 @@ const measure = async (instanceId: string): Promise<Record<string, string>> => {
     "curl -s -m 2 http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1 && echo imds_from_engine=reachable || echo imds_from_engine=blocked",
     "sudo -u worker-1 curl -s -m 2 http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1 && echo imds_from_worker=reachable || echo imds_from_worker=blocked",
   ];
+  // Through a file: the Windows shell the CLI runs under would strip the quotes
+  // out of JSON passed as an argument.
+  const parameters = join(tmpdir(), `nightshift-runner-boot-${process.pid}.json`);
+  writeFileSync(parameters, JSON.stringify({ commands: script, executionTimeout: ["1500"] }));
   const sent = JSON.parse(
     aws([
       "ssm",
@@ -396,9 +403,10 @@ const measure = async (instanceId: string): Promise<Record<string, string>> => {
       "--timeout-seconds",
       "1500",
       "--parameters",
-      JSON.stringify({ commands: script, executionTimeout: ["1500"] }),
+      `file://${parameters.replaceAll("\\", "/")}`,
     ]),
   ) as { Command: { CommandId: string } };
+  rmSync(parameters, { force: true });
   for (let waited = 0; waited < 25 * 60_000; waited += 15_000) {
     await sleep(15_000);
     const invocation = JSON.parse(
