@@ -265,6 +265,12 @@ export const codexBriefAddendum = (input: {
     "  spend a turn trying one, or looking for a way around it: Nightshift is the",
     "  one that commits work, from whatever is in a worker's directory when it reports",
     "  completion.",
+    "",
+    "LONG COMMANDS",
+    "",
+    "  Your session ends when your turn ends, and nothing wakes you afterwards. Run",
+    "  long commands in the foreground and wait for them; never end your turn to",
+    "  wait for something running in the background.",
   ].join("\n");
 
 export const codexPrompt = (briefText: string, addendum: string): string =>

@@ -23,10 +23,19 @@ export interface ChildOutputStream {
   on(event: "data", listener: (chunk: Uint8Array) => void): void;
 }
 
+/** The child's stdin, as this adapter writes it: the brief, then an end. */
+export interface ChildInputStream {
+  write(data: string): unknown;
+  end(): unknown;
+  /** A write to a child that has already gone is an `EPIPE` here, not a crash. */
+  on(event: "error", listener: (error: Error) => void): unknown;
+}
+
 /** A spawned Claude Code process, as this adapter observes it. */
 export interface SpawnedChild {
   /** Absent when the spawn failed before the OS assigned a pid. */
   readonly pid?: number | undefined;
+  readonly stdin: ChildInputStream | null;
   readonly stdout: ChildOutputStream | null;
   readonly stderr: ChildOutputStream | null;
   /**
@@ -49,13 +58,12 @@ export interface SpawnOptions {
   readonly detached: boolean;
   readonly windowsHide: boolean;
   /**
-   * `ignore` for stdin, pipes for the rest.
-   *
-   * Not cosmetic: with an inherited stdin, `claude -p` waits for input it will
-   * never get and prints "no stdin data received in 3s, proceeding without it"
-   * — three seconds added to every job, observed on 2.1.273.
+   * Pipes, all three, for a worker (`ignore` only for a helper such as
+   * `taskkill`, which reads nothing). Stdin carries the brief as a `stream-json` message and is
+   * held open for the life of the session (see `session.ts`); never inherited,
+   * which would hand the worker the operator's terminal.
    */
-  readonly stdio: readonly ["ignore", "pipe", "pipe"];
+  readonly stdio: readonly ["pipe" | "ignore", "pipe", "pipe"];
 }
 
 export type SpawnLike = (

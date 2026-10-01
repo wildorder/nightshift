@@ -592,3 +592,59 @@ describe("a route that could not start (P8, D-P8-06)", () => {
     expect(play(`${refusal(500)}\n`).interpreter.outcome.unavailable).toBeUndefined();
   });
 });
+
+describe("a session kept open for its background work (recorded on 2.1.286)", () => {
+  // A real streaming-input session: a turn that started a background command
+  // and went idle, then the turn Claude Code started on its own when the
+  // command finished. Two `result` frames, one session.
+  const BACKGROUND = readFileSync(
+    new URL("./__fixtures__/claude-stream-background.jsonl", import.meta.url),
+    "utf8",
+  );
+
+  const playWithActivity = (text: string) => {
+    const activity: { idle: boolean; backgroundTasks: number; finished: boolean }[] = [];
+    const sink = recordingHookSink();
+    const interpreter = createStreamInterpreter({
+      sink,
+      clock: createSteppingClock(Date.UTC(2026, 8, 30, 12, 0, 0), 1),
+      onActivity: (a) => activity.push(a),
+    });
+    interpreter.write(encoder.encode(text));
+    interpreter.end();
+    return { activity, events: sink.events, interpreter };
+  };
+
+  it("adds up both turns' tokens and keeps the session's running cost", () => {
+    const { interpreter } = playWithActivity(BACKGROUND);
+    expect(interpreter.outcome.usage).toMatchObject({
+      inputTokens: 28 + 10,
+      outputTokens: 447 + 90,
+      actualCostUsd: 0.023465800000000002,
+    });
+    expect(interpreter.outcome.resultText).toBe("FINISHED");
+  });
+
+  it("reports idleness and the background task list as they change", () => {
+    const { activity } = playWithActivity(BACKGROUND);
+    expect(activity).toContainEqual({ idle: true, backgroundTasks: 1, finished: false });
+    expect(activity.at(-1)).toEqual({ idle: true, backgroundTasks: 0, finished: false });
+  });
+
+  it("still knows a turn has ended when Claude Code emits no session state", () => {
+    // `session_state_changed` is emitted only when asked for; a session must
+    // still close without it, from the `result` that ends each turn.
+    const withoutState = BACKGROUND.split("\n")
+      .filter((line) => !line.includes('"session_state_changed"'))
+      .join("\n");
+    const { activity } = playWithActivity(withoutState);
+    expect(activity).toContainEqual({ idle: true, backgroundTasks: 1, finished: false });
+    expect(activity).toContainEqual({ idle: false, backgroundTasks: 0, finished: false });
+    expect(activity.at(-1)).toEqual({ idle: true, backgroundTasks: 0, finished: false });
+  });
+
+  it("does not report a background shell command as a sub-agent", () => {
+    const { events } = playWithActivity(BACKGROUND);
+    expect(typesOf(events)).not.toContain("agent.subagent_created");
+  });
+});
