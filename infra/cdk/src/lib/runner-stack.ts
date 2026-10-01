@@ -148,6 +148,17 @@ export class NightshiftRunnerStack extends Stack {
         resources: ["*"],
       }),
     );
+    // The build's own log, in CloudWatch under `/aws/imagebuilder/<pipeline>`,
+    // which Image Builder writes when and only when the instance may: a failed
+    // component with no log is a guess, and the first build was one.
+    builderRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+        resources: [
+          `arn:${Aws.PARTITION}:logs:${Aws.REGION}:${Aws.ACCOUNT_ID}:log-group:/aws/imagebuilder/*`,
+        ],
+      }),
+    );
     const builderProfile = new iam.CfnInstanceProfile(this, "ImageBuilderInstanceProfile", {
       roles: [builderRole.roleName],
     });
@@ -179,10 +190,6 @@ export class NightshiftRunnerStack extends Stack {
       additionalInstanceConfiguration: { systemsManagerAgent: { uninstallAfterBuild: false } },
       tags: { [AMI_VERSION_TAG]: imageVersion },
     });
-    const buildLogs = new logs.LogGroup(this, "ImageBuildLogs", {
-      retention: LOG_RETENTION,
-      removalPolicy: RemovalPolicy.DESTROY,
-    });
     const infrastructure = new imagebuilder.CfnInfrastructureConfiguration(
       this,
       "RunnerImageInfrastructure",
@@ -194,10 +201,8 @@ export class NightshiftRunnerStack extends Stack {
         subnetId: builderSubnet.subnetId,
         securityGroupIds: [machineSecurityGroup.securityGroupId],
         terminateInstanceOnFailure: true,
-        logging: { s3Logs: {} },
       },
     );
-    infrastructure.node.addDependency(buildLogs);
     const distribution = new imagebuilder.CfnDistributionConfiguration(this, "RunnerDistribution", {
       name: `nightshift-${stage}-runner`,
       distributions: [

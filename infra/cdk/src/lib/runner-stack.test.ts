@@ -292,7 +292,7 @@ describe("NightshiftRunnerStack", () => {
 
     it("logs to explicit groups with 30-day retention", () => {
       const groups = resourcesOf(synth().template, "AWS::Logs::LogGroup");
-      expect(groups.length).toBeGreaterThanOrEqual(4);
+      expect(groups.length).toBe(3);
       for (const group of groups) expect(group.Properties?.RetentionInDays).toBe(30);
     });
   });

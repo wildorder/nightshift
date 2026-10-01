@@ -63,8 +63,10 @@ export const toolchainComponent = (): string =>
         "dnf -y install git tar gzip xz unzip jq nftables shadow-utils sudo",
         "dnf -y install docker fuse-overlayfs slirp4netns",
         "dnf -y install gcc gcc-c++ make cmake pkgconf openssl-devel python3 python3-pip",
-        // Chromium's shared libraries, for playwright and puppeteer (the audit's Keki and Keyart).
-        "dnf -y install atk at-spi2-atk cups-libs libXcomposite libXdamage libXrandr libgbm pango alsa-lib nss libxkbcommon mesa-libgbm libdrm",
+        // Chromium's shared libraries, for playwright and puppeteer (the audit's Keki
+        // and Keyart). Not strict: a library AL2023 names differently is reported by
+        // the browser measurement (T2 §15), not a reason the whole image fails.
+        "dnf -y --setopt=strict=0 install atk at-spi2-atk cups-libs libXcomposite libXdamage libXrandr libXfixes libXext libX11 pango alsa-lib nss nspr libxkbcommon mesa-libgbm libdrm expat glib2 dbus-libs",
         "systemctl disable --now docker.service docker.socket || true",
       ]),
       shell("node", [
@@ -78,6 +80,7 @@ export const toolchainComponent = (): string =>
         `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/corepack /usr/local/bin/corepack`,
         "node --version",
         `corepack enable && corepack prepare pnpm@${RUNNER_TOOLCHAIN.pnpm} --activate`,
+        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/pnpm /usr/local/bin/pnpm`,
         `npm install -g @anthropic-ai/claude-code@${RUNNER_TOOLCHAIN.claude} @openai/codex@${RUNNER_TOOLCHAIN.codex}`,
         `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/claude /usr/local/bin/claude`,
         `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/codex /usr/local/bin/codex`,
