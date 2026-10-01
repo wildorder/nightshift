@@ -33,6 +33,12 @@ export const DATA_EXPORT_KEYS = [
   // P11 (T2, D-P11-04): the Studio's own app client. The authorizer lists it
   // among its audiences and the studio stack writes it into `config.json`.
   "StudioClientId",
+  // P10 (T2, D-P10-23): an org's provider keys live in a table of their own,
+  // sealed under a dedicated symmetric key. The API function alone reads either.
+  "CredentialsTableName",
+  "CredentialsTableArn",
+  "CredentialsKeyId",
+  "CredentialsKeyArn",
 ] as const;
 export type DataExportKey = (typeof DATA_EXPORT_KEYS)[number];
 export const dataExportName = (stage: string, key: DataExportKey): string =>

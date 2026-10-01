@@ -42,7 +42,7 @@ export const assertValidStage = (stage: string): void => {
 };
 
 /** The staged stacks' roles. */
-export type StackRole = "data" | "api" | "studio" | "studio-cert";
+export type StackRole = "data" | "api" | "studio" | "studio-cert" | "runner";
 
 /** `nightshift-<stage>-<role>`. */
 export const stackNameFor = (stage: string, role: StackRole): string =>

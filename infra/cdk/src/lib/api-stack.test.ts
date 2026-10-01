@@ -418,8 +418,39 @@ describe("NightshiftApiStack", () => {
           // P7 (D-P7-02): ratification reads the uploaded plan document back.
           "s3:GetObject",
           "kms:Sign",
+          // P10 (D-P10-23): a data key per credential, and its unwrapping.
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
         ]),
       );
+    });
+
+    it("reads and writes the credentials table from the API function alone (P10, D-P10-23)", () => {
+      const { template } = synth();
+      const onCredentials = resourcesOf(template, "AWS::IAM::Policy").filter((policy) =>
+        JSON.stringify(policy.Properties?.PolicyDocument).includes(
+          dataExportName("dev", "CredentialsTableArn"),
+        ),
+      );
+      expect(onCredentials).toHaveLength(1);
+      expect(stringsIn(onCredentials[0]?.Properties?.Roles)[0]).toMatch(/^ApiFunctionRole/);
+    });
+
+    it("unwraps credentials only under the credentials key and only with an org in the context", () => {
+      const statements = statementsOf(synth().template).filter((statement) =>
+        actionsOf(statement).includes("kms:Decrypt"),
+      ) as (Statement & { Condition?: unknown })[];
+      expect(statements).toHaveLength(1);
+      expect(actionsOf(statements[0] as Statement).sort()).toEqual([
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+      ]);
+      expect(JSON.stringify(statements[0]?.Resource)).toContain(
+        dataExportName("dev", "CredentialsKeyArn"),
+      );
+      expect(statements[0]?.Condition).toEqual({
+        Null: { "kms:EncryptionContext:orgId": "false" },
+      });
     });
 
     it("gives the materializer the stream, its reads and writes, and its dead-letter queue", () => {
@@ -524,13 +555,15 @@ describe("NightshiftApiStack", () => {
       );
     });
 
-    it("grants no KMS action beyond signing and reading the public key", () => {
+    it("grants no KMS action beyond signing, reading the public key, and sealing credentials", () => {
       const kmsActions = new Set(
         statementsOf(synth().template)
           .flatMap(actionsOf)
           .filter((action) => action.startsWith("kms:")),
       );
-      expect(kmsActions).toEqual(new Set(["kms:Sign", "kms:GetPublicKey"]));
+      expect(kmsActions).toEqual(
+        new Set(["kms:Sign", "kms:GetPublicKey", "kms:GenerateDataKey", "kms:Decrypt"]),
+      );
     });
   });
 
@@ -555,7 +588,13 @@ describe("NightshiftApiStack", () => {
       // carries the key id and the issuer. Neither is a secret: the key id names
       // a key whose private half never leaves KMS, and the issuer is a public
       // hostname. The materializer gets neither, because it signs nothing.
-      const apiOnly = ["NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID", "NIGHTSHIFT_TOKEN_ISSUER"];
+      const apiOnly = [
+        "NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID",
+        "NIGHTSHIFT_TOKEN_ISSUER",
+        // P10 (D-P10-23): the credentials table and key, the API function's alone.
+        "NIGHTSHIFT_CREDENTIALS_TABLE_NAME",
+        "NIGHTSHIFT_CREDENTIALS_KEY_ID",
+      ];
       const { template } = synth();
 
       const api = property<{ Variables: Record<string, unknown> }>(

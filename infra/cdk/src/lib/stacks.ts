@@ -11,11 +11,15 @@ import { NightshiftApiStack } from "./api-stack.js";
 import { NightshiftDataStack } from "./data-stack.js";
 import { NightshiftDnsStack } from "./dns-stack.js";
 import { type HostnamesMode, parseHostnamesMode } from "./hostnames.js";
+import { NightshiftRunnerStack } from "./runner-stack.js";
 import { NightshiftStudioCertificateStack } from "./studio-cert-stack.js";
 import { NightshiftStudioStack, resolveStudioAssets } from "./studio-stack.js";
 
 /** Stage used when `-c stage=<name>` is not supplied. */
 export const DEFAULT_STAGE = "dev";
+
+/** The runner image's version when `-c imageVersion` is not supplied: the repository's. */
+export const DEFAULT_IMAGE_VERSION = "1.0.0";
 
 export interface NightshiftStacks {
   readonly stage: string;
@@ -23,6 +27,12 @@ export interface NightshiftStacks {
   readonly dns: NightshiftDnsStack;
   readonly data: NightshiftDataStack;
   readonly api: NightshiftApiStack;
+  /**
+   * The remote runner's stack (P10, D-P10-21): built only when `runnerCommit`
+   * names the commit the image is made from, so a deploy of the control plane
+   * alone never touches EC2 or Image Builder.
+   */
+  readonly runner: NightshiftRunnerStack | undefined;
   /** The Studio's two stacks (D-P11-02); absent in `zone-only` mode. */
   readonly studio:
     | {
@@ -81,8 +91,28 @@ export const composeNightshiftStacks = (app: App): NightshiftStacks => {
   // The API stack imports the data and DNS stacks' exports by name, so both must
   // deploy first. This orders deploys; it creates no construct reference.
   api.addStackDependency(data, "imports the data stack's exports by name");
+
+  // The runner (P10). `-c runnerCommit=<sha>` names the commit the image builds
+  // the runner from; `-c imageVersion=x.y.z` versions the recipe, defaulting to
+  // the package version. Absent, the stack is not built at all.
+  const runnerCommit: unknown = app.node.tryGetContext("runnerCommit");
+  const imageVersionContext: unknown = app.node.tryGetContext("imageVersion");
+  const runner =
+    typeof runnerCommit === "string" && runnerCommit.length > 0
+      ? new NightshiftRunnerStack(app, "NightshiftRunner", {
+          stage,
+          runnerCommit,
+          imageVersion:
+            typeof imageVersionContext === "string" && imageVersionContext.length > 0
+              ? imageVersionContext
+              : DEFAULT_IMAGE_VERSION,
+          description: `Nightshift remote runner (${stage}): image pipeline, machines, dispatch, reconciler, publisher.`,
+        })
+      : undefined;
+  runner?.addStackDependency(data, "imports the data stack's exports by name");
+
   if (hostnames !== "full" || hostedZoneId === undefined) {
-    return { stage, hostnames, dns, data, api, studio: undefined };
+    return { stage, hostnames, dns, data, api, runner, studio: undefined };
   }
   api.addStackDependency(dns, "imports the DNS stack's exports by name");
 
@@ -103,5 +133,5 @@ export const composeNightshiftStacks = (app: App): NightshiftStacks => {
   site.addStackDependency(data, "imports the data stack's exports by name");
   site.addStackDependency(dns, "imports the DNS stack's exports by name");
 
-  return { stage, hostnames, dns, data, api, studio: { certificate, site } };
+  return { stage, hostnames, dns, data, api, runner, studio: { certificate, site } };
 };

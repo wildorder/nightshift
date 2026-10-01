@@ -47,6 +47,9 @@ export const MACHINE_SCOPE = `${RESOURCE_SERVER_IDENTIFIER}/${API_SCOPE_NAME}`;
 export const executionTokenKeyAlias = (stage: string): string =>
   `nightshift-${stage}-execution-tokens`;
 
+/** P10 (D-P10-23): the symmetric key an org's provider keys are sealed under. */
+export const credentialsKeyAlias = (stage: string): string => `nightshift-${stage}-credentials`;
+
 /** The custom attribute the API reads, as claim `custom:active_org`, to select an org. */
 export const ACTIVE_ORG_ATTRIBUTE = "active_org";
 
@@ -137,9 +140,13 @@ export const DELIVERY_LOG_RETENTION = logs.RetentionDays.ONE_MONTH;
 export class NightshiftDataStack extends Stack {
   readonly stage: string;
   readonly table: dynamodb.Table;
+  /** P10 (D-P10-23): an org's sealed provider keys, apart from everything else. */
+  readonly credentialsTable: dynamodb.Table;
   readonly bucket: s3.Bucket;
   readonly userPool: cognito.UserPool;
   readonly executionTokenKey: kms.Key;
+  /** P10 (D-P10-23): envelope-encrypts an org's provider keys, with the org as context. */
+  readonly credentialsKey: kms.Key;
 
   constructor(scope: Construct, id: string, props: NightshiftStackProps) {
     const { stage, ...stackProps } = props;
@@ -174,6 +181,21 @@ export class NightshiftDataStack extends Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // --- DynamoDB: the credentials table (P10, D-P10-23) -------------------------
+    //
+    // An org's provider keys, sealed, in a table of their own: **no stream**, so
+    // the materializer and anything ever granted stream read never sees a
+    // credential row; no index; and one reader, the API function, which the API
+    // stack's IAM names. The main table's grants do not reach it, and nothing
+    // here could be read by a principal that only holds those.
+    this.credentialsTable = new dynamodb.Table(this, "CredentialsTable", {
+      partitionKey: { name: "PK", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "SK", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      deletionProtection: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
     // --- S3: artifact bodies (A-08, D-P2-08) ------------------------------------
     this.bucket = new s3.Bucket(this, "ArtifactBucket", {
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -206,6 +228,21 @@ export class NightshiftDataStack extends Stack {
       keySpec: kms.KeySpec.RSA_2048,
       keyUsage: kms.KeyUsage.SIGN_VERIFY,
       alias: executionTokenKeyAlias(stage),
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // --- KMS: the credentials key (P10, D-P10-23) --------------------------------
+    //
+    // Symmetric, because it wraps data keys: `GenerateDataKey` and `Decrypt`,
+    // each with `{orgId, provider}` as the encryption context, so a ciphertext
+    // moved to another org's row does not open. The API function alone holds
+    // those two actions (the API stack's IAM, pinned by its test); the key policy
+    // is the account default, which lets IAM grant and nothing else. Rotation is
+    // on: a symmetric key's material can rotate under its ciphertexts.
+    this.credentialsKey = new kms.Key(this, "CredentialsKey", {
+      description: `Seals an org's provider keys for Nightshift (${stage})`,
+      alias: credentialsKeyAlias(stage),
+      enableKeyRotation: true,
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
@@ -438,6 +475,10 @@ export class NightshiftDataStack extends Stack {
       HostedSignInUrl: hostedSignInUrl,
       ExecutionTokenKeyId: this.executionTokenKey.keyId,
       ExecutionTokenKeyArn: this.executionTokenKey.keyArn,
+      CredentialsTableName: this.credentialsTable.tableName,
+      CredentialsTableArn: this.credentialsTable.tableArn,
+      CredentialsKeyId: this.credentialsKey.keyId,
+      CredentialsKeyArn: this.credentialsKey.keyArn,
     };
     for (const [key, value] of Object.entries(exports) as [DataExportKey, string][]) {
       new CfnOutput(this, key, { value, exportName: dataExportName(stage, key) });

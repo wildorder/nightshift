@@ -184,11 +184,24 @@ export class NightshiftApiStack extends Stack {
     const streamArn = imported("TableStreamArn");
 
     const executionTokenKeyArn = imported("ExecutionTokenKeyArn");
+    const credentialsTableArn = imported("CredentialsTableArn");
+    const credentialsKeyArn = imported("CredentialsKeyArn");
 
     const environment = {
       NIGHTSHIFT_TABLE_NAME: imported("TableName"),
       NIGHTSHIFT_BUCKET_NAME: imported("BucketName"),
       NIGHTSHIFT_STAGE: stage,
+    };
+
+    /**
+     * P10 (D-P10-23): the credentials table and the key it is sealed under. The
+     * API function alone carries them, because it alone reads or writes a
+     * credential; neither is a secret, and the key id names a key whose material
+     * never leaves KMS.
+     */
+    const credentialsEnvironment = {
+      NIGHTSHIFT_CREDENTIALS_TABLE_NAME: imported("CredentialsTableName"),
+      NIGHTSHIFT_CREDENTIALS_KEY_ID: imported("CredentialsKeyId"),
     };
 
     /**
@@ -259,12 +272,28 @@ export class NightshiftApiStack extends Stack {
         actions: ["kms:Sign"],
         resources: [executionTokenKeyArn],
       }),
+      // P10 (D-P10-23): the credentials table, gets, puts and queries, and no
+      // other principal in any stack holds any action on it. The stream it does
+      // not have cannot be granted.
+      new iam.PolicyStatement({
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+        resources: [credentialsTableArn],
+      }),
+      // P10 (D-P10-23): a data key per secret, and its unwrapping, under the one
+      // credentials key, and only with an encryption context that names an org.
+      // Not `kms:Encrypt`: the plaintext is sealed locally under the data key,
+      // and KMS only ever sees the key.
+      new iam.PolicyStatement({
+        actions: ["kms:GenerateDataKey", "kms:Decrypt"],
+        resources: [credentialsKeyArn],
+        conditions: { Null: { "kms:EncryptionContext:orgId": "false" } },
+      }),
     ]);
     const apiFunction = this.nodeFunction("ApiFunction", {
       entry: API_ENTRY,
       role: apiRole,
       logGroup: apiLogs,
-      environment: { ...environment, ...tokenEnvironment },
+      environment: { ...environment, ...tokenEnvironment, ...credentialsEnvironment },
       // API Gateway gives an HTTP API integration 30 seconds; stay well inside it.
       timeout: Duration.seconds(10),
       memorySize: 512,

@@ -6,6 +6,7 @@ import { DATA_EXPORT_KEYS, dataExportName } from "./data-exports.js";
 import {
   BUDGET_LIMIT_USD,
   BUDGET_NOTIFY_EMAIL,
+  credentialsKeyAlias,
   DELIVERY_LOG_EVENT_SOURCE,
   DELIVERY_LOG_LEVEL,
   DELIVERY_LOG_RETENTION,
@@ -139,11 +140,19 @@ describe("NightshiftDataStack", () => {
     });
 
     it("retains every stateful resource", () => {
-      for (const type of ["AWS::DynamoDB::Table", "AWS::S3::Bucket", "AWS::Cognito::UserPool"]) {
+      // Two tables since P10 (the credentials table, D-P10-23); one of each other.
+      const expectedCount: Record<string, number> = {
+        "AWS::DynamoDB::Table": 2,
+        "AWS::S3::Bucket": 1,
+        "AWS::Cognito::UserPool": 1,
+      };
+      for (const [type, count] of Object.entries(expectedCount)) {
         const found = Object.values(dev.json.Resources ?? {}).filter((r) => r.Type === type);
-        expect(found, type).toHaveLength(1);
-        expect(found[0]?.DeletionPolicy).toBe("Retain");
-        expect(found[0]?.UpdateReplacePolicy).toBe("Retain");
+        expect(found, type).toHaveLength(count);
+        for (const resource of found) {
+          expect(resource.DeletionPolicy).toBe("Retain");
+          expect(resource.UpdateReplacePolicy).toBe("Retain");
+        }
       }
     });
 
@@ -162,22 +171,34 @@ describe("NightshiftDataStack", () => {
     });
   });
 
+  /** The main table and the credentials table (P10), by logical id. */
+  const tableNamed = (prefix: string): CfnResource => {
+    const found = Object.entries(dev.template.findResources("AWS::DynamoDB::Table")).filter(
+      ([id]) => id.startsWith(prefix),
+    );
+    expect(found, prefix).toHaveLength(1);
+    return found[0]?.[1] as CfnResource;
+  };
+
   describe("DynamoDB table (contract §4)", () => {
     it("has the documented key schema, on-demand billing, and no hand-set name", () => {
-      dev.template.resourceCountIs("AWS::DynamoDB::Table", 1);
-      dev.template.hasResourceProperties("AWS::DynamoDB::Table", {
-        KeySchema: [
-          { AttributeName: "PK", KeyType: "HASH" },
-          { AttributeName: "SK", KeyType: "RANGE" },
-        ],
-        BillingMode: "PAY_PER_REQUEST",
-        DeletionProtectionEnabled: true,
-        TableName: Match.absent(),
-      });
+      // The main table and, since P10, the credentials table (D-P10-23).
+      dev.template.resourceCountIs("AWS::DynamoDB::Table", 2);
+      for (const table of [tableNamed("Table"), tableNamed("CredentialsTable")]) {
+        expect(table.Properties).toMatchObject({
+          KeySchema: [
+            { AttributeName: "PK", KeyType: "HASH" },
+            { AttributeName: "SK", KeyType: "RANGE" },
+          ],
+          BillingMode: "PAY_PER_REQUEST",
+          DeletionProtectionEnabled: true,
+        });
+        expect(table.Properties?.TableName).toBeUndefined();
+      }
     });
 
     it("has exactly one GSI, gsi_node, projecting all attributes", () => {
-      const [table] = Object.values(dev.template.findResources("AWS::DynamoDB::Table"));
+      const table = tableNamed("Table");
       expect(table).toBeDefined();
       const indexes = ((table as CfnResource).Properties as { GlobalSecondaryIndexes: unknown[] })
         .GlobalSecondaryIndexes;
@@ -194,9 +215,40 @@ describe("NightshiftDataStack", () => {
     });
 
     it("streams new and old images for the materializer", () => {
-      dev.template.hasResourceProperties("AWS::DynamoDB::Table", {
-        StreamSpecification: { StreamViewType: "NEW_AND_OLD_IMAGES" },
+      expect(tableNamed("Table").Properties?.StreamSpecification).toEqual({
+        StreamViewType: "NEW_AND_OLD_IMAGES",
       });
+    });
+  });
+
+  describe("the credentials table and key (P10, D-P10-23)", () => {
+    it("is a table of its own with no stream and no index, so no reader of the main table sees a row", () => {
+      const table = tableNamed("CredentialsTable");
+      expect(table.Properties?.StreamSpecification).toBeUndefined();
+      expect(table.Properties?.GlobalSecondaryIndexes).toBeUndefined();
+      expect(table.Properties?.LocalSecondaryIndexes).toBeUndefined();
+    });
+
+    it("is sealed under a symmetric key of its own, rotating, retained, with its alias", () => {
+      const keys = Object.entries(dev.template.findResources("AWS::KMS::Key"));
+      const [, key] = keys.find(([id]) => id.startsWith("CredentialsKey")) ?? [];
+      expect(key).toBeDefined();
+      expect((key as CfnResource).Properties?.KeySpec).toBeUndefined();
+      expect((key as CfnResource).Properties?.EnableKeyRotation).toBe(true);
+      expect((key as CfnResource).DeletionPolicy).toBe("Retain");
+      dev.template.hasResourceProperties("AWS::KMS::Alias", {
+        AliasName: `alias/${credentialsKeyAlias("dev")}`,
+      });
+    });
+
+    it("grants nothing in the key policy beyond the account root: IAM alone names a reader", () => {
+      const keys = Object.entries(dev.template.findResources("AWS::KMS::Key"));
+      const [, key] = keys.find(([id]) => id.startsWith("CredentialsKey")) ?? [];
+      const policy = (key as CfnResource).Properties?.KeyPolicy as {
+        Statement: { Principal: unknown }[];
+      };
+      expect(policy.Statement).toHaveLength(1);
+      expect(JSON.stringify(policy.Statement[0]?.Principal)).toContain(":root");
     });
   });
 
@@ -391,8 +443,18 @@ describe("NightshiftDataStack", () => {
    * invalidating every token in flight.
    */
   describe("execution-token key (P4, T2)", () => {
+    /** The signing key, apart from the credentials key P10 added beside it. */
+    const signingKeys = () =>
+      Object.entries(dev.json.Resources ?? {})
+        .filter(
+          ([id, resource]) => resource.Type === "AWS::KMS::Key" && !id.startsWith("CredentialsKey"),
+        )
+        .map(([, resource]) => resource);
+
     it("is one asymmetric RSA-2048 sign/verify key", () => {
-      dev.template.resourceCountIs("AWS::KMS::Key", 1);
+      // Two keys since P10: this one and the credentials key (D-P10-23).
+      dev.template.resourceCountIs("AWS::KMS::Key", 2);
+      expect(signingKeys()).toHaveLength(1);
       dev.template.hasResourceProperties("AWS::KMS::Key", {
         KeySpec: "RSA_2048",
         KeyUsage: "SIGN_VERIFY",
@@ -410,19 +472,14 @@ describe("NightshiftDataStack", () => {
     });
 
     it("is retained, so replacing the stack does not invalidate every token", () => {
-      const keys = Object.values(dev.json.Resources ?? {}).filter(
-        (resource) => resource.Type === "AWS::KMS::Key",
-      );
+      const keys = signingKeys();
       expect(keys).toHaveLength(1);
       expect(keys[0]?.DeletionPolicy).toBe("Retain");
       expect(keys[0]?.UpdateReplacePolicy).toBe("Retain");
     });
 
     it("does not ask for rotation, which KMS does not offer for asymmetric keys", () => {
-      const keys = Object.values(dev.json.Resources ?? {}).filter(
-        (resource) => resource.Type === "AWS::KMS::Key",
-      );
-      expect(keys[0]?.Properties?.EnableKeyRotation).toBeUndefined();
+      expect(signingKeys()[0]?.Properties?.EnableKeyRotation).toBeUndefined();
     });
   });
 

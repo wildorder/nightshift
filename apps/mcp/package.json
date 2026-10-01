@@ -24,7 +24,8 @@
     "zod": "4.6.4"
   },
   "bin": {
-    "nightshift-mcp": "./dist/bin/nightshift-mcp.js"
+    "nightshift-mcp": "./dist/bin/nightshift-mcp.js",
+    "nightshift-runner": "./dist/bin/nightshift-runner.js"
   },
   "license": "Apache-2.0"
 }

@@ -22,6 +22,23 @@ export {
   ZONE_NAME,
 } from "./hostnames.js";
 export {
+  ENGINE_USER,
+  RUNNER_INSTALL_DIR,
+  RUNNER_TOOLCHAIN,
+  RUNNER_WORKSPACE,
+  WORKER_USERS,
+  WORKSPACE_DEVICE,
+} from "./runner-image.js";
+export {
+  AMI_VERSION_TAG,
+  dispatchParameterPrefix,
+  GITHUB_APP_SECRET_NAME,
+  MANAGED_TAG,
+  NightshiftRunnerStack,
+  type NightshiftRunnerStackProps,
+  RECONCILER_INTERVAL,
+} from "./runner-stack.js";
+export {
   assertValidStage,
   DNS_EXPORT_KEYS,
   DNS_STACK_NAME,
@@ -32,7 +49,12 @@ export {
   type StackRole,
   stackNameFor,
 } from "./stack-props.js";
-export { composeNightshiftStacks, DEFAULT_STAGE, type NightshiftStacks } from "./stacks.js";
+export {
+  composeNightshiftStacks,
+  DEFAULT_IMAGE_VERSION,
+  DEFAULT_STAGE,
+  type NightshiftStacks,
+} from "./stacks.js";
 export {
   NightshiftStudioCertificateStack,
   type NightshiftStudioCertificateStackProps,
