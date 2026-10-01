@@ -146,8 +146,8 @@ export const containmentComponent = (): string => {
         // Only `engine` reaches the instance metadata endpoint, and so the
         // instance's role (D-P10-17). Workers asking for AWS credentials get the
         // project's, from Nightshift, never the machine's.
-        `printf '%s\\n' '#!/usr/sbin/nft -f' 'table inet nightshift {' '  chain output {' '    type filter hook output priority 0; policy accept;' '    ip daddr 169.254.169.254 meta skuid != "${ENGINE_USER}" meta skuid != 0 drop' '  }' '}' > /etc/nftables.d/nightshift-imds.nft`,
         "mkdir -p /etc/nftables.d",
+        `printf '%s\\n' '#!/usr/sbin/nft -f' 'table inet nightshift {' '  chain output {' '    type filter hook output priority 0; policy accept;' '    ip daddr 169.254.169.254 meta skuid != "${ENGINE_USER}" meta skuid != 0 drop' '  }' '}' > /etc/nftables.d/nightshift-imds.nft`,
         `printf '%s\\n' '[Unit]' 'Description=Nightshift IMDS firewall: only engine reaches the metadata endpoint' 'Before=nightshift-runner.service' '[Service]' 'Type=oneshot' 'ExecStart=/usr/sbin/nft -f /etc/nftables.d/nightshift-imds.nft' 'RemainAfterExit=yes' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/nightshift-imds.service`,
         "systemctl enable nightshift-imds.service",
       ]),
