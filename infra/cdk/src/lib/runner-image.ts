@@ -22,6 +22,9 @@ export const RUNNER_TOOLCHAIN = {
   claude: "2.1.286",
   codex: "0.154.0",
   uv: "0.9.4",
+  /** Docker's rootless extras (rootlesskit and the setup tool), from Docker's static builds. */
+  dockerRootlessExtras: "27.5.1",
+  slirp4netns: "1.3.1",
 } as const;
 
 /** The repository the runner is built from on the image, and where it lands. */
@@ -61,7 +64,9 @@ export const toolchainComponent = (): string =>
         "set -euo pipefail",
         "dnf -y update --security",
         "dnf -y install git tar gzip xz unzip jq nftables shadow-utils sudo",
-        "dnf -y install docker fuse-overlayfs slirp4netns",
+        // Docker from AL2023; its rootless pieces come from Docker's static builds
+        // below, because AL2023 packages neither rootlesskit nor slirp4netns.
+        "dnf -y install docker shadow-utils-subid iptables-nft",
         "dnf -y install gcc gcc-c++ make cmake pkgconf openssl-devel python3 python3-pip",
         // Chromium's shared libraries, for playwright and puppeteer (the audit's Keki
         // and Keyart). Not strict: a library AL2023 names differently is reported by
@@ -85,6 +90,15 @@ export const toolchainComponent = (): string =>
         `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/claude /usr/local/bin/claude`,
         `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/codex /usr/local/bin/codex`,
         "claude --version && codex --version",
+      ]),
+      shell("rootless-docker", [
+        "set -euo pipefail",
+        // rootlesskit, dockerd-rootless.sh and dockerd-rootless-setuptool.sh; the
+        // kernel's overlay2 works in a user namespace on AL2023, so no fuse-overlayfs.
+        `curl -fsSL https://download.docker.com/linux/static/stable/aarch64/docker-rootless-extras-${RUNNER_TOOLCHAIN.dockerRootlessExtras}.tgz -o /tmp/rootless.tgz`,
+        "tar -xzf /tmp/rootless.tgz -C /tmp && install -m 0755 /tmp/docker-rootless-extras/* /usr/local/bin/",
+        `curl -fsSL https://github.com/rootless-containers/slirp4netns/releases/download/v${RUNNER_TOOLCHAIN.slirp4netns}/slirp4netns-aarch64 -o /usr/local/bin/slirp4netns && chmod 0755 /usr/local/bin/slirp4netns`,
+        "rootlesskit --version && slirp4netns --version",
       ]),
       shell("rust-and-uv", [
         "set -euo pipefail",
