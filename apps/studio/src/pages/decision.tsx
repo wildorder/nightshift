@@ -13,6 +13,7 @@ import {
   CONFIRMED_CLASSES,
   gatherReport,
   isSuperseded,
+  storiesOf,
   whyNotReversible,
 } from "@nightshift/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,6 +22,7 @@ import { Link, useParams } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Json } from "../components/json.js";
 import { StatusBadge } from "../components/status-badge.js";
+import { Serves } from "../components/stories.js";
 import { shortId, when } from "../lib/format.js";
 import { narrate } from "../lib/narrate.js";
 import { readAll } from "../lib/read-all.js";
@@ -218,6 +220,7 @@ export const DecisionPage = () => {
           {decision.reversibility} · {when(decision.createdAt)} · <code>{decision.decisionId}</code>
         </p>
       </header>
+      <Serves stories={report.data === undefined ? [] : storiesOf(report.data, { decision })} />
 
       <section className="rounded-lg border bg-card p-4 text-card-foreground">
         <p className="mb-2">{decision.context}</p>

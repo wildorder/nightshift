@@ -98,6 +98,7 @@ export {
   delegateJob,
   type IntegrateCandidate,
   type IntegrationCandidate,
+  MAX_UNREPORTED_RESUMES,
   type RunJobInput,
   recordArtifact,
   runJob,

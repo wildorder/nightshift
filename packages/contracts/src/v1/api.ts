@@ -257,6 +257,12 @@ export const RatificationRequestBodySchema = z.strictObject({
   contract: ProgramContractSchema,
   planHash: PlanHashSchema,
   planSha256: PlanHashSchema,
+  /**
+   * P14 (D-P14-06): the SHA-256 of the kept planning conversation, uploaded the
+   * same way as the plan document. The control plane checks the stories' quotes
+   * against the bytes it holds (D-P14-04).
+   */
+  conversationSha256: PlanHashSchema.optional(),
 });
 export type RatificationRequestBody = z.infer<typeof RatificationRequestBodySchema>;
 

@@ -17,6 +17,7 @@ import {
   type ExaminationPolicy,
   ExaminationPolicySchema,
   ModelPolicySchema,
+  SetupStepSchema,
   stricterExaminationPolicy,
   VerificationStepSchema,
 } from "./program-contract.js";
@@ -38,6 +39,8 @@ export const NightshiftConfigSchema = z.strictObject({
   visionPath: z.string().min(1).optional(),
   /** Other documents every plan should be written in the light of. */
   contextDocs: z.array(z.string().min(1)),
+  /** What makes a checkout of this repository usable; see `SetupStepSchema`. */
+  setup: z.array(SetupStepSchema).optional(),
   verification: z.array(VerificationStepSchema).min(1),
   modelPolicy: ModelPolicySchema,
   delegationLimits: DelegationLimitsSchema,
@@ -50,12 +53,19 @@ export const NightshiftConfigSchema = z.strictObject({
   defaultRisk: RiskLevelSchema.optional(),
   /** P8 (D-P8-03): how this repository narrows its org's routing. Only ever less. */
   routing: RoutingNarrowingSchema.optional(),
+  /**
+   * P14 (D-P14-06): keep each program's planning conversation, a summary and
+   * verbatim excerpts, in `docs/programs/{id}/conversation.md`, committed and
+   * uploaded at ratification. On unless this says `false`.
+   */
+  keepConversation: z.boolean().optional(),
 });
 export type NightshiftConfig = z.infer<typeof NightshiftConfigSchema>;
 
 /** The contract fields a config can supply. */
 export const INHERITED_CONTRACT_FIELDS = [
   "projectId",
+  "setup",
   "verification",
   "modelPolicy",
   "delegationLimits",
@@ -63,6 +73,7 @@ export const INHERITED_CONTRACT_FIELDS = [
   "examinationPolicy",
   "defaultRisk",
   "routing",
+  "keepConversation",
 ] as const;
 
 /**

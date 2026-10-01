@@ -78,13 +78,15 @@ import {
   buildSettings,
   CLAUDE_COMMAND,
   claudeBriefAddendum,
+  claudeInputLine,
   claudePrompt,
   VERIFIED_CLAUDE_VERSION,
 } from "./command.js";
-import { sanitizeClaudeEnvironment } from "./environment.js";
-import { claudeToolPolicy } from "./permissions.js";
+import { HEADLESS_CLAUDE_ENV, sanitizeClaudeEnvironment } from "./environment.js";
+import { claudeMcpToolName, claudeToolPolicy } from "./permissions.js";
 import type { AdapterFileSystem, SpawnedChild, SpawnLike, TranscriptSink } from "./process.js";
 import { killProcessTree, nodeFileSystem, nodeSpawn } from "./process.js";
+import { createSessionCloser } from "./session.js";
 import {
   createStreamInterpreter,
   optionalField,
@@ -114,11 +116,33 @@ const MAX_STDERR_TAIL_CHARS = 600;
  * `SIGINT` is what a terminal's Ctrl-C sends and what the CLI honours: verified
  * on 2.1.273 against a running `claude -p`, which exited 334 ms after the signal
  * having written a `[Request interrupted by user]` turn and a `result` frame.
- * There is no other cooperative channel for a `-p` run — `claude stop` addresses
- * background sessions by id, and the stdin control protocol requires
- * `--input-format stream-json`, which this adapter does not use.
+ * Still the stop under `--input-format stream-json`: closing stdin would only
+ * end the session once its turn had finished, which is not a stop.
  */
 const COOPERATIVE_STOP: NodeJS.Signals = "SIGINT";
+
+/**
+ * The Nightshift tools that end an agent's work, in every role. After one, an
+ * idle session is over even with something left running in the background.
+ */
+const FINISHING_TOOLS: readonly string[] = [
+  "job.complete",
+  "job.fail",
+  "subprogram.complete",
+  "subprogram.fail",
+  "run.finish",
+  "examination.ask",
+  "examination.submit",
+  "finding.rule",
+];
+
+/** {@link FINISHING_TOOLS} as Claude spells them, through the named server. None without one. */
+const finishingToolsFor = (mcpServerName: string | undefined): ReadonlySet<string> =>
+  new Set(
+    mcpServerName === undefined
+      ? []
+      : FINISHING_TOOLS.map((tool) => claudeMcpToolName(mcpServerName, tool)),
+  );
 
 /**
  * Cancel escalation, as fractions of the caller's grace.
@@ -198,13 +222,18 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       resolveExit = resolve;
     });
 
+    // Closing stdin ends the session; this decides when (`session.ts`). The
+    // child is spawned below, so the closer reaches it through the state.
+    const closer = createSessionCloser({ close: () => state.child?.stdin?.end() });
     const interpreter = createStreamInterpreter({
       sink: input.sink,
       clock,
       context: { agentId: input.agent.agentId },
+      finishingTools: finishingToolsFor(input.mcp?.name),
+      onActivity: closer.onActivity,
     });
 
-    const env = sanitizeClaudeEnvironment({ platform, parentEnv });
+    const env = sanitizeClaudeEnvironment({ platform, parentEnv, extra: HEADLESS_CLAUDE_ENV });
 
     const state: RunState = {
       interpreter,
@@ -292,7 +321,6 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
     }
 
     const args = buildClaudeArgs({
-      prompt,
       model: input.model,
       mcpConfigPath,
       settingsPath,
@@ -308,13 +336,19 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
         // POSIX: its own process group, so cancel can signal the tree.
         detached: platform !== "win32",
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
       transcript?.close();
       return failToLaunch(`could not start ${CLAUDE_COMMAND}: ${messageOf(error)}`);
     }
     state.child = child;
+    // The brief, as the session's first message. Stdin stays open: closing it
+    // is how the session ends, and `closer` decides when.
+    child.stdin?.on("error", () => {
+      // The child went before reading it; `close` reports how.
+    });
+    child.stdin?.write(claudeInputLine(prompt));
 
     let stderrTail = "";
     const decoder = new TextDecoder("utf-8");
@@ -343,6 +377,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
     });
 
     child.on("close", (code, signal) => {
+      closer.dispose();
       interpreter.end();
       transcript?.close();
       fs.removeDir(configDir);

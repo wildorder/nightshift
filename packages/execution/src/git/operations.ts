@@ -302,10 +302,9 @@ export const fastForward = async (
  * Returns the worktree to exactly `sha`, discarding everything else.
  *
  * `clean -fd` without `-x`, so **ignored files survive**: `node_modules` and
- * build caches stay, and verification needs no reinstall. What is verified is
- * therefore the tracked tree plus whatever is ignored — which is what a
- * developer running the same commands would get, and is worth knowing when
- * reading a verification log.
+ * build caches stay, and a program's `setup` has less to do when it runs again
+ * before verification. Survival is not relied on: a checkout Nightshift created
+ * has no ignored files until setup makes them (see `verify.ts`).
  */
 export const cleanCheckout = async (
   runner: GitRunner,
@@ -460,4 +459,93 @@ export const provisionalCommits = async (
 
 export const deleteRef = async (runner: GitRunner, repo: string, ref: string): Promise<void> => {
   await git(runner, ["update-ref", "-d", ref], { cwd: repo });
+};
+
+/**
+ * Where an attempt's unfinished work is kept: one commit on the base that
+ * attempt was cut from, per node and attempt, never moved and never pushed.
+ */
+export const unfinishedRef = (nodeId: string, attempt: number): string =>
+  `refs/nightshift/unfinished/${nodeId}/${attempt}`;
+
+export interface UnfinishedWork {
+  readonly commit: CommitSha;
+  readonly base: CommitSha;
+  readonly paths: readonly string[];
+}
+
+/**
+ * The work an attempt left in its worktree without handing it in, as one commit
+ * on its base, or `undefined` when there is none to keep.
+ *
+ * Handed-in work is not unfinished: when the worktree's `HEAD` is a snapshot
+ * this node's `job.complete` made (it carries the node's trailer), the work was
+ * delivered and judged, and a retry of it starts clean by design (a fix, a
+ * ruling carried out). Everything else a worker left, tracked or not, is taken
+ * the way a snapshot takes it, so nothing it wrote is lost to the retry.
+ */
+export const collectUnfinished = async (
+  runner: GitRunner,
+  input: {
+    readonly worktree: string;
+    readonly base: CommitSha;
+    readonly nodeId: string;
+    readonly attempt: number;
+    readonly atMs: number;
+  },
+): Promise<UnfinishedWork | undefined> => {
+  const options: GitOptions = { cwd: input.worktree, atMs: input.atMs };
+  const handedIn = await tryGit(
+    runner,
+    ["log", "-1", "--format=%(trailers:key=Nightshift-Node,valueonly)", "HEAD"],
+    options,
+  );
+  if (trimmed(handedIn.stdout) === input.nodeId) return undefined;
+  const commit = await snapshotCommit(runner, {
+    worktree: input.worktree,
+    base: input.base,
+    message: `Unfinished work of attempt ${input.attempt}, kept for the next`,
+    trailers: { "Nightshift-Unfinished": `${input.nodeId} attempt ${input.attempt}` },
+    atMs: input.atMs,
+  });
+  const paths = await changedPaths(runner, input.worktree, input.base, commit);
+  return paths.length === 0 ? undefined : { commit, base: input.base, paths };
+};
+
+/** The whole of a piece of unfinished work as a patch, binary files included. */
+export const unfinishedPatch = (
+  runner: GitRunner,
+  repo: string,
+  work: UnfinishedWork,
+): Promise<string> =>
+  git(runner, ["diff", "--binary", "--no-color", "--no-ext-diff", work.base, work.commit], {
+    cwd: repo,
+  });
+
+/**
+ * Puts unfinished work into a fresh worktree as **uncommitted** changes on its
+ * head, three-way, so a program head that has moved since is taken into
+ * account. A conflict is never resolved here: the worktree goes back to its
+ * head exactly, and the conflicting paths are returned for the next worker,
+ * who has the code in front of it and the patch beside it.
+ */
+export const applyUnfinished = async (
+  runner: GitRunner,
+  worktree: string,
+  commit: CommitSha,
+  atMs: number,
+): Promise<{ readonly applied: boolean; readonly conflicts: readonly string[] }> => {
+  const options: GitOptions = { cwd: worktree, atMs };
+  const picked = await tryGit(runner, ["cherry-pick", "--no-commit", commit], options);
+  if (picked.exitCode === 0) {
+    // Unstaged, so the worktree looks exactly like work in progress.
+    await git(runner, ["reset", "-q"], options);
+    return { applied: true, conflicts: [] };
+  }
+  const unmerged = await tryGit(runner, ["diff", "--name-only", "--diff-filter=U", "-z"], options);
+  const conflicts = unmerged.stdout.split("\0").filter((path) => path !== "");
+  await tryGit(runner, ["cherry-pick", "--abort"], options);
+  await git(runner, ["reset", "--hard", "HEAD"], options);
+  await git(runner, ["clean", "-fd"], options);
+  return { applied: false, conflicts };
 };

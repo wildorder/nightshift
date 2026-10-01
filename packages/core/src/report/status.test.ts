@@ -26,6 +26,7 @@ const strand = (over: Partial<StrandReport> = {}): StrandReport => ({
   departures: [],
   attempts: 1,
   waitingOn: [],
+  nodeIds: [],
   ...over,
 });
 const report = (over: Partial<RunReport> = {}): RunReport => ({

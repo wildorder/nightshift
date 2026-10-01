@@ -46,6 +46,7 @@ export {
 export {
   CLAUDE_ENV_ALLOWLIST,
   envAllowlistFor,
+  HEADLESS_CLAUDE_ENV,
   POSIX_ENV_ALLOWLIST,
   type SanitizeClaudeEnvironmentInput,
   sanitizeClaudeEnvironment,
@@ -81,3 +82,9 @@ export {
   summariseToolInput,
   summariseToolResult,
 } from "./stream.js";
+export {
+  CLAUDE_TRANSCRIPT_HARNESS,
+  claudeTranscriptSource,
+  currentClaudeTranscript,
+  parseClaudeTranscript,
+} from "./transcript.js";

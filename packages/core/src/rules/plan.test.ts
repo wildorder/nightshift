@@ -1,6 +1,7 @@
 import type { ProgramContract, Strand } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { createFixtures, makeProgramContract } from "../testing/index.js";
+import { emptyConversation, keepMessages } from "./conversation.js";
 import {
   blockedBy,
   checkPlan,
@@ -149,8 +150,8 @@ describe("checkPlan (SC-P7-03)", () => {
   it("refuses an unclaimed success criterion", () => {
     const contract = planned({
       successCriteria: [
-        { id: "SC-01", outcome: "one" },
-        { id: "SC-02", outcome: "two" },
+        { id: "SC-01", outcome: "one", serves: ["US-01"] },
+        { id: "SC-02", outcome: "two", serves: ["US-01"] },
       ],
     });
     expect(kinds(contract)).toEqual(["unclaimed_criterion"]);
@@ -339,6 +340,115 @@ describe("planHash", () => {
     const edited = planned({ outOfScope: ["a UI"] });
     expect(planHash(edited, PLAN, fake).hash).not.toBe(before.hash);
     expect(samePlanContent(edited, contract)).toBe(false);
+  });
+});
+
+describe("stories (P14, SC-P14-02)", () => {
+  it("refuses a plan with no story, and says only that", () => {
+    const contract = planned({
+      stories: [],
+      successCriteria: [{ id: "SC-01", outcome: "It works." }],
+    });
+    expect(kinds(contract)).toEqual(["no_stories"]);
+  });
+
+  it("reports every story reason at once", () => {
+    const base = planned();
+    const contract = planned({
+      stories: [
+        { id: "US-01", who: " ", problem: "It is broken.", outcome: "" },
+        { id: "US-02", who: "Someone", problem: "Something.", outcome: "Better." },
+      ],
+      successCriteria: [
+        { id: "SC-01", outcome: "one", serves: ["US-01"] },
+        { id: "SC-02", outcome: "two" },
+        { id: "SC-03", outcome: "three", serves: ["US-09"] },
+      ],
+      strands: (base.strands ?? []).map((candidate) =>
+        candidate.id === "S-01"
+          ? { ...candidate, successCriteria: ["SC-01", "SC-02", "SC-03"] }
+          : candidate,
+      ),
+    });
+    const result = checkPlan(contract, splitPlanSections(PLAN));
+    expect(result.ready).toBe(false);
+    if (result.ready) return;
+    expect(result.reasons.map((reason) => reason.kind)).toEqual([
+      "story_incomplete",
+      "unserved_story",
+      "criterion_serves_no_story",
+      "unknown_story",
+    ]);
+    expect(result.reasons[0]).toMatchObject({ storyId: "US-01", missing: ["who", "outcome"] });
+    expect(result.reasons[3]).toMatchObject({ criterionId: "SC-03", storyId: "US-09" });
+  });
+});
+
+describe("the human's words (P14, SC-P14-03)", () => {
+  const quoting = (overrides: Partial<ProgramContract> = {}): ProgramContract => {
+    const base = planned();
+    return planned({
+      stories: (base.stories ?? []).map((story) => ({
+        ...story,
+        words: ["I want the median, tested"],
+      })),
+      ...overrides,
+    });
+  };
+  const session = {
+    harness: "claude",
+    sessionId: "s-1",
+    messages: [
+      { index: 1, role: "human" as const, text: "hi. I want   the median,\ntested — soon" },
+      { index: 2, role: "assistant" as const, text: "You said: I want the mean, tested" },
+    ],
+  };
+  const kept = keepMessages(emptyConversation("p1"), session, [1, 2]);
+
+  it("refuses quotes when no conversation is kept to hold them to", () => {
+    expect(kinds(quoting())).toEqual(["conversation_missing"]);
+  });
+
+  it("accepts a quote the human said, differing only in whitespace", () => {
+    expect(checkPlan(quoting(), splitPlanSections(PLAN), kept)).toEqual({ ready: true });
+  });
+
+  it("refuses a quote the human did not say, even one the assistant did", () => {
+    const contract = quoting({
+      stories: [
+        {
+          id: "US-01",
+          who: "w",
+          problem: "p",
+          outcome: "o",
+          words: ["I want the mean, tested", "I want the median"],
+        },
+      ],
+    });
+    const result = checkPlan(contract, splitPlanSections(PLAN), kept);
+    expect(result.ready).toBe(false);
+    if (result.ready) return;
+    expect(result.reasons).toEqual([
+      expect.objectContaining({ kind: "quote_not_found", quote: "I want the mean, tested" }),
+    ]);
+  });
+
+  it("does not check quotes when the conversation is not kept", () => {
+    expect(kinds(quoting({ keepConversation: false }))).toEqual([]);
+  });
+});
+
+describe("planHash over P14's fields", () => {
+  const fake = (text: string): string => `${text.length}:${text}`;
+  it("moves with a story, and not with the kept conversation", () => {
+    const contract = planned();
+    const before = planHash(contract, PLAN, fake);
+    const conversation = { uri: "s3://b/c", sha256: "c".repeat(64), sizeBytes: 3 };
+    expect(planHash(planned({ conversation }), PLAN, fake)).toEqual(before);
+    const reworded = planned({
+      stories: (contract.stories ?? []).map((story) => ({ ...story, outcome: "Something else." })),
+    });
+    expect(planHash(reworded, PLAN, fake).hash).not.toBe(before.hash);
   });
 });
 

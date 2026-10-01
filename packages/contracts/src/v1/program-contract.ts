@@ -17,6 +17,8 @@ import {
   PrerequisiteIdSchema,
   PrerequisiteSchema,
   RatificationSchema,
+  StoryIdSchema,
+  StorySchema,
   StrandSchema,
 } from "./plan.js";
 import { RoutingNarrowingSchema } from "./routing-policy.js";
@@ -25,6 +27,8 @@ import { RoutingNarrowingSchema } from "./routing-policy.js";
 export const SuccessCriterionSchema = z.strictObject({
   id: z.string().min(1),
   outcome: z.string().min(1),
+  /** P14 (D-P14-01): the user stories this criterion serves. */
+  serves: z.array(StoryIdSchema).optional(),
 });
 export type SuccessCriterion = z.infer<typeof SuccessCriterionSchema>;
 
@@ -47,6 +51,35 @@ export const VerificationStepSchema = z.strictObject({
   requires: z.array(PrerequisiteIdSchema).optional(),
 });
 export type VerificationStep = z.infer<typeof VerificationStepSchema>;
+
+/**
+ * One command that prepares a checkout before anything runs in it: installing
+ * dependencies, generating code, anything the repository needs and does not
+ * commit.
+ *
+ * Nightshift creates checkouts of its own — a job's worktree, the detached
+ * checkout an examiner's evidence is gathered in, the one resume makes when a
+ * worktree was tidied away — and none of them holds a repository's ignored
+ * files. Setup is how a program says what makes one usable, so its
+ * verification states only what is checked. Nightshift runs every setup step,
+ * in order, in each checkout it creates before a worker starts in it, and again
+ * before every verification, because the commit under verification may have
+ * changed what setup produces (a new dependency, say).
+ *
+ * Setup runs often, so it should be cheap when there is nothing to do. It is
+ * recorded in a verification as its own commands, under `setup:<id>`, and a
+ * setup step that fails fails the verification without the checks running: a
+ * test suite run without its dependencies proves nothing.
+ */
+export const SetupStepSchema = z.strictObject({
+  id: z.string().min(1),
+  command: z.string().min(1),
+  description: z.string().optional(),
+});
+export type SetupStep = z.infer<typeof SetupStepSchema>;
+
+/** The prefix a setup step's id carries in a `Verification`, so it cannot collide with a check's. */
+export const SETUP_STEP_ID_PREFIX = "setup:";
 
 /**
  * Which providers and models this program may use. An empty `allowedModels`
@@ -154,6 +187,8 @@ export const ProgramContractSchema = z
     constraints: z.array(z.string().min(1)),
     /** The root authority every execution node inherits from and may only narrow. */
     scope: ScopeSchema,
+    /** What makes a checkout usable before anything runs in it. Absent means nothing does. */
+    setup: z.array(SetupStepSchema).optional(),
     verification: z.array(VerificationStepSchema).min(1),
     modelPolicy: ModelPolicySchema,
     examinationPolicy: ExaminationPolicySchema,
@@ -173,6 +208,13 @@ export const ProgramContractSchema = z
      * was, and one with no strands runs exactly as it always did.
      */
     status: PlanStatusSchema.optional(),
+    /** P14 (D-P14-01): why the program exists, for the people it is for. */
+    stories: z.array(StorySchema).optional(),
+    /**
+     * P14 (D-P14-06): whether the planning conversation is kept beside the plan.
+     * Absent means kept; usually inherited from `nightshift.config.json`.
+     */
+    keepConversation: z.boolean().optional(),
     strands: z.array(StrandSchema).optional(),
     prerequisites: z.array(PrerequisiteSchema).optional(),
     decisions: z.array(PlannedDecisionSchema).optional(),
@@ -186,6 +228,8 @@ export const ProgramContractSchema = z
     /** `planHash` in `core` over this contract and the plan document, as ratified (D-P7-02). */
     planHash: PlanHashSchema.optional(),
     planDocument: PlanDocumentRefSchema.optional(),
+    /** P14: the conversation kept at the current ratification. Written by the control plane. */
+    conversation: PlanDocumentRefSchema.optional(),
     /** Every ratification so far, oldest first, the current one last. Written by the control plane. */
     ratifications: z.array(RatificationSchema).max(MAX_RATIFICATION_HISTORY).optional(),
   })
@@ -199,6 +243,10 @@ export const ProgramContractSchema = z
     message: "verification step ids must be unique within a program contract",
     path: ["verification"],
   })
+  .refine((value) => uniqueIds(value.setup ?? []), {
+    message: "setup step ids must be unique within a program contract",
+    path: ["setup"],
+  })
   .refine((value) => uniqueIds(value.successCriteria), {
     message: "success criterion ids must be unique within a program contract",
     path: ["successCriteria"],
@@ -207,6 +255,10 @@ export const ProgramContractSchema = z
    * Ids are how the plan document, the engine and the report refer to these, so
    * a duplicate is a broken reference rather than an unready plan.
    */
+  .refine((value) => uniqueIds(value.stories ?? []), {
+    message: "story ids must be unique within a program contract",
+    path: ["stories"],
+  })
   .refine((value) => uniqueIds(value.strands ?? []), {
     message: "strand ids must be unique within a program contract",
     path: ["strands"],

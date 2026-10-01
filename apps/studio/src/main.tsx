@@ -3,7 +3,11 @@
  * stores (D-P11-04, D-P11-07). Everything below `App` is the same tree a test
  * mounts over the memory stores.
  */
-import { ArtifactDownloadResponseSchema, ProjectSchema } from "@nightshift/contracts";
+import {
+  ArtifactDownloadResponseSchema,
+  PlanDocumentResponseSchema,
+  ProjectSchema,
+} from "@nightshift/contracts";
 import { createUlidIdGenerator, nowIso, systemClock } from "@nightshift/core";
 import {
   createFetchTransport,
@@ -62,6 +66,18 @@ const artifactsOver = (transport: Transport): NonNullable<Studio["artifacts"]> =
   },
 });
 
+/** A program's stored documents, the plan and the kept conversation, by hash (P14). */
+const documentsOver = (transport: Transport): NonNullable<Studio["documents"]> => ({
+  planDocument: async (scope, sha256) => {
+    const response = await transport({ method: "GET", path: routes.planDocument(scope, sha256) });
+    if (response.status === 404) return undefined;
+    if (response.status !== 200) {
+      throw new Error(`the control plane would not serve the document (${response.status})`);
+    }
+    return PlanDocumentResponseSchema.parse(response.body).text;
+  },
+});
+
 /** Everything below the session: the same for a hosted stage and a local instance. */
 const renderStudio = async (
   transport: Transport,
@@ -76,6 +92,7 @@ const renderStudio = async (
     ids: createUlidIdGenerator(),
     now: () => nowIso(systemClock),
     artifacts: artifactsOver(transport),
+    documents: documentsOver(transport),
     signOut: signOutAndLeave,
   };
   render(

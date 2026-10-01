@@ -1,6 +1,6 @@
 ---
 name: plan-program
-description: Plan a Nightshift program with the human, in documents, before anything runs — outcomes, the seams (strands), each strand's approach from the code, the decisions that are expensive to reverse, and the human prerequisites — written to docs/programs/{id}/plan.md and contract.json and revised in place until `nightshift plan check` answers READY. Also plans a correction after the human reverses a decision, from its brief. Use when someone wants to plan a program, turn a brief into something Nightshift can run unattended, re-plan after a report, correct a reversed decision, or asks "plan this", "what would the strands be", "is this ready to run", "correct D-…".
+description: Plan a Nightshift program with the human, in documents, before anything runs — who it is for and why (user stories in the human's own words), outcomes, the seams (strands), each strand's approach from the code, the decisions that are expensive to reverse, and the human prerequisites — written to docs/programs/{id}/plan.md and contract.json, with the conversation that shaped them kept in conversation.md, and revised in place until `nightshift plan check` answers READY. Also plans a correction after the human reverses a decision, from its brief. Use when someone wants to plan a program, turn a brief into something Nightshift can run unattended, re-plan after a report, correct a reversed decision, or asks "plan this", "what would the strands be", "is this ready to run", "correct D-…".
 ---
 
 # Planning a program with the human
@@ -24,6 +24,7 @@ One test draws the line between the plan and the run:
 
 | The human decides, in the plan | Nightshift decides, in the run |
 |---|---|
+| **Who it is for and why**: the user stories | Nothing: a run never writes a story |
 | Outcomes, and what is out of scope | How many jobs, and how they are cut |
 | The **seams**: a few strands, each a scope, an objective and acceptance | Order and parallelism inside a strand |
 | The **approach** per strand, at medium fidelity | Local design inside a job |
@@ -71,6 +72,35 @@ The id is the directory name under `docs/programs/`, in the repository's existin
 style (`p3-billing`). Ask only for what is missing. A brief that is one sentence
 is fine; you will grow it from the code.
 
+## 2a. Who is it for: the stories, first
+
+Before any seam, find out **who this program is for and what changes for
+them**, and write it down as **user stories**. Everything after is judged by
+them, and the Studio and the report lead with them the next morning, when the
+human has forgotten the details and a criterion like "tenant billing data is
+isolated" means nothing on its own: which tenant, isolated how, and who would
+notice?
+
+A story (`US-nn`) has:
+
+- **who**: a role, not a person. "A customer's billing admin", not "users".
+- **problem**: what goes wrong for them **today**, concretely. "A support query
+  can return another company's invoices", not "data is not isolated".
+- **outcome**: what is different for them **afterwards**, in terms they would
+  notice. "They only ever see their own company's invoices."
+- **words**: the human's own sentences that say why, **copied exactly** from
+  what they typed in this conversation, typos and all. Choose the sentences; never
+  reword one. `nightshift plan check` refuses a quote that is not, word for word,
+  in the human's kept messages (§8a). If they never said it, leave `words` out
+  rather than put words in their mouth.
+
+Ask the human when you do not know. Most programs have one to three stories; a
+refactor still has one (who suffers from the code as it is?).
+
+Then write each **success criterion** in plain words a newcomer could check, and
+say which stories it `serves`. Every criterion serves a story and every story is
+served by a criterion, or the plan is not ready.
+
 ## 3. Read the code before you propose anything
 
 Read the code the brief touches. Every strand's approach is written **from the
@@ -105,6 +135,14 @@ sequence it **expand → migrate → contract**: one strand adds the new shape
 beside the old, the strands that consume it move over, and a last strand removes
 the old. Each step is green on its own. A strand that changes a shared shape in
 place breaks every strand running beside it.
+
+**Setup is not verification.** Every checkout Nightshift creates starts from
+what is committed: no installed dependencies, no generated code. What makes one
+usable (`npm ci`, a codegen step) goes in `setup`, which Nightshift runs in each
+checkout before an agent works there and before every verification. Never put an
+install into `verification`, and never make a check install conditionally: that
+hides a missing `setup` behind a slower gate. Setup runs often, so prefer a
+command that is quick when there is nothing to do.
 
 Watch the verification's cost against concurrency. Every job is verified on a
 clean checkout, so `maxConcurrency` strands running `maxConcurrency` jobs each
@@ -243,7 +281,7 @@ what the contract cannot — why, how, what was considered — and refers to the
 by id. Do not restate a scope or a `verifyCommand` in the plan; it will drift.
 
 The contract inherits from `nightshift.config.json` whatever it does not state
-(`projectId`, `verification`, `modelPolicy`, `delegationLimits`, `costPolicy`,
+(`projectId`, `setup`, `verification`, `modelPolicy`, `delegationLimits`, `costPolicy`,
 `examinationPolicy`, `defaultRisk`), so state only what differs. It always
 states `schemaVersion`, `programId` (mint one with `nightshift id prog`),
 `objective`, `repository`, `successCriteria`, `constraints`, `scope`,
@@ -252,6 +290,15 @@ states `schemaVersion`, `programId` (mint one with `nightshift id prog`),
 ```json
 {
   "status": "planning",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "A developer reconciling the ledger",
+      "problem": "Entries can be edited after posting, so month-end totals drift and nobody can say why.",
+      "outcome": "Every transaction balances to zero and a posted entry can never change.",
+      "words": ["I need to trust the ledger without re-adding it by hand"]
+    }
+  ],
   "outOfScope": ["A UI for it"],
   "strands": [
     {
@@ -291,7 +338,10 @@ states `schemaVersion`, `programId` (mint one with `nightshift id prog`),
 }
 ```
 
-Those are **all** the fields. A strand has exactly `id`, `name`, `scope
+Each success criterion is `{ "id", "outcome", "serves": ["US-01"] }`.
+
+Those are **all** the fields. A story has exactly `id`, `who`, `problem`,
+`outcome` and, when the human said it, `words`. A strand has exactly `id`, `name`, `scope
 {summary, includes, excludes}`, `acceptance`, `successCriteria`, `dependsOn`,
 `prerequisites`; a prerequisite `id`, `description`, `remediation`,
 `verifyCommand`, `status: "pending"`; a decision `id`, `question`, `options`,
@@ -304,9 +354,35 @@ Every success criterion is claimed by at least one strand. A strand's heading in
 `plan.md` **begins with its id** (`### S-01 The ledger`): that is how its section
 is found, checked, and handed to its orchestrator.
 
-Then reply with a **short** summary — the strands in a line each, the decisions
-you need from them, the prerequisites — and the two paths. Do not paste the
-documents into the conversation.
+Then keep the conversation (§8a), and reply with a **short** summary — the
+stories and the strands in a line each, the decisions you need from them, the
+prerequisites — and the paths. Do not paste the documents into the conversation.
+
+## 8a. Keep the conversation, every round
+
+The human's reasons live in this conversation, and they are gone once it ends.
+At the end of **every** round, keep what shaped the plan in
+`docs/programs/{id}/conversation.md`:
+
+1. `nightshift plan conversation {id}` lists this session's messages, numbered
+   (the human's and yours, never a tool's), with `*` beside those already kept.
+2. Choose the numbers of every exchange that **led to something in the plan**: a
+   story, a criterion, a scope boundary, a decision and its answer, an
+   alternative that was rejected. Judge a message by **what it led to, not by
+   how far from the brief it wandered**: a tangent that ended in a decision stays;
+   one that led nowhere does not. Keep the question an answer answered, or the
+   answer means nothing.
+3. Write a **short summary** of how the plan came about (what the human wanted,
+   what changed their mind, what they ruled out) to a scratch file outside the
+   repository. It is labelled as yours.
+4. `nightshift plan conversation {id} --keep 3,7-9 --summary <file>`. It copies
+   the chosen messages from the transcript word for word, masks anything shaped
+   like a credential, and extends the file without duplicating what is there.
+
+Tell the human the file is there and that they should **read it before it is
+committed**: they may cut anything, and should not reword an excerpt, since the
+stories' quotes are checked against it. When the repository or the contract says
+`"keepConversation": false`, skip this step and leave `words` out.
 
 ## 9. Revise in place, for as many rounds as it takes
 
@@ -318,7 +394,9 @@ hurry: this is the cheap place to be wrong.
 ## 10. Check, and say what is not ready
 
 Run `nightshift plan check {id}`. It is deterministic and answers `READY` or
-every reason at once: an unclaimed success criterion, a strand scope outside the
+every reason at once: no story, a story missing who, problem or outcome, a
+story no criterion serves or a criterion that serves no story, a quote the kept
+conversation does not hold, an unclaimed success criterion, a strand scope outside the
 program's, a cycle or an unknown `dependsOn`, a strand with no section, a
 prerequisite with no remediation or `verifyCommand` or that nothing uses, an
 unanswered decision, two independent strands whose scopes overlap. Fix what is
@@ -339,7 +417,8 @@ yes, do all of this yourself and stop at the run:
    The working tree must be otherwise clean; if it is not, stop and say what is
    in the way.
 2. **Commit the plan on that branch.** `nightshift.config.json`, if it is new,
-   and `docs/programs/{id}/`, and nothing else:
+   and `docs/programs/{id}/` (the plan, the contract and the conversation), and
+   nothing else:
    `git add nightshift.config.json docs/programs/{id} && git commit -m "plan: {id}"`.
    A plan is ratified from a commit, so its hash names something git can
    reproduce.
@@ -375,7 +454,11 @@ what to watch for), the human's reason for reversing it, the commits the
 decision produced and the files they touched, everything that landed after it,
 and later decisions it may have shaped.
 
-Then plan as in steps 3 to 10, with these differences:
+Then plan as in steps 2a to 10, with these differences:
+
+- **The stories are the reversal's.** Who is hurt by the old choice and what
+  changes for them under the new one; the human's reason for reversing is
+  usually the quote.
 
 - **Plan the change the new decision calls for, wherever it reaches.** The
   commits the decision produced are where to start looking, not a boundary:
@@ -394,6 +477,10 @@ Then plan as in steps 3 to 10, with these differences:
 
 ## What you must not do
 
+- Reword the human and call it a quote, or keep a message that is not theirs as
+  their words.
+- Drop an exchange that led to something in the plan because it wandered, or keep
+  a tool's output in the conversation.
 - Name jobs, or order work inside a strand.
 - Put a fact in both files.
 - Invent a prerequisite for something the crew can do, or skip one because it is

@@ -232,6 +232,29 @@ export const summariseToolResult = (content: unknown): string | undefined => {
 export const optionalField = (key: string, value: unknown): Record<string, unknown> =>
   value === undefined ? {} : { [key]: value };
 
+/**
+ * One session's usage over several turns. A session kept open for its
+ * background tasks has one `result` frame per turn: each frame's token counts
+ * and duration are that turn's, so they add up, while `total_cost_usd` is the
+ * session's running total, so the latest stands.
+ */
+export const combineTurns = (earlier: RouteUsage | undefined, turn: RouteUsage): RouteUsage => {
+  if (earlier === undefined) return turn;
+  const add = (key: keyof RouteUsage): Record<string, unknown> => {
+    const a = earlier[key] as number | undefined;
+    const b = turn[key] as number | undefined;
+    return optionalField(key, a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0));
+  };
+  return {
+    ...add("inputTokens"),
+    ...add("outputTokens"),
+    ...add("cacheReadTokens"),
+    ...add("cacheWriteTokens"),
+    ...add("latencyMs"),
+    ...optionalField("actualCostUsd", turn.actualCostUsd ?? earlier.actualCostUsd),
+  } as RouteUsage;
+};
+
 /** What the interpreter learned from the stream, for the exit mapping. */
 export interface StreamOutcome {
   /** True once a `result` frame has been seen, error or not. */
@@ -274,6 +297,28 @@ export interface StreamInterpreterInput {
    * the execution layer's help.
    */
   readonly context?: Readonly<Record<string, unknown>>;
+  /**
+   * Tool names, as Claude spells them, that end the agent's work: its
+   * `job.complete` and the like. Once one is called the session is finished
+   * whatever it left running (see {@link SessionActivity}).
+   */
+  readonly finishingTools?: ReadonlySet<string>;
+  /** Told every time the session's activity changes. Must never throw. */
+  readonly onActivity?: (activity: SessionActivity) => void;
+}
+
+/**
+ * Where a streaming-input session stands, from its `system` frames:
+ * `session_state_changed` (`running` while a turn is under way, `idle` between
+ * turns) and `background_tasks_changed` (the background commands and agents
+ * still running). An idle session with background tasks is waiting to be woken
+ * by one finishing; an idle session with none has nothing left to do.
+ */
+export interface SessionActivity {
+  readonly idle: boolean;
+  readonly backgroundTasks: number;
+  /** True once the agent has called one of its finishing tools. */
+  readonly finished: boolean;
 }
 
 export interface StreamInterpreter {
@@ -319,6 +364,9 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let unavailable: string | undefined;
   let resultText: string | undefined;
   let toolCalls = 0;
+  let idle = false;
+  let backgroundTasks = 0;
+  let finished = false;
   let startEmitted = false;
   let unparseableLines = 0;
 
@@ -336,6 +384,26 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     }
   };
 
+  const activityChanged = (): void => {
+    try {
+      input.onActivity?.({ idle, backgroundTasks, finished });
+    } catch {
+      // Documented as never throwing; the parse goes on regardless.
+    }
+  };
+
+  const handleSessionState = (frame: Frame): void => {
+    const state = str(frame.state);
+    if (state === undefined) return;
+    idle = state === "idle";
+    activityChanged();
+  };
+
+  const handleBackgroundTasks = (frame: Frame): void => {
+    backgroundTasks = Array.isArray(frame.tasks) ? frame.tasks.length : 0;
+    activityChanged();
+  };
+
   const emitStarted = (payload: Readonly<Record<string, unknown>>): void => {
     if (startEmitted) return;
     startEmitted = true;
@@ -343,6 +411,12 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   };
 
   const handleInit = (frame: Frame): void => {
+    // Every turn opens with one, the woken turns of a kept session included: a
+    // turn is under way, whether or not Claude Code also says so.
+    if (idle) {
+      idle = false;
+      activityChanged();
+    }
     sessionId = str(frame.session_id);
     const tools = Array.isArray(frame.tools)
       ? frame.tools.filter((tool): tool is string => typeof tool === "string")
@@ -366,6 +440,8 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   };
 
   const handleSubagent = (frame: Frame): void => {
+    // A background shell command is a task too, and not an agent.
+    if (str(frame.task_type) === "local_bash") return;
     const toolUseId = str(frame.tool_use_id);
     if (toolUseId !== undefined && subagentsSeen.has(toolUseId)) return;
     if (toolUseId !== undefined) subagentsSeen.add(toolUseId);
@@ -402,6 +478,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     const tool = str(block.name);
     if (tool === undefined) return;
     toolCalls += 1;
+    if (input.finishingTools?.has(tool) === true) finished = true;
     const toolUseId = str(block.id);
     if (toolUseId !== undefined) openToolCalls.set(toolUseId, tool);
     const summary = summariseToolInput(tool, block.input);
@@ -477,7 +554,12 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
       ),
       ...optionalField("latencyMs", tokenCount(frame.duration_ms)),
     };
-    if (Object.keys(found).length > 0) usage = found;
+    if (Object.keys(found).length > 0) usage = combineTurns(usage, found);
+    // A turn's `result` is its end. Said here as well as by
+    // `session_state_changed`, which Claude Code emits only when asked to: a
+    // session must never be held open for want of a frame.
+    idle = true;
+    activityChanged();
   };
 
   const handleFrame = (frame: Frame): void => {
@@ -492,6 +574,12 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
             return;
           case "compact_boundary":
             handleCompaction(frame);
+            return;
+          case "session_state_changed":
+            handleSessionState(frame);
+            return;
+          case "background_tasks_changed":
+            handleBackgroundTasks(frame);
             return;
           default:
             // `thinking_tokens`, `task_progress`, `task_updated`,

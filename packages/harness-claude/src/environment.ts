@@ -118,6 +118,26 @@ export const WINDOWS_ENV_ALLOWLIST: readonly string[] = [
 export const envAllowlistFor = (platform: NodeJS.Platform): readonly string[] =>
   platform === "win32" ? WINDOWS_ENV_ALLOWLIST : POSIX_ENV_ALLOWLIST;
 
+/**
+ * Set by Nightshift on every Claude Code process it starts, over whatever the
+ * parent had. Nothing here takes a capability away; background commands stay
+ * on, and the session is kept alive for them (`session.ts`).
+ *
+ * - `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` — the `session_state_changed`
+ *   frames (`running`, `idle`) the adapter ends a session by. Without it Claude
+ *   Code never says it is idle, and a session held open is held forever
+ *   (found by the conformance run on 2.1.286).
+ * - `BASH_MAX_TIMEOUT_MS` — two hours, so a gate a worker chooses to run in
+ *   the foreground is not killed at Claude Code's ten-minute ceiling.
+ * - `BASH_DEFAULT_TIMEOUT_MS` — ten minutes when the model names none, so a
+ *   test suite is not killed at the two-minute default and run again.
+ */
+export const HEADLESS_CLAUDE_ENV: Readonly<Record<string, string>> = Object.freeze({
+  CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+  BASH_MAX_TIMEOUT_MS: String(2 * 60 * 60 * 1000),
+  BASH_DEFAULT_TIMEOUT_MS: String(10 * 60 * 1000),
+});
+
 export interface SanitizeClaudeEnvironmentInput {
   readonly platform: NodeJS.Platform;
   /** The parent process environment, injected so this function stays pure. */

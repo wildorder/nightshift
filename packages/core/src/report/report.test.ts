@@ -111,6 +111,7 @@ describe("the report's routing and examination (P8)", () => {
       departures: [],
       attempts: 1,
       waitingOn: [],
+      nodeIds: [],
       jobs: [
         {
           nodeId: "node_j",
@@ -189,5 +190,37 @@ describe("the report's routing and examination (P8)", () => {
     expect(text).toContain("| work | 3 | 900000 | 3000 | 1.25 + 1 unknown |");
     expect(text).not.toContain("| 0.00 |");
     expect(text).toContain("Budget: $1.25 (3 route(s) unpriced and not counted) of $10.");
+  });
+});
+
+describe("the report's stories (P14, SC-P14-09)", () => {
+  it("leads with each story, the human's words, and its criteria met or not, before strands", () => {
+    const text = renderReport(
+      report({
+        criteria: [
+          { id: "SC-01", outcome: "Tenant billing data is isolated.", met: true, by: ["S-01"] },
+          { id: "SC-02", outcome: "Existing customers remain compatible.", met: false, by: [] },
+        ],
+      }),
+    );
+    const storiesAt = text.indexOf("## Stories");
+    expect(storiesAt).toBeGreaterThan(0);
+    expect(storiesAt).toBeLessThan(text.indexOf("## Strands"));
+    expect(text).toContain(
+      "### US-01 They only ever see their own company's invoices, and a cross-tenant read is refused: done",
+    );
+    expect(text).toContain("- **Who:** A customer's billing admin");
+    expect(text).toContain(
+      `> "an admin must never see another company's invoices, not even by accident"`,
+    );
+    expect(text).toContain("Criteria: SC-01 met.");
+    expect(text).toContain("Criteria: SC-02 NOT met.");
+  });
+
+  it("has no stories section for a program planned before stories", () => {
+    const { stories: _stories, ...before } = program;
+    expect(renderReport(report({ program: { ...before, strands: [] } }))).not.toContain(
+      "## Stories",
+    );
   });
 });

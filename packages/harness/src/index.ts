@@ -36,6 +36,7 @@ export {
 export {
   type AgentTask,
   agentStatusForExit,
+  type CarriedOverWork,
   type Duration,
   describeExit,
   type ExaminationEvidence,
@@ -65,3 +66,4 @@ export {
   type WorkerDecisionInput,
   type WorkerTools,
 } from "./tools.js";
+export type { TranscriptLocateInput, TranscriptSource } from "./transcript.js";

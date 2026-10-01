@@ -443,6 +443,38 @@ describe("examination beside the merge queue (D-P8-09)", () => {
     expect(routes.map((route) => route.purpose ?? "work").sort()).toEqual(["examine", "work"]);
   });
 
+  it("runs the program's setup in the examination's fresh checkout before checking it", async () => {
+    const { world, engine, nodeId } = await rig(
+      { risk: "high" },
+      {
+        program: {
+          setup: [
+            {
+              id: "install",
+              command: `node -e "require('fs').mkdirSync('node_modules',{recursive:true});require('fs').writeFileSync('node_modules/ready','ok')"`,
+            },
+          ],
+          verification: [
+            { id: "test", command: "node --test" },
+            {
+              id: "installed",
+              command: `node -e "process.exit(require('fs').existsSync('node_modules/ready') ? 0 : 1)"`,
+            },
+          ],
+        },
+      },
+    );
+    expect(await settledIdle(world, engine, nodeId)).toBe("integrated");
+    const verifications = await world.stores.verifications.listByNode(world.scope, nodeId);
+    const candidate = verifications.find((verification) => verification.phase === "candidate");
+    expect(candidate?.outcome).toBe("passed");
+    expect(candidate?.commands.map((command) => command.stepId)).toEqual([
+      "setup:install",
+      "test",
+      "installed",
+    ]);
+  });
+
   it("lands low-risk work with no examiner at all (SC-P8-08)", async () => {
     const { world, engine, seen, nodeId } = await rig({ risk: "low" });
     expect(await settledIdle(world, engine, nodeId)).toBe("integrated");

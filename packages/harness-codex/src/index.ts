@@ -45,3 +45,9 @@ export {
   type StreamInterpreter,
   type StreamOutcome,
 } from "./stream.js";
+export {
+  CODEX_TRANSCRIPT_HARNESS,
+  codexTranscriptSource,
+  currentCodexTranscript,
+  parseCodexTranscript,
+} from "./transcript.js";

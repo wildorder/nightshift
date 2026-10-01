@@ -13,7 +13,7 @@
  *   does not claim to know.
  */
 import type { Decision, ExecutionNode, JobContract } from "@nightshift/contracts";
-import type { RunReport } from "@nightshift/core";
+import { type RunReport, storiesOfStrands } from "@nightshift/core";
 
 export type GraphNodeKind = "program" | "strand" | "job";
 
@@ -151,6 +151,55 @@ export interface DecisionReach {
   readonly builtAfter: ReadonlySet<string>;
 }
 
+/** The strand a node belongs to: its own job's, or the nearest ancestor's. */
+export const strandOfNodeIn = (
+  nodes: readonly ExecutionNode[],
+  jobs: readonly JobContract[],
+): ((id: string) => string | undefined) => {
+  const jobOf = new Map(jobs.map((job) => [job.jobContractId as string, job]));
+  const nodeOf = new Map(nodes.map((node) => [node.executionNodeId as string, node]));
+  return (id) => {
+    let current = nodeOf.get(id);
+    while (current !== undefined) {
+      const strandId =
+        current.jobContractId === null ? undefined : jobOf.get(current.jobContractId)?.strandId;
+      if (strandId !== undefined) return strandId;
+      current = current.parentNodeId === null ? undefined : nodeOf.get(current.parentNodeId);
+    }
+    return undefined;
+  };
+};
+
+/**
+ * The strands and jobs built for a story (P14, D-P14-10): every node under a
+ * strand that claims a criterion serving it. The program's own node serves
+ * every story and is left unmarked, or every story would light it.
+ */
+export const storyReachOf = (
+  storyId: string,
+  nodes: readonly ExecutionNode[],
+  jobs: readonly JobContract[],
+  report: RunReport | undefined,
+): ReadonlySet<string> => {
+  if (report === undefined) return new Set();
+  const serving = new Set(
+    (report.program.strands ?? [])
+      .filter((strand) =>
+        storiesOfStrands(report.program, [strand.id]).some((story) => story.id === storyId),
+      )
+      .map((strand) => strand.id),
+  );
+  const strandOfNode = strandOfNodeIn(nodes, jobs);
+  return new Set(
+    nodes
+      .filter((node) => {
+        const strand = strandOfNode(node.executionNodeId);
+        return strand !== undefined && serving.has(strand);
+      })
+      .map((node) => node.executionNodeId as string),
+  );
+};
+
 /** What a decision produced, and what was built after it on top of it. Never "caused". */
 export const reachOf = (
   decision: Decision,
@@ -188,19 +237,7 @@ export const reachOf = (
 
   // The strands that depend, transitively, on the decision's strand.
   const jobOf = new Map(jobs.map((job) => [job.jobContractId as string, job]));
-  const strandOfNode = (id: string): string | undefined => {
-    let current = nodes.find((n) => n.executionNodeId === id);
-    while (current !== undefined) {
-      const strandId =
-        current.jobContractId === null ? undefined : jobOf.get(current.jobContractId)?.strandId;
-      if (strandId !== undefined) return strandId;
-      current =
-        current.parentNodeId === null
-          ? undefined
-          : nodes.find((n) => n.executionNodeId === current?.parentNodeId);
-    }
-    return undefined;
-  };
+  const strandOfNode = strandOfNodeIn(nodes, jobs);
   const origin = strandOfNode(decision.executionNodeId);
   if (origin !== undefined) {
     const strands = report?.program.strands ?? [];
