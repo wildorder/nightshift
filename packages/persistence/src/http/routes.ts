@@ -26,10 +26,19 @@ import type { ProgramScope, RunScope } from "@nightshift/core";
 export const routes = {
   /** An org's routing and examination policy (P8). */
   orgConfig: (orgId: OrgId) => `/orgs/${orgId}/config`,
+  /** An org's provider keys (P10, D-P10-23): `PUT` one, `GET` the views. */
+  orgCredentials: (orgId: OrgId) => `/orgs/${orgId}/credentials`,
+  orgCredential: (orgId: OrgId, provider: string) => `${routes.orgCredentials(orgId)}/${provider}`,
+  /** An org's GitHub App installation (P10, D-P10-02). */
+  orgGithub: (orgId: OrgId) => `/orgs/${orgId}/github`,
+  /** Where the App is installed from. */
+  githubApp: () => "/github/app",
 
   projects: () => "/projects",
   project: (projectId: ProjectId) => `/projects/${projectId}`,
   programs: (projectId: ProjectId) => `/projects/${projectId}/programs`,
+  /** A project's warm snapshot (P10, D-P10-15). */
+  warmCache: (projectId: ProjectId) => `/projects/${projectId}/warm-cache`,
   program: (projectId: ProjectId, programId: ProgramId) =>
     `/projects/${projectId}/programs/${programId}`,
 
@@ -45,6 +54,10 @@ export const routes = {
   prerequisite: (scope: ProgramScope, prerequisiteId: string) =>
     `${routes.prerequisites(scope)}/${prerequisiteId}`,
 
+  /** The tier a program's project should run on, from its past runs (P10, D-P10-14b). */
+  computeRecommendation: (scope: ProgramScope) =>
+    `${routes.program(scope.projectId, scope.programId)}/compute/recommendation`,
+
   runs: (scope: ProgramScope) => `${routes.program(scope.projectId, scope.programId)}/runs`,
   run: (scope: ProgramScope, runId: RunId) => `${routes.runs(scope)}/${runId}`,
 
@@ -52,6 +65,14 @@ export const routes = {
   inRun: (scope: RunScope) => routes.run(scope, scope.runId),
 
   state: (scope: RunScope) => `${routes.inRun(scope)}/state`,
+
+  // The remote runner (P10, D-P10-18, D-P10-22, D-P10-14b).
+  dispatch: (scope: RunScope) => `${routes.inRun(scope)}/dispatch`,
+  dispatchCancel: (scope: RunScope) => `${routes.dispatch(scope)}/cancel`,
+  dispatchResume: (scope: RunScope) => `${routes.dispatch(scope)}/resume`,
+  dispatchHeartbeat: (scope: RunScope) => `${routes.dispatch(scope)}/heartbeat`,
+  publication: (scope: RunScope) => `${routes.inRun(scope)}/publication`,
+  computeUtilization: (scope: RunScope) => `${routes.inRun(scope)}/compute`,
 
   nodes: (scope: RunScope) => `${routes.inRun(scope)}/nodes`,
   node: (scope: RunScope, nodeId: ExecutionNodeId) => `${routes.nodes(scope)}/${nodeId}`,

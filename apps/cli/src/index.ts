@@ -35,6 +35,13 @@ export {
 } from "./commands/login.js";
 export { type LogoutOptions, type LogoutResult, logout } from "./commands/logout.js";
 export {
+  githubInstall,
+  githubStatus,
+  orgOf,
+  providersSet,
+  providersStatus,
+} from "./commands/org-remote.js";
+export {
   type PlanCheckResult,
   type PlanOptions,
   planCheck,

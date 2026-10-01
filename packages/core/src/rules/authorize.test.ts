@@ -166,6 +166,21 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "artifact.createDownloadUrl": "forbidden",
   "orgConfig.get": "forbidden",
   "orgConfig.put": "forbidden",
+  "dispatch.create": "forbidden",
+  "dispatch.get": "forbidden",
+  "dispatch.cancel": "forbidden",
+  "dispatch.resume": "forbidden",
+  "dispatch.heartbeat": "forbidden",
+  "publication.request": "forbidden",
+  "publication.list": "forbidden",
+  "computeUtilization.get": "forbidden",
+  "computeRecommendation.get": "forbidden",
+  "warmCache.get": "forbidden",
+  "orgCredential.put": "forbidden",
+  "orgCredential.list": "forbidden",
+  "orgGithub.put": "forbidden",
+  "orgGithub.get": "forbidden",
+  "githubApp.get": "forbidden",
 };
 
 describe("an execution principal", () => {
@@ -349,8 +364,8 @@ describe("the principal schema", () => {
     expect(PrincipalSchema.safeParse({ kind: "service" }).success).toBe(false);
   });
 
-  it("accepts the four roles a token is minted for, and no other (D-P6-04, D-P8-10, D-P8-13)", () => {
-    for (const role of ["orchestrator", "examiner", "arbiter"]) {
+  it("accepts the five roles a token is minted for, and no other (D-P6-04, D-P8-10, D-P8-13, D-P10-20)", () => {
+    for (const role of ["orchestrator", "examiner", "arbiter", "engine"]) {
       expect(PrincipalSchema.safeParse({ ...execution, role }).success, role).toBe(true);
     }
     for (const role of ["answerer", "user", ""]) {

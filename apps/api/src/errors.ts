@@ -35,7 +35,14 @@ export const DOMAIN_ERROR_STATUS: Readonly<Record<DomainErrorCode, number>> = {
   stale_write: 409,
 };
 
-export const toErrorResponse = (error: unknown): ApiResponse => {
+/** Where a failure happened, for the one log line a 500 writes. Never the body. */
+export interface FailureContext {
+  readonly route: string;
+  /** The route's body is a secret (P10, D-P10-23); the log says so and nothing else. */
+  readonly bodyMasked: boolean;
+}
+
+export const toErrorResponse = (error: unknown, context?: FailureContext): ApiResponse => {
   if (error instanceof HttpError) {
     return { status: error.status, body: errorBody(error.code, error.message, error.issues) };
   }
@@ -49,6 +56,11 @@ export const toErrorResponse = (error: unknown): ApiResponse => {
     return { status: DOMAIN_ERROR_STATUS[error.code], body: errorBody(error.code, error.message) };
   }
   // Logged for the operator; never echoed, so no stack or internal detail leaks.
-  console.error("unhandled control-plane error", error);
+  // The request body is never logged; for a masked route the line says so.
+  console.error(
+    "unhandled control-plane error",
+    context === undefined ? "" : `${context.route}${context.bodyMasked ? " [body masked]" : ""}`,
+    error,
+  );
   return { status: 500, body: errorBody("internal_error", "internal error") };
 };

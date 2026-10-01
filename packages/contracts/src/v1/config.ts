@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { ProjectIdSchema } from "../ids.js";
 import { RiskLevelSchema } from "./common.js";
+import { ComputeChoiceSchema } from "./compute.js";
 import {
   CostPolicySchema,
   DelegationLimitsSchema,
@@ -59,6 +60,11 @@ export const NightshiftConfigSchema = z.strictObject({
    * uploaded at ratification. On unless this says `false`.
    */
   keepConversation: z.boolean().optional(),
+  /**
+   * P10 (D-P10-14): the machine a remote run of this repository gets. `tier` is
+   * the customer's choice; `recommended` is what the probe said at `init`.
+   */
+  compute: ComputeChoiceSchema.optional(),
 });
 export type NightshiftConfig = z.infer<typeof NightshiftConfigSchema>;
 
@@ -66,6 +72,7 @@ export type NightshiftConfig = z.infer<typeof NightshiftConfigSchema>;
 export const INHERITED_CONTRACT_FIELDS = [
   "projectId",
   "setup",
+  "compute",
   "verification",
   "modelPolicy",
   "delegationLimits",

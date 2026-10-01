@@ -28,6 +28,8 @@ import type {
   ArtifactDownloadSigner,
   ArtifactUploadSigner,
   Clock,
+  Envelope,
+  GitHubAppClient,
   NightshiftStores,
   PlanDocumentStore,
 } from "@nightshift/core";
@@ -103,6 +105,10 @@ export interface LocalServerOptions {
    */
   readonly apiPrefix?: string;
   readonly studio?: ServedStudio;
+  /** Seals an org's provider keys (P10, D-P10-23). Absent, the credential routes answer 501. */
+  readonly envelope?: Envelope;
+  /** The Nightshift GitHub App (P10, D-P10-02). Absent, the installation routes answer 501. */
+  readonly github?: GitHubAppClient;
 }
 
 export interface LocalServer {
@@ -236,6 +242,8 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
       issuer: LOCAL_TOKEN_ISSUER,
       signer: { sign: async (input) => signWith("sha256", input, keys.privateKey) },
     },
+    ...(options.envelope === undefined ? {} : { envelope: options.envelope }),
+    ...(options.github === undefined ? {} : { github: options.github }),
   };
 
   /** A `PUT` to a URL this server signed: the three refusals a presigned S3 PUT makes. */

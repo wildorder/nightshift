@@ -14,11 +14,13 @@ import {
   createDynamoSequenceLedger,
   parseStreamRecord,
 } from "@nightshift/persistence/aws";
-import { FakeTable, toStreamRecord } from "@nightshift/persistence/aws/testing";
+import { FakeTable, routingTableClient, toStreamRecord } from "@nightshift/persistence/aws/testing";
 import { describePortConformance } from "@nightshift/test/conformance";
 import { materializeBatch } from "./materializer/materialize.js";
 
 const tableName = "nightshift-conformance";
+/** The credentials table (P10, D-P10-23): a second table through the same client. */
+const credentialsTableName = "nightshift-conformance-credentials";
 
 interface FakeBackedStores extends NightshiftStores {
   readonly table: FakeTable;
@@ -28,7 +30,9 @@ describePortConformance<FakeBackedStores>(
   "DynamoDB adapter on FakeTable",
   () => {
     const table = new FakeTable({ tableName, pageItemCap: 3 });
-    return { ...createAwsStores({ tableName, table }), table };
+    const credentials = new FakeTable({ tableName: credentialsTableName, pageItemCap: 3 });
+    const client = routingTableClient({ [tableName]: table, [credentialsTableName]: credentials });
+    return { ...createAwsStores({ tableName, table: client, credentialsTableName }), table };
   },
   {
     // The DynamoDB adapter implements both halves of the split (T2).

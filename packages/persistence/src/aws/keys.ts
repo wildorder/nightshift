@@ -10,7 +10,16 @@
  * safe because no identifier or Cognito subject can contain one (both are
  * validated by the contracts before a key is ever built).
  */
-import type { OrgId, ProgramId, ProjectId, RunId, UserId } from "@nightshift/contracts";
+import type {
+  CalendarMonth,
+  ComputeArchitecture,
+  OrgId,
+  ProgramId,
+  ProjectId,
+  Provider,
+  RunId,
+  UserId,
+} from "@nightshift/contracts";
 import type { ProgramScope, RunScope } from "@nightshift/core";
 
 export interface TableKey {
@@ -72,6 +81,43 @@ export const keys = {
 
   /** An org's routing and examination policy (P8, D-P8-02). One row per org. */
   orgConfig: (orgId: OrgId): TableKey => ({ PK: `ORG#${orgId}`, SK: "CONFIG" }),
+
+  /** An org's compute ledger for one month (P10, D-P10-19). */
+  computeUsage: (orgId: OrgId, month: CalendarMonth): TableKey => ({
+    PK: `ORG#${orgId}`,
+    SK: `USAGE#${month}`,
+  }),
+
+  /**
+   * An org's sealed provider key (P10, D-P10-23). In the **credentials table**,
+   * never the main one: the only key shape that names another table.
+   */
+  credential: (orgId: OrgId, provider: Provider): TableKey => ({
+    PK: `ORG#${orgId}`,
+    SK: `PROVIDER#${provider}`,
+  }),
+
+  credentialPartition: (orgId: OrgId) => ({ PK: `ORG#${orgId}`, prefix: "PROVIDER#" }),
+
+  /** A run's dispatch (P10, D-P10-18): one row beside the run's records. */
+  dispatch: (scope: RunScope): TableKey => ({ PK: `RUN#${runChain(scope)}`, SK: "DISPATCH" }),
+
+  /** A run's machine utilization (P10, D-P10-14b), under the project so a project's list together. */
+  computeUtilization: (projectId: ProjectId, runId: RunId): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `UTIL#${runId}`,
+  }),
+
+  computeUtilizationPartition: (projectId: ProjectId) => ({
+    PK: `PROJ#${projectId}`,
+    prefix: "UTIL#",
+  }),
+
+  /** A project's warm snapshot (P10, D-P10-15), one per architecture. */
+  warmCache: (projectId: ProjectId, architecture: ComputeArchitecture): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `CACHE#${architecture}`,
+  }),
 
   programContract: (projectId: ProjectId, programId: ProgramId): TableKey => ({
     PK: `PROJ#${projectId}`,

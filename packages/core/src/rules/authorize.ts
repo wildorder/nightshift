@@ -123,7 +123,26 @@ export type Operation =
   | "artifact.createDownloadUrl"
   // An organisation's routing and examination policy (P8, D-P8-02).
   | "orgConfig.get"
-  | "orgConfig.put";
+  | "orgConfig.put"
+  // P10: the remote runner. A run's dispatch and its machine (D-P10-18).
+  | "dispatch.create"
+  | "dispatch.get"
+  | "dispatch.cancel"
+  | "dispatch.resume"
+  | "dispatch.heartbeat"
+  // Publication of the program branch (D-P10-22).
+  | "publication.request"
+  | "publication.list"
+  // What the machine was asked to do, and what the project should run on (D-P10-14).
+  | "computeUtilization.get"
+  | "computeRecommendation.get"
+  | "warmCache.get"
+  // An org's provider keys and its GitHub installation (D-P10-23, D-P10-02).
+  | "orgCredential.put"
+  | "orgCredential.list"
+  | "orgGithub.put"
+  | "orgGithub.get"
+  | "githubApp.get";
 
 /**
  * How far an execution principal reaches for one operation.
@@ -139,9 +158,13 @@ export type Operation =
  * - `own_subtree` — `own_run`, and the target node is the execution's own node,
  *   one of its descendants, or a node being created directly under it. Only an
  *   `orchestrator` token's table uses it (P6, D-P6-04).
+ * - `own_project` — allowed when the target is the project the execution's run
+ *   belongs to. Only the `engine`'s table uses it (P10, D-P10-20): the project
+ *   record carries the cross-account role the Bedrock route assumes (A-25).
  */
 export type ExecutionAccess =
   | "forbidden"
+  | "own_project"
   | "own_program"
   | "own_run"
   | "own_node"
@@ -252,6 +275,25 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   // the policy it executes under, so nothing running needs the org's own.
   "orgConfig.get": "forbidden",
   "orgConfig.put": "forbidden",
+
+  // P10: the machine is the engine's business. A worker learns nothing of its
+  // dispatch, publishes nothing, and never sees a key but the one in its
+  // environment.
+  "dispatch.create": "forbidden",
+  "dispatch.get": "forbidden",
+  "dispatch.cancel": "forbidden",
+  "dispatch.resume": "forbidden",
+  "dispatch.heartbeat": "forbidden",
+  "publication.request": "forbidden",
+  "publication.list": "forbidden",
+  "computeUtilization.get": "forbidden",
+  "computeRecommendation.get": "forbidden",
+  "warmCache.get": "forbidden",
+  "orgCredential.put": "forbidden",
+  "orgCredential.list": "forbidden",
+  "orgGithub.put": "forbidden",
+  "orgGithub.get": "forbidden",
+  "githubApp.get": "forbidden",
 };
 
 /**
@@ -344,6 +386,23 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
 
   "orgConfig.get": "forbidden",
   "orgConfig.put": "forbidden",
+
+  // P10: as for a worker.
+  "dispatch.create": "forbidden",
+  "dispatch.get": "forbidden",
+  "dispatch.cancel": "forbidden",
+  "dispatch.resume": "forbidden",
+  "dispatch.heartbeat": "forbidden",
+  "publication.request": "forbidden",
+  "publication.list": "forbidden",
+  "computeUtilization.get": "forbidden",
+  "computeRecommendation.get": "forbidden",
+  "warmCache.get": "forbidden",
+  "orgCredential.put": "forbidden",
+  "orgCredential.list": "forbidden",
+  "orgGithub.put": "forbidden",
+  "orgGithub.get": "forbidden",
+  "githubApp.get": "forbidden",
 };
 
 /**
@@ -377,6 +436,111 @@ export const ARBITER_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "examination.put": "forbidden",
 };
 
+/**
+ * The table for the **engine** on a remote run's machine (P10, D-P10-20),
+ * exhaustive over `Operation`.
+ *
+ * It does for its run what the orchestrator's human session does locally:
+ * starts, verifies, integrates, checkpoints, routes, records, mints its workers'
+ * and examiners' tokens, heartbeats, and asks for publication. Its reach is the
+ * run, every node in it, and the program and project above it that the run
+ * needs to read. It cannot ratify a plan, reverse a human decision, change the
+ * org's configuration, read a key by any route but its heartbeat, or touch
+ * another run. Every write it makes is further held to the dispatch's current
+ * generation (`stale_generation`), which is the fence D-P10-18 describes.
+ */
+export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
+  "project.list": "forbidden",
+  "project.put": "forbidden",
+  // The project carries the cross-account role the Bedrock route assumes (A-25).
+  "project.get": "own_project",
+  "program.list": "forbidden",
+  "program.put": "forbidden",
+  "program.get": "own_program",
+
+  // Planning is a human's. The engine reads the plan and the prerequisites, and
+  // records a hurdle it meets (D-P7-10), as the local engine does under the
+  // human's session.
+  "program.ratify": "forbidden",
+  "program.createPlanUploadUrl": "forbidden",
+  "program.getPlanDocument": "own_program",
+  "prerequisite.list": "own_program",
+  "prerequisite.put": "own_program",
+
+  "run.list": "forbidden",
+  "run.put": "own_run",
+  "run.get": "own_run",
+  "run.getState": "own_run",
+
+  // Every node in the run, any status: the engine is what asserts verified.
+  "node.list": "own_run",
+  "node.put": "own_run",
+  "node.get": "own_run",
+  "node.listChildren": "own_run",
+
+  "job.list": "own_run",
+  "job.put": "own_run",
+  "job.get": "own_run",
+
+  // The execution identity is created for an agent by the engine (A-04), and
+  // the engine mints its workers', examiners' and arbiters' tokens; the API
+  // refuses it an `engine` token, which only the dispatch Lambda mints.
+  "agent.put": "own_run",
+  "agent.get": "own_run",
+  "agent.listByNode": "own_run",
+  "agent.mintToken": "own_run",
+
+  "event.append": "own_run",
+  "event.list": "own_run",
+
+  "decision.list": "own_run",
+  "decision.put": "own_run",
+  "decision.get": "own_run",
+  "checkpoint.list": "own_run",
+  "checkpoint.put": "own_run",
+  "checkpoint.get": "own_run",
+
+  "verification.put": "own_run",
+  "verification.get": "own_run",
+  "verification.listByNode": "own_run",
+  "examination.put": "own_run",
+  "examination.get": "own_run",
+  "examination.listByNode": "own_run",
+
+  "routingDecision.put": "own_run",
+  "routingDecision.listByNode": "own_run",
+
+  "artifact.list": "own_run",
+  "artifact.put": "own_run",
+  "artifact.get": "own_run",
+  "artifact.createUploadUrl": "own_run",
+  // A signed read is a human's (D-P11-06): the engine holds the bytes it wrote.
+  "artifact.createDownloadUrl": "forbidden",
+
+  // The run recorded its policy when it started; the org's own is its members'.
+  "orgConfig.get": "forbidden",
+  "orgConfig.put": "forbidden",
+
+  // Its own dispatch: read it, heartbeat it, ask for publication. Creating,
+  // cancelling and resuming a dispatch are a human's; so are the org's keys and
+  // installation, which reach the engine only inside a heartbeat response.
+  "dispatch.create": "forbidden",
+  "dispatch.get": "own_run",
+  "dispatch.cancel": "forbidden",
+  "dispatch.resume": "forbidden",
+  "dispatch.heartbeat": "own_run",
+  "publication.request": "own_run",
+  "publication.list": "own_run",
+  "computeUtilization.get": "own_run",
+  "computeRecommendation.get": "forbidden",
+  "warmCache.get": "forbidden",
+  "orgCredential.put": "forbidden",
+  "orgCredential.list": "forbidden",
+  "orgGithub.put": "forbidden",
+  "orgGithub.get": "forbidden",
+  "githubApp.get": "forbidden",
+};
+
 /** The table for a role. Exhaustive over `ExecutionRole` by construction. */
 export const ACCESS_BY_ROLE: Readonly<
   Record<ExecutionRole, Readonly<Record<Operation, ExecutionAccess>>>
@@ -385,7 +549,53 @@ export const ACCESS_BY_ROLE: Readonly<
   orchestrator: ORCHESTRATOR_ACCESS,
   examiner: EXAMINER_ACCESS,
   arbiter: ARBITER_ACCESS,
+  engine: ENGINE_ACCESS,
 };
+
+/**
+ * The operations that only read (P10). An engine's reads are not held to the
+ * generation: a superseded runner learning that it is superseded is how it
+ * stops, and nothing it reads can change a record.
+ */
+export const READ_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
+  "project.list",
+  "project.get",
+  "program.list",
+  "program.get",
+  "program.getPlanDocument",
+  "prerequisite.list",
+  "run.list",
+  "run.get",
+  "run.getState",
+  "node.list",
+  "node.get",
+  "node.listChildren",
+  "job.list",
+  "job.get",
+  "agent.get",
+  "agent.listByNode",
+  "event.list",
+  "decision.list",
+  "decision.get",
+  "checkpoint.list",
+  "checkpoint.get",
+  "verification.get",
+  "verification.listByNode",
+  "examination.get",
+  "examination.listByNode",
+  "routingDecision.listByNode",
+  "artifact.list",
+  "artifact.get",
+  "orgConfig.get",
+  "dispatch.get",
+  "publication.list",
+  "computeUtilization.get",
+  "computeRecommendation.get",
+  "warmCache.get",
+  "orgCredential.list",
+  "orgGithub.get",
+  "githubApp.get",
+]);
 
 /**
  * Where the target node stands relative to the execution's own node. A **stored
@@ -420,6 +630,13 @@ export interface AuthorizationTarget {
   readonly requestedNodeStatus?: string;
   /** For an `orchestrator` execution only. Absent means unresolved, which refuses. */
   readonly nodeRelation?: NodeRelation;
+  /**
+   * For an `engine` execution only (P10, D-P10-18): the dispatch's current
+   * generation, a **stored fact** the API resolves. An engine's write under any
+   * other generation is `stale_generation`; absent means unresolved, which
+   * refuses every write.
+   */
+  readonly currentGeneration?: number;
 }
 
 /**
@@ -459,7 +676,9 @@ export type AuthorizationRefusal =
   /** An execution reached outside its own run, node or agent. */
   | "execution_out_of_scope"
   /** An execution attempted an operation no execution may perform. */
-  | "execution_forbidden_operation";
+  | "execution_forbidden_operation"
+  /** An engine wrote under a generation the dispatch has moved past (P10, D-P10-18). */
+  | "stale_generation";
 
 export interface Allowed {
   readonly allowed: true;
@@ -498,6 +717,9 @@ const inOwnSubtree = (target: AuthorizationTarget): boolean =>
 
 const mayWriteNodeStatus = (role: ExecutionRole, target: AuthorizationTarget): boolean => {
   const requested = target.requestedNodeStatus ?? "";
+  // The engine is Nightshift: it asserts every status the transition table
+  // allows, as the local engine does under the human's session (D-P10-20).
+  if (role === "engine") return requested !== "";
   const writable: readonly string[] =
     role === "worker"
       ? EXECUTION_WRITABLE_NODE_STATUSES
@@ -537,6 +759,30 @@ const authorizeOwnProgram = (
       );
 
 /**
+ * The fence (P10, D-P10-18): an engine's write is allowed only under the
+ * dispatch's current generation. Fails closed on an unresolved generation.
+ */
+const authorizeGeneration = (
+  principal: Extract<Principal, { kind: "execution" }>,
+  operation: Operation,
+  target: AuthorizationTarget,
+): Refused | undefined => {
+  if (target.currentGeneration === undefined) {
+    return refuse(
+      "stale_generation",
+      `an engine's token may ${operation} only once its dispatch's generation is known`,
+    );
+  }
+  if (principal.generation !== target.currentGeneration) {
+    return refuse(
+      "stale_generation",
+      `an engine's token minted under generation ${String(principal.generation)} may not ${operation}: the dispatch is at generation ${target.currentGeneration}`,
+    );
+  }
+  return undefined;
+};
+
+/**
  * The one place a principal's reach is decided (D-P4-05).
  *
  * Pure and total: same inputs, same answer, no I/O, no clock. A user may do
@@ -554,7 +800,19 @@ export const authorize = (
   if (access === "forbidden") {
     return refuse("execution_forbidden_operation", `an execution token may not ${operation}`);
   }
+  if (access === "own_project") {
+    return target.projectId === principal.projectId
+      ? ALLOWED
+      : refuse(
+          "execution_out_of_scope",
+          `an execution token may only ${operation} for the project its run belongs to`,
+        );
+  }
   if (access === "own_program") return authorizeOwnProgram(principal, operation, target);
+  if (principal.role === "engine" && !READ_OPERATIONS.has(operation)) {
+    const stale = authorizeGeneration(principal, operation, target);
+    if (stale !== undefined) return stale;
+  }
   if (!inOwnRun(principal, target)) {
     return refuse(
       "execution_out_of_scope",

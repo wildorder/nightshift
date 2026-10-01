@@ -364,6 +364,102 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     occurredAt: AT_LATER,
     recordedAt: AT_LATER,
   },
+
+  // P10 (D-P10-18): one remote run's machine, on its second attempt.
+  Dispatch: {
+    schemaVersion: 1,
+    projectId: EXAMPLE_IDS.projectId,
+    programId: EXAMPLE_IDS.programId,
+    runId: EXAMPLE_IDS.runId,
+    status: "running",
+    tier: "better",
+    instanceType: "m7g.2xlarge",
+    usdPerHour: 0.3264,
+    amiVersion: "1.0.0",
+    availabilityZone: "us-west-2b",
+    instanceId: "i-0123456789abcdef0",
+    volumeId: "vol-0123456789abcdef0",
+    generation: 2,
+    leaseExpiresAt: AT_LATER,
+    idempotencyKey: `${EXAMPLE_IDS.runId}:${COMMIT}`,
+    engineAgentId: EXAMPLE_IDS.examinerAgentId,
+    input: {
+      repositoryUrl: "https://github.com/wildorder/nightshift-remote-fixture",
+      branch: "program/example",
+      baseSha: COMMIT,
+      planHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    },
+    attempts: [
+      { generation: 1, reason: "dispatch", startedAt: AT, endedAt: AT_LATER, instanceId: "i-0" },
+      {
+        generation: 2,
+        reason: "lease_lost",
+        startedAt: AT_LATER,
+        instanceId: "i-0123456789abcdef0",
+      },
+    ],
+    spend: { estimatedUsd: 8.5, meteredUsd: 0.12, meteredSeconds: 1_300 },
+    publication: {
+      head: COMMIT,
+      lastIntentAt: AT_LATER,
+      intents: [
+        {
+          head: COMMIT,
+          expectedPredecessor: COMMIT,
+          bundleKey: `${EXAMPLE_IDS.projectId}/${EXAMPLE_IDS.programId}/${EXAMPLE_IDS.runId}/bundles/${COMMIT}.bundle`,
+          status: "published",
+          requestedAt: AT_LATER,
+          resolvedAt: AT_LATER,
+        },
+      ],
+    },
+    cleanup: { volumeDeleted: false, failures: [] },
+    requestedAt: AT,
+    updatedAt: AT_LATER,
+  },
+
+  // P10 (D-P10-14): what the machine was asked to do, folded from the heartbeats.
+  ComputeUtilization: {
+    schemaVersion: 1,
+    projectId: EXAMPLE_IDS.projectId,
+    programId: EXAMPLE_IDS.programId,
+    runId: EXAMPLE_IDS.runId,
+    tier: "better",
+    samples: 40,
+    peakMemoryPct: 31.5,
+    peakCpuPct: 72,
+    cpuAbove90Pct: 0,
+    peakDiskPct: 18,
+    oomKills: 0,
+    swapUsed: false,
+    setupSeconds: 41.2,
+    wallClockSeconds: 1_300,
+    updatedAt: AT_LATER,
+  },
+
+  // P10 (D-P10-15): a project's warm snapshot and the one it superseded.
+  WarmCache: {
+    schemaVersion: 1,
+    projectId: EXAMPLE_IDS.projectId,
+    architecture: "arm64",
+    current: {
+      snapshotId: "snap-0123456789abcdef0",
+      amiVersion: "1.0.0",
+      lockfileHashes: { "package-lock.json": COMMIT },
+      fromRunId: EXAMPLE_IDS.runId,
+      takenAt: AT_LATER,
+    },
+    history: [
+      {
+        snapshotId: "snap-0000000000000000a",
+        amiVersion: "1.0.0",
+        lockfileHashes: { "package-lock.json": COMMIT },
+        fromRunId: EXAMPLE_IDS.runId,
+        takenAt: AT,
+      },
+    ],
+    updatedAt: AT_LATER,
+  },
 };
 
 /** A second project's identifier, for proving cross-project queries return nothing. */

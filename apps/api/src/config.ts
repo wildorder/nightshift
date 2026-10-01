@@ -21,12 +21,24 @@ const ConfigEnvSchema = z.object({
   NIGHTSHIFT_TABLE_NAME: z.string().min(1),
   NIGHTSHIFT_BUCKET_NAME: z.string().min(1),
   NIGHTSHIFT_STAGE: z.string().min(1),
+  /**
+   * P10 (D-P10-23): the credentials table and the key it is sealed under.
+   * Optional until the data stack deploys them (T2); without them the API
+   * refuses to store a credential rather than storing one anywhere else.
+   */
+  NIGHTSHIFT_CREDENTIALS_TABLE_NAME: z.string().min(1).optional(),
+  NIGHTSHIFT_CREDENTIALS_KEY_ID: z.string().min(1).optional(),
+  /** P10 (D-P10-16): the AMI the runner stack built, recorded on every dispatch. */
+  NIGHTSHIFT_RUNNER_AMI_VERSION: z.string().min(1).optional(),
 });
 
 export interface ApiConfig {
   readonly tableName: string;
   readonly bucketName: string;
   readonly stage: string;
+  readonly credentialsTableName?: string;
+  readonly credentialsKeyId?: string;
+  readonly runnerAmiVersion?: string;
 }
 
 /** What the API function alone needs, to mint execution tokens (P4, T2). */
@@ -58,10 +70,20 @@ export const loadConfig = (env: Readonly<Record<string, string | undefined>>): A
   if (!result.success) {
     throw new ConfigError([...new Set(result.error.issues.map((issue) => String(issue.path[0])))]);
   }
+  const data = result.data;
   return {
-    tableName: result.data.NIGHTSHIFT_TABLE_NAME,
-    bucketName: result.data.NIGHTSHIFT_BUCKET_NAME,
-    stage: result.data.NIGHTSHIFT_STAGE,
+    tableName: data.NIGHTSHIFT_TABLE_NAME,
+    bucketName: data.NIGHTSHIFT_BUCKET_NAME,
+    stage: data.NIGHTSHIFT_STAGE,
+    ...(data.NIGHTSHIFT_CREDENTIALS_TABLE_NAME === undefined
+      ? {}
+      : { credentialsTableName: data.NIGHTSHIFT_CREDENTIALS_TABLE_NAME }),
+    ...(data.NIGHTSHIFT_CREDENTIALS_KEY_ID === undefined
+      ? {}
+      : { credentialsKeyId: data.NIGHTSHIFT_CREDENTIALS_KEY_ID }),
+    ...(data.NIGHTSHIFT_RUNNER_AMI_VERSION === undefined
+      ? {}
+      : { runnerAmiVersion: data.NIGHTSHIFT_RUNNER_AMI_VERSION }),
   };
 };
 

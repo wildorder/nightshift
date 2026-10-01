@@ -25,6 +25,12 @@ import { runLocal, useStage } from "./commands/local.js";
 import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
 import { getOrgConfig, setOrgConfig } from "./commands/org-config.js";
+import {
+  githubInstall,
+  githubStatus,
+  providersSet,
+  providersStatus,
+} from "./commands/org-remote.js";
 import { planCheck, planRatify } from "./commands/plan.js";
 import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
@@ -60,6 +66,10 @@ Usage:
   nightshift report <program> [--run <id>] [--repo <path>]
   nightshift org config get [--org <id>]
   nightshift org config set <file> [--org <id>]
+  nightshift org github install [--installation <id>] [--org <id>]
+  nightshift org github status [--org <id>]
+  nightshift org providers set <anthropic|openai> [--org <id>]
+  nightshift org providers status [--org <id>]
   nightshift routes export <program> [--run <id>] [--repo <path>]
   nightshift routes export --project <id>
   nightshift id <prefix>
@@ -501,18 +511,41 @@ const doReport = async (environment: CliEnvironment, args: readonly string[]): P
 
 const doOrg = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage =
-    "nightshift org config get [--org <id>] | nightshift org config set <file> [--org <id>]";
+    "nightshift org config get|set <file> | org github install [--installation <id>]|status | org providers set <provider>|status  [--org <id>]";
   const { values, positionals } = parse(
-    { args: [...args], options: { org: { type: "string" } }, allowPositionals: true, strict: true },
+    {
+      args: [...args],
+      options: { org: { type: "string" }, installation: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    },
     usage,
   );
-  const [noun, verb, file] = positionals;
+  const [noun, verb, third] = positionals;
   const org = optional(values, "org");
-  if (noun !== "config")
-    throw new UsageError("`nightshift org` takes `config get` or `config set <file>`", usage);
-  if (verb === "get") return getOrgConfig(environment, org);
-  if (verb === "set" && file !== undefined) return setOrgConfig(environment, file, org);
-  throw new UsageError("`nightshift org config` takes `get` or `set <file>`", usage);
+  if (noun === "config") {
+    if (verb === "get") return getOrgConfig(environment, org);
+    if (verb === "set" && third !== undefined) return setOrgConfig(environment, third, org);
+    throw new UsageError("`nightshift org config` takes `get` or `set <file>`", usage);
+  }
+  // P10 (D-P10-02, D-P10-23): the customer's two onboarding verbs.
+  if (noun === "github") {
+    const installation = optional(values, "installation");
+    if (verb === "install") {
+      return githubInstall(environment, {
+        ...(installation === undefined ? {} : { installation }),
+        ...(org === undefined ? {} : { org }),
+      });
+    }
+    if (verb === "status") return githubStatus(environment, org);
+    throw new UsageError("`nightshift org github` takes `install` or `status`", usage);
+  }
+  if (noun === "providers") {
+    if (verb === "set" && third !== undefined) return providersSet(environment, third, org);
+    if (verb === "status") return providersStatus(environment, org);
+    throw new UsageError("`nightshift org providers` takes `set <provider>` or `status`", usage);
+  }
+  throw new UsageError("`nightshift org` takes `config`, `github` or `providers`", usage);
 };
 
 const doRoutes = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {

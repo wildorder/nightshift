@@ -14,8 +14,12 @@ import {
   type Checkpoint,
   CheckpointSchema,
   type CommitSha,
+  type ComputeUtilization,
+  ComputeUtilizationSchema,
   type Decision,
   DecisionSchema,
+  type Dispatch,
+  DispatchSchema,
   type Event,
   EventSchema,
   type ExecutionNode,
@@ -32,6 +36,8 @@ import {
   type Scope,
   type Verification,
   VerificationSchema,
+  type WarmCache,
+  WarmCacheSchema,
 } from "@nightshift/contracts";
 import { createCountingIdGenerator, type IdGenerator } from "../ids.js";
 import type { RunScope } from "../rules/ownership.js";
@@ -351,6 +357,73 @@ export const makeEvent = (f: Fixtures, overrides: Overrides<Event> = {}): Event 
     payload: {},
     occurredAt: AT,
     recordedAt: AT,
+    ...overrides,
+  });
+
+/** P10 (D-P10-18): a run's machine, freshly requested on `good`. */
+export const makeDispatch = (f: Fixtures, overrides: Overrides<Dispatch> = {}): Dispatch =>
+  DispatchSchema.parse({
+    schemaVersion: 1,
+    ...f.scope,
+    status: "requested",
+    tier: "good",
+    instanceType: "m7g.xlarge",
+    usdPerHour: 0.1632,
+    amiVersion: "1.0.0",
+    generation: 1,
+    idempotencyKey: `${f.scope.runId}:${COMMIT_A}`,
+    engineAgentId: f.ids.next("agent"),
+    input: {
+      repositoryUrl: "https://github.com/example/fixture",
+      branch: "program/fixture",
+      baseSha: COMMIT_A,
+      planHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    },
+    attempts: [{ generation: 1, reason: "dispatch", startedAt: AT }],
+    spend: { estimatedUsd: 4, meteredUsd: 0, meteredSeconds: 0 },
+    publication: { intents: [] },
+    cleanup: { volumeDeleted: false, failures: [] },
+    requestedAt: AT,
+    updatedAt: AT,
+    ...overrides,
+  });
+
+/** P10 (D-P10-14b): a quiet run on `good`. */
+export const makeComputeUtilization = (
+  f: Fixtures,
+  overrides: Overrides<ComputeUtilization> = {},
+): ComputeUtilization =>
+  ComputeUtilizationSchema.parse({
+    schemaVersion: 1,
+    ...f.scope,
+    tier: "good",
+    samples: 10,
+    peakMemoryPct: 30,
+    peakCpuPct: 40,
+    cpuAbove90Pct: 0,
+    peakDiskPct: 20,
+    oomKills: 0,
+    swapUsed: false,
+    wallClockSeconds: 600,
+    updatedAt: AT,
+    ...overrides,
+  });
+
+/** P10 (D-P10-15): a project's warm snapshot with no history. */
+export const makeWarmCache = (f: Fixtures, overrides: Overrides<WarmCache> = {}): WarmCache =>
+  WarmCacheSchema.parse({
+    schemaVersion: 1,
+    projectId: f.scope.projectId,
+    architecture: "arm64",
+    current: {
+      snapshotId: "snap-fixture",
+      amiVersion: "1.0.0",
+      lockfileHashes: {},
+      fromRunId: f.scope.runId,
+      takenAt: AT,
+    },
+    history: [],
+    updatedAt: AT,
     ...overrides,
   });
 

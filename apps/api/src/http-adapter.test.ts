@@ -54,7 +54,9 @@ import {
   isSequenced,
   makeAgent,
   makeCheckpoint,
+  makeComputeUtilization,
   makeDecision,
+  makeDispatch,
   makeEvent,
   makeJobContract,
   makeMembership,
@@ -64,6 +66,7 @@ import {
   makeRootNode,
   makeRun,
   makeVerification,
+  makeWarmCache,
   nextUserId,
   type ProjectStores,
   rejectionOf,
@@ -108,6 +111,11 @@ const PORT_METHODS = {
   routingDecisions: ["put", "listByNode"],
   artifacts: ["put", "get", "listByRun"],
   orgConfigs: ["get", "put"],
+  // P10: the control plane owns these records; the adapter reads them and names
+  // the route that writes them when asked to write one whole.
+  dispatches: ["put", "get"],
+  computeUtilizations: ["put", "get", "listByProject"],
+  warmCaches: ["put", "get"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
 /** `store.method` for every entry above. */
@@ -717,5 +725,34 @@ describe("what the adapter is, structurally", () => {
       const implemented = Object.keys(world.http[store as keyof ProjectStores]).sort();
       expect(implemented, store).toEqual([...methods].sort());
     }
+  });
+});
+
+describe("the remote runner's records (P10)", () => {
+  it("reads a run's dispatch and utilization and a project's warm cache, undefined when absent", async () => {
+    const { http, f, backing } = world;
+    await seed();
+    expect(await http.dispatches.get(f.scope)).toBeUndefined();
+    expect(await http.computeUtilizations.get(f.scope)).toBeUndefined();
+    expect(await http.warmCaches.get(f.scope.projectId, "arm64")).toBeUndefined();
+    const dispatch = makeDispatch(f);
+    await backing.dispatches.put(dispatch);
+    await backing.computeUtilizations.put(makeComputeUtilization(f));
+    await backing.warmCaches.put(makeWarmCache(f));
+    expect(await http.dispatches.get(f.scope)).toEqual(dispatch);
+    expect(await http.computeUtilizations.get(f.scope)).toEqual(makeComputeUtilization(f));
+    expect(await http.warmCaches.get(f.scope.projectId, "arm64")).toEqual(makeWarmCache(f));
+  });
+
+  it("refuses to write one whole, naming the route that does", async () => {
+    const { http, f } = world;
+    await expect(http.dispatches.put(makeDispatch(f))).rejects.toThrow(/dispatch/);
+    await expect(http.computeUtilizations.put(makeComputeUtilization(f))).rejects.toThrow(
+      /heartbeat/,
+    );
+    await expect(http.warmCaches.put(makeWarmCache(f))).rejects.toThrow(/reconciler/);
+    await expect(http.computeUtilizations.listByProject(f.scope.projectId)).rejects.toThrow(
+      /recommendation/,
+    );
   });
 });

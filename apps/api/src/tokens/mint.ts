@@ -34,6 +34,7 @@
  */
 import type {
   Agent,
+  Dispatch,
   ExecutionNode,
   ExecutionRole,
   ExecutionTokenClaims,
@@ -45,6 +46,7 @@ import {
   ExecutionTokenClaimsSchema,
   MAX_EXECUTION_TOKEN_SECONDS,
 } from "@nightshift/contracts";
+import { ENGINE_TOKEN_SECONDS } from "@nightshift/core";
 import { compactToken, EXECUTION_TOKEN_HEADER, signingInputFor } from "./jwt.js";
 
 /**
@@ -202,11 +204,73 @@ export const mintExecutionToken = async (
     exp: expiresAt,
   } satisfies ExecutionTokenClaims);
 
+  return signClaims(signer, claims);
+};
+
+const signClaims = async (
+  signer: ExecutionTokenSigner,
+  claims: ExecutionTokenClaims,
+): Promise<MintedExecutionToken> => {
   const { signingInput, prefix } = signingInputFor(EXECUTION_TOKEN_HEADER, claims);
   const signature = await signer.sign(signingInput);
   return {
     token: compactToken(prefix, signature),
     claims,
-    expiresAt: new Date(expiresAt * 1000).toISOString(),
+    expiresAt: new Date(claims.exp * 1000).toISOString(),
   };
+};
+
+export interface MintEngineTokenInput {
+  readonly dispatch: Dispatch;
+  readonly run: Run;
+  readonly program: ProgramContract;
+  readonly issuer: string;
+  readonly now: number;
+}
+
+/** The run's wall clock has passed: there is no engine token short enough to be honest. */
+export class EngineTokenExpiredError extends Error {
+  override readonly name = "EngineTokenExpiredError";
+  constructor() {
+    super("the run's wall clock has passed; no engine token can be minted");
+  }
+}
+
+/**
+ * The engine's token (P10, D-P10-20): bound to the dispatch's generation, on
+ * the run's root node, under the dispatch's engine identity, for an hour or the
+ * run's remaining wall clock, whichever is shorter. Minted by the dispatch
+ * Lambda at boot and renewed by every heartbeat; never by `agent.mintToken`.
+ */
+export const mintEngineToken = async (
+  signer: ExecutionTokenSigner,
+  input: MintEngineTokenInput,
+): Promise<MintedExecutionToken> => {
+  const { dispatch, run, program, issuer, now } = input;
+  const issuedAt = Math.floor(now / 1000);
+  const wallClock = program.costPolicy.maxWallClockSeconds;
+  const remaining =
+    wallClock === undefined
+      ? ENGINE_TOKEN_SECONDS
+      : Math.floor(Date.parse(run.startedAt) / 1000) + wallClock - issuedAt;
+  const lifetime = Math.min(ENGINE_TOKEN_SECONDS, remaining);
+  if (lifetime <= 0) throw new EngineTokenExpiredError();
+  const claims = ExecutionTokenClaimsSchema.parse({
+    iss: issuer,
+    sub: dispatch.engineAgentId,
+    aud: EXECUTION_TOKEN_AUDIENCE,
+    nightshift: {
+      kind: "execution",
+      projectId: run.projectId,
+      programId: run.programId,
+      runId: run.runId,
+      nodeId: run.rootNodeId,
+      agentId: dispatch.engineAgentId,
+      role: "engine",
+      generation: dispatch.generation,
+    },
+    iat: issuedAt,
+    exp: issuedAt + lifetime,
+  } satisfies ExecutionTokenClaims);
+  return signClaims(signer, claims);
 };

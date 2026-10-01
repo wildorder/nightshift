@@ -28,7 +28,11 @@ export { COUNTER_ATTRIBUTE, createEventStore, type EventStoreConfig } from "./ev
 export { estimateItemBytes, ItemTooLargeError, MAX_ITEM_BYTES } from "./items.js";
 export { artifactPrefix, keys, NODE_INDEX_NAME, type NodeIndexKey, type TableKey } from "./keys.js";
 export { createDynamoSequenceLedger, type SequenceLedgerConfig } from "./sequence-ledger.js";
-export { type AwsStoresConfig, createAwsStores } from "./stores.js";
+export {
+  type AwsStoresConfig,
+  CredentialsTableUnavailableError,
+  createAwsStores,
+} from "./stores.js";
 export {
   type ParsedStreamRecord,
   parseStreamRecord,

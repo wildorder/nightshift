@@ -21,10 +21,14 @@ import type {
   AgentId,
   Artifact,
   ArtifactId,
+  CalendarMonth,
   Checkpoint,
   CheckpointId,
+  ComputeArchitecture,
+  ComputeUtilization,
   Decision,
   DecisionId,
+  Dispatch,
   Event,
   Examination,
   ExaminationId,
@@ -33,12 +37,16 @@ import type {
   JobContract,
   JobContractId,
   Membership,
+  OrgComputeUsage,
   OrgConfig,
+  OrgCredential,
+  OrgCredentialView,
   OrgId,
   ProgramContract,
   ProgramId,
   Project,
   ProjectId,
+  Provider,
   RoutingDecision,
   Run,
   RunId,
@@ -46,6 +54,7 @@ import type {
   UserId,
   Verification,
   VerificationId,
+  WarmCache,
 } from "@nightshift/contracts";
 import type { ProgramScope, RunScope } from "../rules/ownership.js";
 
@@ -229,6 +238,51 @@ export interface OrgConfigStore {
 }
 
 /**
+ * One remote run's machine (P10, D-P10-18). One dispatch per run, keyed by the
+ * run, so a retried `POST …/dispatch` finds the one it made.
+ */
+export interface DispatchStore {
+  put(dispatch: Dispatch): Promise<void>;
+  get(scope: RunScope): Promise<Dispatch | undefined>;
+}
+
+/**
+ * What a run's machine was asked to do (P10, D-P10-14b). Listed by project,
+ * newest run first, because the right-sizing rule reads a project's last three.
+ */
+export interface ComputeUtilizationStore {
+  put(utilization: ComputeUtilization): Promise<void>;
+  get(scope: RunScope): Promise<ComputeUtilization | undefined>;
+  listByProject(projectId: ProjectId, page?: PageRequest): Promise<Page<ComputeUtilization>>;
+}
+
+/** A project's warm snapshot (P10, D-P10-15), one per architecture. */
+export interface WarmCacheStore {
+  put(cache: WarmCache): Promise<void>;
+  get(projectId: ProjectId, architecture: ComputeArchitecture): Promise<WarmCache | undefined>;
+}
+
+/**
+ * An org's provider credentials (P10, D-P10-23). Above every project, like a
+ * membership. `view` is what any read route returns; `sealed` is read by the
+ * heartbeat alone, to decrypt for the run's own engine.
+ */
+export interface CredentialsStore {
+  put(credential: OrgCredential): Promise<void>;
+  view(orgId: OrgId): Promise<readonly OrgCredentialView[]>;
+  sealed(orgId: OrgId, provider: Provider): Promise<OrgCredential | undefined>;
+}
+
+/**
+ * An org's compute ledger, one row per month (P10, D-P10-19). Written by the
+ * API alone, as dispatches start, heartbeat and end; read to refuse a dispatch.
+ */
+export interface ComputeLedgerStore {
+  get(orgId: OrgId, month: CalendarMonth): Promise<OrgComputeUsage | undefined>;
+  put(usage: OrgComputeUsage): Promise<void>;
+}
+
+/**
  * Everything a *run* persists (T2).
  *
  * Split out from {@link NightshiftStores} in P3 because the two halves have
@@ -254,6 +308,10 @@ export interface ProjectStores {
   readonly routingDecisions: RoutingDecisionStore;
   readonly artifacts: ArtifactStore;
   readonly orgConfigs: OrgConfigStore;
+  // P10: the remote runner's records.
+  readonly dispatches: DispatchStore;
+  readonly computeUtilizations: ComputeUtilizationStore;
+  readonly warmCaches: WarmCacheStore;
 }
 
 /**
@@ -266,6 +324,10 @@ export interface ProjectStores {
 export interface IdentityStores {
   readonly users: UserStore;
   readonly memberships: MembershipStore;
+  /** P10 (D-P10-23): an org's provider keys, in a table of their own. */
+  readonly credentials: CredentialsStore;
+  /** P10 (D-P10-19): what the org's remote runs have spent this month. */
+  readonly computeLedger: ComputeLedgerStore;
 }
 
 /**

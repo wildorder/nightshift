@@ -10,6 +10,7 @@ import type { FakeStreamRecord } from "./fake-table.js";
 
 export * from "./fake-objects.js";
 export * from "./fake-table.js";
+export * from "./routing-table.js";
 
 /** A fake stream record in the marshalled shape Lambda delivers. */
 export const toStreamRecord = (record: FakeStreamRecord): StreamRecordLike => ({

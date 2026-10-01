@@ -56,12 +56,26 @@ export type UserPrincipal = z.infer<typeof UserPrincipalSchema>;
  * examination of its node and nothing else a worker cannot, and an `arbiter`,
  * whose token may record its ruling on that node.
  */
-export const ExecutionRoleSchema = z.enum(["worker", "orchestrator", "examiner", "arbiter"]);
+/**
+ * P10 adds one more (D-P10-20): the **engine** on a remote run's machine, whose
+ * token does for its run what the orchestrator's human session does locally,
+ * renewed by its heartbeat and bound to the dispatch's generation.
+ */
+export const ExecutionRoleSchema = z.enum([
+  "worker",
+  "orchestrator",
+  "examiner",
+  "arbiter",
+  "engine",
+]);
 export type ExecutionRole = z.infer<typeof ExecutionRoleSchema>;
 
 /**
  * One agent, on one node, of one run. The chain is carried in the token rather
  * than looked up, so the authorizer needs no database read to build it.
+ *
+ * `generation` is carried by an `engine` token alone (D-P10-18): the dispatch's
+ * generation it was minted under, which every engine write is held to.
  */
 export const ExecutionPrincipalSchema = z.strictObject({
   kind: z.literal("execution"),
@@ -71,6 +85,7 @@ export const ExecutionPrincipalSchema = z.strictObject({
   nodeId: ExecutionNodeIdSchema,
   agentId: AgentIdSchema,
   role: ExecutionRoleSchema,
+  generation: z.int().min(1).optional(),
 });
 export type ExecutionPrincipal = z.infer<typeof ExecutionPrincipalSchema>;
 

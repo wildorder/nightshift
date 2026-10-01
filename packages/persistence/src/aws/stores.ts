@@ -9,20 +9,26 @@ import {
   AgentSchema,
   ArtifactSchema,
   CheckpointSchema,
+  ComputeUtilizationSchema,
   DecisionSchema,
+  DispatchSchema,
   ExaminationSchema,
   ExecutionNodeSchema,
   JobContractSchema,
   MembershipSchema,
+  OrgComputeUsageSchema,
   OrgConfigSchema,
+  OrgCredentialSchema,
   ProgramContractSchema,
   ProjectSchema,
   RoutingDecisionSchema,
   RunSchema,
   UserSchema,
   VerificationSchema,
+  WarmCacheSchema,
 } from "@nightshift/contracts";
 import {
+  type CredentialsStore,
   type NightshiftStores,
   OwnershipViolationError,
   type Page,
@@ -40,9 +46,34 @@ import { conditionFailures, isConditionalCheckFailure, type TableClient } from "
 export interface AwsStoresConfig {
   readonly tableName: string;
   readonly table: TableClient;
+  /**
+   * The credentials table (P10, D-P10-23): an org's sealed provider keys, in a
+   * table of their own with no stream and one reader. Absent until the data
+   * stack deploys it (T2); the credentials store then refuses every call by
+   * name rather than writing a key into the main table.
+   */
+  readonly credentialsTableName?: string;
 }
 
-export const createAwsStores = ({ tableName, table }: AwsStoresConfig): NightshiftStores => {
+/** The credentials table was not configured. The API answers 501 for it. */
+export class CredentialsTableUnavailableError extends Error {
+  override readonly name = "CredentialsTableUnavailableError";
+  constructor() {
+    super(
+      "this control plane has no credentials table configured (NIGHTSHIFT_CREDENTIALS_TABLE_NAME)",
+    );
+  }
+}
+
+const noCredentialsTable = async (): Promise<never> => {
+  throw new CredentialsTableUnavailableError();
+};
+
+export const createAwsStores = ({
+  tableName,
+  table,
+  credentialsTableName,
+}: AwsStoresConfig): NightshiftStores => {
   const getRecord = async <T>(schema: Parser<T>, key: TableKey): Promise<T | undefined> => {
     const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
     return output.Item === undefined ? undefined : fromItem(schema, output.Item);
@@ -69,6 +100,41 @@ export const createAwsStores = ({ tableName, table }: AwsStoresConfig): Nightshi
 
   const listAll = async <T>(schema: Parser<T>, query: PartitionQuery): Promise<readonly T[]> =>
     (await queryAll(table, tableName, query)).map((item) => fromItem(schema, item));
+
+  // The credentials table (D-P10-23). Same client, another table name, and the
+  // only reads and writes that ever name it.
+  const credentials: CredentialsStore =
+    credentialsTableName === undefined
+      ? { put: noCredentialsTable, view: noCredentialsTable, sealed: noCredentialsTable }
+      : {
+          put: async (credential) => {
+            const parsed = OrgCredentialSchema.parse(credential);
+            await table.put({
+              TableName: credentialsTableName,
+              Item: toItem("OrgCredential", keys.credential(parsed.orgId, parsed.provider), parsed),
+            });
+          },
+          view: async (orgId) => {
+            const partition = keys.credentialPartition(orgId);
+            const items = await queryAll(table, credentialsTableName, {
+              partition: partition.PK,
+              prefix: partition.prefix,
+            });
+            return items
+              .map((item) => fromItem(OrgCredentialSchema, item))
+              .map(({ provider, lastFour, setAt }) => ({ provider, lastFour, setAt }));
+          },
+          sealed: async (orgId, provider) => {
+            const output = await table.get({
+              TableName: credentialsTableName,
+              Key: keys.credential(orgId, provider),
+              ConsistentRead: true,
+            });
+            return output.Item === undefined
+              ? undefined
+              : fromItem(OrgCredentialSchema, output.Item);
+          },
+        };
 
   /** A table partition from a key helper. */
   const inTable = (p: { readonly PK: string; readonly prefix: string }): PartitionQuery => ({
@@ -122,6 +188,55 @@ export const createAwsStores = ({ tableName, table }: AwsStoresConfig): Nightshi
 
   return {
     projects,
+    credentials,
+
+    // P10 (D-P10-19): one row per org and month, read to refuse a dispatch.
+    computeLedger: {
+      get: (orgId, month) => getRecord(OrgComputeUsageSchema, keys.computeUsage(orgId, month)),
+      put: async (usage) => {
+        const parsed = OrgComputeUsageSchema.parse(usage);
+        await putRecord("OrgComputeUsage", keys.computeUsage(parsed.orgId, parsed.month), parsed);
+      },
+    },
+
+    // P10 (D-P10-18): one dispatch per run, a row beside the run's records.
+    dispatches: {
+      put: async (dispatch) => {
+        const parsed = DispatchSchema.parse(dispatch);
+        await putRecord("Dispatch", keys.dispatch(runScopeOf(parsed)), parsed);
+      },
+      get: (scope) => getRecord(DispatchSchema, keys.dispatch(scope)),
+    },
+
+    // P10 (D-P10-14b): under the project, newest run first.
+    computeUtilizations: {
+      put: async (utilization) => {
+        const parsed = ComputeUtilizationSchema.parse(utilization);
+        await putRecord(
+          "ComputeUtilization",
+          keys.computeUtilization(parsed.projectId, parsed.runId),
+          parsed,
+        );
+      },
+      get: (scope) =>
+        getRecord(ComputeUtilizationSchema, keys.computeUtilization(scope.projectId, scope.runId)),
+      listByProject: (projectId, page) =>
+        listPage(
+          ComputeUtilizationSchema,
+          { ...inTable(keys.computeUtilizationPartition(projectId)), descending: true },
+          page,
+        ),
+    },
+
+    // P10 (D-P10-15): one per project and architecture.
+    warmCaches: {
+      put: async (cache) => {
+        const parsed = WarmCacheSchema.parse(cache);
+        await putRecord("WarmCache", keys.warmCache(parsed.projectId, parsed.architecture), parsed);
+      },
+      get: (projectId, architecture) =>
+        getRecord(WarmCacheSchema, keys.warmCache(projectId, architecture)),
+    },
 
     programContracts: {
       put: async (contract) => {

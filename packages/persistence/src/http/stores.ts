@@ -31,8 +31,10 @@ import {
   ArtifactSchema,
   type CheckpointId,
   CheckpointSchema,
+  ComputeUtilizationSchema,
   type DecisionId,
   DecisionSchema,
+  DispatchSchema,
   EventSchema,
   type ExaminationId,
   ExaminationSchema,
@@ -50,13 +52,16 @@ import {
   RunSchema,
   type VerificationId,
   VerificationSchema,
+  WarmCacheSchema,
 } from "@nightshift/contracts";
 import type {
   AgentStore,
   AppendResult,
   ArtifactStore,
   CheckpointStore,
+  ComputeUtilizationStore,
   DecisionStore,
+  DispatchStore,
   EventStore,
   ExaminationStore,
   ExecutionNodeStore,
@@ -71,6 +76,7 @@ import type {
   RoutingDecisionStore,
   RunStore,
   VerificationStore,
+  WarmCacheStore,
 } from "@nightshift/core";
 import type { z } from "zod";
 import { routes } from "./routes.js";
@@ -464,9 +470,46 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     },
   };
 
+  /**
+   * The control plane owns these three records (P10): a dispatch is created by
+   * its route and moved by heartbeats and the reconciler, utilization is folded
+   * from heartbeats, and the warm cache is written when a run ends. There is no
+   * route that takes one whole, so a `put` through this adapter is a mistake
+   * named as one. Nothing in the execution layer calls them.
+   */
+  const controlPlaneOwns = (record: string, route: string) => async (): Promise<void> => {
+    throw new Error(
+      `the control plane owns a ${record}; there is no route that writes one whole. Use ${route}.`,
+    );
+  };
+
+  const dispatches: DispatchStore = {
+    put: controlPlaneOwns("dispatch", "POST .../dispatch, .../heartbeat, .../cancel or .../resume"),
+    get: (scope) => getOrUndefined(transport, DispatchSchema, routes.dispatch(scope)),
+  };
+
+  const computeUtilizations: ComputeUtilizationStore = {
+    put: controlPlaneOwns("utilization record", "POST .../dispatch/heartbeat"),
+    get: (scope) =>
+      getOrUndefined(transport, ComputeUtilizationSchema, routes.computeUtilization(scope)),
+    listByProject: async () => {
+      throw new Error(
+        "a project's utilization records are read through GET .../compute/recommendation, not listed",
+      );
+    },
+  };
+
+  const warmCaches: WarmCacheStore = {
+    put: controlPlaneOwns("warm cache", "the reconciler, when a run ends"),
+    get: (projectId) => getOrUndefined(transport, WarmCacheSchema, routes.warmCache(projectId)),
+  };
+
   return {
     orgConfigs,
     projects,
+    dispatches,
+    computeUtilizations,
+    warmCaches,
     programContracts,
     runs,
     executionNodes,

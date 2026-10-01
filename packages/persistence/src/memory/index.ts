@@ -21,12 +21,18 @@ import {
   type Artifact,
   type ArtifactId,
   ArtifactSchema,
+  type CalendarMonth,
   type Checkpoint,
   type CheckpointId,
   CheckpointSchema,
+  type ComputeArchitecture,
+  type ComputeUtilization,
+  ComputeUtilizationSchema,
   type Decision,
   type DecisionId,
   DecisionSchema,
+  type Dispatch,
+  DispatchSchema,
   type Event,
   EventSchema,
   type Examination,
@@ -40,8 +46,12 @@ import {
   JobContractSchema,
   type Membership,
   MembershipSchema,
+  type OrgComputeUsage,
+  OrgComputeUsageSchema,
   type OrgConfig,
   OrgConfigSchema,
+  type OrgCredential,
+  OrgCredentialSchema,
   type OrgId,
   type ProgramContract,
   ProgramContractSchema,
@@ -49,6 +59,7 @@ import {
   type Project,
   type ProjectId,
   ProjectSchema,
+  type Provider,
   type RoutingDecision,
   RoutingDecisionSchema,
   type Run,
@@ -60,13 +71,19 @@ import {
   type Verification,
   type VerificationId,
   VerificationSchema,
+  type WarmCache,
+  WarmCacheSchema,
 } from "@nightshift/contracts";
 import {
   type AgentStore,
   type AppendResult,
   type ArtifactStore,
   type CheckpointStore,
+  type ComputeLedgerStore,
+  type ComputeUtilizationStore,
+  type CredentialsStore,
   type DecisionStore,
+  type DispatchStore,
   type EventStore,
   type ExaminationStore,
   type ExecutionNodeStore,
@@ -88,6 +105,7 @@ import {
   type StampOutcome,
   type UserStore,
   type VerificationStore,
+  type WarmCacheStore,
 } from "@nightshift/core";
 import {
   type Atomically,
@@ -166,6 +184,12 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const users = table<User>("users");
   const memberships = table<Membership>("memberships");
   const orgConfigs = table<OrgConfig>("orgConfigs");
+  // P10: the remote runner's records, and the org's sealed keys.
+  const dispatches = table<Dispatch>("dispatches");
+  const computeUtilizations = table<ComputeUtilization>("computeUtilizations");
+  const warmCaches = table<WarmCache>("warmCaches");
+  const credentials = table<OrgCredential>("credentials");
+  const computeLedger = table<OrgComputeUsage>("computeLedger");
 
   const all = [
     projects,
@@ -186,6 +210,11 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     users,
     memberships,
     orgConfigs,
+    dispatches,
+    computeUtilizations,
+    warmCaches,
+    credentials,
+    computeLedger,
   ];
 
   /**
@@ -448,6 +477,58 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     },
   };
 
+  const dispatchStore: DispatchStore = {
+    put: async (dispatch) => {
+      const parsed = DispatchSchema.parse(dispatch);
+      dispatches.set(runPrefix(parsed), parsed);
+    },
+    get: async (scope: RunScope) => dispatches.get(runPrefix(scope)),
+  };
+
+  const computeUtilizationStore: ComputeUtilizationStore = {
+    put: async (utilization) => {
+      const parsed = ComputeUtilizationSchema.parse(utilization);
+      // Keyed under the project so a project's runs list together, newest run
+      // first: run ids are ULIDs, so the reversed scan is newest first.
+      computeUtilizations.set(`${projectPrefix(parsed)}${parsed.runId}`, parsed);
+    },
+    get: async (scope: RunScope) =>
+      computeUtilizations.get(`${projectPrefix(scope)}${scope.runId}`),
+    listByProject: async (projectId: ProjectId, page?: PageRequest) =>
+      paginate([...computeUtilizations.scan(projectPrefix({ projectId }))].reverse(), page),
+  };
+
+  const warmCacheStore: WarmCacheStore = {
+    put: async (cache) => {
+      const parsed = WarmCacheSchema.parse(cache);
+      warmCaches.set(`${projectPrefix(parsed)}${parsed.architecture}`, parsed);
+    },
+    get: async (projectId: ProjectId, architecture: ComputeArchitecture) =>
+      warmCaches.get(`${projectPrefix({ projectId })}${architecture}`),
+  };
+
+  const credentialsStore: CredentialsStore = {
+    put: async (credential) => {
+      const parsed = OrgCredentialSchema.parse(credential);
+      credentials.set(`${orgPrefix(parsed.orgId)}${parsed.provider}`, parsed);
+    },
+    view: async (orgId: OrgId) =>
+      credentials
+        .scan(orgPrefix(orgId))
+        .map(({ provider, lastFour, setAt }) => ({ provider, lastFour, setAt })),
+    sealed: async (orgId: OrgId, provider: Provider) =>
+      credentials.get(`${orgPrefix(orgId)}${provider}`),
+  };
+
+  const computeLedgerStore: ComputeLedgerStore = {
+    get: async (orgId: OrgId, month: CalendarMonth) =>
+      computeLedger.get(`${orgPrefix(orgId)}${month}`),
+    put: async (usage) => {
+      const parsed = OrgComputeUsageSchema.parse(usage);
+      computeLedger.set(`${orgPrefix(parsed.orgId)}${parsed.month}`, parsed);
+    },
+  };
+
   return {
     projects: projectStore,
     programContracts: programContractStore,
@@ -465,6 +546,11 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     users: userStore,
     memberships: membershipStore,
     orgConfigs: orgConfigStore,
+    dispatches: dispatchStore,
+    computeUtilizations: computeUtilizationStore,
+    warmCaches: warmCacheStore,
+    credentials: credentialsStore,
+    computeLedger: computeLedgerStore,
     sequenceLedger: {
       stamp: async (scope, eventId) => stampStored(`${runPrefix(scope)}${eventId}`),
     },

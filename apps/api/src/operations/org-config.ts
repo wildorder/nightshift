@@ -44,11 +44,16 @@ export const getOrgConfig: Handler = async ({ deps, params }) => {
 export const putOrgConfig: Handler = async ({ deps, request, params }) => {
   const orgId = orgIdFrom(params);
   const body = parseBody(OrgConfigBodySchema, request.body);
+  // P10: the GitHub installation is recorded by its own route (D-P10-02) and
+  // survives a policy write; the compute ceilings are the writer's to set.
+  const stored = await deps.stores.orgConfigs.get(orgId);
   const config: OrgConfig = {
     schemaVersion: 1,
     orgId,
     routingPolicy: body.routingPolicy,
     examinationPolicy: body.examinationPolicy,
+    ...(body.compute === undefined ? {} : { compute: body.compute }),
+    ...(stored?.github === undefined ? {} : { github: stored.github }),
     version: body.replacesVersion + 1,
     updatedAt: nowIso(deps.clock),
   };

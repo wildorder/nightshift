@@ -13,6 +13,8 @@
 import { z } from "zod";
 import { OrgIdSchema } from "../ids.js";
 import { IsoTimestampSchema, SchemaVersionSchema } from "./common.js";
+import { ComputeCeilingsSchema } from "./compute.js";
+import { GitHubInstallationSchema } from "./credentials.js";
 import { type ExaminationPolicy, ExaminationPolicySchema } from "./program-contract.js";
 import { type RoutingPolicy, RoutingPolicySchema } from "./routing-policy.js";
 
@@ -21,16 +23,31 @@ export const OrgConfigSchema = z.strictObject({
   orgId: OrgIdSchema,
   routingPolicy: RoutingPolicySchema,
   examinationPolicy: ExaminationPolicySchema,
+  /**
+   * P10 (D-P10-19): the org's compute ceilings. Absent means the shipped
+   * defaults, `DEFAULT_COMPUTE_CEILINGS`; a project or program may only lower them.
+   */
+  compute: ComputeCeilingsSchema.optional(),
+  /**
+   * P10 (D-P10-02): the GitHub App installation this org granted, written by
+   * `org github install` and never by a client's claim alone.
+   */
+  github: GitHubInstallationSchema.optional(),
   /** 0 for the seeded default nobody has written; 1 for the first write, and so on. */
   version: z.int().min(0),
   updatedAt: IsoTimestampSchema,
 });
 export type OrgConfig = z.infer<typeof OrgConfigSchema>;
 
-/** `PUT /orgs/{orgId}/config`: the policy, and the version this write replaces. */
+/**
+ * `PUT /orgs/{orgId}/config`: the policy, and the version this write replaces.
+ * `github` is not here: the installation is recorded by its own route, which
+ * verifies it through the App, and a config write leaves it as it is.
+ */
 export const OrgConfigBodySchema = z.strictObject({
   routingPolicy: RoutingPolicySchema,
   examinationPolicy: ExaminationPolicySchema,
+  compute: ComputeCeilingsSchema.optional(),
   /** The version the writer read. The stored config must still be at it. */
   replacesVersion: z.int().min(0),
 });

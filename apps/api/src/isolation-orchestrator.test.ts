@@ -92,6 +92,7 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       orgId,
       sha256: "a".repeat(64),
       prerequisiteId: "HP-01",
+      provider: "anthropic",
       agentId: agent.agentId,
       siblingAgentId: siblingAgent.agentId,
     },

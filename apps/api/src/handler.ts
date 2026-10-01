@@ -17,12 +17,28 @@
  * surface area the smoke suite would have to cover, so it is not added
  * speculatively — and every route here is exercised by the smoke suite.
  */
+
+import type { Operation } from "@nightshift/core";
 import { createProjectOrgCache, enforce } from "./auth/enforce.js";
 import { toErrorResponse } from "./errors.js";
 import { type ApiDeps, type ApiRequest, type ApiResponse, errorBody } from "./http.js";
 import { getAgent, listAgentsByNode, mintAgentToken, putAgent } from "./operations/agents.js";
+import {
+  getComputeRecommendation,
+  getComputeUtilization,
+  getWarmCache,
+} from "./operations/compute.js";
+import { listOrgCredentials, putOrgCredential } from "./operations/credentials.js";
+import {
+  cancelDispatch,
+  createDispatch,
+  getDispatch,
+  heartbeat,
+  resumeDispatch,
+} from "./operations/dispatch.js";
 import { createArtifactDownloadUrl } from "./operations/downloads.js";
 import { appendEvent, getRunState, listEvents } from "./operations/events.js";
+import { getGithubApp, getOrgGithub, putOrgGithub } from "./operations/github.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
 import { getOrgConfig, putOrgConfig } from "./operations/org-config.js";
@@ -44,6 +60,7 @@ import {
   putProject,
   putRun,
 } from "./operations/projects.js";
+import { listPublication, requestPublication } from "./operations/publication.js";
 import {
   getArtifact,
   getCheckpoint,
@@ -90,6 +107,33 @@ export const ROUTES: readonly Route[] = [
     handler: putOrgConfig,
   },
 
+  // An org's provider keys and its GitHub installation (P10, D-P10-23, D-P10-02).
+  {
+    method: "PUT",
+    path: "/orgs/{orgId}/credentials/{provider}",
+    operation: "orgCredential.put",
+    handler: putOrgCredential,
+  },
+  {
+    method: "GET",
+    path: "/orgs/{orgId}/credentials",
+    operation: "orgCredential.list",
+    handler: listOrgCredentials,
+  },
+  {
+    method: "PUT",
+    path: "/orgs/{orgId}/github",
+    operation: "orgGithub.put",
+    handler: putOrgGithub,
+  },
+  {
+    method: "GET",
+    path: "/orgs/{orgId}/github",
+    operation: "orgGithub.get",
+    handler: getOrgGithub,
+  },
+  { method: "GET", path: "/github/app", operation: "githubApp.get", handler: getGithubApp },
+
   // Projects and programs.
   { method: "GET", path: "/projects", operation: "project.list", handler: listProjects },
   { method: "PUT", path: PROJECT, operation: "project.put", handler: putProject },
@@ -102,6 +146,19 @@ export const ROUTES: readonly Route[] = [
   },
   { method: "PUT", path: PROGRAM, operation: "program.put", handler: putProgram },
   { method: "GET", path: PROGRAM, operation: "program.get", handler: getProgram },
+  // P10 (D-P10-15, D-P10-14b): a project's warm snapshot, and the tier its runs say.
+  {
+    method: "GET",
+    path: `${PROJECT}/warm-cache`,
+    operation: "warmCache.get",
+    handler: getWarmCache,
+  },
+  {
+    method: "GET",
+    path: `${PROGRAM}/compute/recommendation`,
+    operation: "computeRecommendation.get",
+    handler: getComputeRecommendation,
+  },
 
   // Planning (P7): ratification, the plan document, human prerequisites.
   {
@@ -140,6 +197,51 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", path: RUN, operation: "run.put", handler: putRun },
   { method: "GET", path: RUN, operation: "run.get", handler: getRun },
   { method: "GET", path: `${RUN}/state`, operation: "run.getState", handler: getRunState },
+
+  // The remote runner (P10, D-P10-18, D-P10-22, D-P10-14b).
+  {
+    method: "POST",
+    path: `${RUN}/dispatch`,
+    operation: "dispatch.create",
+    handler: createDispatch,
+  },
+  { method: "GET", path: `${RUN}/dispatch`, operation: "dispatch.get", handler: getDispatch },
+  {
+    method: "POST",
+    path: `${RUN}/dispatch/cancel`,
+    operation: "dispatch.cancel",
+    handler: cancelDispatch,
+  },
+  {
+    method: "POST",
+    path: `${RUN}/dispatch/resume`,
+    operation: "dispatch.resume",
+    handler: resumeDispatch,
+  },
+  {
+    method: "POST",
+    path: `${RUN}/dispatch/heartbeat`,
+    operation: "dispatch.heartbeat",
+    handler: heartbeat,
+  },
+  {
+    method: "POST",
+    path: `${RUN}/publication`,
+    operation: "publication.request",
+    handler: requestPublication,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/publication`,
+    operation: "publication.list",
+    handler: listPublication,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/compute`,
+    operation: "computeUtilization.get",
+    handler: getComputeUtilization,
+  },
 
   // Execution nodes.
   { method: "GET", path: `${RUN}/nodes`, operation: "node.list", handler: listNodes },
@@ -306,6 +408,16 @@ export const ROUTES: readonly Route[] = [
   },
 ];
 
+/**
+ * Routes whose body is a secret (P10, D-P10-23). Nothing in the handler logs a
+ * request body, and this set is what keeps that true for the one route where
+ * it would matter: the diagnostic a failure writes names the route and says
+ * the body was masked, and a test holds it to that.
+ */
+export const MASKED_BODY_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
+  "orgCredential.put",
+]);
+
 export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise<ApiResponse> => {
   const match = matchRoute(ROUTES, request.method.toUpperCase(), request.path);
   if (match.kind === "not_found") {
@@ -331,12 +443,16 @@ export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise
       body: request.body,
       memberships: deps.stores.memberships,
       nodes: deps.stores.executionNodes,
+      dispatches: deps.stores.dispatches,
       projectOrgs:
         deps.projectOrgs ??
         createProjectOrgCache({ projects: deps.stores.projects, clock: deps.clock }),
     });
     return await match.route.handler({ deps, request, params: match.params, principal });
   } catch (error) {
-    return toErrorResponse(error);
+    return toErrorResponse(error, {
+      route: `${request.method.toUpperCase()} ${match.route.path}`,
+      bodyMasked: MASKED_BODY_OPERATIONS.has(match.route.operation),
+    });
   }
 };

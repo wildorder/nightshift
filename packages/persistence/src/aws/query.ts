@@ -20,6 +20,8 @@ export interface PartitionQuery {
   /** Only sort keys beginning with this are returned. */
   readonly prefix: string;
   readonly index?: boolean;
+  /** Newest sort key first (P10: a project's utilization records, newest run first). */
+  readonly descending?: boolean;
 }
 
 export interface ItemPage {
@@ -73,6 +75,7 @@ const collect = async (
       ExpressionAttributeNames: { "#hash": hash, "#range": range },
       ExpressionAttributeValues: { ":hash": query.partition, ":prefix": query.prefix },
       ...(Number.isFinite(wanted) ? { Limit: wanted - items.length } : {}),
+      ...(query.descending === true ? { ScanIndexForward: false } : {}),
       ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }),
     });
     items.push(...((output.Items ?? []) as Item[]));

@@ -26,11 +26,13 @@ import {
   type AuthorizationTarget,
   authorize,
   type Clock,
+  type DispatchStore,
   type ExecutionNodeStore,
   type MembershipStore,
   type NodeRelation,
   type Operation,
   type ProjectStore,
+  READ_OPERATIONS,
 } from "@nightshift/core";
 import { HttpError } from "../http.js";
 import type { PathParams } from "../params.js";
@@ -155,6 +157,13 @@ export interface EnforceOptions {
   readonly projectOrgs: ProjectOrgCache;
   /** The run's nodes, read only to place a target in an orchestrator's subtree. */
   readonly nodes: Pick<ExecutionNodeStore, "get">;
+  /**
+   * The run's dispatch, read only to hold an engine's write to the current
+   * generation (P10, D-P10-18). A **stored fact**, like a node's ancestry: the
+   * token says which generation it was minted under, the record says which is
+   * current, and `authorize` compares the two.
+   */
+  readonly dispatches: Pick<DispatchStore, "get">;
 }
 
 /** How far up a parent chain is followed before the answer is "outside". */
@@ -232,14 +241,28 @@ export const enforce = async (options: EnforceOptions): Promise<Principal> => {
 
   if (!isUserToken(principal)) {
     // Only an orchestrator's table has a reach that depends on the tree, and
-    // only a request inside its own run is worth a read to place.
-    const placed: AuthorizationTarget =
-      principal.role === "orchestrator" && target.runId === principal.runId
-        ? {
-            ...target,
-            nodeRelation: await resolveNodeRelation(principal, target, options.body, options.nodes),
-          }
-        : target;
+    // only a request inside its own run is worth a read to place. Likewise only
+    // an engine's writes are held to a generation, and only its own run's
+    // dispatch says which is current.
+    let placed: AuthorizationTarget = target;
+    if (principal.role === "orchestrator" && target.runId === principal.runId) {
+      placed = {
+        ...target,
+        nodeRelation: await resolveNodeRelation(principal, target, options.body, options.nodes),
+      };
+    } else if (
+      principal.role === "engine" &&
+      target.runId === principal.runId &&
+      !READ_OPERATIONS.has(operation)
+    ) {
+      const dispatch = await options.dispatches.get({
+        projectId: principal.projectId,
+        programId: principal.programId,
+        runId: principal.runId,
+      });
+      placed =
+        dispatch === undefined ? target : { ...target, currentGeneration: dispatch.generation };
+    }
     const decision = authorize(principal, operation, placed);
     if (!decision.allowed) throw new HttpError(403, decision.reason, decision.detail);
     return principal;

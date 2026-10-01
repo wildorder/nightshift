@@ -35,17 +35,21 @@ import {
   isSequenced,
   makeAgent,
   makeCheckpoint,
+  makeComputeUtilization,
   makeDecision,
+  makeDispatch,
   makeEvent,
   makeJobContract,
   makeMembership,
   makeNode,
+  makeOrgCredential,
   makeProgramContract,
   makeProject,
   makeRootNode,
   makeRun,
   makeUser,
   makeVerification,
+  makeWarmCache,
   nextUserId,
   orderEvents,
   type ProjectStores,
@@ -335,6 +339,48 @@ export const describePortConformance = <S extends ProjectStores>(
       });
     });
 
+    describe("the remote runner's records (P10)", () => {
+      it("stores one dispatch per run, read by the run's scope and by no other", async () => {
+        const dispatch = makeDispatch(a);
+        await stores.dispatches.put(dispatch);
+        expect(await stores.dispatches.get(a.scope)).toEqual(dispatch);
+        expect(await stores.dispatches.get(b.scope)).toBeUndefined();
+        const moved = { ...dispatch, status: "running" as const, generation: 2 };
+        await stores.dispatches.put(moved);
+        expect(await stores.dispatches.get(a.scope)).toEqual(moved);
+      });
+
+      it("lists a project's utilization records newest run first, and only that project's", async () => {
+        const older = makeComputeUtilization(a);
+        const newerScope: RunScope = { ...a.scope, runId: a.ids.next("run") as RunId };
+        const newer = makeComputeUtilization(a, { ...newerScope, tier: "better" });
+        await stores.computeUtilizations.put(older);
+        await stores.computeUtilizations.put(newer);
+        await stores.computeUtilizations.put(makeComputeUtilization(b));
+        expect(await stores.computeUtilizations.get(a.scope)).toEqual(older);
+        expect(await stores.computeUtilizations.get(newerScope)).toEqual(newer);
+        const listed = (await stores.computeUtilizations.listByProject(a.scope.projectId)).items;
+        expect(listed.map((record) => record.runId)).toEqual([newer.runId, older.runId]);
+        expect(await stores.computeUtilizations.get(b.scope)).toBeDefined();
+      });
+
+      it("keeps one warm snapshot per project and architecture", async () => {
+        const cache = makeWarmCache(a);
+        await stores.warmCaches.put(cache);
+        expect(await stores.warmCaches.get(a.scope.projectId, "arm64")).toEqual(cache);
+        expect(await stores.warmCaches.get(b.scope.projectId, "arm64")).toBeUndefined();
+      });
+
+      it("refuses a record that is not what its schema says", async () => {
+        await expect(
+          stores.dispatches.put({ ...makeDispatch(a), generation: 0 } as never),
+        ).rejects.toThrow();
+        await expect(
+          stores.warmCaches.put({ ...makeWarmCache(a), architecture: "x86" } as never),
+        ).rejects.toThrow();
+      });
+    });
+
     describe("organisation grouping (T2, A-21)", () => {
       it("round-trips a project with its orgId", async () => {
         const orgId = a.ids.next("org");
@@ -422,6 +468,43 @@ export const describePortConformance = <S extends ProjectStores>(
           if (identityOf === undefined) throw new Error("no identity stores");
           return identityOf(stores);
         };
+
+        it("stores an org's sealed provider keys, and a view never carries the ciphertext (P10, D-P10-23)", async () => {
+          const { credentials } = identity();
+          const orgId = a.ids.next("org");
+          const sealed = makeOrgCredential(orgId);
+          await credentials.put(sealed);
+          await credentials.put(makeOrgCredential(orgId, { provider: "openai", lastFour: "abcd" }));
+          await credentials.put(makeOrgCredential(b.ids.next("org")));
+          const view = await credentials.view(orgId);
+          expect(view).toEqual([
+            { provider: "anthropic", lastFour: "wxyz", setAt: sealed.setAt },
+            { provider: "openai", lastFour: "abcd", setAt: sealed.setAt },
+          ]);
+          for (const item of view) {
+            expect(Object.keys(item).sort()).toEqual(["lastFour", "provider", "setAt"]);
+          }
+          expect(await credentials.sealed(orgId, "anthropic")).toEqual(sealed);
+          expect(await credentials.sealed(orgId, "openai")).toMatchObject({ lastFour: "abcd" });
+          expect(await credentials.sealed(a.ids.next("org"), "anthropic")).toBeUndefined();
+        });
+
+        it("keeps an org's compute ledger by month (P10, D-P10-19)", async () => {
+          const { computeLedger } = identity();
+          const orgId = a.ids.next("org");
+          expect(await computeLedger.get(orgId, "2026-10")).toBeUndefined();
+          const usage = {
+            schemaVersion: 1 as const,
+            orgId,
+            month: "2026-10",
+            meteredUsd: 1.25,
+            liveRuns: [a.scope.runId],
+            updatedAt: "2026-10-01T12:00:00.000Z",
+          };
+          await computeLedger.put(usage);
+          expect(await computeLedger.get(orgId, "2026-10")).toEqual(usage);
+          expect(await computeLedger.get(orgId, "2026-11")).toBeUndefined();
+        });
 
         it("stores and reads a user, and returns undefined for an unknown subject", async () => {
           const user = makeUser(a);
@@ -761,6 +844,7 @@ export const describePortConformance = <S extends ProjectStores>(
           stores.examinations.listByNode,
           stores.routingDecisions.listByNode,
           stores.artifacts.listByRun,
+          stores.computeUtilizations.listByProject,
           // The identity half, only for an adapter that has one.
           ...(options.identity === undefined
             ? []

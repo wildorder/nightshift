@@ -119,6 +119,8 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       orgId,
       sha256: "a".repeat(64),
       prerequisiteId: "HP-01",
+      // P10: an org's provider key routes are named by the provider.
+      provider: "anthropic",
     },
     execution: {
       kind: "execution",
@@ -211,9 +213,10 @@ describe("SC-P4-01 — a user in another organisation is refused every project-s
       a.params.nodeId,
     );
 
-    if (route.path === "/projects") {
-      // The one route with no target project: it is scoped by filtering, not by
-      // refusing, and SC-P4-03 below is where that is asserted.
+    if (route.path === "/projects" || route.path === "/github/app") {
+      // The routes with no target project or org: `/projects` is scoped by
+      // filtering, not by refusing, and SC-P4-03 below is where that is
+      // asserted; `/github/app` (P10) names the one App every org installs.
       expect(answer.status).not.toBe(403);
       return;
     }

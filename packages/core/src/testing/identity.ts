@@ -8,6 +8,8 @@
 import {
   type Membership,
   MembershipSchema,
+  type OrgCredential,
+  OrgCredentialSchema,
   type OrgId,
   type User,
   type UserId,
@@ -42,5 +44,21 @@ export const makeMembership = (
     userId,
     orgId,
     createdAt: FIXTURE_TIMESTAMP,
+    ...overrides,
+  });
+
+/** P10 (D-P10-23): an org's Anthropic key, sealed. The ciphertext is nonsense; the shape is real. */
+export const makeOrgCredential = (
+  orgId: OrgId,
+  overrides: Overrides<OrgCredential> = {},
+): OrgCredential =>
+  OrgCredentialSchema.parse({
+    schemaVersion: 1,
+    orgId,
+    provider: "anthropic",
+    ciphertext: "Y2lwaGVydGV4dA==",
+    wrappedKey: "d3JhcHBlZC1rZXk=",
+    lastFour: "wxyz",
+    setAt: FIXTURE_TIMESTAMP,
     ...overrides,
   });

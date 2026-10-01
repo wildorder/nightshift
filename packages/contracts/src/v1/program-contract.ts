@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { DecisionIdSchema, ProgramIdSchema, RunIdSchema } from "../ids.js";
 import { IsoTimestampSchema, programScoped, RiskLevelSchema, ScopeSchema } from "./common.js";
+import { ComputeChoiceSchema } from "./compute.js";
 import {
   MAX_RATIFICATION_HISTORY,
   PlanDocumentRefSchema,
@@ -201,6 +202,12 @@ export const ProgramContractSchema = z
      * ever less; `effectivePolicy` in `core` refuses a widening by name.
      */
     routing: RoutingNarrowingSchema.optional(),
+    /**
+     * P10 (D-P10-14): the machine a remote run of this program gets, when it
+     * says; usually inherited from `nightshift.config.json`. Absent means the
+     * recommendation, else `good`.
+     */
+    compute: ComputeChoiceSchema.optional(),
     createdAt: IsoTimestampSchema,
     /**
      * The planned part (P7, `./plan.ts`). Every field is optional and absent

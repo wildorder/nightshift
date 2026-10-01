@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { type LocalControlPlane, startLocalControlPlane } from "@nightshift/api/testing";
 import type { CliEnvironment } from "@nightshift/cli";
 import type { OrgId } from "@nightshift/contracts";
+import type { GitHubAppClient } from "@nightshift/core";
 import {
   createSteppingClock,
   createUlidIdGenerator,
@@ -60,6 +61,10 @@ export interface SignInOptions {
    * and a worker's execution token expires within one run's worth of readings.
    */
   readonly realTime?: boolean;
+  /** The Nightshift GitHub App's answers (P10), for the `org github` verbs. */
+  readonly github?: GitHubAppClient;
+  /** What the operator pastes when a command prompts, in order (P10: a provider key). */
+  readonly pastes?: readonly string[];
 }
 
 export const signIn = async (options: SignInOptions = {}): Promise<Operator> => {
@@ -73,7 +78,9 @@ export const signIn = async (options: SignInOptions = {}): Promise<Operator> => 
     stores: backing,
     principal: { kind: "user", userId: SUBJECT as never, activeOrg: orgId },
     clock,
+    ...(options.github === undefined ? {} : { github: options.github }),
   });
+  const pastes = [...(options.pastes ?? [])];
 
   const root = await mkdtemp(join(tmpdir(), "nightshift-cli-suite-"));
   const paths = {
@@ -128,8 +135,14 @@ export const signIn = async (options: SignInOptions = {}): Promise<Operator> => 
     paths,
     fetch,
     openBrowser: async () => false,
-    // Nobody pastes anything in these tests; the callback path is the one under test.
-    readPaste: () => ({ line: new Promise<undefined>(() => undefined), cancel: () => undefined }),
+    // Nothing is pasted unless a suite says so; the callback path is then the one under test.
+    readPaste: () => ({
+      line:
+        pastes.length === 0
+          ? new Promise<undefined>(() => undefined)
+          : Promise.resolve(pastes.shift()),
+      cancel: () => undefined,
+    }),
     clock,
     ids,
     git: nodeGitRunner,

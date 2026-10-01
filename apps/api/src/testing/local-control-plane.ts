@@ -26,9 +26,10 @@
  * not import this module, so esbuild never reaches it.
  */
 import { PrincipalSchema } from "@nightshift/contracts";
-import type { Clock, NightshiftStores } from "@nightshift/core";
+import type { Clock, GitHubAppClient, NightshiftStores } from "@nightshift/core";
 import type { RequestPrincipal } from "../auth/principal.js";
 import { UserTokenLikeSchema } from "../auth/principal.js";
+import { createLocalEnvelope, generateMasterKey } from "../envelope.js";
 import type { ApiDeps } from "../http.js";
 import { ephemeralKeys } from "../local/credentials.js";
 import { createMemoryObjectStore, type LocalBody } from "../local/objects.js";
@@ -85,6 +86,8 @@ export interface LocalControlPlaneOptions {
   readonly principal: RequestPrincipal;
   readonly clock?: Clock;
   readonly host?: string;
+  /** The Nightshift GitHub App's answers (P10, D-P10-02), when a suite needs the routes. */
+  readonly github?: GitHubAppClient;
 }
 
 export interface LocalControlPlane {
@@ -103,6 +106,10 @@ export const startLocalControlPlane = async (
     stores: options.stores,
     objects,
     keys: localKeys,
+    // A master key for this plane only (D-P10-23): the credential routes seal
+    // under it, and nothing a suite stores survives the plane.
+    envelope: createLocalEnvelope(generateMasterKey()),
+    ...(options.github === undefined ? {} : { github: options.github }),
     ...(options.clock === undefined ? {} : { clock: options.clock }),
     ...(options.host === undefined ? {} : { host: options.host }),
     // A declared principal, a real execution token, or the plane's default:

@@ -57,3 +57,20 @@ export const loadOrCreateKeys = (path: string): SigningKeys => {
 
 /** A key for this process only: the harness's, which no restart needs. */
 export const ephemeralKeys = (): SigningKeys => generateKeyPairSync("rsa", { modulusLength: 2048 });
+
+export const masterKeyPath = (stateDir: string): string => join(stateDir, "credentials.key");
+
+/**
+ * The master key an org's provider keys are sealed under in the local instance
+ * (P10, D-P10-23): 32 bytes, base64, owner-only, beside the database, as the
+ * token key is. KMS holds the equivalent in AWS.
+ */
+export const loadOrCreateMasterKey = (path: string): Uint8Array => {
+  if (existsSync(path)) {
+    const key = Buffer.from(readFileSync(path, "utf8").trim(), "base64");
+    if (key.byteLength === 32) return key;
+  }
+  const key = randomBytes(32);
+  writeOwnerOnly(path, `${key.toString("base64")}\n`);
+  return key;
+};

@@ -12,8 +12,10 @@ import {
 import {
   createFixtures,
   makeAgent,
+  makeComputeUtilization,
   makeEvent,
   makeNode,
+  makeOrgCredential,
   makeProgramContract,
   makeProject,
   makeRootNode,
@@ -24,8 +26,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { encodeCursor } from "./cursor.js";
 import { ItemTooLargeError } from "./items.js";
 import { keys } from "./keys.js";
-import { createAwsStores } from "./stores.js";
+import { CredentialsTableUnavailableError, createAwsStores } from "./stores.js";
 import { FakeTable } from "./testing/fake-table.js";
+import { routingTableClient } from "./testing/routing-table.js";
 
 const tableName = "nightshift-test";
 
@@ -64,6 +67,71 @@ describe("DynamoDB adapter specifics", () => {
       );
       await stores.orgConfigs.put(configOf(orgId, 2));
       expect(await stores.orgConfigs.get(orgId)).toEqual(configOf(orgId, 2));
+    });
+  });
+
+  describe("an org's credentials (P10, D-P10-23)", () => {
+    const credentialsTableName = "nightshift-test-credentials";
+
+    it("live in the credentials table and never the main one", async () => {
+      const credentialsTable = new FakeTable({ tableName: credentialsTableName });
+      const client = routingTableClient({
+        [tableName]: table,
+        [credentialsTableName]: credentialsTable,
+      });
+      const withCredentials = createAwsStores({ tableName, table: client, credentialsTableName });
+      const orgId = f.ids.next("org");
+      const sealed = makeOrgCredential(orgId);
+      await withCredentials.credentials.put(sealed);
+      expect(await withCredentials.credentials.sealed(orgId, "anthropic")).toEqual(sealed);
+      expect(await withCredentials.credentials.view(orgId)).toEqual([
+        { provider: "anthropic", lastFour: sealed.lastFour, setAt: sealed.setAt },
+      ]);
+      const inCredentials = await credentialsTable.get({
+        TableName: credentialsTableName,
+        Key: keys.credential(orgId, "anthropic"),
+      });
+      expect(inCredentials.Item).toMatchObject({ PK: `ORG#${orgId}`, SK: "PROVIDER#anthropic" });
+      const inMain = await table.get({
+        TableName: tableName,
+        Key: keys.credential(orgId, "anthropic"),
+      });
+      expect(inMain.Item).toBeUndefined();
+    });
+
+    it("refuse every call by name when no credentials table is configured", async () => {
+      const orgId = f.ids.next("org");
+      await expect(stores.credentials.put(makeOrgCredential(orgId))).rejects.toBeInstanceOf(
+        CredentialsTableUnavailableError,
+      );
+      await expect(stores.credentials.view(orgId)).rejects.toBeInstanceOf(
+        CredentialsTableUnavailableError,
+      );
+      await expect(stores.credentials.sealed(orgId, "openai")).rejects.toBeInstanceOf(
+        CredentialsTableUnavailableError,
+      );
+      // And nothing landed in the main table.
+      const scanned = await table.scan({ TableName: tableName });
+      expect(scanned.Items ?? []).toEqual([]);
+    });
+  });
+
+  describe("a project's utilization records (P10, D-P10-14b)", () => {
+    it("list newest run first, through DynamoDB's own pages", async () => {
+      const runIds = [f.ids.next("run"), f.ids.next("run"), f.ids.next("run")];
+      for (const runId of runIds) {
+        await stores.computeUtilizations.put(makeComputeUtilization(f, { runId }));
+      }
+      const page = await stores.computeUtilizations.listByProject(f.scope.projectId);
+      expect(page.items.map((record) => record.runId)).toEqual([...runIds].reverse());
+      const first = await stores.computeUtilizations.listByProject(f.scope.projectId, { limit: 2 });
+      expect(first.items.map((record) => record.runId)).toEqual([runIds[2], runIds[1]]);
+      expect(first.cursor).toBeDefined();
+      const rest = await stores.computeUtilizations.listByProject(f.scope.projectId, {
+        limit: 2,
+        cursor: first.cursor ?? "",
+      });
+      expect(rest.items.map((record) => record.runId)).toEqual([runIds[0]]);
     });
   });
 

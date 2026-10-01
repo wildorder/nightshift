@@ -15,7 +15,15 @@ import { parseArgs } from "node:util";
 import { createUlidIdGenerator, nowIso, systemClock } from "@nightshift/core";
 import { stateDir } from "@nightshift/persistence/http";
 import { createLocalStores } from "@nightshift/persistence/local";
-import { keyPath, loadOrCreateKeys, loadOrCreateSecret, tokenPath } from "./credentials.js";
+import { createLocalEnvelope } from "../envelope.js";
+import {
+  keyPath,
+  loadOrCreateKeys,
+  loadOrCreateMasterKey,
+  loadOrCreateSecret,
+  masterKeyPath,
+  tokenPath,
+} from "./credentials.js";
 import { ensureOperator } from "./identity.js";
 import { createFileObjectStore, objectsDir } from "./objects.js";
 import { bearerOf, executionTokenPrincipal, startLocalServer } from "./server.js";
@@ -44,6 +52,7 @@ export const startLocalInstance = async (options: {
   const stores = createLocalStores({ file: join(options.state, "nightshift.sqlite") });
   const secret = loadOrCreateSecret(tokenPath(options.state));
   const keys = loadOrCreateKeys(keyPath(options.state));
+  const envelope = createLocalEnvelope(loadOrCreateMasterKey(masterKeyPath(options.state)));
   const operator = await ensureOperator(stores, createUlidIdGenerator(), nowIso(systemClock));
 
   // Exactly the operator's secret, or an execution token this plane signed.
@@ -52,6 +61,7 @@ export const startLocalInstance = async (options: {
     stores,
     objects: createFileObjectStore(objectsDir(options.state)),
     keys,
+    envelope,
     port: options.port,
     apiPrefix: API_PREFIX,
     authenticate: (authorization, now) => {

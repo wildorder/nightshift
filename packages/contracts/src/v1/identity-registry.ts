@@ -9,6 +9,8 @@
  * own test asserts the two registries stay disjoint.
  */
 import type { z } from "zod";
+import { OrgComputeUsageSchema } from "./compute-usage.js";
+import { OrgCredentialSchema } from "./credentials.js";
 import { EXAMPLE_IDS } from "./examples.js";
 import { MembershipSchema } from "./membership.js";
 import {
@@ -18,7 +20,14 @@ import {
 } from "./org-config.js";
 import { UserSchema } from "./user.js";
 
-export const IDENTITY_RECORD_NAMES = ["User", "Membership", "OrgConfig"] as const;
+/** P10 (D-P10-23) adds `OrgCredential`: an org's provider key, envelope-encrypted. */
+export const IDENTITY_RECORD_NAMES = [
+  "User",
+  "Membership",
+  "OrgConfig",
+  "OrgCredential",
+  "OrgComputeUsage",
+] as const;
 
 export type IdentityRecordName = (typeof IDENTITY_RECORD_NAMES)[number];
 
@@ -26,6 +35,8 @@ export const IDENTITY_SCHEMAS: { readonly [K in IdentityRecordName]: z.ZodType }
   User: UserSchema,
   Membership: MembershipSchema,
   OrgConfig: OrgConfigSchema,
+  OrgCredential: OrgCredentialSchema,
+  OrgComputeUsage: OrgComputeUsageSchema,
 };
 
 /** A Cognito UUID subject, for fixtures. */
@@ -53,5 +64,22 @@ export const IDENTITY_EXAMPLES: { readonly [K in IdentityRecordName]: unknown } 
     examinationPolicy: DEFAULT_EXAMINATION_POLICY,
     version: 1,
     updatedAt: "2026-09-25T09:00:00.000Z",
+  },
+  OrgCredential: {
+    schemaVersion: 1,
+    orgId: EXAMPLE_IDS.orgId,
+    provider: "anthropic",
+    ciphertext: "AAECAwQFBgcICQoLDA0ODw==",
+    wrappedKey: "EBESExQVFhcYGRobHB0eHw==",
+    lastFour: "wxyz",
+    setAt: "2026-10-01T09:00:00.000Z",
+  },
+  OrgComputeUsage: {
+    schemaVersion: 1,
+    orgId: EXAMPLE_IDS.orgId,
+    month: "2026-10",
+    meteredUsd: 12.5,
+    liveRuns: [EXAMPLE_IDS.runId],
+    updatedAt: "2026-10-01T09:00:00.000Z",
   },
 };

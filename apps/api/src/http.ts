@@ -7,6 +7,9 @@ import type {
   ArtifactDownloadSigner,
   ArtifactUploadSigner,
   Clock,
+  Envelope,
+  GitHubAppClient,
+  IdGenerator,
   NightshiftStores,
   PlanDocumentStore,
 } from "@nightshift/core";
@@ -73,6 +76,19 @@ export interface ApiDeps {
    * merely uncached.
    */
   readonly projectOrgs?: ProjectOrgCache;
+  /**
+   * Seals and opens an org's provider keys (P10, D-P10-23). Optional like the
+   * signers: the two routes that need it answer 501 when it is absent, so a
+   * plane wired without a key refuses to store a credential rather than
+   * storing one in the clear.
+   */
+  readonly envelope?: Envelope;
+  /** The Nightshift GitHub App (P10, D-P10-02). Optional for the same reason; 501 when absent. */
+  readonly github?: GitHubAppClient;
+  /** Mints the engine identity a dispatch carries (D-P10-20). ULIDs when absent. */
+  readonly ids?: IdGenerator;
+  /** What the runner's machines run (D-P10-16). Recorded on every dispatch. */
+  readonly runner?: { readonly amiVersion: string };
 }
 
 /** Where execution tokens come from, and who they say issued them. */

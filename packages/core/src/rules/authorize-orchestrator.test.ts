@@ -14,6 +14,7 @@ import {
   ARBITER_ACCESS,
   type AuthorizationTarget,
   authorize,
+  ENGINE_ACCESS,
   EXAMINER_ACCESS,
   EXECUTION_ACCESS,
   type ExecutionAccess,
@@ -90,6 +91,21 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "artifact.createDownloadUrl": "forbidden",
   "orgConfig.get": "forbidden",
   "orgConfig.put": "forbidden",
+  "dispatch.create": "forbidden",
+  "dispatch.get": "forbidden",
+  "dispatch.cancel": "forbidden",
+  "dispatch.resume": "forbidden",
+  "dispatch.heartbeat": "forbidden",
+  "publication.request": "forbidden",
+  "publication.list": "forbidden",
+  "computeUtilization.get": "forbidden",
+  "computeRecommendation.get": "forbidden",
+  "warmCache.get": "forbidden",
+  "orgCredential.put": "forbidden",
+  "orgCredential.list": "forbidden",
+  "orgGithub.put": "forbidden",
+  "orgGithub.get": "forbidden",
+  "githubApp.get": "forbidden",
 };
 const ALL_OPERATIONS = Object.keys(EXPECTED) as Operation[];
 
@@ -119,6 +135,7 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
       orchestrator: ORCHESTRATOR_ACCESS,
       examiner: EXAMINER_ACCESS,
       arbiter: ARBITER_ACCESS,
+      engine: ENGINE_ACCESS,
     });
   });
 

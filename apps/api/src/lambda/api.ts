@@ -16,6 +16,7 @@ import {
   createAwsStores,
   createPlanDocumentStore,
 } from "@nightshift/persistence/aws";
+import { createKmsEnvelope } from "../aws/kms-envelope.js";
 import { loadConfig, loadTokenConfig } from "../config.js";
 import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
 import { createApiLambdaHandler } from "./api-handler.js";
@@ -26,7 +27,13 @@ const config = loadConfig(process.env);
  * The materializer shares `loadConfig` and has neither variable.
  */
 const tokenConfig = loadTokenConfig(process.env);
-const stores = createAwsStores({ tableName: config.tableName, table: createAwsClients().table });
+const stores = createAwsStores({
+  tableName: config.tableName,
+  table: createAwsClients().table,
+  ...(config.credentialsTableName === undefined
+    ? {}
+    : { credentialsTableName: config.credentialsTableName }),
+});
 /**
  * Signs presigned artifact uploads (T2). A separate S3 client from the one the
  * artifact body store would use, because this one only ever signs: the function
@@ -61,6 +68,16 @@ const tokens = {
   issuer: tokenConfig.tokenIssuer,
 };
 
+/**
+ * Seals an org's provider keys (P10, D-P10-23): data keys from `CredentialsKey`
+ * with the org and the provider as the context, the one KMS key this function
+ * may `GenerateDataKey` and `Decrypt` under. Absent until T2 deploys the key.
+ */
+const envelope =
+  config.credentialsKeyId === undefined
+    ? undefined
+    : createKmsEnvelope({ kms: new KMSClient({}), keyId: config.credentialsKeyId });
+
 export const handler = createApiLambdaHandler(() => ({
   stores,
   clock: systemClock,
@@ -68,4 +85,8 @@ export const handler = createApiLambdaHandler(() => ({
   downloads,
   plans,
   tokens,
+  ...(envelope === undefined ? {} : { envelope }),
+  ...(config.runnerAmiVersion === undefined
+    ? {}
+    : { runner: { amiVersion: config.runnerAmiVersion } }),
 }));
