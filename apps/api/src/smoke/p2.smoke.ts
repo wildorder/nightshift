@@ -312,6 +312,9 @@ afterAll(async () => {
     deleteObjectsUnder(s3, context.bucketName, planPrefix),
   );
   await step("conformance litter", () => deleteConformanceLitter(clients.table, tableName));
+  await step("conformance litter in the credentials table", () =>
+    deleteConformanceLitter(clients.table, context.credentialsTableName),
+  );
 
   say(
     `runtime ${((Date.now() - startedAt) / 1000).toFixed(1)} s; findings ${JSON.stringify(findings)}`,
@@ -394,7 +397,13 @@ describePortConformance(
     await waitForNumbering(stores.events, writtenRuns());
     await deletePartitions(clients.table, tableName, written);
     written.clear();
-    return createAwsStores({ tableName, table: trackingTable });
+    // P10 (D-P10-23): the credentials table too, so the identity section proves
+    // the deployed table and not a refusal.
+    return createAwsStores({
+      tableName,
+      table: trackingTable,
+      credentialsTableName: context.credentialsTableName,
+    });
   },
   {
     // The deployed adapter implements both halves of the split (T2).

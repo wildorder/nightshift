@@ -51,6 +51,8 @@ export interface StackEnvironment {
    * token against the deployed key's public half.
    */
   readonly executionTokenKeyId: string;
+  /** P10 (D-P10-23): the credentials table, in the data stack beside the main one. */
+  readonly credentialsTableName: string;
 }
 
 interface OutputReader {
@@ -120,6 +122,7 @@ export const loadStackEnvironment = async (
     authDomain: data("AuthDomain"),
     hostedSignInUrl: data("HostedSignInUrl"),
     executionTokenKeyId: data("ExecutionTokenKeyId"),
+    credentialsTableName: data("CredentialsTableName"),
   };
 };
 
