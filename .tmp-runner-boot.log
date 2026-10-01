@@ -29,50 +29,28 @@ dist/assets/index-DliX6HHR.js      795.63 kB │ gzip: 239.97 kB
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
 [33m[INEFFECTIVE_DYNAMIC_IMPORT] [0m../../packages/persistence/dist/http/errors.js is dynamically imported by ../../packages/persistence/dist/http/stores.js but also statically imported by ../../packages/persistence/dist/http/browser/index.js, ../../packages/persistence/dist/http/transport.js, dynamic import will not move module into another chunk.
 
-✓ built in 934ms
+✓ built in 1.40s
 
  RUN  v5.0.0 C:/dev/nightshift/apps/api
 
-[runner-boot] image ami-0b2261ced5b1c5975 (version 1.0.4, runner at 8e5f66f038cede3f92bfeaa168c189cba6151d98)
+[runner-boot] image ami-07b137d61eacc9437 (version 1.0.5, runner at 0859bb90721dcdfb11801b68cb1e8ca1758b0423)
 [runner-boot] dispatch requested: good m7g.xlarge at $0.1632/h
-[runner-boot] launched i-096bec47d3d381a01 in us-west-2a
+[runner-boot] launched i-0f888a15f15524e0b in us-west-2a
 [runner-boot] running; volume attached; waiting for the first heartbeat
-[runner-boot] ready after 52s; lease to 2026-10-01T22:14:58.322Z
-[runner-boot] measurements: {"status":"Success","node":"v24.11.1","boot_to_runner":"24404845","rootless_docker_postgres":"pass","docker_build":"pass","cargo_build":"fail","chromium":"pass","imds_from_engine":"reachable","imds_from_worker":"blocked"}
+[runner-boot] ready after 54s; lease to 2026-10-01T22:42:34.364Z
+[runner-boot] measurements: {"status":"Success","node":"v24.11.1","boot_to_runner":"23324759","rootless_docker_postgres":"pass","docker_build":"pass","cargo_build":"pass","chromium":"pass","imds_from_engine":"reachable","imds_from_worker":"blocked"}
+[runner-boot] stopped as told
+ ✓ |runner-boot| src/smoke/runner-boot.smoke.ts > a runner machine boots to its first heartbeat (P10, T2) > seeds a ratified remote run, dispatches it, launches the machine, and hears it 144364ms
 [runner-boot] cleanup: terminate the machine
 [runner-boot] cleanup: delete the volume
 [runner-boot] cleanup: delete the first token, if it is still there
- × |runner-boot| src/smoke/runner-boot.smoke.ts > a runner machine boots to its first heartbeat (P10, T2) > seeds a ratified remote run, dispatches it, launches the machine, and hears it 344695ms
-   → the runner never reported stopped: expected false to be true // Object.is equality
 [runner-boot] cleanup: delete the records
 [runner-boot] cleanup: delete the membership
 [runner-boot] cleanup: delete the plan document
-[runner-boot] findings {"secondsToFirstHeartbeat":52,"measurements":{"status":"Success","node":"v24.11.1","boot_to_runner":"24404845","rootless_docker_postgres":"pass","docker_build":"pass","cargo_build":"fail","chromium":"pass","imds_from_engine":"reachable","imds_from_worker":"blocked"}}
+[runner-boot] findings {"secondsToFirstHeartbeat":54,"measurements":{"status":"Success","node":"v24.11.1","boot_to_runner":"23324759","rootless_docker_postgres":"pass","docker_build":"pass","cargo_build":"pass","chromium":"pass","imds_from_engine":"reachable","imds_from_worker":"blocked"}}
 
-⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
-
- FAIL  |runner-boot| src/smoke/runner-boot.smoke.ts > a runner machine boots to its first heartbeat (P10, T2) > seeds a ratified remote run, dispatches it, launches the machine, and hears it
-AssertionError: the runner never reported stopped: expected false to be true // Object.is equality
-
-- Expected
-+ Received
-
-- true
-+ false
-
- ❯ src/smoke/runner-boot.smoke.ts:373:58
-    371|       }
-    372|     }
-    373|     expect(stopped, "the runner never reported stopped").toBe(true);
-       |                                                          ^
-    374|     say("stopped as told");
-    375|   });
-
-⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
-
-
- Test Files  1 failed (1)
-      Tests  1 failed (1)
-   Start at  15:12:54
-   Duration  388.71s (tests 99%, import 1%)
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  15:40:29
+   Duration  189.04s (tests 97%, import 2%, transform 1%)
 

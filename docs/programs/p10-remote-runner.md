@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p10-remote-runner` |
 | Source stage | Stage 9, `00-source-program-plan.md`; P10 in `staging.md` |
-| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-23 agreed; the A-14 amendment stands as A-51). Not yet built; task specs follow under `tasks/p10-remote-runner/`. Human prerequisites H-P10-02 … H-P10-06 open |
+| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-23 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01 (§15); T3 next |
 | Depends on | P9 (correction), P12 (token profiles, one loopback server), P14 (stories); the implementation base is `main` after `fc20125` (program setup) |
 | Outcome | Dispatch a program to a machine of the customer's chosen size, close the laptop, and return to verified, published output or a durable account of partial work; the machine is recommended from the project, starts warm, and is right-sized from the runs before it |
 | Blocking decisions | none: D-P10-12 … D-P10-23 ratified; H-P10-01 … H-P10-06 satisfied. The two provider API keys are T5's gate |
@@ -379,4 +379,52 @@ The 2026-09-27 planning kept these; they still hold.
 
 ## 15. As built
 
-Written when the program closes.
+Written as the tasks land; completed when the program closes.
+
+### T1, 2026-10-01
+
+Contracts, rules, stores, routes and the two onboarding verbs, all offline:
+commit `3bf02c0`. Two details a later task needs: the engine's first token is
+minted by the dispatch Lambda and waits in an SSM parameter under
+`/nightshift/<stage>/dispatch/<runId>/<generation>`, read once and deleted by
+the runner, so there is no bootstrap route; and the runner's every write is
+held to the dispatch's generation by `enforce`, which reads the dispatch to
+place an engine principal as it reads the tree to place an orchestrator's.
+
+### T2, 2026-10-01
+
+The data stack gained the `Credentials` table and `CredentialsKey`; the API
+function alone reads either (its stack test enumerates the grants). The
+`RunnerStack` is built only with `-c runnerCommit=<sha>`, and the image's
+recipe is versioned with `-c imageVersion`: an Image Builder component is
+immutable per version, so every change to the image is a new version (1.0.0
+through 1.0.5 on the first day). The image clones this repository at the named
+commit and builds it on the box, so the runner on a machine is exactly a
+commit of `main`'s history. Amazon Linux 2023 packages neither `rootlesskit`
+nor `slirp4netns`; both come from Docker's static builds and the project's
+GitHub releases, pinned in `runner-image.ts`.
+
+**Measured on the real machine** (`npm run runner:boot`, images 1.0.4 and
+1.0.5, `m7g.xlarge`, 2026-10-01, three runs):
+
+| Measurement | Result |
+|-------------|--------|
+| Launch to first `ready` heartbeat | 52 s, 63 s, 54 s |
+| Cancel to the runner's own `stopped` report | within one heartbeat interval (1.0.5) |
+| Rootless Docker, `postgres:16` service container, client connects | pass |
+| Rootless Docker, `docker build` of an arm64 image | pass |
+| Chromium through Playwright under a worker user | pass |
+| `cargo build` under a worker user | pass on 1.0.5 (1.0.4 lacked `RUSTUP_HOME` for the shared toolchain) |
+| Instance metadata from `engine` | reachable |
+| Instance metadata from a worker user | blocked |
+| Node on the image | v24.11.1 |
+| Volume: fresh gp3 formatted, mounted, owned by `engine` | pass |
+
+So D-P10-17's containment is real on the image, not promised: a worker can run
+service containers, a browser and a Rust build, and cannot reach the machine's
+role. What the proof plays by hand (the volume, the first token in SSM, the
+launch with the run's tags, the record's move to `provisioning`) is exactly
+what the dispatch Lambda does in T3. The first boot found two runner bugs that
+only a machine could: a workless runner raced itself to exit, and a milestone
+reported mid-beat was dropped; both are tested now. Image 1.0.5 is
+`ami-07b137d61eacc9437`.
