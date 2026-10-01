@@ -1,0 +1,39 @@
+
+> nightshift@1.0.0 runner:boot
+> node scripts/runner-boot.mjs
+
+Booting a runner as arn:aws:sts::755348349819:assumed-role/AWSReservedSSO_AdministratorAccess_26eb2e22456f161f/tim (755348349819, us-west-2).
+
+> nightshift@1.0.0 build
+> tsc -b && npm run build --workspace @nightshift/studio
+
+
+> @nightshift/studio@0.0.0 build
+> tsc -p tsconfig.json && vite build
+
+vite v8.3.1 building client environment for production...
+transforming...
+✓ 2757 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                      0.47 kB │ gzip:   0.29 kB
+dist/assets/index-BvScBYO_.css      86.37 kB │ gzip:  14.54 kB
+dist/assets/dist-Dno_RJ9_.js       124.79 kB │ gzip:  36.14 kB
+dist/assets/run-graph-BfSFAPUE.js  277.26 kB │ gzip:  89.66 kB
+dist/assets/index-DliX6HHR.js      795.63 kB │ gzip: 239.97 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0m../../packages/persistence/dist/http/errors.js is dynamically imported by ../../packages/persistence/dist/http/stores.js but also statically imported by ../../packages/persistence/dist/http/browser/index.js, ../../packages/persistence/dist/http/transport.js, dynamic import will not move module into another chunk.
+
+✓ built in 804ms
+
+ RUN  v5.0.0 C:/dev/nightshift/apps/api
+
+[runner-boot] image ami-0d06be3e251cb6a07 (version 1.0.3, runner at 51699306769b6729ede5e46f13fcf0d0c26200f7)
+[runner-boot] dispatch requested: good m7g.xlarge at $0.1632/h
+[runner-boot] launched i-0f941c56daf80ee46 in us-west-2a
+[runner-boot] running; volume attached; waiting for the first heartbeat

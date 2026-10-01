@@ -49,7 +49,9 @@ export class HeartbeatLostError extends Error {
 export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
   const intervalMs = options.intervalMs ?? HEARTBEAT_INTERVAL_SECONDS * 1000;
   const startedAt = options.now();
-  let pending: HeartbeatReport | undefined;
+  // Milestones wait their turn: `ready` then `stopped` arrive as two beats, in
+  // order, never one overwriting the other unsent.
+  const pending: HeartbeatReport[] = [];
   let last: HeartbeatResponse | undefined;
   let ended = false;
   let misses = 0;
@@ -58,8 +60,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     const sample = await options.sample();
     // Taken now, so a milestone reported while this beat is in flight waits
     // for the next one rather than being cleared unsent.
-    const report = pending;
-    pending = undefined;
+    const report = pending.shift();
     const body: HeartbeatBody = {
       generation: options.generation,
       meteredSeconds: Math.max(0, Math.floor((options.now() - startedAt) / 1000)),
@@ -76,8 +77,8 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
         }),
       );
     } catch (error) {
-      // Unsent: say it again next time, unless something newer was reported since.
-      pending ??= report;
+      // Unsent: say it again next time, ahead of anything reported since.
+      if (report !== undefined) pending.unshift(report);
       throw error;
     }
     if (response.token !== undefined) options.installToken(response.token);
@@ -86,7 +87,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
 
   return {
     report: (milestone) => {
-      pending = milestone;
+      pending.push(milestone);
     },
     get last() {
       return last;
@@ -115,13 +116,14 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
       // Ended with a milestone unsent (the work finished): one last beat, best
       // effort, so the plane hears `stopped` from the runner rather than from
       // the reconciler's lost lease.
-      if (pending !== undefined) {
+      while (pending.length > 0) {
         try {
           last = await beat();
         } catch (error) {
           options.log(
             `the last heartbeat failed: ${error instanceof Error ? error.message : String(error)}`,
           );
+          break;
         }
       }
       return "stop";

@@ -87,7 +87,12 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     heartbeat,
     machine,
   };
-  const working = (options.work ?? (async () => undefined))(context)
+  // With no work to do (T2), the runner's job is to stay: it heartbeats until
+  // the plane says stop, and a promise that never settles is what "no work"
+  // means to the race below.
+  const working = (
+    options.work === undefined ? new Promise<void>(() => undefined) : options.work(context)
+  )
     .then(() => "worked" as const)
     .catch((error: unknown) => {
       log(`the work failed: ${error instanceof Error ? error.message : String(error)}`);

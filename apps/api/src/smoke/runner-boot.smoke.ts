@@ -197,7 +197,14 @@ describe("a runner machine boots to its first heartbeat (P10, T2)", () => {
       201,
     );
     expectStatus(
-      await api.put(`${runPath}/nodes/${f.rootNodeId}`, makeRootNode(f, { status: "validated" })),
+      await api.put(
+        `${runPath}/nodes/${f.rootNodeId}`,
+        makeRootNode(f, {
+          status: "validated",
+          // A ratified plan's root carries the plan it runs (D-P7-02).
+          plan: { planHash: program.planHash, planDocument: program.planDocument },
+        }),
+      ),
       201,
     );
     const dispatched = await api.post(`${runPath}/dispatch`, {

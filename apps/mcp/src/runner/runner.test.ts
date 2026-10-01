@@ -280,6 +280,36 @@ describe("the workspace volume (D-P10-15)", () => {
 });
 
 describe("the runner end to end over fakes (T2)", () => {
+  it("with no work yet, stays and heartbeats ready until the plane says stop", async () => {
+    const machine = fakeMachine();
+    const bodies: unknown[] = [];
+    let beats = 0;
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      transportFor: () => async (request) => {
+        bodies.push(request.body);
+        beats += 1;
+        return {
+          status: 200,
+          body: {
+            generation: 2,
+            status: beats < 3 ? "ready" : "stopping",
+            leaseExpiresAt: "2026-10-01T12:01:00.000Z",
+            stop: beats >= 3,
+          },
+        };
+      },
+    });
+    expect(code).toBe(0);
+    expect(bodies).toHaveLength(3);
+    expect(bodies[0]).toMatchObject({ report: "ready" });
+    expect((bodies[1] as { report?: string }).report).toBeUndefined();
+  });
+
   it("boots, takes its token, mounts, heartbeats ready, works, reports stopped", async () => {
     const machine = fakeMachine();
     const bodies: unknown[] = [];
