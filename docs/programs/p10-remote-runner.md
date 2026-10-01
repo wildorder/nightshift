@@ -2,531 +2,381 @@
 
 | Field | Value |
 |-------|-------|
-| Status | **Deferred by the owner, 2026-09-28. Not ratified or ready to build.** |
-| Source | Stage 9, `00-source-program-plan.md`; P10 in `staging.md` |
-| Depends on | P9, closed; confirm the implementation base before building |
-| Outcome | Dispatch a program, close the laptop, and return to verified output or a durable account of partial work |
-
-Nightshift v1 is planned by the human in this document, not by Nightshift's
-planning tools. This draft records the settled boundaries and proposed seams;
-open decisions below require the owner's answers before task specs are written.
-
-**Deferred, 2026-09-28:** the owner prioritizes P11 and the Studio UI for visibility
-into attended runs on an always-on local machine. Retain this draft and capability evidence for future remote-runner planning.
-The disposable probe implementation was removed at the owner’s request. The subsequent EC2/EBS
-discussion did not ratify a replacement architecture. See `staging.md` for the
-updated delivery order.
-
-**Feasibility result, 2026-09-28:** the full probe now starts after exporting its
-image as Docker schema v2 instead of OCI. Ordinary Docker-in-Docker fails inside
-the tested AgentCore Instances environment: the process has zero permitted,
-effective and bounding Linux capabilities, `NoNewPrivs=1` and seccomp enabled;
-`dockerd` is denied mount propagation and socket ownership changes. Docker-based
-service tests and CDK bundling are blocked. This is a measured blocker for the
-runner proposed below, not a ratified replacement architecture. Details and
-recovery results are recorded at the end of this draft.
-
-## 1. Objective and existing foundation
-
-Run the existing execution engine, root orchestrator and concurrent workers on
-one AgentCore Runtime Instance per program run. Add the AgentCore harness worker
-with a Bedrock model and prove it against the existing adapter conformance suite.
-The control plane remains authoritative and the CLI becomes a dispatch client.
-
-Today `apps/cli/src/commands/run.ts` refuses `--remote`, `startRun` records local
-execution and resolves the base in a local checkout, and `apps/mcp/src/headless.ts`
-launches the planned root. `packages/harness-agentcore/src/index.ts` is empty.
-The engine's privileged HTTP session still comes from the operator; execution
-tokens cannot mint tokens, and their maximum lifetime is eight hours. Moving
-that session to a server unchanged would not solve remote identity.
-
-## 2. Settled boundaries
-
-- One runtime instance per run, with worktrees and worker processes sharing it;
-  never a hosted environment per leaf job (A-14).
-- Reuse the engine, verification, examination, routing and correction machinery.
-  Remote completion cannot bypass any existing landing gate.
-- All records remain project/program/run scoped. No runner reads DynamoDB or S3
-  records directly in place of the HTTP API.
-- A worker keeps its own execution identity. No operator Cognito refresh token
-  is copied to the runner. Provider authentication and Nightshift authentication
-  are separate concerns.
-- The same dispatch API serves the CLI and future Studio. No Studio or realtime
-  transport work is included.
-- CDK remains the sole infrastructure definition. Existing architecture tests
-  and adapter conformance suites remain intact.
-
-## 3. Decisions to resolve with the owner
-
-Only decisions explicitly marked agreed have the owner's approval. The remaining
-rows are proposals or questions; the program as a whole is not ratified.
-
-| ID | Decision | Proposal / question |
-|----|----------|---------------------|
-| D-P10-01 | Git publication, resolving O-06 | **Agreed by the owner, 2026-09-27:** push each verified integrated head to the program branch as it lands, fast-forward only; never push worker branches, provisional work or main. Refuse concurrent branch movement and retain unpublished work. This is P10's explicit exception to A-29's no-push rule for remote execution; local behavior is unchanged. |
-| D-P10-02 | Git authentication and dispatch input | **Scope, readiness and connection model agreed by the owner, 2026-09-27:** GitHub only; remote dispatch requires a clean checkout, an already-pushed program branch and a ratified plan. Bind dispatch to repository, branch, exact base SHA and ratified plan hash; refuse dirty or unpublished input. Dispatch does not create a missing remote branch or upload a local snapshot. Other Git hosts are deferred. Customers install a GitHub App on selected repositories; runners receive read-only credentials and a trusted publisher outside the worker environment holds publication credentials (§12). The detailed publication/recovery protocol still needs proof. |
-| D-P10-03 | Harness authentication, O-05 | **Product requirement agreed by the owner, 2026-09-27:** support Claude Code and Codex through their subscriptions or provider API keys, plus Bedrock. The owner's reference is Zed's choice of subscription-backed ACP sessions or API keys; this does not select ACP as Nightshift's transport. Establish supported remote sign-in, credential provisioning, renewal and revocation for each mode before ratifying the implementation design. Secret storage remains open. No provider credentials in contracts, logs or general record responses. |
-| D-P10-04 | Bedrock payer, O-05 | **Agreed by the owner, 2026-09-27:** bring-your-own inference for every mode. Bedrock usage is billed to the customer's AWS account, reached through A-25's role assumption with an external ID. Prove access to the selected models before dispatch. Nightshift-supplied inference and customer billing are future product work, excluded from P10 (§10). Routing records the actual provider/model and retains unknown-cost semantics. Runner infrastructure billing is a separate decision. |
-| D-P10-05 | Sizing and lifecycle, O-03 | **Limits, retention and starting defaults agreed by the owner, 2026-09-27:** organization-wide ceilings for run duration, concurrency and compute spend; programs may lower these limits, never raise them. Defaults: 24 hours per run, four concurrent jobs per run, three automatic recovery attempts, seven-day recoverable workspace retention and 90-day report/verification-evidence retention. Configurable within organization ceilings. Recovery counts against the same limits and budget, without resetting either. Stop compute when work ends; retain recoverable work separately from reports and verification evidence. Initial instance class, disk capacity, compute dollar cap, spend measurement and detailed cleanup behavior remain open. Proposed: one fixed profile initially; stop compute while deferred work awaits human action. |
-| D-P10-06 | Recovery promise | **Product requirement agreed by the owner, 2026-09-27:** automatically recover from runner process or instance failure and continue the authorized run without the laptop or a manual resume. A replacement must not race a stale runner or duplicate publication. Default: three recovery attempts within the original run limits (D-P10-05). Recovery protocol, detection/backoff timing, durable recovery points and treatment of uncertain external effects must be specified before build ratification. Persistent files alone do not reconstruct a running engine or harness session. |
-| D-P10-07 | Remote identity | Design a run-scoped engine authority, distinct from an agent's authority, with bootstrap, renewal, cancellation and revocation. It may manage execution records and mint descendant credentials only within its authorized run; it cannot ratify plans, reverse human decisions or alter org policy. Exact principal and API design remains open. |
-| D-P10-08 | Application and infrastructure seams | Proposed: runtime entrypoint and adapter composition in `apps/mcp`; lifecycle/dispatch handlers in `apps/api`; pure state rules and ports in `core`; storage adapters in `persistence`; AgentCore worker in `harness-agentcore`; infrastructure in `infra/cdk`. Ratify where the AWS lifecycle client belongs and whether a separate runner stack is warranted before adding either. |
-| D-P10-09 | Supported remote program inputs | **Plan requirement agreed by the owner, 2026-09-27:** remote execution requires a ratified planned program; unplanned contracts cannot dispatch remotely. Repository toolchains, private package credentials and human prerequisite handling remain to be specified. |
-| D-P10-10 | Runner ownership | **Agreed by the owner, 2026-09-27:** P10 runners run on Nightshift, in Nightshift's AWS account, managed by the service. Customers bring inference, not runner infrastructure. Private/customer-account runners are deferred (§11). Compute pricing and customer billing are not decided by this choice. |
-| D-P10-11 | Runner environment | **Agreed by the owner, 2026-09-27:** no customer-supplied custom runner images in P10. Nightshift supplies the Linux environment; repository setup handles project dependencies. The project audit requires native ARM64 for FoodFly's real CDK bundling, Docker/container networking for Prempt, browser libraries, installable Node/Rust toolchains, private dependency access and substantial build storage. These capabilities must be proven, not inferred from “Linux” (§12). |
-
-## 4. Proposed design seams
-
-### Dispatch and lifecycle
-
-Nightshift provisions runner compute in its own AWS account (D-P10-10).
-Customer AWS role assumption for Bedrock authorizes inference only; it does not
-provision a runner in the customer's account. Private runner registration and
-cross-account compute provisioning are outside P10.
-
-An authenticated request authorizes one immutable run input and durably records
-dispatch intent before provisioning. A caller-supplied idempotency key resolves
-retries to the same run; an uncertain response cannot launch a second engine.
-The response distinguishes accepted dispatch from a ready runner. Provisioning
-continues without the client connection, and failures become inspectable records.
-
-A dispatch record carries lifecycle state separately from the existing Run
-outcome: requested, provisioning, ready, stopping, stopped and failure details
-are design candidates, not a ratified state table. Persist the runtime/session
-identity, immutable image version, authorized base, publication head and cleanup
-result. Use a lease with fencing for competing launch/recovery attempts. A stale
-runner must be unable to mutate state or publish, not merely told to stop.
-
-Cancellation works during provisioning and execution. A reconciler independent
-of the runner records lost heartbeats and retries cleanup. Control-plane loss
-does not authorize unverified publication; spooled events replay idempotently.
-
-### Automatic recovery
-
-D-P10-06 makes recovery part of the walk-away outcome. The following protocol
-is proposed, pending detailed design and ratification:
-
-- Detect failure independently of the runner; establish exclusive authority for
-  the replacement and fence the old runner before continuing execution.
-- Recover under the same run ID, ratified plan, fixed routing policy, budgets
-  and cancellation state. A recovery attempt does not reset spending or grant
-  more authority. Record each attempt and its reason centrally.
-- Reconcile central records, retained Git objects, worktrees, verification and
-  examination evidence, and the actual published branch. A push that succeeded
-  before its acknowledgement was lost must not be treated as new work to repeat.
-- Reconstruct engine and orchestrator state explicitly. Resume harness sessions
-  where supported and intact; otherwise derive a replacement agent's brief from
-  durable records. Finished work stays finished; incomplete work must pass the
-  normal gates before landing. Infrastructure failure is not evidence that a
-  more expensive model is needed.
-- Stop at an ambiguous irreversible external effect rather than blindly repeat
-  it. Automatic recovery cannot promise exactly-once arbitrary shell commands.
-  Surface that case, exhausted recovery limits, expired authorization or missing
-  credentials as an actionable interruption with retained work.
-
-Before implementation, define what survives process loss, instance loss and
-storage loss separately, along with recovery latency and attempt limits. Test
-crashes at record/commit/publication boundaries and a network partition in which
-the old runner returns after its replacement has acquired authority.
-
-### Workspace, publication and retained work
-
-Refuse CLI dispatch from a dirty checkout or an unpublished program-branch head.
-The service independently checks that the requested SHA matches the GitHub
-program branch and that the plan is ratified; it does not trust client readiness
-claims. Checkout the authorized SHA and verify the ratified plan before launching
-an agent. Branch movement cannot silently change the authorized input.
-Use the existing worktree and merge queue implementation. Publication is
-a separate, observable external effect: verification success does not imply a
-push succeeded. Never overwrite a remote branch that moved unexpectedly.
-
-Retain enough Git objects and refs for unpublished verified work, deferred work,
-decision briefs and correction, plus verification logs, reports and transcripts.
-Define an explicit retrieval/resume path before deleting a session. A checkpoint
-SHA in DynamoDB is not a retained Git object. Deferred work never reaches the
-published program branch. Retention expiration and cleanup failure are visible.
-
-Under the agreed D-P10-05 retention model, stopping compute does not delete
-recoverable work. Temporary workspaces and recoverable Git state have an explicit,
-configurable retention period; reports and verification evidence have an
-independent lifecycle and remain accessible after workspace removal. Their exact
-retention defaults are seven days for recoverable workspaces and 90 days for
-reports and verification evidence (D-P10-05). Retention start times and deletion
-rules still need to be specified; independent retention is not indefinite retention.
-
-### Remote identity and credentials
-
-Bootstrap only the run named by the accepted dispatch. Renew engine authority
-without the laptop and without extending the run's authorized lifetime. Bind
-renewal and writes to the current lease; reject ended or cancelled runs.
-Authorization tests must distinguish engine, root agent, sub-orchestrator,
-worker, examiner and arbiter powers.
-
-The provider/Git credential design must account for workers having unrestricted
-tools on a shared instance. Environment filtering alone is not an OS boundary.
-Choose how privileged runner credentials and Git publication are isolated from
-worker processes; do not reinstate harness tool allow-lists as a substitute.
-
-The user chooses subscription authentication, provider API keys or Bedrock where
-the harness/provider combination supports it (D-P10-03). This requirement does
-not assume that a local subscription session can simply be copied to a server.
-Document and prove each supported remote authentication flow, including renewal
-without the initiating laptop. If a provider prevents a required flow, surface
-the constraint to the owner rather than silently dropping subscription support.
-Changing to a separately billed authentication mode requires explicit user
-authorization; route fallback alone does not authorize changing the payer.
-
-### AgentCore harness adapter
-
-Use the exported AgentCore harness running as a process on the program instance.
-Keep provider-specific code inside its adapter. Preserve start/cancel/status,
-observed lifecycle events, usage, unavailable-route reporting, session resume
-for examination questions, and worker operations under the worker's identity.
-The Python export and its dependencies must be pinned, packaged and exercised
-with the Node runtime image. No proprietary replacement agent loop.
-
-## 5. Acceptance criteria to refine after decisions
-
-1. Dispatch a ratified plan, obtain a run ID, terminate the local process and
-   connection, and observe the remote run continue through central records.
-   Dirty checkouts, unpublished branch heads, missing remote branches and
-   unratified or changed plans are refused before provisioning. A direct API
-   caller cannot bypass the remote branch and ratification checks.
-2. Duplicate/retried dispatch produces one run and one active engine. A second
-   tenant cannot dispatch, inspect, cancel, renew or recover the first's work.
-3. Multiple jobs run in parallel worktrees on one instance; a cheap job uses
-   AgentCore harness with Bedrock and passes the unchanged conformance suite.
-4. Only verified, appropriately examined commits publish under the selected
-   policy. Stale remote heads and failed pushes preserve recoverable output.
-5. Engine credentials renew across their normal expiry without a human session;
-   workers cannot obtain engine or sibling authority. Cancellation fences old
-   credentials and stops work within a specified bound.
-6. Provisioning, clone/auth, harness startup, control-plane interruption, MCP
-   interruption, worker crash, cancellation and cleanup failure each leave a
-   durable explanation. Runner recovery is tested to D-P10-06's chosen promise.
-7. Deferred and partial work survives compute shutdown and can be retrieved or
-   resumed through the chosen workflow without bypassing verification.
-8. The report distinguishes execution, publication and cleanup outcomes. Compute
-   ends under the selected policy; retained storage obeys its chosen lifetime.
-9. Existing local behavior and P1–P9 verification remain green.
-10. Claude Code and Codex each execute remotely with subscription authentication
-    and with provider API keys; the Bedrock route executes with the selected AWS
-    billing identity. Credential expiry, revocation and unavailable-auth behavior
-    are tested. No authentication fallback silently changes the billing mode.
-11. Deliberately kill the runner process and, separately, stop its backing
-    instance during a live run. The service recovers automatically under the
-    same run ID and continues to verified, published output without the laptop.
-    Deterministic fault tests cover lost push acknowledgements, stale runners,
-    cancellation during recovery, preserved budgets and bounded recovery failure.
-
-The live exit gate must exercise real remote infrastructure, automatic recovery
-and actual Git publication in a disposable repository. A local process with mocked provisioning
-does not prove walk-away execution. Whether an owner's trial gates closure is
-still to be agreed.
-
-## 6. Human prerequisites
-
-- Ratify the decisions above and confirm the P9 base for implementation.
-- Confirm AgentCore Instances availability, capacity/quota and selected instance
-  type in `us-west-2` in the existing account; confirm CDK/CloudFormation support
-  for the chosen resources, or ratify a CDK-owned custom resource approach.
-- Establish Git access for a disposable test repository and the publication rule.
-- Provision the selected provider secrets and Bedrock access in the paying account.
-- Approve remote infrastructure spending limits and retention/deletion policy.
-
-Each prerequisite needs a concrete, non-secret-printing check in the final
-contract. No deployment, credential upload or paid remote run is authorized by
-this planning draft.
-
-## 7. Candidate implementation phases
-
-| Phase | Outcome | Depends on |
-|-------|---------|------------|
-| T1 | Dispatch/lifecycle contracts, authorization and idempotent API, offline proofs | Ratified decisions |
-| T2 | CDK resources, immutable runtime package and identity bootstrap | T1 |
-| T3 | Remote headless launch, workspace, Git publication and retained-work retrieval | T1, T2 |
-| T4 | AgentCore worker adapter and shared conformance | Runtime packaging and credential decisions |
-| T5 | Cancellation, renewal, fencing, recovery and cleanup failure proofs | T3, T4 |
-| T6 | Live walk-away fixture, regression battery, documentation and as-built | T5 |
-
-Exact tasks, file scopes and checkpoints follow the design decisions. Each phase
-must pass its checks before the next; interactive implementation pauses for
-review between phases.
-
-## 8. Verification and planning status
-
-The implementation baseline is `npm run verify` and `npm run check:architecture`.
-Retain the existing live smoke, slice, conformance, routing and correction suites.
-P10 needs a new opt-in remote suite; its command and cleanup contract are not yet
-defined. Ordinary `npm test` remains offline apart from loopback.
-
-This document has no implementation or validation claims. D-P10-01, D-P10-04 and
-D-P10-10 are agreed, as are D-P10-02's GitHub App connection and dispatch readiness,
-D-P10-09's ratified-plan requirement, D-P10-03's authentication, D-P10-05's limits
-and retention model, D-P10-06's automatic recovery product requirement and
-D-P10-11's deferral of customer images are agreed.
-Their mechanisms, the remaining decisions and
-the overall contract await ratification. No task
-specifications have been issued and no cloud resources have been changed.
-
-## 9. Research references
-
-Checked 2026-09-27; documentation supports design feasibility, not account readiness.
-
-- [AWS Instances](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-how-it-works.html): shared instance sessions, persistent volumes and lifecycle behavior.
-- [AWS instance data management](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-data-management.html): storage ownership and deletion.
-- [AWS instance security](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-security.html): session security model and permissions.
-- [AWS asynchronous execution](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-long-run.html): work continuing after a response and runtime health signaling; validate with Instances in the live fixture.
-- [AWS harness export](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harness-export.html): Python/Strands export used by the planned worker.
-
-## 10. Future feature: Nightshift-supplied inference and customer billing
-
-Captured from the owner's direction on 2026-09-27 while choosing P10's Bedrock
-payer. P10 uses the customer's subscriptions, provider API keys or AWS account
-for inference. A future product may offer inference supplied by Nightshift and
-bill the customer for it. This is a deferred possibility, not a v1 commitment.
-
-That product needs its own decisions about pricing, usage metering, billing,
-spending authorization and responsibility for provider charges. P10's usage
-reports are not a customer billing ledger, and unknown costs remain unknown.
-No automatic fallback may move a customer from their own inference to
-Nightshift-paid inference without their explicit authorization. Revisit this
-alongside D-P10-03, D-P10-04 and A-25 if the product is pursued; do not build
-resale, prepaid balances or customer invoicing as part of remote execution.
-
-## 11. Deferred feature: Private runners
-
-The owner deferred private runners on 2026-09-27. A future hosted offering may
-coordinate execution in a customer's own AWS account or private environment.
-P10 does not implement customer runner onboarding, cross-account provisioning
-or private-network connectivity. Bring-your-own Bedrock inference is separate
-from this feature and remains in P10.
-
-This deferral concerns private runners attached to the hosted service; it does
-not decide the packaging or support model for a complete self-hosted open-source
-deployment. Product tiers, pricing and billing remain future product decisions.
-
-## 12. Technical proposals and feasibility findings, 2026-09-27
-
-These proposals make the remaining choices reviewable; they are not ratified
-decisions or evidence from a deployed runner.
-
-### Standard runner and repository setup
-
-Use a versioned Nightshift image with a pinned Linux distribution and harness
-binaries. Record its digest on the run and retain that version for recovery.
-Run the repository's declared setup command from the authorized commit before
-agents start, recording its output and exit status. Setup must be repeatable
-after recovery. Private package credentials are explicit inputs, not assumed
-to follow from GitHub access. Cache dependencies by toolchain/lockfile/image
-identity; never treat a cache hit as verification evidence.
-
-Declare authorized sibling repositories with exact revisions and checkout
-locations. They are read inputs by default; P10 still publishes only the primary
-program branch. Prempt's stack tests motivate this requirement. Changes needing
-coordinated publication across repositories are outside this proposal.
-
-The audit evidence is local configuration, not executed builds:
-
-| Project | Evidence | Required capability |
-|---------|----------|---------------------|
-| FoodFly | `yaku/foodfly/.github/workflows/deploy-dev.yml`, `infra/lib/constructs/image-optimizer.ts` | Native ARM64, Docker bundling, Node 20, workload AWS credentials |
-| Keki | `keki-backend/.github/workflows/ci.yml` | Node 22, pnpm, Chromium libraries, Neon branch credentials |
-| Prempt | `prempt/ACS-prempt/.github/workflows/ci.yml`, `node/src/__tests__/db/global-setup.ts` | Docker daemon/networking, Rust/Node, private sibling repositories, large build disk |
-| Keyart | `keyart/.github/workflows/ci.yml`, `src/surface/scan.browser.test.ts` | Node 22.18+, real Chromium; absent Chromium skips browser coverage |
-
-Paths above are relative to the owner's `projects/` directory and are research
-references, not runtime dependencies of Nightshift.
-
-**Unproven capability:** AWS documents Instances and persistent volumes, but its
-[container configuration](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_ContainerConfiguration.html)
-does not expose privileged mode or a host Docker socket. That does not prove
-Docker impossible; it does mean this plan cannot promise Docker yet. Prove
-Prempt-style service containers and FoodFly-style ARM64 CDK bundling inside the
-actual runtime, including networking, bind mounts and recovery. If that fails,
-return to the owner on A-14 or the supported workload scope; do not silently
-replace AgentCore or offload jobs to another execution service.
-
-### GitHub access and publication
-
-The owner agreed to a GitHub App with selected-repository installations. Mint renewable,
-repository-scoped read credentials for checkout; keep the App private key and
-publication credentials outside the environment executing repository code.
-Authorize installation-to-Nightshift-org binding, rather than accepting a client
-installation ID as proof of ownership. Grant sibling reads only when explicitly
-declared. GitHub Packages credentials require separate treatment.
-
-The trusted publisher needs Contents write and, for workflow-file edits,
-Workflows permission. Respect branch rules; do not request administrative bypass
-or weaken protection to make a push succeed. Check branch compatibility before
-dispatch and report later protection changes as publication blocked.
-
-Publication uses durable intents naming target branch, verified commit and
-expected predecessor. An intent accepted under valid engine authority survives
-runner replacement. Serialize publication for each repository/branch; resolve
-an outstanding intent before accepting a competing successor. Keep verified
-commit objects durably before accepting the intent. Reconcile lost push replies
-against the actual branch. A branch advanced by an unrelated writer is a conflict,
-not permission to force-push.
-
-GitHub's ref update is not atomic with a Nightshift lease. A lease check followed
-by a push is insufficient fencing. The final protocol must prove publisher
-crash/retry and external branch movement behavior, including actual Git transport
-predecessor checks; do not call this exactly-once publication.
-
-Sources: [installation authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation),
-[App permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app),
-[reference updates](https://docs.github.com/en/rest/git/refs#update-a-reference).
-
-### Provider authentication
-
-Keep native CLI authentication and pin an explicit billing mode for each route.
-API keys can use an org/user-authorized secret reference, with Secrets Manager
-proposed for storage; never mix an API key into a subscription process's
-environment. Bedrock uses the customer's authorized role, with renewable
-short-lived credentials. Route availability includes credential readiness.
-
-**Claude:** [Anthropic's hosting conditions](https://code.claude.com/docs/en/legal-and-compliance)
-permit hosted unmodified Claude Code with the user's own inference. They require
-native sign-in and prohibit platform collection/storage/intermediation of
-Claude.ai session credentials. Propose user sign-in directly to the hosted CLI,
-not a Nightshift OAuth/token-upload service. How native credentials persist
-through recovery without a platform-managed token vault must be validated.
-Do not assume `setup-token` resolves that product boundary.
-
-**Codex:** [official authentication guidance](https://learn.chatgpt.com/docs/auth)
-documents headless device login. Its [CI auth guidance](https://learn.chatgpt.com/docs/auth/ci-cd-auth)
-allows native refresh with preserved credentials for trusted private workflows,
-but warns against concurrent reuse of the same auth file/session and use of that
-CI pattern for public repositories. Propose native login on the hosted runner;
-prove a supported strategy for parallel workers and recovery before promising
-subscription concurrency. Copying one refresh-token cache into every worker is
-not a solution. The existing Codex adapter excludes API-key auth deliberately;
-P10 must explicitly implement the newly agreed mode.
-
-Native credential expiry/revocation may still require the owner to sign in
-again. Preserve work and explain why it paused; do not bill a different mode.
-No authentication proof has been executed during planning.
-
-### Engine recovery and authority
-
-The existing engine keeps active process handles in memory and adopts queued or
-validated nodes; it does not reconstruct arbitrary running jobs after a crash.
-P10 therefore needs an explicit durable execution-attempt recovery protocol,
-not just a process restart. Existing `Run.interrupted` is terminal. Proposed:
-keep a recovering run logically running and express recovery on its dispatch
-record; interrupt the run only when recovery is exhausted or cannot proceed.
-Specify reconciliation for each job phase before introducing state transitions.
-
-AWS treats the whole Instances session as one trust boundary; co-resident agents
-are not isolated merely by separate containers. The plan must demonstrate how
-unrestricted repository code is prevented from reading engine signing/renewal
-authority or forging verification. Proposed Git publication is already outside
-that boundary. A-04/A-05/A-11 are not satisfied by environment filtering alone.
-Source: [Instances security](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-security.html).
-
-### Agreed defaults and remaining sizing proposals
-
-Propose an initial native ARM64 profile with 8 vCPUs, 32 GiB RAM and 100 GiB of
-persistent build storage, subject to availability and the workload proof. Select
-the exact instance class and calculate its compute price before ratification.
-The owner agreed to starting defaults of a 24-hour run ceiling, four concurrent
-leaf jobs per run, three automatic runner recovery attempts, seven-day workspace
-recovery retention and 90-day report/verification-evidence retention. These are
-configurable within organization ceilings; recovery does not reset the budget.
-The hardware profile above remains a proposal. Total agent concurrency,
-including orchestrators and examiners, needs a
-separate explicit resource bound. No unpriced compute launches under a dollar
-cap: require an operator-configured price and cap, with teardown allowance.
-Specify whether organization ceilings bound each run or aggregate concurrent
-usage; the agreed narrowing model alone does not settle that distinction.
-
-### Proofs required before the build contract is ready
-
-| Proof | What must be demonstrated |
-|-------|---------------------------|
-| F1 | Actual Instances Docker daemon, service networking, mounts, ARM64 bundling and browser execution; repeat after recovery |
-| F2 | Native Claude/Codex subscription onboarding, parallel use and recovery within documented credential boundaries; API and customer Bedrock paths |
-| F3 | Worker access cannot obtain engine authority or manufacture verification; same-session trust handled explicitly |
-| F4 | Publisher protocol survives lost replies, competing generations and external branch writes without unverified or duplicate integration |
-| F5 | Exact CDK/CloudFormation resource support, instance class, account quota, price and lifecycle controls |
-
-These are planning blockers to a fully executable contract, not grounds for
-silently narrowing the agreed product. A paid feasibility deployment requires a
-separately scoped, reviewable experiment and spending authorization. The owner
-authorized the prepared experiment on 2026-09-27; its two attempts provisioned
-successfully but failed during the initial container download, before diagnostics.
-
-The disposable F1 capability probe used a separate CDK app and runner script.
-It was designed to test Docker, service networking, bind mounts, ARM64 bundling
-and sandboxed Chromium twice, retaining a storage marker across actual
-managed-instance replacement. Its implementation was removed when P10 was
-deferred; the experimental observations and raw first-pass evidence remain here. Preparing and validating
-this test locally does not satisfy F1. Both cloud attempts returned
-`RuntimeClientError: The agent artifact could not be downloaded. Verify the
-artifact URI is accessible and retry.` The second attempt's runtime log group
-contained no events. CloudTrail recorded runtime-role image-manifest and
-layer-download-URL requests without an error code. The image was a single OCI
-manifest with gzip layers. These observations do not identify the download
-failure's root cause and do not demonstrate any restriction on nested Docker.
-F1 remains unproven; successful provisioning is only partial evidence for F5.
-
-Local evidence directories: `/tmp/nightshift-agentcore-live-20260927` and
-`/tmp/nightshift-agentcore-retry-20260927`. Each holds the deployment identifiers,
-failure and cleanup record; the retry also captured startup logs. The probe was updated to capture those logs before teardown when an invocation fails. Repository
-verification passed: 144 test files, 3,118 tests passed and two skipped; build,
-type-check, lint, synthesis and sterility checks passed.
-Both cleanup records report no failures: the sessions and dedicated stacks were
-deleted, managed-instance termination was checked and the probe image tag was
-removed. A final CloudFormation lookup confirmed the retry stack no longer exists.
-
-The owner then authorized a minimal-image control. The `run-minimal` variant deployed the same
-infrastructure with the same `node:22-bookworm-slim` base and only a built-in HTTP
-server: no Docker, Chromium, CDK or npm dependencies. Both endpoints passed in a
-local ARM64 container. A synthesis test confirmed that only the image changes.
-The cloud control failed with the identical artifact-download error, before the
-server started; the runtime log group was empty and the EC2 boot console showed
-no matching download/error messages. This excludes the added packages as a
-necessary cause, but does not isolate the shared base image/packaging from the
-AWS image-loading path. Evidence is in
-`/tmp/nightshift-agentcore-minimal-20260927`; the boot console was saved separately
-as `/tmp/nightshift-agentcore-minimal-console.json`. Repository verification
-passed again: 144 files, 3,119 tests passed and two skipped, plus all other checks.
-The minimal control's cleanup record reports no failures: its session, stack
-and image tag were removed and managed-instance termination was checked.
-
-### Completed Docker capability test — 2026-09-28
-
-The owner asked to get past startup and reach the test. Exporting the same full
-probe with CDK DockerImageAsset `outputs: ["type=docker,oci-mediatypes=false"]`
-changed the ECR manifest from `application/vnd.oci.image.manifest.v1+json` to
-`application/vnd.docker.distribution.manifest.v2+json`. The full probe then
-started on AgentCore Instances. This resolves the packaging failure for this
-experiment; it is not evidence that all OCI images fail in every AgentCore mode.
-No IAM expansion, host socket or privileged-container workaround was used.
-
-The [raw first-pass evidence](p10-agentcore-capability-evidence.json) records:
-
-- ARM64 execution and the mounted `/mnt/workspace` volume passed.
-- UID and GID were 0, but all Linux capability sets were zero, with
-  `NoNewPrivs: 1` and `Seccomp: 2`.
-- Ordinary `dockerd` failed: mount propagation returned `operation not permitted`,
-  then changing ownership of its Unix socket returned `operation not permitted`.
-- PostgreSQL container networking/bind mounts and CDK Docker bundling were blocked
-  because the Docker daemon was unavailable.
-- The browser attempt failed at `runuser: cannot set groups: Operation not permitted`.
-  Chromium itself was not reached; this does not prove all browser configurations fail.
-- A persistent marker was written successfully. After stopping the runtime, AWS's
-  idle policy stopped the same EC2 instance instead of terminating it. The local
-  waiter was ended and explicit cleanup invoked. No second pass or replacement
-  proof was collected. The probe was updated to recognize either shutdown state, while
-  retaining its strict requirement for a different instance ID to prove replacement.
-
-**Conclusion:** ordinary Docker-in-Docker is unavailable in the tested Instances
-configuration. F1 fails for the proposed Docker-dependent runner. Rootless or
-externally hosted Docker was not tested, and no alternative architecture is
-ratified by this result. Local run evidence is at
-`/tmp/nightshift-agentcore-dockerformat-20260928`.
-Explicit cleanup completed with no reported failures: the session and dedicated
-stack were deleted, managed-instance termination was checked, and the recorded
-probe image tag was removed from ECR.
+| Program ID | `p10-remote-runner` |
+| Project ID | `nightshift` |
+| Base branch | `main` |
+| Program branch | `program/p10-remote-runner` |
+| Source stage | Stage 9, `00-source-program-plan.md`; P10 in `staging.md` |
+| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-23 agreed; the A-14 amendment stands as A-51). Not yet built; task specs follow under `tasks/p10-remote-runner/`. Human prerequisites H-P10-02 … H-P10-06 open |
+| Depends on | P9 (correction), P12 (token profiles, one loopback server), P14 (stories); the implementation base is `main` after `fc20125` (program setup) |
+| Outcome | Dispatch a program to a machine of the customer's chosen size, close the laptop, and return to verified, published output or a durable account of partial work; the machine is recommended from the project, starts warm, and is right-sized from the runs before it |
+| Blocking decisions | none: D-P10-12 … D-P10-23 ratified; H-P10-01 … H-P10-06 satisfied. The two provider API keys are T5's gate |
+
+This contract is the stable authority for P10. The implementation plan may be
+revised continuously; this contract may not be revised to make an implementation
+pass. Amend it only through a human decision recorded in §13. Nightshift v1 is
+planned by the human in this document, not by Nightshift's planning tools.
+
+## 1. Objective
+
+Make Nightshift **walk-away**: `nightshift run <program> --remote` starts the
+run on a machine Nightshift owns, returns a run id, and nothing more is needed
+from the laptop. The run continues to verified output on the program branch at
+GitHub, recovers from the machine's death on its own, and leaves a durable
+account when it cannot finish.
+
+Three product requirements shape the machine (§3.1):
+
+1. **The customer chooses the hardware**, from three tiers: good, better, best.
+2. **Nightshift recommends the tier** from the project before the first run, and
+   from the measured use of earlier runs after it, so nobody overpays or runs
+   out of memory at 3 a.m.
+3. **Starts are warm.** A project's dependencies are not downloaded again on
+   every run; a per-project cache volume holds the clone, the package stores and
+   the last installed tree, and the program's `setup` runs against them.
+
+The AgentCore harness worker with a Bedrock model (SC-04's third half, SC-05) is
+built here, as a process on the run's machine (D-P10-12).
+
+**What P10 is not.** No change to how a run delegates, routes, verifies,
+examines or lands: the engine, merge queue, examination and correction run
+unchanged on the remote machine. No private runners, no Nightshift-supplied
+inference, no customer billing (§5). No Studio work beyond showing the records
+this program adds.
+
+### What exists today
+
+- `apps/cli/src/commands/run.ts` accepts `--remote` and refuses it; `startRun`
+  in `packages/execution` does the half that is the same local and remote
+  (persist program, run, root node, initial checkpoint).
+- `apps/mcp/src/headless.ts` starts the root orchestrator as an agent like any
+  other, with the orchestrator-role MCP server hosting the run's engine. The
+  remote runner starts exactly this, on another machine.
+- A program's `setup` runs in every checkout Nightshift creates before the
+  agent starts and before every verification (`fc20125`). The cache makes
+  setup fast; it does not replace it.
+- Workers hold execution tokens (A-35); the engine still holds the operator's
+  session. Execution tokens cannot mint tokens and live at most eight hours.
+- `packages/harness-agentcore/src/index.ts` is empty.
+- The 2026-09-28 probe measured AgentCore Runtime Instances: ARM64, a persistent
+  volume, and **zero Linux capabilities** (`NoNewPrivs=1`, seccomp on): no
+  Docker daemon, no sandboxed Chromium, no choice of machine beyond a capacity
+  provider. That evidence is why §3.1's answers move the substrate (§14).
+
+## 2. Environment and human prerequisites
+
+| # | Prerequisite | Verify | Status |
+|---|--------------|--------|--------|
+| H-P10-01 | Ratify D-P10-16 … D-P10-23 and the A-14 amendment (A-51) | this document's §13 carries the ruling | **satisfied 2026-10-01** |
+| H-P10-02 | EC2 quota in `us-west-2` for the three tiers: at least 32 vCPUs of on-demand standard (A, C, D, H, I, M, R, T, Z) instances, so one `best` and one `better` run can overlap | `aws service-quotas get-service-quota --service-code ec2 --quota-code L-1216C47A` reports ≥ 32 | **satisfied 2026-10-01**: the account's quota is 64 vCPUs |
+| H-P10-03 | Confirm the three instance classes and their on-demand prices in `us-west-2`, and record them in D-P10-13. **Done 2026-10-01**: $0.1632 / $0.3264 / $0.6528 per hour, offered in all four Oregon zones | `aws pricing get-products --region us-east-1 --service-code AmazonEC2 --filters Type=TERM_MATCH,Field=instanceType,Value=m7g.2xlarge Type=TERM_MATCH,Field=location,Value="US West (Oregon)" Type=TERM_MATCH,Field=operatingSystem,Value=Linux Type=TERM_MATCH,Field=tenancy,Value=Shared Type=TERM_MATCH,Field=preInstalledSw,Value=NA Type=TERM_MATCH,Field=capacitystatus,Value=Used` (per class) | **satisfied 2026-10-01** |
+| H-P10-04 | **Operator.** Register the Nightshift GitHub App (Contents read and write, Metadata read, no webhooks) and put its App id and private key in Secrets Manager under `nightshift/github-app`: the service's own credential, the one secret an operator places by hand | `aws secretsmanager describe-secret --secret-id nightshift/github-app` succeeds | **satisfied 2026-10-01**: App `nightshift-publisher` (id 5152718) under `wildorder`, Contents write and Metadata read; the stored key signs a JWT GitHub accepts; local file deleted. Installed on `wildorder` as installation 166952409, currently on **all** repositories, to be narrowed to selected ones (this repo and the fixture) |
+| H-P10-04b | **Customer.** Install the App on exactly the repositories Nightshift may touch: `wildorder/nightshift` and the fixture repository, with repository access set to selected, not all | With the stored App key, `GET /app/installations` then `GET /user/installations/{id}/repositories` (as the installation) lists exactly those two repositories; the smoke script carries this call | **satisfied 2026-10-01**: installation 166952409 is on selected repositories, and an installation token lists exactly `wildorder/nightshift` and `wildorder/nightshift-remote-fixture` (created private and empty the same day) |
+| H-P10-05 | **Customer.** Enable the chosen cheap model in the paying account's Bedrock console (D-P10-04), and obtain an Anthropic and an OpenAI API key, kept in the owner's password manager until T5. The keys have no honest headless check before the verb that stores them exists, so handing them over is T5's first gate (§11), not a prerequisite | `aws bedrock get-foundation-model-availability --model-id anthropic.claude-haiku-4-5-20251001-v1:0` reports `AUTHORIZED` in the paying account | **satisfied 2026-10-01** for Bedrock: Haiku 4.5 authorized in `755348349819`, the owner's paying account as the first customer; the keys wait for T5 |
+| H-P10-06 | **Operator.** Approve the shipped default ceilings of D-P10-19 (an org-wide monthly cap and a per-run cap), so no unpriced machine launches; an org lowers its own through `nightshift org config set` | recorded in D-P10-19 | **satisfied 2026-10-01**, provisionally: $300 a month, $50 a run, to be revisited against the first three live runs' metered cost |
+
+**Operator and customer.** The owner is both today, and still takes the two
+roles by their own paths: the service's credential (the App key) by hand, the
+org's credentials (installation, provider keys, ceilings) through the CLI verbs
+a second customer would use. The live fixture (§8) onboards its org through
+those verbs, so the exit gate proves the customer path and not a shortcut.
+
+**Explicitly not required.** No second AWS account (A-17). No customer-account
+compute (D-P10-10). No Chromium or Docker promise beyond what T2 measures.
+
+## 3. Decisions
+
+### 3.1 The owner's direction, 2026-10-01
+
+| # | Question | Answer |
+|---|----------|--------|
+| Q1 | Deliver P10 now? | **Yes**: "let's plan the remote runner work … it's time to deliver that" |
+| Q2 | Who sizes the machine | **The customer**: "I want customers to be able to choose their hardware (at least a good/better/best)" |
+| Q3 | Where a size comes from before the first run | **The project**: "I want us to be able to recommend a hardware based on the project" |
+| Q4 | Starts | **Warm**: "I want caching to prevent super long startups with npm ci ... we shouldn't be downloading dependencies every time" |
+| Q5 | Substrate, given the AgentCore evidence | **EC2 and EBS, superseding A-14**; the AgentCore harness worker stays in scope as a process on the instance |
+| Q6 | Tier shape | **vCPU and memory steps on ARM64**, three tiers |
+| Q7 | Where the recommendation comes from | **Both**: a deterministic probe of the project now, refined from past runs: "we definitely want that feature that aws lambda has where it can recommend the right memory adn compute based on past runs so you don't overpay." |
+| Q8 | What is cached | **A per-project warm volume**: clone, package stores and the last installed tree, snapshotted when a run ends |
+
+### 3.2 Decisions agreed before this plan (2026-09-27), unchanged
+
+| ID | Decision |
+|----|----------|
+| D-P10-01 | **Git publication (O-06).** Push each verified integrated head to the program branch as it lands, fast-forward only; never worker branches, provisional work or main. Refuse concurrent branch movement; retain unpublished work. P10's explicit exception to A-29's no-push rule, for remote execution only. |
+| D-P10-02 | **Dispatch input.** GitHub only. Remote dispatch requires a clean checkout, an already-pushed program branch and a ratified plan; it binds repository, branch, exact base SHA and plan hash, and refuses dirty or unpublished input. Customers install a GitHub App on selected repositories; runners receive read-only credentials; a trusted publisher outside the worker environment holds publication credentials. |
+| D-P10-03 | **Harness authentication (O-05).** Claude Code and Codex through their subscriptions or provider API keys, plus Bedrock. Each supported remote sign-in, provisioning, renewal and revocation flow is established before the design is called done. No provider credentials in contracts, logs or record responses. |
+| D-P10-04 | **Bedrock payer (O-05).** Bring-your-own inference for every mode; Bedrock is billed to the customer's account through A-25. Routing records the actual provider and model. |
+| D-P10-05 | **Limits and retention (O-03, part).** Org-wide ceilings on run duration, concurrency and compute spend that a program may lower, never raise. Defaults: 24 hours per run, four concurrent jobs, three automatic recovery attempts, seven days of recoverable workspace, 90 days of reports and evidence. Recovery counts against the same limits. Stop compute when work ends. |
+| D-P10-06 | **Recovery promise.** Recover from runner process or instance failure and continue the authorized run without the laptop. A replacement must not race a stale runner or duplicate publication. Three attempts within the run's limits. |
+| D-P10-09 | **Inputs.** Remote execution requires a ratified planned program. |
+| D-P10-10 | **Ownership.** Runners run in Nightshift's account, managed by the service. Customers bring inference, not infrastructure. |
+| D-P10-11 | **Environment.** No customer images. Nightshift supplies the Linux environment; the program's `setup` handles project dependencies. |
+
+D-P10-07 (remote identity) and D-P10-08 (seams) were open; they are answered
+below as D-P10-20 and D-P10-21.
+
+### 3.3 Decisions of this plan
+
+D-P10-12 … D-P10-15 carry the owner's answers from §3.1; D-P10-16 … D-P10-23
+were the planner's recommendations, each explained to and agreed by the owner
+the same day (H-P10-01).
+
+| ID | Decision | Rationale | Status |
+|----|----------|-----------|--------|
+| D-P10-12 | **The run's machine is one EC2 instance with an EBS workspace volume, launched from a Nightshift AMI. A-14 is superseded (A-51).** One instance per program run; the root orchestrator, the engine, the workers and the AgentCore harness worker are processes on it. Nightshift never runs a worker as a per-job hosted environment; that half of A-14 stands. AgentCore Runtime is not used for compute. | The 2026-09-28 probe: no capabilities, no Docker, no browser, no machine choice. Hardware tiers and a reusable disk need the machine and the disk. EC2 gives both and a volume that survives the instance, which is what recovery and the cache both want. | **agreed 2026-10-01** |
+| D-P10-13 | **Three tiers on Graviton, `good` / `better` / `best`**: `m7g.xlarge` (4 vCPU, 16 GiB), `m7g.2xlarge` (8, 32), `m7g.4xlarge` (16, 64), with gp3 workspace volumes of 100, 200 and 400 GiB. One architecture, `arm64`. On-demand Linux in `us-west-2`, from the Pricing API on 2026-10-01: **$0.1632, $0.3264 and $0.6528 per hour**; all three classes are offered in every Oregon zone (2a … 2d). The classes and their hourly prices are a table in `contracts` (`COMPUTE_TIERS`), changed only by a decision. The CLI prints the tier, class and hourly price at dispatch. | Memory-optimised ratio suits installs, bundlers and test runners better than compute-optimised; Graviton is about a fifth cheaper per vCPU. One architecture keeps the AMI, the cache lineage and the conformance fixtures single. x86-only native dependencies are a reason to revisit, recorded when met. | **agreed 2026-10-01**; prices confirmed the same day (H-P10-03) |
+| D-P10-14 | **The tier is recommended twice: from the project before the first run, from measured use after it.** (a) `nightshift init` and `plan check` run a deterministic **probe** over the repository: lockfile size and workspace count, Docker or Testcontainers in dependencies or CI, browser test dependencies (playwright, puppeteer, chromium), native or Rust toolchains, CDK bundling, and the contract's `maxConcurrency`. A rule table in `core` maps these to a tier with the reasons, recorded as `compute.recommended` in `nightshift.config.json` and shown by `plan check`. (b) The runner samples the machine every 30 seconds (CPU, memory, swap, disk high-water, OOM kills) into a run-scoped **`ComputeUtilization`** record. After three completed runs of a project on one tier, `core` recommends one tier down when every run's peak memory stayed under 45% and peak CPU under 50%, and one tier up when any run saw an OOM kill, swap, disk over 85% or CPU above 90% for a tenth of its wall clock. The recommendation appears in the report, in `nightshift compute recommend <program>` and on the Studio's program card. The customer chooses: `--compute <tier>` on `run --remote`, else `compute.tier` in the contract or config, else the recommendation, else `good`. | The owner's Q7: Lambda's power tuning, for a build machine. Both halves are pure functions over recorded facts, so they are tested offline and explainable in one sentence each. The schema carries the utilization from day one so a learned refinement later has data. | **agreed 2026-10-01** (thresholds are the planner's starting values) |
+| D-P10-15 | **A per-project warm volume.** Every run's workspace is an EBS volume created from the project's latest **warm snapshot** (or empty for the first run). It holds a mirror clone of the repository, the package-manager stores (`npm`, `pnpm`, `cargo`, `pip`, `uv`) reached through environment the runner sets for every process, and the last run's prepared checkout. The program's `setup` runs unchanged in every worktree against those stores; a cache hit is never verification evidence. When a run ends and its setup passed at least once, the volume is snapshotted; the project's `WarmCache` record (snapshot, image version, architecture, lockfile hashes, source run) moves to it; older snapshots are deleted after seven days or when three newer exist. Concurrent runs of one project each get a volume from the same snapshot; the last to end writes the next. | The owner's Q4 and Q8. A snapshot is the one object that serves the cache, recovery (D-P10-18) and retention (D-P10-05): nothing is designed twice. The project keeps control of what setup means; `nightshift init` suggests `npm ci --prefer-offline`. | **agreed 2026-10-01** |
+| D-P10-16 | **A Nightshift AMI, built by an EC2 Image Builder pipeline defined in CDK**, versioned, recorded on every dispatch. Amazon Linux 2023 arm64 with pinned Node 24, git, Docker (rootless per worker user, D-P10-17), Chromium's shared libraries, build tools, rustup, pnpm, Python 3 for the AgentCore export, the pinned `claude` and `codex` CLIs and the Nightshift runner tarball. The first task proves the pipeline; the fallback is a stock AMI with user-data, which costs minutes per start and is then its own decision. **Future seam, not built:** an org may later register its own image, either as a layer the same pipeline bakes over Nightshift's base (preferred: Nightshift keeps the runner, users and containment) or as an org-owned AMI that passes a boot conformance test; the dispatch already records which image ran. | Starts should be seconds of boot, not minutes of package installs. Image Builder keeps the image in CDK (A-09). The version on the dispatch is what recovery relaunches. | **agreed 2026-10-01** |
+| D-P10-17 | **Containment on the machine is Linux users and the API, not a tool list.** The runner process runs as `engine` and holds the engine token and the instance's role; each worker runs as its own unprivileged user in its worktree, with rootless Docker, no access to `engine`'s files, and IMDS reachable only by `engine` (an owner-match firewall rule). Publication credentials are never on the machine (D-P10-22). The instance role can heartbeat, write its own run's logs and artifacts, and read its own run's secrets, and nothing else. The machine is the run's trust boundary: a worker that escaped its user could harm only its own run, and could not publish. Rootless Docker is measured in T2 against a Postgres service container and CDK bundling; if a project needs the rootful daemon, that is the owner's call for that project, recorded. | A-39: containment is the environment's job, and EC2 lets the environment do it. Honest about the boundary: the engine token's scope is already one run. | **agreed 2026-10-01** |
+| D-P10-18 | **Dispatch is a record with a lease and a generation; a reconciler owns liveness.** A new run-scoped aggregate, **`Dispatch`**: `requested → provisioning → ready → running → stopping → stopped`, or `failed` with cause; `tier`, `amiVersion`, `instanceId`, `volumeId`, `availabilityZone`, `generation`, `leaseExpiresAt`, `attempts[]`, `publication`, `cleanup`. `POST /runs/{id}/dispatch` with an idempotency key records intent, then an asynchronous dispatch Lambda creates the volume from the warm snapshot and launches the instance with the dispatch id and a one-time bootstrap secret in user-data. The runner heartbeats every 20 seconds carrying its generation; **every write the API accepts from a runner must carry the current generation**, which is the fence: a stale runner is refused, not asked to stop. A scheduled reconciler marks the lease lost after three missed heartbeats, terminates the instance, increments the generation, and launches a replacement in the same zone with the same volume attached, up to D-P10-05's three attempts, then stops the run with the volume snapshotted. Cancellation sets `stopping`; the heartbeat response carries it; the reconciler terminates what does not stop. `nightshift remote resume <program> --run <id>` is the same path by hand, from the retained snapshot, within seven days. | The volume is the recovery point: worktrees, sealed refs, logs and the merge queue's checkouts survive the instance. The API already sees every mutation (A-06, A-40), so a generation check there is a real fence where a lease check before a push is not. Resume, recovery and retrieval are one mechanism. | **agreed 2026-10-01** |
+| D-P10-19 | **Compute ceilings and spend.** `OrgConfig` gains `compute: { maxTier, maxConcurrentRuns, maxRunHours, maxUsdPerMonth }` with shipped defaults `best`, 2 concurrent runs, 24 hours, **$300 a month**, and a per-run cap of **$50** (`maxUsdPerRun`); a contract or config may only lower them. The two dollar figures are the owner's provisional numbers of 2026-10-01, chosen without data: the report's compute section shows every run's metered cost, and the figures are revisited after the first three live runs. A run's compute cost is hours × the tier's price plus its volume, estimated at dispatch, metered from heartbeats, written on the `Dispatch`, and counted toward the month. The reconciler stops a run at its `maxWallClockSeconds` or the org's hour ceiling, and refuses dispatch when the month's cap would be crossed. This cost is kept beside, never inside, the inference cost A-45 prices. | D-P10-05's limits, made concrete. No unpriced compute launches. Recovery counts against the same figures. | **agreed 2026-10-01** |
+| D-P10-20 | **Engine authority is a run-scoped execution token of its own (resolves D-P10-07).** A new token role, `engine`, minted by the dispatch Lambda against the bootstrap secret and renewed by each heartbeat, bound to the dispatch's generation, expiring in one hour, within the run's ceiling. It can do what the orchestrator's session does today for its run and nothing else: create nodes and records, start, verify and integrate, mint worker, examiner and arbiter tokens for its own run, and request publication. It cannot ratify a plan, reverse a human decision, change org config, or touch another run. `authorize` in `core` gains the row; the API enforces it. Renewal is the engine's background work: the engine renews its own token and re-issues its workers' before expiry, so no agent mid-task ever sees an expired credential. The orchestrator's session lives on the volume and is resumed by id on a replacement, as the local engine resumes a headless session today; a fresh orchestrator starts only when the resume fails, from the ratified plan and the run's full record. | A-35 said P10 gives remote orchestrators tokens. Renewal on the heartbeat means authority and liveness are one exchange. | **agreed 2026-10-01** |
+| D-P10-21 | **Seams (resolves D-P10-08).** `contracts`: `Dispatch`, `ComputeTier`, `ComputeUtilization`, `WarmCache`, the `compute` fields. `core`: dispatch and lease transitions, the recommendation rules, the `engine` authority row, the spend arithmetic. `persistence`: the new tables in both stores, and the `CredentialsStore` over its own table with envelope encryption (D-P10-23). `apps/api`: dispatch, heartbeat, reconciler and publisher Lambdas, an EC2/EBS/KMS client behind a `core` port (`apps/api/src/aws`). `apps/mcp`: a `nightshift-runner` bin that composes the adapters and starts the headless root on the machine. `harness-agentcore`: the exported harness as a process. `infra/cdk`: a `RunnerStack` (AMI pipeline, launch template, instance role, reconciler schedule, publisher), and in the data stack the `Credentials` table and `CredentialsKey`. `apps/cli`: `run --remote [--compute]`, `remote status|cancel|resume`, `compute recommend`, and the org's onboarding verbs `org github install|status` and `org providers set|status`, which reach the store only through the API. The CLI still imports no harness and no AWS SDK. | Follows A-31 and the layering of `architecture.md` §1. A separate stack keeps the control plane deployable without the runner. | **agreed 2026-10-01** |
+| D-P10-22 | **Publication is a bundle and a lease at the Git transport.** The engine requests a publication intent (branch, verified commit, expected predecessor) and uploads a git bundle of the commits to the run's S3 prefix first. The publisher Lambda, holding the GitHub App key, fetches the bundle and pushes with `--force-with-lease=<branch>:<predecessor>`; a rejected lease is recorded as a conflict, never retried with force. Lost replies are reconciled against the actual branch head before any retry. One intent per repository and branch at a time. | D-P10-01 and D-P10-02 made concrete. The bundle makes the verified objects durable before the push; the lease check is in the transport, where the race actually is. | **agreed 2026-10-01** |
+| D-P10-23 | **An org's secrets live in a credentials table of their own, envelope-encrypted under a dedicated key; Secrets Manager holds the service's credentials only.** A second DynamoDB table in the data stack, **`Credentials`**: no stream, no index, deletion protection, retained. One item per org and provider, holding the ciphertext, the wrapped data key, the set-at time and the last four characters, and nothing in plaintext. A new **symmetric KMS key**, `CredentialsKey` (A-35's token key is RSA sign-and-verify and cannot encrypt), whose `Decrypt` the key policy grants to the API function alone and only with an encryption context of `{orgId, provider}`, so a ciphertext moved to another org's row does not decrypt. The API function is the only principal with read or write on the table; the materializer, authorizer, Studio and runner hold neither. `org providers set` encrypts and writes; every read route returns presence, date and last four only; the plaintext is decrypted once per heartbeat response for the run's own org and handed to `engine`, which holds it in memory. The set route's request body is masked from every log, and a test asserts it. The memory and SQLite stores implement the same `CredentialsStore` over a key file beside the database, as the local token key already is, so the local instance and the offline suites run the identical code above `persistence`. The GitHub App's id and private key stay in Secrets Manager under `nightshift/github-app`: one secret, the service's own. | Secrets Manager bills per secret per month and per call: a secret per customer per provider grows with the customer count, for rotation and cross-service IAM a customer's API key never uses. Envelope encryption under one KMS key with a tenant encryption context is the standard SaaS pattern and costs a fraction of a cent per read. A table of its own costs nothing at this volume and buys deny-by-default: the main table's stream never carries a credential, and the read grant is one principal. The owner's ruling, 2026-10-01: set up properly from the beginning. | **agreed 2026-10-01** |
+
+## 4. Design
+
+### 4.1 One run, one machine, one volume
+
+```text
+nightshift run <program> --remote --compute better
+   │  startRun (unchanged): program, run, root node, checkpoint
+   │  refuses: dirty tree, unpublished head, unratified plan, tier over the org's ceiling
+   ▼
+POST /runs/{id}/dispatch  {tier, repo, branch, sha, planHash, idempotencyKey}
+   │  Dispatch{requested}; prints run id, tier, class, $/h; the laptop may close
+   ▼
+dispatch Lambda ── create volume from WarmCache snapshot ── RunInstances(AMI, class, user-data)
+   │                                                               │
+   │                                   instance boots ─ nightshift-runner (user engine)
+   │                                     bootstrap secret → engine token (generation 1)
+   │                                     mount /workspace; mirror fetch; checkout sha
+   │                                     verify plan hash; start headless root (A-44)
+   │                                     heartbeat /20s: generation, utilization, spend
+   ▼                                                               │
+reconciler (EventBridge, 1 min) ─ lease lost? terminate; generation+1; relaunch with the volume
+                                 ─ cancelled? wait for stop, then terminate
+                                 ─ ended? snapshot volume → WarmCache; delete volume; Dispatch{stopped}
+```
+
+The engine, workers, examiners, the merge queue and the AgentCore worker run as
+they do locally; the program checkout the engine integrates into is a clone on
+the volume whose program branch the publisher mirrors to GitHub after each
+landing (D-P10-22). Nothing a worker does differs from a local run.
+
+### 4.2 Recommending the tier
+
+The probe reads files, never runs them: `package.json` workspaces and the
+lockfile, `.github/workflows/*`, `Dockerfile*` and `docker-compose*`,
+`Cargo.toml`, `cdk.json`, test dependencies. Each signal is a row with a weight
+and a sentence; the sum selects the tier and the sentences are the explanation.
+The starting table:
+
+| Signal | Tier |
+|--------|------|
+| none of the below | good |
+| one of: Docker or Testcontainers; a browser test dependency; Rust or native build; CDK bundling; lockfile over 2 MiB or more than six workspaces | better |
+| two or more of those, or any of them with `maxConcurrency ≥ 4` | best |
+
+Right-sizing (D-P10-14b) is a second pure function over the last three
+`ComputeUtilization` records of the project on its current tier. Its output is a
+tier, a direction and the evidence (peak memory as a percentage, OOM count, CPU
+saturation). The report's compute section and `nightshift compute recommend`
+print it; the Studio's program card shows "recommend: good (peak memory 31%)".
+Nothing changes a tier by itself: the customer's choice stands until they change it.
+
+### 4.3 The warm volume's layout
+
+```text
+/workspace/
+  mirror.git/          bare mirror of the repository, fetched each run
+  stores/              npm, pnpm, cargo, pip, uv caches (env set for every process)
+  checkout/            the program checkout the engine integrates into, with its last installed tree
+  runs/<runId>/        worktrees, examination checkouts, logs, bundles for publication
+```
+
+Setup runs in every worktree as it does today. `nightshift init` writes
+`npm ci --prefer-offline` for an npm project and `pnpm install --frozen-lockfile`
+for pnpm, both of which resolve from the stores on the volume. The first run of a
+project is cold; every run after it is warm.
+
+### 4.4 Provider authentication on the machine
+
+The three modes of D-P10-03, in the order they are proven:
+
+1. **API keys.** Given by the org through `nightshift org providers set`, stored
+   by the API in the `Credentials` table, envelope-encrypted under
+   `CredentialsKey` with the org and provider as encryption context (D-P10-23), decrypted
+   once per heartbeat for the run's own org and handed to `engine`, handed to each worker process's environment for
+   its provider only, never written to disk. The existing Codex adapter's exclusion of API-key auth is lifted here.
+2. **Bedrock.** The AgentCore worker assumes the project's role (A-25) and uses
+   the cheap model the routing ladder names.
+3. **Subscriptions.** Anthropic's hosting conditions require native sign-in and
+   forbid platform storage of claude.ai session credentials; Codex's guidance
+   warns against concurrent reuse of one auth file. T5 attempts native device
+   sign-in on the machine through `nightshift remote login`, with credentials
+   kept on the run's volume and never in the control plane. If a provider's
+   terms or mechanics block it, the constraint is surfaced to the owner as a
+   recorded finding and the mode is marked unavailable for that provider;
+   nothing falls back to a differently billed mode.
+
+## 5. Scope
+
+**In.** Everything in §3.3; the AgentCore harness worker against the unchanged
+conformance suite; `run --remote`, `remote status|cancel|resume`, `compute
+recommend`, `org github install|status`, `org providers set|status`; the probe in `init` and `plan check`; the live walk-away fixture;
+the records on the Studio's run status and program card.
+
+**Out.** Private runners (customer accounts); Nightshift-supplied inference and
+customer billing; non-GitHub hosts; customer images; x86 tiers; sibling
+repository checkouts; publishing anything but the program branch; a push
+transport for the Studio; learned right-sizing beyond D-P10-14's rule; teardown
+verification (A-18).
+
+## 6. Stories
+
+| ID | Who | Today | After | Words |
+|----|-----|-------|-------|-------|
+| US-01 | The owner, with a program ratified at 11 p.m. | The laptop must stay open and online for the run; a sleep or a dropped connection ends it | They dispatch, close the laptop, and read the result in the morning | "it's time to deliver that" |
+| US-02 | A customer with a heavy monorepo | The machine is whatever Nightshift picked | They pick good, better or best, and see the price before the run starts | "I want customers to be able to choose their hardware (at least a good/better/best)" |
+| US-03 | A customer on their first run | They guess a size | Nightshift says which tier the project needs and why | "I want us to be able to recommend a hardware based on the project" |
+| US-04 | Every run of a Node project | Each worktree downloads every dependency; the night's first hour is `npm ci` | The volume is warm; setup resolves from the stores in seconds | "I want caching to prevent super long startups with npm ci ... we shouldn't be downloading dependencies every time" |
+| US-05 | A customer three runs in | They pay for `best` because they once feared running out of memory | The report says the runs peaked at a third of it and recommends `good` | "we definitely want that feature that aws lambda has where it can recommend the right memory adn compute based on past runs so you don't overpay." |
+
+## 7. Success criteria
+
+| ID | Outcome | Serves |
+|----|---------|--------|
+| SC-P10-01 | A ratified plan dispatched with `--remote` prints a run id; the CLI process and its network are killed; the run continues through central records to verified output on the program branch at GitHub (SC-14, SC-16) | US-01 |
+| SC-P10-02 | Dirty checkouts, unpublished heads, missing remote branches, changed plans, tiers above the org ceiling and a month over its cap are refused before provisioning, by the API as well as the CLI | US-01, US-02 |
+| SC-P10-03 | A retried dispatch under one idempotency key is one run and one instance; a second org cannot dispatch, inspect, cancel or resume the first's run | US-01 |
+| SC-P10-04 | Several jobs run in parallel worktrees on one instance; one cheap job runs through the AgentCore harness on Bedrock and passes the unchanged conformance suite (SC-04, SC-05, SC-15) | US-01 |
+| SC-P10-05 | Each of the three tiers launches its named class; the dispatch records tier, class, price and AMI version; the CLI printed them | US-02 |
+| SC-P10-06 | The probe's rule table is a pure function with a table-driven test over fixture repositories (plain Node, Docker service tests, Rust, CDK bundling, a six-workspace monorepo), and `plan check` prints its tier and reasons | US-03 |
+| SC-P10-07 | After three completed runs, the right-sizing rule recommends down for under-use and up for an OOM kill, in the report, the CLI and the Studio card; nothing changes the tier by itself | US-05 |
+| SC-P10-08 | The second run of a project starts from the warm snapshot; its first setup completes in under a tenth of the cold run's, measured by the fixture; a cache hit is never recorded as verification | US-04 |
+| SC-P10-09 | The runner process is killed and, separately, the instance terminated during a live run; the service recovers under the same run id with the same volume and continues to published output; the stale generation's writes are refused | US-01 |
+| SC-P10-10 | Deterministic fault tests cover lost push acknowledgement, external branch movement, a stale runner returning after replacement, cancellation during recovery, preserved budgets, exhausted attempts and cleanup failure, each leaving a durable explanation | US-01 |
+| SC-P10-11 | Engine tokens renew across their expiry without a human session; a worker's token cannot obtain engine or sibling authority; cancellation stops work within two heartbeats | US-01 |
+| SC-P10-12 | An org's GitHub installation and provider keys arrive only through the CLI verbs, and the live fixture onboards its org through them; the keys rest in the `Credentials` table under `CredentialsKey`, a synthesized template shows no other principal can read or decrypt them, no read route returns more than presence, date and last four, and the set route's body is absent from the logs; Claude Code and Codex execute remotely with API keys; the Bedrock route executes under the project's role; each subscription mode either executes or is a recorded, surfaced constraint; no fallback changes the billing mode | US-01 |
+| SC-P10-13 | A run that ends with provisional or unlanded work is retrievable by `remote resume` within seven days; after that the snapshot is gone and the report says so | US-01 |
+| SC-P10-14 | Local behaviour and every earlier program's verification stay green; a local run and a remote run of one program produce the same canonical records apart from the `Dispatch` | US-01 |
+
+## 8. Deterministic verification
+
+```text
+npm run verify
+npm run check:architecture
+npm run local:e2e
+npm run conformance          # now including harness-agentcore, opt-in as before
+```
+
+Opt-in, from a developer machine, never in CI: `npm run deploy`, `npm run
+smoke`, and the new `npm run remote`: the live walk-away fixture against a
+disposable repository, which onboards a fixture org through `org github install` and `org providers set`, dispatches on `good`, kills the CLI, kills the
+runner, terminates the instance, and asserts the published branch. Its cleanup
+contract: every instance, volume and snapshot it created is tagged with the
+fixture id and removed at the end, and the report lists what it could not remove.
+
+## 9. Constraints
+
+- The engine, merge queue, verification, examination, routing and correction are
+  not forked for remote: one code path (SC-16).
+- The CLI imports no harness and no AWS SDK; `persistence` is the only data SDK
+  user; the EC2 client lives in `apps/api` behind a `core` port (D-P10-21).
+- Every dependency pinned exactly; the AMI pins every binary it carries.
+- No unpriced compute: a tier without a confirmed price cannot be dispatched.
+- Nothing from the cache is verification evidence; setup runs every time.
+- No provider credential in a contract, log, record response, plaintext column
+  or snapshot that outlives its run, other than the subscription credentials D-P10-03 places on
+  the run's own volume.
+
+## 10. Permissions and forbidden actions
+
+Permitted: editing every package and app named in D-P10-21 and the documents;
+deploying the data, API, Studio and new runner stacks; launching instances of
+the three classes under the fixture's tags; running the suites.
+
+Forbidden:
+
+- A worker as a per-job hosted environment, or a second engine for one run.
+- Pushing anything but the program branch, or any push without a lease.
+- Force-pushing, requesting branch-protection bypass, or weakening protection.
+- Reinstating a harness tool allow-list, sandbox mode or approval policy.
+- Copying an operator's Cognito session or refresh token to a machine.
+- Storing a customer's secret anywhere but the `Credentials` table, in
+  plaintext anywhere, in the main table or its stream, or in Secrets Manager; the App's own key is the
+  service's and the one secret that lives there.
+- Returning a stored secret from any read route, in any form but presence,
+  date and last four characters; logging the set route's body.
+- Granting `kms:Decrypt` on `CredentialsKey`, or read on the `Credentials`
+  table, to any principal but the API function.
+- Deleting a volume before its snapshot is confirmed, or a snapshot inside its
+  retention.
+- Weakening an assertion of an earlier program.
+
+## 11. Tasks
+
+Task specs follow ratification under `tasks/p10-remote-runner/`.
+
+| Task | Title | Depends on | Needs |
+|------|-------|------------|-------|
+| T1 | Contracts, rules and authority: `Dispatch`, tiers, utilization, `WarmCache`, `compute` fields, the `engine` row, the recommendation and spend functions, both stores, the API's dispatch, heartbeat and generation checks, the org onboarding routes and verbs (`org github`, `org providers`), the `CredentialsStore` over its own table with envelope encryption in both stores, the log mask and its test, offline | H-P10-01 | — |
+| T2 | The machine and the vault: the `Credentials` table and `CredentialsKey` in the data stack, `RunnerStack`, AMI pipeline, launch template, instance role, users and firewall, rootless Docker and Chromium measured, `nightshift-runner` booting to a heartbeat | T1, H-P10-02, H-P10-03 | the account |
+| T3 | Warm volume and dispatch: snapshot lineage, volume create and attach, mirror and checkout, setup on the stores, `run --remote`, refusals, the cold-to-warm measurement | T2 | — |
+| T4 | Publication and the headless root on the machine: publisher Lambda, bundles, leases, installation tokens from the App key and the org's recorded installation, the engine's integrate-then-publish. **Gate before it starts:** the owner has run `org github install` and `org github status` lists both repositories | T3, H-P10-04, H-P10-04b | the disposable repository |
+| T5 | Providers: the org's keys as `org providers set` stored them, Bedrock through A-25, the AgentCore harness worker against the conformance suite, subscription sign-in attempted and its result recorded. **Gate before it starts:** the owner has run `org providers set` for Anthropic and OpenAI and `org providers status` shows both | T1, T2, H-P10-05 | the paying account, the two keys |
+| T6 | Recovery and cancellation: reconciler, generations, replacement with the volume, `remote cancel|resume|status`, the deterministic fault battery | T4 | — |
+| T7 | Recommendation: the probe in `init` and `plan check`, utilization sampling, right-sizing, `compute recommend`, the report's compute section, the Studio card and run status | T3 | — |
+| T8 | The live walk-away fixture (`npm run remote`), the regression battery, documentation, `staging.md`, `architecture.md` (A-51, O-03, O-05, O-06 resolved) and §15 as built | T5, T6, T7, H-P10-06 | the account |
+
+Each task passes §8 before the next starts; T5 and T7 may run beside T4 and T6.
+
+## 12. Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Image Builder on arm64 proves slow or brittle | T2's fallback is a stock AMI with user-data; the cost is minutes per start, decided as a §13 ruling if taken |
+| Rootless Docker refuses a project's service containers | Measured in T2 against Postgres and CDK bundling; rootful is a per-project owner's call, never the default |
+| Subscription sign-in is blocked by provider terms | Surfaced as a finding (SC-P10-12); API keys and Bedrock carry the exit gate |
+| A replacement instance cannot attach the volume (zone capacity) | Same-zone launch is retried across the three attempts; the final failure snapshots and stops with the reason |
+| Right-sizing thresholds are wrong | They are one table in `core`, changed by a decision; the record keeps the raw peaks |
+| Spend runs past the cap during recovery | Recovery counts against the same figures (D-P10-05); the reconciler stops at the ceiling |
+
+## 13. Decision log
+
+| Date | Decision | Authority |
+|------|----------|-----------|
+| 2026-09-27 | D-P10-01 … D-P10-06, D-P10-09 … D-P10-11 agreed (§3.2) | Human |
+| 2026-09-28 | Program deferred; AgentCore Instances capability probe recorded: ARM64 and the persistent volume pass; zero Linux capabilities; `dockerd` denied mount propagation and socket ownership; Chromium's `runuser` denied; the probe image had to be exported as Docker schema v2 for AgentCore to start it (`p10-agentcore-capability-evidence.json`) | Human |
+| 2026-10-01 | Program reopened. D-P10-12 (EC2 and EBS, A-14 superseded), D-P10-13 (tiers), D-P10-14 (recommendation twice), D-P10-15 (warm volume) agreed; D-P10-16 … D-P10-23 proposed and, after explanation, agreed the same day: a separate `RunnerStack`; customer secrets envelope-encrypted in a table of their own under a dedicated key, not in Secrets Manager and not in the main table; containment by Linux users that limits nothing an agent legitimately does; the engine token renewed in the background with the orchestrator's session resumed from the volume. D-P10-19's shipped caps set provisionally at $300 a month and $50 a run, to be revisited against real metered cost | Human (§3.1) |
+
+## 14. Retained research
+
+The 2026-09-27 planning kept these; they still hold.
+
+- **AgentCore Instances** (`runtime-instances-how-it-works`, `-data-management`,
+  `-security`): one trust boundary per session, no privileged mode or Docker
+  socket in `ContainerConfiguration`. Two 2026-09-27 cloud attempts failed at
+  artifact download with an OCI manifest; the 2026-09-28 run started after a
+  Docker schema v2 export and measured what §1 records.
+- **GitHub Apps**: installation tokens are repository-scoped and renewable;
+  Contents write publishes, Workflows permission is needed for workflow-file
+  edits; a ref update is not atomic with any lease outside Git, hence D-P10-22.
+- **Anthropic hosting conditions** (`code.claude.com/docs/en/legal-and-compliance`):
+  hosted unmodified Claude Code with the user's own inference is permitted;
+  native sign-in is required; platform storage of claude.ai session credentials
+  is prohibited. **Codex** (`learn.chatgpt.com/docs/auth`, `/auth/ci-cd-auth`):
+  headless device login exists; concurrent reuse of one auth file is warned
+  against.
+- **Project audit, 2026-09-27**: FoodFly needs ARM64 CDK bundling with Docker;
+  Keki needs Chromium libraries; Prempt needs a Docker daemon, Rust and a large
+  disk; Keyart needs real Chromium. These are the probe's signals in §4.2 and
+  T2's measurements.
+
+## 15. As built
+
+Written when the program closes.
