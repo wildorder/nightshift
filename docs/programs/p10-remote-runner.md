@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p10-remote-runner` |
 | Source stage | Stage 9, `00-source-program-plan.md`; P10 in `staging.md` |
-| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-25 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01, T3 and T4's first chunk 2026-10-02, T4 live-accepted the same day (§15); T4's second chunk (workers as their own users, D-P10-25) in build |
+| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-25 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01, T3 and T4's first chunk 2026-10-02, T4 live-accepted the same day (§15); T4 complete but for worker token renewal and the root's session id; D-P10-25 live-accepted 2026-10-02 |
 | Depends on | P9 (correction), P12 (token profiles, one loopback server), P14 (stories); the implementation base is `main` after `fc20125` (program setup) |
 | Outcome | Dispatch a program to a machine of the customer's chosen size, close the laptop, and return to verified, published output or a durable account of partial work; the machine is recommended from the project, starts warm, and is right-sized from the runs before it |
 | Blocking decisions | none: D-P10-12 … D-P10-25 ratified; H-P10-01 … H-P10-06 satisfied. The two provider API keys are T5's gate |
@@ -619,9 +619,14 @@ of its own, wrote no code itself, and left a precise reason on the record.
 
 ### T4, second chunk, 2026-10-02: workers as their own users (D-P10-25)
 
-Built and verified offline in `a85e75b`; the image carrying it (1.0.12) was
-not yet built when the owner's AWS session expired for the night, so its live
-proof is the first thing to run next. What it does: `HarnessStartInput` gains
+Built in `a85e75b`, live-accepted on image 1.0.13 (`2b1cfe4`): the proof ran
+the program to its end with two processes started as worker users (the sudo
+log says so), the worker implemented and completed the job as `worker-1`,
+the branch was published, and nothing was left behind. The first attempt, on
+1.0.12, got as far as `job.complete`, whose `git rev-parse` in the worktree
+failed with "dubious ownership": the repository is the engine's and the
+process was the worker's. The image now marks every directory a safe git
+directory, which is right where every user is Nightshift's. What it does: `HarnessStartInput` gains
 `runAs`, which both adapters honour by spawning `sudo -n -u worker-N -H env …
 sh -c 'umask 002 && exec …'` with the sanitised environment passed explicitly
 and the engine's account variables dropped, granting the user the adapter's
