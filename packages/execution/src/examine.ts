@@ -630,6 +630,7 @@ const candidateVerification = async (
     setup: input.session.program.setup ?? [],
     steps,
     cwd: checkout,
+    reference: input.session.repoPath,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
   });
   const results = [...ran.setup, ...ran.checks];

@@ -629,6 +629,9 @@ const toTsconfig = (path: string, text: string | undefined): Tsconfig[] => {
   }
 };
 
+/** A fixture repository's file, under `test/fixtures/<repo>/`. */
+const isFixtureRepository = (path: string): boolean => path.startsWith("test/fixtures/");
+
 let cached: Repo | undefined;
 
 /**
@@ -643,7 +646,11 @@ export const loadRepo = (): Repo => {
   const paths = git(["ls-files", "-z"], root)
     .split("\0")
     .filter(Boolean)
-    .map((p) => p.replace(/\\/g, "/"));
+    .map((p) => p.replace(/\\/g, "/"))
+    // The repositories under test/fixtures are customers' repositories the
+    // suites materialise into temporary directories: their manifests and
+    // tsconfigs make no claim about Nightshift's layers or its dependencies.
+    .filter((p) => !isFixtureRepository(p));
 
   const read = (path: string): string | undefined => {
     try {

@@ -40,6 +40,9 @@ export const prepareCheckout = async (
   const results = await runSetupSteps({
     setup,
     cwd: input.checkout,
+    // The program checkout's installed tree seeds this one when the lockfiles
+    // match (D-P10-24); the install runs only when they do not.
+    reference: input.session.repoPath,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
   });
   const encoder = new TextEncoder();

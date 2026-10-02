@@ -7,10 +7,10 @@
 | Base branch | `main` |
 | Program branch | `program/p10-remote-runner` |
 | Source stage | Stage 9, `00-source-program-plan.md`; P10 in `staging.md` |
-| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-23 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01, T3 2026-10-02 (§15; SC-P10-08 open, see T3 notes); T4 next |
+| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-24 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01, T3 2026-10-02 (§15); T4 next |
 | Depends on | P9 (correction), P12 (token profiles, one loopback server), P14 (stories); the implementation base is `main` after `fc20125` (program setup) |
 | Outcome | Dispatch a program to a machine of the customer's chosen size, close the laptop, and return to verified, published output or a durable account of partial work; the machine is recommended from the project, starts warm, and is right-sized from the runs before it |
-| Blocking decisions | none: D-P10-12 … D-P10-23 ratified; H-P10-01 … H-P10-06 satisfied. The two provider API keys are T5's gate |
+| Blocking decisions | none: D-P10-12 … D-P10-24 ratified; H-P10-01 … H-P10-06 satisfied. The two provider API keys are T5's gate |
 
 This contract is the stable authority for P10. The implementation plan may be
 revised continuously; this contract may not be revised to make an implementation
@@ -136,6 +136,7 @@ the same day (H-P10-01).
 | D-P10-21 | **Seams (resolves D-P10-08).** `contracts`: `Dispatch`, `ComputeTier`, `ComputeUtilization`, `WarmCache`, the `compute` fields. `core`: dispatch and lease transitions, the recommendation rules, the `engine` authority row, the spend arithmetic. `persistence`: the new tables in both stores, and the `CredentialsStore` over its own table with envelope encryption (D-P10-23). `apps/api`: dispatch, heartbeat, reconciler and publisher Lambdas, an EC2/EBS/KMS client behind a `core` port (`apps/api/src/aws`). `apps/mcp`: a `nightshift-runner` bin that composes the adapters and starts the headless root on the machine. `harness-agentcore`: the exported harness as a process. `infra/cdk`: a `RunnerStack` (AMI pipeline, launch template, instance role, reconciler schedule, publisher), and in the data stack the `Credentials` table and `CredentialsKey`. `apps/cli`: `run --remote [--compute]`, `remote status|cancel|resume`, `compute recommend`, and the org's onboarding verbs `org github install|status` and `org providers set|status`, which reach the store only through the API. The CLI still imports no harness and no AWS SDK. | Follows A-31 and the layering of `architecture.md` §1. A separate stack keeps the control plane deployable without the runner. | **agreed 2026-10-01** |
 | D-P10-22 | **Publication is a bundle and a lease at the Git transport.** The engine requests a publication intent (branch, verified commit, expected predecessor) and uploads a git bundle of the commits to the run's S3 prefix first. The publisher Lambda, holding the GitHub App key, fetches the bundle and pushes with `--force-with-lease=<branch>:<predecessor>`; a rejected lease is recorded as a conflict, never retried with force. Lost replies are reconciled against the actual branch head before any retry. One intent per repository and branch at a time. | D-P10-01 and D-P10-02 made concrete. The bundle makes the verified objects durable before the push; the lease check is in the transport, where the race actually is. | **agreed 2026-10-01** |
 | D-P10-23 | **An org's secrets live in a credentials table of their own, envelope-encrypted under a dedicated key; Secrets Manager holds the service's credentials only.** A second DynamoDB table in the data stack, **`Credentials`**: no stream, no index, deletion protection, retained. One item per org and provider, holding the ciphertext, the wrapped data key, the set-at time and the last four characters, and nothing in plaintext. A new **symmetric KMS key**, `CredentialsKey` (A-35's token key is RSA sign-and-verify and cannot encrypt), whose `Decrypt` the key policy grants to the API function alone and only with an encryption context of `{orgId, provider}`, so a ciphertext moved to another org's row does not decrypt. The API function is the only principal with read or write on the table; the materializer, authorizer, Studio and runner hold neither. `org providers set` encrypts and writes; every read route returns presence, date and last four only; the plaintext is decrypted once per heartbeat response for the run's own org and handed to `engine`, which holds it in memory. The set route's request body is masked from every log, and a test asserts it. The memory and SQLite stores implement the same `CredentialsStore` over a key file beside the database, as the local token key already is, so the local instance and the offline suites run the identical code above `persistence`. The GitHub App's id and private key stay in Secrets Manager under `nightshift/github-app`: one secret, the service's own. | Secrets Manager bills per secret per month and per call: a secret per customer per provider grows with the customer count, for rotation and cross-service IAM a customer's API key never uses. Envelope encryption under one KMS key with a tenant encryption context is the standard SaaS pattern and costs a fraction of a cent per read. A table of its own costs nothing at this volume and buys deny-by-default: the main table's stream never carries a credential, and the read grant is one principal. The owner's ruling, 2026-10-01: set up properly from the beginning. | **agreed 2026-10-01** |
+| D-P10-24 | **One real install per lineage of checkouts.** Setup runs in every checkout Nightshift makes (a worker's worktree, an examiner's checkout, before every verification), and `npm ci` deletes `node_modules` and extracts every package again whatever any cache holds. So: an install step (`npm ci`, `pnpm install`, `yarn`, `uv sync`, `pip install`) is skipped when the checkout's lockfiles hash exactly as the lockfiles its installed tree was made for, recorded in a marker inside the tree; a new checkout with no tree is seeded from the run's program checkout by hardlinking its tree when the two have the same lockfiles; a changed lockfile or a missing tree installs again. Steps that are not installs always run. A skipped step is recorded under its own id with the reason, so a cache hit is visible in the evidence and is never mistaken for a run of the command. The program checkout itself always installs for real: on a remote machine that is the one `npm ci` at boot, on a developer's machine it is their own tree. | Found 2026-10-02 while measuring the warm volume: the one install at boot was 6.6 s cold and 6.8 s warm, which is noise, but the same install ran again in every worktree and before every verification, thirty-odd times a run, a minute each on a real repository, on the critical path. The warm volume (D-P10-15) stays for what it is for: the mirror, the download stores, Rust's `target/`, browsers. Known residual: an agent that mutates `node_modules` outside the lockfile in the program checkout pollutes what later checkouts are seeded from; verification's own install runs when a lockfile changes, and a re-canonicalising install when the machine stops is the follow-up if this is ever seen. | **agreed 2026-10-02** |
 
 ## 4. Design
 
@@ -257,7 +258,7 @@ verification (A-18).
 | SC-P10-05 | Each of the three tiers launches its named class; the dispatch records tier, class, price and AMI version; the CLI printed them | US-02 |
 | SC-P10-06 | The probe's rule table is a pure function with a table-driven test over fixture repositories (plain Node, Docker service tests, Rust, CDK bundling, a six-workspace monorepo), and `plan check` prints its tier and reasons | US-03 |
 | SC-P10-07 | After three completed runs, the right-sizing rule recommends down for under-use and up for an OOM kill, in the report, the CLI and the Studio card; nothing changes the tier by itself | US-05 |
-| SC-P10-08 | The second run of a project starts from the warm snapshot; its first setup completes in under a tenth of the cold run's, measured by the fixture; a cache hit is never recorded as verification | US-04 |
+| SC-P10-08 | The second run of a project starts from the warm snapshot and fetches the mirror rather than cloning it; within a run, a checkout whose lockfiles match the program checkout's is seeded from its installed tree and runs no install, and a skipped install is recorded as skipped, never as a run of the command (restated 2026-10-02 with D-P10-24: the first setup's duration was the wrong measure, see §15 T3) | US-04 |
 | SC-P10-09 | The runner process is killed and, separately, the instance terminated during a live run; the service recovers under the same run id with the same volume and continues to published output; the stale generation's writes are refused | US-01 |
 | SC-P10-10 | Deterministic fault tests cover lost push acknowledgement, external branch movement, a stale runner returning after replacement, cancellation during recovery, preserved budgets, exhausted attempts and cleanup failure, each leaving a durable explanation | US-01 |
 | SC-P10-11 | Engine tokens renew across their expiry without a human session; a worker's token cannot obtain engine or sibling authority; cancellation stops work within two heartbeats | US-01 |
@@ -460,22 +461,24 @@ wires (AR-2), so nothing under `runner/` names the HTTP adapter.
 | `stopped` to snapshot started | 2 reconciler ticks |
 | Snapshot of the 100 GiB gp3 volume to completed, cache written, volume deleted | about 4 min |
 
-**SC-P10-08 is not met by `npm ci`, and no cache will meet it.** The warm
-path works exactly as designed: the second machine came up from the first's
-snapshot, the mirror was fetched rather than cloned, and npm's store was on
-the volume. Setup took the same time because `npm ci` deletes `node_modules`
-and extracts every package again regardless of the cache, and on EC2 the
-download it saves is a fraction of a second for a lockfile this size. What
-the snapshot preserves that `npm ci` throws away is the installed tree
-itself. Two ways to the criterion, for the owner to choose between with these
-numbers in hand: have the runner skip `setup` when the checkout's lockfile
-hashes equal the snapshot's (`WarmCache.current.lockfileHashes`, already
-recorded for this purpose) and `node_modules` is present, so an unchanged
-lockfile costs nothing; or have `init` write `npm install --prefer-offline`,
-which is a near no-op against an intact tree but is not the reproducible
-install `npm ci` is. The first keeps `npm ci` as the thing a cold or changed
-checkout runs and is the recommendation; it is a rule in `core` and a branch
-in `workspace.ts`, a T7 or T8 line.
+**The warm path works and the boot-time number was the wrong one to chase.**
+The second machine came up from the first's snapshot, the mirror was fetched
+rather than cloned, and npm's store was on the volume. Setup took the same
+time because `npm ci` deletes `node_modules` and extracts every package again
+regardless of the cache, and on EC2 the download it saves is a fraction of a
+second. Six seconds at boot is noise against a run measured in hours. What
+the measurement exposed instead, when the owner asked how often setup runs,
+is that the same install ran in every worker's worktree, in every examiner's
+checkout and before every verification, from an empty tree each time: thirty
+or more full installs a run, a minute each on a real repository, on the path
+between a worker finishing and its verification starting. That is D-P10-24,
+ruled the same day and built in `verification`: one real install per lineage
+of checkouts, every later checkout seeded from the program checkout's tree by
+hardlink when the lockfiles match, the install recorded as skipped when it is,
+and run again when a lockfile changes. It applies to local runs as much as
+remote ones. SC-P10-08 was restated to say what the volume and the seed are
+for; the first setup's duration is no longer the measure. The runner itself
+still installs for real once at boot, which is what makes the seed clean.
 
 Three things only a live run could find, each now held by a test: the
 reconciler's role could query the table but not the `gsi_node` index its

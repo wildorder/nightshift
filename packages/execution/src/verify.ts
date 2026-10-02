@@ -200,6 +200,7 @@ export const verifyNode = async (
     setup: input.session.program.setup ?? [],
     steps: runnable,
     cwd: input.worktree,
+    reference: input.session.repoPath,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
   });
   const results = checkout.checks;

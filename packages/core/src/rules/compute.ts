@@ -239,6 +239,66 @@ export const foldUtilization = (
   };
 };
 
+/**
+ * Skipping the install (D-P10-24, SC-P10-08).
+ *
+ * Setup runs in every checkout Nightshift makes, and `npm ci` deletes
+ * `node_modules` and extracts every package again whatever any cache holds, so
+ * a run with thirty verifications paid for thirty full installs. The install
+ * step is skipped only when every lockfile in the checkout hashes exactly as
+ * the lockfiles the installed tree was made for, and the tree is there. The
+ * reference is the marker a tree carries, or the checkout a new tree is
+ * seeded from. Steps that are not installs always run: code generation and
+ * migrations are the program's own, and a lockfile says nothing about them.
+ */
+export interface SkipInstallInput {
+  /** `sha256` per lockfile the installed tree was made for; `undefined` when unknown. */
+  readonly reference: Readonly<Record<string, string>> | undefined;
+  /** `sha256` per lockfile path, as the checkout stands now. */
+  readonly checkout: Readonly<Record<string, string>>;
+  /** Whether the installed tree (`node_modules`) is, or is about to be, present. */
+  readonly installedTree: boolean;
+}
+
+export interface SkipInstallDecision {
+  readonly skip: boolean;
+  readonly reason: string;
+}
+
+/** What an install step looks like: the commands `init` writes and their close relatives. */
+const INSTALL_COMMANDS: readonly RegExp[] = [
+  /^npm (ci|install|i)\b/,
+  /^pnpm (install|i)\b/,
+  /^yarn( install)?(\s|$)/,
+  /^bun install\b/,
+  /^uv sync\b/,
+  /^pip install\b/,
+  /^cargo fetch\b/,
+];
+
+export const isInstallStep = (command: string): boolean =>
+  INSTALL_COMMANDS.some((pattern) => pattern.test(command.trim()));
+
+const sameHashes = (
+  a: Readonly<Record<string, string>>,
+  b: Readonly<Record<string, string>>,
+): boolean => {
+  const keys = Object.keys(a).sort();
+  if (keys.length === 0 || keys.join("|") !== Object.keys(b).sort().join("|")) return false;
+  return keys.every((key) => a[key] === b[key]);
+};
+
+export const maySkipInstall = (input: SkipInstallInput): SkipInstallDecision => {
+  if (input.reference === undefined) {
+    return { skip: false, reason: "nothing records what the installed tree was made for" };
+  }
+  if (!sameHashes(input.checkout, input.reference)) {
+    return { skip: false, reason: "the lockfiles differ from the ones the tree was installed for" };
+  }
+  if (!input.installedTree) return { skip: false, reason: "there is no installed tree" };
+  return { skip: true, reason: "the lockfiles hash as they did when the tree was installed" };
+};
+
 /** A run's utilization before any heartbeat. */
 export const emptyUtilization = (
   scope: Pick<ComputeUtilization, "projectId" | "programId" | "runId">,

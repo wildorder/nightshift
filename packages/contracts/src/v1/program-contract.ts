@@ -67,7 +67,10 @@ export type VerificationStep = z.infer<typeof VerificationStepSchema>;
  * before every verification, because the commit under verification may have
  * changed what setup produces (a new dependency, say).
  *
- * Setup runs often, so it should be cheap when there is nothing to do. It is
+ * Setup runs often, so it is made cheap when there is nothing to do: an
+ * install step is skipped, and recorded as skipped, when the checkout's
+ * lockfiles hash as they did for the installed tree it holds or is seeded with
+ * (D-P10-24). Every other step runs every time. Setup is
  * recorded in a verification as its own commands, under `setup:<id>`, and a
  * setup step that fails fails the verification without the checks running: a
  * test suite run without its dependencies proves nothing.

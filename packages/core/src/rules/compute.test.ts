@@ -11,6 +11,8 @@ import {
   estimateUsd,
   foldUtilization,
   HEAVY_LOCKFILE_BYTES,
+  isInstallStep,
+  maySkipInstall,
   meterUsd,
   type ProbeSignals,
   RIGHT_SIZING_RUNS,
@@ -256,5 +258,42 @@ describe("foldUtilization", () => {
       samples: 0,
       cpuAbove90Pct: 0,
     });
+  });
+});
+
+describe("maySkipInstall (D-P10-24, SC-P10-08)", () => {
+  const hashes = { "package-lock.json": "a".repeat(64) };
+  const matching = { reference: hashes, checkout: hashes, installedTree: true };
+
+  it("skips only when every lockfile matches what the tree was installed for, and the tree is there", () => {
+    expect(maySkipInstall(matching)).toMatchObject({ skip: true });
+    expect(maySkipInstall({ ...matching, reference: undefined }).skip).toBe(false);
+    expect(
+      maySkipInstall({ ...matching, checkout: { "package-lock.json": "b".repeat(64) } }).skip,
+    ).toBe(false);
+    // A lockfile added or removed is a change, as is having none at all.
+    expect(
+      maySkipInstall({ ...matching, checkout: { ...hashes, "uv.lock": "c".repeat(64) } }).skip,
+    ).toBe(false);
+    expect(maySkipInstall({ reference: {}, checkout: {}, installedTree: true }).skip).toBe(false);
+    expect(maySkipInstall({ ...matching, installedTree: false }).skip).toBe(false);
+  });
+
+  it("knows an install step from the rest of setup", () => {
+    for (const command of [
+      "npm ci",
+      "npm ci --prefer-offline",
+      "npm install",
+      "pnpm install --frozen-lockfile",
+      "yarn",
+      "yarn install --immutable",
+      "uv sync",
+      "pip install -r requirements.txt",
+    ]) {
+      expect(isInstallStep(command), command).toBe(true);
+    }
+    for (const command of ["npm run codegen", "npx prisma migrate deploy", "cargo build", "make"]) {
+      expect(isInstallStep(command), command).toBe(false);
+    }
   });
 });
