@@ -173,7 +173,7 @@ const awaitDispatch = async (
 /** The runner's own journal, over SSM, for the record and for the failures. */
 const journal = async (
   instanceId: string,
-  format: "cat" | "short-iso" = "cat",
+  format: "cat" | "short-iso-precise" = "cat",
 ): Promise<string> => {
   const parameters = join(tmpdir(), `nightshift-runner-boot-${process.pid}.json`);
   writeFileSync(
@@ -504,7 +504,7 @@ const phaseTable = async (
     } catch {
       // Gone already; the boot phase is then unknown.
     }
-    const lines = (await journal(instanceId, "short-iso")).split("' + NL + '");
+    const lines = (await journal(instanceId, "short-iso-precise")).split("' + NL + '");
     const at = (needle: string): number | undefined => {
       const line = lines.find((candidate) => candidate.includes(needle));
       const stamp = line?.split(" ")[0];
@@ -556,10 +556,10 @@ const phaseTable = async (
       seconds(first("node.implemented"), first("verification.completed")),
     ],
     [
-      "verification → examination completed",
-      seconds(first("verification.completed"), first("examination.completed")),
+      "implemented → examination completed",
+      seconds(first("node.implemented"), first("examination.completed")),
     ],
-    ["examination → integrated", seconds(first("examination.completed"), first("node.integrated"))],
+    ["implemented → integrated", seconds(first("node.implemented"), first("node.integrated"))],
     ["integrated → published at GitHub", seconds(first("node.integrated"), publishedAt)],
     [
       "integrated → run finished by the root",
