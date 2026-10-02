@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p10-remote-runner` |
 | Source stage | Stage 9, `00-source-program-plan.md`; P10 in `staging.md` |
-| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-24 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01, T3 and T4's first chunk 2026-10-02 (§15); T4's second chunk next |
+| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-24 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01, T3 and T4's first chunk 2026-10-02, T4 live-accepted the same day (§15); T4's second chunk (workers as their own users) awaits the owner's ruling on its design |
 | Depends on | P9 (correction), P12 (token profiles, one loopback server), P14 (stories); the implementation base is `main` after `fc20125` (program setup) |
 | Outcome | Dispatch a program to a machine of the customer's chosen size, close the laptop, and return to verified, published output or a durable account of partial work; the machine is recommended from the project, starts warm, and is right-sized from the runs before it |
 | Blocking decisions | none: D-P10-12 … D-P10-24 ratified; H-P10-01 … H-P10-06 satisfied. The two provider API keys are T5's gate |
@@ -600,7 +600,11 @@ The dispatch's `publication.head` equalled the branch's head at GitHub. The
 runner then ended the dispatch itself, the reconciler snapshotted and
 cleaned up. From the API accepting the dispatch: 102 s to `ready`, 142 s
 from `ready` to the runner's own stop with the program done and published.
-SC-P10-01's publication half and SC-P10-04 are proven live.
+SC-P10-01's publication half and SC-P10-04 are proven live. The proof then
+passed whole on its next run (`npm run runner:boot` with the token): the
+program ran and published in 111 s from `ready`, the warm run dispatched the
+moved head and came up on the snapshot, the branch was reset, and nothing
+was left in the account.
 
 Between the first credentialed run and this one, every failure was in the
 proof's own fixture or in a string an edit script mangled, and each was found
