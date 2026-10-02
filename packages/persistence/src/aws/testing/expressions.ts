@@ -283,6 +283,12 @@ export const evaluate = (condition: Condition, item: Item | undefined): boolean 
           return second !== undefined && typeOf(value) === resolve(second, item);
         case "begins_with": {
           const prefix = second === undefined ? undefined : resolve(second, item);
+          // As DynamoDB answers it: a key value may not be the empty string.
+          if (prefix === "") {
+            throw validationError(
+              "One or more parameter values are not valid. The AttributeValue for a key attribute cannot contain an empty string value.",
+            );
+          }
           return (
             typeof value === "string" && typeof prefix === "string" && value.startsWith(prefix)
           );

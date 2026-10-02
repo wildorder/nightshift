@@ -71,9 +71,19 @@ const collect = async (
       // Strongly consistent where DynamoDB allows it, so a read straight after a
       // write sees the write. A global secondary index cannot be read consistently.
       ...(query.index === true ? { IndexName: NODE_INDEX_NAME } : { ConsistentRead: true }),
-      KeyConditionExpression: "#hash = :hash AND begins_with(#range, :prefix)",
-      ExpressionAttributeNames: { "#hash": hash, "#range": range },
-      ExpressionAttributeValues: { ":hash": query.partition, ":prefix": query.prefix },
+      // A whole partition is asked for by its hash alone: DynamoDB refuses an
+      // empty string as a key value, `begins_with(#range, "")` included.
+      ...(query.prefix === ""
+        ? {
+            KeyConditionExpression: "#hash = :hash",
+            ExpressionAttributeNames: { "#hash": hash },
+            ExpressionAttributeValues: { ":hash": query.partition },
+          }
+        : {
+            KeyConditionExpression: "#hash = :hash AND begins_with(#range, :prefix)",
+            ExpressionAttributeNames: { "#hash": hash, "#range": range },
+            ExpressionAttributeValues: { ":hash": query.partition, ":prefix": query.prefix },
+          }),
       ...(Number.isFinite(wanted) ? { Limit: wanted - items.length } : {}),
       ...(query.descending === true ? { ScanIndexForward: false } : {}),
       ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }),
