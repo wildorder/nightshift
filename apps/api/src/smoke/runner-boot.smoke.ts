@@ -23,7 +23,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { S3Client } from "@aws-sdk/client-s3";
@@ -542,7 +542,9 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     say(`warm cache: ${cache.current.snapshotId} from ${cache.current.fromRunId}`);
 
     // Warm: provisioned from the snapshot; the mirror is fetched, the store answers npm.
-    const warm = await runOnce("warm", baseSha, program);
+    // After a published run the branch has moved; the warm run dispatches what
+    // is at GitHub now, as a customer's second `nightshift run --remote` would.
+    const warm = await runOnce("warm", remoteHead(), program);
     findings.warm = {
       secondsToReady: warm.secondsToReady,
       setupSeconds: warm.setupSeconds,
@@ -636,13 +638,20 @@ afterAll(async () => {
     const before = (findings as { baseShaAtStart?: string }).baseShaAtStart;
     if (before !== undefined) {
       await step(`reset ${FIXTURE_BRANCH} to ${before.slice(0, 12)}`, () => {
-        execFileSync("git", [
-          "push",
-          "-q",
-          "-f",
-          FIXTURE_REPOSITORY,
-          `${before}:refs/heads/${FIXTURE_BRANCH}`,
-        ]);
+        const scratch = mkdtempSync(join(tmpdir(), "nightshift-fixture-reset-"));
+        try {
+          execFileSync("git", ["init", "-q"], { cwd: scratch });
+          execFileSync("git", ["fetch", "-q", FIXTURE_REPOSITORY, FIXTURE_BRANCH], {
+            cwd: scratch,
+          });
+          execFileSync(
+            "git",
+            ["push", "-q", "-f", FIXTURE_REPOSITORY, `${before}:refs/heads/${FIXTURE_BRANCH}`],
+            { cwd: scratch },
+          );
+        } finally {
+          rmSync(scratch, { recursive: true, force: true });
+        }
       });
     }
   }
