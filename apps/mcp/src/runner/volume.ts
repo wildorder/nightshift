@@ -12,6 +12,8 @@ export interface VolumeOptions {
   readonly device: string;
   readonly mountPoint: string;
   readonly owner: string;
+  /** The group the workspace is shared with: the workers' (D-P10-25). */
+  readonly group?: string;
 }
 
 export class VolumeError extends Error {
@@ -58,11 +60,14 @@ export const mountWorkspace = async (machine: Machine, options: VolumeOptions): 
   await machine.exec("sudo", ["mkdir", "-p", options.mountPoint]);
   const mount = await machine.exec("sudo", ["mount", "-o", "noatime", device, options.mountPoint]);
   if (mount.exitCode !== 0) throw new VolumeError(`mount ${device} failed: ${mount.stderr}`);
+  // The engine's, in the workers' group, set-group-id so everything made under
+  // it is the group's too (D-P10-25).
   const owned = await machine.exec("sudo", [
     "chown",
-    `${options.owner}:${options.owner}`,
+    `${options.owner}:${options.group ?? options.owner}`,
     options.mountPoint,
   ]);
   if (owned.exitCode !== 0)
     throw new VolumeError(`chown ${options.mountPoint} failed: ${owned.stderr}`);
+  await machine.exec("chmod", ["2775", options.mountPoint]);
 };

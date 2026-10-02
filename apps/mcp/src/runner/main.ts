@@ -11,6 +11,7 @@
  */
 import type { Dispatch, ProgramContract } from "@nightshift/contracts";
 import type { RunScope } from "@nightshift/core";
+import { WORKER_GROUP } from "../run-as.js";
 import { type RunnerIdentity, readIdentity, takeFirstToken } from "./bootstrap.js";
 import { createHeartbeat, type Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
@@ -102,6 +103,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     device: options.device,
     mountPoint: options.workspace,
     owner: options.engineUser,
+    group: WORKER_GROUP,
   });
   log(`workspace mounted at ${options.workspace}`);
 

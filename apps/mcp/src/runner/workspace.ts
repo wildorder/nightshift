@@ -23,6 +23,7 @@
 import { createHash } from "node:crypto";
 import type { Dispatch, ProgramContract } from "@nightshift/contracts";
 import { planHash, type RunScope } from "@nightshift/core";
+import { WORKER_GROUP } from "../run-as.js";
 import type { Machine } from "./machine.js";
 
 export interface WorkspaceLayout {
@@ -212,6 +213,15 @@ export const prepareWorkspace = async (
   );
   // The push target is GitHub, through the publisher; the checkout's origin
   // stays the mirror so nothing on the machine can push (D-P10-22).
+
+  // Shared with the workers' group (D-P10-25): their commits land in this
+  // object store, and the engine verifies and removes what they wrote.
+  for (const repo of [layout.mirror, layout.checkout]) {
+    await machine.exec("git", ["-C", repo, "config", "core.sharedRepository", "group"]);
+  }
+  await machine.exec("chgrp", ["-R", WORKER_GROUP, layout.root]);
+  await machine.exec("chmod", ["-R", "g+rwX", layout.root]);
+  await machine.exec("find", [layout.root, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"]);
 
   // The program's setup, once, against the stores (D-P10-15). Its duration is
   // the warm-versus-cold number.

@@ -822,3 +822,27 @@ describe("the adapter's identity", () => {
     expect(createClaudeHarness().id).toBe("claude");
   });
 });
+
+describe("running as another user (P10, D-P10-25)", () => {
+  it("spawns through sudo as the user, after granting it the configuration directory", async () => {
+    const { spawn, calls, children } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    const granted: string[] = [];
+    const harness = harnessWith(spawn, fs, { platform: "linux" });
+    const events: HookEvent[] = [];
+    const input = startInput({ events });
+    const handle = await harness.start({
+      ...input,
+      runAs: { user: "worker-2", grant: async (path) => void granted.push(path) },
+    });
+    expect(granted).toEqual([TEMP_DIR]);
+    const call = calls[0];
+    expect(call?.file).toBe("sudo");
+    expect(call?.args.slice(0, 4)).toEqual(["-n", "-u", "worker-2", "-H"]);
+    expect(call?.args).toContain("claude");
+    expect(call?.args.some((arg) => arg.startsWith("HOME="))).toBe(false);
+    expect(call?.options.cwd).toBe(input.worktree);
+    children[0]?.close(0);
+    await handle.exit;
+  });
+});

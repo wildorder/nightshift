@@ -120,6 +120,8 @@ export const buildEnvironment = (
   ...(runtime.prerequisites === undefined ? {} : { prerequisites: runtime.prerequisites }),
   // P8: who examines and who arbitrates, by the run's own policy (D-P8-10, D-P8-13).
   examination: examinationServices(run, program, (identity) => runtime.workerLaunch(identity)),
+  // P10 (D-P10-25): on a machine, every job's agent runs as a worker user.
+  ...(runtime.runAs === undefined ? {} : { runAs: runtime.runAs }),
   // P10 (D-P10-22): on a machine, every landing raises a publication intent.
   ...(runtime.publication === undefined
     ? {}

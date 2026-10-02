@@ -14,11 +14,15 @@
  * publication intent (D-P10-22).
  */
 import { chmod, mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join } from "node:path/posix";
 import { credentialPlacement, PROVIDERS, type Provider } from "@nightshift/contracts";
 import type { Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
 import type { RunnerContext } from "./main.js";
+
+/** Where a worker's own credential copies live: `<root>/<user>/<VAR>/…`, each the user's alone. */
+export const workerCredentialRoot = (runId: string): string =>
+  join(tokenDirectory(runId), "workers");
 
 /** Where the engine's token lives: RAM, this run's directory, 0700. */
 export const tokenDirectory = (runId: string): string => `/dev/shm/nightshift/${runId}`;
@@ -67,6 +71,11 @@ export const awaitProviderCredentials = async (
 export const placeProviderCredentials = async (
   runId: string,
   credentials: Partial<Record<Provider, string>>,
+  workers: {
+    readonly users: readonly string[];
+    /** `chown -R user:group path` as root; the image's sudoers rule allows exactly this. */
+    readonly grant: (user: string, path: string) => Promise<void>;
+  } = { users: [], grant: async () => undefined },
 ): Promise<Record<string, string>> => {
   const env: Record<string, string> = {};
   for (const [provider, secret] of Object.entries(credentials) as [Provider, string][]) {
@@ -81,6 +90,13 @@ export const placeProviderCredentials = async (
     await writeFile(path, secret, { mode: 0o600 });
     await chmod(path, 0o600);
     env[placement.env] = directory;
+    // Each worker user gets a copy of its own (D-P10-25): the engine's stays the engine's.
+    for (const user of workers.users) {
+      const own = join(workerCredentialRoot(runId), user, placement.env);
+      await mkdir(own, { recursive: true, mode: 0o700 });
+      await writeFile(join(own, placement.file), secret, { mode: 0o600 });
+      await workers.grant(user, own);
+    }
   }
   return env;
 };
@@ -88,6 +104,8 @@ export const placeProviderCredentials = async (
 export interface RootEnvironmentInput {
   readonly context: RunnerContext;
   readonly apiEndpoint: string;
+  /** How many `worker-N` users the image made (D-P10-25); 0 or absent runs every agent as the engine. */
+  readonly workerUsers?: number;
   /** The provider keys, by their environment variable names. */
   readonly providerKeys?: Readonly<Record<string, string>>;
   /** This process's environment, for PATH, HOME and the toolchain. */
@@ -129,6 +147,10 @@ export const rootEnvironment = (input: RootEnvironmentInput): Record<string, str
   env.NIGHTSHIFT_API_TOKEN_FILE = tokenFile(context.scope.runId);
   env.NIGHTSHIFT_STATE_DIR = context.layout.run;
   env.NIGHTSHIFT_PUBLISH_BASE = context.dispatch.input.baseSha;
+  if (input.workerUsers !== undefined && input.workerUsers > 0) {
+    env.NIGHTSHIFT_WORKER_USERS = String(input.workerUsers);
+    env.NIGHTSHIFT_WORKER_CREDENTIAL_DIR = workerCredentialRoot(context.scope.runId);
+  }
   // The root's server attaches to this run and no other (D-P10-20).
   env.NIGHTSHIFT_PINNED_RUN = `${context.scope.projectId}/${context.scope.programId}/${context.scope.runId}`;
   env.NIGHTSHIFT_PUBLISH_PACK_DIR = join(context.layout.run, "bundles");

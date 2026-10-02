@@ -441,3 +441,29 @@ describe("cancel (D-P5-02)", () => {
     expect(kills).toEqual(["SIGINT"]);
   });
 });
+
+describe("running as another user (P10, D-P10-25)", () => {
+  it("grants the git guard to the user and spawns codex through sudo", async () => {
+    const world = fakes();
+    const events: HookEvent[] = [];
+    const granted: string[] = [];
+    const harness = createCodexHarness({
+      spawn: world.spawn,
+      fs: world.fs,
+      env: PARENT_ENV,
+      platform: "linux",
+    });
+    const handle = await harness.start({
+      ...startInput(events),
+      runAs: { user: "worker-5", grant: async (path) => void granted.push(path) },
+    });
+    expect(granted).toHaveLength(1);
+    expect(granted[0]).toContain("nightshift-codex-");
+    const call = world.calls[0];
+    expect(call?.file).toBe("sudo");
+    expect(call?.args.slice(0, 4)).toEqual(["-n", "-u", "worker-5", "-H"]);
+    expect(call?.args).toContain("codex");
+    world.children[0]?.close(0);
+    await handle.exit;
+  });
+});

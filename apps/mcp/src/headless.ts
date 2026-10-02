@@ -105,6 +105,8 @@ export const rootLaunch = (
     "NIGHTSHIFT_API_TOKEN",
     "NIGHTSHIFT_API_TOKEN_FILE",
     "NIGHTSHIFT_PINNED_RUN",
+    "NIGHTSHIFT_WORKER_USERS",
+    "NIGHTSHIFT_WORKER_CREDENTIAL_DIR",
     "NIGHTSHIFT_PUBLISH_BASE",
     "NIGHTSHIFT_PUBLISH_PACK_DIR",
     // The org's provider keys, as the heartbeat handed them to the engine on a

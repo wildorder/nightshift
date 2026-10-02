@@ -95,7 +95,7 @@ import {
   updateRef,
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
-import { recordArtifact } from "./runner.js";
+import { recordArtifact, runAsOf } from "./runner.js";
 import { prepareCheckout } from "./setup.js";
 
 /** The environment variable an examiner's server reads its examination's frame from. */
@@ -797,6 +797,7 @@ const runHelper = async (
         agentId: helper.agent.agentId,
       }),
       transcriptPath: transcript,
+      ...runAsOf(environment, helper.agent),
       task: launch.task,
       ...(launch.resume === undefined ? {} : { resume: { sessionId: launch.resume } }),
     });

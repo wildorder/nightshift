@@ -39,6 +39,7 @@
  *    either through the MCP server in `input.mcp` or through `input.tools`
  *    directly, never both: two transports are two ways to report one job.
  */
+
 import type {
   Agent,
   AgentId,
@@ -55,6 +56,7 @@ import type {
   VerificationCommandResult,
 } from "@nightshift/contracts";
 import type { HookSink } from "./hooks.js";
+import type { RunAs } from "./run-as.js";
 import type { WorkerTools } from "./tools.js";
 
 /** A span of time. Milliseconds, named so a call site cannot mistake the unit. */
@@ -234,6 +236,12 @@ export interface HarnessStartInput {
    * execution layer uploads it as a `transcript` artifact after exit.
    */
   readonly transcriptPath?: string;
+  /**
+   * P10 (D-P10-25): run the agent's process as this operating-system user,
+   * through `sudo`, with the adapter's configuration granted to it. Absent on
+   * a laptop, where every process is the operator's.
+   */
+  readonly runAs?: RunAs;
 }
 
 /** Why a worker process stopped. Exactly one of these settles `HarnessHandle.exit`. */

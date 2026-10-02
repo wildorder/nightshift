@@ -69,8 +69,9 @@ import type {
   HarnessExit,
   HarnessHandle,
   HarnessStartInput,
+  RunAs,
 } from "@nightshift/harness";
-import { agentStatusForExit, hookTypeForExit, promptFor } from "@nightshift/harness";
+import { agentStatusForExit, commandAs, hookTypeForExit, promptFor } from "@nightshift/harness";
 import {
   buildClaudeArgs,
   buildEmptyMcpConfig,
@@ -161,6 +162,8 @@ interface RunState {
   readonly env: Readonly<Record<string, string>>;
   child: SpawnedChild | undefined;
   configDir: string | undefined;
+  /** Who the process runs as (D-P10-25), for signalling it as that user. */
+  runAs: RunAs | undefined;
   /** Why the transcript could not be opened, if it could not. Reported on the ending. */
   transcriptError: string | undefined;
   settledExit: HarnessExit | undefined;
@@ -242,6 +245,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       env,
       child: undefined,
       configDir: undefined,
+      runAs: input.runAs,
       transcriptError: undefined,
       settledExit: undefined,
       cancelRequested: false,
@@ -303,6 +307,9 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
         input.mcp === undefined ? buildEmptyMcpConfig() : buildMcpConfig(input.mcp),
       );
       fs.writeConfigFile(settingsPath, buildSettings());
+      // Another user runs the process (D-P10-25): the configuration, which
+      // carries this agent's own token and launch, becomes that user's to read.
+      if (input.runAs !== undefined) await input.runAs.grant(configDir);
     } catch (error) {
       return failToLaunch(`could not write the Claude configuration: ${messageOf(error)}`);
     }
@@ -330,9 +337,10 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
 
     let child: SpawnedChild;
     try {
-      child = spawn(CLAUDE_COMMAND, args, {
+      const command = commandAs(input.runAs, CLAUDE_COMMAND, args, env);
+      child = spawn(command.file, command.args, {
         cwd: input.worktree,
-        env,
+        env: command.env,
         // POSIX: its own process group, so cancel can signal the tree.
         detached: platform !== "win32",
         windowsHide: true,
@@ -423,7 +431,8 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
         cwd: state.cwd,
         env: state.env,
         spawn,
-        kill,
+        // Another user's processes are signalled as that user (D-P10-25).
+        kill: state.runAs?.kill === undefined ? kill : state.runAs.kill.bind(state.runAs),
       });
 
     if (platform === "win32") {

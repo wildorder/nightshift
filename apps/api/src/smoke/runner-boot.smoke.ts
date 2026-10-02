@@ -380,7 +380,18 @@ const runToTheEnd = async (name: string, run: RunMade, baseSha: string): Promise
     const lines = (await journal(stopped.instanceId))
       .split("\n")
       .filter((line) => line.trim() !== "");
-    say(`${name}: the runner said:\n  ${lines.slice(-40).join("\n  ")}`);
+    // D-P10-25: every job's agent ran as a worker user. The sudo log says so,
+    // one line per process the engine started as `worker-N`.
+    const asWorkers = lines.filter((line) => /USER=worker-\d+/.test(line)).length;
+    findings.processesAsWorkers = asWorkers;
+    say(`${name}: ${asWorkers} processes started as worker users`);
+    expect(asWorkers, "no process ran as a worker user").toBeGreaterThan(0);
+    say(
+      `${name}: the runner said:\n  ${lines
+        .filter((line) => !line.includes("COMMAND="))
+        .slice(-40)
+        .join("\n  ")}`,
+    );
   }
   const ended = DispatchSchema.parse((await api.get(`${run.path}/dispatch`)).body);
   say(`${name}: publication ${JSON.stringify(ended.publication)}`);

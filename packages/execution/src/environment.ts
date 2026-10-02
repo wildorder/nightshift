@@ -31,7 +31,7 @@ import type {
   ProjectStores,
   RunScope,
 } from "@nightshift/core";
-import type { Harness, McpLaunch } from "@nightshift/harness";
+import type { Harness, McpLaunch, RunAs } from "@nightshift/harness";
 import type { GitRunner } from "./git/index.js";
 import type { EventOutbox } from "./outbox.js";
 import type { PublishLanding } from "./publish.js";
@@ -127,6 +127,15 @@ export interface ExecutionEnvironment {
    * whose program checkout is the operator's own clone, has none.
    */
   readonly publish?: PublishLanding;
+  /**
+   * P10 (D-P10-25): the operating-system user an agent's process runs as, on
+   * a machine. The composition supplies it; absent, every process is the
+   * engine's own, as on a laptop. The root orchestrator never asks.
+   */
+  readonly runAs?: (agent: {
+    readonly agentId: string;
+    readonly role: string;
+  }) => RunAs | undefined;
 }
 
 /**

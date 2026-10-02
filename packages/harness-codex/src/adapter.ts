@@ -54,8 +54,9 @@ import type {
   HarnessExit,
   HarnessHandle,
   HarnessStartInput,
+  RunAs,
 } from "@nightshift/harness";
-import { agentStatusForExit, hookTypeForExit, promptFor } from "@nightshift/harness";
+import { agentStatusForExit, commandAs, hookTypeForExit, promptFor } from "@nightshift/harness";
 import {
   buildCodexArgs,
   buildGitGuard,
@@ -98,6 +99,8 @@ interface RunState {
   readonly env: Readonly<Record<string, string>>;
   child: SpawnedChild | undefined;
   guardDir: string | undefined;
+  /** Who the process runs as (D-P10-25), for signalling it as that user. */
+  runAs: RunAs | undefined;
   transcriptError: string | undefined;
   settledExit: HarnessExit | undefined;
   cancelRequested: boolean;
@@ -169,6 +172,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       env: sanitizeCodexEnvironment({ platform, parentEnv }),
       child: undefined,
       guardDir: undefined,
+      runAs: input.runAs,
       transcriptError: undefined,
       settledExit: undefined,
       cancelRequested: false,
@@ -235,9 +239,14 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
 
     let child: SpawnedChild;
     try {
-      child = spawn(CODEX_COMMAND, args, {
+      // Another user runs the process (D-P10-25): the git guard becomes its to run.
+      if (input.runAs !== undefined && state.guardDir !== undefined) {
+        await input.runAs.grant(state.guardDir);
+      }
+      const command = commandAs(input.runAs, CODEX_COMMAND, args, state.env);
+      child = spawn(command.file, command.args, {
         cwd: input.worktree,
-        env: state.env,
+        env: command.env,
         detached: platform !== "win32",
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -317,7 +326,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
         cwd: state.cwd,
         env: state.env,
         spawn,
-        kill,
+        kill: state.runAs?.kill === undefined ? kill : state.runAs.kill.bind(state.runAs),
       });
 
     if (platform === "win32") {

@@ -38,6 +38,7 @@ import type {
 } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import type {
+  ExecutionEnvironment,
   GitRunner,
   PrerequisiteBook,
   PublishLanding,
@@ -63,6 +64,7 @@ import {
   type Transport,
 } from "@nightshift/persistence/http";
 import { type Env, EXECUTION_TOKEN_ENV, type Role, workerLaunchEnv } from "./role.js";
+import { createWorkerUsers } from "./run-as.js";
 import type { PlaneFactory } from "./runner/plane.js";
 
 /**
@@ -117,6 +119,14 @@ export const API_TOKEN_FILE_ENV = "NIGHTSHIFT_API_TOKEN_FILE";
 export const PUBLISH_BASE_ENV = "NIGHTSHIFT_PUBLISH_BASE";
 /** Where the packs are written before upload; the run's directory on the volume. */
 export const PUBLISH_PACK_DIR_ENV = "NIGHTSHIFT_PUBLISH_PACK_DIR";
+/**
+ * P10 (D-P10-25): how many `worker-N` users the machine has; set by the runner
+ * on the orchestrator-role server it launches. Present, every job's agent runs
+ * as one of them; absent, as this process.
+ */
+export const WORKER_USERS_ENV = "NIGHTSHIFT_WORKER_USERS";
+/** Where a worker's own credential directories are, `<root>/<user>/<VAR>`. */
+export const WORKER_CREDENTIAL_DIR_ENV = "NIGHTSHIFT_WORKER_CREDENTIAL_DIR";
 
 export interface Runtime {
   readonly stores: ProjectStores;
@@ -145,6 +155,8 @@ export interface Runtime {
    * machine's engine. The session installs it on the run's environment.
    */
   readonly publication?: (scope: RunScope) => PublishLanding;
+  /** P10 (D-P10-25): who an agent runs as on a machine; absent on a laptop. */
+  readonly runAs?: ExecutionEnvironment["runAs"];
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
   /**
@@ -454,10 +466,20 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
   const ids = createUlidIdGenerator();
   const bodies = createHttpArtifactBodyStore({ transport });
   const publication = createPublication(env, transport, bodies, ids);
+  const workerUsers = Number.parseInt(env[WORKER_USERS_ENV] ?? "", 10);
+  const credentialRoot = env[WORKER_CREDENTIAL_DIR_ENV];
+  const runAs =
+    Number.isFinite(workerUsers) && workerUsers > 0
+      ? createWorkerUsers({
+          count: workerUsers,
+          ...(credentialRoot === undefined || credentialRoot === "" ? {} : { credentialRoot }),
+        })
+      : undefined;
   return {
     transport,
     endpoint,
     ...(publication === undefined ? {} : { publication }),
+    ...(runAs === undefined ? {} : { runAs }),
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
     prerequisites: createHttpPlanning({ transport }),

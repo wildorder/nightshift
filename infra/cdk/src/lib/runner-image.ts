@@ -36,6 +36,8 @@ export const WORKSPACE_DEVICE = "/dev/xvdf";
 /** How many worker users the image carries: the largest tier's vCPUs. */
 export const WORKER_USERS = 16;
 export const ENGINE_USER = "engine";
+/** The group the engine and the workers share (D-P10-25); `apps/mcp/src/run-as.ts` names the same. */
+export const WORKER_GROUP = "nightshift";
 
 /** A component document's header. */
 const component = (name: string, description: string, steps: string): string =>
@@ -124,10 +126,13 @@ export const containmentComponent = (): string => {
     [
       shell("users", [
         "set -euo pipefail",
-        `useradd --system --create-home --home-dir /home/${ENGINE_USER} --shell /bin/bash ${ENGINE_USER}`,
+        // One group for the engine and every worker (D-P10-25): the workspace is
+        // theirs together; the engine's token and credentials are the engine's alone.
+        `groupadd ${WORKER_GROUP}`,
+        `useradd --system --create-home --home-dir /home/${ENGINE_USER} --shell /bin/bash -G ${WORKER_GROUP} ${ENGINE_USER}`,
         ...workers.map(
           (worker) =>
-            `useradd --create-home --home-dir /home/${worker} --shell /bin/bash ${worker} && loginctl enable-linger ${worker}`,
+            `useradd --create-home --home-dir /home/${worker} --shell /bin/bash -G ${WORKER_GROUP} ${worker} && loginctl enable-linger ${worker}`,
         ),
         // Subordinate ids for rootless Docker's user namespaces, one block per user.
         ...workers.map(
@@ -176,7 +181,7 @@ export const runnerComponent = (commit: string): string =>
       ]),
       shell("unit", [
         "set -euo pipefail",
-        `printf '%s\\n' '[Unit]' 'Description=Nightshift runner: the engine on this machine' 'After=network-online.target nightshift-imds.service' 'Wants=network-online.target' '[Service]' 'Type=simple' 'User=${ENGINE_USER}' 'WorkingDirectory=${RUNNER_INSTALL_DIR}' 'Environment=NIGHTSHIFT_WORKSPACE=${RUNNER_WORKSPACE}' 'Environment=NIGHTSHIFT_WORKSPACE_DEVICE=${WORKSPACE_DEVICE}' 'ExecStart=/usr/local/bin/node ${RUNNER_INSTALL_DIR}/apps/mcp/dist/bin/nightshift-runner.js' 'Restart=on-failure' 'RestartSec=5' 'StandardOutput=journal' 'StandardError=journal' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/nightshift-runner.service`,
+        `printf '%s\\n' '[Unit]' 'Description=Nightshift runner: the engine on this machine' 'After=network-online.target nightshift-imds.service' 'Wants=network-online.target' '[Service]' 'Type=simple' 'User=${ENGINE_USER}' 'UMask=0002' 'WorkingDirectory=${RUNNER_INSTALL_DIR}' 'Environment=NIGHTSHIFT_WORKSPACE=${RUNNER_WORKSPACE}' 'Environment=NIGHTSHIFT_WORKER_USERS=${WORKER_USERS}' 'Environment=NIGHTSHIFT_WORKSPACE_DEVICE=${WORKSPACE_DEVICE}' 'ExecStart=/usr/local/bin/node ${RUNNER_INSTALL_DIR}/apps/mcp/dist/bin/nightshift-runner.js' 'Restart=on-failure' 'RestartSec=5' 'StandardOutput=journal' 'StandardError=journal' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/nightshift-runner.service`,
         "systemctl enable nightshift-runner.service",
       ]),
     ].join("\n"),

@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import { createRunnerPlane, createRuntime } from "../compose.js";
 import { describeHeadlessEnding, runHeadless } from "../headless.js";
+import { workerUserName } from "../run-as.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
 import {
@@ -40,7 +41,14 @@ runRunner({
       context.machine,
       3 * 60_000,
     );
-    const providerKeys = await placeProviderCredentials(context.scope.runId, credentials);
+    const workerUsers = Number.parseInt(process.env.NIGHTSHIFT_WORKER_USERS ?? "0", 10) || 0;
+    const providerKeys = await placeProviderCredentials(context.scope.runId, credentials, {
+      users: Array.from({ length: workerUsers }, (_, index) => workerUserName(index)),
+      grant: async (user, path) => {
+        const owned = await context.machine.exec("sudo", ["chown", "-R", `${user}:${user}`, path]);
+        if (owned.exitCode !== 0) throw new Error(`chown ${path} to ${user}: ${owned.stderr}`);
+      },
+    });
     say(
       Object.keys(providerKeys).length === 0
         ? "the org set no provider credential; the root starts with none"
@@ -50,6 +58,7 @@ runRunner({
       context,
       apiEndpoint: context.identity.apiEndpoint,
       providerKeys,
+      workerUsers,
       parentEnv: process.env,
     });
     const runtime = await createRuntime(env, "orchestrator");

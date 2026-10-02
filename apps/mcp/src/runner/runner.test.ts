@@ -335,6 +335,9 @@ describe("the workspace (T3, D-P10-15)", () => {
     expect(commands).toContain(`checkout -q -B program/fixture ${"a".repeat(40)}`);
     expect(commands).toContain("npm_config_cache=/workspace/stores/npm");
     expect(commands).toContain("npm ci --prefer-offline");
+    // Shared with the workers' group (D-P10-25).
+    expect(commands).toContain("config core.sharedRepository group");
+    expect(commands).toContain("chgrp -R nightshift /workspace");
     // The token travels in one command's environment, never in a URL or a file.
     expect(commands).toContain("NIGHTSHIFT_GIT_TOKEN=ghs_read");
     expect(commands).not.toContain("ghs_read@");
@@ -558,6 +561,7 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
       } as never,
       apiEndpoint: "https://api.dev.nightshift.invalid",
       providerKeys: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" },
+      workerUsers: 16,
       parentEnv: { PATH: "/usr/bin", HOME: "/home/engine", SECRET: "never" },
     });
     expect(env).toMatchObject({
@@ -569,6 +573,8 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
       NIGHTSHIFT_PUBLISH_BASE: "b".repeat(40),
       NIGHTSHIFT_PINNED_RUN: `${f.scope.projectId}/${f.scope.programId}/${f.scope.runId}`,
       CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x",
+      NIGHTSHIFT_WORKER_USERS: "16",
+      NIGHTSHIFT_WORKER_CREDENTIAL_DIR: `/dev/shm/nightshift/${f.scope.runId}/workers`,
     });
     expect(env.SECRET).toBeUndefined();
     // Every id in the pin is one the server will parse.

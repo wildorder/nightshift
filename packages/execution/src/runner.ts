@@ -55,6 +55,7 @@ import {
   transition,
   transitionAgent,
 } from "@nightshift/core";
+import type { RunAs } from "@nightshift/harness";
 import {
   type AgentTask,
   agentStatusForExit,
@@ -707,6 +708,7 @@ export const startJob = async (
         sink,
         transcriptPath: transcript,
         ...launchExtras(input.task, resumed, carriedOver),
+        ...runAsOf(environment, startedAgent),
       });
     } catch (error) {
       // The adapter could not even attempt a launch. The node and agent already
@@ -1292,6 +1294,15 @@ const uploadTranscript = async (
     contentType: "application/x-ndjson",
     bytes,
   });
+};
+
+/** The user an agent runs as on a machine (D-P10-25), when the composition names one. */
+export const runAsOf = (
+  environment: Pick<ExecutionEnvironment, "runAs">,
+  agent: { readonly agentId: string; readonly role: string },
+): { readonly runAs?: RunAs } => {
+  const runAs = environment.runAs?.(agent);
+  return runAs === undefined ? {} : { runAs };
 };
 
 /** Uploads bytes and records the reference, in that order (A-08). */

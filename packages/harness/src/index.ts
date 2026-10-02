@@ -59,6 +59,7 @@ export {
   nullHookSink,
   recordingHookSink,
 } from "./hooks.js";
+export * from "./run-as.js";
 export {
   NoCheckpointError,
   refusingWorkerTools,
