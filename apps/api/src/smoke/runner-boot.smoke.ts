@@ -643,15 +643,16 @@ const runToTheEnd = async (
     remote,
     blocked: ended.publication.blocked,
   };
-  expect(ended.publication.blocked, "publication was blocked").toBeUndefined();
-  expect(ended.publication.head, "nothing was published").toBeDefined();
-  expect(remote).toBe(ended.publication.head);
-  expect(remote).not.toBe(baseSha);
+  // The phases first: a run that failed still timed its machine.
   if (outcome !== undefined) {
     const phases = (findings.phases as Record<string, unknown> | undefined) ?? {};
     phases[name] = await phaseTable(name, run, outcome, ended);
     findings.phases = phases;
   }
+  expect(ended.publication.blocked, "publication was blocked").toBeUndefined();
+  expect(ended.publication.head, "nothing was published").toBeDefined();
+  expect(remote).toBe(ended.publication.head);
+  expect(remote).not.toBe(baseSha);
   const cleaned = await awaitDispatch(run, "cleanup", 20 * 60_000, (d) => d.cleanup.volumeDeleted);
   say(`${name}: cleaned up; snapshot ${cleaned.cleanup.snapshotId ?? "none"}`);
   return cleaned;
@@ -733,11 +734,19 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     const contract = makeProgramContract(f, {
       status: "planning",
       repository: { url: FIXTURE_REPOSITORY, baseBranch: "main", programBranch: FIXTURE_BRANCH },
-      setup: [{ id: "install", command: "npm ci --prefer-offline" }],
+      // The monorepo's typecheck resolves workspaces through their dist, so
+      // its setup builds. Its local end-to-end test starts a nightshift inside
+      // this one and inherits the runner's environment, so it is left out.
+      setup: HEAVY
+        ? [
+            { id: "install", command: "npm ci --prefer-offline" },
+            { id: "build", command: "npm run build" },
+          ]
+        : [{ id: "install", command: "npm ci --prefer-offline" }],
       verification: HEAVY
         ? [
             { id: "typecheck", command: "npm run typecheck" },
-            { id: "test", command: "npm test" },
+            { id: "test", command: "npx vitest run --exclude 'test/src/local/**'" },
           ]
         : [{ id: "test", command: "npm test" }],
       scope: {
