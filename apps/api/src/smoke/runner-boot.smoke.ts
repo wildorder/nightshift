@@ -32,6 +32,7 @@ import {
   type Dispatch,
   DispatchSchema,
   PlanDocumentUploadResponseSchema,
+  type ProgramContract,
   ProgramContractSchema,
   type RunId,
   UserIdSchema,
@@ -216,9 +217,11 @@ interface RunOutcome {
 const runOnce = async (
   name: string,
   baseSha: string,
-  planHashValue: string,
-  planDocument: unknown,
+  program: ProgramContract,
 ): Promise<RunOutcome> => {
+  const planHashValue = program.planHash;
+  const planDocument = program.planDocument;
+  if (planHashValue === undefined) throw new Error("the program is not ratified");
   const runId = runs.length === 0 ? f.scope.runId : ids.next("run");
   const rootNodeId = runs.length === 0 ? f.rootNodeId : ids.next("node");
   const run: RunMade = { runId, rootNodeId, path: `${programPath}/runs/${runId}` };
@@ -232,11 +235,29 @@ const runOnce = async (
   expectStatus(
     await api.put(
       `${run.path}/nodes/${rootNodeId}`,
+      // The root node's authority is the program's, exactly: a strand that
+      // needs test/** is delegated from a node that holds it.
       makeRootNode(fixtures, {
         status: "validated",
+        scope: program.scope,
         plan: { planHash: planHashValue, planDocument },
       }),
     ),
+    201,
+  );
+  // The checkpoint `nightshift run` creates at the base, so decisions have a state to point at.
+  const checkpointId = ids.next("ckpt");
+  expectStatus(
+    await api.put(`${run.path}/checkpoints/${checkpointId}`, {
+      schemaVersion: 1,
+      ...fixtures.scope,
+      checkpointId,
+      executionNodeId: rootNodeId,
+      commitSha: baseSha,
+      ref: `refs/nightshift/checkpoints/${checkpointId}`,
+      label: "run started",
+      createdAt: nowIso(systemClock),
+    }),
     201,
   );
   const dispatchedAt = Date.now();
@@ -505,7 +526,7 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
 
     // Cold: no warm cache yet, so the volume is empty and setup downloads everything.
     expect((await api.get(`${projectPath}/warm-cache`)).status).toBe(404);
-    const cold = await runOnce("cold", baseSha, program.planHash, program.planDocument);
+    const cold = await runOnce("cold", baseSha, program);
     findings.cold = { secondsToReady: cold.secondsToReady, setupSeconds: cold.setupSeconds };
     const coldCleaned =
       ANTHROPIC_KEY === undefined
@@ -521,7 +542,7 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     say(`warm cache: ${cache.current.snapshotId} from ${cache.current.fromRunId}`);
 
     // Warm: provisioned from the snapshot; the mirror is fetched, the store answers npm.
-    const warm = await runOnce("warm", baseSha, program.planHash, program.planDocument);
+    const warm = await runOnce("warm", baseSha, program);
     findings.warm = {
       secondsToReady: warm.secondsToReady,
       setupSeconds: warm.setupSeconds,
@@ -572,7 +593,9 @@ afterAll(async () => {
       );
       continue;
     }
-    if (dispatch.instanceId !== undefined && dispatch.status !== "stopped") {
+    // A machine the reconciler has not yet taken, whatever the status: the
+    // records go next, and after that nothing would ever terminate it.
+    if (dispatch.instanceId !== undefined && !dispatch.cleanup.volumeDeleted) {
       const instanceId = dispatch.instanceId;
       await step(`terminate ${instanceId}`, () => {
         aws(["ec2", "terminate-instances", "--instance-ids", instanceId]);
