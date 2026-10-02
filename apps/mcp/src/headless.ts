@@ -89,6 +89,10 @@ export const rootLaunch = (
     "NIGHTSHIFT_API_TOKEN_FILE",
     "NIGHTSHIFT_PUBLISH_BASE",
     "NIGHTSHIFT_PUBLISH_PACK_DIR",
+    // The org's provider keys, as the heartbeat handed them to the engine on a
+    // machine (D-P10-23); on a laptop, whatever the operator's shell holds.
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
     "NIGHTSHIFT_HARNESS_MODULE",
     "NIGHTSHIFT_JOB_WAIT_CAP_SECONDS",
     "HOME",
