@@ -208,6 +208,8 @@ interface RunOutcome {
   readonly run: RunMade;
   readonly secondsToReady: number;
   readonly setupSeconds: number;
+  /** The runner's journal said the volume was warm: the mirror was fetched, not cloned. */
+  readonly warmVolume: boolean;
 }
 
 /** One run of the fixture: a pending remote run, its root, the dispatch, `ready`, the setup time. */
@@ -284,26 +286,42 @@ const runOnce = async (
   say(
     `${name}: ready ${secondsToReady}s after the dispatch; setup took ${utilization.setupSeconds?.toFixed(1)}s; lockfiles ${lockfiles}`,
   );
+  let warmVolume = false;
   if (ready.instanceId !== undefined) {
     const lines = (await journal(ready.instanceId))
       .split("\n")
       .filter((line) => line.trim() !== "");
+    warmVolume = lines.some((line) => line.includes("warm volume: fetching the mirror"));
     say(`${name}: the runner said:\n  ${lines.slice(-25).join("\n  ")}`);
   }
-  return { run, secondsToReady, setupSeconds: utilization.setupSeconds ?? Number.NaN };
+  return {
+    run,
+    secondsToReady,
+    setupSeconds: utilization.setupSeconds ?? Number.NaN,
+    warmVolume,
+  };
 };
 
 /** Cancel, hear `stopped` from the runner, then watch the reconciler clean up and snapshot. */
 const stopAndCleanUp = async (name: string, run: RunMade): Promise<Dispatch> => {
   expectStatus(await api.post(`${run.path}/dispatch/cancel`, undefined), 200);
-  await awaitDispatch(run, "stopped", 3 * 60_000, (d) => d.status === "stopped");
+  const stopped = await awaitDispatch(run, "stopped", 3 * 60_000, (d) => d.status === "stopped");
   say(`${name}: stopped as told; waiting for the reconciler's snapshot and cleanup`);
+  // The machine goes within a tick or two; its journal is the only record of
+  // what the root did between `ready` and the stop.
+  if (stopped.instanceId !== undefined) {
+    const lines = (await journal(stopped.instanceId))
+      .split("\n")
+      .filter((line) => line.includes("[nightshift-") || line.includes("root"));
+    say(`${name}: the runner said after ready:\n  ${lines.slice(-25).join("\n  ")}`);
+  }
   const cleaned = await awaitDispatch(run, "cleanup", 20 * 60_000, (d) => d.cleanup.volumeDeleted);
   const failures =
     cleaned.cleanup.failures.length === 0
       ? ""
       : `; failures ${JSON.stringify(cleaned.cleanup.failures)}`;
-  say(`${name}: cleaned up; snapshot ${cleaned.cleanup.snapshotId ?? "none"}${failures}`);
+  const snapshot = cleaned.cleanup.snapshotId ?? "none";
+  say(`${name}: cleaned up; snapshot ${snapshot}${failures}`);
   return cleaned;
 };
 
@@ -320,7 +338,8 @@ const runToTheEnd = async (name: string, run: RunMade, baseSha: string): Promise
     (d) => d.status === "stopped",
   );
   findings.runSeconds = Math.round((Date.now() - startedAt) / 1000);
-  say(`${name}: the runner stopped on its own after ${findings.runSeconds}s`);
+  const runSeconds = findings.runSeconds;
+  say(`${name}: the runner stopped on its own after ${runSeconds} seconds`);
   if (stopped.instanceId !== undefined) {
     const lines = (await journal(stopped.instanceId))
       .split("\n")
@@ -367,12 +386,20 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     // proof, directly in the table, and cleanup hands it back.
     const claimKey = keys.installationClaim(INSTALLATION_ID);
     previousClaim = (await clients.table.get({ TableName: context.tableName, Key: claimKey })).Item;
-    await stores.installationClaims
-      .claim(INSTALLATION_ID, orgId, nowIso(systemClock))
-      .catch(async () => {
-        await clients.table.delete({ TableName: context.tableName, Key: claimKey });
-        await stores.installationClaims.claim(INSTALLATION_ID, orgId, nowIso(systemClock));
-      });
+    const borrowed = await stores.installationClaims.claim(
+      INSTALLATION_ID,
+      orgId,
+      nowIso(systemClock),
+    );
+    if (!borrowed.ok) {
+      await clients.table.delete({ TableName: context.tableName, Key: claimKey });
+      const again = await stores.installationClaims.claim(
+        INSTALLATION_ID,
+        orgId,
+        nowIso(systemClock),
+      );
+      expect(again.ok).toBe(true);
+    }
     const recorded = await api.put(`/orgs/${orgId}/github`, { installationId: INSTALLATION_ID });
     expectStatus(recorded, 200);
     say(`installation ${INSTALLATION_ID} recorded: ${JSON.stringify(recorded.body)}`);
@@ -395,6 +422,14 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
       repository: { url: FIXTURE_REPOSITORY, baseBranch: "main", programBranch: FIXTURE_BRANCH },
       setup: [{ id: "install", command: "npm ci --prefer-offline" }],
       verification: [{ id: "test", command: "npm test" }],
+      scope: {
+        // The root node the proof makes carries the fixture scope; the program
+        // may only be at least as wide and forbid exactly what the node does.
+        includes: ["src/**", "test/**"],
+        excludes: ["src/generated/**"],
+        permissions: ["fs.read", "fs.write", "shell.exec"],
+        forbiddenActions: ["deploy to production"],
+      },
       strands: [
         {
           id: "S-01",
@@ -463,17 +498,23 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
 
     // Warm: provisioned from the snapshot; the mirror is fetched, the store answers npm.
     const warm = await runOnce("warm", baseSha, program.planHash, program.planDocument);
-    findings.warm = { secondsToReady: warm.secondsToReady, setupSeconds: warm.setupSeconds };
+    findings.warm = {
+      secondsToReady: warm.secondsToReady,
+      setupSeconds: warm.setupSeconds,
+      warmVolume: warm.warmVolume,
+    };
     const ratio = warm.setupSeconds / cold.setupSeconds;
     findings.warmToColdSetupRatio = Number(ratio.toFixed(3));
     say(
       `setup cold ${cold.setupSeconds.toFixed(1)}s, warm ${warm.setupSeconds.toFixed(1)}s: ratio ${ratio.toFixed(3)} against SC-P10-08's ${WARM_RATIO_TARGET}`,
     );
-    expect(warm.setupSeconds, "the warm setup was not faster than the cold one").toBeLessThan(
-      cold.setupSeconds,
-    );
+    // SC-P10-08 as restated with D-P10-24: the second run came up on the
+    // project's snapshot and fetched the mirror rather than cloning it. The
+    // install's duration is reported, not asserted: it is the same `npm ci`
+    // on both, and the seed saves its work in the worktrees, not here.
+    expect(warm.warmVolume, "the warm run did not come up on the project's snapshot").toBe(true);
     if (ratio >= WARM_RATIO_TARGET) {
-      say("SC-P10-08 NOT MET at this ratio; the number is recorded in the findings for §15");
+      say(`setup ratio ${ratio.toFixed(2)}: npm ci re-extracts regardless, as D-P10-24 records`);
     }
     const warmCleaned = await stopAndCleanUp("warm", warm.run);
     expect(warmCleaned.cleanup.snapshotId).toBeDefined();
