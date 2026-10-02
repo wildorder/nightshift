@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p10-remote-runner` |
 | Source stage | Stage 9, `00-source-program-plan.md`; P10 in `staging.md` |
-| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-24 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01, T3 2026-10-02 (§15); T4 next |
+| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-24 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01, T3 and T4's first chunk 2026-10-02 (§15); T4's second chunk next |
 | Depends on | P9 (correction), P12 (token profiles, one loopback server), P14 (stories); the implementation base is `main` after `fc20125` (program setup) |
 | Outcome | Dispatch a program to a machine of the customer's chosen size, close the laptop, and return to verified, published output or a durable account of partial work; the machine is recommended from the project, starts warm, and is right-sized from the runs before it |
 | Blocking decisions | none: D-P10-12 … D-P10-24 ratified; H-P10-01 … H-P10-06 satisfied. The two provider API keys are T5's gate |
@@ -488,3 +488,80 @@ the same way); and `ec2:CreateSnapshot` was conditioned on the snapshot's own
 managed tag, which a snapshot that does not exist yet cannot carry. A cleanup
 failure is now logged as well as recorded, because a reconciler failing every
 minute read exactly like one waiting.
+
+### T4, first chunk, 2026-10-02
+
+The root orchestrator runs on the machine and the program branch is published
+with a lease at the Git transport: commits `e58c25a` through `304e12c`, image
+1.0.7. What is built, and how each piece departs from the task spec where it
+does:
+
+- **The root.** After `ready` the runner reports `running`, waits one beat for
+  the org's provider keys (the plane hands them to a running engine and to
+  nothing else, D-P10-23), and starts `runHeadless` over a runtime built by the
+  composition root. The engine's token is in a file on tmpfs
+  (`/dev/shm/nightshift/<runId>/engine-token`, 0600, `engine` only) that the
+  heartbeat rewrites on every renewal; the orchestrator-role server the root
+  launches reads it on each request (`NIGHTSHIFT_API_TOKEN_FILE`), so a renewal
+  needs no restart and nothing is written to the volume. D-P10-20 names the
+  renewal, not the file; this is the as-built mechanism.
+- **Publication intents.** After every landing that moves the program branch,
+  the engine packs the commits (`git pack-objects`, not thin), uploads the pack
+  as a `bundle` artifact through the plane's signed upload, and posts an intent
+  whose predecessor is the previous intent's head, in landing order. The hook
+  is on the execution environment and is installed only when the runner set
+  `NIGHTSHIFT_PUBLISH_BASE`, so a local run publishes nothing and the
+  provisional line never can.
+- **The publisher without `git`.** The spec bundled a `git` binary into the
+  Lambda; there is no Docker on the developer machine to build such a layer,
+  and a pure-JS git was a shallow fetch away from working. The publisher
+  speaks git's smart HTTP protocol in `fetch` instead: the ref advertisement
+  gives the branch's head; the receive-pack command `<predecessor> <head>
+  <ref>` with a non-thin pack is the push, and the remote's check of
+  `<predecessor>` **is** the lease, where the race actually is. The client and
+  the publisher are held to a real `git http-backend` serving a local bare
+  repository, so what passes offline is what GitHub accepts.
+- **One push at a time.** The spec said reserved concurrency; this account's
+  Lambda concurrency quota is the new-account minimum of 10, which leaves
+  nothing to reserve, and the deploy was refused. The serial order per run is
+  a lock row in the table, taken by conditional put (absent, or lease lapsed),
+  released after the sweep, swept once more for an intent that arrived while
+  held. A quota increase to 1000 is requested; the lock works at any quota.
+- **One installation is one customer's.** Recording an installation claims it
+  (a compare-and-set row per installation id); a second org is refused with
+  409, the first may record again. The owner's org holds the dev stage's
+  installation; the live proof borrows it for its throwaway org and hands it
+  back.
+- **The gate.** `nightshift org github install --installation 166952409` was
+  run for the owner's org through the CLI and lists both repositories.
+
+**Measured on real machines** (`npm run runner:boot`, image 1.0.7,
+`m7g.xlarge`, 2026-10-02, two passing runs):
+
+| Measurement | Result |
+|-------------|--------|
+| Dispatch accepted to `ready`, cold | 83 s, 92 s |
+| Dispatch accepted to `ready`, warm, from the snapshot | 72 s, 82 s |
+| Setup (`npm ci --prefer-offline`), cold / warm | 3.4 s / 4.2 s; 4.3 s / 5.3 s |
+| Warm run fetched the mirror rather than cloning (SC-P10-08 as restated) | yes, both runs |
+| Snapshot to warm cache written and volume deleted | about 4 min |
+| Machines, volumes, snapshots left behind | none |
+
+**Not yet in T4, carried to its second chunk**: workers as their own Linux
+users (D-P10-17's `runAs`), which needs the two harness adapters to spawn
+through `sudo`, each worktree chowned to its worker, and the program
+checkout's git objects shared through a group, and so its own live iteration;
+worker token renewal before expiry (today a worker's token lives
+`min(wallClock, 8 h)`); the root's harness session id on the dispatch for T6's
+resume. The live acceptance (a program run to the end, the fixture's branch
+holding the published head) needs an Anthropic key sealed for the org:
+`NIGHTSHIFT_SMOKE_ANTHROPIC_KEY` makes the proof run it; without a key the
+proof lets the root start, reads its journal, and cancels.
+
+Three things only a live run could find, each now held by a test or a rule:
+the smoke's throwaway org and the owner's org cannot both claim one
+installation, so the proof borrows and returns it; a `--no-checkout` clone
+reports every file deleted, which the workspace took for a dirty tree; and a
+heredoc-mangled string literal in the proof passed `tsc -b apps/api`, which
+does not cover the smoke files, while biome's formatter rewrote the rest of
+the file around it. `npm run typecheck` covers them.

@@ -319,17 +319,17 @@ const stopAndCleanUp = async (name: string, run: RunMade): Promise<Dispatch> => 
       ),
   );
   await sleep(ROOT_GRACE_MS);
-  expectStatus(await api.post(`${run.path}/dispatch/cancel`, undefined), 200);
-  const stopped = await awaitDispatch(run, "stopped", 3 * 60_000, (d) => d.status === "stopped");
-  say(`${name}: stopped as told; waiting for the reconciler's snapshot and cleanup`);
-  // The machine goes within a tick or two; its journal is the only record of
-  // what the root did between `ready` and the stop.
-  if (stopped.instanceId !== undefined) {
-    const lines = (await journal(stopped.instanceId))
+  // The journal now, while the machine is certainly still there: what the
+  // root did between `ready` and this cancel is the record T4 wants.
+  if (run.dispatch?.instanceId !== undefined) {
+    const lines = (await journal(run.dispatch.instanceId))
       .split("\n")
-      .filter((line) => line.includes("[nightshift-") || line.includes("root"));
-    say(`${name}: the runner said after ready:\n  ${lines.slice(-25).join("\n  ")}`);
+      .filter((line) => line.trim() !== "" && !line.includes("COMMAND="));
+    say(`${name}: the runner said after ready:\n  ${lines.slice(-30).join("\n  ")}`);
   }
+  expectStatus(await api.post(`${run.path}/dispatch/cancel`, undefined), 200);
+  await awaitDispatch(run, "stopped", 3 * 60_000, (d) => d.status === "stopped");
+  say(`${name}: stopped as told; waiting for the reconciler's snapshot and cleanup`);
   const cleaned = await awaitDispatch(run, "cleanup", 20 * 60_000, (d) => d.cleanup.volumeDeleted);
   const failures =
     cleaned.cleanup.failures.length === 0
