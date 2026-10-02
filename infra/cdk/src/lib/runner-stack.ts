@@ -25,6 +25,7 @@ import * as nodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
 import type { Construct } from "constructs";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
+import { NODE_INDEX_NAME } from "./data-stack.js";
 import { apiHostnameFor } from "./hostnames.js";
 import {
   containmentComponent,
@@ -407,8 +408,15 @@ export class NightshiftRunnerStack extends Stack {
     const reconcilerLogs = this.logGroup("ReconcilerFunctionLogs");
     const reconcilerRole = this.executionRole("ReconcilerFunctionRole", reconcilerLogs, [
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
         resources: [tableArn],
+      }),
+      // The reconciler's one cross-project read, every dispatch by status, is a
+      // query on the node index (A-07's named exception); the first live run
+      // found the grant stopped at the table.
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Query"],
+        resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
       new iam.PolicyStatement({
         actions: [

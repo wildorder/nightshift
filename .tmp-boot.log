@@ -1,0 +1,106 @@
+
+> nightshift@1.0.0 runner:boot
+> node scripts/runner-boot.mjs
+
+Running the fixture remotely as arn:aws:sts::755348349819:assumed-role/AWSReservedSSO_AdministratorAccess_26eb2e22456f161f/tim (755348349819, us-west-2).
+
+> nightshift@1.0.0 build
+> tsc -b && npm run build --workspace @nightshift/studio
+
+
+> @nightshift/studio@0.0.0 build
+> tsc -p tsconfig.json && vite build
+
+[36mvite v8.3.1 [32mbuilding client environment for production...[36m[39m
+transforming...
+✓ 2757 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                      0.47 kB │ gzip:   0.29 kB
+dist/assets/index-BvScBYO_.css      86.37 kB │ gzip:  14.54 kB
+dist/assets/dist-Dno_RJ9_.js       124.79 kB │ gzip:  36.14 kB
+dist/assets/run-graph-D4MNKf3p.js  277.26 kB │ gzip:  89.66 kB
+dist/assets/index-CEggJi_6.js      795.74 kB │ gzip: 240.01 kB
+
+[33m[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m
+[33m[33m[INEFFECTIVE_DYNAMIC_IMPORT] [0m../../packages/persistence/dist/http/errors.js is dynamically imported by ../../packages/persistence/dist/http/stores.js but also statically imported by ../../packages/persistence/dist/http/browser/index.js, ../../packages/persistence/dist/http/transport.js, dynamic import will not move module into another chunk.
+[39m
+[32m✓ built in 1.13s[39m
+
+ RUN  v5.0.0 C:/dev/nightshift/apps/api
+
+[runner-boot] https://github.com/wildorder/nightshift-remote-fixture program/fixture is at 4c96d3b1bf277fe2ac68b6a0946c6bec59b92dd5
+[runner-boot] installation 166952409 recorded: {"installationId":166952409,"account":"wildorder","repositories":["wildorder/nightshift","wildorder/nightshift-remote-fixture"],"recordedAt":"2026-10-02T00:33:28.481Z"}
+[runner-boot] cold: dispatch requested on good (m7g.xlarge)
+[runner-boot] cold: machine i-02c160e8638f9c1ca in us-west-2a, volume vol-01d17369101100455, image 1.0.6
+[runner-boot] cold: ready 92s after the dispatch; setup took 5.9s; lockfiles package-lock.json
+[runner-boot] cold: the runner said:
+  Started nightshift-runner.service - Nightshift runner: the engine on this machine.
+  [nightshift-runner] run run_01M3X0FCB0FTQC4AAS5C3G7Y61, generation 1, on i-02c160e8638f9c1ca
+    engine : PWD=/opt/nightshift ; USER=root ; COMMAND=/usr/sbin/blkid -o value -s TYPE /dev/xvdf
+    engine : PWD=/opt/nightshift ; USER=root ; COMMAND=/usr/sbin/mkfs.ext4 -q -L nightshift /dev/xvdf
+    engine : PWD=/opt/nightshift ; USER=root ; COMMAND=/usr/bin/mkdir -p /workspace
+    engine : PWD=/opt/nightshift ; USER=root ; COMMAND=/usr/bin/mount -o noatime /dev/xvdf /workspace
+    engine : PWD=/opt/nightshift ; USER=root ; COMMAND=/usr/bin/chown engine:engine /workspace
+  [nightshift-runner] workspace mounted at /workspace
+  [nightshift-runner] cold volume: cloning the mirror
+  [nightshift-runner] the checkout was left dirty; resetting it
+  [nightshift-runner] setup install: npm ci --prefer-offline
+  [nightshift-runner] workspace cold: setup took 5.9s
+[runner-boot] cold: stopped as told; waiting for the reconciler's snapshot and cleanup
+ × |runner-boot| src/smoke/runner-boot.smoke.ts > two runs of the fixture, cold then warm (P10, T3, SC-P10-08) > dispatches through the API, reaches ready on both, and the second is provisioned from the first's snapshot 1321484ms
+   → dispatch run_01M3X0FCB0FTQC4AAS5C3G7Y61 did not reach cleanup within 20 minutes; it is stopped
+[runner-boot] cleanup: delete the records
+[runner-boot] cleanup: delete the membership
+[runner-boot] cleanup: delete the plan document
+[runner-boot] findings {"cold":{"secondsToReady":92,"setupSeconds":5.881}}
+stderr | src/smoke/runner-boot.smoke.ts
+cleanup problems:
+  delete vol-01d17369101100455: Command failed: aws ec2 delete-volume --volume-id vol-01d17369101100455 --region us-west-2 --output json
+
+An error occurred (VolumeInUse) when calling the DeleteVolume operation: Volume vol-01d17369101100455 is currently attached to {i-02c160e8638f9c1ca}
+
+
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |runner-boot| src/smoke/runner-boot.smoke.ts [ src/smoke/runner-boot.smoke.ts ]
+Error: cleanup left something behind; see above
+ ❯ src/smoke/runner-boot.smoke.ts:493:11
+    491|   if (problems.length > 0) {
+    492|     console.error(`cleanup problems:\n  ${problems.join("\n  ")}`);
+    493|     throw new Error("cleanup left something behind; see above");
+       |           ^
+    494|   }
+    495| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |runner-boot| src/smoke/runner-boot.smoke.ts > two runs of the fixture, cold then warm (P10, T3, SC-P10-08) > dispatches through the API, reaches ready on both, and the second is provisioned from the first's snapshot
+Error: dispatch run_01M3X0FCB0FTQC4AAS5C3G7Y61 did not reach cleanup within 20 minutes; it is stopped
+ ❯ awaitDispatch src/smoke/runner-boot.smoke.ts:142:13
+    140|     }
+    141|     if (Date.now() - startedAt > timeoutMs) {
+    142|       throw new Error(
+       |             ^
+    143|         `dispatch ${run.runId} did not reach ${what} within ${Math.rou…
+    144|       );
+ ❯ stopAndCleanUp src/smoke/runner-boot.smoke.ts:291:19
+ ❯ src/smoke/runner-boot.smoke.ts:368:25
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  17:33:18
+   Duration  1333.87s (tests 100%)
+
+BOOT_FAILED  
