@@ -130,7 +130,7 @@ export const rootEnvironment = (input: RootEnvironmentInput): Record<string, str
   env.NIGHTSHIFT_STATE_DIR = context.layout.run;
   env.NIGHTSHIFT_PUBLISH_BASE = context.dispatch.input.baseSha;
   // The root's server attaches to this run and no other (D-P10-20).
-  env.NIGHTSHIFT_PINNED_RUN = `' + O + 'context.scope.projectId' + C + '/' + O + 'context.scope.programId' + C + '/' + O + 'context.scope.runId' + C + '`;
+  env.NIGHTSHIFT_PINNED_RUN = `${context.scope.projectId}/${context.scope.programId}/${context.scope.runId}`;
   env.NIGHTSHIFT_PUBLISH_PACK_DIR = join(context.layout.run, "bundles");
   return env;
 };

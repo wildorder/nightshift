@@ -343,7 +343,7 @@ const locateRun = async (
   if (state.pinnedRun !== undefined && runId !== undefined && runId !== state.pinnedRun.runId) {
     throw new ToolRefusal(
       "not_found",
-      `this server is the engine of run ' + O + 'state.pinnedRun.runId' + C + ' and can attach to no other`,
+      `this server is the engine of run ${state.pinnedRun.runId} and can attach to no other`,
     );
   }
   const { projectId, programId } = state.pinnedRun ?? (await repositoryProgram(state, runId));
@@ -555,7 +555,7 @@ export const startNewRun = async (
   if (state.pinnedRun !== undefined) {
     throw new ToolRefusal(
       "pinned_run",
-      `this server is the engine of run ' + O + 'state.pinnedRun.runId' + C + '; attach to it with run.attach. ` +
+      `this server is the engine of run ${state.pinnedRun.runId}; attach to it with run.attach. ` +
         "A machine starts no run of its own.",
     );
   }

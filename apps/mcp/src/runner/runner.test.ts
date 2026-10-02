@@ -18,6 +18,7 @@ import { createHeartbeat } from "./heartbeat.js";
 import type { CommandResult, Machine } from "./machine.js";
 import { runRunner } from "./main.js";
 import type { PlaneFactory } from "./plane.js";
+import { rootEnvironment, tokenFile } from "./root.js";
 import { countOomKills, cpuBusyPct, parseCpuTimes, parseDiskPct, parseMeminfo } from "./sampler.js";
 import { mountWorkspace, resolveDevice } from "./volume.js";
 import { layoutOf, prepareWorkspace } from "./workspace.js";
@@ -541,5 +542,38 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     expect(code).toBe(1);
     expect(lines.join("\n")).toContain("the plan changed");
     expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped" });
+  });
+});
+
+describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
+  it("names the plane, the token file, the state directory, the publication base and the pinned run", () => {
+    const dispatch = makeDispatch(f, {
+      input: { ...makeDispatch(f).input, baseSha: "b".repeat(40) },
+    });
+    const env = rootEnvironment({
+      context: {
+        scope: f.scope,
+        dispatch,
+        layout: layoutOf("/workspace", f.scope.runId),
+      } as never,
+      apiEndpoint: "https://api.dev.nightshift.invalid",
+      providerKeys: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" },
+      parentEnv: { PATH: "/usr/bin", HOME: "/home/engine", SECRET: "never" },
+    });
+    expect(env).toMatchObject({
+      PATH: "/usr/bin",
+      HOME: "/home/engine",
+      NIGHTSHIFT_API_ENDPOINT: "https://api.dev.nightshift.invalid",
+      NIGHTSHIFT_API_TOKEN_FILE: tokenFile(f.scope.runId),
+      NIGHTSHIFT_STATE_DIR: `/workspace/runs/${f.scope.runId}`,
+      NIGHTSHIFT_PUBLISH_BASE: "b".repeat(40),
+      NIGHTSHIFT_PINNED_RUN: `${f.scope.projectId}/${f.scope.programId}/${f.scope.runId}`,
+      CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x",
+    });
+    expect(env.SECRET).toBeUndefined();
+    // Every id in the pin is one the server will parse.
+    for (const part of env.NIGHTSHIFT_PINNED_RUN?.split("/") ?? []) {
+      expect(part).toMatch(/^(proj|prog|run)_[0-9A-HJKMNP-TV-Z]{26}$/);
+    }
   });
 });
