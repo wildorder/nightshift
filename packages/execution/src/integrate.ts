@@ -188,6 +188,20 @@ export const integrateNode = async (
     executionNodeId: input.nodeId,
   });
 
+  // --- Publication (P10, D-P10-22) ------------------------------------------------
+  // The branch moved here; on a machine the publisher moves GitHub's copy. The
+  // hook keeps its own order and never fails the landing: the commit is
+  // integrated and checkpointed whether or not the request got out.
+  if (environment.publish !== undefined) {
+    await environment
+      .publish({
+        head: input.commitSha,
+        programBranch: input.session.program.repository.programBranch,
+        repoPath: repo,
+      })
+      .catch(() => undefined);
+  }
+
   // --- What its decisions produced (P9, D-P9-01) ----------------------------------
   await stampJobDecisions(
     environment,

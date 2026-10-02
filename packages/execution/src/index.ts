@@ -87,6 +87,7 @@ export {
   type PreflightResult,
   runPreflight,
 } from "./preflight.js";
+export * from "./publish.js";
 export {
   deferredLine,
   type ResumeResult,

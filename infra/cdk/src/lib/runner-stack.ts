@@ -61,7 +61,7 @@ export const dispatchParameterPrefix = (stage: string): string => `/nightshift/$
 export const GITHUB_APP_SECRET_NAME = "nightshift/github-app";
 
 /** The runner stack's one export the API stack imports. */
-export const RUNNER_EXPORT_KEYS = ["DispatchFunctionArn"] as const;
+export const RUNNER_EXPORT_KEYS = ["DispatchFunctionArn", "PublisherFunctionArn"] as const;
 export type RunnerExportKey = (typeof RUNNER_EXPORT_KEYS)[number];
 export const runnerExportName = (stage: string, key: RunnerExportKey): string =>
   `nightshift-${stage}-runner-${key}`;
@@ -529,6 +529,9 @@ export class NightshiftRunnerStack extends Stack {
       environment: { ...environment, NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME },
       timeout: Duration.minutes(5),
       memorySize: 1024,
+      // One push at a time, anywhere (D-P10-22): two resolutions of one branch
+      // must never race, and the lease makes the serial order the safe one.
+      reservedConcurrentExecutions: 1,
     });
 
     // --- Outputs ------------------------------------------------------------------
@@ -552,6 +555,10 @@ export class NightshiftRunnerStack extends Stack {
     });
     new CfnOutput(this, "ReconcilerFunctionName", { value: reconcilerFunction.functionName });
     new CfnOutput(this, "PublisherFunctionName", { value: publisherFunction.functionName });
+    new CfnOutput(this, "PublisherFunctionArn", {
+      value: publisherFunction.functionArn,
+      exportName: runnerExportName(stage, "PublisherFunctionArn"),
+    });
     new CfnOutput(this, "WorkerUsers", { value: String(WORKER_USERS) });
     new CfnOutput(this, "Toolchain", { value: JSON.stringify(RUNNER_TOOLCHAIN) });
   }
@@ -588,7 +595,8 @@ export class NightshiftRunnerStack extends Stack {
         nodejs.NodejsFunctionProps,
         "entry" | "role" | "logGroup" | "environment" | "timeout" | "memorySize"
       >
-    >,
+    > &
+      Pick<nodejs.NodejsFunctionProps, "reservedConcurrentExecutions">,
   ): nodejs.NodejsFunction {
     return new nodejs.NodejsFunction(this, id, {
       ...props,

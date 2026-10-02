@@ -39,6 +39,14 @@ export interface GitHubAppClient {
     installationId: number,
     repositories: readonly string[],
   ): Promise<{ readonly token: string; readonly expiresAt: string }>;
+  /**
+   * The publisher's token (D-P10-22): contents write on the one repository a
+   * publication intent names, minted in the publisher Lambda and nowhere else.
+   */
+  writeToken(
+    installationId: number,
+    repository: string,
+  ): Promise<{ readonly token: string; readonly expiresAt: string }>;
 }
 
 /** `owner/name` from the forms a contract's `repository.url` takes. */

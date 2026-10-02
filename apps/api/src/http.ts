@@ -101,6 +101,8 @@ export interface ApiDeps {
 
 export interface Dispatcher {
   provision(scope: RunScope): Promise<void>;
+  /** The publisher Lambda (D-P10-22), invoked when an intent is recorded; absent where nothing publishes. */
+  publish?(scope: RunScope): Promise<void>;
 }
 
 /** Where execution tokens come from, and who they say issued them. */

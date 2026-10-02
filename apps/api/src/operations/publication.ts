@@ -23,7 +23,14 @@ export const requestPublication: Handler = async ({ deps, request, params }) => 
     );
   }
   const { dispatch: next, created } = recordIntent(dispatch, body, nowIso(deps.clock));
-  if (created) await deps.stores.dispatches.put(next);
+  if (created) {
+    await deps.stores.dispatches.put(next);
+    // The publisher resolves what was recorded; a failed invocation leaves the
+    // intent pending for the reconciler to hand over again (T6).
+    await deps.dispatcher?.publish?.(scope).catch((error: unknown) => {
+      console.error(`publication ${scope.runId}: the publisher could not be invoked`, error);
+    });
+  }
   const intent = next.publication.intents.find((candidate) => candidate.head === body.head);
   return { status: created ? 201 : 200, body: intent };
 };

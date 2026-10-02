@@ -654,8 +654,12 @@ describe("NightshiftApiStack", () => {
       const invoke = statements.find((statement) =>
         actionsOf(statement).includes("lambda:InvokeFunction"),
       );
-      expect(invoke?.Resource).toEqual({
-        "Fn::ImportValue": runnerExportName("dev", "DispatchFunctionArn"),
+      expect(invoke?.Resource).toEqual([
+        { "Fn::ImportValue": runnerExportName("dev", "DispatchFunctionArn") },
+        { "Fn::ImportValue": runnerExportName("dev", "PublisherFunctionArn") },
+      ]);
+      expect(variables.NIGHTSHIFT_PUBLISHER_FUNCTION_ARN).toEqual({
+        "Fn::ImportValue": runnerExportName("dev", "PublisherFunctionArn"),
       });
       const secret = statements.find((statement) =>
         actionsOf(statement).includes("secretsmanager:GetSecretValue"),

@@ -314,3 +314,41 @@ export const recordIntent = (
 /** Whether a dispatch holds an intent the publisher has not resolved. */
 export const hasPendingIntent = (dispatch: Dispatch): boolean =>
   dispatch.publication.intents.some((intent) => intent.status === "pending");
+
+/**
+ * Resolves a publication intent (D-P10-22): the publisher's word on one head.
+ * `published` moves the record's branch head to the intent's; `conflict`,
+ * `protected` and `error` block publication with the detail, which the report
+ * carries. Resolved intents past `MAX_RESOLVED_INTENTS` are dropped, newest
+ * kept, pending ones always kept.
+ */
+export const resolveIntent = (
+  dispatch: Dispatch,
+  head: PublicationIntent["head"],
+  status: Exclude<PublicationIntent["status"], "pending">,
+  detail: string | undefined,
+  at: string,
+): Dispatch => {
+  const intents = dispatch.publication.intents.map((intent) =>
+    intent.head === head
+      ? { ...intent, status, resolvedAt: at, ...(detail === undefined ? {} : { detail }) }
+      : intent,
+  );
+  const resolved = intents.filter((intent) => intent.status !== "pending");
+  const pending = intents.filter((intent) => intent.status === "pending");
+  const kept = resolved.slice(Math.max(0, resolved.length - MAX_RESOLVED_INTENTS));
+  return {
+    ...dispatch,
+    publication: {
+      ...dispatch.publication,
+      ...(status === "published" ? { head } : {}),
+      ...(status === "published" ? {} : { blocked: detail ?? `${status} at ${head}` }),
+      intents: [...kept, ...pending],
+    },
+    updatedAt: at,
+  };
+};
+
+/** The oldest pending intent, which is the one the publisher resolves next. */
+export const nextPendingIntent = (dispatch: Dispatch): PublicationIntent | undefined =>
+  dispatch.publication.intents.find((intent) => intent.status === "pending");

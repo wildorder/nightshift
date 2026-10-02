@@ -10,7 +10,7 @@ import { KMSClient } from "@aws-sdk/client-kms";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { S3Client } from "@aws-sdk/client-s3";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { systemClock } from "@nightshift/core";
+import { type RunScope, systemClock } from "@nightshift/core";
 import {
   createArtifactDownloadSigner,
   createArtifactUploadSigner,
@@ -108,19 +108,26 @@ const github =
     : createGitHubAppClient({ secret: githubSecret });
 
 /** The dispatch Lambda (D-P10-18), invoked asynchronously: the API records, the function provisions. */
+const invoke = async (functionArn: string, payload: unknown): Promise<void> => {
+  await new LambdaClient({}).send(
+    new InvokeCommand({
+      FunctionName: functionArn,
+      InvocationType: "Event",
+      Payload: Buffer.from(JSON.stringify(payload)),
+    }),
+  );
+};
+const dispatchFunctionArn = config.dispatchFunctionArn;
+const publisherFunctionArn = config.publisherFunctionArn;
 const dispatcher: Dispatcher | undefined =
-  config.dispatchFunctionArn === undefined
+  dispatchFunctionArn === undefined
     ? undefined
     : {
-        provision: async (scope) => {
-          await new LambdaClient({}).send(
-            new InvokeCommand({
-              FunctionName: config.dispatchFunctionArn,
-              InvocationType: "Event",
-              Payload: Buffer.from(JSON.stringify(scope)),
-            }),
-          );
-        },
+        provision: (scope) => invoke(dispatchFunctionArn, scope),
+        // The publisher (D-P10-22), when the runner stack exports one.
+        ...(publisherFunctionArn === undefined
+          ? {}
+          : { publish: (scope: RunScope) => invoke(publisherFunctionArn, scope) }),
       };
 
 export const handler = createApiLambdaHandler(() => ({

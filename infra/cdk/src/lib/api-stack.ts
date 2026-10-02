@@ -221,20 +221,23 @@ export class NightshiftApiStack extends Stack {
      */
     const dispatchFunctionArn =
       runner === true ? Fn.importValue(runnerExportName(stage, "DispatchFunctionArn")) : undefined;
+    const publisherFunctionArn =
+      runner === true ? Fn.importValue(runnerExportName(stage, "PublisherFunctionArn")) : undefined;
     const runnerEnvironment =
-      dispatchFunctionArn === undefined
+      dispatchFunctionArn === undefined || publisherFunctionArn === undefined
         ? {}
         : {
             NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME,
             NIGHTSHIFT_DISPATCH_FUNCTION_ARN: dispatchFunctionArn,
+            NIGHTSHIFT_PUBLISHER_FUNCTION_ARN: publisherFunctionArn,
           };
     const runnerStatements =
-      dispatchFunctionArn === undefined
+      dispatchFunctionArn === undefined || publisherFunctionArn === undefined
         ? []
         : [
             new iam.PolicyStatement({
               actions: ["lambda:InvokeFunction"],
-              resources: [dispatchFunctionArn],
+              resources: [dispatchFunctionArn, publisherFunctionArn],
             }),
             new iam.PolicyStatement({
               actions: ["secretsmanager:GetSecretValue"],

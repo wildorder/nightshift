@@ -19,8 +19,10 @@
  * `switch` rather than by threading a type through six packages.
  */
 
+import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  CommitShaSchema,
   HeartbeatResponseSchema,
   ProgramIdSchema,
   ProjectIdSchema,
@@ -32,15 +34,17 @@ import type {
   LocalPaths,
   ProgramScope,
   ProjectStores,
+  RunScope,
 } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import type {
   GitRunner,
   PrerequisiteBook,
+  PublishLanding,
   WorkerEnvironment,
   WorkerLaunchIdentity,
 } from "@nightshift/execution";
-import { createEventOutbox, nodeGitRunner } from "@nightshift/execution";
+import { createEventOutbox, createPublicationQueue, nodeGitRunner } from "@nightshift/execution";
 import type { Harness, HarnessHandle, McpLaunch, TranscriptSource } from "@nightshift/harness";
 import { claudeTranscriptSource, createClaudeHarness } from "@nightshift/harness-claude";
 import { codexTranscriptSource, createCodexHarness } from "@nightshift/harness-codex";
@@ -97,6 +101,22 @@ export const HARNESS_MODULE_ENV = "NIGHTSHIFT_HARNESS_MODULE";
 /** An API endpoint and a token, for a session that has not run `nightshift login`. */
 export const API_ENDPOINT_ENV = "NIGHTSHIFT_API_ENDPOINT";
 export const API_TOKEN_ENV = "NIGHTSHIFT_API_TOKEN";
+/**
+ * P10 (D-P10-20): a file holding the current token, read on every request,
+ * rewritten by whoever renews it. On a machine the runner keeps the engine's
+ * token here, on tmpfs, readable by `engine` alone, and the orchestrator-role
+ * server it launches follows every renewal without a restart.
+ */
+export const API_TOKEN_FILE_ENV = "NIGHTSHIFT_API_TOKEN_FILE";
+/**
+ * P10 (D-P10-22): set by the runner on the orchestrator-role server it launches
+ * and nowhere else. Its value is the program branch's head at GitHub when the
+ * run was dispatched: the first publication intent's predecessor. Present, the
+ * engine raises an intent after every landing; absent, it publishes nothing.
+ */
+export const PUBLISH_BASE_ENV = "NIGHTSHIFT_PUBLISH_BASE";
+/** Where the packs are written before upload; the run's directory on the volume. */
+export const PUBLISH_PACK_DIR_ENV = "NIGHTSHIFT_PUBLISH_PACK_DIR";
 
 export interface Runtime {
   readonly stores: ProjectStores;
@@ -120,6 +140,11 @@ export interface Runtime {
   readonly planText?: (scope: ProgramScope, sha256: string) => Promise<string | undefined>;
   /** The program's prerequisites as they stand now, for deferring a check that needs one (D-P7-10). */
   readonly prerequisites?: PrerequisiteBook;
+  /**
+   * P10 (D-P10-22): the publication hook for a run, when this process is a
+   * machine's engine. The session installs it on the run's environment.
+   */
+  readonly publication?: (scope: RunScope) => PublishLanding;
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
   /**
@@ -186,6 +211,16 @@ const createOrchestratorTransport = async (
 ): Promise<{ transport: Transport; endpoint: string }> => {
   const endpoint = env[API_ENDPOINT_ENV];
   const token = env[API_TOKEN_ENV];
+  const tokenFile = env[API_TOKEN_FILE_ENV];
+  if (endpoint !== undefined && endpoint !== "" && tokenFile !== undefined && tokenFile !== "") {
+    return {
+      endpoint,
+      transport: createFetchTransport({
+        endpoint,
+        tokens: { idToken: async () => (await readFile(tokenFile, "utf8")).trim() },
+      }),
+    };
+  }
   if (endpoint !== undefined && endpoint !== "" && token !== undefined && token !== "") {
     return {
       endpoint,
@@ -381,21 +416,58 @@ export const createWorkerEnvironment =
     };
   };
 
+/**
+ * The publication hook for a machine's engine (D-P10-22): a pack per landing,
+ * uploaded as a `bundle` artifact through the plane's signed upload, then the
+ * intent. Built only when the runner set the base; a local run has none.
+ */
+const createPublication = (
+  env: Env,
+  transport: Transport,
+  bodies: ArtifactBodyStore,
+  ids: ReturnType<typeof createUlidIdGenerator>,
+): ((scope: RunScope) => PublishLanding) | undefined => {
+  const base = env[PUBLISH_BASE_ENV];
+  if (base === undefined || base === "") return undefined;
+  const packDir = env[PUBLISH_PACK_DIR_ENV];
+  return (scope) =>
+    createPublicationQueue({
+      baseSha: CommitShaSchema.parse(base),
+      packDir:
+        packDir === undefined || packDir === "" ? `/tmp/nightshift-packs/${scope.runId}` : packDir,
+      upload: async (pack, head) => {
+        // The pack is a body under the run's prefix; the intent's `bundleKey`
+        // is its only reference, and the publisher is its only reader.
+        const stored = await bodies.put(scope, ids.next("art"), pack, "application/x-git-pack");
+        void head;
+        return { key: stored.key };
+      },
+      request: async (body) => {
+        await send(transport, { method: "POST", path: routes.publication(scope), body });
+      },
+      log: (line) => process.stderr.write(`[nightshift-mcp] ${line}\n`),
+    });
+};
+
 export const createRuntime = async (env: Env, role: Role = "orchestrator"): Promise<Runtime> => {
   const { transport, endpoint } = await createTransport(env, role);
+  const ids = createUlidIdGenerator();
+  const bodies = createHttpArtifactBodyStore({ transport });
+  const publication = createPublication(env, transport, bodies, ids);
   return {
     transport,
     endpoint,
+    ...(publication === undefined ? {} : { publication }),
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
     prerequisites: createHttpPlanning({ transport }),
     stores: createHttpStores({ transport }),
-    bodies: createHttpArtifactBodyStore({ transport }),
+    bodies,
     tokens: createHttpExecutionTokenMinter({ transport }),
     harness: await createHarness(env),
     paths: createLocalPaths({ env }),
     git: nodeGitRunner,
-    ids: createUlidIdGenerator(),
+    ids,
     clock: systemClock,
     workerLaunch: createWorkerLaunch(env, endpoint),
     workerEnvironment: createWorkerEnvironment(endpoint),

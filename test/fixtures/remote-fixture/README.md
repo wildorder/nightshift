@@ -6,10 +6,11 @@ is installed, and the copy under `test/fixtures/remote-fixture` in the monorepo
 is its source of truth: edit here, then push the two branches.
 
 Unlike the slice fixture, this one **has dependencies on purpose**: a lockfile
-whose `npm ci` downloads enough that the difference between a cold volume and
-the project's warm one is measurable (SC-P10-08). `nightshift.config.json`
-carries the setup `nightshift init` would write, `npm ci --prefer-offline`, so
-the npm cache on the volume answers before the registry does.
+whose `npm ci` does real work, so the install, the seeded worktrees and the
+warm volume have something to show (D-P10-15, D-P10-24). It carries no
+`nightshift.config.json`: the live proof supplies the program contract, with
+`npm ci --prefer-offline` as its setup, through the plane, and the monorepo's
+sterility rule forbids that file anywhere in this tree.
 
 Branches: `main`, and `program/fixture` at the same commit, which is the program
 branch the live proof (`npm run runner:boot`) dispatches.

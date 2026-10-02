@@ -475,6 +475,7 @@ describe("the runner end to end over fakes (T2, T3)", () => {
       beat < 4 ? { status: "ready", stop: false } : { status: "stopping", stop: true },
     );
     const lines: string[] = [];
+    const tokensInstalled: string[] = [];
     const code = await runRunner({
       machine,
       log: (line) => lines.push(line),
@@ -482,8 +483,15 @@ describe("the runner end to end over fakes (T2, T3)", () => {
       device: "/dev/xvdf",
       engineUser: "engine",
       plane: plane.planeFor,
+      onToken: async (token, scope) => {
+        expect(scope).toEqual(f.scope);
+        tokensInstalled.push(token);
+      },
     });
     expect(code).toBe(0);
+    // The first token and every renewal reach the composition (D-P10-20).
+    expect(tokensInstalled[0]).toBe("eyJ.first.token");
+    expect(tokensInstalled.at(-1)).toMatch(/^eyJ\.renewed\./);
     const ready = plane.heartbeats.find((body) => (body as { report?: string }).report === "ready");
     expect(ready).toMatchObject({ report: "ready", setupSeconds: expect.any(Number) });
     expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped" });

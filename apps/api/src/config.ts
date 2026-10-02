@@ -34,6 +34,7 @@ const ConfigEnvSchema = z.object({
   NIGHTSHIFT_GITHUB_APP_SECRET: z.string().min(1).optional(),
   /** P10 (D-P10-18): the dispatch Lambda the API invokes when a dispatch is accepted. */
   NIGHTSHIFT_DISPATCH_FUNCTION_ARN: z.string().min(1).optional(),
+  NIGHTSHIFT_PUBLISHER_FUNCTION_ARN: z.string().min(1).optional(),
 });
 
 export interface ApiConfig {
@@ -45,6 +46,7 @@ export interface ApiConfig {
   readonly runnerAmiVersion?: string;
   readonly githubAppSecret?: string;
   readonly dispatchFunctionArn?: string;
+  readonly publisherFunctionArn?: string;
 }
 
 /** What the API function alone needs, to mint execution tokens (P4, T2). */
@@ -96,6 +98,9 @@ export const loadConfig = (env: Readonly<Record<string, string | undefined>>): A
     ...(data.NIGHTSHIFT_DISPATCH_FUNCTION_ARN === undefined
       ? {}
       : { dispatchFunctionArn: data.NIGHTSHIFT_DISPATCH_FUNCTION_ARN }),
+    ...(data.NIGHTSHIFT_PUBLISHER_FUNCTION_ARN === undefined
+      ? {}
+      : { publisherFunctionArn: data.NIGHTSHIFT_PUBLISHER_FUNCTION_ARN }),
   };
 };
 

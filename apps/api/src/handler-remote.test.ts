@@ -55,12 +55,15 @@ const github: GitHubAppClient = {
   branchHead: async (_id, repository, branch) =>
     repository === "wildorder/fixture" && branch === "program/fixture" ? SHA : undefined,
   readToken: async () => ({ token: "ghs_read_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
+  writeToken: async () => ({ token: "ghs_write_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
 };
 
 /** What the plane asked to be provisioned (D-P10-18). */
 const provisionRequests: string[] = [];
+const publishRequests: string[] = [];
 const dispatcher = {
   provision: async (scope: { runId: string }) => void provisionRequests.push(scope.runId),
+  publish: async (scope: { runId: string }) => void publishRequests.push(scope.runId),
 };
 
 interface World {
@@ -576,6 +579,8 @@ describe("publication intents (D-P10-22)", () => {
     );
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ head: SHA_B, status: "pending" });
+    // The publisher is handed the run once the intent is recorded (D-P10-22).
+    expect(publishRequests).toEqual([w.f.scope.runId]);
     const again = await call(
       w,
       "POST",
@@ -584,6 +589,8 @@ describe("publication intents (D-P10-22)", () => {
       engine(w, dispatch),
     );
     expect(again.status).toBe(200);
+    // The same head again is the same intent, and no second invocation.
+    expect(publishRequests).toEqual([w.f.scope.runId]);
     const listed = await call(w, "GET", `${w.paths.run}/publication`);
     expect((listed.body as { intents: unknown[] }).intents).toHaveLength(1);
   });

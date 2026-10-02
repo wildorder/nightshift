@@ -82,19 +82,27 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
 
   const asApp = async (): Promise<string> => `Bearer ${appJwt(await options.secret(), now())}`;
 
-  const readToken = async (installationId: number, repositories: readonly string[]) => {
+  const installationToken = async (
+    installationId: number,
+    repositories: readonly string[],
+    contents: "read" | "write",
+  ) => {
     const names = repositories.map((repository) => repository.split("/")[1]).filter(Boolean);
     const { status, body } = await call<{ token?: string; expires_at?: string; message?: string }>(
       await asApp(),
       "POST",
       `/app/installations/${installationId}/access_tokens`,
-      { permissions: { contents: "read", metadata: "read" }, repositories: names },
+      { permissions: { contents, metadata: "read" }, repositories: names },
     );
     if (status !== 201 || body.token === undefined || body.expires_at === undefined) {
       throw new GitHubError(status, "access_tokens", body.message ?? "no token");
     }
     return { token: body.token, expiresAt: body.expires_at };
   };
+  const readToken = (installationId: number, repositories: readonly string[]) =>
+    installationToken(installationId, repositories, "read");
+  const writeToken = (installationId: number, repository: string) =>
+    installationToken(installationId, [repository], "write");
 
   return {
     app: async () => {
@@ -160,5 +168,6 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
       return body.commit.sha;
     },
     readToken,
+    writeToken,
   };
 };

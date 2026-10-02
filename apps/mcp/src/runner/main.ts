@@ -28,8 +28,13 @@ export interface RunnerOptions {
   readonly engineUser: string;
   /** The plane, from the composition root (AR-2) or a test's fake. */
   readonly plane: PlaneFactory;
-  /** What runs between `ready` and the stop: T4 supplies the headless root; T3 waits. */
+  /** What runs between `ready` and the stop: the headless root (T4). Absent, the runner waits. */
   readonly work?: (context: RunnerContext) => Promise<void>;
+  /**
+   * Told every engine token, the first and each renewal (D-P10-20), so the
+   * composition can place it where the root's processes read it.
+   */
+  readonly onToken?: (token: string, scope: RunScope) => Promise<void>;
   /** How long to wait for the plane to hand over the clone's credential. */
   readonly credentialTimeoutMs?: number;
 }
@@ -45,14 +50,18 @@ export interface RunnerContext {
   readonly program: ProgramContract;
 }
 
-/** A token the heartbeat replaces (D-P10-20); never on disk. */
-const renewableToken = (initial: string) => {
+/** A token the heartbeat replaces (D-P10-20); never on the volume. */
+const renewableToken = (
+  initial: string,
+  onToken: ((token: string) => Promise<void>) | undefined,
+) => {
   let current = initial;
   const provider: EngineTokens = { idToken: async () => current };
   return {
     provider,
     install: (token: string) => {
       current = token;
+      void onToken?.(token).catch(() => undefined);
     },
   };
 };
@@ -81,7 +90,12 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   const { machine, log } = options;
   const identity = await readIdentity(machine);
   log(`run ${identity.scope.runId}, generation ${identity.generation}, on ${identity.instanceId}`);
-  const token = renewableToken(await takeFirstToken(machine, identity));
+  const onToken = options.onToken;
+  const token = renewableToken(
+    await takeFirstToken(machine, identity),
+    onToken === undefined ? undefined : (renewed) => onToken(renewed, identity.scope),
+  );
+  await onToken?.(await token.provider.idToken(), identity.scope);
   const plane = options.plane(identity.apiEndpoint, token.provider);
 
   await mountWorkspace(machine, {

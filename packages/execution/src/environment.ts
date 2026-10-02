@@ -8,6 +8,7 @@
  * the network, or whether its harness is Claude Code or a scripted stand-in.
  * Only an application's composition root names a concrete one.
  */
+
 import type {
   AgentId,
   ExecutionNodeId,
@@ -33,6 +34,7 @@ import type {
 import type { Harness, McpLaunch } from "@nightshift/harness";
 import type { GitRunner } from "./git/index.js";
 import type { EventOutbox } from "./outbox.js";
+import type { PublishLanding } from "./publish.js";
 
 /**
  * What the worker's MCP server must be told about itself (P3 §4.2, §4.5).
@@ -118,6 +120,13 @@ export interface ExecutionEnvironment {
    * examination is not examined and does not land: it fails, saying so.
    */
   readonly examination?: ExaminationServices;
+  /**
+   * P10 (D-P10-22): called after every landing that moved the program branch,
+   * with the new head, so a machine's engine can ask the publisher to move
+   * GitHub's copy. Installed by the runner's composition only; a local run,
+   * whose program checkout is the operator's own clone, has none.
+   */
+  readonly publish?: PublishLanding;
 }
 
 /**
@@ -156,6 +165,7 @@ export type LandingEnvironment = Pick<
   | "paths"
   | "git"
   | "outbox"
+  | "publish"
   | "verificationTimeoutMs"
   | "prerequisites"
 >;

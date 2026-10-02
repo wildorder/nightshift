@@ -15,6 +15,8 @@ export const ArtifactKindSchema = z.enum([
   "transcript",
   "build-log",
   "verification-log",
+  /** A git packfile of the commits a publication intent moves the program branch by (P10, D-P10-22). */
+  "bundle",
   "examination-report",
   "diff",
   "report",
