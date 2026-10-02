@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p10-remote-runner` |
 | Source stage | Stage 9, `00-source-program-plan.md`; P10 in `staging.md` |
-| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-23 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01 (§15); T3 next |
+| Status | **Ratified 2026-10-01** (D-P10-12 … D-P10-23 agreed; the A-14 amendment stands as A-51). **In build**: T1 and T2 landed 2026-10-01, T3 2026-10-02 (§15; SC-P10-08 open, see T3 notes); T4 next |
 | Depends on | P9 (correction), P12 (token profiles, one loopback server), P14 (stories); the implementation base is `main` after `fc20125` (program setup) |
 | Outcome | Dispatch a program to a machine of the customer's chosen size, close the laptop, and return to verified, published output or a durable account of partial work; the machine is recommended from the project, starts warm, and is right-sized from the runs before it |
 | Blocking decisions | none: D-P10-12 … D-P10-23 ratified; H-P10-01 … H-P10-06 satisfied. The two provider API keys are T5's gate |
@@ -428,3 +428,60 @@ what the dispatch Lambda does in T3. The first boot found two runner bugs that
 only a machine could: a workless runner raced itself to exit, and a milestone
 reported mid-beat was dropped; both are tested now. Image 1.0.5 is
 `ami-07b137d61eacc9437`.
+
+### T3, 2026-10-02
+
+The customer's path runs end to end on real machines: commits `63f0736`
+through the three live fixes that followed it. `nightshift run <program>
+--remote` refuses what D-P10-02 says it must and posts the dispatch; the API
+verifies the installation, the repository grant and the branch head through
+the GitHub App and invokes the dispatch Lambda; the Lambda mints the first
+token, picks a subnet by the run's hash, takes the project's warm snapshot
+when there is one, and launches; the runner clones with the read token the
+heartbeat carries, checks the plan hash before touching git, runs setup once
+against the stores on the volume, and says `ready` with what setup took; the
+reconciler snapshots a stopped run's volume, writes the project's warm cache,
+and deletes the volume. The fixture is `wildorder/nightshift-remote-fixture`
+(its source of truth is `test/fixtures/remote-fixture`), 105 packages in its
+lockfile. The runner reaches the plane through a port the composition root
+wires (AR-2), so nothing under `runner/` names the HTTP adapter.
+
+**Measured on real machines** (`npm run runner:boot`, image 1.0.6,
+`m7g.xlarge`, 2026-10-02):
+
+| Measurement | Result |
+|-------------|--------|
+| API accepts the dispatch to `ready`, cold (clone, `npm ci`, three runs) | 92 s, 92 s, 83 s |
+| Setup (`npm ci --prefer-offline`), cold | 5.9 s, 5.5 s, 6.6 s |
+| API accepts the dispatch to `ready`, warm (from the snapshot) | 92 s |
+| Setup, warm; the mirror fetched, the npm store on the volume | 6.8 s |
+| Warm-to-cold setup ratio | **1.03** against SC-P10-08's 0.1 |
+| Cancel to the runner's own `stopped` | one heartbeat interval |
+| `stopped` to snapshot started | 2 reconciler ticks |
+| Snapshot of the 100 GiB gp3 volume to completed, cache written, volume deleted | about 4 min |
+
+**SC-P10-08 is not met by `npm ci`, and no cache will meet it.** The warm
+path works exactly as designed: the second machine came up from the first's
+snapshot, the mirror was fetched rather than cloned, and npm's store was on
+the volume. Setup took the same time because `npm ci` deletes `node_modules`
+and extracts every package again regardless of the cache, and on EC2 the
+download it saves is a fraction of a second for a lockfile this size. What
+the snapshot preserves that `npm ci` throws away is the installed tree
+itself. Two ways to the criterion, for the owner to choose between with these
+numbers in hand: have the runner skip `setup` when the checkout's lockfile
+hashes equal the snapshot's (`WarmCache.current.lockfileHashes`, already
+recorded for this purpose) and `node_modules` is present, so an unchanged
+lockfile costs nothing; or have `init` write `npm install --prefer-offline`,
+which is a near no-op against an intact tree but is not the reproducible
+install `npm ci` is. The first keeps `npm ci` as the thing a cold or changed
+checkout runs and is the recommendation; it is a rule in `core` and a branch
+in `workspace.ts`, a T7 or T8 line.
+
+Three things only a live run could find, each now held by a test: the
+reconciler's role could query the table but not the `gsi_node` index its
+listing by status reads; the index query sent `begins_with(GSI1SK, "")`,
+which DynamoDB refuses as an empty key value (the fake table now refuses it
+the same way); and `ec2:CreateSnapshot` was conditioned on the snapshot's own
+managed tag, which a snapshot that does not exist yet cannot carry. A cleanup
+failure is now logged as well as recorded, because a reconciler failing every
+minute read exactly like one waiting.
