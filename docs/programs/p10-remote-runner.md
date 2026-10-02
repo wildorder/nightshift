@@ -616,3 +616,22 @@ second dispatch at a base the branch had moved past (a correct
 `head_mismatch` refusal). The root's conduct under each refusal was exactly
 what D-P10-17 and D-P10-20 ask for: it looked for the cause, started no run
 of its own, wrote no code itself, and left a precise reason on the record.
+
+### T4, second chunk, 2026-10-02: workers as their own users (D-P10-25)
+
+Built and verified offline in `a85e75b`; the image carrying it (1.0.12) was
+not yet built when the owner's AWS session expired for the night, so its live
+proof is the first thing to run next. What it does: `HarnessStartInput` gains
+`runAs`, which both adapters honour by spawning `sudo -n -u worker-N -H env …
+sh -c 'umask 002 && exec …'` with the sanitised environment passed explicitly
+and the engine's account variables dropped, granting the user the adapter's
+own files (Claude's configuration directory, Codex's git guard) by `chown`,
+and signalling the tree as the user. The engine names the users round-robin
+from the image's sixteen (`NIGHTSHIFT_WORKER_USERS`), copies a file credential
+such as Codex's login under each worker's own directory, and keeps its token
+file and credentials at `engine`-only. The workspace is the `nightshift`
+group's: set-group-id, group-writable, `core.sharedRepository=group` on the
+mirror and the checkout, the runner's umask 0002. The root orchestrator stays
+`engine`. The live proof asserts, from the machine's sudo log, that processes
+were started as worker users. Still open from T4's spec: worker token renewal
+before expiry, and the root's harness session id on the dispatch for T6.
