@@ -673,15 +673,34 @@ its Graviton4 counterpart.
 | run finished → runner stopped (observed) | 29.7 | 19.8 | 26.5 | 28.5 |
 | total: dispatch accepted → runner stopped (observed) | 254.6 | 203.9 | 184.1 | 242.8 |
 
-What the table says. The instance type barely matters for this workload:
-every phase that does real computing (clone, install, verification) is a few
-seconds on all four, and the two that dominate are the model's: the root's
-Claude process coming up and making its first calls (55 to 107 s, varying by
-run more than by machine) and the worker's job (21 to 33 s). Boot is 36 to
-51 s. The gaps the proof sees to ten seconds (dispatch to machine, run
-finished to stopped) are the heartbeat and polling cadence, not work. A
-bigger machine buys this program nothing; it would buy a program whose
-verification compiles something. The three zero rows are a measurement gap:
-the journal stamps the runner's lines at receipt and they arrive together, so
-mount, clone and install are not separable there; the install is measured by
-the runner itself. Not run: x86 types, which need a second image pipeline.
+What the table says, and what it cannot. On this fixture every phase that
+computes (clone, install, a 20-second verification) is seconds on all four
+machines, and the two phases that dominate are the model's: the root's Claude
+process coming up (55 to 107 s, varying by run more than by machine) and the
+worker's job (21 to 33 s). Boot is 36 to 51 s. The gaps the proof sees to ten
+seconds (dispatch to machine, run finished to stopped) are heartbeat and
+polling cadence. The owner's reading, which stands: the fixture has nothing
+for a bigger machine to do, so this table says nothing about a five-hour run
+with tens of large suites, where a minute's difference per verification is
+hours; the per-phase percentages must come from a workload that computes.
+The three zero rows are a measurement gap: the journal stamps the runner's
+lines at receipt and they arrive together, so mount, clone and install are not
+separable there; the install is measured by the runner itself.
+
+**The x86_64 image pipeline (5b2ef5c).** The runner stack builds two images
+per version: the arm64 recipe from Amazon Linux 2023 arm64 on `m7g.large` and
+an x86_64 recipe from AL2023 x86_64 on `m7i.large`, each with its own three
+components (the toolchain per architecture: Node `linux-x64`, Docker
+`x86_64`, slirp4netns, uv). Each AMI carries `nightshift:architecture`; the
+dispatcher chooses the image and the warm cache by the instance type's
+architecture (`architectureOf`: a Graviton family carries a `g` in its
+letters), and `npm run image:build -- --arch arm64|x86_64|all` starts and
+waits on either or both pipelines. Image 1.0.14 is the first built for both.
+
+**The heavy benchmark (`NIGHTSHIFT_SMOKE_BENCH_HEAVY=1`).** The same bench
+loop against `wildorder/nightshift` at `program/bench` (pushed from the
+branch under test): setup is the monorepo's `npm ci`, verification its
+`npm run typecheck` and `npm test`, the strand a one-file docs change so the
+machine's work, not the agent's task, is what the phases measure. Planned set:
+m7g.xlarge, m7g.2xlarge, c8gd.2xlarge, c8gd.4xlarge, c8id.2xlarge,
+c8id.4xlarge; results below when run.
