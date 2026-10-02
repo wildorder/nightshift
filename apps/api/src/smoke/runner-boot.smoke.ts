@@ -363,6 +363,15 @@ const runToTheEnd = async (name: string, run: RunMade, baseSha: string): Promise
   }
   const ended = DispatchSchema.parse((await api.get(`${run.path}/dispatch`)).body);
   say(`${name}: publication ${JSON.stringify(ended.publication)}`);
+  // What the root did, from the record rather than the machine: every tool it
+  // called and how each answered, and how the agent ended.
+  const events = (await api.get(`${run.path}/events?limit=500`)).body as {
+    items?: { type: string; payload?: Record<string, unknown> }[];
+  };
+  const told = (events.items ?? [])
+    .filter((event) => /^(tool|agent|run|node)[.]/.test(event.type))
+    .map((event) => `${event.type} ${JSON.stringify(event.payload ?? {}).slice(0, 300)}`);
+  say(`${name}: the run's events (${told.length}):\n  ${told.slice(-60).join("\n  ")}`);
   const remote = remoteHead();
   findings.publication = {
     head: ended.publication.head,

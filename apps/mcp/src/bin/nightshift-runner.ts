@@ -5,6 +5,8 @@
  * token, mounts the workspace, prepares it, heartbeats, and runs the headless
  * root until it finishes or the plane says stop.
  */
+import { readFile } from "node:fs/promises";
+import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import { createRunnerPlane, createRuntime } from "../compose.js";
 import { describeHeadlessEnding, runHeadless } from "../headless.js";
 import { nodeMachine } from "../runner/machine.js";
@@ -57,6 +59,36 @@ runRunner({
       repoPath: context.layout.checkout,
     });
     say(describeHeadlessEnding(result));
+    // The root's transcript, as an artifact on its node: the one durable
+    // record of what the orchestrator did, when the machine is long gone.
+    try {
+      const bytes = await readFile(result.transcript);
+      if (bytes.byteLength > 0) {
+        const outbox = createEventOutbox({
+          events: runtime.stores.events,
+          scope: context.scope,
+          clock: runtime.clock,
+          ids: runtime.ids,
+          writerId: `${result.agentId}-runner`,
+        });
+        const artifactId = await recordArtifact(
+          { ...runtime, outbox },
+          {
+            scope: context.scope,
+            nodeId: result.run.rootNodeId,
+            kind: "transcript",
+            contentType: "application/x-ndjson",
+            bytes: new Uint8Array(bytes),
+          },
+        );
+        await outbox.flush(5_000).catch(() => undefined);
+        say(`root transcript recorded as ${artifactId}`);
+      }
+    } catch (error) {
+      say(
+        `the root's transcript could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     if (result.exit.kind !== "completed") {
       throw new Error(
         `the root ended ${result.exit.kind}; run ${result.run.runId} is ${result.run.status}`,
