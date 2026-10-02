@@ -13,6 +13,12 @@
  * project's warm cache; the second run of the same project is provisioned from
  * that snapshot and its setup time is the warm number (SC-P10-08).
  *
+ * With `NIGHTSHIFT_SMOKE_ANTHROPIC_KEY` set (T4), the key is sealed for the
+ * throwaway org and the cold run is left to **run the program to its end**:
+ * the root orchestrator starts on the machine, the fixture's program branch at
+ * GitHub must then hold the dispatch's published head, and the runner stops on
+ * its own. Without the key the cold run is cancelled at `ready`, as T3 did.
+ *
  * Everything made is removed at the end: machines, volumes, snapshots, records.
  */
 import { execFileSync } from "node:child_process";
@@ -54,6 +60,8 @@ const FIXTURE_BRANCH = "program/fixture";
 const INSTALLATION_ID = 166952409;
 /** SC-P10-08: the warm setup against the cold one. Printed always, asserted softly. */
 const WARM_RATIO_TARGET = 0.1;
+/** T4: an Anthropic key for the throwaway org, so the root can run the program to its end. */
+const ANTHROPIC_KEY = process.env.NIGHTSHIFT_SMOKE_ANTHROPIC_KEY;
 
 const say = (line: string): void => {
   process.stdout.write(`[runner-boot] ${line}\n`);
@@ -297,9 +305,47 @@ const stopAndCleanUp = async (name: string, run: RunMade): Promise<Dispatch> => 
   return cleaned;
 };
 
+/**
+ * T4: the root runs the program; the runner stops on its own when it ends; the
+ * fixture's program branch at GitHub holds the published head (D-P10-22).
+ */
+const runToTheEnd = async (name: string, run: RunMade, baseSha: string): Promise<Dispatch> => {
+  const startedAt = Date.now();
+  const stopped = await awaitDispatch(
+    run,
+    "the run's end",
+    40 * 60_000,
+    (d) => d.status === "stopped",
+  );
+  findings.runSeconds = Math.round((Date.now() - startedAt) / 1000);
+  say(`${name}: the runner stopped on its own after ${findings.runSeconds}s`);
+  if (stopped.instanceId !== undefined) {
+    const lines = (await journal(stopped.instanceId))
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    say(`${name}: the runner said:\n  ${lines.slice(-40).join("\n  ")}`);
+  }
+  const ended = DispatchSchema.parse((await api.get(`${run.path}/dispatch`)).body);
+  say(`${name}: publication ${JSON.stringify(ended.publication)}`);
+  const remote = remoteHead();
+  findings.publication = {
+    head: ended.publication.head,
+    remote,
+    blocked: ended.publication.blocked,
+  };
+  expect(ended.publication.blocked, "publication was blocked").toBeUndefined();
+  expect(ended.publication.head, "nothing was published").toBeDefined();
+  expect(remote).toBe(ended.publication.head);
+  expect(remote).not.toBe(baseSha);
+  const cleaned = await awaitDispatch(run, "cleanup", 20 * 60_000, (d) => d.cleanup.volumeDeleted);
+  say(`${name}: cleaned up; snapshot ${cleaned.cleanup.snapshotId ?? "none"}`);
+  return cleaned;
+};
+
 describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
   it("dispatches through the API, reaches ready on both, and the second is provisioned from the first's snapshot", async () => {
     const baseSha = remoteHead();
+    (findings as { baseShaAtStart?: string }).baseShaAtStart = baseSha;
     say(`${FIXTURE_REPOSITORY} ${FIXTURE_BRANCH} is at ${baseSha}`);
 
     // The org, its one member (the machine principal this suite calls as), and
@@ -319,17 +365,33 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     say(`installation ${INSTALLATION_ID} recorded: ${JSON.stringify(recorded.body)}`);
 
     // A planned program against the fixture, its document uploaded and ratified (D-P10-09).
-    const plan = `# ${label}\n\n## Strands\n\n### S-01 The only strand\n\nA module exists.\n`;
+    const plan = [
+      `# ${label}`,
+      "",
+      "## Strands",
+      "",
+      "### S-01 A median helper",
+      "",
+      "Add `median(values)` to `src/math.js`, exported from `src/index.js`, returning the middle",
+      "value of an odd-length list and the mean of the two middle values of an even-length one,",
+      "throwing `RangeError` on an empty list. Cover it in `test/math.test.js`. Change nothing else.",
+      "",
+    ].join("\n");
     const contract = makeProgramContract(f, {
       status: "planning",
       repository: { url: FIXTURE_REPOSITORY, baseBranch: "main", programBranch: FIXTURE_BRANCH },
       setup: [{ id: "install", command: "npm ci --prefer-offline" }],
+      verification: [{ id: "test", command: "npm test" }],
       strands: [
         {
           id: "S-01",
-          name: "The only strand",
-          scope: { summary: "the source tree", includes: ["src/**"], excludes: [] },
-          acceptance: ["its tests pass"],
+          name: "A median helper",
+          scope: {
+            summary: "the math module and its tests",
+            includes: ["src/**", "test/**"],
+            excludes: [],
+          },
+          acceptance: ["median is exported and its tests pass alongside the existing ones"],
           successCriteria: ["SC-01"],
           dependsOn: [],
           prerequisites: [],
@@ -337,6 +399,14 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
       ],
     });
     expectStatus(await api.put(programPath, contract), 201);
+    if (ANTHROPIC_KEY !== undefined) {
+      // Sealed for this org as `org providers set` seals it (D-P10-23); never printed.
+      expectStatus(
+        await api.put(`/orgs/${orgId}/credentials/anthropic`, { key: ANTHROPIC_KEY }),
+        200,
+      );
+      say("an Anthropic key is sealed for the org: the cold run will run the program to its end");
+    }
     const hash = planHash(contract, plan, sha256Hex);
     const signed = await api.post(`${programPath}/plan-documents/${hash.plan}/upload-url`, {
       sizeBytes: Buffer.byteLength(plan),
@@ -365,7 +435,10 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     expect((await api.get(`${projectPath}/warm-cache`)).status).toBe(404);
     const cold = await runOnce("cold", baseSha, program.planHash, program.planDocument);
     findings.cold = { secondsToReady: cold.secondsToReady, setupSeconds: cold.setupSeconds };
-    const coldCleaned = await stopAndCleanUp("cold", cold.run);
+    const coldCleaned =
+      ANTHROPIC_KEY === undefined
+        ? await stopAndCleanUp("cold", cold.run)
+        : await runToTheEnd("cold", cold.run, baseSha);
     expect(
       coldCleaned.cleanup.snapshotId,
       "no snapshot was taken of the cold volume",
@@ -458,6 +531,20 @@ afterAll(async () => {
     });
   }
 
+  if (findings.publication !== undefined && !keep) {
+    const before = (findings as { baseShaAtStart?: string }).baseShaAtStart;
+    if (before !== undefined) {
+      await step(`reset ${FIXTURE_BRANCH} to ${before.slice(0, 12)}`, () => {
+        execFileSync("git", [
+          "push",
+          "-q",
+          "-f",
+          FIXTURE_REPOSITORY,
+          `${before}:refs/heads/${FIXTURE_BRANCH}`,
+        ]);
+      });
+    }
+  }
   await step("delete the records", () =>
     deletePartitions(clients.table, context.tableName, [
       // The org's partition: its project listing, config (with the installation), ledger.
