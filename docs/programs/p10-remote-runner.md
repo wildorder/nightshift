@@ -585,3 +585,29 @@ also be a Claude Code subscription token (`claude setup-token`, by its
 `sk-ant-oat` prefix) or Codex's `auth.json` login file (placed on tmpfs under
 `CODEX_HOME`); `org providers set --file` takes the latter. Both of the owner's
 are sealed.
+
+**T4's live acceptance, 2026-10-02, image 1.0.11 (commit `2c7cc9c`).** With the
+owner's Claude Code subscription token sealed for the org, a dispatched run of
+the fixture program ran to its end on an `m7g.xlarge` with no one watching:
+the root (`claude-opus-5-5`) attached to its pinned run, delegated the one
+strand, a `claude-sonnet-5` worker implemented `median` with tests in its
+worktree, verification (`npm ci --prefer-offline`, `npm test`) passed, an
+`claude-opus-5-5` examiner passed it, the merge queue integrated it as
+`6934e317`, the engine raised one publication intent with the pack as a
+bundle, the publisher pushed `program/fixture` from `aab0973d` to `6934e317`
+with the lease, and the run finished `succeeded` with the root's own summary.
+The dispatch's `publication.head` equalled the branch's head at GitHub. The
+runner then ended the dispatch itself, the reconciler snapshotted and
+cleaned up. From the API accepting the dispatch: 102 s to `ready`, 142 s
+from `ready` to the runner's own stop with the program done and published.
+SC-P10-01's publication half and SC-P10-04 are proven live.
+
+Between the first credentialed run and this one, every failure was in the
+proof's own fixture or in a string an edit script mangled, and each was found
+from the run's events rather than guessed: a root node narrower than its
+program (a correct `scope_widening` refusal), a pinned-run value that was
+not an id (the server refused it and Claude saw the connection close), and a
+second dispatch at a base the branch had moved past (a correct
+`head_mismatch` refusal). The root's conduct under each refusal was exactly
+what D-P10-17 and D-P10-20 ask for: it looked for the cause, started no run
+of its own, wrote no code itself, and left a precise reason on the record.
