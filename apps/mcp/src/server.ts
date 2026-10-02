@@ -23,11 +23,17 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { AgentIdSchema } from "@nightshift/contracts";
+import {
+  AgentIdSchema,
+  ProgramIdSchema,
+  ProjectIdSchema,
+  RunIdSchema,
+} from "@nightshift/contracts";
 import type { WorkerIdentity } from "@nightshift/execution";
 import { createEventOutbox, shutdown, type WorkerEnvironment } from "@nightshift/execution";
 import { createRuntime, type Runtime } from "./compose.js";
 import { registerArbiterTools, registerExaminerTools } from "./examiner.js";
+import { pinnedRunOf } from "./headless.js";
 import { jobWaitCap, registerOrchestratorTools } from "./orchestrator.js";
 import type { Env, Role } from "./role.js";
 import { roleFrom, workerIdentityFrom } from "./role.js";
@@ -249,10 +255,20 @@ const buildOrchestrator = (
   // where the program checkout is rather than inferring it from where it started.
   const cwd = input.cwd ?? input.env.NIGHTSHIFT_REPO_PATH ?? process.cwd();
   const rootAgentId = AgentIdSchema.safeParse(input.env.NIGHTSHIFT_ROOT_AGENT_ID);
+  const pinned = pinnedRunOf(input.env.NIGHTSHIFT_PINNED_RUN);
   const state: OrchestratorSession = {
     runtime,
     repoPath: cwd,
     ...(rootAgentId.success ? { rootAgentId: rootAgentId.data } : {}),
+    ...(pinned === undefined
+      ? {}
+      : {
+          pinnedRun: {
+            projectId: ProjectIdSchema.parse(pinned.projectId),
+            programId: ProgramIdSchema.parse(pinned.programId),
+            runId: RunIdSchema.parse(pinned.runId),
+          },
+        }),
     contractFile: input.env.NIGHTSHIFT_CONTRACT_FILE ?? DEFAULT_CONTRACT_FILE,
     // The MCP client's own name and version, from the initialize handshake.
     // This is what is actually orchestrating, so it is what the orchestrator's

@@ -537,6 +537,21 @@ describe("cancel and resume", () => {
     expect(stopped.body).toMatchObject({ status: "stopped", stop: true });
   });
 
+  it("lets a running runner end the dispatch itself when its program finishes", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await w.stores.dispatches.put({ ...dispatch, status: "running" });
+    const ended = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped" }),
+      engine(w, dispatch),
+    );
+    expect(ended.body).toMatchObject({ status: "stopped", stop: true });
+    expect((await w.stores.computeLedger.get(w.orgId, "2026-10"))?.liveRuns).toEqual([]);
+  });
+
   it("resumes a settled dispatch from its snapshot, within retention, and refuses otherwise", async () => {
     const w = await setup();
     const dispatch = await dispatched(w);

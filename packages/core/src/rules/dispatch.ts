@@ -85,12 +85,21 @@ type DispatchTransitionTable = {
  * because that is what a replacement is: a machine being created for a run that
  * is still running. `stop` is legal from every live status so a cancel always
  * has somewhere to go; `fail` likewise, so a failure is never unrecordable.
+ * `stopped` is legal from `ready` and `running` as well as `stopping`: a root
+ * that finishes its program ends the dispatch itself, and the first live run
+ * found that a machine whose runner had said so was left `running` for good.
  */
 export const DISPATCH_TRANSITIONS: DispatchTransitionTable = {
   requested: { provision: "provisioning", stop: "stopping", fail: "failed" },
   provisioning: { ready: "ready", recover: "provisioning", stop: "stopping", fail: "failed" },
-  ready: { start: "running", recover: "provisioning", stop: "stopping", fail: "failed" },
-  running: { recover: "provisioning", stop: "stopping", fail: "failed" },
+  ready: {
+    start: "running",
+    recover: "provisioning",
+    stop: "stopping",
+    stopped: "stopped",
+    fail: "failed",
+  },
+  running: { recover: "provisioning", stop: "stopping", stopped: "stopped", fail: "failed" },
   stopping: { stopped: "stopped", fail: "failed" },
   stopped: { resume: "provisioning" },
   failed: { resume: "provisioning" },

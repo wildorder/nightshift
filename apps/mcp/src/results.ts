@@ -42,6 +42,8 @@ export type RefusalCode =
   | "plan_unavailable"
   | "not_attached"
   | "already_attached"
+  /** P10: a machine's server is the engine of one dispatched run and starts no other. */
+  | "pinned_run"
   | "job_running"
   | "not_found"
   | "control_plane_error"

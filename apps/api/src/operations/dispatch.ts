@@ -345,7 +345,11 @@ export const heartbeat: Handler = async (context) => {
     dispatch = transitionDispatch(dispatch, "ready", at);
   } else if (body.report === "running" && dispatch.status === "ready") {
     dispatch = transitionDispatch(dispatch, "start", at);
-  } else if (body.report === "stopped" && dispatch.status === "stopping") {
+  } else if (
+    body.report === "stopped" &&
+    (dispatch.status === "stopping" || dispatch.status === "running" || dispatch.status === "ready")
+  ) {
+    // Told to stop, or finished on its own: either way the runner's word ends it.
     dispatch = transitionDispatch(dispatch, "stopped", at);
     await settleLedger(deps, scope, at);
   }

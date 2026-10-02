@@ -50,6 +50,23 @@ import { routeJob } from "./routing.js";
 export const ROOT_AGENT_ENV = "NIGHTSHIFT_ROOT_AGENT_ID";
 /** The program checkout, which is not the root agent's working directory. */
 export const REPO_PATH_ENV = "NIGHTSHIFT_REPO_PATH";
+/**
+ * P10 (D-P10-20): on a machine the root's server is bound to one run, the
+ * dispatch's, as `projectId/programId/runId`. `run.attach` then reads the
+ * program and the run from the plane rather than from contract files in the
+ * checkout, which a remote repository need not carry, and `run.start` is
+ * refused: the engine's token is for this run and no other.
+ */
+export const PINNED_RUN_ENV = "NIGHTSHIFT_PINNED_RUN";
+
+export const pinnedRunOf = (
+  value: string | undefined,
+): { projectId: string; programId: string; runId: string } | undefined => {
+  if (value === undefined || value === "") return undefined;
+  const [projectId, programId, runId] = value.split("/");
+  if (projectId === undefined || programId === undefined || runId === undefined) return undefined;
+  return { projectId, programId, runId };
+};
 
 export interface HeadlessInput {
   readonly scope: RunScope;
@@ -87,6 +104,7 @@ export const rootLaunch = (
     "NIGHTSHIFT_API_ENDPOINT",
     "NIGHTSHIFT_API_TOKEN",
     "NIGHTSHIFT_API_TOKEN_FILE",
+    "NIGHTSHIFT_PINNED_RUN",
     "NIGHTSHIFT_PUBLISH_BASE",
     "NIGHTSHIFT_PUBLISH_PACK_DIR",
     // The org's provider keys, as the heartbeat handed them to the engine on a

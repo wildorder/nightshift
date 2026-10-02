@@ -91,6 +91,12 @@ export interface OrchestratorSession {
    * than recording a second orchestrator for one process.
    */
   readonly rootAgentId?: AgentId;
+  /**
+   * P10 (D-P10-20): set on a machine, where this server is the engine of one
+   * dispatched run. `run.attach` reads that run from the plane, whatever the
+   * checkout holds, and `run.start` is refused.
+   */
+  readonly pinnedRun?: RunScope;
   current?: AttachedRun | undefined;
 }
 
@@ -334,7 +340,13 @@ const locateRun = async (
   runId: string | undefined,
 ): Promise<Located> => {
   const { stores } = state.runtime;
-  const { projectId, programId } = await repositoryProgram(state, runId);
+  if (state.pinnedRun !== undefined && runId !== undefined && runId !== state.pinnedRun.runId) {
+    throw new ToolRefusal(
+      "not_found",
+      `this server is the engine of run ' + O + 'state.pinnedRun.runId' + C + ' and can attach to no other`,
+    );
+  }
+  const { projectId, programId } = state.pinnedRun ?? (await repositoryProgram(state, runId));
   const program = await stores.programContracts.get(projectId, programId);
   if (program === undefined) {
     throw new ToolRefusal(
@@ -344,7 +356,7 @@ const locateRun = async (
     );
   }
 
-  const chosen = await chooseRun(state, { projectId, programId }, runId);
+  const chosen = await chooseRun(state, { projectId, programId }, runId ?? state.pinnedRun?.runId);
   const scope: RunScope = { projectId, programId, runId: chosen.runId };
   const rootNode = await stores.executionNodes.get(scope, chosen.rootNodeId);
   if (rootNode === undefined) {
@@ -540,6 +552,13 @@ export const startNewRun = async (
   input: StartRunInput,
 ): Promise<AttachedRun & { readonly baseCommit: string }> => {
   const { runtime } = state;
+  if (state.pinnedRun !== undefined) {
+    throw new ToolRefusal(
+      "pinned_run",
+      `this server is the engine of run ' + O + 'state.pinnedRun.runId' + C + '; attach to it with run.attach. ` +
+        "A machine starts no run of its own.",
+    );
+  }
   const started = await startRun(
     { stores: runtime.stores, clock: runtime.clock, ids: runtime.ids, git: runtime.git },
     {
