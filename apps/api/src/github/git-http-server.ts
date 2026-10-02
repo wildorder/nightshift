@@ -30,6 +30,11 @@ const handle = async (
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> => {
+  // The client may be gone before the answer is written (a publisher that
+  // gave up on a lease); a write then raises EPIPE on the socket, which must
+  // not become an uncaught exception in the suite that hosts this server.
+  response.on("error", () => undefined);
+  request.socket.on("error", () => undefined);
   const url = new URL(request.url ?? "/", "http://localhost");
   const body = await readBody(request);
   const env: Record<string, string> = {

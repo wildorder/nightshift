@@ -746,7 +746,7 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
       verification: HEAVY
         ? [
             { id: "typecheck", command: "npm run typecheck" },
-            { id: "test", command: "npx vitest run --exclude 'test/src/local/**'" },
+            { id: "test", command: "npx vitest run --exclude '**/src/local/**'" },
           ]
         : [{ id: "test", command: "npm test" }],
       scope: {
