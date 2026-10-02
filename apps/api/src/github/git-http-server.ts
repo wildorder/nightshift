@@ -30,9 +30,7 @@ const handle = async (
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> => {
-  // The client may be gone before the answer is written (a publisher that
-  // gave up on a lease); a write then raises EPIPE on the socket, which must
-  // not become an uncaught exception in the suite that hosts this server.
+  // A client gone before the answer is written must not fail the suite either.
   response.on("error", () => undefined);
   request.socket.on("error", () => undefined);
   const url = new URL(request.url ?? "/", "http://localhost");
@@ -56,6 +54,11 @@ const handle = async (
   const errors: Buffer[] = [];
   child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
   child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+  // The backend may exit before it has read the body (a push it refuses),
+  // and the write into its closed stdin then raises EPIPE: an uncaught error
+  // in the suite unless someone listens. Seen on the runner, blamed on the
+  // publisher's tests, three runs in four.
+  child.stdin.on("error", () => undefined);
   child.stdin.end(body);
   const code = await new Promise<number>((resolve) => child.on("close", (c) => resolve(c ?? 1)));
   if (code !== 0) {
