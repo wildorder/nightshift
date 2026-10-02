@@ -705,4 +705,40 @@ branch under test): setup is the monorepo's `npm ci`, verification its
 `npm run typecheck` and `npm test`, the strand a one-file docs change so the
 machine's work, not the agent's task, is what the phases measure. Planned set:
 m7g.xlarge, m7g.2xlarge, c8gd.2xlarge, c8gd.4xlarge, c8id.2xlarge,
-c8id.4xlarge; results below when run.
+c8id.4xlarge. The first heavy run taught the program two things: the
+monorepo's typecheck resolves workspaces through their `dist`, so setup must
+build (`npm run build` after `npm ci`); and `test/src/local/local-e2e.test.ts`
+starts a nightshift inside this one and inherits the runner's environment
+(pinned run, token file), so it is excluded from the heavy verification. An
+open edge: the pass-through of `NIGHTSHIFT_*` into a worker's environment
+reaches anything the worker spawns.
+
+Heavy results so far (image 1.0.15, one cold run per type, seconds). The
+x86_64 image booted and ran the program to its end on c8id.2xlarge; the run
+succeeded and published. Caveats on the rows: the `implemented →` rows are
+from the first event of each kind, and this run's first attempt lost its
+verification to a flaky test and was retried, so "implemented → verification
+completed" is attempt 1's (typecheck + test, 134 s) while examination and
+integration include the retry (a second worker, its build and its suite); the
+runner reports the install's time only, not the build's.
+
+| Phase (seconds) | c8id.2xlarge |
+|---|---|
+| dispatch accepted → machine recorded (observed) | 11.8 |
+| instance launch → runner process up (boot) | 39.1 |
+| setup install (npm ci, the monorepo) | 15.0 |
+| dispatch accepted → ready (observed) | 82.6 |
+| root starting → root agent up | 98.4 |
+| root agent up → strand delegated | 7.4 |
+| delegated → worker started (worktree, seed) | 3.9 |
+| worker started → implemented | 140.7 |
+| implemented → verification completed (attempt 1: typecheck + tests) | 133.6 |
+| implemented → examination completed (includes the retry) | 449.8 |
+| implemented → integrated (includes the retry) | 573.2 |
+| integrated → published at GitHub | 1.1 |
+| integrated → run finished by the root | 4.5 |
+| run finished → runner stopped (observed) | 18.0 |
+| total: dispatch accepted → runner stopped (observed) | 889.8 |
+
+The remaining five types are to run; each heavy run is about 22 minutes
+including the snapshot, and an SSO session here is one hour.
