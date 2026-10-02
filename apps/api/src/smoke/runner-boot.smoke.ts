@@ -966,6 +966,14 @@ afterAll(async () => {
       await clients.table.put({ TableName: context.tableName, Item: previousClaim });
     }
   });
+  // The org's sealed provider key lives in the credentials table (D-P10-23),
+  // which the main table's partitions never reach; left behind, every run of
+  // this proof would keep a sealed copy of the owner's token under a dead org.
+  await step("delete the org's sealed credentials", () =>
+    deletePartitions(clients.table, context.credentialsTableName, [
+      keys.credentialPartition(orgId).PK,
+    ]),
+  );
   await step("delete the membership", () =>
     clients.table.delete({
       TableName: context.tableName,
