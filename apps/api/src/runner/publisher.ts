@@ -13,8 +13,9 @@
  * only if the ref still holds the predecessor. A refusal names its reason:
  * `non-fast-forward` is a conflict, a protection rule is `protected`, anything
  * else is an error that is retried on the next invocation, three times, then
- * blocks. The publisher Lambda runs one at a time (reserved concurrency), so no
- * two resolutions of one branch race.
+ * blocks. Two invocations for one run never push at once: the first takes a
+ * lock row for the run, resolves every pending intent, releases, and looks
+ * once more, so an intent recorded while it held the lock is not left behind.
  */
 import type { Dispatch, PublicationIntent } from "@nightshift/contracts";
 import {
@@ -40,6 +41,36 @@ export interface BundleStore {
   get(key: string): Promise<Uint8Array>;
 }
 
+/**
+ * One publisher per run at a time. `acquire` succeeds when no one holds the
+ * run, or the holder's lease has lapsed (a Lambda that died mid-push); the
+ * lease is the function's timeout.
+ */
+export interface PublishLock {
+  acquire(scope: RunScope, leaseMs: number): Promise<boolean>;
+  release(scope: RunScope): Promise<void>;
+}
+
+/** A lock for one process: the tests' and the local plane's. */
+export const createLocalPublishLock = (): PublishLock => {
+  const held = new Map<string, number>();
+  return {
+    acquire: async (scope, leaseMs) => {
+      const now = Date.now();
+      const until = held.get(scope.runId);
+      if (until !== undefined && until > now) return false;
+      held.set(scope.runId, now + leaseMs);
+      return true;
+    },
+    release: async (scope) => {
+      held.delete(scope.runId);
+    },
+  };
+};
+
+/** How long a holder may keep the run: the publisher function's timeout. */
+export const PUBLISH_LEASE_MS = 5 * 60_000;
+
 /** The two transport calls, so the offline suite can stand in for GitHub with a local server. */
 export interface GitRemote {
   advertise(repositoryUrl: string, authorization: string): Promise<ReadonlyMap<string, string>>;
@@ -64,6 +95,7 @@ export interface PublisherDeps {
   readonly clock: Clock;
   readonly github: Pick<GitHubAppClient, "writeToken">;
   readonly bundles: BundleStore;
+  readonly lock?: PublishLock;
   readonly remote?: GitRemote;
   /** Rewrites a contract's repository URL into the one the remote serves; the tests point it at a local server. */
   readonly remoteUrlOf?: (repositoryUrl: string) => string;
@@ -74,6 +106,7 @@ export interface PublisherDeps {
 export const PUBLISH_ATTEMPTS = 3;
 
 export type PublishStep =
+  | "locked"
   | "nothing_pending"
   | "published"
   | "already_published"
@@ -224,16 +257,41 @@ const conflictChain = (dispatch: Dispatch, head: string, detail: string, at: str
   return { ...next, publication: { ...next.publication, blocked: detail } };
 };
 
-/** Every pending intent of the run, in order, until none is left or one blocks. */
+/**
+ * Every pending intent of the run, in order, under the run's lock, until none
+ * is left or one blocks; then once more after releasing, for an intent that
+ * arrived while the lock was held and whose own invocation found it taken.
+ */
 export const publishAll = async (
   deps: PublisherDeps,
   scope: RunScope,
 ): Promise<Record<string, number>> => {
   const counts: Record<string, number> = {};
-  for (let guard = 0; guard < 100; guard += 1) {
-    const step = await publishNext(deps, scope);
+  const count = (step: PublishStep) => {
     counts[step] = (counts[step] ?? 0) + 1;
-    if (!["published", "already_published"].includes(step)) break;
+  };
+  const lock = deps.lock ?? createLocalPublishLock();
+  for (let round = 0; round < 2; round += 1) {
+    if (!(await lock.acquire(scope, PUBLISH_LEASE_MS))) {
+      count("locked");
+      return counts;
+    }
+    let blocked = false;
+    try {
+      for (let guard = 0; guard < 100; guard += 1) {
+        const step = await publishNext(deps, scope);
+        count(step);
+        if (!["published", "already_published"].includes(step)) {
+          blocked = step !== "nothing_pending";
+          break;
+        }
+      }
+    } finally {
+      await lock.release(scope);
+    }
+    if (blocked) break;
+    const dispatch = await deps.stores.dispatches.get(scope);
+    if (dispatch === undefined || nextPendingIntent(dispatch) === undefined) break;
   }
   return counts;
 };

@@ -719,6 +719,27 @@ describe("an org's GitHub installation (D-P10-02)", () => {
     expect((await w.stores.orgConfigs.get(w.orgId))?.version).toBe(1);
   });
 
+  it("refuses a second org claiming the same installation, and lets the first record it again", async () => {
+    const w = await setup();
+    await seed(w);
+    const again = await call(w, "PUT", `/orgs/${w.orgId}/github`, { installationId: 166952409 });
+    expect(again.status).toBe(200);
+    // Another org, another member, the same installation id.
+    const otherOrg = w.f.ids.next("org");
+    const otherUser = nextUserId(w.f);
+    await w.stores.memberships.put(makeMembership(otherUser, otherOrg));
+    const refused = await call(
+      w,
+      "PUT",
+      `/orgs/${otherOrg}/github`,
+      { installationId: 166952409 },
+      { kind: "user", userId: otherUser },
+    );
+    expect(refused.status).toBe(409);
+    expect(code(refused)).toBe("installation_claimed");
+    expect(await w.stores.orgConfigs.get(otherOrg)).toBeUndefined();
+  });
+
   it("refuses an installation GitHub does not know, and 501s without the App", async () => {
     const w = await setup();
     expect((await call(w, "PUT", `/orgs/${w.orgId}/github`, { installationId: 42 })).status).toBe(

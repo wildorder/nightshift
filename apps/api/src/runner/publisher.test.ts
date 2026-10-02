@@ -29,6 +29,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type GitHttpServer, startGitHttpServer } from "../github/git-http-server.js";
 import {
   type BundleStore,
+  createLocalPublishLock,
   type GitRemote,
   publishAll,
   publishNext,
@@ -245,5 +246,24 @@ describe("the publisher (D-P10-22)", () => {
     const step = await publishNext(w.deps, w.f.scope);
     expect(["retrying", "error", "conflict"]).toContain(step);
     expect(branchHead()).toBe(head);
+  });
+});
+
+describe("one publisher per run at a time", () => {
+  it("refuses a second invocation while the first holds the run, and the first sweeps what arrived meanwhile", async () => {
+    const w = await world({
+      advertise: async () => new Map([["refs/heads/program/fixture", branchHead()]]),
+      push: async () => ({ kind: "ok" }),
+    });
+    const head = branchHead();
+    const lock = createLocalPublishLock();
+    await w.intend("a".repeat(40), head, new Uint8Array());
+    expect(await lock.acquire(w.f.scope, 60_000)).toBe(true);
+    expect(await publishAll({ ...w.deps, lock }, w.f.scope)).toEqual({ locked: 1 });
+    await lock.release(w.f.scope);
+    expect(await publishAll({ ...w.deps, lock }, w.f.scope)).toEqual({
+      published: 1,
+      nothing_pending: 1,
+    });
   });
 });

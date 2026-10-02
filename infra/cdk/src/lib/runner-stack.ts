@@ -529,9 +529,9 @@ export class NightshiftRunnerStack extends Stack {
       environment: { ...environment, NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME },
       timeout: Duration.minutes(5),
       memorySize: 1024,
-      // One push at a time, anywhere (D-P10-22): two resolutions of one branch
-      // must never race, and the lease makes the serial order the safe one.
-      reservedConcurrentExecutions: 1,
+      // One push at a time per run (D-P10-22) is a lock row in the table, not
+      // reserved concurrency: a new account's concurrency quota leaves nothing
+      // to reserve, and a lock works at any quota.
     });
 
     // --- Outputs ------------------------------------------------------------------
@@ -595,8 +595,7 @@ export class NightshiftRunnerStack extends Stack {
         nodejs.NodejsFunctionProps,
         "entry" | "role" | "logGroup" | "environment" | "timeout" | "memorySize"
       >
-    > &
-      Pick<nodejs.NodejsFunctionProps, "reservedConcurrentExecutions">,
+    >,
   ): nodejs.NodejsFunction {
     return new nodejs.NodejsFunction(this, id, {
       ...props,

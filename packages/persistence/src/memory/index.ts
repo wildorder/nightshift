@@ -87,6 +87,7 @@ import {
   type EventStore,
   type ExaminationStore,
   type ExecutionNodeStore,
+  type InstallationClaimStore,
   type JobContractStore,
   type MembershipStore,
   type NightshiftStores,
@@ -188,6 +189,9 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const dispatches = table<Dispatch>("dispatches");
   const computeUtilizations = table<ComputeUtilization>("computeUtilizations");
   const warmCaches = table<WarmCache>("warmCaches");
+  const installationClaims = table<{ installationId: number; orgId: OrgId; at: string }>(
+    "installationClaims",
+  );
   const credentials = table<OrgCredential>("credentials");
   const computeLedger = table<OrgComputeUsage>("computeLedger");
 
@@ -213,6 +217,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     dispatches,
     computeUtilizations,
     warmCaches,
+    installationClaims,
     credentials,
     computeLedger,
   ];
@@ -509,6 +514,17 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       warmCaches.get(`${projectPrefix({ projectId })}${architecture}`),
   };
 
+  const installationClaimStore: InstallationClaimStore = {
+    claim: async (installationId, orgId, at) =>
+      atomically(() => {
+        const key = String(installationId);
+        const held = installationClaims.get(key);
+        if (held !== undefined && held.orgId !== orgId) return { ok: false, heldBy: held.orgId };
+        installationClaims.set(key, { installationId, orgId, at });
+        return { ok: true };
+      }),
+  };
+
   const credentialsStore: CredentialsStore = {
     put: async (credential) => {
       const parsed = OrgCredentialSchema.parse(credential);
@@ -551,6 +567,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     dispatches: dispatchStore,
     computeUtilizations: computeUtilizationStore,
     warmCaches: warmCacheStore,
+    installationClaims: installationClaimStore,
     credentials: credentialsStore,
     computeLedger: computeLedgerStore,
     sequenceLedger: {

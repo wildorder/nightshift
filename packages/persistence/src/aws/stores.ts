@@ -20,6 +20,7 @@ import {
   OrgComputeUsageSchema,
   OrgConfigSchema,
   OrgCredentialSchema,
+  type OrgId,
   ProgramContractSchema,
   ProjectSchema,
   RoutingDecisionSchema,
@@ -251,6 +252,28 @@ export const createAwsStores = ({
       },
       get: (projectId, architecture) =>
         getRecord(WarmCacheSchema, keys.warmCache(projectId, architecture)),
+    },
+
+    installationClaims: {
+      claim: async (installationId, orgId, at) => {
+        const key = keys.installationClaim(installationId);
+        try {
+          await table.put({
+            TableName: tableName,
+            Item: toItem("InstallationClaim", key, { installationId, orgId, at }),
+            ConditionExpression: "attribute_not_exists(#pk) OR #orgId = :orgId",
+            ExpressionAttributeNames: { "#pk": "PK", "#orgId": "orgId" },
+            ExpressionAttributeValues: { ":orgId": orgId },
+          });
+          return { ok: true };
+        } catch (error) {
+          if (!isConditionalCheckFailure(error)) throw error;
+          const held = await table.get({ TableName: tableName, Key: key });
+          const heldBy = (held.Item as { orgId?: string } | undefined)?.orgId;
+          if (heldBy === undefined) throw error;
+          return { ok: false, heldBy: heldBy as OrgId };
+        }
+      },
     },
 
     programContracts: {

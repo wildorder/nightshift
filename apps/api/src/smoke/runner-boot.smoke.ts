@@ -123,6 +123,8 @@ interface RunMade {
 }
 const runs: RunMade[] = [];
 const keep = process.env.NIGHTSHIFT_RUNNER_BOOT_KEEP === "1";
+/** The installation claim as it stood before the proof borrowed it; put back at the end. */
+let previousClaim: Record<string, unknown> | undefined;
 const findings: Record<string, unknown> = {};
 
 const expectStatus = (result: { status: number; body: unknown }, status: number): void => {
@@ -360,6 +362,17 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
       await api.put(projectPath, { ...makeProject(f, { orgId, name: label }), orgId: undefined }),
       201,
     );
+    // One installation is one customer's (D-P10-02), and the dev stage's one
+    // installation is the owner's. The throwaway org borrows the claim for the
+    // proof, directly in the table, and cleanup hands it back.
+    const claimKey = keys.installationClaim(INSTALLATION_ID);
+    previousClaim = (await clients.table.get({ TableName: context.tableName, Key: claimKey })).Item;
+    await stores.installationClaims
+      .claim(INSTALLATION_ID, orgId, nowIso(systemClock))
+      .catch(async () => {
+        await clients.table.delete({ TableName: context.tableName, Key: claimKey });
+        await stores.installationClaims.claim(INSTALLATION_ID, orgId, nowIso(systemClock));
+      });
     const recorded = await api.put(`/orgs/${orgId}/github`, { installationId: INSTALLATION_ID });
     expectStatus(recorded, 200);
     say(`installation ${INSTALLATION_ID} recorded: ${JSON.stringify(recorded.body)}`);
@@ -561,6 +574,14 @@ afterAll(async () => {
       }),
     ]),
   );
+  await step("hand the installation claim back", async () => {
+    const claimKey = keys.installationClaim(INSTALLATION_ID);
+    if (previousClaim === undefined) {
+      await clients.table.delete({ TableName: context.tableName, Key: claimKey });
+    } else {
+      await clients.table.put({ TableName: context.tableName, Item: previousClaim });
+    }
+  });
   await step("delete the membership", () =>
     clients.table.delete({
       TableName: context.tableName,

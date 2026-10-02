@@ -13,13 +13,16 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
 import { systemClock } from "@nightshift/core";
 import { createAwsClients, createAwsStores } from "@nightshift/persistence/aws";
+import { createDynamoPublishLock } from "../aws/publish-lock.js";
 import { createS3BundleStore } from "../aws/s3-bundles.js";
 import { loadConfig } from "../config.js";
 import { createGitHubAppClient, type GitHubAppSecret } from "../github/app.js";
 import { publishAll } from "../runner/publisher.js";
 
 const config = loadConfig(process.env);
-const stores = createAwsStores({ tableName: config.tableName, table: createAwsClients().table });
+const table = createAwsClients().table;
+const stores = createAwsStores({ tableName: config.tableName, table });
+const lock = createDynamoPublishLock(table, config.tableName);
 const secretName = config.githubAppSecret;
 if (secretName === undefined) {
   throw new Error("the publisher needs NIGHTSHIFT_GITHUB_APP_SECRET");
@@ -60,6 +63,7 @@ export const handler = async (event: PublishEvent): Promise<Record<string, numbe
       clock: systemClock,
       github,
       bundles,
+      lock,
       log: (line) => console.warn(`publisher: ${line}`),
     },
     scope,

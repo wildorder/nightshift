@@ -47,6 +47,16 @@ export const putOrgGithub: Handler = async ({ deps, request, params }) => {
     );
   }
   const at = nowIso(deps.clock);
+  // One installation is one customer's (D-P10-02): the first org to record it
+  // holds it, and may record it again; a second org is refused.
+  const claimed = await deps.stores.installationClaims.claim(body.installationId, orgId, at);
+  if (!claimed.ok) {
+    throw new HttpError(
+      409,
+      "installation_claimed",
+      `installation ${body.installationId} is recorded by another org; an installation belongs to one customer`,
+    );
+  }
   const installation: GitHubInstallation = {
     installationId: body.installationId,
     account: facts.account,

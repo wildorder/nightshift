@@ -272,6 +272,20 @@ export interface WarmCacheStore {
 }
 
 /**
+ * Which org holds a GitHub App installation (P10, D-P10-02). One installation
+ * is one customer's: a second org claiming it is refused, so a repository's
+ * publication authority cannot be borrowed by recording someone else's
+ * installation id. The claim is a compare-and-set: absent, or already this org.
+ */
+export interface InstallationClaimStore {
+  claim(
+    installationId: number,
+    orgId: OrgId,
+    at: string,
+  ): Promise<{ readonly ok: true } | { readonly ok: false; readonly heldBy: OrgId }>;
+}
+
+/**
  * An org's provider credentials (P10, D-P10-23). Above every project, like a
  * membership. `view` is what any read route returns; `sealed` is read by the
  * heartbeat alone, to decrypt for the run's own engine.
@@ -321,6 +335,7 @@ export interface ProjectStores {
   readonly dispatches: DispatchStore;
   readonly computeUtilizations: ComputeUtilizationStore;
   readonly warmCaches: WarmCacheStore;
+  readonly installationClaims: InstallationClaimStore;
 }
 
 /**

@@ -129,6 +129,15 @@ export const keys = {
     prefix: "UTIL#",
   }),
 
+  /** The publisher's lock on a run's intents (P10, D-P10-22): one row per run, with an expiry. */
+  publishLock: (runId: RunId): TableKey => ({ PK: `RUN#${runId}`, SK: "PUBLISH-LOCK" }),
+
+  /** Which org holds a GitHub App installation (P10, D-P10-02): one row per installation. */
+  installationClaim: (installationId: number): TableKey => ({
+    PK: `INSTALL#${installationId}`,
+    SK: "CLAIM",
+  }),
+
   /** A project's warm snapshot (P10, D-P10-15), one per architecture. */
   warmCache: (projectId: ProjectId, architecture: ComputeArchitecture): TableKey => ({
     PK: `PROJ#${projectId}`,

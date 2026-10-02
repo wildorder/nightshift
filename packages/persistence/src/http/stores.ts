@@ -65,6 +65,7 @@ import type {
   EventStore,
   ExaminationStore,
   ExecutionNodeStore,
+  InstallationClaimStore,
   JobContractStore,
   OrgConfigStore,
   Page,
@@ -502,6 +503,14 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     },
   };
 
+  const installationClaims: InstallationClaimStore = {
+    claim: async () => {
+      throw new Error(
+        "the control plane owns installation claims; PUT /orgs/{orgId}/github records one",
+      );
+    },
+  };
+
   const warmCaches: WarmCacheStore = {
     put: controlPlaneOwns("warm cache", "the reconciler, when a run ends"),
     get: (projectId) => getOrUndefined(transport, WarmCacheSchema, routes.warmCache(projectId)),
@@ -513,6 +522,7 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     dispatches,
     computeUtilizations,
     warmCaches,
+    installationClaims,
     programContracts,
     runs,
     executionNodes,
