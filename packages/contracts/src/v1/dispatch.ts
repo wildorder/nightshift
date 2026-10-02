@@ -112,6 +112,7 @@ export type DispatchPublication = z.infer<typeof DispatchPublicationSchema>;
 
 export const DispatchCleanupSchema = z.strictObject({
   snapshotId: z.string().min(1).optional(),
+  /** Set when EC2 reports the snapshot complete; until then the volume is kept. */
   snapshotTakenAt: IsoTimestampSchema.optional(),
   volumeDeleted: z.boolean(),
   failures: z.array(z.string().min(1)),

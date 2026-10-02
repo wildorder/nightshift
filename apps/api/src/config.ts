@@ -30,6 +30,10 @@ const ConfigEnvSchema = z.object({
   NIGHTSHIFT_CREDENTIALS_KEY_ID: z.string().min(1).optional(),
   /** P10 (D-P10-16): the AMI the runner stack built, recorded on every dispatch. */
   NIGHTSHIFT_RUNNER_AMI_VERSION: z.string().min(1).optional(),
+  /** P10 (D-P10-02): the GitHub App's secret, so the API verifies installations and branch heads. */
+  NIGHTSHIFT_GITHUB_APP_SECRET: z.string().min(1).optional(),
+  /** P10 (D-P10-18): the dispatch Lambda the API invokes when a dispatch is accepted. */
+  NIGHTSHIFT_DISPATCH_FUNCTION_ARN: z.string().min(1).optional(),
 });
 
 export interface ApiConfig {
@@ -39,6 +43,8 @@ export interface ApiConfig {
   readonly credentialsTableName?: string;
   readonly credentialsKeyId?: string;
   readonly runnerAmiVersion?: string;
+  readonly githubAppSecret?: string;
+  readonly dispatchFunctionArn?: string;
 }
 
 /** What the API function alone needs, to mint execution tokens (P4, T2). */
@@ -84,6 +90,42 @@ export const loadConfig = (env: Readonly<Record<string, string | undefined>>): A
     ...(data.NIGHTSHIFT_RUNNER_AMI_VERSION === undefined
       ? {}
       : { runnerAmiVersion: data.NIGHTSHIFT_RUNNER_AMI_VERSION }),
+    ...(data.NIGHTSHIFT_GITHUB_APP_SECRET === undefined
+      ? {}
+      : { githubAppSecret: data.NIGHTSHIFT_GITHUB_APP_SECRET }),
+    ...(data.NIGHTSHIFT_DISPATCH_FUNCTION_ARN === undefined
+      ? {}
+      : { dispatchFunctionArn: data.NIGHTSHIFT_DISPATCH_FUNCTION_ARN }),
+  };
+};
+
+/** What the dispatch Lambda and the reconciler need to make machines (P10, T3). */
+const RunnerEnvSchema = z.object({
+  NIGHTSHIFT_LAUNCH_TEMPLATE_ID: z.string().min(1),
+  NIGHTSHIFT_MACHINE_SUBNETS: z.string().min(1),
+  NIGHTSHIFT_IMAGE_VERSION: z.string().min(1),
+  NIGHTSHIFT_API_ENDPOINT: z.string().min(1),
+});
+
+export interface RunnerConfig {
+  readonly launchTemplateId: string;
+  readonly subnetIds: readonly string[];
+  readonly imageVersion: string;
+  readonly apiEndpoint: string;
+}
+
+export const loadRunnerConfig = (
+  env: Readonly<Record<string, string | undefined>>,
+): RunnerConfig => {
+  const result = RunnerEnvSchema.safeParse(env);
+  if (!result.success) {
+    throw new ConfigError([...new Set(result.error.issues.map((issue) => String(issue.path[0])))]);
+  }
+  return {
+    launchTemplateId: result.data.NIGHTSHIFT_LAUNCH_TEMPLATE_ID,
+    subnetIds: result.data.NIGHTSHIFT_MACHINE_SUBNETS.split(",").filter((id) => id.length > 0),
+    imageVersion: result.data.NIGHTSHIFT_IMAGE_VERSION,
+    apiEndpoint: result.data.NIGHTSHIFT_API_ENDPOINT,
   };
 };
 

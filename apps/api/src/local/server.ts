@@ -36,7 +36,7 @@ import type {
 import { artifactObjectKey, planDocumentObjectKey, systemClock } from "@nightshift/core";
 import type { RequestPrincipal } from "../auth/principal.js";
 import { handleRequest } from "../handler.js";
-import type { ApiDeps, ApiRequest } from "../http.js";
+import type { ApiDeps, ApiRequest, Dispatcher } from "../http.js";
 import { splitToken } from "../tokens/jwt.js";
 import { verifyExecutionToken } from "../tokens/verify.js";
 import { LOCAL_TOKEN_ISSUER, type SigningKeys } from "./credentials.js";
@@ -109,6 +109,8 @@ export interface LocalServerOptions {
   readonly envelope?: Envelope;
   /** The Nightshift GitHub App (P10, D-P10-02). Absent, the installation routes answer 501. */
   readonly github?: GitHubAppClient;
+  /** Provisions accepted dispatches (P10, D-P10-18). Absent, the dispatch routes answer 501. */
+  readonly dispatcher?: Dispatcher;
 }
 
 export interface LocalServer {
@@ -244,6 +246,7 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
     },
     ...(options.envelope === undefined ? {} : { envelope: options.envelope }),
     ...(options.github === undefined ? {} : { github: options.github }),
+    ...(options.dispatcher === undefined ? {} : { dispatcher: options.dispatcher }),
   };
 
   /** A `PUT` to a URL this server signed: the three refusals a presigned S3 PUT makes. */

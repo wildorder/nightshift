@@ -51,6 +51,16 @@ const github: GitHubAppClient = {
     id === 166952409
       ? { account: "wildorder", repositories: ["wildorder/nightshift", "wildorder/fixture"] }
       : undefined,
+  // The fixture's program branch stands at SHA; any other branch is missing.
+  branchHead: async (_id, repository, branch) =>
+    repository === "wildorder/fixture" && branch === "program/fixture" ? SHA : undefined,
+  readToken: async () => ({ token: "ghs_read_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
+};
+
+/** What the plane asked to be provisioned (D-P10-18). */
+const provisionRequests: string[] = [];
+const dispatcher = {
+  provision: async (scope: { runId: string }) => void provisionRequests.push(scope.runId),
 };
 
 interface World {
@@ -83,6 +93,7 @@ const setup = async (): Promise<World> => {
       clock: createFixedClock(Date.parse(NOW)),
       envelope: createLocalEnvelope(generateMasterKey()),
       github,
+      dispatcher,
       tokens: {
         issuer: ISSUER,
         signer: { sign: async (input) => signWith("sha256", input, keys.privateKey) },
@@ -91,7 +102,7 @@ const setup = async (): Promise<World> => {
   };
 };
 
-const omitting = (w: World, ...names: readonly ("envelope" | "github")[]): World => {
+const omitting = (w: World, ...names: readonly ("envelope" | "github" | "dispatcher")[]): World => {
   const deps: Record<string, unknown> = { ...w.deps };
   for (const name of names) delete deps[name];
   return { ...w, deps: deps as unknown as ApiDeps };
@@ -130,6 +141,10 @@ const ratified = (f: Fixtures, overrides: Record<string, unknown> = {}): Program
 
 const seed = async (w: World, program: ProgramContract = ratified(w.f)) => {
   await w.stores.projects.put(makeProject(w.f, { orgId: w.orgId }));
+  // The org's installation, as `org github install` records it (D-P10-02).
+  expect(
+    (await call(w, "PUT", `/orgs/${w.orgId}/github`, { installationId: 166952409 })).status,
+  ).toBe(200);
   await w.stores.programContracts.put(program);
   await w.stores.runs.put(makeRun(w.f, { status: "pending", location: "remote" }));
   await w.stores.executionNodes.put(makeRootNode(w.f, { status: "validated" }));
@@ -240,13 +255,16 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
   it("refuses a tier over the org's ceiling, and a month over its cap", async () => {
     const w = await setup();
     await seed(w);
+    // Seeding recorded the installation, which wrote the config once already.
+    const current = await w.stores.orgConfigs.get(w.orgId);
     await w.stores.orgConfigs.put({
       schemaVersion: 1,
       orgId: w.orgId,
       routingPolicy: DEFAULT_ROUTING_POLICY,
       examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      ...(current?.github === undefined ? {} : { github: current.github }),
       compute: { ...DEFAULT_COMPUTE_CEILINGS, maxTier: "better", maxUsdPerMonth: 10 },
-      version: 1,
+      version: (current?.version ?? 0) + 1,
       updatedAt: NOW,
     });
     expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody("best")))).toBe(
@@ -262,6 +280,65 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     });
     expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody("better")))).toBe(
       "month_over_cap",
+    );
+  });
+
+  it("asks the dispatcher to provision what it recorded", async () => {
+    provisionRequests.length = 0;
+    const w = await setup();
+    await dispatched(w);
+    expect(provisionRequests).toEqual([w.f.scope.runId]);
+  });
+
+  it("refuses to accept a dispatch nothing would provision, or that GitHub cannot verify", async () => {
+    const w = await setup();
+    await seed(w);
+    const noDispatcher = omitting(w, "dispatcher");
+    expect(code(await call(noDispatcher, "POST", `${w.paths.run}/dispatch`, dispatchBody()))).toBe(
+      "dispatch_unavailable",
+    );
+    const noGithub = omitting(w, "github");
+    expect(code(await call(noGithub, "POST", `${w.paths.run}/dispatch`, dispatchBody()))).toBe(
+      "github_unavailable",
+    );
+    expect(await w.stores.dispatches.get(w.f.scope)).toBeUndefined();
+  });
+
+  it("refuses a repository the installation does not grant, a missing branch, and a moved head", async () => {
+    const w = await setup();
+    await seed(w);
+    const other = dispatchBody();
+    expect(
+      code(
+        await call(w, "POST", `${w.paths.run}/dispatch`, {
+          ...other,
+          input: { ...other.input, repositoryUrl: "https://github.com/wildorder/elsewhere" },
+        }),
+      ),
+    ).toBe("repository_not_granted");
+    expect(
+      code(
+        await call(w, "POST", `${w.paths.run}/dispatch`, {
+          ...other,
+          input: { ...other.input, branch: "program/unpushed" },
+        }),
+      ),
+    ).toBe("branch_missing");
+    expect(
+      code(
+        await call(w, "POST", `${w.paths.run}/dispatch`, {
+          ...other,
+          input: { ...other.input, baseSha: SHA_B },
+        }),
+      ),
+    ).toBe("head_mismatch");
+    // And an org with no installation recorded at all.
+    const fresh = await setup();
+    await fresh.stores.projects.put(makeProject(fresh.f, { orgId: fresh.orgId }));
+    await fresh.stores.programContracts.put(ratified(fresh.f));
+    await fresh.stores.runs.put(makeRun(fresh.f, { status: "pending", location: "remote" }));
+    expect(code(await call(fresh, "POST", `${fresh.paths.run}/dispatch`, dispatchBody()))).toBe(
+      "github_not_installed",
     );
   });
 
@@ -336,7 +413,10 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
       heartbeatBody(1, { report: "ready" }),
       engine(w, dispatch),
     );
-    expect((before.body as { credentials?: unknown }).credentials).toBeUndefined();
+    // While provisioning, the clone's credential only: no provider key yet.
+    expect((before.body as { credentials?: unknown }).credentials).toEqual({
+      github: "ghs_read_token",
+    });
     const running = await call(
       w,
       "POST",
@@ -345,6 +425,7 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
       engine(w, dispatch),
     );
     expect((running.body as { credentials?: unknown }).credentials).toEqual({
+      github: "ghs_read_token",
       anthropic: "sk-ant-secret-key-1234",
     });
     // No read route answers more than presence, date and last four.

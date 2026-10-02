@@ -25,10 +25,11 @@ import {
   resolveFrom,
 } from "../program-files.js";
 import { openSession } from "../session.js";
+import { REMOTE_NEEDS_PLAN } from "./remote.js";
 import { runProgram } from "./run-program.js";
 
-/** What `--remote` says until P10 turns it on. */
-export const REMOTE_REFUSAL = "remote execution arrives in P10";
+/** What `--remote` says for anything but a ratified planned program (P10, D-P10-09). */
+export const REMOTE_REFUSAL = REMOTE_NEEDS_PLAN;
 
 export interface RunOptions {
   /** A program id under `docs/programs/`, or the path to an authored Program Contract. */
@@ -43,6 +44,8 @@ export interface RunOptions {
   readonly model?: string;
   /** A correction only (P9, D-P9-05): decisions outside the repository the owner confirms. */
   readonly confirmIrreversible?: readonly string[];
+  /** With `--remote` (P10, D-P10-14): the tier, else the contract's, the config's, the recommendation, `good`. */
+  readonly compute?: string;
 }
 
 export interface RunResult {
@@ -112,19 +115,16 @@ const readContractFile = async (contractPath: string): Promise<unknown> => {
 };
 
 export const run = async (environment: CliEnvironment, options: RunOptions): Promise<RunResult> => {
-  if (options.remote) {
-    // Refused, not ignored, and refused before anything is written: the flag's
-    // shape exists from day one so a script written today keeps working when P10
-    // makes it do something.
-    throw new UsageError(
-      REMOTE_REFUSAL,
-      "Drop `--remote` to start a local run; the run is created either way and an orchestrator " +
-        "attaches to it in the repository.",
-    );
-  }
-
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
+  // Remote execution is for a ratified planned program and nothing else
+  // (D-P10-09): a contract path is refused before it is even read.
+  if (options.remote && !isProgramDirectoryName(options.contract)) {
+    throw new UsageError(REMOTE_REFUSAL, "Drop `--remote` to start a local run from a contract.");
+  }
   const source = await readSource(environment, options, repoPath);
+  if (options.remote && (source.files === undefined || !isPlanned(source.files.contract))) {
+    throw new UsageError(REMOTE_REFUSAL, "Drop `--remote` to start a local run from a contract.");
+  }
 
   const session = await openSession(environment);
 
@@ -132,6 +132,8 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
     const planned = await runProgram(environment, session, source.files, {
       repoPath,
       attended: options.attended === true,
+      remote: options.remote,
+      ...(options.compute === undefined ? {} : { compute: options.compute }),
       ...(options.harness === undefined ? {} : { harness: options.harness }),
       ...(options.model === undefined ? {} : { model: options.model }),
       ...(options.confirmIrreversible === undefined

@@ -486,6 +486,9 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
   const dispatches: DispatchStore = {
     put: controlPlaneOwns("dispatch", "POST .../dispatch, .../heartbeat, .../cancel or .../resume"),
     get: (scope) => getOrUndefined(transport, DispatchSchema, routes.dispatch(scope)),
+    listByStatus: async () => {
+      throw new Error("listing dispatches by status is the reconciler's read; no route serves it");
+    },
   };
 
   const computeUtilizations: ComputeUtilizationStore = {

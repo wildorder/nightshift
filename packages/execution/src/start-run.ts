@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import type {
   Checkpoint,
   Decision,
+  ExecutionLocation,
   ExecutionNode,
   ProgramContract,
   Project,
@@ -52,6 +53,12 @@ export interface StartRunInput {
    * is refused here rather than silently run.
    */
   readonly planText?: string;
+  /**
+   * Where the run executes (P10, A-32): `remote` when `--remote` will dispatch
+   * it to a machine of its own, else `local`. Recorded on the run and in its
+   * first event; the dispatch route refuses a run that was not started remote.
+   */
+  readonly location?: ExecutionLocation;
 }
 
 export interface StartedRun {
@@ -207,7 +214,7 @@ export const startRun = async (
     // `pending`, not `running`: authorizing the work is a human act at a
     // terminal, and it is the orchestrator attaching that starts it (A-32).
     status: "pending",
-    location: "local",
+    location: input.location ?? "local",
     rootNodeId,
     startedAt: at,
     policy,
@@ -312,7 +319,7 @@ export const startRun = async (
   await emit("run.created", {
     programBranch: program.repository.programBranch,
     baseCommit,
-    location: "local",
+    location: input.location ?? "local",
   });
   await emit("checkpoint.created", { checkpointId, ref, commitSha: baseCommit });
 

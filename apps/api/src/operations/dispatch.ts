@@ -19,6 +19,7 @@ import {
   DispatchBodySchema,
   type DispatchStatus,
   emptyComputeUsage,
+  type GitHubInstallation,
   HeartbeatBodySchema,
   type HeartbeatResponse,
   HeartbeatResponseSchema,
@@ -43,6 +44,7 @@ import {
   meterUsd,
   nowIso,
   type RunScope,
+  repositoryNameOf,
   runHoursOf,
   transitionDispatch,
 } from "@nightshift/core";
@@ -127,7 +129,21 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
     );
   }
 
+  const dispatcher = deps.dispatcher;
+  if (dispatcher === undefined) {
+    throw new HttpError(
+      501,
+      "dispatch_unavailable",
+      "this control plane was wired without a dispatcher; no machine would be provisioned",
+    );
+  }
+
   const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
+  // Nothing the client claimed about GitHub is trusted (SC-P10-02): the org's
+  // recorded installation must grant the repository, and the branch's head at
+  // GitHub must be the SHA dispatched.
+  await assertGithubInput(deps, orgConfig?.github, body.input);
+
   const ceilings = orgConfig?.compute ?? DEFAULT_COMPUTE_CEILINGS;
   const runHours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
   const estimatedUsd = estimateUsd(body.tier, runHours);
@@ -165,7 +181,61 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
   };
   await deps.stores.dispatches.put(dispatch);
   await deps.stores.computeLedger.put(withLiveRun(usage, scope.runId, true, at));
+  // Recorded first, then provisioned: an invocation that fails leaves a
+  // `requested` dispatch the reconciler picks up within its grace.
+  await dispatcher.provision(scope).catch((error: unknown) => {
+    console.error(`dispatch ${scope.runId}: the dispatcher could not be invoked`, error);
+  });
   return { status: 201, body: dispatch };
+};
+
+/**
+ * The GitHub half of SC-P10-02, through the App: the repository must be one the
+ * org's installation grants, and the branch must stand at the SHA dispatched.
+ * Without the App wired in, nothing can be verified and nothing is accepted.
+ */
+const assertGithubInput = async (
+  deps: ApiDeps,
+  installation: GitHubInstallation | undefined,
+  input: Dispatch["input"],
+): Promise<void> => {
+  if (deps.github === undefined) {
+    throw new HttpError(
+      501,
+      "github_unavailable",
+      "this control plane was wired without the Nightshift GitHub App; a dispatch cannot be verified",
+    );
+  }
+  if (installation === undefined) {
+    throw new HttpError(
+      409,
+      "github_not_installed",
+      "the org has recorded no GitHub App installation; run `nightshift org github install`",
+    );
+  }
+  const repository = repositoryNameOf(input.repositoryUrl);
+  if (repository === undefined || !installation.repositories.includes(repository)) {
+    throw new HttpError(
+      409,
+      "repository_not_granted",
+      `${input.repositoryUrl} is not among the repositories installation ${installation.installationId} grants`,
+    );
+  }
+  const head = await deps.github.branchHead(installation.installationId, repository, input.branch);
+  if (head === undefined) {
+    throw new HttpError(
+      409,
+      "branch_missing",
+      `${repository} has no branch ${input.branch} at GitHub; push the program branch first`,
+    );
+  }
+  if (head !== input.baseSha) {
+    throw new HttpError(
+      409,
+      "head_mismatch",
+      `${repository}'s ${input.branch} stands at ${head.slice(0, 12)} at GitHub, not ${input.baseSha.slice(0, 12)}; push, or dispatch what is pushed`,
+    );
+  }
 };
 
 export const getDispatch: Handler = async ({ deps, params }) => ({
@@ -218,9 +288,23 @@ export const resumeDispatch: Handler = async ({ deps, params }) => {
       `${usage.liveRuns.length} remote run(s) are live; the org's ceiling is ${ceilings.maxConcurrentRuns}`,
     );
   }
+  const dispatcher = deps.dispatcher;
+  if (dispatcher === undefined) {
+    throw new HttpError(
+      501,
+      "dispatch_unavailable",
+      "this control plane was wired without a dispatcher",
+    );
+  }
   const next = beginReplacement(dispatch, "resume", at);
   await deps.stores.dispatches.put(next);
   await deps.stores.computeLedger.put(withLiveRun(usage, scope.runId, true, at));
+  await dispatcher.provision(scope).catch((error: unknown) => {
+    console.error(
+      `dispatch ${scope.runId}: the dispatcher could not be invoked for a resume`,
+      error,
+    );
+  });
   return { status: 200, body: next };
 };
 
@@ -385,9 +469,32 @@ const credentialsFor = async (
   dispatch: Dispatch,
   stop: boolean,
 ): Promise<Pick<HeartbeatResponse, "credentials">> => {
-  if (stop || dispatch.status !== "running" || deps.envelope === undefined) return {};
+  // Keys travel only to a machine that is past `ready`: the clone needs GitHub
+  // while provisioning; the workers need their providers once running.
+  if (
+    stop ||
+    (dispatch.status !== "running" &&
+      dispatch.status !== "provisioning" &&
+      dispatch.status !== "ready")
+  ) {
+    return {};
+  }
+  const providersWanted = dispatch.status === "running" && deps.envelope !== undefined;
   const credentials: Record<string, string> = {};
-  for (const provider of PROVIDERS) {
+  // The clone's credential (D-P10-02): a short-lived read token for the one
+  // repository, from the org's installation, when the App is wired in.
+  const installation = (await deps.stores.orgConfigs.get(orgId))?.github;
+  const repository = repositoryNameOf(dispatch.input.repositoryUrl);
+  if (deps.github !== undefined && installation !== undefined && repository !== undefined) {
+    try {
+      credentials.github = (
+        await deps.github.readToken(installation.installationId, [repository])
+      ).token;
+    } catch (error) {
+      console.error(`dispatch ${dispatch.runId}: no GitHub read token for the machine`, error);
+    }
+  }
+  for (const provider of providersWanted ? PROVIDERS : []) {
     let sealed: Awaited<ReturnType<typeof deps.stores.credentials.sealed>>;
     try {
       sealed = await deps.stores.credentials.sealed(orgId, provider as Provider);
@@ -395,7 +502,7 @@ const credentialsFor = async (
       if (error instanceof Error && error.name === "CredentialsTableUnavailableError") return {};
       throw error;
     }
-    if (sealed === undefined) continue;
+    if (sealed === undefined || deps.envelope === undefined) continue;
     credentials[provider] = await deps.envelope.open(orgId, provider as Provider, sealed);
   }
   return Object.keys(credentials).length === 0 ? {} : { credentials };

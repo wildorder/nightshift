@@ -2,8 +2,8 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 /**
- * The runner's boot proof (P10, T2), by name and alone: it launches a real
- * machine in the v1 account, so it has its own script (`npm run runner:boot`)
+ * The runner's live proof (P10, T2 and T3), by name and alone: it launches real
+ * machines in the v1 account, so it has its own script (`npm run runner:boot`)
  * and never runs with the smoke suites.
  */
 export default defineConfig({
@@ -13,9 +13,10 @@ export default defineConfig({
     include: ["src/smoke/runner-boot.smoke.ts"],
     exclude: ["**/node_modules/**", "**/dist/**"],
     fileParallelism: false,
-    // A machine boots, builds nothing, and heartbeats: minutes, not seconds.
-    testTimeout: 20 * 60_000,
-    hookTimeout: 10 * 60_000,
+    // Two machines boot, install, stop and are snapshotted in turn: an hour at
+    // the outside, not minutes.
+    testTimeout: 60 * 60_000,
+    hookTimeout: 15 * 60_000,
     reporters: ["verbose"],
   },
 });

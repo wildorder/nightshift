@@ -1,30 +1,35 @@
 /**
- * One runner machine, from the latest image, to its first heartbeat and back
- * (P10, T2). Run by `npm run runner:boot`, never by `npm test`.
+ * Two runs of the fixture repository on real machines, cold and then warm
+ * (P10, T3). Run by `npm run runner:boot`, never by `npm test`.
  *
- * The plane is the deployed one. This suite plays the dispatch Lambda's part
- * by hand (T3 moves it into the function): a throwaway org, project, ratified
- * program and remote run; a dispatch on `good`; a volume; a first engine token
- * in SSM; a machine from the launch template. Then it watches the dispatch
- * record for `ready`, measures the machine over SSM (D-P10-17's rootless
- * Docker, a browser, Rust), cancels, and removes what it made. The seconds
- * from launch to the first heartbeat are the number T2 promised.
+ * The plane is the deployed one and the path is the customer's: a throwaway
+ * org that records the Nightshift GitHub App's installation, a project, a
+ * ratified program whose repository is `wildorder/nightshift-remote-fixture`,
+ * a pending remote run, and `POST …/dispatch` with the branch's real head. The
+ * API verifies the head with the App and invokes the dispatch Lambda; the
+ * machine comes up on its own, clones from GitHub with the read token the
+ * heartbeat carries, runs `npm ci --prefer-offline` and reports `ready` with
+ * what setup took. Cancelled, the reconciler snapshots the volume into the
+ * project's warm cache; the second run of the same project is provisioned from
+ * that snapshot and its setup time is the warm number (SC-P10-08).
+ *
+ * Everything made is removed at the end: machines, volumes, snapshots, records.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
-import { KMSClient } from "@aws-sdk/client-kms";
 import { S3Client } from "@aws-sdk/client-s3";
 import {
-  COMPUTE_TIERS,
+  ComputeUtilizationSchema,
   type Dispatch,
   DispatchSchema,
   PlanDocumentUploadResponseSchema,
   ProgramContractSchema,
+  type RunId,
   UserIdSchema,
+  WarmCacheSchema,
 } from "@nightshift/contracts";
 import {
   createUlidIdGenerator,
@@ -36,15 +41,19 @@ import {
   nowIso,
   planHash,
   systemClock,
-  transitionDispatch,
 } from "@nightshift/core";
 import { createAwsClients, createAwsStores, keys } from "@nightshift/persistence/aws";
 import { afterAll, describe, expect, it } from "vitest";
-import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
-import { mintEngineToken } from "../tokens/mint.js";
 import { deleteObjectsUnder, deletePartitions } from "./cleanup.js";
 import { fetchMachineToken, loadSmokeContext, REGION, subjectOf } from "./context.js";
 import { smokeApiClient } from "./http.js";
+
+/** The fixture repository and the installation that grants it (H-P10-04, H-P10-05). */
+const FIXTURE_REPOSITORY = "https://github.com/wildorder/nightshift-remote-fixture";
+const FIXTURE_BRANCH = "program/fixture";
+const INSTALLATION_ID = 166952409;
+/** SC-P10-08: the warm setup against the cold one. Printed always, asserted softly. */
+const WARM_RATIO_TARGET = 0.1;
 
 const say = (line: string): void => {
   process.stdout.write(`[runner-boot] ${line}\n`);
@@ -72,43 +81,18 @@ if (endpoint === undefined) {
 }
 const api = smokeApiClient(endpoint, token);
 
-/** The runner stack's outputs. */
-const runnerOutputs = async (): Promise<Record<string, string>> => {
-  const cfn = new CloudFormationClient({ region: REGION });
-  const described = await cfn.send(
-    new DescribeStacksCommand({ StackName: `nightshift-${stage}-runner` }),
+/** The branch's head at GitHub, which is what the dispatch binds (D-P10-02). */
+const remoteHead = (): string => {
+  const listed = execFileSync(
+    "git",
+    ["ls-remote", FIXTURE_REPOSITORY, `refs/heads/${FIXTURE_BRANCH}`],
+    { encoding: "utf8" },
   );
-  const outputs: Record<string, string> = {};
-  for (const output of described.Stacks?.[0]?.Outputs ?? []) {
-    if (output.OutputKey !== undefined && output.OutputValue !== undefined) {
-      outputs[output.OutputKey] = output.OutputValue;
-    }
+  const sha = listed.split(/\s+/)[0];
+  if (sha === undefined || !/^[0-9a-f]{40}$/.test(sha)) {
+    throw new Error(`git ls-remote found no ${FIXTURE_BRANCH} at ${FIXTURE_REPOSITORY}`);
   }
-  return outputs;
-};
-
-/** The newest AMI the pipeline built for this image version. */
-const latestAmi = (imageVersion: string): string => {
-  const images = JSON.parse(
-    aws([
-      "ec2",
-      "describe-images",
-      "--owners",
-      "self",
-      "--filters",
-      `Name=tag:nightshift:amiVersion,Values=${imageVersion}`,
-      "Name=state,Values=available",
-      "--query",
-      "Images[].{id:ImageId,created:CreationDate}",
-    ]),
-  ) as { id: string; created: string }[];
-  const newest = [...images].sort((a, b) => b.created.localeCompare(a.created))[0];
-  if (newest === undefined) {
-    throw new Error(
-      `no available AMI tagged nightshift:amiVersion=${imageVersion}; run npm run image:build`,
-    );
-  }
-  return newest.id;
+  return sha;
 };
 
 // --- What this run writes ---------------------------------------------------------
@@ -122,13 +106,14 @@ const f: Fixtures = {
 };
 const projectPath = `/projects/${f.scope.projectId}`;
 const programPath = `${projectPath}/programs/${f.scope.programId}`;
-const runPath = `${programPath}/runs/${f.scope.runId}`;
-const parameterName = `/nightshift/${stage}/dispatch/${f.scope.runId}/1`;
 
-const made = {
-  instanceId: undefined as string | undefined,
-  volumeId: undefined as string | undefined,
-};
+interface RunMade {
+  readonly runId: RunId;
+  readonly rootNodeId: string;
+  readonly path: string;
+  dispatch?: Dispatch;
+}
+const runs: RunMade[] = [];
 const keep = process.env.NIGHTSHIFT_RUNNER_BOOT_KEEP === "1";
 const findings: Record<string, unknown> = {};
 
@@ -136,13 +121,189 @@ const expectStatus = (result: { status: number; body: unknown }, status: number)
   expect(result.status, JSON.stringify(result.body)).toBe(status);
 };
 
-describe("a runner machine boots to its first heartbeat (P10, T2)", () => {
-  it("seeds a ratified remote run, dispatches it, launches the machine, and hears it", async () => {
-    const outputs = await runnerOutputs();
-    const amiId = latestAmi(outputs.ImageVersion ?? "");
-    say(`image ${amiId} (version ${outputs.ImageVersion}, runner at ${outputs.RunnerCommit})`);
+/** Polls the run's dispatch until `until` says so, or the time is up. */
+const awaitDispatch = async (
+  run: RunMade,
+  what: string,
+  timeoutMs: number,
+  until: (dispatch: Dispatch) => boolean,
+): Promise<Dispatch> => {
+  const startedAt = Date.now();
+  for (;;) {
+    const current = DispatchSchema.parse((await api.get(`${run.path}/dispatch`)).body);
+    run.dispatch = current;
+    if (until(current)) return current;
+    if (current.status === "failed") {
+      throw new Error(
+        `dispatch ${run.runId} failed while waiting for ${what}: ${JSON.stringify(current.failure)}`,
+      );
+    }
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(
+        `dispatch ${run.runId} did not reach ${what} within ${Math.round(timeoutMs / 60_000)} minutes; it is ${current.status}`,
+      );
+    }
+    await sleep(10_000);
+  }
+};
 
-    // The org and its one member: the machine principal this suite calls as.
+/** The runner's own journal, over SSM, for the record and for the failures. */
+const journal = async (instanceId: string): Promise<string> => {
+  const parameters = join(tmpdir(), `nightshift-runner-boot-${process.pid}.json`);
+  writeFileSync(
+    parameters,
+    JSON.stringify({
+      commands: ["journalctl -u nightshift-runner --no-pager -n 120 -o cat"],
+      executionTimeout: ["60"],
+    }),
+  );
+  try {
+    const sent = JSON.parse(
+      aws([
+        "ssm",
+        "send-command",
+        "--instance-ids",
+        instanceId,
+        "--document-name",
+        "AWS-RunShellScript",
+        "--parameters",
+        `file://${parameters.replaceAll("\\", "/")}`,
+      ]),
+    ) as { Command: { CommandId: string } };
+    for (let waited = 0; waited < 90_000; waited += 5_000) {
+      await sleep(5_000);
+      const invocation = JSON.parse(
+        aws([
+          "ssm",
+          "get-command-invocation",
+          "--command-id",
+          sent.Command.CommandId,
+          "--instance-id",
+          instanceId,
+        ]),
+      ) as { Status: string; StandardOutputContent: string };
+      if (["Success", "Failed", "TimedOut", "Cancelled"].includes(invocation.Status)) {
+        return invocation.StandardOutputContent;
+      }
+    }
+    return "(no answer from SSM)";
+  } catch (error) {
+    return `(journal unavailable: ${error instanceof Error ? error.message : String(error)})`;
+  } finally {
+    rmSync(parameters, { force: true });
+  }
+};
+
+interface RunOutcome {
+  readonly run: RunMade;
+  readonly secondsToReady: number;
+  readonly setupSeconds: number;
+}
+
+/** One run of the fixture: a pending remote run, its root, the dispatch, `ready`, the setup time. */
+const runOnce = async (
+  name: string,
+  baseSha: string,
+  planHashValue: string,
+  planDocument: unknown,
+): Promise<RunOutcome> => {
+  const runId = runs.length === 0 ? f.scope.runId : ids.next("run");
+  const rootNodeId = runs.length === 0 ? f.rootNodeId : ids.next("node");
+  const run: RunMade = { runId, rootNodeId, path: `${programPath}/runs/${runId}` };
+  runs.push(run);
+  const fixtures: Fixtures = { ids, scope: { ...f.scope, runId }, rootNodeId };
+
+  expectStatus(
+    await api.put(run.path, makeRun(fixtures, { status: "pending", location: "remote" })),
+    201,
+  );
+  expectStatus(
+    await api.put(
+      `${run.path}/nodes/${rootNodeId}`,
+      makeRootNode(fixtures, {
+        status: "validated",
+        plan: { planHash: planHashValue, planDocument },
+      }),
+    ),
+    201,
+  );
+  const dispatchedAt = Date.now();
+  const dispatched = await api.post(`${run.path}/dispatch`, {
+    tier: "good",
+    idempotencyKey: `${runId}:${baseSha}:${planHashValue}`,
+    input: {
+      repositoryUrl: FIXTURE_REPOSITORY,
+      branch: FIXTURE_BRANCH,
+      baseSha,
+      planHash: planHashValue,
+    },
+  });
+  expectStatus(dispatched, 201);
+  run.dispatch = DispatchSchema.parse(dispatched.body);
+  say(
+    `${name}: dispatch ${run.dispatch.status} on ${run.dispatch.tier} (${run.dispatch.instanceType})`,
+  );
+
+  const provisioned = await awaitDispatch(
+    run,
+    "a machine",
+    5 * 60_000,
+    (d) => d.instanceId !== undefined,
+  );
+  say(
+    `${name}: machine ${provisioned.instanceId} in ${provisioned.availabilityZone}, volume ${provisioned.volumeId}, image ${provisioned.amiVersion}`,
+  );
+  let ready: Dispatch;
+  try {
+    ready = await awaitDispatch(
+      run,
+      "ready",
+      12 * 60_000,
+      (d) => d.status === "ready" || d.status === "running",
+    );
+  } catch (error) {
+    if (provisioned.instanceId !== undefined) {
+      say(`${name}: the runner's journal:\n${await journal(provisioned.instanceId)}`);
+    }
+    throw error;
+  }
+  const secondsToReady = Math.round((Date.now() - dispatchedAt) / 1000);
+  const utilization = ComputeUtilizationSchema.parse((await api.get(`${run.path}/compute`)).body);
+  expect(utilization.setupSeconds, "the runner reported no setup time").toBeDefined();
+  const lockfiles = Object.keys(ready.lockfileHashes ?? {}).join(", ") || "none";
+  say(
+    `${name}: ready ${secondsToReady}s after the dispatch; setup took ${utilization.setupSeconds?.toFixed(1)}s; lockfiles ${lockfiles}`,
+  );
+  if (ready.instanceId !== undefined) {
+    const lines = (await journal(ready.instanceId))
+      .split("\n")
+      .filter((line) => line.trim() !== "");
+    say(`${name}: the runner said:\n  ${lines.slice(-25).join("\n  ")}`);
+  }
+  return { run, secondsToReady, setupSeconds: utilization.setupSeconds ?? Number.NaN };
+};
+
+/** Cancel, hear `stopped` from the runner, then watch the reconciler clean up and snapshot. */
+const stopAndCleanUp = async (name: string, run: RunMade): Promise<Dispatch> => {
+  expectStatus(await api.post(`${run.path}/dispatch/cancel`, undefined), 200);
+  await awaitDispatch(run, "stopped", 3 * 60_000, (d) => d.status === "stopped");
+  say(`${name}: stopped as told; waiting for the reconciler's snapshot and cleanup`);
+  const cleaned = await awaitDispatch(run, "cleanup", 20 * 60_000, (d) => d.cleanup.volumeDeleted);
+  const failures =
+    cleaned.cleanup.failures.length === 0
+      ? ""
+      : `; failures ${JSON.stringify(cleaned.cleanup.failures)}`;
+  say(`${name}: cleaned up; snapshot ${cleaned.cleanup.snapshotId ?? "none"}${failures}`);
+  return cleaned;
+};
+
+describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
+  it("dispatches through the API, reaches ready on both, and the second is provisioned from the first's snapshot", async () => {
+    const baseSha = remoteHead();
+    say(`${FIXTURE_REPOSITORY} ${FIXTURE_BRANCH} is at ${baseSha}`);
+
+    // The org, its one member (the machine principal this suite calls as), and
+    // its GitHub installation, recorded as `org github install` records it.
     await stores.memberships.put({
       schemaVersion: 1,
       userId: machineSubject,
@@ -153,11 +314,16 @@ describe("a runner machine boots to its first heartbeat (P10, T2)", () => {
       await api.put(projectPath, { ...makeProject(f, { orgId, name: label }), orgId: undefined }),
       201,
     );
+    const recorded = await api.put(`/orgs/${orgId}/github`, { installationId: INSTALLATION_ID });
+    expectStatus(recorded, 200);
+    say(`installation ${INSTALLATION_ID} recorded: ${JSON.stringify(recorded.body)}`);
 
-    // A planned program, its document uploaded and ratified (D-P10-09).
+    // A planned program against the fixture, its document uploaded and ratified (D-P10-09).
     const plan = `# ${label}\n\n## Strands\n\n### S-01 The only strand\n\nA module exists.\n`;
     const contract = makeProgramContract(f, {
       status: "planning",
+      repository: { url: FIXTURE_REPOSITORY, baseBranch: "main", programBranch: FIXTURE_BRANCH },
+      setup: [{ id: "install", command: "npm ci --prefer-offline" }],
       strands: [
         {
           id: "S-01",
@@ -193,250 +359,49 @@ describe("a runner machine boots to its first heartbeat (P10, T2)", () => {
     });
     expectStatus(ratified, 200);
     const program = ProgramContractSchema.parse(ratified.body);
+    if (program.planHash === undefined) throw new Error("ratification recorded no plan hash");
 
-    // A pending remote run and its root, then the dispatch (D-P10-18).
-    expectStatus(
-      await api.put(runPath, makeRun(f, { status: "pending", location: "remote" })),
-      201,
-    );
-    expectStatus(
-      await api.put(
-        `${runPath}/nodes/${f.rootNodeId}`,
-        makeRootNode(f, {
-          status: "validated",
-          // A ratified plan's root carries the plan it runs (D-P7-02).
-          plan: { planHash: program.planHash, planDocument: program.planDocument },
-        }),
-      ),
-      201,
-    );
-    const dispatched = await api.post(`${runPath}/dispatch`, {
-      tier: "good",
-      idempotencyKey: `${f.scope.runId}:boot`,
-      input: {
-        repositoryUrl: "https://github.com/wildorder/nightshift-remote-fixture",
-        branch: "program/runner-boot",
-        baseSha: "0".repeat(40),
-        planHash: program.planHash,
-      },
-    });
-    expectStatus(dispatched, 201);
-    let dispatch = DispatchSchema.parse(dispatched.body);
+    // Cold: no warm cache yet, so the volume is empty and setup downloads everything.
+    expect((await api.get(`${projectPath}/warm-cache`)).status).toBe(404);
+    const cold = await runOnce("cold", baseSha, program.planHash, program.planDocument);
+    findings.cold = { secondsToReady: cold.secondsToReady, setupSeconds: cold.setupSeconds };
+    const coldCleaned = await stopAndCleanUp("cold", cold.run);
+    expect(
+      coldCleaned.cleanup.snapshotId,
+      "no snapshot was taken of the cold volume",
+    ).toBeDefined();
+    const cache = WarmCacheSchema.parse((await api.get(`${projectPath}/warm-cache`)).body);
+    expect(cache.current.snapshotId).toBe(coldCleaned.cleanup.snapshotId);
+    expect(cache.current.fromRunId).toBe(cold.run.runId);
+    say(`warm cache: ${cache.current.snapshotId} from ${cache.current.fromRunId}`);
+
+    // Warm: provisioned from the snapshot; the mirror is fetched, the store answers npm.
+    const warm = await runOnce("warm", baseSha, program.planHash, program.planDocument);
+    findings.warm = { secondsToReady: warm.secondsToReady, setupSeconds: warm.setupSeconds };
+    const ratio = warm.setupSeconds / cold.setupSeconds;
+    findings.warmToColdSetupRatio = Number(ratio.toFixed(3));
     say(
-      `dispatch requested: ${dispatch.tier} ${dispatch.instanceType} at $${dispatch.usdPerHour}/h`,
+      `setup cold ${cold.setupSeconds.toFixed(1)}s, warm ${warm.setupSeconds.toFixed(1)}s: ratio ${ratio.toFixed(3)} against SC-P10-08's ${WARM_RATIO_TARGET}`,
     );
-
-    // The dispatch Lambda's part, by hand (T3): a volume, a first token, a machine.
-    const subnets = (outputs.MachineSubnetIds ?? "").split(",");
-    const subnetId = subnets[0];
-    if (subnetId === undefined || subnetId === "")
-      throw new Error("the runner stack has no subnets");
-    const zone = JSON.parse(
-      aws([
-        "ec2",
-        "describe-subnets",
-        "--subnet-ids",
-        subnetId,
-        "--query",
-        "Subnets[0].AvailabilityZone",
-      ]),
-    ) as string;
-    const volume = JSON.parse(
-      aws([
-        "ec2",
-        "create-volume",
-        "--availability-zone",
-        zone,
-        "--size",
-        String(COMPUTE_TIERS.good.volumeGiB),
-        "--volume-type",
-        "gp3",
-        "--tag-specifications",
-        `ResourceType=volume,Tags=[{Key=nightshift:managed,Value=true},{Key=nightshift-run,Value=${f.scope.runId}},{Key=Name,Value=${label}}]`,
-      ]),
-    ) as { VolumeId: string };
-    made.volumeId = volume.VolumeId;
-
-    const run = makeRun(f, { status: "pending", location: "remote" });
-    const minted = await mintEngineToken(
-      createKmsExecutionTokenSigner({
-        kms: new KMSClient({ region: REGION }),
-        keyId: context.executionTokenKeyId,
-      }),
-      { dispatch, run, program, issuer: endpoint, now: Date.now() },
+    expect(warm.setupSeconds, "the warm setup was not faster than the cold one").toBeLessThan(
+      cold.setupSeconds,
     );
-    aws([
-      "ssm",
-      "put-parameter",
-      "--name",
-      parameterName,
-      "--type",
-      "SecureString",
-      "--value",
-      minted.token,
-      "--overwrite",
-    ]);
-
-    const tags = [
-      ["nightshift:managed", "true"],
-      ["nightshift-project", f.scope.projectId],
-      ["nightshift-program", f.scope.programId],
-      ["nightshift-run", f.scope.runId],
-      ["nightshift-generation", "1"],
-      ["nightshift-stage", stage],
-      ["nightshift-api", endpoint],
-      ["Name", label],
-    ]
-      .map(([key, value]) => `{Key=${key},Value=${value}}`)
-      .join(",");
-    const launchedAt = Date.now();
-    const launched = JSON.parse(
-      aws([
-        "ec2",
-        "run-instances",
-        "--launch-template",
-        `LaunchTemplateId=${outputs.LaunchTemplateId}`,
-        "--image-id",
-        amiId,
-        "--instance-type",
-        dispatch.instanceType,
-        "--subnet-id",
-        subnetId,
-        "--count",
-        "1",
-        "--tag-specifications",
-        `ResourceType=instance,Tags=[${tags}]`,
-      ]),
-    ) as { Instances: { InstanceId: string }[] };
-    const instanceId = launched.Instances[0]?.InstanceId;
-    if (instanceId === undefined) throw new Error("run-instances returned no instance");
-    made.instanceId = instanceId;
-    say(`launched ${instanceId} in ${zone}`);
-
-    dispatch = transitionDispatch(
-      {
-        ...dispatch,
-        instanceId,
-        volumeId: volume.VolumeId,
-        availabilityZone: zone,
-        amiVersion: outputs.ImageVersion ?? dispatch.amiVersion,
-      },
-      "provision",
-      nowIso(systemClock),
-    );
-    await stores.dispatches.put(dispatch);
-
-    aws(["ec2", "wait", "instance-running", "--instance-ids", instanceId]);
-    aws([
-      "ec2",
-      "attach-volume",
-      "--volume-id",
-      volume.VolumeId,
-      "--instance-id",
-      instanceId,
-      "--device",
-      "/dev/xvdf",
-    ]);
-    say("running; volume attached; waiting for the first heartbeat");
-
-    // The runner mounts the volume and reports `ready`.
-    let ready: Dispatch | undefined;
-    for (let waited = 0; waited < 10 * 60_000; waited += 10_000) {
-      await sleep(10_000);
-      const current = await api.get(`${runPath}/dispatch`);
-      const record = DispatchSchema.parse(current.body);
-      if (record.status === "ready" || record.status === "running") {
-        ready = record;
-        break;
-      }
+    if (ratio >= WARM_RATIO_TARGET) {
+      say("SC-P10-08 NOT MET at this ratio; the number is recorded in the findings for §15");
     }
-    expect(ready, "the runner never reported ready").toBeDefined();
-    findings.secondsToFirstHeartbeat = Math.round((Date.now() - launchedAt) / 1000);
-    say(`ready after ${findings.secondsToFirstHeartbeat}s; lease to ${ready?.leaseExpiresAt}`);
-    expect(ready?.leaseExpiresAt).toBeDefined();
-
-    // D-P10-17's measurements, over SSM, as a worker user.
-    findings.measurements = await measure(instanceId);
-    say(`measurements: ${JSON.stringify(findings.measurements)}`);
-
-    // Cancel: the runner hears `stop` on its next heartbeat and reports `stopped`.
-    expectStatus(await api.post(`${runPath}/dispatch/cancel`, undefined), 200);
-    let stopped = false;
-    for (let waited = 0; waited < 3 * 60_000; waited += 10_000) {
-      await sleep(10_000);
-      const record = DispatchSchema.parse((await api.get(`${runPath}/dispatch`)).body);
-      if (record.status === "stopped") {
-        stopped = true;
-        break;
-      }
-    }
-    expect(stopped, "the runner never reported stopped").toBe(true);
-    say("stopped as told");
+    const warmCleaned = await stopAndCleanUp("warm", warm.run);
+    expect(warmCleaned.cleanup.snapshotId).toBeDefined();
+    const after = WarmCacheSchema.parse((await api.get(`${projectPath}/warm-cache`)).body);
+    expect(after.current.fromRunId).toBe(warm.run.runId);
+    expect(after.history.map((snapshot) => snapshot.snapshotId)).toContain(
+      coldCleaned.cleanup.snapshotId,
+    );
   });
 });
 
-/** The capability table T2 owes the contract (§15), as the machine answers it. */
-const measure = async (instanceId: string): Promise<Record<string, string>> => {
-  const script = [
-    "set +e",
-    'echo "node=$(node --version)"',
-    'echo "boot_to_runner=$(systemctl show nightshift-runner.service -p ActiveEnterTimestampMonotonic --value)"',
-    "sudo -u worker-1 -i bash -c 'dockerd-rootless-setuptool.sh install >/dev/null 2>&1; export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock; docker run --rm -d --name pg -e POSTGRES_PASSWORD=x -p 15432:5432 postgres:16 >/dev/null 2>&1 && sleep 15 && docker exec pg pg_isready -U postgres >/dev/null 2>&1 && echo rootless_docker_postgres=pass || echo rootless_docker_postgres=fail; docker rm -f pg >/dev/null 2>&1'",
-    "sudo -u worker-1 -i bash -c 'export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock; mkdir -p /tmp/b && printf \"FROM public.ecr.aws/docker/library/alpine:3.20\\nRUN echo hi\\n\" > /tmp/b/Dockerfile && docker build -q -t nightshift-probe /tmp/b >/dev/null 2>&1 && echo docker_build=pass || echo docker_build=fail'",
-    "sudo -u worker-1 -i bash -c 'cd /tmp && cargo new --quiet hello >/dev/null 2>&1 && cd hello && cargo build --quiet >/dev/null 2>&1 && echo cargo_build=pass || echo cargo_build=fail'",
-    'sudo -u worker-1 -i bash -c \'cd /tmp && mkdir -p pw && cd pw && npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund playwright@1.56.1 >/dev/null 2>&1 && npx playwright install chromium >/dev/null 2>&1 && node -e "const {chromium}=require(\\"playwright\\");chromium.launch().then(async b=>{const p=await b.newPage();await p.setContent(\\"<h1>hi</h1>\\");console.log(await p.textContent(\\"h1\\"));await b.close()})" 2>/dev/null | grep -q hi && echo chromium=pass || echo chromium=fail\'',
-    "curl -s -m 2 http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1 && echo imds_from_engine=reachable || echo imds_from_engine=blocked",
-    "sudo -u worker-1 curl -s -m 2 http://169.254.169.254/latest/meta-data/ >/dev/null 2>&1 && echo imds_from_worker=reachable || echo imds_from_worker=blocked",
-  ];
-  // Through a file: the Windows shell the CLI runs under would strip the quotes
-  // out of JSON passed as an argument.
-  const parameters = join(tmpdir(), `nightshift-runner-boot-${process.pid}.json`);
-  writeFileSync(parameters, JSON.stringify({ commands: script, executionTimeout: ["1500"] }));
-  const sent = JSON.parse(
-    aws([
-      "ssm",
-      "send-command",
-      "--instance-ids",
-      instanceId,
-      "--document-name",
-      "AWS-RunShellScript",
-      "--timeout-seconds",
-      "1500",
-      "--parameters",
-      `file://${parameters.replaceAll("\\", "/")}`,
-    ]),
-  ) as { Command: { CommandId: string } };
-  rmSync(parameters, { force: true });
-  for (let waited = 0; waited < 25 * 60_000; waited += 15_000) {
-    await sleep(15_000);
-    const invocation = JSON.parse(
-      aws([
-        "ssm",
-        "get-command-invocation",
-        "--command-id",
-        sent.Command.CommandId,
-        "--instance-id",
-        instanceId,
-      ]),
-    ) as { Status: string; StandardOutputContent: string; StandardErrorContent: string };
-    if (["Success", "Failed", "TimedOut", "Cancelled"].includes(invocation.Status)) {
-      const results: Record<string, string> = { status: invocation.Status };
-      for (const line of invocation.StandardOutputContent.split("\n")) {
-        const match = /^(\w+)=(.*)$/.exec(line.trim());
-        if (match?.[1] !== undefined && match[2] !== undefined) results[match[1]] = match[2];
-      }
-      if (invocation.StandardErrorContent.trim().length > 0) {
-        results.stderr = invocation.StandardErrorContent.trim().slice(0, 2000);
-      }
-      return results;
-    }
-  }
-  return { status: "no answer within 25 minutes" };
-};
-
 afterAll(async () => {
   const problems: string[] = [];
-  const step = (label: string, work: () => void | Promise<unknown>) =>
+  const step = (label: string, work: () => unknown) =>
     Promise.resolve()
       .then(work)
       .then(() => say(`cleanup: ${label}`))
@@ -444,38 +409,69 @@ afterAll(async () => {
         problems.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
       });
 
-  if (keep) {
-    say(`--keep: leaving ${made.instanceId ?? "no instance"} and ${made.volumeId ?? "no volume"}`);
-  } else {
-    if (made.instanceId !== undefined) {
-      const instanceId = made.instanceId;
-      await step("terminate the machine", () => {
+  // Whatever the reconciler did not get to: machines, volumes, and every snapshot.
+  const snapshots = new Set<string>();
+  for (const run of runs) {
+    const dispatch = run.dispatch;
+    if (dispatch === undefined) continue;
+    if (dispatch.cleanup.snapshotId !== undefined) snapshots.add(dispatch.cleanup.snapshotId);
+    if (keep) {
+      say(
+        `--keep: leaving ${dispatch.instanceId ?? "no instance"} and ${dispatch.volumeId ?? "no volume"}`,
+      );
+      continue;
+    }
+    if (dispatch.instanceId !== undefined && dispatch.status !== "stopped") {
+      const instanceId = dispatch.instanceId;
+      await step(`terminate ${instanceId}`, () => {
         aws(["ec2", "terminate-instances", "--instance-ids", instanceId]);
         aws(["ec2", "wait", "instance-terminated", "--instance-ids", instanceId]);
       });
     }
-    if (made.volumeId !== undefined) {
-      const volumeId = made.volumeId;
-      await step("delete the volume", () => {
+    if (dispatch.volumeId !== undefined && !dispatch.cleanup.volumeDeleted) {
+      const volumeId = dispatch.volumeId;
+      await step(`delete ${volumeId}`, () => {
         aws(["ec2", "delete-volume", "--volume-id", volumeId]);
       });
     }
-  }
-  await step("delete the first token, if it is still there", () => {
-    try {
-      aws(["ssm", "delete-parameter", "--name", parameterName]);
-    } catch {
-      // Already taken by the runner, which is the point.
+    for (const generation of [1, 2, 3]) {
+      const name = `/nightshift/${stage}/dispatch/${run.runId}/${generation}`;
+      try {
+        aws(["ssm", "delete-parameter", "--name", name]);
+        say(`cleanup: a first token was still in ${name}`);
+      } catch {
+        // Taken by the runner, which is the point.
+      }
     }
-  });
+  }
+  const cache = await stores.warmCaches.get(f.scope.projectId, "arm64").catch(() => undefined);
+  if (cache !== undefined) {
+    for (const snapshot of [cache.current, ...cache.history]) snapshots.add(snapshot.snapshotId);
+  }
+  for (const snapshotId of snapshots) {
+    if (keep) {
+      say(`--keep: leaving ${snapshotId}`);
+      continue;
+    }
+    await step(`delete ${snapshotId}`, () => {
+      aws(["ec2", "delete-snapshot", "--snapshot-id", snapshotId]);
+    });
+  }
+
   await step("delete the records", () =>
     deletePartitions(clients.table, context.tableName, [
+      // The org's partition: its project listing, config (with the installation), ledger.
       keys.orgProject(orgId, f.scope.projectId).PK,
+      // The project's: the program, the utilization records, the warm cache.
       keys.project(f.scope.projectId).PK,
-      keys.run(f.scope, f.scope.runId).PK,
-      keys.runRecord(f.scope, "NODE", f.rootNodeId).PK,
-      // The org's partition holds its project listing and its compute ledger.
-      keys.event(f.scope, f.rootNodeId).PK,
+      ...runs.flatMap((run) => {
+        const scope = { ...f.scope, runId: run.runId };
+        return [
+          keys.run(f.scope, run.runId).PK,
+          keys.runRecord(scope, "NODE", run.rootNodeId).PK,
+          keys.event(scope, run.rootNodeId).PK,
+        ];
+      }),
     ]),
   );
   await step("delete the membership", () =>

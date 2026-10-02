@@ -13,6 +13,7 @@
 import type {
   CalendarMonth,
   ComputeArchitecture,
+  DispatchStatus,
   OrgId,
   ProgramId,
   ProjectId,
@@ -101,6 +102,21 @@ export const keys = {
 
   /** A run's dispatch (P10, D-P10-18): one row beside the run's records. */
   dispatch: (scope: RunScope): TableKey => ({ PK: `RUN#${runChain(scope)}`, SK: "DISPATCH" }),
+
+  /**
+   * The reconciler's view of every dispatch by status (P10, D-P10-18), on the
+   * one index: `gsi_node` carries a dispatch under its status as it carries a
+   * node under its parent. The sort key orders by last update, oldest first.
+   */
+  dispatchIndex: (status: DispatchStatus, updatedAt: string, runId: RunId): NodeIndexKey => ({
+    GSI1PK: `DISPATCH#${status}`,
+    GSI1SK: `${updatedAt}#${runId}`,
+  }),
+
+  dispatchIndexPartition: (status: DispatchStatus) => ({
+    GSI1PK: `DISPATCH#${status}`,
+    prefix: "",
+  }),
 
   /** A run's machine utilization (P10, D-P10-14b), under the project so a project's list together. */
   computeUtilization: (projectId: ProjectId, runId: RunId): TableKey => ({

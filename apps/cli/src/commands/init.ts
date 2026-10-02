@@ -59,14 +59,21 @@ const exists = async (path: string): Promise<boolean> => {
 /** The scripts a verification is usually made of, in the order they have to run. */
 const VERIFICATION_SCRIPTS = ["build", "typecheck", "lint", "test"] as const;
 
+/** What a lockfile makes setup: `--prefer-offline` so a warm volume's store answers first (D-P10-15). */
+export const NPM_SETUP_COMMAND = "npm ci --prefer-offline";
+
 /**
  * Setup read off the repository. Every checkout Nightshift creates starts with
  * no `node_modules`, so a lockfile means `npm ci` prepares each one: learned on
  * the first real repository, where every check failed without it. It is setup,
- * not a verification step, so the checks state only what is checked.
+ * not a verification step, so the checks state only what is checked. Remotely
+ * the npm cache lives on the project's warm volume, and `--prefer-offline`
+ * takes what is there without asking the registry about it (P10, D-P10-15).
  */
 export const detectSetup = async (repoPath: string): Promise<SetupStep[]> =>
-  (await exists(join(repoPath, "package-lock.json"))) ? [{ id: "install", command: "npm ci" }] : [];
+  (await exists(join(repoPath, "package-lock.json")))
+    ? [{ id: "install", command: NPM_SETUP_COMMAND }]
+    : [];
 
 /** Verification steps read off `package.json`'s scripts. */
 export const detectVerification = async (repoPath: string): Promise<VerificationStep[]> => {

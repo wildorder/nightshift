@@ -30,7 +30,7 @@ import type { Clock, GitHubAppClient, NightshiftStores } from "@nightshift/core"
 import type { RequestPrincipal } from "../auth/principal.js";
 import { UserTokenLikeSchema } from "../auth/principal.js";
 import { createLocalEnvelope, generateMasterKey } from "../envelope.js";
-import type { ApiDeps } from "../http.js";
+import type { ApiDeps, Dispatcher } from "../http.js";
 import { ephemeralKeys } from "../local/credentials.js";
 import { createMemoryObjectStore, type LocalBody } from "../local/objects.js";
 import { bearerOf, executionTokenPrincipal, startLocalServer } from "../local/server.js";
@@ -88,6 +88,8 @@ export interface LocalControlPlaneOptions {
   readonly host?: string;
   /** The Nightshift GitHub App's answers (P10, D-P10-02), when a suite needs the routes. */
   readonly github?: GitHubAppClient;
+  /** What provisions a dispatch (P10, D-P10-18), when a suite dispatches. */
+  readonly dispatcher?: Dispatcher;
 }
 
 export interface LocalControlPlane {
@@ -110,6 +112,7 @@ export const startLocalControlPlane = async (
     // under it, and nothing a suite stores survives the plane.
     envelope: createLocalEnvelope(generateMasterKey()),
     ...(options.github === undefined ? {} : { github: options.github }),
+    ...(options.dispatcher === undefined ? {} : { dispatcher: options.dispatcher }),
     ...(options.clock === undefined ? {} : { clock: options.clock }),
     ...(options.host === undefined ? {} : { host: options.host }),
     // A declared principal, a real execution token, or the plane's default:

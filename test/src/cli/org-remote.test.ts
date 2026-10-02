@@ -17,6 +17,8 @@ const github: GitHubAppClient = {
     id === 166952409
       ? { account: "wildorder", repositories: ["wildorder/nightshift", "wildorder/fixture"] }
       : undefined,
+  branchHead: async () => undefined,
+  readToken: async () => ({ token: "ghs_read_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
 };
 
 let op: Operator;

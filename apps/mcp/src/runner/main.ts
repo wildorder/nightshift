@@ -1,22 +1,23 @@
 /**
- * The runner on a run's machine (P10, T2): boot, bootstrap, heartbeat.
+ * The runner on a run's machine (P10, T2, T3): boot, bootstrap, heartbeat,
+ * workspace, and then the work.
  *
- * In T2 the runner learns who it is, takes its first token, mounts the
- * workspace, and heartbeats `ready` to the plane until told to stop. T3 adds
- * the workspace's contents and T4 the headless root between `ready` and
- * `running`; this module is the skeleton they hang on.
+ * Order: who am I (tags), my first token (SSM), the volume mounted, the
+ * heartbeat started so the plane knows the machine is up and hands back the
+ * clone's credential, the workspace prepared on the volume (mirror, checkout
+ * at the authorised SHA, plan hashed, setup run), `ready` reported, and then
+ * whatever work T4 supplies (the headless root) until it ends or the plane
+ * says stop.
  */
+import type { Dispatch, ProgramContract } from "@nightshift/contracts";
 import type { RunScope } from "@nightshift/core";
-import {
-  createFetchTransport,
-  type TokenProvider,
-  type Transport,
-} from "@nightshift/persistence/http";
 import { type RunnerIdentity, readIdentity, takeFirstToken } from "./bootstrap.js";
 import { createHeartbeat, type Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
+import type { EngineTokens, PlaneFactory, RunnerPlane } from "./plane.js";
 import { createSampler } from "./sampler.js";
 import { mountWorkspace } from "./volume.js";
+import { layoutOf, prepareWorkspace, type WorkspaceLayout } from "./workspace.js";
 
 export interface RunnerOptions {
   readonly machine: Machine;
@@ -25,24 +26,29 @@ export interface RunnerOptions {
   readonly workspace: string;
   readonly device: string;
   readonly engineUser: string;
-  /** Injected by the tests; the real one is `createFetchTransport`. */
-  readonly transportFor?: (endpoint: string, tokens: TokenProvider) => Transport;
-  /** What runs between `ready` and the stop: T3 and T4 supply it; T2 waits. */
+  /** The plane, from the composition root (AR-2) or a test's fake. */
+  readonly plane: PlaneFactory;
+  /** What runs between `ready` and the stop: T4 supplies the headless root; T3 waits. */
   readonly work?: (context: RunnerContext) => Promise<void>;
+  /** How long to wait for the plane to hand over the clone's credential. */
+  readonly credentialTimeoutMs?: number;
 }
 
 export interface RunnerContext {
   readonly identity: RunnerIdentity;
   readonly scope: RunScope;
-  readonly transport: Transport;
+  readonly plane: RunnerPlane;
   readonly heartbeat: Heartbeat;
   readonly machine: Machine;
+  readonly layout: WorkspaceLayout;
+  readonly dispatch: Dispatch;
+  readonly program: ProgramContract;
 }
 
 /** A token the heartbeat replaces (D-P10-20); never on disk. */
 const renewableToken = (initial: string) => {
   let current = initial;
-  const provider: TokenProvider = { idToken: async () => current };
+  const provider: EngineTokens = { idToken: async () => current };
   return {
     provider,
     install: (token: string) => {
@@ -51,14 +57,32 @@ const renewableToken = (initial: string) => {
   };
 };
 
+/** Waits for the heartbeat to bring the clone's credential, or gives up. */
+const awaitGithubToken = async (
+  heartbeat: Heartbeat,
+  machine: Machine,
+  timeoutMs: number,
+): Promise<string> => {
+  const deadline = machine.now() + timeoutMs;
+  for (;;) {
+    const token = heartbeat.last?.credentials?.github;
+    if (token !== undefined) return token;
+    if (heartbeat.last?.stop === true) {
+      throw new Error("told to stop before the workspace was made");
+    }
+    if (machine.now() >= deadline) {
+      throw new Error("the plane sent no GitHub credential; is the org's installation recorded?");
+    }
+    await machine.sleep(1000);
+  }
+};
+
 export const runRunner = async (options: RunnerOptions): Promise<number> => {
   const { machine, log } = options;
   const identity = await readIdentity(machine);
   log(`run ${identity.scope.runId}, generation ${identity.generation}, on ${identity.instanceId}`);
   const token = renewableToken(await takeFirstToken(machine, identity));
-  const transport = (
-    options.transportFor ?? ((endpoint, tokens) => createFetchTransport({ endpoint, tokens }))
-  )(identity.apiEndpoint, token.provider);
+  const plane = options.plane(identity.apiEndpoint, token.provider);
 
   await mountWorkspace(machine, {
     device: options.device,
@@ -68,26 +92,74 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   log(`workspace mounted at ${options.workspace}`);
 
   const heartbeat = createHeartbeat({
-    scope: identity.scope,
     generation: identity.generation,
-    transport,
+    post: (body) => plane.heartbeat(identity.scope, body),
     installToken: token.install,
     sample: createSampler(machine, options.workspace).sample,
     sleep: machine.sleep,
     now: machine.now,
     log,
   });
-  heartbeat.report("ready");
-
   const beating = heartbeat.run();
-  const context: RunnerContext = {
-    identity,
-    scope: identity.scope,
-    transport,
-    heartbeat,
-    machine,
-  };
-  // With no work to do (T2), the runner's job is to stay: it heartbeats until
+
+  // The workspace (T3): what the run is, from the plane; the clone's
+  // credential, from the heartbeat; then the volume filled and setup run.
+  const layout = layoutOf(options.workspace, identity.scope.runId);
+  let context: RunnerContext;
+  try {
+    const [dispatch, program] = await Promise.all([
+      plane.dispatch(identity.scope),
+      plane.program(identity.scope),
+    ]);
+    if (dispatch === undefined || program === undefined) {
+      throw new Error("the plane has no dispatch or program for this run");
+    }
+    const planDocument =
+      program.planDocument === undefined
+        ? undefined
+        : await plane.planDocument(identity.scope, program.planDocument.sha256);
+    if (planDocument === undefined) {
+      throw new Error("the ratified plan's document is not on the plane");
+    }
+    const githubToken = await awaitGithubToken(
+      heartbeat,
+      machine,
+      options.credentialTimeoutMs ?? 2 * 60_000,
+    );
+    const prepared = await prepareWorkspace(machine, {
+      layout,
+      dispatch,
+      program,
+      planText: planDocument.text,
+      githubToken,
+      log,
+    });
+    log(
+      `workspace ${prepared.warm ? "warm" : "cold"}: setup took ${prepared.setupSeconds.toFixed(1)}s`,
+    );
+    heartbeat.describeSetup(prepared.setupSeconds, prepared.lockfileHashes);
+    heartbeat.report("ready");
+    context = {
+      identity,
+      scope: identity.scope,
+      plane,
+      heartbeat,
+      machine,
+      layout,
+      dispatch,
+      program,
+    };
+  } catch (error) {
+    log(
+      `the workspace could not be prepared: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    heartbeat.end();
+    await beating;
+    await heartbeat.farewell("stopped");
+    return 1;
+  }
+
+  // With no work yet (T3), the runner's job is to stay: it heartbeats until
   // the plane says stop, and a promise that never settles is what "no work"
   // means to the race below.
   const working = (

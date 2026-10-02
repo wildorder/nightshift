@@ -2,9 +2,9 @@
  * The runner's bootstrap, sampler, heartbeat and volume, over a fake machine
  * and a fake plane (P10, T2).
  */
-import type { HeartbeatResponse } from "@nightshift/contracts";
-import { createFixtures } from "@nightshift/core";
-import type { Transport } from "@nightshift/persistence/http";
+import { createHash } from "node:crypto";
+import { type HeartbeatResponse, HeartbeatResponseSchema } from "@nightshift/contracts";
+import { createFixtures, makeDispatch, makeProgramContract, planHash } from "@nightshift/core";
 import { describe, expect, it } from "vitest";
 import {
   BootstrapError,
@@ -17,8 +17,10 @@ import {
 import { createHeartbeat } from "./heartbeat.js";
 import type { CommandResult, Machine } from "./machine.js";
 import { runRunner } from "./main.js";
+import type { PlaneFactory } from "./plane.js";
 import { countOomKills, cpuBusyPct, parseCpuTimes, parseDiskPct, parseMeminfo } from "./sampler.js";
 import { mountWorkspace, resolveDevice } from "./volume.js";
+import { layoutOf, prepareWorkspace } from "./workspace.js";
 
 const f = createFixtures();
 const ok = (stdout = ""): CommandResult => ({ exitCode: 0, stdout, stderr: "" });
@@ -171,18 +173,18 @@ describe("the heartbeat (D-P10-18)", () => {
   const plane = (answers: readonly (HeartbeatResponse | Error)[]) => {
     const bodies: unknown[] = [];
     let index = 0;
-    const transport: Transport = async (request) => {
-      bodies.push(request.body);
+    const post = async (body: unknown) => {
+      bodies.push(body);
       const answer = answers[Math.min(index, answers.length - 1)];
       index += 1;
       if (answer instanceof Error) throw answer;
-      return { status: 200, body: answer };
+      return answer;
     };
-    return { transport, bodies };
+    return { post, bodies };
   };
 
   it("sends the pending milestone once, installs each renewed token, and stops when told", async () => {
-    const { transport, bodies } = plane([
+    const { post, bodies } = plane([
       response({ token: "eyJ.second" }),
       response({ status: "running", token: "eyJ.third" }),
       response({ status: "stopping", stop: true }),
@@ -190,9 +192,8 @@ describe("the heartbeat (D-P10-18)", () => {
     const installed: string[] = [];
     let now = 0;
     const heartbeat = createHeartbeat({
-      scope: f.scope,
       generation: 2,
-      transport,
+      post,
       installToken: (token) => installed.push(token),
       sample: async () => ({ memoryPct: 10, cpuPct: 5, diskPct: 1, swapUsed: false, oomKills: 0 }),
       sleep: async (ms) => {
@@ -213,11 +214,10 @@ describe("the heartbeat (D-P10-18)", () => {
   });
 
   it("gives up after three failures in a row, so a lost plane means a lost lease here too", async () => {
-    const { transport } = plane([new Error("ECONNREFUSED")]);
+    const { post } = plane([new Error("ECONNREFUSED")]);
     const heartbeat = createHeartbeat({
-      scope: f.scope,
       generation: 2,
-      transport,
+      post,
       installToken: () => undefined,
       sample: async () => undefined,
       sleep: async () => undefined,
@@ -279,65 +279,201 @@ describe("the workspace volume (D-P10-15)", () => {
   });
 });
 
-describe("the runner end to end over fakes (T2)", () => {
-  it("with no work yet, stays and heartbeats ready until the plane says stop", async () => {
-    const machine = fakeMachine();
-    const bodies: unknown[] = [];
-    let beats = 0;
-    const code = await runRunner({
-      machine,
-      log: () => undefined,
-      workspace: "/workspace",
-      device: "/dev/xvdf",
-      engineUser: "engine",
-      transportFor: () => async (request) => {
-        bodies.push(request.body);
-        beats += 1;
-        return {
-          status: 200,
-          body: {
-            generation: 2,
-            status: beats < 3 ? "ready" : "stopping",
-            leaseExpiresAt: "2026-10-01T12:01:00.000Z",
-            stop: beats >= 3,
-          },
-        };
+describe("the workspace (T3, D-P10-15)", () => {
+  const program = makeProgramContract(f, {
+    repository: {
+      url: "https://github.com/wildorder/fixture",
+      baseBranch: "main",
+      programBranch: "program/fixture",
+    },
+    setup: [{ id: "install", command: "npm ci --prefer-offline" }],
+  });
+  const planText = "# Plan\n";
+  const dispatch = makeDispatch(f, {
+    input: {
+      repositoryUrl: "https://github.com/wildorder/fixture",
+      branch: "program/fixture",
+      baseSha: "a".repeat(40),
+      planHash: planHash(program, planText, (text) =>
+        createHash("sha256").update(text).digest("hex"),
+      ).hash,
+    },
+  });
+  const layout = layoutOf("/workspace", f.scope.runId);
+
+  /** A machine with git on it: `warm` says whether the mirror and checkout already exist. */
+  const gitMachine = (warm: boolean) =>
+    fakeMachine({
+      exec: (file, args) => {
+        const joined = [file, ...args].join(" ");
+        if (joined.includes("rev-parse --is-bare-repository")) return warm ? ok("true\n") : fail();
+        if (joined.includes("rev-parse --git-dir")) return warm ? ok(".git\n") : fail();
+        if (joined.includes("status --porcelain")) return ok("");
+        if (file === "env" && args.includes("bash")) return ok("installed\n");
+        return undefined;
       },
     });
-    expect(code).toBe(0);
-    // Three beats, then the farewell carrying `stopped`.
-    expect(bodies).toHaveLength(4);
-    expect(bodies[0]).toMatchObject({ report: "ready" });
-    expect((bodies[1] as { report?: string }).report).toBeUndefined();
-    expect(bodies[3]).toMatchObject({ report: "stopped" });
+
+  it("clones the mirror and the checkout on a cold volume, runs setup against the stores, and hashes the lockfiles", async () => {
+    const machine = gitMachine(false);
+    machine.files.set(`${layout.checkout}/package-lock.json`, '{"lockfileVersion":3}');
+    const prepared = await prepareWorkspace(machine, {
+      layout,
+      dispatch,
+      program,
+      planText,
+      githubToken: "ghs_read",
+      log: () => undefined,
+    });
+    expect(prepared.warm).toBe(false);
+    expect(Object.keys(prepared.lockfileHashes)).toEqual(["package-lock.json"]);
+    const commands = machine.commands.join("\n");
+    expect(commands).toContain(
+      "clone --mirror https://github.com/wildorder/fixture.git /workspace/mirror.git",
+    );
+    expect(commands).toContain(`checkout -q -B program/fixture ${"a".repeat(40)}`);
+    expect(commands).toContain("npm_config_cache=/workspace/stores/npm");
+    expect(commands).toContain("npm ci --prefer-offline");
+    // The token travels in one command's environment, never in a URL or a file.
+    expect(commands).toContain("NIGHTSHIFT_GIT_TOKEN=ghs_read");
+    expect(commands).not.toContain("ghs_read@");
+    expect([...machine.files.values()].join("\n")).not.toContain("ghs_read");
   });
 
-  it("boots, takes its token, mounts, heartbeats ready, works, reports stopped", async () => {
-    const machine = fakeMachine();
-    const bodies: unknown[] = [];
-    const tokens: string[] = [];
+  it("fetches a warm mirror instead of cloning, and refuses a changed plan before touching git", async () => {
+    const machine = gitMachine(true);
+    const prepared = await prepareWorkspace(machine, {
+      layout,
+      dispatch,
+      program,
+      planText,
+      githubToken: "ghs_read",
+      log: () => undefined,
+    });
+    expect(prepared.warm).toBe(true);
+    expect(machine.commands.join("\n")).toContain("fetch --prune origin");
+    expect(machine.commands.join("\n")).not.toContain("clone --mirror");
+
+    const changed = gitMachine(true);
+    await expect(
+      prepareWorkspace(changed, {
+        layout,
+        dispatch,
+        program,
+        planText: "# Another plan\n",
+        githubToken: "ghs_read",
+        log: () => undefined,
+      }),
+    ).rejects.toThrow(/the plan changed/);
+    expect(changed.commands.some((command) => command.includes("git"))).toBe(false);
+  });
+
+  it("fails setup loudly with the step's id", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) => {
+        const joined = [file, ...args].join(" ");
+        if (joined.includes("rev-parse --is-bare-repository")) return ok("true\n");
+        if (joined.includes("rev-parse --git-dir")) return ok(".git\n");
+        if (joined.includes("status --porcelain")) return ok("");
+        if (file === "env" && args.includes("bash")) return fail("npm ERR! missing lockfile");
+        return undefined;
+      },
+    });
+    await expect(
+      prepareWorkspace(machine, {
+        layout,
+        dispatch,
+        program,
+        planText,
+        githubToken: "ghs_read",
+        log: () => undefined,
+      }),
+    ).rejects.toThrow(/setup install exited 1/);
+  });
+});
+
+describe("the runner end to end over fakes (T2, T3)", () => {
+  /** A plane that knows one run: its dispatch, program and plan, and heartbeats with the clone's token. */
+  const fakePlane = (
+    program: ReturnType<typeof makeProgramContract>,
+    dispatch: ReturnType<typeof makeDispatch>,
+    planText: string,
+    status: (beat: number) => { status: string; stop: boolean },
+  ) => {
+    const heartbeats: unknown[] = [];
+    const tokensSeen: string[] = [];
     let beats = 0;
-    const transportFor = (
-      endpoint: string,
-      provider: { idToken(): Promise<string> },
-    ): Transport => {
+    const planeFor: PlaneFactory = (endpoint, tokens) => {
       expect(endpoint).toBe("https://api.dev.nightshift.invalid");
-      return async (request) => {
-        tokens.push(await provider.idToken());
-        bodies.push(request.body);
-        beats += 1;
-        return {
-          status: 200,
-          body: {
+      const seen = async () => void tokensSeen.push(await tokens.idToken());
+      return {
+        dispatch: async () => {
+          await seen();
+          return dispatch;
+        },
+        program: async () => {
+          await seen();
+          return program;
+        },
+        planDocument: async () => {
+          await seen();
+          return { text: planText };
+        },
+        heartbeat: async (_scope, body) => {
+          await seen();
+          heartbeats.push(body);
+          beats += 1;
+          return HeartbeatResponseSchema.parse({
             generation: 2,
-            status: beats === 1 ? "ready" : "stopping",
+            ...status(beats),
             leaseExpiresAt: "2026-10-01T12:01:00.000Z",
-            stop: false,
             token: `eyJ.renewed.${beats}`,
-          },
-        };
+            credentials: { github: "ghs_read" },
+          });
+        },
       };
     };
+    return { planeFor, heartbeats, tokensSeen, beats: () => beats };
+  };
+
+  const planText = "# Plan\n";
+  const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+  const program = makeProgramContract(f, {
+    repository: {
+      url: "https://github.com/wildorder/fixture",
+      baseBranch: "main",
+      programBranch: "program/fixture",
+    },
+    planDocument: { uri: "s3://plans/x", sha256: sha256(planText), sizeBytes: planText.length },
+    setup: [{ id: "install", command: "npm ci" }],
+  });
+  const dispatch = makeDispatch(f, {
+    status: "provisioning",
+    generation: 2,
+    input: {
+      repositoryUrl: "https://github.com/wildorder/fixture",
+      branch: "program/fixture",
+      baseSha: "a".repeat(40),
+      planHash: planHash(program, planText, sha256).hash,
+    },
+  });
+  const gitMachine = () =>
+    fakeMachine({
+      exec: (file, args) => {
+        const joined = [file, ...args].join(" ");
+        if (joined.includes("rev-parse --is-bare-repository")) return fail();
+        if (joined.includes("rev-parse --git-dir")) return fail();
+        if (joined.includes("status --porcelain")) return ok("");
+        if (file === "env" && args.includes("bash")) return ok("");
+        return undefined;
+      },
+    });
+
+  it("with no work yet, prepares the workspace, reports ready with setup's facts, and stays until told to stop", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, (beat) =>
+      beat < 4 ? { status: "ready", stop: false } : { status: "stopping", stop: true },
+    );
     const lines: string[] = [];
     const code = await runRunner({
       machine,
@@ -345,17 +481,57 @@ describe("the runner end to end over fakes (T2)", () => {
       workspace: "/workspace",
       device: "/dev/xvdf",
       engineUser: "engine",
-      transportFor,
+      plane: plane.planeFor,
+    });
+    expect(code).toBe(0);
+    const ready = plane.heartbeats.find((body) => (body as { report?: string }).report === "ready");
+    expect(ready).toMatchObject({ report: "ready", setupSeconds: expect.any(Number) });
+    expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped" });
+    expect(plane.tokensSeen[0]).toBe("eyJ.first.token");
+    expect(plane.tokensSeen.at(-1)).toMatch(/^eyJ\.renewed\./);
+    expect(lines.join("\n")).toContain("workspace cold");
+  });
+
+  it("works between ready and stopped, and reports stopped when the work ends", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
       work: async (context) => {
         expect(context.scope).toEqual(f.scope);
+        expect(context.layout.checkout).toBe("/workspace/checkout");
         await machine.sleep(25_000);
       },
     });
     expect(code).toBe(0);
-    expect((bodies[0] as { report?: string }).report).toBe("ready");
-    expect(bodies.at(-1)).toMatchObject({ report: "stopped" });
-    expect(tokens[0]).toBe("eyJ.first.token");
-    expect(tokens.at(-1)).toMatch(/^eyJ\.renewed\./);
-    expect(lines.join("\n")).toContain("workspace mounted");
+    expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped" });
+  });
+
+  it("stops and says so when the workspace cannot be made", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, "# Another plan\n", () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    const lines: string[] = [];
+    const code = await runRunner({
+      machine,
+      log: (line) => lines.push(line),
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+    });
+    expect(code).toBe(1);
+    expect(lines.join("\n")).toContain("the plan changed");
+    expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped" });
   });
 });

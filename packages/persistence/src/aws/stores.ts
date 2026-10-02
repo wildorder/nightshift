@@ -11,6 +11,7 @@ import {
   CheckpointSchema,
   ComputeUtilizationSchema,
   DecisionSchema,
+  type Dispatch,
   DispatchSchema,
   ExaminationSchema,
   ExecutionNodeSchema,
@@ -203,9 +204,23 @@ export const createAwsStores = ({
     dispatches: {
       put: async (dispatch) => {
         const parsed = DispatchSchema.parse(dispatch);
-        await putRecord("Dispatch", keys.dispatch(runScopeOf(parsed)), parsed);
+        await putRecord(
+          "Dispatch",
+          keys.dispatch(runScopeOf(parsed)),
+          parsed,
+          keys.dispatchIndex(parsed.status, parsed.updatedAt, parsed.runId),
+        );
       },
       get: (scope) => getRecord(DispatchSchema, keys.dispatch(scope)),
+      listByStatus: async (statuses) => {
+        const found: Dispatch[] = [];
+        for (const status of statuses) {
+          found.push(
+            ...(await listAll(DispatchSchema, inIndex(keys.dispatchIndexPartition(status)))),
+          );
+        }
+        return found;
+      },
     },
 
     // P10 (D-P10-14b): under the project, newest run first.

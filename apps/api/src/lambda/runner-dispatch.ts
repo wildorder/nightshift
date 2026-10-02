@@ -1,15 +1,37 @@
 /**
- * The dispatch Lambda (P10, D-P10-18): takes a `requested` dispatch to
- * `provisioning` by creating the run's volume from the project's warm snapshot
- * and launching its machine (T3).
+ * The dispatch Lambda (P10, D-P10-18): invoked by the API when a dispatch is
+ * accepted or resumed, and by the reconciler for a replacement. Takes the
+ * dispatch from `requested` (or a fresh `provisioning`) to a machine with its
+ * workspace volume, a first token in SSM, and a record that names them.
  *
- * T2 deploys the function with the IAM it will need and a handler that only
- * says what it was asked, so the stack, its role and its wiring are proven
- * before any machine is launched by code.
+ * Composition only: the logic is `runner/provision.ts`, held to the offline
+ * suite over fakes.
  */
-import { loadConfig } from "../config.js";
+import { EC2Client } from "@aws-sdk/client-ec2";
+import { KMSClient } from "@aws-sdk/client-kms";
+import { SSMClient } from "@aws-sdk/client-ssm";
+import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
+import { systemClock } from "@nightshift/core";
+import { createAwsClients, createAwsStores } from "@nightshift/persistence/aws";
+import { createEc2Compute, createSsmFirstTokens } from "../aws/ec2-compute.js";
+import { loadConfig, loadRunnerConfig, loadTokenConfig } from "../config.js";
+import { type ProvisionOutcome, provisionDispatch } from "../runner/provision.js";
+import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
 
 const config = loadConfig(process.env);
+const tokenConfig = loadTokenConfig(process.env);
+const runner = loadRunnerConfig(process.env);
+const stores = createAwsStores({ tableName: config.tableName, table: createAwsClients().table });
+const compute = createEc2Compute({
+  ec2: new EC2Client({}),
+  launchTemplateId: runner.launchTemplateId,
+  imageVersionTag: "nightshift:amiVersion",
+});
+const tokens = createSsmFirstTokens(new SSMClient({}));
+const signer = createKmsExecutionTokenSigner({
+  kms: new KMSClient({}),
+  keyId: tokenConfig.executionTokenKeyId,
+});
 
 export interface DispatchEvent {
   readonly projectId: string;
@@ -17,9 +39,29 @@ export interface DispatchEvent {
   readonly runId: string;
 }
 
-export const handler = async (event: DispatchEvent): Promise<{ readonly accepted: false }> => {
-  console.warn(
-    `dispatch Lambda (${config.stage}) received run ${event.runId}; provisioning arrives in T3`,
+export const handler = async (event: DispatchEvent): Promise<ProvisionOutcome> => {
+  const scope = {
+    projectId: ProjectIdSchema.parse(event.projectId),
+    programId: ProgramIdSchema.parse(event.programId),
+    runId: RunIdSchema.parse(event.runId),
+  };
+  const outcome = await provisionDispatch(
+    {
+      stores,
+      compute,
+      tokens,
+      signer,
+      clock: systemClock,
+      stage: config.stage,
+      apiEndpoint: runner.apiEndpoint,
+      issuer: tokenConfig.tokenIssuer,
+      imageVersion: runner.imageVersion,
+      subnetIds: runner.subnetIds,
+    },
+    scope,
   );
-  return { accepted: false };
+  console.warn(
+    `dispatch ${scope.runId}: ${outcome.kind}${"reason" in outcome ? ` (${outcome.reason})` : ""}`,
+  );
+  return outcome;
 };

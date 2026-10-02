@@ -20,7 +20,12 @@
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
+import {
+  HeartbeatResponseSchema,
+  ProgramIdSchema,
+  ProjectIdSchema,
+  RunIdSchema,
+} from "@nightshift/contracts";
 import type {
   ArtifactBodyStore,
   ExecutionTokenMinter,
@@ -48,10 +53,33 @@ import {
   createLocalPaths,
   createTokenProvider,
   requireProfile,
+  routes,
+  send,
   staticTokenProvider,
   type Transport,
 } from "@nightshift/persistence/http";
 import { type Env, EXECUTION_TOKEN_ENV, type Role, workerLaunchEnv } from "./role.js";
+import type { PlaneFactory } from "./runner/plane.js";
+
+/**
+ * The runner's view of the control plane (P10, T3), over the same HTTP adapter
+ * the server uses. The engine token is renewed by the heartbeat, so the
+ * provider is asked for it on every request rather than once.
+ */
+export const createRunnerPlane: PlaneFactory = (endpoint, tokens) => {
+  const transport = createFetchTransport({ endpoint, tokens });
+  const stores = createHttpStores({ transport });
+  const planning = createHttpPlanning({ transport });
+  return {
+    dispatch: (scope) => stores.dispatches.get(scope),
+    program: (scope) => stores.programContracts.get(scope.projectId, scope.programId),
+    planDocument: (scope, sha256) => planning.planDocument(scope, sha256),
+    heartbeat: (scope, body) =>
+      send(transport, { method: "POST", path: routes.dispatchHeartbeat(scope), body }).then(
+        (response) => HeartbeatResponseSchema.parse(response),
+      ),
+  };
+};
 
 /**
  * Where the slice suite points the server at its own control plane and its own

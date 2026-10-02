@@ -7,7 +7,9 @@
  * the first invocation loudly rather than a later request obscurely.
  */
 import { KMSClient } from "@aws-sdk/client-kms";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { S3Client } from "@aws-sdk/client-s3";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { systemClock } from "@nightshift/core";
 import {
   createArtifactDownloadSigner,
@@ -18,6 +20,8 @@ import {
 } from "@nightshift/persistence/aws";
 import { createKmsEnvelope } from "../aws/kms-envelope.js";
 import { loadConfig, loadTokenConfig } from "../config.js";
+import { createGitHubAppClient, type GitHubAppSecret } from "../github/app.js";
+import type { Dispatcher } from "../http.js";
 import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
 import { createApiLambdaHandler } from "./api-handler.js";
 
@@ -78,6 +82,47 @@ const envelope =
     ? undefined
     : createKmsEnvelope({ kms: new KMSClient({}), keyId: config.credentialsKeyId });
 
+/**
+ * The Nightshift GitHub App (P10, D-P10-02): the API verifies an installation,
+ * a branch head and mints a machine's read token with it. The secret is read
+ * once per cold start and held in memory.
+ */
+const githubSecret = (() => {
+  let cached: Promise<GitHubAppSecret> | undefined;
+  return (): Promise<GitHubAppSecret> => {
+    cached ??= new SecretsManagerClient({})
+      .send(new GetSecretValueCommand({ SecretId: config.githubAppSecret }))
+      .then((found) => {
+        const parsed = JSON.parse(found.SecretString ?? "{}") as Partial<GitHubAppSecret>;
+        if (parsed.appId === undefined || parsed.privateKey === undefined) {
+          throw new Error(`secret ${config.githubAppSecret} has no appId or privateKey`);
+        }
+        return { appId: String(parsed.appId), privateKey: parsed.privateKey };
+      });
+    return cached;
+  };
+})();
+const github =
+  config.githubAppSecret === undefined
+    ? undefined
+    : createGitHubAppClient({ secret: githubSecret });
+
+/** The dispatch Lambda (D-P10-18), invoked asynchronously: the API records, the function provisions. */
+const dispatcher: Dispatcher | undefined =
+  config.dispatchFunctionArn === undefined
+    ? undefined
+    : {
+        provision: async (scope) => {
+          await new LambdaClient({}).send(
+            new InvokeCommand({
+              FunctionName: config.dispatchFunctionArn,
+              InvocationType: "Event",
+              Payload: Buffer.from(JSON.stringify(scope)),
+            }),
+          );
+        },
+      };
+
 export const handler = createApiLambdaHandler(() => ({
   stores,
   clock: systemClock,
@@ -86,6 +131,8 @@ export const handler = createApiLambdaHandler(() => ({
   plans,
   tokens,
   ...(envelope === undefined ? {} : { envelope }),
+  ...(github === undefined ? {} : { github }),
+  ...(dispatcher === undefined ? {} : { dispatcher }),
   ...(config.runnerAmiVersion === undefined
     ? {}
     : { runner: { amiVersion: config.runnerAmiVersion } }),

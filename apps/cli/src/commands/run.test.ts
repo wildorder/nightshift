@@ -108,7 +108,7 @@ describe("nightshift run", () => {
     expect(created.out.join("\n")).toContain(repoPath);
   });
 
-  it("accepts --remote and refuses it, so the flag's shape exists from day one", async () => {
+  it("refuses --remote for a contract file: remote execution is for a ratified plan (D-P10-09)", async () => {
     const { created, plane, contractPath } = await prepare();
 
     const failure = await run(created.environment, {
@@ -118,7 +118,8 @@ describe("nightshift run", () => {
 
     expect(failure).toBeInstanceOf(UsageError);
     expect((failure as Error).message).toBe(REMOTE_REFUSAL);
-    expect(REMOTE_REFUSAL).toBe("remote execution arrives in P10");
+    // P10 (D-P10-09): a contract file is not a ratified planned program.
+    expect(REMOTE_REFUSAL).toMatch(/ratified planned program/);
     // Refused before anything was written.
     expect(plane.calls).toHaveLength(0);
   });

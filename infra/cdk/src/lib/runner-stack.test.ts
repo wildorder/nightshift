@@ -265,19 +265,32 @@ describe("NightshiftRunnerStack", () => {
       }
     });
 
-    it("passes only the machine's role to EC2, and signs first tokens with the token key", () => {
+    it("passes only the machine's role to EC2, from the two functions that make machines", () => {
       const { template } = synth();
       const passes = statementsOf(template).filter((statement) =>
         actionsOf(statement).includes("iam:PassRole"),
       );
-      expect(passes).toHaveLength(1);
-      expect(JSON.stringify(passes[0]?.Resource)).toContain("MachineRole");
-      expect(passes[0]?.Condition).toEqual({
-        StringEquals: { "iam:PassedToService": "ec2.amazonaws.com" },
-      });
+      // The dispatch Lambda and the reconciler (which provisions what the API's
+      // invocation did not reach, and replacements in T6); never the publisher.
+      expect(passes).toHaveLength(2);
+      for (const pass of passes) {
+        expect(JSON.stringify(pass.Resource)).toContain("MachineRole");
+        expect(pass.Condition).toEqual({
+          StringEquals: { "iam:PassedToService": "ec2.amazonaws.com" },
+        });
+      }
       expect(actionsOfRole(template, "DispatchFunctionRole")).toContain("kms:Sign");
-      expect(actionsOfRole(template, "ReconcilerFunctionRole")).not.toContain("kms:Sign");
+      expect(actionsOfRole(template, "ReconcilerFunctionRole")).toContain("kms:Sign");
       expect(actionsOfRole(template, "PublisherFunctionRole")).not.toContain("kms:Sign");
+      expect(actionsOfRole(template, "PublisherFunctionRole")).not.toContain("ec2:RunInstances");
+    });
+
+    it("exports the dispatch function's ARN for the API stack to invoke", () => {
+      const { template } = synth();
+      const outputs = template.toJSON().Outputs as Record<string, { Export?: { Name?: string } }>;
+      expect(outputs.DispatchFunctionArn?.Export?.Name).toBe(
+        "nightshift-dev-runner-DispatchFunctionArn",
+      );
     });
 
     it("attaches no managed policy to any role, and no wildcard action anywhere", () => {

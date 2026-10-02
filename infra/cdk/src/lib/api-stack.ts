@@ -29,7 +29,7 @@
  * create a certificate CloudFormation would otherwise wait on.
  */
 import { fileURLToPath } from "node:url";
-import { CfnOutput, Duration, Fn, RemovalPolicy, Stack } from "aws-cdk-lib";
+import { Aws, CfnOutput, Duration, Fn, RemovalPolicy, Stack } from "aws-cdk-lib";
 import {
   ApiMapping,
   CorsHttpMethod,
@@ -56,6 +56,7 @@ import type { Construct } from "constructs";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
 import { NODE_INDEX_NAME } from "./data-stack.js";
 import { apiHostnameFor, type HostnamesMode, studioOriginsFor, ZONE_NAME } from "./hostnames.js";
+import { GITHUB_APP_SECRET_NAME, runnerExportName } from "./runner-stack.js";
 import {
   assertValidStage,
   dnsExportName,
@@ -166,14 +167,24 @@ export const LOG_RETENTION = logs.RetentionDays.ONE_MONTH;
  */
 export const AUTHORIZER_CACHE_TTL = Duration.minutes(5);
 
+export interface NightshiftApiStackProps extends NightshiftStackProps {
+  /**
+   * Whether the runner stack is deployed beside this one (P10, D-P10-18). When
+   * it is, the API function may invoke the dispatch Lambda and read the GitHub
+   * App's secret; when it is not, the dispatch routes answer 501 and nothing
+   * here names a runner resource.
+   */
+  readonly runner?: boolean;
+}
+
 export class NightshiftApiStack extends Stack {
   readonly stage: string;
   readonly hostnames: HostnamesMode;
   /** `https://api.<stage>.nightshift.wildorder.dev`, or `undefined` in `zone-only` mode. */
   readonly customEndpoint: string | undefined;
 
-  constructor(scope: Construct, id: string, props: NightshiftStackProps) {
-    const { stage, hostnames: _hostnames, ...stackProps } = props;
+  constructor(scope: Construct, id: string, props: NightshiftApiStackProps) {
+    const { stage, hostnames: _hostnames, runner, ...stackProps } = props;
     assertValidStage(stage);
     super(scope, id, { stackName: stackNameFor(stage, "api"), ...stackProps });
     this.stage = stage;
@@ -203,6 +214,35 @@ export class NightshiftApiStack extends Stack {
       NIGHTSHIFT_CREDENTIALS_TABLE_NAME: imported("CredentialsTableName"),
       NIGHTSHIFT_CREDENTIALS_KEY_ID: imported("CredentialsKeyId"),
     };
+
+    /**
+     * P10 (D-P10-02, D-P10-18): with the runner stack deployed, the API verifies
+     * dispatches through the GitHub App and invokes the dispatch Lambda.
+     */
+    const dispatchFunctionArn =
+      runner === true ? Fn.importValue(runnerExportName(stage, "DispatchFunctionArn")) : undefined;
+    const runnerEnvironment =
+      dispatchFunctionArn === undefined
+        ? {}
+        : {
+            NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME,
+            NIGHTSHIFT_DISPATCH_FUNCTION_ARN: dispatchFunctionArn,
+          };
+    const runnerStatements =
+      dispatchFunctionArn === undefined
+        ? []
+        : [
+            new iam.PolicyStatement({
+              actions: ["lambda:InvokeFunction"],
+              resources: [dispatchFunctionArn],
+            }),
+            new iam.PolicyStatement({
+              actions: ["secretsmanager:GetSecretValue"],
+              resources: [
+                `arn:${Aws.PARTITION}:secretsmanager:${Aws.REGION}:${Aws.ACCOUNT_ID}:secret:${GITHUB_APP_SECRET_NAME}-*`,
+              ],
+            }),
+          ];
 
     /**
      * What the API function needs beyond the data stack's names (P4, T2).
@@ -288,12 +328,18 @@ export class NightshiftApiStack extends Stack {
         resources: [credentialsKeyArn],
         conditions: { Null: { "kms:EncryptionContext:orgId": "false" } },
       }),
+      ...runnerStatements,
     ]);
     const apiFunction = this.nodeFunction("ApiFunction", {
       entry: API_ENTRY,
       role: apiRole,
       logGroup: apiLogs,
-      environment: { ...environment, ...tokenEnvironment, ...credentialsEnvironment },
+      environment: {
+        ...environment,
+        ...tokenEnvironment,
+        ...credentialsEnvironment,
+        ...runnerEnvironment,
+      },
       // API Gateway gives an HTTP API integration 30 seconds; stay well inside it.
       timeout: Duration.seconds(10),
       memorySize: 512,

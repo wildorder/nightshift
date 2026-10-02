@@ -1,0 +1,19 @@
+{
+  "name": "nightshift-remote-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The repository a Nightshift remote run checks out: small, with a lockfile whose install is worth caching (P10, D-P10-15).",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --test-reporter=tap"
+  },
+  "dependencies": {
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

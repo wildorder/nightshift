@@ -52,8 +52,18 @@ export const AMI_VERSION_TAG = "nightshift:amiVersion";
 /** The SSM parameter path the dispatch Lambda writes a machine's first engine token under. */
 export const dispatchParameterPrefix = (stage: string): string => `/nightshift/${stage}/dispatch/`;
 
-/** The GitHub App's secret (H-P10-04), the publisher's and nobody else's. */
+/**
+ * The GitHub App's secret (H-P10-04). Two control-plane functions read it: the
+ * publisher (write, T4) and the API (read: installations, branch heads, a
+ * machine's clone token). No machine ever does.
+ */
 export const GITHUB_APP_SECRET_NAME = "nightshift/github-app";
+
+/** The runner stack's one export the API stack imports. */
+export const RUNNER_EXPORT_KEYS = ["DispatchFunctionArn"] as const;
+export type RunnerExportKey = (typeof RUNNER_EXPORT_KEYS)[number];
+export const runnerExportName = (stage: string, key: RunnerExportKey): string =>
+  `nightshift-${stage}-runner-${key}`;
 
 /** The latest Amazon Linux 2023 arm64 AMI, resolved by CloudFormation at deploy time. */
 export const AL2023_ARM64_PARAMETER =
@@ -299,6 +309,18 @@ export class NightshiftRunnerStack extends Stack {
     };
     const managedOnly = { StringEquals: { [`aws:ResourceTag/${MANAGED_TAG}`]: "true" } };
 
+    /** What makes a machine: the template, the subnets, the image version, the token key (T3). */
+    const machineEnvironment = {
+      NIGHTSHIFT_LAUNCH_TEMPLATE_ID: launchTemplate.ref,
+      NIGHTSHIFT_MACHINE_SUBNETS: Fn.join(
+        ",",
+        vpc.publicSubnets.map((subnet) => subnet.subnetId),
+      ),
+      NIGHTSHIFT_IMAGE_VERSION: imageVersion,
+      NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID: imported("ExecutionTokenKeyId"),
+      NIGHTSHIFT_TOKEN_ISSUER: `https://${apiHostnameFor(stage)}`,
+    };
+
     const dispatchLogs = this.logGroup("DispatchFunctionLogs");
     const dispatchRole = this.executionRole("DispatchFunctionRole", dispatchLogs, [
       new iam.PolicyStatement({
@@ -326,6 +348,8 @@ export class NightshiftRunnerStack extends Stack {
           `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:security-group/${machineSecurityGroup.securityGroupId}`,
           `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:subnet/*`,
           `arn:${Aws.PARTITION}:ec2:${Aws.REGION}::image/ami-*`,
+          // The workspace volume is made at launch from the warm snapshot (D-P10-15).
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}::snapshot/*`,
         ],
       }),
       new iam.PolicyStatement({
@@ -345,7 +369,12 @@ export class NightshiftRunnerStack extends Stack {
         conditions: managedOnly,
       }),
       new iam.PolicyStatement({
-        actions: ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeImages"],
+        actions: [
+          "ec2:DescribeInstances",
+          "ec2:DescribeVolumes",
+          "ec2:DescribeImages",
+          "ec2:DescribeSnapshots",
+        ],
         resources: ["*"],
       }),
       iam.PolicyStatement.fromJson({
@@ -369,13 +398,7 @@ export class NightshiftRunnerStack extends Stack {
       logGroup: dispatchLogs,
       environment: {
         ...environment,
-        NIGHTSHIFT_LAUNCH_TEMPLATE_ID: launchTemplate.ref,
-        NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID: imported("ExecutionTokenKeyId"),
-        NIGHTSHIFT_TOKEN_ISSUER: `https://${apiHostnameFor(stage)}`,
-        NIGHTSHIFT_MACHINE_SUBNETS: Fn.join(
-          ",",
-          vpc.publicSubnets.map((subnet) => subnet.subnetId),
-        ),
+        ...machineEnvironment,
       },
       timeout: Duration.minutes(2),
       memorySize: 512,
@@ -406,17 +429,51 @@ export class NightshiftRunnerStack extends Stack {
         actions: ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeSnapshots"],
         resources: ["*"],
       }),
-      // A replacement is launched by the dispatch Lambda, which the reconciler invokes.
+      // The reconciler provisions what the API's invocation did not reach and
+      // launches replacements (T6), so it makes machines as the dispatch does.
       new iam.PolicyStatement({
-        actions: ["lambda:InvokeFunction"],
-        resources: [dispatchFunction.functionArn],
+        actions: ["ec2:RunInstances"],
+        resources: [
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:instance/*`,
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:volume/*`,
+        ],
+        conditions: { StringEquals: { [`aws:RequestTag/${MANAGED_TAG}`]: "true" } },
+      }),
+      new iam.PolicyStatement({
+        actions: ["ec2:RunInstances"],
+        resources: [
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:launch-template/${launchTemplate.ref}`,
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:network-interface/*`,
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:security-group/${machineSecurityGroup.securityGroupId}`,
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:subnet/*`,
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}::image/ami-*`,
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}::snapshot/*`,
+        ],
+      }),
+      new iam.PolicyStatement({
+        actions: ["ec2:DescribeImages"],
+        resources: ["*"],
+      }),
+      iam.PolicyStatement.fromJson({
+        Effect: "Allow",
+        Action: "iam:PassRole",
+        Resource: machineRole.roleArn,
+        Condition: { StringEquals: { "iam:PassedToService": "ec2.amazonaws.com" } },
+      }),
+      new iam.PolicyStatement({
+        actions: ["ssm:PutParameter", "ssm:DeleteParameter"],
+        resources: [parameterArn],
+      }),
+      new iam.PolicyStatement({
+        actions: ["kms:Sign"],
+        resources: [imported("ExecutionTokenKeyArn")],
       }),
     ]);
     const reconcilerFunction = this.nodeFunction("ReconcilerFunction", {
       entry: RECONCILER_ENTRY,
       role: reconcilerRole,
       logGroup: reconcilerLogs,
-      environment: { ...environment, NIGHTSHIFT_DISPATCH_FUNCTION: dispatchFunction.functionName },
+      environment: { ...environment, ...machineEnvironment },
       timeout: Duration.seconds(50),
       memorySize: 512,
     });
@@ -467,6 +524,11 @@ export class NightshiftRunnerStack extends Stack {
     new CfnOutput(this, "MachineSecurityGroupId", { value: machineSecurityGroup.securityGroupId });
     new CfnOutput(this, "MachineInstanceProfileArn", { value: machineProfile.attrArn });
     new CfnOutput(this, "DispatchFunctionName", { value: dispatchFunction.functionName });
+    // The API stack imports this by name to invoke the dispatch Lambda (D-P10-18).
+    new CfnOutput(this, "DispatchFunctionArn", {
+      value: dispatchFunction.functionArn,
+      exportName: runnerExportName(stage, "DispatchFunctionArn"),
+    });
     new CfnOutput(this, "ReconcilerFunctionName", { value: reconcilerFunction.functionName });
     new CfnOutput(this, "PublisherFunctionName", { value: publisherFunction.functionName });
     new CfnOutput(this, "WorkerUsers", { value: String(WORKER_USERS) });

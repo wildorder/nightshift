@@ -29,6 +29,7 @@ import type {
   Decision,
   DecisionId,
   Dispatch,
+  DispatchStatus,
   Event,
   Examination,
   ExaminationId,
@@ -244,6 +245,14 @@ export interface OrgConfigStore {
 export interface DispatchStore {
   put(dispatch: Dispatch): Promise<void>;
   get(scope: RunScope): Promise<Dispatch | undefined>;
+  /**
+   * Every dispatch in one of `statuses`, across projects: the **reconciler's**
+   * read (D-P10-18), the one deliberate exception to "no method lists across
+   * projects". No route serves it; only the control plane's own scheduled
+   * function calls it, to find the machines it owes a lease check, a
+   * provisioning or a cleanup to.
+   */
+  listByStatus(statuses: readonly DispatchStatus[]): Promise<readonly Dispatch[]>;
 }
 
 /**

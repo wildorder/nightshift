@@ -34,6 +34,7 @@ import {
 import { planCheck, planRatify } from "./commands/plan.js";
 import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
+import { remoteCancel, remoteResume, remoteStatus } from "./commands/remote.js";
 import { writeRunReport } from "./commands/report.js";
 import { resume } from "./commands/resume.js";
 import { exportRoutes } from "./commands/routes.js";
@@ -58,7 +59,8 @@ Usage:
   nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>]
   nightshift preflight <program> [--repo <path>] [--recheck]
   nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--repo <path>]
-  nightshift run <contract> [--repo <path>] [--remote]
+  nightshift run <program> --remote [--compute good|better|best] [--repo <path>]
+  nightshift remote status|cancel|resume <program> [--run <id>] [--repo <path>]
   nightshift resume <program> [--run <id>] [--repo <path>]
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision reverse <program> <decisionId> --choice <new> --reason <why> [--run <id>] [--repo <path>]
@@ -236,13 +238,14 @@ const doProject = async (environment: CliEnvironment, args: readonly string[]): 
 };
 
 const doRun = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift run <program | contract> [--repo <path>] [--remote]";
+  const usage = "nightshift run <program | contract> [--repo <path>] [--remote [--compute <tier>]]";
   const { values, positionals } = parse(
     {
       args: [...args],
       options: {
         repo: { type: "string" },
         remote: { type: "boolean", default: false },
+        compute: { type: "string" },
         attended: { type: "boolean", default: false },
         harness: { type: "string" },
         model: { type: "string" },
@@ -266,10 +269,12 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
   const repo = optional(values, "repo");
   const harness = optional(values, "harness");
   const model = optional(values, "model");
+  const compute = optional(values, "compute");
   const result = await run(environment, {
     contract,
     ...(repo === undefined ? {} : { repo }),
     remote: values.remote === true,
+    ...(compute === undefined ? {} : { compute }),
     attended: values.attended === true,
     ...(harness === undefined ? {} : { harness }),
     ...(model === undefined ? {} : { model }),
@@ -548,6 +553,25 @@ const doOrg = async (environment: CliEnvironment, args: readonly string[]): Prom
   throw new UsageError("`nightshift org` takes `config`, `github` or `providers`", usage);
 };
 
+/** `nightshift remote status|cancel|resume <program>` (P10, D-P10-18). */
+const doRemote = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage = "nightshift remote status|cancel|resume <program> [--run <id>] [--repo <path>]";
+  const [verb, ...rest] = args;
+  if (verb !== "status" && verb !== "cancel" && verb !== "resume") {
+    throw new UsageError("`nightshift remote` takes `status`, `cancel` or `resume`", usage);
+  }
+  const { id, repo, values } = programArgs(rest, usage, { run: { type: "string" } });
+  const runId = optional(values, "run");
+  const options = {
+    id,
+    ...(repo === undefined ? {} : { repo }),
+    ...(runId === undefined ? {} : { run: runId }),
+  };
+  if (verb === "status") return remoteStatus(environment, options);
+  if (verb === "cancel") return remoteCancel(environment, options);
+  return remoteResume(environment, options);
+};
+
 const doRoutes = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage =
     "nightshift routes export <program> [--run <id>] [--repo <path>] | nightshift routes export --project <id>";
@@ -630,6 +654,8 @@ const dispatch = async (
       return doReport(environment, args);
     case "org":
       return doOrg(environment, args);
+    case "remote":
+      return doRemote(environment, args);
     case "routes":
       return doRoutes(environment, args);
     case "id":

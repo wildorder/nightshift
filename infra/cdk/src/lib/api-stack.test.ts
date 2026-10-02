@@ -21,6 +21,7 @@ import {
   studioOriginsFor,
   ZONE_NAME,
 } from "./hostnames.js";
+import { GITHUB_APP_SECRET_NAME, runnerExportName } from "./runner-stack.js";
 import { DNS_EXPORT_KEYS, dnsExportName } from "./stack-props.js";
 
 /**
@@ -29,8 +30,8 @@ import { DNS_EXPORT_KEYS, dnsExportName } from "./stack-props.js";
  */
 const testApp = (): App => new App({ context: { "aws:cdk:bundling-stacks": [] } });
 
-const synth = (stage = "dev", hostnames: HostnamesMode = "full") => {
-  const stack = new NightshiftApiStack(testApp(), "Api", { stage, hostnames });
+const synth = (stage = "dev", hostnames: HostnamesMode = "full", runner = false) => {
+  const stack = new NightshiftApiStack(testApp(), "Api", { stage, hostnames, runner });
   return { stack, template: Template.fromStack(stack) };
 };
 
@@ -632,6 +633,47 @@ describe("NightshiftApiStack", () => {
         const { LogGroup: logGroup } = property<{ LogGroup: { Ref: string } }>(fn, "LoggingConfig");
         expect(Object.keys(groups)).toContain(logGroup.Ref);
       }
+    });
+  });
+
+  describe("the remote runner beside it (P10, D-P10-02, D-P10-18)", () => {
+    const apiEnvironment = (template: Template): Record<string, unknown> =>
+      property<{ Variables: Record<string, unknown> }>(
+        resourceNamed(template, "AWS::Lambda::Function", "ApiFunction"),
+        "Environment",
+      ).Variables;
+
+    it("with the runner stack, names the dispatch function and the GitHub App's secret, and may call both", () => {
+      const { template } = synth("dev", "full", true);
+      const variables = apiEnvironment(template);
+      expect(variables.NIGHTSHIFT_GITHUB_APP_SECRET).toBe(GITHUB_APP_SECRET_NAME);
+      expect(variables.NIGHTSHIFT_DISPATCH_FUNCTION_ARN).toEqual({
+        "Fn::ImportValue": runnerExportName("dev", "DispatchFunctionArn"),
+      });
+      const statements = statementsOf(template);
+      const invoke = statements.find((statement) =>
+        actionsOf(statement).includes("lambda:InvokeFunction"),
+      );
+      expect(invoke?.Resource).toEqual({
+        "Fn::ImportValue": runnerExportName("dev", "DispatchFunctionArn"),
+      });
+      const secret = statements.find((statement) =>
+        actionsOf(statement).includes("secretsmanager:GetSecretValue"),
+      );
+      expect(stringsIn(secret?.Resource).join("")).toContain(GITHUB_APP_SECRET_NAME);
+    });
+
+    it("without it, knows nothing of the runner: no import, no variable, no permission", () => {
+      const { template } = synth();
+      const variables = apiEnvironment(template);
+      expect(variables.NIGHTSHIFT_GITHUB_APP_SECRET).toBeUndefined();
+      expect(variables.NIGHTSHIFT_DISPATCH_FUNCTION_ARN).toBeUndefined();
+      const actions = statementsOf(template).flatMap(actionsOf);
+      expect(actions).not.toContain("lambda:InvokeFunction");
+      expect(actions).not.toContain("secretsmanager:GetSecretValue");
+      expect(JSON.stringify(template.toJSON())).not.toContain(
+        runnerExportName("dev", "DispatchFunctionArn"),
+      );
     });
   });
 

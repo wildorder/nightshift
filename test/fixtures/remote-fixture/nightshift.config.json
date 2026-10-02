@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "projectId": "proj_FXTR00000000000000000000R1",
+  "contextDocs": [],
+  "setup": [{ "id": "install", "command": "npm ci --prefer-offline" }],
+  "verification": [
+    { "id": "typecheck", "command": "npm run typecheck" },
+    { "id": "test", "command": "npm test" }
+  ],
+  "modelPolicy": {
+    "allowedProviders": ["anthropic"],
+    "allowedModels": ["claude-sonnet-5"],
+    "forbiddenModels": []
+  },
+  "delegationLimits": { "maxDepth": 1, "maxConcurrency": 1 },
+  "costPolicy": { "maxWallClockSeconds": 900 },
+  "defaultRisk": "low",
+  "compute": { "tier": "good" }
+}

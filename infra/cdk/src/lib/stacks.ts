@@ -82,19 +82,10 @@ export const composeNightshiftStacks = (app: App): NightshiftStacks => {
     description: `Nightshift stateful resources (${stage}): table, artifact bucket, user pool, budget.`,
   });
 
-  const api = new NightshiftApiStack(app, "NightshiftApi", {
-    stage,
-    hostnames,
-    description: `Nightshift stateless control plane (${stage}): API, functions, stream consumer.`,
-  });
-
-  // The API stack imports the data and DNS stacks' exports by name, so both must
-  // deploy first. This orders deploys; it creates no construct reference.
-  api.addStackDependency(data, "imports the data stack's exports by name");
-
   // The runner (P10). `-c runnerCommit=<sha>` names the commit the image builds
   // the runner from; `-c imageVersion=x.y.z` versions the recipe, defaulting to
-  // the package version. Absent, the stack is not built at all.
+  // the package version. Absent, the stack is not built at all, and the API is
+  // built without a dispatcher.
   const runnerCommit: unknown = app.node.tryGetContext("runnerCommit");
   const imageVersionContext: unknown = app.node.tryGetContext("imageVersion");
   const runner =
@@ -110,6 +101,21 @@ export const composeNightshiftStacks = (app: App): NightshiftStacks => {
         })
       : undefined;
   runner?.addStackDependency(data, "imports the data stack's exports by name");
+
+  const api = new NightshiftApiStack(app, "NightshiftApi", {
+    stage,
+    hostnames,
+    runner: runner !== undefined,
+    description: `Nightshift stateless control plane (${stage}): API, functions, stream consumer.`,
+  });
+
+  // The API stack imports the data and DNS stacks' exports by name, so both must
+  // deploy first; with the runner stack, its export too. This orders deploys; it
+  // creates no construct reference.
+  api.addStackDependency(data, "imports the data stack's exports by name");
+  if (runner !== undefined) {
+    api.addStackDependency(runner, "imports the runner stack's dispatch function by name");
+  }
 
   if (hostnames !== "full" || hostedZoneId === undefined) {
     return { stage, hostnames, dns, data, api, runner, studio: undefined };

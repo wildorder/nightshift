@@ -113,7 +113,7 @@ const PORT_METHODS = {
   orgConfigs: ["get", "put"],
   // P10: the control plane owns these records; the adapter reads them and names
   // the route that writes them when asked to write one whole.
-  dispatches: ["put", "get"],
+  dispatches: ["put", "get", "listByStatus"],
   computeUtilizations: ["put", "get", "listByProject"],
   warmCaches: ["put", "get"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
@@ -747,6 +747,8 @@ describe("the remote runner's records (P10)", () => {
   it("refuses to write one whole, naming the route that does", async () => {
     const { http, f } = world;
     await expect(http.dispatches.put(makeDispatch(f))).rejects.toThrow(/dispatch/);
+    // The cross-project listing is the reconciler's alone (A-07's one exception); no route serves it.
+    await expect(http.dispatches.listByStatus(["requested"])).rejects.toThrow(/reconciler/);
     await expect(http.computeUtilizations.put(makeComputeUtilization(f))).rejects.toThrow(
       /heartbeat/,
     );

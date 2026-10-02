@@ -15,13 +15,12 @@ import {
   HeartbeatResponseSchema,
   type UtilizationSample,
 } from "@nightshift/contracts";
-import { HEARTBEAT_INTERVAL_SECONDS, LEASE_MISSES, type RunScope } from "@nightshift/core";
-import { routes, send, type Transport } from "@nightshift/persistence/http";
+import { HEARTBEAT_INTERVAL_SECONDS, LEASE_MISSES } from "@nightshift/core";
 
 export interface HeartbeatOptions {
-  readonly scope: RunScope;
   readonly generation: number;
-  readonly transport: Transport;
+  /** One heartbeat to the plane, under the current engine token. */
+  readonly post: (body: HeartbeatBody) => Promise<unknown>;
   /** Replaces the token the transport sends, when the plane renews it. */
   readonly installToken: (token: string) => void;
   readonly sample: () => Promise<UtilizationSample | undefined>;
@@ -42,6 +41,8 @@ export interface Heartbeat {
   end(): void;
   /** One more beat carrying `milestone`, after the loop has ended: the runner's last word. */
   farewell(milestone: HeartbeatReport): Promise<void>;
+  /** What setup took and which lockfiles the checkout has, sent once on the next beat (T3). */
+  describeSetup(setupSeconds: number, lockfileHashes: Readonly<Record<string, string>>): void;
 }
 
 export class HeartbeatLostError extends Error {
@@ -54,6 +55,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
   // Milestones wait their turn: `ready` then `stopped` arrive as two beats, in
   // order, never one overwriting the other unsent.
   const pending: HeartbeatReport[] = [];
+  let setup: { setupSeconds: number; lockfileHashes: Record<string, string> } | undefined;
   let last: HeartbeatResponse | undefined;
   let ended = false;
   let misses = 0;
@@ -63,24 +65,22 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     // Taken now, so a milestone reported while this beat is in flight waits
     // for the next one rather than being cleared unsent.
     const report = pending.shift();
+    const described = setup;
+    setup = undefined;
     const body: HeartbeatBody = {
       generation: options.generation,
       meteredSeconds: Math.max(0, Math.floor((options.now() - startedAt) / 1000)),
       samples: sample === undefined ? [] : [sample],
       ...(report === undefined ? {} : { report }),
+      ...(described === undefined ? {} : described),
     };
     let response: HeartbeatResponse;
     try {
-      response = HeartbeatResponseSchema.parse(
-        await send(options.transport, {
-          method: "POST",
-          path: routes.dispatchHeartbeat(options.scope),
-          body,
-        }),
-      );
+      response = HeartbeatResponseSchema.parse(await options.post(body));
     } catch (error) {
       // Unsent: say it again next time, ahead of anything reported since.
       if (report !== undefined) pending.unshift(report);
+      setup ??= described;
       throw error;
     }
     if (response.token !== undefined) options.installToken(response.token);
@@ -91,6 +91,9 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     report: (milestone) => {
       pending.push(milestone);
     },
+    describeSetup: (setupSeconds, lockfileHashes) => {
+      setup = { setupSeconds, lockfileHashes: { ...lockfileHashes } };
+    },
     get last() {
       return last;
     },
@@ -98,13 +101,18 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
       ended = true;
     },
     farewell: async (milestone) => {
+      // Everything still queued goes first, in order: a `ready` the loop had
+      // not yet carried when the plane said stop is not lost to the farewell.
       pending.push(milestone);
-      try {
-        last = await beat();
-      } catch (error) {
-        options.log(
-          `the farewell heartbeat failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+      while (pending.length > 0) {
+        try {
+          last = await beat();
+        } catch (error) {
+          options.log(
+            `the farewell heartbeat failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return;
+        }
       }
     },
     run: async () => {

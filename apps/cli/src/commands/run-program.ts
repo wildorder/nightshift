@@ -43,6 +43,7 @@ import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import type { ProgramFiles } from "../program-files.js";
 import type { Session } from "../session.js";
+import { assertRemoteReady, dispatchRun } from "./remote.js";
 
 export const REPORT_FILE = "report.md";
 
@@ -57,6 +58,9 @@ export interface RunProgramOptions {
    * repository, which the owner confirms this correction may run over.
    */
   readonly confirmIrreversible?: readonly string[];
+  /** P10: dispatch the run to a machine of its own instead of orchestrating here. */
+  readonly remote?: boolean;
+  readonly compute?: string;
 }
 
 export interface RunProgramResult {
@@ -241,12 +245,25 @@ export const runProgram = async (
 
   const confirming = await requireConfirmations(session, ratified, options);
 
+  // P10: everything the checkout can say against a remote dispatch, before the
+  // run exists (SC-P10-02).
+  const readiness =
+    options.remote === true
+      ? await assertRemoteReady(environment, files, options.repoPath, options.compute)
+      : undefined;
+
   const started = await startRun(deps, {
     program: files.contract,
     planText: files.planText,
     repoPath: options.repoPath,
+    location: readiness === undefined ? "local" : "remote",
   });
   await recordConfirmations(environment, session, started, confirming);
+  if (readiness !== undefined) {
+    environment.out(started.run.runId);
+    await dispatchRun(environment, session, started, readiness);
+    return { started, exitCode: 0 };
+  }
   environment.out(started.run.runId);
   environment.out(
     `run ${started.run.runId} of plan ${ratified.planHash?.slice(0, 12)} is pending ` +

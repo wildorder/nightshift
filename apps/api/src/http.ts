@@ -12,6 +12,7 @@ import type {
   IdGenerator,
   NightshiftStores,
   PlanDocumentStore,
+  RunScope,
 } from "@nightshift/core";
 import type { z } from "zod";
 import type { ProjectOrgCache } from "./auth/enforce.js";
@@ -89,6 +90,17 @@ export interface ApiDeps {
   readonly ids?: IdGenerator;
   /** What the runner's machines run (D-P10-16). Recorded on every dispatch. */
   readonly runner?: { readonly amiVersion: string };
+  /**
+   * Starts provisioning an accepted dispatch (D-P10-18): the dispatch Lambda,
+   * invoked asynchronously. Optional like the rest; without it the dispatch
+   * route answers 501 before recording anything, so no dispatch is ever
+   * accepted that nothing will provision.
+   */
+  readonly dispatcher?: Dispatcher;
+}
+
+export interface Dispatcher {
+  provision(scope: RunScope): Promise<void>;
 }
 
 /** Where execution tokens come from, and who they say issued them. */

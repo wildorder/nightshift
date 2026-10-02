@@ -483,6 +483,8 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       dispatches.set(runPrefix(parsed), parsed);
     },
     get: async (scope: RunScope) => dispatches.get(runPrefix(scope)),
+    listByStatus: async (statuses) =>
+      dispatches.all().filter((dispatch) => statuses.includes(dispatch.status)),
   };
 
   const computeUtilizationStore: ComputeUtilizationStore = {

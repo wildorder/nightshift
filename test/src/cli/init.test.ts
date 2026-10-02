@@ -90,14 +90,16 @@ describe("nightshift init (SC-P7-13)", () => {
   });
 
   it("makes installing dependencies setup, not a verification step", async () => {
-    expect(await detectSetup(fixture.repo)).toEqual([{ id: "install", command: "npm ci" }]);
+    expect(await detectSetup(fixture.repo)).toEqual([
+      { id: "install", command: "npm ci --prefer-offline" },
+    ]);
   });
 
   it("takes a repository from nothing to plannable: project, config, skills, MCP", async () => {
     expect(await cli(environment(), "--yes", "--name", "demo")).toBe(0);
 
     const config = await readConfig(fixture.repo);
-    expect(config?.setup).toEqual([{ id: "install", command: "npm ci" }]);
+    expect(config?.setup).toEqual([{ id: "install", command: "npm ci --prefer-offline" }]);
     expect(config?.verification.map((step) => step.id)).toEqual(["build", "test"]);
     // The project it names exists in the control plane, in the operator's org.
     const stores = createHttpStores({
