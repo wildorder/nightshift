@@ -695,7 +695,9 @@ components (the toolchain per architecture: Node `linux-x64`, Docker
 dispatcher chooses the image and the warm cache by the instance type's
 architecture (`architectureOf`: a Graviton family carries a `g` in its
 letters), and `npm run image:build -- --arch arm64|x86_64|all` starts and
-waits on either or both pipelines. Image 1.0.14 is the first built for both.
+waits on either or both pipelines. Image 1.0.15 (89d0ce4) is the first built
+for both; 1.0.14 failed on both at `rust-and-uv`, a placeholder left in a
+plain string, which a stack test now refuses.
 
 **The heavy benchmark (`NIGHTSHIFT_SMOKE_BENCH_HEAVY=1`).** The same bench
 loop against `wildorder/nightshift` at `program/bench` (pushed from the
