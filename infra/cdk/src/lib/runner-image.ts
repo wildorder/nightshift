@@ -130,6 +130,10 @@ export const containmentComponent = (): string => {
         // theirs together; the engine's token and credentials are the engine's alone.
         `groupadd ${WORKER_GROUP}`,
         `useradd --system --create-home --home-dir /home/${ENGINE_USER} --shell /bin/bash -G ${WORKER_GROUP} ${ENGINE_USER}`,
+        // Git refuses a repository owned by another user ("dubious ownership");
+        // here the checkout is the engine's and the workers commit into it, and
+        // every user on the machine is Nightshift's, so every directory is safe.
+        "git config --system --add safe.directory '*'",
         ...workers.map(
           (worker) =>
             `useradd --create-home --home-dir /home/${worker} --shell /bin/bash -G ${WORKER_GROUP} ${worker} && loginctl enable-linger ${worker}`,
