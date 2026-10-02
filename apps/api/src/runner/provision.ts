@@ -18,6 +18,7 @@ import {
   type WarmCache,
 } from "@nightshift/contracts";
 import {
+  architectureOf,
   type Clock,
   type ComputeControl,
   type FirstTokenStore,
@@ -120,8 +121,11 @@ export const provisionDispatch = async (
     return { kind: "failed", dispatch: failed, reason };
   };
 
-  const imageId = await compute.latestImage(deps.imageVersion);
-  if (imageId === undefined) return fail(`no available image for version ${deps.imageVersion}`);
+  const architecture = architectureOf(dispatch.instanceType);
+  const imageId = await compute.latestImage(deps.imageVersion, architecture);
+  if (imageId === undefined) {
+    return fail(`no available ${architecture} image for version ${deps.imageVersion}`);
+  }
   const subnetId = subnetFor(scope.runId, deps.subnetIds);
   if (subnetId === undefined) return fail("the runner stack has no subnets");
 
@@ -146,7 +150,7 @@ export const provisionDispatch = async (
   const parameter = firstTokenParameterName(deps.stage, scope.runId, dispatch.generation);
   await deps.tokens.put(parameter, token);
 
-  const cache = await stores.warmCaches.get(scope.projectId, "arm64");
+  const cache = await stores.warmCaches.get(scope.projectId, architectureOf(dispatch.instanceType));
   const fromSnapshotId = dispatch.volumeId === undefined ? warmSnapshotOf(cache) : undefined;
   const spec = COMPUTE_TIERS[dispatch.tier];
   let instanceId: string;

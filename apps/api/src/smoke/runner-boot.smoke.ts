@@ -874,9 +874,13 @@ afterAll(async () => {
       }
     }
   }
-  const cache = await stores.warmCaches.get(f.scope.projectId, "arm64").catch(() => undefined);
-  if (cache !== undefined) {
-    for (const snapshot of [cache.current, ...cache.history]) snapshots.add(snapshot.snapshotId);
+  for (const architecture of ["arm64", "x86_64"] as const) {
+    const cache = await stores.warmCaches
+      .get(f.scope.projectId, architecture)
+      .catch(() => undefined);
+    if (cache !== undefined) {
+      for (const snapshot of [cache.current, ...cache.history]) snapshots.add(snapshot.snapshotId);
+    }
   }
   for (const snapshotId of snapshots) {
     if (keep) {

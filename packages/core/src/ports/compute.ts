@@ -7,7 +7,7 @@
  * over the AWS SDK, the local instance over a key file, and the fault battery
  * over fakes.
  */
-import type { OrgId, Provider } from "@nightshift/contracts";
+import type { ComputeArchitecture, OrgId, Provider } from "@nightshift/contracts";
 
 /** The ciphertext of one secret and the data key, wrapped, that encrypts it. */
 export interface Sealed {
@@ -64,7 +64,7 @@ export interface SnapshotDescription {
  */
 export interface ComputeControl {
   /** The newest available image carrying the version tag. */
-  latestImage(imageVersion: string): Promise<string | undefined>;
+  latestImage(imageVersion: string, architecture: ComputeArchitecture): Promise<string | undefined>;
   launch(request: LaunchRequest): Promise<{ readonly instanceId: string }>;
   describe(instanceId: string): Promise<InstanceDescription | undefined>;
   terminate(instanceId: string): Promise<void>;

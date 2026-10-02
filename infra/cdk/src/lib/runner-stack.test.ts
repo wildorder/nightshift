@@ -9,6 +9,7 @@ import { dataExportName } from "./data-exports.js";
 import { ENGINE_USER, RUNNER_TOOLCHAIN, WORKER_USERS } from "./runner-image.js";
 import {
   AMI_VERSION_TAG,
+  ARCHITECTURE_TAG,
   dispatchParameterPrefix,
   GITHUB_APP_SECRET_NAME,
   MANAGED_TAG,
@@ -121,26 +122,30 @@ describe("NightshiftRunnerStack", () => {
   });
 
   describe("the image (D-P10-16, D-P10-17)", () => {
-    it("builds from Amazon Linux 2023 arm64 with three versioned components, run by hand", () => {
+    it("builds an arm64 image and an x86_64 image, each from its own Amazon Linux 2023, three versioned components apiece, run by hand", () => {
       const { template } = synth();
-      const recipe = resourceNamed(template, "AWS::ImageBuilder::ImageRecipe", "RunnerRecipe");
-      expect(recipe.Properties?.ParentImage).toContain("al2023-ami-kernel-default-arm64");
-      expect(recipe.Properties?.Version).toBe("1.0.0");
+      const recipes = template.findResources("AWS::ImageBuilder::ImageRecipe");
+      const ids = Object.keys(recipes);
+      expect(ids).toHaveLength(2);
+      const x86 = recipes[ids.find((id) => id.startsWith("RunnerRecipeX86")) ?? ""] as Resource;
+      const arm = recipes[ids.find((id) => !id.startsWith("RunnerRecipeX86")) ?? ""] as Resource;
+      expect(arm?.Properties?.ParentImage).toContain("al2023-ami-kernel-default-arm64");
+      expect(x86?.Properties?.ParentImage).toContain("al2023-ami-kernel-default-x86_64");
+      expect(arm?.Properties?.Version).toBe("1.0.0");
       const components = resourcesOf(template, "AWS::ImageBuilder::Component");
-      expect(components).toHaveLength(3);
+      expect(components).toHaveLength(6);
       for (const component of components) expect(component.Properties?.Version).toBe("1.0.0");
-      const pipeline = resourceNamed(
-        template,
-        "AWS::ImageBuilder::ImagePipeline",
-        "RunnerPipeline",
-      );
-      expect(pipeline.Properties?.Schedule).toBeUndefined();
-      const infrastructure = resourceNamed(
+      const pipelines = resourcesOf(template, "AWS::ImageBuilder::ImagePipeline");
+      expect(pipelines).toHaveLength(2);
+      for (const pipeline of pipelines) expect(pipeline.Properties?.Schedule).toBeUndefined();
+      const infrastructures = resourcesOf(
         template,
         "AWS::ImageBuilder::InfrastructureConfiguration",
-        "RunnerImageInfrastructure",
       );
-      expect(infrastructure.Properties?.InstanceTypes).toEqual(["m7g.large"]);
+      expect(infrastructures.map((i) => i.Properties?.InstanceTypes).sort()).toEqual([
+        ["m7g.large"],
+        ["m7i.large"],
+      ]);
     });
 
     it("pins every tool it installs, and builds the runner from the named commit", () => {
@@ -148,6 +153,8 @@ describe("NightshiftRunnerStack", () => {
         .map((component) => String(component.Properties?.Data))
         .join("\n");
       expect(data).toContain(`node-v${RUNNER_TOOLCHAIN.node}-linux-arm64`);
+      expect(data).toContain(`node-v${RUNNER_TOOLCHAIN.node}-linux-x64`);
+      expect(data).toContain("static/stable/x86_64/");
       expect(data).toContain(`pnpm@${RUNNER_TOOLCHAIN.pnpm}`);
       expect(data).toContain(`@anthropic-ai/claude-code@${RUNNER_TOOLCHAIN.claude}`);
       expect(data).toContain(`@openai/codex@${RUNNER_TOOLCHAIN.codex}`);
@@ -168,15 +175,18 @@ describe("NightshiftRunnerStack", () => {
       expect(data).toContain(`User=${ENGINE_USER}`);
     });
 
-    it("tags the AMI with its version and the managed tag", () => {
-      const distribution = resourceNamed(
+    it("tags each AMI with its version, its architecture and the managed tag", () => {
+      const distributions = resourcesOf(
         synth().template,
         "AWS::ImageBuilder::DistributionConfiguration",
-        "RunnerDistribution",
       );
-      const json = JSON.stringify(distribution.Properties);
+      expect(distributions).toHaveLength(2);
+      const json = distributions.map((d) => JSON.stringify(d.Properties)).join(" ");
       expect(json).toContain(AMI_VERSION_TAG);
       expect(json).toContain(MANAGED_TAG);
+      expect(json).toContain(ARCHITECTURE_TAG);
+      expect(json).toContain('"arm64"');
+      expect(json).toContain('"x86_64"');
     });
   });
 

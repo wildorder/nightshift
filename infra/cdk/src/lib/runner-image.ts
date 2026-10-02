@@ -57,7 +57,24 @@ const shell = (name: string, lines: readonly string[]): string =>
 ${lines.map((line) => `            - ${JSON.stringify(line)}`).join("\n")}`;
 
 /** System packages, Node 24, pnpm, the harness CLIs, Rust and uv. */
-export const toolchainComponent = (): string =>
+/** The two machine architectures an image is built for; the arm64 one is the tiers' (D-P10-13). */
+export const IMAGE_ARCHITECTURES = ["arm64", "x86_64"] as const;
+export type ImageArchitecture = (typeof IMAGE_ARCHITECTURES)[number];
+
+/** How each upstream names the architecture in its download. */
+const ARCH_NAMES: Readonly<
+  Record<ImageArchitecture, { node: string; docker: string; slirp: string; uv: string }>
+> = {
+  arm64: {
+    node: "linux-arm64",
+    docker: "aarch64",
+    slirp: "aarch64",
+    uv: "aarch64-unknown-linux-gnu",
+  },
+  x86_64: { node: "linux-x64", docker: "x86_64", slirp: "x86_64", uv: "x86_64-unknown-linux-gnu" },
+};
+
+export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): string =>
   component(
     "nightshift-toolchain",
     "Node, git, Docker (rootless prerequisites), browser libraries, build tools, Rust, pnpm, Python",
@@ -78,28 +95,28 @@ export const toolchainComponent = (): string =>
       ]),
       shell("node", [
         "set -euo pipefail",
-        `curl -fsSL https://nodejs.org/dist/v${RUNNER_TOOLCHAIN.node}/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64.tar.xz -o /tmp/node.tar.xz`,
+        `curl -fsSL https://nodejs.org/dist/v${RUNNER_TOOLCHAIN.node}/node-v${RUNNER_TOOLCHAIN.node}-${ARCH_NAMES[architecture].node}.tar.xz -o /tmp/node.tar.xz`,
         "mkdir -p /usr/local/lib/nodejs",
         "tar -xJf /tmp/node.tar.xz -C /usr/local/lib/nodejs",
-        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/node /usr/local/bin/node`,
-        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/npm /usr/local/bin/npm`,
-        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/npx /usr/local/bin/npx`,
-        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/corepack /usr/local/bin/corepack`,
+        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-${ARCH_NAMES[architecture].node}/bin/node /usr/local/bin/node`,
+        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-${ARCH_NAMES[architecture].node}/bin/npm /usr/local/bin/npm`,
+        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-${ARCH_NAMES[architecture].node}/bin/npx /usr/local/bin/npx`,
+        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-${ARCH_NAMES[architecture].node}/bin/corepack /usr/local/bin/corepack`,
         "node --version",
         `corepack enable && corepack prepare pnpm@${RUNNER_TOOLCHAIN.pnpm} --activate`,
-        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/pnpm /usr/local/bin/pnpm`,
+        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-${ARCH_NAMES[architecture].node}/bin/pnpm /usr/local/bin/pnpm`,
         `npm install -g @anthropic-ai/claude-code@${RUNNER_TOOLCHAIN.claude} @openai/codex@${RUNNER_TOOLCHAIN.codex}`,
-        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/claude /usr/local/bin/claude`,
-        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-linux-arm64/bin/codex /usr/local/bin/codex`,
+        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-${ARCH_NAMES[architecture].node}/bin/claude /usr/local/bin/claude`,
+        `ln -sfn /usr/local/lib/nodejs/node-v${RUNNER_TOOLCHAIN.node}-${ARCH_NAMES[architecture].node}/bin/codex /usr/local/bin/codex`,
         "claude --version && codex --version",
       ]),
       shell("rootless-docker", [
         "set -euo pipefail",
         // rootlesskit, dockerd-rootless.sh and dockerd-rootless-setuptool.sh; the
         // kernel's overlay2 works in a user namespace on AL2023, so no fuse-overlayfs.
-        `curl -fsSL https://download.docker.com/linux/static/stable/aarch64/docker-rootless-extras-${RUNNER_TOOLCHAIN.dockerRootlessExtras}.tgz -o /tmp/rootless.tgz`,
+        `curl -fsSL https://download.docker.com/linux/static/stable/${ARCH_NAMES[architecture].docker}/docker-rootless-extras-${RUNNER_TOOLCHAIN.dockerRootlessExtras}.tgz -o /tmp/rootless.tgz`,
         "tar -xzf /tmp/rootless.tgz -C /tmp && install -m 0755 /tmp/docker-rootless-extras/* /usr/local/bin/",
-        `curl -fsSL https://github.com/rootless-containers/slirp4netns/releases/download/v${RUNNER_TOOLCHAIN.slirp4netns}/slirp4netns-aarch64 -o /usr/local/bin/slirp4netns && chmod 0755 /usr/local/bin/slirp4netns`,
+        `curl -fsSL https://github.com/rootless-containers/slirp4netns/releases/download/v${RUNNER_TOOLCHAIN.slirp4netns}/slirp4netns-${ARCH_NAMES[architecture].slirp} -o /usr/local/bin/slirp4netns && chmod 0755 /usr/local/bin/slirp4netns`,
         "rootlesskit --version && slirp4netns --version",
       ]),
       shell("rust-and-uv", [
@@ -111,8 +128,8 @@ export const toolchainComponent = (): string =>
         // The rustup proxies find the shared toolchain through RUSTUP_HOME; each
         // user's own CARGO_HOME (its registry cache) stays in its home.
         "printf '%s\n' 'export RUSTUP_HOME=/opt/rust/rustup' > /etc/profile.d/nightshift-rust.sh",
-        `curl -fsSL https://github.com/astral-sh/uv/releases/download/${RUNNER_TOOLCHAIN.uv}/uv-aarch64-unknown-linux-gnu.tar.gz -o /tmp/uv.tar.gz`,
-        "tar -xzf /tmp/uv.tar.gz -C /tmp && install -m 0755 /tmp/uv-aarch64-unknown-linux-gnu/uv /usr/local/bin/uv",
+        `curl -fsSL https://github.com/astral-sh/uv/releases/download/${RUNNER_TOOLCHAIN.uv}/uv-${ARCH_NAMES[architecture].uv}.tar.gz -o /tmp/uv.tar.gz`,
+        "tar -xzf /tmp/uv.tar.gz -C /tmp && install -m 0755 /tmp/uv-${ARCH_NAMES[architecture].uv}/uv /usr/local/bin/uv",
       ]),
     ].join("\n"),
   );

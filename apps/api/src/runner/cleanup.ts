@@ -13,6 +13,7 @@
 import type { Dispatch, WarmCache, WarmSnapshot } from "@nightshift/contracts";
 import { WARM_CACHE_HISTORY } from "@nightshift/contracts";
 import {
+  architectureOf,
   type Clock,
   type ComputeControl,
   HEARTBEAT_INTERVAL_SECONDS,
@@ -177,7 +178,8 @@ export const cleanupStopped = async (
       return "waiting";
     }
     if (snapshot.state !== "completed") return "snapshot_pending";
-    const existing = await deps.stores.warmCaches.get(dispatch.projectId, "arm64");
+    const architecture = architectureOf(dispatch.instanceType);
+    const existing = await deps.stores.warmCaches.get(dispatch.projectId, architecture);
     const current: WarmSnapshot = {
       snapshotId: dispatch.cleanup.snapshotId,
       amiVersion: dispatch.amiVersion,
@@ -189,7 +191,7 @@ export const cleanupStopped = async (
     const cache: WarmCache = {
       schemaVersion: 1,
       projectId: dispatch.projectId,
-      architecture: "arm64",
+      architecture,
       current,
       history: history.slice(0, WARM_CACHE_HISTORY),
       updatedAt: at,

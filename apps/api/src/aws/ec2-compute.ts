@@ -31,12 +31,13 @@ const tagList = (tags: Readonly<Record<string, string>>) =>
 export const createEc2Compute = (options: Ec2ComputeOptions): ComputeControl => {
   const { ec2 } = options;
   return {
-    latestImage: async (imageVersion) => {
+    latestImage: async (imageVersion, architecture) => {
       const images = await ec2.send(
         new DescribeImagesCommand({
           Owners: ["self"],
           Filters: [
             { Name: `tag:${options.imageVersionTag}`, Values: [imageVersion] },
+            { Name: "architecture", Values: [architecture] },
             { Name: "state", Values: ["available"] },
           ],
         }),

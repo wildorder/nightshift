@@ -29,6 +29,8 @@ import { NODE_INDEX_NAME } from "./data-stack.js";
 import { apiHostnameFor } from "./hostnames.js";
 import {
   containmentComponent,
+  IMAGE_ARCHITECTURES,
+  type ImageArchitecture,
   RUNNER_TOOLCHAIN,
   runnerComponent,
   toolchainComponent,
@@ -66,9 +68,19 @@ export type RunnerExportKey = (typeof RUNNER_EXPORT_KEYS)[number];
 export const runnerExportName = (stage: string, key: RunnerExportKey): string =>
   `nightshift-${stage}-runner-${key}`;
 
-/** The latest Amazon Linux 2023 arm64 AMI, resolved by CloudFormation at deploy time. */
-export const AL2023_ARM64_PARAMETER =
-  "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64";
+/** The latest Amazon Linux 2023 AMI per architecture, resolved by CloudFormation at deploy time. */
+export const AL2023_PARAMETERS: Readonly<Record<ImageArchitecture, string>> = {
+  arm64: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64",
+  x86_64: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64",
+};
+export const AL2023_ARM64_PARAMETER = AL2023_PARAMETERS.arm64;
+/** The instance each image is built on: its own architecture. */
+const BUILDER_INSTANCE_TYPES: Readonly<Record<ImageArchitecture, string>> = {
+  arm64: "m7g.large",
+  x86_64: "m7i.large",
+};
+/** On every image: which architecture it is, so a dispatch picks the one its instance type runs. */
+export const ARCHITECTURE_TAG = "nightshift:architecture";
 
 export interface NightshiftRunnerStackProps extends NightshiftStackProps {
   /** The commit of this repository the image builds the runner from (D-P10-16). */
@@ -174,68 +186,91 @@ export class NightshiftRunnerStack extends Stack {
       roles: [builderRole.roleName],
     });
 
-    const components = [
-      ["Toolchain", toolchainComponent()],
-      ["Containment", containmentComponent()],
-      ["Runner", runnerComponent(runnerCommit)],
-    ].map(
-      ([name, data]) =>
-        new imagebuilder.CfnComponent(this, `${name}Component`, {
-          name: `nightshift-${stage}-${(name as string).toLowerCase()}`,
-          platform: "Linux",
-          version: imageVersion,
-          data: data as string,
-        }),
-    );
-    const recipe = new imagebuilder.CfnImageRecipe(this, "RunnerRecipe", {
-      name: `nightshift-${stage}-runner`,
-      version: imageVersion,
-      parentImage: `{{resolve:ssm:${AL2023_ARM64_PARAMETER}}}`,
-      components: components.map((component) => ({ componentArn: component.attrArn })),
-      blockDeviceMappings: [
-        {
-          deviceName: "/dev/xvda",
-          ebs: { volumeSize: 40, volumeType: "gp3", deleteOnTermination: true },
-        },
-      ],
-      additionalInstanceConfiguration: { systemsManagerAgent: { uninstallAfterBuild: false } },
-      tags: { [AMI_VERSION_TAG]: imageVersion },
-    });
-    const infrastructure = new imagebuilder.CfnInfrastructureConfiguration(
-      this,
-      "RunnerImageInfrastructure",
-      {
-        name: `nightshift-${stage}-runner`,
-        instanceProfileName: builderProfile.ref,
-        // The image is arm64 (D-P10-13); a Graviton builder keeps native modules honest.
-        instanceTypes: ["m7g.large"],
-        subnetId: builderSubnet.subnetId,
-        securityGroupIds: [machineSecurityGroup.securityGroupId],
-        terminateInstanceOnFailure: true,
-      },
-    );
-    const distribution = new imagebuilder.CfnDistributionConfiguration(this, "RunnerDistribution", {
-      name: `nightshift-${stage}-runner`,
-      distributions: [
-        {
-          region: Aws.REGION,
-          amiDistributionConfiguration: {
-            Name: `nightshift-${stage}-runner-{{ imagebuilder:buildDate }}`,
-            AmiTags: { [AMI_VERSION_TAG]: imageVersion, [MANAGED_TAG]: "true" },
+    // One image per architecture: the arm64 one the tiers run on (D-P10-13),
+    // and an x86_64 one for the instance types that need it. The arm64 resources
+    // keep their original ids; the x86 ones carry a suffix.
+    const pipelines = new Map<ImageArchitecture, imagebuilder.CfnImagePipeline>();
+    for (const architecture of IMAGE_ARCHITECTURES) {
+      const suffix = architecture === "arm64" ? "" : "X86";
+      const nameSuffix = architecture === "arm64" ? "" : "-x86";
+      const components = [
+        ["Toolchain", toolchainComponent(architecture)],
+        ["Containment", containmentComponent()],
+        ["Runner", runnerComponent(runnerCommit)],
+      ].map(
+        ([name, data]) =>
+          new imagebuilder.CfnComponent(this, `${name}Component${suffix}`, {
+            name: `nightshift-${stage}-${(name as string).toLowerCase()}${nameSuffix}`,
+            platform: "Linux",
+            version: imageVersion,
+            data: data as string,
+          }),
+      );
+      const recipe = new imagebuilder.CfnImageRecipe(this, `RunnerRecipe${suffix}`, {
+        name: `nightshift-${stage}-runner${nameSuffix}`,
+        version: imageVersion,
+        parentImage: `{{resolve:ssm:${AL2023_PARAMETERS[architecture]}}}`,
+        components: components.map((component) => ({ componentArn: component.attrArn })),
+        blockDeviceMappings: [
+          {
+            deviceName: "/dev/xvda",
+            ebs: { volumeSize: 40, volumeType: "gp3", deleteOnTermination: true },
           },
+        ],
+        additionalInstanceConfiguration: { systemsManagerAgent: { uninstallAfterBuild: false } },
+        tags: { [AMI_VERSION_TAG]: imageVersion, [ARCHITECTURE_TAG]: architecture },
+      });
+      const infrastructure = new imagebuilder.CfnInfrastructureConfiguration(
+        this,
+        `RunnerImageInfrastructure${suffix}`,
+        {
+          name: `nightshift-${stage}-runner${nameSuffix}`,
+          instanceProfileName: builderProfile.ref,
+          // A builder of the image's own architecture keeps native modules honest.
+          instanceTypes: [BUILDER_INSTANCE_TYPES[architecture]],
+          subnetId: builderSubnet.subnetId,
+          securityGroupIds: [machineSecurityGroup.securityGroupId],
+          terminateInstanceOnFailure: true,
         },
-      ],
-    });
-    const pipeline = new imagebuilder.CfnImagePipeline(this, "RunnerPipeline", {
-      name: `nightshift-${stage}-runner`,
-      imageRecipeArn: recipe.attrArn,
-      infrastructureConfigurationArn: infrastructure.attrArn,
-      distributionConfigurationArn: distribution.attrArn,
-      // Run by hand (`npm run image:build`), never on a schedule: an image is a
-      // version, and a version is a decision.
-      status: "ENABLED",
-      imageTestsConfiguration: { imageTestsEnabled: false },
-    });
+      );
+      const distribution = new imagebuilder.CfnDistributionConfiguration(
+        this,
+        `RunnerDistribution${suffix}`,
+        {
+          name: `nightshift-${stage}-runner${nameSuffix}`,
+          distributions: [
+            {
+              region: Aws.REGION,
+              amiDistributionConfiguration: {
+                Name: `nightshift-${stage}-runner${nameSuffix}-{{ imagebuilder:buildDate }}`,
+                AmiTags: {
+                  [AMI_VERSION_TAG]: imageVersion,
+                  [ARCHITECTURE_TAG]: architecture,
+                  [MANAGED_TAG]: "true",
+                },
+              },
+            },
+          ],
+        },
+      );
+      pipelines.set(
+        architecture,
+        new imagebuilder.CfnImagePipeline(this, `RunnerPipeline${suffix}`, {
+          name: `nightshift-${stage}-runner${nameSuffix}`,
+          imageRecipeArn: recipe.attrArn,
+          infrastructureConfigurationArn: infrastructure.attrArn,
+          distributionConfigurationArn: distribution.attrArn,
+          // Run by hand (`npm run image:build`), never on a schedule: an image is a
+          // version, and a version is a decision.
+          status: "ENABLED",
+          imageTestsConfiguration: { imageTestsEnabled: false },
+        }),
+      );
+    }
+    const pipeline = pipelines.get("arm64");
+    const pipelineX86 = pipelines.get("x86_64");
+    if (pipeline === undefined || pipelineX86 === undefined)
+      throw new Error("both pipelines exist");
 
     // --- The machines' identity (D-P10-17) ---------------------------------------
     //
@@ -536,6 +571,7 @@ export class NightshiftRunnerStack extends Stack {
 
     // --- Outputs ------------------------------------------------------------------
     new CfnOutput(this, "ImagePipelineArn", { value: pipeline.attrArn });
+    new CfnOutput(this, "ImagePipelineArnX86", { value: pipelineX86.attrArn });
     new CfnOutput(this, "ImageVersion", { value: imageVersion });
     new CfnOutput(this, "RunnerCommit", { value: runnerCommit });
     new CfnOutput(this, "LaunchTemplateId", { value: launchTemplate.ref });

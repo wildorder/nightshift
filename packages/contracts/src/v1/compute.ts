@@ -16,7 +16,8 @@ export type ComputeTier = z.infer<typeof ComputeTierSchema>;
 export const COMPUTE_TIER_ORDER: readonly ComputeTier[] = ["good", "better", "best"];
 
 /** The architecture every tier runs on (D-P10-13). One, so the image and the cache are single. */
-export const ComputeArchitectureSchema = z.enum(["arm64"]);
+/** The machines' architectures (D-P10-13 made the tiers Graviton; an x86 image exists for instance types that need it). */
+export const ComputeArchitectureSchema = z.enum(["arm64", "x86_64"]);
 export type ComputeArchitecture = z.infer<typeof ComputeArchitectureSchema>;
 
 export interface ComputeTierSpec {

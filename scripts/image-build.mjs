@@ -38,38 +38,60 @@ const outputs = JSON.parse(
   ]),
 );
 const output = (key) => outputs.find((entry) => entry.OutputKey === key)?.OutputValue;
-const pipelineArn = output("ImagePipelineArn");
-if (pipelineArn === undefined) {
-  console.error(`the runner stack for ${stage} has no ImagePipelineArn output; deploy it first`);
+const archFlag = process.argv.indexOf("--arch");
+const arch = archFlag === -1 ? "all" : process.argv[archFlag + 1];
+const wanted = {
+  arm64: output("ImagePipelineArn"),
+  x86_64: output("ImagePipelineArnX86"),
+};
+const pipelines = Object.entries(wanted).filter(
+  ([name, arn]) => arn !== undefined && (arch === "all" || arch === name),
+);
+if (pipelines.length === 0) {
+  console.error(
+    `the runner stack for ${stage} has no pipeline for --arch ${arch}; deploy it first`,
+  );
   process.exit(1);
 }
 console.log(
-  `Pipeline ${pipelineArn}; image version ${output("ImageVersion")}; runner at ${output("RunnerCommit")}.`,
+  `Image version ${output("ImageVersion")}; runner at ${output("RunnerCommit")}; building ${pipelines
+    .map(([name]) => name)
+    .join(" and ")}.`,
 );
 
-const started = JSON.parse(
-  aws(["imagebuilder", "start-image-pipeline-execution", "--image-pipeline-arn", pipelineArn]),
-);
-const imageArn = started.imageBuildVersionArn;
-console.log(
-  `Started ${imageArn}. This takes a while: the toolchain installs and the runner builds.`,
-);
+const started = pipelines.map(([name, arn]) => ({
+  name,
+  imageArn: JSON.parse(
+    aws(["imagebuilder", "start-image-pipeline-execution", "--image-pipeline-arn", arn]),
+  ).imageBuildVersionArn,
+}));
+for (const build of started) console.log(`Started ${build.name}: ${build.imageArn}.`);
+console.log("This takes a while: the toolchain installs and the runner builds.");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-for (;;) {
-  const image = JSON.parse(
-    aws(["imagebuilder", "get-image", "--image-build-version-arn", imageArn]),
-  ).image;
-  const state = image.state?.status;
-  process.stdout.write(`  ${new Date().toISOString()} ${state}\n`);
-  if (state === "AVAILABLE") {
-    const amis = image.outputResources?.amis ?? [];
-    for (const ami of amis) console.log(`AMI ${ami.image} in ${ami.region}: ${ami.name}`);
-    break;
+const pending = new Set(started.map((build) => build.name));
+let failed = false;
+while (pending.size > 0) {
+  for (const build of started) {
+    if (!pending.has(build.name)) continue;
+    const image = JSON.parse(
+      aws(["imagebuilder", "get-image", "--image-build-version-arn", build.imageArn]),
+    ).image;
+    const state = image.state?.status;
+    process.stdout.write(`  ${new Date().toISOString()} ${build.name} ${state}\n`);
+    if (state === "AVAILABLE") {
+      for (const ami of image.outputResources?.amis ?? []) {
+        console.log(`AMI ${ami.image} in ${ami.region} (${build.name}): ${ami.name}`);
+      }
+      pending.delete(build.name);
+    } else if (state === "FAILED" || state === "CANCELLED" || state === "DEPRECATED") {
+      console.error(
+        `image build ${build.name} ${state}: ${image.state?.reason ?? "no reason given"}`,
+      );
+      pending.delete(build.name);
+      failed = true;
+    }
   }
-  if (state === "FAILED" || state === "CANCELLED" || state === "DEPRECATED") {
-    console.error(`image build ${state}: ${image.state?.reason ?? "no reason given"}`);
-    process.exit(1);
-  }
-  await sleep(30_000);
+  if (pending.size > 0) await sleep(30_000);
 }
+if (failed) process.exit(1);

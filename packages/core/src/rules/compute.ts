@@ -13,6 +13,7 @@
  * Nothing here changes a tier. A recommendation is printed; the customer decides.
  */
 import type {
+  ComputeArchitecture,
   ComputeChoice,
   ComputeRecommendation,
   ComputeTier,
@@ -316,3 +317,15 @@ export const emptyUtilization = (
   swapUsed: false,
   wallClockSeconds: 0,
 });
+
+/**
+ * The architecture an EC2 instance type runs: Graviton families carry a `g`
+ * among the letters after the generation digit (`m7g`, `c8gd`, `t4g`, `r8gn`);
+ * every other family (`m7i`, `c8id`, `c7a`) is x86_64. The image a dispatch
+ * launches must match, or EC2 refuses the launch.
+ */
+export const architectureOf = (instanceType: string): ComputeArchitecture => {
+  const family = instanceType.split(".")[0] ?? "";
+  const suffix = /^[a-z]+\d+([a-z]*)$/.exec(family)?.[1] ?? "";
+  return suffix.includes("g") ? "arm64" : "x86_64";
+};

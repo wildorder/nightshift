@@ -6,6 +6,7 @@ import { COMPUTE_TIERS } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { createFixtures, makeComputeUtilization } from "../testing/factories.js";
 import {
+  architectureOf,
   chooseTier,
   emptyUtilization,
   estimateUsd,
@@ -294,6 +295,31 @@ describe("maySkipInstall (D-P10-24, SC-P10-08)", () => {
     }
     for (const command of ["npm run codegen", "npx prisma migrate deploy", "cargo build", "make"]) {
       expect(isInstallStep(command), command).toBe(false);
+    }
+  });
+});
+
+describe("architectureOf", () => {
+  it("tells Graviton families from x86 ones by the letters after the generation", () => {
+    for (const type of [
+      "m7g.xlarge",
+      "m7g.2xlarge",
+      "c8gd.4xlarge",
+      "t4g.small",
+      "r8gn.large",
+      "m7gd.medium",
+    ]) {
+      expect(architectureOf(type), type).toBe("arm64");
+    }
+    for (const type of [
+      "c8id.2xlarge",
+      "c8id.4xlarge",
+      "m7i.large",
+      "c7a.xlarge",
+      "m6a.large",
+      "c8i.2xlarge",
+    ]) {
+      expect(architectureOf(type), type).toBe("x86_64");
     }
   });
 });
