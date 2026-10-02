@@ -23,6 +23,21 @@ export const PROVIDER_KEY_ENV: Readonly<Record<Provider, string>> = {
   openai: "OPENAI_API_KEY",
 };
 
+/**
+ * A Claude Code subscription token, as `claude setup-token` mints it, carries
+ * this prefix; an API key does not. Claude Code reads the one through
+ * `CLAUDE_CODE_OAUTH_TOKEN` and the other through `ANTHROPIC_API_KEY`, so the
+ * stored `anthropic` credential may be either and the engine tells them apart.
+ */
+export const CLAUDE_OAUTH_TOKEN_PREFIX = "sk-ant-oat";
+export const CLAUDE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/** The environment variable an org's stored credential is handed to a harness as. */
+export const providerEnvironmentVariable = (provider: Provider, secret: string): string =>
+  provider === "anthropic" && secret.startsWith(CLAUDE_OAUTH_TOKEN_PREFIX)
+    ? CLAUDE_OAUTH_TOKEN_ENV
+    : PROVIDER_KEY_ENV[provider];
+
 /** Base64 ciphertext and wrapped key, as the envelope produced them. */
 const Base64Schema = z
   .string()

@@ -60,7 +60,7 @@ const FIXTURE_BRANCH = "program/fixture";
 const INSTALLATION_ID = 166952409;
 /** SC-P10-08: the warm setup against the cold one. Printed always, asserted softly. */
 const WARM_RATIO_TARGET = 0.1;
-/** T4: an Anthropic key for the throwaway org, so the root can run the program to its end. */
+/** T4: an Anthropic API key or a Claude Code subscription token (`claude setup-token`) for the throwaway org. */
 const ANTHROPIC_KEY = process.env.NIGHTSHIFT_SMOKE_ANTHROPIC_KEY;
 
 const say = (line: string): void => {

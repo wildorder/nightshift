@@ -15,7 +15,7 @@
  */
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { PROVIDER_KEY_ENV, type Provider } from "@nightshift/contracts";
+import { PROVIDERS, type Provider, providerEnvironmentVariable } from "@nightshift/contracts";
 import type { Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
 import type { RunnerContext } from "./main.js";
@@ -48,9 +48,9 @@ export const awaitProviderKeys = async (
   for (;;) {
     const credentials = heartbeat.last?.credentials ?? {};
     const keys: Record<string, string> = {};
-    for (const [provider, env] of Object.entries(PROVIDER_KEY_ENV) as [Provider, string][]) {
+    for (const provider of PROVIDERS as readonly Provider[]) {
       const value = credentials[provider];
-      if (value !== undefined) keys[env] = value;
+      if (value !== undefined) keys[providerEnvironmentVariable(provider, value)] = value;
     }
     if (Object.keys(keys).length > 0 || heartbeat.last?.status === "running") return keys;
     if (heartbeat.last?.stop === true || machine.now() >= deadline) return keys;

@@ -92,6 +92,7 @@ export const rootLaunch = (
     // The org's provider keys, as the heartbeat handed them to the engine on a
     // machine (D-P10-23); on a laptop, whatever the operator's shell holds.
     "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "OPENAI_API_KEY",
     "NIGHTSHIFT_HARNESS_MODULE",
     "NIGHTSHIFT_JOB_WAIT_CAP_SECONDS",

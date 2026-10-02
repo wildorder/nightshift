@@ -125,3 +125,11 @@ describe("the returned environment", () => {
     expect(Object.isFrozen(env)).toBe(true);
   });
 });
+
+it("lets a Claude Code subscription token through, as it does an API key (P10, D-P10-23)", () => {
+  const env = sanitizeClaudeEnvironment({
+    platform: "linux",
+    parentEnv: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-not-a-real-token", PATH: "/usr/bin" },
+  });
+  expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-not-a-real-token");
+});

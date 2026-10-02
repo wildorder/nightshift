@@ -66,6 +66,8 @@ export const CLAUDE_ENV_ALLOWLIST: readonly string[] = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_BASE_URL",
+  // A Claude Code subscription token from `claude setup-token` (P10, D-P10-23).
+  "CLAUDE_CODE_OAUTH_TOKEN",
   "NODE_EXTRA_CA_CERTS",
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",

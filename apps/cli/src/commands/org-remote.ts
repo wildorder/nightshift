@@ -109,7 +109,9 @@ export const githubStatus = async (environment: CliEnvironment, org?: string): P
 
 /** A key, from a prompt or the pipe: never from an argument, never echoed. */
 const readKey = async (environment: CliEnvironment, provider: Provider): Promise<string> => {
-  environment.err(`Paste the ${provider} API key and press Enter (it is not echoed back):`);
+  environment.err(
+    `Paste the ${provider} API key (or, for anthropic, a Claude Code subscription token from "claude setup-token") and press Enter (it is not echoed back):`,
+  );
   const paste = environment.readPaste();
   const line = await paste.line;
   paste.cancel();
