@@ -170,7 +170,8 @@ export const prepareWorkspace = async (
 
   // The checkout: made from the mirror, moved to the SHA; a divergent one is remade.
   const checkedOut = await machine.exec("git", ["-C", layout.checkout, "rev-parse", "--git-dir"]);
-  if (checkedOut.exitCode !== 0) {
+  const fresh = checkedOut.exitCode !== 0;
+  if (fresh) {
     await run(
       machine,
       "git",
@@ -180,7 +181,11 @@ export const prepareWorkspace = async (
   } else {
     await run(machine, "git", ["-C", layout.checkout, "fetch", "origin"], "fetch the checkout");
   }
-  const dirty = await machine.exec("git", ["-C", layout.checkout, "status", "--porcelain"]);
+  // A checkout that existed may have been left dirty by the last run; one just
+  // cloned with --no-checkout has no files yet, which is not the same thing.
+  const dirty = fresh
+    ? { stdout: "" }
+    : await machine.exec("git", ["-C", layout.checkout, "status", "--porcelain"]);
   if (dirty.stdout.trim().length > 0) {
     log("the checkout was left dirty; resetting it");
     await run(machine, "git", ["-C", layout.checkout, "reset", "--hard"], "reset the checkout");

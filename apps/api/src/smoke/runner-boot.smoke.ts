@@ -302,8 +302,23 @@ const runOnce = async (
   };
 };
 
-/** Cancel, hear `stopped` from the runner, then watch the reconciler clean up and snapshot. */
+/** How long the root is given after `running` before the proof cancels it, with no key to run on. */
+const ROOT_GRACE_MS = 60_000;
+
+/**
+ * Cancel, hear `stopped` from the runner, then watch the reconciler clean up
+ * and snapshot. First the root is let start: `running` is the runner's own
+ * report that it is starting the root, and a minute is enough for the journal
+ * to show what a root with no provider key does.
+ */
 const stopAndCleanUp = async (name: string, run: RunMade): Promise<Dispatch> => {
+  await awaitDispatch(run, "running", 3 * 60_000, (d) => d.status === "running").catch(
+    (error: unknown) =>
+      say(
+        `${name}: the root did not report running: ${error instanceof Error ? error.message : String(error)}`,
+      ),
+  );
+  await sleep(ROOT_GRACE_MS);
   expectStatus(await api.post(`${run.path}/dispatch/cancel`, undefined), 200);
   const stopped = await awaitDispatch(run, "stopped", 3 * 60_000, (d) => d.status === "stopped");
   say(`${name}: stopped as told; waiting for the reconciler's snapshot and cleanup`);
