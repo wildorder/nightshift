@@ -38,6 +38,45 @@ export const providerEnvironmentVariable = (provider: Provider, secret: string):
     ? CLAUDE_OAUTH_TOKEN_ENV
     : PROVIDER_KEY_ENV[provider];
 
+/**
+ * Codex signs in with a ChatGPT subscription and keeps the login in
+ * `$CODEX_HOME/auth.json`, not in an environment variable (D-P5-02 keeps it
+ * there deliberately). An org's `openai` credential may be that file's content,
+ * which is JSON with a `tokens` object; the machine writes it where Codex
+ * reads it and points `CODEX_HOME` at the directory.
+ */
+export const CODEX_HOME_ENV = "CODEX_HOME";
+export const CODEX_AUTH_FILE = "auth.json";
+
+export const isCodexAuthFile = (secret: string): boolean => {
+  if (!secret.trimStart().startsWith("{")) return false;
+  try {
+    const parsed: unknown = JSON.parse(secret);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      ("tokens" in parsed || "OPENAI_API_KEY" in parsed)
+    );
+  } catch {
+    return false;
+  }
+};
+
+/** How a stored credential reaches the harness on a machine: a variable, or a file a variable points at. */
+export type CredentialPlacement =
+  | { readonly kind: "env"; readonly name: string }
+  | {
+      readonly kind: "file";
+      readonly env: string;
+      readonly directory: string;
+      readonly file: string;
+    };
+
+export const credentialPlacement = (provider: Provider, secret: string): CredentialPlacement =>
+  provider === "openai" && isCodexAuthFile(secret)
+    ? { kind: "file", env: CODEX_HOME_ENV, directory: "codex", file: CODEX_AUTH_FILE }
+    : { kind: "env", name: providerEnvironmentVariable(provider, secret) };
+
 /** Base64 ciphertext and wrapped key, as the envelope produced them. */
 const Base64Schema = z
   .string()

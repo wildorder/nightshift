@@ -9,6 +9,7 @@
  * input or a prompt and never from an argument, and nothing it prints is more
  * than presence, date and last four.
  */
+import { readFile } from "node:fs/promises";
 import {
   GitHubAppResponseSchema,
   GitHubInstallationSchema,
@@ -22,6 +23,7 @@ import {
 import { ControlPlaneError, routes, send } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
+import { resolveFrom } from "../program-files.js";
 import { openSession, type Session } from "../session.js";
 
 /**
@@ -128,16 +130,27 @@ const providerOf = (named: string): Provider => {
   return parsed.data;
 };
 
-/** `org providers set <provider> [--org <id>]`: the key goes in through the API, sealed there. */
+/**
+ * `org providers set <provider> [--file <path>] [--org <id>]`: the credential
+ * goes in through the API, sealed there. `--file` is for a credential that is a
+ * file, Codex's `~/.codex/auth.json` (a ChatGPT subscription login) above all:
+ * the file's content is the credential, and the machine puts it back where
+ * Codex reads it (D-P10-23).
+ */
 export const providersSet = async (
   environment: CliEnvironment,
   provider: string,
   org?: string,
+  file?: string,
 ): Promise<number> => {
   const session = await openSession(environment);
   const orgId = await orgOf(session, org);
   const named = providerOf(provider);
-  const key = await readKey(environment, named);
+  const key =
+    file === undefined
+      ? await readKey(environment, named)
+      : (await readFile(resolveFrom(environment.cwd, file), "utf8")).trim();
+  if (key.length < 8) throw new UsageError(`${file} holds no credential`);
   const view = OrgCredentialViewSchema.parse(
     await send(session.transport, {
       method: "PUT",

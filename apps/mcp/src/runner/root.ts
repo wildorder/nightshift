@@ -15,7 +15,7 @@
  */
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { PROVIDERS, type Provider, providerEnvironmentVariable } from "@nightshift/contracts";
+import { credentialPlacement, PROVIDERS, type Provider } from "@nightshift/contracts";
 import type { Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
 import type { RunnerContext } from "./main.js";
@@ -34,28 +34,55 @@ export const installTokenFile = async (runId: string, token: string): Promise<vo
 };
 
 /**
- * The org's provider keys, from the heartbeat (D-P10-23): the plane hands them
- * to `engine` only while the dispatch is `running`, so the runner reports
- * `running` and waits one beat. A run whose org set no key gets no key, and
- * the root's harness says so when it cannot start.
+ * The org's provider credentials, from the heartbeat (D-P10-23): the plane
+ * hands them to `engine` only while the dispatch is `running`, so the runner
+ * reports `running` and waits one beat. A run whose org set none gets none,
+ * and the root's harness says so when it cannot start.
  */
-export const awaitProviderKeys = async (
+export const awaitProviderCredentials = async (
   heartbeat: Heartbeat,
   machine: Machine,
   timeoutMs: number,
-): Promise<Record<string, string>> => {
+): Promise<Partial<Record<Provider, string>>> => {
   const deadline = machine.now() + timeoutMs;
   for (;;) {
     const credentials = heartbeat.last?.credentials ?? {};
-    const keys: Record<string, string> = {};
+    const found: Partial<Record<Provider, string>> = {};
     for (const provider of PROVIDERS as readonly Provider[]) {
       const value = credentials[provider];
-      if (value !== undefined) keys[providerEnvironmentVariable(provider, value)] = value;
+      if (value !== undefined) found[provider] = value;
     }
-    if (Object.keys(keys).length > 0 || heartbeat.last?.status === "running") return keys;
-    if (heartbeat.last?.stop === true || machine.now() >= deadline) return keys;
+    if (Object.keys(found).length > 0 || heartbeat.last?.status === "running") return found;
+    if (heartbeat.last?.stop === true || machine.now() >= deadline) return found;
     await machine.sleep(1000);
   }
+};
+
+/**
+ * Places each credential where its harness reads it: a variable, or a file on
+ * tmpfs under the run's directory (0600, `engine` only) with a variable naming
+ * the directory, as Codex's `auth.json` under `CODEX_HOME`. Answers the
+ * environment the root is given.
+ */
+export const placeProviderCredentials = async (
+  runId: string,
+  credentials: Partial<Record<Provider, string>>,
+): Promise<Record<string, string>> => {
+  const env: Record<string, string> = {};
+  for (const [provider, secret] of Object.entries(credentials) as [Provider, string][]) {
+    const placement = credentialPlacement(provider, secret);
+    if (placement.kind === "env") {
+      env[placement.name] = secret;
+      continue;
+    }
+    const directory = join(tokenDirectory(runId), placement.directory);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const path = join(directory, placement.file);
+    await writeFile(path, secret, { mode: 0o600 });
+    await chmod(path, 0o600);
+    env[placement.env] = directory;
+  }
+  return env;
 };
 
 export interface RootEnvironmentInput {

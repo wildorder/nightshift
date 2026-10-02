@@ -9,7 +9,12 @@ import { createRunnerPlane, createRuntime } from "../compose.js";
 import { describeHeadlessEnding, runHeadless } from "../headless.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
-import { awaitProviderKeys, installTokenFile, rootEnvironment } from "../runner/root.js";
+import {
+  awaitProviderCredentials,
+  installTokenFile,
+  placeProviderCredentials,
+  rootEnvironment,
+} from "../runner/root.js";
 
 const say = (line: string): void => {
   process.stderr.write(`[nightshift-runner] ${line}\n`);
@@ -28,11 +33,16 @@ runRunner({
     // `running` first: the plane hands the org's provider keys to a running
     // engine and to nothing else (D-P10-23), on the next beat.
     context.heartbeat.report("running");
-    const providerKeys = await awaitProviderKeys(context.heartbeat, context.machine, 3 * 60_000);
+    const credentials = await awaitProviderCredentials(
+      context.heartbeat,
+      context.machine,
+      3 * 60_000,
+    );
+    const providerKeys = await placeProviderCredentials(context.scope.runId, credentials);
     say(
       Object.keys(providerKeys).length === 0
-        ? "the org set no provider key; the root starts with none"
-        : `provider keys for ${Object.keys(providerKeys).join(", ")}`,
+        ? "the org set no provider credential; the root starts with none"
+        : `provider credentials placed: ${Object.keys(providerKeys).join(", ")}`,
     );
     const env = rootEnvironment({
       context,

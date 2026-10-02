@@ -70,7 +70,7 @@ Usage:
   nightshift org config set <file> [--org <id>]
   nightshift org github install [--installation <id>] [--org <id>]
   nightshift org github status [--org <id>]
-  nightshift org providers set <anthropic|openai> [--org <id>]
+  nightshift org providers set <anthropic|openai> [--file <path>] [--org <id>]
   nightshift org providers status [--org <id>]
   nightshift routes export <program> [--run <id>] [--repo <path>]
   nightshift routes export --project <id>
@@ -516,11 +516,15 @@ const doReport = async (environment: CliEnvironment, args: readonly string[]): P
 
 const doOrg = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage =
-    "nightshift org config get|set <file> | org github install [--installation <id>]|status | org providers set <provider>|status  [--org <id>]";
+    "nightshift org config get|set <file> | org github install [--installation <id>]|status | org providers set <provider> [--file <path>]|status  [--org <id>]";
   const { values, positionals } = parse(
     {
       args: [...args],
-      options: { org: { type: "string" }, installation: { type: "string" } },
+      options: {
+        org: { type: "string" },
+        installation: { type: "string" },
+        file: { type: "string" },
+      },
       allowPositionals: true,
       strict: true,
     },
@@ -546,7 +550,9 @@ const doOrg = async (environment: CliEnvironment, args: readonly string[]): Prom
     throw new UsageError("`nightshift org github` takes `install` or `status`", usage);
   }
   if (noun === "providers") {
-    if (verb === "set" && third !== undefined) return providersSet(environment, third, org);
+    if (verb === "set" && third !== undefined) {
+      return providersSet(environment, third, org, optional(values, "file"));
+    }
     if (verb === "status") return providersStatus(environment, org);
     throw new UsageError("`nightshift org providers` takes `set <provider>` or `status`", usage);
   }
