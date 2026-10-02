@@ -14,8 +14,9 @@ export default defineConfig({
     exclude: ["**/node_modules/**", "**/dist/**"],
     fileParallelism: false,
     // Two machines boot, install, stop and are snapshotted in turn: an hour at
-    // the outside, not minutes.
-    testTimeout: 60 * 60_000,
+    // the outside, not minutes. A benchmark is one run per instance type, and
+    // a heavy one tens of minutes each: the day's work, bounded at eight hours.
+    testTimeout: (process.env.NIGHTSHIFT_SMOKE_BENCH_TYPES ? 8 : 1) * 60 * 60_000,
     hookTimeout: 15 * 60_000,
     reporters: ["verbose"],
   },

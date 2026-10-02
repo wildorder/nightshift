@@ -57,10 +57,21 @@ import { deleteObjectsUnder, deletePartitions } from "./cleanup.js";
 import { fetchMachineToken, loadSmokeContext, REGION, subjectOf } from "./context.js";
 import { smokeApiClient } from "./http.js";
 
+/**
+ * Heavy benchmark: the program runs against the nightshift monorepo itself
+ * (`program/bench`, pushed by hand from the branch under test), whose
+ * verification is the real typecheck and test suite, minutes not seconds.
+ * The same installation grants it. Needs the bench types and the key.
+ */
+const HEAVY = process.env.NIGHTSHIFT_SMOKE_BENCH_HEAVY === "1";
 /** The fixture repository and the installation that grants it (H-P10-04, H-P10-05). */
-const FIXTURE_REPOSITORY = "https://github.com/wildorder/nightshift-remote-fixture";
-const FIXTURE_BRANCH = "program/fixture";
+const FIXTURE_REPOSITORY = HEAVY
+  ? "https://github.com/wildorder/nightshift"
+  : "https://github.com/wildorder/nightshift-remote-fixture";
+const FIXTURE_BRANCH = HEAVY ? "program/bench" : "program/fixture";
 const INSTALLATION_ID = 166952409;
+/** A heavy run is tens of minutes of real verification; a light one, a few. */
+const RUN_END_TIMEOUT_MS = (HEAVY ? 120 : 40) * 60_000;
 /** SC-P10-08: the warm setup against the cold one. Printed always, asserted softly. */
 const WARM_RATIO_TARGET = 0.1;
 /** T4: an Anthropic API key or a Claude Code subscription token (`claude setup-token`) for the throwaway org. */
@@ -591,7 +602,7 @@ const runToTheEnd = async (
   const stopped = await awaitDispatch(
     run,
     "the run's end",
-    40 * 60_000,
+    RUN_END_TIMEOUT_MS,
     (d) => d.status === "stopped",
   );
   if (outcome !== undefined) outcome.marks.stoppedAt = Date.now();
@@ -688,41 +699,61 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     say(`installation ${INSTALLATION_ID} recorded: ${JSON.stringify(recorded.body)}`);
 
     // A planned program against the fixture, its document uploaded and ratified (D-P10-09).
-    const plan = [
-      `# ${label}`,
-      "",
-      "## Strands",
-      "",
-      "### S-01 A median helper",
-      "",
-      "Add `median(values)` to `src/math.js`, exported from `src/index.js`, returning the middle",
-      "value of an odd-length list and the mean of the two middle values of an even-length one,",
-      "throwing `RangeError` on an empty list. Cover it in `test/math.test.js`. Change nothing else.",
-      "",
-    ].join("\n");
+    // The heavy program's change is trivial on purpose: a docs file, so that
+    // what the benchmark times is the machine running the monorepo's own
+    // install, typecheck and test suite, not an agent's luck with a task.
+    const strand = HEAVY
+      ? {
+          heading: "### S-01 A benchmark note",
+          lines: [
+            "Create `docs/benchmarks/remote-runner.md` containing one heading and one short paragraph",
+            "saying this file was written by a remote runner benchmark. Change nothing else; do not",
+            "edit any other file.",
+          ],
+          name: "A benchmark note",
+          summary: "one new file under docs/benchmarks",
+          includes: ["docs/**"],
+          acceptance: ["docs/benchmarks/remote-runner.md exists and the repository's checks pass"],
+        }
+      : {
+          heading: "### S-01 A median helper",
+          lines: [
+            "Add `median(values)` to `src/math.js`, exported from `src/index.js`, returning the middle",
+            "value of an odd-length list and the mean of the two middle values of an even-length one,",
+            "throwing `RangeError` on an empty list. Cover it in `test/math.test.js`. Change nothing else.",
+          ],
+          name: "A median helper",
+          summary: "the math module and its tests",
+          includes: ["src/**", "test/**"],
+          acceptance: ["median is exported and its tests pass alongside the existing ones"],
+        };
+    const plan = [`# ${label}`, "", "## Strands", "", strand.heading, "", ...strand.lines, ""].join(
+      "\n",
+    );
     const contract = makeProgramContract(f, {
       status: "planning",
       repository: { url: FIXTURE_REPOSITORY, baseBranch: "main", programBranch: FIXTURE_BRANCH },
       setup: [{ id: "install", command: "npm ci --prefer-offline" }],
-      verification: [{ id: "test", command: "npm test" }],
+      verification: HEAVY
+        ? [
+            { id: "typecheck", command: "npm run typecheck" },
+            { id: "test", command: "npm test" },
+          ]
+        : [{ id: "test", command: "npm test" }],
       scope: {
         // The root node the proof makes carries the fixture scope; the program
         // may only be at least as wide and forbid exactly what the node does.
-        includes: ["src/**", "test/**"],
-        excludes: ["src/generated/**"],
+        includes: strand.includes,
+        excludes: HEAVY ? [] : ["src/generated/**"],
         permissions: ["fs.read", "fs.write", "shell.exec"],
         forbiddenActions: ["deploy to production"],
       },
       strands: [
         {
           id: "S-01",
-          name: "A median helper",
-          scope: {
-            summary: "the math module and its tests",
-            includes: ["src/**", "test/**"],
-            excludes: [],
-          },
-          acceptance: ["median is exported and its tests pass alongside the existing ones"],
+          name: strand.name,
+          scope: { summary: strand.summary, includes: strand.includes, excludes: [] },
+          acceptance: strand.acceptance,
           successCriteria: ["SC-01"],
           dependsOn: [],
           prerequisites: [],
@@ -766,7 +797,9 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
       if (ANTHROPIC_KEY === undefined)
         throw new Error("the benchmark needs the key: the program must run");
       const outputs = runnerOutputs();
-      say(`benchmark on ${BENCH_TYPES.join(", ")} (image ${outputs.ImageVersion})`);
+      say(
+        `benchmark on ${BENCH_TYPES.join(", ")} (image ${outputs.ImageVersion}, ${HEAVY ? "heavy: the monorepo" : "the fixture"})`,
+      );
       for (const [index, instanceType] of BENCH_TYPES.entries()) {
         if (index > 0) {
           resetFixtureBranch(baseSha);
