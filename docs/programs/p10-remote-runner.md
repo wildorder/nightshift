@@ -640,3 +640,48 @@ mirror and the checkout, the runner's umask 0002. The root orchestrator stays
 `engine`. The live proof asserts, from the machine's sudo log, that processes
 were started as worker users. Still open from T4's spec: worker token renewal
 before expiry, and the root's harness session id on the dispatch for T6.
+
+### Benchmark: the fixture program on four machines, 2026-10-02
+
+One cold run of the fixture program to its end per instance type, image
+1.0.13, the owner's Claude subscription, `claude-opus-5-5` as root and
+examiner, `claude-sonnet-5` as worker, dispatched straight to the dispatch
+Lambda with the type on the record (`NIGHTSHIFT_SMOKE_BENCH_TYPES`). Phases
+are from the instance's launch time, the runner's journal, the run's events
+and the publication intent; rows marked observed are the proof's own ten-second
+polling. `c8id` (x86) was asked for and cannot run our arm64 image; `c8gd` is
+its Graviton4 counterpart.
+
+| Phase (seconds) | m7g.xlarge | m7g.2xlarge | c8gd.2xlarge | c8gd.4xlarge |
+|---|---|---|---|---|
+| dispatch accepted → machine recorded (observed) | 12.2 | 12.4 | 12.4 | 11.6 |
+| instance launch → runner process up (boot) | 50.7 | 35.7 | 43.2 | 43.6 |
+| runner up → volume mounted | 0.0 | 0.0 | 0.0 | 0.0 |
+| mounted → clone done, setup starting | 0.0 | 0.0 | 0.0 | 0.0 |
+| setup (npm ci) | 9.2 | 6.1 | 3.6 | 6.9 |
+| setup done → root starting (credentials wait) | 0.0 | 0.0 | 0.0 | 0.0 |
+| dispatch accepted → ready (observed) | 103.3 | 83.5 | 83.4 | 93.0 |
+| root starting → root agent up | 107.0 | 81.1 | 55.2 | 98.9 |
+| root agent up → strand delegated | 5.8 | 5.6 | 7.0 | 6.5 |
+| delegated → worker started (worktree, seed) | 1.0 | 0.9 | 0.8 | 0.8 |
+| worker started → implemented | 32.8 | 29.9 | 20.6 | 32.2 |
+| implemented → verification completed | 20.1 | 23.6 | 22.6 | 25.0 |
+| implemented → examination completed | 19.3 | 21.5 | 20.9 | 23.0 |
+| implemented → integrated | 20.2 | 23.9 | 22.8 | 25.3 |
+| integrated → published at GitHub | 1.1 | 1.1 | 1.0 | 1.1 |
+| integrated → run finished by the root | 2.3 | 2.3 | 3.3 | 2.5 |
+| run finished → runner stopped (observed) | 29.7 | 19.8 | 26.5 | 28.5 |
+| total: dispatch accepted → runner stopped (observed) | 254.6 | 203.9 | 184.1 | 242.8 |
+
+What the table says. The instance type barely matters for this workload:
+every phase that does real computing (clone, install, verification) is a few
+seconds on all four, and the two that dominate are the model's: the root's
+Claude process coming up and making its first calls (55 to 107 s, varying by
+run more than by machine) and the worker's job (21 to 33 s). Boot is 36 to
+51 s. The gaps the proof sees to ten seconds (dispatch to machine, run
+finished to stopped) are the heartbeat and polling cadence, not work. A
+bigger machine buys this program nothing; it would buy a program whose
+verification compiles something. The three zero rows are a measurement gap:
+the journal stamps the runner's lines at receipt and they arrive together, so
+mount, clone and install are not separable there; the install is measured by
+the runner itself. Not run: x86 types, which need a second image pipeline.
