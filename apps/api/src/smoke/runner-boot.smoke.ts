@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { S3Client } from "@aws-sdk/client-s3";
 import {
+  COMPUTE_TIERS,
   ComputeUtilizationSchema,
   type Dispatch,
   DispatchSchema,
@@ -41,6 +42,7 @@ import {
 import {
   createUlidIdGenerator,
   type Fixtures,
+  makeDispatch,
   makeProgramContract,
   makeProject,
   makeRootNode,
@@ -63,6 +65,16 @@ const INSTALLATION_ID = 166952409;
 const WARM_RATIO_TARGET = 0.1;
 /** T4: an Anthropic API key or a Claude Code subscription token (`claude setup-token`) for the throwaway org. */
 const ANTHROPIC_KEY = process.env.NIGHTSHIFT_SMOKE_ANTHROPIC_KEY;
+/**
+ * Benchmark mode: a comma-separated list of EC2 instance types. Each gets one
+ * cold run of the program to its end, dispatched straight to the dispatch
+ * Lambda with that type on the record, and a table of how long every phase
+ * took, from the records and the machine's journal. Needs the key.
+ */
+const BENCH_TYPES = (process.env.NIGHTSHIFT_SMOKE_BENCH_TYPES ?? "")
+  .split(",")
+  .map((type) => type.trim())
+  .filter((type) => type !== "");
 
 const say = (line: string): void => {
   process.stdout.write(`[runner-boot] ${line}\n`);
@@ -159,12 +171,15 @@ const awaitDispatch = async (
 };
 
 /** The runner's own journal, over SSM, for the record and for the failures. */
-const journal = async (instanceId: string): Promise<string> => {
+const journal = async (
+  instanceId: string,
+  format: "cat" | "short-iso" = "cat",
+): Promise<string> => {
   const parameters = join(tmpdir(), `nightshift-runner-boot-${process.pid}.json`);
   writeFileSync(
     parameters,
     JSON.stringify({
-      commands: ["journalctl -u nightshift-runner --no-pager -n 120 -o cat"],
+      commands: [`journalctl -u nightshift-runner --no-pager -n 200 -o ${format}`],
       executionTimeout: ["60"],
     }),
   );
@@ -205,12 +220,54 @@ const journal = async (instanceId: string): Promise<string> => {
   }
 };
 
+/** The runner stack's outputs: the dispatch function to invoke directly, the image version. */
+const runnerOutputs = (): Record<string, string> => {
+  const described = JSON.parse(
+    aws([
+      "cloudformation",
+      "describe-stacks",
+      "--stack-name",
+      `nightshift-${stage}-runner`,
+      "--query",
+      "Stacks[0].Outputs",
+    ]),
+  ) as { OutputKey: string; OutputValue: string }[];
+  return Object.fromEntries(described.map((output) => [output.OutputKey, output.OutputValue]));
+};
+
+/** The fixture branch back at `sha`, from a scratch clone that holds the object. */
+const resetFixtureBranch = (sha: string): void => {
+  const scratch = mkdtempSync(join(tmpdir(), "nightshift-fixture-reset-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: scratch });
+    execFileSync("git", ["fetch", "-q", FIXTURE_REPOSITORY, FIXTURE_BRANCH], { cwd: scratch });
+    execFileSync(
+      "git",
+      ["push", "-q", "-f", FIXTURE_REPOSITORY, `${sha}:refs/heads/${FIXTURE_BRANCH}`],
+      {
+        cwd: scratch,
+      },
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+};
+
+/** When the proof saw each state, for the phase table; polling is every ten seconds. */
+interface Marks {
+  dispatchedAt: number;
+  machineAt?: number;
+  readyAt?: number;
+  stoppedAt?: number;
+}
+
 interface RunOutcome {
   readonly run: RunMade;
   readonly secondsToReady: number;
   readonly setupSeconds: number;
   /** The runner's journal said the volume was warm: the mirror was fetched, not cloned. */
   readonly warmVolume: boolean;
+  readonly marks: Marks;
 }
 
 /** One run of the fixture: a pending remote run, its root, the dispatch, `ready`, the setup time. */
@@ -218,6 +275,7 @@ const runOnce = async (
   name: string,
   baseSha: string,
   program: ProgramContract,
+  bench?: { readonly instanceType: string; readonly outputs: Record<string, string> },
 ): Promise<RunOutcome> => {
   const planHashValue = program.planHash;
   const planDocument = program.planDocument;
@@ -261,18 +319,64 @@ const runOnce = async (
     201,
   );
   const dispatchedAt = Date.now();
-  const dispatched = await api.post(`${run.path}/dispatch`, {
-    tier: "good",
-    idempotencyKey: `${runId}:${baseSha}:${planHashValue}`,
-    input: {
-      repositoryUrl: FIXTURE_REPOSITORY,
-      branch: FIXTURE_BRANCH,
-      baseSha,
-      planHash: planHashValue,
-    },
-  });
-  expectStatus(dispatched, 201);
-  run.dispatch = DispatchSchema.parse(dispatched.body);
+  const marks: Marks = { dispatchedAt };
+  if (bench === undefined) {
+    const dispatched = await api.post(`${run.path}/dispatch`, {
+      tier: "good",
+      idempotencyKey: `${runId}:${baseSha}:${planHashValue}`,
+      input: {
+        repositoryUrl: FIXTURE_REPOSITORY,
+        branch: FIXTURE_BRANCH,
+        baseSha,
+        planHash: planHashValue,
+      },
+    });
+    expectStatus(dispatched, 201);
+    run.dispatch = DispatchSchema.parse(dispatched.body);
+  } else {
+    // The benchmark names the machine: the record is written with that type
+    // and the dispatch Lambda is invoked as the API would invoke it.
+    const now = nowIso(systemClock);
+    const record = makeDispatch(fixtures, {
+      status: "requested",
+      tier: "good",
+      instanceType: bench.instanceType,
+      usdPerHour: COMPUTE_TIERS.good.usdPerHour,
+      amiVersion: bench.outputs.ImageVersion ?? "0.0.0",
+      idempotencyKey: `${runId}:${baseSha}:${planHashValue}:${bench.instanceType}`,
+      engineAgentId: ids.next("agent"),
+      input: {
+        repositoryUrl: FIXTURE_REPOSITORY,
+        branch: FIXTURE_BRANCH,
+        baseSha,
+        planHash: planHashValue,
+      },
+      attempts: [{ generation: 1, reason: "dispatch", startedAt: now }],
+      spend: { estimatedUsd: 1, meteredUsd: 0, meteredSeconds: 0 },
+      requestedAt: now,
+      updatedAt: now,
+    });
+    await stores.dispatches.put(record);
+    run.dispatch = record;
+    const payload = join(tmpdir(), `nightshift-bench-${process.pid}.json`);
+    writeFileSync(payload, JSON.stringify(fixtures.scope));
+    const fn = bench.outputs.DispatchFunctionName;
+    if (fn === undefined) throw new Error("the runner stack has no DispatchFunctionName output");
+    aws([
+      "lambda",
+      "invoke",
+      "--function-name",
+      fn,
+      "--invocation-type",
+      "Event",
+      "--cli-binary-format",
+      "raw-in-base64-out",
+      "--payload",
+      `file://${payload.replaceAll("\\", "/")}`,
+      join(tmpdir(), `nightshift-bench-${process.pid}-out.json`),
+    ]);
+    rmSync(payload, { force: true });
+  }
   say(
     `${name}: dispatch ${run.dispatch.status} on ${run.dispatch.tier} (${run.dispatch.instanceType})`,
   );
@@ -283,6 +387,7 @@ const runOnce = async (
     5 * 60_000,
     (d) => d.instanceId !== undefined,
   );
+  marks.machineAt = Date.now();
   say(
     `${name}: machine ${provisioned.instanceId} in ${provisioned.availabilityZone}, volume ${provisioned.volumeId}, image ${provisioned.amiVersion}`,
   );
@@ -300,6 +405,7 @@ const runOnce = async (
     }
     throw error;
   }
+  marks.readyAt = Date.now();
   const secondsToReady = Math.round((Date.now() - dispatchedAt) / 1000);
   const utilization = ComputeUtilizationSchema.parse((await api.get(`${run.path}/compute`)).body);
   expect(utilization.setupSeconds, "the runner reported no setup time").toBeDefined();
@@ -320,6 +426,7 @@ const runOnce = async (
     secondsToReady,
     setupSeconds: utilization.setupSeconds ?? Number.NaN,
     warmVolume,
+    marks,
   };
 };
 
@@ -361,11 +468,125 @@ const stopAndCleanUp = async (name: string, run: RunMade): Promise<Dispatch> => 
   return cleaned;
 };
 
+/** Seconds between two instants, one decimal, or a dash. */
+const seconds = (from: number | undefined, to: number | undefined): string =>
+  from === undefined || to === undefined || Number.isNaN(from) || Number.isNaN(to)
+    ? "-"
+    : ((to - from) / 1000).toFixed(1);
+
+/**
+ * Where every second went, from the records and the machine: the instance's
+ * launch time, the runner's journal (with timestamps), the run's events and
+ * the publication intent. The proof's own observations are to ten seconds.
+ */
+const phaseTable = async (
+  name: string,
+  run: RunMade,
+  outcome: RunOutcome,
+  ended: Dispatch,
+): Promise<Record<string, string>> => {
+  const instanceId = ended.instanceId;
+  let launchedAt: number | undefined;
+  let journalAt: Record<string, number> = {};
+  if (instanceId !== undefined) {
+    try {
+      const described = JSON.parse(
+        aws([
+          "ec2",
+          "describe-instances",
+          "--instance-ids",
+          instanceId,
+          "--query",
+          "Reservations[0].Instances[0].LaunchTime",
+        ]),
+      ) as string;
+      launchedAt = Date.parse(described);
+    } catch {
+      // Gone already; the boot phase is then unknown.
+    }
+    const lines = (await journal(instanceId, "short-iso")).split("' + NL + '");
+    const at = (needle: string): number | undefined => {
+      const line = lines.find((candidate) => candidate.includes(needle));
+      const stamp = line?.split(" ")[0];
+      return stamp === undefined ? undefined : Date.parse(stamp);
+    };
+    journalAt = Object.fromEntries(
+      Object.entries({
+        runnerStart: at("generation 1, on"),
+        mounted: at("workspace mounted"),
+        setupStart: at("setup install:"),
+        setupDone: at("setup took"),
+        rootStart: at("root starting"),
+        rootDone: at("the worker process completed"),
+      }).filter(([, value]) => value !== undefined) as [string, number][],
+    );
+  }
+  const events = (await api.get(`${run.path}/events?limit=500`)).body as {
+    items?: { type: string; occurredAt?: string; payload?: Record<string, unknown> }[];
+  };
+  const items = events.items ?? [];
+  const first = (type: string): number | undefined => {
+    const found = items.find((event) => event.type === type && event.occurredAt !== undefined);
+    return found?.occurredAt === undefined ? undefined : Date.parse(found.occurredAt);
+  };
+  const published = ended.publication.intents.find((intent) => intent.status === "published");
+  const publishedAt =
+    published?.resolvedAt === undefined ? undefined : Date.parse(published.resolvedAt);
+  const m = outcome.marks;
+  const rows: [string, string][] = [
+    ["dispatch accepted → machine recorded (observed)", seconds(m.dispatchedAt, m.machineAt)],
+    ["instance launch → runner process up (boot)", seconds(launchedAt, journalAt.runnerStart)],
+    ["runner up → volume mounted", seconds(journalAt.runnerStart, journalAt.mounted)],
+    ["mounted → clone done, setup starting", seconds(journalAt.mounted, journalAt.setupStart)],
+    ["setup (npm ci)", outcome.setupSeconds.toFixed(1)],
+    [
+      "setup done → root starting (credentials wait)",
+      seconds(journalAt.setupDone, journalAt.rootStart),
+    ],
+    ["dispatch accepted → ready (observed)", seconds(m.dispatchedAt, m.readyAt)],
+    ["root starting → root agent up", seconds(journalAt.rootStart, first("agent.started"))],
+    ["root agent up → strand delegated", seconds(first("agent.started"), first("node.delegated"))],
+    [
+      "delegated → worker started (worktree, seed)",
+      seconds(first("node.delegated"), first("node.started")),
+    ],
+    ["worker started → implemented", seconds(first("node.started"), first("node.implemented"))],
+    [
+      "implemented → verification completed",
+      seconds(first("node.implemented"), first("verification.completed")),
+    ],
+    [
+      "verification → examination completed",
+      seconds(first("verification.completed"), first("examination.completed")),
+    ],
+    ["examination → integrated", seconds(first("examination.completed"), first("node.integrated"))],
+    ["integrated → published at GitHub", seconds(first("node.integrated"), publishedAt)],
+    [
+      "integrated → run finished by the root",
+      seconds(first("node.integrated"), first("run.completed") ?? first("run.failed")),
+    ],
+    [
+      "run finished → runner stopped (observed)",
+      seconds(first("run.completed") ?? first("run.failed"), m.stoppedAt),
+    ],
+    ["total: dispatch accepted → runner stopped (observed)", seconds(m.dispatchedAt, m.stoppedAt)],
+  ];
+  say(
+    `${name}: phases\n  ${rows.map(([phase, value]) => `${value.padStart(7)} s  ${phase}`).join("\n  ")}`,
+  );
+  return Object.fromEntries(rows);
+};
+
 /**
  * T4: the root runs the program; the runner stops on its own when it ends; the
  * fixture's program branch at GitHub holds the published head (D-P10-22).
  */
-const runToTheEnd = async (name: string, run: RunMade, baseSha: string): Promise<Dispatch> => {
+const runToTheEnd = async (
+  name: string,
+  run: RunMade,
+  baseSha: string,
+  outcome?: RunOutcome,
+): Promise<Dispatch> => {
   const startedAt = Date.now();
   const stopped = await awaitDispatch(
     run,
@@ -373,6 +594,7 @@ const runToTheEnd = async (name: string, run: RunMade, baseSha: string): Promise
     40 * 60_000,
     (d) => d.status === "stopped",
   );
+  if (outcome !== undefined) outcome.marks.stoppedAt = Date.now();
   findings.runSeconds = Math.round((Date.now() - startedAt) / 1000);
   const runSeconds = findings.runSeconds;
   say(`${name}: the runner stopped on its own after ${runSeconds} seconds`);
@@ -414,6 +636,11 @@ const runToTheEnd = async (name: string, run: RunMade, baseSha: string): Promise
   expect(ended.publication.head, "nothing was published").toBeDefined();
   expect(remote).toBe(ended.publication.head);
   expect(remote).not.toBe(baseSha);
+  if (outcome !== undefined) {
+    const phases = (findings.phases as Record<string, unknown> | undefined) ?? {};
+    phases[name] = await phaseTable(name, run, outcome, ended);
+    findings.phases = phases;
+  }
   const cleaned = await awaitDispatch(run, "cleanup", 20 * 60_000, (d) => d.cleanup.volumeDeleted);
   say(`${name}: cleaned up; snapshot ${cleaned.cleanup.snapshotId ?? "none"}`);
   return cleaned;
@@ -535,6 +762,22 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     const program = ProgramContractSchema.parse(ratified.body);
     if (program.planHash === undefined) throw new Error("ratification recorded no plan hash");
 
+    if (BENCH_TYPES.length > 0) {
+      if (ANTHROPIC_KEY === undefined)
+        throw new Error("the benchmark needs the key: the program must run");
+      const outputs = runnerOutputs();
+      say(`benchmark on ${BENCH_TYPES.join(", ")} (image ${outputs.ImageVersion})`);
+      for (const [index, instanceType] of BENCH_TYPES.entries()) {
+        if (index > 0) {
+          resetFixtureBranch(baseSha);
+          say(`${FIXTURE_BRANCH} reset to ${baseSha.slice(0, 12)} for the next type`);
+        }
+        const outcome = await runOnce(instanceType, baseSha, program, { instanceType, outputs });
+        await runToTheEnd(instanceType, outcome.run, baseSha, outcome);
+      }
+      return;
+    }
+
     // Cold: no warm cache yet, so the volume is empty and setup downloads everything.
     expect((await api.get(`${projectPath}/warm-cache`)).status).toBe(404);
     const cold = await runOnce("cold", baseSha, program);
@@ -542,7 +785,7 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     const coldCleaned =
       ANTHROPIC_KEY === undefined
         ? await stopAndCleanUp("cold", cold.run)
-        : await runToTheEnd("cold", cold.run, baseSha);
+        : await runToTheEnd("cold", cold.run, baseSha, cold);
     expect(
       coldCleaned.cleanup.snapshotId,
       "no snapshot was taken of the cold volume",
@@ -648,22 +891,9 @@ afterAll(async () => {
   if (findings.publication !== undefined && !keep) {
     const before = (findings as { baseShaAtStart?: string }).baseShaAtStart;
     if (before !== undefined) {
-      await step(`reset ${FIXTURE_BRANCH} to ${before.slice(0, 12)}`, () => {
-        const scratch = mkdtempSync(join(tmpdir(), "nightshift-fixture-reset-"));
-        try {
-          execFileSync("git", ["init", "-q"], { cwd: scratch });
-          execFileSync("git", ["fetch", "-q", FIXTURE_REPOSITORY, FIXTURE_BRANCH], {
-            cwd: scratch,
-          });
-          execFileSync(
-            "git",
-            ["push", "-q", "-f", FIXTURE_REPOSITORY, `${before}:refs/heads/${FIXTURE_BRANCH}`],
-            { cwd: scratch },
-          );
-        } finally {
-          rmSync(scratch, { recursive: true, force: true });
-        }
-      });
+      await step(`reset ${FIXTURE_BRANCH} to ${before.slice(0, 12)}`, () =>
+        resetFixtureBranch(before),
+      );
     }
   }
   await step("delete the records", () =>
