@@ -419,19 +419,32 @@ export class NightshiftRunnerStack extends Stack {
         resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
       new iam.PolicyStatement({
-        actions: [
-          "ec2:TerminateInstances",
-          "ec2:DeleteVolume",
-          "ec2:CreateSnapshot",
-          "ec2:DeleteSnapshot",
-          "ec2:CreateTags",
-        ],
+        actions: ["ec2:TerminateInstances", "ec2:DeleteVolume", "ec2:DeleteSnapshot"],
         resources: [
           `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:instance/*`,
           `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:volume/*`,
           `arn:${Aws.PARTITION}:ec2:${Aws.REGION}::snapshot/*`,
         ],
         conditions: managedOnly,
+      }),
+      // A snapshot is taken of a managed volume (its tag is on the volume) and
+      // is born carrying the managed tag (the request's). A resource-tag
+      // condition on the snapshot itself can never match a snapshot that does
+      // not exist yet: the first live run found that out.
+      new iam.PolicyStatement({
+        actions: ["ec2:CreateSnapshot"],
+        resources: [`arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:volume/*`],
+        conditions: managedOnly,
+      }),
+      new iam.PolicyStatement({
+        actions: ["ec2:CreateSnapshot"],
+        resources: [`arn:${Aws.PARTITION}:ec2:${Aws.REGION}::snapshot/*`],
+        conditions: { StringEquals: { [`aws:RequestTag/${MANAGED_TAG}`]: "true" } },
+      }),
+      new iam.PolicyStatement({
+        actions: ["ec2:CreateTags"],
+        resources: [`arn:${Aws.PARTITION}:ec2:${Aws.REGION}::snapshot/*`],
+        conditions: { StringEquals: { "ec2:CreateAction": "CreateSnapshot" } },
       }),
       new iam.PolicyStatement({
         actions: ["ec2:DescribeInstances", "ec2:DescribeVolumes", "ec2:DescribeSnapshots"],

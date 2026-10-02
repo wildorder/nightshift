@@ -54,6 +54,9 @@ const recordFailure = async (
     cleanup: { ...dispatch.cleanup, failures: [...dispatch.cleanup.failures, failure] },
     updatedAt: nowIso(deps.clock),
   };
+  // On the record for the customer, and in the log for the operator: a
+  // cleanup that fails quietly every minute looks exactly like one waiting.
+  console.error(`cleanup ${dispatch.runId}: ${failure}`);
   await deps.stores.dispatches.put(next);
   return next;
 };

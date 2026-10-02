@@ -253,7 +253,7 @@ describe("NightshiftRunnerStack", () => {
             "ec2:TerminateInstances",
             "ec2:DeleteVolume",
             "ec2:AttachVolume",
-            "ec2:CreateSnapshot",
+            "ec2:DeleteSnapshot",
           ].includes(action),
         ),
       );
@@ -263,6 +263,26 @@ describe("NightshiftRunnerStack", () => {
           StringEquals: { [`aws:ResourceTag/${MANAGED_TAG}`]: "true" },
         });
       }
+    });
+
+    it("snapshots only a managed volume, into a snapshot born with the managed tag", () => {
+      const snapshots = statementsOf(synth().template).filter((statement) =>
+        actionsOf(statement).includes("ec2:CreateSnapshot"),
+      );
+      // One statement on the volume (tagged already), one on the snapshot (tagged by the request).
+      expect(snapshots).toHaveLength(2);
+      const onVolume = snapshots.find((s) =>
+        stringsIn(s.Resource).some((r) => r.includes(":volume/")),
+      );
+      const onSnapshot = snapshots.find((s) =>
+        stringsIn(s.Resource).some((r) => r.includes(":snapshot/")),
+      );
+      expect(onVolume?.Condition).toEqual({
+        StringEquals: { [`aws:ResourceTag/${MANAGED_TAG}`]: "true" },
+      });
+      expect(onSnapshot?.Condition).toEqual({
+        StringEquals: { [`aws:RequestTag/${MANAGED_TAG}`]: "true" },
+      });
     });
 
     it("passes only the machine's role to EC2, from the two functions that make machines", () => {
