@@ -713,32 +713,58 @@ starts a nightshift inside this one and inherits the runner's environment
 open edge: the pass-through of `NIGHTSHIFT_*` into a worker's environment
 reaches anything the worker spawns.
 
-Heavy results so far (image 1.0.15, one cold run per type, seconds). The
-x86_64 image booted and ran the program to its end on c8id.2xlarge; the run
-succeeded and published. Caveats on the rows: the `implemented →` rows are
-from the first event of each kind, and this run's first attempt lost its
-verification to a flaky test and was retried, so "implemented → verification
-completed" is attempt 1's (typecheck + test, 134 s) while examination and
-integration include the retry (a second worker, its build and its suite); the
-runner reports the install's time only, not the build's.
+**Heavy results (image 1.0.15, one cold run per type, 2026-10-02).** The
+number that answers the question is the test suite's own clock: vitest's
+`Duration` from each verification's log (an artifact, so it survives the
+proof's cleanup), one figure per verification the engine ran. Same suite,
+same commit, same image; only the machine differs. c8gd.4xlarge was dropped
+by the owner once c8id.4xlarge showed what a 4xlarge buys.
 
-| Phase (seconds) | c8id.2xlarge |
-|---|---|
-| dispatch accepted → machine recorded (observed) | 11.8 |
-| instance launch → runner process up (boot) | 39.1 |
-| setup install (npm ci, the monorepo) | 15.0 |
-| dispatch accepted → ready (observed) | 82.6 |
-| root starting → root agent up | 98.4 |
-| root agent up → strand delegated | 7.4 |
-| delegated → worker started (worktree, seed) | 3.9 |
-| worker started → implemented | 140.7 |
-| implemented → verification completed (attempt 1: typecheck + tests) | 133.6 |
-| implemented → examination completed (includes the retry) | 449.8 |
-| implemented → integrated (includes the retry) | 573.2 |
-| integrated → published at GitHub | 1.1 |
-| integrated → run finished by the root | 4.5 |
-| run finished → runner stopped (observed) | 18.0 |
-| total: dispatch accepted → runner stopped (observed) | 889.8 |
+| Instance type | vCPU | Arch | vitest suite, each verification (s) | Typical (s) | vs m7g.xlarge |
+|---|---|---|---|---|---|
+| m7g.xlarge | 4 | Graviton3 | 203, 194 | 199 | — |
+| m7g.2xlarge | 8 | Graviton3 | 164, 167 | 165 | −17 % |
+| c8gd.2xlarge | 8 | Graviton4 | 140, 137, 142, 143 | 140 | −30 % |
+| c8id.2xlarge | 8 | x86 (Sapphire Rapids) | 122, 121, 119 | 120 | −40 % |
+| c8id.4xlarge | 16 | x86 | 110, 110, 110 | 110 | −45 % |
 
-The remaining five types are to run; each heavy run is about 22 minutes
-including the snapshot, and an SSO session here is one hour.
+Repeatability is within 3 s on every machine, so the differences are the
+machine's. For the program the owner described, a five-hour run with tens of
+large suites, the verification share scales by these percentages: every hour
+of verification on m7g.xlarge is 36 minutes on c8id.2xlarge and 33 on
+c8id.4xlarge. Doubling cores from 8 to 16 bought 9 % on this suite, whose
+parallelism vitest bounds; a suite with more files or heavier integration
+tests would take more of the 16. The x86 generation beats Graviton4 by 15 %
+at equal size and Graviton3 by 27 %.
+
+The phase table per type, from the proof (seconds). The rows after
+"implemented" are first-event based and three of the five runs retried a
+job, so those rows mix attempts and are shown for the two runs that did not;
+the `setup` row is the runner's cold install of the monorepo.
+
+| Phase (seconds) | m7g.xlarge | m7g.2xlarge | c8gd.2xlarge | c8id.2xlarge | c8id.4xlarge |
+|---|---|---|---|---|---|
+| dispatch accepted → machine recorded (observed) | 11.8 | 11.5 | 11.7 | 11.8 | 12.2 |
+| instance launch → runner process up (boot) | 42.5 | n/a | 35.7 | 39.1 | 34.8 |
+| setup install (npm ci, cold) | 19.0 | 18.1 | 12.2 | 15.0 | 14.6 |
+| dispatch accepted → ready (observed) | 113.0 | 92.5 | 72.5 | 82.6 | 93.2 |
+| root starting → root agent up | 92.7 | n/a | 54.3 | 98.4 | 101.1 |
+| root agent up → strand delegated | 6.7 | 6.2 | 7.1 | 7.4 | 6.8 |
+| delegated → worker started (worktree, seed) | 6.0 | 4.8 | 4.0 | 3.9 | 3.4 |
+| worker started → implemented (agent, incl. its own test run) | 217.8 | 184.6 | 171.0 | 140.7 | 285.8 |
+| implemented → integrated (clean runs only) | failed | 362.2 | retried | retried | retried |
+| total: dispatch accepted → runner stopped (observed) | 1517.2 | 687.3 | 1101.5 | 889.8 | 1123.0 |
+
+What the runs also taught, each fixed on the branch: the m7g.2xlarge journal
+arrived without its boot lines (n/a above); the proof's cleanup never deleted
+the throwaway org's sealed credential from the credentials table, so a sealed
+copy of the owner's token sat under each dead org (fourteen removed by hand,
+cleanup now deletes it); the suite's EPIPE flake that failed three runs in
+four was the test git HTTP server writing a request body into git
+http-backend's stdin after a refused push had closed it, not the publisher;
+one install on c8id.4xlarge exited 255 and was retried (unexplained, once in
+five runs); the `--exclude` the heavy program passes to vitest did not take
+(198 files ran every time, the local e2e among them, and it passed). The
+m7g.xlarge run failed on the EPIPE flake twice and published nothing; its
+suite durations are from its two verifications. The m7g.2xlarge run was the
+only one with no retry.
