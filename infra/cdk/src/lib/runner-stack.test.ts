@@ -148,6 +148,15 @@ describe("NightshiftRunnerStack", () => {
       ]);
     });
 
+    it("leaves no TypeScript placeholder in any component's shell", () => {
+      // A `${...}` in a double-quoted line reaches bash as a bad substitution;
+      // image 1.0.14's first build failed on exactly that.
+      for (const component of resourcesOf(synth().template, "AWS::ImageBuilder::Component")) {
+        const data = String(component.Properties?.Data);
+        expect(data).not.toMatch(/[$][{][A-Za-z_][A-Za-z0-9_.[\]]*[}]/);
+      }
+    });
+
     it("pins every tool it installs, and builds the runner from the named commit", () => {
       const data = resourcesOf(synth().template, "AWS::ImageBuilder::Component")
         .map((component) => String(component.Properties?.Data))

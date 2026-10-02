@@ -129,7 +129,7 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
         // user's own CARGO_HOME (its registry cache) stays in its home.
         "printf '%s\n' 'export RUSTUP_HOME=/opt/rust/rustup' > /etc/profile.d/nightshift-rust.sh",
         `curl -fsSL https://github.com/astral-sh/uv/releases/download/${RUNNER_TOOLCHAIN.uv}/uv-${ARCH_NAMES[architecture].uv}.tar.gz -o /tmp/uv.tar.gz`,
-        "tar -xzf /tmp/uv.tar.gz -C /tmp && install -m 0755 /tmp/uv-${ARCH_NAMES[architecture].uv}/uv /usr/local/bin/uv",
+        `tar -xzf /tmp/uv.tar.gz -C /tmp && install -m 0755 /tmp/uv-${ARCH_NAMES[architecture].uv}/uv /usr/local/bin/uv`,
       ]),
     ].join("\n"),
   );
