@@ -565,3 +565,23 @@ reports every file deleted, which the workspace took for a dirty tree; and a
 heredoc-mangled string literal in the proof passed `tsc -b apps/api`, which
 does not cover the smoke files, while biome's formatter rewrote the rest of
 the file around it. `npm run typecheck` covers them.
+
+**The first run with a real credential (image 1.0.8, the owner's Claude Code
+subscription token).** The whole chain held up to the last step: the token was
+sealed for the org through the credential route, the heartbeat handed it to
+the running engine, the runner placed it as `CLAUDE_CODE_OAUTH_TOKEN`, the
+root started (`claude-opus-5-5`, the Nightshift MCP server connected over the
+engine token), and the root reasoned correctly: it called `run.attach`, was
+refused, looked for the cause, refused to start a run of its own or to write
+code itself, and reported exactly why in its final message. The cause was
+ours: `run.attach` resolved the program from contract files in the checkout,
+which a remote repository need not carry. On a machine the root's server is
+now told the dispatch's run (`NIGHTSHIFT_PINNED_RUN`) and attaches to it from
+the plane, whatever the checkout holds; `run.start` is refused there. The same
+run showed a second gap: a root that finishes on its own left the dispatch
+`running`, because the runner's `stopped` report was legal only from
+`stopping`; it is legal from `ready` and `running` now. An org's credential may
+also be a Claude Code subscription token (`claude setup-token`, by its
+`sk-ant-oat` prefix) or Codex's `auth.json` login file (placed on tmpfs under
+`CODEX_HOME`); `org providers set --file` takes the latter. Both of the owner's
+are sealed.
