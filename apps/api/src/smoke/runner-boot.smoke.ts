@@ -203,7 +203,8 @@ const journal = async (
   writeFileSync(
     parameters,
     JSON.stringify({
-      commands: [`journalctl -u nightshift-runner --no-pager -n 200 -o ${format}`],
+      // The whole run's journal: a heavy run's sudo lines alone pass 200.
+      commands: [`journalctl -u nightshift-runner --no-pager -n 5000 -o ${format}`],
       executionTimeout: ["60"],
     }),
   );
