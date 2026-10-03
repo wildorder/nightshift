@@ -813,3 +813,13 @@ and npm chmods every bin it links. A D-P10-25 edge: before the engine runs
 setup in a worktree another user worked in, it should take ownership back
 (`sudo chown -R engine:nightshift <worktree>`, a rule the image already
 grants). Open; each occurrence costs a whole worker attempt.
+
+**D-P10-27 live-accepted on image 1.0.17 (7b274c0, 2026-10-03).** The
+default proof on c8id.2xlarge: the cold machine mounted the volume at
+`/workspace-sidecar` and its NVMe at `/workspace`, ran the fixture program to
+the end and published; at its stop the sidecar's final copy took 0.2 s; the
+reconciler snapshotted the volume as before; the warm machine found the
+marker and restored the copy onto its own NVMe in 1.7 s, fetched the mirror
+as a warm volume does, ran the program to the end and published. Setup was
+3.5 s cold and 5.4 s warm (the D-P10-24 install, as recorded). Two worker
+processes per run; the account clean after cleanup.
