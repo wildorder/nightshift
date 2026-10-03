@@ -779,15 +779,36 @@ m7g.xlarge run failed on the EPIPE flake twice and published nothing; its
 suite durations are from its two verifications. The m7g.2xlarge run was the
 only one with no retry.
 
-**The disk (2026-10-03, pending).** Every number above is an EBS number: the
+**The disk (2026-10-03).** Every number above was an EBS number: the
 workspace is the gp3 volume at its baseline (3,000 IOPS, 125 MiB/s) and the
-c8id's local NVMe is never touched. The owner's objection ("EBS is slow as
-shit") stands to be measured, not argued: three runs on c8id.2xlarge with
-the same program, the volume at baseline (above), the volume at gp3's
-maximum (16,000 IOPS, 1,000 MiB/s) and the workspace on the local NVMe.
-The dispatch record carries which (`workspace`), provisioning sets the dials,
-the runner mounts the disk named; `NIGHTSHIFT_SMOKE_BENCH_WORKSPACE` selects
-it. The local disk does not survive the instance, so if it wins, the volume
-becomes a durability sidecar the runner syncs to at checkpoints and at stop;
-if it loses narrowly, the dials are raised and the design stands. Results
-follow the next login (an API deploy and image build are needed first).
+c8id's local NVMe was never touched. The owner's objection ("EBS is slow as
+shit") was measured rather than argued: three cold runs of the same program
+on c8id.2xlarge, image 1.0.16, the dispatch record naming the disk
+(`workspace`), provisioning setting gp3's dials, the runner mounting what it
+is told. Durations are the suite's own clock, one per verification.
+
+| Workspace on c8id.2xlarge | Install (s) | vitest suite, each verification (s) | Typical (s) | vs baseline |
+|---|---|---|---|---|
+| gp3 baseline, 3,000 IOPS / 125 MiB/s | 15.0 | 122, 121, 119 | 120 | — |
+| gp3 maximum, 16,000 IOPS / 1,000 MiB/s | 14.2 | 116, 117, 116 | 116 | −3 % |
+| local NVMe (instance store) | 12.2 | 117, 116 | 116 | −3 % |
+
+The disk is not where this program's time goes: the suite is CPU-bound, and
+the fastest disk on the machine buys the same 3 % that the dialled-up volume
+does. The EBS workspace stays as D-P10-15 designed it, at the baseline; the
+`local` option stays on the record for a program that is I/O-bound (a native
+build, a Docker-heavy suite), to be measured when one appears. An hour of
+gp3 at the maximum would cost about $0.14 on top of the volume; not taken.
+
+**What the disk runs also found.** The proof's journal read was the last 200
+lines, which a heavy run's sudo logging alone exceeds, so it counted no
+worker processes and failed both runs after they had succeeded (fixed: the
+whole journal). And the "install exited 255" retry, seen now in three runs,
+has its log: `npm ci` in a worker's worktree fails with `EPERM chmod` on
+`node_modules/@nightshift/api/dist/bin/nightshift-local.js`. The worktree's
+`dist` was built by `worker-N`; the engine, verifying as `engine`, may write
+the file through the shared group but may not `chmod` a file it does not own,
+and npm chmods every bin it links. A D-P10-25 edge: before the engine runs
+setup in a worktree another user worked in, it should take ownership back
+(`sudo chown -R engine:nightshift <worktree>`, a rule the image already
+grants). Open; each occurrence costs a whole worker attempt.
