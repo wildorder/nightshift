@@ -720,13 +720,22 @@ proof's cleanup), one figure per verification the engine ran. Same suite,
 same commit, same image; only the machine differs. c8gd.4xlarge was dropped
 by the owner once c8id.4xlarge showed what a 4xlarge buys.
 
-| Instance type | vCPU | Arch | vitest suite, each verification (s) | Typical (s) | vs m7g.xlarge |
-|---|---|---|---|---|---|
-| m7g.xlarge | 4 | Graviton3 | 203, 194 | 199 | — |
-| m7g.2xlarge | 8 | Graviton3 | 164, 167 | 165 | −17 % |
-| c8gd.2xlarge | 8 | Graviton4 | 140, 137, 142, 143 | 140 | −30 % |
-| c8id.2xlarge | 8 | x86 (Sapphire Rapids) | 122, 121, 119 | 120 | −40 % |
-| c8id.4xlarge | 16 | x86 | 110, 110, 110 | 110 | −45 % |
+| Instance type | vCPU | Arch | vitest suite, each verification (s) | Typical (s) | vs m7g.xlarge | On-demand $/h | $ per suite run | $ per m7g.xlarge-hour of verification |
+|---|---|---|---|---|---|---|---|---|
+| m7g.xlarge | 4 | Graviton3 | 203, 194 | 199 | — | 0.1632 | 0.0090 | 0.163 |
+| m7g.2xlarge | 8 | Graviton3 | 164, 167 | 165 | −17 % | 0.3264 | 0.0150 | 0.271 |
+| c8gd.2xlarge | 8 | Graviton4 | 140, 137, 142, 143 | 140 | −30 % | 0.3919 | 0.0152 | 0.276 |
+| c8id.2xlarge | 8 | x86 (Granite Rapids) | 122, 121, 119 | 120 | −40 % | 0.4435 | 0.0148 | 0.267 |
+| c8id.4xlarge | 16 | x86 (Granite Rapids) | 110, 110, 110 | 110 | −45 % | 0.8870 | 0.0271 | 0.490 |
+
+Prices are Linux on-demand, shared tenancy, US West (Oregon), from the feed
+behind AWS's own pricing page (`ec2-ondemand-without-sec-sel`, published
+2026-09-25). "$ per suite run" is the hourly price for the typical suite
+time; the last column is what each machine charges to do the work m7g.xlarge
+does in an hour. The three 8-vCPU machines cost the same per unit of work to
+within 3 %; c8id.2xlarge does it 40 % sooner for the same money, so there is
+no price to pay for the speed until 4xlarge, where the last 9 % of time costs
+80 % more per unit of work. (c8gd.4xlarge, not run, lists at $0.7838/h.)
 
 Repeatability is within 3 s on every machine, so the differences are the
 machine's. For the program the owner described, a five-hour run with tens of
