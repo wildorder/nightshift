@@ -165,7 +165,7 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
     const launch = w.compute.launches[0];
     expect(launch).toMatchObject({
       imageId: "ami-1",
-      instanceType: "m7g.xlarge",
+      instanceType: "c8id.2xlarge",
       volume: { device: "/dev/xvdf", sizeGiB: 100 },
     });
     expect(launch?.volume.fromSnapshotId).toBeUndefined();
@@ -287,7 +287,7 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
 
     w.compute.snapshots.set("snap-vol-1", "completed");
     expect(await cleanupStopped(w.cleanup(), await dispatch())).toBe("cache_updated");
-    const cache = await w.stores.warmCaches.get(w.f.scope.projectId, "arm64");
+    const cache = await w.stores.warmCaches.get(w.f.scope.projectId, "x86_64");
     expect(cache?.current).toMatchObject({
       snapshotId: "snap-vol-1",
       fromRunId: w.f.scope.runId,
@@ -316,7 +316,7 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
     await cleanupStopped(w.cleanup(), await dispatch());
     w.compute.snapshots.set("snap-vol-1", "completed");
     await cleanupStopped(w.cleanup(), await dispatch());
-    const cache = await w.stores.warmCaches.get(w.f.scope.projectId, "arm64");
+    const cache = await w.stores.warmCaches.get(w.f.scope.projectId, "x86_64");
     expect(cache?.history.map((snapshot) => snapshot.snapshotId)).toEqual([
       "snap-old-1",
       "snap-old-2",
@@ -330,7 +330,7 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
     const dispatch = (await w.stores.dispatches.get(w.f.scope)) as Dispatch;
     expect(await cleanupStopped(w.cleanup(), dispatch)).toBe("volume_deleted");
     expect(w.compute.snapshots.size).toBe(0);
-    expect(await w.stores.warmCaches.get(w.f.scope.projectId, "arm64")).toBeUndefined();
+    expect(await w.stores.warmCaches.get(w.f.scope.projectId, "x86_64")).toBeUndefined();
   });
 
   it("records a failure and tries again next tick when EC2 refuses", async () => {

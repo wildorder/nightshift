@@ -15,8 +15,7 @@ export type ComputeTier = z.infer<typeof ComputeTierSchema>;
 
 export const COMPUTE_TIER_ORDER: readonly ComputeTier[] = ["good", "better", "best"];
 
-/** The architecture every tier runs on (D-P10-13). One, so the image and the cache are single. */
-/** The machines' architectures (D-P10-13 made the tiers Graviton; an x86 image exists for instance types that need it). */
+/** The machines' architectures. The tiers are x86 (D-P10-26); an arm64 image is built beside it. */
 export const ComputeArchitectureSchema = z.enum(["arm64", "x86_64"]);
 export type ComputeArchitecture = z.infer<typeof ComputeArchitectureSchema>;
 
@@ -26,29 +25,38 @@ export interface ComputeTierSpec {
   readonly memoryGiB: number;
   /** The gp3 workspace volume's size. */
   readonly volumeGiB: number;
-  /** On-demand Linux in `us-west-2`, from the Pricing API on 2026-10-01 (H-P10-03). */
+  /** On-demand Linux in `us-west-2`, from AWS's price feed of 2026-09-25 (D-P10-26). */
   readonly usdPerHour: number;
 }
 
 /**
- * The tier table (D-P10-13). Graviton, memory-optimised: installs, bundlers and
- * test runners want the memory more than the clock.
+ * The tier table (D-P10-26, superseding D-P10-13's Graviton ladder). The
+ * heavy benchmark of 2026-10-02 ran one test suite on five machines: the three
+ * 8-vCPU classes cost the same per unit of verification within 3 %, and
+ * c8id.2xlarge did the work 40 % sooner than m7g.xlarge. So the ladder is
+ * compute-optimised x86, Granite Rapids, and `good` is the machine that won.
  */
 export const COMPUTE_TIERS: Readonly<Record<ComputeTier, ComputeTierSpec>> = {
-  good: { instanceType: "m7g.xlarge", vcpu: 4, memoryGiB: 16, volumeGiB: 100, usdPerHour: 0.1632 },
-  better: {
-    instanceType: "m7g.2xlarge",
+  good: {
+    instanceType: "c8id.2xlarge",
     vcpu: 8,
+    memoryGiB: 16,
+    volumeGiB: 100,
+    usdPerHour: 0.44352,
+  },
+  better: {
+    instanceType: "c8id.4xlarge",
+    vcpu: 16,
     memoryGiB: 32,
     volumeGiB: 200,
-    usdPerHour: 0.3264,
+    usdPerHour: 0.88704,
   },
   best: {
-    instanceType: "m7g.4xlarge",
-    vcpu: 16,
+    instanceType: "c8id.8xlarge",
+    vcpu: 32,
     memoryGiB: 64,
     volumeGiB: 400,
-    usdPerHour: 0.6528,
+    usdPerHour: 1.77408,
   },
 };
 

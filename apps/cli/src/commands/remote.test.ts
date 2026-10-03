@@ -198,8 +198,8 @@ describe("dispatchRun", () => {
     const contract = ratified(f);
     const dispatch = makeDispatch(f, {
       tier: "better",
-      instanceType: "m7g.2xlarge",
-      usdPerHour: 0.3264,
+      instanceType: "c8id.4xlarge",
+      usdPerHour: 0.88704,
     });
     const plane = createFakeControlPlane({
       apiEndpoint: TEST_API,
@@ -264,7 +264,7 @@ describe("dispatchRun", () => {
       },
     });
     const printed = created.out.join("\n");
-    expect(printed).toContain(`m7g.2xlarge`);
+    expect(printed).toContain(`c8id.4xlarge`);
     expect(printed).toContain(`$${COMPUTE_TIERS.better.usdPerHour.toFixed(4)}/h`);
     expect(printed).toContain("chosen by flag");
     expect(printed).toContain("close the laptop");

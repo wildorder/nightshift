@@ -373,8 +373,8 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     runId: EXAMPLE_IDS.runId,
     status: "running",
     tier: "better",
-    instanceType: "m7g.2xlarge",
-    usdPerHour: 0.3264,
+    instanceType: "c8id.4xlarge",
+    usdPerHour: 0.88704,
     amiVersion: "1.0.0",
     availabilityZone: "us-west-2b",
     instanceId: "i-0123456789abcdef0",
@@ -441,7 +441,7 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
   WarmCache: {
     schemaVersion: 1,
     projectId: EXAMPLE_IDS.projectId,
-    architecture: "arm64",
+    architecture: "x86_64",
     current: {
       snapshotId: "snap-0123456789abcdef0",
       amiVersion: "1.0.0",

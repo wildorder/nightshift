@@ -513,7 +513,8 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
 
   const warmCaches: WarmCacheStore = {
     put: controlPlaneOwns("warm cache", "the reconciler, when a run ends"),
-    get: (projectId) => getOrUndefined(transport, WarmCacheSchema, routes.warmCache(projectId)),
+    get: (projectId, architecture) =>
+      getOrUndefined(transport, WarmCacheSchema, routes.warmCache(projectId, architecture)),
   };
 
   return {

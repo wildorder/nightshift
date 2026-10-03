@@ -735,14 +735,14 @@ describe("the remote runner's records (P10)", () => {
     await seed();
     expect(await http.dispatches.get(f.scope)).toBeUndefined();
     expect(await http.computeUtilizations.get(f.scope)).toBeUndefined();
-    expect(await http.warmCaches.get(f.scope.projectId, "arm64")).toBeUndefined();
+    expect(await http.warmCaches.get(f.scope.projectId, "x86_64")).toBeUndefined();
     const dispatch = makeDispatch(f);
     await backing.dispatches.put(dispatch);
     await backing.computeUtilizations.put(makeComputeUtilization(f));
     await backing.warmCaches.put(makeWarmCache(f));
     expect(await http.dispatches.get(f.scope)).toEqual(dispatch);
     expect(await http.computeUtilizations.get(f.scope)).toEqual(makeComputeUtilization(f));
-    expect(await http.warmCaches.get(f.scope.projectId, "arm64")).toEqual(makeWarmCache(f));
+    expect(await http.warmCaches.get(f.scope.projectId, "x86_64")).toEqual(makeWarmCache(f));
   });
 
   it("refuses to write one whole, naming the route that does", async () => {

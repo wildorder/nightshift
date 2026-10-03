@@ -10,6 +10,7 @@ import type {
   AgentId,
   ArtifactId,
   CheckpointId,
+  ComputeArchitecture,
   DecisionId,
   ExaminationId,
   ExecutionNodeId,
@@ -38,7 +39,8 @@ export const routes = {
   project: (projectId: ProjectId) => `/projects/${projectId}`,
   programs: (projectId: ProjectId) => `/projects/${projectId}/programs`,
   /** A project's warm snapshot (P10, D-P10-15). */
-  warmCache: (projectId: ProjectId) => `/projects/${projectId}/warm-cache`,
+  warmCache: (projectId: ProjectId, architecture: ComputeArchitecture) =>
+    `/projects/${projectId}/warm-cache?architecture=${architecture}`,
   program: (projectId: ProjectId, programId: ProgramId) =>
     `/projects/${projectId}/programs/${programId}`,
 

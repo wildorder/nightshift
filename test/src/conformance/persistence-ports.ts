@@ -367,8 +367,10 @@ export const describePortConformance = <S extends ProjectStores>(
       it("keeps one warm snapshot per project and architecture", async () => {
         const cache = makeWarmCache(a);
         await stores.warmCaches.put(cache);
-        expect(await stores.warmCaches.get(a.scope.projectId, "arm64")).toEqual(cache);
-        expect(await stores.warmCaches.get(b.scope.projectId, "arm64")).toBeUndefined();
+        expect(await stores.warmCaches.get(a.scope.projectId, cache.architecture)).toEqual(cache);
+        expect(await stores.warmCaches.get(b.scope.projectId, cache.architecture)).toBeUndefined();
+        const other = cache.architecture === "arm64" ? "x86_64" : "arm64";
+        expect(await stores.warmCaches.get(a.scope.projectId, other)).toBeUndefined();
       });
 
       it("refuses a record that is not what its schema says", async () => {

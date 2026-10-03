@@ -621,7 +621,7 @@ describe("compute records (D-P10-14, D-P10-15)", () => {
     await w.stores.warmCaches.put(makeWarmCache(w.f));
     expect((await call(w, "GET", `${w.paths.run}/compute`)).status).toBe(200);
     expect((await call(w, "GET", `${w.paths.project}/warm-cache`)).body).toMatchObject({
-      architecture: "arm64",
+      architecture: "x86_64",
     });
   });
 

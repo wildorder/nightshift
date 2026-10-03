@@ -367,8 +367,8 @@ export const makeDispatch = (f: Fixtures, overrides: Overrides<Dispatch> = {}): 
     ...f.scope,
     status: "requested",
     tier: "good",
-    instanceType: "m7g.xlarge",
-    usdPerHour: 0.1632,
+    instanceType: "c8id.2xlarge",
+    usdPerHour: 0.44352,
     amiVersion: "1.0.0",
     generation: 1,
     idempotencyKey: `${f.scope.runId}:${COMMIT_A}`,
@@ -414,7 +414,7 @@ export const makeWarmCache = (f: Fixtures, overrides: Overrides<WarmCache> = {})
   WarmCacheSchema.parse({
     schemaVersion: 1,
     projectId: f.scope.projectId,
-    architecture: "arm64",
+    architecture: "x86_64",
     current: {
       snapshotId: "snap-fixture",
       amiVersion: "1.0.0",

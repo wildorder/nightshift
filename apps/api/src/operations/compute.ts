@@ -2,7 +2,8 @@
  * What a run's machine was asked to do, what a project should run on, and
  * what its warm snapshot is (P10, D-P10-14, D-P10-15).
  */
-import { chooseTier, recommendFromUse } from "@nightshift/core";
+import { COMPUTE_TIERS, ComputeArchitectureSchema } from "@nightshift/contracts";
+import { architectureOf, chooseTier, recommendFromUse } from "@nightshift/core";
 import { HttpError } from "../http.js";
 import { programScopeFrom, projectIdFrom, runScopeFrom } from "../params.js";
 import type { Handler } from "../router.js";
@@ -36,9 +37,16 @@ export const getComputeRecommendation: Handler = async ({ deps, params }) => {
   return { status: 200, body: { current: current.tier, source: current.source, ...result } };
 };
 
-export const getWarmCache: Handler = async ({ deps, params }) => {
+export const getWarmCache: Handler = async ({ deps, params, request }) => {
   const projectId = projectIdFrom(params);
-  const cache = await deps.stores.warmCaches.get(projectId, "arm64");
+  // One cache per architecture (D-P10-15); unasked, the default tier's.
+  const asked = ComputeArchitectureSchema.safeParse(
+    request.query.architecture ?? architectureOf(COMPUTE_TIERS.good.instanceType),
+  );
+  if (!asked.success) {
+    throw new HttpError(400, "invalid_request", "architecture must be arm64 or x86_64");
+  }
+  const cache = await deps.stores.warmCaches.get(projectId, asked.data);
   if (cache === undefined) {
     throw new HttpError(404, "not_found", `project ${projectId} has no warm snapshot yet`);
   }
