@@ -778,3 +778,16 @@ five runs); the `--exclude` the heavy program passes to vitest did not take
 m7g.xlarge run failed on the EPIPE flake twice and published nothing; its
 suite durations are from its two verifications. The m7g.2xlarge run was the
 only one with no retry.
+
+**The disk (2026-10-03, pending).** Every number above is an EBS number: the
+workspace is the gp3 volume at its baseline (3,000 IOPS, 125 MiB/s) and the
+c8id's local NVMe is never touched. The owner's objection ("EBS is slow as
+shit") stands to be measured, not argued: three runs on c8id.2xlarge with
+the same program, the volume at baseline (above), the volume at gp3's
+maximum (16,000 IOPS, 1,000 MiB/s) and the workspace on the local NVMe.
+The dispatch record carries which (`workspace`), provisioning sets the dials,
+the runner mounts the disk named; `NIGHTSHIFT_SMOKE_BENCH_WORKSPACE` selects
+it. The local disk does not survive the instance, so if it wins, the volume
+becomes a durability sidecar the runner syncs to at checkpoints and at stop;
+if it loses narrowly, the dials are raised and the design stands. Results
+follow the next login (an API deploy and image build are needed first).
