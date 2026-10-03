@@ -823,3 +823,15 @@ marker and restored the copy onto its own NVMe in 1.7 s, fetched the mirror
 as a warm volume does, ran the program to the end and published. Setup was
 3.5 s cold and 5.4 s warm (the D-P10-24 install, as recorded). Two worker
 processes per run; the account clean after cleanup.
+
+The heavy program on the same image, default mode (NVMe workspace, the
+sidecar copied every minute): suite 118, 117, 118, 118 s across four
+verifications, against 120 s on the baseline volume and 116 s on the bare
+NVMe; the final copy of a monorepo workspace with its installed and built
+tree took 2.0 s. The minute-by-minute copy costs the suite nothing it can
+measure. Four worker processes counted on the machine; one retry, a single
+test failing on an unchanged commit, retried clean. Measurement note: SSM
+returns 24,000 characters of a command's output at most, and a heavy run's
+journal passes that, so the proof now filters and counts on the machine; the
+three "0 processes started as worker users" readings on 1.0.16 and 1.0.17
+heavy runs were this truncation, not the machine.
