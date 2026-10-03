@@ -40,6 +40,9 @@ export interface LaunchRequest {
     readonly device: string;
     readonly sizeGiB: number;
     readonly fromSnapshotId?: string;
+    /** gp3 provisioned IOPS and throughput; absent is the baseline (3,000 and 125). */
+    readonly iops?: number;
+    readonly throughputMiBps?: number;
   };
 }
 

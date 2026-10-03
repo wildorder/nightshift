@@ -32,6 +32,7 @@ import {
   ComputeUtilizationSchema,
   type Dispatch,
   DispatchSchema,
+  type DispatchWorkspace,
   PlanDocumentUploadResponseSchema,
   type ProgramContract,
   ProgramContractSchema,
@@ -86,6 +87,18 @@ const BENCH_TYPES = (process.env.NIGHTSHIFT_SMOKE_BENCH_TYPES ?? "")
   .split(",")
   .map((type) => type.trim())
   .filter((type) => type !== "");
+/**
+ * Where the benchmark puts the workspace: `volume` (gp3 baseline, the default),
+ * `volume-max` (gp3 at 16,000 IOPS and 1,000 MiB/s), or `local` (the
+ * instance's NVMe). The dispatch record carries it; the runner obeys it.
+ */
+const BENCH_WORKSPACE_NAME = process.env.NIGHTSHIFT_SMOKE_BENCH_WORKSPACE ?? "volume";
+const BENCH_WORKSPACE: DispatchWorkspace | undefined =
+  BENCH_WORKSPACE_NAME === "volume-max"
+    ? { disk: "volume", iops: 16_000, throughputMiBps: 1_000 }
+    : BENCH_WORKSPACE_NAME === "local"
+      ? { disk: "local" }
+      : undefined;
 
 const say = (line: string): void => {
   process.stdout.write(`[runner-boot] ${line}\n`);
@@ -353,6 +366,7 @@ const runOnce = async (
       tier: "good",
       instanceType: bench.instanceType,
       usdPerHour: COMPUTE_TIERS.good.usdPerHour,
+      ...(BENCH_WORKSPACE === undefined ? {} : { workspace: BENCH_WORKSPACE }),
       amiVersion: bench.outputs.ImageVersion ?? "0.0.0",
       idempotencyKey: `${runId}:${baseSha}:${planHashValue}:${bench.instanceType}`,
       engineAgentId: ids.next("agent"),
@@ -814,8 +828,9 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
           resetFixtureBranch(baseSha);
           say(`${FIXTURE_BRANCH} reset to ${baseSha.slice(0, 12)} for the next type`);
         }
-        const outcome = await runOnce(instanceType, baseSha, program, { instanceType, outputs });
-        await runToTheEnd(instanceType, outcome.run, baseSha, outcome);
+        const name = `${instanceType} ${BENCH_WORKSPACE_NAME}`;
+        const outcome = await runOnce(name, baseSha, program, { instanceType, outputs });
+        await runToTheEnd(name, outcome.run, baseSha, outcome);
       }
       return;
     }

@@ -164,6 +164,10 @@ export const provisionDispatch = async (
         device: WORKSPACE_DEVICE,
         sizeGiB: spec.volumeGiB,
         ...(fromSnapshotId === undefined ? {} : { fromSnapshotId }),
+        ...(dispatch.workspace?.iops === undefined ? {} : { iops: dispatch.workspace.iops }),
+        ...(dispatch.workspace?.throughputMiBps === undefined
+          ? {}
+          : { throughputMiBps: dispatch.workspace.throughputMiBps }),
       },
     }));
   } catch (error) {

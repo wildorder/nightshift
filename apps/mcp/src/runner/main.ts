@@ -99,13 +99,16 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   await onToken?.(await token.provider.idToken(), identity.scope);
   const plane = options.plane(identity.apiEndpoint, token.provider);
 
+  // The record says which disk the workspace is on; the volume unless told.
+  const disk = (await plane.dispatch(identity.scope))?.workspace?.disk ?? "volume";
   await mountWorkspace(machine, {
     device: options.device,
     mountPoint: options.workspace,
     owner: options.engineUser,
     group: WORKER_GROUP,
+    disk,
   });
-  log(`workspace mounted at ${options.workspace}`);
+  log(`workspace mounted at ${options.workspace} (${disk === "local" ? "local NVMe" : "volume"})`);
 
   const heartbeat = createHeartbeat({
     generation: identity.generation,

@@ -65,6 +65,10 @@ export const createEc2Compute = (options: Ec2ComputeOptions): ComputeControl => 
                 VolumeType: "gp3",
                 VolumeSize: request.volume.sizeGiB,
                 DeleteOnTermination: false,
+                ...(request.volume.iops === undefined ? {} : { Iops: request.volume.iops }),
+                ...(request.volume.throughputMiBps === undefined
+                  ? {}
+                  : { Throughput: request.volume.throughputMiBps }),
                 ...(request.volume.fromSnapshotId === undefined
                   ? {}
                   : { SnapshotId: request.volume.fromSnapshotId }),

@@ -14,7 +14,39 @@ export interface VolumeOptions {
   readonly owner: string;
   /** The group the workspace is shared with: the workers' (D-P10-25). */
   readonly group?: string;
+  /** `local`: the instance's own NVMe instead of the volume at `device`. */
+  readonly disk?: "volume" | "local";
 }
+
+/** The model string EC2 gives an instance-store NVMe controller. */
+const INSTANCE_STORE_MODEL = "Instance Storage";
+
+/** The instance's local NVMe disk: unmounted, and named by EC2 as instance storage. */
+export const resolveLocalDisk = async (machine: Machine): Promise<string> => {
+  const listed = await machine.exec("lsblk", ["-dnpo", "NAME,TYPE,MOUNTPOINT,MODEL"]);
+  if (listed.exitCode !== 0) throw new VolumeError(`lsblk failed: ${listed.stderr}`);
+  const candidates = listed.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [name, type, ...rest] = line.split(/\s+/);
+      return { name, type, rest: rest.join(" ") };
+    })
+    .filter(
+      (disk) =>
+        disk.type === "disk" &&
+        disk.rest.includes(INSTANCE_STORE_MODEL) &&
+        !disk.rest.startsWith("/"),
+    )
+    .map((disk) => disk.name)
+    .filter((name): name is string => name !== undefined);
+  const [candidate] = candidates;
+  if (candidate === undefined) {
+    throw new VolumeError("this instance type has no local NVMe disk to put the workspace on");
+  }
+  return candidate;
+};
 
 export class VolumeError extends Error {
   override readonly name = "VolumeError";
@@ -49,7 +81,10 @@ export const resolveDevice = async (machine: Machine, device: string): Promise<s
 export const mountWorkspace = async (machine: Machine, options: VolumeOptions): Promise<void> => {
   const mounted = await machine.exec("findmnt", ["-rn", "-o", "SOURCE", options.mountPoint]);
   if (mounted.exitCode === 0 && mounted.stdout.trim().length > 0) return;
-  const device = await resolveDevice(machine, options.device);
+  const device =
+    options.disk === "local"
+      ? await resolveLocalDisk(machine)
+      : await resolveDevice(machine, options.device);
   const probed = await machine.exec("sudo", ["blkid", "-o", "value", "-s", "TYPE", device]);
   if (probed.exitCode !== 0 || probed.stdout.trim() === "") {
     const formatted = await machine.exec("sudo", ["mkfs.ext4", "-q", "-L", "nightshift", device]);

@@ -20,7 +20,7 @@ import { runRunner } from "./main.js";
 import type { PlaneFactory } from "./plane.js";
 import { rootEnvironment, tokenFile } from "./root.js";
 import { countOomKills, cpuBusyPct, parseCpuTimes, parseDiskPct, parseMeminfo } from "./sampler.js";
-import { mountWorkspace, resolveDevice } from "./volume.js";
+import { mountWorkspace, resolveDevice, resolveLocalDisk } from "./volume.js";
 import { layoutOf, prepareWorkspace } from "./workspace.js";
 
 const f = createFixtures();
@@ -277,6 +277,35 @@ describe("the workspace volume (D-P10-15)", () => {
       },
     });
     expect(await resolveDevice(machine, "/dev/xvdf")).toBe("/dev/nvme1n1");
+  });
+
+  it("puts the workspace on the instance's own NVMe when the record says local", async () => {
+    const lsblk = [
+      "/dev/nvme0n1 disk / Amazon Elastic Block Store",
+      "/dev/nvme1n1 disk  Amazon Elastic Block Store",
+      "/dev/nvme2n1 disk  Amazon EC2 NVMe Instance Storage",
+    ].join("\n");
+    const machine = fakeMachine({
+      exec: (file) => (file === "lsblk" ? ok(`${lsblk}\n`) : undefined),
+    });
+    expect(await resolveLocalDisk(machine)).toBe("/dev/nvme2n1");
+    await mountWorkspace(machine, {
+      device: "/dev/xvdf",
+      mountPoint: "/workspace",
+      owner: "engine",
+      disk: "local",
+    });
+    expect(machine.commands).toEqual(
+      expect.arrayContaining([
+        "sudo mkfs.ext4 -q -L nightshift /dev/nvme2n1",
+        "sudo mount -o noatime /dev/nvme2n1 /workspace",
+      ]),
+    );
+    const without = fakeMachine({
+      exec: (file) =>
+        file === "lsblk" ? ok("/dev/nvme0n1 disk / Amazon Elastic Block Store\n") : undefined,
+    });
+    await expect(resolveLocalDisk(without)).rejects.toThrow(/no local NVMe/);
   });
 });
 

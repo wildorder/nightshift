@@ -129,12 +129,30 @@ export const DispatchFailureCodeSchema = z.enum([
 ]);
 export type DispatchFailureCode = z.infer<typeof DispatchFailureCodeSchema>;
 
+/**
+ * Where the workspace lives and how fast its volume is (measured 2026-10-03).
+ * `volume`: the EBS workspace as D-P10-15 designed it, with gp3's dials left
+ * at the baseline unless `iops` and `throughputMiBps` say otherwise. `local`:
+ * the instance's own NVMe, which does not survive the instance; the EBS
+ * volume is still attached as the recovery point but holds nothing.
+ */
+export const DispatchWorkspaceSchema = z.strictObject({
+  disk: z.enum(["volume", "local"]),
+  /** gp3: 3,000 free, up to 16,000. */
+  iops: z.int().min(3000).max(16000).optional(),
+  /** gp3: 125 free, up to 1,000. */
+  throughputMiBps: z.int().min(125).max(1000).optional(),
+});
+export type DispatchWorkspace = z.infer<typeof DispatchWorkspaceSchema>;
+
 export const DispatchSchema = z.strictObject({
   ...runScoped,
   status: DispatchStatusSchema,
   tier: ComputeTierSchema,
   instanceType: z.string().min(1),
   usdPerHour: z.number().positive(),
+  /** Absent means the EBS volume at gp3's baseline. */
+  workspace: DispatchWorkspaceSchema.optional(),
   /** The Nightshift AMI the machine runs; recovery relaunches the same (D-P10-16). */
   amiVersion: z.string().min(1),
   availabilityZone: z.string().min(1).optional(),
