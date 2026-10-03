@@ -88,17 +88,20 @@ const BENCH_TYPES = (process.env.NIGHTSHIFT_SMOKE_BENCH_TYPES ?? "")
   .map((type) => type.trim())
   .filter((type) => type !== "");
 /**
- * Where the benchmark puts the workspace: `volume` (gp3 baseline, the default),
- * `volume-max` (gp3 at 16,000 IOPS and 1,000 MiB/s), or `local` (the
- * instance's NVMe). The dispatch record carries it; the runner obeys it.
+ * Where the benchmark puts the workspace: `default` (what the runner does
+ * unasked: the local disk with the sidecar, D-P10-27), `volume` (gp3
+ * baseline), `volume-max` (gp3 at 16,000 IOPS and 1,000 MiB/s), or `local`.
+ * The dispatch record carries it; the runner obeys it.
  */
-const BENCH_WORKSPACE_NAME = process.env.NIGHTSHIFT_SMOKE_BENCH_WORKSPACE ?? "volume";
+const BENCH_WORKSPACE_NAME = process.env.NIGHTSHIFT_SMOKE_BENCH_WORKSPACE ?? "default";
 const BENCH_WORKSPACE: DispatchWorkspace | undefined =
   BENCH_WORKSPACE_NAME === "volume-max"
     ? { disk: "volume", iops: 16_000, throughputMiBps: 1_000 }
-    : BENCH_WORKSPACE_NAME === "local"
-      ? { disk: "local" }
-      : undefined;
+    : BENCH_WORKSPACE_NAME === "volume"
+      ? { disk: "volume" }
+      : BENCH_WORKSPACE_NAME === "local"
+        ? { disk: "local" }
+        : undefined;
 
 const say = (line: string): void => {
   process.stdout.write(`[runner-boot] ${line}\n`);

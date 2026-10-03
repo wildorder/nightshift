@@ -29,6 +29,7 @@ runRunner({
   plane: createRunnerPlane,
   workspace: process.env.NIGHTSHIFT_WORKSPACE ?? "/workspace",
   device: process.env.NIGHTSHIFT_WORKSPACE_DEVICE ?? "/dev/xvdf",
+  sidecar: process.env.NIGHTSHIFT_SIDECAR ?? "/workspace-sidecar",
   engineUser: process.env.NIGHTSHIFT_ENGINE_USER ?? "engine",
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
   onToken: (token, scope) => installTokenFile(scope.runId, token),

@@ -20,7 +20,14 @@ import { runRunner } from "./main.js";
 import type { PlaneFactory } from "./plane.js";
 import { rootEnvironment, tokenFile } from "./root.js";
 import { countOomKills, cpuBusyPct, parseCpuTimes, parseDiskPct, parseMeminfo } from "./sampler.js";
-import { mountWorkspace, resolveDevice, resolveLocalDisk } from "./volume.js";
+import {
+  restoreFromSidecar,
+  SIDECAR_MARKER,
+  sidecarHoldsCopy,
+  startSidecarSync,
+  syncToSidecar,
+} from "./sidecar.js";
+import { findLocalDisk, mountWorkspace, resolveDevice, resolveLocalDisk } from "./volume.js";
 import { layoutOf, prepareWorkspace } from "./workspace.js";
 
 const f = createFixtures();
@@ -306,6 +313,67 @@ describe("the workspace volume (D-P10-15)", () => {
         file === "lsblk" ? ok("/dev/nvme0n1 disk / Amazon Elastic Block Store\n") : undefined,
     });
     await expect(resolveLocalDisk(without)).rejects.toThrow(/no local NVMe/);
+    expect(await findLocalDisk(without)).toBeUndefined();
+  });
+});
+
+describe("the durability sidecar (D-P10-27)", () => {
+  it("copies the workspace to the sidecar with owners kept, and marks it", async () => {
+    const machine = fakeMachine();
+    await syncToSidecar(machine, "/workspace", "/workspace-sidecar");
+    expect(machine.commands).toEqual([
+      `sudo rsync -aHAX --delete --numeric-ids --exclude=/${SIDECAR_MARKER} /workspace/ /workspace-sidecar/`,
+      `touch /workspace-sidecar/${SIDECAR_MARKER}`,
+    ]);
+  });
+
+  it("restores only a sidecar that carries the marker", async () => {
+    const empty = fakeMachine({ exec: (file) => (file === "test" ? fail() : undefined) });
+    expect(await sidecarHoldsCopy(empty, "/workspace-sidecar")).toBe(false);
+    const full = fakeMachine();
+    expect(await sidecarHoldsCopy(full, "/workspace-sidecar")).toBe(true);
+    await restoreFromSidecar(full, "/workspace-sidecar", "/workspace");
+    expect(full.commands.at(-1)).toContain(
+      "rsync -aHAX --delete --numeric-ids --exclude=/.nightshift-sidecar /workspace-sidecar/ /workspace/",
+    );
+  });
+
+  it("tolerates files that vanish mid-copy, and refuses other failures", async () => {
+    const vanished = fakeMachine({
+      exec: (file, args) =>
+        file === "sudo" && args[0] === "rsync"
+          ? { exitCode: 24, stdout: "", stderr: "vanished" }
+          : undefined,
+    });
+    await expect(
+      syncToSidecar(vanished, "/workspace", "/workspace-sidecar"),
+    ).resolves.toBeUndefined();
+    const broken = fakeMachine({
+      exec: (file, args) =>
+        file === "sudo" && args[0] === "rsync" ? fail("disk full") : undefined,
+    });
+    await expect(syncToSidecar(broken, "/workspace", "/workspace-sidecar")).rejects.toThrow(
+      /disk full/,
+    );
+  });
+
+  it("copies on the interval and once more when stopped", async () => {
+    const machine = fakeMachine();
+    const lines: string[] = [];
+    const sync = startSidecarSync(machine, {
+      workspace: "/workspace",
+      sidecar: "/workspace-sidecar",
+      intervalMs: 1_000,
+      log: (line) => lines.push(line),
+    });
+    // Three ticks of the fake clock, then the stop and its final copy.
+    for (let i = 0; i < 3; i += 1) await Promise.resolve();
+    await sync.stop();
+    const copies = machine.commands.filter((command) => command.startsWith("sudo rsync"));
+    expect(copies.length).toBeGreaterThanOrEqual(1);
+    expect(machine.commands.at(-2)).toContain("sudo rsync");
+    expect(machine.commands.at(-1)).toBe(`touch /workspace-sidecar/${SIDECAR_MARKER}`);
+    expect(lines).toEqual([]);
   });
 });
 
@@ -531,6 +599,60 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     expect(plane.tokensSeen[0]).toBe("eyJ.first.token");
     expect(plane.tokensSeen.at(-1)).toMatch(/^eyJ\.renewed\./);
     expect(lines.join("\n")).toContain("workspace cold");
+  });
+
+  it("on a machine with a local disk, works there, restores the sidecar's copy first and copies back before stopping", async () => {
+    const lsblk = [
+      "/dev/nvme0n1 disk / Amazon Elastic Block Store",
+      "/dev/nvme1n1 disk  Amazon Elastic Block Store",
+      "/dev/nvme2n1 disk  Amazon EC2 NVMe Instance Storage",
+    ].join("\n");
+    const machine = fakeMachine({
+      exec: (file, args) => {
+        if (file === "lsblk")
+          return ok(`${lsblk}
+`);
+        const joined = [file, ...args].join(" ");
+        if (joined.includes("rev-parse --is-bare-repository")) return fail();
+        if (joined.includes("rev-parse --git-dir")) return fail();
+        if (joined.includes("status --porcelain")) return ok("");
+        if (file === "env" && args.includes("bash")) return ok("");
+        return undefined;
+      },
+    });
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const lines: string[] = [];
+    const code = await runRunner({
+      machine,
+      log: (line) => lines.push(line),
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      sidecarIntervalMs: 5_000,
+      work: async () => {
+        await machine.sleep(12_000);
+      },
+    });
+    expect(code).toBe(0);
+    const commands = machine.commands;
+    // The volume at the sidecar, the local disk at the workspace, the copy restored, copies back.
+    expect(commands).toContain("sudo mount -o noatime /dev/xvdf /workspace-sidecar");
+    expect(commands).toContain("sudo mount -o noatime /dev/nvme2n1 /workspace");
+    const restore = commands.findIndex((c) => c.includes("/workspace-sidecar/ /workspace/"));
+    const firstClone = commands.findIndex((c) => c.includes("clone"));
+    expect(restore).toBeGreaterThan(-1);
+    expect(restore).toBeLessThan(firstClone);
+    const copiesBack = commands.filter((c) => c.includes("/workspace/ /workspace-sidecar/"));
+    expect(copiesBack.length).toBeGreaterThanOrEqual(1);
+    const lastCopy = commands.lastIndexOf(copiesBack[copiesBack.length - 1] as string);
+    expect(lastCopy).toBeGreaterThan(commands.findIndex((c) => c.includes("clone")));
+    expect(lines.join("\n")).toContain("local NVMe; sidecar at /workspace-sidecar");
+    expect(lines.join("\n")).toContain("sidecar: final copy");
+    expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped" });
   });
 
   it("works between ready and stopped, and reports stopped when the work ends", async () => {

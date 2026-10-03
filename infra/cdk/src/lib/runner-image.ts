@@ -82,7 +82,7 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
       shell("packages", [
         "set -euo pipefail",
         "dnf -y update --security",
-        "dnf -y install git tar gzip xz unzip jq nftables shadow-utils sudo",
+        "dnf -y install git tar gzip xz unzip jq nftables shadow-utils sudo rsync",
         // Docker from AL2023; its rootless pieces come from Docker's static builds
         // below, because AL2023 packages neither rootlesskit nor slirp4netns.
         "dnf -y install docker shadow-utils-subid iptables-nft",
@@ -167,7 +167,7 @@ export const containmentComponent = (): string => {
         // `engine` may become any worker (to start a worker's process in its
         // worktree) and run exactly the root commands the runner needs at boot.
         // No password, no shell escape, nothing else.
-        `printf '%s\\n' 'Defaults:${ENGINE_USER} !requiretty' 'Runas_Alias WORKERS = ${workers.join(", ")}' '${ENGINE_USER} ALL=(WORKERS) NOPASSWD: ALL' '${ENGINE_USER} ALL=(root) NOPASSWD: /usr/sbin/nft, /usr/bin/mount, /usr/bin/umount, /usr/sbin/mkfs.ext4, /usr/sbin/blkid, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/loginctl, /usr/bin/machinectl, /usr/bin/systemctl' > /etc/sudoers.d/nightshift-engine`,
+        `printf '%s\\n' 'Defaults:${ENGINE_USER} !requiretty' 'Runas_Alias WORKERS = ${workers.join(", ")}' '${ENGINE_USER} ALL=(WORKERS) NOPASSWD: ALL' '${ENGINE_USER} ALL=(root) NOPASSWD: /usr/sbin/nft, /usr/bin/mount, /usr/bin/umount, /usr/sbin/mkfs.ext4, /usr/sbin/blkid, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/rsync, /usr/bin/loginctl, /usr/bin/machinectl, /usr/bin/systemctl' > /etc/sudoers.d/nightshift-engine`,
         "chmod 0440 /etc/sudoers.d/nightshift-engine && visudo -cf /etc/sudoers.d/nightshift-engine",
       ]),
       shell("imds-firewall", [

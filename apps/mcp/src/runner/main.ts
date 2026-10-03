@@ -17,7 +17,13 @@ import { createHeartbeat, type Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
 import type { EngineTokens, PlaneFactory, RunnerPlane } from "./plane.js";
 import { createSampler } from "./sampler.js";
-import { mountWorkspace } from "./volume.js";
+import {
+  restoreFromSidecar,
+  type SidecarSync,
+  sidecarHoldsCopy,
+  startSidecarSync,
+} from "./sidecar.js";
+import { findLocalDisk, mountWorkspace } from "./volume.js";
 import { layoutOf, prepareWorkspace, type WorkspaceLayout } from "./workspace.js";
 
 export interface RunnerOptions {
@@ -27,6 +33,10 @@ export interface RunnerOptions {
   readonly workspace: string;
   readonly device: string;
   readonly engineUser: string;
+  /** Where the volume is mounted when the workspace is on the local disk (D-P10-27). */
+  readonly sidecar?: string;
+  /** How often the workspace is copied to the sidecar; the default is a minute. */
+  readonly sidecarIntervalMs?: number;
   /** The plane, from the composition root (AR-2) or a test's fake. */
   readonly plane: PlaneFactory;
   /** What runs between `ready` and the stop: the headless root (T4). Absent, the runner waits. */
@@ -99,16 +109,48 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   await onToken?.(await token.provider.idToken(), identity.scope);
   const plane = options.plane(identity.apiEndpoint, token.provider);
 
-  // The record says which disk the workspace is on; the volume unless told.
-  const disk = (await plane.dispatch(identity.scope))?.workspace?.disk ?? "volume";
+  // The workspace goes on the instance's local disk when it has one (D-P10-27),
+  // with the volume mounted beside it as the sidecar; on the volume itself when
+  // the record says so or the instance type has no local disk.
+  const asked = (await plane.dispatch(identity.scope))?.workspace?.disk;
+  const localDisk = asked === "volume" ? undefined : await findLocalDisk(machine);
+  const sidecar =
+    localDisk === undefined ? undefined : (options.sidecar ?? `${options.workspace}-sidecar`);
   await mountWorkspace(machine, {
     device: options.device,
-    mountPoint: options.workspace,
+    mountPoint: sidecar ?? options.workspace,
     owner: options.engineUser,
     group: WORKER_GROUP,
-    disk,
   });
-  log(`workspace mounted at ${options.workspace} (${disk === "local" ? "local NVMe" : "volume"})`);
+  if (localDisk !== undefined && sidecar !== undefined) {
+    await mountWorkspace(machine, {
+      device: options.device,
+      mountPoint: options.workspace,
+      owner: options.engineUser,
+      group: WORKER_GROUP,
+      disk: "local",
+    });
+    if (await sidecarHoldsCopy(machine, sidecar)) {
+      const started = machine.now();
+      await restoreFromSidecar(machine, sidecar, options.workspace);
+      log(
+        `workspace restored from the sidecar in ${((machine.now() - started) / 1000).toFixed(1)}s`,
+      );
+    }
+    log(`workspace mounted at ${options.workspace} (local NVMe; sidecar at ${sidecar})`);
+  } else {
+    log(
+      `workspace mounted at ${options.workspace} (volume${asked === "volume" ? ", as the record asks" : "; no local disk"})`,
+    );
+  }
+  let sync: SidecarSync | undefined;
+  const settle = async () => {
+    if (sync === undefined) return;
+    const started = machine.now();
+    await sync.stop();
+    sync = undefined;
+    log(`sidecar: final copy took ${((machine.now() - started) / 1000).toFixed(1)}s`);
+  };
 
   const heartbeat = createHeartbeat({
     generation: identity.generation,
@@ -157,6 +199,14 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
       `workspace ${prepared.warm ? "warm" : "cold"}: setup took ${prepared.setupSeconds.toFixed(1)}s`,
     );
     heartbeat.describeSetup(prepared.setupSeconds, prepared.lockfileHashes);
+    if (sidecar !== undefined) {
+      sync = startSidecarSync(machine, {
+        workspace: options.workspace,
+        sidecar,
+        intervalMs: options.sidecarIntervalMs ?? 60_000,
+        log,
+      });
+    }
     heartbeat.report("ready");
     context = {
       identity,
@@ -172,6 +222,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     log(
       `the workspace could not be prepared: ${error instanceof Error ? error.message : String(error)}`,
     );
+    await settle();
     heartbeat.end();
     await beating;
     await heartbeat.farewell("stopped");
@@ -192,7 +243,9 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
 
   const outcome = await Promise.race([beating, working]);
   if (outcome === "worked" || outcome === "failed") {
-    // The work ended; tell the plane, let the last beat go out, and stop.
+    // The work ended; the sidecar gets its last copy, then the plane is told
+    // and the last beat goes out.
+    await settle();
     heartbeat.report("stopped");
     heartbeat.end();
     await beating;
@@ -200,12 +253,14 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   }
   if (outcome === "lost") {
     log("the control plane is lost; the lease will lapse and a replacement will come");
+    await settle();
     return 3;
   }
   // Told to stop (cancelled, a ceiling, or superseded): the work is abandoned
   // where it stands, and the plane hears `stopped` from the runner itself so
   // the dispatch settles without waiting for the reconciler's lost lease.
   log(`stopping as told: the dispatch is ${heartbeat.last?.status ?? "unknown"}`);
+  await settle();
   await heartbeat.farewell("stopped");
   return 0;
 };

@@ -21,8 +21,8 @@ export interface VolumeOptions {
 /** The model string EC2 gives an instance-store NVMe controller. */
 const INSTANCE_STORE_MODEL = "Instance Storage";
 
-/** The instance's local NVMe disk: unmounted, and named by EC2 as instance storage. */
-export const resolveLocalDisk = async (machine: Machine): Promise<string> => {
+/** The instance's local NVMe disk if it has one: unmounted, named by EC2 as instance storage. */
+export const findLocalDisk = async (machine: Machine): Promise<string | undefined> => {
   const listed = await machine.exec("lsblk", ["-dnpo", "NAME,TYPE,MOUNTPOINT,MODEL"]);
   if (listed.exitCode !== 0) throw new VolumeError(`lsblk failed: ${listed.stderr}`);
   const candidates = listed.stdout
@@ -41,11 +41,16 @@ export const resolveLocalDisk = async (machine: Machine): Promise<string> => {
     )
     .map((disk) => disk.name)
     .filter((name): name is string => name !== undefined);
-  const [candidate] = candidates;
-  if (candidate === undefined) {
+  return candidates[0];
+};
+
+/** The local disk, or the error that says the instance type has none. */
+export const resolveLocalDisk = async (machine: Machine): Promise<string> => {
+  const found = await findLocalDisk(machine);
+  if (found === undefined) {
     throw new VolumeError("this instance type has no local NVMe disk to put the workspace on");
   }
-  return candidate;
+  return found;
 };
 
 export class VolumeError extends Error {
