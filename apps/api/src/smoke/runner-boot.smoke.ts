@@ -129,6 +129,33 @@ if (endpoint === undefined) {
 }
 const api = smokeApiClient(endpoint, token);
 
+const JOURNAL = "journalctl -u nightshift-runner --no-pager";
+
+/**
+ * The runner's own journal, for the record and for the failures: its own lines
+ * and sudo's first lines, without sudo's command text, the last `tail` of them.
+ * A `grep` keeps only matching lines, on the machine, before the tail.
+ */
+const journal = async (
+  instanceId: string,
+  options: { format?: "cat" | "short-iso-precise"; grep?: string; tail?: number } = {},
+): Promise<string> => {
+  const keep =
+    options.grep === undefined
+      ? "grep -v 'COMMAND=' | grep -v 'command continued'"
+      : `grep -E '${options.grep}'`;
+  return onMachine(
+    instanceId,
+    `${JOURNAL} -o ${options.format ?? "cat"} | ${keep} | tail -n ${options.tail ?? 150}`,
+  );
+};
+
+/** How many journal lines match, counted on the machine. */
+const journalCount = async (instanceId: string, pattern: string): Promise<number> => {
+  const answer = await onMachine(instanceId, `${JOURNAL} -o cat | grep -c -- '${pattern}'`);
+  return Number.parseInt(answer.trim(), 10) || 0;
+};
+
 /** The branch's head at GitHub, which is what the dispatch binds (D-P10-02). */
 const remoteHead = (): string => {
   const listed = execFileSync(
@@ -197,20 +224,13 @@ const awaitDispatch = async (
   }
 };
 
-/** The runner's own journal, over SSM, for the record and for the failures. */
-const journal = async (
-  instanceId: string,
-  format: "cat" | "short-iso-precise" = "cat",
-): Promise<string> => {
+/**
+ * A command on the machine over SSM, its standard output back. SSM returns at
+ * most 24,000 characters of it, so anything long is filtered on the machine.
+ */
+const onMachine = async (instanceId: string, command: string): Promise<string> => {
   const parameters = join(tmpdir(), `nightshift-runner-boot-${process.pid}.json`);
-  writeFileSync(
-    parameters,
-    JSON.stringify({
-      // The whole run's journal: a heavy run's sudo lines alone pass 200.
-      commands: [`journalctl -u nightshift-runner --no-pager -n 5000 -o ${format}`],
-      executionTimeout: ["60"],
-    }),
-  );
+  writeFileSync(parameters, JSON.stringify({ commands: [command], executionTimeout: ["60"] }));
   try {
     const sent = JSON.parse(
       aws([
@@ -242,7 +262,7 @@ const journal = async (
     }
     return "(no answer from SSM)";
   } catch (error) {
-    return `(journal unavailable: ${error instanceof Error ? error.message : String(error)})`;
+    return `(unavailable: ${error instanceof Error ? error.message : String(error)})`;
   } finally {
     rmSync(parameters, { force: true });
   }
@@ -533,7 +553,13 @@ const phaseTable = async (
     } catch {
       // Gone already; the boot phase is then unknown.
     }
-    const lines = (await journal(instanceId, "short-iso-precise")).split("' + NL + '");
+    const lines = (
+      await journal(instanceId, {
+        format: "short-iso-precise",
+        grep: "nightshift-runner\\]|Started nightshift-runner|sidecar",
+        tail: 400,
+      })
+    ).split("\n");
     const at = (needle: string): number | undefined => {
       const line = lines.find((candidate) => candidate.includes(needle));
       const stamp = line?.split(" ")[0];
@@ -632,8 +658,9 @@ const runToTheEnd = async (
       .split("\n")
       .filter((line) => line.trim() !== "");
     // D-P10-25: every job's agent ran as a worker user. The sudo log says so,
-    // one line per process the engine started as `worker-N`.
-    const asWorkers = lines.filter((line) => /USER=worker-\d+/.test(line)).length;
+    // one line per process the engine started as `worker-N`; counted on the
+    // machine, since the journal is longer than SSM returns.
+    const asWorkers = await journalCount(stopped.instanceId, "USER=worker-");
     findings.processesAsWorkers = asWorkers;
     say(`${name}: ${asWorkers} processes started as worker users`);
     expect(asWorkers, "no process ran as a worker user").toBeGreaterThan(0);
