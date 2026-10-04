@@ -67,6 +67,10 @@ runRunner({
     const result = await runHeadless(runtime, env, {
       scope: context.scope,
       repoPath: context.layout.checkout,
+      // A replacement machine resumes the run the lost one was running (T6).
+      ...(context.dispatch.generation > 1
+        ? { recovering: { generation: context.dispatch.generation } }
+        : {}),
     });
     say(describeHeadlessEnding(result));
     // The root's transcript, as an artifact on its node: the one durable

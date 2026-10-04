@@ -28,7 +28,17 @@ import {
   type Run,
   type RunId,
 } from "@nightshift/contracts";
-import { isPlanned, isSettled, nowIso, type RunScope } from "@nightshift/core";
+import {
+  canTransition,
+  canTransitionAgent,
+  isPlanned,
+  isSettled,
+  type NightshiftStores,
+  nowIso,
+  type RunScope,
+  transition,
+  transitionAgent,
+} from "@nightshift/core";
 import {
   addDetachedWorktree,
   createEventOutbox,
@@ -70,6 +80,12 @@ export const pinnedRunOf = (
 
 export interface HeadlessInput {
   readonly scope: RunScope;
+  /**
+   * P10 (T6): this root is a replacement's, after the machine that was running
+   * the run was lost. The run is `running`, not `pending`; what was in flight
+   * on the lost machine is marked interrupted first, and the root is told.
+   */
+  readonly recovering?: { readonly generation: number };
   /** The operator's clone: what the run integrates into. */
   readonly repoPath: string;
   /** The human's choice of orchestrator (A-38). Absent means the contract's own routing. */
@@ -167,6 +183,98 @@ const requireRecords = async (
   return { program, run, rootNode, planText };
 };
 
+/** What the orphan sweep did to the lost machine's work, for the root's brief. */
+export interface Orphans {
+  /** Interrupted: were running, verifying or examining; `job_retry` takes them up from their kept work. */
+  readonly interrupted: readonly string[];
+  /** Failed: were implemented and awaiting verification that never ran; `job_retry` reruns them. */
+  readonly failed: readonly string[];
+  /** Cancelled: were queued in an engine that is gone; their strands are delegated again. */
+  readonly cancelled: readonly string[];
+}
+
+/**
+ * The nodes and agents the lost machine left in flight, settled on the record
+ * so the root can take them up (T6). The transition table decides what each
+ * becomes: a node that was running, verifying or examining is `interrupted`
+ * (retryable); one implemented but not yet verified is `failed` (retryable);
+ * one queued in the dead engine is `cancelled`, and its strand is delegated
+ * anew. Started agents of all of them, and the lost machine's root, are
+ * interrupted.
+ */
+export const interruptOrphans = async (
+  stores: Pick<NightshiftStores, "executionNodes" | "agents">,
+  scope: RunScope,
+  at: string,
+  generation: number,
+): Promise<Orphans> => {
+  const reason = `the machine running this was lost; the run resumed on a replacement at generation ${generation}`;
+  const interrupted: string[] = [];
+  const failed: string[] = [];
+  const cancelled: string[] = [];
+  const nodes = (await stores.executionNodes.listByRun(scope, { limit: 500 })).items;
+  const interruptAgentsOf = async (nodeId: ExecutionNode["executionNodeId"]) => {
+    for (const agent of await stores.agents.listByNode(scope, nodeId)) {
+      if (!canTransitionAgent(agent.status, "interrupt")) continue;
+      await stores.agents.put(transitionAgent(agent, "interrupt", { at, outcomeReason: reason }));
+    }
+  };
+  for (const node of nodes) {
+    if (node.kind === "program") {
+      // The lost machine's root: this process starts its own.
+      await interruptAgentsOf(node.executionNodeId);
+      continue;
+    }
+    const event = canTransition(node.status, "interrupt")
+      ? "interrupt"
+      : node.status === "implemented"
+        ? "fail"
+        : node.status === "queued"
+          ? "cancel"
+          : undefined;
+    if (event === undefined) continue;
+    await stores.executionNodes.put({ ...transition(node, event, at), outcomeReason: reason });
+    (event === "interrupt" ? interrupted : event === "fail" ? failed : cancelled).push(
+      node.executionNodeId,
+    );
+    await interruptAgentsOf(node.executionNodeId);
+  }
+  return { interrupted, failed, cancelled };
+};
+
+/** What a resuming root is told before the plan. */
+export const recoveryNote = (generation: number, orphans: Orphans): string => {
+  const lines = [
+    `# This run is resuming after a machine failure (replacement machine, generation ${generation})`,
+    "",
+    "The machine running this run was lost and this is its replacement. The run's record on the",
+    "control plane is complete: strands already integrated stay integrated, and nothing lands",
+    "twice. Attach to this run with `run.attach`, then read the state of every strand.",
+  ];
+  if (orphans.interrupted.length + orphans.failed.length + orphans.cancelled.length === 0) {
+    lines.push("No job was in flight when the machine was lost.");
+  }
+  if (orphans.interrupted.length > 0) {
+    lines.push(
+      `${orphans.interrupted.length} job(s) were in flight and are marked interrupted (${orphans.interrupted.join(", ")}); their worktrees, with whatever work was done, were restored from the sidecar. Retry each with job_retry: the retry starts from the kept work.`,
+    );
+  }
+  if (orphans.failed.length > 0) {
+    lines.push(
+      `${orphans.failed.length} job(s) had been implemented but never verified and are marked failed (${orphans.failed.join(", ")}). Retry each with job_retry.`,
+    );
+  }
+  if (orphans.cancelled.length > 0) {
+    lines.push(
+      `${orphans.cancelled.length} job(s) were queued and never started and are marked cancelled (${orphans.cancelled.join(", ")}). Delegate their strands again.`,
+    );
+  }
+  lines.push(
+    "Then carry on with the plan below as if nothing had happened. Do not redo integrated strands.",
+  );
+  return lines.join("\n");
+};
+
 /**
  * Starts the root orchestrator and waits for it to go. Resolves with how the
  * process ended and how the **run** ended, which are two facts: a root that
@@ -181,11 +289,17 @@ export const runHeadless = async (
   const { stores, clock, ids } = runtime;
   const { scope } = input;
   const { program, run, rootNode, planText } = await requireRecords(runtime, scope);
-  if (isSettled(rootNode.status) || run.status !== "pending") {
+  const resuming = input.recovering !== undefined && run.status === "running";
+  if (isSettled(rootNode.status) || (run.status !== "pending" && !resuming)) {
     throw new HeadlessRefusal(
       `run ${scope.runId} is ${run.status}; an unattended run starts a pending one`,
     );
   }
+  // What the lost machine was doing is over: nodes and agents in flight there
+  // are interrupted on the record, so the root can retry them (T6).
+  const orphans = resuming
+    ? await interruptOrphans(stores, scope, nowIso(clock), input.recovering?.generation ?? 0)
+    : { interrupted: [], failed: [], cancelled: [] };
 
   // Not persisted: the program node has no Job Contract. It carries the plan to
   // the brief through the one adapter contract every node is started with.
@@ -193,7 +307,9 @@ export const runHeadless = async (
     schemaVersion: 1,
     ...scope,
     jobContractId: ids.next("job"),
-    objective: planText,
+    objective: resuming
+      ? `${recoveryNote(input.recovering?.generation ?? 0, orphans)}\n\n${planText}`
+      : planText,
     scope: { includes: [...program.scope.includes] },
     acceptance: ["every strand of the ratified plan has succeeded, or is parked with a reason"],
     dependencies: [],
