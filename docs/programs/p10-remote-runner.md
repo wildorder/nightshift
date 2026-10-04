@@ -851,3 +851,56 @@ the heavy program ran to a published head in 466 s with no retry at all, the
 first heavy run to do so. (Its proof then failed on publication: the bench
 branch had been moved under it by hand while it ran, and the publisher
 refused the stale lease exactly as it should.)
+
+### T4's last piece and T6, 2026-10-04
+
+**Worker token renewal (5f1ac57).** An execution token lives at most eight
+hours (D-P4-03) and a job can outlive it. On a machine the token now goes in
+a tmpfs file, `/dev/shm/nightshift/<run>/agents/<agent>/token`, in a
+directory handed to the worker user; the worker's MCP server reads it on
+every request (`NIGHTSHIFT_EXECUTION_TOKEN_FILE`), and the engine re-mints
+and rewrites it at half the token's remaining life, never more than four
+hours apart, retrying a failed renewal a minute later; renewals stop and the
+file goes with the worker's process. A laptop is unchanged. Offline tests
+cover the schedule; it has not yet been watched across a real expiry, which
+needs a run past four hours.
+
+**Recovery (aaea5b3, 0f3b3e7, cbd23b7).** Every minute the reconciler looks
+at every live dispatch. One whose lease lapsed (three missed heartbeats) has
+its machine terminated and, with an attempt left of D-P10-05's three, moves to
+the next generation and back to `provisioning` with no machine; the same tick
+provisions a replacement in the volume's zone, launched without a workspace
+device, and attaches the run's volume once the machine runs, retrying while
+the old machine lets go. With no attempt left the dispatch fails as
+`recovery_exhausted`. The runner waits up to three minutes for a volume still
+being attached, restores the sidecar's copy onto its disk (D-P10-27) and
+starts a root that **resumes** the running run: the lost machine's in-flight
+nodes are settled by the transition table first (running, verifying,
+examining → interrupted; implemented → failed; queued → cancelled; their
+agents and the lost root interrupted), and the root's brief opens with what
+happened and what to retry or delegate again. The stack tells the Lambdas each
+subnet's zone and lets the reconciler attach volumes, tag what it launches and
+create a first machine's volume. Offline fault tests: a live lease left alone,
+a lapsed one replaced with the attach retried, exhaustion, a volume that never
+attaches, the device wait, the orphan sweep.
+
+**The live kill proof** (`NIGHTSHIFT_SMOKE_BENCH_KILL=1`: the machine
+terminated two minutes into `running`), four runs so far, each clearing one
+layer:
+
+1. (1.0.19) The lease lapsed and the replacement was begun; its launch was
+   refused on `ec2:CreateTags`: the reconciler lacked the dispatch's grant.
+2. (1.0.19, fixed role) Replacement up at generation 2 **101 s after the
+   kill**, sidecar restored in 38.6 s, warm setup 8.6 s; the headless root
+   refused a `running` run, which it only knew how to start pending.
+3. (1.0.20) Replacement up **71 s after the kill**; the root started
+   resuming and failed to make its worktree: the lost root's came back from
+   the sidecar at the same path.
+4. (1.0.21) The image built; the proof could not start: the operator's SSO
+   session had expired after about eight hours. Pending the next login.
+
+Also found on the way: a Lambda-only change must be deployed with the
+`runnerCommit` the current image was built from, or the recipe update fails
+and rolls back; the deploy script cannot confirm an IAM change headless, so
+such deploys run `cdk deploy --require-approval never` directly after
+`tsc -b`.
