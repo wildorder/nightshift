@@ -94,11 +94,48 @@ export interface WorktreeInput {
   readonly base: CommitSha;
 }
 
+/**
+ * Worktree and ref changes to one repository, one at a time. Two jobs starting
+ * together each add a worktree, and git rewrites `packed-refs` for both; on
+ * Windows the second reads the file while the first is replacing it and fails
+ * with "Permission denied" (seen under the full suite's load, 2026-10-04).
+ * Serialising the writes per repository removes the race; a "Permission
+ * denied" that still appears, from anything else holding the file, is retried
+ * a few times before it is anyone's failure.
+ */
+const repoQueues = new Map<string, Promise<unknown>>();
+const inRepoOrder = async <T>(repo: string, work: () => Promise<T>): Promise<T> => {
+  const previous = repoQueues.get(repo) ?? Promise.resolve();
+  const next = previous.then(work, work);
+  repoQueues.set(
+    repo,
+    next.catch(() => undefined),
+  );
+  return next;
+};
+const PERMISSION_RETRIES = 4;
+const retryingPermission = async <T>(work: () => Promise<T>): Promise<T> => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await work();
+    } catch (error) {
+      const stderr = (error as { result?: { stderr?: string } }).result?.stderr ?? "";
+      if (attempt >= PERMISSION_RETRIES || !/Permission denied|EPERM|EBUSY/.test(stderr))
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+};
+const repoWrite = <T>(repo: string, work: () => Promise<T>): Promise<T> =>
+  inRepoOrder(repo, () => retryingPermission(work));
+
 /** Creates the worktree and its branch at `base`. */
 export const addWorktree = async (runner: GitRunner, input: WorktreeInput): Promise<void> => {
-  await git(runner, ["worktree", "add", "-b", input.branch, input.path, input.base], {
-    cwd: input.repo,
-  });
+  await repoWrite(input.repo, () =>
+    git(runner, ["worktree", "add", "-b", input.branch, input.path, input.base], {
+      cwd: input.repo,
+    }),
+  );
 };
 
 /**
@@ -110,7 +147,9 @@ export const addDetachedWorktree = async (
   runner: GitRunner,
   input: Omit<WorktreeInput, "branch">,
 ): Promise<void> => {
-  await git(runner, ["worktree", "add", "--detach", input.path, input.base], { cwd: input.repo });
+  await repoWrite(input.repo, () =>
+    git(runner, ["worktree", "add", "--detach", input.path, input.base], { cwd: input.repo }),
+  );
 };
 
 /**
@@ -128,15 +167,17 @@ export const removeWorktree = async (
   branch: string,
   nodeId?: string,
 ): Promise<void> => {
-  await git(runner, ["worktree", "remove", "--force", path], { cwd: repo });
-  await tryGit(runner, ["branch", "-D", branch], { cwd: repo });
-  if (nodeId !== undefined)
-    await tryGit(runner, ["update-ref", "-d", baseRef(nodeId)], { cwd: repo });
+  await repoWrite(repo, async () => {
+    await git(runner, ["worktree", "remove", "--force", path], { cwd: repo });
+    await tryGit(runner, ["branch", "-D", branch], { cwd: repo });
+    if (nodeId !== undefined)
+      await tryGit(runner, ["update-ref", "-d", baseRef(nodeId)], { cwd: repo });
+  });
 };
 
 /** Forgets worktrees whose directories are gone, so a stale entry cannot block a name. */
 export const pruneWorktrees = async (runner: GitRunner, repo: string): Promise<void> => {
-  await tryGit(runner, ["worktree", "prune"], { cwd: repo });
+  await inRepoOrder(repo, () => tryGit(runner, ["worktree", "prune"], { cwd: repo }));
 };
 
 export interface SnapshotInput {
@@ -267,7 +308,7 @@ export const updateRef = async (
   ref: string,
   sha: CommitSha,
 ): Promise<void> => {
-  await git(runner, ["update-ref", ref, sha], { cwd: repo });
+  await repoWrite(repo, () => git(runner, ["update-ref", ref, sha], { cwd: repo }));
 };
 
 export interface FastForwardResult {
