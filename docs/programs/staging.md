@@ -54,7 +54,7 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 | **P7** | Planning | — (inserted) | A program is planned with the human in a plan document and its contract, up to the point where a wrong choice becomes cheap: seams, approach, the expensive decisions and human prerequisites hoisted before the run. It is checked deterministically, ratified, and then run end to end with nobody watching | — | complete |
 | **P8** | Routing & Examination | 6, 7 | Cheap bounded jobs route to inexpensive models and still integrate only when verified; risk policy drives independent examination without code changes | — | complete |
 | **P9** | Decision Graph & Correction | 8 | Every decision is tied to the commits it produced; reversing one starts a correction planned from its record with the owner, ratified and run back to verified (reframed by the owner 2026-09-27: re-planning, not cone replay) | — | complete (the owner's trial follows the close) |
-| **P10** | Remote Runner | 9 | Walk-away execution on one EC2 instance per run with an EBS workspace volume: the customer picks good/better/best, Nightshift recommends the tier from the project and right-sizes it from past runs, and a per-project warm volume keeps starts short; the AgentCore harness worker on Bedrock runs there | O-03, O-05, O-06 answered by D-P10-05, D-P10-13, D-P10-19, D-P10-03/04, D-P10-01; A-14 superseded by D-P10-12 | **ratified 2026-10-01**, not yet built (`p10-remote-runner.md`); deferred 2026-09-28 to 2026-10-01 |
+| **P10** | Remote Runner | 9 | Walk-away execution on one EC2 instance per run with an EBS workspace volume: the customer picks good/better/best, Nightshift recommends the tier from the project and right-sizes it from past runs, and a per-project warm volume keeps starts short; the AgentCore harness worker on Bedrock runs there | O-03, O-05, O-06 answered by D-P10-05, D-P10-13, D-P10-19, D-P10-03/04, D-P10-01; A-14 superseded by D-P10-12 | **complete 2026-10-04** (`p10-remote-runner.md` §15): built and live-accepted on EC2 with the workspace on the instance's NVMe and an EBS sidecar (A-51); T7's recommendation surfaces and T5's AgentCore/Bedrock route skipped by the owner, so SC-04's AgentCore half and SC-05 are not discharged; deferred 2026-09-28 to 2026-10-01 |
 | **P11** | Realtime, Analytics & Studio | 10 + Studio UI | Local runs and decisions visible live in Studio; full run state and history reconstructable from centralized APIs alone | O-02 (resolved by D-P11-05) | ratified 2026-09-28, in build (`p11-studio.md`) |
 | **P12** | Local Instance | — (inserted) | Nightshift runs on one machine with no cloud account: `nightshift local`, the same plane over SQLite, the Studio beside it; the repository opened under Apache-2.0 | — | closed 2026-09-29 (`p12-local-instance.md`) |
 | **P13** | Studio UI | — (inserted) | A SaaS-shaped Studio on shadcn/ui, restyled from one theme file: program status on each card and the run's first tab, the run as a horizontal graph with a decision's recorded reach | — | closed 2026-09-29 (`p13-studio-ui.md`) |
@@ -85,7 +85,7 @@ P9 Decision Graph & Correction
    ↓
 P11 Realtime, Analytics & Studio
 
-P10 Remote Runner                ← deferred 2026-09-28; reopened 2026-10-01 after P14, on EC2 (D-P10-12)
+P10 Remote Runner                ← deferred 2026-09-28; reopened 2026-10-01 after P14, on EC2 (D-P10-12); complete 2026-10-04
 ```
 
 P11 now follows P9 directly, per the owner's 2026-09-28 restaging. Its exit demo
