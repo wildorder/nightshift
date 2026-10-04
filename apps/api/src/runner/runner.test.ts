@@ -20,6 +20,7 @@ import { createInMemoryStores, type InMemoryStores } from "@nightshift/persisten
 import { describe, expect, it } from "vitest";
 import { cleanupStopped, enforceStop } from "./cleanup.js";
 import { machineTags, provisionDispatch, subnetFor } from "./provision.js";
+import { recoverLostLease } from "./recover.js";
 
 const NOW = Date.parse("2026-10-01T12:00:00.000Z");
 const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -30,6 +31,9 @@ const signer = {
 interface FakeCompute extends ComputeControl {
   readonly launches: Parameters<ComputeControl["launch"]>[0][];
   readonly terminated: string[];
+  readonly attached: { volumeId: string; instanceId: string; device: string }[];
+  /** Attach refusals left before one succeeds: a volume the old machine still holds. */
+  attachRefusals: number;
   readonly snapshots: Map<string, "pending" | "completed" | "error">;
   readonly deletedVolumes: string[];
   readonly deletedSnapshots: string[];
@@ -42,6 +46,8 @@ const fakeCompute = (): FakeCompute => {
   const compute: FakeCompute = {
     launches: [],
     terminated: [],
+    attached: [],
+    attachRefusals: 0,
     snapshots: new Map(),
     deletedVolumes: [],
     deletedSnapshots: [],
@@ -57,11 +63,24 @@ const fakeCompute = (): FakeCompute => {
         instanceId,
         state: "running",
         availabilityZone: "us-west-2a",
-        workspaceVolumeId: `vol-${compute.launches.length}`,
+        // A replacement launches with no volume; its own is attached after.
+        ...(request.volume === undefined
+          ? {}
+          : { workspaceVolumeId: `vol-${compute.launches.length}` }),
       });
       return { instanceId };
     },
     describe: async (instanceId) => compute.instances.get(instanceId),
+    attachVolume: async ({ volumeId, instanceId, device }) => {
+      if (compute.attachRefusals > 0) {
+        compute.attachRefusals -= 1;
+        throw new Error("VolumeInUse");
+      }
+      compute.attached.push({ volumeId, instanceId, device });
+      const current = compute.instances.get(instanceId);
+      if (current !== undefined)
+        compute.instances.set(instanceId, { ...current, workspaceVolumeId: volumeId });
+    },
     terminate: async (instanceId) => {
       compute.terminated.push(instanceId);
       const current = compute.instances.get(instanceId);
@@ -108,6 +127,7 @@ interface World {
   readonly program: ProgramContract;
   deps(): Parameters<typeof provisionDispatch>[0];
   cleanup(): Parameters<typeof cleanupStopped>[0];
+  recover(): Parameters<typeof recoverLostLease>[0];
 }
 
 const world = async (dispatch: Partial<Dispatch> = {}): Promise<World> => {
@@ -138,9 +158,11 @@ const world = async (dispatch: Partial<Dispatch> = {}): Promise<World> => {
       issuer: "https://api.dev.nightshift.invalid",
       imageVersion: "1.0.5",
       subnetIds: ["subnet-a", "subnet-b"],
+      subnetZones: { "subnet-a": "us-west-2a", "subnet-b": "us-west-2b" },
       describeAttempts: 1,
       sleep: async () => undefined,
     }),
+    recover: () => ({ stores, compute, clock }),
     cleanup: () => ({ stores, compute, clock, stage: "dev" }),
   };
 };
@@ -168,7 +190,7 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
       instanceType: "c8id.2xlarge",
       volume: { device: "/dev/xvdf", sizeGiB: 100 },
     });
-    expect(launch?.volume.fromSnapshotId).toBeUndefined();
+    expect(launch?.volume?.fromSnapshotId).toBeUndefined();
     expect(launch?.tags).toMatchObject({
       "nightshift:managed": "true",
       "nightshift-run": w.f.scope.runId,
@@ -192,7 +214,7 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
       }),
     );
     await provisionDispatch(w.deps(), w.f.scope);
-    expect(w.compute.launches[0]?.volume.fromSnapshotId).toBe("snap-warm");
+    expect(w.compute.launches[0]?.volume?.fromSnapshotId).toBe("snap-warm");
   });
 
   it("records a failure and removes the parked token when the launch fails", async () => {
@@ -343,5 +365,135 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
     expect((await w.stores.dispatches.get(w.f.scope))?.cleanup.failures[0]).toContain(
       "VolumeInUse",
     );
+  });
+});
+
+describe("recovery of a lapsed lease (T6, D-P10-18, D-P10-05)", () => {
+  const lapsed = new Date(NOW - 1_000).toISOString();
+  const live = new Date(NOW + 30_000).toISOString();
+
+  it("leaves a live lease alone", async () => {
+    const w = await world({
+      status: "running",
+      instanceId: "i-old",
+      volumeId: "vol-run",
+      availabilityZone: "us-west-2b",
+      leaseExpiresAt: live,
+    });
+    expect(
+      await recoverLostLease(w.recover(), (await w.stores.dispatches.get(w.f.scope)) as Dispatch),
+    ).toBe("alive");
+    expect(w.compute.terminated).toEqual([]);
+  });
+
+  it("terminates the quiet machine, moves the generation, and provisions a replacement in the volume's zone with the volume attached", async () => {
+    const w = await world({
+      status: "running",
+      instanceId: "i-old",
+      volumeId: "vol-run",
+      availabilityZone: "us-west-2b",
+      leaseExpiresAt: lapsed,
+      generation: 1,
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T11:00:00.000Z",
+          instanceId: "i-old",
+        },
+      ],
+    });
+    w.compute.instances.set("i-old", {
+      instanceId: "i-old",
+      state: "running",
+      availabilityZone: "us-west-2b",
+      workspaceVolumeId: "vol-run",
+    });
+    const dispatch = () => w.stores.dispatches.get(w.f.scope) as Promise<Dispatch>;
+    expect(await recoverLostLease(w.recover(), await dispatch())).toBe("replacing");
+    expect(w.compute.terminated).toEqual(["i-old"]);
+    const replacing = await dispatch();
+    expect(replacing).toMatchObject({ status: "provisioning", generation: 2, volumeId: "vol-run" });
+    expect(replacing.instanceId).toBeUndefined();
+    expect(replacing.attempts).toHaveLength(2);
+    expect(replacing.attempts[0]?.endedAt).toBeDefined();
+    expect(replacing.attempts[1]).toMatchObject({ generation: 2, reason: "lease_lost" });
+
+    // The old machine still holds the volume for a moment; the attach is retried.
+    w.compute.attachRefusals = 2;
+    const outcome = await provisionDispatch(w.deps(), w.f.scope);
+    expect(outcome.kind).toBe("provisioned");
+    const launch = w.compute.launches[0];
+    expect(launch?.subnetId).toBe("subnet-b");
+    expect(launch?.volume).toBeUndefined();
+    expect(w.compute.attached).toEqual([
+      { volumeId: "vol-run", instanceId: "i-1", device: "/dev/xvdf" },
+    ]);
+    const provisioned = await dispatch();
+    expect(provisioned).toMatchObject({
+      status: "provisioning",
+      instanceId: "i-1",
+      volumeId: "vol-run",
+      generation: 2,
+    });
+    // The first token waits under the new generation.
+    expect([...w.tokens.parameters.keys()]).toEqual([
+      `/nightshift/dev/dispatch/${w.f.scope.runId}/2`,
+    ]);
+  });
+
+  it("fails the dispatch as recovery_exhausted when no attempt remains", async () => {
+    const w = await world({
+      status: "running",
+      instanceId: "i-3",
+      volumeId: "vol-run",
+      leaseExpiresAt: lapsed,
+      generation: 3,
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T10:00:00.000Z",
+          endedAt: "2026-10-01T10:30:00.000Z",
+        },
+        {
+          generation: 2,
+          reason: "lease_lost",
+          startedAt: "2026-10-01T10:30:00.000Z",
+          endedAt: "2026-10-01T11:00:00.000Z",
+        },
+        { generation: 3, reason: "lease_lost", startedAt: "2026-10-01T11:00:00.000Z" },
+      ],
+    });
+    const dispatch = () => w.stores.dispatches.get(w.f.scope) as Promise<Dispatch>;
+    expect(await recoverLostLease(w.recover(), await dispatch())).toBe("exhausted");
+    expect(w.compute.terminated).toEqual(["i-3"]);
+    expect(await dispatch()).toMatchObject({
+      status: "failed",
+      failure: { code: "recovery_exhausted" },
+    });
+  });
+
+  it("gives up a replacement whose volume never attaches, and terminates the machine it made", async () => {
+    const w = await world({
+      status: "provisioning",
+      volumeId: "vol-run",
+      availabilityZone: "us-west-2a",
+      generation: 2,
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T10:00:00.000Z",
+          endedAt: "2026-10-01T11:00:00.000Z",
+        },
+        { generation: 2, reason: "lease_lost", startedAt: "2026-10-01T11:00:00.000Z" },
+      ],
+    });
+    w.compute.attachRefusals = 1000;
+    const outcome = await provisionDispatch(w.deps(), w.f.scope);
+    expect(outcome.kind).toBe("failed");
+    expect(w.compute.terminated).toEqual(["i-1"]);
+    expect((await w.stores.dispatches.get(w.f.scope))?.failure?.code).toBe("provisioning_failed");
   });
 });

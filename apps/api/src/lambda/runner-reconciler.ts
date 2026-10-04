@@ -4,8 +4,9 @@
  *
  * T3: a `requested` dispatch the API's invocation never reached is provisioned;
  * a `stopping` one whose runner went quiet is terminated; a `stopped` one has
- * its volume snapshotted into the project's warm cache and deleted. T6 adds the
- * lease, the ceilings, the replacement and the orphan sweep.
+ * its volume snapshotted into the project's warm cache and deleted. T6: a live
+ * one whose lease lapsed is terminated and replaced on its volume, generation
+ * plus one, until the attempts run out.
  *
  * Composition only: the rules are `runner/provision.ts` and `runner/cleanup.ts`.
  */
@@ -18,6 +19,7 @@ import { createEc2Compute, createSsmFirstTokens } from "../aws/ec2-compute.js";
 import { loadConfig, loadRunnerConfig, loadTokenConfig } from "../config.js";
 import { cleanupStopped, enforceStop } from "../runner/cleanup.js";
 import { provisionDispatch } from "../runner/provision.js";
+import { recoverLostLease } from "../runner/recover.js";
 import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
 
 const config = loadConfig(process.env);
@@ -44,6 +46,7 @@ const provision = {
   issuer: tokenConfig.tokenIssuer,
   imageVersion: runner.imageVersion,
   subnetIds: runner.subnetIds,
+  subnetZones: runner.subnetZones,
 };
 
 /** A `requested` dispatch older than this was not picked up by the API's invocation. */
@@ -57,6 +60,8 @@ export const handler = async (): Promise<Record<string, number>> => {
   const live = await stores.dispatches.listByStatus([
     "requested",
     "provisioning",
+    "ready",
+    "running",
     "stopping",
     "stopped",
     "failed",
@@ -74,6 +79,18 @@ export const handler = async (): Promise<Record<string, number>> => {
         (dispatch.status === "provisioning" && dispatch.instanceId === undefined)
       ) {
         count(`provision:${(await provisionDispatch(provision, scope)).kind}`);
+      } else if (
+        dispatch.status === "ready" ||
+        dispatch.status === "running" ||
+        (dispatch.status === "provisioning" && dispatch.instanceId !== undefined)
+      ) {
+        // T6: a live machine whose lease lapsed is replaced, on the same volume,
+        // in the same tick when there is an attempt left.
+        const step = await recoverLostLease(cleanup, dispatch);
+        count(`lease:${step}`);
+        if (step === "replacing") {
+          count(`provision:${(await provisionDispatch(provision, scope)).kind}`);
+        }
       } else if (dispatch.status === "stopping") {
         count(`stop:${await enforceStop(cleanup, dispatch)}`);
       } else if (dispatch.status === "stopped" || dispatch.status === "failed") {

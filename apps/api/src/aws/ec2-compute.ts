@@ -5,6 +5,7 @@
  * first token waits in.
  */
 import {
+  AttachVolumeCommand,
   CreateSnapshotCommand,
   DeleteSnapshotCommand,
   DeleteVolumeCommand,
@@ -58,23 +59,28 @@ export const createEc2Compute = (options: Ec2ComputeOptions): ComputeControl => 
           MaxCount: 1,
           // The workspace, made at launch from the warm snapshot or empty, and
           // kept when the instance goes: it is the recovery point (D-P10-15).
-          BlockDeviceMappings: [
-            {
-              DeviceName: request.volume.device,
-              Ebs: {
-                VolumeType: "gp3",
-                VolumeSize: request.volume.sizeGiB,
-                DeleteOnTermination: false,
-                ...(request.volume.iops === undefined ? {} : { Iops: request.volume.iops }),
-                ...(request.volume.throughputMiBps === undefined
-                  ? {}
-                  : { Throughput: request.volume.throughputMiBps }),
-                ...(request.volume.fromSnapshotId === undefined
-                  ? {}
-                  : { SnapshotId: request.volume.fromSnapshotId }),
-              },
-            },
-          ],
+          // A replacement launches without one and attaches the run's (T6).
+          ...(request.volume === undefined
+            ? {}
+            : {
+                BlockDeviceMappings: [
+                  {
+                    DeviceName: request.volume.device,
+                    Ebs: {
+                      VolumeType: "gp3",
+                      VolumeSize: request.volume.sizeGiB,
+                      DeleteOnTermination: false,
+                      ...(request.volume.iops === undefined ? {} : { Iops: request.volume.iops }),
+                      ...(request.volume.throughputMiBps === undefined
+                        ? {}
+                        : { Throughput: request.volume.throughputMiBps }),
+                      ...(request.volume.fromSnapshotId === undefined
+                        ? {}
+                        : { SnapshotId: request.volume.fromSnapshotId }),
+                    },
+                  },
+                ],
+              }),
           TagSpecifications: [
             { ResourceType: "instance", Tags: tagList(request.tags) },
             { ResourceType: "volume", Tags: tagList(request.tags) },
@@ -108,6 +114,11 @@ export const createEc2Compute = (options: Ec2ComputeOptions): ComputeControl => 
           : { workspaceVolumeId: workspace.Ebs.VolumeId }),
       };
       return description;
+    },
+    attachVolume: async ({ volumeId, instanceId, device }) => {
+      await ec2.send(
+        new AttachVolumeCommand({ VolumeId: volumeId, InstanceId: instanceId, Device: device }),
+      );
     },
     terminate: async (instanceId) => {
       await ec2

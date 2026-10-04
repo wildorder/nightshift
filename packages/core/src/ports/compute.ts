@@ -36,7 +36,8 @@ export interface LaunchRequest {
   readonly subnetId: string;
   /** Tags every resource carries, `nightshift:managed=true` among them. */
   readonly tags: Readonly<Record<string, string>>;
-  readonly volume: {
+  /** Absent for a replacement (T6): the run's existing volume is attached once the machine runs. */
+  readonly volume?: {
     readonly device: string;
     readonly sizeGiB: number;
     readonly fromSnapshotId?: string;
@@ -70,6 +71,12 @@ export interface ComputeControl {
   latestImage(imageVersion: string, architecture: ComputeArchitecture): Promise<string | undefined>;
   launch(request: LaunchRequest): Promise<{ readonly instanceId: string }>;
   describe(instanceId: string): Promise<InstanceDescription | undefined>;
+  /** A replacement's volume onto its machine, at the workspace device (T6). */
+  attachVolume(input: {
+    readonly volumeId: string;
+    readonly instanceId: string;
+    readonly device: string;
+  }): Promise<void>;
   terminate(instanceId: string): Promise<void>;
   snapshot(input: {
     readonly volumeId: string;

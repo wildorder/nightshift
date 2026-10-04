@@ -108,6 +108,7 @@ export const loadConfig = (env: Readonly<Record<string, string | undefined>>): A
 const RunnerEnvSchema = z.object({
   NIGHTSHIFT_LAUNCH_TEMPLATE_ID: z.string().min(1),
   NIGHTSHIFT_MACHINE_SUBNETS: z.string().min(1),
+  NIGHTSHIFT_MACHINE_SUBNET_ZONES: z.string().optional(),
   NIGHTSHIFT_IMAGE_VERSION: z.string().min(1),
   NIGHTSHIFT_API_ENDPOINT: z.string().min(1),
 });
@@ -115,6 +116,8 @@ const RunnerEnvSchema = z.object({
 export interface RunnerConfig {
   readonly launchTemplateId: string;
   readonly subnetIds: readonly string[];
+  /** Each subnet's availability zone (T6): a replacement must launch where its volume is. */
+  readonly subnetZones: Readonly<Record<string, string>>;
   readonly imageVersion: string;
   readonly apiEndpoint: string;
 }
@@ -129,6 +132,12 @@ export const loadRunnerConfig = (
   return {
     launchTemplateId: result.data.NIGHTSHIFT_LAUNCH_TEMPLATE_ID,
     subnetIds: result.data.NIGHTSHIFT_MACHINE_SUBNETS.split(",").filter((id) => id.length > 0),
+    subnetZones: Object.fromEntries(
+      (result.data.NIGHTSHIFT_MACHINE_SUBNET_ZONES ?? "")
+        .split(",")
+        .map((pair) => pair.split("="))
+        .filter((pair): pair is [string, string] => pair.length === 2 && pair[0] !== ""),
+    ),
     imageVersion: result.data.NIGHTSHIFT_IMAGE_VERSION,
     apiEndpoint: result.data.NIGHTSHIFT_API_ENDPOINT,
   };

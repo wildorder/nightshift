@@ -82,6 +82,22 @@ export const resolveDevice = async (machine: Machine, device: string): Promise<s
   return candidate;
 };
 
+/** How long to wait for a volume still being attached: a replacement's arrives after the machine (T6). */
+export const VOLUME_WAIT_MS = 3 * 60_000;
+
+/** The volume's device, waiting for an attach still in flight. */
+export const awaitDevice = async (machine: Machine, device: string): Promise<string> => {
+  const deadline = machine.now() + VOLUME_WAIT_MS;
+  for (;;) {
+    try {
+      return await resolveDevice(machine, device);
+    } catch (error) {
+      if (machine.now() >= deadline) throw error;
+      await machine.sleep(5_000);
+    }
+  }
+};
+
 /** Mounts the workspace, formatting a fresh volume. Idempotent: a mounted workspace is left as it is. */
 export const mountWorkspace = async (machine: Machine, options: VolumeOptions): Promise<void> => {
   const mounted = await machine.exec("findmnt", ["-rn", "-o", "SOURCE", options.mountPoint]);
@@ -89,7 +105,7 @@ export const mountWorkspace = async (machine: Machine, options: VolumeOptions): 
   const device =
     options.disk === "local"
       ? await resolveLocalDisk(machine)
-      : await resolveDevice(machine, options.device);
+      : await awaitDevice(machine, options.device);
   const probed = await machine.exec("sudo", ["blkid", "-o", "value", "-s", "TYPE", device]);
   if (probed.exitCode !== 0 || probed.stdout.trim() === "") {
     const formatted = await machine.exec("sudo", ["mkfs.ext4", "-q", "-L", "nightshift", device]);

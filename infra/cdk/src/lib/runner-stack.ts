@@ -352,6 +352,11 @@ export class NightshiftRunnerStack extends Stack {
         ",",
         vpc.publicSubnets.map((subnet) => subnet.subnetId),
       ),
+      // T6: a replacement must launch in its volume's zone.
+      NIGHTSHIFT_MACHINE_SUBNET_ZONES: Fn.join(
+        ",",
+        vpc.publicSubnets.map((subnet) => `${subnet.subnetId}=${subnet.availabilityZone}`),
+      ),
       NIGHTSHIFT_IMAGE_VERSION: imageVersion,
       NIGHTSHIFT_EXECUTION_TOKEN_KEY_ID: imported("ExecutionTokenKeyId"),
       NIGHTSHIFT_TOKEN_ISSUER: `https://${apiHostnameFor(stage)}`,
@@ -454,7 +459,13 @@ export class NightshiftRunnerStack extends Stack {
         resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
       new iam.PolicyStatement({
-        actions: ["ec2:TerminateInstances", "ec2:DeleteVolume", "ec2:DeleteSnapshot"],
+        // T6: a replacement attaches the run's volume to its new machine.
+        actions: [
+          "ec2:TerminateInstances",
+          "ec2:DeleteVolume",
+          "ec2:DeleteSnapshot",
+          "ec2:AttachVolume",
+        ],
         resources: [
           `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:instance/*`,
           `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:volume/*`,

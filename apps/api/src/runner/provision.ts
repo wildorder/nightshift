@@ -61,6 +61,8 @@ export interface ProvisionDeps {
   readonly imageVersion: string;
   /** The runner VPC's public subnets, one per zone. */
   readonly subnetIds: readonly string[];
+  /** Each subnet's zone (T6); absent, a replacement takes the hashed subnet and hopes. */
+  readonly subnetZones?: Readonly<Record<string, string>>;
   /** How long to wait for EC2 to report the instance and its volume. */
   readonly describeAttempts?: number;
   readonly sleep?: (ms: number) => Promise<void>;
@@ -126,8 +128,19 @@ export const provisionDispatch = async (
   if (imageId === undefined) {
     return fail(`no available ${architecture} image for version ${deps.imageVersion}`);
   }
-  const subnetId = subnetFor(scope.runId, deps.subnetIds);
+  // A replacement must land in its volume's zone (T6); a first machine goes where the hash says.
+  const replacing = dispatch.volumeId !== undefined;
+  const inZone =
+    replacing && dispatch.availabilityZone !== undefined && deps.subnetZones !== undefined
+      ? deps.subnetIds.find((id) => deps.subnetZones?.[id] === dispatch.availabilityZone)
+      : undefined;
+  const subnetId = inZone ?? subnetFor(scope.runId, deps.subnetIds);
   if (subnetId === undefined) return fail("the runner stack has no subnets");
+  if (replacing && inZone === undefined && dispatch.availabilityZone !== undefined) {
+    return fail(
+      `no subnet in ${dispatch.availabilityZone} for the replacement to attach the volume in`,
+    );
+  }
 
   // The first token, parked before the machine exists so it is there when the
   // machine boots. Minted under this attempt's generation (D-P10-20).
@@ -160,15 +173,19 @@ export const provisionDispatch = async (
       instanceType: dispatch.instanceType,
       subnetId,
       tags: machineTags(dispatch, deps.stage, deps.apiEndpoint),
-      volume: {
-        device: WORKSPACE_DEVICE,
-        sizeGiB: spec.volumeGiB,
-        ...(fromSnapshotId === undefined ? {} : { fromSnapshotId }),
-        ...(dispatch.workspace?.iops === undefined ? {} : { iops: dispatch.workspace.iops }),
-        ...(dispatch.workspace?.throughputMiBps === undefined
-          ? {}
-          : { throughputMiBps: dispatch.workspace.throughputMiBps }),
-      },
+      ...(replacing
+        ? {}
+        : {
+            volume: {
+              device: WORKSPACE_DEVICE,
+              sizeGiB: spec.volumeGiB,
+              ...(fromSnapshotId === undefined ? {} : { fromSnapshotId }),
+              ...(dispatch.workspace?.iops === undefined ? {} : { iops: dispatch.workspace.iops }),
+              ...(dispatch.workspace?.throughputMiBps === undefined
+                ? {}
+                : { throughputMiBps: dispatch.workspace.throughputMiBps }),
+            },
+          }),
     }));
   } catch (error) {
     await deps.tokens.delete(parameter).catch(() => undefined);
@@ -179,9 +196,37 @@ export const provisionDispatch = async (
   // pending; a few describes, then the record is written with what is known.
   let description = await compute.describe(instanceId);
   const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const describeAttempts = deps.describeAttempts ?? 12;
+  if (replacing && dispatch.volumeId !== undefined) {
+    // The run's volume onto the new machine (T6): once the machine runs, and
+    // once the old machine has let the volume go, which the terminate may still
+    // be doing; so the attach is tried for as long as the describes are.
+    const volumeId = dispatch.volumeId;
+    let attached = false;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < Math.max(describeAttempts, 24) && !attached; attempt += 1) {
+      if (description?.state === "running") {
+        try {
+          await compute.attachVolume({ volumeId, instanceId, device: WORKSPACE_DEVICE });
+          attached = true;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      await sleep(5_000);
+      description = await compute.describe(instanceId);
+    }
+    if (!attached) {
+      await compute.terminate(instanceId).catch(() => undefined);
+      return fail(
+        `could not attach ${volumeId} to the replacement ${instanceId}: ${lastError instanceof Error ? lastError.message : String(lastError ?? "the machine never ran")}`,
+      );
+    }
+  }
   for (
     let attempt = 0;
-    attempt < (deps.describeAttempts ?? 12) && description?.workspaceVolumeId === undefined;
+    attempt < describeAttempts && description?.workspaceVolumeId === undefined;
     attempt += 1
   ) {
     await sleep(5_000);
@@ -191,23 +236,25 @@ export const provisionDispatch = async (
   const attempts = dispatch.attempts.map((attempt) =>
     attempt.generation === dispatch.generation ? { ...attempt, instanceId } : attempt,
   );
-  const provisioned = transitionDispatch(
-    {
-      ...dispatch,
-      instanceId,
-      ...(description?.availabilityZone === undefined
-        ? {}
-        : { availabilityZone: description.availabilityZone }),
-      ...(description?.workspaceVolumeId === undefined
-        ? {}
-        : { volumeId: description.workspaceVolumeId }),
-      amiVersion: deps.imageVersion,
-      attempts,
-      cleanup: { ...dispatch.cleanup, volumeDeleted: false },
-    },
-    dispatch.status === "requested" ? "provision" : "provision",
-    at,
-  );
+  const withMachine: Dispatch = {
+    ...dispatch,
+    instanceId,
+    ...(description?.availabilityZone === undefined
+      ? {}
+      : { availabilityZone: description.availabilityZone }),
+    ...(description?.workspaceVolumeId === undefined
+      ? {}
+      : { volumeId: description.workspaceVolumeId }),
+    amiVersion: deps.imageVersion,
+    attempts,
+    cleanup: { ...dispatch.cleanup, volumeDeleted: false },
+  };
+  // A first machine moves the record to `provisioning`; a replacement is
+  // already there (T6) and only gains its machine.
+  const provisioned =
+    dispatch.status === "requested"
+      ? transitionDispatch(withMachine, "provision", at)
+      : { ...withMachine, updatedAt: at };
   await stores.dispatches.put(provisioned);
   return { kind: "provisioned", dispatch: provisioned };
 };

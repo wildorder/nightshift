@@ -27,7 +27,14 @@ import {
   startSidecarSync,
   syncToSidecar,
 } from "./sidecar.js";
-import { findLocalDisk, mountWorkspace, resolveDevice, resolveLocalDisk } from "./volume.js";
+import {
+  awaitDevice,
+  findLocalDisk,
+  mountWorkspace,
+  resolveDevice,
+  resolveLocalDisk,
+  VOLUME_WAIT_MS,
+} from "./volume.js";
 import { layoutOf, prepareWorkspace } from "./workspace.js";
 
 const f = createFixtures();
@@ -273,6 +280,34 @@ describe("the workspace volume (D-P10-15)", () => {
       owner: "engine",
     });
     expect(machine.commands.some((command) => command.startsWith("sudo mkfs"))).toBe(false);
+  });
+
+  it("waits for a volume still being attached, and gives up after the wait (T6)", async () => {
+    let probes = 0;
+    const late = fakeMachine({
+      exec: (file) => {
+        if (file === "test") {
+          probes += 1;
+          return probes < 3 ? fail() : ok();
+        }
+        if (file === "lsblk") return ok("/dev/nvme0n1 disk /\n");
+        return undefined;
+      },
+    });
+    expect(await awaitDevice(late, "/dev/xvdf")).toBe("/dev/xvdf");
+    expect(probes).toBe(3);
+    const never = fakeMachine({
+      exec: (file) => {
+        if (file === "test") return fail();
+        if (file === "lsblk") return ok("/dev/nvme0n1 disk /\n");
+        return undefined;
+      },
+    });
+    const started = never.now();
+    await expect(awaitDevice(never, "/dev/xvdf")).rejects.toThrow(
+      /could not find the workspace volume/,
+    );
+    expect(never.now() - started).toBeGreaterThanOrEqual(VOLUME_WAIT_MS);
   });
 
   it("finds the volume under its NVMe name when the attachment name is absent", async () => {
