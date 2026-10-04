@@ -81,7 +81,8 @@ const RUN_END_TIMEOUT_MS = (HEAVY ? 120 : 40) * 60_000;
  * end published; the record must show both attempts.
  */
 const KILL = process.env.NIGHTSHIFT_SMOKE_BENCH_KILL === "1";
-const KILL_AFTER_RUNNING_MS = 2 * 60_000;
+const KILL_AFTER_RUNNING_MS =
+  (Number.parseInt(process.env.NIGHTSHIFT_SMOKE_KILL_AFTER_SECONDS ?? "", 10) || 120) * 1000;
 /** SC-P10-08: the warm setup against the cold one. Printed always, asserted softly. */
 const WARM_RATIO_TARGET = 0.1;
 /** T4: an Anthropic API key or a Claude Code subscription token (`claude setup-token`) for the throwaway org. */
@@ -645,9 +646,10 @@ const runToTheEnd = async (
   run: RunMade,
   baseSha: string,
   outcome?: RunOutcome,
+  fault: boolean = KILL,
 ): Promise<Dispatch> => {
   const startedAt = Date.now();
-  if (KILL) {
+  if (fault) {
     const running = await awaitDispatch(run, "running", 20 * 60_000, (d) => d.status === "running");
     await sleep(KILL_AFTER_RUNNING_MS);
     const victim = running.instanceId;
@@ -671,7 +673,7 @@ const runToTheEnd = async (
     RUN_END_TIMEOUT_MS,
     (d) => d.status === "stopped",
   );
-  if (KILL) {
+  if (fault) {
     expect(
       stopped.generation,
       "the run did not move to a second generation",
@@ -905,10 +907,12 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     expect((await api.get(`${projectPath}/warm-cache`)).status).toBe(404);
     const cold = await runOnce("cold", baseSha, program);
     findings.cold = { secondsToReady: cold.secondsToReady, setupSeconds: cold.setupSeconds };
+    // The walk-away fixture (`npm run remote`): the cold run is also the one
+    // whose machine is killed, and it must still end published (T6, T8).
     const coldCleaned =
       ANTHROPIC_KEY === undefined
         ? await stopAndCleanUp("cold", cold.run)
-        : await runToTheEnd("cold", cold.run, baseSha, cold);
+        : await runToTheEnd("cold", cold.run, baseSha, cold, KILL);
     expect(
       coldCleaned.cleanup.snapshotId,
       "no snapshot was taken of the cold volume",

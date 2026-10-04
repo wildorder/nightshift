@@ -37,6 +37,7 @@
     "admin:user": "node scripts/admin-user.mjs",
     "image:build": "node scripts/image-build.mjs",
     "runner:boot": "node scripts/runner-boot.mjs",
+    "remote": "node scripts/remote.mjs",
     "verify": "npm run build && npm run typecheck && npm run lint && npm test && npm run synth && npm run check:sterility",
     "studio": "npm run dev --workspace @nightshift/studio",
     "local:e2e": "npm run build && vitest run --project test src/local"
