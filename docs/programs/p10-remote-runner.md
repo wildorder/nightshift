@@ -897,7 +897,28 @@ layer:
    resuming and failed to make its worktree: the lost root's came back from
    the sidecar at the same path.
 4. (1.0.21) The image built; the proof could not start: the operator's SSO
-   session had expired after about eight hours. Pending the next login.
+   session had expired after about eight hours.
+5. (1.0.21) Replacement up **112 s after the kill**, root resumed, the retried
+   worker redid the job, and then could not call `job.complete` for 45
+   minutes: T4's token directory, `/dev/shm/nightshift/<run>`, was 0700 and
+   the engine's, so the worker's own server could not read the token kept
+   fresh for it (`job.progress` still worked, through the engine's in-process
+   transport, which is why the symptom looked like a plane fault). The proof
+   then lost its own machine token after an hour. Both fixed (06c78a6): the
+   directory is 0711, and the proof renews its token on a 401.
+6. (1.0.22, 06c78a6) **Passed.** Killed two minutes into `running`;
+   replacement at generation 2 **81 s after the kill**; sidecar restored onto
+   the new disk in 62 s; warm setup 9.3 s; the root resumed, found the
+   interrupted job, and the run ended **succeeded and published** at the
+   second generation, 802 s after the first machine was dispatched; three
+   processes as worker users; cleanup clean. One edge the root reported and
+   worked around: `job_retry` on the interrupted job was refused because a
+   different orchestrator session had delegated it, so the root delegated the
+   strand again; nothing landed twice. A resuming root should be allowed to
+   retry what the lost one delegated. Open, small.
+
+**T6 is live-accepted** on image 1.0.22: a run survives the loss of its machine
+without a human, and the Studio sees every step.
 
 Also found on the way: a Lambda-only change must be deployed with the
 `runnerCommit` the current image was built from, or the recipe update fails
