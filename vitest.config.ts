@@ -4,7 +4,20 @@ export default defineConfig({
   test: {
     // One root project list so `npm test` at the root runs every suite.
     projects: [
-      "packages/*",
+      // The packages have no configuration of their own and inherit this one:
+      // a glob would give each of them vitest's defaults instead, among them a
+      // five-second test timeout that a real-git test under the full suite's
+      // load overran (2026-10-04). The apps carry their own configurations.
+      { extends: true, test: { name: "contracts", root: "packages/contracts" } },
+      { extends: true, test: { name: "core", root: "packages/core" } },
+      { extends: true, test: { name: "execution", root: "packages/execution" } },
+      { extends: true, test: { name: "harness", root: "packages/harness" } },
+      { extends: true, test: { name: "harness-agentcore", root: "packages/harness-agentcore" } },
+      { extends: true, test: { name: "harness-claude", root: "packages/harness-claude" } },
+      { extends: true, test: { name: "harness-codex", root: "packages/harness-codex" } },
+      { extends: true, test: { name: "persistence", root: "packages/persistence" } },
+      { extends: true, test: { name: "routing", root: "packages/routing" } },
+      { extends: true, test: { name: "verification", root: "packages/verification" } },
       "apps/api",
       "apps/cli",
       "apps/mcp",
