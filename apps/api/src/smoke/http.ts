@@ -49,12 +49,27 @@ const send = async (
   return { status: response.status, body: parsed };
 };
 
-export const smokeApiClient = (endpoint: string, token: string): SmokeApiClient => {
-  const bearer = `Bearer ${token}`;
+/**
+ * The client. With a `renew`, a 401 is answered by fetching a fresh token once
+ * and repeating the request: a machine token lives an hour and a live proof
+ * may run longer.
+ */
+export const smokeApiClient = (
+  endpoint: string,
+  token: string,
+  renew?: () => Promise<string>,
+): SmokeApiClient => {
+  let bearer = `Bearer ${token}`;
+  const call = async (method: string, path: string, body?: unknown): Promise<ApiResult> => {
+    const first = await send(endpoint, bearer, method, path, body);
+    if (first.status !== 401 || renew === undefined) return first;
+    bearer = `Bearer ${await renew()}`;
+    return send(endpoint, bearer, method, path, body);
+  };
   return {
-    get: (path) => send(endpoint, bearer, "GET", path),
-    put: (path, body) => send(endpoint, bearer, "PUT", path, body),
-    post: (path, body) => send(endpoint, bearer, "POST", path, body),
+    get: (path) => call("GET", path),
+    put: (path, body) => call("PUT", path, body),
+    post: (path, body) => call("POST", path, body),
     withAuthorization: (authorization, method, path) => send(endpoint, authorization, method, path),
   };
 };

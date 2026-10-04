@@ -24,14 +24,20 @@ import type { RunnerContext } from "./main.js";
 export const workerCredentialRoot = (runId: string): string =>
   join(tokenDirectory(runId), "workers");
 
-/** Where the engine's token lives: RAM, this run's directory, 0700. */
+/**
+ * Where the engine's token lives: RAM, this run's directory. The directory is
+ * 0711, traversable but not listable, because the workers' own token
+ * directories hang under it (T4) and a worker must reach its own; the engine's
+ * file inside stays 0600 and the engine's.
+ */
 export const tokenDirectory = (runId: string): string => `/dev/shm/nightshift/${runId}`;
 export const tokenFile = (runId: string): string => join(tokenDirectory(runId), "engine-token");
 
 /** Writes the token where the root's processes read it. Called at start and on every renewal. */
 export const installTokenFile = async (runId: string, token: string): Promise<void> => {
   const dir = tokenDirectory(runId);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await mkdir(dir, { recursive: true, mode: 0o711 });
+  await chmod(dir, 0o711);
   const path = tokenFile(runId);
   await writeFile(path, `${token}\n`, { mode: 0o600 });
   await chmod(path, 0o600);

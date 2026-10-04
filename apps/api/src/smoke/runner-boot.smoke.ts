@@ -136,7 +136,7 @@ const endpoint = context.apiCustomEndpoint;
 if (endpoint === undefined) {
   throw new Error("the API stack is zone-only; the runner needs the stable hostname as its issuer");
 }
-const api = smokeApiClient(endpoint, token);
+const api = smokeApiClient(endpoint, token, () => fetchMachineToken(context));
 
 const JOURNAL = "journalctl -u nightshift-runner --no-pager";
 

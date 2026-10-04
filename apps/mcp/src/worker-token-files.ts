@@ -25,6 +25,16 @@ export const createWorkerTokenFiles = (
   place: async (scope: RunScope, agentId, token) => {
     const dir = workerTokenDirectory(scope.runId, agentId);
     await mkdir(dir, { recursive: true, mode: 0o700 });
+    // Every directory on the way is traversable by the worker; only its own is
+    // its own. The run's directory may predate this, made 0700 by an older
+    // engine, so it is set here too. (The first live kill proof on T4 found a
+    // worker unable to read its token for 45 minutes: this.)
+    for (const parent of [
+      tokenDirectory(scope.runId),
+      join(tokenDirectory(scope.runId), "agents"),
+    ]) {
+      await chmod(parent, 0o711).catch(() => undefined);
+    }
     const path = workerTokenFile(scope.runId, agentId);
     await writeFile(path, `${token}\n`, { mode: 0o600 });
     await chmod(path, 0o600);
