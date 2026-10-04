@@ -35,6 +35,7 @@ import type { Harness, McpLaunch, RunAs } from "@nightshift/harness";
 import type { GitRunner } from "./git/index.js";
 import type { EventOutbox } from "./outbox.js";
 import type { PublishLanding } from "./publish.js";
+import type { WorkerTokenFiles } from "./worker-tokens.js";
 
 /**
  * What the worker's MCP server must be told about itself (P3 §4.2, §4.5).
@@ -67,6 +68,11 @@ export interface WorkerLaunchIdentity {
    * written to disk.
    */
   readonly executionToken: string;
+  /**
+   * P10 (T4): where the worker's server reads its token from instead, a file
+   * the engine rewrites before the token expires. Absent on a laptop.
+   */
+  readonly executionTokenFile?: string;
 }
 
 /** What the worker half needs. A narrower set than the runner's. */
@@ -136,6 +142,12 @@ export interface ExecutionEnvironment {
     readonly agentId: string;
     readonly role: string;
   }) => RunAs | undefined;
+  /**
+   * P10 (T4): on a machine, a worker's token lives in a file the engine keeps
+   * fresh (`worker-tokens.ts`); absent, the token travels in the launch and
+   * lasts as long as it lasts.
+   */
+  readonly workerTokens?: WorkerTokenFiles;
 }
 
 /**

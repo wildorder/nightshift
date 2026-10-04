@@ -17,7 +17,7 @@ import {
   createWorkerLaunchForTest,
   harnessModuleSpecifier,
 } from "./compose.js";
-import { EXECUTION_TOKEN_ENV, WORKER_IDENTITY_ENV } from "./role.js";
+import { EXECUTION_TOKEN_ENV, EXECUTION_TOKEN_FILE_ENV, WORKER_IDENTITY_ENV } from "./role.js";
 
 describe("harnessModuleSpecifier", () => {
   it("turns a Windows absolute path into a file:// URL", () => {
@@ -78,6 +78,21 @@ describe("the worker's launch environment", () => {
     const launch = launchWith({});
     expect(launch.env[EXECUTION_TOKEN_ENV]).toBe(identity.executionToken);
     expect(launch.env[API_ENDPOINT_ENV]).toBe("https://api.dev.nightshift.wildorder.dev");
+  });
+
+  it("carries the token's file instead of the token when the engine keeps one (P10, T4)", () => {
+    const launch = createWorkerLaunchForTest(
+      {},
+      "https://api.dev.nightshift.wildorder.dev",
+    )({
+      ...identity,
+      executionTokenFile: "/dev/shm/nightshift/run_x/agents/agent_y/token",
+    });
+    expect(launch.env[EXECUTION_TOKEN_FILE_ENV]).toBe(
+      "/dev/shm/nightshift/run_x/agents/agent_y/token",
+    );
+    expect(launch.env[EXECUTION_TOKEN_ENV]).toBeUndefined();
+    expect(Object.values(launch.env)).not.toContain(identity.executionToken);
   });
 
   it("never carries the config directory, whatever the orchestrator holds", () => {

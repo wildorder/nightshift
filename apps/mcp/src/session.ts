@@ -122,6 +122,8 @@ export const buildEnvironment = (
   examination: examinationServices(run, program, (identity) => runtime.workerLaunch(identity)),
   // P10 (D-P10-25): on a machine, every job's agent runs as a worker user.
   ...(runtime.runAs === undefined ? {} : { runAs: runtime.runAs }),
+  // P10 (T4): on a machine, a worker's token is a file the engine keeps fresh.
+  ...(runtime.workerTokens === undefined ? {} : { workerTokens: runtime.workerTokens }),
   // P10 (D-P10-22): on a machine, every landing raises a publication intent.
   ...(runtime.publication === undefined
     ? {}

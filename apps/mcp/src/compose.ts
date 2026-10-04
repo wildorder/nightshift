@@ -63,9 +63,16 @@ import {
   staticTokenProvider,
   type Transport,
 } from "@nightshift/persistence/http";
-import { type Env, EXECUTION_TOKEN_ENV, type Role, workerLaunchEnv } from "./role.js";
+import {
+  type Env,
+  EXECUTION_TOKEN_ENV,
+  EXECUTION_TOKEN_FILE_ENV,
+  type Role,
+  workerLaunchEnv,
+} from "./role.js";
 import { createWorkerUsers } from "./run-as.js";
 import type { PlaneFactory } from "./runner/plane.js";
+import { createWorkerTokenFiles } from "./worker-token-files.js";
 
 /**
  * The runner's view of the control plane (P10, T3), over the same HTTP adapter
@@ -157,6 +164,8 @@ export interface Runtime {
   readonly publication?: (scope: RunScope) => PublishLanding;
   /** P10 (D-P10-25): who an agent runs as on a machine; absent on a laptop. */
   readonly runAs?: ExecutionEnvironment["runAs"];
+  /** P10 (T4): where a worker's token file lives on a machine; absent on a laptop. */
+  readonly workerTokens?: ExecutionEnvironment["workerTokens"];
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
   /**
@@ -192,6 +201,18 @@ export class MissingExecutionTokenError extends Error {
 const createWorkerTransport = (env: Env): { transport: Transport; endpoint: string } => {
   const endpoint = env[API_ENDPOINT_ENV];
   const token = env[EXECUTION_TOKEN_ENV];
+  const tokenFile = env[EXECUTION_TOKEN_FILE_ENV];
+  // P10 (T4): on a machine the token is a file the engine keeps fresh, read on
+  // every request so a renewal needs no restart.
+  if (endpoint !== undefined && endpoint !== "" && tokenFile !== undefined && tokenFile !== "") {
+    return {
+      endpoint,
+      transport: createFetchTransport({
+        endpoint,
+        tokens: { idToken: async () => (await readFile(tokenFile, "utf8")).trim() },
+      }),
+    };
+  }
   const missing = [
     ...(endpoint === undefined || endpoint === "" ? [API_ENDPOINT_ENV] : []),
     ...(token === undefined || token === "" ? [EXECUTION_TOKEN_ENV] : []),
@@ -404,9 +425,13 @@ export const createWorkerLaunchForTest = createWorkerLaunch;
 export const createWorkerEnvironment =
   (endpoint: string) =>
   (identity: WorkerLaunchIdentity): WorkerEnvironment => {
+    const file = identity.executionTokenFile;
     const transport = createFetchTransport({
       endpoint,
-      tokens: staticTokenProvider(identity.executionToken),
+      tokens:
+        file === undefined
+          ? staticTokenProvider(identity.executionToken)
+          : { idToken: async () => (await readFile(file, "utf8")).trim() },
     });
     const stores = createHttpStores({ transport });
     return {
@@ -480,6 +505,7 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     endpoint,
     ...(publication === undefined ? {} : { publication }),
     ...(runAs === undefined ? {} : { runAs }),
+    ...(runAs === undefined ? {} : { workerTokens: createWorkerTokenFiles(runAs) }),
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
     prerequisites: createHttpPlanning({ transport }),

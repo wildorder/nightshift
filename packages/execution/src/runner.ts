@@ -101,6 +101,7 @@ import { prepareCheckout } from "./setup.js";
 import { stampSettledDecisions } from "./stamp.js";
 import { verifyNode } from "./verify.js";
 import { createWorkerTools } from "./worker.js";
+import { startTokenRenewal, type TokenRenewal } from "./worker-tokens.js";
 
 export interface RunJobInput {
   readonly session: RunSession;
@@ -148,6 +149,9 @@ export type Reroute = (failed: RouteTarget) => RouteChoice | undefined;
 interface AttemptIdentity {
   readonly agent: Agent;
   readonly executionToken: string;
+  /** P10 (T4): the file the worker reads its token from on a machine, kept fresh. */
+  readonly executionTokenFile?: string;
+  readonly renewal?: TokenRenewal;
   readonly routingDecision: RoutingDecision;
 }
 
@@ -600,7 +604,34 @@ export const startJob = async (
     // Minted the moment the identity exists, and before anything the worker could
     // act with. Held in this frame and handed to the launch; never stored, never
     // logged, and never in an event payload.
-    const { token: executionToken } = await environment.tokens.mint(session.scope, agentId);
+    const minted = await environment.tokens.mint(session.scope, agentId);
+    const executionToken = minted.token;
+    // On a machine the token goes in a file the worker's server reads on every
+    // request, and the engine rewrites it before it expires (P10, T4).
+    const executionTokenFile = await environment.workerTokens?.place(
+      session.scope,
+      agentId,
+      executionToken,
+    );
+    const renewal =
+      environment.workerTokens === undefined
+        ? undefined
+        : startTokenRenewal({
+            scope: session.scope,
+            agentId,
+            minted,
+            tokens: environment.tokens,
+            files: environment.workerTokens,
+            now: () => clock.now(),
+            log: (line) =>
+              outbox.emit({
+                type: "node.progress",
+                source: "control-plane",
+                payload: { message: line },
+                executionNodeId: nodeId,
+                agentId,
+              }),
+          });
 
     // A retry, or a fallback, is a new attempt at the same node (D-P6-06, D-P8-06):
     // its decision says which it is and links the one before, so the record
@@ -638,7 +669,13 @@ export const startJob = async (
       },
       executionNodeId: nodeId,
     });
-    return { agent, executionToken, routingDecision };
+    return {
+      agent,
+      executionToken,
+      ...(executionTokenFile === undefined ? {} : { executionTokenFile }),
+      ...(renewal === undefined ? {} : { renewal }),
+      routingDecision,
+    };
   }
 
   /** The agent started and its process launched, on the worktree already prepared. */
@@ -676,6 +713,9 @@ export const startJob = async (
       worktree,
       role: orchestrates ? "sub-orchestrator" : "worker",
       executionToken,
+      ...(identity.executionTokenFile === undefined
+        ? {}
+        : { executionTokenFile: identity.executionTokenFile }),
     };
     // The function transport is a worker's four operations. A sub-orchestrator's
     // surface is a different one, and it reaches it through its MCP launch, as
@@ -729,6 +769,11 @@ export const startJob = async (
       // The node is ended by `failStart`, like every other failure to launch.
       throw new Error(reason, { cause: error });
     }
+    // The token's renewals end with the process; the file goes with them (T4).
+    void handle.exit.finally(() => {
+      identity.renewal?.stop();
+      void environment.workerTokens?.remove(session.scope, agentId);
+    });
     return { agentId, handle, sink, routingDecision, startedAtMs: clock.now() };
   }
 

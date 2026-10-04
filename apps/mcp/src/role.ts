@@ -52,6 +52,8 @@ export const ROLE_ENV = "NIGHTSHIFT_ROLE";
  * expires, and Nightshift has no way to revoke one.
  */
 export const EXECUTION_TOKEN_ENV = "NIGHTSHIFT_EXECUTION_TOKEN";
+/** P10 (T4): a file the worker's server reads its token from on every request, kept fresh by the engine. */
+export const EXECUTION_TOKEN_FILE_ENV = "NIGHTSHIFT_EXECUTION_TOKEN_FILE";
 
 /**
  * `sub-orchestrator` is P6's (D-P6-03): a sub-program's orchestrator. Like a
@@ -149,13 +151,18 @@ export const workerLaunchEnv = (identity: {
   readonly jobContractId: string;
   readonly worktree: string;
   readonly executionToken: string;
+  readonly executionTokenFile?: string;
   readonly role?: "worker" | "sub-orchestrator" | "examiner" | "arbiter";
   /** P8: an examiner's or arbiter's frame. Never a credential. */
   readonly extraEnv?: Readonly<Record<string, string>>;
 }): Record<string, string> => ({
   ...identity.extraEnv,
   [ROLE_ENV]: identity.role ?? "worker",
-  [EXECUTION_TOKEN_ENV]: identity.executionToken,
+  // The file when there is one: a token fixed in the environment would outlive
+  // its own expiry on a long job (P10, T4).
+  ...(identity.executionTokenFile === undefined
+    ? { [EXECUTION_TOKEN_ENV]: identity.executionToken }
+    : { [EXECUTION_TOKEN_FILE_ENV]: identity.executionTokenFile }),
   [WORKER_IDENTITY_ENV.projectId]: identity.projectId,
   [WORKER_IDENTITY_ENV.programId]: identity.programId,
   [WORKER_IDENTITY_ENV.runId]: identity.runId,
