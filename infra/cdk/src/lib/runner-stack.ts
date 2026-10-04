@@ -517,6 +517,17 @@ export class NightshiftRunnerStack extends Stack {
           `arn:${Aws.PARTITION}:ec2:${Aws.REGION}::snapshot/*`,
         ],
       }),
+      // What RunInstances makes it tags, and a first machine's volume it creates:
+      // the same grant the dispatch holds. A replacement's launch failed on
+      // `ec2:CreateTags` without it (T6, live, 2026-10-04).
+      new iam.PolicyStatement({
+        actions: ["ec2:CreateVolume", "ec2:CreateTags"],
+        resources: [
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:volume/*`,
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:instance/*`,
+          `arn:${Aws.PARTITION}:ec2:${Aws.REGION}::snapshot/*`,
+        ],
+      }),
       new iam.PolicyStatement({
         actions: ["ec2:DescribeImages"],
         resources: ["*"],
