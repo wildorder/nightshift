@@ -234,6 +234,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       context: { agentId: input.agent.agentId },
       finishingTools: finishingToolsFor(input.mcp?.name),
       onActivity: closer.onActivity,
+      ...(input.runAs === undefined ? {} : { started: { user: input.runAs.user } }),
     });
 
     const env = sanitizeClaudeEnvironment({ platform, parentEnv, extra: HEADLESS_CLAUDE_ENV });

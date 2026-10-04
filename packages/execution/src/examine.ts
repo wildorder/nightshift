@@ -779,6 +779,9 @@ const runHelper = async (
 ): Promise<HarnessExit> => {
   const transcript = environment.paths.transcript(input.session.scope.runId, helper.agent.agentId);
   await mkdir(dirname(transcript), { recursive: true });
+  // The helper's checkout is its own from here on (D-P10-25).
+  const { runAs } = runAsOf(environment, helper.agent);
+  if (runAs !== undefined) await runAs.grant(launch.worktree);
   try {
     const handle = await environment.harness.start({
       agent: helper.agent,

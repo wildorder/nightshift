@@ -89,6 +89,8 @@ export interface StreamInterpreterInput {
   readonly clock: Clock;
   /** Extra fields merged into every payload. */
   readonly context?: Readonly<Record<string, unknown>>;
+  /** Merged into `agent.started` alone: the operating-system user the agent runs as (D-P10-25). */
+  readonly started?: Readonly<Record<string, unknown>>;
 }
 
 export interface StreamInterpreter {
@@ -165,7 +167,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   const ensureStarted = (payload: Readonly<Record<string, unknown>> = {}): void => {
     if (startEmitted) return;
     startEmitted = true;
-    emit("agent.started", { harness: "codex", ...payload });
+    emit("agent.started", { harness: "codex", ...(input.started ?? {}), ...payload });
   };
 
   /** The tool an item stands for, and a bounded line about it. */

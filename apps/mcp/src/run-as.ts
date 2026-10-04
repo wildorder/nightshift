@@ -3,9 +3,9 @@
  *
  * `engine` runs the engine; each job's agent runs as one of `worker-1` …
  * `worker-N`, which the image created, in the `nightshift` group with
- * `engine`. The users are handed out round-robin: N is at least the program's
- * concurrency ceiling, so two live jobs never share one, and a user is reused
- * only after its job is long gone. Granting a path means `chown` to the user,
+ * `engine`. The users are handed out round-robin, one per agent for as long as
+ * the engine runs: N is at least the program's concurrency ceiling, so two live
+ * jobs never share one, and a user is reused only after its job is long gone. Granting a path means `chown` to the user,
  * which `engine` may do as root (the image's sudoers rule); signalling means
  * `kill` as the user, since `engine` may not signal another user's processes.
  * A credential a worker needs as a file (Codex's login) is a copy under
@@ -45,8 +45,13 @@ export const createWorkerUsers = (
 ): ((agent: { readonly agentId: string; readonly role: string }) => RunAs | undefined) => {
   const run = options.exec ?? sudo;
   let next = 0;
-  return () => {
+  // An agent keeps its user: the engine asks again when it verifies the
+  // agent's worktree as its owner (D-P10-25).
+  const assigned = new Map<string, RunAs>();
+  return (agent) => {
     if (options.count <= 0) return undefined;
+    const kept = assigned.get(agent.agentId);
+    if (kept !== undefined) return kept;
     const user = workerUserName(next % options.count);
     next += 1;
     const env: Record<string, string> = {};
@@ -56,7 +61,7 @@ export const createWorkerUsers = (
         if (existsSync(directory)) env[variable] = directory;
       }
     }
-    return {
+    const runAs: RunAs = {
       user,
       ...(Object.keys(env).length === 0 ? {} : { env }),
       grant: (path) => run("chown", ["-R", `${user}:${WORKER_GROUP}`, path]),
@@ -65,5 +70,7 @@ export const createWorkerUsers = (
         run("sudo", ["-u", user, "kill", `-${signal}`, "--", `-${pid}`]).catch(() => undefined);
       },
     };
+    assigned.set(agent.agentId, runAs);
+    return runAs;
   };
 };

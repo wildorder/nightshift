@@ -20,17 +20,19 @@ describe("the worker users (D-P10-25)", () => {
       credentialRoot: root,
       exec: async (file, args) => void ran.push([file, ...args]),
     });
-    const agent = { agentId: "agent_x", role: "worker" };
-    const first = runAs(agent);
-    const second = runAs(agent);
-    const third = runAs(agent);
-    const fourth = runAs(agent);
+    const agentOf = (id: string) => ({ agentId: id, role: "worker" });
+    const first = runAs(agentOf("agent_1"));
+    const second = runAs(agentOf("agent_2"));
+    const third = runAs(agentOf("agent_3"));
+    const fourth = runAs(agentOf("agent_4"));
     expect([first?.user, second?.user, third?.user, fourth?.user]).toEqual([
       "worker-1",
       "worker-2",
       "worker-3",
       "worker-1",
     ]);
+    // The same agent keeps its user: the engine asks again to verify its worktree.
+    expect(runAs(agentOf("agent_2"))).toBe(second);
     expect(first?.env).toBeUndefined();
     expect(second?.env).toEqual({ CODEX_HOME: join(root, "worker-2", "CODEX_HOME") });
     return second?.grant("/tmp/cfg").then(() => {

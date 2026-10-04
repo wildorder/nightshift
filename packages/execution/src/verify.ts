@@ -59,7 +59,7 @@ import {
   type RunSession,
 } from "./environment.js";
 import { cleanCheckout } from "./git/index.js";
-import { recordArtifact } from "./runner.js";
+import { recordArtifact, stepsAs } from "./runner.js";
 
 export interface VerifyInput {
   readonly session: RunSession;
@@ -196,12 +196,14 @@ export const verifyNode = async (
   // Setup first: the checkout holds only what is committed and what an earlier
   // setup left, and the commit may have changed what setup produces. When setup
   // fails, nothing is checked, and the record says so with setup's own output.
+  // As the worker the worktree belongs to (D-P10-25), never as the engine.
   const checkout = await runCheckoutSteps({
     setup: input.session.program.setup ?? [],
     steps: runnable,
     cwd: input.worktree,
     reference: input.session.repoPath,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+    ...stepsAs(environment, { agentId: input.agentId, role: "worker" }),
   });
   const results = checkout.checks;
 

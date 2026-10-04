@@ -844,5 +844,7 @@ describe("running as another user (P10, D-P10-25)", () => {
     expect(call?.options.cwd).toBe(input.worktree);
     children[0]?.close(0);
     await handle.exit;
+    const started = events.find((event) => event.type === "agent.started");
+    expect(started?.payload).toMatchObject({ user: "worker-2" });
   });
 });

@@ -131,6 +131,26 @@ describe("runVerificationSteps, with an injected spawn", () => {
     expect(calls[0]?.options.windowsVerbatimArguments).toBe(process.platform === "win32");
   });
 
+  it("runs a step through the wrapper it is given, with the wrapper's file, arguments and environment", async () => {
+    const { calls, spawn } = fakeSpawn((child) => child.close(0));
+    await runVerificationSteps({
+      steps: [step("test", "npm test")],
+      cwd: CWD,
+      timeoutMs: 1_000,
+      spawn,
+      as: (invocation) => ({
+        file: "sudo",
+        args: ["-n", "-u", "worker-3", invocation.file, ...invocation.args],
+        env: { PATH: invocation.env.PATH ?? "" },
+      }),
+    });
+    expect(calls[0]?.file).toBe("sudo");
+    expect(calls[0]?.args.slice(0, 3)).toEqual(["-n", "-u", "worker-3"]);
+    expect(calls[0]?.args).toContain(expectedShellFile);
+    expect(calls[0]?.args.at(-1)).toContain("npm test");
+    expect(Object.keys(calls[0]?.options.env ?? {})).toEqual(["PATH"]);
+  });
+
   it("does not pass a variable planted in process.env to the step", async () => {
     process.env.NIGHTSHIFT_TEST_SECRET = "must-not-leak";
     try {

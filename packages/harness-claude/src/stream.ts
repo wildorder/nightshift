@@ -305,6 +305,8 @@ export interface StreamInterpreterInput {
   readonly finishingTools?: ReadonlySet<string>;
   /** Told every time the session's activity changes. Must never throw. */
   readonly onActivity?: (activity: SessionActivity) => void;
+  /** Merged into `agent.started` alone: the operating-system user the agent runs as (D-P10-25). */
+  readonly started?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -407,7 +409,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   const emitStarted = (payload: Readonly<Record<string, unknown>>): void => {
     if (startEmitted) return;
     startEmitted = true;
-    emit("agent.started", payload);
+    emit("agent.started", { ...(input.started ?? {}), ...payload });
   };
 
   const handleInit = (frame: Frame): void => {

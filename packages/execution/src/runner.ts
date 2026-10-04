@@ -60,6 +60,7 @@ import {
   type AgentTask,
   agentStatusForExit,
   type CarriedOverWork,
+  commandAs,
   describeExit,
   type HarnessExit,
   type HarnessHandle,
@@ -69,6 +70,7 @@ import {
   millis,
   refusingWorkerTools,
 } from "@nightshift/harness";
+import type { StepInvocation } from "@nightshift/verification";
 import {
   DEFAULT_CANCEL_GRACE_MS,
   type ExecutionEnvironment,
@@ -694,6 +696,10 @@ export const startJob = async (
           ids,
         );
 
+    // The worktree is the worker's from here on (D-P10-25): one owner for its
+    // whole life, the engine reading but never again writing as itself.
+    const { runAs } = runAsOf(environment, startedAgent);
+    if (runAs !== undefined) await runAs.grant(worktree);
     let handle: HarnessHandle;
     try {
       handle = await environment.harness.start({
@@ -1297,6 +1303,25 @@ const uploadTranscript = async (
 };
 
 /** The user an agent runs as on a machine (D-P10-25), when the composition names one. */
+/**
+ * The program's setup and verification steps, run in a checkout as the user
+ * the checkout was handed to (D-P10-25): the same `sudo` line the agent's own
+ * process runs under. Nothing to wrap when there is no such user.
+ */
+export const stepsAs = (
+  environment: Pick<ExecutionEnvironment, "runAs">,
+  agent: { readonly agentId: string; readonly role: string },
+): { readonly as?: (invocation: StepInvocation) => StepInvocation } => {
+  const runAs = environment.runAs?.(agent);
+  if (runAs === undefined) return {};
+  return {
+    as: (invocation) => {
+      const command = commandAs(runAs, invocation.file, invocation.args, invocation.env);
+      return { file: command.file, args: command.args, env: command.env };
+    },
+  };
+};
+
 export const runAsOf = (
   environment: Pick<ExecutionEnvironment, "runAs">,
   agent: { readonly agentId: string; readonly role: string },

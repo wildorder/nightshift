@@ -163,6 +163,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       sink: input.sink,
       clock,
       context: { agentId: input.agent.agentId },
+      ...(input.runAs === undefined ? {} : { started: { user: input.runAs.user } }),
     });
 
     const state: RunState = {

@@ -45,11 +45,24 @@ export interface StepChunk {
 /** Receives output as it arrives, for later streaming. Must never throw. */
 export type StepSink = (chunk: StepChunk) => void;
 
+/** What a step spawns: the shell, its arguments, and the environment it gets. */
+export interface StepInvocation {
+  readonly file: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+}
+
 export interface RunVerificationInput {
   readonly steps: readonly VerificationStep[];
   readonly cwd: string;
   /** Added to the sanitized base environment, never replacing it. */
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Wraps what each step would spawn, so it runs as the user who owns the
+   * checkout (P10, D-P10-25): the engine never runs a program's commands as
+   * itself in a tree it handed to a worker. Absent, the step runs as is.
+   */
+  readonly as?: (invocation: StepInvocation) => StepInvocation;
   readonly timeoutMs: number;
   /** Injectable process spawning, so a test needs no real child. */
   readonly spawn?: SpawnLike;
@@ -103,6 +116,7 @@ interface StepRunInput {
   readonly sink: StepSink | undefined;
   readonly clock: Clock;
   readonly platform: NodeJS.Platform;
+  readonly as?: (invocation: StepInvocation) => StepInvocation;
 }
 
 const runStep = (input: StepRunInput): Promise<StepResult> =>
@@ -146,12 +160,16 @@ const runStep = (input: StepRunInput): Promise<StepResult> =>
       });
     };
 
-    const invocation = shellInvocation(input.platform, step.command);
+    const shell = shellInvocation(input.platform, step.command);
+    const invocation: StepInvocation =
+      input.as === undefined
+        ? { file: shell.file, args: shell.args, env: input.env }
+        : input.as({ file: shell.file, args: shell.args, env: input.env });
     let child: SpawnedChild;
     try {
       child = input.spawn(invocation.file, invocation.args, {
         cwd: input.cwd,
-        env: input.env,
+        env: invocation.env,
         // POSIX: its own process group, so the timeout can kill the tree.
         detached: input.platform !== "win32",
         windowsHide: true,
@@ -223,6 +241,7 @@ export const runVerificationSteps = async (
         sink: input.sink,
         clock,
         platform,
+        ...(input.as === undefined ? {} : { as: input.as }),
       }),
     );
   }

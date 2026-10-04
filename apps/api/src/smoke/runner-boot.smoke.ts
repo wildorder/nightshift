@@ -150,12 +150,6 @@ const journal = async (
   );
 };
 
-/** How many journal lines match, counted on the machine. */
-const journalCount = async (instanceId: string, pattern: string): Promise<number> => {
-  const answer = await onMachine(instanceId, `${JOURNAL} -o cat | grep -c -- '${pattern}'`);
-  return Number.parseInt(answer.trim(), 10) || 0;
-};
-
 /** The branch's head at GitHub, which is what the dispatch binds (D-P10-02). */
 const remoteHead = (): string => {
   const listed = execFileSync(
@@ -657,10 +651,14 @@ const runToTheEnd = async (
     const lines = (await journal(stopped.instanceId))
       .split("\n")
       .filter((line) => line.trim() !== "");
-    // D-P10-25: every job's agent ran as a worker user. The sudo log says so,
-    // one line per process the engine started as `worker-N`; counted on the
-    // machine, since the journal is longer than SSM returns.
-    const asWorkers = await journalCount(stopped.instanceId, "USER=worker-");
+    // D-P10-25: every job's agent ran as a worker user. Each agent's start
+    // event says which user it ran as; the record, not the machine.
+    const startedEvents = (await api.get(`${run.path}/events?limit=500`)).body as {
+      items?: { type: string; payload?: { user?: string } }[];
+    };
+    const asWorkers = (startedEvents.items ?? []).filter(
+      (event) => event.type === "agent.started" && /^worker-\d+$/.test(event.payload?.user ?? ""),
+    ).length;
     findings.processesAsWorkers = asWorkers;
     say(`${name}: ${asWorkers} processes started as worker users`);
     expect(asWorkers, "no process ran as a worker user").toBeGreaterThan(0);

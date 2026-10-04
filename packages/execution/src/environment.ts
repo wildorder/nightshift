@@ -177,6 +177,7 @@ export type LandingEnvironment = Pick<
   | "publish"
   | "verificationTimeoutMs"
   | "prerequisites"
+  | "runAs"
 >;
 
 /** Reads the program's prerequisites. Satisfied by `persistence/http`'s planning client. */
