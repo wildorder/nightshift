@@ -713,10 +713,15 @@ m7g.xlarge, m7g.2xlarge, c8gd.2xlarge, c8gd.4xlarge, c8id.2xlarge,
 c8id.4xlarge. The first heavy run taught the program two things: the
 monorepo's typecheck resolves workspaces through their `dist`, so setup must
 build (`npm run build` after `npm ci`); and `test/src/local/local-e2e.test.ts`
-starts a nightshift inside this one and inherits the runner's environment
-(pinned run, token file), so it is excluded from the heavy verification. An
-open edge: the pass-through of `NIGHTSHIFT_*` into a worker's environment
-reaches anything the worker spawns.
+starts a nightshift inside this one and failed once under the engine, so it
+was excluded from the heavy verification on a guess that it inherited the
+runner's environment. **Checked 2026-10-04: it does not.** Every environment a
+worker's process, a verification step or the test's own nested nightshift
+gets is an allowlist (`harness-claude` and `harness-codex` `environment.ts`,
+`verification/environment.ts`, the test's own `sanitizeEnvironment`), and no
+`NIGHTSHIFT_*` name is on any of them; the worker's MCP server alone receives
+its identity, in its own launch. The test's one failure was its own; it passed
+under the engine in every later heavy run (198 files).
 
 **Heavy results (image 1.0.15, one cold run per type, 2026-10-02).** The
 number that answers the question is the test suite's own clock: vitest's
@@ -983,10 +988,11 @@ movement are covered by the publisher's tests; cancellation during recovery
 is not specifically covered. SC-P10-13: `remote resume` exists in the CLI and
 the API; it has not been exercised live.
 
-**Open, for after P10.** A resuming root's `job_retry` of the interrupted job
-is refused for the lost session's delegation (it delegates anew, correctly);
-the pass-through of `NIGHTSHIFT_*` into a worker's environment reaches what
-the worker spawns; the warm cache is now the sidecar's snapshot and worth
+**Open, for after P10.** (A resuming root's `job_retry` of the lost machine's
+job was refused because the engine only knew the jobs it delegated itself;
+fixed 2026-10-04: the engine rebuilds the submission from the record. The
+supposed leak of `NIGHTSHIFT_*` into workers' children was checked and is not
+one; see the heavy benchmark section.) The warm cache is now the sidecar's snapshot and worth
 little; the right-sizing thresholds were set for a Graviton ladder with memory
 steps and should be re-read against the c8id ladder once real runs have
 utilization; T7's surfaces; the third harness.

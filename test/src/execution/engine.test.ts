@@ -475,6 +475,46 @@ describe("the merge queue (D-P6-05, D-P6-06)", () => {
     expect(await r.engine.retry(a.jobId)).toBe(false);
   });
 
+  it("lets an engine that did not delegate a job retry it from the record, as a replacement machine's root must (P10, T6)", async () => {
+    const rewrite =
+      (body: string): Work =>
+      async ({ worktree }) =>
+        edit(
+          worktree,
+          "src/math.js",
+          () => `export const sum = (xs) => ${body};
+`,
+        );
+    const r = await rig(
+      {
+        loop: rewrite("xs.reduce((t, x) => t + x, 0)"),
+        strict: rewrite("xs.reduce((total, value) => total + Number(value), 0)"),
+      },
+      { gated: true },
+    );
+    const a = await r.submit("loop rewrite of sum");
+    const b = await r.submit("strict rewrite of sum");
+    await r.until(a.nodeId, (status) => status === "implemented");
+    await r.until(b.nodeId, (status) => status === "implemented");
+    await r.releaseQueue(2);
+    expect(await r.until(a.nodeId, settled)).toBe("integrated");
+    expect(await r.until(b.nodeId, settled)).toBe("failed");
+    await r.queue.idle();
+
+    // A second engine over the same run, knowing nothing of what the first delegated.
+    const resumed = createEngine({
+      environment: r.environment,
+      session: r.world.session,
+      mcp,
+      mergeQueue: r.queue,
+    });
+    expect(await resumed.retry(b.jobId)).toBe(true);
+    expect(await r.until(b.nodeId, settled)).toBe("integrated");
+    // A job no engine ever recorded is still refused.
+    expect(await resumed.retry("job_00000000000000000000000000" as never)).toBe(false);
+    await resumed.close("the test is over");
+  });
+
   it("catches two jobs that are each green alone and broken together", async () => {
     const rename: Work = async ({ worktree }) => {
       await edit(worktree, "src/math.js", (text) =>

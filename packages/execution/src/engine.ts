@@ -608,10 +608,56 @@ export const createEngine = (options: EngineOptions): Engine => {
     );
 
   /** A job again, as a fix or a ruling carried out when its examination says so (D-P8-07, D-P8-13). */
+  /**
+   * A job this engine did not delegate, from the record (P10, T6): the
+   * engine that did is gone with its machine, and the resuming root asks for
+   * the retry. The node names the job; the last routing decision names the
+   * route it had; the pins are gone with the delegator, which is honest.
+   */
+  const recoverSubmission = async (
+    jobContractId: JobContractId,
+  ): Promise<{ submission: Submission; nodeId: ExecutionNodeId } | undefined> => {
+    const job = await stores.jobContracts.get(session.scope, jobContractId);
+    if (job === undefined) return undefined;
+    const node = (await stores.executionNodes.listByRun(session.scope, { limit: 500 })).items.find(
+      (candidate) => candidate.jobContractId === jobContractId,
+    );
+    if (node === undefined) return undefined;
+    const last = attemptsOf(
+      await stores.routingDecisions.listByNode(session.scope, node.executionNodeId),
+    ).at(-1);
+    if (last === undefined) return undefined;
+    const submission: Submission = {
+      job,
+      scope: node.scope,
+      depth: node.depth,
+      parentNodeId: node.parentNodeId ?? session.rootNodeId,
+      route: {
+        target: last.chosen,
+        eligibleOptions: last.eligibleOptions,
+        ruleId: last.ruleId,
+        wasOverride: last.wasOverride,
+        ...(last.ladder === undefined ? {} : { ladder: last.ladder }),
+        ...(last.rung === undefined ? {} : { rung: last.rung }),
+        ...(last.classification === undefined ? {} : { classification: last.classification }),
+        ...(last.policyVersion === undefined ? {} : { policyVersion: last.policyVersion }),
+      },
+      ...(node.kind === "sub-program" ? { kind: "sub-program" as const } : {}),
+    };
+    submissions.set(jobContractId, submission);
+    nodeOfJob.set(jobContractId, node.executionNodeId);
+    return { submission, nodeId: node.executionNodeId };
+  };
+
   const retryJob = async (jobContractId: JobContractId): Promise<boolean> => {
-    const submission = submissions.get(jobContractId);
-    const nodeId = nodeOfJob.get(jobContractId);
-    if (closed || submission === undefined || nodeId === undefined) return false;
+    if (closed) return false;
+    const known =
+      submissions.has(jobContractId) && nodeOfJob.has(jobContractId)
+        ? undefined
+        : await recoverSubmission(jobContractId);
+    const submission = known?.submission ?? submissions.get(jobContractId);
+    const nodeId = known?.nodeId ?? nodeOfJob.get(jobContractId);
+    if (submission === undefined || nodeId === undefined) return false;
     if (pending.some((entry) => entry.node.executionNodeId === nodeId)) return false;
     const node = await stores.executionNodes.get(session.scope, nodeId);
     if (node === undefined || !RETRYABLE_STATUSES.includes(node.status)) return false;
