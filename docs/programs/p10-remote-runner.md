@@ -835,3 +835,19 @@ returns 24,000 characters of a command's output at most, and a heavy run's
 journal passes that, so the proof now filters and counts on the machine; the
 three "0 processes started as worker users" readings on 1.0.16 and 1.0.17
 heavy runs were this truncation, not the machine.
+
+**The handoff, 2026-10-03 (8906c7b, image 1.0.18).** The owner's design, on
+reading the install retries: the engine hands a worker its worktree once and
+never re-enters it as itself. The worktree is chowned to the worker before the
+agent starts (the examiner's checkout likewise); the engine runs the program's
+setup and verification steps in it as the worker, through the same `sudo`
+line the agent runs under (`stepsAs` in `execution`, an `as` wrapper on the
+verification runner); the worker-user pool keeps one user per agent so the
+verifier is the owner; each agent's start event carries the user it ran as,
+and the live proof counts worker users from those events, not from the
+machine's journal over SSM. Live on 1.0.18: the fixture proof passed (cold 91
+s to a published run, the warm machine restored from the sidecar in 1.4 s);
+the heavy program ran to a published head in 466 s with no retry at all, the
+first heavy run to do so. (Its proof then failed on publication: the bench
+branch had been moved under it by hand while it ran, and the publisher
+refused the stale lease exactly as it should.)
