@@ -332,10 +332,10 @@ Task specs follow ratification under `tasks/p10-remote-runner/`.
 | T2 | The machine and the vault: the `Credentials` table and `CredentialsKey` in the data stack, `RunnerStack`, AMI pipeline, launch template, instance role, users and firewall, rootless Docker and Chromium measured, `nightshift-runner` booting to a heartbeat | T1, H-P10-02, H-P10-03 | the account |
 | T3 | Warm volume and dispatch: snapshot lineage, volume create and attach, mirror and checkout, setup on the stores, `run --remote`, refusals, the cold-to-warm measurement | T2 | — |
 | T4 | Publication and the headless root on the machine: publisher Lambda, bundles, leases, installation tokens from the App key and the org's recorded installation, the engine's integrate-then-publish. **Gate before it starts:** the owner has run `org github install` and `org github status` lists both repositories | T3, H-P10-04, H-P10-04b | the disposable repository |
-| T5 | Providers: the org's keys as `org providers set` stored them, Bedrock through A-25, the AgentCore harness worker against the conformance suite, subscription sign-in attempted and its result recorded. **Gate before it starts:** the owner has run `org providers set` for Anthropic and OpenAI and `org providers status` shows both | T1, T2, H-P10-05 | the paying account, the two keys |
-| T6 | Recovery and cancellation: reconciler, generations, replacement with the volume, `remote cancel|resume|status`, the deterministic fault battery | T4 | — |
-| T7 | Recommendation: the probe in `init` and `plan check`, utilization sampling, right-sizing, `compute recommend`, the report's compute section, the Studio card and run status | T3 | — |
-| T8 | The live walk-away fixture (`npm run remote`), the regression battery, documentation, `staging.md`, `architecture.md` (A-51, O-03, O-05, O-06 resolved) and §15 as built | T5, T6, T7, H-P10-06 | the account |
+| T5 | Providers: the org's keys as `org providers set` stored them, Bedrock through A-25, the AgentCore harness worker against the conformance suite, subscription sign-in attempted and its result recorded. **Gate before it starts:** the owner has run `org providers set` for Anthropic and OpenAI and `org providers status` shows both **Done in part, rest skipped 2026-10-04:** keys as `org providers set` stores them (an API key, a subscription token, a Codex login file) are live; Bedrock through A-25 and the AgentCore harness worker were not built, by the owner's decision. | T1, T2, H-P10-05 | the paying account, the two keys |
+| T6 | Recovery and cancellation: reconciler, generations, replacement with the volume, `remote cancel|resume|status`, the deterministic fault battery **Done, live-accepted 2026-10-04** (§15: the kill proof's sixth run). | T4 | — |
+| T7 | Recommendation: the probe in `init` and `plan check`, utilization sampling, right-sizing, `compute recommend`, the report's compute section, the Studio card and run status **Skipped 2026-10-04 by the owner's decision**: the probe, the right-sizing rule, the sampling and the recommendation route exist; the report's compute section, the Studio card and `compute recommend` do not. | T3 | — |
+| T8 | The live walk-away fixture (`npm run remote`), the regression battery, documentation, `staging.md`, `architecture.md` (A-51, O-03, O-05, O-06 resolved) and §15 as built **Done 2026-10-04** (§15, last section). | T5, T6, T7, H-P10-06 | the account |
 
 Each task passes §8 before the next starts; T5 and T7 may run beside T4 and T6.
 
@@ -357,6 +357,9 @@ Each task passes §8 before the next starts; T5 and T7 may run beside T4 and T6.
 | 2026-09-27 | D-P10-01 … D-P10-06, D-P10-09 … D-P10-11 agreed (§3.2) | Human |
 | 2026-09-28 | Program deferred; AgentCore Instances capability probe recorded: ARM64 and the persistent volume pass; zero Linux capabilities; `dockerd` denied mount propagation and socket ownership; Chromium's `runuser` denied; the probe image had to be exported as Docker schema v2 for AgentCore to start it (`p10-agentcore-capability-evidence.json`) | Human |
 | 2026-10-01 | Program reopened. D-P10-12 (EC2 and EBS, A-14 superseded), D-P10-13 (tiers), D-P10-14 (recommendation twice), D-P10-15 (warm volume) agreed; D-P10-16 … D-P10-23 proposed and, after explanation, agreed the same day: a separate `RunnerStack`; customer secrets envelope-encrypted in a table of their own under a dedicated key, not in Secrets Manager and not in the main table; containment by Linux users that limits nothing an agent legitimately does; the engine token renewed in the background with the orchestrator's session resumed from the volume. D-P10-19's shipped caps set provisionally at $300 a month and $50 a run, to be revisited against real metered cost | Human (§3.1) |
+| 2026-10-02 | D-P10-24 (one real install per lineage), D-P10-25 (workers share a group; the engine's credentials are its own) agreed; the fixture program benchmarked on four Graviton machines | Human |
+| 2026-10-03 | The heavy benchmark on five machines and the x86 pipeline; D-P10-26 (the tiers are c8id.2xlarge, 4xlarge and 8xlarge) agreed; the disk measured; D-P10-27 (workspace on the instance's NVMe, the EBS volume a durability sidecar) agreed; the engine hands a worktree over once and runs setup and verification as its worker | Human |
+| 2026-10-04 | T4's worker token renewal and T6's recovery built and live-accepted (six kill proofs). **T7 (the recommendation's surfaces) and T5's AgentCore harness worker and Bedrock route skipped by the owner's decision**: the probe, the rule and the sampling exist unshown; subscription and API-key credentials cover every live run. T8 closes the program with `npm run remote` and the documentation | Human |
 
 ## 14. Retained research
 
@@ -925,3 +928,55 @@ Also found on the way: a Lambda-only change must be deployed with the
 and rolls back; the deploy script cannot confirm an IAM change headless, so
 such deploys run `cdk deploy --require-approval never` directly after
 `tsc -b`.
+
+### T8, 2026-10-04: the walk-away fixture and the close
+
+`npm run remote` (`scripts/remote.mjs`) is the runner proof in its customer-path
+form with the fault on: a throwaway org with the installation recorded and a
+provider credential sealed, a ratified program against the disposable
+repository, a dispatch on `good`, nothing on the laptop from there but the
+record being read. The cold run's machine is terminated 45 s into `running`;
+the lease lapses, the reconciler replaces the machine on the same volume, the
+runner restores the sidecar's copy and the root resumes, and the run must end
+published at the second generation. A warm run then comes up on the project's
+snapshot, and the warm cache is checked. Everything the fixture made is removed
+and what could not be is listed as cleanup problems. Its live result is below.
+
+**The regression battery**, deterministic and offline, all in `npm run verify`:
+the dispatch rules and the reconciler's provisioning, stop enforcement,
+cleanup and recovery (`apps/api/src/runner/runner.test.ts`: a live lease left
+alone, a lapsed one replaced with the attach retried, exhaustion, a volume
+that never attaches); the runner's boot, mount, local disk, sidecar and
+device wait (`apps/mcp/src/runner/runner.test.ts`); the orphan sweep and the
+resuming root's brief (`apps/mcp/src/headless.test.ts`); the worker token
+schedule (`packages/execution/src/worker-tokens.test.ts`); the publisher
+against a real `git http-backend`; the harnesses running as a user and
+reporting it; the stack's two pipelines and its grants. The live proofs are
+`npm run runner:boot` (modes: default, key, bench, kill) and `npm run remote`,
+from a developer machine with the account, never in CI.
+
+**Documentation.** `architecture.md`: A-51 records the remote runner as built
+and supersedes A-14 for compute; O-03, O-05 and O-06 are resolved. `staging.md`
+marks P10 complete, with SC-04's AgentCore half and SC-05 not discharged by the
+owner's decision to skip the third harness and Bedrock. This file's §3.3 and §13
+carry the decisions of 2026-10-02 to 04.
+
+**Success criteria, as they stand.** SC-P10-01, 03, 05, 08 (as restated), 09,
+11 (engine and worker tokens renew; a worker's token is a file; cancellation
+within two heartbeats), 12 and 14: met and live. SC-P10-02: met for the CLI and
+API refusals. SC-P10-04: the parallel worktrees on one machine are met; the
+AgentCore and Bedrock half is skipped. SC-P10-06 and 07: the functions exist
+and are tested; their surfaces are skipped with T7. SC-P10-10: the fault tests
+cover exhausted attempts, a stale runner's refusal (the generation fence),
+cleanup failure and recovery; lost push acknowledgement and external branch
+movement are covered by the publisher's tests; cancellation during recovery
+is not specifically covered. SC-P10-13: `remote resume` exists in the CLI and
+the API; it has not been exercised live.
+
+**Open, for after P10.** A resuming root's `job_retry` of the interrupted job
+is refused for the lost session's delegation (it delegates anew, correctly);
+the pass-through of `NIGHTSHIFT_*` into a worker's environment reaches what
+the worker spawns; the warm cache is now the sidecar's snapshot and worth
+little; the right-sizing thresholds were set for a Graviton ladder with memory
+steps and should be re-read against the c8id ladder once real runs have
+utilization; T7's surfaces; the third harness.
