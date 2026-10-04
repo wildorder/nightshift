@@ -954,8 +954,15 @@ replaced at generation 2 **94 s after the kill**; the run ended succeeded and
 Warm: ready 82 s, the sidecar's copy restored onto the new disk in 7.8 s, setup
 4.0 s, the project's warm cache advanced and the cold snapshot kept in its
 history. Nothing left behind: no instance, volume or warm snapshot, the
-installation claim and the credentials table back to the owner's. **P10 is
-complete**, with the owner's omissions recorded above.
+installation claim and the credentials table back to the owner's.
+
+**Again on image 1.0.23 (cb42d3c), 2026-10-04 17:19 to 17:39 UTC: passed**, and
+this time the resumed root took the retry: the first attempt's examiner had
+been killed with the machine, the root retried the job on the replacement
+(its own words: "I retried it once on the replacement machine"), and the
+strand integrated and published 333 s after the dispatch, 102 s of which was
+the replacement coming up. The warm run needed no retry. **P10 is complete**,
+with the owner's omissions recorded above.
 
 **The regression battery**, deterministic and offline, all in `npm run verify`:
 the dispatch rules and the reconciler's provisioning, stop enforcement,
