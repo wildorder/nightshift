@@ -16,7 +16,7 @@
  * the operator's clone would leave it dirty, and integration refuses a dirty
  * checkout.
  */
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -45,6 +45,7 @@ import {
   createHookSink,
   pruneWorktrees,
   revParse,
+  tryGit,
 } from "@nightshift/execution";
 import {
   describeExit,
@@ -342,6 +343,12 @@ export const runHeadless = async (
   const base = await revParse(runtime.git, input.repoPath, program.repository.programBranch);
   const worktree = runtime.paths.worktree(scope.runId, rootNode.executionNodeId);
   await mkdir(dirname(worktree), { recursive: true });
+  if (resuming) {
+    // The checkout came back from the sidecar with the lost root's worktree in
+    // it (T6); this root gets a fresh one at the same path.
+    await tryGit(runtime.git, ["worktree", "remove", "--force", worktree], { cwd: input.repoPath });
+    await rm(worktree, { recursive: true, force: true });
+  }
   await pruneWorktrees(runtime.git, input.repoPath);
   await addDetachedWorktree(runtime.git, { repo: input.repoPath, path: worktree, base });
 
