@@ -940,7 +940,17 @@ the lease lapses, the reconciler replaces the machine on the same volume, the
 runner restores the sidecar's copy and the root resumes, and the run must end
 published at the second generation. A warm run then comes up on the project's
 snapshot, and the warm cache is checked. Everything the fixture made is removed
-and what could not be is listed as cleanup problems. Its live result is below.
+and what could not be is listed as cleanup problems.
+
+**Live, 2026-10-04 15:57 to 16:42 UTC, image 1.0.22: passed.** Cold: ready 72 s
+after the dispatch, setup 3.7 s; the machine terminated 45 s into `running`;
+replaced at generation 2 **94 s after the kill**; the run ended succeeded and
+**published** 496 s after the dispatch, with four processes as worker users.
+Warm: ready 82 s, the sidecar's copy restored onto the new disk in 7.8 s, setup
+4.0 s, the project's warm cache advanced and the cold snapshot kept in its
+history. Nothing left behind: no instance, volume or warm snapshot, the
+installation claim and the credentials table back to the owner's. **P10 is
+complete**, with the owner's omissions recorded above.
 
 **The regression battery**, deterministic and offline, all in `npm run verify`:
 the dispatch rules and the reconciler's provisioning, stop enforcement,
