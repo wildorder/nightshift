@@ -73,6 +73,15 @@ const FIXTURE_BRANCH = HEAVY ? "program/bench" : "program/fixture";
 const INSTALLATION_ID = 166952409;
 /** A heavy run is tens of minutes of real verification; a light one, a few. */
 const RUN_END_TIMEOUT_MS = (HEAVY ? 120 : 40) * 60_000;
+/**
+ * The fault (T6): with `NIGHTSHIFT_SMOKE_BENCH_KILL=1`, the machine is
+ * terminated behind the runner's back two minutes into `running`. The lease
+ * lapses, the reconciler replaces the machine on the same volume at the next
+ * generation, the runner restores the sidecar's copy, and the run must still
+ * end published; the record must show both attempts.
+ */
+const KILL = process.env.NIGHTSHIFT_SMOKE_BENCH_KILL === "1";
+const KILL_AFTER_RUNNING_MS = 2 * 60_000;
 /** SC-P10-08: the warm setup against the cold one. Printed always, asserted softly. */
 const WARM_RATIO_TARGET = 0.1;
 /** T4: an Anthropic API key or a Claude Code subscription token (`claude setup-token`) for the throwaway org. */
@@ -297,6 +306,7 @@ const resetFixtureBranch = (sha: string): void => {
 
 /** When the proof saw each state, for the phase table; polling is every ten seconds. */
 interface Marks {
+  killedAt?: number;
   dispatchedAt: number;
   machineAt?: number;
   readyAt?: number;
@@ -637,12 +647,39 @@ const runToTheEnd = async (
   outcome?: RunOutcome,
 ): Promise<Dispatch> => {
   const startedAt = Date.now();
+  if (KILL) {
+    const running = await awaitDispatch(run, "running", 20 * 60_000, (d) => d.status === "running");
+    await sleep(KILL_AFTER_RUNNING_MS);
+    const victim = running.instanceId;
+    if (victim === undefined) throw new Error("the running dispatch names no machine to kill");
+    aws(["ec2", "terminate-instances", "--instance-ids", victim]);
+    say(`${name}: FAULT: terminated ${victim} behind the runner's back; the lease will lapse`);
+    if (outcome !== undefined) outcome.marks.killedAt = Date.now();
+    const replaced = await awaitDispatch(
+      run,
+      "a replacement machine",
+      15 * 60_000,
+      (d) => d.generation >= 2 && d.instanceId !== undefined && d.instanceId !== victim,
+    );
+    say(
+      `${name}: replaced by ${replaced.instanceId} at generation ${replaced.generation}, ${Math.round((Date.now() - (outcome?.marks.killedAt ?? Date.now())) / 1000)}s after the kill`,
+    );
+  }
   const stopped = await awaitDispatch(
     run,
     "the run's end",
     RUN_END_TIMEOUT_MS,
     (d) => d.status === "stopped",
   );
+  if (KILL) {
+    expect(
+      stopped.generation,
+      "the run did not move to a second generation",
+    ).toBeGreaterThanOrEqual(2);
+    expect(stopped.attempts.map((a) => a.reason)).toEqual(
+      expect.arrayContaining(["dispatch", "lease_lost"]),
+    );
+  }
   if (outcome !== undefined) outcome.marks.stoppedAt = Date.now();
   findings.runSeconds = Math.round((Date.now() - startedAt) / 1000);
   const runSeconds = findings.runSeconds;
