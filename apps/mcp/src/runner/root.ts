@@ -96,12 +96,21 @@ export const placeProviderCredentials = async (
     await writeFile(path, secret, { mode: 0o600 });
     await chmod(path, 0o600);
     env[placement.env] = directory;
-    // Each worker user gets a copy of its own (D-P10-25): the engine's stays the engine's.
+    // Each worker user gets a copy of its own (D-P10-25): the engine's stays the
+    // engine's. The directory of copies is traversable (0711, like the run's),
+    // and each user's own directory under it is the user's, whole: a recursive
+    // mkdir made the parents 0700 and the engine's, so the worker could not
+    // reach the copy made for it, and every Codex examiner on FoodFly's first
+    // runs died at start with "Permission denied" (2026-10-05).
+    const copies = workerCredentialRoot(runId);
+    await mkdir(copies, { recursive: true, mode: 0o711 });
+    await chmod(copies, 0o711);
     for (const user of workers.users) {
-      const own = join(workerCredentialRoot(runId), user, placement.env);
+      const mine = join(copies, user);
+      const own = join(mine, placement.env);
       await mkdir(own, { recursive: true, mode: 0o700 });
       await writeFile(join(own, placement.file), secret, { mode: 0o600 });
-      await workers.grant(user, own);
+      await workers.grant(user, mine);
     }
   }
   return env;
