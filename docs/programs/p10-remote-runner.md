@@ -995,6 +995,16 @@ movement are covered by the publisher's tests; cancellation during recovery
 is not specifically covered. SC-P10-13: `remote resume` exists in the CLI and
 the API; it has not been exercised live.
 
+**From the first run on another project (2026-10-05).** The owner ran a
+monorepo and its build failed on missing packages: D-P10-24's seed copied the
+root `node_modules` alone, and npm keeps a workspace's conflicting versions
+under `packages/<workspace>/node_modules`, which the fixture and this
+monorepo happened not to exercise in a way that broke. The seed now copies
+every installed tree under the reference at the same relative path
+(`installedTrees` in `verification/install.ts`), image 1.0.24. A lesson for
+the real-project runs ahead: the fixture is small by design, and a customer's
+repository will keep finding what it did not.
+
 **Open, for after P10.** (A resuming root's `job_retry` of the lost machine's
 job was refused because the engine only knew the jobs it delegated itself;
 fixed 2026-10-04: the engine rebuilds the submission from the record. The
