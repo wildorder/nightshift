@@ -165,11 +165,23 @@ export interface CliEnvironment {
   readonly assets?: CliAssets;
 }
 
+/**
+ * A word as cmd.exe must see it. With `shell`, spawn hands cmd.exe one command
+ * line, and a path with a space in it, like `C:\Program Files\nodejs\node.exe`,
+ * is two words to it unless quoted: the orchestrator then dies with
+ * `'C:\Program' is not recognized`.
+ */
+export const shellWord = (word: string): string =>
+  /\s/.test(word) && !(word.startsWith('"') && word.endsWith('"')) ? `"${word}"` : word;
+
 /** The ambient environment. Called by `bin/nightshift.ts`, and nowhere else. */
 const nodeExec: Exec = (file, args, options) =>
   new Promise((resolve, reject) => {
     // `shell` on Windows only, where `claude` is a `.cmd` shim a bare spawn cannot find.
-    const child = spawn(file, [...args], { cwd: options.cwd, shell: process.platform === "win32" });
+    const shell = process.platform === "win32";
+    const child = shell
+      ? spawn(shellWord(file), args.map(shellWord), { cwd: options.cwd, shell })
+      : spawn(file, [...args], { cwd: options.cwd });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {

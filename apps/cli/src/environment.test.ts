@@ -1,6 +1,6 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { type PasteInput, pasteSourceFor } from "./environment.js";
+import { type PasteInput, pasteSourceFor, shellWord } from "./environment.js";
 
 const terminalLike = (): PassThrough & { isTTY: boolean } =>
   Object.assign(new PassThrough(), { isTTY: true });
@@ -43,5 +43,19 @@ describe("pasteSourceFor", () => {
     const second = source();
     input.write("second\n");
     await expect(second.line).resolves.toBe("second");
+  });
+});
+
+describe("shellWord", () => {
+  it("quotes a word with a space, so cmd.exe reads a path like Program Files as one", () => {
+    const node = String.raw`C:\Program Files\nodejs\node.exe`;
+    expect(shellWord(node)).toBe(`"${node}"`);
+  });
+
+  it("leaves a plain word and an already-quoted word alone", () => {
+    const entry = String.raw`C:\dev\nightshift\apps\cli\dist\orchestrate.js`;
+    expect(shellWord("claude")).toBe("claude");
+    expect(shellWord(entry)).toBe(entry);
+    expect(shellWord('"already quoted"')).toBe('"already quoted"');
   });
 });

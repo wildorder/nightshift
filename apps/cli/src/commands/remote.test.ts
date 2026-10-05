@@ -25,7 +25,6 @@ import {
 import type { GitRunner } from "@nightshift/execution";
 import { afterEach, describe, expect, it } from "vitest";
 import { UsageError } from "../failures.js";
-import type { ProgramFiles } from "../program-files.js";
 import { openSession } from "../session.js";
 import {
   createFakeControlPlane,
@@ -100,15 +99,6 @@ const ratified = (f: Fixtures, overrides: Record<string, unknown> = {}): Program
     ...overrides,
   });
 
-const files = (contract: ProgramContract): ProgramFiles => ({
-  id: contract.programId,
-  directory: `docs/programs/${contract.programId}`,
-  contractPath: `docs/programs/${contract.programId}/contract.json`,
-  planPath: `docs/programs/${contract.programId}/plan.md`,
-  contract,
-  planText: "# Plan\n",
-});
-
 const environmentWith = async (git: GitRunner) => {
   const repoPath = await mkdtemp(join(tmpdir(), "nightshift-remote-"));
   scratch.push(repoPath);
@@ -132,38 +122,28 @@ describe("assertRemoteReady (SC-P10-02, the CLI's half)", () => {
     });
     const { created, repoPath } = await environmentWith(gitAnswering({ head: HEAD, origin: HEAD }));
     await expect(
-      assertRemoteReady(created.environment, files(planning), repoPath, undefined),
+      assertRemoteReady(created.environment, planning, repoPath, undefined),
     ).rejects.toThrow(/not ratified/);
 
     const dirty = await environmentWith(gitAnswering({ dirty: true, head: HEAD, origin: HEAD }));
     await expect(
-      assertRemoteReady(dirty.created.environment, files(ratified(f)), dirty.repoPath, undefined),
+      assertRemoteReady(dirty.created.environment, ratified(f), dirty.repoPath, undefined),
     ).rejects.toThrow(/uncommitted changes/);
 
     const unpushed = await environmentWith(gitAnswering({ head: HEAD }));
     await expect(
-      assertRemoteReady(
-        unpushed.created.environment,
-        files(ratified(f)),
-        unpushed.repoPath,
-        undefined,
-      ),
+      assertRemoteReady(unpushed.created.environment, ratified(f), unpushed.repoPath, undefined),
     ).rejects.toThrow(/has not been pushed/);
 
     const moved = await environmentWith(gitAnswering({ head: HEAD, origin: BEHIND }));
     await expect(
-      assertRemoteReady(moved.created.environment, files(ratified(f)), moved.repoPath, undefined),
+      assertRemoteReady(moved.created.environment, ratified(f), moved.repoPath, undefined),
     ).rejects.toThrow(/at origin/);
   });
 
   it("answers the pushed head and the tier in D-P10-14's order, and refuses a tier it does not know", async () => {
     const { created, repoPath } = await environmentWith(gitAnswering({ head: HEAD, origin: HEAD }));
-    const plain = await assertRemoteReady(
-      created.environment,
-      files(ratified(f)),
-      repoPath,
-      undefined,
-    );
+    const plain = await assertRemoteReady(created.environment, ratified(f), repoPath, undefined);
     expect(plain).toEqual({
       repositoryUrl: "https://github.com/wildorder/fixture",
       branch: "program/fixture",
@@ -173,20 +153,15 @@ describe("assertRemoteReady (SC-P10-02, the CLI's half)", () => {
     });
     const stated = await assertRemoteReady(
       created.environment,
-      files(ratified(f, { compute: { tier: "better" } })),
+      ratified(f, { compute: { tier: "better" } }),
       repoPath,
       undefined,
     );
     expect(stated).toMatchObject({ tier: "better", source: "contract" });
-    const flagged = await assertRemoteReady(
-      created.environment,
-      files(ratified(f)),
-      repoPath,
-      "best",
-    );
+    const flagged = await assertRemoteReady(created.environment, ratified(f), repoPath, "best");
     expect(flagged).toMatchObject({ tier: "best", source: "flag" });
     await expect(
-      assertRemoteReady(created.environment, files(ratified(f)), repoPath, "huge"),
+      assertRemoteReady(created.environment, ratified(f), repoPath, "huge"),
     ).rejects.toBeInstanceOf(UsageError);
   });
 });

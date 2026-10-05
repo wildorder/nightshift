@@ -246,10 +246,11 @@ export const runProgram = async (
   const confirming = await requireConfirmations(session, ratified, options);
 
   // P10: everything the checkout can say against a remote dispatch, before the
-  // run exists (SC-P10-02).
+  // run exists (SC-P10-02). The ratified record, not the file: ratification
+  // lives on the control plane, and contract.json's status stays `planning`.
   const readiness =
     options.remote === true
-      ? await assertRemoteReady(environment, files, options.repoPath, options.compute)
+      ? await assertRemoteReady(environment, ratified, options.repoPath, options.compute)
       : undefined;
 
   const started = await startRun(deps, {

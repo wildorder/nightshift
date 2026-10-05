@@ -4,7 +4,8 @@
  *
  * Remote dispatch is refused before anything is written unless the checkout is
  * clean, the program branch's head is the one at `origin`, and the plan is
- * ratified; the plane then checks the records and GitHub for itself. What is
+ * ratified on the control plane; the plane then checks the records and GitHub
+ * for itself. What is
  * printed at dispatch is what the customer is buying: the tier, its class and
  * its price per hour, and what the run could cost at its ceiling.
  */
@@ -57,16 +58,18 @@ const parseTier = (value: string | undefined): ComputeTier | undefined => {
 
 /**
  * The CLI's half of SC-P10-02: nothing dirty, nothing unpublished, a stated or
- * recommended tier. Everything here is answered from the checkout; the plane
- * then refuses on its own evidence.
+ * recommended tier. `contract` is the control plane's record of the program,
+ * the one `requireRatifiedPlan` held the checkout to: ratification is recorded
+ * there and never written back to `contract.json`, whose `status` stays
+ * `planning` on disk. Everything else here is answered from the checkout; the
+ * plane then refuses on its own evidence.
  */
 export const assertRemoteReady = async (
   environment: CliEnvironment,
-  files: ProgramFiles,
+  contract: ProgramContract,
   repoPath: string,
   computeFlag: string | undefined,
 ): Promise<RemoteReadiness> => {
-  const { contract } = files;
   if (!isPlanned(contract) || contract.status !== "ratified") {
     throw new UsageError(
       `program ${contract.programId} is not ratified; remote execution needs a ratified plan (D-P10-09)`,
