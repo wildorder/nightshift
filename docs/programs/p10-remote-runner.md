@@ -1005,6 +1005,21 @@ every installed tree under the reference at the same relative path
 the real-project runs ahead: the fixture is small by design, and a customer's
 repository will keep finding what it did not.
 
+**The second run on that project (2026-10-05, image 1.0.24).** The nested
+trees arrived and every job passed build, typecheck, lint and test; six
+examinations in a row then ended "without submitting a verdict" and the
+orchestrator reported, correctly, that the examiner was broken. It was: the
+project's policy routes examination to Codex, and Codex started as `worker-N`
+with `CODEX_HOME` pointing at its credential copy under
+`/dev/shm/nightshift/<run>/workers/<user>/`, whose parents a recursive mkdir
+had made 0700 and the engine's; it died at start with "Permission denied",
+one second after launch, before the model was involved. `workers/` is 0711
+and each user's directory is handed over whole (fe76050, image 1.0.26). The
+live proofs never exercised a Codex agent as a worker user: every one ran
+Claude alone. The same shape as the T4 token directory a day earlier, and the
+lesson is the same: a credential placed for another user needs every parent
+traversable, and a proof that runs one harness proves one harness.
+
 **Open, for after P10.** (A resuming root's `job_retry` of the lost machine's
 job was refused because the engine only knew the jobs it delegated itself;
 fixed 2026-10-04: the engine rebuilds the submission from the record. The
