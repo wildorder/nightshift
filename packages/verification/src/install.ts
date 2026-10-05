@@ -108,15 +108,55 @@ export const writeInstallMarker = async (
 /** How many entries are linked at once; a tree is tens of thousands of small files. */
 const LINK_CONCURRENCY = 64;
 
+/** Directories an installed tree is never looked for under. */
+const NOT_A_WORKSPACE = new Set([INSTALLED_TREE, ".git", "dist", "build", "coverage", ".next"]);
+/** How deep a workspace's own tree may sit: `packages/<ws>/node_modules` is depth 2. */
+const WORKSPACE_DEPTH = 4;
+
 /**
- * Copies `from`'s installed tree into `to` by hardlink, file by file, so the
- * copy shares the reference's blocks and takes seconds. Symlinks (npm's `.bin`
- * on Linux) are recreated as symlinks; a file that cannot be linked (another
- * filesystem) is copied. Returns how many files were placed.
+ * Every `node_modules` under `dir`, as paths relative to it: the root's, and
+ * each workspace's own, where npm puts a version that conflicts with the
+ * hoisted one. Nothing inside a tree is searched, nor build output, nor
+ * deeper than a workspace plausibly sits. (A monorepo's first remote run
+ * failed its build on exactly this: the root tree was seeded and
+ * `packages/marketplace/node_modules` was not, 2026-10-05.)
+ */
+export const installedTrees = async (dir: string): Promise<readonly string[]> => {
+  const found: string[] = [];
+  const walk = async (rel: string, depth: number): Promise<void> => {
+    const entries = await readdir(join(dir, rel), { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const child = rel === "" ? entry.name : `${rel}/${entry.name}`;
+      if (entry.name === INSTALLED_TREE) {
+        found.push(child);
+        continue;
+      }
+      if (NOT_A_WORKSPACE.has(entry.name) || entry.name.startsWith(".")) continue;
+      if (depth < WORKSPACE_DEPTH) await walk(child, depth + 1);
+    }
+  };
+  await walk("", 0);
+  return found.sort();
+};
+
+/**
+ * Copies every installed tree of `from` into `to` by hardlink, file by file,
+ * at the same relative paths, so the copy shares the reference's blocks and
+ * takes seconds. Symlinks (npm's `.bin` on Linux, and the workspace links
+ * under the root tree, which are relative) are recreated as symlinks; a file
+ * that cannot be linked (another filesystem) is copied. Returns how many
+ * files were placed.
  */
 export const seedInstalledTree = async (from: string, to: string): Promise<number> => {
-  const source = join(from, INSTALLED_TREE);
-  const target = join(to, INSTALLED_TREE);
+  let placed = 0;
+  for (const tree of await installedTrees(from)) {
+    placed += await seedOneTree(join(from, tree), join(to, tree));
+  }
+  return placed;
+};
+
+const seedOneTree = async (source: string, target: string): Promise<number> => {
   let placed = 0;
   const pending: string[] = [""];
   const files: { readonly rel: string; readonly symlink: boolean }[] = [];
