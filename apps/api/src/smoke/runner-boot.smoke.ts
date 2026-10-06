@@ -732,7 +732,11 @@ const runToTheEnd = async (
   };
   const told = (events.items ?? [])
     .filter((event) => /^(tool|agent|run|node)[.]/.test(event.type))
-    .map((event) => `${event.type} ${JSON.stringify(event.payload ?? {}).slice(0, 300)}`);
+    // A failure's whole payload: the one line that says why an agent died.
+    .map(
+      (event) =>
+        `${event.type} ${JSON.stringify(event.payload ?? {}).slice(0, event.type === "agent.failed" ? 4000 : 300)}`,
+    );
   say(`${name}: the run's events (${told.length}):\n  ${told.slice(-60).join("\n  ")}`);
   if (EXAMINED_BY_CODEX) {
     // The examiner ran as a worker user and gave a verdict: its agent completed,
