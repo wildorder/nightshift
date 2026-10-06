@@ -1,0 +1,279 @@
+{
+  "schemaVersion": 1,
+  "programId": "prog_01M49RS9VSWZDFF1ACAWF4FZTR",
+  "status": "planning",
+  "objective": "Make gate health something Nightshift judges, records and repairs: planning audits a repository's gates against Nightshift's gate standard before ratification and the human decides each fix, and a run repairs a broken or flaky gate itself and records it as a decision, never re-planning. The authority is docs/programs/p15-gate-health.md.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p15-gate-health"
+  },
+  "createdAt": "2026-10-06T20:00:00Z",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "A developer bringing a repository to Nightshift",
+      "problem": "The gates fail in Nightshift's conditions for reasons nobody saw: installs folded into pre-hooks, two gates sharing a build folder, an undeclared Docker dependency. The first run finds out hours in and lands nothing.",
+      "outcome": "Planning tells them what has to be cleaned up before Nightshift can run reliably. They decide each fix once, and the first strand builds it.",
+      "words": [
+        "suppose a super unhealthy piece of shit build starts using nightshift. nightshift should be able to say, umm, we need to get this cleaned up before i can reliably run",
+        "we can only do as good as their testing is setup"
+      ]
+    },
+    {
+      "id": "US-02",
+      "who": "The owner reviewing a run in the morning",
+      "problem": "A gate that breaks mid-run fails every job, retries climb to dearer models, and the only answer offered is to re-plan.",
+      "outcome": "The run repaired the gate itself, carried on, and recorded what it did as decisions they can review and reverse.",
+      "words": [
+        "the fucking thing is designed to get the job done and record what happened so it can be REVIEWED. NOT replanned."
+      ]
+    }
+  ],
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "Planning a program on a repository with no healthy gate-health record runs the gates and the review against the gate standard, and turns each finding into a decision the human answers",
+      "serves": ["US-01"]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "`plan check` does not answer READY until the audit is complete: a healthy record matching the plan's gate fingerprint, or a repairing record whose findings are each answered by a decision, with a gate-health strand every other strand depends on",
+      "serves": ["US-01"]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "A later plan whose gate fingerprint is unchanged skips the audit; changing any gate-machinery file brings it back",
+      "serves": ["US-01"]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "When a gate-health strand lands, the project's record reads healthy for the new fingerprint",
+      "serves": ["US-01"]
+    },
+    {
+      "id": "SC-05",
+      "outcome": "A red gate at the start of a run becomes the run's first job, a repair, and the strands start once it lands, locally and on a remote machine",
+      "serves": ["US-02"]
+    },
+    {
+      "id": "SC-06",
+      "outcome": "A check that fails and then passes on the same commit lands the work, is recorded as flaky, does not climb the route, and opens a repair job no strand waits on",
+      "serves": ["US-02"]
+    },
+    {
+      "id": "SC-07",
+      "outcome": "A repair job can change setup and gate commands, and the verifications after it lands use the new definition",
+      "serves": ["US-02"]
+    },
+    {
+      "id": "SC-08",
+      "outcome": "Every repair job records a decision, and a repair that weakens a gate is stopped by examination unless its decision says why",
+      "serves": ["US-02"]
+    },
+    {
+      "id": "SC-09",
+      "outcome": "The report and the Studio's Status tab show the gate audit, each repair with its decision, and each flake",
+      "serves": ["US-01", "US-02"]
+    }
+  ],
+  "constraints": [
+    "docs/programs/p15-gate-health.md is the authority: its decisions and design hold, and a departure is recorded.",
+    "The mechanical audit stays deterministic; only the planning review and repair jobs use a model.",
+    "No run re-plans or re-ratifies: a repair is a run decision, reviewed afterwards.",
+    "The gate-health record is written only by Nightshift commands and the engine, never by an agent's file edit.",
+    "Every existing suite stays green, on Linux and Windows; no suite is carved out."
+  ],
+  "outOfScope": [
+    "Repairing a repository's gates outside a program",
+    "Measuring or rewriting test coverage",
+    "Changing how a strand cuts, routes or examines its own jobs",
+    "Backfilling gate-health records for projects already planned",
+    "Deploying the API, the runner image or the Studio"
+  ],
+  "scope": {
+    "includes": [
+      "apps/**",
+      "packages/**",
+      "skills/**",
+      "test/**",
+      "docs/**",
+      "nightshift.config.json"
+    ],
+    "excludes": [
+      "infra/**",
+      ".github/**",
+      "docs/programs/p15-gate-health/contract.json",
+      "docs/programs/p15-gate-health/plan.md",
+      "docs/programs/p15-gate-health/conversation.md"
+    ],
+    "permissions": ["fs.read", "fs.write", "shell.exec"],
+    "forbiddenActions": [
+      "deploy any stack or stage (cdk deploy, npm run deploy, image builds)",
+      "write to the dev or any hosted control plane outside the run's own records",
+      "push to main",
+      "read legacy history or the nightshift-archive repository (AGENTS.md greenfield boundary)"
+    ]
+  },
+  "strands": [
+    {
+      "id": "S-01",
+      "name": "The gate-health record and the planning audit",
+      "scope": {
+        "summary": "The gate-health record end to end, the gate standard, the planning audit, gates --record and plan check",
+        "includes": [
+          "packages/contracts/**",
+          "packages/core/**",
+          "packages/persistence/**",
+          "apps/api/**",
+          "apps/cli/**",
+          "skills/**",
+          "test/**",
+          "docs/**"
+        ],
+        "excludes": ["packages/execution/**", "apps/mcp/**", "apps/studio/**"]
+      },
+      "acceptance": [
+        "A project's gate-health record can be written by `nightshift gates {id} --record` and read back over the control plane, in every store",
+        "`plan check` enforces the audit as D-08 says, with every reason at once",
+        "The planning skill audits against the shipped gate standard and turns findings into decisions and a gate-health strand"
+      ],
+      "successCriteria": ["SC-01", "SC-02", "SC-03"],
+      "dependsOn": [],
+      "prerequisites": []
+    },
+    {
+      "id": "S-02",
+      "name": "Repairs in the run",
+      "scope": {
+        "summary": "Flaky detection, repair jobs, repair-first starts, changing gate definitions, the setup reference, and the report and Studio surfaces",
+        "includes": ["packages/**", "apps/**", "skills/**", "test/**", "docs/**"],
+        "excludes": []
+      },
+      "acceptance": [
+        "A flaky check lands the work as flaky with a non-blocking repair job and a decision",
+        "A red base starts the run with a repair job first, locally and on the runner",
+        "A repair that changes a gate definition applies to later verifications, and every repair records a decision",
+        "The report and the Studio show gate health"
+      ],
+      "successCriteria": ["SC-04", "SC-05", "SC-06", "SC-07", "SC-08", "SC-09"],
+      "dependsOn": ["S-01"],
+      "prerequisites": []
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "When is the intelligent gate audit done?",
+      "options": [
+        "In planning, before ratification",
+        "Once per project",
+        "At the start of every run"
+      ],
+      "leaning": "In planning, before ratification",
+      "answer": "In planning, before ratification",
+      "rationale": "The owner: the human is initialising Nightshift and decides the fixes up front; they can wait. Findings become decisions, built by a gate-health strand every other strand depends on.",
+      "touches": ["S-01", "S-02"]
+    },
+    {
+      "id": "D-02",
+      "question": "How is a completed audit remembered?",
+      "options": [
+        "Per project, against a fingerprint of the gate machinery",
+        "Per program",
+        "Not at all"
+      ],
+      "leaning": "Per project, against a fingerprint of the gate machinery",
+      "answer": "Per project, against a fingerprint of the gate machinery",
+      "rationale": "Fast without trading reliability: unchanged gates skip the audit.",
+      "touches": ["S-01"]
+    },
+    {
+      "id": "D-03",
+      "question": "What does a run do with a red gate at its start?",
+      "options": ["Repair it first", "Stop"],
+      "leaning": "Repair it first",
+      "answer": "Repair it first",
+      "rationale": "The owner: a run gets the job done and records what happened for review, never re-plans. One mechanical pass, no override flag.",
+      "touches": ["S-02"]
+    },
+    {
+      "id": "D-04",
+      "question": "What may a repair job change?",
+      "options": ["Anything, setup and gate commands included", "Tests and scripts only"],
+      "leaning": "Anything, setup and gate commands included",
+      "answer": "Anything, setup and gate commands included",
+      "rationale": "The owner: let it do whatever it needs. Every repair records a decision and is examined at high risk against weakening a gate.",
+      "touches": ["S-02"]
+    },
+    {
+      "id": "D-05",
+      "question": "Who defines a healthy gate?",
+      "options": ["A gate standard Nightshift ships", "Each repository"],
+      "leaning": "A gate standard Nightshift ships",
+      "answer": "A gate standard Nightshift ships",
+      "rationale": "The owner: Nightshift should have an opinion on gate standards.",
+      "touches": ["S-01", "S-02"]
+    },
+    {
+      "id": "D-06",
+      "question": "What happens to a job whose failed check passes on a rerun?",
+      "options": [
+        "Land it, record the flake, open a non-blocking repair",
+        "Hold it until the gate is repaired"
+      ],
+      "leaning": "Land it, record the flake, open a non-blocking repair",
+      "answer": "Land it, record the flake, open a non-blocking repair",
+      "rationale": "The owner: open a repair job, not on a blocking path, and log a decision for every repair.",
+      "touches": ["S-02"]
+    },
+    {
+      "id": "D-07",
+      "question": "Where does the gate-health record live?",
+      "options": ["The control plane", "A committed file"],
+      "leaning": "The control plane",
+      "answer": "The control plane",
+      "rationale": "Ratified 2026-10-06. Only a Nightshift command can write it; the Studio and a runner can read it.",
+      "touches": ["S-01", "S-02"]
+    },
+    {
+      "id": "D-08",
+      "question": "How does plan check enforce the audit?",
+      "options": [
+        "Healthy record for the fingerprint, or every finding answered with a gate-health strand",
+        "Not at all"
+      ],
+      "leaning": "Healthy record for the fingerprint, or every finding answered with a gate-health strand",
+      "answer": "Healthy record for the fingerprint, or every finding answered with a gate-health strand",
+      "rationale": "Ratified 2026-10-06.",
+      "touches": ["S-01"]
+    },
+    {
+      "id": "D-09",
+      "question": "Where is repair work shown?",
+      "options": ["The report and the Studio's Status tab", "Nowhere new"],
+      "leaning": "The report and the Studio's Status tab",
+      "answer": "The report and the Studio's Status tab",
+      "rationale": "Ratified 2026-10-06: the owner reviews what the run repaired.",
+      "touches": ["S-02"]
+    },
+    {
+      "id": "D-10",
+      "question": "What is a repair job's scope?",
+      "options": ["The whole program scope", "A strand's scope"],
+      "leaning": "The whole program scope",
+      "answer": "The whole program scope",
+      "rationale": "Ratified 2026-10-06. Conflicts go through the merge queue like any landing.",
+      "touches": ["S-02"]
+    },
+    {
+      "id": "D-11",
+      "question": "Is the program checkout the setup reference after a repair lands?",
+      "options": ["Yes", "No"],
+      "leaning": "Yes",
+      "answer": "Yes",
+      "rationale": "Ratified 2026-10-06: one real install per lockfile change, not one per worktree.",
+      "touches": ["S-02"]
+    }
+  ]
+}

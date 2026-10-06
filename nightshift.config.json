@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "projectId": "proj_01M49RRHPS6B770S9G5HDCPSD2",
+  "contextDocs": [
+    "AGENTS.md",
+    "docs/vision.md",
+    "docs/architecture.md",
+    "docs/programs/p15-gate-health.md"
+  ],
+  "setup": [
+    {
+      "id": "install",
+      "command": "npm ci --prefer-offline"
+    }
+  ],
+  "verification": [
+    {
+      "id": "build",
+      "command": "npm run build"
+    },
+    {
+      "id": "typecheck",
+      "command": "npm run typecheck"
+    },
+    {
+      "id": "lint",
+      "command": "npm run lint"
+    },
+    {
+      "id": "test",
+      "command": "npm run test"
+    },
+    {
+      "id": "synth",
+      "command": "npm --workspace @nightshift/cdk run synth"
+    },
+    {
+      "id": "sterility",
+      "command": "npm run check:sterility"
+    }
+  ],
+  "modelPolicy": {
+    "allowedProviders": ["anthropic", "openai"],
+    "allowedModels": [],
+    "forbiddenModels": []
+  },
+  "delegationLimits": {
+    "maxDepth": 2,
+    "maxConcurrency": 2
+  },
+  "costPolicy": {},
+  "examinationPolicy": {
+    "low": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "medium": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "high": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    }
+  },
+  "defaultRisk": "medium"
+}
