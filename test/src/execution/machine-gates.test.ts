@@ -16,10 +16,7 @@ afterEach(cleanupWorlds);
 
 const BROKEN = `node -e "console.log('the base is broken');process.exit(1)"`;
 
-const machine = async (
-  program: Partial<ProgramContract>,
-  input: { allowRedGates?: true; generation?: number } = {},
-) => {
+const machine = async (program: Partial<ProgramContract>, input: { generation?: number } = {}) => {
   const world: BaseWorld = await createBaseWorld({ program });
   const started = await startRun(
     { stores: world.stores, clock: world.clock, ids: world.ids, git: world.git },
@@ -48,7 +45,6 @@ const machine = async (
         branch: world.program.repository.programBranch,
         baseSha: started.baseCommit as CommitSha,
         planHash: "unused",
-        ...(input.allowRedGates === undefined ? {} : { allowRedGates: true }),
       },
     } as unknown as Dispatch,
   };
@@ -74,14 +70,14 @@ describe("the gate audit on a run's machine", () => {
     expect(run?.status).toBe("pending");
   });
 
-  it("fails the run before the root starts when a gate fails every time, and keeps its output", async () => {
+  it("fails the run before the root starts when a gate fails, and keeps its output", async () => {
     const { world, result, run, started } = await machine({
       verification: [{ id: "build", command: BROKEN }],
     });
     expect(result.proceed).toBe(false);
     expect(run?.status).toBe("failed");
     expect(run?.outcomeReason).toContain("build (`node -e");
-    expect(run?.outcomeReason).toContain("--allow-red-gates");
+    expect(run?.outcomeReason).toContain("Fix the base and run again");
 
     const root = await world.stores.executionNodes.get(
       {
@@ -102,16 +98,6 @@ describe("the gate audit on a run's machine", () => {
         .filter((artifact) => artifact.executionNodeId === started.rootNode.executionNodeId)
         .map((artifact) => artifact.kind),
     ).toEqual(["verification-log"]);
-  });
-
-  it("starts anyway when the human said --allow-red-gates", async () => {
-    const { result, run, lines } = await machine(
-      { verification: [{ id: "build", command: BROKEN }] },
-      { allowRedGates: true },
-    );
-    expect(result.proceed).toBe(true);
-    expect(run?.status).toBe("pending");
-    expect(lines.join("\n")).toContain("starting anyway");
   });
 
   it("does not audit again on a replacement machine, whose run has already begun", async () => {

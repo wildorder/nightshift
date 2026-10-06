@@ -144,9 +144,9 @@ install into `verification`, and never make a check install conditionally: that
 hides a missing `setup` behind a slower gate. Setup runs often, so prefer a
 command that is quick when there is nothing to do.
 
-`nightshift gates {id}` runs the setup and every check twice on the program
-branch, in a fresh checkout, as verification will, and says what is red, what
-is flaky and whether lockfiles are committed with no setup. Run it once the
+`nightshift gates {id}` runs the setup and every check on the program branch,
+in a fresh checkout, as verification will, and says what is red and whether
+lockfiles are committed with no setup. Run it once the
 contract's gates are written, before ratifying: a gate that cannot pass on the
 base stops the run before it starts, and the human is here now, not then.
 

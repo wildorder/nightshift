@@ -2,20 +2,18 @@
  * `nightshift gates {id}`, and the gate audit `nightshift run` does before it
  * creates a run.
  *
- * The program's setup and verification, run twice on the program branch's head
+ * The program's setup and verification, run once on the program branch's head
  * in a fresh checkout, exactly as verification would run them (see
- * `auditGates`). What it finds is printed as it goes and summed up at the end:
- * a gate that failed every time is red, and no job can pass verification on
- * that base; one that passed once and failed once is flaky; one that needs an
- * unmet prerequisite did not run.
+ * `auditGates`). Deterministic: commands and exit codes, no model. What it finds
+ * is printed as it goes and summed up at the end: a gate that failed is red,
+ * and no job can pass verification on that base; one that needs an unmet
+ * prerequisite did not run.
  */
 import type { ProgramContract } from "@nightshift/contracts";
 import { prerequisitesOf } from "@nightshift/core";
 import {
-  type AuditedGate,
   auditGates,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
-  GATE_AUDIT_PASSES,
   type GateAudit,
   outputTail,
   revParse,
@@ -42,7 +40,7 @@ export const auditProgramGates = async (
   const base = await revParse(environment.git, repoPath, branch);
   say(
     `auditing the gates on ${branch} at ${base.slice(0, 8)}: setup and every check, ` +
-      `${GATE_AUDIT_PASSES} times in a fresh checkout, as verification runs them`,
+      "in a fresh checkout, as verification runs them",
   );
   const unmet = new Set(
     prerequisitesOf(contract)
@@ -60,29 +58,23 @@ export const auditProgramGates = async (
     program: contract,
     unmet,
     timeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
-    onStep: ({ pass, result }) => {
+    onStep: (result) => {
       const verdict =
         result.exitCode === 0
           ? "ok  "
           : result.timedOut
             ? "FAIL (timed out)"
             : `FAIL (exited ${result.exitCode})`;
-      say(
-        `  run ${pass}  ${result.stepId.padEnd(width)}  ${verdict}  ${seconds(result.durationMs)}`,
-      );
+      say(`  ${result.stepId.padEnd(width)}  ${verdict}  ${seconds(result.durationMs)}`);
     },
   });
 };
 
-const lastFailure = (gate: AuditedGate) =>
-  [...gate.runs].reverse().find((run) => run.exitCode !== 0);
-
-/** Each red gate, with the end of what it said the last time it failed. */
+/** Each red gate, with the end of what it said. */
 const describeRed = (environment: CliEnvironment, audit: GateAudit, sha: string): void => {
   for (const gate of audit.gates.filter((candidate) => candidate.verdict === "failed")) {
-    environment.err(`RED   ${gate.id} failed every run on ${sha}: \`${gate.command}\``);
-    const failed = lastFailure(gate);
-    const said = failed === undefined ? [] : outputTail(failed).split("\n");
+    environment.err(`RED   ${gate.id} failed on ${sha}: \`${gate.command}\``);
+    const said = gate.result === undefined ? [] : outputTail(gate.result).split("\n");
     for (const line of said) environment.err(`    ${line}`);
   }
   if (!audit.red) return;
@@ -117,22 +109,11 @@ export const describeAudit = (
     say(`  not run: ${gate.id} waits on ${gate.waitingOn.join(", ")}`);
   }
   describeRed(environment, audit, sha);
-  if (audit.flaky.length > 0) {
-    environment.err(
-      `FLAKY ${audit.flaky.join(", ")} passed and failed on the same commit. A job's verification ` +
-        "will fail for no reason in its work some of the time, and each retry is a new attempt.",
-    );
-  }
   describeMissingSetup(say, audit.lockfilesWithoutSetup);
-  if (!audit.red && audit.flaky.length === 0) {
-    say(`the gates pass on ${sha}, ${GATE_AUDIT_PASSES} runs out of ${GATE_AUDIT_PASSES}`);
-  }
+  if (!audit.red) say(`the gates pass on ${sha}`);
 };
 
-/**
- * Exit code 0 unless a gate is red. Flaky gates and a missing setup are said,
- * not counted: they are the human's to weigh.
- */
+/** Exit code 0 unless a gate is red. A missing setup is said, not counted. */
 export const gates = async (
   environment: CliEnvironment,
   options: GatesOptions,

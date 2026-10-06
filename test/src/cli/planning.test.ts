@@ -331,16 +331,16 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     expect(op.out[0]).toMatch(/^run_/);
     const said = op.err.join("\n");
     expect(said).toContain("auditing the gates on");
-    expect(said).toMatch(/the gates pass on [0-9a-f]{8}, 2 runs out of 2/);
+    expect(said).toMatch(/the gates pass on [0-9a-f]{8}/);
   });
 
-  it("stops before creating anything when a gate fails every time on the base", async () => {
+  it("stops before creating anything when a gate fails on the base", async () => {
     await breakAGate();
     await cli("plan", "ratify", PROGRAM);
     await writeFile(join(fixture.repo, "release-token"), "present");
     expect(await cli("run", PROGRAM, "--attended")).toBe(1);
     const said = op.err.join("\n");
-    expect(said).toContain("RED   broken failed every run");
+    expect(said).toContain("RED   broken failed on");
     expect(said).toContain("the base is broken");
     expect(said).toContain("Nothing was started");
     const runs = await stores().runs.listByProgram(
@@ -348,15 +348,6 @@ describe("nightshift run {id} (SC-P7-04)", () => {
       {},
     );
     expect(runs.items).toEqual([]);
-  });
-
-  it("starts anyway with --allow-red-gates, for a program whose work is that gate", async () => {
-    await breakAGate();
-    await cli("plan", "ratify", PROGRAM);
-    await writeFile(join(fixture.repo, "release-token"), "present");
-    expect(await cli("run", PROGRAM, "--attended", "--allow-red-gates")).toBe(0);
-    expect(op.out[0]).toMatch(/^run_/);
-    expect(op.err.join("\n")).toContain("starting anyway, as --allow-red-gates says");
   });
 });
 
@@ -366,7 +357,7 @@ describe("nightshift gates", () => {
     commit("a lockfile");
     expect(await cli("gates", PROGRAM)).toBe(0);
     const said = op.out.join("\n");
-    expect(said).toContain("run 2");
+    expect(said).toMatch(/the gates pass on [0-9a-f]{8}/);
     expect(said).toContain("package-lock.json is committed and the program declares no setup");
   });
 

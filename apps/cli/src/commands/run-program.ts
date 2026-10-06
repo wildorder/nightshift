@@ -11,9 +11,8 @@
  *    prerequisite only a later strand needs does not stop it (D-P7-10): the
  *    work that needs it defers, and the rest of the night is not wasted;
  * 3. the gate audit (`gates.ts`), for a run on this machine: setup and every
- *    check, twice, on the base. A gate that fails every time stops the run here,
- *    because no job could pass verification, unless the human says
- *    `--allow-red-gates`. A remote run is audited on its own machine instead;
+ *    check, once, on the base. A gate that fails stops the run here, because no
+ *    job could pass verification. A remote run is audited on its own machine;
  * 4. the run, its program node, and the human's decisions (`startRun`);
  * 5. the headless root orchestrator, as a process, waited for;
  * 6. `report.md`, from the control plane alone.
@@ -66,8 +65,6 @@ export interface RunProgramOptions {
   /** P10: dispatch the run to a machine of its own instead of orchestrating here. */
   readonly remote?: boolean;
   readonly compute?: string;
-  /** Start even when a gate fails every time on the base. */
-  readonly allowRedGates?: boolean;
 }
 
 export interface RunProgramResult {
@@ -221,25 +218,18 @@ const recordConfirmations = async (
   }
 };
 
-/** The gate audit, said; false when a gate is red and the human did not say to start anyway. */
+/** The gate audit, said; false when a gate is red. */
 const gatesAllowStart = async (
   environment: CliEnvironment,
   ratified: ProgramContract,
-  options: RunProgramOptions,
+  repoPath: string,
 ): Promise<boolean> => {
   // On stderr, all of it: the run id stays the first line of stdout.
   const say = environment.err;
-  const audit = await auditProgramGates(environment, ratified, options.repoPath, say);
+  const audit = await auditProgramGates(environment, ratified, repoPath, say);
   describeAudit(environment, audit, say);
   if (!audit.red) return true;
-  if (options.allowRedGates === true) {
-    say("starting anyway, as --allow-red-gates says");
-    return true;
-  }
-  environment.err(
-    "Nothing was started. Fix the base, or start it anyway with --allow-red-gates " +
-      "if this program's work is to make that gate pass.",
-  );
+  environment.err("Nothing was started. Fix the base, then run this again.");
   return false;
 };
 
@@ -276,7 +266,10 @@ export const runProgram = async (
 
   // The gates, before anything is created. A remote run is audited on the
   // machine that will run it, which is the one whose gates matter.
-  if (options.remote !== true && !(await gatesAllowStart(environment, ratified, options))) {
+  if (
+    options.remote !== true &&
+    !(await gatesAllowStart(environment, ratified, options.repoPath))
+  ) {
     return { started: undefined, exitCode: 1 };
   }
 
@@ -297,7 +290,7 @@ export const runProgram = async (
   await recordConfirmations(environment, session, started, confirming);
   if (readiness !== undefined) {
     environment.out(started.run.runId);
-    await dispatchRun(environment, session, started, readiness, options.allowRedGates === true);
+    await dispatchRun(environment, session, started, readiness);
     return { started, exitCode: 0 };
   }
   environment.out(started.run.runId);

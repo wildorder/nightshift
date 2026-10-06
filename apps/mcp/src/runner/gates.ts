@@ -3,11 +3,11 @@
  *
  * A laptop run is audited by `nightshift run` before the run exists. A remote
  * run cannot be: the gates that matter are this machine's, with its toolchain,
- * its stores and its worker users. So the runner audits the base here, with
- * the same environment and the same users verification will use, and a gate
- * that fails every time ends the run as `failed` before any agent is paid for,
- * unless the human started it with `--allow-red-gates`. Each red gate's output
- * is kept on the run's program node, where the report and the Studio find it.
+ * its stores and its worker users. So the runner audits the base here, once,
+ * with the same environment and the same users verification will use, and a
+ * gate that fails ends the run as `failed` before any agent is paid for. Each
+ * red gate's output is kept on the run's program node, where the report and the
+ * Studio find it.
  *
  * Only on a dispatch's first machine. A replacement (T6) resumes a run that
  * has already started; its base was audited when it began.
@@ -48,9 +48,9 @@ export const redReason = (audit: GateAudit): string => {
     .map((gate) => `${gate.id} (\`${gate.command}\`)`)
     .join(", ");
   return (
-    `the gate audit on ${audit.base.slice(0, 8)} found ${named} failing every run, so no job ` +
-    "could pass verification; nothing was started. Fix the base, or run again with " +
-    "--allow-red-gates if this program's work is to make it pass. Each gate's output is on the run's program node."
+    `the gate audit on ${audit.base.slice(0, 8)} found ${named} failing, so no job ` +
+    "could pass verification; nothing was started. Fix the base and run again. " +
+    "Each gate's output is on the run's program node."
   );
 };
 
@@ -65,7 +65,7 @@ export const auditOnMachine = async (
       .filter((prerequisite) => prerequisite.status !== "satisfied")
       .map((prerequisite) => prerequisite.id),
   );
-  log(`gate audit: setup and every check, twice, on ${context.dispatch.input.baseSha.slice(0, 8)}`);
+  log(`gate audit: setup and every check, on ${context.dispatch.input.baseSha.slice(0, 8)}`);
   const audit = await auditGates({
     git: runtime.git,
     repoPath: context.layout.checkout,
@@ -80,20 +80,13 @@ export const auditOnMachine = async (
       agentId: `${context.dispatch.engineAgentId}-gates`,
       role: "worker",
     }),
-    onStep: ({ pass, result }) =>
+    onStep: (result) =>
       log(
-        `gate audit run ${pass}: ${result.stepId} ${result.exitCode === 0 ? "ok" : `exited ${result.exitCode}`} ` +
+        `gate audit: ${result.stepId} ${result.exitCode === 0 ? "ok" : `exited ${result.exitCode}`} ` +
           `in ${(result.durationMs / 1000).toFixed(1)}s`,
       ),
   });
-  if (audit.flaky.length > 0) log(`gate audit: flaky ${audit.flaky.join(", ")}`);
   if (!audit.red) return { proceed: true, audit };
-  if (context.dispatch.input.allowRedGates === true) {
-    log(
-      `gate audit: red (${audit.failing.join(", ")}); starting anyway, as --allow-red-gates says`,
-    );
-    return { proceed: true, audit };
-  }
 
   const run = await runtime.stores.runs.get(context.scope, context.scope.runId);
   if (run !== undefined) await keepRedOutput(runtime, context, run.rootNodeId, audit);
@@ -119,7 +112,7 @@ const keepRedOutput = async (
     writerId: `${context.dispatch.engineAgentId}-gates`,
   });
   for (const gate of audit.gates.filter((candidate) => candidate.verdict === "failed")) {
-    const last = gate.runs.at(-1);
+    const last = gate.result;
     if (last === undefined) continue;
     await recordArtifact(
       { ...runtime, outbox },

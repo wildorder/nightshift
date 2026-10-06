@@ -7,8 +7,9 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommitSha, ProgramContract } from "@nightshift/contracts";
+import type { StepResult } from "@nightshift/verification";
 import { afterEach, describe, expect, it } from "vitest";
-import { auditGates, type GateAuditProgress, verdictOf } from "./gate-audit.js";
+import { auditGates } from "./gate-audit.js";
 import { git, nodeGitRunner, revParse } from "./git/index.js";
 
 const AT = Date.parse("2026-10-06T12:00:00.000Z");
@@ -24,9 +25,6 @@ const temporary = async (prefix: string): Promise<string> => {
   made.push(dir);
   return dir;
 };
-
-/** A forward-slashed path, safe inside a single-quoted JavaScript string on Windows too. */
-const js = (path: string): string => path.replace(/\\/g, "/");
 
 const repository = async (
   files: Readonly<Record<string, string>> = {},
@@ -55,7 +53,7 @@ const audit = async (
   options: { files?: Record<string, string>; unmet?: readonly string[] } = {},
 ) => {
   const { repo, base } = await repository(options.files);
-  const progress: GateAuditProgress[] = [];
+  const progress: StepResult[] = [];
   const result = await auditGates({
     git: nodeGitRunner,
     repoPath: repo,
@@ -70,18 +68,13 @@ const audit = async (
 };
 
 describe("the gate audit", () => {
-  it("runs setup and every check twice, and a base that passes is not red", async () => {
+  it("runs setup and every check once, in order, and a base that passes is not red", async () => {
     const { result, progress } = await audit({
       setup: [{ id: "install", command: INSTALL }],
       verification: [{ id: "installed", command: NEEDS_INSTALL }],
     });
 
-    expect(progress.map((step) => `${step.pass}:${step.result.stepId}`)).toEqual([
-      "1:setup:install",
-      "1:installed",
-      "2:setup:install",
-      "2:installed",
-    ]);
+    expect(progress.map((step) => step.stepId)).toEqual(["setup:install", "installed"]);
     expect(result.gates.map((gate) => [gate.id, gate.verdict])).toEqual([
       ["setup:install", "passed"],
       ["installed", "passed"],
@@ -90,8 +83,8 @@ describe("the gate audit", () => {
     expect(result.failing).toEqual([]);
   });
 
-  it("calls a gate that fails every run red, and keeps what it said", async () => {
-    const { result } = await audit({
+  it("calls a base with a failing gate red, runs the rest, and keeps what it said", async () => {
+    const { result, progress } = await audit({
       verification: [
         { id: "build", command: FAIL },
         { id: "lint", command: PASS },
@@ -100,19 +93,9 @@ describe("the gate audit", () => {
 
     expect(result.red).toBe(true);
     expect(result.failing).toEqual(["build"]);
+    expect(progress.map((step) => step.stepId)).toEqual(["build", "lint"]);
     const build = result.gates.find((gate) => gate.id === "build");
-    expect(build?.runs).toHaveLength(2);
-    expect(new TextDecoder().decode(build?.runs[0]?.output)).toContain("the build is broken");
-  });
-
-  it("calls a gate that passes once and fails once flaky, not red", async () => {
-    const counter = join(await temporary("nightshift-audit-counter-"), "count");
-    // Fails the first time it runs, passes after: state outside the checkout.
-    const ONCE = `node -e "const f='${js(counter)}';const fs=require('fs');const n=fs.existsSync(f)?1:0;fs.writeFileSync(f,'1');process.exit(n?0:1)"`;
-    const { result } = await audit({ verification: [{ id: "e2e", command: ONCE }] });
-
-    expect(result.flaky).toEqual(["e2e"]);
-    expect(result.red).toBe(false);
+    expect(new TextDecoder().decode(build?.result?.output)).toContain("the build is broken");
   });
 
   it("does not run a check whose prerequisite is unmet, and says what it waits on", async () => {
@@ -126,7 +109,7 @@ describe("the gate audit", () => {
     expect(result.red).toBe(false);
   });
 
-  it("names a setup that fails every pass, and runs no check behind it", async () => {
+  it("names a setup that fails, and runs no check behind it", async () => {
     const { result } = await audit({
       setup: [{ id: "install", command: FAIL }],
       verification: [{ id: "test", command: PASS }],
@@ -135,14 +118,6 @@ describe("the gate audit", () => {
     expect(result.failing).toEqual(["setup:install"]);
     expect(result.gates.find((gate) => gate.id === "test")?.verdict).toBe("unrun");
     expect(result.red).toBe(true);
-  });
-
-  it("starts the second pass from a pristine checkout, as a re-verification does", async () => {
-    // Fails when an ignored file from an earlier run is still there.
-    const FRESH_ONLY = `node -e "const fs=require('fs');if(fs.existsSync('node_modules/left'))process.exit(1);fs.mkdirSync('node_modules',{recursive:true});fs.writeFileSync('node_modules/left','x')"`;
-    const { result } = await audit({ verification: [{ id: "build", command: FRESH_ONLY }] });
-
-    expect(result.gates[0]?.verdict).toBe("passed");
   });
 
   it("names the lockfiles a program with no setup leaves uninstalled", async () => {
@@ -168,23 +143,5 @@ describe("the gate audit", () => {
     expect(worktrees.match(/^worktree /gm)).toHaveLength(1);
     const work = made.find((dir) => dir.includes("nightshift-audit-work-"));
     expect(work === undefined ? [] : await readdir(work)).toEqual([]);
-  });
-});
-
-describe("a gate's verdict", () => {
-  const run = (exitCode: number) => ({
-    stepId: "x",
-    command: "x",
-    exitCode,
-    durationMs: 1,
-    output: new Uint8Array(),
-    timedOut: false,
-  });
-
-  it("is passed, failed or flaky from its runs, and unrun without any", () => {
-    expect(verdictOf([run(0), run(0)])).toBe("passed");
-    expect(verdictOf([run(1), run(2)])).toBe("failed");
-    expect(verdictOf([run(1), run(0)])).toBe("flaky");
-    expect(verdictOf([])).toBe("unrun");
   });
 });

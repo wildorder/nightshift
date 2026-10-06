@@ -73,13 +73,10 @@ export {
 export {
   type AuditedGate,
   auditGates,
-  GATE_AUDIT_PASSES,
   type GateAudit,
   type GateAuditInput,
-  type GateAuditProgress,
   type GateVerdict,
   outputTail,
-  verdictOf,
 } from "./gate-audit.js";
 export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";

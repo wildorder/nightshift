@@ -8,12 +8,9 @@
  * job for a reason none of them caused. The audit moves that moment to before
  * the run, where the human is.
  *
- * It runs exactly what verification runs, the same way: a new checkout of the
- * base, setup (seeded from the program checkout when the lockfiles match,
- * D-P10-24), then each check in the contract's order. Then it does it again in
- * the same checkout after `pristineCheckout`, which is what a re-verification in
- * a worker's reused worktree sees. Two runs tell a gate that is broken from one
- * that is flaky, and catch a gate that depends on state outside the checkout.
+ * It runs exactly what verification runs, the same way, once: a new checkout
+ * of the base, setup (seeded from the program checkout when the lockfiles
+ * match, D-P10-24), then each check in the contract's order.
  *
  * Deterministic: no model is asked anything, and the audit decides nothing on
  * its own. It reports; the caller decides what a red base means for its run.
@@ -31,32 +28,22 @@ import {
   setupAsStep,
   setupFailed,
 } from "@nightshift/verification";
-import {
-  addDetachedWorktree,
-  type GitRunner,
-  pristineCheckout,
-  pruneWorktrees,
-  tryGit,
-} from "./git/index.js";
-
-/** Two passes: the second is a re-verification in the same checkout. */
-export const GATE_AUDIT_PASSES = 2;
+import { addDetachedWorktree, type GitRunner, pruneWorktrees, tryGit } from "./git/index.js";
 
 /**
- * - `passed`: every run of it passed.
- * - `failed`: every run of it failed. The base cannot pass this gate.
- * - `flaky`: it passed and failed on the same commit.
+ * - `passed`: it exited 0.
+ * - `failed`: it did not. A failed check means the base cannot pass this gate.
  * - `waiting`: it needs a human prerequisite nobody has met, so it did not run.
- * - `unrun`: setup failed in every pass, so no check ran.
+ * - `unrun`: setup failed before it, or an earlier setup step did.
  */
-export type GateVerdict = "passed" | "failed" | "flaky" | "waiting" | "unrun";
+export type GateVerdict = "passed" | "failed" | "waiting" | "unrun";
 
 export interface AuditedGate {
   readonly id: string;
   readonly command: string;
   readonly kind: "setup" | "check";
-  /** One per pass the step ran in, in order. */
-  readonly runs: readonly StepResult[];
+  /** What it did, when it ran. */
+  readonly result?: StepResult;
   readonly verdict: GateVerdict;
   /** The unmet prerequisites, when `waiting`. */
   readonly waitingOn: readonly string[];
@@ -65,21 +52,15 @@ export interface AuditedGate {
 export interface GateAudit {
   readonly base: CommitSha;
   readonly gates: readonly AuditedGate[];
-  /** True when some gate failed every run: no job can pass verification on this base. */
+  /** True when some gate failed: no job can pass verification on this base. */
   readonly red: boolean;
   readonly failing: readonly string[];
-  readonly flaky: readonly string[];
   /**
    * Lockfiles at the base when the program declares no setup. Every
    * verification then starts with nothing installed, and only an install folded
    * into the gates, if there is one, makes them pass.
    */
   readonly lockfilesWithoutSetup: readonly string[];
-}
-
-export interface GateAuditProgress {
-  readonly pass: number;
-  readonly result: StepResult;
 }
 
 export interface GateAuditInput {
@@ -98,55 +79,43 @@ export interface GateAuditInput {
   /** Who each step runs as, as verification's do on a machine (D-P10-25). Absent, as this process. */
   readonly as?: RunVerificationInput["as"];
   /** After each step, for a caller that shows progress. */
-  readonly onStep?: (progress: GateAuditProgress) => void;
+  readonly onStep?: (result: StepResult) => void;
 }
 
-/** A gate's verdict from its runs. */
-export const verdictOf = (runs: readonly StepResult[]): GateVerdict => {
-  if (runs.length === 0) return "unrun";
-  const passed = runs.filter((run) => run.exitCode === 0).length;
-  if (passed === runs.length) return "passed";
-  return passed === 0 ? "failed" : "flaky";
+const verdictOf = (result: StepResult | undefined): GateVerdict => {
+  if (result === undefined) return "unrun";
+  return result.exitCode === 0 ? "passed" : "failed";
 };
 
-type RunsById = Map<string, StepResult[]>;
-
-/** Both passes in `checkout`: setup, then each runnable check, the second pass after a pristine clean. */
-const runPasses = async (
+/** Setup, then, when it passed, each runnable check, in `checkout`. */
+const runOnce = async (
   input: GateAuditInput,
   checkout: string,
   runnable: readonly VerificationStep[],
-): Promise<RunsById> => {
-  const runs: RunsById = new Map();
-  const record = (pass: number, result: StepResult): void => {
-    runs.set(result.stepId, [...(runs.get(result.stepId) ?? []), result]);
-    input.onStep?.({ pass, result });
+): Promise<Map<string, StepResult>> => {
+  const results = new Map<string, StepResult>();
+  const record = (result: StepResult): void => {
+    results.set(result.stepId, result);
+    input.onStep?.(result);
   };
   const how = {
     timeoutMs: input.timeoutMs,
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.as === undefined ? {} : { as: input.as }),
   };
-  for (let pass = 1; pass <= GATE_AUDIT_PASSES; pass += 1) {
-    if (pass > 1) await pristineCheckout(input.git, checkout, input.base);
-    const prepared = await runSetupSteps({
-      setup: input.program.setup ?? [],
-      cwd: checkout,
-      reference: input.repoPath,
-      ...how,
-    });
-    for (const result of prepared) record(pass, result);
-    if (setupFailed(prepared)) continue;
-    for (const step of runnable) {
-      const [result] = await runVerificationSteps({
-        steps: [step],
-        cwd: checkout,
-        ...how,
-      });
-      if (result !== undefined) record(pass, result);
-    }
+  const prepared = await runSetupSteps({
+    setup: input.program.setup ?? [],
+    cwd: checkout,
+    reference: input.repoPath,
+    ...how,
+  });
+  for (const result of prepared) record(result);
+  if (setupFailed(prepared)) return results;
+  for (const step of runnable) {
+    const [result] = await runVerificationSteps({ steps: [step], cwd: checkout, ...how });
+    if (result !== undefined) record(result);
   }
-  return runs;
+  return results;
 };
 
 /** The lockfiles committed at `base`, when the program declares no setup. */
@@ -176,9 +145,9 @@ export const auditGates = async (input: GateAuditInput): Promise<GateAudit> => {
   await pruneWorktrees(input.git, input.repoPath);
   await addDetachedWorktree(input.git, { repo: input.repoPath, path: checkout, base: input.base });
 
-  let runs: RunsById;
+  let results: Map<string, StepResult>;
   try {
-    runs = await runPasses(input, checkout, runnable);
+    results = await runOnce(input, checkout, runnable);
   } finally {
     await tryGit(input.git, ["worktree", "remove", "--force", checkout], {
       cwd: input.repoPath,
@@ -192,38 +161,36 @@ export const auditGates = async (input: GateAuditInput): Promise<GateAudit> => {
   const gates: AuditedGate[] = [
     ...(input.program.setup ?? []).map((step): AuditedGate => {
       const id = setupAsStep(step).id;
-      const ran = runs.get(id) ?? [];
+      const result = results.get(id);
       return {
         id,
         command: step.command,
         kind: "setup",
-        runs: ran,
-        verdict: verdictOf(ran),
+        ...(result === undefined ? {} : { result }),
+        verdict: verdictOf(result),
         waitingOn: [],
       };
     }),
     ...input.program.verification.map((step): AuditedGate => {
       const waiting = waitingOn(step);
-      const ran = runs.get(step.id) ?? [];
+      const result = results.get(step.id);
       return {
         id: step.id,
         command: step.command,
         kind: "check",
-        runs: ran,
-        verdict: waiting.length > 0 ? "waiting" : verdictOf(ran),
+        ...(result === undefined ? {} : { result }),
+        verdict: waiting.length > 0 ? "waiting" : verdictOf(result),
         waitingOn: waiting,
       };
     }),
   ];
-  // A setup step that failed every pass is what left the checks `unrun`; it is
-  // the one named.
+  // A failed setup step is what left the checks `unrun`; it is the one named.
   const failing = gates.filter((gate) => gate.verdict === "failed").map((gate) => gate.id);
   return {
     base: input.base,
     gates,
     red: failing.length > 0,
     failing,
-    flaky: gates.filter((gate) => gate.verdict === "flaky").map((gate) => gate.id),
     lockfilesWithoutSetup: await lockfilesWithoutSetupAt(input),
   };
 };
