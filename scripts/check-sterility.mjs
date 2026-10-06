@@ -6,9 +6,12 @@
  * branch. Five rules, defined by `tasks/p1-foundation/T3-sterility-and-
  * architecture.md`:
  *
- *   1. No v0 artifacts: `nightshift.config.json`, `docs/as-built.md`, or a v0
- *      manifest (JSON/YAML with a top-level `workstreams` key) under
- *      `docs/programs/` or `tasks/`.
+ *   1. No v0 artifacts: a v0 `nightshift.config.json`, `docs/as-built.md`, or a
+ *      v0 manifest (JSON/YAML with a top-level `workstreams` key) under
+ *      `docs/programs/` or `tasks/`. v1 reuses the config's file name for its
+ *      own project config (P7, D-P7-03), and Nightshift is now a Nightshift
+ *      project itself (P15), so the file is told apart by what it holds: v1's
+ *      is a JSON object with `schemaVersion` 1 and a `proj_` project id.
  *   2. No `package.json` depends on `@wildorder/nightshift` or on any package
  *      whose name contains `program-pipeline`.
  *   3. No tracked file contains a v0 marker string.
@@ -54,6 +57,22 @@ const FORBIDDEN_DIRS = new Set(["dist", "build-logs", "unused", "worktrees"]);
 /** Files whose mere presence is a v0 artifact (rule 1). */
 const FORBIDDEN_BASENAMES = new Set(["nightshift.config.json"]);
 const FORBIDDEN_PATHS = new Set(["docs/as-built.md"]);
+
+/** v1's own `nightshift.config.json` (D-P7-03): a JSON object, `schemaVersion` 1, a `proj_` project id. */
+const isV1Config = (text) => {
+  try {
+    const parsed = JSON.parse(text);
+    return (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      parsed.schemaVersion === 1 &&
+      typeof parsed.projectId === "string" &&
+      parsed.projectId.startsWith("proj_")
+    );
+  } catch {
+    return false;
+  }
+};
 
 /** Where a v0 program manifest would live (rule 1). */
 const MANIFEST_DIRS = ["docs/programs/", "tasks/"];
@@ -130,7 +149,7 @@ const RULES = [
           offenders.push({ path, detail: "v0 as-built document" });
           continue;
         }
-        if (FORBIDDEN_BASENAMES.has(basename(path))) {
+        if (FORBIDDEN_BASENAMES.has(basename(path)) && !isV1Config(text)) {
           offenders.push({ path, detail: "v0 configuration schema" });
           continue;
         }
@@ -278,6 +297,10 @@ const CLEAN_FIXTURE = [
   { path: "package.json", text: JSON.stringify({ name: "nightshift", private: true }) },
   { path: "packages/core/src/index.ts", text: "export {};\n" },
   { path: "docs/programs/p1-foundation.md", text: "# Program P1\n" },
+  {
+    path: "nightshift.config.json",
+    text: JSON.stringify({ schemaVersion: 1, projectId: "proj_01M49RRHPS6B770S9G5HDCPSD2" }),
+  },
 ];
 
 /** Verify every rule still detects its own violation and still accepts a clean tree. */
