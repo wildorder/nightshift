@@ -72,6 +72,18 @@ const commit = (message: string): void => {
   git("-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", message);
 };
 
+/** Adds a gate that fails on every commit, through the config every program inherits. */
+const breakAGate = async (): Promise<void> => {
+  const path = join(fixture.repo, "nightshift.config.json");
+  const config = JSON.parse(await readFile(path, "utf8"));
+  config.verification = [
+    ...config.verification,
+    { id: "broken", command: `node -e "console.log('the base is broken');process.exit(1)"` },
+  ];
+  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`);
+  commit("break a gate");
+};
+
 const cli = async (...argv: string[]): Promise<number> => {
   op.out.length = 0;
   op.err.length = 0;
@@ -311,6 +323,57 @@ describe("nightshift run {id} (SC-P7-04)", () => {
 
   it("still runs a contract by its path", async () => {
     expect(await cli("run", join(fixture.repo, "nightshift.program.json"))).toBe(0);
+  });
+  it("audits the gates first, on stderr, so the run id is still the first line out", async () => {
+    await cli("plan", "ratify", PROGRAM);
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended")).toBe(0);
+    expect(op.out[0]).toMatch(/^run_/);
+    const said = op.err.join("\n");
+    expect(said).toContain("auditing the gates on");
+    expect(said).toMatch(/the gates pass on [0-9a-f]{8}, 2 runs out of 2/);
+  });
+
+  it("stops before creating anything when a gate fails every time on the base", async () => {
+    await breakAGate();
+    await cli("plan", "ratify", PROGRAM);
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended")).toBe(1);
+    const said = op.err.join("\n");
+    expect(said).toContain("RED   broken failed every run");
+    expect(said).toContain("the base is broken");
+    expect(said).toContain("Nothing was started");
+    const runs = await stores().runs.listByProgram(
+      { projectId: contract.projectId, programId: contract.programId },
+      {},
+    );
+    expect(runs.items).toEqual([]);
+  });
+
+  it("starts anyway with --allow-red-gates, for a program whose work is that gate", async () => {
+    await breakAGate();
+    await cli("plan", "ratify", PROGRAM);
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended", "--allow-red-gates")).toBe(0);
+    expect(op.out[0]).toMatch(/^run_/);
+    expect(op.err.join("\n")).toContain("starting anyway, as --allow-red-gates says");
+  });
+});
+
+describe("nightshift gates", () => {
+  it("answers 0 when the gates pass, and says the program declares no setup", async () => {
+    await writeFile(join(fixture.repo, "package-lock.json"), "{}\n");
+    commit("a lockfile");
+    expect(await cli("gates", PROGRAM)).toBe(0);
+    const said = op.out.join("\n");
+    expect(said).toContain("run 2");
+    expect(said).toContain("package-lock.json is committed and the program declares no setup");
+  });
+
+  it("answers 1 when a gate is red, with what it said", async () => {
+    await breakAGate();
+    expect(await cli("gates", PROGRAM)).toBe(1);
+    expect(op.err.join("\n")).toContain("the base is broken");
   });
 });
 

@@ -22,7 +22,7 @@ one where the human can watch**:
 
 ## 0. Make sure it is Nightshift v1
 
-`nightshift --help` must list `run`, `resume` and `preflight`. If it does not,
+`nightshift --help` must list `run`, `resume`, `preflight` and `gates`. If it does not,
 the `nightshift` on the PATH is an older tool of the same name: stop and say so.
 
 ## 1. Before starting
@@ -53,12 +53,23 @@ Check, and say what you find, without fixing anything the human did not ask for:
   it back to planning: the fix is a `setup` in `nightshift.config.json` or the
   contract, never an install folded into the gate. Say it once, and let the human choose
   `--model` or lower the limit in `nightshift.config.json` if they want.
+- **The gates.** `nightshift run` audits them before it creates anything: setup
+  and every check, twice, in a fresh checkout of the program branch, as
+  verification will run them. It prints the audit on stderr and stops with exit 1
+  when a gate fails every time, because no job could then pass verification.
+  Relay what it said: which gate, and the end of its output. The fix is the
+  human's, in the repository. Only when the program's own work is to make that
+  gate pass does `--allow-red-gates` belong on the command, and only when the
+  human says so. A **flaky** gate (passed once, failed once) does not stop the
+  run; say it, because each flake costs a job a retry. `nightshift gates {id}`
+  runs the same audit on its own, for a human who wants to know before deciding.
 
 ## 2. Attended: this session orchestrates
 
 1. `nightshift run {id} --attended` creates the run and prints its id. It runs
    preflight first and stops with remediations if a first strand's prerequisite
-   is unmet.
+   is unmet, then the gate audit, and stops if a gate is red (section 1). The
+   audit runs the whole gate twice, so expect it to take that long.
 2. `run.attach { runId, model: "<the model you are>" }`.
 3. `strand.delegate { strandId }` for **every** strand, at once. You name the
    strand and nothing else: its orchestrator is handed its plan section

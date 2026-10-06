@@ -10,6 +10,7 @@ import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import { createRunnerPlane, createRuntime } from "../compose.js";
 import { describeHeadlessEnding, runHeadless } from "../headless.js";
 import { workerUserName } from "../run-as.js";
+import { auditOnMachine } from "../runner/gates.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
 import {
@@ -63,6 +64,9 @@ runRunner({
       parentEnv: process.env,
     });
     const runtime = await createRuntime(env, "orchestrator");
+    // The base's gates, on this machine, before any agent is paid for.
+    const audited = await auditOnMachine(runtime, context, say);
+    if (!audited.proceed) return;
     say(`root starting in ${context.layout.checkout}`);
     const result = await runHeadless(runtime, env, {
       scope: context.scope,

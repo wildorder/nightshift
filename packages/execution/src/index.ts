@@ -70,6 +70,17 @@ export {
   RULING_CONTEXT_ENV,
   type RulingContext,
 } from "./examine.js";
+export {
+  type AuditedGate,
+  auditGates,
+  GATE_AUDIT_PASSES,
+  type GateAudit,
+  type GateAuditInput,
+  type GateAuditProgress,
+  type GateVerdict,
+  outputTail,
+  verdictOf,
+} from "./gate-audit.js";
 export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";
 export { type IntegrateInput, type IntegrateResult, integrateNode } from "./integrate.js";
@@ -106,6 +117,7 @@ export {
   type StartedJob,
   type StartJobInput,
   startJob,
+  stepsAs,
   verifyAndIntegrate,
 } from "./runner.js";
 export { checkChangedPaths, describeScopeViolation, type ScopeCheck } from "./scope-check.js";
@@ -123,6 +135,7 @@ export {
   stampSettledDecisions,
 } from "./stamp.js";
 export {
+  failBeforeStart,
   PlanChangedError,
   PlanNotRatifiedError,
   ProgramContractChangedError,

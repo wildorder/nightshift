@@ -44,6 +44,11 @@ export interface RunOptions {
   readonly model?: string;
   /** A correction only (P9, D-P9-05): decisions outside the repository the owner confirms. */
   readonly confirmIrreversible?: readonly string[];
+  /**
+   * Start even when the gate audit finds a gate that fails every time: for a
+   * program whose work is to make that gate pass.
+   */
+  readonly allowRedGates?: boolean;
   /** With `--remote` (P10, D-P10-14): the tier, else the contract's, the config's, the recommendation, `good`. */
   readonly compute?: string;
 }
@@ -144,6 +149,7 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
     const planned = await runProgram(environment, session, source.files, {
       repoPath,
       attended: options.attended === true,
+      allowRedGates: options.allowRedGates === true,
       remote: options.remote,
       ...(options.compute === undefined ? {} : { compute: options.compute }),
       ...(options.harness === undefined ? {} : { harness: options.harness }),

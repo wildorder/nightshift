@@ -31,8 +31,15 @@ import type {
   Run,
 } from "@nightshift/contracts";
 import { defaultOrgConfig, EventSchema, ProgramContractSchema } from "@nightshift/contracts";
-import type { Clock, IdGenerator, ProjectStores } from "@nightshift/core";
-import { isPlanned, nowIso, planHash, requireEffectivePolicy } from "@nightshift/core";
+import type { Clock, IdGenerator, ProjectStores, RunScope } from "@nightshift/core";
+import {
+  finishRun,
+  isPlanned,
+  nowIso,
+  planHash,
+  requireEffectivePolicy,
+  transitionRun,
+} from "@nightshift/core";
 import { checkpointRef, type GitRunner, revParse, updateRef } from "./git/index.js";
 
 export interface StartRunEnvironment {
@@ -324,4 +331,39 @@ export const startRun = async (
   await emit("checkpoint.created", { checkpointId, ref, commitSha: baseCommit });
 
   return { program, run, rootNode, checkpoint, baseCommit };
+};
+
+/**
+ * Ends a run that never got to work: its program node and the run to
+ * `running`, then both to `failed` with `reason`, one table step at a time.
+ * For a run whose machine found, before any agent started, that it cannot
+ * succeed (the gate audit, on a remote machine).
+ */
+export const failBeforeStart = async (
+  deps: Pick<StartRunEnvironment, "stores" | "clock">,
+  scope: RunScope,
+  reason: string,
+): Promise<void> => {
+  const { stores, clock } = deps;
+  const run = await stores.runs.get(scope, scope.runId);
+  if (run === undefined || run.status !== "pending") return;
+  let node = await stores.executionNodes.get(scope, run.rootNodeId);
+  for (const next of ["queued", "running"] as const) {
+    if (
+      node !== undefined &&
+      ((next === "queued" && node.status === "validated") ||
+        (next === "running" && node.status === "queued"))
+    ) {
+      node = { ...node, status: next, updatedAt: nowIso(clock) };
+      await stores.executionNodes.put(node);
+    }
+  }
+  const at = nowIso(clock);
+  const running: Run = { ...run, status: "running" };
+  await stores.runs.put(running);
+  await stores.runs.put(transitionRun(running, "fail", { endedAt: at, outcomeReason: reason }));
+  if (node !== undefined) {
+    const ended = finishRun(node, "failed", at, reason);
+    if (ended !== node) await stores.executionNodes.put(ended);
+  }
 };

@@ -10,9 +10,13 @@
  *    here with their remediations, because there is nothing to carry on with. A
  *    prerequisite only a later strand needs does not stop it (D-P7-10): the
  *    work that needs it defers, and the rest of the night is not wasted;
- * 3. the run, its program node, and the human's decisions (`startRun`);
- * 4. the headless root orchestrator, as a process, waited for;
- * 5. `report.md`, from the control plane alone.
+ * 3. the gate audit (`gates.ts`), for a run on this machine: setup and every
+ *    check, twice, on the base. A gate that fails every time stops the run here,
+ *    because no job could pass verification, unless the human says
+ *    `--allow-red-gates`. A remote run is audited on its own machine instead;
+ * 4. the run, its program node, and the human's decisions (`startRun`);
+ * 5. the headless root orchestrator, as a process, waited for;
+ * 6. `report.md`, from the control plane alone.
  *
  * The exit code is 0 only when the run succeeded: anything parked is 1, and a
  * run whose only shortfall is deferred work is 3, so a script chaining programs
@@ -43,6 +47,7 @@ import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import type { ProgramFiles } from "../program-files.js";
 import type { Session } from "../session.js";
+import { auditProgramGates, describeAudit } from "./gates.js";
 import { assertRemoteReady, dispatchRun } from "./remote.js";
 
 export const REPORT_FILE = "report.md";
@@ -61,6 +66,8 @@ export interface RunProgramOptions {
   /** P10: dispatch the run to a machine of its own instead of orchestrating here. */
   readonly remote?: boolean;
   readonly compute?: string;
+  /** Start even when a gate fails every time on the base. */
+  readonly allowRedGates?: boolean;
 }
 
 export interface RunProgramResult {
@@ -214,6 +221,28 @@ const recordConfirmations = async (
   }
 };
 
+/** The gate audit, said; false when a gate is red and the human did not say to start anyway. */
+const gatesAllowStart = async (
+  environment: CliEnvironment,
+  ratified: ProgramContract,
+  options: RunProgramOptions,
+): Promise<boolean> => {
+  // On stderr, all of it: the run id stays the first line of stdout.
+  const say = environment.err;
+  const audit = await auditProgramGates(environment, ratified, options.repoPath, say);
+  describeAudit(environment, audit, say);
+  if (!audit.red) return true;
+  if (options.allowRedGates === true) {
+    say("starting anyway, as --allow-red-gates says");
+    return true;
+  }
+  environment.err(
+    "Nothing was started. Fix the base, or start it anyway with --allow-red-gates " +
+      "if this program's work is to make that gate pass.",
+  );
+  return false;
+};
+
 /** Deferred work and nothing worse: its own code, so a script can tell "come back" from "it broke". */
 export const EXIT_DEFERRED = 3;
 
@@ -245,6 +274,12 @@ export const runProgram = async (
 
   const confirming = await requireConfirmations(session, ratified, options);
 
+  // The gates, before anything is created. A remote run is audited on the
+  // machine that will run it, which is the one whose gates matter.
+  if (options.remote !== true && !(await gatesAllowStart(environment, ratified, options))) {
+    return { started: undefined, exitCode: 1 };
+  }
+
   // P10: everything the checkout can say against a remote dispatch, before the
   // run exists (SC-P10-02). The ratified record, not the file: ratification
   // lives on the control plane, and contract.json's status stays `planning`.
@@ -262,7 +297,7 @@ export const runProgram = async (
   await recordConfirmations(environment, session, started, confirming);
   if (readiness !== undefined) {
     environment.out(started.run.runId);
-    await dispatchRun(environment, session, started, readiness);
+    await dispatchRun(environment, session, started, readiness, options.allowRedGates === true);
     return { started, exitCode: 0 };
   }
   environment.out(started.run.runId);

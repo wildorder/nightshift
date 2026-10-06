@@ -40,6 +40,12 @@ export {
 } from "./role.js";
 export { examinationServices, routeJob } from "./routing.js";
 export {
+  auditOnMachine,
+  type MachineAuditContext,
+  type MachineAuditResult,
+  type MachineAuditRuntime,
+} from "./runner/gates.js";
+export {
   type CreateServerInput,
   createNightshiftServer,
   type NightshiftServer,

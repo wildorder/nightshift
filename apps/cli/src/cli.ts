@@ -19,6 +19,7 @@
 import { parseArgs } from "node:util";
 import { planConversation } from "./commands/conversation.js";
 import { decisionBrief, reverseDecision } from "./commands/decision.js";
+import { gates } from "./commands/gates.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
 import { runLocal, useStage } from "./commands/local.js";
@@ -58,8 +59,9 @@ Usage:
   nightshift plan ratify <program> [--repo <path>]
   nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>]
   nightshift preflight <program> [--repo <path>] [--recheck]
-  nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--repo <path>]
-  nightshift run <program> --remote [--compute good|better|best] [--repo <path>]
+  nightshift gates <program> [--repo <path>]
+  nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--allow-red-gates] [--repo <path>]
+  nightshift run <program> --remote [--compute good|better|best] [--allow-red-gates] [--repo <path>]
   nightshift remote status|cancel|resume <program> [--run <id>] [--repo <path>]
   nightshift resume <program> [--run <id>] [--repo <path>]
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
@@ -88,6 +90,11 @@ watching, and exits non-zero when anything was parked. --attended only creates
 the run, for your own orchestrator session to attach to. A check that needs
 something only you can supply does not stop the night: the work carries on a
 provisional line, and \`resume\` runs those checks and lands it when you are back.
+\`gates <program>\` runs the program's setup and every check twice on the program
+branch, in a fresh checkout, as verification will. \`run\` does the same before it
+creates a run, and stops when a gate fails every time, because no job could then
+pass verification; --allow-red-gates starts it anyway, for a program whose work
+is to make that gate pass.
 
 \`nightshift login\` needs no flags: the CLI knows where the control plane is.
 Over SSH, add --no-browser and paste the address your browser lands on.
@@ -238,7 +245,8 @@ const doProject = async (environment: CliEnvironment, args: readonly string[]): 
 };
 
 const doRun = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift run <program | contract> [--repo <path>] [--remote [--compute <tier>]]";
+  const usage =
+    "nightshift run <program | contract> [--repo <path>] [--remote [--compute <tier>]] [--allow-red-gates]";
   const { values, positionals } = parse(
     {
       args: [...args],
@@ -250,6 +258,7 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
         harness: { type: "string" },
         model: { type: "string" },
         "confirm-irreversible": { type: "string", multiple: true },
+        "allow-red-gates": { type: "boolean", default: false },
       },
       allowPositionals: true,
       strict: true,
@@ -276,6 +285,7 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
     remote: values.remote === true,
     ...(compute === undefined ? {} : { compute }),
     attended: values.attended === true,
+    allowRedGates: values["allow-red-gates"] === true,
     ...(harness === undefined ? {} : { harness }),
     ...(model === undefined ? {} : { model }),
     ...(values["confirm-irreversible"] === undefined
@@ -389,6 +399,12 @@ const doPreflight = async (
     ...(repo === undefined ? {} : { repo }),
     recheck: values.recheck === true,
   });
+};
+
+const doGates = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage = "nightshift gates <program> [--repo <path>]";
+  const { id, repo } = programArgs(args, usage);
+  return gates(environment, { id, ...(repo === undefined ? {} : { repo }) });
 };
 
 const doResume = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
@@ -648,6 +664,8 @@ const dispatch = async (
       return doPlan(environment, args);
     case "preflight":
       return doPreflight(environment, args);
+    case "gates":
+      return doGates(environment, args);
     case "run":
       return doRun(environment, args);
     case "resume":

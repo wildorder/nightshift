@@ -50,6 +50,13 @@ export const DispatchInputSchema = z.strictObject({
   branch: z.string().min(1),
   baseSha: CommitShaSchema,
   planHash: z.string().min(1),
+  /**
+   * The human started the run knowing a gate fails every time on the base, for
+   * a program whose work is to make it pass (`--allow-red-gates`). Absent
+   * means false: the runner's gate audit ends the run before any agent starts
+   * when a gate is red.
+   */
+  allowRedGates: z.literal(true).optional(),
 });
 export type DispatchInput = z.infer<typeof DispatchInputSchema>;
 

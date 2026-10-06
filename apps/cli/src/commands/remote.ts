@@ -138,6 +138,7 @@ export const dispatchRun = async (
   session: Session,
   started: StartedRun,
   readiness: RemoteReadiness,
+  allowRedGates = false,
 ): Promise<Dispatch> => {
   const contract: ProgramContract = started.program;
   const scope: RunScope = {
@@ -176,6 +177,7 @@ export const dispatchRun = async (
           branch: readiness.branch,
           baseSha: readiness.baseSha,
           planHash: contract.planHash,
+          ...(allowRedGates ? { allowRedGates: true } : {}),
         },
       },
     }),
