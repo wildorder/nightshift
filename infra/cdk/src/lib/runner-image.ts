@@ -20,7 +20,7 @@ export const RUNNER_TOOLCHAIN = {
   node: "24.11.1",
   pnpm: "10.17.1",
   claude: "2.1.286",
-  codex: "0.154.0",
+  codex: "0.155.1",
   uv: "0.9.4",
   /** Docker's rootless extras (rootlesskit and the setup tool), from Docker's static builds. */
   dockerRootlessExtras: "27.5.1",

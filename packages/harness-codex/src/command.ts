@@ -84,7 +84,7 @@ import type { RouteTarget } from "@nightshift/contracts";
 import { type McpLaunch, nightshiftToolNames } from "@nightshift/harness";
 
 /** The CLI version every flag and every stream shape here was verified against. */
-export const VERIFIED_CODEX_VERSION = "0.154.0";
+export const VERIFIED_CODEX_VERSION = "0.155.1";
 
 export const CODEX_COMMAND = "codex";
 
