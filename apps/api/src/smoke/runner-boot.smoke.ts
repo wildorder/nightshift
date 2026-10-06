@@ -855,7 +855,14 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     const contract = makeProgramContract(f, {
       status: "planning",
       ...(EXAMINED_BY_CODEX
-        ? { examinationPolicy: { low: strict, medium: strict, high: strict } }
+        ? {
+            examinationPolicy: { low: strict, medium: strict, high: strict },
+            modelPolicy: {
+              allowedProviders: ["anthropic", "openai"],
+              allowedModels: [],
+              forbiddenModels: [],
+            },
+          }
         : {}),
       repository: { url: FIXTURE_REPOSITORY, baseBranch: "main", programBranch: FIXTURE_BRANCH },
       // The monorepo's typecheck resolves workspaces through their dist, so
