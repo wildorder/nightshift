@@ -187,7 +187,7 @@ describe("nightshift run, against the real handler", () => {
         repo: fixture.repo,
         remote: true,
       }),
-    ).rejects.toThrow(/ratified planned program/);
+    ).rejects.toThrow(/remote execution runs a planned program/);
 
     // Nothing reached the control plane: no program, so no run to find.
     const transport = createFetchTransport({

@@ -116,7 +116,7 @@ const PORT_METHODS = {
   dispatches: ["put", "get", "listByStatus"],
   installationClaims: ["claim"],
   computeUtilizations: ["put", "get", "listByProject"],
-  warmCaches: ["put", "get"],
+  warmCaches: ["put", "get", "delete"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
 /** `store.method` for every entry above. */
@@ -757,6 +757,7 @@ describe("the remote runner's records (P10)", () => {
       /heartbeat/,
     );
     await expect(http.warmCaches.put(makeWarmCache(f))).rejects.toThrow(/reconciler/);
+    await expect(http.warmCaches.delete(f.scope.projectId, "x86_64")).rejects.toThrow(/dispatcher/);
     await expect(http.computeUtilizations.listByProject(f.scope.projectId)).rejects.toThrow(
       /recommendation/,
     );
