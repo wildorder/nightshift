@@ -59,6 +59,7 @@ they share a fixture and a theme so closely that splitting duplicates setup.
 | **P12** | Local Instance | — (inserted) | Nightshift runs on one machine with no cloud account: `nightshift local`, the same plane over SQLite, the Studio beside it; the repository opened under Apache-2.0 | — | closed 2026-09-29 (`p12-local-instance.md`) |
 | **P13** | Studio UI | — (inserted) | A SaaS-shaped Studio on shadcn/ui, restyled from one theme file: program status on each card and the run's first tab, the run as a horizontal graph with a decision's recorded reach | — | closed 2026-09-29 (`p13-studio-ui.md`) |
 | **P14** | Intent | — (inserted) | Every program keeps why it exists: user stories in the owner's own words, the planning conversation as evidence, and every strand, job and decision linked to the story it serves; the Studio and the report lead with them | — | built 2026-09-30; the owner's trial follows (`p14-intent.md`) |
+| **P15** | Gate Health | — (inserted) | Planning audits a repository's gates against Nightshift's gate standard before ratification and the human decides each fix; a run repairs a broken or flaky gate itself and records it as a decision, never re-planning | — | ratified 2026-10-06; built by Nightshift on a remote run (`p15-gate-health.md`) |
 
 Open decision IDs refer to `docs/architecture.md` §3.
 
