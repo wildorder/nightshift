@@ -117,9 +117,10 @@ describe("nightshift run", () => {
     }).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(UsageError);
-    expect((failure as Error).message).toBe(REMOTE_REFUSAL);
+    expect((failure as Error).message).toContain(REMOTE_REFUSAL);
     // P10 (D-P10-09): a contract file is not a ratified planned program.
-    expect(REMOTE_REFUSAL).toMatch(/ratified planned program/);
+    expect(REMOTE_REFUSAL).toMatch(/planned program/);
+    expect(REMOTE_REFUSAL).not.toMatch(/ratified/);
     // Refused before anything was written.
     expect(plane.calls).toHaveLength(0);
   });

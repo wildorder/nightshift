@@ -119,11 +119,23 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
   // Remote execution is for a ratified planned program and nothing else
   // (D-P10-09): a contract path is refused before it is even read.
   if (options.remote && !isProgramDirectoryName(options.contract)) {
-    throw new UsageError(REMOTE_REFUSAL, "Drop `--remote` to start a local run from a contract.");
+    throw new UsageError(
+      `${REMOTE_REFUSAL}; \`${options.contract}\` is not a program directory name`,
+      "Drop `--remote` to start a local run from a contract.",
+    );
   }
   const source = await readSource(environment, options, repoPath);
-  if (options.remote && (source.files === undefined || !isPlanned(source.files.contract))) {
-    throw new UsageError(REMOTE_REFUSAL, "Drop `--remote` to start a local run from a contract.");
+  if (options.remote && source.files === undefined) {
+    throw new UsageError(
+      `${REMOTE_REFUSAL}; no docs/programs/${options.contract}/ under ${repoPath}`,
+      "Run from the repository root, or pass --repo <path>.",
+    );
+  }
+  if (options.remote && source.files !== undefined && !isPlanned(source.files.contract)) {
+    throw new UsageError(
+      `${REMOTE_REFUSAL}; ${options.contract} has no strands, so it is not a planned program`,
+      "Plan it (`nightshift plan check`) and ratify it, or drop `--remote` to run the contract locally.",
+    );
   }
 
   const session = await openSession(environment);

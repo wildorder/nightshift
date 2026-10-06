@@ -36,8 +36,14 @@ import { type ProgramFiles, readConfig, readProgramFiles, resolveFrom } from "..
 import { openSession, type Session } from "../session.js";
 
 /** What `--remote` says for a contract that is not a ratified planned program (D-P10-09). */
+/**
+ * Not about ratification, which the plane answers: this is the argument. A
+ * remote run takes a planned program's directory name under `docs/programs/`,
+ * run from the repository root; a path, a contract file, or an id the checkout
+ * has no directory for is refused before anything is read.
+ */
 export const REMOTE_NEEDS_PLAN =
-  "remote execution needs a ratified planned program: pass its id under docs/programs/, not a contract file";
+  "remote execution runs a planned program: pass the program's directory name under docs/programs/ (not a path or a contract file), from the repository root";
 
 export interface RemoteReadiness {
   readonly repositoryUrl: string;
