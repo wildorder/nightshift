@@ -252,6 +252,9 @@ export const createAwsStores = ({
       },
       get: (projectId, architecture) =>
         getRecord(WarmCacheSchema, keys.warmCache(projectId, architecture)),
+      delete: async (projectId, architecture) => {
+        await table.delete({ TableName: tableName, Key: keys.warmCache(projectId, architecture) });
+      },
     },
 
     installationClaims: {

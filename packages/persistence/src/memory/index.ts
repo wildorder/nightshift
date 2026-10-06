@@ -512,6 +512,9 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     },
     get: async (projectId: ProjectId, architecture: ComputeArchitecture) =>
       warmCaches.get(`${projectPrefix({ projectId })}${architecture}`),
+    delete: async (projectId: ProjectId, architecture: ComputeArchitecture) => {
+      warmCaches.delete(`${projectPrefix({ projectId })}${architecture}`);
+    },
   };
 
   const installationClaimStore: InstallationClaimStore = {

@@ -200,8 +200,29 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
     expect(["subnet-a", "subnet-b"]).toContain(launch?.subnetId);
   });
 
+  it("starts cold and forgets the cache when the warm snapshot no longer exists", async () => {
+    const w = await world();
+    await w.stores.warmCaches.put(
+      makeWarmCache(w.f, {
+        current: {
+          snapshotId: "snap-deleted-by-hand",
+          amiVersion: "1.0.4",
+          lockfileHashes: {},
+          fromRunId: w.f.scope.runId,
+          takenAt: "2026-10-01T11:00:00.000Z",
+        },
+      }),
+    );
+    // The fake knows no such snapshot: describeSnapshot answers undefined.
+    const outcome = await provisionDispatch(w.deps(), w.f.scope);
+    expect(outcome.kind).toBe("provisioned");
+    expect(w.compute.launches[0]?.volume?.fromSnapshotId).toBeUndefined();
+    expect(await w.stores.warmCaches.get(w.f.scope.projectId, "x86_64")).toBeUndefined();
+  });
+
   it("starts the volume from the project's warm snapshot when there is one", async () => {
     const w = await world();
+    w.compute.snapshots.set("snap-warm", "completed");
     await w.stores.warmCaches.put(
       makeWarmCache(w.f, {
         current: {

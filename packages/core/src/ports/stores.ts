@@ -269,6 +269,8 @@ export interface ComputeUtilizationStore {
 export interface WarmCacheStore {
   put(cache: WarmCache): Promise<void>;
   get(projectId: ProjectId, architecture: ComputeArchitecture): Promise<WarmCache | undefined>;
+  /** Forgets a project's cache for an architecture: its snapshot is gone, and the next run starts cold. */
+  delete(projectId: ProjectId, architecture: ComputeArchitecture): Promise<void>;
 }
 
 /**

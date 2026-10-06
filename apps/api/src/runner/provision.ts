@@ -163,8 +163,21 @@ export const provisionDispatch = async (
   const parameter = firstTokenParameterName(deps.stage, scope.runId, dispatch.generation);
   await deps.tokens.put(parameter, token);
 
-  const cache = await stores.warmCaches.get(scope.projectId, architectureOf(dispatch.instanceType));
-  const fromSnapshotId = dispatch.volumeId === undefined ? warmSnapshotOf(cache) : undefined;
+  const cache = await stores.warmCaches.get(scope.projectId, architecture);
+  let fromSnapshotId = dispatch.volumeId === undefined ? warmSnapshotOf(cache) : undefined;
+  if (fromSnapshotId !== undefined && cache !== undefined) {
+    // The snapshot must still exist: one deleted behind the record's back (by
+    // hand, 2026-10-06) failed every launch of the project until the record
+    // was repaired. A missing one is a cold start, and the record goes.
+    const described = await compute.describeSnapshot(fromSnapshotId).catch(() => undefined);
+    if (described === undefined || described.state === "error") {
+      console.warn(
+        `dispatch ${scope.runId}: warm snapshot ${fromSnapshotId} is gone; starting cold and forgetting the cache`,
+      );
+      await stores.warmCaches.delete(scope.projectId, architecture);
+      fromSnapshotId = undefined;
+    }
+  }
   const spec = COMPUTE_TIERS[dispatch.tier];
   let instanceId: string;
   try {
