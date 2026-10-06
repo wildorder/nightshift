@@ -110,6 +110,12 @@ export const placeProviderCredentials = async (
       const own = join(mine, placement.env);
       await mkdir(own, { recursive: true, mode: 0o700 });
       await writeFile(join(own, placement.file), secret, { mode: 0o600 });
+      // The user's directory is traversable by anyone and listable by nobody
+      // (0711): the engine, which is not its owner once it is handed over,
+      // must still be able to see that `<user>/CODEX_HOME` exists to name it
+      // in the worker's environment (`run-as.ts`); the copy inside stays 0700
+      // and the user's. Set before the chown, which keeps modes.
+      await chmod(mine, 0o711);
       await workers.grant(user, mine);
     }
   }
