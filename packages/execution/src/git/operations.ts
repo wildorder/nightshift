@@ -340,12 +340,12 @@ export const fastForward = async (
 };
 
 /**
- * Returns the worktree to exactly `sha`, discarding everything else.
+ * Returns the worktree to `sha` for an agent to go on working in it.
  *
  * `clean -fd` without `-x`, so **ignored files survive**: `node_modules` and
- * build caches stay, and a program's `setup` has less to do when it runs again
- * before verification. Survival is not relied on: a checkout Nightshift created
- * has no ignored files until setup makes them (see `verify.ts`).
+ * build caches stay, and the agent starts with a usable checkout. This is a
+ * workspace, not evidence. Verification never uses it: `pristineCheckout`
+ * removes ignored files too.
  */
 export const cleanCheckout = async (
   runner: GitRunner,
@@ -354,6 +354,30 @@ export const cleanCheckout = async (
 ): Promise<void> => {
   await git(runner, ["reset", "--hard", sha], { cwd: worktree });
   await git(runner, ["clean", "-fd"], { cwd: worktree });
+};
+
+/**
+ * Returns the worktree to exactly `sha` and nothing else, ignored files
+ * included, so that verification sees what a fresh clone of the commit holds.
+ *
+ * `clean -fdx`. Ignored files in a worker's worktree are whatever the worker,
+ * or an earlier verification, left there: an install the commit does not
+ * describe, a hand-run code generator's output, a build cache from another
+ * mode. Any of them can make a check pass or fail for a reason the commit does
+ * not contain. The playspace-time-reservations run on keki-backend
+ * (2026-10-06) failed its build twelve times out of twelve in reused worker
+ * worktrees and never in a fresh checkout of the same commits. The program's
+ * `setup` makes the checkout usable again afterwards, and is cheap when the
+ * lockfiles have not changed (D-P10-24). A file git cannot remove fails the
+ * clean rather than surviving it.
+ */
+export const pristineCheckout = async (
+  runner: GitRunner,
+  worktree: string,
+  sha: CommitSha,
+): Promise<void> => {
+  await git(runner, ["reset", "--hard", sha], { cwd: worktree });
+  await git(runner, ["clean", "-fdx"], { cwd: worktree });
 };
 
 export type ReplayResult =

@@ -4,7 +4,7 @@
  * `node_modules/` is ignored, exactly like a real repository's.
  */
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JobContract, RouteChoice } from "@nightshift/contracts";
 import { JobContractSchema } from "@nightshift/contracts";
@@ -145,5 +145,63 @@ describe("setup", () => {
     expect(node?.outcomeReason).toContain("setup:install exited 3");
     const [verification] = await world.stores.verifications.listByNode(world.scope, started.nodeId);
     expect(verification?.commands.map((command) => command.stepId)).toEqual(["setup:install"]);
+  });
+
+  it("does not count what the worker installed itself: no setup, no installed tree", async () => {
+    // A repository that needs an install and declares no setup. The worker
+    // installs in its own worktree, as any agent would; the commit does not
+    // say how. A fresh clone of it fails, so verification must too.
+    const world = await createWorld({
+      program: { verification: [{ id: "installed", command: NEEDS_INSTALL }] },
+      harness: createFakeHarness({
+        script: async (context) => {
+          await mkdir(join(context.worktree, "node_modules"), { recursive: true });
+          await writeFile(join(context.worktree, "node_modules", "ready"), "ok", "utf8");
+          const worker = workerEnvironment(world, context.identity);
+          await completeJob(worker, context.identity, "Nothing to change.");
+          await worker.outbox.flush();
+          return { kind: "completed" };
+        },
+      }),
+    });
+
+    const started = await delegate(world, jobFor(world));
+    await started.completion;
+    await world.outbox.flush();
+
+    const node = await world.stores.executionNodes.get(world.scope, started.nodeId);
+    expect(node?.status).toBe("verification_failed");
+    expect(node?.outcomeReason).toContain("installed exited 1");
+  });
+
+  it("does not let a stale ignored file the worker left fail a commit that is sound", async () => {
+    // The keki-backend case (2026-10-06): build output from another mode, left
+    // in the worktree, broke a build that passed in every fresh checkout.
+    const NOT_STALE = `node -e "process.exit(require('fs').existsSync('node_modules/stale') ? 1 : 0)"`;
+    const world = await createWorld({
+      program: {
+        setup: [{ id: "install", command: INSTALL }],
+        verification: [
+          { id: "installed", command: NEEDS_INSTALL },
+          { id: "not-stale", command: NOT_STALE },
+        ],
+      },
+      harness: createFakeHarness({
+        script: async (context) => {
+          await writeFile(join(context.worktree, "node_modules", "stale"), "other mode", "utf8");
+          const worker = workerEnvironment(world, context.identity);
+          await completeJob(worker, context.identity, "Nothing to change.");
+          await worker.outbox.flush();
+          return { kind: "completed" };
+        },
+      }),
+    });
+
+    const started = await delegate(world, jobFor(world));
+    await started.completion;
+    await world.outbox.flush();
+
+    const [verification] = await world.stores.verifications.listByNode(world.scope, started.nodeId);
+    expect(verification?.outcome).toBe("passed");
   });
 });

@@ -12,15 +12,17 @@
  * work `verified`. The MCP server registers no tool that creates one, in either
  * role.
  *
- * The clean checkout matters more than it looks. `reset --hard` and `clean -fd`
- * discard everything the worker left that is not in the commit — so what is
- * verified is exactly what would integrate. Ignored files survive, because
- * `clean` is run without `-x`, but nothing guarantees they were ever there: a
- * worktree Nightshift created starts with none. So the program's `setup` runs
- * first, every time, and is recorded under `setup:<id>`; a setup that fails
- * fails the verification without the checks running. What is verified is the
- * tracked tree plus what setup produced from it, which is what a developer who
- * cloned the commit and ran the same commands would get.
+ * The clean checkout matters more than it looks. `reset --hard` and
+ * `clean -fdx` discard everything the worker left that is not in the commit,
+ * ignored files included, so what is verified is exactly what would integrate.
+ * Ignored files are not spared: a worker's own install, a build cache from an
+ * earlier verification's other mode, or a generated file no command
+ * reproduces would otherwise decide the result without being in the commit.
+ * The program's `setup` then runs, every time, and is recorded under
+ * `setup:<id>`; a setup that fails fails the verification without the checks
+ * running. What is verified is the tracked tree plus what setup produced from
+ * it, which is what a developer who cloned the commit and ran the same
+ * commands would get.
  *
  * ## Order
  *
@@ -58,7 +60,7 @@ import {
   type LandingEnvironment,
   type RunSession,
 } from "./environment.js";
-import { cleanCheckout } from "./git/index.js";
+import { pristineCheckout } from "./git/index.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 
 export interface VerifyInput {
@@ -180,8 +182,9 @@ export const verifyNode = async (
     agentId: input.agentId,
   });
 
-  // Exactly what would integrate, and nothing the worker left behind.
-  await cleanCheckout(environment.git, input.worktree, commitSha);
+  // Exactly what would integrate, and nothing the worker or an earlier
+  // verification left behind, ignored files included.
+  await pristineCheckout(environment.git, input.worktree, commitSha);
 
   // A step that needs a human prerequisite nobody has met **cannot run**, and is
   // deferred; every other step runs (D-P7-10). When resuming, the preflight has
@@ -193,8 +196,8 @@ export const verifyNode = async (
   const steps = input.session.program.verification;
   const runnable = steps.filter((step) => waitingOf(step).length === 0);
 
-  // Setup first: the checkout holds only what is committed and what an earlier
-  // setup left, and the commit may have changed what setup produces. When setup
+  // Setup first: the checkout holds only what is committed, so setup is what
+  // makes it usable, from what this commit declares. When setup
   // fails, nothing is checked, and the record says so with setup's own output.
   // As the worker the worktree belongs to (D-P10-25), never as the engine.
   const checkout = await runCheckoutSteps({

@@ -3,7 +3,7 @@
  *
  * Deliberately not a fake. Every claim in `operations.ts` is a claim about what
  * `git` does — that `reset --soft` keeps the index, that `clean -fd` spares
- * ignored files, that `merge --ff-only` refuses a diverged branch — and a fake
+ * ignored files and `clean -fdx` does not, that `merge --ff-only` refuses a diverged branch — and a fake
  * would only prove that this file and `operations.ts` agree with each other.
  *
  * `git` is on the path on both CI runners, which is stated in the contract §7.
@@ -24,6 +24,7 @@ import {
   fastForward,
   isDirty,
   jobBranch,
+  pristineCheckout,
   removeWorktree,
   revParse,
   sealedRef,
@@ -286,8 +287,8 @@ describe("the snapshot commit", () => {
   });
 });
 
-describe("the clean checkout before verification", () => {
-  it("discards what the worker left and restores exactly the commit", async () => {
+describe("cleaning a worktree", () => {
+  it("for an agent: discards what the worker left, but keeps ignored files", async () => {
     const { repo, base } = await repository();
     const worktree = join(repo, "..", "wt-clean");
     await addWorktree(nodeGitRunner, {
@@ -315,9 +316,41 @@ describe("the clean checkout before verification", () => {
 
     expect(await readFile(join(worktree, "src", "a.ts"), "utf8")).toBe("committed\n");
     await expect(readFile(join(worktree, "src", "stray.ts"), "utf8")).rejects.toThrow();
-    // Ignored files survive: `clean -fd` without `-x`, so dependencies stay
-    // installed and verification needs no reinstall.
+    // Ignored files survive: `clean -fd` without `-x`, so an agent that goes on
+    // working here keeps its installed dependencies.
     expect(await readFile(join(worktree, "ignored", "cache"), "utf8")).toBe("expensive\n");
+    expect(await isDirty(nodeGitRunner, worktree)).toBe(false);
+  });
+
+  it("for verification: restores exactly the commit, ignored files included", async () => {
+    const { repo, base } = await repository();
+    const worktree = join(repo, "..", "wt-pristine");
+    await addWorktree(nodeGitRunner, {
+      repo,
+      path: worktree,
+      branch: jobBranch("run_a", "node_p"),
+      base,
+    });
+    await writeFile(join(worktree, "src", "a.ts"), "committed\n", "utf8");
+    const sha = await snapshotCommit(nodeGitRunner, {
+      worktree,
+      base,
+      message: "done",
+      trailers: {},
+      atMs: AT,
+    });
+
+    await writeFile(join(worktree, "src", "a.ts"), "uncommitted edit\n", "utf8");
+    await writeFile(join(worktree, "src", "stray.ts"), "untracked\n", "utf8");
+    await mkdir(join(worktree, "ignored"), { recursive: true });
+    await writeFile(join(worktree, "ignored", "cache"), "from another mode\n", "utf8");
+
+    await pristineCheckout(nodeGitRunner, worktree, sha);
+
+    expect(await readFile(join(worktree, "src", "a.ts"), "utf8")).toBe("committed\n");
+    await expect(readFile(join(worktree, "src", "stray.ts"), "utf8")).rejects.toThrow();
+    // What a fresh clone of the commit holds, and nothing else.
+    await expect(readFile(join(worktree, "ignored", "cache"), "utf8")).rejects.toThrow();
     expect(await isDirty(nodeGitRunner, worktree)).toBe(false);
   });
 });
