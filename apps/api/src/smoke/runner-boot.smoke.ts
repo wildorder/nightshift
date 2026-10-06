@@ -23,7 +23,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { S3Client } from "@aws-sdk/client-s3";
@@ -87,6 +87,21 @@ const KILL_AFTER_RUNNING_MS =
 const WARM_RATIO_TARGET = 0.1;
 /** T4: an Anthropic API key or a Claude Code subscription token (`claude setup-token`) for the throwaway org. */
 const ANTHROPIC_KEY = process.env.NIGHTSHIFT_SMOKE_ANTHROPIC_KEY;
+/**
+ * A Codex login file (`~/.codex/auth.json`) to seal as the org's `openai`
+ * credential. With it, the program's examination policy requires an examiner
+ * from another provider at every risk, so each job is examined by Codex
+ * running as a worker user: the path FoodFly's first three runs died on
+ * (2026-10-05) and no proof had walked.
+ */
+const OPENAI_AUTH_FILE = process.env.NIGHTSHIFT_SMOKE_OPENAI_AUTH_FILE;
+const EXAMINED_BY_CODEX = OPENAI_AUTH_FILE !== undefined;
+const strict = {
+  required: true,
+  mustDifferModel: true,
+  mustDifferProvider: true,
+  blockOnMaterialFindings: true,
+};
 /**
  * Benchmark mode: a comma-separated list of EC2 instance types. Each gets one
  * cold run of the program to its end, dispatched straight to the dispatch
@@ -719,6 +734,30 @@ const runToTheEnd = async (
     .filter((event) => /^(tool|agent|run|node)[.]/.test(event.type))
     .map((event) => `${event.type} ${JSON.stringify(event.payload ?? {}).slice(0, 300)}`);
   say(`${name}: the run's events (${told.length}):\n  ${told.slice(-60).join("\n  ")}`);
+  if (EXAMINED_BY_CODEX) {
+    // The examiner ran as a worker user and gave a verdict: its agent completed,
+    // and an examination completed, rather than the agent failing at start.
+    const examiners = (events.items ?? []).filter(
+      (event) =>
+        event.type === "agent.created" &&
+        (event.payload as { role?: string; harness?: string } | undefined)?.role === "examiner",
+    );
+    const examinerHarnesses = examiners.map(
+      (event) => (event.payload as { harness?: string } | undefined)?.harness,
+    );
+    const examined = (events.items ?? []).filter((event) => event.type === "examination.completed");
+    const examinerFailures = (events.items ?? []).filter(
+      (event) =>
+        event.type === "agent.failed" &&
+        /PATH aliases|CODEX_HOME|Permission denied/.test(JSON.stringify(event.payload ?? {})),
+    );
+    say(
+      `${name}: ${examiners.length} examiner(s) (${examinerHarnesses.join(", ")}), ${examined.length} examination(s) completed, ${examinerFailures.length} died at start`,
+    );
+    expect(examinerHarnesses, "no examination was routed to Codex").toContain("codex");
+    expect(examinerFailures, "a Codex examiner died at start").toHaveLength(0);
+    expect(examined.length, "no examination completed").toBeGreaterThan(0);
+  }
   const remote = remoteHead();
   findings.publication = {
     head: ended.publication.head,
@@ -815,6 +854,9 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     );
     const contract = makeProgramContract(f, {
       status: "planning",
+      ...(EXAMINED_BY_CODEX
+        ? { examinationPolicy: { low: strict, medium: strict, high: strict } }
+        : {}),
       repository: { url: FIXTURE_REPOSITORY, baseBranch: "main", programBranch: FIXTURE_BRANCH },
       // The monorepo's typecheck resolves workspaces through their dist, so
       // its setup builds. Its local end-to-end test starts a nightshift inside
@@ -859,6 +901,13 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
         200,
       );
       say("an Anthropic key is sealed for the org: the cold run will run the program to its end");
+    }
+    if (OPENAI_AUTH_FILE !== undefined) {
+      const login = readFileSync(OPENAI_AUTH_FILE, "utf8").trim();
+      expectStatus(await api.put(`/orgs/${orgId}/credentials/openai`, { key: login }), 200);
+      say(
+        "a Codex login is sealed for the org: every job is examined by Codex, as another provider",
+      );
     }
     const hash = planHash(contract, plan, sha256Hex);
     const signed = await api.post(`${programPath}/plan-documents/${hash.plan}/upload-url`, {
