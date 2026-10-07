@@ -19,6 +19,9 @@ const TONE_OF: Readonly<Record<string, Tone>> = {
   passed: "success",
   completed: "success",
   met: "success",
+  // P15: a gate-health verdict (D-P15-07).
+  healthy: "success",
+  repairing: "warning",
   // In motion.
   running: "info",
   started: "info",

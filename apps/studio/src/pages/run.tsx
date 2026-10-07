@@ -25,6 +25,7 @@ import { Json } from "../components/json.js";
 import { Markdown } from "../components/markdown.js";
 import { PageHeader } from "../components/page-header.js";
 import { ProgramStatusSummary } from "../components/program-status.js";
+import { GateHealthView } from "../components/run/gate-health.js";
 import { NodeDetail } from "../components/run/node-detail.js";
 import {
   ArtifactLink,
@@ -83,9 +84,11 @@ const Panel = ({
 const StatusTab = ({
   report,
   status,
+  scope,
 }: {
   readonly report: RunReport;
   readonly status: Parameters<typeof ProgramStatusSummary>[0]["status"];
+  readonly scope: RunScope;
 }) => (
   <div className="grid gap-4">
     <Panel title="Program status">
@@ -129,6 +132,9 @@ const StatusTab = ({
         </ul>
       </Panel>
     )}
+    <Panel title="Gate health">
+      <GateHealthView gateHealth={report.gateHealth} scope={scope} />
+    </Panel>
     <Panel title="Success criteria">
       <ul className="grid gap-1 text-sm">
         {report.criteria.map((c) => (
@@ -360,7 +366,7 @@ export const RunPage = () => {
           {report === undefined || runStatus.data === undefined ? (
             <p className="text-muted-foreground">Building the report…</p>
           ) : (
-            <StatusTab report={report} status={runStatus.data.status} />
+            <StatusTab report={report} status={runStatus.data.status} scope={scope} />
           )}
         </TabsContent>
 

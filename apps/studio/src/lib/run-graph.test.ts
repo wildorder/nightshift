@@ -105,6 +105,7 @@ const world = () => {
     corrections: [],
     usage: [],
     rulings: [],
+    gateHealth: { audit: undefined, red: undefined, repairs: [], flakes: [] },
   };
   return { root, nodes, contracts, report, decision, s1, s2, s3 };
 };

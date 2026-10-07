@@ -51,6 +51,7 @@ const report = (patch: Partial<RunReport> = {}): RunReport => ({
   corrections: [],
   usage: [],
   rulings: [],
+  gateHealth: { audit: undefined, red: undefined, repairs: [], flakes: [] },
   ...patch,
 });
 
@@ -222,5 +223,131 @@ describe("the report's stories (P14, SC-P14-09)", () => {
     expect(renderReport(report({ program: { ...before, strands: [] } }))).not.toContain(
       "## Stories",
     );
+  });
+});
+
+describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
+  const repairDecision = DecisionSchema.parse({
+    ...(structuredClone(AGGREGATE_EXAMPLES.Decision) as Record<string, unknown>),
+    context: "The build gate was red on the base commit.",
+    choice: "point the build at tsconfig.build.json",
+    rationale: "the base config pulled the tests into the build",
+  }) as Decision;
+  const departure = DecisionSchema.parse({
+    ...(structuredClone(AGGREGATE_EXAMPLES.Decision) as Record<string, unknown>),
+    context: "DEPARTURE: kept the old index",
+    choice: "keep it",
+    rationale: "the migration is not reversible",
+  }) as Decision;
+  const gateHealth: RunReport["gateHealth"] = {
+    audit: {
+      verdict: "repairing",
+      commit: "0123456789abcdef0123456789abcdef01234567",
+      auditedAt: "2026-10-06T09:00:00.000Z",
+      findings: [{ id: "F-01", rule: 3, found: "Two gates write to dist/.", decisionId: "D-01" }],
+    },
+    red: { baseCommit: "fedcba9876543210fedcba9876543210fedcba98", failing: ["build"] },
+    repairs: [
+      {
+        jobContractId: "job_repair",
+        cause: "red_base",
+        gates: ["build"],
+        objective: "Make the build gate green",
+        status: "integrated",
+        decision: repairDecision,
+        definitionsChanged: true,
+        verification: [
+          { id: "build", command: "npm run build -- -p tsconfig.build.json" },
+          { id: "test", command: "npm test" },
+        ],
+      },
+    ],
+    flakes: [
+      {
+        stepId: "test",
+        jobContractId: "job_flaky",
+        executionNodeId: "node_flaky",
+        commitSha: "aaaaaaaa11111111aaaaaaaa11111111aaaaaaaa",
+        verificationId: "ver_flaky",
+        firstExitCode: 1,
+      },
+    ],
+  };
+  const strand = {
+    id: "S-01",
+    name: "The module",
+    outcome: "succeeded" as const,
+    acceptance: ["It works."],
+    reason: undefined,
+    blockedBy: [],
+    departures: [departure],
+    attempts: 1,
+    waitingOn: [],
+    nodeIds: [],
+    jobs: [],
+  };
+
+  it("shows the audit, the red base, each repair with its decision and new definitions, and each flake", () => {
+    const text = renderReport(report({ strands: [strand], gateHealth }));
+    expect(text).toContain("Audit: **repairing** at `01234567`, 2026-10-06T09:00:00.000Z:");
+    expect(text).toContain("- F-01 (rule 3): Two gates write to dist/. Decided by `D-01`.");
+    expect(text).toContain("The base was red: build failed on `fedcba98`");
+    expect(text).toContain("- **Repair `job_repair`** (red base) of build: integrated");
+    expect(text).toContain(`Decision \`${repairDecision.decisionId}\`: point the build at`);
+    expect(text).toContain("Why: the base config pulled the tests into the build");
+    // F-01: the commands that landed, not only how many.
+    expect(text).toContain("- `build`: `npm run build -- -p tsconfig.build.json`");
+    expect(text).toContain("- `test`: `npm test`");
+    expect(text).toContain(
+      "- `test` on job `job_flaky` (node `node_flaky`) at `aaaaaaaa`: first run exited 1",
+    );
+  });
+
+  it("puts departures first, then gate health, then the strands (F-02)", () => {
+    const text = renderReport(report({ strands: [strand], gateHealth }));
+    const departures = text.indexOf("## Departures from the plan");
+    const gates = text.indexOf("## Gate health");
+    const strands = text.indexOf("## Strands");
+    expect(departures).toBeGreaterThan(0);
+    expect(text.indexOf("kept the old index")).toBeLessThan(gates);
+    expect(departures).toBeLessThan(gates);
+    expect(gates).toBeLessThan(strands);
+    // Repairs sit outside every strand: the strand count is the plan's alone.
+    expect(text).toContain("1 of 1 strands succeeded");
+  });
+
+  it("says so in one line when there is nothing", () => {
+    const text = renderReport(report());
+    expect(text).toContain(
+      "## Gate health\n\nNo gate-health record, no red base, no repairs and no flakes.\n\n## Strands",
+    );
+    expect(text).not.toContain("Repairs:");
+    expect(text).not.toContain("Flakes");
+  });
+
+  it("names a missing record and an unchanged repair plainly", () => {
+    const text = renderReport(
+      report({
+        gateHealth: {
+          ...gateHealth,
+          audit: undefined,
+          red: undefined,
+          flakes: [],
+          repairs: [
+            {
+              ...(gateHealth.repairs[0] as RunReport["gateHealth"]["repairs"][number]),
+              cause: "flaky",
+              status: "running",
+              decision: undefined,
+              definitionsChanged: false,
+            },
+          ],
+        },
+      }),
+    );
+    expect(text).toContain("Audit: no gate-health record for this project.");
+    expect(text).toContain("(flaky) of build: running");
+    expect(text).toContain("Decision: not on the record.");
+    expect(text).not.toContain("New gate definitions");
   });
 });

@@ -17,8 +17,11 @@ export {
 } from "./decision-graph.js";
 export {
   DEPARTURE_PREFIX,
+  type FlakeReport,
+  type GateHealthReport,
   gatherReport,
   type JobReport,
+  type RepairReport,
   type RulingReport,
   type RunReport,
   renderReport,
