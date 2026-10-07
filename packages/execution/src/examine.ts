@@ -408,7 +408,11 @@ export const examine = async (
     });
     if (typeof examination === "string") return { kind: "examiner_failed", reason: examination };
     announceVerdict(environment, input, examination);
-    return verdictOf(environment, services, input, examination, {
+    // Awaited here, not returned as a promise: the `finally` below removes the
+    // checkout, and an arbiter `verdictOf` starts works in it. Returned
+    // unawaited, the checkout went while the arbiter was being handed it, and
+    // the job failed on a missing directory (P15's run, 2026-10-07).
+    return await verdictOf(environment, services, input, examination, {
       checkout,
       diff: gathered.evidence.diff,
     });
@@ -1373,6 +1377,30 @@ export const fixOf = (
     };
   }
   return { task: { kind: "fix", findings: blockingFindings(last) } };
+};
+
+/**
+ * Why Nightshift itself is still taking a stopped job further, or `undefined`
+ * when nothing more will happen to it without its orchestrator. From the
+ * records alone, so the root's server and a strand's, which holds no engine,
+ * answer alike. A job reported settled while an arbiter was ruling on it, or
+ * while the engine was about to carry out an upheld ruling, looked finished to
+ * its orchestrator, which delegated the same work again; that job landed the
+ * work without the ruling (P15's run, 2026-10-07).
+ */
+export const continuedByNightshift = (
+  status: ExecutionNode["status"],
+  examinations: readonly Examination[],
+): string | undefined => {
+  if (status !== "failed" && status !== "examination_failed") return undefined;
+  const latest = latestOf(examinations);
+  if (latest?.findings.some((finding) => finding.resolution === "disputed") === true) {
+    return "an arbiter is ruling on its disputed finding; Nightshift continues the job itself";
+  }
+  if (rulingDue(examinations)) {
+    return "an arbiter upheld a finding; Nightshift starts the attempt that carries the ruling out";
+  }
+  return undefined;
 };
 
 /** Whether a retry after these examinations carries out an arbiter's ruling: the engine's to start. */

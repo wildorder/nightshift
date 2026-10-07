@@ -7,6 +7,7 @@
  * The run's policy is the seeded org default: high risk is examined by another
  * provider; medium by a different model; a material finding blocks at both.
  */
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -26,6 +27,7 @@ import { isSettled, nowIso } from "@nightshift/core";
 import {
   carriedExamination,
   completeJob,
+  continuedByNightshift,
   createEngine,
   createEventOutbox,
   EXAMINATION_CONTEXT_ENV,
@@ -91,6 +93,8 @@ interface Seen {
   readonly roles: string[];
   readonly tasks: HarnessStartInput["task"][];
   readonly resumes: (string | undefined)[];
+  /** Whether each agent's checkout was there when it started. */
+  readonly checkouts: boolean[];
 }
 
 const helperStores = (world: World, input: HarnessStartInput) =>
@@ -109,6 +113,7 @@ const play =
     seen.roles.push(input.agent.role);
     seen.tasks.push(input.task);
     seen.resumes.push(input.resume?.sessionId);
+    seen.checkouts.push(existsSync(input.worktree));
     switch (input.agent.role) {
       case "examiner":
         return examiner(w, input, scenario);
@@ -325,7 +330,7 @@ interface RigOptions {
 
 const rig = async (scenario: Scenario, options: RigOptions = {}) => {
   let world: World | undefined;
-  const seen: Seen = { roles: [], tasks: [], resumes: [] };
+  const seen: Seen = { roles: [], tasks: [], resumes: [], checkouts: [] };
   const made = await createWorld({
     harness: createFakeHarness({ script: play(() => world as World, scenario, seen) }),
     ...(options.program === undefined ? {} : { program: options.program }),
@@ -574,6 +579,10 @@ describe("a blocking finding: fixes, the limit, the arbiter (D-P8-13)", () => {
     ]);
     const carried = seen.tasks[seen.roles.lastIndexOf("worker")];
     expect(carried).toMatchObject({ kind: "fix", rulings: [{ findingId: upheld?.id }] });
+    // The arbiter worked in the examination's checkout, which was still there:
+    // removed under it, the job failed on a missing directory (2026-10-07).
+    expect(seen.roles).toContain("arbiter");
+    expect(seen.checkouts.every((present) => present)).toBe(true);
     // Whoever retries after it has landed finds nothing to do.
     expect(await engine.retry(jobId)).toBe(false);
   });
@@ -608,6 +617,41 @@ describe("a blocking finding: fixes, the limit, the arbiter (D-P8-13)", () => {
     const again = await engine.dispute(jobId, "it is carried out");
     expect(again).toMatchObject({ kind: "refused" });
     expect(again.kind === "refused" ? again.reason : "").toMatch(/ruling is final/);
+  });
+
+  it("does not call a stopped job settled while Nightshift is still taking it further", () => {
+    const base = {
+      ...(structuredClone(AGGREGATE_EXAMPLES.Examination) as Examination),
+      blocking: true,
+      fixAttempt: 2,
+    };
+    const withFinding = (resolution: "unresolved" | "disputed" | "upheld"): Examination => ({
+      ...base,
+      findings: base.findings.map((finding) => ({
+        ...finding,
+        severity: "material" as const,
+        resolution,
+        ...(resolution === "upheld"
+          ? {
+              resolvedBy: {
+                authority: "agent" as const,
+                decisionId: "dec_01M4BHBEV4HGHTQQ419AD8BC58" as never,
+                at: "2026-10-07T15:57:42.748Z",
+              },
+            }
+          : {}),
+      })),
+    });
+    // An arbiter ruling on it: its orchestrator has nothing to do yet.
+    expect(continuedByNightshift("failed", [withFinding("disputed")])).toMatch(/arbiter is ruling/);
+    // Upheld, and the engine about to carry the ruling out.
+    expect(continuedByNightshift("failed", [withFinding("upheld")])).toMatch(
+      /carries the ruling out/,
+    );
+    // Two fixes spent and nothing disputed: nothing happens without its orchestrator.
+    expect(continuedByNightshift("failed", [withFinding("unresolved")])).toBeUndefined();
+    // Landed is landed.
+    expect(continuedByNightshift("integrated", [withFinding("upheld")])).toBeUndefined();
   });
 
   it("never carries over an examination whose finding was upheld", () => {
