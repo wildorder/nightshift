@@ -25,6 +25,7 @@
  * No agent is started but a retry's worker, and an examiner where the run's
  * policy requires one.
  */
+
 import { mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
@@ -67,6 +68,7 @@ import {
   tryRevParse,
 } from "./git/index.js";
 import { checkoutBlocked, integrateNode } from "./integrate.js";
+import { repairProvisionalLine } from "./provisional-line.js";
 import { attemptsOf, startJob } from "./runner.js";
 import { checkChangedPaths, describeScopeViolation } from "./scope-check.js";
 import { verifyNode } from "./verify.js";
@@ -402,6 +404,9 @@ export const resumeDeferred = async (
   resumed: ResumeSession,
   retry?: ResumeRetry,
 ): Promise<ResumeResult> => {
+  // What a stop left at the line's tip without a deferred node goes first: it
+  // never finished verifying, and nothing may land on it (provisional-line.ts).
+  await repairProvisionalLine(environment, resumed);
   const line = await deferredLine(environment, resumed);
   if (line.length === 0) return { landed: [], retried: [], failed: [] };
 

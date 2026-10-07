@@ -46,6 +46,7 @@ import {
   type EventOutbox,
   type ExecutionEnvironment,
   type RunSession,
+  repairProvisionalLine,
   revParse,
   startRun,
   updateRef,
@@ -515,6 +516,9 @@ export const attachRun = async (
   };
   const planSections = await readPlanSections(state, program, rootNode);
   const environment = buildEnvironment(runtime, outbox, started, program);
+  // Before the engine uses the provisional line: drop what an earlier engine's
+  // stop left at its tip without a deferred node (provisional-line.ts).
+  await repairProvisionalLine(environment, session);
   const attached: AttachedRun = {
     session,
     environment,

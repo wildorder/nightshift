@@ -116,6 +116,11 @@ export {
   type PreflightResult,
   runPreflight,
 } from "./preflight.js";
+export {
+  type ProvisionalLineEnvironment,
+  type ProvisionalLineSession,
+  repairProvisionalLine,
+} from "./provisional-line.js";
 export * from "./publish.js";
 export { gateRedPayload, type RecordRedBaseInput, recordRedBase } from "./red-base.js";
 export {

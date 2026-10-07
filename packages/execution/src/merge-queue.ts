@@ -39,13 +39,7 @@ import type {
 import { nextToIntegrate, nowIso, transition } from "@nightshift/core";
 import type { ExecutionEnvironment } from "./environment.js";
 import { examineInQueue, recordRulingLanded } from "./examine.js";
-import {
-  changedPaths,
-  effectiveHead,
-  provisionalRef,
-  replayCommit,
-  updateRef,
-} from "./git/index.js";
+import { changedPaths, effectiveHead, replayCommit } from "./git/index.js";
 import { integrateNode } from "./integrate.js";
 import type { IntegrateCandidate, IntegrationCandidate } from "./runner.js";
 import { checkChangedPaths, describeScopeViolation } from "./scope-check.js";
@@ -180,16 +174,9 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
       worktree: candidate.worktree,
       onProvisionalLine: provisional,
     });
-    if (!verified.passed) {
-      if (verified.deferred !== undefined) {
-        await landProvisionally(
-          candidate,
-          verified.deferred.commitSha,
-          verified.deferred.waitingOn,
-        );
-      }
-      return;
-    }
+    // A deferred node is on the provisional line already: verification put it
+    // there before it said `deferred` (provisional-line.ts).
+    if (!verified.passed) return;
 
     await examineAndLand(candidate, head, verified.commitSha, verified.verification);
   };
@@ -242,28 +229,6 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
   };
 
   /** The node on its replayed commit, or `undefined` when it conflicted and failed. */
-  /**
-   * The provisional line takes the commit, through this same queue and in the
-   * same order, so it is a line: each commit's parent is the one before it. The
-   * program branch is not touched. The worktree is kept, because `nightshift
-   * resume` verifies this commit again, in full, before it may land.
-   */
-  const landProvisionally = async (
-    candidate: IntegrationCandidate,
-    commitSha: CommitSha,
-    waitingOn: readonly string[],
-  ): Promise<void> => {
-    const ref = provisionalRef(candidate.session.scope.runId);
-    await updateRef(runner, candidate.session.repoPath, ref, commitSha);
-    outbox.emit({
-      type: "node.deferred",
-      source: "control-plane",
-      payload: { commitSha, provisionalRef: ref, waitingOn },
-      executionNodeId: candidate.nodeId,
-      agentId: candidate.agentId,
-    });
-  };
-
   const reconcile = async (
     candidate: IntegrationCandidate,
     node: ExecutionNode,

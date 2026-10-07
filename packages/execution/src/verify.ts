@@ -76,7 +76,7 @@ import {
 } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import { type GateDefinitions, gateDefinitions } from "./gate-repair.js";
-import { pristineCheckout } from "./git/index.js";
+import { pristineCheckout, provisionalRef, updateRef } from "./git/index.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 import { discardScratch, freshScratch, scratchEnv } from "./scratch.js";
 
@@ -108,6 +108,35 @@ export type VerifyResult =
        */
       readonly deferred?: { readonly commitSha: CommitSha; readonly waitingOn: readonly string[] };
     };
+
+/**
+ * The commit on the run's provisional line, then the node `deferred` by
+ * `markDeferred`, in that order (provisional-line.ts). A resume's node is on
+ * the line already, under the commit it is replaying, and only becomes
+ * `deferred` again.
+ */
+const deferOnTheLine = async (
+  environment: LandingEnvironment,
+  input: VerifyInput,
+  commitSha: CommitSha,
+  waitingOn: readonly string[],
+  markDeferred: () => Promise<void>,
+): Promise<void> => {
+  if (input.resuming === true) {
+    await markDeferred();
+    return;
+  }
+  const line = provisionalRef(input.session.scope.runId);
+  await updateRef(environment.git, input.session.repoPath, line, commitSha);
+  await markDeferred();
+  environment.outbox.emit({
+    type: "node.deferred",
+    source: "control-plane",
+    payload: { commitSha, provisionalRef: line, waitingOn },
+    executionNodeId: input.node.executionNodeId,
+    agentId: input.agentId,
+  });
+};
 
 /**
  * The prerequisites that are unmet **now**, from the control plane when this
@@ -329,7 +358,10 @@ export const verifyNode = async (
     // No `outcomeReason`: a deferral is not an outcome, and a node's reason is
     // written once. Why it waits is in the Verification (each deferred command
     // names its prerequisite) and on the `node.deferred` event.
-    await stores.executionNodes.put(transition(verifying, "defer", at));
+    // On the provisional line first, so `deferred` always means "on the line".
+    await deferOnTheLine(environment, input, commitSha, waitingOn, () =>
+      stores.executionNodes.put(transition(verifying, "defer", at)),
+    );
     outbox.emit({
       type: "verification.completed",
       source: "control-plane",
