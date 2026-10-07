@@ -29,7 +29,7 @@ import { storesEnvironment } from "./workspace.js";
 
 export type MachineAuditRuntime = Pick<
   Runtime,
-  "git" | "stores" | "bodies" | "ids" | "clock" | "runAs"
+  "git" | "stores" | "bodies" | "ids" | "clock" | "runAs" | "paths"
 >;
 
 export type MachineAuditContext = Pick<RunnerContext, "scope" | "layout" | "dispatch" | "program">;
@@ -71,6 +71,7 @@ export const auditOnMachine = async (
     unmet,
     workDir: `${context.layout.run}/gate-audit`,
     timeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
+    paths: runtime.paths,
     env: storesEnvironment(context.layout),
     // As verification on this machine runs its steps (D-P10-25).
     ...stepsAs(runtime as Pick<ExecutionEnvironment, "runAs">, {

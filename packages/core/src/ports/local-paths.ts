@@ -31,4 +31,16 @@ export interface LocalPaths {
   spool(runId: string): string;
   /** Where an adapter writes an agent's raw transcript until it is uploaded. */
   transcript(runId: string, agentId: string): string;
+  /**
+   * The temp directory every process in `checkout` is given (P15): one per
+   * checkout, on the state directory's disk, never the machine's shared `/tmp`.
+   *
+   * Short and of fixed length, whatever the checkout's own path: a temp
+   * directory is where tools put unix sockets, and a socket's path may not
+   * exceed 104 bytes on macOS (108 on Linux). Derived from the checkout so that
+   * whoever cleans up finds it again. A directory beside the checkout inherited
+   * the checkout's length, and tsx's IPC socket under a gate audit's checkout
+   * reached 114 bytes and failed every migration (keki-backend, 2026-10-07).
+   */
+  scratch(checkout: string): string;
 }

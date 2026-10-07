@@ -10,7 +10,7 @@ import type { CommitSha, Dispatch, ProgramContract } from "@nightshift/contracts
 import { startRun } from "@nightshift/execution";
 import { auditOnMachine, type MachineAuditContext } from "@nightshift/mcp";
 import { afterEach, describe, expect, it } from "vitest";
-import { type BaseWorld, cleanupWorlds, createBaseWorld } from "./world.js";
+import { type BaseWorld, cleanupWorlds, createBaseWorld, localPathsIn } from "./world.js";
 
 afterEach(cleanupWorlds);
 
@@ -55,6 +55,7 @@ const machine = async (program: Partial<ProgramContract>, input: { generation?: 
     bodies: world.bodies,
     ids: world.ids,
     clock: world.clock,
+    paths: localPathsIn(world.stateDir),
   };
   const result = await auditOnMachine(runtime, context, (line) => lines.push(line));
   const run = await world.stores.runs.get(scope, scope.runId);

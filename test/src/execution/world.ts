@@ -17,6 +17,7 @@
  * table lets `test` reference what its suites drive (D-P3-12) and quite rightly
  * does not let `execution` reference `apps/api`.
  */
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -315,6 +316,8 @@ export const localPathsIn = (stateDir: string): LocalPaths => ({
   spool: (runId) => join(stateDir, "runs", runId, "spool.ndjson"),
   transcript: (runId, agentId) =>
     join(stateDir, "runs", runId, "agents", agentId, "transcript.jsonl"),
+  scratch: (checkout) =>
+    join(stateDir, "t", createHash("sha256").update(checkout).digest("hex").slice(0, 12)),
 });
 
 export interface World extends BaseWorld {

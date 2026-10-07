@@ -8,6 +8,7 @@ import {
   idTail,
   profilePath,
   runStateDir,
+  scratchPath,
   spoolPath,
   stateDir,
   transcriptPath,
@@ -109,6 +110,26 @@ describe("the files and directories underneath", () => {
     );
     // The prefix Nightshift adds, on top of whatever the state directory is.
     expect(worktreePath(runId, nodeId, at).length - "/state".length).toBeLessThan(30);
+  });
+
+  /**
+   * A scratch is where tools put unix sockets, and a socket's path may not
+   * exceed 104 bytes on macOS: tsx's sits 20-odd bytes below its temp
+   * directory. So a scratch's length is fixed, whatever its checkout's is.
+   */
+  it("keeps a checkout's scratch short and of fixed length, whatever the checkout's path", () => {
+    const short = scratchPath(join("/w", "a"), at);
+    const long = scratchPath(
+      join("/var", "folders", "x".repeat(60), "T", "nightshift-gates-abc", "audit-0123456789ab"),
+      at,
+    );
+    expect(short.length).toBe(long.length);
+    expect(long.length - join("/state").length).toBe("/t/".length + 12);
+    expect(long.startsWith(join("/state", "t"))).toBe(true);
+    // Found again by whoever cleans up, and never shared by two checkouts.
+    expect(scratchPath(join("/w", "a"), at)).toBe(short);
+    expect(scratchPath(join("/w", "b"), at)).not.toBe(short);
+    expect(createLocalPaths(at).scratch(join("/w", "a"))).toBe(short);
   });
 
   it("gives two nodes of the same run distinct worktrees", () => {

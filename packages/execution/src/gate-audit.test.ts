@@ -61,6 +61,7 @@ const audit = async (
     program,
     unmet: new Set(options.unmet ?? []),
     workDir: await temporary("nightshift-audit-work-"),
+    paths: { scratch: (checkout: string) => `${checkout}-scratch` },
     timeoutMs: TIMEOUT_MS,
     onStep: (step) => progress.push(step),
   });

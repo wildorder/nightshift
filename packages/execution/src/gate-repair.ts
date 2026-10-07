@@ -31,8 +31,6 @@
  * (a lost event, a gate-health put the control plane refused) is made by the
  * next landing or the next engine to attach.
  */
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
 import {
   type CheckpointId,
   type Decision,
@@ -64,7 +62,7 @@ import {
 import { fingerprintAtCommit, gitBlobReader } from "./gate-fingerprint.js";
 import { type GitRunner, revParse, tryGit } from "./git/index.js";
 import { recordArtifact } from "./runner.js";
-import { scratchEnv } from "./scratch.js";
+import { discardScratch, freshScratch, scratchEnv } from "./scratch.js";
 import { setupLog } from "./setup.js";
 
 /** What a verification runs: setup first, then the gates. */
@@ -587,9 +585,9 @@ const rewriteGateHealth = async (
 /**
  * The current setup, once, in the program checkout, writing the install marker
  * as any setup does, so later worktrees are seeded from it (D-P10-24). Run as
- * the engine, never as a worker, and with a temp directory made for this alone
- * under the run's own directory: the operator's checkout sits wherever they
- * cloned it, and nothing beside it is Nightshift's to delete. Never throws: a
+ * the engine, never as a worker, and with the checkout's own scratch from the
+ * paths port: under Nightshift's state directory, never beside the operator's
+ * checkout, where nothing is Nightshift's to delete. Never throws: a
  * failure is reported on `nodeId`, and each worktree still runs setup itself.
  */
 export const prepareSetupReference = async (
@@ -602,14 +600,14 @@ export const prepareSetupReference = async (
   try {
     const { setup } = await gateDefinitions(environment, session);
     if (setup.length === 0) return true;
-    const runDir = environment.paths.runDir(session.scope.runId);
-    await mkdir(runDir, { recursive: true });
-    scratch = await mkdtemp(join(runDir, "reference-tmp-"));
+    // Short enough for sockets (scratch.ts).
+    const dir = await freshScratch(environment.paths, session.repoPath);
+    scratch = dir;
     const results = await runSetupSteps({
       setup,
       cwd: session.repoPath,
       timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
-      env: scratchEnv(scratch),
+      env: scratchEnv(dir),
     });
     const artifactId = await recordArtifact(environment, {
       scope: session.scope,
@@ -638,7 +636,7 @@ export const prepareSetupReference = async (
     warn(environment, nodeId, `the program checkout could not be prepared ${why}`, error);
     return false;
   } finally {
-    if (scratch !== undefined) await rm(scratch, { recursive: true, force: true }).catch(() => {});
+    if (scratch !== undefined) await discardScratch(environment.paths, session.repoPath);
   }
 };
 

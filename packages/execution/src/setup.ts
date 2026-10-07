@@ -41,7 +41,7 @@ export const prepareCheckout = async (
   environment: ExecutionEnvironment,
   input: PrepareCheckoutInput,
 ): Promise<boolean> => {
-  const scratch = await freshScratch(input.checkout);
+  const scratch = await freshScratch(environment.paths, input.checkout);
   const { setup } = await gateDefinitions(environment, input.session);
   if (setup.length === 0) return true;
   const results = await runSetupSteps({

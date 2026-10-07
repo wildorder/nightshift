@@ -31,7 +31,13 @@ import { flakyStepIds } from "@nightshift/contracts";
 import { type CheckRerun, rerunFailedChecks, type StepResult } from "@nightshift/verification";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import { recordArtifact } from "./runner.js";
-import { discardScratch, freshScratch, type RunScratchAs, scratchEnv } from "./scratch.js";
+import {
+  discardScratch,
+  freshScratch,
+  type RunScratchAs,
+  type ScratchPaths,
+  scratchEnv,
+} from "./scratch.js";
 
 export interface RerunInput {
   readonly steps: readonly VerificationStep[];
@@ -39,6 +45,8 @@ export interface RerunInput {
   readonly first: readonly StepResult[];
   /** The checkout the first run used, as it is: not reset, and setup not run again. */
   readonly cwd: string;
+  /** Where the rerun's scratch goes (`LocalPaths.scratch`). */
+  readonly paths: ScratchPaths;
   readonly timeoutMs: number;
   /** Whoever ran the first run, so the rerun is the same identity (D-P10-25). */
   readonly as?: RunScratchAs;
@@ -48,9 +56,9 @@ export interface RerunInput {
 
 /** Reruns each failed check once, with a scratch of its own. Empty when nothing failed. */
 export const rerunFailures = async (input: RerunInput): Promise<readonly CheckRerun[]> => {
-  const { steps, first, cwd, timeoutMs, as, keepScratch } = input;
+  const { steps, first, cwd, paths, timeoutMs, as, keepScratch } = input;
   if (first.every((result) => result.exitCode === 0)) return [];
-  const scratch = await freshScratch(cwd, as);
+  const scratch = await freshScratch(paths, cwd, as);
   const ran = rerunFailedChecks({
     steps,
     first,
@@ -59,7 +67,7 @@ export const rerunFailures = async (input: RerunInput): Promise<readonly CheckRe
     env: scratchEnv(scratch),
     ...(as === undefined ? {} : { as }),
   });
-  return keepScratch === true ? ran : ran.finally(() => discardScratch(cwd, as));
+  return keepScratch === true ? ran : ran.finally(() => discardScratch(paths, cwd, as));
 };
 
 /**
