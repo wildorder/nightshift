@@ -101,6 +101,8 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "computeUtilization.get": "forbidden",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",
+  "gateHealth.get": "forbidden",
+  "gateHealth.put": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",

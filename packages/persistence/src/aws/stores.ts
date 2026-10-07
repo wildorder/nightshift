@@ -15,6 +15,7 @@ import {
   DispatchSchema,
   ExaminationSchema,
   ExecutionNodeSchema,
+  GateHealthSchema,
   JobContractSchema,
   MembershipSchema,
   OrgComputeUsageSchema,
@@ -255,6 +256,15 @@ export const createAwsStores = ({
       delete: async (projectId, architecture) => {
         await table.delete({ TableName: tableName, Key: keys.warmCache(projectId, architecture) });
       },
+    },
+
+    // P15 (D-P15-07): one per project, replaced by each put.
+    gateHealth: {
+      put: async (record) => {
+        const parsed = GateHealthSchema.parse(record);
+        await putRecord("GateHealth", keys.gateHealth(parsed.projectId), parsed);
+      },
+      get: (projectId) => getRecord(GateHealthSchema, keys.gateHealth(projectId)),
     },
 
     installationClaims: {

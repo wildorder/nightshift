@@ -11,6 +11,7 @@ describe("key schema matches contract §4.1 and §4.2", () => {
     ["project", keys.project(p), `PROJ#${p}`, "META"],
     ["org pointer", keys.orgProject(org, p), `ORG#${org}`, `PROJ#${p}`],
     ["program contract", keys.programContract(p, g), `PROJ#${p}`, `PROG#${g}`],
+    ["gate health", keys.gateHealth(p), `PROJ#${p}`, "GATE-HEALTH"],
     ["run", keys.run(f.scope, r), `PROJ#${p}#PROG#${g}`, `RUN#${r}`],
     [
       "execution node",

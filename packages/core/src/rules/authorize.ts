@@ -137,6 +137,9 @@ export type Operation =
   | "computeUtilization.get"
   | "computeRecommendation.get"
   | "warmCache.get"
+  // P15: a project's gate-health record (D-P15-07).
+  | "gateHealth.get"
+  | "gateHealth.put"
   // An org's provider keys and its GitHub installation (D-P10-23, D-P10-02).
   | "orgCredential.put"
   | "orgCredential.list"
@@ -160,7 +163,9 @@ export type Operation =
  *   `orchestrator` token's table uses it (P6, D-P6-04).
  * - `own_project` — allowed when the target is the project the execution's run
  *   belongs to. Only the `engine`'s table uses it (P10, D-P10-20): the project
- *   record carries the cross-account role the Bedrock route assumes (A-25).
+ *   record carries the cross-account role the Bedrock route assumes (A-25), and
+ *   the project's gate-health record is the run's to update (P15, D-P15-07).
+ *   A write at this reach is held to the generation like any other.
  */
 export type ExecutionAccess =
   | "forbidden"
@@ -289,6 +294,10 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "computeUtilization.get": "forbidden",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",
+  // P15 (D-P15-07): the gate-health record is written by a Nightshift command or
+  // the engine, never by an agent, and no agent needs to read it.
+  "gateHealth.get": "forbidden",
+  "gateHealth.put": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
@@ -398,6 +407,8 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "computeUtilization.get": "forbidden",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",
+  "gateHealth.get": "forbidden",
+  "gateHealth.put": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
@@ -534,6 +545,10 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "computeUtilization.get": "own_run",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",
+  // P15 (D-P15-07): the run updates the project's record when a gate-health
+  // strand or a repair lands. Its project's alone, and the write is fenced.
+  "gateHealth.get": "own_project",
+  "gateHealth.put": "own_project",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
@@ -592,6 +607,7 @@ export const READ_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
   "computeUtilization.get",
   "computeRecommendation.get",
   "warmCache.get",
+  "gateHealth.get",
   "orgCredential.list",
   "orgGithub.get",
   "githubApp.get",
@@ -801,12 +817,16 @@ export const authorize = (
     return refuse("execution_forbidden_operation", `an execution token may not ${operation}`);
   }
   if (access === "own_project") {
-    return target.projectId === principal.projectId
-      ? ALLOWED
-      : refuse(
-          "execution_out_of_scope",
-          `an execution token may only ${operation} for the project its run belongs to`,
-        );
+    if (target.projectId !== principal.projectId) {
+      return refuse(
+        "execution_out_of_scope",
+        `an execution token may only ${operation} for the project its run belongs to`,
+      );
+    }
+    if (principal.role === "engine" && !READ_OPERATIONS.has(operation)) {
+      return authorizeGeneration(principal, operation, target) ?? ALLOWED;
+    }
+    return ALLOWED;
   }
   if (access === "own_program") return authorizeOwnProgram(principal, operation, target);
   if (principal.role === "engine" && !READ_OPERATIONS.has(operation)) {

@@ -153,9 +153,11 @@ export const PlannedDecisionSchema = z.strictObject({
 });
 export type PlannedDecision = z.infer<typeof PlannedDecisionSchema>;
 
-const Sha256HexSchema = z
+/** A lowercase hex SHA-256 digest. */
+export const Sha256HexSchema = z
   .string()
   .regex(/^[0-9a-f]{64}$/, { message: "must be a lowercase hex SHA-256" });
+export type Sha256Hex = z.infer<typeof Sha256HexSchema>;
 
 /**
  * The plan document as the control plane holds it (D-P7-02): stored at

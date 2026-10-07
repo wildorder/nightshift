@@ -72,7 +72,9 @@ describe("the engine's table (D-P10-20)", () => {
   });
 
   it("reaches the project and the program only for what the run needs to read or record", () => {
-    expect(ENGINE_ACCESS["project.get"]).toBe("own_project");
+    for (const operation of ["project.get", "gateHealth.get", "gateHealth.put"] as const) {
+      expect(ENGINE_ACCESS[operation], operation).toBe("own_project");
+    }
     for (const operation of [
       "program.get",
       "program.getPlanDocument",
@@ -118,6 +120,22 @@ describe("the engine's table (D-P10-20)", () => {
     expect(authorize(engine(), "node.put", noStatus)).toMatchObject({ allowed: false });
   });
 
+  it("reads and writes its own project's gate health, from any run of it (D-P15-07)", () => {
+    for (const operation of ["gateHealth.get", "gateHealth.put"] as const) {
+      expect(
+        authorize(engine(), operation, { projectId: here.scope.projectId, currentGeneration: 2 }),
+      ).toEqual({
+        allowed: true,
+      });
+      expect(
+        authorize(engine(), operation, {
+          projectId: elsewhere.scope.projectId,
+          currentGeneration: 2,
+        }),
+      ).toMatchObject({ allowed: false, reason: "execution_out_of_scope" });
+    }
+  });
+
   it("mints its workers' tokens within its run, which no other execution may", () => {
     expect(authorize(engine(), "agent.mintToken", target())).toEqual({ allowed: true });
   });
@@ -125,11 +143,15 @@ describe("the engine's table (D-P10-20)", () => {
 
 describe("the generation fence (D-P10-18)", () => {
   const writes = ALL_OPERATIONS.filter(
-    (operation) => !READ_OPERATIONS.has(operation) && ENGINE_ACCESS[operation] === "own_run",
+    (operation) =>
+      !READ_OPERATIONS.has(operation) &&
+      (ENGINE_ACCESS[operation] === "own_run" || ENGINE_ACCESS[operation] === "own_project"),
   );
 
   it("names a write for every operation that is not a read", () => {
     expect(writes).toContain("node.put");
+    expect(writes).toContain("gateHealth.put");
+    expect(writes).not.toContain("gateHealth.get");
     expect(writes).toContain("dispatch.heartbeat");
     expect(writes).toContain("publication.request");
     expect(writes).not.toContain("dispatch.get");
@@ -160,7 +182,7 @@ describe("the generation fence (D-P10-18)", () => {
   });
 
   it("lets a superseded engine read, so it can learn it is superseded", () => {
-    for (const operation of ["dispatch.get", "run.get", "node.list"] as const) {
+    for (const operation of ["dispatch.get", "run.get", "node.list", "gateHealth.get"] as const) {
       expect(authorize(engine(1), operation, target({ currentGeneration: 2 }))).toEqual({
         allowed: true,
       });

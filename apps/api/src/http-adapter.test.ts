@@ -37,8 +37,10 @@ import type {
   Checkpoint,
   Decision,
   ExecutionNode,
+  ExecutionRole,
   JobContract,
   OrgId,
+  Principal,
   Project,
   RoutingDecision,
   Run,
@@ -58,6 +60,7 @@ import {
   makeDecision,
   makeDispatch,
   makeEvent,
+  makeGateHealth,
   makeJobContract,
   makeMembership,
   makeNode,
@@ -85,7 +88,12 @@ import {
 } from "@nightshift/persistence/http";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type LocalControlPlane, startLocalControlPlane } from "./testing/local-control-plane.js";
+import type { RequestPrincipal } from "./auth/principal.js";
+import {
+  encodeTestPrincipal,
+  type LocalControlPlane,
+  startLocalControlPlane,
+} from "./testing/local-control-plane.js";
 
 const NOW = "2026-09-15T12:00:00.000Z";
 
@@ -117,6 +125,8 @@ const PORT_METHODS = {
   installationClaims: ["claim"],
   computeUtilizations: ["put", "get", "listByProject"],
   warmCaches: ["put", "get", "delete"],
+  // P15: written whole by the operator or the engine, so it has a write route.
+  gateHealth: ["put", "get"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
 /** `store.method` for every entry above. */
@@ -761,5 +771,163 @@ describe("the remote runner's records (P10)", () => {
     await expect(http.computeUtilizations.listByProject(f.scope.projectId)).rejects.toThrow(
       /recommendation/,
     );
+  });
+});
+
+describe("a project's gate health (P15, D-P15-07)", () => {
+  /** The http adapter, carrying someone else's token. Not recorded: only the session's calls count. */
+  const storesAs = (principal: RequestPrincipal): ProjectStores =>
+    createHttpStores({
+      transport: createFetchTransport({
+        endpoint: world.plane.url,
+        tokens: staticTokenProvider(encodeTestPrincipal(principal)),
+      }),
+    });
+
+  /** A token on a run of `f`'s program, as `role`. */
+  const executionOf = (
+    f: Fixtures,
+    role: ExecutionRole,
+    generation?: number,
+  ): Extract<Principal, { kind: "execution" }> => ({
+    kind: "execution",
+    ...f.scope,
+    nodeId: f.rootNodeId,
+    agentId: f.ids.next("agent"),
+    role,
+    ...(generation === undefined ? {} : { generation }),
+  });
+
+  const statusOf = async (promise: Promise<unknown>): Promise<number> => {
+    const failure = await rejectionOf(promise);
+    expect(failure).toBeInstanceOf(ControlPlaneError);
+    return (failure as ControlPlaneError).status;
+  };
+
+  it("lets a member write and read it, and a second put replaces the first", async () => {
+    const { http, f, backing } = world;
+    await http.projects.put(aProject(f));
+    expect(await http.gateHealth.get(f.scope.projectId)).toBeUndefined();
+
+    const healthy = makeGateHealth(f);
+    await http.gateHealth.put(healthy);
+    expect(await http.gateHealth.get(f.scope.projectId)).toEqual(healthy);
+
+    const repairing = makeGateHealth(f, {
+      verdict: "repairing",
+      findings: [
+        {
+          id: "F-01",
+          rule: 3,
+          found: "two gates share dist/",
+          decisionId: "D-01",
+          paths: ["package.json"],
+        },
+      ],
+    });
+    await http.gateHealth.put(repairing);
+    expect(await http.gateHealth.get(f.scope.projectId)).toEqual(repairing);
+    expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(repairing);
+  });
+
+  it("refuses an invalid record with 400, and one for another project or none", async () => {
+    const { http, f } = world;
+    await http.projects.put(aProject(f));
+    const record = makeGateHealth(f);
+    // Healthy with a finding, and a machinery path that leaves the checkout on Windows.
+    for (const bad of [
+      { ...record, findings: [{ id: "F-01", rule: 1, found: "x", decisionId: "D-01", paths: [] }] },
+      { ...record, machinery: ["..\\outside\\gate.mjs"] },
+    ]) {
+      const failure = await rejectionOf(http.gateHealth.put(bad as never));
+      expect((failure as ControlPlaneError).status).toBe(400);
+      expect((failure as ControlPlaneError).code).toBe("validation_failed");
+    }
+    // The body names a project the path does not.
+    const other = createFixtures();
+    const response = await world.transport({
+      method: "PUT",
+      path: routes.gateHealth(f.scope.projectId),
+      body: makeGateHealth(other),
+    });
+    expect(response.status).toBe(403);
+    // No such project: nothing to record it against.
+    expect(await statusOf(http.gateHealth.put(makeGateHealth(other)))).toBe(404);
+    expect(await world.backing.gateHealth.get(f.scope.projectId)).toBeUndefined();
+  });
+
+  it("refuses a caller who is not a member of the project's organisation", async () => {
+    const { http, f, backing } = world;
+    await http.projects.put(aProject(f));
+    await http.gateHealth.put(makeGateHealth(f));
+
+    // A member of another organisation, and a signed-in user with no membership at all.
+    const outsider = nextUserId(f);
+    const otherOrg = f.ids.next("org");
+    await backing.memberships.put(makeMembership(outsider, otherOrg));
+    const stranger = nextUserId(f);
+    for (const principal of [
+      { kind: "user", userId: outsider, activeOrg: otherOrg },
+      { kind: "user", userId: stranger },
+    ] as const) {
+      const theirs = storesAs(principal);
+      expect(await statusOf(theirs.gateHealth.get(f.scope.projectId))).toBe(403);
+      expect(
+        await statusOf(theirs.gateHealth.put(makeGateHealth(f, { fingerprint: "1".repeat(64) }))),
+      ).toBe(403);
+    }
+    expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(makeGateHealth(f));
+  });
+
+  it("lets the engine write its own project's under its dispatch's generation, and no other", async () => {
+    const { http, f, backing } = world;
+    await seed();
+    await backing.dispatches.put(makeDispatch(f, { generation: 2 }));
+
+    const engine = storesAs(executionOf(f, "engine", 2));
+    const record = makeGateHealth(f, {
+      auditedBy: executionOf(f, "engine", 2),
+    });
+    await engine.gateHealth.put(record);
+    expect(await engine.gateHealth.get(f.scope.projectId)).toEqual(record);
+    expect(await http.gateHealth.get(f.scope.projectId)).toEqual(record);
+
+    // A superseded engine may still read, and may not write (D-P10-18).
+    const superseded = storesAs(executionOf(f, "engine", 1));
+    expect(await superseded.gateHealth.get(f.scope.projectId)).toEqual(record);
+    const stale = await rejectionOf(superseded.gateHealth.put(makeGateHealth(f)));
+    expect((stale as ControlPlaneError).status).toBe(403);
+    expect((stale as ControlPlaneError).code).toBe("stale_generation");
+
+    // An engine of another project's run reaches neither.
+    const other = createFixtures();
+    const foreign = storesAs(executionOf(other, "engine", 1));
+    for (const attempt of [
+      foreign.gateHealth.get(f.scope.projectId),
+      foreign.gateHealth.put(makeGateHealth(f)),
+    ]) {
+      const failure = await rejectionOf(attempt);
+      expect((failure as ControlPlaneError).status).toBe(403);
+      expect((failure as ControlPlaneError).code).toBe("execution_out_of_scope");
+    }
+    expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(record);
+  });
+
+  it("refuses every agent role but the engine, even on its own project", async () => {
+    const { f, backing } = world;
+    await seed();
+    await backing.gateHealth.put(makeGateHealth(f));
+    for (const role of ["worker", "orchestrator", "examiner", "arbiter"] as const) {
+      const agent = storesAs(executionOf(f, role));
+      for (const attempt of [
+        agent.gateHealth.get(f.scope.projectId),
+        agent.gateHealth.put(makeGateHealth(f, { fingerprint: "1".repeat(64) })),
+      ]) {
+        const failure = await rejectionOf(attempt);
+        expect((failure as ControlPlaneError).status, role).toBe(403);
+        expect((failure as ControlPlaneError).code, role).toBe("execution_forbidden_operation");
+      }
+    }
+    expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(makeGateHealth(f));
   });
 });

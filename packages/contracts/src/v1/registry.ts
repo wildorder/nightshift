@@ -16,6 +16,7 @@ import { ComputeUtilizationSchema, DispatchSchema } from "./dispatch.js";
 import { EventSchema } from "./event.js";
 import { ExaminationSchema } from "./examination.js";
 import { ExecutionNodeSchema } from "./execution-node.js";
+import { GateHealthSchema } from "./gate-health.js";
 import { JobContractSchema } from "./job-contract.js";
 import { ProgramContractSchema } from "./program-contract.js";
 import { ProjectSchema } from "./project.js";
@@ -27,7 +28,8 @@ import { WarmCacheSchema } from "./warm-cache.js";
 /**
  * Exactly the aggregates listed in the source plan, Stage 1, plus the three
  * P10 added for remote execution (D-P10-18, D-P10-14, D-P10-15): a run's
- * `Dispatch` and `ComputeUtilization`, and a project's `WarmCache`.
+ * `Dispatch` and `ComputeUtilization`, and a project's `WarmCache`; and P15's
+ * project `GateHealth` (D-P15-07).
  */
 export const AGGREGATE_NAMES = [
   "Project",
@@ -46,6 +48,7 @@ export const AGGREGATE_NAMES = [
   "Dispatch",
   "ComputeUtilization",
   "WarmCache",
+  "GateHealth",
 ] as const;
 
 export type AggregateName = (typeof AGGREGATE_NAMES)[number];
@@ -69,12 +72,18 @@ export const AGGREGATE_SCHEMAS: {
   Dispatch: DispatchSchema,
   ComputeUtilization: ComputeUtilizationSchema,
   WarmCache: WarmCacheSchema,
+  GateHealth: GateHealthSchema,
 };
 
 /**
  * Aggregates that carry the full run-scoped chain. `Project`,
- * `ProgramContract` and a project's `WarmCache` sit above a run and so are excluded.
+ * `ProgramContract` and a project's `WarmCache` and `GateHealth` sit above a run
+ * and so are excluded.
  */
 export const RUN_SCOPED_AGGREGATES: readonly AggregateName[] = AGGREGATE_NAMES.filter(
-  (name) => name !== "Project" && name !== "ProgramContract" && name !== "WarmCache",
+  (name) =>
+    name !== "Project" &&
+    name !== "ProgramContract" &&
+    name !== "WarmCache" &&
+    name !== "GateHealth",
 );

@@ -38,6 +38,7 @@ import {
 } from "./operations/dispatch.js";
 import { createArtifactDownloadUrl } from "./operations/downloads.js";
 import { appendEvent, getRunState, listEvents } from "./operations/events.js";
+import { getGateHealth, putGateHealth } from "./operations/gate-health.js";
 import { getGithubApp, getOrgGithub, putOrgGithub } from "./operations/github.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
@@ -152,6 +153,19 @@ export const ROUTES: readonly Route[] = [
     path: `${PROJECT}/warm-cache`,
     operation: "warmCache.get",
     handler: getWarmCache,
+  },
+  // P15 (D-P15-07): a project's gate health, written whole by the operator or the engine.
+  {
+    method: "GET",
+    path: `${PROJECT}/gate-health`,
+    operation: "gateHealth.get",
+    handler: getGateHealth,
+  },
+  {
+    method: "PUT",
+    path: `${PROJECT}/gate-health`,
+    operation: "gateHealth.put",
+    handler: putGateHealth,
   },
   {
     method: "GET",

@@ -41,6 +41,8 @@ export const routes = {
   /** A project's warm snapshot (P10, D-P10-15). */
   warmCache: (projectId: ProjectId, architecture: ComputeArchitecture) =>
     `/projects/${projectId}/warm-cache?architecture=${architecture}`,
+  /** A project's gate-health record (P15, D-P15-07): `GET` it, `PUT` it whole. */
+  gateHealth: (projectId: ProjectId) => `/projects/${projectId}/gate-health`,
   program: (projectId: ProjectId, programId: ProgramId) =>
     `/projects/${projectId}/programs/${programId}`,
 

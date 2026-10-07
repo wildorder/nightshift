@@ -460,6 +460,28 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     ],
     updatedAt: AT_LATER,
   },
+
+  // P15 (D-P15-07): a project's gate-health record, with one finding a gate-health strand is fixing.
+  GateHealth: {
+    schemaVersion: 1,
+    projectId: EXAMPLE_IDS.projectId,
+    programId: EXAMPLE_IDS.programId,
+    commit: COMMIT,
+    fingerprint: "a".repeat(64),
+    verdict: "repairing",
+    findings: [
+      {
+        id: "F-01",
+        rule: 3,
+        found: "The unit and e2e gates both write their builds to dist/.",
+        decisionId: "D-01",
+        paths: ["package.json", "vitest.config.ts"],
+      },
+    ],
+    machinery: ["package.json", "vitest.config.ts", "scripts/check.mjs"],
+    auditedBy: { kind: "user", userId: "operator-01", orgId: EXAMPLE_IDS.orgId },
+    auditedAt: AT_LATER,
+  },
 };
 
 /** A second project's identifier, for proving cross-project queries return nothing. */

@@ -13,6 +13,7 @@ export * from "./event.js";
 export * from "./examination.js";
 export * from "./examples.js";
 export * from "./execution-node.js";
+export * from "./gate-health.js";
 export * from "./identity-registry.js";
 export * from "./job-contract.js";
 export * from "./membership.js";

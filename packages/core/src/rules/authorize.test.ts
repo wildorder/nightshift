@@ -176,6 +176,8 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "computeUtilization.get": "forbidden",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",
+  "gateHealth.get": "forbidden",
+  "gateHealth.put": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
@@ -265,6 +267,40 @@ describe("an execution principal", () => {
     }
     // While a user in the owning organisation is allowed, like every other read.
     expect(authorize(user, "artifact.createDownloadUrl", ownTarget)).toEqual({ allowed: true });
+  });
+
+  /**
+   * P15 (D-P15-07): the gate-health record is written by a Nightshift command
+   * or the engine, never by an agent. Walked over every agent role for the same
+   * reason as the signed download.
+   */
+  it("is refused the project's gate health, whatever its agent role", () => {
+    for (const role of ["worker", "orchestrator", "examiner", "arbiter"] as const) {
+      for (const operation of ["gateHealth.get", "gateHealth.put"] as const) {
+        expect(ACCESS_BY_ROLE[role][operation], `${role} ${operation}`).toBe("forbidden");
+        expect(
+          authorize({ ...execution, role }, operation, {
+            orgId: ORG_A,
+            projectId: here.scope.projectId,
+          }),
+          `${role} ${operation}`,
+        ).toMatchObject({ allowed: false, reason: "execution_forbidden_operation" });
+      }
+    }
+    // A member of the owning organisation reads and writes it; anyone else is refused.
+    for (const operation of ["gateHealth.get", "gateHealth.put"] as const) {
+      expect(authorize(user, operation, { orgId: ORG_A, projectId: here.scope.projectId })).toEqual(
+        {
+          allowed: true,
+        },
+      );
+      expect(
+        authorize(user, operation, { orgId: ORG_B, projectId: here.scope.projectId }),
+      ).toMatchObject({
+        allowed: false,
+        reason: "wrong_org",
+      });
+    }
   });
 
   it("can never mint a token, create a node, or write a verification", () => {
