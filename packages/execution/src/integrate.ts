@@ -46,6 +46,7 @@ import {
   sealedRef,
   updateRef,
 } from "./git/index.js";
+import { discardScratch } from "./scratch.js";
 import { stampJobDecisions } from "./stamp.js";
 
 export interface IntegrateInput {
@@ -218,6 +219,7 @@ export const integrateNode = async (
     // A worktree that will not go is untidy, not incorrect: the work is
     // integrated and the checkpoint exists. `git worktree prune` clears it later.
   });
+  await discardScratch(input.worktree);
 
   return { kind: "integrated", checkpointId };
 };

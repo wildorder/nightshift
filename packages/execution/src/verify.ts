@@ -62,6 +62,7 @@ import {
 } from "./environment.js";
 import { pristineCheckout } from "./git/index.js";
 import { recordArtifact, stepsAs } from "./runner.js";
+import { discardScratch, freshScratch, scratchEnv } from "./scratch.js";
 
 export interface VerifyInput {
   readonly session: RunSession;
@@ -199,15 +200,20 @@ export const verifyNode = async (
   // Setup first: the checkout holds only what is committed, so setup is what
   // makes it usable, from what this commit declares. When setup
   // fails, nothing is checked, and the record says so with setup's own output.
-  // As the worker the worktree belongs to (D-P10-25), never as the engine.
+  // As the worker the worktree belongs to (D-P10-25), never as the engine, and
+  // with a temp directory of its own that nothing before it wrote into and
+  // nothing after it inherits (scratch.ts).
+  const as = stepsAs(environment, { agentId: input.agentId, role: "worker" });
+  const scratch = await freshScratch(input.worktree, as.as);
   const checkout = await runCheckoutSteps({
     setup: input.session.program.setup ?? [],
     steps: runnable,
     cwd: input.worktree,
     reference: input.session.repoPath,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
-    ...stepsAs(environment, { agentId: input.agentId, role: "worker" }),
-  });
+    env: scratchEnv(scratch),
+    ...as,
+  }).finally(() => discardScratch(input.worktree, as.as));
   const results = checkout.checks;
 
   // Each step's whole output, in S3 and referenced — never inline (A-08).

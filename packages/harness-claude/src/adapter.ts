@@ -71,7 +71,13 @@ import type {
   HarnessStartInput,
   RunAs,
 } from "@nightshift/harness";
-import { agentStatusForExit, commandAs, hookTypeForExit, promptFor } from "@nightshift/harness";
+import {
+  agentStatusForExit,
+  commandAs,
+  hookTypeForExit,
+  promptFor,
+  withTmpDir,
+} from "@nightshift/harness";
 import {
   buildClaudeArgs,
   buildEmptyMcpConfig,
@@ -237,7 +243,10 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       ...(input.runAs === undefined ? {} : { started: { user: input.runAs.user } }),
     });
 
-    const env = sanitizeClaudeEnvironment({ platform, parentEnv, extra: HEADLESS_CLAUDE_ENV });
+    const env = withTmpDir(
+      sanitizeClaudeEnvironment({ platform, parentEnv, extra: HEADLESS_CLAUDE_ENV }),
+      input.tmpDir,
+    );
 
     const state: RunState = {
       interpreter,

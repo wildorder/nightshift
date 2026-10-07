@@ -97,6 +97,7 @@ import {
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
+import { discardScratch, ensureScratch } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
 import { stampSettledDecisions } from "./stamp.js";
 import { verifyNode } from "./verify.js";
@@ -383,6 +384,7 @@ export const startJob = async (
       await removeWorktree(environment.git, session.repoPath, worktree, branch, nodeId).catch(
         () => {},
       );
+      await discardScratch(worktree);
       await pruneWorktrees(environment.git, session.repoPath);
     }
     if (orchestrates) {
@@ -738,8 +740,13 @@ export const startJob = async (
 
     // The worktree is the worker's from here on (D-P10-25): one owner for its
     // whole life, the engine reading but never again writing as itself.
+    // Its temp directory too, beside the worktree (scratch.ts).
     const { runAs } = runAsOf(environment, startedAgent);
-    if (runAs !== undefined) await runAs.grant(worktree);
+    const tmpDir = await ensureScratch(worktree);
+    if (runAs !== undefined) {
+      await runAs.grant(worktree);
+      await runAs.grant(tmpDir);
+    }
     let handle: HarnessHandle;
     try {
       handle = await environment.harness.start({
@@ -748,6 +755,7 @@ export const startJob = async (
         job: input.job,
         program: session.program,
         worktree,
+        tmpDir,
         model: routingDecision.chosen,
         mcp: input.mcp(launchIdentity),
         tools,
@@ -854,6 +862,7 @@ const finishSubProgram = async (
       input.branch,
       input.nodeId,
     ).catch(() => {});
+    await discardScratch(input.worktree);
     await recordRouteResult(environment, input, usage);
     // What the strand's decisions produced, now that its work has all landed
     // or stopped (P9, D-P9-01).

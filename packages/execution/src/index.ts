@@ -22,6 +22,11 @@
  * - `start-run.ts` — the one function `nightshift run` and `run.start` share.
  */
 
+export {
+  type CarryOverEnvironment,
+  type CarryOverInput,
+  carriedStrandsFor,
+} from "./carry-over.js";
 export { routingDataset } from "./dataset.js";
 export {
   createEngine,
@@ -118,6 +123,14 @@ export {
   verifyAndIntegrate,
 } from "./runner.js";
 export { checkChangedPaths, describeScopeViolation, type ScopeCheck } from "./scope-check.js";
+export {
+  discardScratch,
+  ensureScratch,
+  freshScratch,
+  type RunScratchAs,
+  scratchEnv,
+  scratchOf,
+} from "./scratch.js";
 export {
   DEFAULT_FLUSH_DEADLINE_MS,
   endProgramNode,

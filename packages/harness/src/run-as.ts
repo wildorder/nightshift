@@ -81,3 +81,25 @@ export const commandAs = (
     env: { PATH: env.PATH ?? "/usr/local/bin:/usr/bin:/bin" },
   };
 };
+
+/** The variables a platform's temp lookup reads: `TMPDIR` on POSIX, `TEMP` and `TMP` on Windows. */
+const TEMP_VARIABLES = ["TMPDIR", "TEMP", "TMP"] as const;
+
+/**
+ * `env` with every temp variable pointing at `tmpDir` (P15), replacing any
+ * spelling of them already there: Windows reads names without regard to case,
+ * and two spellings of one name in a child's environment is undefined there.
+ * `env` itself, unchanged, when there is no `tmpDir`.
+ */
+export const withTmpDir = (
+  env: Readonly<Record<string, string>>,
+  tmpDir: string | undefined,
+): Readonly<Record<string, string>> => {
+  if (tmpDir === undefined) return env;
+  const replaced = new Set<string>(TEMP_VARIABLES);
+  const kept = Object.entries(env).filter(([name]) => !replaced.has(name.toUpperCase()));
+  return Object.freeze({
+    ...Object.fromEntries(kept),
+    ...Object.fromEntries(TEMP_VARIABLES.map((name) => [name, tmpDir])),
+  });
+};

@@ -56,7 +56,13 @@ import type {
   HarnessStartInput,
   RunAs,
 } from "@nightshift/harness";
-import { agentStatusForExit, commandAs, hookTypeForExit, promptFor } from "@nightshift/harness";
+import {
+  agentStatusForExit,
+  commandAs,
+  hookTypeForExit,
+  promptFor,
+  withTmpDir,
+} from "@nightshift/harness";
 import {
   buildCodexArgs,
   buildGitGuard,
@@ -170,7 +176,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       interpreter,
       exit: exitPromise,
       cwd: input.worktree,
-      env: sanitizeCodexEnvironment({ platform, parentEnv }),
+      env: withTmpDir(sanitizeCodexEnvironment({ platform, parentEnv }), input.tmpDir),
       child: undefined,
       guardDir: undefined,
       runAs: input.runAs,

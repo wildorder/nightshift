@@ -487,17 +487,25 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           model,
           ...(runId === undefined ? {} : { runId }),
         });
+        const carried = attached.session.run.carriedStrands ?? [];
         return ok(
           `Attached to run ${attached.session.scope.runId}. ` +
             (attached.replayed > 0
               ? `Replayed ${attached.replayed} spooled events from an earlier session. `
               : "") +
+            (carried.length === 0
+              ? ""
+              : `Carried over, already built by an earlier run of this plan and on the program ` +
+                `branch, so not to be delegated: ${carried
+                  .map((strand) => `${strand.strandId} (run ${strand.fromRunId})`)
+                  .join(", ")}. `) +
             "Delegate a job with `delegate`.",
           {
             runId: attached.session.scope.runId,
             rootNodeId: attached.session.rootNodeId,
             agentId: attached.session.orchestratorAgentId,
             replayedEvents: attached.replayed,
+            carriedStrands: carried,
           },
         );
       }),
@@ -641,6 +649,19 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     async (input) =>
       guarded(async () => {
         const attached = requireAttached(state);
+        const carried = attached.session.run.carriedStrands?.find(
+          (strand) => strand.strandId === input.strandId,
+        );
+        if (carried !== undefined) {
+          // Built by an earlier run of this plan, and on the branch: done here too.
+          throw new ToolRefusal(
+            "strand_carried",
+            `${input.strandId} was built by run ${carried.fromRunId} under this same plan, and ` +
+              "everything it landed is on the program branch this run started from, so it has " +
+              "succeeded in this run already. Do not delegate it; delegate the strands that remain.",
+            { strandId: input.strandId, fromRunId: carried.fromRunId, landed: carried.landed },
+          );
+        }
         const kind = input.kind ?? "sub-program";
         const job = buildStrandJob(state, attached, input.strandId, kind);
         const check = await checkDelegationOrRefuse(state, attached, job.scope);

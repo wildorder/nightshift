@@ -288,12 +288,23 @@ export const runProgram = async (
     location: readiness === undefined ? "local" : "remote",
   });
   await recordConfirmations(environment, session, started, confirming);
+  const sayCarried = (): void => {
+    for (const carried of started.run.carriedStrands ?? []) {
+      environment.out(
+        `carried over: ${carried.strandId} was built by run ${carried.fromRunId} under this same plan, ` +
+          `and its ${carried.landed.length} landed commit${carried.landed.length === 1 ? " is" : "s are"} ` +
+          `on ${started.program.repository.programBranch}; it is not built again`,
+      );
+    }
+  };
   if (readiness !== undefined) {
     environment.out(started.run.runId);
+    sayCarried();
     await dispatchRun(environment, session, started, readiness);
     return { started, exitCode: 0 };
   }
   environment.out(started.run.runId);
+  sayCarried();
   environment.out(
     `run ${started.run.runId} of plan ${ratified.planHash?.slice(0, 12)} is pending ` +
       `at ${started.baseCommit.slice(0, 8)} on ${started.program.repository.programBranch}`,
