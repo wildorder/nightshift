@@ -29,6 +29,7 @@ import {
   setupFailed,
 } from "@nightshift/verification";
 import { addDetachedWorktree, type GitRunner, pruneWorktrees, tryGit } from "./git/index.js";
+import { discardScratch, freshScratch, scratchEnv } from "./scratch.js";
 
 /**
  * - `passed`: it exited 0.
@@ -98,9 +99,11 @@ const runOnce = async (
     results.set(result.stepId, result);
     input.onStep?.(result);
   };
+  // A temp directory of its own, as a verification gets (scratch.ts).
+  const scratch = await freshScratch(checkout, input.as);
   const how = {
     timeoutMs: input.timeoutMs,
-    ...(input.env === undefined ? {} : { env: input.env }),
+    env: { ...(input.env ?? {}), ...scratchEnv(scratch) },
     ...(input.as === undefined ? {} : { as: input.as }),
   };
   const prepared = await runSetupSteps({
@@ -149,6 +152,7 @@ export const auditGates = async (input: GateAuditInput): Promise<GateAudit> => {
   try {
     results = await runOnce(input, checkout, runnable);
   } finally {
+    await discardScratch(checkout, input.as);
     await tryGit(input.git, ["worktree", "remove", "--force", checkout], {
       cwd: input.repoPath,
     }).catch(() => undefined);

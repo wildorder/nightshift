@@ -43,6 +43,7 @@ import {
   addDetachedWorktree,
   createEventOutbox,
   createHookSink,
+  freshScratch,
   pruneWorktrees,
   revParse,
   tryGit,
@@ -351,6 +352,8 @@ export const runHeadless = async (
   }
   await pruneWorktrees(runtime.git, input.repoPath);
   await addDetachedWorktree(runtime.git, { repo: input.repoPath, path: worktree, base });
+  // The root's temp directory, beside its worktree, like every agent's (scratch.ts).
+  const tmpDir = await freshScratch(worktree);
 
   const transcript = runtime.paths.transcript(scope.runId, agent.agentId);
   await mkdir(dirname(transcript), { recursive: true });
@@ -369,6 +372,7 @@ export const runHeadless = async (
     job: brief,
     program,
     worktree,
+    tmpDir,
     model: route.target,
     mcp: rootLaunch(env, { repoPath: input.repoPath, agentId: agent.agentId }),
     tools: refusingWorkerTools("the root orchestrator reaches Nightshift through its MCP launch"),

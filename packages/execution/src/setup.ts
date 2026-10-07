@@ -21,6 +21,7 @@ import {
   type RunSession,
 } from "./environment.js";
 import { recordArtifact } from "./runner.js";
+import { freshScratch, scratchEnv } from "./scratch.js";
 
 export interface PrepareCheckoutInput {
   readonly session: RunSession;
@@ -30,11 +31,16 @@ export interface PrepareCheckoutInput {
   readonly purpose: string;
 }
 
-/** Runs the program's setup in `checkout`. True when there was none, or it all passed. */
+/**
+ * Runs the program's setup in `checkout`, and gives the checkout its scratch
+ * (scratch.ts), which the agent started there then uses as its temp directory.
+ * True when there was no setup, or it all passed.
+ */
 export const prepareCheckout = async (
   environment: ExecutionEnvironment,
   input: PrepareCheckoutInput,
 ): Promise<boolean> => {
+  const scratch = await freshScratch(input.checkout);
   const setup = input.session.program.setup ?? [];
   if (setup.length === 0) return true;
   const results = await runSetupSteps({
@@ -44,6 +50,7 @@ export const prepareCheckout = async (
     // match (D-P10-24); the install runs only when they do not.
     reference: input.session.repoPath,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+    env: scratchEnv(scratch),
   });
   const encoder = new TextEncoder();
   const log = results.flatMap((result) => [

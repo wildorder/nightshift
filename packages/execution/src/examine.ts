@@ -96,6 +96,7 @@ import {
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
 import { recordArtifact, runAsOf } from "./runner.js";
+import { discardScratch, ensureScratch, freshScratch, scratchEnv } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
 
 /** The environment variable an examiner's server reads its examination's frame from. */
@@ -559,6 +560,7 @@ const removeCheckout = async (
   await git(environment.git, ["worktree", "remove", "--force", path], {
     cwd: input.session.repoPath,
   }).catch(() => {});
+  await discardScratch(path);
   await pruneWorktrees(environment.git, input.session.repoPath).catch(() => {});
 };
 
@@ -625,13 +627,16 @@ const candidateVerification = async (
 
   const startedAt = nowIso(environment.clock);
   // The checkout is new and holds only what is committed, so setup comes first;
-  // it also leaves the checkout usable for the examiner who works in it.
+  // it also leaves the checkout usable for the examiner who works in it. The
+  // checks get a fresh scratch (scratch.ts), which the examiner then inherits.
+  const scratch = await freshScratch(checkout);
   const ran = await runCheckoutSteps({
     setup: input.session.program.setup ?? [],
     steps,
     cwd: checkout,
     reference: input.session.repoPath,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+    env: scratchEnv(scratch),
   });
   const results = [...ran.setup, ...ran.checks];
   const logs = new Map<string, Verification["commands"][number]["logArtifactId"]>();
@@ -781,7 +786,11 @@ const runHelper = async (
   await mkdir(dirname(transcript), { recursive: true });
   // The helper's checkout is its own from here on (D-P10-25).
   const { runAs } = runAsOf(environment, helper.agent);
-  if (runAs !== undefined) await runAs.grant(launch.worktree);
+  const tmpDir = await ensureScratch(launch.worktree);
+  if (runAs !== undefined) {
+    await runAs.grant(launch.worktree);
+    await runAs.grant(tmpDir);
+  }
   try {
     const handle = await environment.harness.start({
       agent: helper.agent,
@@ -789,6 +798,7 @@ const runHelper = async (
       job: input.job,
       program: input.session.program,
       worktree: launch.worktree,
+      tmpDir,
       model: helper.decision.chosen,
       ...(launch.mcp === undefined ? {} : { mcp: launch.mcp }),
       tools: refusingWorkerTools(
