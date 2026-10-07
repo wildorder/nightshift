@@ -60,6 +60,7 @@ export {
 export {
   arbitrateAll,
   carriedExamination,
+  continuedByNightshift,
   describeBlocking,
   EXAMINATION_CONTEXT_ENV,
   type ExaminationContext,

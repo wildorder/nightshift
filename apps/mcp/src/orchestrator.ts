@@ -68,6 +68,7 @@ import {
   strandsOf,
 } from "@nightshift/core";
 import {
+  continuedByNightshift,
   endProgramNode,
   FixLimitError,
   type RoutePins,
@@ -171,6 +172,10 @@ const jobReport = async (
   );
   const running = attached.engine.running(jobContractId as never);
   const waiting = attached.engine.waiting(jobContractId as never);
+  const continuing = continuedByNightshift(
+    node.status,
+    await stores.examinations.listByNode(scope, node.executionNodeId),
+  );
 
   return {
     jobContractId,
@@ -179,7 +184,10 @@ const jobReport = async (
     // `core`'s own list, so a status added there (`succeeded`, for a sub-program)
     // is settled here too rather than waited on for ever.
     // Done for now: settled, or deferred for a human (D-P7-10). Nothing to wait for either way.
-    settled: isDoneForNow(node.status),
+    // Not while Nightshift is still taking it further itself: an arbiter ruling,
+    // or a ruling about to be carried out. Its orchestrator has nothing to do yet.
+    settled: isDoneForNow(node.status) && continuing === undefined,
+    ...(continuing === undefined ? {} : { continuing }),
     commitSha: node.commitSha,
     outcomeReason: node.outcomeReason ?? null,
     worktree: running?.worktree ?? null,
@@ -807,7 +815,9 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       title: "Wait for a job",
       description:
         "Block until the job settles or the cap elapses, then answer exactly what job.get would. " +
-        "Always returns: `timedOut` says whether the job settled or the wait did.",
+        "Always returns: `timedOut` says whether the job settled or the wait did. A failed job " +
+        "Nightshift is still taking further (an arbiter ruling on it, or an upheld ruling about " +
+        "to be carried out) is not settled, and `continuing` says why: wait for it.",
       inputSchema: {
         jobId: z.string().min(1).optional(),
         // Several at once (D-P6-09): an orchestrator that can only wait on one

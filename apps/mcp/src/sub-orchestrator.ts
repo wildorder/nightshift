@@ -42,6 +42,7 @@ import {
   transition,
 } from "@nightshift/core";
 import {
+  continuedByNightshift,
   fixOf,
   git,
   latestExamination,
@@ -138,12 +139,18 @@ export const registerSubOrchestratorTools = (
       -1,
     );
     const agent = (await stores.agents.listByNode(scope, node.executionNodeId)).at(-1);
+    // Not settled while Nightshift is still taking it further itself (examine.ts).
+    const continuing = continuedByNightshift(
+      node.status,
+      await stores.examinations.listByNode(scope, node.executionNodeId),
+    );
     return {
       jobContractId: jobId,
       nodeId: node.executionNodeId,
       kind: node.kind,
       status: node.status,
-      settled: isDoneForNow(node.status),
+      settled: isDoneForNow(node.status) && continuing === undefined,
+      ...(continuing === undefined ? {} : { continuing }),
       commitSha: node.commitSha,
       outcomeReason: node.outcomeReason ?? null,
       agent:
@@ -327,7 +334,9 @@ export const registerSubOrchestratorTools = (
       title: "Wait for jobs you delegated",
       description:
         "Block until the first of these jobs settles, or the cap elapses. Always returns: " +
-        "`timedOut` says whether a job settled or the wait did.",
+        "`timedOut` says whether a job settled or the wait did. A failed job Nightshift is " +
+        "still taking further (an arbiter ruling on it, or an upheld ruling about to be carried " +
+        "out) is not settled, and `continuing` says why: wait for it, do not delegate it again.",
       inputSchema: {
         jobId: z.string().min(1).optional(),
         jobIds: z.array(z.string().min(1)).min(1).optional(),
