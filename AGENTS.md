@@ -60,8 +60,10 @@ See `docs/architecture.md` for settled and open architectural decisions.
 See `docs/programs/staging.md` for how v1 is split into programs.
 See `docs/programs/` for program plans and manifests. From P7 on a *product's*
 programs are planned as `docs/programs/{id}/plan.md` + `contract.json`
-(`skills/plan-program`); Nightshift's own programs stay single contract documents
-planned by a human, because v1 does not dogfood itself.
+(`skills/plan-program`). Nightshift's own programs keep their single contract
+document (`docs/programs/pNN-*.md`), which stays the authority; since P15 a program
+may also be planned for Nightshift to build (`docs/programs/{id}/plan.md` +
+`contract.json`, pointing at that document) and run like any product's.
 See `tasks/{program-id}/` for task specs.
 
 ### Greenfield Boundary — read first
@@ -93,12 +95,15 @@ Legacy refs remain in the repository solely for deliberate human reference. A
 human may explicitly instruct you to consult one; absent that instruction, treat
 them as absent.
 
-**Nightshift v1 does not dogfood itself.** No Nightshift tooling of any version
-plans, executes, verifies, or reviews v1 delivery. In particular, do not invoke
-Nightshift skills installed at the user level, do not read or recreate a
-`nightshift.config.json`, and do not expect a `docs/as-built.md`. A human plans
-each program in an ordinary coding-agent session; the resulting Program Contract
-lives under `docs/programs/` and task specs live under `tasks/{program-id}/`.
+**Nightshift builds Nightshift, by the owner's direction (2026-10-06).** This
+repository is a Nightshift project (`nightshift.config.json`): P15 was the first
+program Nightshift built for itself, on a remote run. Only Nightshift v1, its
+skills and this repository's own config take part; no earlier generation's
+tooling does, and there is still no `docs/as-built.md`. A human still plans each
+program and owns its contract document under `docs/programs/`. When the owner
+asks for one to be built by Nightshift, plan it with the plan-program skill
+beside that document and run it with the run-program skill. When the owner asks
+you to build directly, in a coding-agent session, do that.
 
 ### Tech Stack
 

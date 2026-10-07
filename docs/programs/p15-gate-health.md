@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p15-gate-health` |
 | Source stage | none: the owner's direction of 2026-10-06 (§3.1), after keki-backend's playspace-time-reservations run |
-| Status | **Ratified 2026-10-06.** D-P15-01 … D-P15-06 are the owner's, from the conversation; D-P15-07 … D-P15-11 were proposed and ratified the same day. Built by Nightshift itself, on a remote run (§13) |
+| Status | **Built 2026-10-07 by Nightshift itself**, on two remote runs: `run_01M49VNT…` built S-01, then failed when the machine's `/tmp` filled; `run_01M4B8ZQ…` carried S-01 over (A-53) and built S-02. The owner's review then fixed what the run got wrong and what it exposed: seeding from an unverified reference, deferral ordering, the arbiter's vanishing checkout, "settled" while Nightshift was still continuing a job, and rulings as the program's memory (A-54). Merged to main; the owner's testing follows. D-P15-01 … D-P15-11 ratified |
 | Depends on | P7 (planning, `plan check`, ratification), P8 (examination and risk), P9 (decisions), P10 (the runner), A-52 (the mechanical gate audit, built 2026-10-06) |
 | Blocking decisions | none: D-P15-01 … D-P15-11 ratified |
 
@@ -245,3 +245,4 @@ As P14. Nothing here pushes to a product repository or deploys one.
 |------|----------|----|
 | 2026-10-06 | Contract drafted from the owner's direction (§3.1); D-P15-01 … D-P15-06 agreed in conversation; D-P15-07 … D-P15-11 proposed | Agent, for human ratification |
 | 2026-10-06 | D-P15-07 … D-P15-11 ratified ("yes. love it let's go"). The owner asked for P15 to be built by Nightshift on a remote run, the first Nightshift program Nightshift builds | Human |
+| 2026-10-07 | Built (two runs), reviewed, fixed and merged to main, by the owner's direction | Agent, for the owner's testing |
