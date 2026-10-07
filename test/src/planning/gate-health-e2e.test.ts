@@ -229,6 +229,20 @@ describe("the gate-health audit through the CLI (D-P15-07, D-P15-08)", () => {
     expect(said()).toContain("stale");
   }, 120_000);
 
+  it("audits the plan being re-planned, not the one last ratified, so plan check agrees with the record", async () => {
+    expect(await cli("gates", PROGRAM, "--record"), said()).toBe(0);
+    expect(await cli("plan", "ratify", PROGRAM), said()).toBe(0);
+
+    // Re-planned: a setup step the ratified plan does not have. The record
+    // must be of these gates, which plan check and ratification judge.
+    await writeProgram({ setup: [{ id: "prepare", command: 'node -e "process.exit(0)"' }] });
+    commit("re-plan with a setup");
+    expect(await cli("gates", PROGRAM, "--record"), said()).toBe(0);
+    expect(said()).toContain("setup:prepare");
+    expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
+    expect(op.out[0]).toBe("READY");
+  }, 120_000);
+
   it("records a review's findings as repairing, READY only once each is answered and S-00 comes first", async () => {
     await writeProgram({
       decisions: [
