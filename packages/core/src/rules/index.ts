@@ -9,6 +9,7 @@ export * from "./dispatch.js";
 export * from "./event-stream.js";
 export * from "./examination.js";
 export * from "./execution-tree.js";
+export * from "./gate-fingerprint.js";
 export * from "./integration.js";
 export * from "./ownership.js";
 export * from "./permissions.js";
