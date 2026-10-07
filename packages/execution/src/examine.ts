@@ -14,6 +14,11 @@
  * was examined (the same patch id), the examination carries over; if the replay
  * changed the diff, it is examined again, in the queue.
  *
+ * The candidate check reruns a failed check once, as the queue's does
+ * (D-P15-06, `flaky.ts`): a check that then passes is recorded as flaky, the
+ * job goes on to its examiner rather than ending `verification_failed`, and
+ * `gate.flaked` names the flake.
+ *
  * ## Who is involved
  *
  * - The **examiner**: an agent of its own on the job's node, with its own token
@@ -85,6 +90,7 @@ import {
   type ExecutionEnvironment,
   type RunSession,
 } from "./environment.js";
+import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import {
   addDetachedWorktree,
   changedPaths,
@@ -630,12 +636,13 @@ const candidateVerification = async (
   // it also leaves the checkout usable for the examiner who works in it. The
   // checks get a fresh scratch (scratch.ts), which the examiner then inherits.
   const scratch = await freshScratch(checkout);
+  const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const ran = await runCheckoutSteps({
     setup: input.session.program.setup ?? [],
     steps,
     cwd: checkout,
     reference: input.session.repoPath,
-    timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+    timeoutMs,
     env: scratchEnv(scratch),
   });
   const results = [...ran.setup, ...ran.checks];
@@ -650,7 +657,23 @@ const candidateVerification = async (
     });
     logs.set(result.stepId, artifactId as never);
   }
-  const commands = toVerificationCommands(results, logs as never);
+  // A failed check runs once more here too, exactly as in the queue (D-P15-06,
+  // flaky.ts): a flake is recorded as passed and goes on to the examiner,
+  // never ending the job as verification_failed. The examiner inherits the
+  // rerun's scratch.
+  const reruns = await rerunFailures({
+    steps,
+    first: ran.checks,
+    cwd: checkout,
+    timeoutMs,
+    keepScratch: true,
+  });
+  const commands = await withFlakes(
+    environment,
+    { scope: input.session.scope, nodeId: input.node.executionNodeId },
+    toVerificationCommands(results, logs as never),
+    reruns,
+  );
   const workerId = (await implementerOf(environment, input))?.agentId;
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
@@ -667,6 +690,7 @@ const candidateVerification = async (
     endedAt: nowIso(environment.clock),
   }) as Verification;
   await environment.stores.verifications.put(verification);
+  announceFlakes(environment, verification, workerId);
   return verification;
 };
 

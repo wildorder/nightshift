@@ -24,10 +24,24 @@
  * it, which is what a developer who cloned the commit and ran the same
  * commands would get.
  *
+ * ## A check that fails is run once more
+ *
+ * Each check that ran and failed (not a declared deferral, not one waiting on
+ * a prerequisite; never setup) is rerun exactly once, on the same checkout of
+ * the same commit, as the same worker, in a fresh scratch, with no setup and
+ * no reset in between (D-P15-06, `flaky.ts`). A rerun that passes makes the
+ * check **flaky**: recorded with the rerun's evidence and the first run under
+ * `flaky`, it counts as passed, so the node goes on exactly as a pass does and
+ * nothing climbs the route. That keeps the run fast, since a flake no longer
+ * costs a whole new attempt, and the flake is still seen: `gate.flaked` names
+ * it, and the root repairs the gate off the blocking path. A rerun that fails
+ * is the failure it always was, recorded as its first run.
+ *
  * ## Order
  *
  * Node to `verifying`, run the steps, upload each step's output as an artifact,
- * write the `Verification`, and only then transition. The record exists before
+ * rerun the failed checks, write the `Verification`, announce any flake
+ * (`gate.flaked`), and only then transition. The record exists before
  * the status that depends on it, so a reader can never find a `verified` node
  * with no evidence — and `core`'s `markVerified` would refuse anyway.
  */
@@ -60,6 +74,7 @@ import {
   type LandingEnvironment,
   type RunSession,
 } from "./environment.js";
+import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import { pristineCheckout } from "./git/index.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 import { discardScratch, freshScratch, scratchEnv } from "./scratch.js";
@@ -205,12 +220,13 @@ export const verifyNode = async (
   // nothing after it inherits (scratch.ts).
   const as = stepsAs(environment, { agentId: input.agentId, role: "worker" });
   const scratch = await freshScratch(input.worktree, as.as);
+  const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const checkout = await runCheckoutSteps({
     setup: input.session.program.setup ?? [],
     steps: runnable,
     cwd: input.worktree,
     reference: input.session.repoPath,
-    timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+    timeoutMs,
     env: scratchEnv(scratch),
     ...as,
   }).finally(() => discardScratch(input.worktree, as.as));
@@ -240,10 +256,25 @@ export const verifyNode = async (
     discovered.set(result.stepId, signal.prerequisiteId);
   }
 
-  // In the contract's own order, so a record reads like the contract it ran.
-  const ran = new Map(
-    toVerificationCommands(results, logArtifactIds).map((command) => [command.stepId, command]),
+  // Each check that failed, and did not declare a deferral, runs once more on
+  // this same checkout as the same worker (D-P15-06, flaky.ts). One whose rerun
+  // passes is a flake: recorded as passed, with its first run beside it.
+  const reruns = await rerunFailures({
+    steps: runnable,
+    first: results,
+    cwd: input.worktree,
+    timeoutMs,
+    ...as,
+  });
+  const checkCommands = await withFlakes(
+    environment,
+    { scope: input.session.scope, nodeId: input.node.executionNodeId },
+    toVerificationCommands(results, logArtifactIds),
+    reruns,
   );
+
+  // In the contract's own order, so a record reads like the contract it ran.
+  const ran = new Map(checkCommands.map((command) => [command.stepId, command]));
   const checked = checkout.setupFailed ? [] : steps;
   const commands = [
     ...toVerificationCommands(checkout.setup, logArtifactIds),
@@ -279,6 +310,8 @@ export const verifyNode = async (
     endedAt: nowIso(clock),
   } satisfies Record<string, unknown>) as Verification;
   await stores.verifications.put(verification);
+  // A flake lands the work, and is still seen: the root repairs it off the path.
+  const flakyPayload = announceFlakes(environment, verification, input.agentId);
 
   const at = nowIso(clock);
   const nothingFailed = verification.outcome !== "failed";
@@ -300,6 +333,7 @@ export const verifyNode = async (
           .filter((command) => command.deferred !== undefined)
           .map((command) => command.stepId),
         waitingOn,
+        ...flakyPayload,
       },
       executionNodeId: input.node.executionNodeId,
       agentId: input.agentId,
@@ -323,6 +357,7 @@ export const verifyNode = async (
           exitCode: command.exitCode,
           durationMs: command.durationMs,
         })),
+        ...flakyPayload,
       },
       executionNodeId: input.node.executionNodeId,
       agentId: input.agentId,
@@ -350,6 +385,7 @@ export const verifyNode = async (
       // Nothing is sealed and nothing integrates; the worktree is kept so a
       // human can look at what the commands saw.
       worktree: input.worktree,
+      ...flakyPayload,
     },
     executionNodeId: input.node.executionNodeId,
     agentId: input.agentId,
