@@ -102,6 +102,7 @@ import {
   updateRef,
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
+import { programRulings, rulingsCarriedBy } from "./rulings.js";
 import { recordArtifact, runAsOf } from "./runner.js";
 import { discardScratch, ensureScratch, freshScratch, scratchEnv } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
@@ -483,10 +484,14 @@ const gatherEvidence = async (
   const paths = await changedPaths(environment.git, checkout, input.base, input.commitSha);
   const fixAttempt = fixAttemptOf(examinations);
   const previous = latestOf(examinations);
-  const rulings = rulingsToCheck(examinations);
+  const patchId = patchIdOf(diff);
+  // This job's own rulings; otherwise any made on the very work it carries,
+  // re-landed or replayed, which follow that work here (rulings.ts).
+  const rulings =
+    rulingsToCheck(examinations) ?? (await rulingsFollowingTheWork(environment, input, patchId));
   return {
     verification,
-    patchId: patchIdOf(diff),
+    patchId,
     evidence: {
       diff: diff.slice(0, MAX_DIFF_CHARS),
       diffTruncated: diff.length > MAX_DIFF_CHARS,
@@ -499,6 +504,23 @@ const gatherEvidence = async (
       ...(rulings === undefined ? {} : { rulings }),
     },
   };
+};
+
+/** Rulings made elsewhere in the program on the work this change carries, or `undefined`. */
+const rulingsFollowingTheWork = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  patchId: string,
+): Promise<readonly ExaminationRuling[] | undefined> => {
+  const { projectId, programId } = input.session.scope;
+  const carried = await rulingsCarriedBy(environment.git, {
+    repoPath: input.session.repoPath,
+    base: input.base,
+    commitSha: input.commitSha,
+    patchId,
+    rulings: await programRulings(environment.stores, { projectId, programId }),
+  });
+  return carried.length === 0 ? undefined : carried;
 };
 
 const announceVerdict = (
@@ -832,6 +854,11 @@ const runHelper = async (
       ),
       worktree: launch.worktree,
       tmpDir,
+      // The program's rulings so far: an examiner holds the change to them (rulings.ts).
+      rulings: await programRulings(environment.stores, {
+        projectId: input.session.scope.projectId,
+        programId: input.session.scope.programId,
+      }),
       model: helper.decision.chosen,
       ...(launch.mcp === undefined ? {} : { mcp: launch.mcp }),
       tools: refusingWorkerTools(

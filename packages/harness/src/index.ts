@@ -49,6 +49,7 @@ export {
   hookTypeForExit,
   type McpLaunch,
   millis,
+  type ProgramRuling,
   routeUnavailableReason,
 } from "./harness.js";
 export {

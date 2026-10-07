@@ -195,6 +195,28 @@ export interface CarriedOverWork {
   readonly patchPath: string;
 }
 
+/**
+ * An arbiter's upheld ruling, anywhere in the program, as later agents are
+ * told it: the program's memory of what has been decided about how its code
+ * must behave. A worker follows it where its work touches what it covers; an
+ * examiner treats a change that contradicts it as material. Gathered from the
+ * records when an agent starts; a ruling a human reversed is not among them.
+ */
+export interface ProgramRuling {
+  readonly decisionId: string;
+  readonly runId: string;
+  readonly findingId: string;
+  /** The finding the arbiter upheld. */
+  readonly finding: string;
+  /** Why the arbiter upheld it. */
+  readonly rationale: string;
+  /** The paths the finding cited. */
+  readonly paths: readonly string[];
+  /** The commit the finding was made against, and its change's patch id. */
+  readonly commitSha: string;
+  readonly patchId: string;
+}
+
 export interface HarnessStartInput {
   /** The execution identity, already persisted as `created` before this call (A-04). */
   readonly agent: Agent;
@@ -213,6 +235,11 @@ export interface HarnessStartInput {
    * machine's shared `/tmp`. Absent, the agent inherits the engine's.
    */
   readonly tmpDir?: string;
+  /**
+   * Every upheld ruling in the program so far (P15): the context the brief
+   * gives a worker, an orchestrator and an examiner. Absent or empty, none.
+   */
+  readonly rulings?: readonly ProgramRuling[];
   /** Harness, provider and model, as routing chose them (D-P3-08). */
   readonly model: RouteTarget;
   /**

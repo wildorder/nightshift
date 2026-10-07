@@ -35,6 +35,7 @@ import type {
   CarriedOverWork,
   ExaminationEvidence,
   HarnessStartInput,
+  ProgramRuling,
 } from "./harness.js";
 
 /**
@@ -54,7 +55,52 @@ export interface WorkerBriefInput {
   readonly task?: AgentTask;
   /** The last attempt's unfinished work, when this attempt starts from it. */
   readonly carriedOver?: CarriedOverWork;
+  /** Every upheld ruling in the program so far (P15). */
+  readonly rulings?: readonly ProgramRuling[];
 }
+
+/**
+ * The program's rulings, as the role reading them should take them (P15). A
+ * worker and an orchestrator are told what has been decided, to follow where
+ * their work touches it; an examiner, to hold the change to it. Never an
+ * instruction to do something outside the job: whether a ruling applies is the
+ * reader's judgement, and one that does not apply is left alone.
+ */
+const renderProgramRulings = (
+  rulings: readonly ProgramRuling[] | undefined,
+  role: "worker" | "orchestrator" | "examiner",
+): string | undefined => {
+  if (rulings === undefined || rulings.length === 0) return undefined;
+  const how =
+    role === "examiner"
+      ? [
+          "  An independent arbiter upheld each of these findings on earlier work in this",
+          "  program. They are what the program has decided about how its code must behave.",
+          "  Where the change in front of you touches what one covers, a change that",
+          "  contradicts it is a material finding; cite the ruling. Where none applies, say",
+          "  nothing of them.",
+        ]
+      : [
+          "  An independent arbiter upheld each of these findings on earlier work in this",
+          "  program. They are what the program has decided about how its code must behave,",
+          `  and ${role === "worker" ? "your work is examined against them" : "the work you delegate is examined against them"}. Where ${role === "worker" ? "your job" : "your sub-program"}`,
+          "  touches what one covers, follow it. One that does not concern this work is",
+          "  context, not a task: do not go and change code for it.",
+        ];
+  return [
+    "RULINGS ALREADY MADE IN THIS PROGRAM",
+    "",
+    ...how,
+    "",
+    ...rulings.map((ruling) =>
+      [
+        `  - ${ruling.findingId} (${ruling.decisionId}, run ${ruling.runId}): ${ruling.finding}`,
+        `    Upheld because: ${ruling.rationale}`,
+        ...(ruling.paths.length === 0 ? [] : [`    Where: ${ruling.paths.join(", ")}`]),
+      ].join("\n"),
+    ),
+  ].join("\n");
+};
 
 /**
  * Every agent Nightshift starts runs unattended: nobody will prompt it again.
@@ -147,6 +193,8 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
       bullets(program.constraints),
     ].join("\n"),
   );
+  const rulings = renderProgramRulings(input.rulings, "worker");
+  if (rulings !== undefined) sections.push(rulings);
 
   sections.push(
     [
@@ -345,6 +393,9 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       `  ${job.objective}`,
     ].join("\n"),
     ["ACCEPTANCE CRITERIA", numbered(job.acceptance)].join("\n"),
+    ...[renderProgramRulings(input.rulings, "orchestrator")].filter(
+      (section): section is string => section !== undefined,
+    ),
     ...(job.strandId === undefined
       ? []
       : [
@@ -882,6 +933,8 @@ export const renderExaminerBrief = (
   ];
   const repair = renderRepairStandard(input.job);
   if (repair !== undefined) sections.push(repair);
+  const rulings = renderProgramRulings(input.rulings, "examiner");
+  if (rulings !== undefined) sections.push(rulings);
   if (evidence.rulings !== undefined && evidence.rulings.length > 0) {
     sections.push(renderRulingsToCheck(evidence.rulings));
   } else if (evidence.previousFindings !== undefined && evidence.previousFindings.length > 0) {
@@ -1030,7 +1083,7 @@ export const renderArbiterBrief = (
 export const promptFor = (
   input: Pick<
     HarnessStartInput,
-    "job" | "node" | "program" | "worktree" | "task" | "mcp" | "agent" | "carriedOver"
+    "job" | "node" | "program" | "worktree" | "task" | "mcp" | "agent" | "carriedOver" | "rulings"
   >,
   withAddendum: (brief: string, mcpServerName: string, tools: readonly string[]) => string,
 ): string => {
@@ -1041,6 +1094,7 @@ export const promptFor = (
     worktree: input.worktree,
     ...(input.task === undefined ? {} : { task: input.task }),
     ...(input.carriedOver === undefined ? {} : { carriedOver: input.carriedOver }),
+    ...(input.rulings === undefined ? {} : { rulings: input.rulings }),
   });
   return input.mcp === undefined
     ? brief

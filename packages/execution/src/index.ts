@@ -130,6 +130,7 @@ export {
   type ResumeSession,
   resumeDeferred,
 } from "./resume.js";
+export { programRulings, rulingsCarriedBy } from "./rulings.js";
 export {
   type DelegateJobInput,
   delegateJob,
