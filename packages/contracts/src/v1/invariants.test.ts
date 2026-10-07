@@ -12,9 +12,10 @@ import { PathGlobSchema, ScopeRequestSchema, ScopeSchema } from "./common.js";
 import { EventSchema, inlinePayloadBytes, MAX_INLINE_PAYLOAD_BYTES } from "./event.js";
 import { ExaminationSchema } from "./examination.js";
 import { AGGREGATE_EXAMPLES, EXAMPLE_IDS } from "./examples.js";
+import { JobContractSchema } from "./job-contract.js";
 import { ProgramContractSchema } from "./program-contract.js";
 import { RoutingDecisionSchema } from "./routing-decision.js";
-import { VerificationSchema } from "./verification.js";
+import { flakyStepIds, VerificationSchema } from "./verification.js";
 
 const clone = <T>(value: T): Record<string, unknown> =>
   structuredClone(value) as Record<string, unknown>;
@@ -98,6 +99,91 @@ describe("Verification", () => {
     commands[0] = { ...commands[0], log: "a".repeat(1000) };
     expect(VerificationSchema.safeParse(record).success).toBe(false);
   });
+
+  describe("a flaky check (P15, D-P15-06)", () => {
+    const flaky = { firstExitCode: 1, firstDurationMs: 500 };
+
+    it("accepts a check that failed first and passed on the rerun", () => {
+      const record = clone(AGGREGATE_EXAMPLES.Verification);
+      const commands = record.commands as Record<string, unknown>[];
+      commands[0] = { ...commands[0], exitCode: 0, flaky };
+      expect(VerificationSchema.safeParse(record).success).toBe(true);
+    });
+
+    it("refuses flaky when the rerun itself did not pass", () => {
+      const record = clone(AGGREGATE_EXAMPLES.Verification);
+      const commands = record.commands as Record<string, unknown>[];
+      commands[0] = { ...commands[0], exitCode: 1, flaky };
+      record.outcome = "failed";
+      expect(VerificationSchema.safeParse(record).success).toBe(false);
+    });
+
+    it("refuses flaky when the first run did not actually fail", () => {
+      const record = clone(AGGREGATE_EXAMPLES.Verification);
+      const commands = record.commands as Record<string, unknown>[];
+      commands[0] = { ...commands[0], exitCode: 0, flaky: { ...flaky, firstExitCode: 0 } };
+      expect(VerificationSchema.safeParse(record).success).toBe(false);
+    });
+
+    it("names only the steps that flaked", () => {
+      const record = clone(AGGREGATE_EXAMPLES.Verification);
+      const commands = record.commands as Record<string, unknown>[];
+      commands[0] = { ...commands[0], exitCode: 0, flaky };
+      const parsed = VerificationSchema.parse(record);
+      expect(flakyStepIds(parsed)).toEqual(["build"]);
+    });
+
+    it("names nothing when nothing flaked", () => {
+      const parsed = VerificationSchema.parse(AGGREGATE_EXAMPLES.Verification);
+      expect(flakyStepIds(parsed)).toEqual([]);
+    });
+  });
+});
+
+describe("JobContract repair (P15, D-P15-03, D-P15-04)", () => {
+  const repair = { cause: "red_base", gates: ["build"], decisionId: EXAMPLE_IDS.decisionId };
+
+  it("accepts a repair job", () => {
+    const record = clone(AGGREGATE_EXAMPLES.JobContract);
+    record.repair = repair;
+    expect(JobContractSchema.safeParse(record).success).toBe(true);
+  });
+
+  it("accepts a repair job with cause flaky", () => {
+    const record = clone(AGGREGATE_EXAMPLES.JobContract);
+    record.repair = { ...repair, cause: "flaky" };
+    expect(JobContractSchema.safeParse(record).success).toBe(true);
+  });
+
+  it("refuses an unknown cause", () => {
+    const record = clone(AGGREGATE_EXAMPLES.JobContract);
+    record.repair = { ...repair, cause: "something_else" };
+    expect(JobContractSchema.safeParse(record).success).toBe(false);
+  });
+
+  it("refuses an empty gates list", () => {
+    const record = clone(AGGREGATE_EXAMPLES.JobContract);
+    record.repair = { ...repair, gates: [] };
+    expect(JobContractSchema.safeParse(record).success).toBe(false);
+  });
+
+  it("requires a decisionId", () => {
+    const record = clone(AGGREGATE_EXAMPLES.JobContract);
+    const { decisionId: _decisionId, ...rest } = repair;
+    record.repair = rest;
+    expect(JobContractSchema.safeParse(record).success).toBe(false);
+  });
+
+  it("is never set together with strandId", () => {
+    const record = clone(AGGREGATE_EXAMPLES.JobContract);
+    record.repair = repair;
+    record.strandId = "S-01";
+    expect(JobContractSchema.safeParse(record).success).toBe(false);
+  });
+
+  it("every existing stored contract, with no repair, still parses", () => {
+    expect(JobContractSchema.safeParse(AGGREGATE_EXAMPLES.JobContract).success).toBe(true);
+  });
 });
 
 describe("Examination", () => {
@@ -166,6 +252,44 @@ describe("Event", () => {
       expect(EventSchema.safeParse({ ...record, source }).success).toBe(true);
     }
     expect(EventSchema.safeParse({ ...record, source: "guesswork" }).success).toBe(false);
+  });
+
+  it("accepts the P15 gate-health types (D-P15-03, D-P15-04, D-P15-06)", () => {
+    const record = clone(AGGREGATE_EXAMPLES.Event);
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+
+    expect(
+      EventSchema.safeParse({
+        ...record,
+        type: "gate.red",
+        payload: { baseCommit: commit, failing: ["build"] },
+      }).success,
+    ).toBe(true);
+
+    expect(
+      EventSchema.safeParse({
+        ...record,
+        type: "gate.flaked",
+        payload: {
+          verificationId: EXAMPLE_IDS.verificationId,
+          commitSha: commit,
+          stepIds: ["test"],
+        },
+      }).success,
+    ).toBe(true);
+
+    expect(
+      EventSchema.safeParse({
+        ...record,
+        type: "gate.repaired",
+        payload: {
+          jobContractId: EXAMPLE_IDS.jobContractId,
+          decisionId: EXAMPLE_IDS.decisionId,
+          cause: "red_base",
+          definitionsChanged: true,
+        },
+      }).success,
+    ).toBe(true);
   });
 });
 

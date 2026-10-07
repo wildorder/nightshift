@@ -101,6 +101,27 @@ export const EventTypeSchema = z.enum([
   "finding.ruled",
   /** Added in P8 (D-P8-08). A budget is spent; nothing new starts. Payload: which and how much. */
   "run.budget_spent",
+  // Gate health — P15.
+  /**
+   * Added in P15 (D-P15-03). The run's one mechanical pass at the start found
+   * these gates red; the run repairs them first, and the strands wait on the
+   * repair alone. Payload: `baseCommit` and `failing` (the step ids).
+   */
+  "gate.red",
+  /**
+   * Added in P15 (D-P15-06). A check failed and then passed when verification
+   * reran it once on the same commit: flaky, not blocking, and the work lands.
+   * Emitted by verification on the node whose check flaked. Payload:
+   * `verificationId`, `commitSha`, and `stepIds` (the steps that flaked).
+   */
+  "gate.flaked",
+  /**
+   * Added in P15 (D-P15-04). A repair job landed. Payload: `jobContractId`,
+   * `decisionId`, `cause` (a `RepairCause`), `definitionsChanged`, and — only
+   * when the landing changed them — the new `setup` and `verification` step
+   * definitions.
+   */
+  "gate.repaired",
   // Decisions, checkpoints, routing, artifacts.
   "decision.recorded",
   "decision.overridden",

@@ -42,16 +42,41 @@ export const VerificationCommandResultSchema = z
      * is why this and an exit code cannot both be present.
      */
     deferred: z.strictObject({ prerequisiteId: PrerequisiteIdSchema }).optional(),
+    /**
+     * P15 (D-P15-06): set when this check failed and then passed when
+     * verification reran it once on the same pristine checkout. The step's own
+     * `exitCode`/`durationMs`/`logArtifactId` are the rerun's; these three are
+     * the failed first run that make it flaky rather than simply green.
+     */
+    flaky: z
+      .strictObject({
+        firstExitCode: z.int(),
+        firstDurationMs: z.int().min(0),
+        firstLogArtifactId: ArtifactIdSchema.optional(),
+      })
+      .optional(),
   })
   .refine((value) => (value.deferred === undefined) !== (value.exitCode === undefined), {
     message: "a step either ran and has an exit code, or was deferred and has none",
     path: ["exitCode"],
-  });
+  })
+  /** A flake is a failure that then passed; it cannot be recorded on a step that did neither. */
+  .refine(
+    (value) =>
+      value.flaky === undefined || (value.exitCode === 0 && value.flaky.firstExitCode !== 0),
+    {
+      message: "flaky is only set on a step whose rerun passed after a first run that failed",
+      path: ["flaky"],
+    },
+  );
 export type VerificationCommandResult = z.infer<typeof VerificationCommandResultSchema>;
 
 /**
  * The one outcome a set of command results can have. A failure outranks a
  * deferral: claiming a hurdle never hides a step that ran and failed (D-P7-10).
+ * A flaky command's own `exitCode` is 0, so it already counts as passed here;
+ * D-P15-06 asks only that the flake not climb the route, not that it change
+ * the outcome.
  */
 export const outcomeOfCommands = (
   commands: readonly { readonly exitCode?: number | undefined; readonly deferred?: unknown }[],
@@ -91,3 +116,12 @@ export const VerificationSchema = z
     path: ["outcome"],
   });
 export type Verification = z.infer<typeof VerificationSchema>;
+
+/**
+ * The step ids this verification recorded as flaky (D-P15-06): the ones a
+ * repair job opened off the blocking path should name in its `gates`.
+ */
+export const flakyStepIds = (verification: Pick<Verification, "commands">): string[] =>
+  verification.commands
+    .filter((command) => command.flaky !== undefined)
+    .map((command) => command.stepId);
