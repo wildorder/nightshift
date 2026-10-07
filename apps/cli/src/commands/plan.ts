@@ -2,7 +2,9 @@
  * `nightshift plan check` and `nightshift plan ratify` (P7, T3; D-P7-02, D-P7-07).
  *
  * `check` is deterministic and touches nothing: it reads the two files, runs
- * `checkPlan` from `core`, and its exit code is the answer. `ratify` is the gate.
+ * `checkPlan` from `core`, reads the project's gate-health record and holds the
+ * gates to it (`gateHealthReasons`, P15 D-P15-08), and its exit code is the
+ * answer. `ratify` is the gate.
  * It refuses a plan that is not `READY`, and one with uncommitted changes,
  * because the hash has to name something git can reproduce; then it uploads the
  * plan document and records the hash. If the upload fails, nothing is ratified.
@@ -21,6 +23,7 @@ import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession } from "../session.js";
+import { gateHealthReadiness } from "./gate-health.js";
 
 export interface PlanOptions {
   readonly id: string;
@@ -33,7 +36,16 @@ export interface PlanCheckResult {
   readonly planHash: string;
 }
 
-const readinessOf = (files: ProgramFiles): PlanCheckResult => {
+/**
+ * The files' readiness and the gates' (D-P15-08), every reason at once. The
+ * gates are the project's, so their record is the control plane's: this is
+ * where `check` and `ratify` reach it, and not reaching it is a reason too.
+ */
+const readinessOf = async (
+  environment: CliEnvironment,
+  repoPath: string,
+  files: ProgramFiles,
+): Promise<PlanCheckResult> => {
   const readiness = checkPlan(
     files.contract,
     splitPlanSections(files.planText),
@@ -41,9 +53,13 @@ const readinessOf = (files: ProgramFiles): PlanCheckResult => {
       ? undefined
       : parseConversation(files.id, files.conversationText),
   );
+  const reasons = [
+    ...(readiness.ready ? [] : readiness.reasons),
+    ...(await gateHealthReadiness(environment, repoPath, files)),
+  ];
   return {
-    ready: readiness.ready,
-    reasons: readiness.ready ? [] : readiness.reasons,
+    ready: reasons.length === 0,
+    reasons,
     planHash: planHash(files.contract, files.planText, sha256Hex).hash,
   };
 };
@@ -100,7 +116,7 @@ export const planCheck = async (
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const files = await readProgramFiles(repoPath, options.id);
-  const local = readinessOf(files);
+  const local = await readinessOf(environment, repoPath, files);
   const correction = await correctionOf(environment, files);
   const result: PlanCheckResult =
     correction.problems.length === 0
@@ -161,7 +177,7 @@ export const planRatify = async (
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const files = await readProgramFiles(repoPath, options.id);
 
-  const result = readinessOf(files);
+  const result = await readinessOf(environment, repoPath, files);
   if (!result.ready) {
     printReasons(environment, result);
     environment.err("Nothing was ratified. Fix the plan and run `nightshift plan check` again.");

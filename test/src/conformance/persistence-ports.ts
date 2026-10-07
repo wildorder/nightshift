@@ -39,6 +39,7 @@ import {
   makeDecision,
   makeDispatch,
   makeEvent,
+  makeGateHealth,
   makeJobContract,
   makeMembership,
   makeNode,
@@ -380,6 +381,81 @@ export const describePortConformance = <S extends ProjectStores>(
         await expect(
           stores.warmCaches.put({ ...makeWarmCache(a), architecture: "x86" } as never),
         ).rejects.toThrow();
+      });
+    });
+
+    describe("a project's gate health (P15, D-P15-07)", () => {
+      it("round trips a project's record, and answers undefined for a project with none", async () => {
+        expect(await stores.gateHealth.get(a.scope.projectId)).toBeUndefined();
+        const record = makeGateHealth(a);
+        await stores.gateHealth.put(record);
+        expect(await stores.gateHealth.get(a.scope.projectId)).toEqual(record);
+      });
+
+      it("keeps one record per project: a put replaces it", async () => {
+        await stores.gateHealth.put(makeGateHealth(a));
+        const repairing = makeGateHealth(a, {
+          verdict: "repairing",
+          commit: "2222222222222222222222222222222222222222",
+          findings: [
+            {
+              id: "F-01",
+              rule: 5,
+              found: "a fixed sleep",
+              decisionId: "D-01",
+              paths: ["test/a.ts"],
+            },
+          ],
+          machinery: ["package.json", "test/a.ts"],
+          auditedAt: "2026-01-02T00:00:00.000Z",
+        });
+        await stores.gateHealth.put(repairing);
+        expect(await stores.gateHealth.get(a.scope.projectId)).toEqual(repairing);
+        const healthy = makeGateHealth(a, { fingerprint: "1".repeat(64) });
+        await stores.gateHealth.put(healthy);
+        expect(await stores.gateHealth.get(a.scope.projectId)).toEqual(healthy);
+      });
+
+      it("never answers one project's record for another", async () => {
+        const mine = makeGateHealth(a);
+        const theirs = makeGateHealth(b, {
+          verdict: "repairing",
+          findings: [
+            {
+              id: "F-01",
+              rule: 3,
+              found: "shared dist/",
+              decisionId: "D-02",
+              paths: ["package.json"],
+            },
+          ],
+        });
+        await stores.gateHealth.put(mine);
+        expect(await stores.gateHealth.get(b.scope.projectId)).toBeUndefined();
+        await stores.gateHealth.put(theirs);
+        expect(await stores.gateHealth.get(a.scope.projectId)).toEqual(mine);
+        expect(await stores.gateHealth.get(b.scope.projectId)).toEqual(theirs);
+      });
+
+      it("refuses a record that is not what its schema says, storing nothing", async () => {
+        const record = makeGateHealth(a);
+        const finding = { id: "F-01", rule: 1, found: "x", decisionId: "D-01", paths: [] };
+        for (const bad of [
+          { ...record, findings: [finding] },
+          { ...record, verdict: "broken" },
+          { ...record, fingerprint: "nope" },
+          { ...record, machinery: ["..\\outside\\gate.mjs"] },
+          { ...record, machinery: ["../outside/gate.mjs"] },
+          {
+            ...record,
+            verdict: "repairing",
+            findings: [{ ...finding, paths: ["\\Windows\\gate.mjs"] }],
+          },
+          { ...record, verdict: "repairing", findings: [finding, finding] },
+        ]) {
+          await expect(stores.gateHealth.put(bad as never)).rejects.toThrow();
+        }
+        expect(await stores.gateHealth.get(a.scope.projectId)).toBeUndefined();
       });
     });
 

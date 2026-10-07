@@ -78,6 +78,7 @@ import {
   type WorkerLaunchIdentity,
 } from "./environment.js";
 import { examine } from "./examine.js";
+import { gateDefinitions, withGateDefinitions } from "./gate-repair.js";
 import {
   addDetachedWorktree,
   addWorktree,
@@ -97,6 +98,7 @@ import {
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
+import { programRulings } from "./rulings.js";
 import { discardScratch, ensureScratch } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
 import { stampSettledDecisions } from "./stamp.js";
@@ -753,9 +755,14 @@ export const startJob = async (
         agent: startedAgent,
         node: started,
         job: input.job,
-        program: session.program,
+        program: withGateDefinitions(session.program, await gateDefinitions(environment, session)),
         worktree,
         tmpDir,
+        // The program's rulings so far, as memory for the brief (rulings.ts).
+        rulings: await programRulings(environment.stores, {
+          projectId: session.scope.projectId,
+          programId: session.scope.programId,
+        }),
         model: routingDecision.chosen,
         mcp: input.mcp(launchIdentity),
         tools,

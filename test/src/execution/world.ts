@@ -330,6 +330,8 @@ export interface World extends BaseWorld {
 export interface WorldOptions extends BaseWorldOptions {
   readonly harness: Harness;
   readonly verificationTimeoutMs?: number;
+  /** The gates a red base failed: the run starts with `gate.red` (P15, D-P15-03). */
+  readonly red?: readonly string[];
 }
 
 /** A base world with a started, attached run — what the execution tests drive. */
@@ -341,7 +343,7 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
 
   const started = await startRun(
     { stores, clock, ids, git: nodeGitRunner },
-    { program, repoPath: repo },
+    { program, repoPath: repo, ...(options.red === undefined ? {} : { red: options.red }) },
   );
   const scope: RunScope = {
     projectId: program.projectId,

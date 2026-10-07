@@ -46,6 +46,7 @@ import {
   type EventOutbox,
   type ExecutionEnvironment,
   type RunSession,
+  repairProvisionalLine,
   revParse,
   startRun,
   updateRef,
@@ -515,6 +516,9 @@ export const attachRun = async (
   };
   const planSections = await readPlanSections(state, program, rootNode);
   const environment = buildEnvironment(runtime, outbox, started, program);
+  // Before the engine uses the provisional line: drop what an earlier engine's
+  // stop left at its tip without a deferred node (provisional-line.ts).
+  await repairProvisionalLine(environment, session);
   const attached: AttachedRun = {
     session,
     environment,
@@ -526,6 +530,10 @@ export const attachRun = async (
       // and for a fallback: routed here, by the same rules over the same ladders
       // as the root's own delegations (D-P8-04).
       route: (job, context) => routeJob(started, program, job, context),
+      // P15 (D-P15-11): a new run's program checkout becomes the setup
+      // reference, once. Not on a machine: its workspace ran setup there
+      // already (runner/workspace.ts), and not for a run being re-attached.
+      prepareReference: run.status === "pending" && state.pinnedRun === undefined,
     }),
     outbox,
     replayed,

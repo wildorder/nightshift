@@ -39,6 +39,7 @@ import {
   type ExaminationId,
   ExaminationSchema,
   ExecutionNodeSchema,
+  GateHealthSchema,
   type JobContractId,
   JobContractSchema,
   OrgConfigSchema,
@@ -65,6 +66,7 @@ import type {
   EventStore,
   ExaminationStore,
   ExecutionNodeStore,
+  GateHealthStore,
   InstallationClaimStore,
   JobContractStore,
   OrgConfigStore,
@@ -518,12 +520,26 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     delete: controlPlaneOwns("warm cache", "the dispatcher, when its snapshot is gone"),
   };
 
+  // P15 (D-P15-07): written whole by the signed-in operator or the run's engine,
+  // so unlike the warm cache it has a write route.
+  const gateHealth: GateHealthStore = {
+    put: async (record) => {
+      await send(transport, {
+        method: "PUT",
+        path: routes.gateHealth(record.projectId),
+        body: record,
+      });
+    },
+    get: (projectId) => getOrUndefined(transport, GateHealthSchema, routes.gateHealth(projectId)),
+  };
+
   return {
     orgConfigs,
     projects,
     dispatches,
     computeUtilizations,
     warmCaches,
+    gateHealth,
     installationClaims,
     programContracts,
     runs,

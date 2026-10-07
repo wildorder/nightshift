@@ -16,6 +16,13 @@
 
 export { openBrowser, openerFor } from "./browser.js";
 export { runCli, USAGE, VERSION } from "./cli.js";
+export {
+  gateHealthReadiness,
+  type RecordedGatesOptions,
+  type RecordGatesOptions,
+  recordedGates,
+  recordGates,
+} from "./commands/gate-health.js";
 export { mintId } from "./commands/id.js";
 export {
   detectSetup,
@@ -77,6 +84,12 @@ export {
   failureLines,
   UsageError,
 } from "./failures.js";
+export {
+  fingerprintAtCommit,
+  gitBlobReader,
+  type ReadBlob,
+  sha256Bytes,
+} from "./gate-fingerprint.js";
 export {
   AuthorizationRefusedError,
   CALLBACK_PATH,

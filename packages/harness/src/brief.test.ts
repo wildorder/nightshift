@@ -150,7 +150,8 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     // The plan as ratified, whole, is part of the brief.
     expect(brief).toContain("THE PLAN, AS RATIFIED\n\n# The plan\n\n### S-01 First\n\nA module.");
     expect(nightshiftToolNames("program", planned)).toContain("strand.delegate");
-    expect(nightshiftToolNames("program", planned)).not.toContain("delegate");
+    // For a repair of a gate alone (P15, D-P15-04): the tool refuses anything else.
+    expect(nightshiftToolNames("program", planned)).toContain("delegate");
   });
 
   it("leaves a program node of an unplanned contract exactly as it was", () => {
@@ -289,5 +290,73 @@ describe("headless sessions", () => {
     });
     expect(brief).toContain("prepared this worktree with the program's");
     expect(brief).toContain("install: npm ci");
+  });
+});
+
+describe("the program's rulings, as memory (P15)", () => {
+  const ruling = {
+    decisionId: "dec_01M4BHBEV4HGHTQQ419AD8BC58",
+    runId: "run_01M4B8ZQ33D60K0AS9RBJ4Q6Y1",
+    findingId: "F-01",
+    finding: "Seeding trusts the reference's lockfiles, not its install marker.",
+    rationale: "A failed reference setup leaves new lockfiles over an old tree.",
+    paths: ["packages/verification/src/install.ts"],
+    commitSha: "de4cae15fcd9b8965127f781962578a5cd5bad00",
+    patchId: "0".repeat(40),
+  };
+  const briefFor = (kind: "job" | "sub-program", withRulings: boolean, examine = false) => {
+    const f = createFixtures();
+    const program = makeProgramContract(f);
+    const job = makeJobContract(f);
+    const node = makeNode(f, f.rootNodeId, { kind });
+    return renderWorkerBrief({
+      job,
+      node,
+      program,
+      worktree: "/tmp/wt/x",
+      ...(withRulings ? { rulings: [ruling] } : {}),
+      ...(examine
+        ? {
+            task: {
+              kind: "examine" as const,
+              round: 1 as const,
+              evidence: {
+                diff: "",
+                diffTruncated: false,
+                changedTests: [],
+                verification: [],
+                risk: "high" as const,
+                blocking: true,
+                fixAttempt: 0,
+              },
+            },
+          }
+        : {}),
+    });
+  };
+
+  it("tells a worker what has been decided, as context to follow where its job touches it", () => {
+    const brief = briefFor("job", true);
+    expect(brief).toContain("RULINGS ALREADY MADE IN THIS PROGRAM");
+    expect(brief).toContain(`F-01 (${ruling.decisionId}, run ${ruling.runId}): ${ruling.finding}`);
+    expect(brief).toContain(`Upheld because: ${ruling.rationale}`);
+    expect(brief).toContain("Where: packages/verification/src/install.ts");
+    expect(brief).toContain("context, not a task");
+  });
+
+  it("tells an orchestrator the work it delegates is examined against them", () => {
+    expect(briefFor("sub-program", true)).toContain(
+      "the work you delegate is examined against them",
+    );
+  });
+
+  it("tells an examiner to hold the change to them where it applies, and to cite the ruling", () => {
+    const brief = briefFor("job", true, true);
+    expect(brief).toContain("a change that");
+    expect(brief).toContain("contradicts it is a material finding; cite the ruling");
+  });
+
+  it("says nothing of rulings when the program has none", () => {
+    expect(briefFor("job", false)).not.toContain("RULINGS ALREADY MADE");
   });
 });

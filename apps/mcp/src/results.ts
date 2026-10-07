@@ -42,6 +42,10 @@ export type RefusalCode =
   /** A strand an earlier run of the same plan built, carried over: succeeded here already. */
   | "strand_carried"
   | "plan_unavailable"
+  /** P15 (D-P15-04): every repair records a decision, in the same call that delegates it. */
+  | "repair_needs_decision"
+  /** P15 (D-P15-04): only the program node opens a repair; a sub-program's orchestrator does not. */
+  | "repair_not_yours"
   | "not_attached"
   | "already_attached"
   /** P10: a machine's server is the engine of one dispatched run and starts no other. */

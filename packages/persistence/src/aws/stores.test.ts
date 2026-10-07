@@ -14,6 +14,7 @@ import {
   makeAgent,
   makeComputeUtilization,
   makeEvent,
+  makeGateHealth,
   makeNode,
   makeOrgCredential,
   makeProgramContract,
@@ -132,6 +133,27 @@ describe("DynamoDB adapter specifics", () => {
         cursor: first.cursor ?? "",
       });
       expect(rest.items.map((record) => record.runId)).toEqual([runIds[0]]);
+    });
+  });
+
+  describe("a project's gate health (P15, D-P15-07)", () => {
+    it("is one row under the project's partition, replaced by each put", async () => {
+      await stores.gateHealth.put(makeGateHealth(f));
+      const replaced = makeGateHealth(f, { fingerprint: "1".repeat(64) });
+      await stores.gateHealth.put(replaced);
+      const rows = table.allItems().filter((item) => item.SK === "GATE-HEALTH");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        PK: `PROJ#${f.scope.projectId}`,
+        fingerprint: "1".repeat(64),
+      });
+      expect(await stores.gateHealth.get(f.scope.projectId)).toEqual(replaced);
+    });
+
+    it("is not one of the project's programs or utilization records", async () => {
+      await stores.gateHealth.put(makeGateHealth(f));
+      expect((await stores.programContracts.listByProject(f.scope.projectId)).items).toEqual([]);
+      expect((await stores.computeUtilizations.listByProject(f.scope.projectId)).items).toEqual([]);
     });
   });
 

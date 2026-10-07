@@ -22,7 +22,8 @@
  */
 import { createHash } from "node:crypto";
 import type { Dispatch, ProgramContract } from "@nightshift/contracts";
-import { planHash, type RunScope } from "@nightshift/core";
+import { isInstallStep, planHash, type RunScope } from "@nightshift/core";
+import { INSTALL_MARKER_NAME, INSTALLED_TREE, LOCKFILES } from "@nightshift/verification";
 import { WORKER_GROUP } from "../run-as.js";
 import type { Machine } from "./machine.js";
 
@@ -244,15 +245,20 @@ export const prepareWorkspace = async (
   const setupSeconds = Math.max(0, (machine.now() - startedAt) / 1000);
 
   const lockfileHashes: Record<string, string> = {};
-  for (const lockfile of [
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "Cargo.lock",
-    "uv.lock",
-  ]) {
+  for (const lockfile of LOCKFILES) {
     const text = await machine.readFile(`${layout.checkout}/${lockfile}`);
     if (text !== undefined) lockfileHashes[lockfile] = sha256Hex(text);
+  }
+  // The checkout is the setup reference every worktree is seeded from
+  // (D-P10-24, D-P15-11), so its tree is marked with the lockfiles it was
+  // installed for, as setup marks any tree it installs. The engine does not
+  // run setup here again at the run's start; it does after a repair lands.
+  if ((program.setup ?? []).some((step) => isInstallStep(step.command))) {
+    await machine.exec("mkdir", ["-p", `${layout.checkout}/${INSTALLED_TREE}`]);
+    await machine.writeFile(
+      `${layout.checkout}/${INSTALLED_TREE}/${INSTALL_MARKER_NAME}`,
+      `${JSON.stringify(lockfileHashes, null, 2)}\n`,
+    );
   }
   return { setupSeconds, lockfileHashes, warm };
 };

@@ -60,6 +60,7 @@ export {
 export {
   arbitrateAll,
   carriedExamination,
+  continuedByNightshift,
   describeBlocking,
   EXAMINATION_CONTEXT_ENV,
   type ExaminationContext,
@@ -83,6 +84,22 @@ export {
   type GateVerdict,
   outputTail,
 } from "./gate-audit.js";
+export {
+  fingerprintAtCommit,
+  gitBlobReader,
+  type ReadBlob,
+  sha256Bytes,
+} from "./gate-fingerprint.js";
+export {
+  type GateDefinitions,
+  type GateSession,
+  gateDefinitions,
+  gateDefinitionsAt,
+  prepareSetupReference,
+  type ReconcileGateRepairsInput,
+  reconcileGateRepairs,
+  withGateDefinitions,
+} from "./gate-repair.js";
 export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";
 export { type IntegrateInput, type IntegrateResult, integrateNode } from "./integrate.js";
@@ -100,13 +117,20 @@ export {
   type PreflightResult,
   runPreflight,
 } from "./preflight.js";
+export {
+  type ProvisionalLineEnvironment,
+  type ProvisionalLineSession,
+  repairProvisionalLine,
+} from "./provisional-line.js";
 export * from "./publish.js";
+export { gateRedPayload, type RecordRedBaseInput, recordRedBase } from "./red-base.js";
 export {
   deferredLine,
   type ResumeResult,
   type ResumeSession,
   resumeDeferred,
 } from "./resume.js";
+export { programRulings, rulingsCarriedBy } from "./rulings.js";
 export {
   type DelegateJobInput,
   delegateJob,
@@ -145,7 +169,6 @@ export {
   stampSettledDecisions,
 } from "./stamp.js";
 export {
-  failBeforeStart,
   PlanChangedError,
   PlanNotRatifiedError,
   ProgramContractChangedError,

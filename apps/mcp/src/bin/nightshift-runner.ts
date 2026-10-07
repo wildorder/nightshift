@@ -64,9 +64,9 @@ runRunner({
       parentEnv: process.env,
     });
     const runtime = await createRuntime(env, "orchestrator");
-    // The base's gates, on this machine, before any agent is paid for.
-    const audited = await auditOnMachine(runtime, context, say);
-    if (!audited.proceed) return;
+    // The base's gates, on this machine, before any agent is paid for. A red
+    // base is recorded and the root starts: its first job is the repair (D-P15-03).
+    await auditOnMachine(runtime, context, say);
     say(`root starting in ${context.layout.checkout}`);
     const result = await runHeadless(runtime, env, {
       scope: context.scope,

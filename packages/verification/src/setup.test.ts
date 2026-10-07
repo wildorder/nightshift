@@ -2,7 +2,12 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { INSTALL_MARKER, lockfileHashes, readInstallMarker } from "./install.js";
+import {
+  INSTALL_MARKER,
+  lockfileHashes,
+  readInstallMarker,
+  writeInstallMarker,
+} from "./install.js";
 import { runCheckoutSteps, runSetupSteps, setupAsStep } from "./setup.js";
 
 /** `node -e` with no double quote inside, so it survives `sh -c` and `cmd /c` alike. */
@@ -91,13 +96,17 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
   const text = (result: { output: Uint8Array } | undefined) =>
     new TextDecoder().decode(result?.output ?? new Uint8Array());
 
-  /** A checkout with a lockfile and, when asked, an installed tree the lockfile fits. */
+  /**
+   * A checkout with a lockfile and, when asked, an installed tree the lockfile
+   * fits, marked as a passing install marks it.
+   */
   const checkout = async (lock: string, withTree: boolean): Promise<string> => {
     const dir = await scratch();
     await writeFile(join(dir, "package-lock.json"), lock, "utf8");
     if (withTree) {
       await mkdir(join(dir, "node_modules", "left-pad"), { recursive: true });
       await writeFile(join(dir, "node_modules", "left-pad", "index.js"), "module.exports=1;\n");
+      await writeInstallMarker(dir, await lockfileHashes(dir));
     }
     return dir;
   };
@@ -197,7 +206,7 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
 
   it("never skips a tree with no record of what it was installed for, nor one with no reference", async () => {
     const unmarked = await checkout(LOCK, true);
-    expect(await stat(join(unmarked, INSTALL_MARKER)).catch(() => undefined)).toBeUndefined();
+    await rm(join(unmarked, INSTALL_MARKER));
     const results = await runSetupSteps({
       setup: [harmlessInstall],
       cwd: unmarked,
@@ -208,6 +217,52 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
     const alone = await checkout(LOCK, false);
     const ran = await runSetupSteps({ setup: [harmlessInstall], cwd: alone, timeoutMs: 60_000 });
     expect(text(ran[0])).not.toContain("[setup skipped]");
+  });
+
+  it("never seeds from a tree its marker does not vouch for: new lockfiles over an old install", async () => {
+    // The reference took a commit that changed the lockfile and its own setup
+    // failed: new lockfiles, the old tree, the old marker (P15's arbiter).
+    const reference = await checkout(LOCK, true);
+    const changed = '{"lockfileVersion":3,"packages":{"":{"name":"changed"}}}';
+    await writeFile(join(reference, "package-lock.json"), changed, "utf8");
+    const fresh = await checkout(changed, false);
+    const results = await runSetupSteps({
+      setup: [harmlessInstall],
+      cwd: fresh,
+      reference,
+      timeoutMs: 60_000,
+    });
+    expect(text(results[0])).not.toContain("seeded from");
+    expect(
+      await stat(join(fresh, "node_modules", "left-pad")).catch(() => undefined),
+    ).toBeUndefined();
+    // And the reference's own record is left as it was: nothing vouched for the old tree anew.
+    expect(await readInstallMarker(reference)).toEqual({
+      "package-lock.json": expect.any(String),
+    });
+    expect(await readInstallMarker(reference)).not.toEqual(await lockfileHashes(reference));
+  });
+
+  it("does not seed from a tree installed by hand, which carries no marker", async () => {
+    const reference = await checkout(LOCK, true);
+    await rm(join(reference, INSTALL_MARKER));
+    const fresh = await checkout(LOCK, false);
+    const results = await runSetupSteps({
+      setup: [harmlessInstall],
+      cwd: fresh,
+      reference,
+      timeoutMs: 60_000,
+    });
+    expect(text(results[0])).not.toContain("seeded from");
+  });
+
+  it("gives a seeded tree a marker of its own, leaving the reference's untouched", async () => {
+    const reference = await checkout(LOCK, true);
+    const fresh = await checkout(LOCK, false);
+    await runSetupSteps({ setup: [install], cwd: fresh, reference, timeoutMs: 60_000 });
+    const mine = await stat(join(fresh, INSTALL_MARKER));
+    const theirs = await stat(join(reference, INSTALL_MARKER));
+    expect(mine.ino).not.toBe(theirs.ino);
   });
 
   it("does not seed from a reference with no tree", async () => {

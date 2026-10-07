@@ -144,6 +144,12 @@ export const keys = {
     SK: `CACHE#${architecture}`,
   }),
 
+  /** A project's gate-health record (P15, D-P15-07): one row per project. */
+  gateHealth: (projectId: ProjectId): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: "GATE-HEALTH",
+  }),
+
   programContract: (projectId: ProjectId, programId: ProgramId): TableKey => ({
     PK: `PROJ#${projectId}`,
     SK: `PROG#${programId}`,

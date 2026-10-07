@@ -144,6 +144,67 @@ describe("the skill", () => {
   });
 });
 
+describe("the gate audit (P15, D-P15-01, D-P15-05)", () => {
+  it("ships a gate standard whose rules are numbered 1 to 7", async () => {
+    const text = await readFile(skill("gate-standard.md"), "utf8");
+    const rules = text
+      .split("\n")
+      .filter((line) => /^## \d+\. /.test(line))
+      .map((line) => Number(/^## (\d+)\./.exec(line)?.[1]));
+    expect(rules).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    for (const phrase of [
+      "Declares setup",
+      "Passes on a fresh checkout of the base",
+      "Is hermetic",
+      "Declares outside dependencies",
+      "Is deterministic",
+      "Can be kept healthy by the work",
+      "Costs what it should",
+      "pretest: npm ci",
+      "**Typical fix.**",
+    ]) {
+      expect(text, phrase).toContain(phrase);
+    }
+    // Rule 7 makes a gate cheaper; it never takes a check out of verification.
+    expect(text).toContain("Never drop a\ncheck from verification");
+  });
+
+  it("audits the gates between reading the code and proposing the seams, and the human waits", async () => {
+    const text = await readFile(skill("SKILL.md"), "utf8");
+    const headings = text.split("\n").filter((line) => /^## /.test(line));
+    const at = (heading: string): number => headings.indexOf(heading);
+    expect(at("## 3a. Audit the gates")).toBe(
+      at("## 3. Read the code before you propose anything") + 1,
+    );
+    expect(at("## 4. Propose the seams")).toBe(at("## 3a. Audit the gates") + 1);
+
+    const step = text.slice(
+      text.indexOf("## 3a. Audit the gates"),
+      text.indexOf("## 4. Propose the seams"),
+    );
+    for (const phrase of [
+      "**The human waits for it, on purpose**",
+      "`nightshift gates {id} --recorded`",
+      "**Exit 0**",
+      "`nightshift gates {id}`",
+      "`gate-standard.md`",
+      "**Name every gate-machinery path",
+      'answered "leave it"',
+      "`S-00`",
+      '`dependsOn`\n   includes `"S-00"`',
+      "nightshift gates {id} --record --findings <file>",
+      '"machinery"',
+      '"decisionId"',
+      // The gate commands read the program's files: the step drafts them first (F-01).
+      "git branch program/{id} main",
+    ]) {
+      expect(step, phrase).toContain(phrase);
+    }
+    expect(text).toContain("no gate-health record for the project");
+    expect(text).toContain("no `S-00` strand\nor a strand that does not depend on it");
+  });
+});
+
 describe("the nightshift skill (P8)", () => {
   it("names the classification, the fix limit, the dispute and every tool it names by its real name", async () => {
     const text = await readFile(

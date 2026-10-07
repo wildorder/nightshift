@@ -41,6 +41,8 @@ import {
   type ExecutionNode,
   type ExecutionNodeId,
   ExecutionNodeSchema,
+  type GateHealth,
+  GateHealthSchema,
   type JobContract,
   type JobContractId,
   JobContractSchema,
@@ -87,6 +89,7 @@ import {
   type EventStore,
   type ExaminationStore,
   type ExecutionNodeStore,
+  type GateHealthStore,
   type InstallationClaimStore,
   type JobContractStore,
   type MembershipStore,
@@ -189,6 +192,8 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const dispatches = table<Dispatch>("dispatches");
   const computeUtilizations = table<ComputeUtilization>("computeUtilizations");
   const warmCaches = table<WarmCache>("warmCaches");
+  // P15: one gate-health record per project.
+  const gateHealths = table<GateHealth>("gateHealth");
   const installationClaims = table<{ installationId: number; orgId: OrgId; at: string }>(
     "installationClaims",
   );
@@ -217,6 +222,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     dispatches,
     computeUtilizations,
     warmCaches,
+    gateHealths,
     installationClaims,
     credentials,
     computeLedger,
@@ -517,6 +523,14 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     },
   };
 
+  const gateHealthStore: GateHealthStore = {
+    put: async (record) => {
+      const parsed = GateHealthSchema.parse(record);
+      gateHealths.set(projectPrefix(parsed), parsed);
+    },
+    get: async (projectId: ProjectId) => gateHealths.get(projectPrefix({ projectId })),
+  };
+
   const installationClaimStore: InstallationClaimStore = {
     claim: async (installationId, orgId, at) =>
       atomically(() => {
@@ -570,6 +584,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     dispatches: dispatchStore,
     computeUtilizations: computeUtilizationStore,
     warmCaches: warmCacheStore,
+    gateHealth: gateHealthStore,
     installationClaims: installationClaimStore,
     credentials: credentialsStore,
     computeLedger: computeLedgerStore,

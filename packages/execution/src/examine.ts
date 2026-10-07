@@ -14,6 +14,11 @@
  * was examined (the same patch id), the examination carries over; if the replay
  * changed the diff, it is examined again, in the queue.
  *
+ * The candidate check reruns a failed check once, as the queue's does
+ * (D-P15-06, `flaky.ts`): a check that then passes is recorded as flaky, the
+ * job goes on to its examiner rather than ending `verification_failed`, and
+ * `gate.flaked` names the flake.
+ *
  * ## Who is involved
  *
  * - The **examiner**: an agent of its own on the job's node, with its own token
@@ -85,6 +90,8 @@ import {
   type ExecutionEnvironment,
   type RunSession,
 } from "./environment.js";
+import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
+import { gateDefinitions, withGateDefinitions } from "./gate-repair.js";
 import {
   addDetachedWorktree,
   changedPaths,
@@ -95,6 +102,7 @@ import {
   updateRef,
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
+import { programRulings, rulingsCarriedBy } from "./rulings.js";
 import { recordArtifact, runAsOf } from "./runner.js";
 import { discardScratch, ensureScratch, freshScratch, scratchEnv } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
@@ -401,7 +409,11 @@ export const examine = async (
     });
     if (typeof examination === "string") return { kind: "examiner_failed", reason: examination };
     announceVerdict(environment, input, examination);
-    return verdictOf(environment, services, input, examination, {
+    // Awaited here, not returned as a promise: the `finally` below removes the
+    // checkout, and an arbiter `verdictOf` starts works in it. Returned
+    // unawaited, the checkout went while the arbiter was being handed it, and
+    // the job failed on a missing directory (P15's run, 2026-10-07).
+    return await verdictOf(environment, services, input, examination, {
       checkout,
       diff: gathered.evidence.diff,
     });
@@ -472,10 +484,14 @@ const gatherEvidence = async (
   const paths = await changedPaths(environment.git, checkout, input.base, input.commitSha);
   const fixAttempt = fixAttemptOf(examinations);
   const previous = latestOf(examinations);
-  const rulings = rulingsToCheck(examinations);
+  const patchId = patchIdOf(diff);
+  // This job's own rulings; otherwise any made on the very work it carries,
+  // re-landed or replayed, which follow that work here (rulings.ts).
+  const rulings =
+    rulingsToCheck(examinations) ?? (await rulingsFollowingTheWork(environment, input, patchId));
   return {
     verification,
-    patchId: patchIdOf(diff),
+    patchId,
     evidence: {
       diff: diff.slice(0, MAX_DIFF_CHARS),
       diffTruncated: diff.length > MAX_DIFF_CHARS,
@@ -488,6 +504,23 @@ const gatherEvidence = async (
       ...(rulings === undefined ? {} : { rulings }),
     },
   };
+};
+
+/** Rulings made elsewhere in the program on the work this change carries, or `undefined`. */
+const rulingsFollowingTheWork = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  patchId: string,
+): Promise<readonly ExaminationRuling[] | undefined> => {
+  const { projectId, programId } = input.session.scope;
+  const carried = await rulingsCarriedBy(environment.git, {
+    repoPath: input.session.repoPath,
+    base: input.base,
+    commitSha: input.commitSha,
+    patchId,
+    rulings: await programRulings(environment.stores, { projectId, programId }),
+  });
+  return carried.length === 0 ? undefined : carried;
 };
 
 const announceVerdict = (
@@ -610,7 +643,8 @@ const candidateVerification = async (
   input: ExamineInput,
   checkout: string,
 ): Promise<Verification | "postponed"> => {
-  const steps: readonly VerificationStep[] = input.session.program.verification;
+  const gates = await gateDefinitions(environment, input.session);
+  const steps: readonly VerificationStep[] = gates.verification;
   if (steps.some((step) => (step.requires ?? []).length > 0)) {
     const current =
       environment.prerequisites === undefined
@@ -630,12 +664,13 @@ const candidateVerification = async (
   // it also leaves the checkout usable for the examiner who works in it. The
   // checks get a fresh scratch (scratch.ts), which the examiner then inherits.
   const scratch = await freshScratch(checkout);
+  const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const ran = await runCheckoutSteps({
-    setup: input.session.program.setup ?? [],
+    setup: gates.setup,
     steps,
     cwd: checkout,
     reference: input.session.repoPath,
-    timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
+    timeoutMs,
     env: scratchEnv(scratch),
   });
   const results = [...ran.setup, ...ran.checks];
@@ -650,7 +685,23 @@ const candidateVerification = async (
     });
     logs.set(result.stepId, artifactId as never);
   }
-  const commands = toVerificationCommands(results, logs as never);
+  // A failed check runs once more here too, exactly as in the queue (D-P15-06,
+  // flaky.ts): a flake is recorded as passed and goes on to the examiner,
+  // never ending the job as verification_failed. The examiner inherits the
+  // rerun's scratch.
+  const reruns = await rerunFailures({
+    steps,
+    first: ran.checks,
+    cwd: checkout,
+    timeoutMs,
+    keepScratch: true,
+  });
+  const commands = await withFlakes(
+    environment,
+    { scope: input.session.scope, nodeId: input.node.executionNodeId },
+    toVerificationCommands(results, logs as never),
+    reruns,
+  );
   const workerId = (await implementerOf(environment, input))?.agentId;
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
@@ -667,6 +718,7 @@ const candidateVerification = async (
     endedAt: nowIso(environment.clock),
   }) as Verification;
   await environment.stores.verifications.put(verification);
+  announceFlakes(environment, verification, workerId);
   return verification;
 };
 
@@ -796,9 +848,17 @@ const runHelper = async (
       agent: helper.agent,
       node: input.node,
       job: input.job,
-      program: input.session.program,
+      program: withGateDefinitions(
+        input.session.program,
+        await gateDefinitions(environment, input.session),
+      ),
       worktree: launch.worktree,
       tmpDir,
+      // The program's rulings so far: an examiner holds the change to them (rulings.ts).
+      rulings: await programRulings(environment.stores, {
+        projectId: input.session.scope.projectId,
+        programId: input.session.scope.programId,
+      }),
       model: helper.decision.chosen,
       ...(launch.mcp === undefined ? {} : { mcp: launch.mcp }),
       tools: refusingWorkerTools(
@@ -1344,6 +1404,30 @@ export const fixOf = (
     };
   }
   return { task: { kind: "fix", findings: blockingFindings(last) } };
+};
+
+/**
+ * Why Nightshift itself is still taking a stopped job further, or `undefined`
+ * when nothing more will happen to it without its orchestrator. From the
+ * records alone, so the root's server and a strand's, which holds no engine,
+ * answer alike. A job reported settled while an arbiter was ruling on it, or
+ * while the engine was about to carry out an upheld ruling, looked finished to
+ * its orchestrator, which delegated the same work again; that job landed the
+ * work without the ruling (P15's run, 2026-10-07).
+ */
+export const continuedByNightshift = (
+  status: ExecutionNode["status"],
+  examinations: readonly Examination[],
+): string | undefined => {
+  if (status !== "failed" && status !== "examination_failed") return undefined;
+  const latest = latestOf(examinations);
+  if (latest?.findings.some((finding) => finding.resolution === "disputed") === true) {
+    return "an arbiter is ruling on its disputed finding; Nightshift continues the job itself";
+  }
+  if (rulingDue(examinations)) {
+    return "an arbiter upheld a finding; Nightshift starts the attempt that carries the ruling out";
+  }
+  return undefined;
 };
 
 /** Whether a retry after these examinations carries out an arbiter's ruling: the engine's to start. */

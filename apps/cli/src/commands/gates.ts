@@ -19,8 +19,8 @@ import {
   revParse,
 } from "@nightshift/execution";
 import type { CliEnvironment } from "../environment.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
-import { openSession } from "../session.js";
+import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
+import { openSession, type Session } from "../session.js";
 
 export interface GatesOptions {
   readonly id: string;
@@ -113,6 +113,27 @@ export const describeAudit = (
   if (!audit.red) say(`the gates pass on ${sha}`);
 };
 
+/**
+ * The contract the gates are audited by: the control plane's record when the
+ * plan is ratified, for its prerequisites' statuses (only `preflight` sets
+ * them, there); the files on disk while it is still being planned. Shared by
+ * `gates` and `gates --record`, so a record is of the audit `gates` would run.
+ */
+export const auditContractOf = async (
+  environment: CliEnvironment,
+  files: ProgramFiles,
+  session: Session | undefined,
+): Promise<ProgramContract> => {
+  const recorded = await session?.stores.programContracts
+    .get(files.contract.projectId, files.contract.programId)
+    .catch(() => undefined);
+  if (recorded?.status === "ratified") return recorded;
+  environment.out(
+    "the plan is not ratified (or the control plane is out of reach): prerequisites count as the contract file states them",
+  );
+  return files.contract;
+};
+
 /** Exit code 0 unless a gate is red. A missing setup is said, not counted. */
 export const gates = async (
   environment: CliEnvironment,
@@ -120,18 +141,8 @@ export const gates = async (
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const files = await readProgramFiles(repoPath, options.id);
-  // The control plane's record when the plan is ratified, for its prerequisites'
-  // statuses; the files on disk while it is still being planned.
   const session = await openSession(environment).catch(() => undefined);
-  const recorded = await session?.stores.programContracts
-    .get(files.contract.projectId, files.contract.programId)
-    .catch(() => undefined);
-  const contract = recorded?.status === "ratified" ? recorded : files.contract;
-  if (contract !== recorded) {
-    environment.out(
-      "the plan is not ratified (or the control plane is out of reach): prerequisites count as the contract file states them",
-    );
-  }
+  const contract = await auditContractOf(environment, files, session);
   const audit = await auditProgramGates(environment, contract, repoPath);
   describeAudit(environment, audit);
   return audit.red ? 1 : 0;

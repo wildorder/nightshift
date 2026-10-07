@@ -243,7 +243,9 @@ export const enforce = async (options: EnforceOptions): Promise<Principal> => {
     // Only an orchestrator's table has a reach that depends on the tree, and
     // only a request inside its own run is worth a read to place. Likewise only
     // an engine's writes are held to a generation, and only its own run's
-    // dispatch says which is current.
+    // dispatch says which is current. A path above every run (P15's
+    // `…/gate-health`) names no run, so the engine's own is the one it writes
+    // under.
     let placed: AuthorizationTarget = target;
     if (principal.role === "orchestrator" && target.runId === principal.runId) {
       placed = {
@@ -252,7 +254,7 @@ export const enforce = async (options: EnforceOptions): Promise<Principal> => {
       };
     } else if (
       principal.role === "engine" &&
-      target.runId === principal.runId &&
+      (target.runId ?? principal.runId) === principal.runId &&
       !READ_OPERATIONS.has(operation)
     ) {
       const dispatch = await options.dispatches.get({

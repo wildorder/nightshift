@@ -7,7 +7,8 @@
  *
  * It reports against the plan, in the order a human wants in the morning: what
  * happened to each strand, leading with any departure from the approach they
- * approved; whether each success criterion was met, and by what; what was parked
+ * approved; the gates' health, and what the run repaired (P15, D-P15-09);
+ * whether each success criterion was met, and by what; what was parked
  * and what that blocked; what is still theirs to do; and the decisions the run
  * took without them.
  *
@@ -16,17 +17,26 @@
  * because whether an approach was departed from is a judgement only the agent
  * that made it can record.
  */
-import type {
-  Agent,
-  CarriedStrand,
-  Decision,
-  Examination,
-  ExecutionNode,
-  JobContract,
-  Prerequisite,
-  ProgramContract,
-  RoutingDecision,
-  Run,
+import {
+  type Agent,
+  type CarriedStrand,
+  type Decision,
+  type Event,
+  type Examination,
+  type ExecutionNode,
+  type GateHealth,
+  type GateHealthVerdict,
+  type JobContract,
+  type Prerequisite,
+  type ProgramContract,
+  type RepairCause,
+  type RoutingDecision,
+  type Run,
+  type SetupStep,
+  SetupStepSchema,
+  type Verification,
+  type VerificationStep,
+  VerificationStepSchema,
 } from "@nightshift/contracts";
 import type { ProjectStores } from "../ports/stores.js";
 import { buildTree, descendantsOf, type ExecutionTree } from "../rules/execution-tree.js";
@@ -144,6 +154,58 @@ export interface RunReport {
   readonly usage: readonly UsageRow[];
   /** P8: the arbiter's rulings, which lead the report (D-P8-13). */
   readonly rulings: readonly RulingReport[];
+  /** P15: the gates' audit, the red base, every repair and every flake (D-P15-09). */
+  readonly gateHealth: GateHealthReport;
+}
+
+/** One repair job (D-P15-03, D-P15-04): what it repaired, under which decision, and how it ended. */
+export interface RepairReport {
+  readonly jobContractId: string;
+  readonly cause: RepairCause;
+  readonly gates: readonly string[];
+  readonly objective: string;
+  /** Its node's status; `not delegated` when no node ever took the contract. */
+  readonly status: string;
+  /** The decision `repair.decisionId` names, when it is on the record. */
+  readonly decision: Decision | undefined;
+  /** From its `gate.repaired` event; false until it landed. */
+  readonly definitionsChanged: boolean;
+  /** The new setup steps, when the landing changed them. */
+  readonly setup?: readonly SetupStep[];
+  /** The new verification steps, when the landing changed them. */
+  readonly verification?: readonly VerificationStep[];
+}
+
+/** One check that failed and then passed on a rerun on the same commit (D-P15-06). */
+export interface FlakeReport {
+  readonly stepId: string;
+  readonly jobContractId: string;
+  readonly executionNodeId: string;
+  readonly commitSha: string;
+  readonly verificationId: string;
+  readonly firstExitCode: number;
+}
+
+/** The run's gate health, as the report and the Studio's Status tab show it (D-P15-09). */
+export interface GateHealthReport {
+  /** The project's gate-health record, as planning's audit (or a later repair) left it. */
+  readonly audit:
+    | {
+        readonly verdict: GateHealthVerdict;
+        readonly commit: string;
+        readonly auditedAt: string;
+        readonly findings: readonly {
+          readonly id: string;
+          readonly rule: number;
+          readonly found: string;
+          readonly decisionId: string;
+        }[];
+      }
+    | undefined;
+  /** The run's `gate.red` event: the gates red on the commit it started from. */
+  readonly red: { readonly baseCommit: string; readonly failing: readonly string[] } | undefined;
+  readonly repairs: readonly RepairReport[];
+  readonly flakes: readonly FlakeReport[];
 }
 
 interface PageOf<T> {
@@ -415,6 +477,121 @@ const readRecords = async (
   };
 };
 
+const stringsOf = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+const auditOf = (record: GateHealth | undefined): GateHealthReport["audit"] =>
+  record === undefined
+    ? undefined
+    : {
+        verdict: record.verdict,
+        commit: record.commit,
+        auditedAt: record.auditedAt,
+        findings: record.findings.map(({ id, rule, found, decisionId }) => ({
+          id,
+          rule,
+          found,
+          decisionId,
+        })),
+      };
+
+/** The new gate definitions a `gate.repaired` event carries, when it changed them. */
+const definitionsOf = (
+  payload: Readonly<Record<string, unknown>>,
+): Pick<RepairReport, "definitionsChanged" | "setup" | "verification"> => {
+  if (payload.definitionsChanged !== true) return { definitionsChanged: false };
+  const setup = SetupStepSchema.array().safeParse(payload.setup);
+  const verification = VerificationStepSchema.array().safeParse(payload.verification);
+  return {
+    definitionsChanged: true,
+    ...(setup.success ? { setup: setup.data } : {}),
+    ...(verification.success ? { verification: verification.data } : {}),
+  };
+};
+
+/**
+ * The run's gate health (D-P15-09): the project's record, the run's red base,
+ * every job contract that is a repair with its node and decision, and every
+ * check a verification recorded as flaky.
+ */
+const gatherGateHealth = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  records: Records,
+): Promise<GateHealthReport> => {
+  const events = await readAll<Event>((page) => stores.events.listByRun(scope, page));
+  let red: GateHealthReport["red"];
+  const repaired = new Map<string, Readonly<Record<string, unknown>>>();
+  for (const event of events) {
+    if (event.type === "gate.red") {
+      red = {
+        baseCommit: String(event.payload.baseCommit ?? ""),
+        failing: [...new Set([...(red?.failing ?? []), ...stringsOf(event.payload.failing)])],
+      };
+    }
+    if (event.type === "gate.repaired") {
+      repaired.set(String(event.payload.jobContractId), event.payload);
+    }
+  }
+
+  const nodes = [...records.tree.nodes.values()].sort((a, b) =>
+    a.createdAt.localeCompare(b.createdAt),
+  );
+  const byId = new Map(
+    records.decisions.map((decision) => [decision.decisionId as string, decision]),
+  );
+  const repairs = [...records.jobOf.values()]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .flatMap((job): RepairReport[] => {
+      if (job.repair === undefined) return [];
+      const node = nodes
+        .filter((candidate) => candidate.jobContractId === job.jobContractId)
+        .at(-1);
+      const landed = repaired.get(job.jobContractId);
+      return [
+        {
+          jobContractId: job.jobContractId,
+          cause: job.repair.cause,
+          gates: job.repair.gates,
+          objective: firstLine(job.objective),
+          status: node?.status ?? "not delegated",
+          decision: byId.get(job.repair.decisionId),
+          ...(landed === undefined ? { definitionsChanged: false } : definitionsOf(landed)),
+        },
+      ];
+    });
+
+  const verifications: Verification[] = [];
+  for (const node of nodes.filter((candidate) => candidate.kind === "job")) {
+    verifications.push(...(await stores.verifications.listByNode(scope, node.executionNodeId)));
+  }
+  const flakes = verifications
+    .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+    .flatMap((verification) =>
+      verification.commands.flatMap((command): FlakeReport[] =>
+        command.flaky === undefined
+          ? []
+          : [
+              {
+                stepId: command.stepId,
+                jobContractId: verification.jobContractId,
+                executionNodeId: verification.executionNodeId,
+                commitSha: verification.commitSha,
+                verificationId: verification.verificationId,
+                firstExitCode: command.flaky.firstExitCode,
+              },
+            ],
+      ),
+    );
+
+  return {
+    audit: auditOf(await stores.gateHealth.get(scope.projectId)),
+    red,
+    repairs,
+    flakes,
+  };
+};
+
 export const gatherReport = async (stores: ProjectStores, scope: RunScope): Promise<RunReport> => {
   const program = await stores.programContracts.get(scope.projectId, scope.programId);
   const run = await stores.runs.get(scope, scope.runId);
@@ -452,6 +629,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
     corrections: await gatherCorrections(stores, program),
     usage: usageOf([...records.routesOf.values()].flat()),
     rulings,
+    gateHealth: await gatherGateHealth(stores, scope, records),
   };
 };
 
@@ -631,6 +809,102 @@ const renderStrand = (strand: StrandReport): string[] => {
   ];
 };
 
+/**
+ * Every departure from the plan's approach, by strand, ahead of everything
+ * else about the strands (SC-P7-11): what the human most needs to know.
+ */
+const renderDepartures = (strands: readonly StrandReport[]): string[] => {
+  const departed = strands.filter((strand) => strand.departures.length > 0);
+  return departed.length === 0
+    ? []
+    : [
+        "## Departures from the plan",
+        "",
+        ...departed.flatMap((strand) => [
+          `**${strand.id} ${strand.name}**`,
+          "",
+          ...strand.departures.flatMap(renderDecision),
+          "",
+        ]),
+      ];
+};
+
+const CAUSE_WORD: Readonly<Record<RepairCause, string>> = {
+  red_base: "red base",
+  flaky: "flaky",
+};
+
+const renderSteps = (title: string, steps: readonly { id: string; command: string }[]) => [
+  `  - ${title}:`,
+  ...steps.map((step) => `    - \`${step.id}\`: \`${step.command}\``),
+];
+
+const renderRepair = (repair: RepairReport): string[] => [
+  `- **Repair \`${repair.jobContractId}\`** (${CAUSE_WORD[repair.cause]}) of ${repair.gates.join(", ")}: ${repair.status}`,
+  `  ${repair.objective}`,
+  ...(repair.decision === undefined
+    ? ["  Decision: not on the record."]
+    : [
+        `  Decision \`${repair.decision.decisionId}\`: ${repair.decision.choice}`,
+        `  Why: ${repair.decision.rationale}`,
+      ]),
+  ...(repair.definitionsChanged
+    ? [
+        "  New gate definitions; every later verification uses them:",
+        ...(repair.setup === undefined ? [] : renderSteps("Setup", repair.setup)),
+        ...(repair.verification === undefined
+          ? []
+          : renderSteps("Verification", repair.verification)),
+      ]
+    : []),
+];
+
+/**
+ * Gate health (D-P15-09): the project's audit, whether the run started red,
+ * what it repaired under which decision, and every check that flaked. Repair
+ * jobs sit outside every strand, so this is the only place they appear.
+ */
+const renderGateHealth = ({ audit, red, repairs, flakes }: GateHealthReport): string[] => {
+  if (audit === undefined && red === undefined && repairs.length === 0 && flakes.length === 0) {
+    return [
+      "## Gate health",
+      "",
+      "No gate-health record, no red base, no repairs and no flakes.",
+      "",
+    ];
+  }
+  return [
+    "## Gate health",
+    "",
+    audit === undefined
+      ? "Audit: no gate-health record for this project."
+      : `Audit: **${audit.verdict}** at \`${audit.commit.slice(0, 8)}\`, ${audit.auditedAt}${audit.findings.length === 0 ? "." : ":"}`,
+    ...(audit?.findings ?? []).map(
+      (finding) =>
+        `- ${finding.id} (rule ${finding.rule}): ${finding.found} Decided by \`${finding.decisionId}\`.`,
+    ),
+    "",
+    ...(red === undefined
+      ? []
+      : [
+          `The base was red: ${red.failing.join(", ")} failed on \`${red.baseCommit.slice(0, 8)}\`, so the run repaired it before the strands.`,
+          "",
+        ]),
+    ...(repairs.length === 0 ? [] : ["Repairs:", "", ...repairs.flatMap(renderRepair), ""]),
+    ...(flakes.length === 0
+      ? []
+      : [
+          "Flakes (each failed, then passed on a rerun of the same commit):",
+          "",
+          ...flakes.map(
+            (flake) =>
+              `- \`${flake.stepId}\` on job \`${flake.jobContractId}\` (node \`${flake.executionNodeId}\`) at \`${flake.commitSha.slice(0, 8)}\`: first run exited ${flake.firstExitCode}; verification \`${flake.verificationId}\`.`,
+          ),
+          "",
+        ]),
+  ];
+};
+
 const isParked = (strand: StrandReport): boolean =>
   strand.outcome === "failed" || strand.outcome === "cancelled";
 
@@ -751,6 +1025,8 @@ export const renderReport = (report: RunReport): string => {
     ...renderCorrections(report.corrections),
     ...renderRulings(report.rulings),
     ...renderStories(report),
+    ...renderDepartures(strands),
+    ...renderGateHealth(report.gateHealth),
     "## Strands",
     "",
     ...strands.flatMap(renderStrand),

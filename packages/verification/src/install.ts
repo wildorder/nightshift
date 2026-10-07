@@ -10,13 +10,22 @@
  * what makes it so.
  *
  * The install step is skipped when the checkout's lockfiles hash exactly as
- * they did when its installed tree was made. A new checkout without a tree
- * is **seeded** from a reference checkout (the run's program checkout, whose
- * install was real) by hardlinking its tree, which takes seconds for tens of
- * thousands of files and costs no disk, provided the two have the same
- * lockfiles. The hashes the tree was installed for are kept in a marker inside
- * the tree, so a commit that changes a lockfile installs again, and a tree
- * that was removed installs again. Steps that are not installs always run.
+ * they did when its installed tree was made. The hashes a tree was installed
+ * for are kept in a marker inside the tree, written only after an install
+ * passes, so a commit that changes a lockfile installs again, and a tree that
+ * was removed installs again. Steps that are not installs always run.
+ *
+ * A new checkout without a tree is **seeded** from a reference checkout (the
+ * run's program checkout) by hardlinking its tree, which takes seconds for tens
+ * of thousands of files and costs no disk. Only when the reference's **marker**
+ * matches the new checkout's lockfiles: the marker is the one proof of what the
+ * reference's tree was installed for. The reference's lockfiles are not: a
+ * checkout pulled without reinstalling, or whose own setup failed after a
+ * lockfile changed, has new lockfiles over an old tree, and seeding from it
+ * would certify old dependencies as the new ones (P15's arbiter, 2026-10-07).
+ * A reference with no marker, or whose marker records other lockfiles (a
+ * failed install never writes one, so the old record stands and no longer
+ * matches), seeds nothing, and the checkout installs for itself.
  *
  * A skipped step is still recorded, under its own id, with the reason: a
  * cache hit is visible in the evidence and is never mistaken for a run of the
@@ -30,6 +39,7 @@ import {
   readdir,
   readFile,
   readlink,
+  rename,
   stat,
   symlink,
   writeFile,
@@ -51,8 +61,11 @@ export const LOCKFILES = [
 /** The installed tree a Node install produces, and the one that is seeded. */
 export const INSTALLED_TREE = "node_modules";
 
+/** The marker's file name, inside the installed tree. */
+export const INSTALL_MARKER_NAME = ".nightshift-install.json";
+
 /** Inside the tree, so it goes wherever the tree goes and with it when the tree is removed. */
-export const INSTALL_MARKER = join(INSTALLED_TREE, ".nightshift-install.json");
+export const INSTALL_MARKER = join(INSTALLED_TREE, INSTALL_MARKER_NAME);
 
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
@@ -97,12 +110,20 @@ export const readInstallMarker = async (
   }
 };
 
+/**
+ * Writes `dir`'s marker as a new file, never into the existing one: a seeded
+ * tree's marker is a hardlink to the reference's, and writing through it would
+ * rewrite the reference's record of what it was installed for.
+ */
 export const writeInstallMarker = async (
   dir: string,
   hashes: Readonly<Record<string, string>>,
 ): Promise<void> => {
   await mkdir(join(dir, INSTALLED_TREE), { recursive: true });
-  await writeFile(join(dir, INSTALL_MARKER), `${JSON.stringify(hashes, null, 2)}\n`, "utf8");
+  const path = join(dir, INSTALL_MARKER);
+  const next = `${path}.${process.pid}.next`;
+  await writeFile(next, `${JSON.stringify(hashes, null, 2)}\n`, "utf8");
+  await rename(next, path);
 };
 
 /** How many entries are linked at once; a tree is tens of thousands of small files. */
@@ -246,16 +267,30 @@ export const planInstall = async (
       seeded: 0,
     };
   }
+  // What the reference's tree was installed for, by its marker: never what its
+  // lockfiles say now (see the header).
   const referenceTree = await hasInstalledTree(reference);
   const decision = maySkipInstall({
-    reference: referenceTree ? await lockfileHashes(reference) : undefined,
+    reference: referenceTree ? await readInstallMarker(reference) : undefined,
     checkout: hashes,
     installedTree: referenceTree,
   });
   if (!decision.skip) {
     return { skipInstalls: false, reason: `not seeded: ${decision.reason}`, hashes, seeded: 0 };
   }
-  const seeded = await seedInstalledTree(reference, cwd);
+  let seeded: number;
+  try {
+    seeded = await seedInstalledTree(reference, cwd);
+  } catch (error) {
+    // The reference changed under the seed: its own setup was running there
+    // (D-P15-11). Not a failure of this checkout's setup, which installs.
+    return {
+      skipInstalls: false,
+      reason: `not seeded: the reference's tree could not be read (${error instanceof Error ? error.message : String(error)})`,
+      hashes,
+      seeded: 0,
+    };
+  }
   await writeInstallMarker(cwd, hashes);
   return {
     skipInstalls: true,

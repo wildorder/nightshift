@@ -10,7 +10,7 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import {
-  inheritFromConfig,
+  mergeProgramFiles,
   NIGHTSHIFT_CONFIG_FILE,
   type NightshiftConfig,
   NightshiftConfigSchema,
@@ -105,9 +105,7 @@ export const readProgramFiles = async (repoPath: string, id: string): Promise<Pr
 
   const config = await readConfig(repoPath);
   const authored = parseJson(contractPath, contractText);
-  const contract = ProgramContractSchema.parse(
-    config === undefined ? authored : inheritFromConfig(authored, config),
-  );
+  const contract = ProgramContractSchema.parse(mergeProgramFiles(authored, config));
   const conversationText = keepsConversation(contract)
     ? await readText(join(repoPath, PROGRAMS_DIRECTORY, id, CONVERSATION_FILE))
     : undefined;

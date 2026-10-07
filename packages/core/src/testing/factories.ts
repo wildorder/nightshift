@@ -25,6 +25,8 @@ import {
   type ExecutionNode,
   type ExecutionNodeId,
   ExecutionNodeSchema,
+  type GateHealth,
+  GateHealthSchema,
   type JobContract,
   JobContractSchema,
   type ProgramContract,
@@ -424,6 +426,26 @@ export const makeWarmCache = (f: Fixtures, overrides: Overrides<WarmCache> = {})
     },
     history: [],
     updatedAt: AT,
+    ...overrides,
+  });
+
+/** P15 (D-P15-07): a project's healthy gate-health record, audited by the program's planning. */
+export const makeGateHealth = (f: Fixtures, overrides: Overrides<GateHealth> = {}): GateHealth =>
+  GateHealthSchema.parse({
+    schemaVersion: 1,
+    projectId: f.scope.projectId,
+    programId: f.scope.programId,
+    commit: COMMIT_A,
+    fingerprint: "0".repeat(64),
+    verdict: "healthy",
+    findings: [],
+    machinery: ["package.json"],
+    auditedBy: {
+      kind: "user",
+      userId: "fixture-operator",
+      orgId: "org_01HF7YAT00GGGGGGGGGGGGGGGG",
+    },
+    auditedAt: AT,
     ...overrides,
   });
 

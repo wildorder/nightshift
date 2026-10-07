@@ -63,6 +63,7 @@ import {
 import type { AgentTask, McpLaunch } from "@nightshift/harness";
 import type { ExecutionEnvironment, RunSession, WorkerLaunchIdentity } from "./environment.js";
 import { arbitrateAll, fixOf, latestExamination, rulingDue } from "./examine.js";
+import { prepareSetupReference, reconcileGateRepairs } from "./gate-repair.js";
 import { baseRef, git, jobBranch, revParse } from "./git/index.js";
 import { createMergeQueue, type MergeQueue } from "./merge-queue.js";
 import { attemptsOf, delegateJob, type StartedJob, startJob } from "./runner.js";
@@ -84,6 +85,13 @@ export interface EngineOptions {
   readonly route?: (job: JobContract, context: RouteContext) => RouteChoice;
   /** How often the run's nodes are read while a sub-orchestrator is running. */
   readonly discoveryIntervalMs?: number;
+  /**
+   * P15 (D-P15-11): run the current setup once in the program checkout before
+   * the first job starts, so every worktree is seeded from it. For an engine
+   * attaching to a new run on a laptop; not per job, not for an engine that
+   * re-attaches, and not on a machine, whose workspace already ran setup there.
+   */
+  readonly prepareReference?: boolean;
 }
 
 /** What the router is told beyond the job itself (P8). Structural, so this package names no router. */
@@ -173,6 +181,11 @@ export type WaitingReason =
   | { readonly kind: "parent_full"; readonly running: number; readonly maxConcurrency: number }
   /** A strand held until the strands it depends on have succeeded (P7, D-P7-04). */
   | { readonly kind: "strands"; readonly waitingFor: readonly string[] }
+  /**
+   * P15 (D-P15-03): the run started on a red base, and the work waits on its
+   * repair alone. `gates` are the red gates' ids, as the `gate.red` event names them.
+   */
+  | { readonly kind: "repair"; readonly gates: readonly string[] }
   | { readonly kind: "wall_clock_spent"; readonly maxWallClockSeconds: number }
   /** P8 (D-P8-08): the run has spent its dollars or its tokens. Nothing new starts. */
   | {
@@ -278,6 +291,21 @@ export const createEngine = (options: EngineOptions): Engine => {
   // --- The route onto the branch: one per run, and it is here (D-P6-05) -------------
   const queue = options.mergeQueue ?? createMergeQueue(environment);
   const integrate = queue.integrate;
+
+  // --- The gates as the run's repairs left them (P15, D-P15-04, D-P15-11) -----------
+  //
+  // Before anything starts: whatever a repair's landing left unrecorded (its
+  // `gate.repaired`, the gate-health record) is made from the run's records,
+  // and a new run's program checkout is prepared as the setup reference. In the
+  // merge queue's order, so it never races a landing in the same checkout.
+  const ready = queue
+    .exclusive(async () => {
+      await reconcileGateRepairs(environment, session, { nodeId: session.rootNodeId });
+      if (options.prepareReference === true) {
+        await prepareSetupReference(environment, session, session.rootNodeId, "at the run's start");
+      }
+    })
+    .catch(() => {});
 
   // --- The wall clock (D-P6-07) ------------------------------------------------------
   const wallClockRemainingSeconds = (): number | undefined => {
@@ -412,13 +440,16 @@ export const createEngine = (options: EngineOptions): Engine => {
 
   /** Starts the first queued node that may start. False when none could. */
   const startNext = async (): Promise<boolean> => {
+    await ready;
     if (await holding()) return false;
 
     const nodes = await readNodes();
     const tree = buildTree(nodes);
     const outcomes = planned ? await readStrandOutcomes(nodes) : {};
+    const red = await redBase(nodes);
     for (const entry of [...pending]) {
-      const free = !heldByStrands(entry, outcomes) && mayStartNow(tree, entry);
+      const free =
+        !heldForRepair(entry, red) && !heldByStrands(entry, outcomes) && mayStartNow(tree, entry);
       if (free && (await start(entry))) return true;
     }
     return false;
@@ -447,6 +478,97 @@ export const createEngine = (options: EngineOptions): Engine => {
       cursor = page.cursor;
     } while (cursor !== undefined);
     return strandOutcomes(strandAttempts(nodes, strandOfJob), session.run.carriedStrands ?? []);
+  };
+
+  // --- Repair first: a red base (P15, D-P15-03, SC-P15-05) ---------------------------
+  //
+  // A run that started on a red base carries a `gate.red` event on its program
+  // node, written before any orchestrator attaches (`startRun` locally, the
+  // runner's gate audit remotely). Until a `red_base` repair has landed, the work
+  // that needs green gates waits on it: every strand, and on an unplanned run
+  // every non-repair job directly under the program node. Read from the run's
+  // records, never remembered from a submission, so an engine that attaches to a
+  // run under way holds exactly as the one that started it did.
+  let redEvent: Promise<readonly string[] | undefined> | undefined;
+  let repaired = false;
+
+  /** The red gates the run started with, from its `gate.red` event; undefined when it started green. */
+  const readRedGates = async (): Promise<readonly string[] | undefined> => {
+    let gates: string[] | undefined;
+    let cursor: string | undefined;
+    do {
+      const page = await stores.events.listByRun(
+        session.scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      for (const event of page.items) {
+        if (event.type === "gate.red")
+          gates = [...new Set([...(gates ?? []), ...failingOf(event.payload)])];
+      }
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return gates;
+  };
+
+  /** True once a job whose contract repairs the red base has been integrated. */
+  const repairLanded = async (nodes: readonly ExecutionNode[]): Promise<boolean> => {
+    const integrated = new Set(
+      nodes
+        .filter((node) => node.status === "integrated" && node.jobContractId !== null)
+        .map((node) => node.jobContractId),
+    );
+    if (integrated.size === 0) return false;
+    let cursor: string | undefined;
+    do {
+      const page = await stores.jobContracts.listByRun(
+        session.scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      if (
+        page.items.some(
+          (job) => job.repair?.cause === "red_base" && integrated.has(job.jobContractId),
+        )
+      ) {
+        return true;
+      }
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return false;
+  };
+
+  /** Whether a submission is work the red base holds: a strand, or (unplanned) a root job. */
+  const needsGreenBase = (submission: Submission): boolean =>
+    submission.job.repair === undefined &&
+    (submission.job.strandId !== undefined ||
+      (!planned && submission.parentNodeId === session.rootNodeId));
+
+  /**
+   * The red gates still unrepaired, or undefined when nothing is held. The
+   * `gate.red` event is read once, because it is written before any engine
+   * attaches; a landed repair, once seen, stays landed.
+   */
+  const redBase = async (
+    nodes: readonly ExecutionNode[],
+  ): Promise<readonly string[] | undefined> => {
+    if (repaired || !pending.some((entry) => needsGreenBase(entry.submission))) return undefined;
+    redEvent ??= readRedGates().catch((error: unknown) => {
+      redEvent = undefined;
+      throw error;
+    });
+    const gates = await redEvent;
+    if (gates === undefined) return undefined;
+    if (await repairLanded(nodes)) {
+      repaired = true;
+      return undefined;
+    }
+    return gates;
+  };
+
+  /** True while the run's red base is unrepaired and `entry` needs it green. Records why. */
+  const heldForRepair = (entry: Pending, red: readonly string[] | undefined): boolean => {
+    if (red === undefined || !needsGreenBase(entry.submission)) return false;
+    entry.waiting = { kind: "repair", gates: red };
+    return true;
   };
 
   /** True while a strand's dependencies have not all succeeded. Records what it waits for. */
@@ -1227,11 +1349,20 @@ export const createEngine = (options: EngineOptions): Engine => {
     strands: async () => (planned ? readStrandOutcomes(await readNodes()) : {}),
 
     settled: async () => {
+      await ready;
       while (pumping !== undefined) await pumping;
     },
 
     discover,
   };
+};
+
+/** The red gates a `gate.red` payload names. */
+const failingOf = (payload: unknown): readonly string[] => {
+  const failing = (payload as { failing?: unknown }).failing;
+  return Array.isArray(failing)
+    ? failing.filter((gate): gate is string => typeof gate === "string")
+    : [];
 };
 
 const messageOf = (error: unknown): string =>

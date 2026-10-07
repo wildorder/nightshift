@@ -39,13 +39,7 @@ import type {
 import { nextToIntegrate, nowIso, transition } from "@nightshift/core";
 import type { ExecutionEnvironment } from "./environment.js";
 import { examineInQueue, recordRulingLanded } from "./examine.js";
-import {
-  changedPaths,
-  effectiveHead,
-  provisionalRef,
-  replayCommit,
-  updateRef,
-} from "./git/index.js";
+import { changedPaths, effectiveHead, replayCommit } from "./git/index.js";
 import { integrateNode } from "./integrate.js";
 import type { IntegrateCandidate, IntegrationCandidate } from "./runner.js";
 import { checkChangedPaths, describeScopeViolation } from "./scope-check.js";
@@ -61,6 +55,12 @@ export interface MergeQueue {
   };
   /** Settles when the pipeline is idle. */
   idle(): Promise<void>;
+  /**
+   * Runs `task` between landings, never during one, and holds the next landing
+   * until it has finished: for work in the program checkout that must not race
+   * a fast-forward there (P15, D-P15-11: the setup reference at a run's start).
+   */
+  exclusive<T>(task: () => Promise<T>): Promise<T>;
 }
 
 interface Waiting {
@@ -73,6 +73,13 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
   const waiting = new Map<ExecutionNodeId, Waiting>();
   let current: ExecutionNodeId | undefined;
   let running: Promise<void> | undefined;
+  // One landing or one exclusive task at a time, in the order they asked.
+  let tail: Promise<unknown> = Promise.resolve();
+  const serially = <T>(task: () => Promise<T>): Promise<T> => {
+    const result = tail.then(task);
+    tail = result.catch(() => undefined);
+    return result;
+  };
 
   const run = (): Promise<void> => {
     running ??= (async () => {
@@ -130,7 +137,7 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     waiting.delete(next.executionNodeId);
     current = next.executionNodeId;
     try {
-      await integrateOne(entry.candidate, next);
+      await serially(() => integrateOne(entry.candidate, next));
     } catch (error) {
       await failNode(entry.candidate, `the merge queue failed: ${messageOf(error)}`).catch(
         () => {},
@@ -167,16 +174,9 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
       worktree: candidate.worktree,
       onProvisionalLine: provisional,
     });
-    if (!verified.passed) {
-      if (verified.deferred !== undefined) {
-        await landProvisionally(
-          candidate,
-          verified.deferred.commitSha,
-          verified.deferred.waitingOn,
-        );
-      }
-      return;
-    }
+    // A deferred node is on the provisional line already: verification put it
+    // there before it said `deferred` (provisional-line.ts).
+    if (!verified.passed) return;
 
     await examineAndLand(candidate, head, verified.commitSha, verified.verification);
   };
@@ -229,28 +229,6 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
   };
 
   /** The node on its replayed commit, or `undefined` when it conflicted and failed. */
-  /**
-   * The provisional line takes the commit, through this same queue and in the
-   * same order, so it is a line: each commit's parent is the one before it. The
-   * program branch is not touched. The worktree is kept, because `nightshift
-   * resume` verifies this commit again, in full, before it may land.
-   */
-  const landProvisionally = async (
-    candidate: IntegrationCandidate,
-    commitSha: CommitSha,
-    waitingOn: readonly string[],
-  ): Promise<void> => {
-    const ref = provisionalRef(candidate.session.scope.runId);
-    await updateRef(runner, candidate.session.repoPath, ref, commitSha);
-    outbox.emit({
-      type: "node.deferred",
-      source: "control-plane",
-      payload: { commitSha, provisionalRef: ref, waitingOn },
-      executionNodeId: candidate.nodeId,
-      agentId: candidate.agentId,
-    });
-  };
-
   const reconcile = async (
     candidate: IntegrationCandidate,
     node: ExecutionNode,
@@ -336,6 +314,7 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     idle: async () => {
       while (running !== undefined) await running;
     },
+    exclusive: (task) => serially(task),
   };
 };
 

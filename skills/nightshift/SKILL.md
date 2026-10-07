@@ -32,7 +32,8 @@ expensive decisions in `docs/programs/{id}/plan.md` and `contract.json` (the
     handed its section of the plan word for word, the human's decisions that
     touch it, and the other strands' scopes. Plain `delegate` is refused to you
     (`plan_fixes_strands`): how a strand divides into jobs is its own
-    orchestrator's decision, one level down.
+    orchestrator's decision, one level down. The one exception is a **repair**
+    of a broken gate (below).
   - Delegate every strand at once. Nightshift holds a strand until the strands it
     depends on have succeeded.
   - A strand that fails is **parked** with everything that depends on it
@@ -40,6 +41,17 @@ expensive decisions in `docs/programs/{id}/plan.md` and `contract.json` (the
   - A job that ends `deferred` is done for now: one of its checks needs something
     only a human can supply. It is not a failure. Its work is kept on a
     provisional line, and `nightshift resume {id}` lands it when they are back.
+  - **A gate that breaks is repaired, never re-planned** (P15). A repair is
+    `delegate { objective, acceptance, repair: { cause, gates, decision } }`:
+    the program's whole scope, high risk, and a decision recorded in the same
+    call (refused as `repair_needs_decision` without one). Only the root may
+    open one. When the run starts red (`gate.red`), your first act is a repair
+    `{ cause: "red_base" }`; the strands are held until it lands. On a flake
+    (`gate.flaked`), the work landed: open one repair `{ cause: "flaky" }` per
+    flaky gate, off the blocking path. The fix must keep the gate at least as
+    strong; a weakened gate is a blocking finding unless the decision says why.
+    Do not `run.finish` while a repair is in flight. The `run-program` skill
+    has the detail.
   - Finish `succeeded` only if every strand succeeded; `deferred` if nothing
     failed and some work is deferred; otherwise `failed`, naming what was parked.
 - If the plan on disk was edited after it was ratified, the run is refused until

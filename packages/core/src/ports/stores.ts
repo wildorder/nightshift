@@ -35,6 +35,7 @@ import type {
   ExaminationId,
   ExecutionNode,
   ExecutionNodeId,
+  GateHealth,
   JobContract,
   JobContractId,
   Membership,
@@ -274,6 +275,16 @@ export interface WarmCacheStore {
 }
 
 /**
+ * A project's gate-health record (P15, D-P15-07): one per project, and `put`
+ * replaces it. Written by a Nightshift command or the engine, never by an
+ * agent's file edit.
+ */
+export interface GateHealthStore {
+  put(record: GateHealth): Promise<void>;
+  get(projectId: ProjectId): Promise<GateHealth | undefined>;
+}
+
+/**
  * Which org holds a GitHub App installation (P10, D-P10-02). One installation
  * is one customer's: a second org claiming it is refused, so a repository's
  * publication authority cannot be borrowed by recording someone else's
@@ -338,6 +349,8 @@ export interface ProjectStores {
   readonly computeUtilizations: ComputeUtilizationStore;
   readonly warmCaches: WarmCacheStore;
   readonly installationClaims: InstallationClaimStore;
+  // P15: the project's gate health.
+  readonly gateHealth: GateHealthStore;
 }
 
 /**
