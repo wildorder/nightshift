@@ -11,9 +11,12 @@
  *    prerequisite only a later strand needs does not stop it (D-P7-10): the
  *    work that needs it defers, and the rest of the night is not wasted;
  * 3. the gate audit (`gates.ts`), for a run on this machine: setup and every
- *    check, once, on the base. A gate that fails stops the run here, because no
- *    job could pass verification. A remote run is audited on its own machine;
- * 4. the run, its program node, and the human's decisions (`startRun`);
+ *    check, once, on the base. A gate that fails does not stop the run (P15,
+ *    D-P15-03): the run is started on a red base, which it records as `gate.red`
+ *    on its program node, and its first job is the repair; the engine holds the
+ *    strands until it lands. A remote run is audited on its own machine;
+ * 4. the run, its program node, and the human's decisions (`startRun`), with
+ *    each red gate's output kept on the program node;
  * 5. the headless root orchestrator, as a process, waited for;
  * 6. `report.md`, from the control plane alone.
  *
@@ -36,12 +39,14 @@ import {
   unconfirmedCorrections,
 } from "@nightshift/core";
 import {
+  type GateAudit,
+  recordRedBase,
   requireRatifiedPlan,
   runPreflight,
   type StartedRun,
   startRun,
 } from "@nightshift/execution";
-import { createHttpPlanning } from "@nightshift/persistence/http";
+import { createHttpArtifactBodyStore, createHttpPlanning } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import type { ProgramFiles } from "../program-files.js";
@@ -218,19 +223,53 @@ const recordConfirmations = async (
   }
 };
 
-/** The gate audit, said; false when a gate is red. */
-const gatesAllowStart = async (
+/**
+ * The gate audit, said. A red one does not stop the run (D-P15-03): it is
+ * returned, and the run records it and repairs it first.
+ */
+const auditBeforeStart = async (
   environment: CliEnvironment,
   ratified: ProgramContract,
   repoPath: string,
-): Promise<boolean> => {
+): Promise<GateAudit> => {
   // On stderr, all of it: the run id stays the first line of stdout.
   const say = environment.err;
   const audit = await auditProgramGates(environment, ratified, repoPath, say);
   describeAudit(environment, audit, say);
-  if (!audit.red) return true;
-  environment.err("Nothing was started. Fix the base, then run this again.");
-  return false;
+  if (audit.red) {
+    environment.err(
+      `The base is red, so the run starts anyway and its first job is a repair of ${audit.failing.join(", ")}; ` +
+        "the strands wait for it to land.",
+    );
+  }
+  return audit;
+};
+
+/** Each red gate's last output, kept on the run's program node beside its `gate.red`. */
+const keepRedOutput = async (
+  environment: CliEnvironment,
+  session: Session,
+  started: StartedRun,
+  audit: GateAudit | undefined,
+): Promise<void> => {
+  if (audit?.red !== true) return;
+  const { projectId, programId, runId } = started.run;
+  await recordRedBase(
+    {
+      stores: session.stores,
+      bodies: createHttpArtifactBodyStore({ transport: session.transport }),
+      clock: environment.clock,
+      ids: environment.ids,
+    },
+    {
+      scope: { projectId, programId, runId },
+      nodeId: started.rootNode.executionNodeId,
+      audit,
+      writerId: `run-${runId}-gates`,
+      // `startRun` wrote it, with the run's other start events.
+      event: false,
+    },
+  );
 };
 
 /** Deferred work and nothing worse: its own code, so a script can tell "come back" from "it broke". */
@@ -265,13 +304,12 @@ export const runProgram = async (
   const confirming = await requireConfirmations(session, ratified, options);
 
   // The gates, before anything is created. A remote run is audited on the
-  // machine that will run it, which is the one whose gates matter.
-  if (
-    options.remote !== true &&
-    !(await gatesAllowStart(environment, ratified, options.repoPath))
-  ) {
-    return { started: undefined, exitCode: 1 };
-  }
+  // machine that will run it, which is the one whose gates matter. A red base
+  // starts the run all the same: its first job is the repair (D-P15-03).
+  const audit =
+    options.remote === true
+      ? undefined
+      : await auditBeforeStart(environment, ratified, options.repoPath);
 
   // P10: everything the checkout can say against a remote dispatch, before the
   // run exists (SC-P10-02). The ratified record, not the file: ratification
@@ -286,7 +324,9 @@ export const runProgram = async (
     planText: files.planText,
     repoPath: options.repoPath,
     location: readiness === undefined ? "local" : "remote",
+    red: audit?.failing ?? [],
   });
+  await keepRedOutput(environment, session, started, audit);
   await recordConfirmations(environment, session, started, confirming);
   const sayCarried = (): void => {
     for (const carried of started.run.carriedStrands ?? []) {

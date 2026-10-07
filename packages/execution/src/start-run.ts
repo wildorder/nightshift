@@ -31,15 +31,8 @@ import type {
   Run,
 } from "@nightshift/contracts";
 import { defaultOrgConfig, EventSchema, ProgramContractSchema } from "@nightshift/contracts";
-import type { Clock, IdGenerator, ProjectStores, RunScope } from "@nightshift/core";
-import {
-  finishRun,
-  isPlanned,
-  nowIso,
-  planHash,
-  requireEffectivePolicy,
-  transitionRun,
-} from "@nightshift/core";
+import type { Clock, IdGenerator, ProjectStores } from "@nightshift/core";
+import { isPlanned, nowIso, planHash, requireEffectivePolicy } from "@nightshift/core";
 import { carriedStrandsFor } from "./carry-over.js";
 import { checkpointRef, type GitRunner, revParse, updateRef } from "./git/index.js";
 
@@ -67,6 +60,13 @@ export interface StartRunInput {
    * first event; the dispatch route refuses a run that was not started remote.
    */
   readonly location?: ExecutionLocation;
+  /**
+   * P15 (D-P15-03): the gates the audit found red on the base, by id. The run
+   * starts all the same, and records them as a `gate.red` event on its program
+   * node: its first job is their repair, and the engine holds the strands until
+   * it lands. Absent, or empty, when the base is green or was not audited here.
+   */
+  readonly red?: readonly string[];
 }
 
 export interface StartedRun {
@@ -313,7 +313,7 @@ export const startRun = async (
   // run by the server that attaches, and this runs before there is one. The keys
   // are deterministic all the same, so a retried `nightshift run` converges.
   let n = 0;
-  const emit = async (type: "run.created" | "checkpoint.created", payload: object) => {
+  const emit = async (type: "run.created" | "checkpoint.created" | "gate.red", payload: object) => {
     n += 1;
     await stores.events.append(
       EventSchema.parse({
@@ -338,41 +338,9 @@ export const startRun = async (
     location: input.location ?? "local",
   });
   await emit("checkpoint.created", { checkpointId, ref, commitSha: baseCommit });
+  if (input.red !== undefined && input.red.length > 0) {
+    await emit("gate.red", { baseCommit, failing: [...input.red] });
+  }
 
   return { program, run, rootNode, checkpoint, baseCommit };
-};
-
-/**
- * Ends a run that never got to work: its program node and the run to
- * `running`, then both to `failed` with `reason`, one table step at a time.
- * For a run whose machine found, before any agent started, that it cannot
- * succeed (the gate audit, on a remote machine).
- */
-export const failBeforeStart = async (
-  deps: Pick<StartRunEnvironment, "stores" | "clock">,
-  scope: RunScope,
-  reason: string,
-): Promise<void> => {
-  const { stores, clock } = deps;
-  const run = await stores.runs.get(scope, scope.runId);
-  if (run === undefined || run.status !== "pending") return;
-  let node = await stores.executionNodes.get(scope, run.rootNodeId);
-  for (const next of ["queued", "running"] as const) {
-    if (
-      node !== undefined &&
-      ((next === "queued" && node.status === "validated") ||
-        (next === "running" && node.status === "queued"))
-    ) {
-      node = { ...node, status: next, updatedAt: nowIso(clock) };
-      await stores.executionNodes.put(node);
-    }
-  }
-  const at = nowIso(clock);
-  const running: Run = { ...run, status: "running" };
-  await stores.runs.put(running);
-  await stores.runs.put(transitionRun(running, "fail", { endedAt: at, outcomeReason: reason }));
-  if (node !== undefined) {
-    const ended = finishRun(node, "failed", at, reason);
-    if (ended !== node) await stores.executionNodes.put(ended);
-  }
 };

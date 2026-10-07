@@ -221,7 +221,9 @@ const describeJob = (report: Readonly<Record<string, unknown>>): string => {
   const verification = report.verification as { outcome?: string } | null;
   const verified =
     verification === null ? "" : ` Verification ${verification.outcome ?? "unknown"}.`;
-  return `Job ${String(report.jobContractId)} is ${status}.${commit}${verified}${reason}${nextStepFor(report)}`;
+  const waiting = report.waitingFor as { kind?: string; gates?: readonly string[] } | null;
+  const held = waiting?.kind === "repair" ? ` Queued: ${waitsForRepair(waiting.gates ?? [])}` : "";
+  return `Job ${String(report.jobContractId)} is ${status}.${held}${commit}${verified}${reason}${nextStepFor(report)}`;
 };
 
 /**
@@ -689,6 +691,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           nodeId: submitted.nodeId,
           status: submitted.status,
           waitingFor: waiting?.kind === "strands" ? waiting.waitingFor : [],
+          waitingForRepair: waiting?.kind === "repair" ? waiting.gates : [],
           harness: route.target.harness,
           model: route.target.model,
         });
@@ -758,9 +761,11 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
 
         return ok(
           started === undefined
-            ? `Delegated job ${job.jobContractId} as node ${submitted.nodeId}. It is queued: its ` +
-                "parent's concurrency limit is full, and it starts when a slot frees. Wait for it " +
-                "with job.wait."
+            ? describeQueuedJob(
+                job.jobContractId,
+                submitted.nodeId,
+                attached.engine.waiting(job.jobContractId),
+              )
             : `Delegated job ${job.jobContractId} as node ${submitted.nodeId}. A ${route.target.model} ` +
                 `worker on the ${route.target.harness} harness is running in ${started.worktree}. ` +
                 "Wait for it with job.wait.",
@@ -1385,6 +1390,23 @@ const submitStrand = async (
   }
 };
 
+/** P15 (D-P15-03): what a submission held for the red base's repair waits on. */
+const waitsForRepair = (gates: readonly string[]): string =>
+  `the run started on a red base, so it waits for the repair of ${gates.join(", ")} to land, ` +
+  "and starts once it has. Delegate that repair first if nobody has.";
+
+/** A delegated job that did not start at once, and why. */
+const describeQueuedJob = (
+  jobId: string,
+  nodeId: string,
+  waiting: ReturnType<AttachedRun["engine"]["waiting"]>,
+): string =>
+  `Delegated job ${jobId} as node ${nodeId}. It is queued: ` +
+  (waiting?.kind === "repair"
+    ? waitsForRepair(waiting.gates)
+    : "its parent's concurrency limit is full, and it starts when a slot frees.") +
+  " Wait for it with job.wait.";
+
 const describeStrandSubmission = (
   strandId: string,
   submitted: { readonly status: string; readonly nodeId: string },
@@ -1392,6 +1414,9 @@ const describeStrandSubmission = (
 ): string => {
   if (submitted.status === "running") {
     return `Strand ${strandId} is running as node ${submitted.nodeId}.`;
+  }
+  if (waiting?.kind === "repair") {
+    return `Strand ${strandId} is queued as node ${submitted.nodeId}: ${waitsForRepair(waiting.gates)}`;
   }
   if (waiting?.kind !== "strands") {
     return `Strand ${strandId} is queued as node ${submitted.nodeId}; it starts when a slot frees.`;

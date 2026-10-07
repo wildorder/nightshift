@@ -101,6 +101,7 @@ export {
   runPreflight,
 } from "./preflight.js";
 export * from "./publish.js";
+export { gateRedPayload, type RecordRedBaseInput, recordRedBase } from "./red-base.js";
 export {
   deferredLine,
   type ResumeResult,
@@ -145,7 +146,6 @@ export {
   stampSettledDecisions,
 } from "./stamp.js";
 export {
-  failBeforeStart,
   PlanChangedError,
   PlanNotRatifiedError,
   ProgramContractChangedError,

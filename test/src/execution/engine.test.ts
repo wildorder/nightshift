@@ -133,6 +133,7 @@ interface Rig {
   submit(
     objective: string,
     strandId?: string,
+    extra?: Partial<JobContract>,
   ): Promise<{ jobId: JobContract["jobContractId"]; nodeId: ExecutionNodeId }>;
   status(nodeId: ExecutionNodeId): Promise<string>;
   until(nodeId: ExecutionNodeId, predicate: (status: string) => boolean): Promise<string>;
@@ -150,6 +151,8 @@ const rig = async (
     program?: Partial<ProgramContract>;
     /** The prerequisites as the control plane would answer them, read on every verification. */
     prerequisites?: () => readonly Prerequisite[];
+    /** The run starts on a red base with these gates failing (P15, D-P15-03). */
+    red?: readonly string[];
   } = {},
 ): Promise<Rig> => {
   let world: World | undefined;
@@ -159,6 +162,7 @@ const rig = async (
       delegationLimits: { maxDepth: 2, maxConcurrency: options.maxConcurrency ?? 3 },
       ...options.program,
     },
+    ...(options.red === undefined ? {} : { red: options.red }),
   });
   world = made;
   const book: PrerequisiteBook = {
@@ -221,7 +225,7 @@ const rig = async (
       });
       gate.open();
     },
-    submit: async (objective, strandId) => {
+    submit: async (objective, strandId, extra) => {
       const job = JobContractSchema.parse({
         schemaVersion: 1,
         ...made.scope,
@@ -233,6 +237,7 @@ const rig = async (
         risk: "low",
         ambiguity: "low",
         ...(strandId === undefined ? {} : { strandId }),
+        ...extra,
         createdAt: nowIso(made.environment.clock),
       });
       const submitted = await engine.submit({
@@ -689,6 +694,90 @@ const expectStartedAfterDependencies = (
     }
   }
 };
+
+// --- P15: repair first ----------------------------------------------------------------------
+
+/** A repair of the red base's gates (D-P15-03): outside every strand, never held by the base. */
+const redBaseRepair = (gates: readonly string[]): Partial<JobContract> => ({
+  repair: {
+    cause: "red_base",
+    gates: [...gates],
+    decisionId: "dec_01M4REPA1R0000000000000000" as never,
+  },
+});
+
+describe("a run that starts on a red base repairs it first (P15, D-P15-03, SC-P15-05)", () => {
+  it("holds a strand on the repair, lands the repair, then starts the strand", async () => {
+    const r = await rig(
+      { repair: addModule("repair"), s01: addModule("s01") },
+      { strands: [strandOf("S-01")], red: ["build"] },
+    );
+    const s01 = await r.submit("s01", "S-01");
+    expect(await r.status(s01.nodeId)).toBe("queued");
+    expect(r.engine.waiting(s01.jobId)).toEqual({ kind: "repair", gates: ["build"] });
+
+    const repair = await r.submit("repair of the build", undefined, redBaseRepair(["build"]));
+    expect(r.engine.waiting(repair.jobId)).toBeUndefined();
+    await r.until(repair.nodeId, (status) => status === "integrated");
+    await r.until(s01.nodeId, (status) => status === "integrated");
+
+    // From the record, never from timing: the strand started after the repair landed.
+    await r.world.outbox.flush();
+    const events = await eventsOf(r.world);
+    expect(indexOfEvent(events, "node.started", s01.nodeId)).toBeGreaterThan(
+      indexOfEvent(events, "node.integrated", repair.nodeId),
+    );
+  }, 60_000);
+
+  it("keeps the strands held when the repair fails, and an engine attaching later holds them too", async () => {
+    const r = await rig(
+      { repair: outOfScope, s01: addModule("s01") },
+      { strands: [strandOf("S-01")], red: ["build", "test"] },
+    );
+    const s01 = await r.submit("s01", "S-01");
+    const repair = await r.submit("repair of the gates", undefined, redBaseRepair(["build"]));
+    expect(await r.until(repair.nodeId, settled)).toBe("failed");
+    await r.engine.settled();
+    expect(await r.status(s01.nodeId)).toBe("queued");
+    expect(r.engine.waiting(s01.jobId)).toEqual({ kind: "repair", gates: ["build", "test"] });
+
+    // Derived from the records, not remembered: a second engine reads the same hold.
+    const attached = createEngine({
+      environment: r.environment,
+      session: {
+        ...r.world.session,
+        program: { ...r.world.session.program, status: "planning", strands: [strandOf("S-01")] },
+      },
+      mcp,
+      mergeQueue: r.queue,
+      route: () => ROUTE,
+    });
+    await attached.discover();
+    await attached.settled();
+    expect(await r.status(s01.nodeId)).toBe("queued");
+    expect(attached.waiting(s01.jobId)).toEqual({ kind: "repair", gates: ["build", "test"] });
+    await attached.close("test over");
+  }, 60_000);
+
+  it("holds a non-repair job under the root of an unplanned run, but not the repair", async () => {
+    const r = await rig(
+      { alpha: addModule("alpha"), repair: addModule("repair") },
+      { red: ["lint"] },
+    );
+    const alpha = await r.submit("alpha module");
+    expect(r.engine.waiting(alpha.jobId)).toEqual({ kind: "repair", gates: ["lint"] });
+    const repair = await r.submit("repair of lint", undefined, redBaseRepair(["lint"]));
+    await r.until(repair.nodeId, (status) => status === "integrated");
+    await r.until(alpha.nodeId, (status) => status === "integrated");
+  }, 60_000);
+
+  it("holds nothing on a run that started green", async () => {
+    const r = await rig({ s01: addModule("s01") }, { strands: [strandOf("S-01")] });
+    const s01 = await r.submit("s01", "S-01");
+    expect(r.engine.waiting(s01.jobId)?.kind).not.toBe("repair");
+    await r.until(s01.nodeId, (status) => status === "integrated");
+  }, 60_000);
+});
 
 describe("strands are gated and parked (P7, D-P7-04, §4.4)", () => {
   it("holds a strand until what it depends on has succeeded, and runs the rest meanwhile", async () => {

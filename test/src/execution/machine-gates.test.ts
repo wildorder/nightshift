@@ -1,8 +1,8 @@
 /**
  * The gate audit on a remote run's machine (`auditOnMachine`), against the real
- * control plane: a red base ends the pending run as `failed` through the
- * transition tables, with each red gate's output kept on the program node, and
- * the root never starts. Everything a machine adds (the volume, the worker
+ * control plane: a red base no longer ends the run (P15, D-P15-03). It is
+ * recorded as a `gate.red` event on the program node, with each red gate's
+ * output kept beside it, and the root starts: its first job is the repair. Everything a machine adds (the volume, the worker
  * users) is out of the picture; the checkout is the fixture repository.
  */
 import { join } from "node:path";
@@ -66,33 +66,34 @@ describe("the gate audit on a run's machine", () => {
     const { result, run } = await machine({
       verification: [{ id: "test", command: `node -e "process.exit(0)"` }],
     });
-    expect(result.proceed).toBe(true);
+    expect(result.audit?.red).toBe(false);
     expect(run?.status).toBe("pending");
   });
 
-  it("fails the run before the root starts when a gate fails, and keeps its output", async () => {
-    const { world, result, run, started } = await machine({
+  it("records gate.red on the program node and lets the root start, keeping each red gate's output", async () => {
+    const { world, result, run, started, lines } = await machine({
       verification: [{ id: "build", command: BROKEN }],
     });
-    expect(result.proceed).toBe(false);
-    expect(run?.status).toBe("failed");
-    expect(run?.outcomeReason).toContain("build (`node -e");
-    expect(run?.outcomeReason).toContain("Fix the base and run again");
-
-    const root = await world.stores.executionNodes.get(
-      {
-        projectId: world.program.projectId,
-        programId: world.program.programId,
-        runId: run?.runId as never,
-      },
-      started.rootNode.executionNodeId,
-    );
-    expect(root?.status).toBe("failed");
-    const artifacts = await world.stores.artifacts.listByRun({
+    expect(result.audit?.red).toBe(true);
+    expect(run?.status).toBe("pending");
+    expect(lines.at(-1)).toContain("first job is their repair");
+    const scope = {
       projectId: world.program.projectId,
       programId: world.program.programId,
       runId: run?.runId as never,
-    });
+    };
+
+    const root = await world.stores.executionNodes.get(scope, started.rootNode.executionNodeId);
+    expect(root?.status).toBe("validated");
+    const red = (await world.stores.events.listByRun(scope)).items.filter(
+      (event) => event.type === "gate.red",
+    );
+    expect(red).toHaveLength(1);
+    expect(red[0]?.executionNodeId).toBe(started.rootNode.executionNodeId);
+    expect(red[0]?.source).toBe("control-plane");
+    expect(red[0]?.payload).toEqual({ baseCommit: started.baseCommit, failing: ["build"] });
+
+    const artifacts = await world.stores.artifacts.listByRun(scope);
     expect(
       artifacts.items
         .filter((artifact) => artifact.executionNodeId === started.rootNode.executionNodeId)
@@ -105,7 +106,7 @@ describe("the gate audit on a run's machine", () => {
       { verification: [{ id: "build", command: BROKEN }] },
       { generation: 2 },
     );
-    expect(result).toEqual({ proceed: true });
+    expect(result).toEqual({});
     expect(lines).toEqual([]);
   });
 });

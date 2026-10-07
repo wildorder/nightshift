@@ -346,22 +346,58 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     expect(said).toMatch(/the gates pass on [0-9a-f]{8}/);
   });
 
-  it("stops before creating anything when a gate fails on the base", async () => {
+  it("starts the run on a red base, records gate.red and keeps each red gate's output (D-P15-03)", async () => {
     await breakAGate();
     // Recorded healthy as it was ratified: the gate broke between ratification and the run.
     await recordHealthyGates(op, fixture.repo, PROGRAM);
     expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
     await writeFile(join(fixture.repo, "release-token"), "present");
-    expect(await cli("run", PROGRAM, "--attended")).toBe(1);
+    expect(await cli("run", PROGRAM, "--attended")).toBe(0);
+    expect(op.out[0]).toMatch(/^run_/);
     const said = op.err.join("\n");
     expect(said).toContain("RED   broken failed on");
     expect(said).toContain("the base is broken");
-    expect(said).toContain("Nothing was started");
+    expect(said).toContain("The base is red");
+    expect(said).toContain("its first job is a repair of broken");
+    expect(said).not.toContain("Nothing was started");
+
     const runs = await stores().runs.listByProgram(
       { projectId: contract.projectId, programId: contract.programId },
       {},
     );
-    expect(runs.items).toEqual([]);
+    expect(runs.items).toHaveLength(1);
+    const run = runs.items[0];
+    if (run === undefined) throw new Error("no run");
+    const scope = { projectId: run.projectId, programId: run.programId, runId: run.runId };
+    const red = (await stores().events.listByRun(scope)).items.filter(
+      (event) => event.type === "gate.red",
+    );
+    expect(red).toHaveLength(1);
+    expect(red[0]?.executionNodeId).toBe(run.rootNodeId);
+    expect(red[0]?.payload).toMatchObject({
+      baseCommit: expect.stringMatching(/^[0-9a-f]{40}$/),
+      failing: ["broken"],
+    });
+    const logs = (await stores().artifacts.listByRun(scope)).items.filter(
+      (artifact) =>
+        artifact.executionNodeId === run.rootNodeId && artifact.kind === "verification-log",
+    );
+    expect(logs).toHaveLength(1);
+  });
+
+  it("records no gate.red when the base is green", async () => {
+    await cli("plan", "ratify", PROGRAM);
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended")).toBe(0);
+    const runs = await stores().runs.listByProgram(
+      { projectId: contract.projectId, programId: contract.programId },
+      {},
+    );
+    const run = runs.items[0];
+    if (run === undefined) throw new Error("no run");
+    const scope = { projectId: run.projectId, programId: run.programId, runId: run.runId };
+    const events = (await stores().events.listByRun(scope)).items;
+    expect(events.some((event) => event.type === "gate.red")).toBe(false);
   });
 });
 
