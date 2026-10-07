@@ -1,6 +1,6 @@
 ---
 name: plan-program
-description: Plan a Nightshift program with the human, in documents, before anything runs — who it is for and why (user stories in the human's own words), outcomes, the seams (strands), each strand's approach from the code, the decisions that are expensive to reverse, and the human prerequisites — written to docs/programs/{id}/plan.md and contract.json, with the conversation that shaped them kept in conversation.md, and revised in place until `nightshift plan check` answers READY. Also plans a correction after the human reverses a decision, from its brief. Use when someone wants to plan a program, turn a brief into something Nightshift can run unattended, re-plan after a report, correct a reversed decision, or asks "plan this", "what would the strands be", "is this ready to run", "correct D-…".
+description: Plan a Nightshift program with the human, in documents, before anything runs — who it is for and why (user stories in the human's own words), outcomes, the seams (strands), each strand's approach from the code, the decisions that are expensive to reverse, and the human prerequisites — written to docs/programs/{id}/plan.md and contract.json, with the conversation that shaped them kept in conversation.md; it audits the repository's gates against Nightshift's gate standard first, with the human, and turns each finding into a decision and a gate-health strand S-00; and it is revised in place until `nightshift plan check` answers READY. Also plans a correction after the human reverses a decision, from its brief. Use when someone wants to plan a program, turn a brief into something Nightshift can run unattended, re-plan after a report, correct a reversed decision, or asks "plan this", "what would the strands be", "is this ready to run", "correct D-…".
 ---
 
 # Planning a program with the human
@@ -109,6 +109,89 @@ coupling is. Find: the modules that will change, who imports them, the shared
 types and schemas they pass through, the tests that cover them, and what the
 verification commands actually exercise.
 
+## 3a. Audit the gates
+
+Nightshift can only be as good as the repository's gates, and the human is here
+now, not at 3 a.m. Audit them **before you propose any seam**, in the
+foreground. **The human waits for it, on purpose**: they are initialising
+Nightshift on this repository, and every fix is theirs to decide up front, not
+the run's to discover. Say so when you start, and roughly how long the gates
+took last time if you know.
+
+**First, a draft to audit from.** The gate commands read
+`docs/programs/{id}/contract.json` and `plan.md`, and check out the program
+branch. If they do not exist yet, make them now:
+
+- write a first `contract.json` (as in step 8, `"status": "planning"`) with what
+  you already have: the fields it always states, the stories and success
+  criteria from step 2a, and `setup` and `verification` only where they differ
+  from `nightshift.config.json`. No strands yet;
+- write `plan.md` from `templates/plan.md`, as far as you have got;
+- create the program branch from the base **without** checking it out, if it
+  does not exist: `git branch program/{id} main`. The audit runs on its head,
+  which is the base until anything lands.
+
+The rest of the plan is written into these same files in step 8.
+
+1. **Is there a record that still holds?**
+   `nightshift gates {id} --recorded` reads the project's gate-health record
+   from the control plane and says whether it still holds for the gates on the
+   program's commit. It runs no gate. **Exit 0** means a healthy record matches
+   the current fingerprint (the setup and gate commands, the lockfiles, the
+   gate-machinery files the last audit named): skip the rest of this step and
+   tell the human the gates were audited before and nothing they depend on has
+   changed. Anything else (no record, a changed gate-machinery file, a
+   `repairing` record, not signed in) means audit; say which it was.
+2. **Run the gates.** `nightshift gates {id}`, in the foreground. It runs setup
+   and every check once in a fresh checkout of the base, exactly as
+   verification will, and prints each gate's verdict and time.
+3. **Review the gate machinery** against `gate-standard.md` beside this skill:
+   its seven numbered rules, how to check each, and the typical fixes. Read the
+   package scripts and their `pre`/`post` hooks, the test and build configs,
+   anything that assumes CI's environment, the registries a new test or module
+   must be added to, and the `setup` and `verification` in
+   `nightshift.config.json` and the contract. **Name every gate-machinery path
+   you read**: they are what the record is fingerprinted on.
+4. **Each finding becomes a decision** `D-nn`, in the contract's `decisions`
+   and in `plan.md`'s Decisions: the rule it breaks, what you found, the fix
+   options and your leaning. The human answers it like any other. A finding
+   they wave off is still a decision, answered "leave it" with their reason, and
+   is not argued again. Keep findings few and real (the standard says why).
+5. **Anything to fix becomes the gate-health strand `S-00`.** Its scope is the
+   gate machinery the answers touch; its acceptance is the answered decisions
+   built and `nightshift gates {id}` green. **Every other strand's `dependsOn`
+   includes `"S-00"`**, so nothing is built on gates that are about to change.
+   With nothing to fix there is no S-00.
+6. **Record it.** Write the audit to a file **outside** `docs/programs/{id}/`
+   (a temp path: the control plane holds the record, not the repository):
+
+   ```text
+   {
+     "machinery": ["package.json", "vitest.config.ts", "scripts/suites.json"],
+     "findings": [
+       {
+         "id": "F-01",
+         "rule": 1,
+         "found": "`pretest` runs `npm ci`, so every test gate reinstalls",
+         "decisionId": "D-03",
+         "paths": ["package.json"]
+       }
+     ]
+   }
+   ```
+
+   `machinery` lists **every** gate-machinery path you named, so changing any of
+   them later brings the audit back; `findings` may be empty; each finding's
+   `rule` is the standard's number (1–7) and its `paths` are the machinery it
+   touched. Then `nightshift gates {id} --record --findings <file>`. It runs the
+   mechanical audit itself and writes the record: `healthy` with no findings
+   and green gates, `repairing` otherwise. It needs the human signed in
+   (`nightshift login`).
+
+Revise the record when the answers change what is to be fixed: write the file
+again and run `--record --findings` again. `nightshift plan check` reads it
+(step 10).
+
 ## 4. Propose the seams
 
 A **strand** is a bounded region of the program handed to an orchestrator of its
@@ -144,16 +227,17 @@ install into `verification`, and never make a check install conditionally: that
 hides a missing `setup` behind a slower gate. Setup runs often, so prefer a
 command that is quick when there is nothing to do.
 
-`nightshift gates {id}` runs the setup and every check on the program branch,
-in a fresh checkout, as verification will, and says what is red and whether
-lockfiles are committed with no setup. Run it once the
-contract's gates are written, before ratifying: a gate that cannot pass on the
-base stops the run before it starts, and the human is here now, not then.
+You ran `nightshift gates {id}` in step 3a, and the gate-health strand `S-00`
+(if there is one) comes before every strand you propose here. If the plan
+changes `setup` or `verification` after that, the fingerprint no longer matches
+the record: run the audit of step 3a again (`nightshift gates {id}`, then
+`--record --findings`) before you check.
 
-Watch the verification's cost against concurrency. Every job is verified on a
-clean checkout, so `maxConcurrency` strands running `maxConcurrency` jobs each
-can mean that many full test suites at once on the human's machine. Say the
-number out loud and let them choose.
+Watch the verification's cost against concurrency (the standard's rule 7). Every
+job is verified on a clean checkout with every gate, so `maxConcurrency`
+strands running `maxConcurrency` jobs each can mean that many full test suites
+at once on the human's machine. Say the number out loud, from the times the
+audit printed, and let them choose.
 
 ## 5. Write each strand's approach, at medium fidelity
 
@@ -273,7 +357,7 @@ does not belong in the list.
 
 ## 8. Write the two files
 
-Write, **to disk**, in the repository:
+Write, **to disk**, in the repository (over the drafts of step 3a):
 
 - `docs/programs/{id}/plan.md` — from `templates/plan.md` beside this skill,
   matched to how this repository's earlier programs are written.
@@ -356,6 +440,10 @@ contract is strict: a key it does not know (an `authority`, a `priority`, a
 `notes`) is refused by `plan check` rather than ignored. Who answered a decision
 is recorded when the run starts, not here.
 
+When the gate audit (step 3a) left anything to fix, the first strand is
+`S-00`, the gate-health strand, scoped to the gate machinery, and every other
+strand's `dependsOn` includes `"S-00"`.
+
 Every success criterion is claimed by at least one strand. A strand's heading in
 `plan.md` **begins with its id** (`### S-01 The ledger`): that is how its section
 is found, checked, and handed to its orchestrator.
@@ -405,7 +493,12 @@ story no criterion serves or a criterion that serves no story, a quote the kept
 conversation does not hold, an unclaimed success criterion, a strand scope outside the
 program's, a cycle or an unknown `dependsOn`, a strand with no section, a
 prerequisite with no remediation or `verifyCommand` or that nothing uses, an
-unanswered decision, two independent strands whose scopes overlap. Fix what is
+unanswered decision, two independent strands whose scopes overlap; and for the
+gates (D-P15-08): no gate-health record for the project, a record whose
+fingerprint no longer matches the gates (re-audit, step 3a), a `repairing`
+record with a finding whose decision is missing or unanswered, no `S-00` strand
+or a strand that does not depend on it, and the control plane out of reach (it
+says so: it cannot read the record). Fix what is
 yours to fix; bring the human what is theirs (an unanswered decision, a boundary
 to move). For an overlap it shows both scopes and the globs that intersect: the
 fix is a narrower scope, an `excludes`, or an honest `dependsOn`.
@@ -418,7 +511,7 @@ yes, do all of this yourself and stop at the run:
 1. **The program branch.** The contract's `repository.programBranch` (say
    `program/{id}`) must exist and be **checked out**: Nightshift integrates by
    fast-forwarding the branch the checkout is on, and refuses any other. Create it
-   from the base branch if it does not exist, and check it out:
+   from the base branch if it does not exist (step 3a usually made it), and check it out:
    `git checkout -b program/{id} main` (or `git checkout program/{id}` if it does).
    The working tree must be otherwise clean; if it is not, stop and say what is
    in the way.

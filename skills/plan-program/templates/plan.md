@@ -36,7 +36,11 @@
 <!-- One section per strand. The heading MUST begin with the strand's id, exactly
      as in the contract: that is how the section is found, checked, and handed
      word for word to the strand's orchestrator. As few strands as the work
-     honestly has; one is fine. -->
+     honestly has; one is fine.
+
+     When the gate audit found anything to fix, the first section is
+     "### S-00 Gate health": what the answered gate decisions change, by id. Every
+     other strand dependsOn S-00. With nothing to fix there is no S-00. -->
 
 ### S-01 {Strand name}
 
