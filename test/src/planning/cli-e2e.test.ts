@@ -1,7 +1,7 @@
 /**
  * The planned fixture, end to end, through the real CLI (P7, T5; SC-P7-03 …
- * SC-P7-12): `plan check`, `plan ratify`, `run` unattended, `preflight`,
- * `resume`. Three strands, one `dependsOn`, one human prerequisite a test can
+ * SC-P7-12): `gates --record`, `plan check`, `plan ratify`, `run` unattended,
+ * `preflight`, `resume`. Three strands, one `dependsOn`, one human prerequisite a test can
  * flip, one decision.
  *
  * Real: the CLI, the API handler over a socket, the launcher binary, the MCP
@@ -200,7 +200,10 @@ describe("a planned program, from a plan on disk to a landed program, through th
   it("checks, ratifies, runs unattended past a hurdle, and lands it when the human is back", async () => {
     const before = git("rev-parse", PROGRAM_BRANCH);
 
-    expect(await cli("plan", "check", PROGRAM)).toBe(0);
+    // Planning audits the gates and records them healthy (D-P15-01, D-P15-07).
+    expect(await cli("gates", PROGRAM, "--record"), op.err.join("\n")).toBe(0);
+    expect(op.out.join("\n")).toContain("recorded the gates as healthy");
+    expect(await cli("plan", "check", PROGRAM), op.err.join("\n")).toBe(0);
     expect(op.out[0]).toBe("READY");
     expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
 

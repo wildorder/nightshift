@@ -555,6 +555,31 @@ export type PlanReason =
       readonly strandIds: readonly [string, string];
       readonly intersections: readonly GlobIntersection[];
       readonly message: string;
+    }
+  /**
+   * P15 (D-P15-08): the gates' audit. Found against the project's gate-health
+   * record on the control plane, never by `checkPlan`, which reads only the
+   * files; `gateHealthReasons` says them.
+   */
+  | { readonly kind: "gate_health_unrecorded"; readonly message: string }
+  /** The record could not be read, or the fingerprint not computed: not signed in, out of reach. */
+  | { readonly kind: "gate_health_unreadable"; readonly message: string }
+  | {
+      readonly kind: "gate_health_stale";
+      readonly commit: string;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "gate_finding_unanswered";
+      readonly findingId: string;
+      readonly decisionId: string;
+      readonly message: string;
+    }
+  | { readonly kind: "gate_health_strand_missing"; readonly message: string }
+  | {
+      readonly kind: "gate_health_strand_not_first";
+      readonly strandId: string;
+      readonly message: string;
     };
 
 export type PlanReadiness =

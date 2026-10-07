@@ -23,6 +23,7 @@ import {
   staticTokenProvider,
 } from "@nightshift/persistence/http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { recordHealthyGates } from "./gate-health.js";
 import { type Operator, signIn } from "./operator.js";
 
 let op: Operator;
@@ -239,6 +240,7 @@ describe("a correction's contract (D-P9-04, D-P9-05)", () => {
       decisionId: decision.decisionId,
     };
     await writeCorrection([{ ...target, reversedBy: op.ids.next("dec") as never }], program);
+    await recordHealthyGates(op, repo, "demo-fix");
     expect(await cli("plan", "check", "demo-fix", "--repo", repo)).toBe(1);
     expect(op.err.join("\n")).toContain("is not a decision of run");
 

@@ -143,3 +143,50 @@ export const gateFingerprint = (input: GateFingerprintInput, sha256: Sha256Bytes
 
   return sha256(out.done());
 };
+
+/**
+ * The lockfiles a fingerprint counts when they are present: the same list as
+ * `LOCKFILES` in `@nightshift/verification`, which decides when an installed
+ * tree still fits. Repeated here because `core` sits below `verification` and
+ * a client of the control plane can reach `core` alone; a test holds the two
+ * lists equal.
+ */
+export const GATE_LOCKFILES = [
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "Cargo.lock",
+  "uv.lock",
+] as const;
+
+/** A file's bytes at the commit being fingerprinted, `undefined` when it is not a file there. */
+export type ReadGateFile = (path: string) => Promise<Uint8Array | undefined>;
+
+export interface GateFingerprintAtInput {
+  readonly setup: readonly SetupStep[];
+  readonly verification: readonly VerificationStep[];
+  /** The gate-machinery paths the audit named. */
+  readonly machinery: readonly string[];
+}
+
+/**
+ * {@link gateFingerprint} at one commit, reading what it covers through `read`:
+ * each named machinery path (absent counts, as absent) and every lockfile in
+ * {@link GATE_LOCKFILES} present there. The one way to compute it, so the CLI
+ * that records the audit and the engine that later checks it agree.
+ */
+export const gateFingerprintAt = async (
+  input: GateFingerprintAtInput,
+  read: ReadGateFile,
+  sha256: Sha256Bytes,
+): Promise<string> => {
+  const files: GateFile[] = [];
+  for (const path of input.machinery) files.push({ path, bytes: await read(path) });
+  for (const lockfile of GATE_LOCKFILES) {
+    if (input.machinery.includes(lockfile)) continue;
+    const bytes = await read(lockfile);
+    if (bytes !== undefined) files.push({ path: lockfile, bytes });
+  }
+  return gateFingerprint({ setup: input.setup, verification: input.verification, files }, sha256);
+};

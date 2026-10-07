@@ -246,6 +246,8 @@ describe("a stranger's first run, on a local instance", () => {
       "plan the modules",
     );
 
+    // The gates' audit is kept in the local plane, like every other record (D-P15-07).
+    expect(await cli("gates", PROGRAM, "--record", "--repo", fixture.repo)).toBe(0);
     expect(await cli("plan", "check", PROGRAM, "--repo", fixture.repo)).toBe(0);
     expect(await cli("plan", "ratify", PROGRAM, "--repo", fixture.repo)).toBe(0);
     const ran = await cli("run", PROGRAM, "--repo", fixture.repo);
@@ -286,7 +288,9 @@ describe("a stranger's first run, on a local instance", () => {
     const afterRestart = await readFile(reportPath, "utf8");
     expect(afterRestart).toContain("1 of 1 strands succeeded");
     expect(afterRestart).toContain("one file is enough");
-    // The plan document the plane held, read back through its own route.
+    // The plan document the plane held, read back through its own route, and
+    // the gate-health record, still there and still holding.
+    expect(await cli("gates", PROGRAM, "--recorded", "--repo", fixture.repo)).toBe(0);
     expect(await cli("plan", "check", PROGRAM, "--repo", fixture.repo)).toBe(0);
   });
 });

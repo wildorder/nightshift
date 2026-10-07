@@ -21,6 +21,7 @@ import {
   type MaterialisedRepo,
   materialiseFixtureRepo,
 } from "../slice/fixture-repo.js";
+import { recordHealthyGates } from "./gate-health.js";
 import { type Operator, signIn } from "./operator.js";
 
 const PROGRAM = "p1-demo";
@@ -148,6 +149,8 @@ beforeEach(async () => {
   );
   await writeProgram();
   commit("plan the demo program");
+  // Audited and healthy (D-P15-08), so the plan's own readiness is what each test is about.
+  await recordHealthyGates(op, fixture.repo, PROGRAM);
 });
 
 afterEach(async () => {
@@ -178,6 +181,15 @@ describe("nightshift plan check", () => {
     expect(said).toContain("is claimed by no strand");
     expect(said).toContain("depends on S-02");
     expect(said).toContain("S-01 has no section in the plan document");
+  });
+
+  it("is NOT READY when the gates changed since they were audited, alongside the plan's own reasons", async () => {
+    await breakAGate();
+    await writeProgram({ prerequisites: [] });
+    expect(await cli("plan", "check", PROGRAM)).toBe(1);
+    const said = op.err.join("\n");
+    expect(said).toContain("the gates changed since they were audited at");
+    expect(said).toContain("HP-01");
   });
 
   it("refuses an id that is not a program here, as a usage error", async () => {
@@ -336,7 +348,9 @@ describe("nightshift run {id} (SC-P7-04)", () => {
 
   it("stops before creating anything when a gate fails on the base", async () => {
     await breakAGate();
-    await cli("plan", "ratify", PROGRAM);
+    // Recorded healthy as it was ratified: the gate broke between ratification and the run.
+    await recordHealthyGates(op, fixture.repo, PROGRAM);
+    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
     await writeFile(join(fixture.repo, "release-token"), "present");
     expect(await cli("run", PROGRAM, "--attended")).toBe(1);
     const said = op.err.join("\n");

@@ -19,6 +19,7 @@
 import { parseArgs } from "node:util";
 import { planConversation } from "./commands/conversation.js";
 import { decisionBrief, reverseDecision } from "./commands/decision.js";
+import { recordedGates, recordGates } from "./commands/gate-health.js";
 import { gates } from "./commands/gates.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
@@ -59,7 +60,7 @@ Usage:
   nightshift plan ratify <program> [--repo <path>]
   nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>]
   nightshift preflight <program> [--repo <path>] [--recheck]
-  nightshift gates <program> [--repo <path>]
+  nightshift gates <program> [--record [--findings <file>] | --recorded] [--repo <path>]
   nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--repo <path>]
   nightshift run <program> --remote [--compute good|better|best] [--repo <path>]
   nightshift remote status|cancel|resume <program> [--run <id>] [--repo <path>]
@@ -93,7 +94,14 @@ provisional line, and \`resume\` runs those checks and lands it when you are bac
 \`gates <program>\` runs the program's setup and every check on the program
 branch, in a fresh checkout, as verification will. \`run\` does the same before it
 creates a run, and stops when a gate fails, because no job could then pass
-verification.
+verification. \`gates <program> --record\` runs that audit and keeps it as the
+project's gate-health record, fingerprinted over the gates' commands, the
+lockfiles and the gate machinery --findings names: healthy, or repairing when
+the review found something to fix. A red gate needs a finding. \`--recorded\`
+runs nothing, and says whether the record still holds for the gates now.
+\`plan check\` is READY only on a healthy record that holds, or a repairing one
+whose findings are answered by the plan's decisions, with a gate-health strand
+S-00 that every other strand depends on.
 
 \`nightshift login\` needs no flags: the CLI knows where the control plane is.
 Over SSH, add --no-browser and paste the address your browser lands on.
@@ -397,10 +405,31 @@ const doPreflight = async (
   });
 };
 
+const GATES_USAGE =
+  "nightshift gates <program> [--record [--findings <file>] | --recorded] [--repo <path>]";
+
 const doGates = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift gates <program> [--repo <path>]";
-  const { id, repo } = programArgs(args, usage);
-  return gates(environment, { id, ...(repo === undefined ? {} : { repo }) });
+  const { id, repo, values } = programArgs(args, GATES_USAGE, {
+    record: { type: "boolean" },
+    findings: { type: "string" },
+    recorded: { type: "boolean" },
+  });
+  const findings = optional(values, "findings");
+  const where = { id, ...(repo === undefined ? {} : { repo }) };
+  if (values.record === true && values.recorded === true) {
+    throw new UsageError(
+      "--record writes the record and --recorded reads it: pick one",
+      GATES_USAGE,
+    );
+  }
+  if (findings !== undefined && values.record !== true) {
+    throw new UsageError("--findings is the audit `--record` writes; add --record", GATES_USAGE);
+  }
+  if (values.record === true) {
+    return recordGates(environment, { ...where, ...(findings === undefined ? {} : { findings }) });
+  }
+  if (values.recorded === true) return recordedGates(environment, where);
+  return gates(environment, where);
 };
 
 const doResume = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {

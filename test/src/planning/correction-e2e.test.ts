@@ -170,6 +170,9 @@ describe("a reversed decision, corrected by a plan (SC-P9-08)", () => {
     git("add", "-A");
     git("commit", "-qm", "plan the modules");
 
+    // The project's gates, audited once (D-P15-07): the correction below is
+    // checked against the same record, because its gates are the same.
+    expect(await cli("gates", "modules", "--record"), op.err.join("\n")).toBe(0);
     expect(await cli("plan", "check", "modules"), op.err.join("\n")).toBe(0);
     expect(await cli("plan", "ratify", "modules"), op.err.join("\n")).toBe(0);
     expect(await cli("run", "modules"), `${op.out.join("\n")}\n${op.err.join("\n")}`).toBe(0);

@@ -5,6 +5,9 @@
  * the operator's session, and a run's engine puts it when a gate-health strand
  * or a repair lands. `plan check` reads it. Who may do which is `authorize`'s;
  * an agent's token may do neither.
+ *
+ * `auditedBy` is the caller, whatever the body says: the record promises to
+ * name who recorded it, and only the token can say that.
  */
 import { GateHealthSchema } from "@nightshift/contracts";
 import { HttpError, parseBody } from "../http.js";
@@ -22,8 +25,8 @@ export const getGateHealth: Handler = async ({ deps, params }) => {
 };
 
 /** Replaces the project's record. 201 when it is the first, 200 when it replaced one. */
-export const putGateHealth: Handler = async ({ deps, request, params }) => {
-  const record = parseBody(GateHealthSchema, request.body);
+export const putGateHealth: Handler = async ({ deps, request, params, principal }) => {
+  const record = { ...parseBody(GateHealthSchema, request.body), auditedBy: principal };
   const projectId = projectIdFrom(params);
   assertChainMatches({ projectId }, record);
   await requireProject(deps.stores, projectId);

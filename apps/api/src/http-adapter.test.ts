@@ -38,12 +38,14 @@ import type {
   Decision,
   ExecutionNode,
   ExecutionRole,
+  GateHealth,
   JobContract,
   OrgId,
   Principal,
   Project,
   RoutingDecision,
   Run,
+  UserId,
   Verification,
 } from "@nightshift/contracts";
 import { DEFAULT_EXAMINATION_POLICY, DEFAULT_ROUTING_POLICY } from "@nightshift/contracts";
@@ -165,6 +167,8 @@ interface World {
   readonly bodies: ReturnType<typeof createHttpArtifactBodyStore>;
   readonly f: Fixtures;
   readonly orgId: OrgId;
+  /** The signed-in member the session acts as. */
+  readonly subject: UserId;
   /** Numbers every event appended so far, imitating the Streams consumer (A-22). */
   settle(): void;
 }
@@ -201,6 +205,7 @@ beforeEach(async () => {
     bodies: createHttpArtifactBodyStore({ transport }),
     f,
     orgId,
+    subject,
     settle: () => void backing.materializeSequences(),
   };
 });
@@ -804,27 +809,35 @@ describe("a project's gate health (P15, D-P15-07)", () => {
     return (failure as ControlPlaneError).status;
   };
 
+  /** What the session's own puts are recorded as: `auditedBy` is the caller (D-P15-07). */
+  const byCaller = (record: GateHealth): GateHealth => ({
+    ...record,
+    auditedBy: { kind: "user", userId: world.subject, orgId: world.orgId },
+  });
+
   it("lets a member write and read it, and a second put replaces the first", async () => {
     const { http, f, backing } = world;
     await http.projects.put(aProject(f));
     expect(await http.gateHealth.get(f.scope.projectId)).toBeUndefined();
 
-    const healthy = makeGateHealth(f);
+    const healthy = byCaller(makeGateHealth(f));
     await http.gateHealth.put(healthy);
     expect(await http.gateHealth.get(f.scope.projectId)).toEqual(healthy);
 
-    const repairing = makeGateHealth(f, {
-      verdict: "repairing",
-      findings: [
-        {
-          id: "F-01",
-          rule: 3,
-          found: "two gates share dist/",
-          decisionId: "D-01",
-          paths: ["package.json"],
-        },
-      ],
-    });
+    const repairing = byCaller(
+      makeGateHealth(f, {
+        verdict: "repairing",
+        findings: [
+          {
+            id: "F-01",
+            rule: 3,
+            found: "two gates share dist/",
+            decisionId: "D-01",
+            paths: ["package.json"],
+          },
+        ],
+      }),
+    );
     await http.gateHealth.put(repairing);
     expect(await http.gateHealth.get(f.scope.projectId)).toEqual(repairing);
     expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(repairing);
@@ -856,6 +869,23 @@ describe("a project's gate health (P15, D-P15-07)", () => {
     expect(await world.backing.gateHealth.get(f.scope.projectId)).toBeUndefined();
   });
 
+  it("records the caller as auditedBy, whoever the body names", async () => {
+    const { http, f, backing } = world;
+    await http.projects.put(aProject(f));
+    const someoneElse = makeGateHealth(f, {
+      auditedBy: { kind: "user", userId: nextUserId(f), orgId: f.ids.next("org") },
+    });
+    const response = await world.transport({
+      method: "PUT",
+      path: routes.gateHealth(f.scope.projectId),
+      body: someoneElse,
+    });
+    expect(response.status).toBe(201);
+    expect((response.body as GateHealth).auditedBy).toEqual(byCaller(someoneElse).auditedBy);
+    expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(byCaller(someoneElse));
+    expect(await http.gateHealth.get(f.scope.projectId)).toEqual(byCaller(someoneElse));
+  });
+
   it("refuses a caller who is not a member of the project's organisation", async () => {
     const { http, f, backing } = world;
     await http.projects.put(aProject(f));
@@ -876,7 +906,7 @@ describe("a project's gate health (P15, D-P15-07)", () => {
         await statusOf(theirs.gateHealth.put(makeGateHealth(f, { fingerprint: "1".repeat(64) }))),
       ).toBe(403);
     }
-    expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(makeGateHealth(f));
+    expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(byCaller(makeGateHealth(f)));
   });
 
   it("lets the engine write its own project's under its dispatch's generation, and no other", async () => {
@@ -884,11 +914,11 @@ describe("a project's gate health (P15, D-P15-07)", () => {
     await seed();
     await backing.dispatches.put(makeDispatch(f, { generation: 2 }));
 
-    const engine = storesAs(executionOf(f, "engine", 2));
-    const record = makeGateHealth(f, {
-      auditedBy: executionOf(f, "engine", 2),
-    });
-    await engine.gateHealth.put(record);
+    const engineToken = executionOf(f, "engine", 2);
+    const engine = storesAs(engineToken);
+    // The body names another agent; the record names the engine that put it.
+    const record = makeGateHealth(f, { auditedBy: engineToken });
+    await engine.gateHealth.put({ ...record, auditedBy: executionOf(f, "engine", 2) });
     expect(await engine.gateHealth.get(f.scope.projectId)).toEqual(record);
     expect(await http.gateHealth.get(f.scope.projectId)).toEqual(record);
 
