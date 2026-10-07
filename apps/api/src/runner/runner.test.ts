@@ -19,7 +19,7 @@ import {
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it } from "vitest";
 import { cleanupStopped, enforceStop } from "./cleanup.js";
-import { machineTags, provisionDispatch, subnetFor } from "./provision.js";
+import { machineTags, provisionDispatch, subnetFor, subnetsFor } from "./provision.js";
 import { recoverLostLease } from "./recover.js";
 
 const NOW = Date.parse("2026-10-01T12:00:00.000Z");
@@ -40,6 +40,9 @@ interface FakeCompute extends ComputeControl {
   instances: Map<string, InstanceDescription>;
   image: string | undefined;
   failLaunch: boolean;
+  /** Subnets EC2 has no room in, and an error that is not about room. */
+  noCapacityIn: Set<string>;
+  launchError: string | undefined;
 }
 
 const fakeCompute = (): FakeCompute => {
@@ -54,9 +57,20 @@ const fakeCompute = (): FakeCompute => {
     instances: new Map(),
     image: "ami-1",
     failLaunch: false,
+    noCapacityIn: new Set(),
+    launchError: undefined,
     latestImage: async () => compute.image,
     launch: async (request) => {
       if (compute.failLaunch) throw new Error("InsufficientInstanceCapacity");
+      if (compute.launchError !== undefined) throw new Error(compute.launchError);
+      if (compute.noCapacityIn.has(request.subnetId)) {
+        throw Object.assign(
+          new Error(
+            `We currently do not have sufficient ${request.instanceType} capacity in the Availability Zone you requested.`,
+          ),
+          { name: "InsufficientInstanceCapacity" },
+        );
+      }
       compute.launches.push(request);
       const instanceId = `i-${compute.launches.length}`;
       compute.instances.set(instanceId, {
@@ -248,6 +262,33 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
       message: expect.stringContaining("InsufficientInstanceCapacity"),
     });
     expect(w.tokens.parameters.size).toBe(0);
+  });
+
+  it("launches a first machine in another zone when the run's zone has no capacity", async () => {
+    const w = await world();
+    const [first, second] = subnetsFor(w.f.scope.runId, ["subnet-a", "subnet-b"]);
+    w.compute.noCapacityIn.add(first as string);
+    const outcome = await provisionDispatch(w.deps(), w.f.scope);
+    expect(outcome.kind).toBe("provisioned");
+    expect(w.compute.launches.map((launch) => launch.subnetId)).toEqual([second]);
+  });
+
+  it("fails, naming every zone, when none has capacity, and at once on any other error", async () => {
+    const w = await world();
+    w.compute.noCapacityIn = new Set(["subnet-a", "subnet-b"]);
+    expect((await provisionDispatch(w.deps(), w.f.scope)).kind).toBe("failed");
+    const failure = (await w.stores.dispatches.get(w.f.scope))?.failure?.message ?? "";
+    expect(failure).toContain("no zone had capacity");
+    expect(failure).toContain("us-west-2a");
+    expect(failure).toContain("us-west-2b");
+
+    const other = await world();
+    other.compute.launchError = "UnauthorizedOperation";
+    expect((await provisionDispatch(other.deps(), other.f.scope)).kind).toBe("failed");
+    expect(other.compute.launches).toEqual([]);
+    expect((await other.stores.dispatches.get(other.f.scope))?.failure?.message).toContain(
+      "UnauthorizedOperation",
+    );
   });
 
   it("fails plainly without an image for the version, and skips a dispatch with a machine", async () => {

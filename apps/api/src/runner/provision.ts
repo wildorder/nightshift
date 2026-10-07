@@ -74,12 +74,28 @@ export type ProvisionOutcome =
   | { readonly kind: "failed"; readonly dispatch: Dispatch; readonly reason: string };
 
 /** A zone for the run: stable per run id, spread across the subnets. */
-export const subnetFor = (runId: RunId, subnetIds: readonly string[]): string | undefined => {
-  if (subnetIds.length === 0) return undefined;
+export const subnetFor = (runId: RunId, subnetIds: readonly string[]): string | undefined =>
+  subnetsFor(runId, subnetIds)[0];
+
+/**
+ * Every subnet, in the order a first machine tries them: the run's hashed one
+ * first, then the rest in turn. A first machine may go in any zone (its volume
+ * is new, and a warm snapshot is regional), so a zone with no capacity for the
+ * instance type is not the end of the launch.
+ */
+export const subnetsFor = (runId: RunId, subnetIds: readonly string[]): readonly string[] => {
+  if (subnetIds.length === 0) return [];
   let hash = 0;
   for (const char of runId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return subnetIds[hash % subnetIds.length];
+  const first = hash % subnetIds.length;
+  return [...subnetIds.slice(first), ...subnetIds.slice(0, first)];
 };
+
+/** EC2's answer when a zone has no room for the instance type: another zone may. */
+export const isCapacityRefusal = (error: unknown): boolean =>
+  /InsufficientInstanceCapacity|do not have sufficient .* capacity/i.test(
+    `${error instanceof Error ? `${error.name} ${error.message}` : String(error)}`,
+  );
 
 /**
  * The snapshot a new volume starts from. A snapshot made on another image
@@ -134,8 +150,9 @@ export const provisionDispatch = async (
     replacing && dispatch.availabilityZone !== undefined && deps.subnetZones !== undefined
       ? deps.subnetIds.find((id) => deps.subnetZones?.[id] === dispatch.availabilityZone)
       : undefined;
-  const subnetId = inZone ?? subnetFor(scope.runId, deps.subnetIds);
-  if (subnetId === undefined) return fail("the runner stack has no subnets");
+  // A replacement must use its volume's zone; a first machine may try them all.
+  const subnets = inZone !== undefined ? [inZone] : subnetsFor(scope.runId, deps.subnetIds);
+  if (subnets.length === 0) return fail("the runner stack has no subnets");
   if (replacing && inZone === undefined && dispatch.availabilityZone !== undefined) {
     return fail(
       `no subnet in ${dispatch.availabilityZone} for the replacement to attach the volume in`,
@@ -179,9 +196,8 @@ export const provisionDispatch = async (
     }
   }
   const spec = COMPUTE_TIERS[dispatch.tier];
-  let instanceId: string;
-  try {
-    ({ instanceId } = await compute.launch({
+  const launchIn = (subnetId: string) =>
+    compute.launch({
       imageId,
       instanceType: dispatch.instanceType,
       subnetId,
@@ -199,10 +215,25 @@ export const provisionDispatch = async (
                 : { throughputMiBps: dispatch.workspace.throughputMiBps }),
             },
           }),
-    }));
-  } catch (error) {
+    });
+  let instanceId: string | undefined;
+  const refusals: string[] = [];
+  for (const subnetId of subnets) {
+    try {
+      ({ instanceId } = await launchIn(subnetId));
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isCapacityRefusal(error)) {
+        await deps.tokens.delete(parameter).catch(() => undefined);
+        return fail(`launch failed: ${message}`);
+      }
+      refusals.push(`${deps.subnetZones?.[subnetId] ?? subnetId}: ${message}`);
+    }
+  }
+  if (instanceId === undefined) {
     await deps.tokens.delete(parameter).catch(() => undefined);
-    return fail(`launch failed: ${error instanceof Error ? error.message : String(error)}`);
+    return fail(`launch failed: no zone had capacity. ${refusals.join(" | ")}`);
   }
 
   // EC2 reports the zone at once and the volume once the instance is past
