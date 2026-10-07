@@ -12,5 +12,7 @@ export default defineConfig({
     testTimeout: 60_000,
     hookTimeout: 60_000,
     exclude: ["**/node_modules/**", "**/dist/**", "**/cdk.out/**"],
+    // Every App's cloud assembly lands in a temp directory this removes.
+    globalSetup: ["./vitest.global-setup.ts"],
   },
 });

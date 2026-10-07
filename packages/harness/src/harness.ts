@@ -206,6 +206,13 @@ export interface HarnessStartInput {
   readonly program: ProgramContract;
   /** Absolute path to the isolated worktree. The worker's working directory. */
   readonly worktree: string;
+  /**
+   * The worktree's own temp directory, beside it (P15): the adapter sets
+   * `TMPDIR`, `TEMP` and `TMP` to it in the agent's environment, so what the
+   * agent's tools leave there goes with the worktree rather than into the
+   * machine's shared `/tmp`. Absent, the agent inherits the engine's.
+   */
+  readonly tmpDir?: string;
   /** Harness, provider and model, as routing chose them (D-P3-08). */
   readonly model: RouteTarget;
   /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandAs, RUN_AS_SHELL_LINE, type RunAs } from "./run-as.js";
+import { commandAs, RUN_AS_SHELL_LINE, type RunAs, withTmpDir } from "./run-as.js";
 
 const runAs: RunAs = {
   user: "worker-3",
@@ -45,5 +45,25 @@ describe("commandAs (D-P10-25)", () => {
     ]);
     // The spawned sudo itself gets only a PATH.
     expect(Object.keys(command.env)).toEqual(["PATH"]);
+  });
+});
+
+describe("withTmpDir (P15)", () => {
+  it("points every temp variable at the directory, replacing any spelling already there", () => {
+    const env = withTmpDir(
+      { PATH: "/bin", Temp: "C:\\Users\\x\\AppData", tmpdir: "/tmp" },
+      "/w/node.tmp",
+    );
+    expect(env).toEqual({
+      PATH: "/bin",
+      TMPDIR: "/w/node.tmp",
+      TEMP: "/w/node.tmp",
+      TMP: "/w/node.tmp",
+    });
+  });
+
+  it("leaves the environment as it is when there is no directory", () => {
+    const env = { PATH: "/bin", TMPDIR: "/tmp" };
+    expect(withTmpDir(env, undefined)).toBe(env);
   });
 });
