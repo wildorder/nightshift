@@ -18,6 +18,7 @@ import {
   type Dispatch,
   DispatchBodySchema,
   type DispatchStatus,
+  DispatchStatusSchema,
   emptyComputeUsage,
   type GitHubInstallation,
   HeartbeatBodySchema,
@@ -67,15 +68,29 @@ const usageOf = async (deps: ApiDeps, orgId: OrgId, at: string): Promise<OrgComp
   (await deps.stores.computeLedger.get(orgId, calendarMonthOf(at))) ??
   emptyComputeUsage(orgId, calendarMonthOf(at), at);
 
-const withLiveRun = (usage: OrgComputeUsage, runId: RunId, live: boolean, at: string) => ({
-  ...usage,
-  liveRuns: live
-    ? usage.liveRuns.includes(runId)
-      ? usage.liveRuns
-      : [...usage.liveRuns, runId]
-    : usage.liveRuns.filter((candidate) => candidate !== runId),
-  updatedAt: at,
-});
+/** Every dispatch status but the two that end one. */
+const LIVE_DISPATCH_STATUSES: readonly DispatchStatus[] = DispatchStatusSchema.options.filter(
+  (status) => !isDispatchTerminal(status),
+);
+
+/**
+ * The org's runs whose dispatch is not terminal, read from the dispatches
+ * themselves, whichever month they started in. Never kept beside them: a copy
+ * updated at some endings and not others is how a failed launch held its place
+ * against the ceiling for the rest of the month (2026-10-06).
+ */
+const liveRunsOf = async (deps: ApiDeps, orgId: OrgId): Promise<readonly RunId[]> => {
+  const live = await deps.stores.dispatches.listByStatus(LIVE_DISPATCH_STATUSES);
+  const orgOf = new Map<string, OrgId | undefined>();
+  const runs: RunId[] = [];
+  for (const dispatch of live) {
+    if (!orgOf.has(dispatch.projectId)) {
+      orgOf.set(dispatch.projectId, (await deps.stores.projects.get(dispatch.projectId))?.orgId);
+    }
+    if (orgOf.get(dispatch.projectId) === orgId) runs.push(dispatch.runId);
+  }
+  return runs;
+};
 
 /**
  * `POST …/runs/{runId}/dispatch` — authorise a machine for a run.
@@ -154,7 +169,7 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
     runHours,
     estimatedUsd,
     monthSpentUsd: usage.meteredUsd,
-    concurrentRuns: usage.liveRuns.length,
+    concurrentRuns: (await liveRunsOf(deps, project.orgId)).length,
   });
   if (refusal !== undefined) throw new HttpError(409, refusal.reason, refusal.detail);
 
@@ -180,7 +195,6 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
     updatedAt: at,
   };
   await deps.stores.dispatches.put(dispatch);
-  await deps.stores.computeLedger.put(withLiveRun(usage, scope.runId, true, at));
   // Recorded first, then provisioned: an invocation that fails leaves a
   // `requested` dispatch the reconciler picks up within its grace.
   await dispatcher.provision(scope).catch((error: unknown) => {
@@ -259,10 +273,7 @@ export const cancelDispatch: Handler = async ({ deps, params }) => {
     "stop",
     at,
   );
-  if (dispatch.status === "requested") {
-    next = transitionDispatch(next, "stopped", at);
-    await settleLedger(deps, scope, at);
-  }
+  if (dispatch.status === "requested") next = transitionDispatch(next, "stopped", at);
   await deps.stores.dispatches.put(next);
   return { status: 200, body: next };
 };
@@ -278,14 +289,14 @@ export const resumeDispatch: Handler = async ({ deps, params }) => {
   const allowed = mayResume(dispatch, deps.clock.now());
   if (!allowed.ok) throw new HttpError(409, "cannot_resume", allowed.reason);
   const project = await requireProject(deps.stores, scope.projectId);
-  const usage = await usageOf(deps, project.orgId, at);
   const ceilings =
     (await deps.stores.orgConfigs.get(project.orgId))?.compute ?? DEFAULT_COMPUTE_CEILINGS;
-  if (usage.liveRuns.length >= ceilings.maxConcurrentRuns) {
+  const live = await liveRunsOf(deps, project.orgId);
+  if (live.length >= ceilings.maxConcurrentRuns) {
     throw new HttpError(
       409,
       "concurrency_over_ceiling",
-      `${usage.liveRuns.length} remote run(s) are live; the org's ceiling is ${ceilings.maxConcurrentRuns}`,
+      `${live.length} remote run(s) are live; the org's ceiling is ${ceilings.maxConcurrentRuns}`,
     );
   }
   const dispatcher = deps.dispatcher;
@@ -298,7 +309,6 @@ export const resumeDispatch: Handler = async ({ deps, params }) => {
   }
   const next = beginReplacement(dispatch, "resume", at);
   await deps.stores.dispatches.put(next);
-  await deps.stores.computeLedger.put(withLiveRun(usage, scope.runId, true, at));
   await dispatcher.provision(scope).catch((error: unknown) => {
     console.error(
       `dispatch ${scope.runId}: the dispatcher could not be invoked for a resume`,
@@ -306,13 +316,6 @@ export const resumeDispatch: Handler = async ({ deps, params }) => {
     );
   });
   return { status: 200, body: next };
-};
-
-/** A run left the org's live set. */
-const settleLedger = async (deps: ApiDeps, scope: RunScope, at: string): Promise<void> => {
-  const project = await requireProject(deps.stores, scope.projectId);
-  const usage = await usageOf(deps, project.orgId, at);
-  await deps.stores.computeLedger.put(withLiveRun(usage, scope.runId, false, at));
 };
 
 const STOP_STATUSES: readonly DispatchStatus[] = ["stopping", "stopped", "failed"];
@@ -351,7 +354,6 @@ export const heartbeat: Handler = async (context) => {
   ) {
     // Told to stop, or finished on its own: either way the runner's word ends it.
     dispatch = transitionDispatch(dispatch, "stopped", at);
-    await settleLedger(deps, scope, at);
   }
 
   // The machine's use and its cost.

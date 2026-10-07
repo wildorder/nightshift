@@ -79,7 +79,6 @@ export const IDENTITY_EXAMPLES: { readonly [K in IdentityRecordName]: unknown } 
     orgId: EXAMPLE_IDS.orgId,
     month: "2026-10",
     meteredUsd: 12.5,
-    liveRuns: [EXAMPLE_IDS.runId],
     updatedAt: "2026-10-01T09:00:00.000Z",
   },
 };

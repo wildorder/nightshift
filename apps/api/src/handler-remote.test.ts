@@ -10,6 +10,7 @@ import {
   DEFAULT_COMPUTE_CEILINGS,
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
+  OrgComputeUsageSchema,
 } from "@nightshift/contracts";
 import type { GitHubAppClient } from "@nightshift/core";
 import {
@@ -18,6 +19,7 @@ import {
   type Fixtures,
   LEASE_SECONDS,
   makeComputeUtilization,
+  makeDispatch,
   makeMembership,
   makeProgramContract,
   makeProject,
@@ -205,7 +207,7 @@ const heartbeatBody = (generation: number, extra: Record<string, unknown> = {}) 
 });
 
 describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
-  it("records a requested dispatch with the tier's class and price, and the org's live run", async () => {
+  it("records a requested dispatch with the tier's class and price", async () => {
     const w = await setup();
     const dispatch = await dispatched(w, "better");
     expect(dispatch).toMatchObject({
@@ -218,8 +220,6 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     });
     expect(dispatch.spend.estimatedUsd).toBeGreaterThan(0);
     expect(dispatch.engineAgentId).toMatch(/^agent_/);
-    const usage = await w.stores.computeLedger.get(w.orgId, "2026-10");
-    expect(usage?.liveRuns).toEqual([w.f.scope.runId]);
     expect((await call(w, "GET", `${w.paths.run}/dispatch`)).body).toEqual(dispatch);
   });
 
@@ -278,12 +278,63 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       orgId: w.orgId,
       month: "2026-10",
       meteredUsd: 9.5,
-      liveRuns: [],
       updatedAt: NOW,
     });
     expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody("better")))).toBe(
       "month_over_cap",
     );
+  });
+
+  it("counts the org's live runs from their dispatches, so one that failed to launch frees its place", async () => {
+    const w = await setup();
+    await seed(w);
+    const current = await w.stores.orgConfigs.get(w.orgId);
+    await w.stores.orgConfigs.put({
+      schemaVersion: 1,
+      orgId: w.orgId,
+      routingPolicy: DEFAULT_ROUTING_POLICY,
+      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      ...(current?.github === undefined ? {} : { github: current.github }),
+      compute: { ...DEFAULT_COMPUTE_CEILINGS, maxConcurrentRuns: 1 },
+      version: (current?.version ?? 0) + 1,
+      updatedAt: NOW,
+    });
+    // Another run of the org's, still being provisioned.
+    const other = makeDispatch(w.f, {
+      runId: "run_01M49ZZZZZZZZZZZZZZZZZZZZZ" as never,
+      status: "provisioning",
+    });
+    await w.stores.dispatches.put(other);
+    expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody()))).toBe(
+      "concurrency_over_ceiling",
+    );
+    // Its launch failed, as the dispatcher records it: no longer live, wherever it ended.
+    await w.stores.dispatches.put({
+      ...other,
+      status: "failed",
+      failure: { code: "provisioning_failed", message: "no capacity" },
+    });
+    const accepted = await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody());
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+  });
+
+  it("reads a ledger row written before the live list was retired", async () => {
+    const w = await setup();
+    const legacy = {
+      schemaVersion: 1,
+      orgId: w.orgId,
+      month: "2026-10",
+      meteredUsd: 1,
+      liveRuns: ["run_01M47RDS0TAQW4QG39C7BNBHJQ"],
+      updatedAt: NOW,
+    };
+    expect(OrgComputeUsageSchema.parse(legacy)).toEqual({
+      schemaVersion: 1,
+      orgId: w.orgId,
+      month: "2026-10",
+      meteredUsd: 1,
+      updatedAt: NOW,
+    });
   });
 
   it("asks the dispatcher to provision what it recorded", async () => {
@@ -522,7 +573,6 @@ describe("cancel and resume", () => {
     const requested = await dispatched(w);
     const cancelled = await call(w, "POST", `${w.paths.run}/dispatch/cancel`);
     expect(cancelled.body).toMatchObject({ status: "stopped", failure: { code: "cancelled" } });
-    expect((await w.stores.computeLedger.get(w.orgId, "2026-10"))?.liveRuns).toEqual([]);
 
     await w.stores.dispatches.put({ ...requested, status: "running", instanceId: "i-1" });
     const stopping = await call(w, "POST", `${w.paths.run}/dispatch/cancel`);
@@ -549,7 +599,6 @@ describe("cancel and resume", () => {
       engine(w, dispatch),
     );
     expect(ended.body).toMatchObject({ status: "stopped", stop: true });
-    expect((await w.stores.computeLedger.get(w.orgId, "2026-10"))?.liveRuns).toEqual([]);
   });
 
   it("resumes a settled dispatch from its snapshot, within retention, and refuses otherwise", async () => {
