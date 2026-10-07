@@ -14,12 +14,13 @@
  * runs setup again and fails on it (see `verify.ts`).
  */
 import type { ExecutionNodeId } from "@nightshift/contracts";
-import { runSetupSteps, setupFailed } from "@nightshift/verification";
+import { runSetupSteps, type StepResult, setupFailed } from "@nightshift/verification";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExecutionEnvironment,
   type RunSession,
 } from "./environment.js";
+import { gateDefinitions } from "./gate-repair.js";
 import { recordArtifact } from "./runner.js";
 import { freshScratch, scratchEnv } from "./scratch.js";
 
@@ -41,7 +42,7 @@ export const prepareCheckout = async (
   input: PrepareCheckoutInput,
 ): Promise<boolean> => {
   const scratch = await freshScratch(input.checkout);
-  const setup = input.session.program.setup ?? [];
+  const { setup } = await gateDefinitions(environment, input.session);
   if (setup.length === 0) return true;
   const results = await runSetupSteps({
     setup,
@@ -52,18 +53,12 @@ export const prepareCheckout = async (
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
     env: scratchEnv(scratch),
   });
-  const encoder = new TextEncoder();
-  const log = results.flatMap((result) => [
-    encoder.encode(`$ ${result.command}\n`),
-    result.output,
-    encoder.encode(`\n[exit ${result.exitCode}${result.timedOut ? ", timed out" : ""}]\n`),
-  ]);
   const artifactId = await recordArtifact(environment, {
     scope: input.session.scope,
     nodeId: input.nodeId,
     kind: "build-log",
     contentType: "text/plain; charset=utf-8",
-    bytes: concat(log),
+    bytes: setupLog(results),
   });
   if (!setupFailed(results)) return true;
   const failed = results.at(-1);
@@ -77,6 +72,18 @@ export const prepareCheckout = async (
     executionNodeId: input.nodeId,
   });
   return false;
+};
+
+/** Setup's results as one log: each command, its output, and how it exited. */
+export const setupLog = (results: readonly StepResult[]): Uint8Array => {
+  const encoder = new TextEncoder();
+  return concat(
+    results.flatMap((result) => [
+      encoder.encode(`$ ${result.command}\n`),
+      result.output,
+      encoder.encode(`\n[exit ${result.exitCode}${result.timedOut ? ", timed out" : ""}]\n`),
+    ]),
+  );
 };
 
 const concat = (chunks: readonly Uint8Array[]): Uint8Array => {

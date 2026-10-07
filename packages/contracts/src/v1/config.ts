@@ -117,3 +117,19 @@ export const inheritFromConfig = (contract: unknown, config: NightshiftConfig): 
   }
   return merged;
 };
+
+/** A program's authored contract, repository-relative: `docs/programs/{id}/contract.json` (D-P7-03). */
+export const programContractPath = (id: string): string =>
+  `${PROGRAMS_DIRECTORY}/${id}/contract.json`;
+
+/**
+ * The contract a program's files state, exactly as `nightshift run {id}` reads
+ * them: the authored contract over the project's defaults when the repository
+ * has a config, the authored contract alone when it has none. Unvalidated, as
+ * {@link inheritFromConfig} is. Shared by the CLI and the engine, which reads a
+ * repair's landing at the program head (P15, D-P15-04).
+ */
+export const mergeProgramFiles = (
+  authored: unknown,
+  config: NightshiftConfig | undefined,
+): unknown => (config === undefined ? authored : inheritFromConfig(authored, config));

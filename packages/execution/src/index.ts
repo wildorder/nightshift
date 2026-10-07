@@ -83,6 +83,22 @@ export {
   type GateVerdict,
   outputTail,
 } from "./gate-audit.js";
+export {
+  fingerprintAtCommit,
+  gitBlobReader,
+  type ReadBlob,
+  sha256Bytes,
+} from "./gate-fingerprint.js";
+export {
+  type GateDefinitions,
+  type GateSession,
+  gateDefinitions,
+  gateDefinitionsAt,
+  prepareSetupReference,
+  type ReconcileGateRepairsInput,
+  reconcileGateRepairs,
+  withGateDefinitions,
+} from "./gate-repair.js";
 export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";
 export { type IntegrateInput, type IntegrateResult, integrateNode } from "./integrate.js";

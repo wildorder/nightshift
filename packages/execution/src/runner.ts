@@ -78,6 +78,7 @@ import {
   type WorkerLaunchIdentity,
 } from "./environment.js";
 import { examine } from "./examine.js";
+import { gateDefinitions, withGateDefinitions } from "./gate-repair.js";
 import {
   addDetachedWorktree,
   addWorktree,
@@ -753,7 +754,7 @@ export const startJob = async (
         agent: startedAgent,
         node: started,
         job: input.job,
-        program: session.program,
+        program: withGateDefinitions(session.program, await gateDefinitions(environment, session)),
         worktree,
         tmpDir,
         model: routingDecision.chosen,

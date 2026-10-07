@@ -36,6 +36,7 @@ import type {
 } from "@nightshift/contracts";
 import { nowIso, transition } from "@nightshift/core";
 import type { LandingEnvironment, RunSession } from "./environment.js";
+import { reconcileGateRepairs } from "./gate-repair.js";
 import {
   checkpointRef,
   currentBranch,
@@ -220,6 +221,17 @@ export const integrateNode = async (
     // integrated and the checkpoint exists. `git worktree prune` clears it later.
   });
   await discardScratch(input.worktree);
+
+  // --- What a repair did to the gates (P15, D-P15-04, D-P15-07, D-P15-11) ----------
+  // Every landing passes here, whoever lands it (the merge queue, a readmitted
+  // dispute, `nightshift resume`), and before the next landing can start: the
+  // definitions the next verification reads, the gate-health record and the
+  // setup reference are brought up to date with every repair that has landed.
+  // It never fails the landing; the work is integrated whatever it finds.
+  await reconcileGateRepairs(environment, input.session, {
+    landed: input.nodeId,
+    nodeId: input.nodeId,
+  });
 
   return { kind: "integrated", checkpointId };
 };

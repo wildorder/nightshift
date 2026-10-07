@@ -91,6 +91,7 @@ import {
   type RunSession,
 } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
+import { gateDefinitions, withGateDefinitions } from "./gate-repair.js";
 import {
   addDetachedWorktree,
   changedPaths,
@@ -616,7 +617,8 @@ const candidateVerification = async (
   input: ExamineInput,
   checkout: string,
 ): Promise<Verification | "postponed"> => {
-  const steps: readonly VerificationStep[] = input.session.program.verification;
+  const gates = await gateDefinitions(environment, input.session);
+  const steps: readonly VerificationStep[] = gates.verification;
   if (steps.some((step) => (step.requires ?? []).length > 0)) {
     const current =
       environment.prerequisites === undefined
@@ -638,7 +640,7 @@ const candidateVerification = async (
   const scratch = await freshScratch(checkout);
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const ran = await runCheckoutSteps({
-    setup: input.session.program.setup ?? [],
+    setup: gates.setup,
     steps,
     cwd: checkout,
     reference: input.session.repoPath,
@@ -820,7 +822,10 @@ const runHelper = async (
       agent: helper.agent,
       node: input.node,
       job: input.job,
-      program: input.session.program,
+      program: withGateDefinitions(
+        input.session.program,
+        await gateDefinitions(environment, input.session),
+      ),
       worktree: launch.worktree,
       tmpDir,
       model: helper.decision.chosen,

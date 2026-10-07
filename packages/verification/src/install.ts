@@ -51,8 +51,11 @@ export const LOCKFILES = [
 /** The installed tree a Node install produces, and the one that is seeded. */
 export const INSTALLED_TREE = "node_modules";
 
+/** The marker's file name, inside the installed tree. */
+export const INSTALL_MARKER_NAME = ".nightshift-install.json";
+
 /** Inside the tree, so it goes wherever the tree goes and with it when the tree is removed. */
-export const INSTALL_MARKER = join(INSTALLED_TREE, ".nightshift-install.json");
+export const INSTALL_MARKER = join(INSTALLED_TREE, INSTALL_MARKER_NAME);
 
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
@@ -255,7 +258,19 @@ export const planInstall = async (
   if (!decision.skip) {
     return { skipInstalls: false, reason: `not seeded: ${decision.reason}`, hashes, seeded: 0 };
   }
-  const seeded = await seedInstalledTree(reference, cwd);
+  let seeded: number;
+  try {
+    seeded = await seedInstalledTree(reference, cwd);
+  } catch (error) {
+    // The reference changed under the seed: its own setup was running there
+    // (D-P15-11). Not a failure of this checkout's setup, which installs.
+    return {
+      skipInstalls: false,
+      reason: `not seeded: the reference's tree could not be read (${error instanceof Error ? error.message : String(error)})`,
+      hashes,
+      seeded: 0,
+    };
+  }
   await writeInstallMarker(cwd, hashes);
   return {
     skipInstalls: true,

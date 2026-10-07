@@ -61,6 +61,12 @@ export interface MergeQueue {
   };
   /** Settles when the pipeline is idle. */
   idle(): Promise<void>;
+  /**
+   * Runs `task` between landings, never during one, and holds the next landing
+   * until it has finished: for work in the program checkout that must not race
+   * a fast-forward there (P15, D-P15-11: the setup reference at a run's start).
+   */
+  exclusive<T>(task: () => Promise<T>): Promise<T>;
 }
 
 interface Waiting {
@@ -73,6 +79,13 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
   const waiting = new Map<ExecutionNodeId, Waiting>();
   let current: ExecutionNodeId | undefined;
   let running: Promise<void> | undefined;
+  // One landing or one exclusive task at a time, in the order they asked.
+  let tail: Promise<unknown> = Promise.resolve();
+  const serially = <T>(task: () => Promise<T>): Promise<T> => {
+    const result = tail.then(task);
+    tail = result.catch(() => undefined);
+    return result;
+  };
 
   const run = (): Promise<void> => {
     running ??= (async () => {
@@ -130,7 +143,7 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     waiting.delete(next.executionNodeId);
     current = next.executionNodeId;
     try {
-      await integrateOne(entry.candidate, next);
+      await serially(() => integrateOne(entry.candidate, next));
     } catch (error) {
       await failNode(entry.candidate, `the merge queue failed: ${messageOf(error)}`).catch(
         () => {},
@@ -336,6 +349,7 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     idle: async () => {
       while (running !== undefined) await running;
     },
+    exclusive: (task) => serially(task),
   };
 };
 

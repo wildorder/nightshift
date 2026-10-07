@@ -460,6 +460,13 @@ describe("the workspace (T3, D-P10-15)", () => {
     });
     expect(prepared.warm).toBe(false);
     expect(Object.keys(prepared.lockfileHashes)).toEqual(["package-lock.json"]);
+    // The checkout is the setup reference (D-P10-24, D-P15-11): its tree is
+    // marked with the lockfiles setup installed it for, as setup marks any tree.
+    expect(
+      JSON.parse(
+        machine.files.get(`${layout.checkout}/node_modules/.nightshift-install.json`) ?? "",
+      ),
+    ).toEqual(prepared.lockfileHashes);
     const commands = machine.commands.join("\n");
     expect(commands).toContain(
       "clone --mirror https://github.com/wildorder/fixture.git /workspace/mirror.git",

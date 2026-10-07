@@ -75,6 +75,7 @@ import {
   type RunSession,
 } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
+import { type GateDefinitions, gateDefinitions } from "./gate-repair.js";
 import { pristineCheckout } from "./git/index.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 import { discardScratch, freshScratch, scratchEnv } from "./scratch.js";
@@ -115,9 +116,10 @@ export type VerifyResult =
 const unmetPrerequisites = async (
   environment: LandingEnvironment,
   input: VerifyInput,
+  steps: readonly VerificationStep[],
 ): Promise<ReadonlySet<string>> => {
   const { program } = input.session;
-  if ((program.verification ?? []).every((step) => (step.requires ?? []).length === 0)) {
+  if (steps.every((step) => (step.requires ?? []).length === 0)) {
     return new Set();
   }
   const current =
@@ -140,12 +142,13 @@ const unmetPrerequisites = async (
 const recordDiscovered = async (
   environment: LandingEnvironment,
   input: VerifyInput,
+  steps: readonly VerificationStep[],
   stepId: string,
   signal: DeferSignal,
 ): Promise<void> => {
   if (environment.prerequisites === undefined) return;
   const { program, scope } = input.session;
-  const step = program.verification.find((candidate) => candidate.id === stepId);
+  const step = steps.find((candidate) => candidate.id === stepId);
   await environment.prerequisites
     .recordDiscovered(
       { projectId: program.projectId, programId: program.programId },
@@ -177,6 +180,9 @@ export const verifyNode = async (
     throw new Error(`node ${input.node.executionNodeId} is implemented but carries no commit`);
   }
 
+  // The run's gates as they stand now: a repair that lands while this runs
+  // changes the next verification, never this one (D-P15-04).
+  const gates: GateDefinitions = await gateDefinitions(environment, input.session);
   const verifying = transition(
     input.node,
     input.resuming === true ? "resume_verification" : "begin_verification",
@@ -190,8 +196,8 @@ export const verifyNode = async (
     payload: {
       commitSha,
       steps: [
-        ...(input.session.program.setup ?? []).map((step) => setupAsStep(step).id),
-        ...input.session.program.verification.map((step) => step.id),
+        ...gates.setup.map((step) => setupAsStep(step).id),
+        ...gates.verification.map((step) => step.id),
       ],
     },
     executionNodeId: input.node.executionNodeId,
@@ -206,10 +212,12 @@ export const verifyNode = async (
   // deferred; every other step runs (D-P7-10). When resuming, the preflight has
   // already passed, and every step runs.
   const unmet =
-    input.resuming === true ? new Set<string>() : await unmetPrerequisites(environment, input);
+    input.resuming === true
+      ? new Set<string>()
+      : await unmetPrerequisites(environment, input, gates.verification);
   const waitingOf = (step: VerificationStep): readonly string[] =>
     (step.requires ?? []).filter((id) => unmet.has(id));
-  const steps = input.session.program.verification;
+  const steps = gates.verification;
   const runnable = steps.filter((step) => waitingOf(step).length === 0);
 
   // Setup first: the checkout holds only what is committed, so setup is what
@@ -222,7 +230,7 @@ export const verifyNode = async (
   const scratch = await freshScratch(input.worktree, as.as);
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const checkout = await runCheckoutSteps({
-    setup: input.session.program.setup ?? [],
+    setup: gates.setup,
     steps: runnable,
     cwd: input.worktree,
     reference: input.session.repoPath,
@@ -252,7 +260,7 @@ export const verifyNode = async (
   for (const result of results) {
     const signal = deferSignalOf(result.exitCode, new TextDecoder().decode(result.output));
     if (signal === undefined) continue;
-    await recordDiscovered(environment, input, result.stepId, signal);
+    await recordDiscovered(environment, input, steps, result.stepId, signal);
     discovered.set(result.stepId, signal.prerequisiteId);
   }
 

@@ -63,6 +63,7 @@ import {
 import type { AgentTask, McpLaunch } from "@nightshift/harness";
 import type { ExecutionEnvironment, RunSession, WorkerLaunchIdentity } from "./environment.js";
 import { arbitrateAll, fixOf, latestExamination, rulingDue } from "./examine.js";
+import { prepareSetupReference, reconcileGateRepairs } from "./gate-repair.js";
 import { baseRef, git, jobBranch, revParse } from "./git/index.js";
 import { createMergeQueue, type MergeQueue } from "./merge-queue.js";
 import { attemptsOf, delegateJob, type StartedJob, startJob } from "./runner.js";
@@ -84,6 +85,13 @@ export interface EngineOptions {
   readonly route?: (job: JobContract, context: RouteContext) => RouteChoice;
   /** How often the run's nodes are read while a sub-orchestrator is running. */
   readonly discoveryIntervalMs?: number;
+  /**
+   * P15 (D-P15-11): run the current setup once in the program checkout before
+   * the first job starts, so every worktree is seeded from it. For an engine
+   * attaching to a new run on a laptop; not per job, not for an engine that
+   * re-attaches, and not on a machine, whose workspace already ran setup there.
+   */
+  readonly prepareReference?: boolean;
 }
 
 /** What the router is told beyond the job itself (P8). Structural, so this package names no router. */
@@ -284,6 +292,21 @@ export const createEngine = (options: EngineOptions): Engine => {
   const queue = options.mergeQueue ?? createMergeQueue(environment);
   const integrate = queue.integrate;
 
+  // --- The gates as the run's repairs left them (P15, D-P15-04, D-P15-11) -----------
+  //
+  // Before anything starts: whatever a repair's landing left unrecorded (its
+  // `gate.repaired`, the gate-health record) is made from the run's records,
+  // and a new run's program checkout is prepared as the setup reference. In the
+  // merge queue's order, so it never races a landing in the same checkout.
+  const ready = queue
+    .exclusive(async () => {
+      await reconcileGateRepairs(environment, session, { nodeId: session.rootNodeId });
+      if (options.prepareReference === true) {
+        await prepareSetupReference(environment, session, session.rootNodeId, "at the run's start");
+      }
+    })
+    .catch(() => {});
+
   // --- The wall clock (D-P6-07) ------------------------------------------------------
   const wallClockRemainingSeconds = (): number | undefined => {
     if (maxWallClockSeconds === undefined) return undefined;
@@ -417,6 +440,7 @@ export const createEngine = (options: EngineOptions): Engine => {
 
   /** Starts the first queued node that may start. False when none could. */
   const startNext = async (): Promise<boolean> => {
+    await ready;
     if (await holding()) return false;
 
     const nodes = await readNodes();
@@ -1325,6 +1349,7 @@ export const createEngine = (options: EngineOptions): Engine => {
     strands: async () => (planned ? readStrandOutcomes(await readNodes()) : {}),
 
     settled: async () => {
+      await ready;
       while (pumping !== undefined) await pumping;
     },
 
