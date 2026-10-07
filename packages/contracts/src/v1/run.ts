@@ -4,9 +4,15 @@
  * beyond `location` itself.
  */
 import { z } from "zod";
-import { ExecutionNodeIdSchema } from "../ids.js";
-import { ExecutionLocationSchema, IsoTimestampSchema, runScoped } from "./common.js";
+import { ExecutionNodeIdSchema, RunIdSchema } from "../ids.js";
+import {
+  CommitShaSchema,
+  ExecutionLocationSchema,
+  IsoTimestampSchema,
+  runScoped,
+} from "./common.js";
 import { EffectivePolicySchema } from "./org-config.js";
+import { StrandIdSchema } from "./plan.js";
 
 export const RunStatusSchema = z.enum([
   "pending",
@@ -17,6 +23,22 @@ export const RunStatusSchema = z.enum([
   "interrupted",
 ]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
+
+/**
+ * A strand an earlier run of the same ratified plan already finished, counted as
+ * succeeded in this one instead of being built again. Decided when the run
+ * starts, from records and git alone: the strand succeeded in that run, the plan
+ * hash is the one this run follows, and every commit it landed is already on the
+ * program branch this run starts from.
+ */
+export const CarriedStrandSchema = z.strictObject({
+  strandId: StrandIdSchema,
+  /** The run that built it. A strand carried twice still names the run that built it. */
+  fromRunId: RunIdSchema,
+  /** What it landed there, each one an ancestor of this run's base. */
+  landed: z.array(CommitShaSchema),
+});
+export type CarriedStrand = z.infer<typeof CarriedStrandSchema>;
 
 export const RunSchema = z.strictObject({
   ...runScoped,
@@ -37,5 +59,10 @@ export const RunSchema = z.strictObject({
    * starts. Absent on a run started before P8.
    */
   policy: EffectivePolicySchema.optional(),
+  /**
+   * The strands this run does not build, because an earlier run of the same
+   * plan did and their work is on the program branch. Absent when none are.
+   */
+  carriedStrands: z.array(CarriedStrandSchema).optional(),
 });
 export type Run = z.infer<typeof RunSchema>;

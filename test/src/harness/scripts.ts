@@ -11,6 +11,7 @@
  * A script's return value is the process's exit code.
  */
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -417,7 +418,9 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
     // benchmark's tree, and no tag makes the barrier pair the tree test forces.
     // A strand's tag (P7): `prefix=` names its modules so strands running at once
     // touch different files, `fail=1` is a strand that cannot be done, `depart=1`
-    // one that leaves the plan's approach and says so.
+    // one that leaves the plan's approach and says so. `unless=<path>` makes
+    // `fail=1` hold only while that file is missing from the checkout: the same
+    // plan fails, then succeeds once something has fixed the branch (carry-over).
     const prefix = option(args, "prefix");
     if (option(args, "depart") === "1") {
       await orchestrator.decide({
@@ -434,11 +437,15 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
           | "irreversible",
       });
     }
-    if (option(args, "fail") === "1") {
+    const unless = option(args, "unless");
+    if (
+      option(args, "fail") === "1" &&
+      !(unless !== undefined && existsSync(join(worktree, unless)))
+    ) {
       await orchestrator.fail("this strand's objective cannot be met as planned");
       return 0;
     }
-    const passed = (args ?? []).filter((arg) => !/^(prefix|fail|depart|class)=/.test(arg));
+    const passed = (args ?? []).filter((arg) => !/^(prefix|fail|depart|class|unless)=/.test(arg));
     const how =
       prefix === undefined
         ? passed.length
@@ -483,12 +490,16 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
     await root.attach(runId);
     // Every strand, at once: the engine holds what must wait (D-P7-04).
     const jobs = new Map<string, string>();
+    // Built by an earlier run of this plan and on the branch: done here already.
+    const carried = new Set<string>();
     for (const strandId of strandIds) {
       const delegated = await root.delegateStrand(strandId);
       if (delegated.jobId !== undefined) jobs.set(strandId, delegated.jobId);
+      if (delegated.refused === "strand_carried") carried.add(strandId);
     }
     const statuses = await root.waitAll([...jobs.values()]);
     const unfinished = strandIds.filter((strandId) => {
+      if (carried.has(strandId)) return false;
       const jobId = jobs.get(strandId);
       return jobId === undefined || statuses[jobId] !== "succeeded";
     });

@@ -159,7 +159,8 @@ const rootOver = (worker: Worker): RootSurface => ({
     const result = await worker.call("strand.delegate", { strandId });
     return result.ok === true
       ? { jobId: String(result.jobId) }
-      : { refused: String((result.error as { code?: unknown } | undefined)?.code ?? "refused") };
+      : // A refusal's code is on the tool's structured answer (results.ts `refused`).
+        { refused: String(result.code ?? "refused") };
   },
   waitAll: async (jobIds) => {
     const statuses: Record<string, string> = {};

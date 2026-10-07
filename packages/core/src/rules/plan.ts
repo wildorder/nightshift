@@ -279,8 +279,15 @@ const outcomeOfStatus = (status: ExecutionNodeStatus): StrandOutcome => {
  * Where every strand stands, from the run's own records. A strand tried twice
  * stands where its **latest** attempt does, so one that failed and was delegated
  * again is running again, and its cone is no longer blocked by it.
+ *
+ * A strand the run carried over from an earlier run of the same plan
+ * (`Run.carriedStrands`) has succeeded: its work is on the program branch. An
+ * attempt at it in this run, which nothing should make, would stand instead.
  */
-export const strandOutcomes = (attempts: readonly StrandAttempt[]): StrandOutcomes => {
+export const strandOutcomes = (
+  attempts: readonly StrandAttempt[],
+  carried: readonly { readonly strandId: string }[] = [],
+): StrandOutcomes => {
   const latest = new Map<string, StrandAttempt>();
   for (const attempt of attempts) {
     const seen = latest.get(attempt.strandId);
@@ -288,15 +295,16 @@ export const strandOutcomes = (attempts: readonly StrandAttempt[]): StrandOutcom
       latest.set(attempt.strandId, attempt);
     }
   }
-  return Object.fromEntries(
-    [...latest].map(([strandId, attempt]) => {
+  return Object.fromEntries([
+    ...carried.map(({ strandId }) => [strandId, "succeeded"] as const),
+    ...[...latest].map(([strandId, attempt]) => {
       const outcome = outcomeOfStatus(attempt.status);
       return [
         strandId,
         outcome === "succeeded" && attempt.hasDeferredWork === true ? "provisional" : outcome,
-      ];
+      ] as const;
     }),
-  );
+  ]);
 };
 
 /**

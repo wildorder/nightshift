@@ -17,6 +17,7 @@ import {
   samePlanContent,
   scopesOverlap,
   splitPlanSections,
+  strandOutcomes,
 } from "./plan.js";
 
 const strand = (id: string, includes: string[], overrides: Partial<Strand> = {}): Strand => ({
@@ -292,6 +293,22 @@ describe("strand gating and the cone", () => {
     expect(downstreamCone(contract, "S-02")).toEqual(["S-04"]);
     expect(downstreamCone(contract, "S-05")).toEqual([]);
     expect(() => downstreamCone(contract, "S-99")).toThrow(RangeError);
+  });
+
+  it("counts a carried-over strand as succeeded, so what depends on it may start", () => {
+    const outcomes = strandOutcomes(
+      [{ strandId: "S-03", status: "running", createdAt: "2026-10-07T00:00:00.000Z" }],
+      [{ strandId: "S-01" }],
+    );
+    expect(outcomes).toEqual({ "S-01": "succeeded", "S-03": "running" });
+    expect(mayStartStrand(contract, outcomes, "S-02")).toEqual({ start: true });
+    // An attempt in this run, which nothing should make, would stand instead.
+    expect(
+      strandOutcomes(
+        [{ strandId: "S-01", status: "failed", createdAt: "2026-10-07T00:00:00.000Z" }],
+        [{ strandId: "S-01" }],
+      ),
+    ).toEqual({ "S-01": "failed" });
   });
 
   it("names the strand that broke, not the first casualty", () => {

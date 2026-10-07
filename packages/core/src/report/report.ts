@@ -18,6 +18,7 @@
  */
 import type {
   Agent,
+  CarriedStrand,
   Decision,
   Examination,
   ExecutionNode,
@@ -98,6 +99,12 @@ export interface StrandReport {
   readonly attempts: number;
   /** The human prerequisites its deferred work waits on (D-P7-10). Empty unless provisional. */
   readonly waitingOn: readonly string[];
+  /**
+   * When an earlier run of the same plan built it and this run carried it over
+   * rather than build it again (`Run.carriedStrands`): which run, and what it
+   * landed, all of it on the branch this run started from.
+   */
+  readonly carriedFrom?: { readonly runId: string; readonly landed: readonly string[] };
 }
 
 export interface UsageRow {
@@ -177,6 +184,8 @@ interface Records {
   /** Every attempt at every strand, oldest first. */
   readonly strandNodes: readonly { readonly strandId: string; readonly node: ExecutionNode }[];
   readonly outcomes: StrandOutcomes;
+  /** What the run carried over from an earlier run of the same plan. */
+  readonly carried: readonly CarriedStrand[];
 }
 
 const jobReportOf = (records: Records, node: ExecutionNode): JobReport => ({
@@ -197,6 +206,13 @@ const jobReportOf = (records: Records, node: ExecutionNode): JobReport => ({
 const workRoutes = (routes: readonly RoutingDecision[]): RoutingDecision[] =>
   routes.filter((route) => route.purpose === undefined).sort((a, b) => a.attempt - b.attempt);
 
+const carriedFromOf = (records: Records, strandId: string): Pick<StrandReport, "carriedFrom"> => {
+  const carried = records.carried.find((candidate) => candidate.strandId === strandId);
+  return carried === undefined
+    ? {}
+    : { carriedFrom: { runId: carried.fromRunId, landed: carried.landed } };
+};
+
 const strandReportOf = (
   records: Records,
   strand: NonNullable<ProgramContract["strands"]>[number],
@@ -215,6 +231,7 @@ const strandReportOf = (
     blockedBy: blocked.get(strand.id) ?? [],
     attempts: attempts.length,
     waitingOn: [...new Set([...inStrand].flatMap((id) => records.waitingOf.get(id) ?? []))].sort(),
+    ...carriedFromOf(records, strand.id),
     jobs: under
       .map((id) => records.tree.nodes.get(id))
       .filter((node): node is ExecutionNode => node !== undefined && node.kind === "job")
@@ -321,6 +338,7 @@ const readRecords = async (
   stores: ProjectStores,
   scope: RunScope,
   program: ProgramContract,
+  carried: readonly CarriedStrand[],
 ): Promise<Records> => {
   const nodes = await readAll<ExecutionNode>((page) =>
     stores.executionNodes.listByRun(scope, page),
@@ -380,6 +398,7 @@ const readRecords = async (
         ),
       ),
     ),
+    carried,
   );
   return {
     program,
@@ -392,6 +411,7 @@ const readRecords = async (
     waitingOf,
     strandNodes,
     outcomes,
+    carried,
   };
 };
 
@@ -401,7 +421,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   if (program === undefined || run === undefined) {
     throw new Error(`run ${scope.runId} or its program is not in the control plane`);
   }
-  const records = await readRecords(stores, scope, program);
+  const records = await readRecords(stores, scope, program, run.carriedStrands ?? []);
   const blocked = blockedBy(program, records.outcomes);
   const strands = strandsOf(program).map((strand) => strandReportOf(records, strand, blocked));
   const rulings = rulingsOf(records);
@@ -576,6 +596,17 @@ const renderStrand = (strand: StrandReport): string[] => {
   return [
     `### ${strand.id} ${strand.name}: ${OUTCOME_WORD[strand.outcome]}${blockedNote}`,
     "",
+    ...(strand.carriedFrom === undefined
+      ? []
+      : [
+          `Carried over from run \`${strand.carriedFrom.runId}\`, which built it under this same ` +
+            `plan; this run did not build it again. ${strand.carriedFrom.landed.length} landed ` +
+            `commit${strand.carriedFrom.landed.length === 1 ? "" : "s"}, all on the branch this run started from` +
+            (strand.carriedFrom.landed.length === 0
+              ? "."
+              : `: ${strand.carriedFrom.landed.map((sha) => sha.slice(0, 8)).join(", ")}.`),
+          "",
+        ]),
     // First, because it is what the human most needs to know about a strand.
     ...(strand.departures.length === 0
       ? []

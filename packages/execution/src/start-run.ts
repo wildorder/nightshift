@@ -40,6 +40,7 @@ import {
   requireEffectivePolicy,
   transitionRun,
 } from "@nightshift/core";
+import { carriedStrandsFor } from "./carry-over.js";
 import { checkpointRef, type GitRunner, revParse, updateRef } from "./git/index.js";
 
 export interface StartRunEnvironment {
@@ -210,6 +211,13 @@ export const startRun = async (
     program.repository.programBranch,
   );
 
+  // What an earlier run of this same plan already finished, and is on the
+  // branch this run starts from: not built again (carry-over.ts).
+  const carriedStrands = await carriedStrandsFor(
+    { stores, git: environment.git },
+    { program, repoPath: input.repoPath, baseCommit },
+  );
+
   const runId = ids.next("run");
   const rootNodeId = ids.next("node");
   const scope = { projectId: program.projectId, programId: program.programId, runId };
@@ -225,6 +233,7 @@ export const startRun = async (
     rootNodeId,
     startedAt: at,
     policy,
+    ...(carriedStrands.length === 0 ? {} : { carriedStrands: [...carriedStrands] }),
   };
   await stores.runs.put(run);
 
