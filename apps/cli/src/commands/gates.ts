@@ -18,6 +18,7 @@ import {
   outputTail,
   revParse,
 } from "@nightshift/execution";
+import { createLocalPaths } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession, type Session } from "../session.js";
@@ -58,6 +59,8 @@ export const auditProgramGates = async (
     program: contract,
     unmet,
     timeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
+    // The scratch goes where a run's would: short, under the state directory.
+    paths: createLocalPaths(environment.paths),
     onStep: (result) => {
       const verdict =
         result.exitCode === 0
@@ -124,14 +127,42 @@ export const auditContractOf = async (
   files: ProgramFiles,
   session: Session | undefined,
 ): Promise<ProgramContract> => {
+  // Always the plan on disk: it is what `plan check` and ratification judge,
+  // and while a ratified program is re-planned it differs from the record (a
+  // new setup, a gate-health strand). The record is read only for what lives
+  // on the control plane: which prerequisites preflight found satisfied. An
+  // audit of the record instead fingerprinted the last ratified gates, and
+  // `plan check` refused it as stale on the same commit (keki-backend,
+  // 2026-10-07).
   const recorded = await session?.stores.programContracts
     .get(files.contract.projectId, files.contract.programId)
     .catch(() => undefined);
-  if (recorded?.status === "ratified") return recorded;
-  environment.out(
-    "the plan is not ratified (or the control plane is out of reach): prerequisites count as the contract file states them",
+  if (recorded === undefined) {
+    environment.out(
+      "the control plane holds no record of this program (or is out of reach): prerequisites count as the contract file states them",
+    );
+    return files.contract;
+  }
+  const statusOf = new Map(
+    prerequisitesOf(recorded).map((prerequisite) => [prerequisite.id, prerequisite]),
   );
-  return files.contract;
+  return {
+    ...files.contract,
+    ...(files.contract.prerequisites === undefined
+      ? {}
+      : {
+          prerequisites: files.contract.prerequisites.map((prerequisite) => {
+            const known = statusOf.get(prerequisite.id);
+            return known === undefined
+              ? prerequisite
+              : {
+                  ...prerequisite,
+                  status: known.status,
+                  ...(known.lastCheck === undefined ? {} : { lastCheck: known.lastCheck }),
+                };
+          }),
+        }),
+  };
 };
 
 /** Exit code 0 unless a gate is red. A missing setup is said, not counted. */

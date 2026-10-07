@@ -593,7 +593,7 @@ const removeCheckout = async (
   await git(environment.git, ["worktree", "remove", "--force", path], {
     cwd: input.session.repoPath,
   }).catch(() => {});
-  await discardScratch(path);
+  await discardScratch(environment.paths, path);
   await pruneWorktrees(environment.git, input.session.repoPath).catch(() => {});
 };
 
@@ -663,7 +663,7 @@ const candidateVerification = async (
   // The checkout is new and holds only what is committed, so setup comes first;
   // it also leaves the checkout usable for the examiner who works in it. The
   // checks get a fresh scratch (scratch.ts), which the examiner then inherits.
-  const scratch = await freshScratch(checkout);
+  const scratch = await freshScratch(environment.paths, checkout);
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const ran = await runCheckoutSteps({
     setup: gates.setup,
@@ -693,6 +693,7 @@ const candidateVerification = async (
     steps,
     first: ran.checks,
     cwd: checkout,
+    paths: environment.paths,
     timeoutMs,
     keepScratch: true,
   });
@@ -838,7 +839,7 @@ const runHelper = async (
   await mkdir(dirname(transcript), { recursive: true });
   // The helper's checkout is its own from here on (D-P10-25).
   const { runAs } = runAsOf(environment, helper.agent);
-  const tmpDir = await ensureScratch(launch.worktree);
+  const tmpDir = await ensureScratch(environment.paths, launch.worktree);
   if (runAs !== undefined) {
     await runAs.grant(launch.worktree);
     await runAs.grant(tmpDir);

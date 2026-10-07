@@ -256,7 +256,7 @@ export const verifyNode = async (
   // with a temp directory of its own that nothing before it wrote into and
   // nothing after it inherits (scratch.ts).
   const as = stepsAs(environment, { agentId: input.agentId, role: "worker" });
-  const scratch = await freshScratch(input.worktree, as.as);
+  const scratch = await freshScratch(environment.paths, input.worktree, as.as);
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const checkout = await runCheckoutSteps({
     setup: gates.setup,
@@ -266,7 +266,7 @@ export const verifyNode = async (
     timeoutMs,
     env: scratchEnv(scratch),
     ...as,
-  }).finally(() => discardScratch(input.worktree, as.as));
+  }).finally(() => discardScratch(environment.paths, input.worktree, as.as));
   const results = checkout.checks;
 
   // Each step's whole output, in S3 and referenced — never inline (A-08).
@@ -300,6 +300,7 @@ export const verifyNode = async (
     steps: runnable,
     first: results,
     cwd: input.worktree,
+    paths: environment.paths,
     timeoutMs,
     ...as,
   });

@@ -16,9 +16,13 @@
  *   half the machine's memory, and every verification after failed. A scratch
  *   lives on the workspace's disk and goes when its checkout's work is done.
  *
- * Beside the checkout, not inside it, so no gate that walks the tree (a
- * linter, a sterility check, a test glob) ever sees it, and `git status` is
- * untouched.
+ * Outside the checkout, so no gate that walks the tree (a linter, a sterility
+ * check, a test glob) ever sees it, and `git status` is untouched. Where it is
+ * is the paths port's (`LocalPaths.scratch`): short and of fixed length under
+ * the state directory, because tools put unix sockets in a temp directory and a
+ * socket's path has a byte limit. It used to sit beside the checkout, with the
+ * checkout's length, and broke tsx under a gate audit (keki-backend,
+ * 2026-10-07).
  *
  * On a machine a checkout's processes run as its worker (D-P10-25), and the
  * tools they run make owner-only directories the engine cannot delete. So a
@@ -27,13 +31,17 @@
  */
 import { spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
+import type { LocalPaths } from "@nightshift/core";
 import type { StepInvocation } from "@nightshift/verification";
+
+/** Where checkouts' scratches live: the paths port's. */
+export type ScratchPaths = Pick<LocalPaths, "scratch">;
 
 /** Wraps a command so it runs as the checkout's worker, as verification steps are. */
 export type RunScratchAs = (invocation: StepInvocation) => StepInvocation;
 
-/** Where `checkout`'s scratch lives: beside it. */
-export const scratchOf = (checkout: string): string => `${checkout}.tmp`;
+/** Where `checkout`'s scratch lives. */
+export const scratchOf = (paths: ScratchPaths, checkout: string): string => paths.scratch(checkout);
 
 /** The variables every platform's temp lookup reads: `TMPDIR` on POSIX, `TEMP` and `TMP` on Windows. */
 export const scratchEnv = (dir: string): Readonly<Record<string, string>> => ({
@@ -53,8 +61,12 @@ const runToEnd = (invocation: StepInvocation): Promise<void> =>
   });
 
 /** Removes `checkout`'s scratch, whoever wrote into it. Never throws: a leftover is not a failure. */
-export const discardScratch = async (checkout: string, as?: RunScratchAs): Promise<void> => {
-  const dir = scratchOf(checkout);
+export const discardScratch = async (
+  paths: ScratchPaths,
+  checkout: string,
+  as?: RunScratchAs,
+): Promise<void> => {
+  const dir = scratchOf(paths, checkout);
   if (as !== undefined) {
     await runToEnd(
       as({ file: "rm", args: ["-rf", dir], env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } }),
@@ -64,9 +76,13 @@ export const discardScratch = async (checkout: string, as?: RunScratchAs): Promi
 };
 
 /** An empty scratch for `checkout`, whatever an earlier run left there. Returns its path. */
-export const freshScratch = async (checkout: string, as?: RunScratchAs): Promise<string> => {
-  await discardScratch(checkout, as);
-  const dir = scratchOf(checkout);
+export const freshScratch = async (
+  paths: ScratchPaths,
+  checkout: string,
+  as?: RunScratchAs,
+): Promise<string> => {
+  await discardScratch(paths, checkout, as);
+  const dir = scratchOf(paths, checkout);
   await mkdir(dir, { recursive: true });
   return dir;
 };
@@ -75,8 +91,8 @@ export const freshScratch = async (checkout: string, as?: RunScratchAs): Promise
  * `checkout`'s scratch, made if it is missing and otherwise left as it is: an
  * agent resumed in the same checkout keeps what it wrote. Returns its path.
  */
-export const ensureScratch = async (checkout: string): Promise<string> => {
-  const dir = scratchOf(checkout);
+export const ensureScratch = async (paths: ScratchPaths, checkout: string): Promise<string> => {
+  const dir = scratchOf(paths, checkout);
   await mkdir(dir, { recursive: true });
   return dir;
 };

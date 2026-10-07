@@ -12,8 +12,14 @@ afterEach(async () => {
   for (const dir of made.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
+let root = "";
+/** Scratches under the test's own root, as the paths port puts them under the state directory. */
+const paths = {
+  scratch: (checkout: string) => join(root, "t", checkout.split(/[\\/]/).at(-1) ?? "x"),
+};
+
 const checkout = async (): Promise<string> => {
-  const root = await mkdtemp(join(tmpdir(), "nightshift-scratch-"));
+  root = await mkdtemp(join(tmpdir(), "nightshift-scratch-"));
   made.push(root);
   const path = join(root, "node_a");
   await mkdir(path);
@@ -21,39 +27,39 @@ const checkout = async (): Promise<string> => {
 };
 
 describe("a checkout's scratch", () => {
-  it("sits beside the checkout, never inside it", async () => {
+  it("is where the paths port says, never inside the checkout", async () => {
     const path = await checkout();
-    expect(scratchOf(path)).toBe(`${path}.tmp`);
+    expect(scratchOf(paths, path)).toBe(join(root, "t", "node_a"));
     expect(scratchEnv("/x")).toEqual({ TMPDIR: "/x", TEMP: "/x", TMP: "/x" });
   });
 
   it("is fresh when asked for, whatever an earlier run left", async () => {
     const path = await checkout();
-    const dir = await freshScratch(path);
+    const dir = await freshScratch(paths, path);
     await writeFile(join(dir, "cdk.out1234"), "left behind");
-    expect(await readdir(await freshScratch(path))).toEqual([]);
+    expect(await readdir(await freshScratch(paths, path))).toEqual([]);
   });
 
   it("is kept by ensure, for an agent resumed in the same checkout", async () => {
     const path = await checkout();
-    const dir = await freshScratch(path);
+    const dir = await freshScratch(paths, path);
     await writeFile(join(dir, "mine"), "x");
-    expect(await readdir(await ensureScratch(path))).toEqual(["mine"]);
+    expect(await readdir(await ensureScratch(paths, path))).toEqual(["mine"]);
   });
 
   it("goes when discarded, removed as the checkout's worker first when there is one", async () => {
     const path = await checkout();
-    await writeFile(join(await freshScratch(path), "f"), "x");
+    await writeFile(join(await freshScratch(paths, path), "f"), "x");
     const asked: StepInvocation[] = [];
-    await discardScratch(path, (invocation) => {
+    await discardScratch(paths, path, (invocation) => {
       asked.push(invocation);
       return invocation;
     });
-    expect(existsSync(scratchOf(path))).toBe(false);
+    expect(existsSync(scratchOf(paths, path))).toBe(false);
     expect(asked.map((invocation) => [invocation.file, ...invocation.args])).toEqual([
-      ["rm", "-rf", scratchOf(path)],
+      ["rm", "-rf", scratchOf(paths, path)],
     ]);
     // Discarding what is not there is not a failure.
-    await expect(discardScratch(path)).resolves.toBeUndefined();
+    await expect(discardScratch(paths, path)).resolves.toBeUndefined();
   });
 });

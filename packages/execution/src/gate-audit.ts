@@ -29,7 +29,7 @@ import {
   setupFailed,
 } from "@nightshift/verification";
 import { addDetachedWorktree, type GitRunner, pruneWorktrees, tryGit } from "./git/index.js";
-import { discardScratch, freshScratch, scratchEnv } from "./scratch.js";
+import { discardScratch, freshScratch, type ScratchPaths, scratchEnv } from "./scratch.js";
 
 /**
  * - `passed`: it exited 0.
@@ -75,6 +75,8 @@ export interface GateAuditInput {
   /** A directory to make the audit's checkout in. A temporary one when absent. */
   readonly workDir?: string;
   readonly timeoutMs: number;
+  /** Where the audit's scratch goes (`LocalPaths.scratch`): short, so sockets fit in it. */
+  readonly paths: ScratchPaths;
   /** Added to every step's environment, as verification's are on this machine. */
   readonly env?: Readonly<Record<string, string>>;
   /** Who each step runs as, as verification's do on a machine (D-P10-25). Absent, as this process. */
@@ -100,7 +102,7 @@ const runOnce = async (
     input.onStep?.(result);
   };
   // A temp directory of its own, as a verification gets (scratch.ts).
-  const scratch = await freshScratch(checkout, input.as);
+  const scratch = await freshScratch(input.paths, checkout, input.as);
   const how = {
     timeoutMs: input.timeoutMs,
     env: { ...(input.env ?? {}), ...scratchEnv(scratch) },
@@ -152,7 +154,7 @@ export const auditGates = async (input: GateAuditInput): Promise<GateAudit> => {
   try {
     results = await runOnce(input, checkout, runnable);
   } finally {
-    await discardScratch(checkout, input.as);
+    await discardScratch(input.paths, checkout, input.as);
     await tryGit(input.git, ["worktree", "remove", "--force", checkout], {
       cwd: input.repoPath,
     }).catch(() => undefined);

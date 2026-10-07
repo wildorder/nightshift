@@ -16,6 +16,7 @@
  * One module, used by the CLI, the MCP server and the execution layer, so the
  * three cannot disagree about where a spool lives.
  */
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -222,6 +223,14 @@ export const worktreePath = (
   environment: PathEnvironment = {},
 ): string => join(stateDir(environment), "wt", idTail(runId), idTail(nodeId));
 
+/** `<state>/t/<12 hex of the checkout's path>` — see {@link LocalPaths.scratch} on length. */
+export const scratchPath = (checkout: string, environment: PathEnvironment = {}): string =>
+  join(
+    stateDir(environment),
+    "t",
+    createHash("sha256").update(checkout).digest("hex").slice(0, 12),
+  );
+
 /**
  * The {@link LocalPaths} port over this module (D-P3-10).
  *
@@ -234,4 +243,5 @@ export const createLocalPaths = (environment: PathEnvironment = {}): LocalPaths 
   runDir: (runId) => runStateDir(runId, environment),
   spool: (runId) => spoolPath(runId, environment),
   transcript: (runId, agentId) => transcriptPath(runId, agentId, environment),
+  scratch: (checkout) => scratchPath(checkout, environment),
 });

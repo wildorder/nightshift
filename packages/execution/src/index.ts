@@ -152,6 +152,7 @@ export {
   ensureScratch,
   freshScratch,
   type RunScratchAs,
+  type ScratchPaths,
   scratchEnv,
   scratchOf,
 } from "./scratch.js";

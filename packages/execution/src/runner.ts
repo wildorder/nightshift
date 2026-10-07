@@ -386,7 +386,7 @@ export const startJob = async (
       await removeWorktree(environment.git, session.repoPath, worktree, branch, nodeId).catch(
         () => {},
       );
-      await discardScratch(worktree);
+      await discardScratch(environment.paths, worktree);
       await pruneWorktrees(environment.git, session.repoPath);
     }
     if (orchestrates) {
@@ -744,7 +744,7 @@ export const startJob = async (
     // whole life, the engine reading but never again writing as itself.
     // Its temp directory too, beside the worktree (scratch.ts).
     const { runAs } = runAsOf(environment, startedAgent);
-    const tmpDir = await ensureScratch(worktree);
+    const tmpDir = await ensureScratch(environment.paths, worktree);
     if (runAs !== undefined) {
       await runAs.grant(worktree);
       await runAs.grant(tmpDir);
@@ -869,7 +869,7 @@ const finishSubProgram = async (
       input.branch,
       input.nodeId,
     ).catch(() => {});
-    await discardScratch(input.worktree);
+    await discardScratch(environment.paths, input.worktree);
     await recordRouteResult(environment, input, usage);
     // What the strand's decisions produced, now that its work has all landed
     // or stopped (P9, D-P9-01).

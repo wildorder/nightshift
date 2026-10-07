@@ -364,7 +364,7 @@ export const runHeadless = async (
   await pruneWorktrees(runtime.git, input.repoPath);
   await addDetachedWorktree(runtime.git, { repo: input.repoPath, path: worktree, base });
   // The root's temp directory, beside its worktree, like every agent's (scratch.ts).
-  const tmpDir = await freshScratch(worktree);
+  const tmpDir = await freshScratch(runtime.paths, worktree);
 
   const transcript = runtime.paths.transcript(scope.runId, agent.agentId);
   await mkdir(dirname(transcript), { recursive: true });

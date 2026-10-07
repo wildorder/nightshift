@@ -220,7 +220,7 @@ export const integrateNode = async (
     // A worktree that will not go is untidy, not incorrect: the work is
     // integrated and the checkpoint exists. `git worktree prune` clears it later.
   });
-  await discardScratch(input.worktree);
+  await discardScratch(environment.paths, input.worktree);
 
   // --- What a repair did to the gates (P15, D-P15-04, D-P15-07, D-P15-11) ----------
   // Every landing passes here, whoever lands it (the merge queue, a readmitted

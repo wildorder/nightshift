@@ -204,12 +204,12 @@ describe("setup", () => {
     const [verification] = await world.stores.verifications.listByNode(world.scope, started.nodeId);
     expect(verification?.outcome).toBe("passed");
   });
-  it("gives the agent a temp directory beside its worktree, and verification a fresh one that goes", async () => {
+  it("gives the agent a temp directory of its own, and verification a fresh one that goes", async () => {
     let agentTmp: string | undefined;
     let worktree = "";
-    // Passes only with its own temp directory beside the checkout, and leaves a
+    // Passes only with its own temp directory, outside the checkout, and leaves a
     // folder there the way aws-cdk-lib's tests did.
-    const OWN_TMP = `node -e "const os=require('os'),p=require('path'),fs=require('fs');const t=os.tmpdir();if(p.basename(t)!==p.basename(process.cwd())+'.tmp')process.exit(1);fs.mkdirSync(p.join(t,'cdk.out1'),{recursive:true})"`;
+    const OWN_TMP = `node -e "const os=require('os'),p=require('path'),fs=require('fs');const t=os.tmpdir();if(!/^[0-9a-f]{12}$/.test(p.basename(t))||t.startsWith(process.cwd()))process.exit(1);fs.mkdirSync(p.join(t,'cdk.out1'),{recursive:true})"`;
     const world = await createWorld({
       program: { verification: [{ id: "own-tmp", command: OWN_TMP }] },
       harness: createFakeHarness({
@@ -229,10 +229,10 @@ describe("setup", () => {
     await started.completion;
     await world.outbox.flush();
 
-    expect(agentTmp).toBe(`${worktree}.tmp`);
+    expect(agentTmp).toBe(world.environment.paths.scratch(worktree));
     const [verification] = await world.stores.verifications.listByNode(world.scope, started.nodeId);
     expect(verification?.outcome).toBe("passed");
     // What the step left in its temp directory went with it.
-    expect(existsSync(`${worktree}.tmp`)).toBe(false);
+    expect(existsSync(world.environment.paths.scratch(worktree))).toBe(false);
   });
 });
