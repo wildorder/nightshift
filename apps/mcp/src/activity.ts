@@ -97,7 +97,8 @@ const payloadOf = (event: Event): Record<string, unknown> =>
 
 const listOf = (value: unknown): string => short(Array.isArray(value) ? value.join(", ") : "");
 
-type Render = (p: Record<string, unknown>, context: Context) => string;
+/** `who` is the line's own label: the strand or job the event is about. */
+type Render = (p: Record<string, unknown>, context: Context, who: string) => string;
 
 const verificationText: Render = (p) => {
   if (p.outcome === "failed") {
@@ -150,6 +151,28 @@ const RENDER: Readonly<Record<string, Render>> = {
   "finding.ruled": (p) => `the arbiter ${String(p.ruling)} ${String(p.findingId)}`,
   "run.budget_spent": (p) =>
     `budget spent: ${String(p.budget)} ${String(p.spent)} of ${String(p.limit)}; nothing new starts`,
+  // P15: a gate that broke, and what the root does about it (D-P15-03, D-P15-04, D-P15-06).
+  "gate.red": (p) =>
+    `the base is red: ${listOf(p.failing)}; the run repairs it first — delegate a repair ` +
+    "{ cause: red_base } before anything else; strands wait on it",
+  "gate.flaked": (p, _context, who) =>
+    `${listOf(p.stepIds)} flaked on ${who}: the work landed; open a repair { cause: flaky } off ` +
+    "the blocking path",
+  "gate.repaired": (p, context, who) => repairedText(p, context, who),
+};
+
+/** A repair landed: what it repaired, under which decision, and whether the gates changed. */
+const repairedText: Render = (p, context) => {
+  const job = context.jobs.get(String(p.jobContractId));
+  const gates = job?.repair === undefined ? "" : ` ${job.repair.gates.join(", ")}`;
+  const changed =
+    p.definitionsChanged === true
+      ? "the gate definitions changed, and later verifications use them"
+      : "the gate definitions are unchanged";
+  return (
+    `repair ${String(p.jobContractId)} landed (${String(p.cause)}${gates}) under decision ` +
+    `${String(p.decisionId)}; ${changed}`
+  );
 };
 
 /** A routing decision, told as a reader wants it: a fallback, a climb, or where a job started. */
@@ -199,10 +222,11 @@ class Narration {
     this.ids.push(event.eventId);
     if (this.handed.has(event.eventId)) return;
     if (nodeId !== null) this.heartbeat(nodeId);
+    const who = whoIs(this.context, nodeId);
     this.lines.push({
       at: event.occurredAt,
-      who: whoIs(this.context, nodeId),
-      text: render(payloadOf(event), this.context),
+      who,
+      text: render(payloadOf(event), this.context, who),
     });
   }
 

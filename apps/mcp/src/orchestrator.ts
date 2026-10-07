@@ -24,8 +24,11 @@ import { dirname, resolve } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   Checkpoint,
+  DecisionId,
   ExecutionNode,
   JobContract,
+  Repair,
+  RepairCause,
   RouteChoice,
   Scope,
 } from "@nightshift/contracts";
@@ -38,6 +41,8 @@ import {
   type JobKind,
   NIGHTSHIFT_CONFIG_FILE,
   NightshiftConfigSchema,
+  RepairCauseSchema,
+  type Reversibility,
   ReversibilitySchema,
   ScopeRequestSchema,
   StrandIdSchema,
@@ -696,10 +701,14 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       title: "Delegate one bounded job",
       description:
         "Validate a Job Contract, persist it with its node, agent and routing decision, and start " +
-        "a worker in an isolated worktree. Returns once the worker is running; wait with job.wait.",
+        "a worker in an isolated worktree. Returns once the worker is running; wait with job.wait. " +
+        "With `repair`, it opens a repair of a red or flaky gate (P15): the one job a planned run " +
+        "adds outside its strands. A repair carries its `decision`, recorded in the same call; its " +
+        "scope is the program's whole scope and its risk is high, whatever you ask for.",
       inputSchema: {
         objective: z.string().min(1),
-        scope: ScopeRequestSchema,
+        // Required for every job but a repair, whose scope is the program's (D-P15-10).
+        scope: ScopeRequestSchema.optional(),
         acceptance: z.array(z.string().min(1)).min(1),
         dependencies: z.array(z.string().min(1)).optional(),
         // P8 (D-P8-01): what the job says about itself, so routing can place it.
@@ -709,30 +718,25 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         // of its own, which delegates within it (D-P6-03).
         kind: z.enum(["job", "sub-program"]).optional(),
         ...PIN_INPUTS,
+        repair: REPAIR_INPUT.optional(),
       },
     },
     async (input) =>
       guarded(async () => {
         const attached = requireAttached(state);
-        if (attached.planSections !== undefined) {
-          // A ratified plan fixed the seams (D-P7-04). The root of a planned run
-          // delegates strands and nothing else: how a strand divides is its own
-          // orchestrator's, one level down.
-          throw new ToolRefusal(
-            "plan_fixes_strands",
-            "this run follows a ratified plan, so the program node delegates its strands and " +
-              "nothing else. Use strand.delegate { strandId }; a strand's own orchestrator " +
-              "decides its jobs. A strand cannot be added or dropped without ratifying the plan again.",
-            { strands: strandsOf(attached.session.program).map((strand) => strand.id) },
-          );
+        // P15 (D-P15-04): a repair is the one job a planned run adds outside its
+        // strands, so it is admitted before the plan's refusal below.
+        if (input.repair !== undefined) {
+          return await delegateRepair(state, attached, input, input.repair);
         }
+        const scope = scopeOfOrdinaryDelegation(attached, input.scope);
 
         // 1. A valid Job Contract before anything else (A-03). An invalid one
         //    never becomes a node, so nothing is persisted on this path.
-        const job = buildJobContract(state, attached, input);
+        const job = buildJobContract(state, attached, { ...input, scope, repair: undefined });
 
         // 2. Depth, concurrency and scope narrowing, all from `core` (A-11).
-        const check = await checkDelegationOrRefuse(state, attached, input.scope);
+        const check = await checkDelegationOrRefuse(state, attached, scope);
 
         // 3. Where it runs, and why: the run's rules over its ladders (D-P8-04).
         const pins = pinsOf(input);
@@ -958,63 +962,22 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       description:
         "A choice a later reader would want the reasoning for, with the alternatives you rejected.",
       inputSchema: {
-        context: z.string().min(1),
-        alternatives: z
-          .array(z.object({ summary: z.string().min(1), rejectedBecause: z.string().optional() }))
-          .min(1),
-        choice: z.string().min(1),
-        rationale: z.string().min(1),
-        reversibility: ReversibilitySchema,
+        ...DECISION_FIELDS,
         affectedNodes: z.array(z.string().min(1)).optional(),
       },
     },
     async (input) =>
       guarded(async () => {
         const attached = requireAttached(state);
-        const { stores, ids, clock } = state.runtime;
-        const scope = attached.session.scope;
-        const checkpoints = await stores.checkpoints.listByRun(scope);
-        const latest = checkpoints.items.at(-1);
-        if (latest === undefined) {
-          throw new ToolRefusal(
-            "not_found",
-            "this run has no checkpoint yet, and a decision must point at the state it was made " +
-              "from. That should not happen: `nightshift run` creates one.",
-          );
-        }
-
-        const decisionId = ids.next("dec");
-        await stores.decisions.put({
-          schemaVersion: 1,
-          ...scope,
-          decisionId,
-          executionNodeId: attached.session.rootNodeId,
-          agentId: attached.session.orchestratorAgentId,
-          context: input.context,
-          alternatives: input.alternatives.map((alternative) =>
-            alternative.rejectedBecause === undefined
-              ? { summary: alternative.summary }
-              : { summary: alternative.summary, rejectedBecause: alternative.rejectedBecause },
-          ),
-          choice: input.choice,
-          rationale: input.rationale,
-          reversibility: input.reversibility,
-          checkpointBefore: latest.checkpointId,
-          affectedNodes: (input.affectedNodes ?? []).map((id) => ExecutionNodeIdSchema.parse(id)),
-          authority: "agent",
-          supersedesDecisionId: null,
-          createdAt: nowIso(clock),
-        });
-        attached.outbox.emit({
-          type: "decision.recorded",
-          source: "mcp",
-          payload: { decisionId, choice: input.choice, reversibility: input.reversibility },
-          executionNodeId: attached.session.rootNodeId,
-          agentId: attached.session.orchestratorAgentId,
-        });
+        const { decisionId, checkpointBefore } = await recordDecision(
+          state,
+          attached,
+          input,
+          state.runtime.ids.next("dec"),
+        );
         return ok(`Recorded decision ${decisionId}: ${input.choice}`, {
           decisionId,
-          checkpointBefore: latest.checkpointId,
+          checkpointBefore,
         });
       }),
   );
@@ -1043,8 +1006,236 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
 };
 
 // ---------------------------------------------------------------------------
+// Decisions
+// ---------------------------------------------------------------------------
+
+/** What a decision says, as `decision.record` takes it and a repair carries it. */
+const DECISION_FIELDS = {
+  context: z.string().min(1),
+  alternatives: z
+    .array(z.object({ summary: z.string().min(1), rejectedBecause: z.string().optional() }))
+    .min(1),
+  choice: z.string().min(1),
+  rationale: z.string().min(1),
+  reversibility: ReversibilitySchema,
+};
+
+interface DecisionInput {
+  readonly context: string;
+  readonly alternatives: readonly {
+    readonly summary: string;
+    readonly rejectedBecause?: string | undefined;
+  }[];
+  readonly choice: string;
+  readonly rationale: string;
+  readonly reversibility: Reversibility;
+  readonly affectedNodes?: readonly string[] | undefined;
+}
+
+/**
+ * Records a decision of the root's, as `decision.record` always has: the same
+ * store, the same event. Nothing is written when the run has no checkpoint.
+ */
+const recordDecision = async (
+  state: OrchestratorSession,
+  attached: AttachedRun,
+  input: DecisionInput,
+  decisionId: DecisionId,
+): Promise<{ readonly decisionId: DecisionId; readonly checkpointBefore: string }> => {
+  const { stores, clock } = state.runtime;
+  const scope = attached.session.scope;
+  const checkpoints = await stores.checkpoints.listByRun(scope);
+  const latest = checkpoints.items.at(-1);
+  if (latest === undefined) {
+    throw new ToolRefusal(
+      "not_found",
+      "this run has no checkpoint yet, and a decision must point at the state it was made " +
+        "from. That should not happen: `nightshift run` creates one.",
+    );
+  }
+
+  await stores.decisions.put({
+    schemaVersion: 1,
+    ...scope,
+    decisionId,
+    executionNodeId: attached.session.rootNodeId,
+    agentId: attached.session.orchestratorAgentId,
+    context: input.context,
+    alternatives: input.alternatives.map((alternative) =>
+      alternative.rejectedBecause === undefined
+        ? { summary: alternative.summary }
+        : { summary: alternative.summary, rejectedBecause: alternative.rejectedBecause },
+    ),
+    choice: input.choice,
+    rationale: input.rationale,
+    reversibility: input.reversibility,
+    checkpointBefore: latest.checkpointId,
+    affectedNodes: (input.affectedNodes ?? []).map((id) => ExecutionNodeIdSchema.parse(id)),
+    authority: "agent",
+    supersedesDecisionId: null,
+    createdAt: nowIso(clock),
+  });
+  attached.outbox.emit({
+    type: "decision.recorded",
+    source: "mcp",
+    payload: { decisionId, choice: input.choice, reversibility: input.reversibility },
+    executionNodeId: attached.session.rootNodeId,
+    agentId: attached.session.orchestratorAgentId,
+  });
+  return { decisionId, checkpointBefore: latest.checkpointId };
+};
+
+// ---------------------------------------------------------------------------
+// Repairs (P15, D-P15-04, D-P15-06, D-P15-10)
+// ---------------------------------------------------------------------------
+
+/** What `delegate` takes to open a repair: the gates, why, and the decision that records it. */
+const REPAIR_INPUT = z
+  .object({
+    cause: RepairCauseSchema,
+    gates: z.array(z.string().min(1)).min(1),
+    decision: z.object(DECISION_FIELDS).optional(),
+  })
+  .describe(
+    "Open a repair of red or flaky gates (setup or verification step ids). `decision` is " +
+      "required: every repair records one, as decision.record takes it.",
+  );
+
+type RepairInput = z.infer<typeof REPAIR_INPUT>;
+
+const CAUSE_SENTENCE: Readonly<Record<RepairCause, string>> = {
+  red_base:
+    "These gates were red on the base this run started from. The strands wait on this repair " +
+    "alone: fix them first.",
+  flaky:
+    "These gates failed and then passed when verification reran them on the same commit: they " +
+    "are flaky. The work that met the flake landed; this repair runs off the blocking path.",
+};
+
+/** The paragraph Nightshift appends to every repair's objective, and the decision behind it. */
+const repairObjective = (objective: string, repair: Repair, decision: DecisionInput): string =>
+  [
+    objective.trim(),
+    "",
+    `REPAIR (${repair.cause}) — the gates: ${repair.gates.join(", ")}.`,
+    `${CAUSE_SENTENCE[repair.cause]} The gate standard holds: the fix must keep each gate at ` +
+      "least as strong as it was. Weakening a gate (a retry wrapper, a looser assertion, a " +
+      "deleted or skipped test, a removed check) is a blocking finding unless the decision below " +
+      "says why. A repair may change anything it needs to, setup and gate commands included " +
+      "(nightshift.config.json, the contract's setup and verification); a changed gate definition " +
+      "applies to verifications after the repair lands. Its scope is the program's whole scope, " +
+      "and it is examined at high risk.",
+    "",
+    `THE DECISION RECORDED WITH THIS REPAIR (${repair.decisionId})`,
+    `Context: ${decision.context}`,
+    `Choice: ${decision.choice}`,
+    `Rationale: ${decision.rationale}`,
+    ...decision.alternatives.map(
+      (alternative) =>
+        `Rejected: ${alternative.summary}` +
+        (alternative.rejectedBecause === undefined ? "" : ` — ${alternative.rejectedBecause}`),
+    ),
+    `Reversibility: ${decision.reversibility}`,
+  ].join("\n");
+
+/**
+ * A repair job (D-P15-04): the root's alone, with its decision recorded in the
+ * same call; the program's whole scope (D-P15-10); examined at high risk,
+ * whatever was asked for. Admitted on a planned run, outside every strand.
+ */
+const delegateRepair = async (
+  state: OrchestratorSession,
+  attached: AttachedRun,
+  input: DelegateRequest,
+  repairInput: RepairInput,
+) => {
+  const decision = repairInput.decision;
+  if (decision === undefined) {
+    // Refused before anything is written: no decision, no repair.
+    throw new ToolRefusal(
+      "repair_needs_decision",
+      "every repair records a decision (D-P15-04), in the same call: pass repair.decision " +
+        "{ context, alternatives, choice, rationale, reversibility } saying which gates broke, " +
+        "how, and what the repair will do about them.",
+      { cause: repairInput.cause, gates: repairInput.gates },
+    );
+  }
+  if (input.kind === "sub-program") {
+    throw new ToolRefusal(
+      "validation_failed",
+      "a repair is one job, not a sub-program: leave kind unset or pass job.",
+    );
+  }
+  const { program } = attached.session;
+  // The id first, so the contract that carries it is validated before anything is written.
+  const decisionId = state.runtime.ids.next("dec");
+  const repair: Repair = { cause: repairInput.cause, gates: repairInput.gates, decisionId };
+  const scope: Scope = program.scope;
+  const job = buildJobContract(state, attached, {
+    ...input,
+    objective: repairObjective(input.objective, repair, decision),
+    scope,
+    // High whatever was asked, so an independent examiner sees it (D-P15-04).
+    risk: "high",
+    kind: "job",
+    repair,
+  });
+  const check = await checkDelegationOrRefuse(state, attached, scope);
+  const pins = pinsOf(input);
+  const route = chooseRoute(attached, job, pins);
+
+  // The decision is recorded first, exactly as decision.record records one;
+  // then the job that carries its id is submitted like any other.
+  await recordDecision(state, attached, decision, decisionId);
+  const submitted = await attached.engine.submit({
+    job,
+    scope: check.scope,
+    depth: check.depth,
+    parentNodeId: attached.session.rootNodeId,
+    route,
+    pins,
+  });
+  const started = submitted.started;
+  return ok(
+    `Delegated repair ${job.jobContractId} (${repair.cause}: ${repair.gates.join(", ")}) as node ` +
+      `${submitted.nodeId}, with decision ${decisionId}. It has the program's whole scope and is ` +
+      "examined at high risk. " +
+      (repair.cause === "red_base"
+        ? "The strands wait on it: wait for it with job.wait before anything else."
+        : "It is off the blocking path: carry on with the strands, and do not finish the run " +
+          "while it is in flight.") +
+      (started === undefined ? " It is queued until its parent has a free slot." : ""),
+    {
+      jobId: job.jobContractId,
+      nodeId: submitted.nodeId,
+      status: submitted.status,
+      decisionId,
+      repair,
+      agentId: started?.agentId ?? null,
+      worktree: started?.worktree ?? null,
+      harness: route.target.harness,
+      provider: route.target.provider,
+      model: route.target.model,
+      wasOverride: route.wasOverride,
+      ruleId: route.ruleId,
+      ladder: route.ladder ?? null,
+      tier: route.rung?.tier ?? null,
+    },
+  );
+};
+
+// ---------------------------------------------------------------------------
 // `delegate`, one step at a time
 // ---------------------------------------------------------------------------
+
+/** What `delegate` was called with: a scope is optional only for a repair. */
+type DelegateRequest = Omit<DelegateInput, "scope" | "repair"> & {
+  readonly scope?: DelegateInput["scope"] | undefined;
+  readonly ladder?: string | undefined;
+  readonly tier?: Tier | undefined;
+  readonly harness?: string | undefined;
+  readonly effort?: Effort | undefined;
+};
 
 interface DelegateInput {
   readonly objective: string;
@@ -1057,6 +1248,8 @@ interface DelegateInput {
   readonly jobKind?: JobKind | undefined;
   readonly model?: string | undefined;
   readonly kind?: "job" | "sub-program" | undefined;
+  /** P15: set for a repair job alone, by `delegateRepair`. */
+  readonly repair?: Repair | undefined;
 }
 
 /**
@@ -1097,6 +1290,35 @@ const pinsOf = (input: {
   model: input.model,
   effort: input.effort,
 });
+
+/**
+ * A delegation that is not a repair: refused on a planned run, whose plan fixed
+ * the seams (D-P7-04), and it must name its scope.
+ */
+const scopeOfOrdinaryDelegation = (
+  attached: AttachedRun,
+  scope: DelegateInput["scope"] | undefined,
+): DelegateInput["scope"] => {
+  if (attached.planSections !== undefined) {
+    // The root of a planned run delegates strands and nothing else: how a
+    // strand divides is its own orchestrator's, one level down.
+    throw new ToolRefusal(
+      "plan_fixes_strands",
+      "this run follows a ratified plan, so the program node delegates its strands and " +
+        "nothing else. Use strand.delegate { strandId }; a strand's own orchestrator " +
+        "decides its jobs. A strand cannot be added or dropped without ratifying the plan again. " +
+        "The one exception is a repair of a red or flaky gate: delegate with `repair` and its decision.",
+      { strands: strandsOf(attached.session.program).map((strand) => strand.id) },
+    );
+  }
+  if (scope === undefined) {
+    throw new ToolRefusal(
+      "validation_failed",
+      "name the job's scope: only a repair takes the program's whole scope without one.",
+    );
+  }
+  return scope;
+};
 
 /** The contract, validated. An invalid one never becomes a node. */
 /**
@@ -1202,6 +1424,7 @@ const buildJobContract = (
       : input.jobKind === undefined
         ? {}
         : { kind: input.jobKind }),
+    ...(input.repair === undefined ? {} : { repair: input.repair }),
     createdAt: nowIso(state.runtime.clock),
   });
 

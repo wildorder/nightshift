@@ -217,10 +217,23 @@ export const registerSubOrchestratorTools = (
         // P8 (D-P8-01): what the job says about itself, so routing can place it.
         // Unset is the conservative choice, not the cheap one.
         ...CLASSIFICATION_INPUTS,
+        // Accepted only to be refused by name: a repair is the program node's (D-P15-04).
+        repair: z
+          .unknown()
+          .optional()
+          .describe("Not yours: only the program node opens a repair of a gate."),
       },
     },
     async (input) =>
       guarded(async () => {
+        if (input.repair !== undefined) {
+          throw new ToolRefusal(
+            "repair_not_yours",
+            "only the program node delegates a repair of a gate (D-P15-04), because a repair " +
+              "takes the program's whole scope and a sub-program holds only its own. Report the " +
+              "broken or flaky gate with subprogram.progress, or in subprogram.fail, and the root repairs it.",
+          );
+        }
         const parent = await own();
         // Scope can only narrow (A-11). Checked here so the refusal lists every
         // pattern that was not covered; the API checks it again, with depth and

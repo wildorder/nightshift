@@ -150,7 +150,8 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     // The plan as ratified, whole, is part of the brief.
     expect(brief).toContain("THE PLAN, AS RATIFIED\n\n# The plan\n\n### S-01 First\n\nA module.");
     expect(nightshiftToolNames("program", planned)).toContain("strand.delegate");
-    expect(nightshiftToolNames("program", planned)).not.toContain("delegate");
+    // For a repair of a gate alone (P15, D-P15-04): the tool refuses anything else.
+    expect(nightshiftToolNames("program", planned)).toContain("delegate");
   });
 
   it("leaves a program node of an unplanned contract exactly as it was", () => {

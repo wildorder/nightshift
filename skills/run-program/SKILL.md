@@ -67,13 +67,17 @@ Check, and say what you find, without fixing anything the human did not ask for:
    preflight first and stops with remediations if a first strand's prerequisite
    is unmet, then the gate audit, and stops if a gate is red (section 1). The
    audit runs the whole gate once, so expect it to take that long.
-2. `run.attach { runId, model: "<the model you are>" }`.
+2. `run.attach { runId, model: "<the model you are>" }`. If the run started
+   red (a `gate.red` line in `Meanwhile:`: the base fails its own gates), your
+   **first act is a repair**, before any strand (section 2a). The strands are
+   held until it lands.
 3. `strand.delegate { strandId }` for **every** strand, at once. You name the
    strand and nothing else: its orchestrator is handed its plan section
    verbatim, the human's decisions that touch it, and the other strands'
    scopes. Nightshift holds a strand until what it depends on has succeeded, so
    do not sequence them yourself. Plain `delegate` is refused: the plan fixes
-   the strands, and how each divides into jobs is its orchestrator's call.
+   the strands, and how each divides into jobs is its orchestrator's call. The
+   one exception is a repair of a gate (section 2a).
    A strand an earlier run of this same plan already finished, whose work is
    on the program branch, is **carried over**: `run.attach` names it, it counts
    as succeeded, and `strand.delegate` refuses it as `strand_carried`. That is
@@ -101,13 +105,50 @@ Check, and say what you find, without fixing anything the human did not ask for:
    the worker's brief already carries them.
 6. A job that ends **deferred** is done for now, waiting on a human
    prerequisite, on the provisional line. Not a failure; nothing to retry.
-7. When every strand has succeeded, is deferred, or is parked:
+7. When every strand has succeeded, is deferred, or is parked, **and no repair
+   is still in flight**:
    `run.finish { outcome, reason }` — `succeeded` only if every strand did;
    `deferred` when nothing failed and some work waits; otherwise `failed`,
    naming what was parked. Then read the report (section 4).
 
 You do not write code during the run, and you do not touch the checkout: every
 landing fast-forwards the branch it is on.
+
+### 2a. When a gate breaks: repair it, never re-plan
+
+A gate is a setup or verification step. A run repairs a broken gate itself, with
+a **repair job**: the one job the root adds outside the strands (D-P15-04). Only
+the root may; a strand's orchestrator is refused. A repair has the program's
+whole scope, may change anything it needs (setup and the gate commands in
+`nightshift.config.json` or the contract included), and is examined at high
+risk against Nightshift's gate standard. **Every repair carries its decision**,
+recorded in the same call; without one it is refused as `repair_needs_decision`:
+
+```text
+delegate {
+  objective: "Make the test gate pass on the base: …",
+  acceptance: ["npm run test passes on a fresh checkout", …],
+  repair: {
+    cause: "red_base" | "flaky",
+    gates: ["test"],
+    decision: { context, alternatives, choice, rationale, reversibility }
+  }
+}
+```
+
+- **A red base** (`gate.red`: "the base is red"). Your first act is one repair
+  `{ cause: "red_base" }` naming the failing gates, before any strand. The
+  strands are held until it lands; wait for it with `job.wait`.
+- **A flake** (`gate.flaked`: a check failed and passed when rerun on the same
+  commit). The work landed and nothing is blocked. Open **one repair per flaky
+  gate**, `{ cause: "flaky" }`, off the blocking path: no strand waits on it,
+  and you carry on with the strands.
+- **The gate standard holds.** The fix must keep each gate at least as strong.
+  Weakening a gate (a retry wrapper, a looser assertion, a deleted or skipped
+  test, a removed check) is a blocking finding unless the decision says why.
+- **Do not `run.finish` while a repair is in flight.** A `gate.repaired` line
+  says one landed, under which decision, and whether the gate definitions
+  changed (later verifications use the new ones).
 
 ## 3. Dark: nightshift runs it alone
 

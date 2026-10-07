@@ -33,6 +33,7 @@ export {
   STRAND_DEPARTURE_PREFIX,
   type WorkerBriefInput,
 } from "./brief.js";
+export { GATE_STANDARD } from "./gate-standard.js";
 export {
   type AgentTask,
   agentStatusForExit,

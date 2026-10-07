@@ -29,6 +29,7 @@ import type {
 } from "@nightshift/contracts";
 import { MAX_EXAMINATION_QUESTIONS } from "@nightshift/contracts";
 import { grantedPermissions, PERMISSION_SHELL_EXEC } from "@nightshift/core";
+import { GATE_STANDARD } from "./gate-standard.js";
 import type {
   AgentTask,
   CarriedOverWork,
@@ -303,7 +304,7 @@ export const nightshiftToolNames = (
 const isPlanRoot = (kind: ExecutionNode["kind"], program: ProgramContract | undefined): boolean =>
   kind === "program" && (program?.strands?.length ?? 0) > 0;
 
-/** What the headless root of a planned run is given: strands in, a finished run out. */
+/** What the headless root of a planned run is given: strands (and repairs) in, a finished run out. */
 const ROOT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "run.attach",
   "program.get",
@@ -311,6 +312,9 @@ const ROOT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "execution.status",
   "run.activity",
   "strand.delegate",
+  // P15 (D-P15-04): for a repair of a gate alone. The tool refuses anything else
+  // on a planned run as plan_fixes_strands.
+  "delegate",
   "job.wait",
   "job.get",
   "job.cancel",
@@ -513,6 +517,37 @@ const describeStrand = (strand: NonNullable<ProgramContract["strands"]>[number])
  * `job.objective` carries the plan document, so the adapter contract is the one
  * every other node is started through.
  */
+/**
+ * What the root of a planned run does when a gate breaks (P15, D-P15-03,
+ * D-P15-04, D-P15-06): it repairs, it never re-plans, and every repair carries
+ * its decision. `skills/run-program/SKILL.md` says the same to an interactive root.
+ */
+const REPAIRING_GATES = [
+  "WHEN A GATE BREAKS — repair it; never re-plan",
+  "",
+  "  A gate is a setup or verification step. The run repairs a broken one itself, with a",
+  "  repair job: the one job you add outside the strands. It has the program's whole scope,",
+  "  may change anything (setup and gate commands included), and is examined at high risk.",
+  "",
+  "    nightshift delegate { objective, acceptance,",
+  "      repair: { cause, gates, decision: { context, alternatives, choice, rationale,",
+  "                                          reversibility } } }",
+  "",
+  "  Every repair carries its decision, recorded in the same call; without one it is refused",
+  "  (repair_needs_decision). Say which gates broke, how, and what the repair will do.",
+  "",
+  "  A RED BASE (`gate.red`): the base this run started from fails its gates. Your first act",
+  "    is a repair { cause: red_base } naming the failing gates, before anything else. The",
+  "    strands are held until it lands; wait for it with job.wait.",
+  "  A FLAKE (`gate.flaked`): a check failed and passed when rerun on the same commit. The",
+  "    work landed and nothing is blocked. Open one repair { cause: flaky } per flaky gate,",
+  "    off the blocking path: no strand waits on it, and you carry on with the strands.",
+  "",
+  "  The fix must keep each gate at least as strong. A weakened gate (a retry wrapper, a",
+  "  looser assertion, a deleted or skipped test, a removed check) is a blocking finding",
+  "  unless the decision says why. Do not run.finish while a repair is still in flight.",
+].join("\n");
+
 export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
   const { job, program, worktree, node } = input;
   const strands = program.strands ?? [];
@@ -541,6 +576,9 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
     [
       "WHAT YOU DO",
       "",
+      "  0. If the run started red (a `gate.red` line: the base fails its own gates), your first",
+      "     act is a repair, before any strand: see WHEN A GATE BREAKS. The strands are held",
+      "     until it lands.",
       "  1. Delegate EVERY strand, now, all of them, in any order:",
       "       nightshift strand.delegate { strandId }",
       "     You say which strand and nothing else. Its orchestrator is handed its section of",
@@ -561,7 +599,8 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       "     a human can supply. It is not a failure and there is nothing to retry. Its work is",
       "     kept on a provisional line, later strands build on it, and job.wait treats it as",
       "     settled. Carry on with everything else.",
-      "  6. When every strand has succeeded, is deferred, or is parked:",
+      "  6. When every strand has succeeded, is deferred, or is parked, and no repair is still",
+      "     in flight:",
       "       nightshift run.finish { outcome, reason }",
       '     "succeeded" only if every strand succeeded. "deferred" when nothing failed and some',
       '     work is deferred: name the prerequisites it waits on. Otherwise "failed", with a',
@@ -571,12 +610,14 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       "YOU DO NOT WRITE CODE, AND YOU DO NOT PLAN JOBS",
       "",
       "  Every change is made by a worker a strand's orchestrator delegates. Nothing you edit",
-      "  is ever collected, and the plain delegate tool is refused to you. Your working",
+      "  is ever collected, and the plain delegate tool is refused to you, but for a repair",
+      "  (below). Your working",
       `  directory is a checkout to read: ${worktree}`,
       "",
       "  Record what you decide (a retry, giving up on a strand) with decision.record: the",
       "  report lists the run's own decisions.",
     ].join("\n"),
+    REPAIRING_GATES,
     ...(decisions.length === 0
       ? []
       : [
@@ -784,6 +825,34 @@ const indent = (text: string, spaces: number): string =>
     .join("\n");
 
 /**
+ * What the examiner of a repair job judges it against (P15, D-P15-04,
+ * D-P15-05): Nightshift's gate standard, and the rule that a weakened gate
+ * stops the work unless the repair's decision says why. The decision itself
+ * travels in the job's objective, which Nightshift wrote when the root
+ * delegated the repair; an ordinary job gets none of this.
+ */
+const renderRepairStandard = (job: JobContract): string | undefined => {
+  if (job.repair === undefined) return undefined;
+  const { cause, gates, decisionId } = job.repair;
+  return [
+    "THIS IS A REPAIR — JUDGE IT AGAINST NIGHTSHIFT'S GATE STANDARD",
+    "",
+    `  The run opened this job to repair ${cause === "red_base" ? "a red base" : "a flaky gate"}: ${gates.join(", ")}.`,
+    "  A repair may change anything it needs to, setup and gate commands included.",
+    "  What it may not do is make a gate weaker to get it green. A weakened gate (a",
+    "  retry wrapper, a looser assertion, a deleted or skipped test, a removed check,",
+    "  a gate dropped from verification) is a blocking finding unless the repair's",
+    `  decision says why. That decision, ${decisionId}, is quoted in full at the end of`,
+    "  what was asked for above. Raise a weakened gate the decision does not account",
+    "  for as material, with evidence; one it does account for, say so as minor.",
+    "",
+    "  The standard, as Nightshift ships it:",
+    "",
+    indent(GATE_STANDARD.trimEnd(), 4),
+  ].join("\n");
+};
+
+/**
  * The examiner's brief (D-P8-10, D-P8-11, D-P8-12, D-P8-15). It is given the
  * evidence and nothing of the builder's reasoning; it may ask; every finding it
  * raises must point at something a reader can check.
@@ -811,6 +880,8 @@ export const renderExaminerBrief = (
     ].join("\n"),
     ...evidenceSections(input, evidence),
   ];
+  const repair = renderRepairStandard(input.job);
+  if (repair !== undefined) sections.push(repair);
   if (evidence.rulings !== undefined && evidence.rulings.length > 0) {
     sections.push(renderRulingsToCheck(evidence.rulings));
   } else if (evidence.previousFindings !== undefined && evidence.previousFindings.length > 0) {
