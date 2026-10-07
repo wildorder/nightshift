@@ -277,6 +277,13 @@ export const recoveryNote = (generation: number, orphans: Orphans): string => {
   return lines.join("\n");
 };
 
+/** What the root is told before the plan when strands were carried over from an earlier run. */
+const carriedNote = (carried: NonNullable<Run["carriedStrands"]>): string =>
+  "Some strands of this plan were already built by an earlier run of it, and everything they " +
+  "landed is on the program branch this run starts from. They count as succeeded here; do not " +
+  `delegate them: ${carried.map((strand) => `${strand.strandId} (run ${strand.fromRunId})`).join(", ")}. ` +
+  "Delegate every other strand as usual.";
+
 /**
  * Starts the root orchestrator and waits for it to go. Resolves with how the
  * process ended and how the **run** ended, which are two facts: a root that
@@ -309,9 +316,13 @@ export const runHeadless = async (
     schemaVersion: 1,
     ...scope,
     jobContractId: ids.next("job"),
-    objective: resuming
-      ? `${recoveryNote(input.recovering?.generation ?? 0, orphans)}\n\n${planText}`
-      : planText,
+    objective: [
+      ...(resuming ? [recoveryNote(input.recovering?.generation ?? 0, orphans)] : []),
+      ...(run.carriedStrands === undefined || run.carriedStrands.length === 0
+        ? []
+        : [carriedNote(run.carriedStrands)]),
+      planText,
+    ].join("\n\n"),
     scope: { includes: [...program.scope.includes] },
     acceptance: ["every strand of the ratified plan has succeeded, or is parked with a reason"],
     dependencies: [],

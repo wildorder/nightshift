@@ -39,6 +39,8 @@ export type RefusalCode =
   /** P7: a planned run. The plan names the strands; the root neither adds nor drops one. */
   | "plan_fixes_strands"
   | "strand_blocked"
+  /** A strand an earlier run of the same plan built, carried over: succeeded here already. */
+  | "strand_carried"
   | "plan_unavailable"
   | "not_attached"
   | "already_attached"

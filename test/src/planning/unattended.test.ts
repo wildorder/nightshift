@@ -20,7 +20,7 @@ import {
   renderReport,
   systemClock,
 } from "@nightshift/core";
-import { git, nodeGitRunner, startRun } from "@nightshift/execution";
+import { carriedStrandsFor, git, nodeGitRunner, startRun } from "@nightshift/execution";
 import { STRAND_DEPARTURE_PREFIX } from "@nightshift/harness";
 import { createActivityFeed, renderActivity } from "@nightshift/mcp";
 import { createHttpPlanning } from "@nightshift/persistence/http";
@@ -85,8 +85,8 @@ const plan = (tags: Readonly<Record<string, string>>): string =>
     "",
   ].join("\n");
 
-/** Ratifies the three-strand plan, starts a run of it, and runs the launcher to its end. */
-const runUnattended = async (
+/** Ratifies the three-strand plan and commits its program directory. Starts nothing. */
+const prepare = async (
   tags: Readonly<Record<string, string>> = {},
   /** Adds a verification step that needs a human prerequisite nobody has met (D-P7-10). */
   gated = false,
@@ -147,7 +147,11 @@ const runUnattended = async (
     ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", "plan"],
     { cwd: ctx.fixture.repo },
   );
+  return { ctx, contract, planText };
+};
 
+/** Starts a run of the ratified plan and runs the launcher to its end. */
+const launch = async (ctx: SliceContext, contract: ProgramContract, planText: string) => {
   const started = await startRun(
     { stores: ctx.stores, clock: systemClock, ids: ctx.ids, git: nodeGitRunner },
     { program: contract, planText, repoPath: ctx.fixture.repo },
@@ -228,7 +232,17 @@ const runUnattended = async (
     ["log", "--format=%s", `${started.baseCommit}..${PROGRAM_BRANCH}`],
     { cwd: ctx.fixture.repo },
   );
-  return { ctx, scope, answer, events, report, log, planText };
+  return { ctx, scope, answer, events, report, log, planText, started };
+};
+
+/** Ratifies the three-strand plan, starts a run of it, and runs the launcher to its end. */
+const runUnattended = async (
+  tags: Readonly<Record<string, string>> = {},
+  /** Adds a verification step that needs a human prerequisite nobody has met (D-P7-10). */
+  gated = false,
+) => {
+  const { ctx, contract, planText } = await prepare(tags, gated);
+  return launch(ctx, contract, planText);
 };
 
 describe("nightshift run {id}, unattended (SC-P7-06)", () => {
@@ -376,6 +390,62 @@ describe("nightshift run {id}, unattended (SC-P7-06)", () => {
     // The program branch received none of it.
     expect(log).toBe("");
   }, 180_000);
+
+  it("carries over what an earlier run of the same plan finished, and builds only the rest", async () => {
+    // S-02 cannot be done until READY is on the branch: the same plan fails,
+    // then succeeds once something has fixed the branch, as P15's run did.
+    const { ctx, contract, planText } = await prepare({ "S-02": " fail=1 unless=READY" });
+    const first = await launch(ctx, contract, planText);
+    expect(first.answer.runStatus).toBe("failed");
+    expect(first.report.strands.map((s) => [s.id, s.outcome])).toEqual([
+      ["S-01", "succeeded"],
+      ["S-02", "failed"],
+      ["S-03", "succeeded"],
+    ]);
+
+    // A branch that no longer holds a strand's work carries nothing of it.
+    expect(
+      await carriedStrandsFor(
+        { stores: ctx.stores, git: nodeGitRunner },
+        {
+          program: first.started.program,
+          repoPath: ctx.fixture.repo,
+          baseCommit: first.started.baseCommit,
+        },
+      ),
+    ).toEqual([]);
+
+    // The fix lands on the program branch.
+    await writeFile(join(ctx.fixture.repo, "READY"), "");
+    await git(nodeGitRunner, ["add", "-A"], { cwd: ctx.fixture.repo });
+    await git(
+      nodeGitRunner,
+      ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", "ready"],
+      { cwd: ctx.fixture.repo },
+    );
+
+    const second = await launch(ctx, contract, planText);
+    expect(second.started.run.carriedStrands?.map((c) => [c.strandId, c.fromRunId])).toEqual([
+      ["S-01", first.scope.runId],
+      ["S-03", first.scope.runId],
+    ]);
+    expect(second.answer.runStatus).toBe("succeeded");
+    expect(second.report.strands.map((s) => [s.id, s.outcome])).toEqual([
+      ["S-01", "succeeded"],
+      ["S-02", "succeeded"],
+      ["S-03", "succeeded"],
+    ]);
+    expect(second.report.criteria.every((criterion) => criterion.met)).toBe(true);
+    const s01 = second.report.strands.find((s) => s.id === "S-01");
+    expect(s01?.carriedFrom?.runId).toBe(first.scope.runId);
+    expect(s01?.carriedFrom?.landed).toHaveLength(2);
+    expect(s01?.jobs).toEqual([]);
+    // Only S-02 was built: nothing of the a or c modules landed again.
+    expect(second.log).toContain("b1");
+    expect(second.log).not.toContain("a1");
+    expect(second.log).not.toContain("c1");
+    expect(renderReport(second.report)).toContain(`Carried over from run \`${first.scope.runId}\``);
+  }, 360_000);
 
   it("parks a strand that fails with exactly its cone, finishes the rest, and says so (SC-P7-08)", async () => {
     const { answer, events, report, log } = await runUnattended({ "S-01": " fail=1" });

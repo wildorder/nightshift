@@ -22,6 +22,11 @@
  * - `start-run.ts` — the one function `nightshift run` and `run.start` share.
  */
 
+export {
+  type CarryOverEnvironment,
+  type CarryOverInput,
+  carriedStrandsFor,
+} from "./carry-over.js";
 export { routingDataset } from "./dataset.js";
 export {
   createEngine,

@@ -446,7 +446,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       }
       cursor = page.cursor;
     } while (cursor !== undefined);
-    return strandOutcomes(strandAttempts(nodes, strandOfJob));
+    return strandOutcomes(strandAttempts(nodes, strandOfJob), session.run.carriedStrands ?? []);
   };
 
   /** True while a strand's dependencies have not all succeeded. Records what it waits for. */

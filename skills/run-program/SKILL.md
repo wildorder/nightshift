@@ -74,6 +74,10 @@ Check, and say what you find, without fixing anything the human did not ask for:
    scopes. Nightshift holds a strand until what it depends on has succeeded, so
    do not sequence them yourself. Plain `delegate` is refused: the plan fixes
    the strands, and how each divides into jobs is its orchestrator's call.
+   A strand an earlier run of this same plan already finished, whose work is
+   on the program branch, is **carried over**: `run.attach` names it, it counts
+   as succeeded, and `strand.delegate` refuses it as `strand_carried`. That is
+   not a failure; leave it and delegate the rest.
 4. Loop on `job.wait { jobIds }` over the strands still in flight. **Every
    return carries `Meanwhile:`, the lines since the last one** — strands
    starting, their orchestrators' own notes on how they divided the work and
@@ -114,6 +118,12 @@ the run id (the output's first line), where the report will be, and that this
 machine must stay awake. `--harness` and `--model` choose the headless
 orchestrator. When the human asks how it is going, read the output so far and
 answer in strands, not jobs.
+
+**After a failed run.** Fix what stopped it, then start a new run of the same
+plan: `nightshift run {id}` (or `--remote`). The strands that succeeded before
+are carried over, as long as the plan has not changed and their work is still
+on the program branch, and only the rest is built. Say which strands were carried; the
+command prints them after the run id.
 
 ## 4. When it ends
 
