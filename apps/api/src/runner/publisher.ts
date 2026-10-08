@@ -21,6 +21,7 @@ import type { Dispatch, PublicationIntent } from "@nightshift/contracts";
 import {
   type Clock,
   type GitHubAppClient,
+  installationGranting,
   type NightshiftStores,
   nextPendingIntent,
   nowIso,
@@ -152,14 +153,17 @@ export const publishNext = async (deps: PublisherDeps, scope: RunScope): Promise
   const orgConfig =
     project === undefined ? undefined : await deps.stores.orgConfigs.get(project.orgId);
   const repository = program === undefined ? undefined : repositoryNameOf(program.repository.url);
-  const installation = orgConfig?.github;
+  const installation =
+    repository === undefined
+      ? undefined
+      : installationGranting(orgConfig?.installations ?? [], repository);
   if (program === undefined || repository === undefined || installation === undefined) {
     await put(
       resolveIntent(
         dispatch,
         intent.head,
         "error",
-        "the org has no GitHub installation recorded, or the program names no GitHub repository",
+        "the org has no GitHub installation granting the repository, or the program names no GitHub repository",
         at,
       ),
     );

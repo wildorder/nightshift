@@ -32,6 +32,8 @@ export const routes = {
   orgCredential: (orgId: OrgId, provider: string) => `${routes.orgCredentials(orgId)}/${provider}`,
   /** An org's GitHub App installation (P10, D-P10-02). */
   orgGithub: (orgId: OrgId) => `/orgs/${orgId}/github`,
+  orgGithubInstallation: (orgId: OrgId, installationId: number) =>
+    `/orgs/${orgId}/github/${installationId}`,
   /** Where the App is installed from. */
   githubApp: () => "/github/app",
 

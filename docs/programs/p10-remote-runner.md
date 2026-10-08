@@ -140,6 +140,7 @@ the same day (H-P10-01).
 | D-P10-25 | **Workers share a group; the engine's credentials are its own.** On a machine every job's agent (worker, examiner, arbiter) runs as one of the `worker-N` users, started through `sudo` by `engine`; all of them and `engine` are in one `nightshift` group, the workspace is group-writable with set-group-id directories and `core.sharedRepository=group`, so workers read each other's worktrees and the checkout and commit into the shared object store, as a team sharing one repository does. What a worker cannot read is `engine`'s: the engine token file and the placed credentials on tmpfs stay mode 0600 under `engine`, and a worker needing a credential file of its own (Codex's login) gets its own copy under its own user. The root orchestrator stays `engine`. | D-P10-17 asked for workers as their own users; the owner's ruling (2026-10-02) is that workers are collaborators, not tenants: isolating them from each other buys nothing a program needs and costs starts, clones and turns. The boundary that matters is the one between code a worker runs (an `npm install` postinstall script, say) and the engine's authority over the plane: with every agent as `engine`, such a script could read the engine's token and act as the engine. Separate users with a shared group close that and leave collaboration intact, exactly as a developer can read a colleague's branch but not their SSH key. | **agreed 2026-10-02** |
 | D-P10-26 | **The tiers are compute-optimised x86: `good` c8id.2xlarge (8 vCPU, 16 GiB), `better` c8id.4xlarge (16, 32), `best` c8id.8xlarge (32, 64), gp3 volumes of 100, 200 and 400 GiB as before.** On-demand Linux in `us-west-2` from AWS's price feed of 2026-09-25: **$0.44352, $0.88704 and $1.77408 per hour**. Supersedes D-P10-13's ladder; the arm64 image is still built, for any instance type whose family carries a `g`. | The heavy benchmark (§15, 2026-10-02): the monorepo's own suite on five machines, repeatable within 3 s. The three 8-vCPU classes cost the same per unit of verification within 3 %, and c8id.2xlarge did the work 40 % sooner than m7g.xlarge and 15 % sooner than Graviton4 at the same size; the step to 16 vCPU bought 9 % of time for 80 % more per unit of work. The owner, 2026-10-03: "kind of where I thought we'd net out. let's default c8id.2xlarge". Noted for a later ruling: c8i (no local NVMe, which the runner never uses) is the same processor at $0.37484 for the 2xlarge, 15 % less. | **agreed 2026-10-03** |
 | D-P10-27 | **The workspace is on the instance's local NVMe; the EBS volume is a durability sidecar.** When the instance type has an instance-store disk (every c8id tier does), the runner formats and mounts it at `/workspace` and mounts the EBS volume beside it at `/workspace-sidecar`; the workspace is copied to the sidecar with `rsync` (owners kept) every minute and once more when the runner stops, under a marker file; a replacement instance or a warm start that finds the marker restores the copy onto its own disk before preparing the workspace, so in-flight worktrees come back. A dispatch whose record says `workspace.disk: volume`, or an instance type with no local disk, works on the volume as D-P10-15 designed. The warm snapshot is now the sidecar's snapshot, unchanged in mechanism. | The disk measurement (§15) found the monorepo's own suite CPU-bound, but the owner has run integration suites that were latency-bound on EBS and fast on NVMe, and customers bring those; the NVMe on c8id is already paid for. The volume's remaining job is recovery, and what recovery needs that re-cloning cannot give back is the in-flight worktrees; a copy a minute stale serves that. Everything the Studio shows is on the plane and in S3, not on either disk. | **agreed 2026-10-03** ("yeah, i guess that sidecar seems valuable to keep") |
+| D-P10-28 | **An org holds a set of GitHub App installations, one per GitHub account.** `OrgConfig.installations` replaces the single `github`; `org github install` adds an installation or refreshes the one already recorded under its id, `org github remove` drops one and hands its claim back, `org github status` lists them all. Dispatch, the heartbeat's read token and the publisher's write token each use the installation that grants the run's repository. The claim stays one-to-one: an installation belongs to one org. A stored config of the old shape is read as a one-element set and rewritten as a set on its next write. | Found 2026-10-08 when the owner, a repository admin but not an owner in a customer's GitHub org, could install the App on that repository himself (the App asks only repository permissions) but recording it would have replaced his org's `wildorder` installation: an org that works across GitHub accounts had to swap installations between runs. A set is what the customer's situation is; one slot was an accident of the first program. The owner's ruling: fix it before the first run on that repository. | **agreed 2026-10-08** |
 
 ## 4. Design
 
@@ -360,6 +361,7 @@ Each task passes §8 before the next starts; T5 and T7 may run beside T4 and T6.
 | 2026-10-02 | D-P10-24 (one real install per lineage), D-P10-25 (workers share a group; the engine's credentials are its own) agreed; the fixture program benchmarked on four Graviton machines | Human |
 | 2026-10-03 | The heavy benchmark on five machines and the x86 pipeline; D-P10-26 (the tiers are c8id.2xlarge, 4xlarge and 8xlarge) agreed; the disk measured; D-P10-27 (workspace on the instance's NVMe, the EBS volume a durability sidecar) agreed; the engine hands a worktree over once and runs setup and verification as its worker | Human |
 | 2026-10-04 | T4's worker token renewal and T6's recovery built and live-accepted (six kill proofs). **T7 (the recommendation's surfaces) and T5's AgentCore harness worker and Bedrock route skipped by the owner's decision**: the probe, the rule and the sampling exist unshown; subscription and API-key credentials cover every live run. T8 closes the program with `npm run remote` and the documentation | Human |
+| 2026-10-08 | D-P10-28 (an org holds a set of installations, one per GitHub account; `org github remove` added; dispatch, heartbeat and publisher use the installation granting the repository) agreed and built in a coding-agent session | Human |
 
 ## 14. Retained research
 
@@ -537,7 +539,8 @@ does:
   (a compare-and-set row per installation id); a second org is refused with
   409, the first may record again. The owner's org holds the dev stage's
   installation; the live proof borrows it for its throwaway org and hands it
-  back.
+  back. Since D-P10-28 an org holds a set of installations, one per GitHub
+  account, and removing one hands its claim back.
 - **The gate.** `nightshift org github install --installation 166952409` was
   run for the owner's org through the CLI and lists both repositories.
 
@@ -1028,3 +1031,21 @@ one; see the heavy benchmark section.) The warm cache is now the sidecar's snaps
 little; the right-sizing thresholds were set for a Graviton ladder with memory
 steps and should be re-read against the c8id ladder once real runs have
 utilization; T7's surfaces; the third harness.
+
+### D-P10-28, 2026-10-08: a set of installations
+
+The org's `github` slot became `installations`, a set with one entry per GitHub
+account the App is installed on. `PUT /orgs/{orgId}/github` adds or refreshes
+the entry for the id given; `DELETE /orgs/{orgId}/github/{installationId}`
+drops one and releases its claim (`InstallationClaimStore.release`, a
+conditional delete on the claim row); `GET` answers `{ items }`. The three
+places that used the single installation (dispatch's grant check, the
+heartbeat's read token, the publisher's write token) go through one rule,
+`installationGranting` in `core`, which picks the installation whose grant
+lists the run's repository. `DELETE` is the API's first delete method; the
+gateway's `$default` route already matched every method, so nothing in the
+infrastructure changed. A config stored with `github` is lifted to a one-element
+`installations` by the schema on read, in every store, and is written back as a
+set. The CLI gained `org github remove --installation <id>`, and `status` lists
+every installation. The dev stage's records were not migrated by hand: the
+owner's org is rewritten the first time it records or removes an installation.

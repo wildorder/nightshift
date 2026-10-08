@@ -18,7 +18,7 @@ import { GitHubInstallationSchema } from "./credentials.js";
 import { type ExaminationPolicy, ExaminationPolicySchema } from "./program-contract.js";
 import { type RoutingPolicy, RoutingPolicySchema } from "./routing-policy.js";
 
-export const OrgConfigSchema = z.strictObject({
+const OrgConfigRecordSchema = z.strictObject({
   schemaVersion: SchemaVersionSchema,
   orgId: OrgIdSchema,
   routingPolicy: RoutingPolicySchema,
@@ -29,20 +29,36 @@ export const OrgConfigSchema = z.strictObject({
    */
   compute: ComputeCeilingsSchema.optional(),
   /**
-   * P10 (D-P10-02): the GitHub App installation this org granted, written by
-   * `org github install` and never by a client's claim alone.
+   * P10 (D-P10-02, D-P10-28): the GitHub App installations this org granted,
+   * one per GitHub account, written by `org github install` and never by a
+   * client's claim alone. Dispatch matches a repository against any of them.
    */
-  github: GitHubInstallationSchema.optional(),
+  installations: z.array(GitHubInstallationSchema),
   /** 0 for the seeded default nobody has written; 1 for the first write, and so on. */
   version: z.int().min(0),
   updatedAt: IsoTimestampSchema,
 });
-export type OrgConfig = z.infer<typeof OrgConfigSchema>;
+
+/**
+ * Until D-P10-28 (2026-10-08) an org held one installation, under `github`.
+ * A stored record of that shape is read as a one-element set; the next write
+ * stores the set. Nothing writes `github` any more.
+ */
+const liftSingleInstallation = (raw: unknown): unknown => {
+  if (typeof raw !== "object" || raw === null || !("github" in raw) || "installations" in raw) {
+    return raw;
+  }
+  const { github, ...rest } = raw as { github?: unknown };
+  return { ...rest, installations: github === undefined ? [] : [github] };
+};
+
+export const OrgConfigSchema = z.preprocess(liftSingleInstallation, OrgConfigRecordSchema);
+export type OrgConfig = z.infer<typeof OrgConfigRecordSchema>;
 
 /**
  * `PUT /orgs/{orgId}/config`: the policy, and the version this write replaces.
- * `github` is not here: the installation is recorded by its own route, which
- * verifies it through the App, and a config write leaves it as it is.
+ * `installations` is not here: an installation is recorded by its own route,
+ * which verifies it through the App, and a config write leaves the set as it is.
  */
 export const OrgConfigBodySchema = z.strictObject({
   routingPolicy: RoutingPolicySchema,
@@ -137,6 +153,7 @@ export const defaultOrgConfig = (orgId: OrgConfig["orgId"], at: string): OrgConf
   orgId,
   routingPolicy: DEFAULT_ROUTING_POLICY,
   examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+  installations: [],
   version: 0,
   updatedAt: at,
 });

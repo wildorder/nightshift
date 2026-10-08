@@ -62,6 +62,7 @@ export const IDENTITY_EXAMPLES: { readonly [K in IdentityRecordName]: unknown } 
     orgId: EXAMPLE_IDS.orgId,
     routingPolicy: DEFAULT_ROUTING_POLICY,
     examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+    installations: [],
     version: 1,
     updatedAt: "2026-09-25T09:00:00.000Z",
   },

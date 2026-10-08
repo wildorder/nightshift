@@ -16,7 +16,9 @@ const github: GitHubAppClient = {
   installation: async (id) =>
     id === 166952409
       ? { account: "wildorder", repositories: ["wildorder/nightshift", "wildorder/fixture"] }
-      : undefined,
+      : id === 777
+        ? { account: "keki", repositories: ["keki/backend"] }
+        : undefined,
   branchHead: async () => undefined,
   readToken: async () => ({ token: "ghs_read_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
   writeToken: async () => ({ token: "ghs_write_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
@@ -60,6 +62,32 @@ describe("nightshift org github", () => {
 
     expect(await cli("org", "github", "status", "--org", op.orgId)).toBe(0);
     expect(op.out.join("\n")).toContain("Installation 166952409 on wildorder");
+  });
+
+  it("holds an installation per account, and removes one (D-P10-28)", async () => {
+    expect(
+      await cli("org", "github", "install", "--installation", "166952409", "--org", op.orgId),
+    ).toBe(0);
+    expect(await cli("org", "github", "install", "--installation", "777", "--org", op.orgId)).toBe(
+      0,
+    );
+    expect(op.out.join("\n")).toContain("keki/backend");
+
+    expect(await cli("org", "github", "status", "--org", op.orgId)).toBe(0);
+    const status = op.out.join("\n");
+    expect(status).toContain("Installation 166952409 on wildorder");
+    expect(status).toContain("Installation 777 on keki");
+
+    expect(await cli("org", "github", "remove", "--installation", "777", "--org", op.orgId)).toBe(
+      0,
+    );
+    expect(await cli("org", "github", "remove", "--installation", "777", "--org", op.orgId)).toBe(
+      1,
+    );
+    expect(op.err.join("\n")).toContain("no installation 777");
+
+    expect(await cli("org", "github", "status", "--org", op.orgId)).toBe(0);
+    expect(op.out.join("\n")).not.toContain("keki");
   });
 });
 

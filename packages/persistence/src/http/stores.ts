@@ -511,6 +511,11 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
         "the control plane owns installation claims; PUT /orgs/{orgId}/github records one",
       );
     },
+    release: async () => {
+      throw new Error(
+        "the control plane owns installation claims; DELETE /orgs/{orgId}/github/{installationId} releases one",
+      );
+    },
   };
 
   const warmCaches: WarmCacheStore = {

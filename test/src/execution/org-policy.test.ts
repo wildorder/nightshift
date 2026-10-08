@@ -78,6 +78,7 @@ describe("the same fixture under two org configurations (SC-P8-14)", () => {
     await stores.orgConfigs.put({
       schemaVersion: 1,
       orgId,
+      installations: [],
       version: 1,
       updatedAt: nowIso(clock),
       routingPolicy: {

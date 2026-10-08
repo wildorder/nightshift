@@ -43,6 +43,7 @@ export {
 export { type LogoutOptions, type LogoutResult, logout } from "./commands/logout.js";
 export {
   githubInstall,
+  githubRemove,
   githubStatus,
   orgOf,
   providersSet,
