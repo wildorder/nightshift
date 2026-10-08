@@ -296,6 +296,11 @@ export interface InstallationClaimStore {
     orgId: OrgId,
     at: string,
   ): Promise<{ readonly ok: true } | { readonly ok: false; readonly heldBy: OrgId }>;
+  /**
+   * Hands the claim back when `orgId` holds it, so another org may record the
+   * installation (D-P10-28). A claim nobody holds, or another org's, is left alone.
+   */
+  release(installationId: number, orgId: OrgId): Promise<void>;
 }
 
 /**

@@ -7,7 +7,7 @@ import type { Operation } from "@nightshift/core";
 import type { ApiDeps, ApiRequest, ApiResponse } from "./http.js";
 import type { PathParams } from "./params.js";
 
-export type HttpMethod = "GET" | "PUT" | "POST";
+export type HttpMethod = "GET" | "PUT" | "POST" | "DELETE";
 
 export interface RouteContext {
   readonly deps: ApiDeps;

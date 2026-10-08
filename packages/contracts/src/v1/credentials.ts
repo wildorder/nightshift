@@ -120,8 +120,9 @@ export type SetOrgCredentialBody = z.infer<typeof SetOrgCredentialBodySchema>;
 export const lastFourOf = (key: string): string => key.slice(-4).padStart(4, "*");
 
 /**
- * An org's GitHub App installation (D-P10-02), recorded by `org github install`
- * and read by dispatch to refuse a repository nobody granted.
+ * One of an org's GitHub App installations (D-P10-02, D-P10-28), recorded by
+ * `org github install` and read by dispatch to refuse a repository nobody
+ * granted. An org holds one per GitHub account it installed the App on.
  */
 export const GitHubInstallationSchema = z.strictObject({
   installationId: z.int().positive(),
@@ -132,6 +133,12 @@ export const GitHubInstallationSchema = z.strictObject({
   recordedAt: IsoTimestampSchema,
 });
 export type GitHubInstallation = z.infer<typeof GitHubInstallationSchema>;
+
+/** `GET /orgs/{orgId}/github`: every installation the org has recorded. */
+export const GitHubInstallationsResponseSchema = z.strictObject({
+  items: z.array(GitHubInstallationSchema),
+});
+export type GitHubInstallationsResponse = z.infer<typeof GitHubInstallationsResponseSchema>;
 
 /** `PUT /orgs/{orgId}/github`. The plane verifies the installation through the App itself. */
 export const RecordInstallationBodySchema = z.strictObject({

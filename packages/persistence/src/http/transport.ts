@@ -40,7 +40,7 @@ import type { Clock } from "@nightshift/core";
 import { ControlPlaneUnreachableError, toThrowable } from "./errors.js";
 
 export interface ControlPlaneRequest {
-  readonly method: "GET" | "PUT" | "POST";
+  readonly method: "GET" | "PUT" | "POST" | "DELETE";
   /** Path with no origin and no stage prefix, e.g. `/projects/proj_…`. */
   readonly path: string;
   readonly query?: Readonly<Record<string, string | undefined>>;

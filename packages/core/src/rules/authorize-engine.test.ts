@@ -60,6 +60,7 @@ const FORBIDDEN: readonly Operation[] = [
   "orgCredential.list",
   "orgGithub.put",
   "orgGithub.get",
+  "orgGithub.delete",
   "githubApp.get",
 ];
 

@@ -250,6 +250,8 @@ export const OrgSettingsPage = () => {
         schemaVersion: 1,
         orgId: base.orgId,
         ...policies,
+        // A policy write leaves the org's GitHub installations as they are (D-P10-28).
+        installations: base.installations,
         version: base.version + 1,
         updatedAt: new Date().toISOString(),
       });

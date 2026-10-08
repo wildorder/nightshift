@@ -145,6 +145,7 @@ export type Operation =
   | "orgCredential.list"
   | "orgGithub.put"
   | "orgGithub.get"
+  | "orgGithub.delete"
   | "githubApp.get";
 
 /**
@@ -302,6 +303,7 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
   "orgGithub.get": "forbidden",
+  "orgGithub.delete": "forbidden",
   "githubApp.get": "forbidden",
 };
 
@@ -413,6 +415,7 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
   "orgGithub.get": "forbidden",
+  "orgGithub.delete": "forbidden",
   "githubApp.get": "forbidden",
 };
 
@@ -553,6 +556,7 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
   "orgGithub.get": "forbidden",
+  "orgGithub.delete": "forbidden",
   "githubApp.get": "forbidden",
 };
 

@@ -52,7 +52,9 @@ const github: GitHubAppClient = {
   installation: async (id) =>
     id === 166952409
       ? { account: "wildorder", repositories: ["wildorder/nightshift", "wildorder/fixture"] }
-      : undefined,
+      : id === 777
+        ? { account: "keki", repositories: ["keki/backend"] }
+        : undefined,
   // The fixture's program branch stands at SHA; any other branch is missing.
   branchHead: async (_id, repository, branch) =>
     repository === "wildorder/fixture" && branch === "program/fixture" ? SHA : undefined,
@@ -265,7 +267,7 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       orgId: w.orgId,
       routingPolicy: DEFAULT_ROUTING_POLICY,
       examinationPolicy: DEFAULT_EXAMINATION_POLICY,
-      ...(current?.github === undefined ? {} : { github: current.github }),
+      installations: current?.installations ?? [],
       compute: { ...DEFAULT_COMPUTE_CEILINGS, maxTier: "better", maxUsdPerMonth: 10 },
       version: (current?.version ?? 0) + 1,
       updatedAt: NOW,
@@ -294,7 +296,7 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       orgId: w.orgId,
       routingPolicy: DEFAULT_ROUTING_POLICY,
       examinationPolicy: DEFAULT_EXAMINATION_POLICY,
-      ...(current?.github === undefined ? {} : { github: current.github }),
+      installations: current?.installations ?? [],
       compute: { ...DEFAULT_COMPUTE_CEILINGS, maxConcurrentRuns: 1 },
       version: (current?.version ?? 0) + 1,
       updatedAt: NOW,
@@ -765,13 +767,13 @@ describe("an org's credentials (D-P10-23)", () => {
   });
 });
 
-describe("an org's GitHub installation (D-P10-02)", () => {
+describe("an org's GitHub installations (D-P10-02, D-P10-28)", () => {
   it("tells a customer where to install, records what GitHub says, and reads it back", async () => {
     const w = await setup();
     expect((await call(w, "GET", "/github/app")).body).toMatchObject({
       slug: "nightshift-publisher",
     });
-    expect((await call(w, "GET", `/orgs/${w.orgId}/github`)).status).toBe(404);
+    expect((await call(w, "GET", `/orgs/${w.orgId}/github`)).body).toEqual({ items: [] });
     const recorded = await call(w, "PUT", `/orgs/${w.orgId}/github`, { installationId: 166952409 });
     expect(recorded.status).toBe(200);
     expect(recorded.body).toMatchObject({
@@ -779,8 +781,73 @@ describe("an org's GitHub installation (D-P10-02)", () => {
       account: "wildorder",
       repositories: ["wildorder/nightshift", "wildorder/fixture"],
     });
-    expect((await call(w, "GET", `/orgs/${w.orgId}/github`)).body).toEqual(recorded.body);
+    expect((await call(w, "GET", `/orgs/${w.orgId}/github`)).body).toEqual({
+      items: [recorded.body],
+    });
     expect((await w.stores.orgConfigs.get(w.orgId))?.version).toBe(1);
+  });
+
+  it("holds one installation per account, refreshes one recorded again, and removes one with its claim", async () => {
+    const w = await setup();
+    await call(w, "PUT", `/orgs/${w.orgId}/github`, { installationId: 166952409 });
+    const second = await call(w, "PUT", `/orgs/${w.orgId}/github`, { installationId: 777 });
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({ account: "keki", repositories: ["keki/backend"] });
+    // Recording the first again refreshes its entry rather than adding a second.
+    await call(w, "PUT", `/orgs/${w.orgId}/github`, { installationId: 166952409 });
+    const listed = await call(w, "GET", `/orgs/${w.orgId}/github`);
+    expect(
+      (listed.body as { items: { installationId: number }[] }).items.map((i) => i.installationId),
+    ).toEqual([777, 166952409]);
+
+    // Dispatch finds the installation that grants the repository, whichever it is.
+    await seed(w);
+    expect((await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody())).status).toBe(201);
+
+    // Removing hands the claim back: another org may record it.
+    const removed = await call(w, "DELETE", `/orgs/${w.orgId}/github/777`);
+    expect(removed.status).toBe(204);
+    expect(
+      (await call(w, "GET", `/orgs/${w.orgId}/github`)).body as { items: unknown[] },
+    ).toMatchObject({ items: [{ installationId: 166952409 }] });
+    expect((await call(w, "DELETE", `/orgs/${w.orgId}/github/777`)).status).toBe(404);
+    expect((await call(w, "DELETE", `/orgs/${w.orgId}/github/abc`)).status).toBe(400);
+    const otherOrg = w.f.ids.next("org");
+    const otherUser = nextUserId(w.f);
+    await w.stores.memberships.put(makeMembership(otherUser, otherOrg));
+    expect(
+      (
+        await call(
+          w,
+          "PUT",
+          `/orgs/${otherOrg}/github`,
+          { installationId: 777 },
+          { kind: "user", userId: otherUser },
+        )
+      ).status,
+    ).toBe(200);
+  });
+
+  it("reads a config stored before D-P10-28, with its one installation under `github`, as a set", async () => {
+    const w = await setup();
+    const legacy = {
+      schemaVersion: 1,
+      orgId: w.orgId,
+      routingPolicy: DEFAULT_ROUTING_POLICY,
+      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      github: {
+        installationId: 166952409,
+        account: "wildorder",
+        repositories: ["wildorder/nightshift", "wildorder/fixture"],
+        recordedAt: NOW,
+      },
+      version: 1,
+      updatedAt: NOW,
+    };
+    await w.stores.orgConfigs.put(legacy as never);
+    expect((await call(w, "GET", `/orgs/${w.orgId}/github`)).body).toMatchObject({
+      items: [{ installationId: 166952409 }],
+    });
   });
 
   it("refuses a second org claiming the same installation, and lets the first record it again", async () => {
@@ -826,7 +893,7 @@ describe("an org's GitHub installation (D-P10-02)", () => {
     expect(written.body).toMatchObject({
       version: 2,
       compute: { maxTier: "good" },
-      github: { installationId: 166952409 },
+      installations: [{ installationId: 166952409 }],
     });
   });
 });

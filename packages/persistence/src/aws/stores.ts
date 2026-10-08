@@ -287,6 +287,20 @@ export const createAwsStores = ({
           return { ok: false, heldBy: heldBy as OrgId };
         }
       },
+      release: async (installationId, orgId) => {
+        try {
+          await table.delete({
+            TableName: tableName,
+            Key: keys.installationClaim(installationId),
+            ConditionExpression: "#orgId = :orgId",
+            ExpressionAttributeNames: { "#orgId": "orgId" },
+            ExpressionAttributeValues: { ":orgId": orgId },
+          });
+        } catch (error) {
+          // Absent, or another org's: nothing of this org's to hand back.
+          if (!isConditionalCheckFailure(error)) throw error;
+        }
+      },
     },
 
     programContracts: {

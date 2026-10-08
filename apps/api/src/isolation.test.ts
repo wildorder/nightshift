@@ -119,8 +119,10 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       orgId,
       sha256: "a".repeat(64),
       prerequisiteId: "HP-01",
-      // P10: an org's provider key routes are named by the provider.
+      // P10: an org's provider key routes are named by the provider, and an
+      // installation route by the installation.
       provider: "anthropic",
+      installationId: "1",
     },
     execution: {
       kind: "execution",

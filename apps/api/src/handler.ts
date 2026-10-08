@@ -39,7 +39,7 @@ import {
 import { createArtifactDownloadUrl } from "./operations/downloads.js";
 import { appendEvent, getRunState, listEvents } from "./operations/events.js";
 import { getGateHealth, putGateHealth } from "./operations/gate-health.js";
-import { getGithubApp, getOrgGithub, putOrgGithub } from "./operations/github.js";
+import { deleteOrgGithub, getGithubApp, getOrgGithub, putOrgGithub } from "./operations/github.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
 import { getOrgConfig, putOrgConfig } from "./operations/org-config.js";
@@ -108,7 +108,7 @@ export const ROUTES: readonly Route[] = [
     handler: putOrgConfig,
   },
 
-  // An org's provider keys and its GitHub installation (P10, D-P10-23, D-P10-02).
+  // An org's provider keys and its GitHub installations (P10, D-P10-23, D-P10-02, D-P10-28).
   {
     method: "PUT",
     path: "/orgs/{orgId}/credentials/{provider}",
@@ -132,6 +132,12 @@ export const ROUTES: readonly Route[] = [
     path: "/orgs/{orgId}/github",
     operation: "orgGithub.get",
     handler: getOrgGithub,
+  },
+  {
+    method: "DELETE",
+    path: "/orgs/{orgId}/github/{installationId}",
+    operation: "orgGithub.delete",
+    handler: deleteOrgGithub,
   },
   { method: "GET", path: "/github/app", operation: "githubApp.get", handler: getGithubApp },
 

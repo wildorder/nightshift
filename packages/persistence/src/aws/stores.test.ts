@@ -51,6 +51,7 @@ describe("DynamoDB adapter specifics", () => {
       orgId,
       routingPolicy: DEFAULT_ROUTING_POLICY,
       examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      installations: [],
       version,
       updatedAt: "2026-09-25T10:00:00.000Z",
     });

@@ -124,7 +124,7 @@ const PORT_METHODS = {
   // P10: the control plane owns these records; the adapter reads them and names
   // the route that writes them when asked to write one whole.
   dispatches: ["put", "get", "listByStatus"],
-  installationClaims: ["claim"],
+  installationClaims: ["claim", "release"],
   computeUtilizations: ["put", "get", "listByProject"],
   warmCaches: ["put", "get", "delete"],
   // P15: written whole by the operator or the engine, so it has a write route.
@@ -512,6 +512,7 @@ describe("decisions, checkpoints, verifications, examinations and routing", () =
       orgId: world.orgId,
       routingPolicy: DEFAULT_ROUTING_POLICY,
       examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      installations: [],
       version: 1,
       updatedAt: NOW,
     };
@@ -766,6 +767,9 @@ describe("the remote runner's records (P10)", () => {
     // The cross-project listing is the reconciler's alone (A-07's one exception); no route serves it.
     await expect(http.dispatches.listByStatus(["requested"])).rejects.toThrow(/reconciler/);
     await expect(http.installationClaims.claim(1, f.scope.projectId as never, "")).rejects.toThrow(
+      /github/,
+    );
+    await expect(http.installationClaims.release(1, f.scope.projectId as never)).rejects.toThrow(
       /github/,
     );
     await expect(http.computeUtilizations.put(makeComputeUtilization(f))).rejects.toThrow(

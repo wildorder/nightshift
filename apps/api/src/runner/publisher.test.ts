@@ -102,12 +102,14 @@ const world = async (remote: GitRemote = smartHttpRemote): Promise<World> => {
     orgId,
     routingPolicy: DEFAULT_ROUTING_POLICY,
     examinationPolicy: DEFAULT_EXAMINATION_POLICY,
-    github: {
-      installationId: 166952409,
-      account: "wildorder",
-      repositories: ["wildorder/fixture"],
-      recordedAt: NOW,
-    },
+    installations: [
+      {
+        installationId: 166952409,
+        account: "wildorder",
+        repositories: ["wildorder/fixture"],
+        recordedAt: NOW,
+      },
+    ],
     version: 1,
     updatedAt: NOW,
   });

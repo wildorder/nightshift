@@ -107,6 +107,7 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
   "orgGithub.get": "forbidden",
+  "orgGithub.delete": "forbidden",
   "githubApp.get": "forbidden",
 };
 const ALL_OPERATIONS = Object.keys(EXPECTED) as Operation[];

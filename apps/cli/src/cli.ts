@@ -29,6 +29,7 @@ import { logout } from "./commands/logout.js";
 import { getOrgConfig, setOrgConfig } from "./commands/org-config.js";
 import {
   githubInstall,
+  githubRemove,
   githubStatus,
   providersSet,
   providersStatus,
@@ -72,6 +73,7 @@ Usage:
   nightshift org config get [--org <id>]
   nightshift org config set <file> [--org <id>]
   nightshift org github install [--installation <id>] [--org <id>]
+  nightshift org github remove --installation <id> [--org <id>]
   nightshift org github status [--org <id>]
   nightshift org providers set <anthropic|openai> [--file <path>] [--org <id>]
   nightshift org providers status [--org <id>]
@@ -557,7 +559,7 @@ const doReport = async (environment: CliEnvironment, args: readonly string[]): P
 
 const doOrg = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage =
-    "nightshift org config get|set <file> | org github install [--installation <id>]|status | org providers set <provider> [--file <path>]|status  [--org <id>]";
+    "nightshift org config get|set <file> | org github install [--installation <id>]|remove --installation <id>|status | org providers set <provider> [--file <path>]|status  [--org <id>]";
   const { values, positionals } = parse(
     {
       args: [...args],
@@ -587,8 +589,14 @@ const doOrg = async (environment: CliEnvironment, args: readonly string[]): Prom
         ...(org === undefined ? {} : { org }),
       });
     }
+    if (verb === "remove") {
+      return githubRemove(environment, {
+        ...(installation === undefined ? {} : { installation }),
+        ...(org === undefined ? {} : { org }),
+      });
+    }
     if (verb === "status") return githubStatus(environment, org);
-    throw new UsageError("`nightshift org github` takes `install` or `status`", usage);
+    throw new UsageError("`nightshift org github` takes `install`, `remove` or `status`", usage);
   }
   if (noun === "providers") {
     if (verb === "set" && third !== undefined) {

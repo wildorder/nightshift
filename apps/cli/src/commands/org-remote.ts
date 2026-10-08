@@ -13,6 +13,7 @@ import { readFile } from "node:fs/promises";
 import {
   GitHubAppResponseSchema,
   GitHubInstallationSchema,
+  GitHubInstallationsResponseSchema,
   OrgCredentialsResponseSchema,
   OrgCredentialViewSchema,
   OrgIdSchema,
@@ -52,7 +53,7 @@ const notFound = (error: unknown): boolean =>
 /**
  * `org github install [--installation <id>] [--org <id>]`: with no id, prints
  * where to install the App; with one, records the installation the plane
- * verifies through the App.
+ * verifies through the App, beside any the org already holds (D-P10-28).
  */
 export const githubInstall = async (
   environment: CliEnvironment,
@@ -69,12 +70,12 @@ export const githubInstall = async (
     environment.out('Choose "Only select repositories". Then record the installation here:');
     environment.out("  nightshift org github install --installation <id>");
     environment.out("The id is the number at the end of the installation's settings URL.");
+    environment.out(
+      "An org may record one installation per GitHub account it installs the App on.",
+    );
     return 0;
   }
-  const installationId = Number.parseInt(options.installation, 10);
-  if (!Number.isInteger(installationId) || installationId <= 0) {
-    throw new UsageError("--installation takes the installation's numeric id");
-  }
+  const installationId = installationIdOf(options.installation);
   const recorded = GitHubInstallationSchema.parse(
     await send(session.transport, {
       method: "PUT",
@@ -89,24 +90,65 @@ export const githubInstall = async (
   return 0;
 };
 
+const installationIdOf = (named: string): number => {
+  const installationId = Number.parseInt(named, 10);
+  if (!Number.isInteger(installationId) || installationId <= 0) {
+    throw new UsageError("--installation takes the installation's numeric id");
+  }
+  return installationId;
+};
+
+/** `org github status [--org <id>]`: every installation the org holds, and what each grants. */
 export const githubStatus = async (environment: CliEnvironment, org?: string): Promise<number> => {
   const session = await openSession(environment);
   const orgId = await orgOf(session, org);
-  try {
-    const recorded = GitHubInstallationSchema.parse(
-      await send(session.transport, { method: "GET", path: routes.orgGithub(orgId as never) }),
-    );
-    environment.out(
-      `Installation ${recorded.installationId} on ${recorded.account}, recorded ${recorded.recordedAt}:`,
-    );
-    for (const repository of recorded.repositories) environment.out(`  ${repository}`);
-    return 0;
-  } catch (error) {
-    if (!notFound(error)) throw error;
+  const { items } = GitHubInstallationsResponseSchema.parse(
+    await send(session.transport, { method: "GET", path: routes.orgGithub(orgId as never) }),
+  );
+  if (items.length === 0) {
     environment.out("No GitHub installation is recorded for this org.");
     environment.out("Run `nightshift org github install` to see where to install the App.");
     return 1;
   }
+  for (const recorded of items) {
+    environment.out(
+      `Installation ${recorded.installationId} on ${recorded.account}, recorded ${recorded.recordedAt}:`,
+    );
+    for (const repository of recorded.repositories) environment.out(`  ${repository}`);
+  }
+  return 0;
+};
+
+/**
+ * `org github remove --installation <id> [--org <id>]`: the org stops running
+ * against that installation's repositories and gives its claim back. The App
+ * stays installed at GitHub until the customer uninstalls it there.
+ */
+export const githubRemove = async (
+  environment: CliEnvironment,
+  options: { readonly installation?: string; readonly org?: string },
+): Promise<number> => {
+  if (options.installation === undefined) {
+    throw new UsageError("`org github remove` takes --installation <id>");
+  }
+  const installationId = installationIdOf(options.installation);
+  const session = await openSession(environment);
+  const orgId = await orgOf(session, options.org);
+  try {
+    await send(
+      session.transport,
+      { method: "DELETE", path: routes.orgGithubInstallation(orgId as never, installationId) },
+      [204],
+    );
+  } catch (error) {
+    if (!notFound(error)) throw error;
+    environment.err(`This org has recorded no installation ${installationId}.`);
+    return 1;
+  }
+  environment.out(
+    `Removed installation ${installationId}. Uninstall the App at GitHub as well if Nightshift should lose access.`,
+  );
+  return 0;
 };
 
 /** A key, from a prompt or the pipe: never from an argument, never echoed. */

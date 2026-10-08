@@ -18,6 +18,7 @@ import type {
   ComputeTier,
   Dispatch,
   DispatchStatus,
+  GitHubInstallation,
   PublicationIntent,
 } from "@nightshift/contracts";
 import { computeTierRank, MAX_RESOLVED_INTENTS } from "@nightshift/contracts";
@@ -241,6 +242,19 @@ export interface MayDispatchInput {
  * Whether a dispatch may be accepted under the org's ceilings (D-P10-19). The
  * first refusal found is the answer; a caller wanting them all can ask again.
  */
+/**
+ * The installation among an org's that grants `repository` (D-P10-02,
+ * D-P10-28): the one dispatch verifies against, the heartbeat mints the clone's
+ * read token from, and the publisher mints its write token from. An org installs
+ * the App once per GitHub account, and no two of its installations can grant the
+ * same repository, so the first match is the match.
+ */
+export const installationGranting = (
+  installations: readonly GitHubInstallation[],
+  repository: string,
+): GitHubInstallation | undefined =>
+  installations.find((installation) => installation.repositories.includes(repository));
+
 export const mayDispatch = (input: MayDispatchInput): DispatchRefusal | undefined => {
   const { ceilings } = input;
   if (computeTierRank(input.tier) > computeTierRank(ceilings.maxTier)) {

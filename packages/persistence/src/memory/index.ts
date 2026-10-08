@@ -473,7 +473,12 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   };
 
   const orgConfigStore: OrgConfigStore = {
-    get: async (orgId: OrgId) => orgConfigs.get(orgId),
+    // Parsed on the way out as well: a record a local instance stored before
+    // D-P10-28 is read in the shape the schema lifts it to.
+    get: async (orgId: OrgId) => {
+      const stored = orgConfigs.get(orgId);
+      return stored === undefined ? undefined : OrgConfigSchema.parse(stored);
+    },
     put: async (config) => {
       const parsed = OrgConfigSchema.parse(config);
       const stored = orgConfigs.get(parsed.orgId)?.version ?? 0;
@@ -539,6 +544,11 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
         if (held !== undefined && held.orgId !== orgId) return { ok: false, heldBy: held.orgId };
         installationClaims.set(key, { installationId, orgId, at });
         return { ok: true };
+      }),
+    release: async (installationId, orgId) =>
+      atomically(() => {
+        const key = String(installationId);
+        if (installationClaims.get(key)?.orgId === orgId) installationClaims.delete(key);
       }),
   };
 

@@ -37,6 +37,7 @@ import {
   emptyUtilization,
   estimateUsd,
   foldUtilization,
+  installationGranting,
   isDispatchTerminal,
   isPlanned,
   leaseExpiryFrom,
@@ -154,10 +155,10 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
   }
 
   const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
-  // Nothing the client claimed about GitHub is trusted (SC-P10-02): the org's
-  // recorded installation must grant the repository, and the branch's head at
-  // GitHub must be the SHA dispatched.
-  await assertGithubInput(deps, orgConfig?.github, body.input);
+  // Nothing the client claimed about GitHub is trusted (SC-P10-02): one of the
+  // org's recorded installations must grant the repository, and the branch's
+  // head at GitHub must be the SHA dispatched.
+  await assertGithubInput(deps, orgConfig?.installations ?? [], body.input);
 
   const ceilings = orgConfig?.compute ?? DEFAULT_COMPUTE_CEILINGS;
   const runHours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
@@ -204,13 +205,14 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
 };
 
 /**
- * The GitHub half of SC-P10-02, through the App: the repository must be one the
- * org's installation grants, and the branch must stand at the SHA dispatched.
- * Without the App wired in, nothing can be verified and nothing is accepted.
+ * The GitHub half of SC-P10-02, through the App: the repository must be one an
+ * installation of the org's grants (D-P10-28), and the branch must stand at the
+ * SHA dispatched. Without the App wired in, nothing can be verified and nothing
+ * is accepted.
  */
 const assertGithubInput = async (
   deps: ApiDeps,
-  installation: GitHubInstallation | undefined,
+  installations: readonly GitHubInstallation[],
   input: Dispatch["input"],
 ): Promise<void> => {
   if (deps.github === undefined) {
@@ -220,7 +222,7 @@ const assertGithubInput = async (
       "this control plane was wired without the Nightshift GitHub App; a dispatch cannot be verified",
     );
   }
-  if (installation === undefined) {
+  if (installations.length === 0) {
     throw new HttpError(
       409,
       "github_not_installed",
@@ -228,11 +230,14 @@ const assertGithubInput = async (
     );
   }
   const repository = repositoryNameOf(input.repositoryUrl);
-  if (repository === undefined || !installation.repositories.includes(repository)) {
+  const installation =
+    repository === undefined ? undefined : installationGranting(installations, repository);
+  if (repository === undefined || installation === undefined) {
+    const accounts = installations.map((held) => `${held.account} (${held.installationId})`);
     throw new HttpError(
       409,
       "repository_not_granted",
-      `${input.repositoryUrl} is not among the repositories installation ${installation.installationId} grants`,
+      `${input.repositoryUrl} is not among the repositories granted by the org's installation${installations.length === 1 ? "" : "s"} on ${accounts.join(", ")}`,
     );
   }
   const head = await deps.github.branchHead(installation.installationId, repository, input.branch);
@@ -488,9 +493,15 @@ const credentialsFor = async (
   const providersWanted = dispatch.status === "running" && deps.envelope !== undefined;
   const credentials: Record<string, string> = {};
   // The clone's credential (D-P10-02): a short-lived read token for the one
-  // repository, from the org's installation, when the App is wired in.
-  const installation = (await deps.stores.orgConfigs.get(orgId))?.github;
+  // repository, from the org's installation that grants it, when the App is wired in.
   const repository = repositoryNameOf(dispatch.input.repositoryUrl);
+  const installation =
+    repository === undefined
+      ? undefined
+      : installationGranting(
+          (await deps.stores.orgConfigs.get(orgId))?.installations ?? [],
+          repository,
+        );
   if (deps.github !== undefined && installation !== undefined && repository !== undefined) {
     try {
       credentials.github = (
