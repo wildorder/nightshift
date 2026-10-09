@@ -27,6 +27,7 @@ import type {
   Dispatch,
   DispatchToolchain,
   ProgramContract,
+  RunnerProgress,
   RuntimeVersion,
 } from "@nightshift/contracts";
 import {
@@ -166,6 +167,17 @@ export const projectEnvironment = (
   return env;
 };
 
+/**
+ * The runtimes the machine installs, exactly, for the `toolchain` stage's
+ * detail: "node 22.22.0, python 3.12.8"; with none pinned, the image's.
+ */
+export const toolchainDetail = (toolchain: DispatchToolchain | undefined): string => {
+  const pinned = pinnedRuntimes(toolchain);
+  if (pinned.length === 0) return "the image's runtimes";
+  const named = pinned.map((entry) => `${entry.runtime} ${entry.version}`).join(", ");
+  return named.length <= 500 ? named : `${named.slice(0, 499)}…`;
+};
+
 export class WorkspaceError extends Error {
   override readonly name = "WorkspaceError";
 }
@@ -181,6 +193,8 @@ export interface PrepareInput {
   readonly log: (line: string) => void;
   /** The runner's own PATH, kept after the project's runtimes and the image's PATH. */
   readonly inheritedPath?: string;
+  /** Told where the workspace has got to (P16 S-03): the runner's heartbeat carries it. */
+  readonly onProgress?: (progress: RunnerProgress) => void;
 }
 
 export interface Prepared {
@@ -371,6 +385,8 @@ export const prepareWorkspace = async (
   input: PrepareInput,
 ): Promise<Prepared> => {
   const { layout, dispatch, program, log } = input;
+  const progress = (stage: RunnerProgress["stage"], detail: string): void =>
+    input.onProgress?.({ stage, detail });
   const url = dispatch.input.repositoryUrl.replace(/\.git$/, "");
   const cloneUrl = `${url}.git`;
 
@@ -396,6 +412,7 @@ export const prepareWorkspace = async (
   const warm = mirrored.exitCode === 0 && mirrored.stdout.trim() === "true";
   if (warm) {
     log("warm volume: fetching the mirror");
+    progress("workspace", "fetching the mirror");
     const fetched = await gitWithToken(machine, layout.mirror, input.githubToken, [
       "fetch",
       "--prune",
@@ -404,6 +421,7 @@ export const prepareWorkspace = async (
     if (fetched.exitCode !== 0) throw new WorkspaceError(`fetch: ${fetched.stderr.trim()}`);
   } else {
     log("cold volume: cloning the mirror");
+    progress("workspace", "cloning the mirror");
     const cloned = await gitWithToken(machine, undefined, input.githubToken, [
       "clone",
       "--mirror",
@@ -426,6 +444,7 @@ export const prepareWorkspace = async (
   }
 
   // The checkout: made from the mirror, moved to the SHA; a divergent one is remade.
+  progress("workspace", `checking out ${dispatch.input.baseSha.slice(0, 8)}`);
   const checkedOut = await machine.exec("git", ["-C", layout.checkout, "rev-parse", "--git-dir"]);
   const fresh = checkedOut.exitCode !== 0;
   if (fresh) {
@@ -482,6 +501,7 @@ export const prepareWorkspace = async (
   // The pinned runtimes, before setup (P16 S-01, D-04), and the one project
   // environment, written where the engine's processes and the boot proof read it.
   const toolchain = dispatch.input.toolchain;
+  progress("toolchain", toolchainDetail(toolchain));
   await installRuntimes(machine, layout, toolchain, log);
   const env = projectEnvironment(layout, toolchain, undefined, input.inheritedPath);
   const environmentFile = `${layout.run}/project.env`;
@@ -491,8 +511,10 @@ export const prepareWorkspace = async (
   // duration is the warm-versus-cold number. Not a login shell: a profile
   // would put the image's PATH and rustup home back over the project's.
   const startedAt = machine.now();
+  if ((program.setup ?? []).length === 0) progress("setup", "no setup steps");
   for (const step of program.setup ?? []) {
     log(`setup ${step.id}: ${step.command}`);
+    progress("setup", `setup ${step.id}`.slice(0, 500));
     const result = await machine.exec("env", [
       ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
       "bash",

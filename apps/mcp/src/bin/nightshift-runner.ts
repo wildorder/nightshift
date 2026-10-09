@@ -6,6 +6,7 @@
  * root until it finishes or the plane says stop.
  */
 import { readFile } from "node:fs/promises";
+import type { RunnerProgress } from "@nightshift/contracts";
 import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import { createRunnerPlane, createRuntime } from "../compose.js";
 import { describeHeadlessEnding, runHeadless } from "../headless.js";
@@ -71,7 +72,12 @@ runRunner({
     // (D-P15-03). A gate green in the reference and red here is an
     // environment fault (P16 D-07): the root never starts, and the dispatch
     // ends failed with it.
-    const { ended } = await auditThenRoot(runtime, context, say, async () => {
+    // Where the audit has got to goes to the heartbeat (P16 S-03).
+    const audited = {
+      ...context,
+      onProgress: (progress: RunnerProgress) => context.heartbeat.progress(progress),
+    };
+    const { ended } = await auditThenRoot(runtime, audited, say, async () => {
       say(`root starting in ${context.layout.checkout}`);
       const result = await runHeadless(runtime, env, {
         scope: context.scope,

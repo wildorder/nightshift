@@ -155,6 +155,8 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     now: machine.now,
     log,
   });
+  // The first beat says the machine is up (P16 S-03).
+  heartbeat.progress({ stage: "up", detail: `on ${identity.instanceId}` });
   const beating = heartbeat.run();
 
   let sync: SidecarSync | undefined;
@@ -175,6 +177,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     // The workspace goes on the instance's local disk when it has one (D-P10-27),
     // with the volume mounted beside it as the sidecar; on the volume itself when
     // the record says so or the instance type has no local disk.
+    heartbeat.progress({ stage: "workspace", detail: "mounting the volume" });
     const asked = (await plane.dispatch(identity.scope))?.workspace?.disk;
     const localDisk = asked === "volume" ? undefined : await findLocalDisk(machine);
     const sidecar =
@@ -232,6 +235,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
       planText: planDocument.text,
       githubToken,
       log,
+      onProgress: (progress) => heartbeat.progress(progress),
       ...(options.inheritedPath === undefined ? {} : { inheritedPath: options.inheritedPath }),
     });
     log(

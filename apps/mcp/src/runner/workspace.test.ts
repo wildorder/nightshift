@@ -3,7 +3,7 @@
  * installed before setup, one project environment, over a fake machine.
  */
 import { createHash } from "node:crypto";
-import type { DispatchToolchain } from "@nightshift/contracts";
+import type { DispatchToolchain, RunnerProgress } from "@nightshift/contracts";
 import { createFixtures, makeDispatch, makeProgramContract, planHash } from "@nightshift/core";
 import { describe, expect, it } from "vitest";
 import { parseProjectEnv } from "../project-env.js";
@@ -15,6 +15,7 @@ import {
   projectEnvironment,
   rustToolchainName,
   storesEnvironment,
+  toolchainDetail,
   WorkspaceError,
 } from "./workspace.js";
 
@@ -250,7 +251,7 @@ describe("prepareWorkspace in the project environment (P16 S-01)", () => {
     },
   });
 
-  const prepare = (machine: Machine) =>
+  const prepare = (machine: Machine, onProgress?: (progress: RunnerProgress) => void) =>
     prepareWorkspace(machine, {
       layout,
       dispatch,
@@ -259,7 +260,25 @@ describe("prepareWorkspace in the project environment (P16 S-01)", () => {
       githubToken: "ghs_read",
       log: () => undefined,
       inheritedPath: "/usr/local/bin:/usr/bin:/bin",
+      ...(onProgress === undefined ? {} : { onProgress }),
     });
+
+  it("says where it has got to (P16 S-03): the mirror, the checkout, the exact runtimes, each setup step", async () => {
+    const machine = fakeMachine();
+    const progress: RunnerProgress[] = [];
+    await prepare(machine, (given) => progress.push(given));
+    expect(progress).toEqual([
+      { stage: "workspace", detail: "fetching the mirror" },
+      { stage: "workspace", detail: "checking out aaaaaaaa" },
+      { stage: "toolchain", detail: "node 22.11.0, python 3.12.1" },
+      { stage: "setup", detail: "setup install" },
+    ]);
+    // With nothing pinned, the image's runtimes are what runs.
+    expect(toolchainDetail(undefined)).toBe("the image's runtimes");
+    expect(
+      toolchainDetail([{ runtime: "ruby", version: "3.3.0", source: { kind: "image" } }]),
+    ).toBe("the image's runtimes");
+  });
 
   it("installs the runtimes before setup, and runs setup in the project environment, not a login shell", async () => {
     const machine = fakeMachine();

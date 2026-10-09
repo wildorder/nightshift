@@ -3,7 +3,12 @@
  * and a fake plane (P10, T2).
  */
 import { createHash } from "node:crypto";
-import { type HeartbeatResponse, HeartbeatResponseSchema } from "@nightshift/contracts";
+import {
+  type HeartbeatResponse,
+  HeartbeatResponseSchema,
+  MAX_PROGRESS_GATES,
+  type RunnerProgress,
+} from "@nightshift/contracts";
 import { createFixtures, makeDispatch, makeProgramContract, planHash } from "@nightshift/core";
 import { describe, expect, it } from "vitest";
 import {
@@ -14,7 +19,8 @@ import {
   readIdentity,
   takeFirstToken,
 } from "./bootstrap.js";
-import { createHeartbeat } from "./heartbeat.js";
+import { auditProgressOf, auditVerdictOf, gateProgressOf } from "./gates.js";
+import { createHeartbeat, PROGRESS_MIN_GAP_MS } from "./heartbeat.js";
 import type { CommandResult, Machine } from "./machine.js";
 import { runRunner } from "./main.js";
 import type { PlaneFactory } from "./plane.js";
@@ -266,6 +272,342 @@ describe("the heartbeat (D-P10-18)", () => {
       intervalMs: 1,
     });
     expect(await heartbeat.run()).toBe("lost");
+  });
+});
+
+describe("the heartbeat's progress (P16 S-03)", () => {
+  const answer = (overrides: Partial<HeartbeatResponse> = {}): HeartbeatResponse => ({
+    generation: 2,
+    status: "ready",
+    leaseExpiresAt: "2026-10-01T12:01:00.000Z",
+    stop: false,
+    ...overrides,
+  });
+  /** Lets every pending promise and timer callback run. */
+  const settle = async () => {
+    for (let round = 0; round < 10; round += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  };
+  const progressOf = (body: unknown): RunnerProgress | undefined =>
+    (body as { progress?: RunnerProgress }).progress;
+
+  /**
+   * A heartbeat whose sleep never ends on its own: any beat after the first is
+   * one a progress woke. `post` may fail or act before it answers.
+   */
+  const asleep = (
+    options: {
+      readonly post?: (body: unknown, index: number) => HeartbeatResponse | Error | undefined;
+      readonly sample?: (index: number) => Promise<undefined>;
+    } = {},
+  ) => {
+    const bodies: unknown[] = [];
+    let now = 0;
+    let samples = 0;
+    const heartbeat = createHeartbeat({
+      generation: 2,
+      post: async (body) => {
+        bodies.push(body);
+        const said = options.post?.(body, bodies.length - 1);
+        if (said instanceof Error) throw said;
+        return said ?? answer();
+      },
+      installToken: () => undefined,
+      sample: async () => {
+        samples += 1;
+        return options.sample?.(samples - 1);
+      },
+      sleep: () => new Promise<void>(() => undefined),
+      now: () => now,
+      log: () => undefined,
+    });
+    return {
+      heartbeat,
+      bodies,
+      advance: (ms: number) => {
+        now += ms;
+      },
+    };
+  };
+
+  it("carries `up` on the first beat, and a new stage at once rather than after the interval", async () => {
+    const { heartbeat, bodies } = asleep();
+    heartbeat.progress({ stage: "up", detail: "on i-0123" });
+    const beating = heartbeat.run();
+    await settle();
+    expect(bodies).toHaveLength(1);
+    expect(progressOf(bodies[0])).toEqual({ stage: "up", detail: "on i-0123" });
+    // The sleep never ends: only the new stage can have brought this beat.
+    heartbeat.progress({ stage: "workspace", detail: "mounting the volume" });
+    await settle();
+    expect(bodies).toHaveLength(2);
+    expect(progressOf(bodies[1])).toEqual({ stage: "workspace", detail: "mounting the volume" });
+    heartbeat.progress({ stage: "audit", gates: [] });
+    await settle();
+    heartbeat.progress({ stage: "audit", gates: [], verdict: "agrees" });
+    await settle();
+    expect(bodies.map((body) => progressOf(body)?.verdict)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      "agrees",
+    ]);
+    heartbeat.end();
+    expect(await beating).toBe("stop");
+    // Sent once: nothing went again with the last beat.
+    expect(bodies).toHaveLength(4);
+  });
+
+  it("sends a stage the runner moved on from before a beat carried it, then the next, in order", async () => {
+    const { heartbeat, bodies } = asleep();
+    heartbeat.progress({ stage: "up" });
+    heartbeat.progress({ stage: "workspace", detail: "cloning the mirror" });
+    heartbeat.progress({ stage: "workspace", detail: "checking out aaaaaaaa" });
+    heartbeat.progress({ stage: "toolchain", detail: "node 22.11.0" });
+    const beating = heartbeat.run();
+    await settle();
+    // Within a stage, the newest; every stage, once, in order.
+    expect(bodies.map((body) => progressOf(body))).toEqual([
+      { stage: "up" },
+      { stage: "workspace", detail: "checking out aaaaaaaa" },
+      { stage: "toolchain", detail: "node 22.11.0" },
+    ]);
+    heartbeat.end();
+    await beating;
+    expect(bodies).toHaveLength(3);
+  });
+
+  it("sends the next beat as soon as one in flight returns, when a stage arrived meanwhile", async () => {
+    const { heartbeat, bodies } = asleep({
+      post: (_body, index) => {
+        if (index === 0) heartbeat.progress({ stage: "workspace", detail: "cloning the mirror" });
+        return undefined;
+      },
+    });
+    heartbeat.progress({ stage: "up" });
+    const beating = heartbeat.run();
+    await settle();
+    expect(bodies.map((body) => progressOf(body)?.stage)).toEqual(["up", "workspace"]);
+    heartbeat.end();
+    await beating;
+  });
+
+  it("wakes for a detail-only change at most every few seconds", async () => {
+    const { heartbeat, bodies, advance } = asleep();
+    heartbeat.progress({ stage: "setup", detail: "setup install" });
+    const beating = heartbeat.run();
+    await settle();
+    expect(bodies).toHaveLength(1);
+    advance(PROGRESS_MIN_GAP_MS / 4);
+    heartbeat.progress({ stage: "setup", detail: "setup build" });
+    await settle();
+    // Too soon: it waits, unsent.
+    expect(bodies).toHaveLength(1);
+    advance(PROGRESS_MIN_GAP_MS);
+    heartbeat.progress({ stage: "setup", detail: "setup migrate" });
+    await settle();
+    expect(bodies).toHaveLength(2);
+    // The newest only: `setup build` was replaced before it was sent.
+    expect(progressOf(bodies[1])).toEqual({ stage: "setup", detail: "setup migrate" });
+    advance(PROGRESS_MIN_GAP_MS / 4);
+    heartbeat.progress({ stage: "setup", detail: "setup seed" });
+    await settle();
+    expect(bodies).toHaveLength(2);
+    // The loop's end carries what the rate held back.
+    heartbeat.end();
+    await beating;
+    expect(bodies).toHaveLength(3);
+    expect(progressOf(bodies[2])).toEqual({ stage: "setup", detail: "setup seed" });
+  });
+
+  it("sends a progress again after a failed beat, unless a newer one has replaced it", async () => {
+    let now = 0;
+    const bodies: unknown[] = [];
+    const answers: (HeartbeatResponse | Error)[] = [
+      new Error("ECONNRESET"),
+      answer(),
+      new Error("ECONNRESET"),
+      answer(),
+      answer({ stop: true, status: "stopping" }),
+    ];
+    const heartbeat = createHeartbeat({
+      generation: 2,
+      post: async (body) => {
+        bodies.push(body);
+        const said = answers[bodies.length - 1] ?? answer({ stop: true });
+        // While the third beat is in flight, the runner moves on.
+        if (bodies.length === 3) heartbeat.progress({ stage: "toolchain", detail: "node 22.11.0" });
+        if (said instanceof Error) throw said;
+        return said;
+      },
+      installToken: () => undefined,
+      sample: async () => undefined,
+      sleep: async (ms) => {
+        now += ms;
+      },
+      now: () => now,
+      log: () => undefined,
+    });
+    heartbeat.progress({ stage: "up" });
+    expect(await heartbeat.run()).toBe("stop");
+    expect(bodies.map((body) => progressOf(body))).toEqual([
+      { stage: "up" },
+      // Failed, so said again.
+      { stage: "up" },
+      undefined,
+      // Failed with nothing to say; the newer one goes, and nothing stale after it.
+      { stage: "toolchain", detail: "node 22.11.0" },
+      undefined,
+    ]);
+  });
+
+  it("keeps the progress when the sample fails, and sends it on the next beat (F-01)", async () => {
+    const { heartbeat, bodies } = asleep({
+      sample: async (index) => {
+        if (index === 0) throw new Error("/proc/stat: EIO");
+        return undefined;
+      },
+    });
+    heartbeat.progress({ stage: "up", detail: "on i-0123" });
+    const beating = heartbeat.run();
+    await settle();
+    // The first beat never reached the plane; the progress is not lost with it.
+    expect(bodies).toHaveLength(0);
+    heartbeat.end();
+    await beating;
+    expect(bodies.map((body) => progressOf(body))).toEqual([{ stage: "up", detail: "on i-0123" }]);
+  });
+
+  it("sends the newer progress, not the older, when a sample fails after a newer one arrived", async () => {
+    let failed = false;
+    const { heartbeat, bodies } = asleep({
+      sample: async () => {
+        if (failed) return undefined;
+        failed = true;
+        heartbeat.progress({ stage: "audit", gates: [], verdict: "fault" });
+        throw new Error("/proc/meminfo: EIO");
+      },
+    });
+    heartbeat.progress({ stage: "audit", gates: [] });
+    const beating = heartbeat.run();
+    await settle();
+    expect(bodies).toHaveLength(0);
+    heartbeat.end();
+    await beating;
+    expect(bodies.map((body) => progressOf(body))).toEqual([
+      { stage: "audit", gates: [], verdict: "fault" },
+    ]);
+  });
+
+  it("carries the newest progress with stopped, so nothing follows the beat that ends the dispatch", async () => {
+    const { heartbeat, bodies } = asleep();
+    heartbeat.progress({ stage: "prerequisites", detail: "checking 1" });
+    heartbeat.progress({ stage: "audit", gates: [], verdict: "fault" });
+    heartbeat.report("stopped", { code: "environment_fault", message: "unit" });
+    heartbeat.end();
+    await heartbeat.run();
+    expect(bodies).toEqual([
+      expect.objectContaining({
+        report: "stopped",
+        progress: { stage: "audit", gates: [], verdict: "fault" },
+      }),
+    ]);
+  });
+
+  it("carries an unsent progress with the farewell's stopped", async () => {
+    const { heartbeat, bodies } = asleep();
+    heartbeat.end();
+    await heartbeat.run();
+    heartbeat.progress({ stage: "audit", gates: [], verdict: "fault" });
+    await heartbeat.farewell("stopped", { code: "environment_fault", message: "unit" });
+    expect(bodies).toEqual([
+      expect.objectContaining({
+        report: "stopped",
+        failure: { code: "environment_fault", message: "unit" },
+        progress: { stage: "audit", gates: [], verdict: "fault" },
+      }),
+    ]);
+  });
+});
+
+describe("the audit's progress (P16 S-03)", () => {
+  const program = makeProgramContract(f, {
+    setup: [{ id: "install", command: "npm ci" }],
+    verification: [{ id: "unit", command: "npm test" }],
+  });
+  const withReference = makeDispatch(f, {
+    input: {
+      repositoryUrl: "https://github.com/wildorder/fixture",
+      branch: "program/fixture",
+      baseSha: "a".repeat(40),
+      planHash: "unused",
+      reference: {
+        base: "a".repeat(40),
+        auditedAt: "2026-10-01T12:00:00.000Z",
+        gates: [
+          { id: "setup:install", kind: "setup", verdict: "passed" },
+          { id: "unit", kind: "check", verdict: "passed" },
+        ],
+      },
+    },
+  });
+  const step = (stepId: string, exitCode: number, output = "") => ({
+    stepId,
+    exitCode,
+    durationMs: 10,
+    output: new TextEncoder().encode(output),
+  });
+  const compared = (
+    faults: number,
+    red: readonly string[],
+    count = 1,
+  ): Parameters<typeof auditProgressOf>[0] => {
+    const gates = Array.from({ length: count }, (_, index) => ({
+      id: `gate-${index}`,
+      command: "true",
+      kind: "check" as const,
+      machine: "passed" as const,
+      outcome: "agree" as const,
+      ...(index === 0 ? { reference: "passed" as const } : {}),
+    }));
+    return { gates, faults: gates.slice(0, faults), red };
+  };
+
+  it("names each finished gate as the reference does, with both verdicts", () => {
+    expect(
+      gateProgressOf(step("setup:install", 0) as never, { program, dispatch: withReference }),
+    ).toEqual({ id: "setup:install", kind: "setup", machine: "passed", reference: "passed" });
+    expect(gateProgressOf(step("unit", 1) as never, { program, dispatch: withReference })).toEqual({
+      id: "unit",
+      kind: "check",
+      machine: "failed",
+      reference: "passed",
+    });
+    expect(
+      gateProgressOf(step("unit", 75, "NIGHTSHIFT_DEFER HP-01 needs docker\n") as never, {
+        program,
+        dispatch: makeDispatch(f),
+      }),
+    ).toMatchObject({ id: "unit", kind: "check", machine: expect.any(String) });
+  });
+
+  it("gives the verdict: a fault outranks red, and red outranks agreement", () => {
+    expect(auditVerdictOf(compared(1, ["gate-0"]))).toBe("fault");
+    expect(auditVerdictOf(compared(0, ["gate-0"]))).toBe("red");
+    expect(auditVerdictOf(compared(0, []))).toBe("agrees");
+  });
+
+  it("keeps no more gates than a progress may carry", () => {
+    const progress = auditProgressOf(compared(0, [], MAX_PROGRESS_GATES + 5));
+    expect(progress.gates).toHaveLength(MAX_PROGRESS_GATES);
+    expect(progress.gates?.[0]).toEqual({
+      id: "gate-0",
+      kind: "check",
+      machine: "passed",
+      reference: "passed",
+    });
+    expect(progress.verdict).toBe("agrees");
   });
 });
 
@@ -639,8 +981,9 @@ describe("the runner end to end over fakes (T2, T3)", () => {
 
   it("with no work yet, prepares the workspace, reports ready with setup's facts, and stays until told to stop", async () => {
     const machine = gitMachine();
+    // Each stage the runner reaches is a beat of its own (P16 S-03): the stop comes after them.
     const plane = fakePlane(program, dispatch, planText, (beat) =>
-      beat < 4 ? { status: "ready", stop: false } : { status: "stopping", stop: true },
+      beat < 12 ? { status: "ready", stop: false } : { status: "stopping", stop: true },
     );
     const lines: string[] = [];
     const tokensInstalled: string[] = [];
@@ -743,6 +1086,71 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     });
     expect(code).toBe(0);
     expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped" });
+  });
+
+  /** The stages the plane heard, each once, in the order it first heard them. */
+  const stagesHeard = (heartbeats: readonly unknown[]): string[] => {
+    const stages: string[] = [];
+    for (const body of heartbeats) {
+      const stage = (body as { progress?: RunnerProgress }).progress?.stage;
+      if (stage !== undefined && stages.at(-1) !== stage) stages.push(stage);
+    }
+    return stages;
+  };
+
+  it("says it is up on the first beat, then the workspace, the toolchain and setup, in order (P16 S-03)", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, (beat) =>
+      beat < 12 ? { status: "ready", stop: false } : { status: "stopping", stop: true },
+    );
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+    });
+    expect(code).toBe(0);
+    expect(plane.heartbeats[0]).toMatchObject({
+      progress: { stage: "up", detail: "on i-0123456789abcdef0" },
+    });
+    expect(stagesHeard(plane.heartbeats)).toEqual(["up", "workspace", "toolchain", "setup"]);
+    const heard = plane.heartbeats.map((body) => (body as { progress?: RunnerProgress }).progress);
+    expect(heard).toContainEqual({ stage: "toolchain", detail: "the image's runtimes" });
+    expect(heard).toContainEqual({ stage: "setup", detail: "setup install" });
+  });
+
+  it("gets an audit's fault to the plane no later than the stopped beat that ends the dispatch", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      work: async (context) => {
+        context.heartbeat.progress({
+          stage: "audit",
+          gates: [{ id: "unit", kind: "check", machine: "failed", reference: "passed" }],
+          verdict: "fault",
+        });
+        return { failure: { code: "environment_fault", message: "unit failed here" } };
+      },
+    });
+    expect(code).toBe(1);
+    const bodies = plane.heartbeats as { report?: string; progress?: RunnerProgress }[];
+    const fault = bodies.findIndex((body) => body.progress?.verdict === "fault");
+    const stopped = bodies.findIndex((body) => body.report === "stopped");
+    expect(fault).toBeGreaterThan(-1);
+    expect(stopped).toBeGreaterThan(-1);
+    expect(fault).toBeLessThanOrEqual(stopped);
+    expect(bodies[stopped]).toMatchObject({ failure: { code: "environment_fault" } });
   });
 
   it("stops and says so when the workspace cannot be made", async () => {

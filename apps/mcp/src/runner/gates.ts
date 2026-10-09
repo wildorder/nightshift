@@ -27,12 +27,22 @@
  *
  * Only on a dispatch's first machine. A replacement (T6) resumes a run that
  * has already started; its base was audited when it began.
+ *
+ * As it goes, the audit says where it has got to (P16 S-03), through the
+ * context's `onProgress`, which the runner hands to its heartbeat:
+ * `prerequisites` while they are checked, then `audit` with each gate as it
+ * finishes beside the reference's verdict, and last the verdict: `agrees`,
+ * `red`, `fault`, or `skipped` on a replacement machine.
  */
-import type {
-  CheckDispatch,
-  CommitSha,
-  EnvironmentFaultPayload,
-  Prerequisite,
+import {
+  type CheckDispatch,
+  type CommitSha,
+  type EnvironmentFaultPayload,
+  MAX_PROGRESS_GATES,
+  type MachineAuditVerdict,
+  type MachineGateProgress,
+  type Prerequisite,
+  type RunnerProgress,
 } from "@nightshift/contracts";
 import {
   nowIso,
@@ -50,12 +60,13 @@ import {
   environmentFaultReason,
   type GateAudit,
   type GateComparison,
+  gateVerdictOf,
   recordEnvironmentFault,
   recordRedBase,
   runPreflight,
   stepsAs,
 } from "@nightshift/execution";
-import { runVerificationSteps } from "@nightshift/verification";
+import { runVerificationSteps, type StepResult, setupAsStep } from "@nightshift/verification";
 import type { Runtime } from "../compose.js";
 import type { RunnerContext, RunnerWorkEnd } from "./main.js";
 import { projectEnvironment } from "./workspace.js";
@@ -66,7 +77,54 @@ export type MachineAuditRuntime = Pick<
 >;
 
 export type MachineAuditContext = Pick<RunnerContext, "scope" | "layout" | "dispatch" | "program"> &
-  Partial<Pick<RunnerContext, "projectEnv">>;
+  Partial<Pick<RunnerContext, "projectEnv">> & {
+    /** Told where the audit has got to (P16 S-03); the runner hands it to its heartbeat. */
+    readonly onProgress?: (progress: RunnerProgress) => void;
+  };
+
+/** What a replacement machine says of the audit it does not run. */
+export const SKIPPED_AUDIT_DETAIL = "a replacement machine; the first one's audit stands";
+
+/**
+ * One finished step of the audit as the heartbeat carries it: its gate's id
+ * and kind as the audit and the reference name them (`setup:<id>`), its
+ * verdict here, and the reference's beside it when the reference has the gate.
+ */
+export const gateProgressOf = (
+  result: StepResult,
+  context: Pick<MachineAuditContext, "dispatch" | "program">,
+): MachineGateProgress => {
+  const setup = new Set((context.program.setup ?? []).map((step) => setupAsStep(step).id));
+  const reference = context.dispatch.input.reference?.gates.find(
+    (gate) => gate.id === result.stepId,
+  );
+  return {
+    id: result.stepId,
+    kind: setup.has(result.stepId) ? "setup" : "check",
+    machine: gateVerdictOf(result),
+    ...(reference === undefined ? {} : { reference: reference.verdict }),
+  };
+};
+
+/** The audit's verdict against the reference: a fault outranks red, and red outranks agreement. */
+export const auditVerdictOf = (comparison: GateComparison): MachineAuditVerdict => {
+  if (comparison.faults.length > 0) return "fault";
+  return comparison.red.length > 0 ? "red" : "agrees";
+};
+
+/** The final `audit` progress: every gate, unrun and waiting ones too, and the verdict. */
+export const auditProgressOf = (comparison: GateComparison): RunnerProgress => ({
+  stage: "audit",
+  gates: comparison.gates.slice(0, MAX_PROGRESS_GATES).map(
+    (gate): MachineGateProgress => ({
+      id: gate.id,
+      kind: gate.kind,
+      machine: gate.machine,
+      ...(gate.reference === undefined ? {} : { reference: gate.reference }),
+    }),
+  ),
+  verdict: auditVerdictOf(comparison),
+});
 
 /** What the audit found; absent on a replacement machine, which does not audit. A red one does not stop the root. */
 export interface MachineAuditResult {
@@ -129,6 +187,7 @@ export const checkPrerequisitesOnMachine = async (
   };
   const book = runtime.prerequisites;
   log(`prerequisites: checking ${prerequisites.length} on this machine`);
+  context.onProgress?.({ stage: "prerequisites", detail: `checking ${prerequisites.length}` });
   const result = await runPreflight({
     contract: context.program,
     cwd: context.layout.checkout,
@@ -251,9 +310,16 @@ export const auditOnMachine = async (
   context: MachineAuditContext,
   log: (line: string) => void,
 ): Promise<MachineAuditResult> => {
-  if (context.dispatch.generation > 1) return {};
+  if (context.dispatch.generation > 1) {
+    context.onProgress?.({ stage: "audit", verdict: "skipped", detail: SKIPPED_AUDIT_DETAIL });
+    return {};
+  }
   const unmet = await checkPrerequisitesOnMachine(runtime, context, log);
-  log(`gate audit: setup and every check, on ${context.dispatch.input.baseSha.slice(0, 8)}`);
+  const base = context.dispatch.input.baseSha.slice(0, 8);
+  log(`gate audit: setup and every check, on ${base}`);
+  context.onProgress?.({ stage: "audit", detail: `setup and every check, on ${base}` });
+  // Each gate as it finishes, beside the reference's verdict.
+  const finished: MachineGateProgress[] = [];
   const audit = await auditGates({
     git: runtime.git,
     repoPath: context.layout.checkout,
@@ -267,7 +333,7 @@ export const auditOnMachine = async (
     env: environmentOf(context),
     // As verification on this machine runs its steps (D-P10-25).
     ...asWorker(runtime, context),
-    onStep: (result) =>
+    onStep: (result) => {
       log(
         `gate audit: ${result.stepId} ${
           result.exitCode === 0
@@ -276,7 +342,10 @@ export const auditOnMachine = async (
               ? `exited ${result.exitCode}`
               : "deferred"
         } in ${(result.durationMs / 1000).toFixed(1)}s`,
-      ),
+      );
+      if (finished.length < MAX_PROGRESS_GATES) finished.push(gateProgressOf(result, context));
+      context.onProgress?.({ stage: "audit", gates: [...finished] });
+    },
   });
   // Deferred is not red (D-P7-10): it is said, with what it waits for, and the root starts.
   for (const gate of audit.gates.filter((candidate) => candidate.verdict === "deferred")) {
@@ -288,6 +357,9 @@ export const auditOnMachine = async (
     );
   }
   const comparison = compareWithReference(context.dispatch.input.reference, audit);
+  // The verdict goes to the heartbeat before anything is recorded: on a fault,
+  // it reaches the plane before or with the `stopped` that ends the dispatch.
+  context.onProgress?.(auditProgressOf(comparison));
   for (const gate of comparison.gates.filter(
     (candidate) => candidate.reference === "failed" && candidate.machine === "passed",
   )) {

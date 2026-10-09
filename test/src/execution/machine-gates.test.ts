@@ -16,6 +16,7 @@ import {
   type Prerequisite,
   type ProgramContract,
   type ReferenceGate,
+  type RunnerProgress,
 } from "@nightshift/contracts";
 import { createFixtures, gatherReport, makeDispatch, renderReport } from "@nightshift/core";
 import { startRun } from "@nightshift/execution";
@@ -66,6 +67,8 @@ const machine = async (
     runId: started.run.runId,
   };
   const generation = input.generation ?? 1;
+  // What the audit tells the heartbeat (P16 S-03), in order.
+  const progress: RunnerProgress[] = [];
   const engineAgentId = world.ids.next("agent");
   const context: MachineAuditContext = {
     scope,
@@ -97,6 +100,7 @@ const machine = async (
       },
     } as unknown as Dispatch,
     ...(input.projectEnv === undefined ? {} : { projectEnv: input.projectEnv }),
+    onProgress: (given) => progress.push(given),
   };
   let prerequisites: Runtime["prerequisites"];
   if (input.recorded !== undefined) {
@@ -157,7 +161,7 @@ const machine = async (
     },
   );
   const run = await world.stores.runs.get(scope, scope.runId);
-  return { world, result, run, lines, started, ended, rootStarted };
+  return { world, result, run, lines, started, ended, rootStarted, progress };
 };
 
 describe("the gate audit on a run's machine", () => {
@@ -220,6 +224,43 @@ describe("the gate audit on a run's machine", () => {
     expect(run?.status).toBe("pending");
   });
 
+  it("reports each gate as it finishes, then `agrees` (P16 S-03)", async () => {
+    const { progress } = await machine(
+      {
+        setup: [{ id: "install", command: `node -e "process.exit(0)"` }],
+        verification: [{ id: "test", command: `node -e "process.exit(0)"` }],
+      },
+      {
+        reference: {
+          gates: [
+            { id: "setup:install", kind: "setup", verdict: "passed" },
+            { id: "test", kind: "check", verdict: "passed" },
+          ],
+        },
+      },
+    );
+    // No prerequisites, so no `prerequisites` stage.
+    expect(progress.map((given) => given.stage)).toEqual(["audit", "audit", "audit", "audit"]);
+    expect(progress[0]?.detail).toMatch(/^setup and every check, on [0-9a-f]{8}$/);
+    expect(progress[1]).toEqual({
+      stage: "audit",
+      gates: [{ id: "setup:install", kind: "setup", machine: "passed", reference: "passed" }],
+    });
+    expect(progress[2]?.gates).toEqual([
+      { id: "setup:install", kind: "setup", machine: "passed", reference: "passed" },
+      { id: "test", kind: "check", machine: "passed", reference: "passed" },
+    ]);
+    expect(progress[2]?.verdict).toBeUndefined();
+    expect(progress.at(-1)).toEqual({
+      stage: "audit",
+      gates: [
+        { id: "setup:install", kind: "setup", machine: "passed", reference: "passed" },
+        { id: "test", kind: "check", machine: "passed", reference: "passed" },
+      ],
+      verdict: "agrees",
+    });
+  });
+
   it("records gate.red on the program node and lets the root start, keeping each red gate's output", async () => {
     const { world, result, run, started, lines } = await machine({
       verification: [{ id: "build", command: BROKEN }],
@@ -277,7 +318,7 @@ describe("the gate audit on a run's machine", () => {
 
     it("builds the audit's unmet set from its own checks: the laptop's satisfied one fails here, the laptop's pending one passes", async () => {
       const recorded: Recorded[] = [];
-      const { world, result, lines, run } = await machine(gated, {
+      const { world, result, lines, run, progress } = await machine(gated, {
         recorded,
         projectEnv: { MACHINE_HAS_TOKEN: "yes" },
       });
@@ -296,6 +337,17 @@ describe("the gate audit on a run's machine", () => {
       ]);
       expect(lines).toContain("prerequisites: HP-01 unmet (exited 1) on this machine");
       expect(lines).toContain("prerequisites: HP-02 met on this machine");
+      // `prerequisites` first, then the audit, whose final gates include the waiting one.
+      expect(progress[0]).toEqual({ stage: "prerequisites", detail: "checking 2" });
+      expect(progress[1]?.stage).toBe("audit");
+      expect(progress.at(-1)).toEqual({
+        stage: "audit",
+        gates: [
+          { id: "docker", kind: "check", machine: "waiting" },
+          { id: "token", kind: "check", machine: "passed" },
+        ],
+        verdict: "agrees",
+      });
 
       // The laptop's status is the laptop's: the machine's checks moved neither.
       const stored = await world.stores.programContracts.get(
@@ -337,17 +389,20 @@ describe("the gate audit on a run's machine", () => {
       ).items;
 
     it("passed on the reference and failed here is an environment fault: no gate.red, the run cancelled, the root never started", async () => {
-      const { world, result, run, started, lines, ended, rootStarted } = await machine(program, {
-        reference: {
-          node: "20.0.1",
-          gates: [
-            { id: "build", kind: "check", verdict: "passed" },
-            { id: "unit", kind: "check", verdict: "passed", outputArtifactId: REFERENCE_OUTPUT },
-            // Red on both: still no gate.red, since the fault outranks it.
-            { id: "lint", kind: "check", verdict: "failed" },
-          ],
+      const { world, result, run, started, lines, ended, rootStarted, progress } = await machine(
+        program,
+        {
+          reference: {
+            node: "20.0.1",
+            gates: [
+              { id: "build", kind: "check", verdict: "passed" },
+              { id: "unit", kind: "check", verdict: "passed", outputArtifactId: REFERENCE_OUTPUT },
+              // Red on both: still no gate.red, since the fault outranks it.
+              { id: "lint", kind: "check", verdict: "failed" },
+            ],
+          },
         },
-      });
+      );
       const machineNode = process.versions.node;
       expect(result.comparison?.faults.map((gate) => gate.id)).toEqual(["unit"]);
 
@@ -357,6 +412,17 @@ describe("the gate audit on a run's machine", () => {
       expect(ended?.failure.message).toContain("20.0.1");
       expect(ended?.failure.message).toContain(machineNode);
       expect(ended?.failure.message).not.toContain("lint");
+      // The heartbeat hears the fault, every gate with the reference's verdict beside it.
+      expect(progress.at(-1)).toEqual({
+        stage: "audit",
+        gates: [
+          { id: "build", kind: "check", machine: "passed", reference: "passed" },
+          { id: "unit", kind: "check", machine: "failed", reference: "passed" },
+          { id: "lint", kind: "check", machine: "failed", reference: "failed" },
+        ],
+        verdict: "fault",
+      });
+      expect(progress.filter((given) => given.verdict !== undefined)).toHaveLength(1);
 
       expect(run?.status).toBe("cancelled");
       expect(run?.outcomeReason).toBe(ended?.failure.message);
@@ -481,7 +547,7 @@ describe("the gate audit on a run's machine", () => {
     });
 
     it("failed on both is a red base as today: gate.red, and the root starts", async () => {
-      const { world, run, started, ended, rootStarted } = await machine(
+      const { world, run, started, ended, rootStarted, progress } = await machine(
         { verification: [{ id: "unit", command: BROKEN }] },
         {
           reference: {
@@ -493,6 +559,11 @@ describe("the gate audit on a run's machine", () => {
       expect(ended).toBeUndefined();
       expect(rootStarted).toBe(true);
       expect(run?.status).toBe("pending");
+      expect(progress.at(-1)).toEqual({
+        stage: "audit",
+        gates: [{ id: "unit", kind: "check", machine: "failed", reference: "failed" }],
+        verdict: "red",
+      });
       const events = await eventsOf(world, started.run.runId);
       expect(events.some((event) => event.type === "environment.fault")).toBe(false);
       expect(events.find((event) => event.type === "gate.red")?.payload).toEqual({
@@ -502,10 +573,16 @@ describe("the gate audit on a run's machine", () => {
     });
 
     it("without a reference behaves as before: gate.red, and the root starts", async () => {
-      const { world, run, started, ended, rootStarted, result } = await machine({
+      const { world, run, started, ended, rootStarted, result, progress } = await machine({
         verification: [{ id: "unit", command: BROKEN }],
       });
       expect(result.comparison?.faults).toEqual([]);
+      // No reference: the machine's verdicts alone, and red.
+      expect(progress.at(-1)).toEqual({
+        stage: "audit",
+        gates: [{ id: "unit", kind: "check", machine: "failed" }],
+        verdict: "red",
+      });
       expect(ended).toBeUndefined();
       expect(rootStarted).toBe(true);
       expect(run?.status).toBe("pending");
@@ -516,11 +593,19 @@ describe("the gate audit on a run's machine", () => {
   });
 
   it("does not audit again on a replacement machine, whose run has already begun", async () => {
-    const { result, lines } = await machine(
+    const { result, lines, progress } = await machine(
       { verification: [{ id: "build", command: BROKEN }] },
       { generation: 2 },
     );
     expect(result).toEqual({});
     expect(lines).toEqual([]);
+    // The heartbeat says so (P16 S-03): the first machine's audit stands.
+    expect(progress).toEqual([
+      {
+        stage: "audit",
+        verdict: "skipped",
+        detail: "a replacement machine; the first one's audit stands",
+      },
+    ]);
   });
 });
