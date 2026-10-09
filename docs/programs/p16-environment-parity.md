@@ -382,6 +382,169 @@ commits (`0b25b71`, `d661e0b`, `0d5156c`, `e72b175`, `4d91ba7`, `7f23ab5`,
    built from keki's three failure modes plus the obvious pairings, not an
    exhaustive audit of every verdict combination a live machine can return.
 
+## S-03 as built
+
+S-03 is the moment the plan asked for: `nightshift run --remote` stays with
+the developer, showing WAIT while the machine comes up, installs the
+project's runtimes, runs setup, checks the prerequisites and audits the
+gates against the laptop's reference, and says OK GO the instant the machine
+agrees. This is what landed, read from the commits (`27fa736`, `3a99510`,
+`33836a2`) and the arbiter's F-01 rulings on the runner's heartbeat and the
+CLI's plain display.
+
+### What exists now
+
+- **The progress contract** (`packages/contracts/src/v1/dispatch.ts`).
+  `RunnerStageSchema` is the six stages in order: `up`, `workspace`,
+  `toolchain`, `setup`, `prerequisites`, `audit`. `RunnerProgressSchema` is
+  what a heartbeat carries — a stage, an optional one-line `detail`, and,
+  only at stage `audit`, the gates finished so far
+  (`MachineGateProgressSchema`: a gate's id and kind, its machine verdict,
+  and the reference's verdict beside it when the reference has that gate,
+  capped at `MAX_PROGRESS_GATES`) and a `verdict`
+  (`MachineAuditVerdictSchema`: `agrees`, `red`, `fault`, `skipped`) once the
+  comparison is made; a refinement keeps gates and verdict off every other
+  stage. `DispatchProgressSchema` is the same shape plus the generation that
+  reported it and two timestamps, `stageStartedAt` and `updatedAt`.
+  `foldProgress` (`packages/core/src/rules/dispatch.ts`) turns a reported
+  progress into the stored one: it keeps `stageStartedAt` when the stage and
+  the generation are unchanged, resets it to the beat's own time otherwise,
+  always bumps `updatedAt`, and carries over only the fields the report
+  itself has — a field the previous record had but this report omits is
+  dropped, not kept. `progress` is optional on both `HeartbeatBodySchema` and
+  `DispatchSchema`, so an old dispatch without one still parses. The API's
+  heartbeat handler (`apps/api/src/operations/dispatch.ts`) folds
+  `body.progress` whenever present, alongside any milestone or failure, and
+  refuses a heartbeat whose `generation` does not match the dispatch's own
+  before it reaches `foldProgress` — so a replaced machine's stale beat can
+  never overwrite the current one's progress.
+- **The heartbeat's `progress()`** (`apps/mcp/src/runner/heartbeat.ts`). A
+  new stage, or a verdict not yet given, wakes the loop's wait at once rather
+  than waiting out the 20-second interval (`HEARTBEAT_INTERVAL_SECONDS` is
+  unchanged); a progress that only updates `detail` or adds gates within the
+  same stage wakes the loop too, but no more often than
+  `PROGRESS_MIN_GAP_MS` (2s). Only the newest progress of a stage is kept to
+  send; a stage the runner has already left before any beat carried it is
+  queued rather than overwritten, so the plane hears every stage in order
+  even under a slow beat. F-01 (`dec_01M4H71H4T48YG6P7CCM1D33QN`): the
+  catch that restores unsent progress after a failed beat now covers
+  `options.sample()` as well as the post and the response parsing, so a
+  rejected sample no longer loses that beat's progress; it is restored only
+  when nothing newer has arrived, so the newest still wins. The end-of-loop
+  flush and `farewell` carry any progress still unsent, and a `stopped` beat
+  takes the single newest progress queued (an audit's `fault` verdict, say)
+  rather than the oldest, so that verdict reaches the plane before or with
+  the beat that ends the dispatch.
+- **Where the runner reports each stage.** `main.ts` sends `up` (with the
+  instance id) before the first beat, then `workspace` as it mounts the
+  volume, clones or fetches the mirror, and checks out the base's short SHA.
+  `workspace.ts`'s `prepareWorkspace` takes an `onProgress` callback through
+  which it reports `toolchain` (via `toolchainDetail`: the pinned runtimes
+  and their exact versions, or "the image's runtimes" when none are pinned)
+  and `setup` as each setup step starts (or "no setup steps" when there are
+  none). `gates.ts`'s `auditOnMachine` reports `prerequisites` only when
+  there are any to check, then `audit` before the gates run, again as each
+  gate finishes (carrying the gates finished so far against the reference),
+  and a final `audit` progress carrying every gate and the verdict once the
+  comparison with the reference is made. A replacement machine (dispatch
+  generation > 1) reports `audit`/`skipped` immediately, before checking
+  prerequisites or running a single gate.
+- **The CLI watch** (`apps/cli/src/commands/watch.ts`). `WAIT_BANNER` and
+  `OK_GO_BANNER` are plain-ASCII `#` art, no dependency. `watchDispatch`
+  polls `dispatches.get` every `POLL_MS` (3s) and renders a `terminalDisplay`
+  when `environment.stdoutIsTTY`, redrawing the frame in place (cursor up
+  over the last frame, then clear to end of screen), or a `plainDisplay`
+  otherwise: one line per stage change, per newly finished gate, and for the
+  verdict, with no escape codes. Per the arbiter's F-01
+  (`dec_01M4H6KGJCEH7YNER1SMZJJ5XY`), every plain stage-change line is
+  prefixed with both durations — `[stage m:ss, total m:ss]` — computed by
+  `timesOf` from `progress.stageStartedAt` and the dispatch's `requestedAt`,
+  both read through `environment.clock`; the terminal frame shows the same
+  two durations beneath the banner. The endings: the machine agreeing, a red
+  base both agree on, or a replacement machine skipping its audit all show
+  OK GO and exit `0`; an environment fault shows the cause and, read
+  best-effort from the run's events, the side-by-side table (via
+  `environmentFaultLines`/`environmentFaultOfRun`, shared with `remote
+  status`), and exits `1`; any other failed dispatch shows the cause and
+  exits `1`; a dispatch stopped from elsewhere shows that and exits `1`;
+  Ctrl-C (`EXIT_DETACHED`, 130) detaches at once, cancels nothing, and prints
+  the reattach and cancel commands; ten unanswered polls in a row
+  (`MAX_POLL_FAILURES`) end the same way with exit `1`. `run --remote`
+  (`run-program.ts`) dispatches and then calls `watchDispatch`, returning its
+  exit code as its own; `remote status <program> --watch`
+  (`remote.ts`) attaches to the same display, reattaching mid-audit when the
+  machine is still going or showing the ending at once when it has already
+  ended. Plain `remote status` (no `--watch`) adds one `progress:` line —
+  stage, detail, verdict — rather than the full display. `watchDispatch`
+  trusts progress only from the dispatch's current generation: the plane
+  itself refuses a stale generation's heartbeat (above), so nothing further
+  is needed here, and a replacement machine's own stages reset the CLI's
+  per-gate and per-verdict "already printed" state (keyed to
+  `progress.generation`) so its `skipped` verdict is not mistaken for a
+  repeat of the first machine's gates.
+
+### Departures from `plan.md`
+
+1. **A sixth stage, `setup`, between `toolchain` and `prerequisites`.** The
+   plan's list (§S-03) named five: up, workspace, Node/Docker, prerequisites,
+   audit. The pinned runtimes are installed before the program's `setup`
+   step runs — setup itself must see them — so setup needed its own place in
+   the sequence rather than being folded into `toolchain`'s detail. Docker's
+   readiness is not a toolchain check at all: Docker is rootless and
+   per-worker-user (S-01), so there is no single "Docker is up" moment at the
+   engine's own stage the way there is for a language runtime; it shows
+   through the prerequisite checks and the gate audit instead, both of which
+   run as a worker and can reach a worker's socket (decision
+   `dec_01M4H1DV7ZHTG18YZYK4N0JXM1`).
+2. **Ctrl-C's exit code, 130,** which the plan's table left as "—". It
+   follows the conventional 128 + SIGINT (2) that shells use for an
+   interrupted foreground process.
+3. **The heartbeat's wake-up rule covers more than "a stage change,"** which
+   is all the plan's Approach named. A verdict reported without a stage
+   change (the final `audit` progress, once the comparison is made) also
+   wakes the loop at once, and a detail-only or gates-only change wakes it
+   at a bounded rate (`PROGRESS_MIN_GAP_MS`) rather than only on the next
+   scheduled beat — otherwise a slow audit's per-gate progress would sit
+   unsent for up to 20 seconds at a time.
+4. **A stage the runner already left before any beat carried it is queued,
+   not dropped.** The plan did not say what happens when the runner outruns
+   the heartbeat; without queuing, an end-to-end test showed the `toolchain`
+   stage never reaching the plane at all on a fast machine. Every stage is
+   now a beat of its own when the runner moves faster than the interval.
+
+### Known limits
+
+- **A replacement machine does not audit again.** `auditOnMachine` reports
+  `audit`/`skipped` and returns immediately when the dispatch's generation is
+  greater than 1, without checking prerequisites or running a gate. Reattaching
+  with `remote status --watch` after a recovery shows OK GO on the strength of
+  the first machine's audit, not a new one from the replacement.
+- **Progress is the latest only, not a history.** `DispatchProgressSchema`
+  holds one stage, one set of finished gates and one verdict; nothing records
+  how long a prior stage took once the next has overwritten it (`stageStartedAt`
+  moves with the stage), beyond what the CLI itself prints as it goes.
+- **The CLI's "already printed" state is per process.** Each `watchDispatch`
+  call starts with empty `printedGates`/`printedVerdict`/`stageKey`, so
+  reattaching after a detach reprints the stage line (and, in the plain
+  display, every gate already finished) rather than picking up from where a
+  previous attached process left off.
+- **A fault's side-by-side table depends on the run's events having landed.**
+  `watchDispatch` tries reading them on up to `FAULT_READS` polls before
+  falling back to the cause line alone; a fault that ends the dispatch and
+  writes its events in the same moment the CLI happens to poll can still show
+  the bare cause if the events are not yet readable after three tries.
+
+### What the owner must do after this lands (the run cannot)
+
+1. **Build the image and deploy**, as S-01 and S-02 already required: nothing
+   in S-03 changes that. The heartbeat's new wake-ups, the runner's stage
+   reports and the CLI's display were all checked against fakes and a local
+   end-to-end test, never a real machine's heartbeat over the network.
+2. **Watch the first real `run --remote` for the display end to end** — the
+   terminal redraw, the plain-line fallback in CI, and Ctrl-C's detach — since
+   timing a live 20-second heartbeat against a developer actually watching a
+   terminal is not something a fake clock can stand in for.
+
 ## Decision log
 
 | Date | Decision | Authority |
@@ -389,3 +552,4 @@ commits (`0b25b71`, `d661e0b`, `0d5156c`, `e72b175`, `4d91ba7`, `7f23ab5`,
 | 2026-10-09 | Plan drafted: D-01 … D-09 proposed | Agent |
 | 2026-10-09 | D-03, D-05, D-06, D-07 and D-08 answered by the owner at the leanings. D-04 widened by the owner from Node to every language runtime through one polyglot version manager: "nightshift should work on any environment". D-01, D-02 and D-09 taken at the leanings under the owner's standing review style | Human |
 | 2026-10-09 | The first run cancelled after S-01 landed an ambient-environment workaround forced by path scopes. Path scopes removed from Nightshift (PR #12, the owner's ruling). D-10 added to S-02: the project environment is threaded explicitly | Human |
+| 2026-10-09 | S-03 adds a sixth runner stage, `setup`, between `toolchain` and `prerequisites`, because the pinned runtimes must be installed before the program's setup step runs on them; Docker's readiness is shown through the prerequisite checks and the audit rather than a toolchain check, since it is per-worker-user (`dec_01M4H1DV7ZHTG18YZYK4N0JXM1`) | Agent |
