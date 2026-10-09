@@ -5,6 +5,7 @@
  * output kept beside it, and the root starts: its first job is the repair. Everything a machine adds (the volume, the worker
  * users) is out of the picture; the checkout is the fixture repository.
  */
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { encodeTestPrincipal } from "@nightshift/api/testing";
 import {
@@ -392,6 +393,9 @@ describe("the gate audit on a run's machine", () => {
       const { world, result, run, started, lines, ended, rootStarted, progress } = await machine(
         program,
         {
+          // The runner hands the audit the project environment it set up; here,
+          // this host's PATH, so the Node the audit measures is the one on it.
+          projectEnv: { PATH: process.env.PATH ?? "" },
           reference: {
             node: "20.0.1",
             gates: [
@@ -403,7 +407,14 @@ describe("the gate audit on a run's machine", () => {
           },
         },
       );
-      const machineNode = process.versions.node;
+      // What `node --version` answers on that PATH, which on a CI host need not
+      // be the Node running this test (an image's /usr/local/bin can hold another).
+      const machineNode = execFileSync("node", ["--version"], {
+        env: { PATH: process.env.PATH ?? "" },
+        encoding: "utf8",
+      })
+        .trim()
+        .replace(/^v/, "");
       expect(result.comparison?.faults.map((gate) => gate.id)).toEqual(["unit"]);
 
       expect(rootStarted).toBe(false);
