@@ -11,7 +11,7 @@
  * Shared by `nightshift run` on a laptop and the runner on a machine of its own,
  * so the two record a red base the same way.
  */
-import { EventSchema, type ExecutionNodeId } from "@nightshift/contracts";
+import { type ArtifactId, EventSchema, type ExecutionNodeId } from "@nightshift/contracts";
 import { nowIso } from "@nightshift/core";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import type { GateAudit } from "./gate-audit.js";
@@ -40,11 +40,15 @@ export interface RecordRedBaseInput {
   readonly event: boolean;
 }
 
-/** Each red gate's last output as a verification log on the program node, and `gate.red` when asked. */
+/**
+ * Each red gate's last output as a verification log on the program node, and
+ * `gate.red` when asked. Returns the artifact recorded for each red gate, by
+ * gate id: a reference audit (P16 D-06) names them.
+ */
 export const recordRedBase = async (
   environment: Pick<ExecutionEnvironment, "stores" | "bodies" | "clock" | "ids">,
   input: RecordRedBaseInput,
-): Promise<void> => {
+): Promise<ReadonlyMap<string, ArtifactId>> => {
   const outbox = createEventOutbox({
     events: environment.stores.events,
     scope: input.scope,
@@ -74,11 +78,12 @@ export const recordRedBase = async (
       }),
     );
   }
+  const recorded = new Map<string, ArtifactId>();
   // Only the red ones: a `deferred` gate is not red (D-P7-10), and its output is not a failure's.
   for (const gate of input.audit.gates.filter((candidate) => candidate.verdict === "failed")) {
     const last = gate.result;
     if (last === undefined) continue;
-    await recordArtifact(
+    const artifactId = await recordArtifact(
       { ...environment, outbox },
       {
         scope: input.scope,
@@ -88,6 +93,8 @@ export const recordRedBase = async (
         bytes: last.output,
       },
     );
+    recorded.set(gate.id, artifactId as ArtifactId);
   }
   await outbox.flush(5_000).catch(() => undefined);
+  return recorded;
 };

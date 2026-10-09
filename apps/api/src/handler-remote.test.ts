@@ -235,6 +235,40 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     expect(other.status).toBe(409);
   });
 
+  it("stores the laptop's reference audit unchanged, and refuses one of another base (P16 D-06)", async () => {
+    const w = await setup();
+    await seed(w);
+    const reference = {
+      base: SHA,
+      node: "22.22.0",
+      auditedAt: "2026-10-09T12:00:00.000Z",
+      gates: [
+        { id: "setup:install", kind: "setup", verdict: "passed" },
+        {
+          id: "test",
+          kind: "check",
+          verdict: "failed",
+          outputArtifactId: "art_01M4AAAAAAAAAAAAAAAAAAAAAA",
+        },
+        { id: "e2e", kind: "check", verdict: "waiting" },
+      ],
+    };
+    const body = dispatchBody();
+    const other = await call(w, "POST", `${w.paths.run}/dispatch`, {
+      ...body,
+      input: { ...body.input, reference: { ...reference, base: "c".repeat(40) } },
+    });
+    expect(other.status).toBe(400);
+    const response = await call(w, "POST", `${w.paths.run}/dispatch`, {
+      ...body,
+      input: { ...body.input, reference },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect((response.body as Dispatch).input.reference).toEqual(reference);
+    const stored = (await call(w, "GET", `${w.paths.run}/dispatch`)).body as Dispatch;
+    expect(stored.input.reference).toEqual(reference);
+  });
+
   it("refuses a local run, a run already started, an unratified plan and a changed plan", async () => {
     const w = await setup();
     await seed(w);

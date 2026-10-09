@@ -10,7 +10,7 @@
  * and a `NIGHTSHIFT_DEFER` line) said a human must supply something first, and
  * is neither red nor passed; one that needs an unmet prerequisite did not run.
  */
-import type { ProgramContract } from "@nightshift/contracts";
+import type { CommitSha, ProgramContract } from "@nightshift/contracts";
 import {
   PIN_FILES,
   prerequisitesOf,
@@ -48,24 +48,41 @@ export const stepVerdict = (result: NonNullable<AuditedGate["result"]>): string 
   return deferralOf(result) === undefined ? `FAIL (exited ${result.exitCode})` : "DEFERRED";
 };
 
-/** Audits `contract`'s gates on its program branch's head, printing each step as it ends. */
+/** Where an audit runs and what it counts as unmet, when not its defaults. */
+export interface AuditAt {
+  /** The commit audited. Absent, the program branch's head. */
+  readonly base?: CommitSha;
+  /**
+   * The prerequisites not satisfied, as checked by the caller. Absent, those
+   * `contract` does not record as satisfied.
+   */
+  readonly unmet?: ReadonlySet<string>;
+}
+
+/**
+ * Audits `contract`'s gates on its program branch's head, or on `at.base`,
+ * printing each step as it ends.
+ */
 export const auditProgramGates = async (
   environment: CliEnvironment,
   contract: ProgramContract,
   repoPath: string,
   say: (line: string) => void = environment.out,
+  at: AuditAt = {},
 ): Promise<GateAudit> => {
   const branch = contract.repository.programBranch;
-  const base = await revParse(environment.git, repoPath, branch);
+  const base = at.base ?? (await revParse(environment.git, repoPath, branch));
   say(
     `auditing the gates on ${branch} at ${base.slice(0, 8)}: setup and every check, ` +
       "in a fresh checkout, as verification runs them",
   );
-  const unmet = new Set(
-    prerequisitesOf(contract)
-      .filter((prerequisite) => prerequisite.status !== "satisfied")
-      .map((prerequisite) => prerequisite.id),
-  );
+  const unmet =
+    at.unmet ??
+    new Set(
+      prerequisitesOf(contract)
+        .filter((prerequisite) => prerequisite.status !== "satisfied")
+        .map((prerequisite) => prerequisite.id),
+    );
   const width = Math.max(
     ...(contract.setup ?? []).map((step) => `setup:${step.id}`.length),
     ...contract.verification.map((step) => step.id.length),

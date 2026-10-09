@@ -14,7 +14,7 @@
  * is `core`'s (`rules/dispatch.ts`); this is only the record.
  */
 import { z } from "zod";
-import { AgentIdSchema } from "../ids.js";
+import { AgentIdSchema, ArtifactIdSchema } from "../ids.js";
 import { CommitShaSchema, IsoTimestampSchema, runScoped } from "./common.js";
 import { ComputeTierSchema } from "./compute.js";
 
@@ -117,15 +117,78 @@ export const DispatchToolchainSchema = z
   );
 export type DispatchToolchain = z.infer<typeof DispatchToolchainSchema>;
 
-/** What was authorised: a repository, a branch, the exact base and the ratified plan (D-P10-02). */
-export const DispatchInputSchema = z.strictObject({
-  repositoryUrl: z.string().min(1),
-  branch: z.string().min(1),
-  baseSha: CommitShaSchema,
-  planHash: z.string().min(1),
-  /** The runtime versions the machine installs (P16 D-03). Absent on dispatches from before P16. */
-  toolchain: DispatchToolchainSchema.optional(),
+/**
+ * One gate's verdict in the reference audit, as the gate audit gave it:
+ *
+ * - `passed`, `failed`: the laptop's evidence, which the machine must agree with;
+ * - `deferred`, `waiting`, `unrun`: no evidence from the laptop (a deferral, an
+ *   unmet prerequisite, or a setup that failed before it), so the machine's own
+ *   result stands.
+ */
+export const ReferenceGateVerdictSchema = z.enum([
+  "passed",
+  "failed",
+  "deferred",
+  "waiting",
+  "unrun",
+]);
+export type ReferenceGateVerdict = z.infer<typeof ReferenceGateVerdictSchema>;
+
+export const ReferenceGateSchema = z.strictObject({
+  /** The gate's id as the audit names it: `setup:<id>` for a setup step. */
+  id: z.string().min(1),
+  kind: z.enum(["setup", "check"]),
+  verdict: ReferenceGateVerdictSchema,
+  /** The artifact, on the run's program node, holding a failed gate's output tail. */
+  outputArtifactId: ArtifactIdSchema.optional(),
 });
+export type ReferenceGate = z.infer<typeof ReferenceGateSchema>;
+
+/**
+ * The reference audit (P16 D-06): the gate audit `run --remote` ran on the
+ * laptop at the base it dispatches, with the laptop's own prerequisite checks.
+ * The machine audits the same base and compares its verdicts with these.
+ */
+export const ReferenceAuditSchema = z
+  .strictObject({
+    /** The commit audited: the dispatch's `baseSha`. */
+    base: CommitShaSchema,
+    /** The Node the audit ran on, exact, as `node --version` reports it without the `v`. Absent when there was none. */
+    node: z.string().min(1).optional(),
+    auditedAt: IsoTimestampSchema,
+    gates: z.array(ReferenceGateSchema),
+  })
+  .refine((value) => value.node === undefined || isExactRuntimeVersion("node", value.node), {
+    message: "node must be an exact Node version (X.Y.Z, without the v)",
+    path: ["node"],
+  })
+  .refine((value) => new Set(value.gates.map((gate) => gate.id)).size === value.gates.length, {
+    message: "a gate appears at most once",
+    path: ["gates"],
+  })
+  .refine(
+    (value) =>
+      value.gates.every((gate) => gate.outputArtifactId === undefined || gate.verdict === "failed"),
+    { message: "only a failed gate carries an output artifact", path: ["gates"] },
+  );
+export type ReferenceAudit = z.infer<typeof ReferenceAuditSchema>;
+
+/** What was authorised: a repository, a branch, the exact base and the ratified plan (D-P10-02). */
+export const DispatchInputSchema = z
+  .strictObject({
+    repositoryUrl: z.string().min(1),
+    branch: z.string().min(1),
+    baseSha: CommitShaSchema,
+    planHash: z.string().min(1),
+    /** The runtime versions the machine installs (P16 D-03). Absent on dispatches from before P16. */
+    toolchain: DispatchToolchainSchema.optional(),
+    /** The laptop's gate audit of `baseSha` (P16 D-06). Absent on dispatches from before it. */
+    reference: ReferenceAuditSchema.optional(),
+  })
+  .refine((value) => value.reference === undefined || value.reference.base === value.baseSha, {
+    message: "the reference audit must be of the base dispatched",
+    path: ["reference", "base"],
+  });
 export type DispatchInput = z.infer<typeof DispatchInputSchema>;
 
 export const DispatchSpendSchema = z.strictObject({

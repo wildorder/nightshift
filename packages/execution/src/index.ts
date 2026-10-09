@@ -127,6 +127,11 @@ export {
 export * from "./publish.js";
 export { gateRedPayload, type RecordRedBaseInput, recordRedBase } from "./red-base.js";
 export {
+  type ReferenceAuditInput,
+  referenceAuditOf,
+  referenceGatesOf,
+} from "./reference-audit.js";
+export {
   deferredLine,
   type ResumeResult,
   type ResumeSession,

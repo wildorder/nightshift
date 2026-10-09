@@ -20,6 +20,7 @@ import {
   OrgConfigSchema,
   type ProgramContract,
   ProjectSchema,
+  type ReferenceAudit,
 } from "@nightshift/contracts";
 import {
   chooseTier,
@@ -317,6 +318,8 @@ export const dispatchRun = async (
   session: Session,
   started: StartedRun,
   readiness: RemoteReadiness,
+  /** The laptop's gate audit of `readiness.baseSha` (P16 D-06), carried to the machine. */
+  reference?: ReferenceAudit,
 ): Promise<Dispatch> => {
   const contract: ProgramContract = started.program;
   const scope: RunScope = {
@@ -356,6 +359,7 @@ export const dispatchRun = async (
           baseSha: readiness.baseSha,
           planHash: contract.planHash,
           ...(readiness.toolchain === undefined ? {} : { toolchain: readiness.toolchain }),
+          ...(reference === undefined ? {} : { reference }),
         },
       },
     }),

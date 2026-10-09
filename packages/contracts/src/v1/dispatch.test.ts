@@ -5,6 +5,7 @@ import {
   DispatchToolchainSchema,
   HeartbeatBodySchema,
   isExactRuntimeVersion,
+  ReferenceAuditSchema,
   RuntimeVersionSchema,
 } from "./dispatch.js";
 
@@ -69,6 +70,68 @@ describe("the versions a dispatch carries are exact (P16 D-03)", () => {
   it("carries each runtime once", () => {
     expect(
       DispatchToolchainSchema.safeParse([nodePin("22.22.0"), nodePin("22.22.1")]).success,
+    ).toBe(false);
+  });
+});
+
+describe("a dispatch carries the laptop's reference audit (P16 D-06)", () => {
+  const reference = {
+    base: input.baseSha,
+    node: "22.22.0",
+    auditedAt: "2026-10-09T12:00:00.000Z",
+    gates: [
+      { id: "setup:install", kind: "setup", verdict: "passed" },
+      {
+        id: "build",
+        kind: "check",
+        verdict: "failed",
+        outputArtifactId: "art_01M4AAAAAAAAAAAAAAAAAAAAAA",
+      },
+      { id: "e2e", kind: "check", verdict: "waiting" },
+      { id: "cloud", kind: "check", verdict: "deferred" },
+      { id: "lint", kind: "check", verdict: "unrun" },
+    ],
+  };
+
+  it("parses a reference with every verdict, and keeps it unchanged", () => {
+    const parsed = DispatchInputSchema.parse({ ...input, reference });
+    expect(parsed.reference).toEqual(reference);
+  });
+
+  it("refuses a reference of another base than the one dispatched", () => {
+    const result = DispatchInputSchema.safeParse({
+      ...input,
+      reference: { ...reference, base: "c".repeat(40) },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(["reference", "base"]);
+  });
+
+  it("still parses an input from before the reference", () => {
+    expect(DispatchInputSchema.parse(input).reference).toBeUndefined();
+  });
+
+  it("takes node as exact, without the v, and lets it be absent", () => {
+    expect(ReferenceAuditSchema.safeParse({ ...reference, node: "22" }).success).toBe(false);
+    expect(ReferenceAuditSchema.safeParse({ ...reference, node: "v22.22.0" }).success).toBe(false);
+    const { node: _node, ...without } = reference;
+    expect(ReferenceAuditSchema.safeParse(without).success).toBe(true);
+  });
+
+  it("refuses an unknown verdict, and an output artifact on a gate that did not fail", () => {
+    const gates = (gate: object) => ({ ...reference, gates: [gate] });
+    expect(
+      ReferenceAuditSchema.safeParse(gates({ id: "a", kind: "check", verdict: "skipped" })).success,
+    ).toBe(false);
+    expect(
+      ReferenceAuditSchema.safeParse(
+        gates({
+          id: "a",
+          kind: "check",
+          verdict: "passed",
+          outputArtifactId: "art_01M4AAAAAAAAAAAAAAAAAAAAAA",
+        }),
+      ).success,
     ).toBe(false);
   });
 });
