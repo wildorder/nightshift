@@ -208,11 +208,61 @@ describe("watchDispatch's endings", () => {
   });
 
   it("OK GO on skipped, saying a replacement machine carries on", async () => {
-    const h = await harness([running(at(1, "audit", { verdict: "skipped", generation: 2 }))]);
+    const h = await harness([
+      running(at(1, "audit", { verdict: "skipped", generation: 2 }), { generation: 2 }),
+    ]);
     expect(await watch(h)).toBe(0);
     expect(h.created.out.join("\n")).toContain(
       "a replacement machine carries on the audited run; it does not audit again.",
     );
+  });
+
+  it("generation 2 provisioning with generation-1 agrees progress keeps waiting and shows replacement line", async () => {
+    const h = await harness(
+      [
+        running(undefined, { generation: 2 }),
+        running(at(1, "audit", { verdict: "agrees", generation: 1 }), { generation: 2 }),
+        running(at(2, "audit", { verdict: "skipped", generation: 2 }), { generation: 2 }),
+      ],
+      { times: [0, 5, 10] },
+    );
+    expect(await watch(h)).toBe(0);
+    const out = h.created.out;
+    const text = out.join("\n");
+    // The output should show the replacement provisioning line when stale generation-1 progress arrives
+    expect(text).toContain("a replacement machine is being provisioned (generation 2)");
+    // Should eventually show OK GO when generation-2 progress arrives
+    expect(text).toContain(OK_GO_BANNER.join("\n"));
+    // Should show the machine agrees message for the replacement
+    expect(text).toContain(
+      "a replacement machine carries on the audited run; it does not audit again.",
+    );
+  });
+
+  it("then generation-2 progress with verdict skipped reaches OK GO with exit 0", async () => {
+    const h = await harness(
+      [
+        running(undefined, { generation: 2 }),
+        running(at(1, "audit", { verdict: "agrees", generation: 1 }), { generation: 2 }),
+        running(at(2, "audit", { verdict: "skipped", generation: 2 }), { generation: 2 }),
+      ],
+      { times: [0, 5, 10] },
+    );
+    expect(await watch(h)).toBe(0);
+    const text = h.created.out.join("\n");
+    expect(text).toContain(OK_GO_BANNER.join("\n"));
+    expect(text).toContain(
+      "a replacement machine carries on the audited run; it does not audit again.",
+    );
+  });
+
+  it("generation 2 with generation-2 agrees reaches OK GO", async () => {
+    const h = await harness([
+      running(undefined, { generation: 2 }),
+      running(at(1, "audit", { verdict: "agrees", generation: 2 }), { generation: 2 }),
+    ]);
+    expect(await watch(h)).toBe(0);
+    expect(h.created.out.join("\n")).toContain(OK_GO_BANNER.join("\n"));
   });
 
   const fault = {

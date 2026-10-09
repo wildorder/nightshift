@@ -107,6 +107,9 @@ const verdictLine = (progress: DispatchProgress): string | undefined => {
 const provisioningLine = (dispatch: Dispatch): string =>
   `dispatch ${dispatch.status}: the machine is being provisioned`;
 
+const replacementProvisioningLine = (generation: number): string =>
+  `a replacement machine is being provisioned (generation ${generation})`;
+
 /** Both durations: this stage's, from `stageStartedAt`, and the whole wait's, from `requestedAt`. */
 const timesOf = (dispatch: Dispatch, nowMs: number): string => {
   const total = elapsed(dispatch.requestedAt, nowMs);
@@ -118,14 +121,23 @@ const timesOf = (dispatch: Dispatch, nowMs: number): string => {
 /** The frame a terminal shows beneath WAIT. */
 export const waitLines = (dispatch: Dispatch, nowMs: number, trouble: boolean): string[] => {
   const progress = dispatch.progress;
+  const isStaleProgress = progress !== undefined && progress.generation !== dispatch.generation;
   const lines = [
     "",
-    `  ${progress === undefined ? provisioningLine(dispatch) : stageWords(progress)}`,
+    `  ${
+      progress === undefined
+        ? provisioningLine(dispatch)
+        : isStaleProgress
+          ? replacementProvisioningLine(dispatch.generation)
+          : stageWords(progress)
+    }`,
     `  ${timesOf(dispatch, nowMs)}`,
   ];
-  for (const gate of progress?.gates ?? []) lines.push(`    ${gateLine(gate)}`);
-  const verdict = progress === undefined ? undefined : verdictLine(progress);
-  if (verdict !== undefined) lines.push(`  ${verdict}`);
+  if (!isStaleProgress) {
+    for (const gate of progress?.gates ?? []) lines.push(`    ${gateLine(gate)}`);
+    const verdict = progress === undefined ? undefined : verdictLine(progress);
+    if (verdict !== undefined) lines.push(`  ${verdict}`);
+  }
   if (trouble) lines.push(`  ${NO_ANSWER}`);
   lines.push("", "  Ctrl-C detaches; the machine carries on.");
   return lines;
@@ -174,14 +186,28 @@ const plainDisplay = (environment: CliEnvironment): Display => {
 
   const sayStage = (dispatch: Dispatch, at: string): void => {
     const progress = dispatch.progress;
+    const isStaleProgress = progress !== undefined && progress.generation !== dispatch.generation;
     const key =
-      progress === undefined ? `status ${dispatch.status}` : `${generation} ${progress.stage}`;
+      progress === undefined
+        ? `status ${dispatch.status}`
+        : isStaleProgress
+          ? `replacement ${dispatch.generation}`
+          : `${generation} ${progress.stage}`;
     if (key === stageKey) return;
     stageKey = key;
-    say(`${at} ${progress === undefined ? provisioningLine(dispatch) : stageWords(progress)}`);
+    say(
+      `${at} ${
+        progress === undefined
+          ? provisioningLine(dispatch)
+          : isStaleProgress
+            ? replacementProvisioningLine(dispatch.generation)
+            : stageWords(progress)
+      }`,
+    );
   };
 
-  const sayAudit = (progress: DispatchProgress, at: string): void => {
+  const sayAudit = (dispatch: Dispatch, progress: DispatchProgress, at: string): void => {
+    if (progress.generation !== dispatch.generation) return;
     for (const gate of progress.gates ?? []) {
       if (printedGates.has(gate.id)) continue;
       printedGates.add(gate.id);
@@ -210,7 +236,7 @@ const plainDisplay = (environment: CliEnvironment): Display => {
       // Both durations on every line: this stage's and the whole wait's.
       const at = `[${timesOf(dispatch, environment.clock.now())}]`;
       sayStage(dispatch, at);
-      if (progress !== undefined) sayAudit(progress, at);
+      if (progress !== undefined) sayAudit(dispatch, progress, at);
     },
     trouble: () => {
       if (troubled) return;
@@ -233,8 +259,13 @@ export const endingOf = (dispatch: Dispatch): Ending | undefined => {
     return dispatch.failure?.code === "environment_fault" ? { kind: "fault" } : { kind: "failed" };
   }
   if (!LIVE.has(dispatch.status)) return { kind: "stopped" };
-  const verdict = dispatch.progress?.verdict;
-  if (verdict === "agrees" || verdict === "red" || verdict === "skipped") {
+  const progress = dispatch.progress;
+  const verdict = progress?.verdict;
+  if (
+    verdict &&
+    (verdict === "agrees" || verdict === "red" || verdict === "skipped") &&
+    progress.generation === dispatch.generation
+  ) {
     return { kind: "go", verdict };
   }
   return undefined;
