@@ -32,9 +32,13 @@ runRunner({
   device: process.env.NIGHTSHIFT_WORKSPACE_DEVICE ?? "/dev/xvdf",
   sidecar: process.env.NIGHTSHIFT_SIDECAR ?? "/workspace-sidecar",
   engineUser: process.env.NIGHTSHIFT_ENGINE_USER ?? "engine",
+  ...(process.env.PATH === undefined ? {} : { inheritedPath: process.env.PATH }),
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
   onToken: (token, scope) => installTokenFile(scope.runId, token),
   work: async (context) => {
+    // The engine runs in the project environment from here on (P16 S-01): the
+    // gate audit's steps, and every process it launches, inherit it.
+    Object.assign(process.env, context.projectEnv);
     // `running` first: the plane hands the org's provider keys to a running
     // engine and to nothing else (D-P10-23), on the next beat.
     context.heartbeat.report("running");

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { commandAs, RUN_AS_SHELL_LINE, type RunAs, withTmpDir } from "./run-as.js";
 
@@ -46,6 +47,50 @@ describe("commandAs (D-P10-25)", () => {
     // The spawned sudo itself gets only a PATH.
     expect(Object.keys(command.env)).toEqual(["PATH"]);
   });
+
+  it("never passes the engine's XDG_RUNTIME_DIR or DOCKER_HOST, but passes a DOCKER_HOST the user was given", () => {
+    const engines = {
+      PATH: "/usr/bin",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      DOCKER_HOST: "unix:///run/user/1000/docker.sock",
+    };
+    const command = commandAs(runAs, "claude", [], engines);
+    const passed = command.args.slice(command.args.indexOf("env"), command.args.indexOf("sh"));
+    expect(passed.some((arg) => arg.startsWith("XDG_RUNTIME_DIR="))).toBe(false);
+    expect(passed.some((arg) => arg.startsWith("DOCKER_HOST="))).toBe(false);
+    const given = commandAs(
+      { ...runAs, env: { DOCKER_HOST: "unix:///run/user/1003/docker.sock" } },
+      "claude",
+      [],
+      engines,
+    );
+    expect(given.args).toContain("DOCKER_HOST=unix:///run/user/1003/docker.sock");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "sets the user's own XDG_RUNTIME_DIR and defaults DOCKER_HOST to its socket (P16 S-01)",
+    () => {
+      const run = (env: Record<string, string>) =>
+        execFileSync(
+          "sh",
+          [
+            "-c",
+            RUN_AS_SHELL_LINE,
+            "sh",
+            "-c",
+            'printf "%s|%s|%s" "$XDG_RUNTIME_DIR" "$DOCKER_HOST" "$(umask)"',
+          ],
+          { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env }, encoding: "utf8" },
+        );
+      const uid = execFileSync("id", ["-u"], { encoding: "utf8" }).trim();
+      expect(run({ XDG_RUNTIME_DIR: "/elsewhere" })).toBe(
+        `/run/user/${uid}|unix:///run/user/${uid}/docker.sock|0002`,
+      );
+      expect(run({ DOCKER_HOST: "tcp://127.0.0.1:2375" })).toBe(
+        `/run/user/${uid}|tcp://127.0.0.1:2375|0002`,
+      );
+    },
+  );
 });
 
 describe("withTmpDir (P15)", () => {

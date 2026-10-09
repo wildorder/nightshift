@@ -39,6 +39,14 @@ describe("the Codex worker's environment (D-P5-02)", () => {
     }
   });
 
+  it("passes DOCKER_HOST, so the agent's shell finds the developer's Docker (P16 S-01)", () => {
+    const docker = sanitizeCodexEnvironment({
+      platform: "linux",
+      parentEnv: { ...PARENT, DOCKER_HOST: "unix:///run/user/1000/docker.sock" },
+    });
+    expect(docker.DOCKER_HOST).toBe("unix:///run/user/1000/docker.sock");
+  });
+
   it("lets the adapter add to it, and the addition wins", () => {
     const extended = sanitizeCodexEnvironment({
       platform: "linux",

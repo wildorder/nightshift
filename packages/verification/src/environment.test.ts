@@ -3,7 +3,12 @@
  * as denials first: what must never reach a verification step.
  */
 import { describe, expect, it } from "vitest";
-import { POSIX_ENV_ALLOWLIST, sanitizeEnvironment, WINDOWS_ENV_ALLOWLIST } from "./environment.js";
+import {
+  POSIX_ENV_ALLOWLIST,
+  PROJECT_ENV_ALLOWLIST,
+  sanitizeEnvironment,
+  WINDOWS_ENV_ALLOWLIST,
+} from "./environment.js";
 
 /** The shapes of secret that actually live in the Nightshift parent process. */
 const SECRETS: Readonly<Record<string, string>> = {
@@ -40,6 +45,32 @@ describe("sanitizeEnvironment", () => {
       }
       // Without this the assertion above would pass on an empty environment.
       expect(env.PATH).toBe("/usr/bin");
+    }
+  });
+
+  it("passes a machine's project environment through on POSIX: Docker, the stores, the pinned runtimes (P16 S-01)", () => {
+    const project = {
+      DOCKER_HOST: "unix:///run/user/1001/docker.sock",
+      npm_config_cache: "/workspace/stores/npm",
+      PNPM_HOME: "/workspace/stores/pnpm",
+      npm_config_store_dir: "/workspace/stores/pnpm-store",
+      CARGO_HOME: "/workspace/stores/cargo",
+      RUSTUP_HOME: "/workspace/stores/runtimes/rustup",
+      RUSTUP_TOOLCHAIN: "1.79.0",
+      PIP_CACHE_DIR: "/workspace/stores/pip",
+      UV_CACHE_DIR: "/workspace/stores/uv",
+      PLAYWRIGHT_BROWSERS_PATH: "/workspace/stores/playwright",
+      JAVA_HOME: "/workspace/stores/runtimes/installs/java/21.0.2",
+    };
+    const env = sanitizeEnvironment({
+      platform: "linux",
+      parentEnv: { PATH: "/usr/bin", ...project, ...SECRETS },
+      extra: undefined,
+    });
+    expect(env).toEqual({ PATH: "/usr/bin", ...project });
+    expect(Object.keys(project).sort()).toEqual([...PROJECT_ENV_ALLOWLIST].sort());
+    for (const name of PROJECT_ENV_ALLOWLIST) {
+      expect(name).not.toMatch(/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i);
     }
   });
 

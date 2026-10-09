@@ -18,7 +18,7 @@
  */
 import { SETUP_STEP_ID_PREFIX, type SetupStep, type VerificationStep } from "@nightshift/contracts";
 import { isInstallStep } from "@nightshift/core";
-import { planInstall, writeInstallMarker } from "./install.js";
+import { planInstall, RUNTIMES_ENV, runtimeHashes, writeInstallMarker } from "./install.js";
 import { type RunVerificationInput, runVerificationSteps, type StepResult } from "./run.js";
 
 /** A setup step as it is run and recorded: its id prefixed, so it cannot collide with a check's. */
@@ -54,7 +54,9 @@ const skippedStep = (step: SetupStep, reason: string): StepResult => ({
  */
 export const runSetupSteps = async (input: RunSetupInput): Promise<readonly StepResult[]> => {
   const { setup, reference, ...rest } = input;
-  const plan = await planInstall(rest.cwd, setup, reference);
+  // The runtimes the steps run on: the caller's environment over the engine's.
+  const runtimes = runtimeHashes(rest.env?.[RUNTIMES_ENV] ?? process.env[RUNTIMES_ENV]);
+  const plan = await planInstall(rest.cwd, setup, reference, runtimes);
   const results: StepResult[] = [];
   let installed = false;
   for (const step of setup) {

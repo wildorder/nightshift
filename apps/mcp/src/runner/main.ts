@@ -48,6 +48,8 @@ export interface RunnerOptions {
   readonly onToken?: (token: string, scope: RunScope) => Promise<void>;
   /** How long to wait for the plane to hand over the clone's credential. */
   readonly credentialTimeoutMs?: number;
+  /** The runner's own PATH, kept in the project environment after the runtimes and the image's. */
+  readonly inheritedPath?: string;
 }
 
 export interface RunnerContext {
@@ -59,6 +61,14 @@ export interface RunnerContext {
   readonly layout: WorkspaceLayout;
   readonly dispatch: Dispatch;
   readonly program: ProgramContract;
+  /**
+   * The one project environment (P16 S-01): the pinned runtimes first on PATH
+   * and the stores. The engine takes it as its own, so every step it runs
+   * inherits it, and each worker user gets it through `RunAs.env`.
+   */
+  readonly projectEnv: Readonly<Record<string, string>>;
+  /** Where it was written, for the processes the runner launches: `<run>/project.env`. */
+  readonly projectEnvFile: string;
 }
 
 /** A token the heartbeat replaces (D-P10-20); never on the volume. */
@@ -194,6 +204,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
       planText: planDocument.text,
       githubToken,
       log,
+      ...(options.inheritedPath === undefined ? {} : { inheritedPath: options.inheritedPath }),
     });
     log(
       `workspace ${prepared.warm ? "warm" : "cold"}: setup took ${prepared.setupSeconds.toFixed(1)}s`,
@@ -217,6 +228,8 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
       layout,
       dispatch,
       program,
+      projectEnv: prepared.environment,
+      projectEnvFile: prepared.environmentFile,
     };
   } catch (error) {
     log(

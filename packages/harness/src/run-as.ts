@@ -5,11 +5,17 @@
  * `worker-N` users, so code a worker runs cannot read the engine's token or
  * credentials. The adapter does not know users; it is handed this and wraps
  * the command it would have spawned: `sudo -n -u <user> -H env K=V… sh -c
- * 'umask 002 && exec "$0" "$@"' <command> <args>`. The environment the
- * adapter sanitised is passed whole through `env`, less the variables that
- * name the engine's own account, which `sudo -H` sets for the target user; the
- * umask makes what the worker writes group-writable, so the engine can verify
- * and remove the worktree afterwards (D-P10-25's shared group).
+ * '<RUN_AS_SHELL_LINE>' <command> <args>`. The environment the adapter
+ * sanitised is passed whole through `env`, less the variables that name the
+ * engine's own account, which `sudo -H` sets for the target user; the umask
+ * makes what the worker writes group-writable, so the engine can verify and
+ * remove the worktree afterwards (D-P10-25's shared group).
+ *
+ * `XDG_RUNTIME_DIR` is the engine's and is never passed; the shell line sets
+ * the target user's own, `/run/user/<uid>`, so the user's rootless Docker
+ * socket resolves there (P16 S-01, D-05). `DOCKER_HOST` defaults to that
+ * socket when nothing set it for the user; the engine's own is never passed,
+ * since it names the engine's socket, not the user's.
  */
 
 export interface RunAs {
@@ -38,14 +44,28 @@ const ACCOUNT_VARIABLES: ReadonlySet<string> = new Set([
   "TMPDIR",
 ]);
 
+/**
+ * Variables the engine's environment may carry that are never right for
+ * another user: only `RunAs.env` may set them (P16 S-01).
+ */
+const ENGINE_ONLY_VARIABLES: ReadonlySet<string> = new Set(["DOCKER_HOST"]);
+
 export interface Command {
   readonly file: string;
   readonly args: readonly string[];
   readonly env: Readonly<Record<string, string>>;
 }
 
-/** The exec line that runs `file args` after setting the umask; `$0` is the file, `$@` the args. */
-export const RUN_AS_SHELL_LINE = 'umask 002 && exec "$0" "$@"';
+/**
+ * The exec line that runs `file args` as the target user, `$0` the file and
+ * `$@` the args: the user's own `XDG_RUNTIME_DIR`, a `DOCKER_HOST` on its
+ * socket unless one was given, then the umask.
+ */
+export const RUN_AS_SHELL_LINE =
+  'XDG_RUNTIME_DIR="/run/user/$(id -u)" && export XDG_RUNTIME_DIR && ' +
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion, on purpose
+  'export DOCKER_HOST="${DOCKER_HOST:-unix://$XDG_RUNTIME_DIR/docker.sock}" && ' +
+  'umask 002 && exec "$0" "$@"';
 
 /**
  * The command to spawn: the adapter's own when there is no user to run as,
@@ -60,9 +80,11 @@ export const commandAs = (
   env: Readonly<Record<string, string>>,
 ): Command => {
   if (runAs === undefined) return { file, args, env };
-  const passed = Object.entries({ ...env, ...(runAs.env ?? {}) }).filter(
-    ([name]) => !ACCOUNT_VARIABLES.has(name),
-  );
+  const engines = Object.entries(env).filter(([name]) => !ENGINE_ONLY_VARIABLES.has(name));
+  const passed = Object.entries({
+    ...Object.fromEntries(engines),
+    ...(runAs.env ?? {}),
+  }).filter(([name]) => !ACCOUNT_VARIABLES.has(name));
   return {
     file: "sudo",
     args: [

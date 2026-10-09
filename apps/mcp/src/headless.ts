@@ -125,6 +125,8 @@ export const rootLaunch = (
     "NIGHTSHIFT_PINNED_RUN",
     "NIGHTSHIFT_WORKER_USERS",
     "NIGHTSHIFT_WORKER_CREDENTIAL_DIR",
+    // The project environment's file (P16 S-01): the engine takes it as its own.
+    "NIGHTSHIFT_PROJECT_ENV_FILE",
     "NIGHTSHIFT_PUBLISH_BASE",
     "NIGHTSHIFT_PUBLISH_PACK_DIR",
     // The org's provider keys, as the heartbeat handed them to the engine on a

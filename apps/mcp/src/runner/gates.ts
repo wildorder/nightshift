@@ -25,14 +25,15 @@ import {
 } from "@nightshift/execution";
 import type { Runtime } from "../compose.js";
 import type { RunnerContext } from "./main.js";
-import { storesEnvironment } from "./workspace.js";
+import { projectEnvironment } from "./workspace.js";
 
 export type MachineAuditRuntime = Pick<
   Runtime,
   "git" | "stores" | "bodies" | "ids" | "clock" | "runAs" | "paths"
 >;
 
-export type MachineAuditContext = Pick<RunnerContext, "scope" | "layout" | "dispatch" | "program">;
+export type MachineAuditContext = Pick<RunnerContext, "scope" | "layout" | "dispatch" | "program"> &
+  Partial<Pick<RunnerContext, "projectEnv">>;
 
 /** What the audit found; absent on a replacement machine, which does not audit. A red one does not stop the root. */
 export interface MachineAuditResult {
@@ -72,7 +73,8 @@ export const auditOnMachine = async (
     workDir: `${context.layout.run}/gate-audit`,
     timeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
     paths: runtime.paths,
-    env: storesEnvironment(context.layout),
+    // The project environment setup ran in (P16 S-01): the pinned runtimes and the stores.
+    env: context.projectEnv ?? projectEnvironment(context.layout, context.dispatch.input.toolchain),
     // As verification on this machine runs its steps (D-P10-25).
     ...stepsAs(runtime as Pick<ExecutionEnvironment, "runAs">, {
       agentId: `${context.dispatch.engineAgentId}-gates`,

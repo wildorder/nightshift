@@ -62,6 +62,11 @@ const UNIVERSAL_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
  * one earns its place.
  */
 export const CLAUDE_ENV_ALLOWLIST: readonly string[] = [
+  // Where the agent's shell finds Docker (P16 S-01, D-05): a developer's
+  // colima or remote daemon on a laptop. On a machine the worker's own socket
+  // arrives through \`RunAs.env\` or the run-as wrapper's default; the engine's
+  // is never passed to another user (\`commandAs\`). Not a credential.
+  "DOCKER_HOST",
   "CLAUDE_CONFIG_DIR",
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",

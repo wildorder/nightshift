@@ -58,6 +58,7 @@ import type {
 } from "@nightshift/harness";
 import {
   agentStatusForExit,
+  type CliLauncher,
   commandAs,
   hookTypeForExit,
   promptFor,
@@ -114,6 +115,13 @@ interface RunState {
 }
 
 export interface CodexHarnessOptions {
+  /**
+   * What is spawned in place of `codex` by name: `file ...args <cli args>`
+   * (P16 S-01). On a machine, the image's Node and the CLI's script, so a
+   * project's pinned Node first on `PATH` cannot run the CLI. Absent, `codex`
+   * is found on `PATH` as before.
+   */
+  readonly launcher?: CliLauncher;
   readonly spawn?: SpawnLike;
   readonly fs?: AdapterFileSystem;
   readonly clock?: Clock;
@@ -129,6 +137,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
   const clock = options.clock ?? systemClock;
   const platform = options.platform ?? process.platform;
   const parentEnv = options.env ?? process.env;
+  const launcher = options.launcher;
   const kill =
     options.kill ??
     ((pid, signal) => {
@@ -250,7 +259,12 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       if (input.runAs !== undefined && state.guardDir !== undefined) {
         await input.runAs.grant(state.guardDir);
       }
-      const command = commandAs(input.runAs, CODEX_COMMAND, args, state.env);
+      const command = commandAs(
+        input.runAs,
+        launcher?.file ?? CODEX_COMMAND,
+        [...(launcher?.args ?? []), ...args],
+        state.env,
+      );
       child = spawn(command.file, command.args, {
         cwd: input.worktree,
         env: command.env,

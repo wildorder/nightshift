@@ -469,3 +469,23 @@ describe("running as another user (P10, D-P10-25)", () => {
     expect(started?.payload).toMatchObject({ user: "worker-5" });
   });
 });
+
+describe("launching through the image's Node (P16 S-01)", () => {
+  it("spawns the launcher with the CLI's script before codex's own arguments", async () => {
+    const world = fakes();
+    const events: HookEvent[] = [];
+    const harness = createCodexHarness({
+      spawn: world.spawn,
+      fs: world.fs,
+      env: PARENT_ENV,
+      platform: "linux",
+      launcher: { file: "/usr/local/bin/node", args: ["/usr/local/lib/codex/bin/codex.js"] },
+    });
+    const handle = await harness.start(startInput(events));
+    const call = world.calls[0];
+    expect(call?.file).toBe("/usr/local/bin/node");
+    expect(call?.args.slice(0, 3)).toEqual(["/usr/local/lib/codex/bin/codex.js", "exec", "--json"]);
+    world.children[0]?.close(0);
+    await handle.exit;
+  });
+});

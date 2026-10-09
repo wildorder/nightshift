@@ -16,7 +16,10 @@ afterEach(cleanupWorlds);
 
 const BROKEN = `node -e "console.log('the base is broken');process.exit(1)"`;
 
-const machine = async (program: Partial<ProgramContract>, input: { generation?: number } = {}) => {
+const machine = async (
+  program: Partial<ProgramContract>,
+  input: { generation?: number; projectEnv?: Readonly<Record<string, string>> } = {},
+) => {
   const world: BaseWorld = await createBaseWorld({ program });
   const started = await startRun(
     { stores: world.stores, clock: world.clock, ids: world.ids, git: world.git },
@@ -47,6 +50,7 @@ const machine = async (program: Partial<ProgramContract>, input: { generation?: 
         planHash: "unused",
       },
     } as unknown as Dispatch,
+    ...(input.projectEnv === undefined ? {} : { projectEnv: input.projectEnv }),
   };
   const lines: string[] = [];
   const runtime = {
@@ -63,6 +67,21 @@ const machine = async (program: Partial<ProgramContract>, input: { generation?: 
 };
 
 describe("the gate audit on a run's machine", () => {
+  it("runs the gates in the project environment (P16 S-01)", async () => {
+    const { result } = await machine(
+      {
+        verification: [
+          {
+            id: "stores",
+            command: `node -e "process.exit(process.env.npm_config_cache === '/stores/npm' ? 0 : 1)"`,
+          },
+        ],
+      },
+      { projectEnv: { npm_config_cache: "/stores/npm" } },
+    );
+    expect(result.audit?.red).toBe(false);
+  });
+
   it("lets the root start when the base's gates pass", async () => {
     const { result, run } = await machine({
       verification: [{ id: "test", command: `node -e "process.exit(0)"` }],

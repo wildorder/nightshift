@@ -30,6 +30,18 @@ const PARENT = {
   UNDEFINED_ENTRY: undefined,
 } as const;
 
+describe("Docker for the agent's shell (P16 S-01)", () => {
+  it("passes DOCKER_HOST on every platform", () => {
+    for (const platform of ["linux", "darwin", "win32"] as const) {
+      const env = sanitizeClaudeEnvironment({
+        platform,
+        parentEnv: { ...PARENT, DOCKER_HOST: "unix:///run/user/1000/docker.sock" },
+      });
+      expect(env.DOCKER_HOST).toBe("unix:///run/user/1000/docker.sock");
+    }
+  });
+});
+
 describe("the child environment is an allowlist", () => {
   const env = sanitizeClaudeEnvironment({ platform: "darwin", parentEnv: PARENT });
 

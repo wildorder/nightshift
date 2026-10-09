@@ -776,3 +776,30 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
     }
   });
 });
+
+describe("the root's project environment (P16 S-01)", () => {
+  it("carries the project environment over the parent's, and names its file", () => {
+    const layout = layoutOf("/workspace", f.scope.runId);
+    const projectEnv = {
+      PATH: "/workspace/stores/runtimes/installs/node/22.11.0/bin:/usr/local/bin:/usr/bin:/bin",
+      npm_config_cache: "/workspace/stores/npm",
+      NIGHTSHIFT_RUNTIMES: "node@22.11.0",
+    };
+    const env = rootEnvironment({
+      context: {
+        scope: f.scope,
+        dispatch: makeDispatch(f),
+        layout,
+        projectEnv,
+        projectEnvFile: `${layout.run}/project.env`,
+      } as never,
+      apiEndpoint: "https://api.dev.nightshift.invalid",
+      parentEnv: { PATH: "/usr/bin", HOME: "/home/engine" },
+    });
+    expect(env).toMatchObject({
+      ...projectEnv,
+      HOME: "/home/engine",
+      NIGHTSHIFT_PROJECT_ENV_FILE: `/workspace/runs/${f.scope.runId}/project.env`,
+    });
+  });
+});

@@ -61,6 +61,7 @@ export {
   nullHookSink,
   recordingHookSink,
 } from "./hooks.js";
+export * from "./node-cli.js";
 export * from "./run-as.js";
 export {
   NoCheckpointError,

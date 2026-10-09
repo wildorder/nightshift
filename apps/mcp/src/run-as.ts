@@ -10,6 +10,11 @@
  * `kill` as the user, since `engine` may not signal another user's processes.
  * A credential a worker needs as a file (Codex's login) is a copy under
  * `<credentialRoot>/<user>/`, placed by the runner and named here by variable.
+ *
+ * On a machine each user's environment is also the project's (P16 S-01): the
+ * pinned runtimes first on PATH and the stores, from the runner's
+ * `project.env`. Its `DOCKER_HOST` is the run-as wrapper's default, the
+ * user's own rootless socket under `/run/user/<uid>` (`commandAs`).
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -22,6 +27,8 @@ export interface WorkerUsersOptions {
   readonly count: number;
   /** Where per-user credential directories live, by variable name: `<root>/<user>/<VAR>`. */
   readonly credentialRoot?: string;
+  /** The project environment every worker's processes run in (P16 S-01); absent on a laptop. */
+  readonly projectEnv?: Readonly<Record<string, string>>;
   /** Injected by the tests; the real one runs `sudo`. */
   readonly exec?: (file: string, args: readonly string[]) => Promise<void>;
 }
@@ -54,7 +61,7 @@ export const createWorkerUsers = (
     if (kept !== undefined) return kept;
     const user = workerUserName(next % options.count);
     next += 1;
-    const env: Record<string, string> = {};
+    const env: Record<string, string> = { ...(options.projectEnv ?? {}) };
     if (options.credentialRoot !== undefined) {
       for (const variable of CREDENTIAL_DIRECTORY_VARIABLES) {
         const directory = join(options.credentialRoot, user, variable);
