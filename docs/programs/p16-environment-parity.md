@@ -47,6 +47,140 @@ builds are forbidden to the run:
 3. Dispatch keki-backend's `lightning-ux` remotely and see it reach OK GO and
    start its strands.
 
+## S-01 as built
+
+S-01 gives a dispatched machine the project's own language runtimes and
+working Docker, and keeps Nightshift's own processes off them. This is what
+landed, in plain terms, for whoever reads this next.
+
+### What exists now
+
+- **The pins rule** (`packages/core/src/rules/pins.ts`): `resolvePins` reads a
+  project's `.nvmrc`, `.node-version`, `.python-version`, `.ruby-version`,
+  `.go-version`, `.java-version`, `rust-toolchain.toml`/`rust-toolchain`,
+  `.tool-versions` and `package.json#volta.node` (`engines.node` only as a
+  fallback when nothing else pins Node), and refuses when two files disagree.
+  `satisfiesPin` is an npm-range matcher (exact, partial, `^`, `~`, `x`,
+  hyphen ranges, `||`, and Rust's channel names). `dispatchToolchain` turns
+  the pins plus the laptop's measured versions into the exact versions a
+  dispatch carries, refusing a measured version that is itself partial (a
+  measured Node `22` is not enough — the dispatch needs `22.22.0` or whatever
+  patch the laptop actually ran).
+- **`nightshift run --remote` measures its own laptop** before anything is
+  written to the control plane or a machine is paid for: `assertRemoteReady`
+  in `apps/cli/src/commands/remote.ts` calls the exported `measureToolchain`,
+  which reads the pin files at the dispatched commit (never the working
+  tree), runs each pinned runtime's `--version` on the laptop, and refuses
+  with both versions named — the pin and what the laptop measured — when a
+  runtime is missing or its version does not satisfy the pin. On success the
+  exact versions go on the dispatch as `input.toolchain`
+  (`DispatchInputSchema.toolchain` in `packages/contracts/src/v1/dispatch.ts`,
+  `DispatchToolchainSchema`, one entry per runtime, each an exact version by
+  `isExactRuntimeVersion`, never a pin or a range).
+- **The machine installs them before setup.** `installRuntimes` in
+  `apps/mcp/src/runner/workspace.ts` runs `mise install <runtime>@<version>`
+  for every pinned runtime but Rust, into `/workspace/stores/runtimes`
+  (`RUNTIMES_DIR`, on the volume), and checks each with its own `--version`.
+  A failed install, or an install that reports a different version, stops the
+  workspace with the tool's own words. This runs before the program's `setup`
+  step, so setup itself sees the pinned runtimes.
+- **Runtime versions join the warm key.** `NIGHTSHIFT_RUNTIMES` becomes
+  `runtime:<name>` entries beside the lockfile hashes in the install marker
+  (`runtimeHashes` / `installHashes` in `@nightshift/verification`), so a tree
+  installed for one Node is reinstalled when the dispatched Node changes.
+- **One project environment**, computed once and pure
+  (`projectEnvironment` in `workspace.ts`): each pinned runtime's own `bin`
+  first on `PATH`, then the image's `PATH`, then whatever the runner
+  inherited; the store variables (`npm_config_cache`, `PNPM_HOME`,
+  `CARGO_HOME`, `PIP_CACHE_DIR`, `UV_CACHE_DIR`, …) pointed at the volume;
+  `JAVA_HOME` and `RUSTUP_HOME`/`RUSTUP_TOOLCHAIN` when those runtimes are
+  pinned; `DOCKER_HOST` on a worker's own socket when a uid is given. It is
+  written once to `<run>/project.env`
+  (`apps/mcp/src/project-env.ts`), which the orchestrator-role server reads
+  at startup and adopts into its own `process.env`
+  (`adoptProjectEnv`), so every step the engine runs inherits it by whichever
+  path launched it, and which each worker user gets through `RunAs.env`
+  (`createWorkerUsers({ projectEnv })` in `apps/mcp/src/run-as.ts`). The boot
+  proof reads the same file.
+- **Docker per worker, on its first connection**, not at boot
+  (`infra/cdk/src/lib/runner-image.ts`): each worker's rootless daemon is
+  installed by Docker's own `dockerd-rootless-setuptool.sh` while it still
+  listens on the conventional `/run/user/<uid>/docker.sock`; the daemon is
+  then moved to a private socket, and the conventional path becomes a
+  `docker.socket` that a `systemd-socket-proxyd` service answers, pulling the
+  real daemon up on demand and forwarding to it. An idle worker has the
+  socket listening and no `dockerd`. `packages/harness/src/run-as.ts`'s shell
+  line sets the target user's own `XDG_RUNTIME_DIR=/run/user/$(id -u)` and
+  defaults `DOCKER_HOST` to that socket unless something already set it; the
+  engine's own `XDG_RUNTIME_DIR` and `DOCKER_HOST` are never passed to a
+  worker.
+- **`claude`, `codex`, the MCP servers and the runner itself stay on the
+  image's Node 24**, never the project's pinned one. The runner's unit starts
+  it by absolute path (`/usr/local/bin/node`), and `agentLauncher` in
+  `apps/mcp/src/compose.ts` resolves `claude`/`codex` on the image's own
+  `PATH` with `resolveNodeCli`/`nodeCliDeps` (`packages/harness/src/node-cli.ts`),
+  launching a Node-shebang script as `<image node> <script>` rather than
+  letting the project's Node (first on the project environment's `PATH`) run
+  it by the bin's shebang. On a laptop, where there is no project
+  environment, nothing changes.
+
+### Departures from `plan.md`
+
+1. **The laptop's runtime versions are measured by `run --remote` itself, at
+   dispatch** (the exported `measureToolchain`), because S-02's reference
+   audit did not exist yet to do it. S-02 should record the same measurement
+   in its reference audit rather than duplicate or replace this one.
+2. **The Docker socket uses the `docker.socket` + `systemd-socket-proxyd`
+   pattern directly**, rather than relying on rootless Docker's native
+   systemd-socket-activation support, since that native path could not be
+   checked without an image build.
+3. **On the machine, the engine process itself runs in the project
+   environment** (adopted into its own `process.env` at startup, and passed
+   to each worker user through `RunAs.env`), instead of an explicit
+   `projectEnv` threaded to every call site that runs project code. Some call
+   sites — `packages/execution/src/examine.ts`'s candidate checks,
+   `gate-repair.ts`'s setup reference, and `flaky.ts`'s reruns — were outside
+   S-01's scope; they get the project environment anyway because they run
+   inside the engine process and inherit it, but S-02, which owns those
+   files, may thread it through explicitly instead.
+4. **The pinned Rust toolchain's home moved onto the volume.** The image's
+   own `rustup` home (`/opt/rust/rustup`) is root's and read-only past
+   install, so it can hold only the image's stable toolchain. A project
+   pinning another Rust version gets a rustup home of its own under
+   `/workspace/stores/runtimes/rustup`, which the engine (as itself) installs
+   into with the image's `rustup` binary, and which the project environment
+   then selects with `RUSTUP_HOME`/`RUSTUP_TOOLCHAIN` — Rust stays on
+   `rustup`, as the plan asked, rather than moving to `mise`.
+
+### Known limits
+
+- **Boot setup runs as the engine, which has no Docker daemon.** A setup step
+  that needs Docker gets none at boot. (The gate audit runs setup again as a
+  worker, where Docker is available.)
+
+### What the owner must do after this lands (the run cannot)
+
+1. **Build the image and deploy.** Nothing here was deployed or built; mise's
+   binary and checksum, the generated systemd units, and the Rust/mise
+   installer scripts were checked locally (`bash -n`, a real mise 2026.10.5
+   reading the config back) but never run on a built image.
+2. **Commit Node and Python pins to `wildorder/nightshift-remote-fixture` if
+   it has none.** The boot proof's `fixtureToolchain` (in
+   `apps/api/src/smoke/runner-boot-env.ts`) requires the fixture to pin both:
+   a `.nvmrc` naming an exact Node 22 version (e.g. `22.22.0`) or any Node
+   spec, and a `.python-version` naming an exact 3.12.x version (e.g.
+   `3.12.8`) or any Python spec — a non-exact pin is accepted only if the
+   documented default (`node 22.22.0`, `python 3.12.8`) satisfies it, or an
+   override does (`NIGHTSHIFT_SMOKE_NODE_VERSION` /
+   `NIGHTSHIFT_SMOKE_PYTHON_VERSION`). Missing either pin, or one that no
+   default or override satisfies, refuses the proof before it dispatches.
+3. **Run `npm run runner:boot`.** It now also checks, as a worker user and
+   through the run sandbox's own wrapper (never a login shell): the pinned
+   `node` and `python` versions answer `--version`, `docker info` succeeds,
+   a `postgres:16` container's published port answers a host-side client,
+   and an idle worker (one the single-strand fixture never delegates to) has
+   no `dockerd` process while its `docker.socket` is listening.
+
 ## Decision log
 
 | Date | Decision | Authority |
