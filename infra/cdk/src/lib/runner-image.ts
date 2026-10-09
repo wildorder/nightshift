@@ -76,6 +76,9 @@ export const RUNNER_WORKSPACE = "/workspace";
 export const WORKSPACE_DEVICE = "/dev/xvdf";
 /** How many worker users the image carries: the largest tier's vCPUs. */
 export const WORKER_USERS = 16;
+
+/** Image Builder's limit on a component's inline document, in characters. */
+export const IMAGE_COMPONENT_MAX_CHARS = 16_000;
 export const ENGINE_USER = "engine";
 /** The group the engine and the workers share (D-P10-25); `apps/mcp/src/run-as.ts` names the same. */
 export const WORKER_GROUP = "nightshift";
@@ -242,15 +245,11 @@ export const containmentComponent = (): string => {
         // here the checkout is the engine's and the workers commit into it, and
         // every user on the machine is Nightshift's, so every directory is safe.
         "git config --system --add safe.directory '*'",
-        ...workers.map(
-          (worker) =>
-            `useradd --create-home --home-dir /home/${worker} --shell /bin/bash -G ${WORKER_GROUP} ${worker} && loginctl enable-linger ${worker}`,
-        ),
-        // Subordinate ids for rootless Docker's user namespaces, one block per user.
-        ...workers.map(
-          (worker, index) =>
-            `echo "${worker}:${100000 + index * 65536}:65536" >> /etc/subuid && echo "${worker}:${100000 + index * 65536}:65536" >> /etc/subgid`,
-        ),
+        // One loop per step over the workers, never a line per worker: an Image
+        // Builder component's document is capped at 16,000 characters, and the
+        // unrolled form passed it at sixteen workers (2026-10-09).
+        // Each worker's subordinate ids are one block, for rootless Docker.
+        `i=0; for w in ${workers.join(" ")}; do { useradd --create-home --home-dir /home/$w --shell /bin/bash -G ${WORKER_GROUP} $w && loginctl enable-linger $w && echo "$w:$((100000 + i * 65536)):65536" >> /etc/subuid && echo "$w:$((100000 + i * 65536)):65536" >> /etc/subgid; } || exit 1; i=$((i + 1)); done`,
         `echo "${ENGINE_USER}:${100000 + WORKER_USERS * 65536}:65536" >> /etc/subuid`,
       ]),
       shell("rootless-docker", [
@@ -262,22 +261,13 @@ export const containmentComponent = (): string => {
         // `docker version`, so nothing may move the daemon off it yet. The tool
         // enables and starts docker.service; it is disabled and stopped at once,
         // because no worker's daemon starts at boot (D-05).
-        ...workers.map(
-          (worker) =>
-            `uid=$(id -u ${worker}) && systemctl start user@$uid.service && ${asWorker(worker, "dockerd-rootless-setuptool.sh install")} && ${asWorker(worker, "systemctl --user disable --now docker.service")}`,
-        ),
+        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && systemctl start user@$uid.service && ${asWorker("$w", "dockerd-rootless-setuptool.sh install")} && ${asWorker("$w", "systemctl --user disable --now docker.service")}; } || exit 1; done`,
         // Then the daemon moves to a private socket, and the worker's socket path
         // belongs to docker.socket, which activates the proxy.
         ...dockerUserUnits(),
-        ...workers.map(
-          (worker) =>
-            `uid=$(id -u ${worker}) && ${asWorker(worker, "systemctl --user daemon-reload")} && ${asWorker(worker, "systemctl --user enable docker.socket")}`,
-        ),
+        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && ${asWorker("$w", "systemctl --user daemon-reload")} && ${asWorker("$w", "systemctl --user enable docker.socket")}; } || exit 1; done`,
         // An idle worker after boot: the socket enabled, the daemon not.
-        ...workers.map(
-          (worker) =>
-            `uid=$(id -u ${worker}) && [ "$(${asWorker(worker, "systemctl --user is-enabled docker.service")} || true)" = disabled ] && [ "$(${asWorker(worker, "systemctl --user is-enabled docker.socket")})" = enabled ] && systemctl stop user@$uid.service`,
-        ),
+        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && [ "$(${asWorker("$w", "systemctl --user is-enabled docker.service")} || true)" = disabled ] && [ "$(${asWorker("$w", "systemctl --user is-enabled docker.socket")})" = enabled ] && systemctl stop user@$uid.service; } || exit 1; done`,
       ]),
       shell("sudoers", [
         "set -euo pipefail",

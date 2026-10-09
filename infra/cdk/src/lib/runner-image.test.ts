@@ -14,10 +14,12 @@ import {
   DOCKER_PRIVATE_SOCKET,
   DOCKER_SOCKET,
   IMAGE_ARCHITECTURES,
+  IMAGE_COMPONENT_MAX_CHARS,
   MISE_SHA256,
   MISE_SYSTEM_CONFIG,
   RUNNER_TOOLCHAIN,
   RUNTIMES_DIR,
+  runnerComponent,
   SOCKET_PROXYD,
   toolchainComponent,
   WORKER_USERS,
@@ -43,7 +45,33 @@ const unitWrittenTo = (commands: readonly string[], path: string): string => {
 
 const workers = Array.from({ length: WORKER_USERS }, (_, index) => `worker-${index + 1}`);
 
+/**
+ * The one command that runs `step` for every worker: a loop over all of them,
+ * in order, that stops the build on the first worker it fails for. One loop,
+ * never a line per worker, keeps the component under Image Builder's limit.
+ */
+const everyWorker = (commands: readonly string[], step: string): string => {
+  const command = commands.find((c) => c.includes(step));
+  if (command === undefined) throw new Error(`no command runs ${step}`);
+  expect(command.startsWith(`for w in ${workers.join(" ")}; do {`)).toBe(true);
+  expect(command.endsWith("} || exit 1; done")).toBe(true);
+  return command;
+};
+
 describe("the runner image", () => {
+  // Image Builder refuses a component document over 16,000 characters, and
+  // only at deploy: P16's containment component reached 31,163 (2026-10-09).
+  it("keeps every component's document under Image Builder's limit", () => {
+    const documents = [
+      ...IMAGE_ARCHITECTURES.map((architecture) => toolchainComponent(architecture)),
+      containmentComponent(),
+      runnerComponent("0".repeat(40)),
+    ];
+    for (const document of documents) {
+      expect(document.length).toBeLessThanOrEqual(IMAGE_COMPONENT_MAX_CHARS);
+    }
+  });
+
   describe("mise (D-04)", () => {
     it("is pinned to an exact release, never latest", () => {
       expect(RUNNER_TOOLCHAIN.mise).toMatch(/^\d{4}\.\d{1,2}\.\d+$/);
@@ -102,15 +130,10 @@ describe("the runner image", () => {
     const dropIn = "/etc/systemd/user/docker.service.d/nightshift-private-socket.conf";
 
     it("runs Docker's setup tool as every worker, with its own runtime directory and bus", () => {
-      for (const worker of workers) {
-        const setup = commands.find((c) =>
-          c.includes(`sudo -u ${worker} -H env XDG_RUNTIME_DIR=/run/user/$uid`),
-        );
-        expect(setup, worker).toBeDefined();
-        expect(setup).toContain(`uid=$(id -u ${worker}) && systemctl start user@$uid.service`);
-        expect(setup).toContain("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus");
-        expect(setup).toContain("dockerd-rootless-setuptool.sh install");
-      }
+      const setup = everyWorker(commands, "dockerd-rootless-setuptool.sh install");
+      expect(setup).toContain("uid=$(id -u $w) && systemctl start user@$uid.service");
+      expect(setup).toContain("sudo -u $w -H env XDG_RUNTIME_DIR=/run/user/$uid");
+      expect(setup).toContain("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus");
     });
 
     it("installs every worker's daemon before it is moved off the socket the tool smoke-tests", () => {
@@ -137,19 +160,18 @@ describe("the runner image", () => {
     });
 
     it("leaves every worker's docker.service disabled and stopped, and its docker.socket enabled", () => {
-      for (const worker of workers) {
-        const mine = commands.filter((c) => c.includes(`sudo -u ${worker} `));
-        expect(mine.some((c) => c.includes("systemctl --user disable --now docker.service"))).toBe(
-          true,
-        );
-        expect(mine.some((c) => c.includes("systemctl --user enable docker.socket"))).toBe(true);
-        expect(
-          mine.some((c) => /enable docker\.service|enable --now docker\.service/.test(c)),
-        ).toBe(false);
-        const check = mine.find((c) => c.includes("is-enabled docker.service"));
-        expect(check).toContain("= disabled ]");
-        expect(check).toContain('is-enabled docker.socket)" = enabled ]');
-      }
+      expect(everyWorker(commands, "systemctl --user disable --now docker.service")).toContain(
+        "sudo -u $w ",
+      );
+      expect(everyWorker(commands, "systemctl --user enable docker.socket")).toContain(
+        "sudo -u $w ",
+      );
+      expect(
+        commands.some((c) => /enable docker\.service|enable --now docker\.service/.test(c)),
+      ).toBe(false);
+      const check = everyWorker(commands, "is-enabled docker.service");
+      expect(check).toContain("= disabled ]");
+      expect(check).toContain('is-enabled docker.socket)" = enabled ]');
     });
 
     it("keeps the rootful system units disabled", () => {

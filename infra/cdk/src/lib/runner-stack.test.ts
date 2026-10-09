@@ -176,7 +176,9 @@ describe("NightshiftRunnerStack", () => {
         .map((component) => String(component.Properties?.Data))
         .join("\n");
       expect(data).toContain(`useradd --system --create-home --home-dir /home/${ENGINE_USER}`);
-      expect(data).toContain(`useradd --create-home --home-dir /home/worker-${WORKER_USERS}`);
+      expect(data).toContain(
+        `worker-${WORKER_USERS}; do { useradd --create-home --home-dir /home/$w`,
+      );
       expect(data).toContain(`${ENGINE_USER} ALL=(WORKERS) NOPASSWD: ALL`);
       expect(data).toContain("169.254.169.254");
       expect(data).toContain(`meta skuid != \\"${ENGINE_USER}\\"`);
