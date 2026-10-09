@@ -590,9 +590,15 @@ const removeCheckout = async (
   input: ExamineInput,
   path: string,
 ): Promise<void> => {
+  // The examiner was granted its checkout (D-P10-25); the engine takes it back first.
+  await environment.reclaim?.(path).catch(() => {});
   await git(environment.git, ["worktree", "remove", "--force", path], {
     cwd: input.session.repoPath,
-  }).catch(() => {});
+  }).catch((error: unknown) => {
+    console.error(
+      `examination checkout ${path}: ${error instanceof Error ? error.message : error}`,
+    );
+  });
   await discardScratch(environment.paths, path);
   await pruneWorktrees(environment.git, input.session.repoPath).catch(() => {});
 };

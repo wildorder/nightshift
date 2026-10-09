@@ -141,6 +141,7 @@ the same day (H-P10-01).
 | D-P10-26 | **The tiers are compute-optimised x86: `good` c8id.2xlarge (8 vCPU, 16 GiB), `better` c8id.4xlarge (16, 32), `best` c8id.8xlarge (32, 64), gp3 volumes of 100, 200 and 400 GiB as before.** On-demand Linux in `us-west-2` from AWS's price feed of 2026-09-25: **$0.44352, $0.88704 and $1.77408 per hour**. Supersedes D-P10-13's ladder; the arm64 image is still built, for any instance type whose family carries a `g`. | The heavy benchmark (§15, 2026-10-02): the monorepo's own suite on five machines, repeatable within 3 s. The three 8-vCPU classes cost the same per unit of verification within 3 %, and c8id.2xlarge did the work 40 % sooner than m7g.xlarge and 15 % sooner than Graviton4 at the same size; the step to 16 vCPU bought 9 % of time for 80 % more per unit of work. The owner, 2026-10-03: "kind of where I thought we'd net out. let's default c8id.2xlarge". Noted for a later ruling: c8i (no local NVMe, which the runner never uses) is the same processor at $0.37484 for the 2xlarge, 15 % less. | **agreed 2026-10-03** |
 | D-P10-27 | **The workspace is on the instance's local NVMe; the EBS volume is a durability sidecar.** When the instance type has an instance-store disk (every c8id tier does), the runner formats and mounts it at `/workspace` and mounts the EBS volume beside it at `/workspace-sidecar`; the workspace is copied to the sidecar with `rsync` (owners kept) every minute and once more when the runner stops, under a marker file; a replacement instance or a warm start that finds the marker restores the copy onto its own disk before preparing the workspace, so in-flight worktrees come back. A dispatch whose record says `workspace.disk: volume`, or an instance type with no local disk, works on the volume as D-P10-15 designed. The warm snapshot is now the sidecar's snapshot, unchanged in mechanism. | The disk measurement (§15) found the monorepo's own suite CPU-bound, but the owner has run integration suites that were latency-bound on EBS and fast on NVMe, and customers bring those; the NVMe on c8id is already paid for. The volume's remaining job is recovery, and what recovery needs that re-cloning cannot give back is the in-flight worktrees; a copy a minute stale serves that. Everything the Studio shows is on the plane and in S3, not on either disk. | **agreed 2026-10-03** ("yeah, i guess that sidecar seems valuable to keep") |
 | D-P10-28 | **An org holds a set of GitHub App installations, one per GitHub account.** `OrgConfig.installations` replaces the single `github`; `org github install` adds an installation or refreshes the one already recorded under its id, `org github remove` drops one and hands its claim back, `org github status` lists them all. Dispatch, the heartbeat's read token and the publisher's write token each use the installation that grants the run's repository. The claim stays one-to-one: an installation belongs to one org. A stored config of the old shape is read as a one-element set and rewritten as a set on its next write. | Found 2026-10-08 when the owner, a repository admin but not an owner in a customer's GitHub org, could install the App on that repository himself (the App asks only repository permissions) but recording it would have replaced his org's `wildorder` installation: an org that works across GitHub accounts had to swap installations between runs. A set is what the customer's situation is; one slot was an accident of the first program. The owner's ruling: fix it before the first run on that repository. | **agreed 2026-10-08** |
+| D-P10-29 | **The engine reads its whole program; it writes only its own run.** D-P10-20's "cannot touch another run" means authority, and is narrowed to writes: every read of a run-scoped record (runs, nodes, jobs, agents, events, decisions, checkpoints, verifications, examinations, routing decisions, artifacts, its dispatch's records) is allowed across the engine's own program; every write stays within its own run and under the dispatch's generation. A suite now launches, verifies and integrates a worker under an `engine` token. Alongside it, a failed launch releases the worktree and branch it made, and the engine takes a granted worktree back (`reclaim`, a root `chown`) before removing it, with a removal that cannot finish saying why. | Found 2026-10-08 on keki's `lightning-ux`, the first remote run since 07a6022 made every worker launch read the program's upheld rulings across its runs: every launch was refused `run.list`, and the retry then collided with the first attempt's branch, which a worker-owned worktree had kept when its removal failed silently. Reads of the engine's own program expose nothing it does not already hold (the same project, org and repository), and since D-P10-25 project code cannot reach the engine's token. The owner's ruling: the restriction protected nothing, so remove it rather than route around it. | **agreed 2026-10-08** |
 
 ## 4. Design
 
@@ -362,6 +363,7 @@ Each task passes §8 before the next starts; T5 and T7 may run beside T4 and T6.
 | 2026-10-03 | The heavy benchmark on five machines and the x86 pipeline; D-P10-26 (the tiers are c8id.2xlarge, 4xlarge and 8xlarge) agreed; the disk measured; D-P10-27 (workspace on the instance's NVMe, the EBS volume a durability sidecar) agreed; the engine hands a worktree over once and runs setup and verification as its worker | Human |
 | 2026-10-04 | T4's worker token renewal and T6's recovery built and live-accepted (six kill proofs). **T7 (the recommendation's surfaces) and T5's AgentCore harness worker and Bedrock route skipped by the owner's decision**: the probe, the rule and the sampling exist unshown; subscription and API-key credentials cover every live run. T8 closes the program with `npm run remote` and the documentation | Human |
 | 2026-10-08 | D-P10-28 (an org holds a set of installations, one per GitHub account; `org github remove` added; dispatch, heartbeat and publisher use the installation granting the repository) agreed and built in a coding-agent session | Human |
+| 2026-10-08 | D-P10-29 (the engine reads its whole program and writes only its own run; a suite launches under an engine token; a failed launch releases its worktree; the engine reclaims before removing) agreed and built | Human |
 
 ## 14. Retained research
 
@@ -1049,3 +1051,34 @@ infrastructure changed. A config stored with `github` is lifted to a one-element
 set. The CLI gained `org github remove --installation <id>`, and `status` lists
 every installation. The dev stage's records were not migrated by hand: the
 owner's org is rewritten the first time it records or removes an installation.
+
+### D-P10-29, 2026-10-08: the engine reads its program
+
+keki's `lightning-ux`, dispatched on `best` with image 1.0.32, started no
+worker: since 07a6022 (2026-10-07) every launch reads the program's upheld
+rulings, which lists the program's runs and their decisions and
+examinations, and `ENGINE_ACCESS` forbade `run.list` and held decisions and
+examinations to the engine's own run. Every execution suite drove the engine
+with the operator's session, so none saw it. `ENGINE_ACCESS` now grants every
+read of a run-scoped record at `own_program` and keeps every write at
+`own_run`, the table's tests pin both halves against a sibling run, and
+`test/src/execution/engine-token.test.ts` launches, verifies and integrates
+under an `engine` token beside an earlier run of the program. It failed with
+the keki error before the table changed.
+
+The same run's retry collided with the first attempt's branch. Offline the
+retry works; on the machine the worktree had been chowned to a worker user
+before the launch failed, and the engine's removal failed silently inside a
+`.catch(() => {})`, leaving the branch. Now a failed launch releases what it
+made; every engine-side removal takes the path back first (`reclaim`, `chown
+-R engine:nightshift` as root) and removes through `removeWorktree`, which
+frees the branch of a worktree already gone and throws git's reason for one
+that will not go. The machine-side cause of the original removal failure was
+not observed directly (the workspace was on the instance's disk and the
+machine is gone); reclaiming removes the one difference between the machine
+and the offline suite that passes.
+
+The same run's red base is not fixed here: its Docker gates deferred on a
+machine with no Docker for its users, HP-01 had been checked on the laptop,
+and unit failed on the image's Node 24 against keki's pinned 22. That is the
+environment-parity program that follows.

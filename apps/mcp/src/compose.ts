@@ -20,6 +20,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { userInfo } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   CommitShaSchema,
@@ -70,7 +71,7 @@ import {
   type Role,
   workerLaunchEnv,
 } from "./role.js";
-import { createWorkerUsers } from "./run-as.js";
+import { createReclaim, createWorkerUsers } from "./run-as.js";
 import type { PlaneFactory } from "./runner/plane.js";
 import { createWorkerTokenFiles } from "./worker-token-files.js";
 
@@ -164,6 +165,8 @@ export interface Runtime {
   readonly publication?: (scope: RunScope) => PublishLanding;
   /** P10 (D-P10-25): who an agent runs as on a machine; absent on a laptop. */
   readonly runAs?: ExecutionEnvironment["runAs"];
+  /** P10 (D-P10-25): takes a granted path back for the engine; with `runAs`. */
+  readonly reclaim?: ExecutionEnvironment["reclaim"];
   /** P10 (T4): where a worker's token file lives on a machine; absent on a laptop. */
   readonly workerTokens?: ExecutionEnvironment["workerTokens"];
   /** How to launch a worker's own MCP server, given the identity it must carry. */
@@ -505,6 +508,7 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     endpoint,
     ...(publication === undefined ? {} : { publication }),
     ...(runAs === undefined ? {} : { runAs }),
+    ...(runAs === undefined ? {} : { reclaim: createReclaim(userInfo().username) }),
     ...(runAs === undefined ? {} : { workerTokens: createWorkerTokenFiles(runAs) }),
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,

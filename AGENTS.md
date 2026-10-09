@@ -692,7 +692,23 @@ A-40 and A-41.
   ask a node to be: `validated` (a new child of its own node), `cancelled` or
   `queued` (a descendant: stop, or retry), `succeeded` or `failed` (itself).
   Never `running` or anything past it. Add an operation and you decide it in
-  both tables, with a cell in both `authorize*.test.ts` files.
+  both tables, with a cell in both `authorize*.test.ts` files. (There are more
+  tables now: `EXAMINER_ACCESS`, `ARBITER_ACCESS` and P10's `ENGINE_ACCESS`;
+  decide an operation in every one.)
+- **A machine's engine reads its whole program and writes only its own run**
+  (D-P10-29). Every other execution suite drives the engine with the
+  operator's session, which may do anything in the org, so a launch that needs
+  an operation the engine's table forbids passes them all and fails on the
+  first remote run (keki, 2026-10-08: rulings read across runs, "an execution
+  token may not run.list"). `test/src/execution/engine-token.test.ts` launches,
+  verifies and integrates under an `engine` token (`createWorld({ engine: true })`);
+  a feature that adds a read or write to the launch path runs there too.
+- **The engine takes back what it granted before removing it.** A worktree
+  handed to a worker user (D-P10-25) is released through `releaseWorktree`,
+  which calls the environment's `reclaim` (a root `chown` to the engine on a
+  machine) and then `removeWorktree`, which frees the branch or throws git's
+  reason. Never `.catch(() => {})` a removal: a branch left silently is a
+  retry that fails later with no cause.
 - **A sub-orchestrator has no channel to the engine but the control plane.** The
   engine reads the run's nodes once a second while one is running and adopts what
   it finds. Do not add a socket, a port or an IPC path: P10 and P11 depend on this

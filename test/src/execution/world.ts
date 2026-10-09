@@ -21,7 +21,11 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type LocalControlPlane, startLocalControlPlane } from "@nightshift/api/testing";
+import {
+  encodeTestPrincipal,
+  type LocalControlPlane,
+  startLocalControlPlane,
+} from "@nightshift/api/testing";
 import type {
   Agent,
   CommitSha,
@@ -31,12 +35,15 @@ import type {
   ProjectId,
 } from "@nightshift/contracts";
 import {
+  createFixtures,
   createSteppingClock,
   createUlidIdGenerator,
   type ExecutionTokenMinter,
   type IdGenerator,
   type LocalPaths,
+  makeDispatch,
   makeMembership,
+  makeRun,
   nowIso,
   type ProjectStores,
   type RunScope,
@@ -335,6 +342,14 @@ export interface WorldOptions extends BaseWorldOptions {
   readonly verificationTimeoutMs?: number;
   /** The gates a red base failed: the run starts with `gate.red` (P15, D-P15-03). */
   readonly red?: readonly string[];
+  /**
+   * Run as a machine's engine does (P10, D-P10-20, D-P10-29): a dispatch on
+   * record, an earlier run of the same program, and the environment's stores,
+   * tokens, bodies and outbox all carrying an `engine` token rather than the
+   * operator's session. A launch that needs an operation the engine's table
+   * forbids fails here, offline, rather than on a machine.
+   */
+  readonly engine?: boolean;
 }
 
 /** A base world with a started, attached run — what the execution tests drive. */
@@ -375,8 +390,52 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
     await stores.executionNodes.put({ ...started.rootNode, status, updatedAt: nowIso(clock) });
   }
 
+  // The engine's world: what a machine holds instead of the operator's session.
+  let acting = { stores, bodies, tokens: base.tokens };
+  if (options.engine === true) {
+    const fixtures = createFixtures();
+    await base.backing.dispatches.put(
+      makeDispatch(fixtures, { ...scope, engineAgentId: orchestrator.agentId, generation: 1 }),
+    );
+    // An earlier run of the same program: the program's memory the engine reads.
+    await base.backing.runs.put(
+      makeRun(fixtures, {
+        projectId: scope.projectId,
+        programId: scope.programId,
+        runId: ids.next("run"),
+        rootNodeId: ids.next("node"),
+        status: "failed",
+      }),
+    );
+    const transport = createFetchTransport({
+      endpoint: base.plane.url,
+      tokens: staticTokenProvider(
+        encodeTestPrincipal({
+          kind: "execution",
+          ...scope,
+          nodeId: started.rootNode.executionNodeId,
+          agentId: orchestrator.agentId,
+          role: "engine",
+          generation: 1,
+        }),
+      ),
+    });
+    const engineStores = createHttpStores({ transport });
+    acting = {
+      stores: engineStores,
+      bodies: createHttpArtifactBodyStore({
+        transport,
+        read: async (bodyScope, artifactId) =>
+          base.plane.bodies.get(
+            `${bodyScope.projectId}/${bodyScope.programId}/${bodyScope.runId}/${artifactId}`,
+          )?.body,
+      }),
+      tokens: createHttpExecutionTokenMinter({ transport }),
+    };
+  }
+
   const outbox = createEventOutbox({
-    events: stores.events,
+    events: acting.stores.events,
     scope,
     clock,
     ids,
@@ -386,9 +445,9 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
   });
 
   const environment: ExecutionEnvironment = {
-    stores,
-    bodies,
-    tokens: base.tokens,
+    stores: acting.stores,
+    bodies: acting.bodies,
+    tokens: acting.tokens,
     harness: options.harness,
     clock,
     ids,

@@ -47,7 +47,6 @@ const FORBIDDEN: readonly Operation[] = [
   "program.put",
   "program.ratify",
   "program.createPlanUploadUrl",
-  "run.list",
   "artifact.createDownloadUrl",
   "orgConfig.get",
   "orgConfig.put",
@@ -65,7 +64,7 @@ const FORBIDDEN: readonly Operation[] = [
 ];
 
 describe("the engine's table (D-P10-20)", () => {
-  it("forbids exactly the human's operations: planning, the org, other runs, and keys", () => {
+  it("forbids exactly the human's operations: planning, the org, and keys", () => {
     const forbidden = ALL_OPERATIONS.filter(
       (operation) => ENGINE_ACCESS[operation] === "forbidden",
     );
@@ -102,13 +101,44 @@ describe("the engine's table (D-P10-20)", () => {
     }
   });
 
-  it.each(ALL_OPERATIONS)("refuses %s against another run", (operation) => {
+  it.each(ALL_OPERATIONS)("refuses %s in another program", (operation) => {
     const result = authorize(
       engine(),
       operation,
       target({ ...elsewhere.scope, nodeId: OTHER_NODE }),
     );
     expect(result.allowed).toBe(false);
+  });
+
+  // D-P10-29: an earlier run of the same program is the program's memory (its
+  // rulings, the strands it finished). The engine reads it; it never writes it.
+  const siblingRun = { ...here.scope, runId: here.ids.next("run") };
+  // The run-scoped writes. Its program's prerequisites and its project's gate
+  // health are the program's and the project's records, not a run's.
+  const writes = ALL_OPERATIONS.filter(
+    (operation) => !READ_OPERATIONS.has(operation) && ENGINE_ACCESS[operation] === "own_run",
+  );
+
+  it.each(
+    ALL_OPERATIONS.filter(
+      (operation) => READ_OPERATIONS.has(operation) && ENGINE_ACCESS[operation] !== "forbidden",
+    ),
+  )("reads %s in another run of its own program (D-P10-29)", (operation) => {
+    expect(authorize(engine(), operation, target({ ...siblingRun }))).toEqual({ allowed: true });
+  });
+
+  it.each(writes)("refuses %s in another run of its own program (D-P10-29)", (operation) => {
+    expect(authorize(engine(), operation, target({ ...siblingRun })).allowed).toBe(false);
+  });
+
+  it("reads no record narrower than its program, and writes none wider than its run", () => {
+    for (const operation of ALL_OPERATIONS) {
+      if (READ_OPERATIONS.has(operation)) {
+        expect(ENGINE_ACCESS[operation], operation).not.toBe("own_run");
+      }
+    }
+    expect(writes).toContain("node.put");
+    expect(writes).toContain("decision.put");
   });
 
   it("may ask a node to take any status: it is what asserts verified", () => {

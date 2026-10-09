@@ -74,3 +74,18 @@ export const createWorkerUsers = (
     return runAs;
   };
 };
+
+/**
+ * Takes a path back for the engine (D-P10-25): `chown -R` to the engine's own
+ * user and the shared group, as root, which the image's sudoers rule allows.
+ * The engine then removes what it granted whatever modes the agent left.
+ */
+export const createReclaim = (
+  engineUser: string,
+  exec: (file: string, args: readonly string[]) => Promise<void> = sudo,
+): ((path: string) => Promise<void>) => {
+  return async (path) => {
+    if (!existsSync(path)) return;
+    await exec("chown", ["-R", `${engineUser}:${WORKER_GROUP}`, path]);
+  };
+};

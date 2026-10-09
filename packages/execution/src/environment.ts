@@ -143,6 +143,15 @@ export interface ExecutionEnvironment {
     readonly role: string;
   }) => RunAs | undefined;
   /**
+   * P10 (D-P10-25): takes a path the engine granted to an agent back for the
+   * engine, before the engine removes it. A worktree handed to a worker user
+   * is that user's; the shared group lets the engine read and verify it, but
+   * removal must not depend on every file the agent or its tools wrote being
+   * group-writable. Supplied with `runAs`; absent on a laptop, where every
+   * path is already the engine's.
+   */
+  readonly reclaim?: (path: string) => Promise<void>;
+  /**
    * P10 (T4): on a machine, a worker's token lives in a file the engine keeps
    * fresh (`worker-tokens.ts`); absent, the token travels in the launch and
    * lasts as long as it lasts.
@@ -190,6 +199,7 @@ export type LandingEnvironment = Pick<
   | "verificationTimeoutMs"
   | "prerequisites"
   | "runAs"
+  | "reclaim"
 >;
 
 /** Reads the program's prerequisites. Satisfied by `persistence/http`'s planning client. */

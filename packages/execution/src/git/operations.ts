@@ -153,12 +153,16 @@ export const addDetachedWorktree = async (
 };
 
 /**
- * Removes a worktree and its branch.
+ * Removes a worktree and its branch, or says why it could not.
  *
- * Only ever called after the work is sealed, so the commit stays reachable
- * through `refs/nightshift/sealed/<nodeId>` and deleting the branch loses
- * nothing. On any failure the worktree is kept for inspection, which is why this
- * is a separate call rather than something the runner does in a `finally`.
+ * Called once the work is sealed, so the commit stays reachable through
+ * `refs/nightshift/sealed/<nodeId>` and deleting the branch loses nothing, and
+ * by a launch that failed before any work existed. A worktree that was never
+ * made, or whose directory is already gone, is forgotten and its branch freed.
+ * One that is there and will not go is left whole, and the call throws with
+ * git's own reason: a branch left behind silently is how a retry of the same
+ * job later failed with "a branch named … already exists" and no cause (keki,
+ * 2026-10-08).
  */
 export const removeWorktree = async (
   runner: GitRunner,
@@ -168,10 +172,23 @@ export const removeWorktree = async (
   nodeId?: string,
 ): Promise<void> => {
   await repoWrite(repo, async () => {
-    await git(runner, ["worktree", "remove", "--force", path], { cwd: repo });
-    await tryGit(runner, ["branch", "-D", branch], { cwd: repo });
+    const removed = await tryGit(runner, ["worktree", "remove", "--force", path], { cwd: repo });
+    if (removed.exitCode !== 0) await tryGit(runner, ["worktree", "prune"], { cwd: repo });
+    const deleted = await tryGit(runner, ["branch", "-D", branch], { cwd: repo });
     if (nodeId !== undefined)
       await tryGit(runner, ["update-ref", "-d", baseRef(nodeId)], { cwd: repo });
+    const left = await tryGit(
+      runner,
+      ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
+      { cwd: repo },
+    );
+    if (left.exitCode === 0) {
+      const why = [removed.stderr, deleted.stderr]
+        .map((text) => text.trim())
+        .filter((text) => text !== "")
+        .join("; ");
+      throw new Error(`could not remove the worktree at ${path} and its branch ${branch}: ${why}`);
+    }
   });
 };
 

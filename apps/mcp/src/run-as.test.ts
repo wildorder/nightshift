@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkerUsers, WORKER_GROUP, workerUserName } from "./run-as.js";
+import { createReclaim, createWorkerUsers, WORKER_GROUP, workerUserName } from "./run-as.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -43,5 +43,17 @@ describe("the worker users (D-P10-25)", () => {
   it("names nobody when the machine has no worker users", () => {
     expect(createWorkerUsers({ count: 0 })({ agentId: "a", role: "worker" })).toBeUndefined();
     expect(workerUserName(0)).toBe("worker-1");
+  });
+});
+
+describe("reclaiming a granted path (D-P10-25)", () => {
+  it("chowns it back to the engine and the shared group, and skips a path that is gone", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ns-reclaim-"));
+    dirs.push(root);
+    const ran: string[][] = [];
+    const reclaim = createReclaim("engine", async (file, args) => void ran.push([file, ...args]));
+    await reclaim(root);
+    await reclaim(join(root, "gone"));
+    expect(ran).toEqual([["chown", "-R", `engine:${WORKER_GROUP}`, root]]);
   });
 });

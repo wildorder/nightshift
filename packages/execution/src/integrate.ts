@@ -42,11 +42,11 @@ import {
   currentBranch,
   fastForward,
   isDirty,
-  removeWorktree,
   revParse,
   sealedRef,
   updateRef,
 } from "./git/index.js";
+import { releaseWorktree } from "./release-worktree.js";
 import { discardScratch } from "./scratch.js";
 import { stampJobDecisions } from "./stamp.js";
 
@@ -216,10 +216,15 @@ export const integrateNode = async (
   // --- The worktree has done its job --------------------------------------------
   // Only on the happy path. Every failure keeps it, because a worktree is the
   // only place a human can see what the worker actually did.
-  await removeWorktree(runner, repo, input.worktree, input.branch, input.nodeId).catch(() => {
-    // A worktree that will not go is untidy, not incorrect: the work is
-    // integrated and the checkpoint exists. `git worktree prune` clears it later.
-  });
+  await releaseWorktree(environment, repo, input.worktree, input.branch, input.nodeId).catch(
+    (error: unknown) => {
+      // A worktree that will not go is untidy, not incorrect: the work is
+      // integrated and the checkpoint exists. It is said, never swallowed.
+      console.error(
+        `node ${input.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    },
+  );
   await discardScratch(environment.paths, input.worktree);
 
   // --- What a repair did to the gates (P15, D-P15-04, D-P15-07, D-P15-11) ----------
