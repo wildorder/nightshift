@@ -17,10 +17,12 @@ import type {
   ComputeCeilings,
   ComputeTier,
   Dispatch,
+  DispatchProgress,
   DispatchStatus,
   GitHubInstallation,
   PublicationIntent,
   RunnerFailure,
+  RunnerProgress,
 } from "@nightshift/contracts";
 import { computeTierRank, MAX_RESOLVED_INTENTS } from "@nightshift/contracts";
 import { IllegalTransitionError } from "../errors.js";
@@ -164,6 +166,35 @@ export const runnerStopped = (
     return transitionDispatch(dispatch, "stopped", at);
   }
   return dispatch;
+};
+
+/**
+ * Folds a heartbeat's reported progress into the dispatch (P16 S-03).
+ * `stageStartedAt` is kept from `previous` when the stage and generation are
+ * both unchanged; otherwise it moves to `at`, a new stage or a new machine
+ * starting it over. `updatedAt` always moves to `at`. A field the report does
+ * not carry is absent from the result, even if `previous` had one: the report
+ * is the whole truth of where the runner now stands.
+ */
+export const foldProgress = (
+  previous: DispatchProgress | undefined,
+  reported: RunnerProgress,
+  generation: number,
+  at: string,
+): DispatchProgress => {
+  const sameStage =
+    previous !== undefined &&
+    previous.stage === reported.stage &&
+    previous.generation === generation;
+  return {
+    stage: reported.stage,
+    ...(reported.detail === undefined ? {} : { detail: reported.detail }),
+    ...(reported.gates === undefined ? {} : { gates: reported.gates }),
+    ...(reported.verdict === undefined ? {} : { verdict: reported.verdict }),
+    generation,
+    stageStartedAt: sameStage ? previous.stageStartedAt : at,
+    updatedAt: at,
+  };
 };
 
 /** How often the runner heartbeats (D-P10-18). */

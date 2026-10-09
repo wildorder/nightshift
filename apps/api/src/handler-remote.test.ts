@@ -16,6 +16,7 @@ import type { GitHubAppClient } from "@nightshift/core";
 import {
   createFixedClock,
   createFixtures,
+  createSteppingClock,
   type Fixtures,
   LEASE_SECONDS,
   makeComputeUtilization,
@@ -600,6 +601,136 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
       engine(w, dispatch),
     );
     expect(code(response)).toBe("no_machine");
+  });
+
+  it("stores the runner's reported progress, in the order a later beat replaces it (P16 S-03)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const first = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "toolchain", detail: "node 22.22.0" } }),
+      engine(w, dispatch),
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    let stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored?.progress).toMatchObject({
+      stage: "toolchain",
+      detail: "node 22.22.0",
+      generation: 1,
+      stageStartedAt: NOW,
+      updatedAt: NOW,
+    });
+
+    const second = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "setup", detail: "setup install" } }),
+      engine(w, dispatch),
+    );
+    expect(second.status).toBe(200);
+    stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored?.progress).toMatchObject({ stage: "setup", detail: "setup install" });
+  });
+
+  it("keeps the stored progress on a beat that reports none", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "toolchain", detail: "node 22.22.0" } }),
+      engine(w, dispatch),
+    );
+    const before = (await w.stores.dispatches.get(w.f.scope))?.progress;
+    const quiet = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1),
+      engine(w, dispatch),
+    );
+    expect(quiet.status).toBe(200);
+    expect((await w.stores.dispatches.get(w.f.scope))?.progress).toEqual(before);
+  });
+
+  it("resets stageStartedAt on a stage change, and keeps it on the same stage", async () => {
+    // A clock that moves, so a kept vs. a reset `stageStartedAt` are distinguishable.
+    const stepped = await setup();
+    const w = {
+      ...stepped,
+      deps: { ...stepped.deps, clock: createSteppingClock(Date.parse(NOW), 1000) },
+    };
+    const dispatch = await provisioned(w, await dispatched(w));
+    await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "toolchain" } }),
+      engine(w, dispatch),
+    );
+    const afterFirst = (await w.stores.dispatches.get(w.f.scope))?.progress;
+
+    await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "toolchain", detail: "still toolchain" } }),
+      engine(w, dispatch),
+    );
+    const sameStage = (await w.stores.dispatches.get(w.f.scope))?.progress;
+    expect(sameStage?.updatedAt).not.toBe(afterFirst?.updatedAt);
+    expect(sameStage?.stageStartedAt).toBe(afterFirst?.stageStartedAt);
+
+    await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "setup" } }),
+      engine(w, dispatch),
+    );
+    const changedStage = (await w.stores.dispatches.get(w.f.scope))?.progress;
+    expect(changedStage?.stage).toBe("setup");
+    expect(changedStage?.stageStartedAt).not.toBe(afterFirst?.stageStartedAt);
+  });
+
+  it("stores progress reported alongside stopped", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await w.stores.dispatches.put({ ...dispatch, status: "running" });
+    const response = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped", progress: { stage: "audit", verdict: "agrees" } }),
+      engine(w, dispatch),
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored?.status).toBe("stopped");
+    expect(stored?.progress).toMatchObject({ stage: "audit", verdict: "agrees" });
+  });
+
+  it("refuses a progress with gates at a non-audit stage", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const response = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, {
+        progress: {
+          stage: "setup",
+          gates: [{ id: "test", kind: "check", machine: "passed" }],
+        },
+      }),
+      engine(w, dispatch),
+    );
+    expect(response.status).toBe(400);
+    expect((await w.stores.dispatches.get(w.f.scope))?.progress).toBeUndefined();
   });
 });
 

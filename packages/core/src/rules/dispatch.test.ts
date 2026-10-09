@@ -1,7 +1,12 @@
 /**
  * The dispatch's lifecycle, lease and fence (P10, D-P10-18, D-P10-19).
  */
-import type { Dispatch, DispatchStatus } from "@nightshift/contracts";
+import type {
+  Dispatch,
+  DispatchProgress,
+  DispatchStatus,
+  RunnerProgress,
+} from "@nightshift/contracts";
 import { DEFAULT_COMPUTE_CEILINGS } from "@nightshift/contracts";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
@@ -16,6 +21,7 @@ import {
   DISPATCH_TRANSITION_EVENTS,
   DISPATCH_TRANSITIONS,
   type DispatchTransitionEvent,
+  foldProgress,
   hasPendingIntent,
   isCurrentGeneration,
   isDispatchTerminal,
@@ -350,5 +356,79 @@ describe("the runner's stopped (P16 SC-07)", () => {
       const dispatch = at(status);
       expect(runnerStopped(dispatch, setupFailed, LATER)).toBe(dispatch);
     }
+  });
+});
+
+describe("foldProgress folds a heartbeat's reported progress into the dispatch (P16 S-03)", () => {
+  const report = (overrides: Partial<RunnerProgress> = {}): RunnerProgress => ({
+    stage: "toolchain",
+    ...overrides,
+  });
+
+  it("starts a stage, with no previous progress, at `at`", () => {
+    const next = foldProgress(undefined, report({ detail: "node 22.22.0" }), 1, AT);
+    expect(next).toEqual({
+      stage: "toolchain",
+      detail: "node 22.22.0",
+      generation: 1,
+      stageStartedAt: AT,
+      updatedAt: AT,
+    });
+  });
+
+  it("keeps stageStartedAt when the stage and generation are unchanged", () => {
+    const previous: DispatchProgress = {
+      stage: "toolchain",
+      generation: 1,
+      stageStartedAt: AT,
+      updatedAt: AT,
+    };
+    const next = foldProgress(previous, report({ detail: "python 3.12.8" }), 1, LATER);
+    expect(next.stageStartedAt).toBe(AT);
+    expect(next.updatedAt).toBe(LATER);
+    expect(next.detail).toBe("python 3.12.8");
+  });
+
+  it("resets stageStartedAt to `at` when the stage changes", () => {
+    const previous: DispatchProgress = {
+      stage: "toolchain",
+      generation: 1,
+      stageStartedAt: AT,
+      updatedAt: AT,
+    };
+    const next = foldProgress(previous, report({ stage: "setup" }), 1, LATER);
+    expect(next.stage).toBe("setup");
+    expect(next.stageStartedAt).toBe(LATER);
+  });
+
+  it("resets stageStartedAt to `at` when the generation changes, even at the same stage", () => {
+    const previous: DispatchProgress = {
+      stage: "toolchain",
+      generation: 1,
+      stageStartedAt: AT,
+      updatedAt: AT,
+    };
+    const next = foldProgress(previous, report(), 2, LATER);
+    expect(next.generation).toBe(2);
+    expect(next.stageStartedAt).toBe(LATER);
+  });
+
+  it("drops a field the report does not carry, even if the previous progress had one", () => {
+    const previous: DispatchProgress = {
+      stage: "audit",
+      detail: "running gate 3 of 6",
+      gates: [{ id: "test", kind: "check", machine: "passed" }],
+      verdict: "agrees",
+      generation: 1,
+      stageStartedAt: AT,
+      updatedAt: AT,
+    };
+    const next = foldProgress(previous, report({ stage: "audit" }), 1, LATER);
+    expect(next).toEqual({
+      stage: "audit",
+      generation: 1,
+      stageStartedAt: AT,
+      updatedAt: LATER,
+    });
   });
 });

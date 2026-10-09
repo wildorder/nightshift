@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   DispatchFailureCodeSchema,
   DispatchInputSchema,
+  DispatchProgressSchema,
   DispatchToolchainSchema,
   HeartbeatBodySchema,
   isExactRuntimeVersion,
+  MAX_PROGRESS_GATES,
   ReferenceAuditSchema,
+  RunnerProgressSchema,
   RuntimeVersionSchema,
 } from "./dispatch.js";
 
@@ -188,6 +191,63 @@ describe("a heartbeat can say why the runner stopped (P16 SC-07, D-07)", () => {
         report: "stopped",
         failure: { code: "setup_failed", message: "" },
       }).success,
+    ).toBe(false);
+  });
+});
+
+describe("a heartbeat can report the runner's progress (P16 S-03)", () => {
+  const gate = { id: "test", kind: "check", machine: "passed", reference: "passed" } as const;
+
+  it("accepts a progress at a non-audit stage, without gates or a verdict", () => {
+    expect(
+      RunnerProgressSchema.safeParse({ stage: "toolchain", detail: "node 22.22.0" }).success,
+    ).toBe(true);
+  });
+
+  it("accepts an audit stage with gates and a verdict", () => {
+    expect(
+      RunnerProgressSchema.safeParse({ stage: "audit", gates: [gate], verdict: "agrees" }).success,
+    ).toBe(true);
+  });
+
+  it("refuses gates or a verdict at any stage but audit", () => {
+    for (const stage of ["up", "workspace", "toolchain", "setup", "prerequisites"]) {
+      expect(RunnerProgressSchema.safeParse({ stage, gates: [gate] }).success).toBe(false);
+      expect(RunnerProgressSchema.safeParse({ stage, verdict: "agrees" }).success).toBe(false);
+    }
+  });
+
+  it("refuses more gates than the cap", () => {
+    const gates = Array.from({ length: MAX_PROGRESS_GATES + 1 }, (_, i) => ({
+      ...gate,
+      id: `g${i}`,
+    }));
+    expect(RunnerProgressSchema.safeParse({ stage: "audit", gates }).success).toBe(false);
+    const atCap = Array.from({ length: MAX_PROGRESS_GATES }, (_, i) => ({ ...gate, id: `g${i}` }));
+    expect(RunnerProgressSchema.safeParse({ stage: "audit", gates: atCap }).success).toBe(true);
+  });
+
+  it("refuses detail over 500 characters", () => {
+    expect(RunnerProgressSchema.safeParse({ stage: "up", detail: "a".repeat(500) }).success).toBe(
+      true,
+    );
+    expect(RunnerProgressSchema.safeParse({ stage: "up", detail: "a".repeat(501) }).success).toBe(
+      false,
+    );
+  });
+
+  it("the dispatch's stored progress carries the same fields, plus the generation and timestamps", () => {
+    const stored = {
+      stage: "audit",
+      gates: [gate],
+      verdict: "agrees",
+      generation: 1,
+      stageStartedAt: "2026-10-09T12:00:00.000Z",
+      updatedAt: "2026-10-09T12:00:05.000Z",
+    };
+    expect(DispatchProgressSchema.safeParse(stored).success).toBe(true);
+    expect(
+      DispatchProgressSchema.safeParse({ ...stored, stage: "setup", gates: [gate] }).success,
     ).toBe(false);
   });
 });

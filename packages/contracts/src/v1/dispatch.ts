@@ -337,6 +337,87 @@ export const DispatchWorkspaceSchema = z.strictObject({
 });
 export type DispatchWorkspace = z.infer<typeof DispatchWorkspaceSchema>;
 
+/** Where the runner has got to, in the order it happens (P16 S-03). */
+export const RunnerStageSchema = z.enum([
+  "up",
+  "workspace",
+  "toolchain",
+  "setup",
+  "prerequisites",
+  "audit",
+]);
+export type RunnerStage = z.infer<typeof RunnerStageSchema>;
+
+/** One gate of the machine's audit as it finishes, with the reference's verdict beside it. */
+export const MachineGateProgressSchema = z.strictObject({
+  id: z.string().min(1).max(200),
+  kind: z.enum(["setup", "check"]),
+  machine: ReferenceGateVerdictSchema,
+  /** Absent when the reference has no such gate. */
+  reference: ReferenceGateVerdictSchema.optional(),
+});
+export type MachineGateProgress = z.infer<typeof MachineGateProgressSchema>;
+
+/**
+ * The audit's outcome against the reference: `agrees` (OK GO), `red` (a red
+ * base both agree on: OK GO, the run repairs it), `fault` (an environment
+ * fault, D-07), `skipped` (a replacement machine, generation > 1, which does
+ * not audit again).
+ */
+export const MachineAuditVerdictSchema = z.enum(["agrees", "red", "fault", "skipped"]);
+export type MachineAuditVerdict = z.infer<typeof MachineAuditVerdictSchema>;
+
+/** The audit's gates kept on a report are dropped past this many. */
+export const MAX_PROGRESS_GATES = 200;
+
+/** Only `audit` carries gates or a verdict; every other stage carries neither. */
+const onlyAuditCarriesGatesOrVerdict = (value: {
+  readonly stage: RunnerStage;
+  readonly gates?: readonly unknown[] | undefined;
+  readonly verdict?: unknown;
+}): boolean =>
+  value.stage === "audit" || (value.gates === undefined && value.verdict === undefined);
+
+/** What a heartbeat says about the runner's progress. */
+export const RunnerProgressSchema = z
+  .strictObject({
+    stage: RunnerStageSchema,
+    /** One line of what is happening within the stage, e.g. "cloning", "node 22.22.0, python 3.12.8", "setup install". */
+    detail: z.string().min(1).max(500).optional(),
+    /** The audit's gates finished so far; only at stage `audit`. */
+    gates: z.array(MachineGateProgressSchema).max(MAX_PROGRESS_GATES).optional(),
+    /** Set once the comparison with the reference is made; only at stage `audit`. */
+    verdict: MachineAuditVerdictSchema.optional(),
+  })
+  .refine(onlyAuditCarriesGatesOrVerdict, {
+    message: "gates and verdict are only reported at stage `audit`",
+    path: ["stage"],
+  });
+export type RunnerProgress = z.infer<typeof RunnerProgressSchema>;
+
+/** The latest progress, as the dispatch keeps it. */
+export const DispatchProgressSchema = z
+  .strictObject({
+    stage: RunnerStageSchema,
+    /** One line of what is happening within the stage. */
+    detail: z.string().min(1).max(500).optional(),
+    /** The audit's gates finished so far; only at stage `audit`. */
+    gates: z.array(MachineGateProgressSchema).max(MAX_PROGRESS_GATES).optional(),
+    /** Set once the comparison with the reference is made; only at stage `audit`. */
+    verdict: MachineAuditVerdictSchema.optional(),
+    /** The generation that reported it. */
+    generation: z.int().min(1),
+    /** When the plane first heard this stage from this generation. */
+    stageStartedAt: IsoTimestampSchema,
+    /** When the plane last heard any progress. */
+    updatedAt: IsoTimestampSchema,
+  })
+  .refine(onlyAuditCarriesGatesOrVerdict, {
+    message: "gates and verdict are only reported at stage `audit`",
+    path: ["stage"],
+  });
+export type DispatchProgress = z.infer<typeof DispatchProgressSchema>;
+
 export const DispatchSchema = z.strictObject({
   ...runScoped,
   status: DispatchStatusSchema,
@@ -371,6 +452,8 @@ export const DispatchSchema = z.strictObject({
   rootSessionId: z.string().min(1).optional(),
   /** `sha256` per lockfile path, as the runner last reported them, for the warm cache (D-P10-15). */
   lockfileHashes: z.record(z.string().min(1), z.string().min(1)).optional(),
+  /** The runner's latest progress, P16 S-03. */
+  progress: DispatchProgressSchema.optional(),
   requestedAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
 });
@@ -418,6 +501,8 @@ export const HeartbeatBodySchema = z
     /** `sha256` per lockfile path, for the warm cache's record (D-P10-15). */
     lockfileHashes: z.record(z.string().min(1), z.string().min(1)).optional(),
     rootSessionId: z.string().min(1).optional(),
+    /** Where the runner has got to, P16 S-03. */
+    progress: RunnerProgressSchema.optional(),
   })
   .refine((body) => body.failure === undefined || body.report === "stopped", {
     message: "a failure is reported only with `stopped`",

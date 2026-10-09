@@ -36,6 +36,7 @@ import {
   createUlidIdGenerator,
   emptyUtilization,
   estimateUsd,
+  foldProgress,
   foldUtilization,
   installationGranting,
   isDispatchTerminal,
@@ -391,6 +392,11 @@ export const heartbeat: Handler = async (context) => {
     ...(live ? { leaseExpiresAt: leaseExpiryFrom(deps.clock.now()) } : {}),
     ...(body.rootSessionId === undefined ? {} : { rootSessionId: body.rootSessionId }),
     ...(body.lockfileHashes === undefined ? {} : { lockfileHashes: body.lockfileHashes }),
+    // A beat without `progress` leaves the stored progress as it is, whatever
+    // the dispatch's status, including one that also reports `stopped` (P16 S-03).
+    ...(body.progress === undefined
+      ? {}
+      : { progress: foldProgress(dispatch.progress, body.progress, dispatch.generation, at) }),
     updatedAt: at,
   };
   await deps.stores.dispatches.put(dispatch);
