@@ -148,8 +148,7 @@ The rest of the plan is written into these same files in step 8.
    **rule 8's findings** at the audited commit, naming the files and versions
    (see below).
 3. **Review the gate machinery** against `gate-standard.md` beside this skill:
-   its seven numbered rules, how to check each, and the typical fixes. The
-   standard has an eighth rule that `gate-standard.md` does not yet spell out:
+   its eight numbered rules, how to check each, and the typical fixes.
 
    **8. Declares its runtimes**: the repository pins every language runtime it
    uses, in one file per runtime, and the gates are audited on those versions.

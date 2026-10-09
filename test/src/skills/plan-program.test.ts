@@ -145,13 +145,13 @@ describe("the skill", () => {
 });
 
 describe("the gate audit (P15, D-P15-01, D-P15-05)", () => {
-  it("ships a gate standard whose rules are numbered 1 to 7", async () => {
+  it("ships a gate standard whose rules are numbered 1 to 8", async () => {
     const text = await readFile(skill("gate-standard.md"), "utf8");
     const rules = text
       .split("\n")
       .filter((line) => /^## \d+\. /.test(line))
       .map((line) => Number(/^## (\d+)\./.exec(line)?.[1]));
-    expect(rules).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(rules).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     for (const phrase of [
       "Declares setup",
       "Passes on a fresh checkout of the base",
@@ -160,6 +160,7 @@ describe("the gate audit (P15, D-P15-01, D-P15-05)", () => {
       "Is deterministic",
       "Can be kept healthy by the work",
       "Costs what it should",
+      "Declares its runtimes",
       "pretest: npm ci",
       "**Typical fix.**",
     ]) {
@@ -218,10 +219,10 @@ describe("the gate audit (P15, D-P15-01, D-P15-05)", () => {
     ]) {
       expect(step, phrase).toContain(phrase);
     }
-    // gate-standard.md is embedded byte-for-byte in the harness and stays as it
-    // is; rule 8 lives in the skill until it can be added there.
+    // gate-standard.md is embedded byte-for-byte in the harness and now spells
+    // out rule 8 itself.
     const standard = await readFile(skill("gate-standard.md"), "utf8");
-    expect(standard).not.toMatch(/^## 8\. /m);
+    expect(standard).toMatch(/^## 8\. Declares its runtimes$/m);
     expect(text).toContain("no `S-00` strand\nor a strand that does not depend on it");
   });
 });
