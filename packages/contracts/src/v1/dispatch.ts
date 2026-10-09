@@ -44,12 +44,87 @@ export const DispatchAttemptSchema = z.strictObject({
 });
 export type DispatchAttempt = z.infer<typeof DispatchAttemptSchema>;
 
+/**
+ * Whether `version` names exactly one release of `runtime` (P16 D-03), as the
+ * runtime's own `--version` reports it. A partial version (`22`, `3.12`) is a
+ * pin, not a version: it would leave the patch to the machine, which may then
+ * run a different build from the one the audit certified.
+ *
+ * - node, java and any runtime not listed: `X.Y.Z` (java may add a fourth
+ *   component; its GA releases report `21`, which the CLI's parser reads as
+ *   `21.0.0`);
+ * - python: `X.Y.Z`, optionally a pre-release (`3.13.0rc1`);
+ * - ruby: `X.Y.Z`, optionally a pre-release (`3.4.0preview1`);
+ * - go: `X.Y.Z`; `X.Y` only before Go 1.21, whose first releases were named
+ *   so (`go1.20`), or with a pre-release (`1.22rc1`);
+ * - rust: `X.Y.Z`, optionally `-beta.N` or `-nightly`.
+ */
+export const isExactRuntimeVersion = (runtime: string, version: string): boolean => {
+  switch (runtime) {
+    case "python":
+      return /^\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?$/.test(version);
+    case "ruby":
+      return /^\d+\.\d+\.\d+(?:-?(?:preview|rc)\d+)?$/.test(version);
+    case "go": {
+      const match = /^(\d+)\.(\d+)(\.\d+)?((?:rc|beta)\d+)?$/.exec(version);
+      if (match === null) return false;
+      if (match[3] !== undefined || match[4] !== undefined) return true;
+      return Number(match[1]) === 1 && Number(match[2]) < 21;
+    }
+    case "java":
+      return /^\d+\.\d+\.\d+(?:\.\d+)*$/.test(version);
+    case "rust":
+      return /^\d+\.\d+\.\d+(?:-(?:beta(?:\.\d+)?|nightly))?$/.test(version);
+    default:
+      return /^\d+\.\d+\.\d+$/.test(version);
+  }
+};
+
+/** Where a runtime's version came from: the project's pin, or the image when the project pins none. */
+export const RuntimeVersionSourceSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("pin"),
+    /** The pin file, repository-root relative; `package.json#volta.node` for a field. */
+    file: z.string().min(1),
+    /** The pin's text: a version, a partial version or a range. */
+    spec: z.string().min(1),
+  }),
+  z.strictObject({ kind: z.literal("image") }),
+]);
+export type RuntimeVersionSource = z.infer<typeof RuntimeVersionSourceSchema>;
+
+/** One runtime the machine installs, at the exact version the reference audit ran on (P16 D-03). */
+export const RuntimeVersionSchema = z
+  .strictObject({
+    /** mise's tool name: `node`, `python`, `ruby`, `go`, `java`, `rust`. */
+    runtime: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    /** Exact, never a pin or a range: see `isExactRuntimeVersion`. */
+    version: z.string().min(1),
+    source: RuntimeVersionSourceSchema,
+  })
+  .refine((value) => isExactRuntimeVersion(value.runtime, value.version), {
+    message: "version must be an exact version of the runtime, not a partial version or a range",
+    path: ["version"],
+  });
+export type RuntimeVersion = z.infer<typeof RuntimeVersionSchema>;
+
+/** The runtimes a dispatch carries, one entry per runtime. */
+export const DispatchToolchainSchema = z
+  .array(RuntimeVersionSchema)
+  .refine(
+    (toolchain) => new Set(toolchain.map((entry) => entry.runtime)).size === toolchain.length,
+    { message: "a runtime appears at most once" },
+  );
+export type DispatchToolchain = z.infer<typeof DispatchToolchainSchema>;
+
 /** What was authorised: a repository, a branch, the exact base and the ratified plan (D-P10-02). */
 export const DispatchInputSchema = z.strictObject({
   repositoryUrl: z.string().min(1),
   branch: z.string().min(1),
   baseSha: CommitShaSchema,
   planHash: z.string().min(1),
+  /** The runtime versions the machine installs (P16 D-03). Absent on dispatches from before P16. */
+  toolchain: DispatchToolchainSchema.optional(),
 });
 export type DispatchInput = z.infer<typeof DispatchInputSchema>;
 

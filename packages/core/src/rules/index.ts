@@ -14,6 +14,7 @@ export * from "./gate-health.js";
 export * from "./integration.js";
 export * from "./ownership.js";
 export * from "./permissions.js";
+export * from "./pins.js";
 export * from "./plan.js";
 export * from "./policy.js";
 export * from "./routing-transitions.js";
