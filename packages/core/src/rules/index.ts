@@ -17,6 +17,7 @@ export * from "./permissions.js";
 export * from "./pins.js";
 export * from "./plan.js";
 export * from "./policy.js";
+export * from "./prerequisite-checks.js";
 export * from "./routing-transitions.js";
 export * from "./run-transitions.js";
 export * from "./scope.js";

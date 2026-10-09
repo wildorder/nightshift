@@ -10,6 +10,7 @@ import {
   emptyConversation,
   type Fixtures,
   keepMessages,
+  makeDispatch,
   makeMembership,
   makeNode,
   makeProgramContract,
@@ -572,6 +573,170 @@ describe("prerequisites (D-P7-05, D-P7-10)", () => {
     ]);
     const after = (await call(w, "GET", w.paths.program)).body as ProgramContract;
     expect(planHash(after, PLAN, sha256).hash).toBe(ratified.planHash);
+  });
+
+  describe("where a check ran (P16, D-08)", () => {
+    const engine = (w: World, generation = 1): RequestPrincipal => ({
+      kind: "execution",
+      projectId: w.f.scope.projectId,
+      programId: w.f.scope.programId,
+      runId: w.f.scope.runId,
+      nodeId: w.f.ids.next("node"),
+      agentId: w.f.ids.next("agent"),
+      role: "engine",
+      generation,
+    });
+    const machineCheck = (w: World, exitCode: number, generation = 1) => ({
+      kind: "check",
+      exitCode,
+      where: "machine",
+      dispatch: { runId: w.f.scope.runId, generation },
+    });
+    const laptopCheck = (exitCode: number) => ({ kind: "check", exitCode, where: "laptop" });
+
+    /** A ratified program whose run has a dispatch at `generation`. */
+    const dispatched = async (generation = 1) => {
+      const w = await setup();
+      const ratified = await ratify(w);
+      await call(w, "PUT", w.paths.run, makeRun(w.f));
+      await w.deps.stores.dispatches.put(makeDispatch(w.f, { generation }));
+      const path = `${w.paths.program}/prerequisites/HP-01`;
+      const stored = async (): Promise<Prerequisite | undefined> =>
+        (
+          await w.deps.stores.programContracts.get(w.f.scope.projectId, w.f.scope.programId)
+        )?.prerequisites?.find((prerequisite) => prerequisite.id === "HP-01");
+      return { w, ratified, path, stored };
+    };
+
+    it("keeps a machine check apart: it never moves the laptop's status, and a laptop check never moves it", async () => {
+      const { w, ratified, path, stored } = await dispatched();
+      // A check that says nowhere is the laptop's, as every check before P16 was.
+      expect((await call(w, "PUT", path, { kind: "check", exitCode: 0 })).body).toMatchObject({
+        status: "satisfied",
+        lastCheck: { exitCode: 0, checkedAt: NOW, where: "laptop" },
+      });
+      const laptop = await stored();
+
+      const onMachine = await call(w, "PUT", path, machineCheck(w, 1), engine(w));
+      expect(onMachine.status, JSON.stringify(onMachine.body)).toBe(200);
+      expect(onMachine.body).toMatchObject({
+        status: "satisfied",
+        lastCheck: laptop?.lastCheck,
+        machineChecks: [
+          { where: "machine", runId: w.f.scope.runId, generation: 1, exitCode: 1, checkedAt: NOW },
+        ],
+      });
+      expect((await stored())?.status).toBe("satisfied");
+      expect((await stored())?.lastCheck).toEqual(laptop?.lastCheck);
+
+      const machine = (await stored())?.machineChecks;
+      expect((await call(w, "PUT", path, laptopCheck(1))).body).toMatchObject({
+        status: "pending",
+      });
+      expect((await stored())?.machineChecks).toEqual(machine);
+
+      const after = (await call(w, "GET", w.paths.program)).body as ProgramContract;
+      expect(after.status).toBe("ratified");
+      expect(planHash(after, PLAN, sha256).hash).toBe(ratified.planHash);
+    });
+
+    it("lands overlapping laptop and machine checks, in either order, without either undoing the other", async () => {
+      for (const order of [
+        ["machine", "laptop"],
+        ["laptop", "machine"],
+      ] as const) {
+        const { w, path, stored } = await dispatched();
+        const replies = await Promise.all(
+          order.map((where) =>
+            where === "machine"
+              ? call(w, "PUT", path, machineCheck(w, 0), engine(w))
+              : call(w, "PUT", path, laptopCheck(0)),
+          ),
+        );
+        expect(
+          replies.map((reply) => reply.status),
+          order.join(" then "),
+        ).toEqual([200, 200]);
+        const persisted = await stored();
+        expect(persisted?.status, order.join(" then ")).toBe("satisfied");
+        expect(persisted?.lastCheck, order.join(" then ")).toEqual({
+          exitCode: 0,
+          checkedAt: NOW,
+          where: "laptop",
+        });
+        expect(persisted?.machineChecks, order.join(" then ")).toEqual([
+          { where: "machine", runId: w.f.scope.runId, generation: 1, exitCode: 0, checkedAt: NOW },
+        ]);
+      }
+    });
+
+    it("takes a machine check from the engine alone, under its own dispatch, and a laptop check from no execution", async () => {
+      const { w, path, stored } = await dispatched(2);
+      // A human cannot say what a machine found.
+      const byUser = await call(w, "PUT", path, machineCheck(w, 0, 2));
+      expect(byUser.status).toBe(403);
+      expect(errorCode(byUser)).toBe("prerequisite_check_site");
+      // The engine cannot move the laptop's status.
+      expect((await call(w, "PUT", path, laptopCheck(0), engine(w, 2))).status).toBe(403);
+      expect(
+        (await call(w, "PUT", path, { kind: "check", exitCode: 0 }, engine(w, 2))).status,
+      ).toBe(403);
+      // Nor record a check under a dispatch that is not its own.
+      expect((await call(w, "PUT", path, machineCheck(w, 0, 1), engine(w, 2))).status).toBe(403);
+      // A machine check names its dispatch, and only a machine check does.
+      expect(
+        (await call(w, "PUT", path, { kind: "check", exitCode: 0, where: "machine" }, engine(w, 2)))
+          .status,
+      ).toBe(400);
+      expect(
+        (
+          await call(w, "PUT", path, {
+            ...laptopCheck(0),
+            dispatch: { runId: w.f.scope.runId, generation: 2 },
+          })
+        ).status,
+      ).toBe(400);
+      expect((await stored())?.status).toBe("pending");
+      expect((await stored())?.machineChecks).toBeUndefined();
+
+      expect((await call(w, "PUT", path, machineCheck(w, 0, 2), engine(w, 2))).status).toBe(200);
+      expect((await stored())?.machineChecks).toHaveLength(1);
+      expect((await stored())?.status).toBe("pending");
+    });
+
+    it("keeps the machine checks across a re-ratification that leaves the command alone, and drops a client's", async () => {
+      const { w, path, stored } = await dispatched();
+      await call(w, "PUT", path, machineCheck(w, 0), engine(w));
+      const kept = (await stored())?.machineChecks;
+      expect(kept).toHaveLength(1);
+      const contract = planned(w, { outOfScope: ["a UI"] });
+      await ratify(w, contract);
+      expect((await stored())?.machineChecks).toEqual(kept);
+
+      const forged = planned(w, {
+        outOfScope: ["a CLI"],
+        prerequisites: [
+          {
+            id: "HP-01",
+            description: "A key exists.",
+            remediation: "Create it.",
+            verifyCommand: "test -n y",
+            status: "pending",
+            machineChecks: [
+              {
+                where: "machine",
+                runId: w.f.scope.runId,
+                generation: 9,
+                exitCode: 0,
+                checkedAt: NOW,
+              },
+            ],
+          },
+        ],
+      });
+      await ratify(w, forged);
+      expect((await stored())?.machineChecks).toBeUndefined();
+    });
   });
 
   it.each(["worker", "orchestrator"] as const)(

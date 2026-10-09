@@ -67,6 +67,7 @@ import {
   createHttpStores,
   createLocalPaths,
   createTokenProvider,
+  type PlanningClient,
   requireProfile,
   routes,
   send,
@@ -167,8 +168,12 @@ export interface Runtime {
    * suite that runs no planned program need not supply one.
    */
   readonly planText?: (scope: ProgramScope, sha256: string) => Promise<string | undefined>;
-  /** The program's prerequisites as they stand now, for deferring a check that needs one (D-P7-10). */
-  readonly prerequisites?: PrerequisiteBook;
+  /**
+   * The program's prerequisites as they stand now, for deferring a check that
+   * needs one (D-P7-10); and, on a run's machine, where its own checks are
+   * recorded before its gate audit (P16, D-08).
+   */
+  readonly prerequisites?: PrerequisiteBook & Pick<PlanningClient, "recordMachineCheck">;
   /**
    * P10 (D-P10-22): the publication hook for a run, when this process is a
    * machine's engine. The session installs it on the run's environment.

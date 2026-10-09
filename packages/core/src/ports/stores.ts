@@ -95,6 +95,21 @@ export interface ProjectStore {
 export interface ProgramContractStore {
   put(contract: ProgramContract): Promise<void>;
   get(projectId: ProjectId, programId: ProgramId): Promise<ProgramContract | undefined>;
+  /**
+   * Replaces the stored contract with `change(stored)` as one atomic step, and
+   * returns the contract as it then stands; `undefined`, with `change` never
+   * called, when none is stored. Two writers that overlap both land: when
+   * another write got in between the read and this one, the contract is read
+   * again and `change` applied to what that writer left (P16, D-08: a laptop's
+   * prerequisite check and a machine's must not undo each other). So `change`
+   * is pure and may be called more than once. It returns `undefined` to leave
+   * the contract as it is.
+   */
+  update(
+    projectId: ProjectId,
+    programId: ProgramId,
+    change: (current: ProgramContract) => ProgramContract | undefined,
+  ): Promise<ProgramContract | undefined>;
   listByProject(projectId: ProjectId, page?: PageRequest): Promise<Page<ProgramContract>>;
 }
 

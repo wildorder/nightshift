@@ -5,8 +5,8 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Prerequisite, ProgramContract } from "@nightshift/contracts";
-import { createFixtures, makeProgramContract } from "@nightshift/core";
+import { type Prerequisite, type ProgramContract, RunIdSchema } from "@nightshift/contracts";
+import { createFixtures, makeProgramContract, withMachineCheck } from "@nightshift/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runPreflight } from "./preflight.js";
 
@@ -124,5 +124,69 @@ describe("runPreflight (D-P7-05)", () => {
     });
     expect(result.checks[0]?.timedOut).toBe(true);
     expect(result.pending.map((p) => p.id)).toEqual(["HP-01"]);
+  });
+});
+
+describe("runPreflight on a run's machine (P16, D-08)", () => {
+  const RUN = RunIdSchema.parse("run_01M4FQ2A0RVJBX1N6EAAYM96MV");
+  const site = { where: "machine" as const, dispatch: { runId: RUN, generation: 1 } };
+
+  /** What the control plane does with a machine check: kept apart, status untouched. */
+  const recordOnMachine =
+    (laptop: (id: string) => Prerequisite) =>
+    async (_scope: unknown, id: string, exitCode: number): Promise<Prerequisite> => {
+      recorded.push([id, exitCode]);
+      return withMachineCheck(laptop(id), {
+        ...site.dispatch,
+        exitCode,
+        checkedAt: "2026-10-09T00:00:00.000Z",
+      });
+    };
+
+  it("runs every prerequisite, the laptop's satisfied ones too, and judges by its own checks", async () => {
+    const contract = contractWith([
+      prerequisite("HP-01", `node -e "process.exit(1)"`, "satisfied"),
+      prerequisite("HP-02", `node -e "process.exit(0)"`),
+    ]);
+    const result = await runPreflight({
+      contract,
+      cwd,
+      record: recordOnMachine((id) =>
+        id === "HP-01"
+          ? prerequisite(id, "recorded", "satisfied")
+          : prerequisite(id, "recorded", "pending"),
+      ),
+      site,
+    });
+    expect(recorded).toEqual([
+      ["HP-01", 1],
+      ["HP-02", 0],
+    ]);
+    expect(result.skipped).toEqual([]);
+    // Satisfied on the laptop, failed here: unmet here. Pending on the laptop, passed here: met.
+    expect(result.pending.map((p) => p.id)).toEqual(["HP-01"]);
+  });
+
+  it("runs each command in the environment and as the user it is given", async () => {
+    const wrapped: string[] = [];
+    const result = await runPreflight({
+      contract: contractWith([
+        prerequisite(
+          "HP-01",
+          `node -e "process.exit(process.env.NIGHTSHIFT_PROJECT_PIN === '24' ? 0 : 1)"`,
+        ),
+      ]),
+      cwd,
+      record: recordOnMachine((id) => prerequisite(id, "recorded")),
+      site,
+      env: { NIGHTSHIFT_PROJECT_PIN: "24" },
+      as: (invocation) => {
+        wrapped.push(invocation.file);
+        return invocation;
+      },
+    });
+    expect(wrapped).toHaveLength(1);
+    expect(recorded).toEqual([["HP-01", 0]]);
+    expect(result.pending).toEqual([]);
   });
 });

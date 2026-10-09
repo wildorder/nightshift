@@ -31,6 +31,7 @@ import type { Decision, ProgramContract } from "@nightshift/contracts";
 import {
   gatherReport,
   irreversibleConfirmationContext,
+  isMetAt,
   nowIso,
   prerequisitesOf,
   type RunReport,
@@ -93,14 +94,17 @@ const preflightFirstStrands = async (
   repoPath: string,
 ): Promise<boolean> => {
   const needed = firstStrandPrerequisites(ratified);
+  // A local run runs here, so the laptop's checks are the ones that count (P16, D-08).
+  const laptop = { where: "laptop" } as const;
   const later = prerequisitesOf(ratified).filter(
-    (prerequisite) => prerequisite.status !== "satisfied" && !needed.includes(prerequisite.id),
+    (prerequisite) => !isMetAt(prerequisite, laptop) && !needed.includes(prerequisite.id),
   );
   const planning = createHttpPlanning({ transport: session.transport });
   const result = await runPreflight({
     contract: ratified,
     cwd: repoPath,
     record: planning.recordCheck,
+    site: laptop,
     only: needed,
     clock: environment.clock,
   });

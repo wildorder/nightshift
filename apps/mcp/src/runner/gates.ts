@@ -10,11 +10,18 @@
  * it, and the root starts. Its first job is the repair, and the engine holds the
  * strands until that lands.
  *
+ * Before the audit the machine checks the human prerequisites itself (P16,
+ * D-08): every `verifyCommand`, as a worker user in the project environment,
+ * each recorded through `prerequisite.put` as a machine check under this
+ * dispatch. The audit's `unmet` set is built from those checks alone. A
+ * prerequisite the laptop's preflight satisfied is no evidence here: Docker on
+ * the laptop says nothing of Docker on this machine.
+ *
  * Only on a dispatch's first machine. A replacement (T6) resumes a run that
  * has already started; its base was audited when it began.
  */
-import type { CommitSha } from "@nightshift/contracts";
-import { prerequisitesOf } from "@nightshift/core";
+import type { CheckDispatch, CommitSha, Prerequisite } from "@nightshift/contracts";
+import { nowIso, prerequisitesOf, unmetPrerequisitesAt } from "@nightshift/core";
 import {
   auditGates,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
@@ -22,6 +29,7 @@ import {
   type ExecutionEnvironment,
   type GateAudit,
   recordRedBase,
+  runPreflight,
   stepsAs,
 } from "@nightshift/execution";
 import type { Runtime } from "../compose.js";
@@ -30,7 +38,7 @@ import { projectEnvironment } from "./workspace.js";
 
 export type MachineAuditRuntime = Pick<
   Runtime,
-  "git" | "stores" | "bodies" | "ids" | "clock" | "runAs" | "paths"
+  "git" | "stores" | "bodies" | "ids" | "clock" | "runAs" | "paths" | "prerequisites"
 >;
 
 export type MachineAuditContext = Pick<RunnerContext, "scope" | "layout" | "dispatch" | "program"> &
@@ -53,17 +61,83 @@ export const redReason = (audit: GateAudit): string => {
   );
 };
 
+/** The project environment setup ran in (P16 S-01): the pinned runtimes and the stores. */
+const environmentOf = (context: MachineAuditContext): Readonly<Record<string, string>> =>
+  context.projectEnv ?? projectEnvironment(context.layout, context.dispatch.input.toolchain);
+
+/** As verification on this machine runs its steps (D-P10-25): a worker user. */
+const asWorker = (runtime: MachineAuditRuntime, context: MachineAuditContext) =>
+  stepsAs(runtime as Pick<ExecutionEnvironment, "runAs">, {
+    agentId: `${context.dispatch.engineAgentId}-gates`,
+    role: "worker",
+  });
+
+/**
+ * Every prerequisite's `verifyCommand`, run on this machine as a worker user in
+ * the project environment, each recorded as a machine check under this
+ * dispatch (P16, D-08). Returns the ids unmet here: those whose check, this
+ * dispatch's own, did not exit zero. The laptop's status plays no part.
+ */
+export const checkPrerequisitesOnMachine = async (
+  runtime: MachineAuditRuntime,
+  context: MachineAuditContext,
+  log: (line: string) => void,
+): Promise<ReadonlySet<string>> => {
+  const prerequisites = prerequisitesOf(context.program);
+  if (prerequisites.length === 0) return new Set();
+  const dispatch: CheckDispatch = {
+    runId: context.scope.runId,
+    generation: context.dispatch.generation,
+  };
+  const book = runtime.prerequisites;
+  log(`prerequisites: checking ${prerequisites.length} on this machine`);
+  const result = await runPreflight({
+    contract: context.program,
+    cwd: context.layout.checkout,
+    site: { where: "machine", dispatch },
+    env: environmentOf(context),
+    ...asWorker(runtime, context),
+    clock: runtime.clock,
+    record: async (scope, prerequisiteId, exitCode): Promise<Prerequisite> => {
+      if (book !== undefined) {
+        return book.recordMachineCheck(scope, prerequisiteId, exitCode, dispatch);
+      }
+      // No control plane to tell (a suite's runtime): the check stands as run.
+      const prerequisite = prerequisites.find((candidate) => candidate.id === prerequisiteId);
+      if (prerequisite === undefined) throw new Error(`no prerequisite ${prerequisiteId}`);
+      return {
+        ...prerequisite,
+        machineChecks: [
+          { where: "machine", ...dispatch, exitCode, checkedAt: nowIso(runtime.clock) },
+        ],
+      };
+    },
+  });
+  for (const check of result.checks) {
+    log(
+      `prerequisites: ${check.prerequisite.id} ${
+        check.exitCode === 0
+          ? "met"
+          : check.timedOut
+            ? "unmet (timed out)"
+            : `unmet (exited ${check.exitCode})`
+      } on this machine`,
+    );
+  }
+  // Judged from the checks as recorded, this dispatch's alone.
+  return unmetPrerequisitesAt(
+    result.checks.map((check) => check.prerequisite),
+    { where: "machine", dispatch },
+  );
+};
+
 export const auditOnMachine = async (
   runtime: MachineAuditRuntime,
   context: MachineAuditContext,
   log: (line: string) => void,
 ): Promise<MachineAuditResult> => {
   if (context.dispatch.generation > 1) return {};
-  const unmet = new Set(
-    prerequisitesOf(context.program)
-      .filter((prerequisite) => prerequisite.status !== "satisfied")
-      .map((prerequisite) => prerequisite.id),
-  );
+  const unmet = await checkPrerequisitesOnMachine(runtime, context, log);
   log(`gate audit: setup and every check, on ${context.dispatch.input.baseSha.slice(0, 8)}`);
   const audit = await auditGates({
     git: runtime.git,
@@ -75,12 +149,9 @@ export const auditOnMachine = async (
     timeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
     paths: runtime.paths,
     // The project environment setup ran in (P16 S-01): the pinned runtimes and the stores.
-    env: context.projectEnv ?? projectEnvironment(context.layout, context.dispatch.input.toolchain),
+    env: environmentOf(context),
     // As verification on this machine runs its steps (D-P10-25).
-    ...stepsAs(runtime as Pick<ExecutionEnvironment, "runAs">, {
-      agentId: `${context.dispatch.engineAgentId}-gates`,
-      role: "worker",
-    }),
+    ...asWorker(runtime, context),
     onStep: (result) =>
       log(
         `gate audit: ${result.stepId} ${

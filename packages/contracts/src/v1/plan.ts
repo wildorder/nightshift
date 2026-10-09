@@ -93,12 +93,49 @@ export type Strand = z.infer<typeof StrandSchema>;
 export const PrerequisiteStatusSchema = z.enum(["pending", "satisfied"]);
 export type PrerequisiteStatus = z.infer<typeof PrerequisiteStatusSchema>;
 
-/** The last deterministic run of a prerequisite's `verifyCommand`. */
+/**
+ * Where a prerequisite's `verifyCommand` ran (P16, D-08). A check counts only
+ * where it ran: the laptop's says nothing of a run's machine, and the other way
+ * round.
+ */
+export const CheckSiteSchema = z.enum(["laptop", "machine"]);
+export type CheckSite = z.infer<typeof CheckSiteSchema>;
+
+/**
+ * The last deterministic run of a prerequisite's `verifyCommand` on the
+ * laptop, by `nightshift preflight`. `where` is absent on a check recorded
+ * before P16, which was the laptop's: there was nowhere else.
+ */
 export const PrerequisiteCheckSchema = z.strictObject({
   exitCode: z.int(),
   checkedAt: IsoTimestampSchema,
+  where: z.literal("laptop").optional(),
 });
 export type PrerequisiteCheck = z.infer<typeof PrerequisiteCheckSchema>;
+
+/** The remote dispatch a machine check ran under: its run, and the machine's generation. */
+export const CheckDispatchSchema = z.strictObject({
+  runId: RunIdSchema,
+  generation: z.int().min(1),
+});
+export type CheckDispatch = z.infer<typeof CheckDispatchSchema>;
+
+/**
+ * One run of a prerequisite's `verifyCommand` on a remote run's machine, as a
+ * worker user in the project environment, before the machine's gate audit
+ * (P16, D-08). It never moves the prerequisite's `status`, which is the
+ * laptop's.
+ */
+export const MachineCheckSchema = z.strictObject({
+  where: z.literal("machine"),
+  ...CheckDispatchSchema.shape,
+  exitCode: z.int(),
+  checkedAt: IsoTimestampSchema,
+});
+export type MachineCheck = z.infer<typeof MachineCheckSchema>;
+
+/** How many runs' machine checks a prerequisite keeps; the oldest goes first. */
+export const MAX_MACHINE_CHECKS = 20;
 
 /**
  * Something only a human can do, found at planning time and done before the run
@@ -106,7 +143,7 @@ export type PrerequisiteCheck = z.infer<typeof PrerequisiteCheckSchema>;
  *
  * `status` is only ever moved to `satisfied` by the deterministic preflight,
  * with the command's exit code in `lastCheck`: never by a planner and never by
- * a model.
+ * a model. A machine's checks are kept beside it, in `machineChecks`.
  */
 export const PrerequisiteSchema = z
   .strictObject({
@@ -120,8 +157,15 @@ export const PrerequisiteSchema = z
      * verification commands.
      */
     verifyCommand: z.string(),
+    /** The laptop's: moved only by a laptop check (`lastCheck`). */
     status: PrerequisiteStatusSchema,
     lastCheck: PrerequisiteCheckSchema.optional(),
+    /**
+     * The machines' checks (P16, D-08), the latest per run, apart from the
+     * laptop's so neither overwrites the other. Outside the plan hash, as
+     * `status` and `lastCheck` are.
+     */
+    machineChecks: z.array(MachineCheckSchema).max(MAX_MACHINE_CHECKS).optional(),
     /**
      * Set when the engine recorded this hurdle mid-run (D-P7-10) rather than a
      * human planning it. Such a prerequisite is no part of what was ratified, so

@@ -13,10 +13,26 @@
  * A failed check is recorded too. "Satisfied" is what the *last* check said, so
  * a credential that has since been revoked stops counting the next time anyone
  * looks.
+ *
+ * A check counts only where it ran (P16, D-08). The laptop's preflight is the
+ * default. A remote run's machine runs the same checks before its gate audit,
+ * every one of them, as a worker user in the project environment, and records
+ * each as a machine check under its dispatch; what is `pending` is then judged
+ * by that dispatch's checks alone, never by the laptop's status.
  */
 import type { Prerequisite, ProgramContract } from "@nightshift/contracts";
-import { type Clock, type ProgramScope, prerequisitesOf } from "@nightshift/core";
-import { runVerificationSteps, type SpawnLike } from "@nightshift/verification";
+import {
+  type Clock,
+  isMetAt,
+  type ProgramScope,
+  prerequisitesOf,
+  type RunSite,
+} from "@nightshift/core";
+import {
+  type RunVerificationInput,
+  runVerificationSteps,
+  type SpawnLike,
+} from "@nightshift/verification";
 
 /** Long enough for a cloud CLI to answer on a bad connection; short enough that a prompt waiting on stdin ends. */
 export const PREFLIGHT_TIMEOUT_MS = 60_000;
@@ -42,7 +58,10 @@ export interface PreflightInput {
   readonly contract: ProgramContract;
   /** The repository root: where a `verifyCommand` is run. */
   readonly cwd: string;
-  /** Records one exit code. The control plane decides what status follows from it. */
+  /**
+   * Records one exit code, as a check made at `site`. The control plane decides
+   * what follows from it.
+   */
   readonly record: (
     scope: ProgramScope,
     prerequisiteId: string,
@@ -52,6 +71,16 @@ export interface PreflightInput {
   readonly only?: readonly string[];
   /** Run satisfied prerequisites again as well. */
   readonly recheck?: boolean;
+  /**
+   * Where the checks run, and so which checks say what is met (P16, D-08). The
+   * laptop when absent. On a machine every prerequisite is run, since the
+   * laptop's status is no evidence there.
+   */
+  readonly site?: RunSite;
+  /** Added to each command's environment: the project environment, on a machine. */
+  readonly env?: RunVerificationInput["env"];
+  /** Who each command runs as: a worker user, on a machine (D-P10-25). */
+  readonly as?: RunVerificationInput["as"];
   readonly timeoutMs?: number;
   readonly spawn?: SpawnLike;
   readonly clock?: Clock;
@@ -62,8 +91,10 @@ export const runPreflight = async (input: PreflightInput): Promise<PreflightResu
   const considered = prerequisitesOf(input.contract).filter(
     (prerequisite) => input.only === undefined || input.only.includes(prerequisite.id),
   );
+  const site: RunSite = input.site ?? { where: "laptop" };
   const toRun = considered.filter(
-    (prerequisite) => input.recheck === true || prerequisite.status !== "satisfied",
+    (prerequisite) =>
+      input.recheck === true || site.where === "machine" || !isMetAt(prerequisite, site),
   );
   const skipped = considered.filter((prerequisite) => !toRun.includes(prerequisite));
 
@@ -73,6 +104,8 @@ export const runPreflight = async (input: PreflightInput): Promise<PreflightResu
       command: prerequisite.verifyCommand,
     })),
     cwd: input.cwd,
+    ...(input.env === undefined ? {} : { env: input.env }),
+    ...(input.as === undefined ? {} : { as: input.as }),
     timeoutMs: input.timeoutMs ?? PREFLIGHT_TIMEOUT_MS,
     ...(input.spawn === undefined ? {} : { spawn: input.spawn }),
     ...(input.clock === undefined ? {} : { clock: input.clock }),
@@ -93,6 +126,6 @@ export const runPreflight = async (input: PreflightInput): Promise<PreflightResu
     skipped,
     pending: checks
       .map((check) => check.prerequisite)
-      .filter((prerequisite) => prerequisite.status !== "satisfied"),
+      .filter((prerequisite) => !isMetAt(prerequisite, site)),
   };
 };
