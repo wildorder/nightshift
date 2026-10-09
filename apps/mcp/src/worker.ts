@@ -40,7 +40,7 @@ export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void =
     {
       title: "Read your job",
       description:
-        "Your objective, the scope you may touch, your acceptance criteria and your worktree. " +
+        "Your objective, your acceptance criteria and your worktree. " +
         "No argument: you have one job, and this is it.",
       inputSchema: {},
     },
@@ -60,17 +60,12 @@ export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void =
         return ok(
           `Objective: ${job.objective}\n` +
             `Acceptance: ${job.acceptance.map((line) => `- ${line}`).join("\n")}\n` +
-            `You may change: ${node.scope.includes.join(", ")}` +
-            (node.scope.excludes.length > 0
-              ? `, but never ${node.scope.excludes.join(", ")}`
-              : "") +
-            `\nWorking directory: ${identity.worktree}\n` +
+            `Working directory: ${identity.worktree}\n` +
             "Finish with job.complete, or job.fail if you are stuck. Do not commit.",
           {
             jobContractId: job.jobContractId,
             objective: job.objective,
             acceptance: job.acceptance,
-            scope: node.scope,
             worktree: identity.worktree,
             status: node.status,
           },
@@ -100,24 +95,13 @@ export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void =
     {
       title: "Report the job complete",
       description:
-        "Nightshift snapshots your worktree into one commit it authors, checks every changed " +
-        "path against your scope, and records the result. Do not commit anything yourself.",
+        "Nightshift snapshots your worktree into one commit it authors and records the result. " +
+        "Do not commit anything yourself.",
       inputSchema: { summary: z.string().min(1) },
     },
     async ({ summary }) =>
       guarded(async () => {
         const result = await tools.complete(summary);
-
-        if (result.kind === "scope_violation") {
-          // Already durably failed. The worker is being told, not asked.
-          return ok(
-            `Refused, and the job has failed: you changed ${result.offending.join(", ")}, which is ` +
-              "outside the scope you were given. Nothing you did will be integrated. If the work " +
-              "genuinely needs those paths, that is a job for your orchestrator to delegate, not " +
-              "something to work around.",
-            { outcome: "scope_violation", offending: result.offending, reason: result.reason },
-          );
-        }
         return ok(
           `Recorded as implemented at commit ${result.commitSha}, with ${result.changedPaths.length} ` +
             "changed paths. Nightshift now verifies it; implemented is not verified, and the " +
@@ -137,7 +121,7 @@ export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void =
       title: "Report the job as failed",
       description:
         "Use this when you are stuck, the job is impossible as specified, or finishing it would " +
-        "mean going outside your scope. A clear reason is worth far more than a guess.",
+        "take an action the program forbids. A clear reason is worth far more than a guess.",
       inputSchema: { reason: z.string().min(1) },
     },
     async ({ reason }) =>

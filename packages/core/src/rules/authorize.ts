@@ -328,8 +328,8 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "project.get": "forbidden",
   "program.list": "forbidden",
   "program.put": "forbidden",
-  // Above the run, like a worker. What it delegates under reaches it as its own
-  // node's scope; limits and policy are the API's and the engine's to apply.
+  // Above the run, like a worker. Limits and policy are the API's and the
+  // engine's to apply; its brief carries what it needs of the program.
   "program.get": "forbidden",
 
   // As for a worker: prerequisites are readable, and nothing of a plan is writable.

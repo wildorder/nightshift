@@ -27,7 +27,7 @@
  * skipped rather than passing silently (D-P3-11: `npm test` must stay runnable
  * with no Claude Code sign-in, no credentials and no network).
  */
-import type { ExecutionNode, RouteTarget, Scope } from "@nightshift/contracts";
+import type { ExecutionNode, RouteTarget } from "@nightshift/contracts";
 import {
   createFixtures,
   makeAgent,
@@ -108,19 +108,12 @@ export interface ClaudeConformanceFixtureOptions {
   readonly completionTimeout?: Duration;
 }
 
-/** No permission at all. See {@link claudeConformanceFixture} for why. */
-const noPermissions = (): string[] => [];
-
 /**
  * Inputs for the two workers T1's suite needs.
  *
- * Both are given a scope granting **no permissions at all**, which is not a
- * shortcut: it means neither worker can read, write or run anything in the
- * directory it is pointed at, so the suite cannot damage a real checkout and its
- * assertions are about the adapter rather than about a model's behaviour. The
- * Nightshift MCP tools remain available regardless of permissions (verified:
- * `--tools ""` leaves `--mcp-config` servers in place), so the shape of a real
- * job is preserved.
+ * Their program forbids committing and pushing, which their briefs say, and
+ * their objectives ask for nothing but text: the suite's assertions are about
+ * the adapter rather than about a model's behaviour.
  *
  * The long-running worker is a long *generation* rather than a `sleep`: a
  * `shell.exec` worker asked to sleep was observed backgrounding the command and
@@ -146,15 +139,10 @@ export const claudeConformanceFixture = (
 
   const build = (objective: string): ConformanceStartInput => {
     const fixtures = createFixtures();
-    const program = makeProgramContract(fixtures);
-    const node: ExecutionNode = makeRootNode(fixtures, {
-      scope: {
-        includes: ["**"],
-        excludes: [],
-        permissions: noPermissions(),
-        forbiddenActions: ["commit", "push"],
-      } satisfies Scope,
+    const program = makeProgramContract(fixtures, {
+      scope: { includes: ["**"], excludes: [], forbiddenActions: ["commit", "push"] },
     });
+    const node: ExecutionNode = makeRootNode(fixtures);
     return {
       agent: makeAgent(fixtures, node.executionNodeId),
       node,

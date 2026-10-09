@@ -2,21 +2,25 @@
  * The worker brief: what every adapter tells a worker, in plain text.
  *
  * Shared here rather than written per adapter because the things a worker must
- * be told are properties of *Nightshift*, not of a provider: what it is allowed
- * to touch, that Nightshift collects its work rather than it committing, and
- * which tools end the job. An adapter appends whatever its provider needs (how
- * its tools are named to it, for instance) and changes nothing above.
+ * be told are properties of *Nightshift*, not of a provider: the program's
+ * forbidden actions, that Nightshift collects its work rather than it
+ * committing, and which tools end the job. An adapter appends whatever its
+ * provider needs (how its tools are named to it, for instance) and changes
+ * nothing above.
  *
  * Deliberately plain text with no markup beyond headings. It is read by a model,
  * not rendered, and every provider accepts a string.
  *
  * ## What this is not
  *
- * It is not enforcement. Everything the brief asks for is also enforced
- * structurally: scope containment at commit time (A-29), tool policy inside the
- * adapter (D-P3-15), and the worker MCP role registering no delegation tool
- * (D-P3-01). The brief exists so a competent worker does not trip the fences,
- * not so the fences can be removed.
+ * It is not enforcement. What bounds an agent is structural: Nightshift owns
+ * every commit (A-29), the execution token, the environment the agent runs in,
+ * and the worker MCP role registering no delegation tool (D-P3-01).
+ *
+ * No brief tells an agent which paths it may or may not change. A job carries
+ * no path scope (the owner's ruling, 2026-10-09): it is given the reach to do
+ * the job. What every brief does carry is the program's forbidden actions,
+ * which are rules ("deploy any stack"), not paths.
  */
 import type {
   AgentRole,
@@ -28,7 +32,6 @@ import type {
   ProgramContract,
 } from "@nightshift/contracts";
 import { MAX_EXAMINATION_QUESTIONS } from "@nightshift/contracts";
-import { grantedPermissions, PERMISSION_SHELL_EXEC } from "@nightshift/core";
 import { GATE_STANDARD } from "./gate-standard.js";
 import type {
   AgentTask,
@@ -47,7 +50,6 @@ export const STRAND_DEPARTURE_PREFIX = "DEPARTURE:";
 
 export interface WorkerBriefInput {
   readonly job: JobContract;
-  /** The node whose `scope` is the effective authority, after narrowing (A-11). */
   readonly node: ExecutionNode;
   readonly program: ProgramContract;
   readonly worktree: string;
@@ -121,6 +123,26 @@ const headlessSession = (finish: string): string =>
 const bullets = (items: readonly string[]): string =>
   items.length === 0 ? "  (none)" : items.map((item) => `  - ${item}`).join("\n");
 
+/**
+ * The program's forbidden actions, told to every agent it starts, whatever its
+ * role (the owner's ruling, 2026-10-09). They are read from the program
+ * contract, never from a node: a node carries no scope. `undefined` when the
+ * program forbids nothing.
+ */
+export const renderForbiddenActions = (program: ProgramContract): string | undefined =>
+  program.scope.forbiddenActions.length === 0
+    ? undefined
+    : [
+        "ACTIONS FORBIDDEN IN THIS PROGRAM",
+        "",
+        "  No agent in this program may do any of these, whatever its task:",
+        bullets(program.scope.forbiddenActions),
+      ].join("\n");
+
+/** Sections with the ones that have nothing to say left out. */
+const present = (...sections: readonly (string | undefined)[]): string[] =>
+  sections.filter((section): section is string => section !== undefined && section !== "");
+
 const numbered = (items: readonly string[]): string =>
   items.map((item, index) => `  ${index + 1}. ${item}`).join("\n");
 
@@ -141,7 +163,7 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
     case "arbitrate":
       return renderArbiterBrief(input, input.task);
     case "answer":
-      return renderAnswerBrief(input.task);
+      return renderAnswerBrief(input.task, input.program);
     case "continue":
       return renderContinueBrief(input, input.task);
     default:
@@ -153,10 +175,7 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
   if (input.node.kind === "sub-program") return renderSubOrchestratorBrief(input);
   // The program node itself, run headless from a ratified plan (P7, D-P7-09).
   if (isPlanRoot(input.node.kind, input.program)) return renderPlanFollowingBrief(input);
-  const { job, node, program, worktree } = input;
-  const scope = node.scope;
-  const permissions = grantedPermissions(scope);
-  const mayRunCommands = permissions.includes(PERMISSION_SHELL_EXEC);
+  const { job, program, worktree } = input;
 
   const sections: string[] = [];
 
@@ -198,26 +217,14 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
 
   sections.push(
     [
-      "SCOPE — this is authority, not advice",
+      "CHANGE WHAT THE JOB NEEDS",
       "",
-      "  You may create, edit and delete files matching these patterns, and nothing else:",
-      bullets(scope.includes),
-      "",
-      "  Excluded even when an include above would otherwise match them:",
-      bullets(scope.excludes),
-      "",
-      "  Permissions granted to you:",
-      bullets(permissions.length === 0 ? [] : [...permissions]),
-      "",
-      "  Actions forbidden to you:",
-      bullets(scope.forbiddenActions),
-      "",
-      "  Nightshift checks the files you changed against this scope when you finish.",
-      "  A single change outside it fails the whole job, durably, and nothing you did",
-      "  is integrated. If the work genuinely requires touching something outside the",
-      "  scope, do not do it: call job.fail and say which path and why.",
+      "  Anywhere in this repository. No change is refused for the path it touches:",
+      "  your work lands when it passes verification.",
     ].join("\n"),
   );
+  const forbidden = renderForbiddenActions(program);
+  if (forbidden !== undefined) sections.push(forbidden);
 
   sections.push(
     [
@@ -269,9 +276,8 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
       "  checkout of your work and the result is what counts:",
       bullets(program.verification.map((step) => `${step.id}: ${step.command}`)),
       "",
-      mayRunCommands
-        ? "  Run them yourself before reporting. Reporting completion on work that fails\n  them wastes a full verification cycle and the node ends verification_failed."
-        : "  You cannot run commands, so you cannot check them yourself. Be correspondingly\n  careful, and say in your summary what you could not verify.",
+      "  Run them yourself before reporting. Reporting completion on work that fails",
+      "  them wastes a full verification cycle and the node ends verification_failed.",
     ].join("\n"),
   );
 
@@ -287,8 +293,8 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
       "",
       "  nightshift job.fail { reason }",
       "    Call this when you are stuck, the job is impossible as specified, or",
-      "    finishing it would require going outside your scope. A clear reason is",
-      "    worth far more than a guess: a human reads it.",
+      "    finishing it would take an action this program forbids. A clear reason",
+      "    is worth far more than a guess: a human reads it.",
       "",
       "  While you work:",
       "    nightshift job.progress { message }  — report what you are doing.",
@@ -382,9 +388,9 @@ const ROOT_ORCHESTRATOR_TOOLS: readonly string[] = [
  * came back, and says when the whole is done.
  */
 export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
-  const { job, node, program, worktree } = input;
-  const scope = node.scope;
-  return `${[
+  const { job, program, worktree } = input;
+  const strand = (program.strands ?? []).find((candidate) => candidate.id === job.strandId);
+  return `${present(
     [
       "You are a Nightshift orchestrator for one sub-program: a bounded region of a larger",
       "program, handed to you to get done by delegating it.",
@@ -393,9 +399,7 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       `  ${job.objective}`,
     ].join("\n"),
     ["ACCEPTANCE CRITERIA", numbered(job.acceptance)].join("\n"),
-    ...[renderProgramRulings(input.rulings, "orchestrator")].filter(
-      (section): section is string => section !== undefined,
-    ),
+    renderProgramRulings(input.rulings, "orchestrator"),
     ...(job.strandId === undefined
       ? []
       : [
@@ -403,9 +407,9 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
             `YOU ARE STRAND ${job.strandId} OF A PLAN A HUMAN RATIFIED`,
             "",
             "  Your objective above opens with your section of that plan, word for word. What it",
-            "  says will exist, and your scope, hold. HOW is medium fidelity on purpose: with the",
-            "  code in front of you, you may find the approach is wrong. Then depart from it, and",
-            "  say so, before you build on the departure:",
+            "  says will exist holds. HOW is medium fidelity on purpose: with the code in front",
+            "  of you, you may find the approach is wrong. Then depart from it, and say so,",
+            "  before you build on the departure:",
             "",
             `    nightshift decision.record { context: "${STRAND_DEPARTURE_PREFIX} <what the plan said, and what you are doing instead>", ... }`,
             "",
@@ -414,7 +418,23 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
             "  against one.",
           ].join("\n"),
         ]),
+    strand === undefined
+      ? undefined
+      : [
+          "WHERE THE PLAN EXPECTS THIS STRAND'S WORK — guidance, not a limit",
+          "",
+          "  The plan expects this strand's work mostly in:",
+          bullets(strand.scope.includes),
+          ...(strand.scope.excludes.length === 0
+            ? []
+            : ["", "  and not in:", bullets(strand.scope.excludes)]),
+          "",
+          "  This is not a limit: you and your jobs change whatever the work needs, wherever",
+          "  it is. It is where the plan expected the work, so other strands may be working",
+          "  elsewhere at the same time.",
+        ].join("\n"),
     ["THE PROGRAM THIS IS PART OF", `  ${program.objective}`].join("\n"),
+    renderForbiddenActions(program),
     [
       "YOU DO NOT WRITE THE CODE",
       "",
@@ -427,19 +447,6 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       `    ${worktree}`,
       "  Read it to understand the code before you divide the work. Call",
       "  subprogram.refresh to see what your jobs have integrated since.",
-    ].join("\n"),
-    [
-      "WHAT YOU MAY DELEGATE — authority, not advice",
-      "",
-      "  Every job's scope must sit inside yours:",
-      bullets(scope.includes.map((pattern) => `may change: ${pattern}`)),
-      ...(scope.excludes.length === 0
-        ? []
-        : [bullets(scope.excludes.map((pattern) => `never: ${pattern}`))]),
-      "",
-      "  Ask for more and the delegation is refused, listing what was not covered. Scope",
-      "  each job to what it needs, and give it what it needs: a job that must add a",
-      "  test needs the test directory.",
     ].join("\n"),
     [
       "HOW TO DELEGATE WELL",
@@ -495,8 +502,7 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "                          carries it out: wait for it with job.wait.",
       "    examination_ruling_unmet  two attempts could not carry the ruling out. Now,",
       "                          and only now, delegate the work differently.",
-      "    failed                read the reason. A scope violation means the job needed",
-      "                          more than you gave it. A worker that died or stopped",
+      "    failed                read the reason. A worker that died or stopped",
       "                          without reporting is worth a job.retry: the retry starts",
       "                          from whatever it left unfinished, kept by Nightshift, so",
       "                          do not save its work or describe it in a new job.",
@@ -527,8 +533,8 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "    clear reason is worth far more than a guess: a human reads it.",
       "",
       "  While you work:",
-      "    nightshift subprogram.get            — your objective, scope, and what you have delegated.",
-      "    nightshift delegate { objective, scope, acceptance, risk, ambiguity, testability, jobKind }",
+      "    nightshift subprogram.get            — your objective, and what you have delegated.",
+      "    nightshift delegate { objective, acceptance, risk, ambiguity, testability, jobKind }",
       "    nightshift job.wait { jobIds }       — returns when the first of them settles.",
       "    nightshift job.get / job.cancel / job.retry { jobId }",
       "    nightshift finding.dispute { jobId, reason } — when an examiner is wrong.",
@@ -543,7 +549,7 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "  sub-program and cancels its jobs, with no explanation attached.",
     ].join("\n"),
     headlessSession("subprogram.complete or subprogram.fail"),
-  ].join("\n\n")}\n`;
+  ).join("\n\n")}\n`;
 };
 
 const describeStrand = (strand: NonNullable<ProgramContract["strands"]>[number]): string =>
@@ -577,8 +583,8 @@ const REPAIRING_GATES = [
   "WHEN A GATE BREAKS — repair it; never re-plan",
   "",
   "  A gate is a setup or verification step. The run repairs a broken one itself, with a",
-  "  repair job: the one job you add outside the strands. It has the program's whole scope,",
-  "  may change anything (setup and gate commands included), and is examined at high risk.",
+  "  repair job: the one job you add outside the strands. It may change anything (setup and",
+  "  gate commands included), and is examined at high risk.",
   "",
   "    nightshift delegate { objective, acceptance,",
   "      repair: { cause, gates, decision: { context, alternatives, choice, rationale,",
@@ -603,7 +609,7 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
   const { job, program, worktree, node } = input;
   const strands = program.strands ?? [];
   const decisions = (program.decisions ?? []).filter((decision) => decision.answer !== undefined);
-  return `${[
+  return `${present(
     [
       "You are the Nightshift orchestrator for a whole program. A human planned it with care,",
       "ratified the plan, and has gone. Nobody is watching and nobody will answer a question:",
@@ -633,9 +639,10 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       "  1. Delegate EVERY strand, now, all of them, in any order:",
       "       nightshift strand.delegate { strandId }",
       "     You say which strand and nothing else. Its orchestrator is handed its section of",
-      "     the plan verbatim, the human's decisions that touch it, and the other strands'",
-      "     scopes. Nightshift holds a strand until the strands it depends on have succeeded,",
-      "     and runs as many at once as the program's limits allow, so you do not sequence them.",
+      "     the plan verbatim, the human's decisions that touch it, and where the plan expects",
+      "     the other strands' work. Nightshift holds a strand until the strands it depends on",
+      "     have succeeded, and runs as many at once as the program's limits allow, so you do",
+      "     not sequence them.",
       '     A strand that is one small bounded change may be delegated with kind: "job".',
       "  2. Wait:  nightshift job.wait { jobIds }  returns when the first of them settles. Call",
       "     it again for the rest.",
@@ -668,6 +675,7 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       "  Record what you decide (a retry, giving up on a strand) with decision.record: the",
       "  report lists the run's own decisions.",
     ].join("\n"),
+    renderForbiddenActions(program),
     REPAIRING_GATES,
     ...(decisions.length === 0
       ? []
@@ -691,7 +699,7 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       "Exiting without calling run.finish leaves the run interrupted, with no explanation.",
     ].join("\n"),
     headlessSession("run.finish"),
-  ].join("\n\n")}\n`;
+  ).join("\n\n")}\n`;
 };
 
 // ---------------------------------------------------------------------------
@@ -841,13 +849,8 @@ const evidenceSections = (input: WorkerBriefInput, evidence: ExaminationEvidence
       "",
       "  Constraints:",
       bullets(program.constraints),
-      "",
-      "  The job's scope:",
-      bullets(input.node.scope.includes),
-      input.node.scope.excludes.length === 0
-        ? ""
-        : `  never: ${input.node.scope.excludes.join(", ")}`,
     ].join("\n"),
+    ...present(renderForbiddenActions(program)),
     [
       "WHAT THE DETERMINISTIC CHECKS SAID (they all passed, or you would not be here)",
       ...evidence.verification.map(
@@ -1010,14 +1013,19 @@ export const renderExaminerBrief = (
 };
 
 /** The builder, resumed to answer an examiner's questions (D-P8-15). */
-export const renderAnswerBrief = (task: Extract<AgentTask, { kind: "answer" }>): string =>
-  [
+export const renderAnswerBrief = (
+  task: Extract<AgentTask, { kind: "answer" }>,
+  program: ProgramContract,
+): string => {
+  const forbidden = renderForbiddenActions(program);
+  return [
     task.transcript === undefined
       ? "An independent examiner is reviewing the work you just did, and has questions only you can answer."
       : "An independent examiner is reviewing work a builder did, and has questions only the builder can answer. The builder's session could not be resumed, so here is its transcript; answer as the builder, from it.",
     "",
     "Answer each question directly and briefly, from what you know about why the work is the way it is.",
     "Do not change any file, and do not run anything that writes: this is a conversation, not more work.",
+    ...(forbidden === undefined ? [] : ["", forbidden]),
     "",
     "The questions:",
     ...task.questions.map((question, index) => `  ${index + 1}. ${question}`),
@@ -1026,6 +1034,7 @@ export const renderAnswerBrief = (task: Extract<AgentTask, { kind: "answer" }>):
     ...(task.transcript === undefined ? [] : ["", "THE BUILDER'S TRANSCRIPT", task.transcript]),
     "",
   ].join("\n");
+};
 
 /** The arbiter's brief (D-P8-13): one disputed finding, both sides, and the change. */
 export const renderArbiterBrief = (
@@ -1047,6 +1056,7 @@ export const renderArbiterBrief = (
       "  Acceptance criteria:",
       numbered(input.job.acceptance),
     ].join("\n"),
+    renderForbiddenActions(input.program) ?? "",
     ["THE FINDING", describeFinding(task.finding)].join("\n"),
     ["THE DISPUTE", `  ${task.dispute}`].join("\n"),
     task.questions.length === 0

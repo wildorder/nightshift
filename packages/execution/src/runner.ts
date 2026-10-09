@@ -44,7 +44,6 @@ import type {
   RouteTarget,
   RouteUsage,
   RoutingDecision,
-  Scope,
   Verification,
 } from "@nightshift/contracts";
 import {
@@ -110,8 +109,6 @@ export interface RunJobInput {
   readonly session: RunSession;
   /** Validated by the caller, not yet persisted. */
   readonly job: JobContract;
-  /** The **effective** scope, already narrowed against the parent by `core`. */
-  readonly scope: Scope;
   readonly depth: number;
   readonly parentNodeId: ExecutionNodeId;
   readonly route: RouteChoice;
@@ -195,7 +192,7 @@ interface Attempt {
 
 /** What it takes to record a delegation: the first half of {@link runJob}. */
 export interface DelegateJobInput
-  extends Pick<RunJobInput, "session" | "job" | "scope" | "depth" | "parentNodeId"> {
+  extends Pick<RunJobInput, "session" | "job" | "depth" | "parentNodeId"> {
   /** `job` unless said otherwise. A sub-program is delegated the same way (D-P6-03). */
   readonly kind?: "job" | "sub-program";
 }
@@ -286,7 +283,6 @@ export const delegateJob = async (
     kind: input.kind ?? "job",
     parentNodeId: input.parentNodeId,
     depth: input.depth,
-    scope: input.scope,
     status: "validated",
     jobContractId: input.job.jobContractId,
     commitSha: null,

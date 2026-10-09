@@ -11,17 +11,16 @@
  * What bounds a worker is therefore **not** the harness:
  *
  * - Nightshift owns every commit (A-29). `job.complete` snapshots the worktree
- *   onto the base, so nothing a worker commits becomes history, and every
- *   changed path is checked against the node's scope before anything integrates.
+ *   onto the base, so nothing a worker commits becomes history, and nothing
+ *   integrates until Nightshift has verified it.
  * - The worker's only Nightshift credential is an execution token good for its
  *   four operations on its own node (A-35).
  * - Its environment is an allowlist (`environment.ts`).
  *
- * `Scope.permissions` (`fs.read`, `fs.write`, `shell.exec`) is still told to the
- * worker in its brief and still reported on `agent.started`, but **no harness
- * flag enforces it any more**. A worker's effects outside its worktree are not
- * contained by Nightshift at all; that is the operator's machine's business
- * until the remote runner (P10) gives workers a machine of their own.
+ * A worker is given no permission list and no path scope (the owner's ruling,
+ * 2026-10-09): its reach is the environment it runs in. A worker's effects
+ * outside its worktree are not contained by Nightshift at all; that is the
+ * operator's machine's business, or the remote runner's machine (P10).
  *
  * ## The one list that remains, and why it is not the same thing
  *
@@ -36,8 +35,6 @@
  * The list flag takes a comma-separated value, because a pattern like
  * `Bash(git commit:*)` contains a space.
  */
-import type { Scope } from "@nightshift/contracts";
-import { grantedPermissions, unknownPermissions, type WorkerPermission } from "@nightshift/core";
 
 /**
  * Git subcommands a worker may never run (A-29).
@@ -93,27 +90,17 @@ export const FORBIDDEN_GIT_SUBCOMMANDS: readonly string[] = [
 export const gitWriteDenials = (): readonly string[] =>
   FORBIDDEN_GIT_SUBCOMMANDS.map((subcommand) => `Bash(git ${subcommand}:*)`);
 
-/** What the adapter passes to Claude Code, and what it reports about the scope. */
+/** What the adapter passes to Claude Code. The same for every worker. */
 export interface ClaudeToolPolicy {
   /** Value for `--permission-mode`. Always the same; see the module comment. */
   readonly permissionMode: "bypassPermissions";
   /** Value for `--disallowedTools`: the git write denials, unconditionally. */
   readonly denied: readonly string[];
-  /** The permissions the scope names, in vocabulary order. Reported, not enforced. */
-  readonly granted: readonly WorkerPermission[];
-  /** Permissions on the scope that Nightshift does not understand. */
-  readonly unknown: readonly string[];
 }
 
-export interface ClaudeToolPolicyInput {
-  readonly scope: Scope;
-}
-
-export const claudeToolPolicy = (input: ClaudeToolPolicyInput): ClaudeToolPolicy => ({
+export const claudeToolPolicy = (): ClaudeToolPolicy => ({
   permissionMode: "bypassPermissions",
   denied: gitWriteDenials(),
-  granted: grantedPermissions(input.scope),
-  unknown: unknownPermissions(input.scope),
 });
 
 /**

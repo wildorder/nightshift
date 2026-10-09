@@ -4,19 +4,19 @@
  * The overlap rule is the check a planner will argue with, so what it promises
  * is pinned: it is symmetric, a dependency in either direction clears a pair,
  * and an exclude that removes the intersection clears it. It is also sound
- * against the matcher the engine enforces scope with: two scopes that both
- * allow some concrete path always overlap.
+ * against the path matcher: two scopes that both match some concrete path
+ * always overlap.
  */
 import type { ProgramContract, Strand, StrandScope } from "@nightshift/contracts";
 import {
   blockedBy,
   createFixtures,
   downstreamCone,
+  globSetMatchesPath,
   independentOverlaps,
   makeProgramContract,
   mayStartStrand,
   type StrandOutcomes,
-  scopeAllowsPath,
   scopesOverlap,
 } from "@nightshift/core";
 import fc from "fast-check";
@@ -91,8 +91,6 @@ const fixtures = createFixtures();
 const contractOf = (strands: readonly Strand[]): ProgramContract =>
   makeProgramContract(fixtures, { status: "planning", strands });
 
-const asScope = (scope: StrandScope) => ({ ...scope, permissions: [], forbiddenActions: [] });
-
 describe("scopesOverlap", () => {
   it("is symmetric", () => {
     fc.assert(
@@ -110,7 +108,7 @@ describe("scopesOverlap", () => {
         ),
         ([path, a, b]) => {
           // Built to allow the path; an unlucky exclude is the only way it would not.
-          fc.pre(scopeAllowsPath(asScope(a), path) && scopeAllowsPath(asScope(b), path));
+          fc.pre(globSetMatchesPath(a, path) && globSetMatchesPath(b, path));
           expect(scopesOverlap(a, b)).toBe(true);
         },
       ),

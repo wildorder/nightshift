@@ -1,11 +1,11 @@
 /**
- * SC-P3-07 and SC-P3-13: the two ways a job that *finished* still does not
- * integrate.
+ * SC-P3-07: the way a job that *finished* still does not integrate.
  *
- * Both are cases where the worker did its job and reported success. One wrote a
- * test that fails; the other touched a file it had no authority over. Neither is
- * caught by asking the worker — which is the point of having verification and a
- * scope check at all.
+ * The worker did its job and reported success, and wrote a test that fails. It
+ * is not caught by asking the worker, which is the point of having verification
+ * at all. (SC-P3-13, a job failed for a path it changed, went with the owner's
+ * ruling of 2026-10-09: a job carries no path scope. `integrated.test.ts` shows a
+ * job that changes a file outside the program's planned paths landing.)
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -37,7 +37,7 @@ afterEach(async () => {
   await context?.close().catch(() => {});
 });
 
-const runJobWith = async (script: "implement-broken" | "out-of-scope") => {
+const runJobWith = async (script: "implement-broken") => {
   mcp = await startOrchestrator({ context: ctx(), script });
   const started = await mcp.call("run.start", {
     programContractPath: "nightshift.program.json",
@@ -45,7 +45,6 @@ const runJobWith = async (script: "implement-broken" | "out-of-scope") => {
   });
   const job = await mcp.call("delegate", {
     objective: "Add a median helper to src/math.js, with tests.",
-    scope: { includes: ["src/**", "test/**"] },
     acceptance: ["median([3,1,2]) is 2", "the existing tests still pass"],
   });
   expect(job.ok, JSON.stringify(job)).toBe(true);
@@ -109,32 +108,6 @@ describe("SC-P3-07: an intentionally failing test blocks integration", () => {
 
     await expectNothingIntegrated(scope, String(report.nodeId));
     // And the operator's checkout never saw the median helper at all.
-    const math = await readFile(join(ctx().fixture.repo, "src", "math.js"), "utf8");
-    expect(math).not.toContain("median");
-  });
-});
-
-describe("SC-P3-13: a change outside the effective scope never integrates", () => {
-  it("fails at completion, names the offending path, and moves nothing", async () => {
-    const { report, scope } = await runJobWith("out-of-scope");
-
-    expect(report.status, JSON.stringify(report)).toBe("failed");
-    expect(String(report.outcomeReason)).toContain("README.md");
-    expect(String(report.outcomeReason)).toContain("outside the job's effective scope");
-
-    // It never reached `implemented`, so it was never verified — the scope check
-    // is before verification, not a filter after it.
-    expect(
-      await ctx().stores.verifications.listByNode(scope, String(report.nodeId) as never),
-    ).toEqual([]);
-
-    await expectNothingIntegrated(scope, String(report.nodeId));
-
-    // The operator's README is exactly as it was, and so is src/math.js: the
-    // in-scope part of the job is discarded with the out-of-scope part, because
-    // the commit is all-or-nothing.
-    const readme = await readFile(join(ctx().fixture.repo, "README.md"), "utf8");
-    expect(readme).not.toContain("a worker that strayed");
     const math = await readFile(join(ctx().fixture.repo, "src", "math.js"), "utf8");
     expect(math).not.toContain("median");
   });

@@ -36,7 +36,6 @@ import type {
   Artifact,
   Checkpoint,
   Decision,
-  ExecutionNode,
   ExecutionRole,
   GateHealth,
   JobContract,
@@ -75,7 +74,6 @@ import {
   nextUserId,
   type ProjectStores,
   rejectionOf,
-  ScopeWideningError,
   StaleWriteError,
 } from "@nightshift/core";
 import {
@@ -674,23 +672,6 @@ describe("artifacts and their bodies", () => {
 });
 
 describe("refusals come back typed", () => {
-  it("turns a scope widening into ScopeWideningError, not a status code", async () => {
-    const { root } = await seed();
-    // The program's scope is `src/**`; a child claiming `docs/**` widens it.
-    const widening: ExecutionNode = makeNode(world.f, root.executionNodeId, {
-      status: "validated",
-      scope: {
-        includes: ["docs/**"],
-        excludes: [],
-        permissions: ["fs.read"],
-        forbiddenActions: [],
-      },
-    });
-    const failure = await rejectionOf(world.http.executionNodes.put(widening));
-    expect(failure).toBeInstanceOf(ScopeWideningError);
-    expect(failure.message).toContain("docs/**");
-  });
-
   it("turns an illegal transition into IllegalTransitionError", async () => {
     const { root } = await seed();
     const agent = makeAgent(world.f, root.executionNodeId);

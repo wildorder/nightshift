@@ -298,10 +298,10 @@ export const snapshotCommit = async (
 /**
  * Repository-relative paths that differ between two commits.
  *
- * `--no-renames` on purpose: a file moved from inside the job's scope to outside
- * it must be reported as both a deletion and an addition, so the scope check
- * sees the destination. Reported as a rename, the out-of-scope destination would
- * be invisible.
+ * `--no-renames` on purpose: a moved file is reported as both a deletion and an
+ * addition, so whoever reads the change set (the `node.implemented` event, an
+ * examiner's evidence) sees where it went as well as where it came from.
+ * Reported as a rename, one of the two paths would be invisible.
  *
  * `-z` because a path may contain a space, a quote or a newline, and git's
  * default quoting would have to be parsed back.

@@ -21,8 +21,8 @@ export type ScriptName =
   | "implement"
   /** As `implement`, but the added test fails. */
   | "implement-broken"
-  /** Edit a file outside the job's includes, then complete. */
-  | "out-of-scope"
+  /** As `implement`, and edit the README too, outside the program's planned paths. */
+  | "beyond-the-plan"
   /** Report progress once, then wait until killed. */
   | "hang"
   /** Call `job.fail` with a reason, exit 0. */
@@ -51,7 +51,7 @@ export type ScriptName =
 export const SCRIPT_NAMES: readonly ScriptName[] = [
   "implement",
   "implement-broken",
-  "out-of-scope",
+  "beyond-the-plan",
   "hang",
   "fail",
   "silent-exit",
@@ -90,7 +90,7 @@ export const taggedScript = (
 
 /** What a sub-orchestrator script drives: the sub-orchestrator role's tools. */
 export interface OrchestratorSurface {
-  delegate(objective: string, includes: readonly string[]): Promise<string>;
+  delegate(objective: string): Promise<string>;
   /** Waits until every one of `jobIds` has settled; answers each one's final status. */
   waitAll(jobIds: readonly string[]): Promise<Readonly<Record<string, string>>>;
   progress(message: string): Promise<void>;
@@ -122,7 +122,8 @@ export interface WorkerSurface {
   get(): Promise<void>;
   progress(message: string, percent?: number): Promise<void>;
   decide(decision: SurfaceDecision): Promise<void>;
-  complete(summary: string): Promise<"implemented" | "scope_violation">;
+  /** `implemented`, or `refused` when the call recorded nothing. */
+  complete(summary: string): Promise<"implemented" | "refused">;
   fail(reason: string): Promise<void>;
 }
 
@@ -183,7 +184,7 @@ const addMedian = async (worktree: string, testSource: string): Promise<void> =>
   await writeFile(join(worktree, "test", "median.test.js"), testSource, "utf8");
 };
 
-/** `node --test` in the worktree, as a worker with `shell.exec` would run it. */
+/** `node --test` in the worktree, as a worker would run it. */
 const runTests = (worktree: string): Promise<boolean> =>
   new Promise((resolve) => {
     execFile(process.execPath, ["--test"], { cwd: worktree }, (error) => {
@@ -248,13 +249,21 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
     return 0;
   },
 
-  "out-of-scope": async ({ surface, worktree }) => {
+  "beyond-the-plan": async ({ surface, worktree, note }) => {
     await surface.get();
     await addMedian(worktree, PASSING_TEST);
-    // Outside `src/**` and `test/**`. Everything else about this job is fine,
-    // which is the point: the scope check is what stops it.
-    await appendFile(join(worktree, "README.md"), "\nEdited by a worker that strayed.\n", "utf8");
-    await surface.complete("Added median, and tidied the README.");
+    // Outside `src/**` and `test/**`, where the program's plan expects its work.
+    // A job carries no path scope (the owner's ruling, 2026-10-09): it lands.
+    await appendFile(
+      join(worktree, "README.md"),
+      "\nmedian: the middle value of a list.\n",
+      "utf8",
+    );
+    const outcome = await surface.complete("Added median, and documented it in the README.");
+    if (outcome !== "implemented") {
+      note(`job.complete answered ${outcome}`);
+      return 1;
+    }
     return 0;
   },
 
@@ -453,19 +462,12 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
           : "wait=2 group=c"
         : passed.join(" ");
     const [first, second] = prefix === undefined ? ["c1", "c2"] : [`${prefix}1`, `${prefix}2`];
-    // A strand's jobs ask for the strand's own paths: anything wider is refused (A-11).
-    const includes =
-      prefix === undefined
-        ? ["src/**", "test/**"]
-        : [`src/${prefix}*.js`, `test/${prefix}*.test.js`];
     const jobs = [
       await orchestrator.delegate(
         `[add-module ${first} ${how}] Add the ${first} module and its test.`,
-        includes,
       ),
       await orchestrator.delegate(
         `[add-module ${second} ${how}] Add the ${second} module and its test.`,
-        includes,
       ),
     ];
     const statuses = await orchestrator.waitAll(jobs);

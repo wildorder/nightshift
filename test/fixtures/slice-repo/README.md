@@ -13,5 +13,7 @@ Three properties matter, and each is a constraint rather than a preference:
 - **Its tests genuinely pass, and can genuinely be broken.** The
   `implement-broken` script adds a failing test; SC-P3-07 is only a proof if the
   verification it runs is real.
-- **It has somewhere out of scope to stray.** `package.json` and this file sit
-  outside `src/**` and `test/**`, which is what the `out-of-scope` script edits.
+- **It has somewhere outside its planned paths.** `package.json` and this file
+  sit outside `src/**` and `test/**`, where the program expects its work. The
+  `beyond-the-plan` script edits this file, and the job lands: since the
+  owner's ruling of 2026-10-09 a job carries no path scope.

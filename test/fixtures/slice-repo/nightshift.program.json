@@ -31,7 +31,7 @@
     { "id": "SC-02", "outcome": "The existing tests still pass.", "serves": ["US-02"] }
   ],
   "constraints": [
-    "Change nothing outside src/ and test/.",
+    "Keep every existing helper behaving exactly as it does.",
     "Add no dependency: verification runs on a clean checkout with no install."
   ],
   "scope": {

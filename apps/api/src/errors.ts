@@ -12,7 +12,6 @@ import { type ApiResponse, errorBody, HttpError } from "./http.js";
 export const DOMAIN_ERROR_STATUS: Readonly<Record<DomainErrorCode, number>> = {
   // Specified by T4.
   ownership_violation: 403,
-  scope_widening: 403,
   illegal_transition: 409,
   // Chosen here. The transition was legal but the record was incomplete: a
   // well-formed request the handler cannot process, which is 422 not 409.
@@ -25,7 +24,7 @@ export const DOMAIN_ERROR_STATUS: Readonly<Record<DomainErrorCode, number>> = {
   tree_structure: 409,
   cycle: 409,
   // The parent holds no delegation authority (a leaf job) or is terminal: a
-  // refusal of authority, like scope widening.
+  // refusal of authority.
   delegation_refused: 403,
   // An agent trying to outrank a human is an authority refusal.
   decision_authority: 403,

@@ -10,7 +10,6 @@ import type { DomainErrorCode } from "@nightshift/core";
 
 export const DOMAIN_ERROR_CODES_FOR_TEST = [
   "ownership_violation",
-  "scope_widening",
   "tree_structure",
   "cycle",
   "depth_limit_exceeded",

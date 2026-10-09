@@ -12,7 +12,7 @@
  * Silence is the failure mode this guards against. A job that stops with no
  * record of why is the one outcome nobody can do anything about.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JobContract, RouteChoice } from "@nightshift/contracts";
 import { JobContractSchema } from "@nightshift/contracts";
@@ -56,7 +56,6 @@ const jobFor = (world: World, overrides: Partial<JobContract> = {}): JobContract
     ...world.scope,
     jobContractId: world.ids.next("job"),
     objective: "Add a median helper.",
-    scope: { includes: ["src/**", "test/**"] },
     acceptance: ["it works"],
     dependencies: [],
     risk: "low",
@@ -83,7 +82,6 @@ const delegate = (world: World, job: JobContract): Promise<StartedJob> =>
   runJob(world.environment, {
     session: world.session,
     job,
-    scope: world.session.program.scope,
     depth: 1,
     parentNodeId: world.session.rootNodeId,
     route: ROUTE,
@@ -163,74 +161,6 @@ describe("verification fails (SC-P3-07)", () => {
     await expectNothingIntegrated(world, started.nodeId);
     await expectWorktreeKept(world, started.nodeId);
     expect(await eventTypesOf(world)).toContain("verification.completed");
-  });
-});
-
-describe("a change outside the effective scope (SC-P3-13)", () => {
-  it("fails the job at completion, naming the path, and nothing integrates", async () => {
-    let result: Awaited<ReturnType<typeof completeJob>> | undefined;
-    const world = await createWorld({
-      harness: createFakeHarness({
-        script: async (context) => {
-          const worker = workerEnvironment(world, context.identity);
-          // Inside scope, and would have passed verification.
-          await writeFile(join(context.worktree, "src", "ok.js"), "export const ok = 1;\n", "utf8");
-          // And one file outside it. `package.json` is not under `src/` or `test/`.
-          await writeFile(join(context.worktree, "package.json"), '{"name":"hijacked"}\n', "utf8");
-          result = await completeJob(worker, context.identity, "Added a helper.");
-          await worker.outbox.flush();
-          return { kind: "completed" };
-        },
-      }),
-    });
-
-    const started = await delegate(world, jobFor(world));
-    await started.completion;
-    await world.outbox.flush();
-
-    expect(result?.kind).toBe("scope_violation");
-    if (result?.kind === "scope_violation") {
-      expect(result.offending).toEqual(["package.json"]);
-    }
-
-    const node = await world.stores.executionNodes.get(world.scope, started.nodeId);
-    expect(node?.status).toBe("failed");
-    expect(node?.outcomeReason).toContain("package.json");
-    expect(node?.outcomeReason).toContain("outside the job's effective scope");
-
-    // Never verified, because it never reached `implemented`.
-    expect(await world.stores.verifications.listByNode(world.scope, started.nodeId)).toEqual([]);
-    await expectNothingIntegrated(world, started.nodeId);
-    // And the operator's `package.json` is untouched.
-    expect(await readFile(join(world.repo, "package.json"), "utf8")).toContain("slice-fixture");
-  });
-
-  it("refuses a change an exclude knocks out, even though an include covers it", async () => {
-    const world = await createWorld({
-      harness: createFakeHarness({
-        script: async (context) => {
-          const worker = workerEnvironment(world, context.identity);
-          // `src/**` includes it; `src/generated/**` excludes it. An exclude is
-          // authority, not a hint, so it wins.
-          await mkdir(join(context.worktree, "src", "generated"), { recursive: true });
-          await writeFile(
-            join(context.worktree, "src", "generated", "schema.js"),
-            "export const schema = 1;\n",
-            "utf8",
-          );
-          await completeJob(worker, context.identity, "Regenerated the schema.");
-          await worker.outbox.flush();
-          return { kind: "completed" };
-        },
-      }),
-    });
-
-    const started = await delegate(world, jobFor(world));
-    await started.completion;
-
-    const node = await world.stores.executionNodes.get(world.scope, started.nodeId);
-    expect(node?.status).toBe("failed");
-    expect(node?.outcomeReason).toContain("src/generated/schema.js");
   });
 });
 

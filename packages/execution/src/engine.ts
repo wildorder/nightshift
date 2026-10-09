@@ -33,7 +33,6 @@ import {
   type RouteChoice,
   type RouteTarget,
   type RouteUsage,
-  type Scope,
   type Tier,
 } from "@nightshift/contracts";
 import {
@@ -154,8 +153,6 @@ export const DEFAULT_DISCOVERY_INTERVAL_MS = 1_000;
 export interface Submission {
   /** Validated by the caller, not yet persisted. */
   readonly job: JobContract;
-  /** The effective scope, already narrowed against the parent by `core`. */
-  readonly scope: Scope;
   readonly depth: number;
   readonly parentNodeId: ExecutionNodeId;
   readonly route: RouteChoice;
@@ -751,7 +748,6 @@ export const createEngine = (options: EngineOptions): Engine => {
     if (last === undefined) return undefined;
     const submission: Submission = {
       job,
-      scope: node.scope,
       depth: node.depth,
       parentNodeId: node.parentNodeId ?? session.rootNodeId,
       route: {
@@ -954,7 +950,6 @@ export const createEngine = (options: EngineOptions): Engine => {
     const queued = await enqueued(node, job);
     const submission: Submission = {
       job,
-      scope: node.scope,
       depth: node.depth,
       parentNodeId: node.parentNodeId as ExecutionNodeId,
       route,
@@ -1242,7 +1237,6 @@ export const createEngine = (options: EngineOptions): Engine => {
       const node = await delegateJob(environment, {
         session,
         job: submission.job,
-        scope: submission.scope,
         depth: submission.depth,
         parentNodeId: submission.parentNodeId,
         ...(submission.kind === undefined ? {} : { kind: submission.kind }),

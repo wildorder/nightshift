@@ -4,9 +4,8 @@ import {
   ConcurrencyLimitExceededError,
   DelegationRefusedError,
   DepthLimitExceededError,
-  ScopeWideningError,
 } from "../errors.js";
-import { createFixtures, FIXTURE_SCOPE, makeNode, makeRootNode } from "../testing/factories.js";
+import { createFixtures, makeNode, makeRootNode } from "../testing/factories.js";
 import {
   assertDelegationAllowed,
   CAN_DELEGATE,
@@ -151,32 +150,12 @@ describe("checkDelegation concurrency", () => {
 });
 
 describe("checkDelegation authority", () => {
-  it("resolves the child's effective scope when a narrowing is requested", () => {
-    const tree = singletonTree(root);
-    const result = checkDelegation(tree, root.executionNodeId, generous, {
-      includes: ["src/billing/**"],
-    });
-    expect(result.allowed).toBe(true);
-    if (result.allowed) {
-      expect(result.scope.includes).toEqual(["src/billing/**"]);
-      expect(result.scope.permissions).toEqual(FIXTURE_SCOPE.permissions);
-    }
-  });
-
-  it("inherits the parent's scope when no narrowing is requested", () => {
+  // The owner's ruling, 2026-10-09: a delegation is decided by depth and limits
+  // alone. There is no path scope to resolve, inherit or refuse.
+  it("allows a child from a program with nothing but its depth", () => {
     const tree = singletonTree(root);
     const result = checkDelegation(tree, root.executionNodeId, generous);
-    expect(result.allowed).toBe(true);
-    if (result.allowed) expect(result.scope).toEqual(FIXTURE_SCOPE);
-  });
-
-  it("refuses a request that would widen scope", () => {
-    const tree = singletonTree(root);
-    const result = checkDelegation(tree, root.executionNodeId, generous, {
-      includes: ["../elsewhere/**"],
-    });
-    expect(result.allowed).toBe(false);
-    if (!result.allowed) expect(result.reason.kind).toBe("scope_widening");
+    expect(result).toEqual({ allowed: true, depth: 1 });
   });
 
   it("refuses delegation from a leaf job", () => {
@@ -205,7 +184,7 @@ describe("checkDelegation authority", () => {
 });
 
 describe("assertDelegationAllowed", () => {
-  it("returns depth and scope when allowed", () => {
+  it("returns the depth when allowed", () => {
     const tree = singletonTree(root);
     expect(assertDelegationAllowed(tree, root.executionNodeId, generous).depth).toBe(1);
   });
@@ -227,12 +206,6 @@ describe("assertDelegationAllowed", () => {
     expect(() =>
       assertDelegationAllowed(busy, root.executionNodeId, { maxDepth: 9, maxConcurrency: 1 }),
     ).toThrow(ConcurrencyLimitExceededError);
-
-    expect(() =>
-      assertDelegationAllowed(singletonTree(root), root.executionNodeId, generous, {
-        includes: ["nope/**"],
-      }),
-    ).toThrow(ScopeWideningError);
 
     const job = makeNode(f, root.executionNodeId, { kind: "job", status: "running" });
     const withJob = addChild(singletonTree(root), root.executionNodeId, job);

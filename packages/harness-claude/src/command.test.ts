@@ -1,4 +1,4 @@
-import type { RouteTarget, Scope } from "@nightshift/contracts";
+import type { RouteTarget } from "@nightshift/contracts";
 import type { McpLaunch } from "@nightshift/harness";
 import { describe, expect, it } from "vitest";
 import {
@@ -30,19 +30,12 @@ const MCP: McpLaunch = {
   },
 };
 
-const scope = (permissions: readonly string[]): Scope => ({
-  includes: ["src/**"],
-  excludes: [],
-  permissions: [...permissions],
-  forbiddenActions: [],
-});
-
-const argsFor = (permissions: readonly string[]) =>
+const argsFor = () =>
   buildClaudeArgs({
     model: MODEL,
     mcpConfigPath: "/tmp/ns/mcp.json",
     settingsPath: "/tmp/ns/settings.json",
-    policy: claudeToolPolicy({ scope: scope(permissions) }),
+    policy: claudeToolPolicy(),
   });
 
 /** The index of a flag, or -1. */
@@ -55,7 +48,7 @@ const flagValue = (args: readonly string[], flag: string): string | undefined =>
 };
 
 describe("the command line, against Claude Code 2.1.286", () => {
-  const args = argsFor(["fs.read", "fs.write", "shell.exec"]);
+  const args = argsFor();
 
   it("records the version its flags were verified against", () => {
     expect(VERIFIED_CLAUDE_VERSION).toBe("2.1.286");
@@ -105,7 +98,7 @@ describe("the command line, against Claude Code 2.1.286", () => {
 
   it("passes the model routing chose, unchanged and with no list of its own", () => {
     expect(flagValue(args, "--model")).toBe(MODEL.model);
-    const alias = argsFor([]);
+    const alias = argsFor();
     expect(flagValue(alias, "--model")).toBe("claude-sonnet-5");
   });
 
@@ -138,11 +131,6 @@ describe("the command line, against Claude Code 2.1.286", () => {
     // --verbose".
     expect(flagValue(args, "--output-format")).toBe("stream-json");
     expect(args).toContain("--verbose");
-  });
-
-  it("is the same command line whatever the scope's permissions say", () => {
-    expect(argsFor([])).toEqual(args);
-    expect(argsFor(["fs.read"])).toEqual(args);
   });
 });
 
@@ -220,10 +208,10 @@ describe("a rung's reasoning effort (P8)", () => {
       model: { ...MODEL, effort: "high" },
       mcpConfigPath: "/tmp/ns/mcp.json",
       settingsPath: "/tmp/ns/settings.json",
-      policy: claudeToolPolicy({ scope: scope([]) }),
+      policy: claudeToolPolicy(),
     });
     expect(flagValue(withEffort, "--effort")).toBe("high");
-    expect(at(argsFor([]), "--effort")).toBe(-1);
+    expect(at(argsFor(), "--effort")).toBe(-1);
   });
 });
 
@@ -233,7 +221,7 @@ describe("resuming a session (P8, D-P8-15)", () => {
       model: MODEL,
       mcpConfigPath: "/tmp/ns/mcp.json",
       settingsPath: "/tmp/ns/settings.json",
-      policy: claudeToolPolicy({ scope: scope([]) }),
+      policy: claudeToolPolicy(),
       resumeSessionId: "15e34857-26e0-46ae-89c0-bdac582c50a7",
     });
     expect(args.slice(-2)).toEqual(["--resume", "15e34857-26e0-46ae-89c0-bdac582c50a7"]);

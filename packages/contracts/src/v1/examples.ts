@@ -42,6 +42,10 @@ const AT = "2026-09-13T12:00:00.000Z";
 const AT_LATER = "2026-09-13T12:05:00.000Z";
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
+/**
+ * Written as a contract from before the owner's ruling of 2026-10-09, with the
+ * `permissions` nobody is told any more: it still parses, and hashes as it did.
+ */
 const projectScope = {
   includes: ["src/**"],
   excludes: ["src/generated/**"],
@@ -148,12 +152,6 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     kind: "job",
     parentNodeId: EXAMPLE_IDS.rootNodeId,
     depth: 1,
-    scope: {
-      includes: ["src/billing/**"],
-      excludes: ["src/generated/**"],
-      permissions: ["fs.read", "fs.write"],
-      forbiddenActions: ["deploy to production", "change public API"],
-    },
     status: "verified",
     jobContractId: EXAMPLE_IDS.jobContractId,
     commitSha: COMMIT,
@@ -168,7 +166,6 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     runId: EXAMPLE_IDS.runId,
     jobContractId: EXAMPLE_IDS.jobContractId,
     objective: "Add tenant ownership to invoice persistence.",
-    scope: { includes: ["src/billing/**"], excludes: ["src/generated/**"] },
     acceptance: [
       "Existing invoices remain readable.",
       "New invoices require tenant ownership.",

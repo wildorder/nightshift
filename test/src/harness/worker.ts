@@ -99,7 +99,7 @@ const surfaceOver = (worker: Worker): WorkerSurface => ({
   complete: async (summary) => {
     const result = await worker.call("job.complete", { summary });
     if (result.outcome !== "implemented") note(`job.complete answered ${JSON.stringify(result)}`);
-    return result.outcome === "implemented" ? "implemented" : "scope_violation";
+    return result.outcome === "implemented" ? "implemented" : "refused";
   },
   fail: async (reason) => {
     await worker.call("job.fail", { reason });
@@ -108,10 +108,9 @@ const surfaceOver = (worker: Worker): WorkerSurface => ({
 
 /** The sub-orchestrator role's tools, over stdio: each one a real tool call. */
 const orchestratorOver = (worker: Worker): OrchestratorSurface => ({
-  delegate: async (objective, includes) => {
+  delegate: async (objective) => {
     const result = await worker.call("delegate", {
       objective,
-      scope: { includes: [...includes] },
       acceptance: ["node --test passes"],
     });
     if (result.ok !== true) throw new Error(`delegate was refused: ${JSON.stringify(result)}`);

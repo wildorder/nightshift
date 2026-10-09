@@ -5,7 +5,7 @@
  * taken from real runs on 0.154.0. What is tested is the adapter's own logic —
  * what it launches, what it lets through, and how it names an ending.
  */
-import type { ExecutionNode, RouteTarget, Scope } from "@nightshift/contracts";
+import type { ExecutionNode, RouteTarget } from "@nightshift/contracts";
 import {
   createFixtures,
   makeAgent,
@@ -142,17 +142,10 @@ const PARENT_ENV = {
 
 const startInput = (
   events: HookEvent[],
-  overrides: { permissions?: readonly string[]; transcriptPath?: string } = {},
+  overrides: { transcriptPath?: string } = {},
 ): HarnessStartInput => {
   const fixtures = createFixtures();
-  const node: ExecutionNode = makeRootNode(fixtures, {
-    scope: {
-      includes: ["src/**"],
-      excludes: [],
-      permissions: [...(overrides.permissions ?? ["fs.read", "fs.write", "shell.exec"])],
-      forbiddenActions: [],
-    } satisfies Scope,
-  });
+  const node: ExecutionNode = makeRootNode(fixtures);
   return {
     agent: makeAgent(fixtures, node.executionNodeId),
     node,
@@ -172,7 +165,6 @@ const run = async (
   options: {
     platform?: NodeJS.Platform;
     transcriptPath?: string;
-    permissions?: readonly string[];
   } = {},
 ) => {
   const world = fakes();
@@ -214,13 +206,6 @@ describe("what it launches", () => {
     const prompt = calls[0]?.args.at(-1) ?? "";
     expect(prompt).toContain("You are a Nightshift worker");
     expect(prompt).toContain("HOW THE NIGHTSHIFT TOOLS REACH YOU");
-  });
-
-  it("launches every worker the same way, whatever its scope's permissions say", async () => {
-    const full = await run((child) => child.close(0));
-    const readOnly = await run((child) => child.close(0), { permissions: ["fs.read"] });
-    const flags = (args: readonly string[] | undefined) => (args ?? []).slice(0, -1);
-    expect(flags(readOnly.calls[0]?.args)).toEqual(flags(full.calls[0]?.args));
   });
 
   it("hands the worker's identity to its MCP server and to nothing else", async () => {

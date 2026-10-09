@@ -299,7 +299,7 @@ describe("the snapshot commit", () => {
 
     const sha = await snapshot(worktree, base);
     const paths = await changedPaths(nodeGitRunner, worktree, base, sha);
-    // Both halves, so the scope check sees the destination.
+    // Both halves, so a reader of the change set sees the destination.
     expect([...paths].sort()).toEqual(["src/a.ts", "vendor/a.ts"]);
   });
 

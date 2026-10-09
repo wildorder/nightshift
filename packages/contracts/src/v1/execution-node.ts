@@ -1,13 +1,13 @@
 /**
  * Execution node — a node in the run's execution tree.
  *
- * `depth` and `scope` are stored for queryability but are never trusted as
- * authority: `core` recomputes depth from parentage and recomputes effective
- * scope by narrowing the parent's, so a tampered record cannot widen authority.
+ * `depth` is stored for queryability but never trusted as authority: `core`
+ * recomputes it from parentage. A node carries no path scope (the owner's
+ * ruling, 2026-10-09): a job's reach is the environment it runs in.
  */
 import { z } from "zod";
 import { ExecutionNodeIdSchema, JobContractIdSchema } from "../ids.js";
-import { CommitShaSchema, IsoTimestampSchema, runScoped, ScopeSchema } from "./common.js";
+import { CommitShaSchema, dropRetiredScope, IsoTimestampSchema, runScoped } from "./common.js";
 import { PlanDocumentRefSchema, PlanHashSchema } from "./plan.js";
 
 /** `sub-program` carries its own orchestrator and its own delegation authority. */
@@ -51,7 +51,7 @@ export const ExecutionNodeStatusSchema = z.enum([
 ]);
 export type ExecutionNodeStatus = z.infer<typeof ExecutionNodeStatusSchema>;
 
-export const ExecutionNodeSchema = z.strictObject({
+const ExecutionNodeRecordSchema = z.strictObject({
   ...runScoped,
   executionNodeId: ExecutionNodeIdSchema,
   kind: ExecutionNodeKindSchema,
@@ -59,8 +59,6 @@ export const ExecutionNodeSchema = z.strictObject({
   parentNodeId: ExecutionNodeIdSchema.nullable(),
   /** Root is 0. Recomputed from parentage, never trusted from the record. */
   depth: z.int().min(0),
-  /** Effective authority after narrowing the parent's scope. */
-  scope: ScopeSchema,
   status: ExecutionNodeStatusSchema,
   /** Set when `kind` is `job`; `null` for program and sub-program nodes. */
   jobContractId: JobContractIdSchema.nullable(),
@@ -75,8 +73,7 @@ export const ExecutionNodeSchema = z.strictObject({
    * Why this node ended as it did, when it ended in anything but success.
    *
    * Added in P3. The job lifecycle (`p3-vertical-slice.md` §4.3) names it on
-   * every failure path — a worker's own reason from `job.fail`, the offending
-   * paths from a scope violation, `stale_base` with the two commits, "the worker
+   * every failure path — a worker's own reason from `job.fail`, `stale_base` with the two commits, "the worker
    * exited N without reporting completion" — and `job.get` returns it. Killing a
    * worker must leave durable state, never silence (architecture §4), and a node
    * that failed for no recorded reason is that silence.
@@ -98,4 +95,7 @@ export const ExecutionNodeSchema = z.strictObject({
   createdAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
 });
-export type ExecutionNode = z.infer<typeof ExecutionNodeSchema>;
+
+/** A node stored before the ruling of 2026-10-09 has a `scope`, which is dropped on read. */
+export const ExecutionNodeSchema = z.preprocess(dropRetiredScope, ExecutionNodeRecordSchema);
+export type ExecutionNode = z.infer<typeof ExecutionNodeRecordSchema>;

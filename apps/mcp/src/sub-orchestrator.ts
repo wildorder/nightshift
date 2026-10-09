@@ -28,15 +28,12 @@ import {
   type JobKind,
   ReversibilitySchema,
   type RiskLevel,
-  ScopeRequestSchema,
   type Testability,
 } from "@nightshift/contracts";
 import {
-  explainWidening,
   type IdGenerator,
   isDoneForNow,
   isSettled,
-  narrow,
   nowIso,
   RETRYABLE_STATUSES,
   transition,
@@ -179,8 +176,7 @@ export const registerSubOrchestratorTools = (
     "subprogram.get",
     {
       title: "Read your sub-program",
-      description:
-        "Your objective, acceptance criteria, the scope you may delegate within, and what you have delegated so far.",
+      description: "Your objective, acceptance criteria, and what you have delegated so far.",
       inputSchema: {},
     },
     async () =>
@@ -190,12 +186,10 @@ export const registerSubOrchestratorTools = (
         const children = await descendants();
         return ok(
           `Objective: ${contract?.objective ?? "(unreadable)"}\n` +
-            `You may delegate within: ${node.scope.includes.join(", ")}\n` +
             `Delegated so far: ${children.length === 0 ? "nothing" : children.map((child) => `${child.jobContractId} ${child.status}`).join("; ")}`,
           {
             objective: contract?.objective ?? null,
             acceptance: contract?.acceptance ?? [],
-            scope: node.scope,
             status: node.status,
             checkout: identity.worktree,
             children: children.map((child) => ({
@@ -219,7 +213,6 @@ export const registerSubOrchestratorTools = (
       inputSchema: {
         kind: z.enum(["job", "sub-program"]).optional(),
         objective: z.string().min(1),
-        scope: ScopeRequestSchema,
         acceptance: z.array(z.string().min(1)).min(1),
         // P8 (D-P8-01): what the job says about itself, so routing can place it.
         // Unset is the conservative choice, not the cheap one.
@@ -236,23 +229,14 @@ export const registerSubOrchestratorTools = (
         if (input.repair !== undefined) {
           throw new ToolRefusal(
             "repair_not_yours",
-            "only the program node delegates a repair of a gate (D-P15-04), because a repair " +
-              "takes the program's whole scope and a sub-program holds only its own. Report the " +
-              "broken or flaky gate with subprogram.progress, or in subprogram.fail, and the root repairs it.",
+            "only the program node delegates a repair of a gate (D-P15-04): a repair sits outside " +
+              "every strand, and the root opens it. Report the broken or flaky gate with " +
+              "subprogram.progress, or in subprogram.fail, and the root repairs it.",
           );
         }
+        // The API checks depth and everything else this role cannot see. There is
+        // no path scope to check: a job carries none (the owner's ruling, 2026-10-09).
         const parent = await own();
-        // Scope can only narrow (A-11). Checked here so the refusal lists every
-        // pattern that was not covered; the API checks it again, with depth and
-        // everything else this role cannot see.
-        const widenings = explainWidening(parent.scope, input.scope);
-        if (widenings.length > 0) {
-          throw new ToolRefusal(
-            "scope_widening",
-            `the requested scope claims authority this sub-program does not hold: ${widenings.join("; ")}`,
-            { reasons: widenings },
-          );
-        }
 
         // Unstated risk is this sub-program's own, which was the program's
         // default when nobody stated it either: never "low" by omission, which
@@ -268,7 +252,6 @@ export const registerSubOrchestratorTools = (
           ...scope,
           jobContractId: ids.next("job"),
           objective: input.objective,
-          scope: input.scope,
           acceptance: input.acceptance,
           dependencies: [],
           ...classificationFor(input, parentJob?.risk),
@@ -283,7 +266,6 @@ export const registerSubOrchestratorTools = (
           kind: input.kind ?? "job",
           parentNodeId: parent.executionNodeId,
           depth: parent.depth + 1,
-          scope: narrow(parent.scope, input.scope),
           status: "validated",
           jobContractId: job.jobContractId,
           commitSha: null,

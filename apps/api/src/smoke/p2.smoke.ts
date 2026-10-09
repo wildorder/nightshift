@@ -838,7 +838,7 @@ describe("phase 3: live-only assertions", () => {
 
     // Ratified, it runs, and its program node carries the plan it runs.
     expectStatus(await api.put(runPathPlanned, run), 201);
-    const root = makeRootNode(plannedWorld, { status: "validated", scope: contract.scope });
+    const root = makeRootNode(plannedWorld, { status: "validated" });
     const nodePath = `${runPathPlanned}/nodes/${plannedRootNodeId}`;
     expectStatus(await api.put(nodePath, root), 422);
     const withPlan = {

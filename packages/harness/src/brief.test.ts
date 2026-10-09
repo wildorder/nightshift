@@ -1,4 +1,4 @@
-import type { ExecutionNode } from "@nightshift/contracts";
+import type { ProgramContract } from "@nightshift/contracts";
 import {
   createFixtures,
   makeJobContract,
@@ -9,7 +9,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { nightshiftToolNames, renderWorkerBrief, STRAND_DEPARTURE_PREFIX } from "./brief.js";
 
-const build = (nodeOverrides: Partial<Record<keyof ExecutionNode, unknown>> = {}) => {
+const build = (programOverrides: Partial<Record<keyof ProgramContract, unknown>> = {}) => {
   const f = createFixtures();
   const program = makeProgramContract(f, {
     constraints: ["Never widen the public API."],
@@ -17,12 +17,13 @@ const build = (nodeOverrides: Partial<Record<keyof ExecutionNode, unknown>> = {}
       { id: "test", command: "node --test" },
       { id: "lint", command: "npm run lint" },
     ],
+    ...programOverrides,
   });
   const job = makeJobContract(f, {
     objective: "Add a median helper.",
     acceptance: ["median([1,2,3]) is 2", "tests pass"],
   });
-  const node = makeNode(f, f.rootNodeId, nodeOverrides);
+  const node = makeNode(f, f.rootNodeId);
   return { brief: renderWorkerBrief({ job, node, program, worktree: "/tmp/wt/x" }), job, program };
 };
 
@@ -34,7 +35,9 @@ describe("renderWorkerBrief", () => {
     expect(brief).toContain("2. tests pass");
   });
 
-  it("states the effective scope, not the requested one", () => {
+  // The owner's ruling, 2026-10-09: no path scope, and the program's forbidden
+  // actions told from the contract.
+  it("tells the worker the program's forbidden actions, and to change whatever the job needs", () => {
     const { brief } = build({
       scope: {
         includes: ["src/math/**"],
@@ -43,9 +46,12 @@ describe("renderWorkerBrief", () => {
         forbiddenActions: ["publish a package"],
       },
     });
-    expect(brief).toContain("src/math/**");
-    expect(brief).toContain("src/math/generated/**");
-    expect(brief).toContain("publish a package");
+    expect(brief).toContain("ACTIONS FORBIDDEN IN THIS PROGRAM");
+    expect(brief).toContain("  - publish a package");
+    expect(brief).toContain("Anywhere in this repository.");
+    expect(brief).not.toContain("src/math/**");
+    expect(brief).not.toContain("src/math/generated/**");
+    expect(brief).not.toContain("fs.write");
   });
 
   it("tells the worker never to commit, and names the git verbs", () => {
@@ -68,28 +74,17 @@ describe("renderWorkerBrief", () => {
     expect(brief).toContain("lint: npm run lint");
   });
 
-  it("asks a worker with shell.exec to run the verification itself", () => {
-    const { brief } = build({
-      scope: {
-        includes: ["src/**"],
-        excludes: [],
-        permissions: ["fs.read", "fs.write", "shell.exec"],
-        forbiddenActions: [],
-      },
-    });
+  it("asks every worker to run the verification itself", () => {
+    const { brief } = build();
     expect(brief).toContain("Run them yourself before reporting");
+    expect(brief).not.toContain("You cannot run commands");
   });
 
-  it("tells a worker without shell.exec that it cannot check them", () => {
+  it("says nothing of forbidden actions when the program forbids none", () => {
     const { brief } = build({
-      scope: {
-        includes: ["src/**"],
-        excludes: [],
-        permissions: ["fs.read", "fs.write"],
-        forbiddenActions: [],
-      },
+      scope: { includes: ["src/**"], excludes: [], forbiddenActions: [] },
     });
-    expect(brief).toContain("You cannot run commands");
+    expect(brief).not.toContain("ACTIONS FORBIDDEN");
   });
 
   it("never mentions a provider", () => {
@@ -100,10 +95,8 @@ describe("renderWorkerBrief", () => {
   });
 
   it("renders empty lists as (none) rather than an empty bullet", () => {
-    const { brief } = build({
-      scope: { includes: ["src/**"], excludes: [], permissions: [], forbiddenActions: [] },
-    });
-    expect(brief).toContain("(none)");
+    const { brief } = build({ constraints: [] });
+    expect(brief).toContain("PROGRAM CONSTRAINTS\n  (none)");
   });
 });
 
@@ -196,7 +189,7 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
       worktree: "/tmp/w",
     });
     expect(brief).toContain(
-      "delegate { objective, scope, acceptance, risk, ambiguity, testability, jobKind }",
+      "delegate { objective, acceptance, risk, ambiguity, testability, jobKind }",
     );
     expect(brief).toContain("low when your objective and acceptance say exactly what to change");
     for (const ending of [
@@ -358,5 +351,146 @@ describe("the program's rulings, as memory (P15)", () => {
 
   it("says nothing of rulings when the program has none", () => {
     expect(briefFor("job", false)).not.toContain("RULINGS ALREADY MADE");
+  });
+});
+
+/**
+ * The owner's ruling, 2026-10-09: a job carries no path scope. Every agent
+ * Nightshift starts is told the program's forbidden actions, read from the
+ * program contract, and no brief tells any agent what it may or may not change
+ * by path.
+ */
+describe("every agent's brief, after jobs lost their path scope", () => {
+  const f = createFixtures();
+  const FORBIDDEN = ["deploy any stack", "push to main"];
+  const strand = {
+    id: "S-01",
+    name: "The examiner",
+    scope: {
+      summary: "examination",
+      includes: ["packages/execution/src/examine.ts"],
+      excludes: ["packages/execution/src/flaky.ts"],
+    },
+    acceptance: ["green"],
+    successCriteria: [],
+    dependsOn: [],
+    prerequisites: [],
+  };
+  const program = makeProgramContract(f, {
+    status: "planning",
+    strands: [strand],
+    scope: {
+      includes: ["packages/**"],
+      excludes: ["packages/generated/**"],
+      permissions: ["fs.read", "fs.write", "shell.exec"],
+      forbiddenActions: FORBIDDEN,
+    },
+  });
+  const job = makeJobContract(f);
+  const repairJob = makeJobContract(f, {
+    repair: { cause: "red_base", gates: ["test"], decisionId: f.ids.next("dec") },
+  });
+  const worker = makeNode(f, f.rootNodeId);
+  const subProgram = makeNode(f, f.rootNodeId, { kind: "sub-program" });
+  const evidence = {
+    diff: "diff --git a/x b/x",
+    diffTruncated: false,
+    changedTests: [],
+    verification: [],
+    risk: "high" as const,
+    blocking: true,
+    fixAttempt: 0,
+  };
+  const finding = {
+    id: "F-01",
+    severity: "material" as const,
+    summary: "It is wrong.",
+    evidence: [{ kind: "contract" as const, clause: "acceptance 1" }],
+    resolution: "disputed" as const,
+  };
+  const briefs: Record<string, string> = {
+    worker: renderWorkerBrief({ job, node: worker, program, worktree: "/w" }),
+    repair: renderWorkerBrief({ job: repairJob, node: worker, program, worktree: "/w" }),
+    "sub-program orchestrator": renderWorkerBrief({
+      job,
+      node: subProgram,
+      program,
+      worktree: "/w",
+    }),
+    "strand orchestrator": renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: subProgram,
+      program,
+      worktree: "/w",
+    }),
+    root: renderWorkerBrief({
+      job: makeJobContract(f, { objective: "# The plan" }),
+      node: makeRootNode(f, { status: "validated" }),
+      program,
+      worktree: "/w",
+    }),
+    examiner: renderWorkerBrief({
+      job,
+      node: worker,
+      program,
+      worktree: "/w",
+      task: { kind: "examine", round: 1, evidence },
+    }),
+    "repair examiner": renderWorkerBrief({
+      job: repairJob,
+      node: worker,
+      program,
+      worktree: "/w",
+      task: { kind: "examine", round: 1, evidence },
+    }),
+    arbiter: renderWorkerBrief({
+      job,
+      node: worker,
+      program,
+      worktree: "/w",
+      task: { kind: "arbitrate", finding, dispute: "It is right.", questions: [], diff: "" },
+    }),
+    answerer: renderWorkerBrief({
+      job,
+      node: worker,
+      program,
+      worktree: "/w",
+      task: { kind: "answer", questions: ["Why?"] },
+    }),
+  };
+
+  it.each(Object.keys(briefs))("tells the %s the program's forbidden actions", (role) => {
+    const brief = briefs[role] as string;
+    expect(brief).toContain("ACTIONS FORBIDDEN IN THIS PROGRAM");
+    for (const action of FORBIDDEN) expect(brief).toContain(`  - ${action}`);
+  });
+
+  it.each(Object.keys(briefs))("never limits by path what the %s may change", (role) => {
+    const brief = briefs[role] as string;
+    for (const limit of [
+      /you may change:/i,
+      /may change: /i,
+      /may delegate within/i,
+      /outside (your|the|its) scope/i,
+      /sit inside yours/i,
+      /authority, not advice/i,
+      /not yours to change/i,
+      /scope violation/i,
+      /permissions granted/i,
+      /fs\.write|shell\.exec/,
+      /packages\/generated\/\*\*/,
+    ]) {
+      expect(brief, `${role}: ${limit}`).not.toMatch(limit);
+    }
+  });
+
+  it("tells a strand's orchestrator where the plan expects its work, as guidance and not a limit", () => {
+    const brief = briefs["strand orchestrator"] as string;
+    expect(brief).toContain("WHERE THE PLAN EXPECTS THIS STRAND'S WORK — guidance, not a limit");
+    expect(brief).toContain("  - packages/execution/src/examine.ts");
+    expect(brief).toContain(
+      "This is not a limit: you and your jobs change whatever the work needs",
+    );
+    expect(briefs["sub-program orchestrator"]).not.toContain("WHERE THE PLAN EXPECTS");
   });
 });

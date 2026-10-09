@@ -30,7 +30,6 @@ import type {
   Repair,
   RepairCause,
   RouteChoice,
-  Scope,
 } from "@nightshift/contracts";
 import {
   type Effort,
@@ -44,7 +43,6 @@ import {
   RepairCauseSchema,
   type Reversibility,
   ReversibilitySchema,
-  ScopeRequestSchema,
   StrandIdSchema,
   type Testability,
   type Tier,
@@ -651,8 +649,8 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       description:
         "Hand a strand of the ratified plan to an orchestrator of its own. You name the strand " +
         "and nothing else: its objective is its section of the plan verbatim, with the human's " +
-        "decisions that touch it and the other strands' scopes, and its scope and acceptance are " +
-        "the contract's. It stays queued until the strands it depends on have succeeded.",
+        "decisions that touch it and where the plan expects the other strands' work, and its " +
+        "acceptance is the contract's. It stays queued until the strands it depends on have succeeded.",
       inputSchema: {
         strandId: StrandIdSchema,
         // `job` when the strand is one bounded change and an orchestrator would
@@ -679,12 +677,11 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         }
         const kind = input.kind ?? "sub-program";
         const job = buildStrandJob(state, attached, input.strandId, kind);
-        const check = await checkDelegationOrRefuse(state, attached, job.scope);
+        const check = await checkDelegationOrRefuse(state, attached);
         const pins = pinsOf(input);
         const route = chooseRoute(attached, job, pins);
         const submitted = await submitStrand(attached, {
           job,
-          scope: check.scope,
           depth: check.depth,
           parentNodeId: attached.session.rootNodeId,
           route,
@@ -714,12 +711,10 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         "Validate a Job Contract, persist it with its node, agent and routing decision, and start " +
         "a worker in an isolated worktree. Returns once the worker is running; wait with job.wait. " +
         "With `repair`, it opens a repair of a red or flaky gate (P15): the one job a planned run " +
-        "adds outside its strands. A repair carries its `decision`, recorded in the same call; its " +
-        "scope is the program's whole scope and its risk is high, whatever you ask for.",
+        "adds outside its strands. A repair carries its `decision`, recorded in the same call, and " +
+        "its risk is high, whatever you ask for.",
       inputSchema: {
         objective: z.string().min(1),
-        // Required for every job but a repair, whose scope is the program's (D-P15-10).
-        scope: ScopeRequestSchema.optional(),
         acceptance: z.array(z.string().min(1)).min(1),
         dependencies: z.array(z.string().min(1)).optional(),
         // P8 (D-P8-01): what the job says about itself, so routing can place it.
@@ -740,14 +735,14 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         if (input.repair !== undefined) {
           return await delegateRepair(state, attached, input, input.repair);
         }
-        const scope = scopeOfOrdinaryDelegation(attached, input.scope);
+        refuseOnPlannedRun(attached);
 
         // 1. A valid Job Contract before anything else (A-03). An invalid one
         //    never becomes a node, so nothing is persisted on this path.
-        const job = buildJobContract(state, attached, { ...input, scope, repair: undefined });
+        const job = buildJobContract(state, attached, { ...input, repair: undefined });
 
-        // 2. Depth, concurrency and scope narrowing, all from `core` (A-11).
-        const check = await checkDelegationOrRefuse(state, attached, scope);
+        // 2. Delegation authority and depth, from `core`.
+        const check = await checkDelegationOrRefuse(state, attached);
 
         // 3. Where it runs, and why: the run's rules over its ladders (D-P8-04).
         const pins = pinsOf(input);
@@ -758,7 +753,6 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         //    continues in the background of this process (D-P3-04).
         const submitted = await attached.engine.submit({
           job,
-          scope: check.scope,
           depth: check.depth,
           parentNodeId: attached.session.rootNodeId,
           route,
@@ -1138,8 +1132,7 @@ const repairObjective = (objective: string, repair: Repair, decision: DecisionIn
       "deleted or skipped test, a removed check) is a blocking finding unless the decision below " +
       "says why. A repair may change anything it needs to, setup and gate commands included " +
       "(nightshift.config.json, the contract's setup and verification); a changed gate definition " +
-      "applies to verifications after the repair lands. Its scope is the program's whole scope, " +
-      "and it is examined at high risk.",
+      "applies to verifications after the repair lands. It is examined at high risk.",
     "",
     `THE DECISION RECORDED WITH THIS REPAIR (${repair.decisionId})`,
     `Context: ${decision.context}`,
@@ -1155,8 +1148,8 @@ const repairObjective = (objective: string, repair: Repair, decision: DecisionIn
 
 /**
  * A repair job (D-P15-04): the root's alone, with its decision recorded in the
- * same call; the program's whole scope (D-P15-10); examined at high risk,
- * whatever was asked for. Admitted on a planned run, outside every strand.
+ * same call; examined at high risk, whatever was asked for. Admitted on a
+ * planned run, outside every strand.
  */
 const delegateRepair = async (
   state: OrchestratorSession,
@@ -1181,21 +1174,18 @@ const delegateRepair = async (
       "a repair is one job, not a sub-program: leave kind unset or pass job.",
     );
   }
-  const { program } = attached.session;
   // The id first, so the contract that carries it is validated before anything is written.
   const decisionId = state.runtime.ids.next("dec");
   const repair: Repair = { cause: repairInput.cause, gates: repairInput.gates, decisionId };
-  const scope: Scope = program.scope;
   const job = buildJobContract(state, attached, {
     ...input,
     objective: repairObjective(input.objective, repair, decision),
-    scope,
     // High whatever was asked, so an independent examiner sees it (D-P15-04).
     risk: "high",
     kind: "job",
     repair,
   });
-  const check = await checkDelegationOrRefuse(state, attached, scope);
+  const check = await checkDelegationOrRefuse(state, attached);
   const pins = pinsOf(input);
   const route = chooseRoute(attached, job, pins);
 
@@ -1204,7 +1194,6 @@ const delegateRepair = async (
   await recordDecision(state, attached, decision, decisionId);
   const submitted = await attached.engine.submit({
     job,
-    scope: check.scope,
     depth: check.depth,
     parentNodeId: attached.session.rootNodeId,
     route,
@@ -1213,8 +1202,7 @@ const delegateRepair = async (
   const started = submitted.started;
   return ok(
     `Delegated repair ${job.jobContractId} (${repair.cause}: ${repair.gates.join(", ")}) as node ` +
-      `${submitted.nodeId}, with decision ${decisionId}. It has the program's whole scope and is ` +
-      "examined at high risk. " +
+      `${submitted.nodeId}, with decision ${decisionId}. It is examined at high risk. ` +
       (repair.cause === "red_base"
         ? "The strands wait on it: wait for it with job.wait before anything else."
         : "It is off the blocking path: carry on with the strands, and do not finish the run " +
@@ -1243,9 +1231,8 @@ const delegateRepair = async (
 // `delegate`, one step at a time
 // ---------------------------------------------------------------------------
 
-/** What `delegate` was called with: a scope is optional only for a repair. */
-type DelegateRequest = Omit<DelegateInput, "scope" | "repair"> & {
-  readonly scope?: DelegateInput["scope"] | undefined;
+/** What `delegate` was called with. */
+type DelegateRequest = Omit<DelegateInput, "repair"> & {
   readonly ladder?: string | undefined;
   readonly tier?: Tier | undefined;
   readonly harness?: string | undefined;
@@ -1254,7 +1241,6 @@ type DelegateRequest = Omit<DelegateInput, "scope" | "repair"> & {
 
 interface DelegateInput {
   readonly objective: string;
-  readonly scope: Parameters<typeof checkAuthority>[3] & object;
   readonly acceptance: readonly string[];
   readonly dependencies?: readonly string[] | undefined;
   readonly risk?: "low" | "medium" | "high" | undefined;
@@ -1308,12 +1294,9 @@ const pinsOf = (input: {
 
 /**
  * A delegation that is not a repair: refused on a planned run, whose plan fixed
- * the seams (D-P7-04), and it must name its scope.
+ * the seams (D-P7-04).
  */
-const scopeOfOrdinaryDelegation = (
-  attached: AttachedRun,
-  scope: DelegateInput["scope"] | undefined,
-): DelegateInput["scope"] => {
+const refuseOnPlannedRun = (attached: AttachedRun): void => {
   if (attached.planSections !== undefined) {
     // The root of a planned run delegates strands and nothing else: how a
     // strand divides is its own orchestrator's, one level down.
@@ -1326,13 +1309,6 @@ const scopeOfOrdinaryDelegation = (
       { strands: strandsOf(attached.session.program).map((strand) => strand.id) },
     );
   }
-  if (scope === undefined) {
-    throw new ToolRefusal(
-      "validation_failed",
-      "name the job's scope: only a repair takes the program's whole scope without one.",
-    );
-  }
-  return scope;
 };
 
 /** The contract, validated. An invalid one never becomes a node. */
@@ -1367,7 +1343,6 @@ const buildStrandJob = (
     ...attached.session.scope,
     jobContractId: state.runtime.ids.next("job"),
     objective: brief.objective,
-    scope: brief.scope,
     acceptance: brief.acceptance,
     dependencies: [],
     // A strand's risk is the plan's to state (D-P8-01): the program's default.
@@ -1445,7 +1420,6 @@ const buildJobContract = (
     ...attached.session.scope,
     jobContractId: state.runtime.ids.next("job"),
     objective: input.objective,
-    scope: input.scope,
     acceptance: input.acceptance,
     dependencies: input.dependencies ?? [],
     // Unstated means conservative (D-P8-01): the program's risk, medium
@@ -1463,32 +1437,28 @@ const buildJobContract = (
     createdAt: nowIso(state.runtime.clock),
   });
 
-/** Depth, concurrency and scope narrowing, from `core`'s own rule. */
+/** Delegation authority and depth, from `core`'s own rule. */
 const checkDelegationOrRefuse = async (
   state: OrchestratorSession,
   attached: AttachedRun,
-  request: DelegateInput["scope"],
-): Promise<{ readonly depth: number; readonly scope: Scope }> => {
+): Promise<{ readonly depth: number }> => {
   const nodes = await state.runtime.stores.executionNodes.listByRun(attached.session.scope);
   const tree = buildTree([...nodes.items]);
-  // Authority, depth and scope. Not concurrency: excess work queues (D-P6-02).
+  // Authority and depth. Not concurrency: excess work queues (D-P6-02).
   const check = checkAuthority(
     tree,
     attached.session.rootNodeId,
     attached.session.program.delegationLimits,
-    request,
   );
-  if (check.allowed) return { depth: check.depth, scope: check.scope };
+  if (check.allowed) return { depth: check.depth };
 
   const reason = check.reason;
   const code: RefusalCode =
-    reason.kind === "scope_widening"
-      ? "scope_widening"
-      : reason.kind === "depth_limit_exceeded"
-        ? "depth_limit_exceeded"
-        : reason.kind === "concurrency_limit_exceeded"
-          ? "concurrency_limit_exceeded"
-          : "validation_failed";
+    reason.kind === "depth_limit_exceeded"
+      ? "depth_limit_exceeded"
+      : reason.kind === "concurrency_limit_exceeded"
+        ? "concurrency_limit_exceeded"
+        : "validation_failed";
   throw new ToolRefusal(code, describeRejection(reason), { ...reason });
 };
 
@@ -1510,8 +1480,6 @@ const chooseRoute = (attached: AttachedRun, job: JobContract, pins: RoutePins): 
 /** A refusal a model can act on, rather than a rule's internal vocabulary. */
 const describeRejection = (reason: DelegationRejection): string => {
   switch (reason.kind) {
-    case "scope_widening":
-      return `the requested scope claims authority the program does not hold: ${reason.reasons.join("; ")}`;
     case "depth_limit_exceeded":
       return `this would be depth ${reason.depth}, and the program allows ${reason.maxDepth}`;
     case "concurrency_limit_exceeded":

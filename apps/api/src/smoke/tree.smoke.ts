@@ -111,8 +111,6 @@ const expectEveryLandedCommitVerified = async (
   return commits;
 };
 
-const SCOPE = { includes: ["src/**", "test/**"] };
-
 describe("the Stage 5 tree, with real adapters, against the deployed control plane", () => {
   it("runs two harnesses at once and a real sub-orchestrator, and lands only verified work", async () => {
     const { context } = slice;
@@ -131,7 +129,7 @@ describe("the Stage 5 tree, with real adapters, against the deployed control pla
     slice.say(`run ${scope.runId}`);
 
     const delegate = async (input: Record<string, unknown>) => {
-      const result = await (mcp as Orchestrator).call("delegate", { scope: SCOPE, ...input });
+      const result = await (mcp as Orchestrator).call("delegate", input);
       expect(result.ok, JSON.stringify(result)).toBe(true);
       slice.say(
         `delegated ${String(result.jobId)} as ${String(result.nodeId)}: ${String(result.status)} ` +

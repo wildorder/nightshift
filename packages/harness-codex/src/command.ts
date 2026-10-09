@@ -38,11 +38,11 @@
  * approvals, and there are none to decide.
  *
  * What bounds a Codex worker is therefore what bounds a Claude one, and none of
- * it is the harness: Nightshift owns every commit and checks every changed path
- * against the node's scope before anything integrates (A-29); the worker's only
- * Nightshift credential is its execution token (A-35); its environment is an
- * allowlist. **Its effects outside its worktree are not contained by Nightshift
- * at all**, until P10 gives workers a machine of their own.
+ * it is the harness: Nightshift owns every commit and integrates nothing it has
+ * not verified (A-29); the worker's only Nightshift credential is its execution
+ * token (A-35); its environment is an allowlist. A job carries no path scope
+ * (the owner's ruling, 2026-10-09). **Its effects outside its worktree are not
+ * contained by Nightshift at all**, beyond the machine it runs on (P10).
  *
  * ## The rest
  *

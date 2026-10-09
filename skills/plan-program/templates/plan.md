@@ -51,7 +51,8 @@
 <!-- Medium fidelity: the modules touched, the shapes of the interfaces and data
      that cross a boundary, how it is tested. Enough to say "yes, that" or "no, not
      like that", and no more. The strand's orchestrator may depart from the HOW when
-     the code demands it, and must record that it did; the WHAT and the scope hold. -->
+     the code demands it, and must record that it did; the WHAT holds. The scope is
+     where the plan expects the work, never a limit on it. -->
 
 #### Considered and rejected
 

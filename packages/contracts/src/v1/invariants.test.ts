@@ -8,12 +8,13 @@
  */
 import { describe, expect, it } from "vitest";
 import { ArtifactSchema } from "./artifact.js";
-import { PathGlobSchema, ScopeRequestSchema, ScopeSchema } from "./common.js";
+import { PathGlobSchema } from "./common.js";
 import { EventSchema, inlinePayloadBytes, MAX_INLINE_PAYLOAD_BYTES } from "./event.js";
 import { ExaminationSchema } from "./examination.js";
 import { AGGREGATE_EXAMPLES, EXAMPLE_IDS } from "./examples.js";
+import { ExecutionNodeSchema } from "./execution-node.js";
 import { JobContractSchema } from "./job-contract.js";
-import { ProgramContractSchema } from "./program-contract.js";
+import { ProgramContractSchema, ProgramContractScopeSchema } from "./program-contract.js";
 import { RoutingDecisionSchema } from "./routing-decision.js";
 import { flakyStepIds, VerificationSchema } from "./verification.js";
 
@@ -355,24 +356,66 @@ describe("path globs", () => {
   );
 });
 
-describe("scope", () => {
-  it("requires at least one include, so an empty scope is never authority", () => {
+describe("a program contract's scope", () => {
+  it("requires at least one include, so a plan always says where the program lies", () => {
     expect(
-      ScopeSchema.safeParse({
-        includes: [],
-        excludes: [],
-        permissions: [],
-        forbiddenActions: [],
-      }).success,
+      ProgramContractScopeSchema.safeParse({ includes: [], excludes: [], forbiddenActions: [] })
+        .success,
     ).toBe(false);
   });
 
-  it("distinguishes an omitted request field from an empty one", () => {
-    const omitted = ScopeRequestSchema.parse({ includes: ["src/**"] });
-    expect(omitted.permissions).toBeUndefined();
+  it("reads a contract written before 2026-10-09 with its permissions, and needs none since", () => {
+    const old = {
+      includes: ["src/**"],
+      excludes: [],
+      permissions: ["fs.read", "fs.write", "shell.exec"],
+      forbiddenActions: ["deploy to production"],
+    };
+    expect(ProgramContractScopeSchema.parse(old)).toEqual(old);
+    const { permissions: _permissions, ...current } = old;
+    expect(ProgramContractScopeSchema.parse(current)).toEqual(current);
+  });
+});
 
-    const empty = ScopeRequestSchema.parse({ includes: ["src/**"], permissions: [] });
-    expect(empty.permissions).toEqual([]);
+/**
+ * The owner's ruling, 2026-10-09: jobs carry no path scope. A node or a Job
+ * Contract stored before it has a `scope`, which every read drops, so nothing
+ * that reads one and writes it back carries it on.
+ */
+describe("records stored before jobs lost their path scope", () => {
+  const oldScope = {
+    includes: ["src/billing/**"],
+    excludes: ["src/generated/**"],
+    permissions: ["fs.read", "fs.write"],
+    forbiddenActions: ["deploy to production"],
+  };
+
+  it("parses a stored ExecutionNode with a scope, and drops it", () => {
+    const stored = { ...clone(AGGREGATE_EXAMPLES.ExecutionNode), scope: oldScope };
+    const parsed = ExecutionNodeSchema.parse(stored);
+    expect(parsed).not.toHaveProperty("scope");
+    expect(parsed).toEqual(AGGREGATE_EXAMPLES.ExecutionNode);
+  });
+
+  it("parses a stored JobContract with a requested scope, and drops it", () => {
+    const stored = {
+      ...clone(AGGREGATE_EXAMPLES.JobContract),
+      scope: { includes: ["src/billing/**"], excludes: ["src/generated/**"] },
+    };
+    const parsed = JobContractSchema.parse(stored);
+    expect(parsed).not.toHaveProperty("scope");
+    expect(parsed).toEqual(AGGREGATE_EXAMPLES.JobContract);
+  });
+
+  it("stays strict about every other key", () => {
+    expect(
+      ExecutionNodeSchema.safeParse({ ...clone(AGGREGATE_EXAMPLES.ExecutionNode), reach: "all" })
+        .success,
+    ).toBe(false);
+    expect(
+      JobContractSchema.safeParse({ ...clone(AGGREGATE_EXAMPLES.JobContract), reach: "all" })
+        .success,
+    ).toBe(false);
   });
 });
 

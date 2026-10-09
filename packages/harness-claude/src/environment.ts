@@ -45,8 +45,8 @@
  *   variables — on a machine behind a TLS-intercepting proxy the CLI cannot
  *   reach the API without them, and the resulting failure looks like an outage
  *   rather than a configuration problem.
- * - `PATH`, `SHELL`, `TMPDIR`, locale and timezone — as in T4: a worker granted
- *   `shell.exec` runs real commands, and a toolchain that cannot find a temp
+ * - `PATH`, `SHELL`, `TMPDIR`, locale and timezone — as in T4: a worker runs
+ *   real commands, and a toolchain that cannot find a temp
  *   directory writes into the worktree instead.
  *
  * `TERM` is deliberately absent, as in T4: with it the CLI emits ANSI colour

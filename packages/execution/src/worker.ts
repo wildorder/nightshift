@@ -37,7 +37,6 @@ import {
 } from "@nightshift/harness";
 import type { WorkerEnvironment, WorkerIdentity } from "./environment.js";
 import { baseRef, changedPaths, revParse, snapshotCommit } from "./git/index.js";
-import { checkChangedPaths, describeScopeViolation } from "./scope-check.js";
 
 /** The same shape the adapter contract names, so the two cannot drift. */
 export type CompleteJobResult = WorkerCompletion;
@@ -90,20 +89,13 @@ export const reportProgress = (
  * Collects the worker's work into one Nightshift-authored commit and moves the
  * node to `implemented` (D-P3-05).
  *
- * The order is the whole of it:
- *
  * 1. Snapshot the worktree into a single commit on the base, squashing anything
  *    the worker committed along the way.
- * 2. Compare the commit's changed paths against the node's **effective** scope.
- * 3. On a violation, fail the job durably, naming every offending path, and
- *    return — the node never reaches `implemented`, so nothing downstream can
- *    verify or integrate it.
- * 4. Otherwise `markImplemented`, which records the commit on the node.
+ * 2. `markImplemented`, which records the commit on the node.
  *
- * The scope check is after the commit rather than before because the commit is
- * what defines the change set: a check over the working tree would miss a
- * deletion staged and then restored, and this way the thing checked is exactly
- * the thing that would integrate.
+ * Whatever paths the commit changes, the job completes: a job carries no path
+ * scope (the owner's ruling, 2026-10-09), and what decides whether its work
+ * lands is verification, and examination where the policy asks for it.
  */
 export const completeJob = async (
   environment: WorkerEnvironment,
@@ -132,13 +124,6 @@ export const completeJob = async (
   });
 
   const paths = await changedPaths(runner, identity.worktree, base, commitSha);
-  const check = checkChangedPaths(node.scope, paths);
-
-  if (!check.allowed) {
-    const reason = describeScopeViolation(check.offending);
-    await failJob(environment, identity, reason);
-    return { kind: "scope_violation", offending: check.offending, reason };
-  }
 
   await stores.executionNodes.put(markImplemented(node, commitSha, nowIso(clock)));
   outbox.emit({
@@ -161,10 +146,9 @@ export const completeJob = async (
 /**
  * Durable failure with the worker's own reason.
  *
- * Called by the worker's `job.fail`, and by `completeJob` when the snapshot
- * strayed outside scope. The node's `outcomeReason` is what a human reads, so
- * the reason is stored before anything else happens and is never summarised
- * away.
+ * Called by the worker's `job.fail`. The node's `outcomeReason` is what a human
+ * reads, so the reason is stored before anything else happens and is never
+ * summarised away.
  */
 export const failJob = async (
   environment: WorkerEnvironment,

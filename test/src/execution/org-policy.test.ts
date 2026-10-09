@@ -43,7 +43,6 @@ describe("the same fixture under two org configurations (SC-P8-14)", () => {
       runId: ids.next("run"),
       jobContractId: ids.next("job"),
       objective: "Add the helper",
-      scope: { includes: ["src/**"] },
       acceptance: ["node --test passes"],
       dependencies: [],
       risk: "low",
