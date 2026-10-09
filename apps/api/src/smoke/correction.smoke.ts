@@ -152,7 +152,6 @@ describe("a decision stamped, a failed check retried at resume, and a reversal, 
         "half(8) === 4. Also create src/marker.txt containing the word marker. Before you " +
         "complete, record one decision with decision.record: how you implemented half, with at " +
         "least one alternative you rejected and why.",
-      scope: { includes: ["src/**", "test/**"] },
       acceptance: ["half(8) returns 4", "node --test passes"],
       risk: "low",
       ambiguity: "low",

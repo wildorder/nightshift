@@ -161,7 +161,6 @@ const implementWell =
 
 const DELEGATION = {
   objective: "Add a median helper to src/math.js and a test for it.",
-  scope: { includes: ["src/**", "test/**"] },
   acceptance: ["median([1,2,3]) is 2", "node --test passes"],
 };
 
@@ -438,28 +437,6 @@ describe("delegate's refusals are typed (§4.5)", () => {
     });
     return mcp;
   };
-
-  it("refuses a widening scope, naming the pattern the program does not cover", async () => {
-    const world = await createBaseWorld();
-    const mcp = await attached(world);
-    const result = await mcp.call("delegate", {
-      ...DELEGATION,
-      scope: { includes: ["docs/**"] },
-    });
-    expect(result.ok).toBe(false);
-    expect(result.code).toBe("scope_widening");
-    expect(JSON.stringify(result.reasons)).toContain("docs/**");
-
-    // Nothing was persisted: a refused delegation leaves no node behind.
-    const nodes = await world.stores.executionNodes.listByRun({
-      projectId: world.program.projectId,
-      programId: world.program.programId,
-      runId:
-        (await world.stores.runs.listByProgram(world.program)).items[0]?.runId ?? ("" as never),
-    });
-    expect(nodes.items.filter((node) => node.kind === "job")).toEqual([]);
-    await mcp.stop();
-  });
 
   it("refuses an invalid contract before anything is persisted", async () => {
     const world = await createBaseWorld();

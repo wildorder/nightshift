@@ -28,7 +28,7 @@ import type {
 } from "@nightshift/contracts";
 import { humanSaid, type KeptConversation } from "./conversation.js";
 import { buildTree, descendantsOf } from "./execution-tree.js";
-import { explainWidening, globContains, singleSegmentMatches } from "./scope.js";
+import { globContains, singleSegmentMatches, uncoveredGlobs } from "./globs.js";
 
 // --- the planned part of a contract, absent meaning empty ---------------------
 
@@ -647,13 +647,19 @@ const strandReasons = (
   const prerequisiteIds = new Set(prerequisitesOf(contract).map((candidate) => candidate.id));
   const reasons: PlanReason[] = [];
 
-  // Excludes are inherited from the program, so only the includes can widen.
-  const widenings = explainWidening(contract.scope, { includes: strand.scope.includes });
-  if (widenings.length > 0) {
+  // Where the plan expects a strand's work must lie inside where it expects the
+  // program's. Planning information only: no job is confined by either.
+  const outside = uncoveredGlobs(contract.scope.includes, strand.scope.includes);
+  if (outside.length > 0) {
     reasons.push({
       kind: "scope_outside_program",
       strandId: strand.id,
-      message: `${strand.id}'s scope is outside the program's: ${widenings.join("; ")}`,
+      message: `${strand.id}'s scope is outside the program's: ${outside
+        .map(
+          (include) =>
+            `include "${include}" is not covered by the program's includes [${contract.scope.includes.join(", ")}]`,
+        )
+        .join("; ")}`,
     });
   }
   for (const dependsOn of strand.dependsOn.filter((id) => !strandIds.has(id))) {

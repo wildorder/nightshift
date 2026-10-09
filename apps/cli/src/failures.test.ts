@@ -1,4 +1,4 @@
-import { ScopeWideningError } from "@nightshift/core";
+import { DepthLimitExceededError } from "@nightshift/core";
 import { ProgramContractChangedError, ProjectMissingError } from "@nightshift/execution";
 import { ControlPlaneError, ControlPlaneUnreachableError } from "@nightshift/persistence/http";
 import { describe, expect, it } from "vitest";
@@ -49,9 +49,9 @@ describe("describing a failure", () => {
   });
 
   it("keeps a domain rule's own class and code across the network", () => {
-    const failure = describeFailure(new ScopeWideningError(["paths widened"]));
+    const failure = describeFailure(new DepthLimitExceededError(4, 3));
     expect(failure.code).toBe("domain_rule");
-    expect(failure.summary).toContain("scope_widening");
+    expect(failure.summary).toContain("depth_limit_exceeded");
   });
 
   it("separates an unreachable control plane from a refused one", () => {

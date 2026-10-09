@@ -114,7 +114,6 @@ const rig = async (behaviour: Behaviour, program: Partial<ProgramContract> = {})
       ...made.scope,
       jobContractId: made.ids.next("job"),
       objective,
-      scope: { includes: ["src/**", "test/**"] },
       acceptance: ["node --test passes"],
       dependencies: [],
       risk: "low",
@@ -123,7 +122,6 @@ const rig = async (behaviour: Behaviour, program: Partial<ProgramContract> = {})
     });
     const submitted = await engine.submit({
       job,
-      scope: made.session.program.scope,
       depth: 1,
       parentNodeId: made.session.rootNodeId,
       route: route(job, { unavailable: [] }),

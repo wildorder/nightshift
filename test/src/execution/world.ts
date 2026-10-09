@@ -113,11 +113,10 @@ const fixtureProgram = (
   objective: "Prove the vertical slice.",
   repository: { url: repo, baseBranch: "main", programBranch: PROGRAM_BRANCH },
   successCriteria: [{ id: "SC-01", outcome: "The sum helper works." }],
-  constraints: ["Change nothing outside src/ and test/."],
+  constraints: ["Add no dependency: verification runs on a clean checkout with no install."],
   scope: {
     includes: ["src/**", "test/**"],
     excludes: ["src/generated/**"],
-    permissions: ["fs.read", "fs.write", "shell.exec"],
     forbiddenActions: ["push any ref"],
   },
   verification: [

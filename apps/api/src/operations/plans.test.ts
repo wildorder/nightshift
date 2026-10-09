@@ -467,7 +467,7 @@ describe("the gate on a run (SC-P7-04)", () => {
     const ratified = await ratify(w);
     expect((await call(w, "PUT", w.paths.run, makeRun(w.f))).status).toBe(201);
 
-    const root = makeRootNode(w.f, { scope: ratified.scope });
+    const root = makeRootNode(w.f);
     const nodePath = `${w.paths.run}/nodes/${root.executionNodeId}`;
     const bare = await call(w, "PUT", nodePath, root);
     expect(bare.status).toBe(422);
@@ -483,7 +483,7 @@ describe("the gate on a run (SC-P7-04)", () => {
     // only the program node has one.
     const moved = { ...root, plan: wrong, status: "running" };
     expect((await call(w, "PUT", nodePath, moved)).status).toBe(409);
-    const child = makeNode(w.f, root.executionNodeId, { kind: "sub-program", scope: root.scope });
+    const child = makeNode(w.f, root.executionNodeId, { kind: "sub-program" });
     const childPath = `${w.paths.run}/nodes/${child.executionNodeId}`;
     expect((await call(w, "PUT", childPath, { ...child, plan })).status).toBe(422);
   });
@@ -493,7 +493,7 @@ describe("the gate on a run (SC-P7-04)", () => {
     const plain = makeProgramContract(w.f);
     await call(w, "PUT", w.paths.program, plain);
     expect((await call(w, "PUT", w.paths.run, makeRun(w.f))).status).toBe(201);
-    const root = makeRootNode(w.f, { scope: plain.scope });
+    const root = makeRootNode(w.f);
     const nodePath = `${w.paths.run}/nodes/${root.executionNodeId}`;
     const plan = {
       planHash: "0".repeat(64),

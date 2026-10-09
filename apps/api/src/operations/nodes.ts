@@ -17,7 +17,6 @@ import {
   buildTree,
   ConcurrencyLimitExceededError,
   explainEvidenceMismatch,
-  explainWidening,
   IllegalTransitionError,
   isPostVerification,
   isValidEvidence,
@@ -32,7 +31,6 @@ import {
   nextStatus,
   RETRYABLE_STATUSES,
   type RunScope,
-  ScopeWideningError,
   type TransitionEvent,
   TreeStructureError,
   transition,
@@ -85,9 +83,6 @@ const createNode = async (
         node.executionNodeId,
       );
     }
-    // The root's authority is the program contract's scope, narrowed or inherited.
-    const widenings = explainWidening(program.scope, node.scope);
-    if (widenings.length > 0) throw new ScopeWideningError(widenings);
     assertPlanReference(program, node);
     buildTree([...stored, node]);
     if (node.depth !== 0) throw depthMismatch(node, 0);
@@ -102,10 +97,10 @@ const createNode = async (
     throw new HttpError(404, "not_found", `parent node ${parentId} does not exist in this run`);
   }
   const tree = buildTree(stored);
-  // Delegation authority, depth and concurrency limits, and scope narrowing (A-11).
-  // Authority, depth and scope. Not concurrency: P6 applies that limit when a
-  // node *starts* (D-P6-02), so excess work queues instead of being refused.
-  const { depth } = assertAuthority(tree, parentId, program.delegationLimits, node.scope);
+  // Delegation authority and depth. Not concurrency: P6 applies that limit when a
+  // node *starts* (D-P6-02), so excess work queues instead of being refused. No
+  // path scope: a node carries none (the owner's ruling, 2026-10-09).
+  const { depth } = assertAuthority(tree, parentId, program.delegationLimits);
   if (node.depth !== depth) throw depthMismatch(node, depth);
   // Cycles, duplicates and the ownership chain.
   addChild(tree, parentId, node);
@@ -135,7 +130,7 @@ const assertPlanReference = (program: ProgramContract, node: ExecutionNode): voi
   );
 };
 
-const IMMUTABLE_FIELDS = ["kind", "parentNodeId", "depth", "scope", "plan", "createdAt"] as const;
+const IMMUTABLE_FIELDS = ["kind", "parentNodeId", "depth", "plan", "createdAt"] as const;
 
 /**
  * Refuses changes to fields fixed at creation, and to the commit or job once the

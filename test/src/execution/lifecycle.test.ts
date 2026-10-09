@@ -7,13 +7,12 @@
  * the thing the whole program exists to provide: a run whose state is legible
  * from records alone.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JobContract, RouteChoice } from "@nightshift/contracts";
 import { JobContractSchema } from "@nightshift/contracts";
 import { nowIso } from "@nightshift/core";
 import {
-  checkChangedPaths,
   checkpointRef,
   completeJob,
   createEventOutbox,
@@ -56,7 +55,6 @@ const jobFor = (world: World, overrides: Partial<JobContract> = {}): JobContract
     ...world.scope,
     jobContractId: world.ids.next("job"),
     objective: "Add a median helper to src/math.js and a test for it.",
-    scope: { includes: ["src/**", "test/**"] },
     acceptance: ["median([1,2,3]) is 2", "node --test passes"],
     dependencies: [],
     risk: "low",
@@ -83,7 +81,6 @@ const delegate = (world: World, job: JobContract): Promise<StartedJob> =>
   runJob(world.environment, {
     session: world.session,
     job,
-    scope: world.session.program.scope,
     depth: 1,
     parentNodeId: world.session.rootNodeId,
     route: ROUTE,
@@ -566,17 +563,74 @@ describe("the worker-side half", () => {
     expect(await tryRevParse(nodeGitRunner, world.repo, sealedRef(started.nodeId))).toBeUndefined();
     expect(await revParse(nodeGitRunner, world.repo, PROGRAM_BRANCH)).toBe(world.baseCommit);
   });
+});
 
-  it("computes the same scope answer the delegation-time check would", () => {
-    // One implementation of include-and-exclude semantics, in `core`, used by
-    // both. This is a guard against a second one appearing here.
-    const scope = {
-      includes: ["src/**"],
-      excludes: ["src/generated/**"],
-      permissions: [],
-      forbiddenActions: [],
-    };
-    expect(checkChangedPaths(scope, ["src/a.ts"]).allowed).toBe(true);
-    expect(checkChangedPaths(scope, ["src/generated/a.ts"]).allowed).toBe(false);
+/**
+ * The owner's ruling, 2026-10-09: a job carries no path scope. "Give them the
+ * scope to do the job." A worker that changes files anywhere in the repository,
+ * including where the program's plan does not expect work and under what it
+ * excludes, completes, is verified and integrates like any other.
+ */
+describe("a job that changes files anywhere in the repository", () => {
+  it("completes, verifies and integrates, whatever paths it touched", async () => {
+    let completion: Awaited<ReturnType<typeof completeJob>> | undefined;
+    const world = await createWorld({
+      harness: createFakeHarness({
+        script: async (context) => {
+          const worker = workerEnvironment(world, context.identity);
+          const exit = await implementWell(context);
+          // Outside the program's `src/**` and `test/**`, and under its
+          // `src/generated/**` exclude: none of it limits the job.
+          await mkdir(join(context.worktree, "docs"), { recursive: true });
+          await writeFile(join(context.worktree, "docs", "median.md"), "# median\n", "utf8");
+          await writeFile(
+            join(context.worktree, "README.md"),
+            "# The fixture\n\nmedian added.\n",
+            "utf8",
+          );
+          await mkdir(join(context.worktree, "src", "generated"), { recursive: true });
+          await writeFile(
+            join(context.worktree, "src", "generated", "median-table.js"),
+            "export const table = [];\n",
+            "utf8",
+          );
+          completion = await completeJob(worker, context.identity, "Added a median helper.");
+          await worker.outbox.flush();
+          return exit;
+        },
+      }),
+    });
+    expect(world.session.program.scope.includes).toEqual(["src/**", "test/**"]);
+    expect(world.session.program.scope.excludes).toEqual(["src/generated/**"]);
+
+    const started = await delegate(world, jobFor(world));
+    await started.completion;
+    await world.outbox.flush();
+
+    expect(completion?.kind).toBe("implemented");
+    expect([...(completion?.changedPaths ?? [])].sort()).toEqual([
+      "README.md",
+      "docs/median.md",
+      "src/generated/median-table.js",
+      "src/math.js",
+      "test/median.test.js",
+    ]);
+
+    const node = await world.stores.executionNodes.get(world.scope, started.nodeId);
+    expect(node?.status).toBe("integrated");
+    expect(node?.outcomeReason).toBeUndefined();
+    const verifications = await world.stores.verifications.listByNode(world.scope, started.nodeId);
+    expect(verifications.map((verification) => verification.outcome)).toEqual(["passed"]);
+
+    const sha = node?.commitSha ?? "";
+    expect(await revParse(nodeGitRunner, world.repo, PROGRAM_BRANCH)).toBe(sha);
+    const landed = await git(
+      nodeGitRunner,
+      ["diff", "--name-only", world.baseCommit, PROGRAM_BRANCH],
+      { cwd: world.repo },
+    );
+    for (const path of ["README.md", "docs/median.md", "src/generated/median-table.js"]) {
+      expect(landed).toContain(path);
+    }
   });
 });

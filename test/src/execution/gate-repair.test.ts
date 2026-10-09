@@ -203,7 +203,6 @@ const rig = async (
       ...made.scope,
       jobContractId: made.ids.next("job"),
       objective,
-      scope: { includes: PROGRAM.scope?.includes ?? [] },
       acceptance: ["the gates pass"],
       dependencies: [],
       risk: "low",
@@ -213,7 +212,6 @@ const rig = async (
     });
     const submitted = await on.submit({
       job,
-      scope: made.session.program.scope,
       depth: 1,
       parentNodeId: made.session.rootNodeId,
       route: ROUTE,

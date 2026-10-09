@@ -93,7 +93,6 @@ const jobFor = (world: World, risk: RiskLevel = "low"): JobContract =>
     ...world.scope,
     jobContractId: world.ids.next("job"),
     objective: "Add a helper.",
-    scope: { includes: ["src/**", "test/**"] },
     acceptance: ["It works."],
     dependencies: [],
     risk,
@@ -176,7 +175,6 @@ const runDirect = async (world: World): Promise<ExecutionNodeId> => {
   const started = await runJob(world.environment, {
     session: world.session,
     job: jobFor(world),
-    scope: world.session.program.scope,
     depth: 1,
     parentNodeId: world.session.rootNodeId,
     route: choice(BUILDER),
@@ -214,7 +212,6 @@ const runThroughEngine = async (world: World, risk: RiskLevel): Promise<Executio
   });
   const { nodeId } = await engine.submit({
     job: jobFor(world, risk),
-    scope: world.session.program.scope,
     depth: 1,
     parentNodeId: world.session.rootNodeId,
     route: choice(BUILDER),

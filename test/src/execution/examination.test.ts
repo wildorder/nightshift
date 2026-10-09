@@ -375,7 +375,6 @@ const rig = async (scenario: Scenario, options: RigOptions = {}) => {
     ...made.scope,
     jobContractId: made.ids.next("job"),
     objective: "examined",
-    scope: { includes: ["src/**", "test/**"] },
     acceptance: ["It works."],
     dependencies: [],
     risk: scenario.risk,
@@ -384,7 +383,6 @@ const rig = async (scenario: Scenario, options: RigOptions = {}) => {
   });
   const submitted = await engine.submit({
     job,
-    scope: made.session.program.scope,
     depth: 1,
     parentNodeId: made.session.rootNodeId,
     route: choice(BUILDER),

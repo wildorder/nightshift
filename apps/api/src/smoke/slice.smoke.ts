@@ -85,7 +85,6 @@ afterAll(async () => {
 
 const DELEGATION = {
   objective: "Add a median helper to src/math.js, with tests for odd and even lengths.",
-  scope: { includes: ["src/**", "test/**"] },
   acceptance: ["median([3,1,2]) is 2", "median([1,2,3,4]) is 2.5", "the existing tests still pass"],
 };
 

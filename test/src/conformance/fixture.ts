@@ -15,7 +15,6 @@ export interface ConformanceJob {
   readonly script: ScriptName;
   readonly delegation: {
     readonly objective: string;
-    readonly scope: { readonly includes: readonly string[]; readonly excludes?: readonly string[] };
     readonly acceptance: readonly string[];
   };
 }
@@ -37,7 +36,6 @@ export const COMPLETING_JOB: ConformanceJob = {
       "you start and after each step. For an even-length list there is more than one defensible " +
       "answer: choose one, and record the choice with decision.record before you finish. Run " +
       "the test suite yourself, then report completion.",
-    scope: { includes: ["src/**", "test/**"] },
     acceptance: [
       "median([3, 1, 2]) is 2, and an empty list is refused the way mean refuses one",
       "median is exported from the package's entry point beside the existing helpers",
@@ -49,7 +47,7 @@ export const COMPLETING_JOB: ConformanceJob = {
 
 /**
  * The deterministic failure: the job asks for behaviour the fixture's own tests
- * contradict, and puts those tests out of scope. A worker that does exactly what
+ * contradict, and tells the worker to leave those tests alone. A worker that does exactly what
  * it was asked and says so ends `verification_failed`, because verification is
  * Nightshift's and the worker's report is only a claim (A-05).
  */
@@ -58,10 +56,9 @@ export const FAILING_JOB: ConformanceJob = {
   delegation: {
     objective:
       "Change `sum` in src/math.js so that an empty list answers null rather than 0. Change " +
-      "nothing else. The tests are outside your scope and are being updated by a separate job: " +
+      "nothing else. The tests are being updated by a separate job: " +
       "do not edit them, and do not wait for them. Report progress once, make the change, and " +
       "report completion.",
-    scope: { includes: ["src/**"] },
     acceptance: ["sum([]) is null", "sum of a non-empty list is unchanged"],
   },
 };
@@ -74,7 +71,6 @@ export const CANCELLED_JOB: ConformanceJob = {
       "First report progress with the message 'waiting'. Then write, in your reply and not in " +
       "any file, a 20000 word history of the median as a statistic, in full, without stopping " +
       "early. Do not report completion until the essay is finished.",
-    scope: { includes: ["src/**"] },
     acceptance: ["the essay is complete"],
   },
 };

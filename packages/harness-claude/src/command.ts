@@ -208,7 +208,7 @@ export const claudeBriefAddendum = (input: {
     "  their dots become underscores:",
     ...tools.map((tool) => `    ${tool.padEnd(22)} -> ${name(tool)}`),
     "",
-    "  They are always available to you, whatever else your scope granted.",
+    "  They are always available to you.",
     "",
     "YOUR TOOLS",
     "",

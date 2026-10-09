@@ -39,10 +39,9 @@ import type {
 import { nextToIntegrate, nowIso, transition } from "@nightshift/core";
 import type { ExecutionEnvironment } from "./environment.js";
 import { examineInQueue, recordRulingLanded } from "./examine.js";
-import { changedPaths, effectiveHead, replayCommit } from "./git/index.js";
+import { effectiveHead, replayCommit } from "./git/index.js";
 import { integrateNode } from "./integrate.js";
 import type { IntegrateCandidate, IntegrationCandidate } from "./runner.js";
-import { checkChangedPaths, describeScopeViolation } from "./scope-check.js";
 import { verifyNode } from "./verify.js";
 
 export interface MergeQueue {
@@ -261,14 +260,6 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
           `Nothing was integrated and nothing was resolved. Its worktree is kept at ${candidate.worktree}; ` +
           "retry it to run it again from the current head.",
       );
-      return undefined;
-    }
-
-    // The same check `completeJob` made, on the commit that would now land.
-    const paths = await changedPaths(runner, candidate.worktree, head, replayed.commitSha);
-    const check = checkChangedPaths(node.scope, paths);
-    if (!check.allowed) {
-      await failNode(candidate, describeScopeViolation(check.offending));
       return undefined;
     }
 

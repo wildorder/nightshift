@@ -31,11 +31,11 @@ import {
   JobContractSchema,
   type ProgramContract,
   ProgramContractSchema,
+  type ProgramContractScope,
   type Project,
   ProjectSchema,
   type Run,
   RunSchema,
-  type Scope,
   type Verification,
   VerificationSchema,
   type WarmCache,
@@ -52,10 +52,9 @@ const COMMIT_A = "1111111111111111111111111111111111111111";
 
 export const FIXTURE_COMMIT: CommitSha = COMMIT_A as CommitSha;
 
-export const FIXTURE_SCOPE: Scope = {
+export const FIXTURE_PROGRAM_SCOPE: ProgramContractScope = {
   includes: ["src/**"],
   excludes: ["src/generated/**"],
-  permissions: ["fs.read", "fs.write", "shell.exec"],
   forbiddenActions: ["deploy to production"],
 };
 
@@ -152,7 +151,7 @@ export const makeProgramContract = (
     ],
     successCriteria: [{ id: "SC-01", outcome: "It works.", serves: ["US-01"] }],
     constraints: [],
-    scope: FIXTURE_SCOPE,
+    scope: FIXTURE_PROGRAM_SCOPE,
     verification: [{ id: "test", command: "npm test" }],
     modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
     examinationPolicy: {
@@ -205,7 +204,6 @@ export const makeRootNode = (
     kind: "program",
     parentNodeId: null,
     depth: 0,
-    scope: FIXTURE_SCOPE,
     status: "running",
     jobContractId: null,
     commitSha: null,
@@ -226,7 +224,6 @@ export const makeNode = (
     kind: "job",
     parentNodeId,
     depth: 1,
-    scope: FIXTURE_SCOPE,
     status: "validated",
     jobContractId: null,
     commitSha: null,
@@ -241,7 +238,6 @@ export const makeJobContract = (f: Fixtures, overrides: Overrides<JobContract> =
     ...f.scope,
     jobContractId: f.ids.next("job"),
     objective: "Fixture job.",
-    scope: { includes: ["src/**"] },
     acceptance: ["It works."],
     dependencies: [],
     risk: "low",

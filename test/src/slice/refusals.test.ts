@@ -1,10 +1,11 @@
 /**
  * SC-P3-01: delegation requires a valid Job Contract.
  *
- * Two refusals, and one property that matters more than either: **nothing is
+ * One refusal, and one property that matters more than it: **nothing is
  * persisted**. A refused delegation that had already written a node would leave
  * a run whose tree contains work nobody asked for, and an orchestrator with no
- * way to tell a refusal from a half-started job.
+ * way to tell a refusal from a half-started job. A delegation is never refused
+ * for the paths its work will change (the owner's ruling, 2026-10-09).
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -62,7 +63,6 @@ describe("SC-P3-01: a delegation must be a valid Job Contract", () => {
 
     const refusal = await driver.call("delegate", {
       objective: "Add a median helper.",
-      scope: { includes: ["src/**"] },
       // Empty: a job with no acceptance criteria is a job nobody can judge.
       acceptance: [],
     });
@@ -75,60 +75,23 @@ describe("SC-P3-01: a delegation must be a valid Job Contract", () => {
     expect((await ctx().stores.jobContracts.listByRun(scope)).items).toEqual([]);
   });
 
-  it("refuses a scope the program does not cover, naming the pattern, and persists nothing", async () => {
-    const { driver, scope } = await attached();
-
-    const refusal = await driver.call("delegate", {
-      objective: "Rewrite the documentation.",
-      // The program allows `src/**` and `test/**`. This claims authority it
-      // does not inherit, which is A-11 enforced structurally.
-      scope: { includes: ["docs/**"] },
-      acceptance: ["the docs read better"],
-    });
-
-    expect(refusal.ok).toBe(false);
-    expect(refusal.code).toBe("scope_widening");
-    expect(JSON.stringify(refusal.reasons)).toContain("docs/**");
-    // And it says what the parent *does* hold, so the orchestrator can restate.
-    expect(JSON.stringify(refusal.reasons)).toContain("src/**");
-
-    expect(await jobNodes(scope)).toEqual([]);
-    expect((await ctx().stores.jobContracts.listByRun(scope)).items).toEqual([]);
-  });
-
-  it("refuses a scope that drops an exclude the program requires", async () => {
-    const { driver, scope } = await attached();
-    const refusal = await driver.call("delegate", {
-      objective: "Regenerate the generated sources.",
-      // `src/**` is covered, but the program excludes `src/generated/**`, and a
-      // child that omits an exclude has widened its authority.
-      scope: { includes: ["src/**"], excludes: [] },
-      acceptance: ["the generated sources are current"],
-    });
-
-    expect(refusal.ok).toBe(false);
-    expect(refusal.code).toBe("scope_widening");
-    expect(JSON.stringify(refusal.reasons)).toContain("src/generated/**");
-    expect(await jobNodes(scope)).toEqual([]);
-  });
-
-  it("accepts a narrowing scope, which is the whole point of the rule", async () => {
+  // The owner's ruling, 2026-10-09: a job carries no path scope, so there is
+  // nothing to state, narrow or refuse. Work outside the program's planned
+  // paths, and under what it excludes, is delegated like any other.
+  it("delegates work anywhere in the repository, with no path scope to state or refuse", async () => {
     const { driver, scope } = await attached();
     const job = await driver.call("delegate", {
-      objective: "Add a median helper.",
-      // Narrower than the program's on every axis: fewer includes, fewer
-      // permissions. Narrowing is always allowed; widening never is.
-      scope: { includes: ["src/math.js"], permissions: ["fs.read", "fs.write"] },
-      acceptance: ["median works"],
+      objective: "Rewrite the documentation and regenerate src/generated/.",
+      acceptance: ["the docs read better", "the generated sources are current"],
     });
 
     expect(job.ok, JSON.stringify(job)).toBe(true);
     const nodes = await jobNodes(scope);
     expect(nodes).toHaveLength(1);
-    expect(nodes[0]?.scope.includes).toEqual(["src/math.js"]);
-    // The effective scope kept the parent's excludes, which were not narrowed.
-    expect(nodes[0]?.scope.excludes).toEqual(["src/generated/**"]);
-    expect(nodes[0]?.scope.permissions).toEqual(["fs.read", "fs.write"]);
+    expect(nodes[0]).not.toHaveProperty("scope");
+    const stored = await ctx().stores.jobContracts.get(scope, job.jobId as never);
+    expect(stored).toBeDefined();
+    expect(stored).not.toHaveProperty("scope");
 
     await driver.call("job.cancel", { jobId: job.jobId });
   });

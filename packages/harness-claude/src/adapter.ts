@@ -221,7 +221,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
   const runs = new WeakMap<HarnessHandle, RunState>();
 
   const start = async (input: HarnessStartInput): Promise<HarnessHandle> => {
-    const policy = claudeToolPolicy({ scope: input.node.scope });
+    const policy = claudeToolPolicy();
     const prompt = promptFor(input, (brief, mcpServerName, tools) =>
       claudePrompt(brief, claudeBriefAddendum({ mcpServerName, tools })),
     );

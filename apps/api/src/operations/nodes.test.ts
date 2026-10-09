@@ -87,14 +87,29 @@ describe("creating execution nodes", () => {
     expect(code(response)).toBe("tree_structure");
   });
 
-  it("refuses a root wider than the program contract's scope", async () => {
+  // The owner's ruling, 2026-10-09: a node carries no path scope. A client from
+  // before it still sends one; the key is dropped, never checked, never stored.
+  it("creates a root and a child whatever path scope an old client sends, and stores none", async () => {
     const w = await setup(undefined, { withRoot: false });
-    const wide = makeRootNode(w.f, {
-      scope: { includes: ["**"], excludes: [], permissions: ["everything"], forbiddenActions: [] },
-    });
-    const response = await putNode(w, wide);
-    expect(response.status).toBe(403);
-    expect(code(response)).toBe("scope_widening");
+    const everything = {
+      includes: ["**"],
+      excludes: [],
+      permissions: ["everything"],
+      forbiddenActions: [],
+    };
+    const root = { ...makeRootNode(w.f), scope: everything };
+    expect((await w.call("PUT", `${w.runPath}/nodes/${root.executionNodeId}`, root)).status).toBe(
+      201,
+    );
+    const child = { ...makeNode(w.f, w.f.rootNodeId), scope: everything };
+    expect((await w.call("PUT", `${w.runPath}/nodes/${child.executionNodeId}`, child)).status).toBe(
+      201,
+    );
+    for (const id of [root.executionNodeId, child.executionNodeId]) {
+      const stored = await w.stores.executionNodes.get(w.f.scope, id);
+      expect(stored).toBeDefined();
+      expect(stored).not.toHaveProperty("scope");
+    }
   });
 
   it("creates a child under an existing parent", async () => {
@@ -157,18 +172,6 @@ describe("creating execution nodes", () => {
     const queued = next(child, { status: "queued" });
     expect((await putNode(w, queued)).status).toBe(200);
     expect((await putNode(w, next(queued, { status: "running" }))).status).toBe(200);
-  });
-
-  it("refuses a child whose scope widens its parent's", async () => {
-    const w = await setup();
-    const response = await putNode(
-      w,
-      makeNode(w.f, w.f.rootNodeId, {
-        scope: { includes: ["**"], excludes: [], permissions: [], forbiddenActions: [] },
-      }),
-    );
-    expect(response.status).toBe(403);
-    expect(code(response)).toBe("scope_widening");
   });
 
   it("refuses delegation from a leaf job", async () => {

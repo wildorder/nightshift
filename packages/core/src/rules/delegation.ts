@@ -5,21 +5,13 @@
  * refused needs to know whether to wait (concurrency) or restructure its plan
  * (depth). Two different answers, two different behaviours.
  */
-import type {
-  DelegationLimits,
-  ExecutionNodeId,
-  ExecutionNodeKind,
-  Scope,
-  ScopeRequest,
-} from "@nightshift/contracts";
+import type { DelegationLimits, ExecutionNodeId, ExecutionNodeKind } from "@nightshift/contracts";
 import {
   ConcurrencyLimitExceededError,
   DelegationRefusedError,
   DepthLimitExceededError,
-  ScopeWideningError,
 } from "../errors.js";
 import { childrenOf, depthOfChildOf, type ExecutionTree, getNode } from "./execution-tree.js";
-import { explainWidening, narrow } from "./scope.js";
 import { isTerminal, OCCUPIES_CONCURRENCY_SLOT } from "./transitions.js";
 
 export type DelegationRejection =
@@ -29,12 +21,11 @@ export type DelegationRejection =
       readonly running: number;
       readonly maxConcurrency: number;
     }
-  | { readonly kind: "scope_widening"; readonly reasons: readonly string[] }
   | { readonly kind: "parent_is_terminal"; readonly parentStatus: string }
   | { readonly kind: "parent_cannot_delegate"; readonly parentKind: ExecutionNodeKind };
 
 export type DelegationCheck =
-  | { readonly allowed: true; readonly depth: number; readonly scope: Scope }
+  | { readonly allowed: true; readonly depth: number }
   | { readonly allowed: false; readonly reason: DelegationRejection };
 
 /**
@@ -59,15 +50,14 @@ export const runningChildCount = (tree: ExecutionTree, parentId: ExecutionNodeId
  * `maxDepth` counts levels below the root: the root is depth 0, so `maxDepth: 3`
  * permits children at depths 1, 2 and 3 and refuses depth 4.
  *
- * Checks are ordered depth, then concurrency, then scope, so the answer is
- * stable for a given input rather than depending on which failure is noticed
- * first.
+ * Checks are ordered depth, then concurrency, so the answer is stable for a
+ * given input rather than depending on which failure is noticed first. No path
+ * scope is asked about: a job carries none (the owner's ruling, 2026-10-09).
  */
 export const checkDelegation = (
   tree: ExecutionTree,
   parentId: ExecutionNodeId,
   limits: DelegationLimits,
-  request?: ScopeRequest,
 ): DelegationCheck => {
   const parent = getNode(tree, parentId);
 
@@ -101,16 +91,7 @@ export const checkDelegation = (
     };
   }
 
-  if (request === undefined) {
-    return { allowed: true, depth, scope: parent.scope };
-  }
-
-  const reasons = explainWidening(parent.scope, request);
-  if (reasons.length > 0) {
-    return { allowed: false, reason: { kind: "scope_widening", reasons } };
-  }
-
-  return { allowed: true, depth, scope: narrow(parent.scope, request) };
+  return { allowed: true, depth };
 };
 
 /**
@@ -121,10 +102,9 @@ export const assertDelegationAllowed = (
   tree: ExecutionTree,
   parentId: ExecutionNodeId,
   limits: DelegationLimits,
-  request?: ScopeRequest,
-): { readonly depth: number; readonly scope: Scope } => {
-  const result = checkDelegation(tree, parentId, limits, request);
-  if (result.allowed) return { depth: result.depth, scope: result.scope };
+): { readonly depth: number } => {
+  const result = checkDelegation(tree, parentId, limits);
+  if (result.allowed) return { depth: result.depth };
 
   const { reason } = result;
   switch (reason.kind) {
@@ -132,8 +112,7 @@ export const assertDelegationAllowed = (
       throw new DepthLimitExceededError(reason.depth, reason.maxDepth);
     case "concurrency_limit_exceeded":
       throw new ConcurrencyLimitExceededError(reason.running, reason.maxConcurrency);
-    case "scope_widening":
-      throw new ScopeWideningError(reason.reasons);
+
     case "parent_is_terminal":
       throw new DelegationRefusedError(
         `parent ${parentId} is ${reason.parentStatus} and can take no further children`,
@@ -149,8 +128,8 @@ export const assertDelegationAllowed = (
 const OPEN_CONCURRENCY = Number.MAX_SAFE_INTEGER;
 
 /**
- * Whether a child may **exist** under `parentId`: delegation authority, depth and
- * scope, with concurrency left out (P6, D-P6-02).
+ * Whether a child may **exist** under `parentId`: delegation authority and
+ * depth, with concurrency left out (P6, D-P6-02).
  *
  * P6 applies the concurrency limit when a node *starts*, not when it is
  * delegated, so that excess work queues instead of being refused. This is
@@ -161,18 +140,16 @@ export const checkAuthority = (
   tree: ExecutionTree,
   parentId: ExecutionNodeId,
   limits: DelegationLimits,
-  request?: ScopeRequest,
 ): DelegationCheck =>
-  checkDelegation(tree, parentId, { ...limits, maxConcurrency: OPEN_CONCURRENCY }, request);
+  checkDelegation(tree, parentId, { ...limits, maxConcurrency: OPEN_CONCURRENCY });
 
 /** {@link checkAuthority}, throwing the typed domain error on refusal. */
 export const assertAuthority = (
   tree: ExecutionTree,
   parentId: ExecutionNodeId,
   limits: DelegationLimits,
-  request?: ScopeRequest,
-): { readonly depth: number; readonly scope: Scope } =>
-  assertDelegationAllowed(tree, parentId, { ...limits, maxConcurrency: OPEN_CONCURRENCY }, request);
+): { readonly depth: number } =>
+  assertDelegationAllowed(tree, parentId, { ...limits, maxConcurrency: OPEN_CONCURRENCY });
 
 export type SlotCheck =
   | { readonly free: true }

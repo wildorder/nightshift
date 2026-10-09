@@ -56,7 +56,6 @@ import {
 } from "./examine.js";
 import {
   addDetachedWorktree,
-  changedPaths,
   deleteRef,
   git,
   jobBranch,
@@ -70,7 +69,6 @@ import {
 import { checkoutBlocked, integrateNode } from "./integrate.js";
 import { repairProvisionalLine } from "./provisional-line.js";
 import { attemptsOf, startJob } from "./runner.js";
-import { checkChangedPaths, describeScopeViolation } from "./scope-check.js";
 import { verifyNode } from "./verify.js";
 
 export interface ResumeResult {
@@ -174,9 +172,9 @@ type Stopped = { readonly kind: "failed" | "refused"; readonly reason: string };
 
 /**
  * `node`, its commit on the program head: as it is when the head is its parent,
- * replayed onto the head otherwise. A replay that conflicts, or that now reaches
- * outside the node's scope, ends the node (`cancel`, the one edge out of
- * `deferred` that is not a verification) with the reason.
+ * replayed onto the head otherwise. A replay that conflicts ends the node
+ * (`cancel`, the one edge out of `deferred` that is not a verification) with
+ * the reason.
  */
 const replayedOntoHead = async (
   environment: LandingEnvironment | ExecutionEnvironment,
@@ -197,15 +195,11 @@ const replayedOntoHead = async (
     onto: head,
     atMs: clock.now(),
   });
-  const offending = replayed.ok
-    ? checkChangedPaths(node.scope, await changedPaths(runner, worktree, head, replayed.commitSha))
-    : undefined;
-  if (!replayed.ok || (offending !== undefined && !offending.allowed)) {
-    const reason = replayed.ok
-      ? describeScopeViolation(offending?.allowed === false ? offending.offending : [])
-      : `integration_conflict: this change no longer applies on the program head after an ` +
-        `earlier deferred node did not land as it was, in ${replayed.conflicts.join(", ") || replayed.detail}. ` +
-        "It is kept under its job branch; plan a correction for it.";
+  if (!replayed.ok) {
+    const reason =
+      `integration_conflict: this change no longer applies on the program head after an ` +
+      `earlier deferred node did not land as it was, in ${replayed.conflicts.join(", ") || replayed.detail}. ` +
+      "It is kept under its job branch; plan a correction for it.";
     await stores.executionNodes.put({
       ...transition(node, "cancel", nowIso(clock)),
       outcomeReason: reason,

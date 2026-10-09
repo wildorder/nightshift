@@ -79,7 +79,7 @@ export const FindingEvidenceSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     kind: z.literal("contract"),
-    /** The clause, quoted or named: an acceptance criterion, a constraint, a scope rule. */
+    /** The clause, quoted or named: an acceptance criterion, a constraint, a forbidden action. */
     clause: z.string().min(1),
   }),
 ]);

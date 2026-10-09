@@ -220,11 +220,11 @@ export interface ProgramRuling {
 export interface HarnessStartInput {
   /** The execution identity, already persisted as `created` before this call (A-04). */
   readonly agent: Agent;
-  /** The node the work belongs to. Its `scope` is the effective authority. */
+  /** The node the work belongs to. */
   readonly node: ExecutionNode;
-  /** What to do. The objective, requested scope and acceptance criteria. */
+  /** What to do: the objective and acceptance criteria. */
   readonly job: JobContract;
-  /** For the brief: the program's constraints and the verification it will face. */
+  /** For the brief: the program's constraints, forbidden actions and verification. */
   readonly program: ProgramContract;
   /** Absolute path to the isolated worktree. The worker's working directory. */
   readonly worktree: string;

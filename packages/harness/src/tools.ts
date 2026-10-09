@@ -28,23 +28,15 @@ import type {
   Reversibility,
 } from "@nightshift/contracts";
 
-/** What `complete` found. The job is already durably recorded either way. */
-export type WorkerCompletion =
-  | {
-      readonly kind: "implemented";
-      readonly commitSha: CommitSha;
-      readonly changedPaths: readonly string[];
-    }
-  | {
-      /**
-       * The snapshot touched paths outside the node's effective scope. The job is
-       * **already durably failed** by the time this is returned; the worker is
-       * being told, not asked.
-       */
-      readonly kind: "scope_violation";
-      readonly offending: readonly string[];
-      readonly reason: string;
-    };
+/**
+ * What `complete` recorded: the commit that holds the work, whatever paths it
+ * changed. A job carries no path scope (the owner's ruling, 2026-10-09).
+ */
+export interface WorkerCompletion {
+  readonly kind: "implemented";
+  readonly commitSha: CommitSha;
+  readonly changedPaths: readonly string[];
+}
 
 export interface WorkerDecisionInput {
   readonly context: string;
@@ -66,9 +58,8 @@ export interface WorkerTools {
   /** Intent, not ground truth: recorded as `node.progress` with source `mcp` (A-30). */
   progress(message: string, percent?: number): Promise<void>;
   /**
-   * Snapshots the worktree into one Nightshift-authored commit, checks every
-   * changed path against the node's scope, and moves the node to `implemented`
-   * and no further (A-05, A-29).
+   * Snapshots the worktree into one Nightshift-authored commit and moves the
+   * node to `implemented` and no further (A-05, A-29), whatever paths it changed.
    */
   complete(summary: string): Promise<WorkerCompletion>;
   /** Durable failure with the worker's own reason. */

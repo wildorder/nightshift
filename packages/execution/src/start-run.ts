@@ -244,8 +244,6 @@ export const startRun = async (
     kind: "program",
     parentNodeId: null,
     depth: 0,
-    // The root's authority is the contract's scope; every child may only narrow it.
-    scope: program.scope,
     status: "validated",
     jobContractId: null,
     commitSha: null,

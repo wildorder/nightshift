@@ -145,24 +145,26 @@ and decides its own jobs.
 done before the run, and proven by a deterministic command.
 
 Execution is recursive. Children may narrow inherited authority; they may never
-widen it.
+widen it. Authority is delegation and depth, never a path scope: a job is given
+the reach to do the job (the owner's ruling, 2026-10-09).
 
 **Program Contract** — the stable authority for a run: objective, project
-identity, repository, program branch, success criteria, constraints, permissions,
-forbidden actions, deterministic verification, model/provider policy,
+identity, repository, program branch, success criteria, constraints, where the
+work is expected, forbidden actions (told to every agent), deterministic
+verification, model/provider policy,
 risk/examination policy, delegation limits, cost policy. The orchestrator may
 continuously revise its *implementation plan*. It may not silently revise the
 Program Contract to make its implementation pass.
 
-**Job Contract** — objective, scope (includes/excludes), acceptance criteria,
-dependencies, risk, ambiguity. Nightshift — not the orchestrator — then decides
+**Job Contract** — objective, acceptance criteria, dependencies, risk,
+ambiguity. No path scope (2026-10-09). Nightshift — not the orchestrator — then decides
 harness, model, workspace, worktree, priority, examination requirement, and
 fallback policy. An orchestrator may *request* a model; Nightshift honours it
 only within the Program Contract's policy and records the routing decision as
 an override, so the choice stays explainable.
 
-**Execution node** — a node in the run's execution tree. Parentage, scope
-inheritance, depth, and concurrency are enforced structurally.
+**Execution node** — a node in the run's execution tree. Parentage, depth, and
+concurrency are enforced structurally.
 
 **Verification** — deterministic, Nightshift-owned evidence tied to a job, agent,
 commit, and where applicable a program success criterion.

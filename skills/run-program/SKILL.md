@@ -73,8 +73,8 @@ Check, and say what you find, without fixing anything the human did not ask for:
    held until it lands.
 3. `strand.delegate { strandId }` for **every** strand, at once. You name the
    strand and nothing else: its orchestrator is handed its plan section
-   verbatim, the human's decisions that touch it, and the other strands'
-   scopes. Nightshift holds a strand until what it depends on has succeeded, so
+   verbatim, the human's decisions that touch it, and where the plan expects
+   the other strands' work. Nightshift holds a strand until what it depends on has succeeded, so
    do not sequence them yourself. Plain `delegate` is refused: the plan fixes
    the strands, and how each divides into jobs is its orchestrator's call. The
    one exception is a repair of a gate (section 2a).
@@ -118,8 +118,8 @@ landing fast-forwards the branch it is on.
 
 A gate is a setup or verification step. A run repairs a broken gate itself, with
 a **repair job**: the one job the root adds outside the strands (D-P15-04). Only
-the root may; a strand's orchestrator is refused. A repair has the program's
-whole scope, may change anything it needs (setup and the gate commands in
+the root may; a strand's orchestrator is refused. A repair may change anything
+it needs (setup and the gate commands in
 `nightshift.config.json` or the contract included), and is examined at high
 risk against Nightshift's gate standard. **Every repair carries its decision**,
 recorded in the same call; without one it is refused as `repair_needs_decision`:

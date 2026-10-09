@@ -51,7 +51,6 @@ const jobFor = (world: World): JobContract =>
     ...world.scope,
     jobContractId: world.ids.next("job"),
     objective: "Add a median helper to src/math.js and a test for it.",
-    scope: { includes: ["src/**", "test/**"] },
     acceptance: ["median([1,2,3]) is 2", "node --test passes"],
     dependencies: [],
     risk: "low",
@@ -63,7 +62,6 @@ const delegate = (world: World, job: JobContract): Promise<StartedJob> =>
   runJob(world.environment, {
     session: world.session,
     job,
-    scope: world.session.program.scope,
     depth: 1,
     parentNodeId: world.session.rootNodeId,
     route: ROUTE,
@@ -180,7 +178,6 @@ describe("a worker launched under the engine's token (D-P10-20, D-P10-29)", () =
     const job = jobFor(world);
     const { nodeId } = await engine.submit({
       job,
-      scope: world.session.program.scope,
       depth: 1,
       parentNodeId: world.session.rootNodeId,
       route: ROUTE,

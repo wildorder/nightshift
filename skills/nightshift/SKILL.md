@@ -30,7 +30,8 @@ expensive decisions in `docs/programs/{id}/plan.md` and `contract.json` (the
   - Delegate **each strand, and nothing else**, with
     `strand.delegate { strandId }`. You say which strand; its orchestrator is
     handed its section of the plan word for word, the human's decisions that
-    touch it, and the other strands' scopes. Plain `delegate` is refused to you
+    touch it, and where the plan expects the other strands' work. Plain
+    `delegate` is refused to you
     (`plan_fixes_strands`): how a strand divides into jobs is its own
     orchestrator's decision, one level down. The one exception is a **repair**
     of a broken gate (below).
@@ -43,8 +44,7 @@ expensive decisions in `docs/programs/{id}/plan.md` and `contract.json` (the
     provisional line, and `nightshift resume {id}` lands it when they are back.
   - **A gate that breaks is repaired, never re-planned** (P15). A repair is
     `delegate { objective, acceptance, repair: { cause, gates, decision } }`:
-    the program's whole scope, high risk, and a decision recorded in the same
-    call (refused as `repair_needs_decision` without one). Only the root may
+    high risk, and a decision recorded in the same call (refused as `repair_needs_decision` without one). Only the root may
     open one. When the run starts red (`gate.red`), your first act is a repair
     `{ cause: "red_base" }`; the strands are held until it lands. On a flake
     (`gate.flaked`), the work landed: open one repair `{ cause: "flaky" }` per
@@ -64,7 +64,8 @@ strands, which you cut into jobs yourself.
 ## Start a run
 
 A run needs a Program Contract: the objective, the repository and its program
-branch, the success criteria, the scope, and the verification commands. It is
+branch, the success criteria, the forbidden actions, and the verification
+commands. It is
 authored by a human and it is the stable authority for the run. **Do not edit
 it.** If it is wrong, say so and stop; a contract quietly revised to make an
 implementation pass is the one failure this system exists to prevent.
@@ -91,25 +92,18 @@ the file on disk.
 ```
 delegate {
   objective:  "one bounded piece of work, stated as an outcome"
-  scope:      { includes: ["src/parser/**"], excludes: ["src/parser/generated/**"] }
   acceptance: ["parse('1+2') returns an AST with one BinaryExpr", "node --test passes"]
   risk:       "low" | "medium" | "high"
 }
 ```
 
-**Scope is authority, not advice.** It is what the worker may change, and
-Nightshift checks every changed path against it when the job finishes — one file
-outside it fails the whole job, durably, and nothing is integrated. Three
-consequences worth internalising:
-
-- **You can only narrow.** A job's scope must sit inside the program's. Ask for
-  more and the delegation is refused with `scope_widening`, listing exactly which
-  patterns were not covered.
-- **Scope the job, not the repository.** `src/**` for a job that touches one
-  module is how a worker ends up rewriting something you did not ask about.
-- **Include what the job genuinely needs.** A job that must add a test needs the
-  test directory in its scope. Refusing to include it does not make the worker
-  careful; it makes the job fail at the last step.
+**A job carries no path scope** (the owner's ruling, 2026-10-09: "give them
+the scope to do the job"). The worker changes whatever the job needs, anywhere in
+the repository, and nothing is refused or failed for the paths it touched: what
+decides whether it lands is verification, and examination where the policy asks
+for it. Bound a job by its objective and acceptance instead. Two jobs that change
+the same lines at once will conflict, so give overlapping work to one job or run
+it one after the other. Every worker is told the program's forbidden actions.
 
 **Acceptance criteria are what the worker is judged against**, so write them as
 things that are checkable rather than as adjectives. "Handles empty input" is
@@ -176,14 +170,13 @@ job that was fine on its own and breaks against what landed before it ends
 ### Sub-programs
 
 ```
-delegate { kind: "sub-program", objective, scope, acceptance }
+delegate { kind: "sub-program", objective, acceptance }
 ```
 
 hands a **bounded region** of the program to an orchestrator of its own, which
 delegates the jobs within it. Use one when a part of the work is big enough to
-need its own planning and can be fenced by scope: give it a whole outcome and a
-narrower scope than yours. It can only delegate inside that scope, only as deep
-as the program's `maxDepth` allows, and it writes no code itself. You wait for it
+need its own planning: give it a whole outcome. It delegates only as deep as
+the program's `maxDepth` allows, and it writes no code itself. You wait for it
 like a job; it ends `succeeded` or `failed`.
 
 ## Wait, and read the result
@@ -207,13 +200,13 @@ Read the status carefully, because the words are not interchangeable:
 | `verification_failed` | The commands failed. Nothing integrated. The `Verification` record names the failing step, and its log is an artifact. |
 | `verified` → `sealed` → `integrated` | Passed, addressable, and fast-forwarded into the program branch. |
 | `queued` | Delegated and waiting for a slot. `job.get` says what it is waiting for. Not a problem. |
-| `failed` | The worker failed, exited without reporting, changed something outside its scope, **conflicted** with work integrated since it started (`integration_conflict`, with the paths), or was **stopped by its examiner** (`examination_failed`, with the findings). `outcomeReason` says which. |
+| `failed` | The worker failed, exited without reporting, **conflicted** with work integrated since it started (`integration_conflict`, with the paths), or was **stopped by its examiner** (`examination_failed`, with the findings). `outcomeReason` says which. |
 | `succeeded` | A sub-program whose orchestrator reported its objective met. |
 | `interrupted` | Something stopped it that nobody chose. Retryable. |
 
 When a job fails, **read `outcomeReason` before doing anything else.** It is
-written to be acted on: the offending paths for a scope violation, the failing
-step for a verification failure, the two commits for a stale base.
+written to be acted on: the worker's own reason for a failure, the failing step
+for a verification failure, the two commits for a stale base.
 
 `job.retry { jobId }` runs a job again **from the current program branch** as a
 new attempt. It is usually right for an `integration_conflict`, where the work
@@ -255,7 +248,7 @@ Do not dispute a finding to get past it; dispute it when it is wrong.
 
 A failed job is usually a delegation problem, not a worker problem. Ask why
 before you retry: a vague objective, acceptance criteria that did not say what
-mattered, a scope that excluded something the job needed.
+mattered, a job cut so that it conflicts with another in flight.
 
 ## Record decisions
 
@@ -292,7 +285,7 @@ Refused while a job is still running. Anything but `succeeded` needs a reason.
   is not helping; its commits are squashed away.
 - **Do not treat `implemented` as done.** It is a claim, and claims are exactly
   what verification exists to check. Wait for `integrated`.
-- **Do not work around a refusal.** `scope_widening`, `depth_limit_exceeded`,
+- **Do not work around a refusal.** `depth_limit_exceeded`,
   a refused third fix and a routing refusal are the system telling you something
   true about the work. Restate the delegation, wait, or
   tell the human — do not go and do the job yourself to get past it.
