@@ -118,21 +118,26 @@ describe("a dispatch carries the laptop's reference audit (P16 D-06)", () => {
     expect(ReferenceAuditSchema.safeParse(without).success).toBe(true);
   });
 
-  it("refuses an unknown verdict, and an output artifact on a gate that did not fail", () => {
+  it("refuses an unknown verdict, and an output artifact on a gate that did not run", () => {
     const gates = (gate: object) => ({ ...reference, gates: [gate] });
     expect(
       ReferenceAuditSchema.safeParse(gates({ id: "a", kind: "check", verdict: "skipped" })).success,
     ).toBe(false);
-    expect(
+    const withOutput = (verdict: string) =>
       ReferenceAuditSchema.safeParse(
         gates({
           id: "a",
           kind: "check",
-          verdict: "passed",
+          verdict,
           outputArtifactId: "art_01M4AAAAAAAAAAAAAAAAAAAAAA",
         }),
-      ).success,
-    ).toBe(false);
+      ).success;
+    // Every gate that ran keeps its output (P16 D-07); one that did not has none.
+    expect(withOutput("passed")).toBe(true);
+    expect(withOutput("failed")).toBe(true);
+    expect(withOutput("deferred")).toBe(true);
+    expect(withOutput("waiting")).toBe(false);
+    expect(withOutput("unrun")).toBe(false);
   });
 });
 

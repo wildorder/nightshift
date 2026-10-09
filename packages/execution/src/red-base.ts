@@ -14,8 +14,8 @@
 import { type ArtifactId, EventSchema, type ExecutionNodeId } from "@nightshift/contracts";
 import { nowIso } from "@nightshift/core";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
-import type { GateAudit } from "./gate-audit.js";
-import { createEventOutbox } from "./outbox.js";
+import type { AuditedGate, GateAudit } from "./gate-audit.js";
+import { createEventOutbox, type EventOutbox } from "./outbox.js";
 import { recordArtifact } from "./runner.js";
 
 /** The payload of a `gate.red` event: the base audited, and the ids of its red gates. */
@@ -78,9 +78,33 @@ export const recordRedBase = async (
       }),
     );
   }
-  const recorded = new Map<string, ArtifactId>();
   // Only the red ones: a `deferred` gate is not red (D-P7-10), and its output is not a failure's.
-  for (const gate of input.audit.gates.filter((candidate) => candidate.verdict === "failed")) {
+  const recorded = await keepOutputs(environment, outbox, {
+    ...input,
+    gates: input.audit.gates.filter((candidate) => candidate.verdict === "failed"),
+  });
+  await outbox.flush(5_000).catch(() => undefined);
+  return recorded;
+};
+
+export interface RecordGateOutputsInput {
+  readonly scope: RunSession["scope"];
+  /** The run's program node. */
+  readonly nodeId: ExecutionNodeId;
+  /** The gates whose last output to keep; one that did not run has none, and is skipped. */
+  readonly gates: readonly AuditedGate[];
+  /** Who writes these records (A-30): the outbox's writer id. */
+  readonly writerId: string;
+}
+
+/** Each gate's last output, whatever its verdict, as a verification log on the program node. */
+const keepOutputs = async (
+  environment: Pick<ExecutionEnvironment, "stores" | "bodies" | "clock" | "ids">,
+  outbox: EventOutbox,
+  input: Omit<RecordGateOutputsInput, "writerId">,
+): Promise<ReadonlyMap<string, ArtifactId>> => {
+  const recorded = new Map<string, ArtifactId>();
+  for (const gate of input.gates) {
     const last = gate.result;
     if (last === undefined) continue;
     const artifactId = await recordArtifact(
@@ -95,6 +119,27 @@ export const recordRedBase = async (
     );
     recorded.set(gate.id, artifactId as ArtifactId);
   }
+  return recorded;
+};
+
+/**
+ * Each given gate's last output as a verification log on the program node,
+ * passed ones included: a reference audit keeps every output it has (P16 D-07),
+ * so an environment fault can show the laptop's beside the machine's. Returns
+ * the artifact recorded for each, by gate id.
+ */
+export const recordGateOutputs = async (
+  environment: Pick<ExecutionEnvironment, "stores" | "bodies" | "clock" | "ids">,
+  input: RecordGateOutputsInput,
+): Promise<ReadonlyMap<string, ArtifactId>> => {
+  const outbox = createEventOutbox({
+    events: environment.stores.events,
+    scope: input.scope,
+    clock: environment.clock,
+    ids: environment.ids,
+    writerId: input.writerId,
+  });
+  const recorded = await keepOutputs(environment, outbox, input);
   await outbox.flush(5_000).catch(() => undefined);
   return recorded;
 };

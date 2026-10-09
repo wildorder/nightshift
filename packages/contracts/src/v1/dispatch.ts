@@ -134,12 +134,21 @@ export const ReferenceGateVerdictSchema = z.enum([
 ]);
 export type ReferenceGateVerdict = z.infer<typeof ReferenceGateVerdictSchema>;
 
+/** A gate with this verdict ran, so it has an output: `passed`, `failed` or `deferred`. */
+export const referenceGateRan = (verdict: ReferenceGateVerdict): boolean =>
+  verdict === "passed" || verdict === "failed" || verdict === "deferred";
+
 export const ReferenceGateSchema = z.strictObject({
   /** The gate's id as the audit names it: `setup:<id>` for a setup step. */
   id: z.string().min(1),
   kind: z.enum(["setup", "check"]),
   verdict: ReferenceGateVerdictSchema,
-  /** The artifact, on the run's program node, holding a failed gate's output tail. */
+  /**
+   * The artifact, on the run's program node, holding the gate's output tail.
+   * Any gate that ran may carry one (P16 D-07), so a fault can show the
+   * laptop's output beside the machine's; earlier references kept only a failed
+   * gate's.
+   */
   outputArtifactId: ArtifactIdSchema.optional(),
 });
 export type ReferenceGate = z.infer<typeof ReferenceGateSchema>;
@@ -168,8 +177,10 @@ export const ReferenceAuditSchema = z
   })
   .refine(
     (value) =>
-      value.gates.every((gate) => gate.outputArtifactId === undefined || gate.verdict === "failed"),
-    { message: "only a failed gate carries an output artifact", path: ["gates"] },
+      value.gates.every(
+        (gate) => gate.outputArtifactId === undefined || referenceGateRan(gate.verdict),
+      ),
+    { message: "only a gate that ran carries an output artifact", path: ["gates"] },
   );
 export type ReferenceAudit = z.infer<typeof ReferenceAuditSchema>;
 

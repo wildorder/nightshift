@@ -41,9 +41,11 @@ export {
 export { examinationServices, routeJob } from "./routing.js";
 export {
   auditOnMachine,
+  auditThenRoot,
   type MachineAuditContext,
   type MachineAuditResult,
   type MachineAuditRuntime,
+  nodeOnMachine,
 } from "./runner/gates.js";
 export {
   type CreateServerInput,

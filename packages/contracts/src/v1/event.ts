@@ -11,7 +11,8 @@
  */
 import { z } from "zod";
 import { AgentIdSchema, ArtifactIdSchema, EventIdSchema, ExecutionNodeIdSchema } from "../ids.js";
-import { IsoTimestampSchema, runScoped } from "./common.js";
+import { CommitShaSchema, IsoTimestampSchema, runScoped } from "./common.js";
+import { ReferenceGateVerdictSchema } from "./dispatch.js";
 
 export const EventSourceSchema = z.enum(["mcp", "hook", "control-plane"]);
 export type EventSource = z.infer<typeof EventSourceSchema>;
@@ -122,6 +123,13 @@ export const EventTypeSchema = z.enum([
    * definitions.
    */
   "gate.repaired",
+  /**
+   * Added in P16 (D-07). Gates green in the reference audit (the laptop's) are
+   * red on the run's machine: the machine is at fault, not the project, so the
+   * run is cancelled before the root starts and nothing is repaired. Recorded
+   * on the run's program node. Payload: `EnvironmentFaultPayload`.
+   */
+  "environment.fault",
   // Decisions, checkpoints, routing, artifacts.
   "decision.recorded",
   "decision.overridden",
@@ -180,3 +188,31 @@ export const EventSchema = z
     path: ["payload"],
   });
 export type Event = z.infer<typeof EventSchema>;
+
+/** One gate the reference audit and the machine disagree on (P16 D-07). */
+export const EnvironmentFaultGateSchema = z.strictObject({
+  id: z.string().min(1),
+  command: z.string(),
+  kind: z.enum(["setup", "check"]),
+  /** The laptop's verdict: `passed`, for a fault. */
+  reference: ReferenceGateVerdictSchema,
+  /** The machine's verdict: `failed`, for a fault. */
+  machine: ReferenceGateVerdictSchema,
+  /** The laptop's output tail, on the run's program node, when the reference kept one. */
+  referenceOutputArtifactId: ArtifactIdSchema.optional(),
+  /** The machine's output tail, on the run's program node. */
+  machineOutputArtifactId: ArtifactIdSchema.optional(),
+});
+export type EnvironmentFaultGate = z.infer<typeof EnvironmentFaultGateSchema>;
+
+/** The payload of an `environment.fault` event, for the report and the Studio to read. */
+export const EnvironmentFaultPayloadSchema = z.strictObject({
+  /** The commit both audits were of. */
+  baseCommit: CommitShaSchema,
+  gates: z.array(EnvironmentFaultGateSchema).min(1),
+  /** `node --version` where the reference audit ran, without the `v`; absent when there was none. */
+  referenceNode: z.string().min(1).optional(),
+  /** `node --version` on the machine, as a worker user in the project environment; absent when there was none. */
+  machineNode: z.string().min(1).optional(),
+});
+export type EnvironmentFaultPayload = z.infer<typeof EnvironmentFaultPayloadSchema>;

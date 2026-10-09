@@ -58,6 +58,11 @@ export {
   type WorkerLaunchIdentity,
 } from "./environment.js";
 export {
+  environmentFaultReason,
+  type RecordEnvironmentFaultInput,
+  recordEnvironmentFault,
+} from "./environment-fault.js";
+export {
   arbitrateAll,
   carriedExamination,
   continuedByNightshift,
@@ -86,6 +91,13 @@ export {
   gateVerdictOf,
   outputTail,
 } from "./gate-audit.js";
+export {
+  type ComparedGate,
+  compareWithReference,
+  type GateAgreement,
+  type GateComparison,
+  gateAgreement,
+} from "./gate-comparison.js";
 export {
   fingerprintAtCommit,
   gitBlobReader,
@@ -125,7 +137,13 @@ export {
   repairProvisionalLine,
 } from "./provisional-line.js";
 export * from "./publish.js";
-export { gateRedPayload, type RecordRedBaseInput, recordRedBase } from "./red-base.js";
+export {
+  gateRedPayload,
+  type RecordGateOutputsInput,
+  type RecordRedBaseInput,
+  recordGateOutputs,
+  recordRedBase,
+} from "./red-base.js";
 export {
   type ReferenceAuditInput,
   referenceAuditOf,

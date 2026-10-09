@@ -195,7 +195,7 @@ afterEach(async () => {
 });
 
 describe("run --remote audits on the laptop, at the base it dispatches (P16 D-06)", () => {
-  it("carries every gate's verdict, the Node it ran on, and each failed gate's output", async () => {
+  it("carries every gate's verdict, the Node it ran on, and the output of each gate that ran", async () => {
     const head = git("rev-parse", PROGRAM_BRANCH);
     expect(await cli(remoteEnvironment(), "run", PROGRAM, "--remote")).toBe(0);
 
@@ -238,7 +238,19 @@ describe("run --remote audits on the laptop, at the base it dispatches (P16 D-06
 
     const broken = reference?.gates.find((gate) => gate.id === "broken");
     expect(broken?.outputArtifactId).toMatch(/^art_/);
-    expect(reference?.gates.filter((gate) => gate.outputArtifactId !== undefined)).toHaveLength(1);
+    // Passed ones too (P16 D-07): a fault on the machine shows the laptop's output beside its own.
+    for (const gate of reference?.gates ?? []) {
+      if (gate.verdict === "waiting" || gate.verdict === "unrun") {
+        expect(gate.outputArtifactId, gate.id).toBeUndefined();
+      } else {
+        expect(gate.outputArtifactId, gate.id).toMatch(/^art_/);
+      }
+    }
+    const passed = reference?.gates.find((gate) => gate.id === "needs-first");
+    expect(await stores().artifacts.get(scope, passed?.outputArtifactId as never)).toMatchObject({
+      executionNodeId: run.rootNodeId,
+      kind: "verification-log",
+    });
     const artifact = await stores().artifacts.get(scope, broken?.outputArtifactId as never);
     expect(artifact).toMatchObject({
       executionNodeId: run.rootNodeId,

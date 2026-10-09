@@ -10,7 +10,7 @@ import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import { createRunnerPlane, createRuntime } from "../compose.js";
 import { describeHeadlessEnding, runHeadless } from "../headless.js";
 import { workerUserName } from "../run-as.js";
-import { auditOnMachine } from "../runner/gates.js";
+import { auditThenRoot } from "../runner/gates.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
 import {
@@ -69,53 +69,58 @@ runRunner({
     });
     const runtime = await createRuntime(env, "orchestrator");
     // The base's gates, on this machine, before any agent is paid for. A red
-    // base is recorded and the root starts: its first job is the repair (D-P15-03).
-    await auditOnMachine(runtime, context, say);
-    say(`root starting in ${context.layout.checkout}`);
-    const result = await runHeadless(runtime, env, {
-      scope: context.scope,
-      repoPath: context.layout.checkout,
-      // A replacement machine resumes the run the lost one was running (T6).
-      ...(context.dispatch.generation > 1
-        ? { recovering: { generation: context.dispatch.generation } }
-        : {}),
-    });
-    say(describeHeadlessEnding(result));
-    // The root's transcript, as an artifact on its node: the one durable
-    // record of what the orchestrator did, when the machine is long gone.
-    try {
-      const bytes = await readFile(result.transcript);
-      if (bytes.byteLength > 0) {
-        const outbox = createEventOutbox({
-          events: runtime.stores.events,
-          scope: context.scope,
-          clock: runtime.clock,
-          ids: runtime.ids,
-          writerId: `${result.agentId}-runner`,
-        });
-        const artifactId = await recordArtifact(
-          { ...runtime, outbox },
-          {
+    // base is recorded and the root starts: its first job is the repair
+    // (D-P15-03). A gate green in the reference and red here is an
+    // environment fault (P16 D-07): the root never starts, and the dispatch
+    // ends failed with it.
+    const { ended } = await auditThenRoot(runtime, context, say, async () => {
+      say(`root starting in ${context.layout.checkout}`);
+      const result = await runHeadless(runtime, env, {
+        scope: context.scope,
+        repoPath: context.layout.checkout,
+        // A replacement machine resumes the run the lost one was running (T6).
+        ...(context.dispatch.generation > 1
+          ? { recovering: { generation: context.dispatch.generation } }
+          : {}),
+      });
+      say(describeHeadlessEnding(result));
+      // The root's transcript, as an artifact on its node: the one durable
+      // record of what the orchestrator did, when the machine is long gone.
+      try {
+        const bytes = await readFile(result.transcript);
+        if (bytes.byteLength > 0) {
+          const outbox = createEventOutbox({
+            events: runtime.stores.events,
             scope: context.scope,
-            nodeId: result.run.rootNodeId,
-            kind: "transcript",
-            contentType: "application/x-ndjson",
-            bytes: new Uint8Array(bytes),
-          },
+            clock: runtime.clock,
+            ids: runtime.ids,
+            writerId: `${result.agentId}-runner`,
+          });
+          const artifactId = await recordArtifact(
+            { ...runtime, outbox },
+            {
+              scope: context.scope,
+              nodeId: result.run.rootNodeId,
+              kind: "transcript",
+              contentType: "application/x-ndjson",
+              bytes: new Uint8Array(bytes),
+            },
+          );
+          await outbox.flush(5_000).catch(() => undefined);
+          say(`root transcript recorded as ${artifactId}`);
+        }
+      } catch (error) {
+        say(
+          `the root's transcript could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
         );
-        await outbox.flush(5_000).catch(() => undefined);
-        say(`root transcript recorded as ${artifactId}`);
       }
-    } catch (error) {
-      say(
-        `the root's transcript could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    if (result.exit.kind !== "completed") {
-      throw new Error(
-        `the root ended ${result.exit.kind}; run ${result.run.runId} is ${result.run.status}`,
-      );
-    }
+      if (result.exit.kind !== "completed") {
+        throw new Error(
+          `the root ended ${result.exit.kind}; run ${result.run.runId} is ${result.run.status}`,
+        );
+      }
+    });
+    return ended;
   },
 })
   .then((code) => {

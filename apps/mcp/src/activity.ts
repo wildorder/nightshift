@@ -155,10 +155,28 @@ const RENDER: Readonly<Record<string, Render>> = {
   "gate.red": (p) =>
     `the base is red: ${listOf(p.failing)}; the run repairs it first — delegate a repair ` +
     "{ cause: red_base } before anything else; strands wait on it",
+  // P16: green on the laptop and red on the machine is the machine's fault, not the base's (D-07).
+  "environment.fault": (p) => environmentFaultText(p),
   "gate.flaked": (p, _context, who) =>
     `${listOf(p.stepIds)} flaked on ${who}: the work landed; open a repair { cause: flaky } off ` +
     "the blocking path",
   "gate.repaired": (p, context, who) => repairedText(p, context, who),
+};
+
+/** The gates the machine disagrees with the reference on, and both Nodes. */
+const environmentFaultText = (p: Record<string, unknown>): string => {
+  const gates = Array.isArray(p.gates)
+    ? p.gates.map((gate) => {
+        const g = (gate ?? {}) as Record<string, unknown>;
+        return `${String(g.id)} (${String(g.reference)} on the reference, ${String(g.machine)} here)`;
+      })
+    : [];
+  const node = (value: unknown): string => (typeof value === "string" ? value : "none");
+  return (
+    `environment fault: ${short(gates.join(", "))}; Node ${node(p.referenceNode)} on the ` +
+    `reference, ${node(p.machineNode)} on the machine. The machine is at fault, not the base: ` +
+    "nothing is repaired, and the run is cancelled"
+  );
 };
 
 /** A repair landed: what it repaired, under which decision, and whether the gates changed. */

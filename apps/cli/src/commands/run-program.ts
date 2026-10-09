@@ -53,6 +53,7 @@ import {
   type GateAudit,
   type GitRunner,
   type PreflightResult,
+  recordGateOutputs,
   recordRedBase,
   referenceAuditOf,
   requireRatifiedPlan,
@@ -415,32 +416,39 @@ const atAuditedBase =
       ? { stdout: `${sha}\n`, stderr: "", exitCode: 0 }
       : git(args, options);
 
-/** Each red gate's last output, kept on the run's program node beside its `gate.red`. */
-const keepRedOutput = async (
+/**
+ * The audit's outputs, kept on the run's program node: a local run's red
+ * gates, beside its `gate.red`; a remote run's reference keeps every gate that
+ * ran, passed ones included, so an environment fault on the machine can show
+ * the laptop's output beside its own (P16 D-07).
+ */
+const keepAuditOutput = async (
   environment: CliEnvironment,
   session: Session,
   started: StartedRun,
   audit: GateAudit | undefined,
+  reference: boolean,
 ): Promise<ReadonlyMap<string, ArtifactId>> => {
-  if (audit?.red !== true) return new Map();
+  if (audit === undefined) return new Map();
   const { projectId, programId, runId } = started.run;
-  return recordRedBase(
-    {
-      stores: session.stores,
-      bodies: createHttpArtifactBodyStore({ transport: session.transport }),
-      clock: environment.clock,
-      ids: environment.ids,
-    },
-    {
-      scope: { projectId, programId, runId },
-      nodeId: started.rootNode.executionNodeId,
-      audit,
-      writerId: `run-${runId}-gates`,
-      // `startRun` wrote it, with the run's other start events; or, for a
-      // remote run, the machine writes it if its own audit agrees (P16 D-06).
-      event: false,
-    },
-  );
+  const writer = {
+    stores: session.stores,
+    bodies: createHttpArtifactBodyStore({ transport: session.transport }),
+    clock: environment.clock,
+    ids: environment.ids,
+  };
+  const target = {
+    scope: { projectId, programId, runId },
+    nodeId: started.rootNode.executionNodeId,
+    writerId: `run-${runId}-gates`,
+  };
+  if (reference) {
+    // No `gate.red` here: the machine writes it if its own audit agrees (P16 D-06).
+    return recordGateOutputs(writer, { ...target, gates: audit.gates });
+  }
+  if (!audit.red) return new Map();
+  // `startRun` wrote `gate.red`, with the run's other start events.
+  return recordRedBase(writer, { ...target, audit, event: false });
 };
 
 /** What is settled before the run exists: a local run's audit, or a remote run's readiness and reference. */
@@ -561,11 +569,12 @@ export const runProgram = async (
   const remote = before.remote;
 
   const started = await startAfter(deps, files, options, before);
-  const outputs = await keepRedOutput(
+  const outputs = await keepAuditOutput(
     environment,
     session,
     started,
     before.audit ?? remote?.reference.audit,
+    remote !== undefined,
   );
   await recordConfirmations(environment, session, started, confirming);
   const sayCarried = (): void => {
