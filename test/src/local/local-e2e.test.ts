@@ -110,6 +110,9 @@ beforeAll(async () => {
     startLoopback: async () => {
       throw new Error("a local instance has no sign-in");
     },
+    sleep: async () => undefined,
+    stdoutIsTTY: false,
+    onInterrupt: () => () => undefined,
     launch,
     assets: {
       skillsDir: "",

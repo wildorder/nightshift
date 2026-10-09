@@ -84,6 +84,22 @@ const remoteEnvironment = (git?: GitRunner): CliEnvironment => {
       const body = JSON.stringify(makeDispatch(createFixtures()));
       return { status: 201, text: async () => body };
     }
+    // P16 S-03: the attached display reads the dispatch until the machine agrees.
+    if (init.method === "GET" && url.endsWith("/dispatch")) {
+      const body = JSON.stringify(
+        makeDispatch(createFixtures(), {
+          status: "running",
+          progress: {
+            stage: "audit",
+            verdict: "agrees",
+            generation: 1,
+            stageStartedAt: "2026-09-15T12:00:00.000Z",
+            updatedAt: "2026-09-15T12:00:00.000Z",
+          },
+        }),
+      );
+      return { status: 200, text: async () => body };
+    }
     return real(url, init);
   };
   const exec: Exec = async (file) => {
@@ -210,6 +226,10 @@ describe("run --remote audits on the laptop, at the base it dispatches (P16 D-06
     expect(dispatched).toHaveLength(1);
     const input = dispatched[0];
     expect(input?.baseSha).toBe(head);
+    // P16 S-03: it stayed attached until the machine agreed.
+    expect(op.out.join("\n")).toContain(
+      "the machine agrees with your laptop: you can close it now.",
+    );
     const reference = input?.reference;
     expect(reference?.base).toBe(head);
     expect(reference?.node).toBe("22.22.0");

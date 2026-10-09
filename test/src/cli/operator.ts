@@ -45,6 +45,8 @@ export interface Operator {
   readonly err: string[];
   readonly orgId: OrgId;
   readonly ids: IdGenerator;
+  /** Presses Ctrl-C: calls every interrupt handler the command has installed and not removed. */
+  interrupt(): void;
   /** How many times the CLI went to the token endpoint. */
   tokenMints(): number;
   cleanup(): Promise<void>;
@@ -124,6 +126,7 @@ export const signIn = async (options: SignInOptions = {}): Promise<Operator> => 
 
   const out: string[] = [];
   const err: string[] = [];
+  const interrupts = new Set<() => void>();
   const environment: CliEnvironment = {
     out: (line) => {
       out.push(line);
@@ -149,6 +152,16 @@ export const signIn = async (options: SignInOptions = {}): Promise<Operator> => 
     startLoopback: async () => {
       throw new Error("no command in this suite opens a loopback listener");
     },
+    // A remote run's attached display polls at once, and draws no terminal.
+    sleep: async () => undefined,
+    stdoutIsTTY: false,
+    onInterrupt: (handler) => {
+      const own = (): void => handler();
+      interrupts.add(own);
+      return () => {
+        interrupts.delete(own);
+      };
+    },
   };
 
   return {
@@ -158,6 +171,9 @@ export const signIn = async (options: SignInOptions = {}): Promise<Operator> => 
     err,
     orgId,
     ids,
+    interrupt: () => {
+      for (const handler of [...interrupts]) handler();
+    },
     tokenMints: () => mints,
     cleanup: async () => {
       await rm(root, { recursive: true, force: true });

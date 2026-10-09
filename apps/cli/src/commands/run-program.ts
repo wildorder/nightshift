@@ -70,6 +70,7 @@ import type { ProgramFiles } from "../program-files.js";
 import type { Session } from "../session.js";
 import { type AuditAt, auditProgramGates, describeAudit } from "./gates.js";
 import { assertRemoteReady, dispatchRun, measureRuntime, type RemoteReadiness } from "./remote.js";
+import { watchDispatch } from "./watch.js";
 
 export const REPORT_FILE = "report.md";
 
@@ -596,7 +597,16 @@ export const runProgram = async (
       remote.readiness,
       referenceAuditOf({ ...remote.reference, outputs }),
     );
-    return { started, exitCode: 0 };
+    // P16 S-03: stay with the developer until the machine's audit agrees.
+    const exitCode = await watchDispatch(environment, session, {
+      program: files.id,
+      scope: {
+        projectId: started.run.projectId,
+        programId: started.run.programId,
+        runId: started.run.runId,
+      },
+    });
+    return { started, exitCode };
   }
   environment.out(started.run.runId);
   sayCarried();

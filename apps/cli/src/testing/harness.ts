@@ -117,6 +117,10 @@ export interface TestEnvironment {
   readonly err: string[];
   readonly configDir: string;
   readonly stateDir: string;
+  /** Presses Ctrl-C: calls every interrupt handler the command has installed and not removed. */
+  interrupt(): void;
+  /** How many interrupt handlers are installed now. */
+  interruptHandlers(): number;
   /** Removes the temporary directories. Call from `afterEach`. */
   cleanup(): Promise<void>;
 }
@@ -130,6 +134,12 @@ export interface TestEnvironmentOptions {
   readonly git?: GitRunner;
   readonly cwd?: string;
   readonly nowMs?: number;
+  /** Default: returns at once. */
+  readonly sleep?: CliEnvironment["sleep"];
+  /** Default: not a terminal. */
+  readonly stdoutIsTTY?: boolean;
+  /** Default: the fixed clock at `nowMs`. */
+  readonly clock?: CliEnvironment["clock"];
 }
 
 /**
@@ -147,6 +157,7 @@ export const createTestEnvironment = async (
   const stateDir = join(root, "state");
   const out: string[] = [];
   const err: string[] = [];
+  const interrupts = new Set<() => void>();
 
   const environment: CliEnvironment = {
     out: (line) => {
@@ -167,7 +178,7 @@ export const createTestEnvironment = async (
     readPaste:
       options.readPaste ??
       (() => ({ line: new Promise<undefined>(() => undefined), cancel: () => undefined })),
-    clock: createFixedClock(options.nowMs ?? FIXED_NOW),
+    clock: options.clock ?? createFixedClock(options.nowMs ?? FIXED_NOW),
     ids: options.ids ?? createCountingIdGenerator(),
     git: options.git ?? createFakeGit(),
     // The real listener, on a port the operating system picks. The flow under
@@ -175,6 +186,15 @@ export const createTestEnvironment = async (
     startLoopback: async (loopbackOptions) => {
       const { startLoopback } = await import("../loopback.js");
       return startLoopback({ port: 0, timeoutMs: 10_000, ...loopbackOptions });
+    },
+    sleep: options.sleep ?? (async () => undefined),
+    stdoutIsTTY: options.stdoutIsTTY ?? false,
+    onInterrupt: (handler) => {
+      const own = (): void => handler();
+      interrupts.add(own);
+      return () => {
+        interrupts.delete(own);
+      };
     },
   };
 
@@ -184,6 +204,10 @@ export const createTestEnvironment = async (
     err,
     configDir,
     stateDir,
+    interrupt: () => {
+      for (const handler of [...interrupts]) handler();
+    },
+    interruptHandlers: () => interrupts.size,
     cleanup: async () => {
       await rm(root, { recursive: true, force: true });
     },

@@ -54,6 +54,7 @@ import type { CliEnvironment, Exec } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { type ProgramFiles, readConfig, readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession, type Session } from "../session.js";
+import { STAGE_WORDS, watchDispatch } from "./watch.js";
 
 /** What `--remote` says for a contract that is not a ratified planned program (D-P10-09). */
 /**
@@ -376,8 +377,8 @@ export const dispatchRun = async (
       `up to $${estimated.toFixed(2)} at the run's ${hours}-hour ceiling`,
   );
   environment.out(
-    `dispatch ${dispatch.status}: the machine is provisioned without you. ` +
-      `\`nightshift remote status ${contract.programId}\` follows it; you can close the laptop.`,
+    `dispatch ${dispatch.status}: the machine is being provisioned. You wait here until it has ` +
+      "audited the gates and agrees with your laptop; Ctrl-C detaches, and the machine carries on.",
   );
   return dispatch;
 };
@@ -406,7 +407,7 @@ const dispatchOf = async (
 };
 
 /** An environment fault's cause, and the fault side by side when the events were read. */
-const environmentFaultLines = (
+export const environmentFaultLines = (
   dispatch: Dispatch,
   fault: EnvironmentFaultPayload | undefined,
 ): string[] => {
@@ -419,6 +420,12 @@ const environmentFaultLines = (
       : renderEnvironmentFault(fault).map((line) => (line === "" ? "" : `    ${line}`))),
   ];
 };
+
+/** The runner's latest progress (P16 S-03), in one line: stage, detail and verdict. */
+const progressLine = (progress: NonNullable<Dispatch["progress"]>): string =>
+  `  progress: ${progress.stage} (${STAGE_WORDS[progress.stage]})` +
+  (progress.detail === undefined ? "" : `: ${progress.detail}`) +
+  (progress.verdict === undefined ? "" : `; verdict ${progress.verdict}`);
 
 /**
  * What `remote status` prints: the machine, its spend, and why it failed when
@@ -443,6 +450,7 @@ export const describeDispatch = (
       `  attempt ${attempt.generation} (${attempt.reason}) from ${attempt.startedAt}${attempt.endedAt === undefined ? "" : ` to ${attempt.endedAt}`}`,
     );
   }
+  if (dispatch.progress !== undefined) lines.push(progressLine(dispatch.progress));
   if (dispatch.publication.head !== undefined)
     lines.push(`  published ${dispatch.publication.head}`);
   if (dispatch.publication.blocked !== undefined)
@@ -463,6 +471,8 @@ export interface RemoteOptions {
   readonly id: string;
   readonly repo?: string;
   readonly run?: string;
+  /** `remote status --watch`: stay attached, as `run --remote` does (P16 S-03). */
+  readonly watch?: boolean;
 }
 
 const openFor = async (environment: CliEnvironment, options: RemoteOptions) => {
@@ -479,6 +489,8 @@ export const remoteStatus = async (
   const { files, session } = await openFor(environment, options);
   const { scope, dispatch } = await dispatchOf(environment, session, files, options.run);
   if (dispatch === undefined) return 1;
+  if (options.watch === true)
+    return watchDispatch(environment, session, { program: options.id, scope });
   const fault =
     dispatch.failure?.code === "environment_fault"
       ? await environmentFaultOfRun(session, scope)

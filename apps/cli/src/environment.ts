@@ -163,6 +163,12 @@ export interface CliEnvironment {
   readonly exec?: Exec;
   readonly launch?: Launch;
   readonly assets?: CliAssets;
+  /** Waits. `run --remote` polls its dispatch through it; a fake returns at once. */
+  readonly sleep: (ms: number) => Promise<void>;
+  /** Whether stdout is a terminal: the attached display redraws in place only on one. */
+  readonly stdoutIsTTY: boolean;
+  /** Installs a Ctrl-C (SIGINT) handler and answers its removal. */
+  readonly onInterrupt: (handler: () => void) => () => void;
 }
 
 /**
@@ -236,6 +242,18 @@ export const createCliEnvironment = (): CliEnvironment => ({
   startLoopback,
   exec: nodeExec,
   launch: nodeLaunch,
+  sleep: (ms) =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    }),
+  stdoutIsTTY: process.stdout.isTTY === true,
+  onInterrupt: (handler) => {
+    const listener = (): void => handler();
+    process.on("SIGINT", listener);
+    return () => {
+      process.off("SIGINT", listener);
+    };
+  },
   assets: {
     skillsDir: join(REPO_ROOT, "skills"),
     mcpServerPath: join(REPO_ROOT, "apps", "mcp", "dist", "bin", "nightshift-mcp.js"),

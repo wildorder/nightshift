@@ -250,7 +250,9 @@ describe("dispatchRun", () => {
     expect(printed).toContain(`c8id.4xlarge`);
     expect(printed).toContain(`$${COMPUTE_TIERS.better.usdPerHour.toFixed(4)}/h`);
     expect(printed).toContain("chosen by flag");
-    expect(printed).toContain("close the laptop");
+    expect(printed).toContain("the machine is being provisioned");
+    expect(printed).toContain("Ctrl-C detaches");
+    expect(printed).not.toContain("close the laptop");
   });
 
   it("refuses, before posting, a tier above the org's ceiling", async () => {
