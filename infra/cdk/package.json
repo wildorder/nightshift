@@ -5,7 +5,7 @@
   "type": "module",
   "description": "AWS CDK v2 app. The sole IaC system (A-09).",
   "scripts": {
-    "synth": "cdk synth --no-lookups"
+    "synth": "cdk synth --no-lookups -c runnerCommit=0000000000000000000000000000000000000000"
   },
   "dependencies": {
     "aws-cdk-lib": "2.269.0",
