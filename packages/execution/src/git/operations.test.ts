@@ -133,6 +133,31 @@ describe("worktrees", () => {
     expect(await tryRevParse(nodeGitRunner, repo, branch)).toBeUndefined();
     expect(await tryRevParse(nodeGitRunner, repo, baseRef("node_b"))).toBeUndefined();
   });
+
+  it("frees the branch of a worktree whose directory is already gone, and does nothing for one never made", async () => {
+    const { repo, base } = await repository();
+    const path = join(repo, "..", "wt-gone");
+    const branch = jobBranch("run_a", "node_c");
+    await addWorktree(nodeGitRunner, { repo, path, branch, base });
+    await rm(path, { recursive: true, force: true });
+    await removeWorktree(nodeGitRunner, repo, path, branch, "node_c");
+    expect(await tryRevParse(nodeGitRunner, repo, branch)).toBeUndefined();
+    // A launch that failed before its worktree existed releases nothing, quietly.
+    await removeWorktree(nodeGitRunner, repo, join(repo, "..", "never"), jobBranch("run_a", "x"));
+  });
+
+  it("says why when a worktree that is there will not go, rather than leaving its branch silently", async () => {
+    const { repo, base } = await repository();
+    const path = join(repo, "..", "wt-locked");
+    const branch = jobBranch("run_a", "node_d");
+    await addWorktree(nodeGitRunner, { repo, path, branch, base });
+    // A locked worktree refuses a single --force: it stands for one that will not go.
+    await git(nodeGitRunner, ["worktree", "lock", path], { cwd: repo });
+    await expect(removeWorktree(nodeGitRunner, repo, path, branch, "node_d")).rejects.toThrow(
+      /could not remove the worktree at .* and its branch .*locked/,
+    );
+    expect(await tryRevParse(nodeGitRunner, repo, branch)).toBe(base);
+  });
 });
 
 describe("the snapshot commit", () => {

@@ -89,7 +89,6 @@ import {
   effectiveHead,
   jobBranch,
   pruneWorktrees,
-  removeWorktree,
   tryRevParse,
   type UnfinishedWork,
   unfinishedPatch,
@@ -98,6 +97,7 @@ import {
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
+import { releaseWorktree } from "./release-worktree.js";
 import { programRulings } from "./rulings.js";
 import { discardScratch, ensureScratch } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
@@ -383,9 +383,9 @@ export const startJob = async (
       if (!orchestrates) unfinished = await keepUnfinished(worktree, earlier.at(-1)?.attempt ?? 1);
       // The last attempt's worktree was kept for whoever had to read a failure.
       // This attempt starts from the current head, so it goes now, and not before.
-      await removeWorktree(environment.git, session.repoPath, worktree, branch, nodeId).catch(
-        () => {},
-      );
+      // A worktree that will not go fails this launch with git's reason, rather
+      // than leaving its branch for the new worktree to collide with.
+      await releaseWorktree(environment, session.repoPath, worktree, branch, nodeId);
       await discardScratch(environment.paths, worktree);
       await pruneWorktrees(environment.git, session.repoPath);
     }
@@ -792,9 +792,27 @@ export const startJob = async (
     return { agentId, handle, sink, routingDecision, startedAtMs: clock.now() };
   }
 
-  /** A launch that failed after the slot was taken: the node ends, durably. */
+  /**
+   * A launch that failed after the slot was taken: the node ends, durably, and
+   * what the launch made goes with it. No agent ran, so the worktree holds
+   * nothing to read; the setup's output is already an artifact. A retry then
+   * starts from nothing, as a first launch does.
+   */
   async function failStart(error: unknown): Promise<void> {
     const reason = error instanceof Error ? error.message : String(error);
+    const worktree = environment.paths.worktree(session.scope.runId, nodeId);
+    await releaseWorktree(
+      environment,
+      session.repoPath,
+      worktree,
+      jobBranch(session.scope.runId, nodeId),
+      nodeId,
+    )
+      .then(() => discardScratch(environment.paths, worktree))
+      .catch((cleanup: unknown) => {
+        // The node still ends; the next launch at this node names the cause.
+        console.error(`node ${nodeId}: ${cleanup instanceof Error ? cleanup.message : cleanup}`);
+      });
     try {
       const node = await stores.executionNodes.get(session.scope, nodeId);
       if (node === undefined || node.status !== "running") return;
@@ -862,13 +880,17 @@ const finishSubProgram = async (
   } catch (error) {
     await failHard(environment, input, error);
   } finally {
-    await removeWorktree(
-      environment.git,
+    await releaseWorktree(
+      environment,
       input.session.repoPath,
       input.worktree,
       input.branch,
       input.nodeId,
-    ).catch(() => {});
+    ).catch((error: unknown) => {
+      console.error(
+        `node ${input.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
     await discardScratch(environment.paths, input.worktree);
     await recordRouteResult(environment, input, usage);
     // What the strand's decisions produced, now that its work has all landed

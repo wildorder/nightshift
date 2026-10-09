@@ -458,9 +458,10 @@ export const ARBITER_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
  * starts, verifies, integrates, checkpoints, routes, records, mints its workers'
  * and examiners' tokens, heartbeats, and asks for publication. Its reach is the
  * run, every node in it, and the program and project above it that the run
- * needs to read. It cannot ratify a plan, reverse a human decision, change the
- * org's configuration, read a key by any route but its heartbeat, or touch
- * another run. Every write it makes is further held to the dispatch's current
+ * needs to read; it reads every record of its own program, earlier runs
+ * included (D-P10-29). It cannot ratify a plan, reverse a human decision, change
+ * the org's configuration, read a key by any route but its heartbeat, or write
+ * to another run. Every write it makes is further held to the dispatch's current
  * generation (`stale_generation`), which is the fence D-P10-18 describes.
  */
 export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
@@ -481,52 +482,55 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "prerequisite.list": "own_program",
   "prerequisite.put": "own_program",
 
-  "run.list": "forbidden",
+  // D-P10-29: the engine reads every record of its own program, earlier runs
+  // included (the program's rulings and carried-over work are read across its
+  // runs). It writes only within its own run, under the dispatch's generation.
+  "run.list": "own_program",
   "run.put": "own_run",
-  "run.get": "own_run",
-  "run.getState": "own_run",
+  "run.get": "own_program",
+  "run.getState": "own_program",
 
   // Every node in the run, any status: the engine is what asserts verified.
-  "node.list": "own_run",
+  "node.list": "own_program",
   "node.put": "own_run",
-  "node.get": "own_run",
-  "node.listChildren": "own_run",
+  "node.get": "own_program",
+  "node.listChildren": "own_program",
 
-  "job.list": "own_run",
+  "job.list": "own_program",
   "job.put": "own_run",
-  "job.get": "own_run",
+  "job.get": "own_program",
 
   // The execution identity is created for an agent by the engine (A-04), and
   // the engine mints its workers', examiners' and arbiters' tokens; the API
   // refuses it an `engine` token, which only the dispatch Lambda mints.
   "agent.put": "own_run",
-  "agent.get": "own_run",
-  "agent.listByNode": "own_run",
+  "agent.get": "own_program",
+  "agent.listByNode": "own_program",
   "agent.mintToken": "own_run",
 
   "event.append": "own_run",
-  "event.list": "own_run",
+  "event.list": "own_program",
 
-  "decision.list": "own_run",
+  "decision.list": "own_program",
   "decision.put": "own_run",
-  "decision.get": "own_run",
-  "checkpoint.list": "own_run",
+  "decision.get": "own_program",
+  "checkpoint.list": "own_program",
   "checkpoint.put": "own_run",
-  "checkpoint.get": "own_run",
+  "checkpoint.get": "own_program",
 
   "verification.put": "own_run",
-  "verification.get": "own_run",
-  "verification.listByNode": "own_run",
+  "verification.get": "own_program",
+  "verification.listByNode": "own_program",
   "examination.put": "own_run",
-  "examination.get": "own_run",
-  "examination.listByNode": "own_run",
+  "examination.get": "own_program",
+  "examination.listByNode": "own_program",
 
   "routingDecision.put": "own_run",
-  "routingDecision.listByNode": "own_run",
+  "routingDecision.listByNode": "own_program",
 
-  "artifact.list": "own_run",
+  "artifact.list": "own_program",
   "artifact.put": "own_run",
-  "artifact.get": "own_run",
+  "artifact.get": "own_program",
   "artifact.createUploadUrl": "own_run",
   // A signed read is a human's (D-P11-06): the engine holds the bytes it wrote.
   "artifact.createDownloadUrl": "forbidden",
@@ -539,13 +543,13 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   // cancelling and resuming a dispatch are a human's; so are the org's keys and
   // installation, which reach the engine only inside a heartbeat response.
   "dispatch.create": "forbidden",
-  "dispatch.get": "own_run",
+  "dispatch.get": "own_program",
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "own_run",
   "publication.request": "own_run",
-  "publication.list": "own_run",
-  "computeUtilization.get": "own_run",
+  "publication.list": "own_program",
+  "computeUtilization.get": "own_program",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",
   // P15 (D-P15-07): the run updates the project's record when a gate-health
