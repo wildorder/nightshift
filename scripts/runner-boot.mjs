@@ -13,6 +13,13 @@
  * snapshot, and prints the warm-to-cold setup ratio SC-P10-08 asks about. Then
  * removes everything it made. Refuses to start outside the v1 account; never
  * part of `npm test`.
+ *
+ * P16 S-01: the dispatch also carries a toolchain built from the fixture's
+ * own Node and Python pins, and once the cold run is `ready` the proof checks
+ * the machine as a worker user — an idle worker has no `dockerd` while its
+ * `docker.socket` listens, `node` and `python` answer the toolchain's
+ * versions, Docker works, and a `postgres:16` container's published port
+ * answers a host-side client.
  */
 import { execFileSync } from "node:child_process";
 import { assertNightshiftAccount, EXPECTED_REGION, SHELL } from "./aws-account.mjs";

@@ -20,9 +20,20 @@
  * its own. Without the key the cold run is cancelled at `ready`, as T3 did.
  *
  * Everything made is removed at the end: machines, volumes, snapshots, records.
+ *
+ * P16 S-01: once the cold run is `ready`, the dispatch it was given carries a
+ * toolchain built from the fixture's own Node and Python pins at the
+ * dispatched head (refusing clearly if the fixture pins neither), and the
+ * proof checks the machine as a worker user, through the run sandbox's own
+ * wrapper (`commandAs`, never a login shell) and the project environment the
+ * runner wrote to `project.env`: an idle worker has no `dockerd` while its
+ * `docker.socket` listens, `node` and `python` answer the toolchain's
+ * versions, `docker info` succeeds, and a `postgres:16` container's published
+ * port answers a host-side client. These checks stay; they are not by-hand
+ * checks to be deleted once run, as the P10 T2 checks were in T3.
  */
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,14 +60,24 @@ import {
   makeRootNode,
   makeRun,
   nowIso,
+  PIN_FILES,
   planHash,
   systemClock,
 } from "@nightshift/core";
+import { commandAs } from "@nightshift/harness";
 import { createAwsClients, createAwsStores, keys } from "@nightshift/persistence/aws";
 import { afterAll, describe, expect, it } from "vitest";
 import { deleteObjectsUnder, deletePartitions } from "./cleanup.js";
 import { fetchMachineToken, loadSmokeContext, REGION, subjectOf } from "./context.js";
 import { smokeApiClient } from "./http.js";
+import {
+  commandLine,
+  fixtureToolchain,
+  parseExitMarked,
+  parseProjectEnv,
+  parseWorkerNumbers,
+  withExitMarker,
+} from "./runner-boot-env.js";
 
 /**
  * Heavy benchmark: the program runs against the nightshift monorepo itself
@@ -246,10 +267,19 @@ const awaitDispatch = async (
 /**
  * A command on the machine over SSM, its standard output back. SSM returns at
  * most 24,000 characters of it, so anything long is filtered on the machine.
+ * `timeoutSeconds` is the document's own execution budget (a `docker run`
+ * pulling an image, or a wait loop, needs more than the sixty-second default).
  */
-const onMachine = async (instanceId: string, command: string): Promise<string> => {
+const onMachine = async (
+  instanceId: string,
+  command: string,
+  timeoutSeconds = 60,
+): Promise<string> => {
   const parameters = join(tmpdir(), `nightshift-runner-boot-${process.pid}.json`);
-  writeFileSync(parameters, JSON.stringify({ commands: [command], executionTimeout: ["60"] }));
+  writeFileSync(
+    parameters,
+    JSON.stringify({ commands: [command], executionTimeout: [String(timeoutSeconds)] }),
+  );
   try {
     const sent = JSON.parse(
       aws([
@@ -263,7 +293,7 @@ const onMachine = async (instanceId: string, command: string): Promise<string> =
         `file://${parameters.replaceAll("\\", "/")}`,
       ]),
     ) as { Command: { CommandId: string } };
-    for (let waited = 0; waited < 90_000; waited += 5_000) {
+    for (let waited = 0; waited < (timeoutSeconds + 30) * 1000; waited += 5_000) {
       await sleep(5_000);
       const invocation = JSON.parse(
         aws([
@@ -315,6 +345,34 @@ const resetFixtureBranch = (sha: string): void => {
         cwd: scratch,
       },
     );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+};
+
+/**
+ * The fixture's pin files as committed at `sha` (P16 S-01), from a scratch
+ * clone holding just that commit. GitHub serves an arbitrary reachable commit
+ * to `git fetch <url> <sha>` for a public repository, so no API token is
+ * needed.
+ */
+const fixturePinFilesAt = (sha: string): Record<string, string> => {
+  const scratch = mkdtempSync(join(tmpdir(), "nightshift-fixture-pins-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: scratch });
+    execFileSync("git", ["fetch", "-q", "--depth", "1", FIXTURE_REPOSITORY, sha], { cwd: scratch });
+    const files: Record<string, string> = {};
+    for (const file of PIN_FILES) {
+      try {
+        files[file] = execFileSync("git", ["show", `${sha}:${file}`], {
+          cwd: scratch,
+          encoding: "utf8",
+        });
+      } catch {
+        // Not committed at this sha.
+      }
+    }
+    return files;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -389,6 +447,23 @@ const runOnce = async (
   const dispatchedAt = Date.now();
   const marks: Marks = { dispatchedAt };
   if (bench === undefined) {
+    // P16 S-01, D-03: the dispatch carries the fixture's own Node and Python
+    // pins at this base, each at an exact version, so the machine installs
+    // exactly what the plan was audited on.
+    const toolchainResult = fixtureToolchain(fixturePinFilesAt(baseSha), {
+      node: process.env.NIGHTSHIFT_SMOKE_NODE_VERSION,
+      python: process.env.NIGHTSHIFT_SMOKE_PYTHON_VERSION,
+    });
+    if (!toolchainResult.ok) {
+      throw new Error(
+        `P16 S-01: the fixture's toolchain could not be resolved: ${toolchainResult.message}`,
+      );
+    }
+    say(
+      `${name}: toolchain ${toolchainResult.toolchain
+        .map((entry) => `${entry.runtime} ${entry.version}`)
+        .join(", ")}`,
+    );
     const dispatched = await api.post(`${run.path}/dispatch`, {
       tier: "good",
       idempotencyKey: `${runId}:${baseSha}:${planHashValue}`,
@@ -397,6 +472,7 @@ const runOnce = async (
         branch: FIXTURE_BRANCH,
         baseSha,
         planHash: planHashValue,
+        toolchain: toolchainResult.toolchain,
       },
     });
     expectStatus(dispatched, 201);
@@ -783,6 +859,121 @@ const runToTheEnd = async (
   return cleaned;
 };
 
+/**
+ * P16 S-01: as a worker user, through the run sandbox's own wrapper
+ * (`commandAs`, never a login shell) and the project environment the runner
+ * computed. The P10 T2 checks were by hand and were deleted once T3 landed;
+ * these are not deleted — they are this proof's permanent coverage of S-01,
+ * run on every cold boot.
+ */
+const checkEnvironmentParity = async (outcome: RunOutcome): Promise<void> => {
+  const instanceId = outcome.run.dispatch?.instanceId;
+  const toolchain = outcome.run.dispatch?.input.toolchain;
+  expect(instanceId, "the cold run named no machine").toBeDefined();
+  expect(toolchain, "the dispatch carries no toolchain").toBeDefined();
+  if (instanceId === undefined || toolchain === undefined) return;
+
+  const numbers = parseWorkerNumbers(
+    await onMachine(instanceId, "ls -d /home/worker-* 2>/dev/null"),
+  );
+  expect(numbers.length, "fewer than two worker users on the machine").toBeGreaterThanOrEqual(2);
+  // The highest-numbered worker is the one this single-strand program never
+  // delegates to; a lower one does the job, and gets the Docker checks.
+  const idleWorker = `worker-${numbers[numbers.length - 1]}`;
+  const activeWorker = `worker-${numbers[0]}`;
+
+  const envText = await onMachine(
+    instanceId,
+    `cat /workspace/runs/${outcome.run.runId}/project.env`,
+  );
+  const projectEnv = parseProjectEnv(envText);
+  say(`environment parity: project.env has ${Object.keys(projectEnv).length} variable(s)`);
+
+  const run = async (
+    user: string,
+    file: string,
+    args: readonly string[],
+    timeoutSeconds = 60,
+  ): Promise<{ readonly body: string; readonly exitCode: number }> => {
+    const wrapped = commandAs({ user, grant: async () => {} }, file, args, projectEnv);
+    const output = await onMachine(
+      instanceId,
+      withExitMarker(commandLine(wrapped)),
+      timeoutSeconds,
+    );
+    return parseExitMarked(output);
+  };
+
+  // First, before any Docker use: the idle worker has no dockerd, while its
+  // own docker.socket is listening (D-05).
+  const idle = await run(idleWorker, "sh", [
+    "-c",
+    `pgrep -u ${idleWorker} dockerd >/dev/null 2>&1; echo DOCKERD=$?; systemctl --user is-active docker.socket 2>&1`,
+  ]);
+  const idleLines = idle.body.trim().split("\n");
+  say(`environment parity: ${idleWorker} (idle) says ${idleLines.join(", ")}`);
+  expect(idleLines[0], `${idleWorker} has a dockerd process`).toBe("DOCKERD=1");
+  expect(idleLines[1], `${idleWorker}'s docker.socket is not listening`).toBe("active");
+
+  for (const entry of toolchain) {
+    if (entry.runtime !== "node" && entry.runtime !== "python") continue;
+    const checked = await run(activeWorker, entry.runtime, ["--version"]);
+    expect(checked.exitCode, `${entry.runtime} --version failed as ${activeWorker}`).toBe(0);
+    expect(
+      checked.body,
+      `${activeWorker}'s ${entry.runtime} is not the toolchain's ${entry.version}`,
+    ).toContain(entry.version);
+  }
+
+  const dockerInfo = await run(activeWorker, "docker", ["info"]);
+  expect(dockerInfo.exitCode, `docker info failed as ${activeWorker}`).toBe(0);
+
+  const port = 55432;
+  const container = "nightshift-boot-pg";
+  const password = randomUUID();
+  try {
+    const started = await run(
+      activeWorker,
+      "docker",
+      [
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        container,
+        "-p",
+        `127.0.0.1:${port}:5432`,
+        "-e",
+        `POSTGRES_PASSWORD=${password}`,
+        "postgres:16",
+      ],
+      180,
+    );
+    expect(started.exitCode, "starting a postgres:16 container failed").toBe(0);
+
+    // A host-side client against the published port, not the container's own
+    // network namespace: `pg_isready` on the host if it exists, else the same
+    // image's `pg_isready` from a throwaway container on the host's network.
+    const waitScript = [
+      "end=$(( $(date +%s) + 60 ))",
+      "ok=0",
+      'while [ "$(date +%s)" -lt "$end" ]; do',
+      `  if command -v pg_isready >/dev/null 2>&1 && pg_isready -h 127.0.0.1 -p ${port} -t 2 >/dev/null 2>&1; then ok=1; break; fi`,
+      `  if docker run --rm --network host postgres:16 pg_isready -h 127.0.0.1 -p ${port} -t 2 >/dev/null 2>&1; then ok=1; break; fi`,
+      "  sleep 2",
+      "done",
+      "echo READY=$ok",
+    ].join("\n");
+    const ready = await run(activeWorker, "sh", ["-c", waitScript], 90);
+    say(`environment parity: postgres:16's published port ${ready.body.trim()}`);
+    expect(ready.body.trim(), "the published port never answered a host-side client").toBe(
+      "READY=1",
+    );
+  } finally {
+    await run(activeWorker, "docker", ["stop", container], 30);
+  }
+};
+
 describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
   it("dispatches through the API, reaches ready on both, and the second is provisioned from the first's snapshot", async () => {
     const baseSha = remoteHead();
@@ -967,6 +1158,9 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     expect((await api.get(`${projectPath}/warm-cache`)).status).toBe(404);
     const cold = await runOnce("cold", baseSha, program);
     findings.cold = { secondsToReady: cold.secondsToReady, setupSeconds: cold.setupSeconds };
+    // P16 S-01: right after `ready`, before the root has started and so
+    // before any agent has touched a worker, the machine itself is checked.
+    await checkEnvironmentParity(cold);
     // The walk-away fixture (`npm run remote`): the cold run is also the one
     // whose machine is killed, and it must still end published (T6, T8).
     const coldCleaned =
