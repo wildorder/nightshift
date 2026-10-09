@@ -1,6 +1,20 @@
+import { defaultClientConditions, defaultServerConditions } from "vite";
 import { defineProject } from "vitest/config";
 
 export default defineProject({
+  // D-02: "source" ahead of vite's defaults, not in place of them, so
+  // @nightshift/* resolves from TypeScript source rather than dist. This
+  // project has no config of its own to walk up from otherwise.
+  resolve: {
+    conditions: ["source", ...defaultClientConditions],
+  },
+  ssr: {
+    resolve: {
+      // "module" dropped: see the root vitest.config.ts for why (AWS SDK v3 /
+      // Smithy's own exports break under Node's native loader with it present).
+      conditions: ["source", ...defaultServerConditions.filter((c) => c !== "module")],
+    },
+  },
   test: {
     /**
      * Name this project `test` so the root script `npm run check:architecture`

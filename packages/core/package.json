@@ -6,6 +6,7 @@
   "description": "Pure domain rules and persistence port interfaces. No I/O.",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }

@@ -1,6 +1,26 @@
+import { defaultClientConditions, defaultServerConditions } from "vite";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // D-02: resolve workspace packages from source, not dist, so a test sees a
+  // source change without a build first. The "source" condition is prepended
+  // rather than replacing vite's defaults (which `resolve.conditions` would
+  // otherwise do), and both the client and server (SSR/node) condition lists
+  // are covered since vitest executes tests through the SSR pipeline.
+  resolve: {
+    conditions: ["source", ...defaultClientConditions],
+  },
+  ssr: {
+    resolve: {
+      // "module" is dropped from vite's server defaults here: several AWS SDK
+      // v3 / Smithy packages list a "module" condition before "node" in their
+      // own subpath exports, pointing at an extensionless ESM-for-bundlers
+      // build that Node's native loader (which Vitest hands externalized
+      // dependencies to) cannot resolve. Node has no built-in "module"
+      // condition; dropping it restores their working "node"/"import" branch.
+      conditions: ["source", ...defaultServerConditions.filter((c) => c !== "module")],
+    },
+  },
   test: {
     // One root project list so `npm test` at the root runs every suite.
     projects: [
