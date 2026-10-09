@@ -93,9 +93,15 @@ export const redReason = (audit: GateAudit): string => {
   );
 };
 
-/** The project environment setup ran in (P16 S-01): the pinned runtimes and the stores. */
+/**
+ * The project environment setup ran in (P16 S-01): the pinned runtimes and the
+ * stores. Built here only when the runner did not hand one over, and then, as
+ * `prepareWorkspace` builds it, with the runner's own PATH after the image's,
+ * so a runtime the project does not pin is found where the runner finds it.
+ */
 const environmentOf = (context: MachineAuditContext): Readonly<Record<string, string>> =>
-  context.projectEnv ?? projectEnvironment(context.layout, context.dispatch.input.toolchain);
+  context.projectEnv ??
+  projectEnvironment(context.layout, context.dispatch.input.toolchain, undefined, process.env.PATH);
 
 /** As verification on this machine runs its steps (D-P10-25): a worker user. */
 const asWorker = (runtime: MachineAuditRuntime, context: MachineAuditContext) =>
