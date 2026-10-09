@@ -54,7 +54,6 @@ export {
 } from "./environment.js";
 export {
   type ClaudeToolPolicy,
-  type ClaudeToolPolicyInput,
   claudeMcpToolName,
   claudeToolPolicy,
   FORBIDDEN_GIT_SUBCOMMANDS,

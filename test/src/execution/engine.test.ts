@@ -27,6 +27,7 @@ import {
   createMergeQueue,
   type Engine,
   type ExecutionEnvironment,
+  failJob,
   git,
   type MergeQueue,
   type PrerequisiteBook,
@@ -66,18 +67,21 @@ const barrier = () => {
   return { open, opened };
 };
 
-type Work = (context: ScriptContext) => Promise<void>;
+/** A job's work. Resolving to "fail" is a worker that gives up and reports job.fail. */
+type Work = (context: ScriptContext) => Promise<unknown>;
 
 /** What each job does, keyed by the first word of its objective. */
 const harnessFor = (world: () => World, work: Readonly<Record<string, Work>>) =>
   createFakeHarness({
     script: async (context) => {
       const name = context.input.job.objective.split(" ")[0] ?? "";
-      const stopped = await Promise.race([
-        (work[name] ?? (async () => {}))(context).then(() => false),
-        context.cancelled.then(() => true),
+      const ended = await Promise.race([
+        (work[name] ?? (async () => {}))(context).then((outcome) =>
+          outcome === "fail" ? "fail" : "done",
+        ),
+        context.cancelled.then(() => "cancelled" as const),
       ]);
-      if (stopped) return { kind: "cancelled" };
+      if (ended === "cancelled") return { kind: "cancelled" };
       const w = world();
       const outbox = createEventOutbox({
         events: w.stores.events,
@@ -88,7 +92,8 @@ const harnessFor = (world: () => World, work: Readonly<Record<string, Work>>) =>
         initialDelayMs: 1,
       });
       const environment = { stores: w.stores, clock: w.environment.clock, git: w.git, outbox };
-      await completeJob(environment, context.identity, `${name}: done`);
+      if (ended === "fail") await failJob(environment, context.identity, `${name}: gave up`);
+      else await completeJob(environment, context.identity, `${name}: done`);
       await outbox.flush();
       return { kind: "completed" };
     },
@@ -231,7 +236,6 @@ const rig = async (
         ...made.scope,
         jobContractId: made.ids.next("job"),
         objective,
-        scope: { includes: ["src/**", "test/**"] },
         acceptance: ["node --test passes"],
         dependencies: [],
         risk: "low",
@@ -242,7 +246,6 @@ const rig = async (
       });
       const submitted = await engine.submit({
         job,
-        scope: made.session.program.scope,
         depth: 1,
         parentNodeId: made.session.rootNodeId,
         route: ROUTE,
@@ -377,7 +380,6 @@ describe("the engine schedules (D-P6-01, D-P6-02)", () => {
       ...world.scope,
       jobContractId: world.ids.next("job"),
       objective: "late module",
-      scope: { includes: ["src/**"] },
       acceptance: ["x"],
       dependencies: [],
       risk: "low",
@@ -386,7 +388,6 @@ describe("the engine schedules (D-P6-01, D-P6-02)", () => {
     });
     const submitted = await engine.submit({
       job,
-      scope: world.session.program.scope,
       depth: 1,
       parentNodeId: world.session.rootNodeId,
       route: ROUTE,
@@ -646,10 +647,8 @@ const strandOf = (id: string, dependsOn: readonly string[] = []): Strand => ({
 /** The module a strand adds, named after it: `S-01` writes `src/s01.js`. */
 const moduleOf = (strandId: string): string => strandId.replace("-", "").toLowerCase();
 
-/** A job that cannot land: it changes a path outside its scope, which fails it (A-29). */
-const outOfScope: Work = async ({ worktree }) => {
-  await edit(worktree, "README.md", (text) => `${text}\nnot mine to change\n`);
-};
+/** A job that cannot land: its worker gives up and reports job.fail. */
+const givesUp: Work = async () => "fail";
 
 /** Index of the first event of `type` on `nodeId`, which must exist. */
 const indexOfEvent = (
@@ -731,7 +730,7 @@ describe("a run that starts on a red base repairs it first (P15, D-P15-03, SC-P1
 
   it("keeps the strands held when the repair fails, and an engine attaching later holds them too", async () => {
     const r = await rig(
-      { repair: outOfScope, s01: addModule("s01") },
+      { repair: givesUp, s01: addModule("s01") },
       { strands: [strandOf("S-01")], red: ["build", "test"] },
     );
     const s01 = await r.submit("s01", "S-01");
@@ -779,6 +778,40 @@ describe("a run that starts on a red base repairs it first (P15, D-P15-03, SC-P1
   }, 60_000);
 });
 
+describe("a strand's planned paths are guidance, never a fence (owner's ruling, 2026-10-09)", () => {
+  it("lands a strand's work that changes files outside the strand's planned paths", async () => {
+    const strand: Strand = {
+      ...strandOf("S-01"),
+      scope: {
+        summary: "s01",
+        includes: ["src/s01.js", "test/s01.test.js"],
+        excludes: ["docs/**"],
+      },
+    };
+    const r = await rig(
+      {
+        s01: async (context) => {
+          await addModule("s01")(context);
+          await mkdir(join(context.worktree, "docs"), { recursive: true });
+          await edit(context.worktree, "docs/s01.md", () => "# s01\n");
+          await edit(context.worktree, "README.md", (text) => `${text}\ns01 added.\n`);
+        },
+      },
+      { strands: [strand] },
+    );
+    const s01 = await r.submit("s01", "S-01");
+    expect(await r.until(s01.nodeId, settled)).toBe("integrated");
+    const landed = await git(
+      r.world.git,
+      ["diff", "--name-only", r.world.baseCommit, PROGRAM_BRANCH],
+      { cwd: r.world.repo },
+    );
+    for (const path of ["README.md", "docs/s01.md", "src/s01.js", "test/s01.test.js"]) {
+      expect(landed).toContain(path);
+    }
+  }, 60_000);
+});
+
 describe("strands are gated and parked (P7, D-P7-04, §4.4)", () => {
   it("holds a strand until what it depends on has succeeded, and runs the rest meanwhile", async () => {
     const first = barrier();
@@ -814,7 +847,7 @@ describe("strands are gated and parked (P7, D-P7-04, §4.4)", () => {
       {
         s01: async (context) => {
           await all.opened;
-          await outOfScope(context);
+          return givesUp(context);
         },
         s02: addModule("s02"),
         s03: addModule("s03"),

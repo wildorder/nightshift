@@ -54,7 +54,6 @@ console.error("the escalation job's first verification fails on purpose (P8, SC-
 process.exit(1);
 `;
 
-const SCOPE = { includes: ["src/**", "test/**"] };
 const lines: string[] = [];
 const startedAt = Date.now();
 let slice: DeployedSlice;
@@ -151,7 +150,7 @@ const startRun = async (label: string): Promise<Started> => {
 };
 
 const delegate = async (started: Started, input: Record<string, unknown>) => {
-  const result = await started.mcp.call("delegate", { scope: SCOPE, ...input });
+  const result = await started.mcp.call("delegate", input);
   expect(result.ok, JSON.stringify(result)).toBe(true);
   return { jobId: String(result.jobId), nodeId: String(result.nodeId) };
 };

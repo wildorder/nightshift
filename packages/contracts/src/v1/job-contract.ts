@@ -11,10 +11,10 @@ import { z } from "zod";
 import { DecisionIdSchema, JobContractIdSchema } from "../ids.js";
 import {
   AmbiguityLevelSchema,
+  dropRetiredScope,
   IsoTimestampSchema,
   RiskLevelSchema,
   runScoped,
-  ScopeRequestSchema,
 } from "./common.js";
 import { StrandIdSchema } from "./plan.js";
 import { JobKindSchema, TestabilitySchema } from "./routing-policy.js";
@@ -35,13 +35,11 @@ export const RepairSchema = z.strictObject({
 });
 export type Repair = z.infer<typeof RepairSchema>;
 
-export const JobContractSchema = z
+const JobContractRecordSchema = z
   .strictObject({
     ...runScoped,
     jobContractId: JobContractIdSchema,
     objective: z.string().min(1),
-    /** Requested authority. Omitted fields inherit the parent's unchanged (A-11). */
-    scope: ScopeRequestSchema,
     acceptance: z.array(z.string().min(1)).min(1),
     /** Other Job Contracts that must reach `integrated` before this one starts. */
     dependencies: z.array(JobContractIdSchema),
@@ -67,9 +65,8 @@ export const JobContractSchema = z
     /**
      * Set when this contract **is a repair job** (P15, D-P15-03, D-P15-04): a job
      * a planned run's root may add outside its strands, to fix a gate that was
-     * red at the start or a check that flaked. Its scope is the program's whole
-     * scope (D-P15-10), not a strand's, and it is examined at high risk against
-     * the gate standard. Never set together with `strandId`: a repair sits
+     * red at the start or a check that flaked. It is examined at high risk
+     * against the gate standard. Never set together with `strandId`: a repair sits
      * outside every strand by definition.
      */
     repair: RepairSchema.optional(),
@@ -79,4 +76,10 @@ export const JobContractSchema = z
     message: "a repair job sits outside every strand, so repair and strandId are never both set",
     path: ["repair"],
   });
-export type JobContract = z.infer<typeof JobContractSchema>;
+
+/**
+ * A Job Contract carries no path scope (the owner's ruling, 2026-10-09): one
+ * stored before the ruling has a `scope`, which is dropped on read.
+ */
+export const JobContractSchema = z.preprocess(dropRetiredScope, JobContractRecordSchema);
+export type JobContract = z.infer<typeof JobContractRecordSchema>;

@@ -171,7 +171,6 @@ export {
   stepsAs,
   verifyAndIntegrate,
 } from "./runner.js";
-export { checkChangedPaths, describeScopeViolation, type ScopeCheck } from "./scope-check.js";
 export {
   discardScratch,
   ensureScratch,

@@ -325,7 +325,6 @@ export const runHeadless = async (
         : [carriedNote(run.carriedStrands)]),
       planText,
     ].join("\n\n"),
-    scope: { includes: [...program.scope.includes] },
     acceptance: ["every strand of the ratified plan has succeeded, or is parked with a reason"],
     dependencies: [],
     risk: program.defaultRisk,

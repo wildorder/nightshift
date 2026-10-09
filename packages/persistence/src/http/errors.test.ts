@@ -16,10 +16,10 @@ describe("turning a refusal into a typed failure", () => {
   });
 
   it("keeps the class stable, so instanceof works across the network", async () => {
-    const { ScopeWideningError, IllegalTransitionError } = await import("@nightshift/core");
+    const { DelegationRefusedError, IllegalTransitionError } = await import("@nightshift/core");
     expect(
-      toThrowable(403, refusal("scope_widening", 'include "docs/**" is not covered')),
-    ).toBeInstanceOf(ScopeWideningError);
+      toThrowable(403, refusal("delegation_refused", "the parent is a job and holds no authority")),
+    ).toBeInstanceOf(DelegationRefusedError);
     expect(
       toThrowable(409, refusal("illegal_transition", 'no legal transition from "created"')),
     ).toBeInstanceOf(IllegalTransitionError);

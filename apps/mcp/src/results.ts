@@ -11,8 +11,8 @@
  *   failed will sometimes not.
  *
  * Refusals are the typed `code` plus a message, **never a stack trace**. A
- * refusal is a fact about the delegation, not an incident: `scope_widening`
- * tells an orchestrator to restate its request, `concurrency_limit_exceeded`
+ * refusal is a fact about the delegation, not an incident: `depth_limit_exceeded`
+ * tells an orchestrator to restructure its plan, `concurrency_limit_exceeded`
  * tells it to wait. A stack trace tells it nothing it can act on and fills its
  * context with this repository's file paths.
  */
@@ -23,7 +23,6 @@ import {
   DelegationRefusedError,
   DepthLimitExceededError,
   isDomainError,
-  ScopeWideningError,
 } from "@nightshift/core";
 import { ZodError } from "zod";
 
@@ -33,7 +32,6 @@ import { ZodError } from "zod";
  */
 export type RefusalCode =
   | "validation_failed"
-  | "scope_widening"
   | "depth_limit_exceeded"
   | "concurrency_limit_exceeded"
   /** P7: a planned run. The plan names the strands; the root neither adds nor drops one. */
@@ -96,10 +94,10 @@ export const refused = (refusal: ToolRefusal): ToolResult => ({
 /**
  * Any failure, as a refusal an orchestrator can act on.
  *
- * Domain errors keep their own code, so `ScopeWideningError` raised three layers
- * down in `core` arrives at the orchestrator as `scope_widening` with the
- * reasons attached — the same answer whether the rule fired locally or across
- * the network (`persistence/http` reconstructs the class).
+ * Domain errors keep their own code, so `DepthLimitExceededError` raised three
+ * layers down in `core` arrives at the orchestrator as `depth_limit_exceeded`
+ * with the depths attached — the same answer whether the rule fired locally or
+ * across the network (`persistence/http` reconstructs the class).
  */
 export const asRefusal = (error: unknown): ToolRefusal => {
   if (error instanceof ToolRefusal) return error;
@@ -109,9 +107,7 @@ export const asRefusal = (error: unknown): ToolRefusal => {
       issues: error.issues.map((issue) => ({ path: issue.path, message: issue.message })),
     });
   }
-  if (error instanceof ScopeWideningError) {
-    return new ToolRefusal("scope_widening", error.message, { reasons: error.reasons });
-  }
+
   if (error instanceof DepthLimitExceededError) {
     return new ToolRefusal("depth_limit_exceeded", error.message, {
       depth: error.depth,

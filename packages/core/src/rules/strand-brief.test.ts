@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createFixtures, makeProgramContract } from "../testing/index.js";
 import { splitPlanSections } from "./plan.js";
-import { isNarrowing } from "./scope.js";
+
 import { StrandBriefError, strandBrief } from "./strand-brief.js";
 
 const PLAN = [
@@ -69,22 +69,24 @@ describe("strandBrief (SC-P7-10)", () => {
     expect(objective).not.toContain("D-04");
   });
 
-  it("names the other strands and their scopes, never its own", () => {
+  it("names where the plan expects the other strands' work, never its own", () => {
     const { objective } = strandBrief(contract, sections, "S-02");
     expect(objective).toContain("S-01 The API: S-01's corner");
-    expect(objective).toContain("its paths: src/api/**");
-    expect(objective).toContain("not its paths: src/api/legacy/**");
+    expect(objective).toContain("the plan expects its work mostly in: src/api/**");
+    expect(objective).toContain("and not in: src/api/legacy/**");
     expect(objective).not.toContain("S-02 The CLI: S-02's corner");
   });
 
-  it("asks for a scope that narrows the program's, its excludes restated", () => {
+  // The owner's ruling, 2026-10-09: a strand's planned paths are guidance, and
+  // nothing in its brief tells it what it may not change.
+  it("carries no path scope and never limits what the strand may change", () => {
     const brief = strandBrief(contract, sections, "S-01");
-    expect(brief.scope).toEqual({
-      includes: ["src/api/**"],
-      excludes: ["src/generated/**", "src/api/legacy/**"],
-    });
-    expect(isNarrowing(contract.scope, brief.scope)).toBe(true);
+    expect(Object.keys(brief).sort()).toEqual(["acceptance", "objective"]);
     expect(brief.acceptance).toEqual(["S-01 is green"]);
+    expect(brief.objective).toContain("guidance, not a limit");
+    expect(brief.objective).not.toMatch(
+      /not yours to change|may change|may not change|outside your scope/i,
+    );
   });
 
   it("refuses a strand the plan does not have, or has no section for", () => {

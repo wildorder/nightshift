@@ -228,6 +228,13 @@ Each strand must be:
   and real `excludes` — `excludes` is how a strand tells its neighbours "not
   here". When two strands genuinely must touch the same files, either they are
   one strand, or one depends on the other.
+
+A strand's scope is **planning information, never a fence** (the owner's ruling,
+2026-10-09). It is how `plan check` finds strands that may overlap, and its
+orchestrator is told it as where the plan expects the work. No job is confined
+to it, refused for leaving it or failed for a path outside it: a job changes
+whatever the work needs. Draw scopes honestly so the overlap check means
+something, not tightly to keep a job in.
 - **Ordered only where it is causal.** `dependsOn` means "cannot be built until
   that exists", not "feels like it comes after". Every unnecessary edge is work
   that waits for no reason.
@@ -272,7 +279,8 @@ Medium fidelity means: enough that the human can say "yes, that is what I meant"
 or "no, not like that" — and no more. Signatures of things that cross a strand
 boundary: yes. The body of a function: no. The strand's orchestrator is handed
 this section **word for word**, may depart from the *how* when the code demands
-it, and must record that it did; the *what* and the scope hold.
+it, and must record that it did; the *what* holds. The scope is where the
+plan expects the work, not a limit on it.
 
 ## 6. Run the actor audit
 
@@ -394,7 +402,11 @@ The contract inherits from `nightshift.config.json` whatever it does not state
 `examinationPolicy`, `defaultRisk`), so state only what differs. It always
 states `schemaVersion`, `programId` (mint one with `nightshift id prog`),
 `objective`, `repository`, `successCriteria`, `constraints`, `scope`,
-`createdAt`, and the planned part:
+`createdAt`, and the planned part. The program's `scope` is `{ includes,
+excludes, forbiddenActions }`: where its work is expected (every strand's scope
+lies inside it) and the actions no agent may take ("deploy any stack", "push to
+main"), which every agent's brief lists. It confines no job, and a `permissions`
+list is no longer read.
 
 ```json
 {

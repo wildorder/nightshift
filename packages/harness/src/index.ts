@@ -11,22 +11,12 @@
  */
 
 export {
-  grantedPermissions,
-  grantsPermission,
-  isWorkerPermission,
-  PERMISSION_FS_READ,
-  PERMISSION_FS_WRITE,
-  PERMISSION_SHELL_EXEC,
-  unknownPermissions,
-  WORKER_PERMISSIONS,
-  type WorkerPermission,
-} from "@nightshift/core";
-export {
   nightshiftToolNames,
   promptFor,
   renderAnswerBrief,
   renderArbiterBrief,
   renderExaminerBrief,
+  renderForbiddenActions,
   renderPlanFollowingBrief,
   renderSubOrchestratorBrief,
   renderWorkerBrief,

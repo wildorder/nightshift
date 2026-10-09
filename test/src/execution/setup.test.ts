@@ -45,7 +45,6 @@ const jobFor = (world: World): JobContract =>
     ...world.scope,
     jobContractId: world.ids.next("job"),
     objective: "Add a median helper.",
-    scope: { includes: ["src/**", "test/**"] },
     acceptance: ["it works"],
     dependencies: [],
     risk: "low",
@@ -71,7 +70,6 @@ const delegate = (world: World, job: JobContract): Promise<StartedJob> =>
   runJob(world.environment, {
     session: world.session,
     job,
-    scope: world.session.program.scope,
     depth: 1,
     parentNodeId: world.session.rootNodeId,
     route: ROUTE,

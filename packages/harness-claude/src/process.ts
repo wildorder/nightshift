@@ -9,7 +9,7 @@
  *
  * Process-tree killing is the same problem T4 solved and the same solution.
  * `claude` is not a leaf: it runs the worker's MCP server as a child, and a
- * worker granted `shell.exec` leaves shells and build tools below that. Killing
+ * worker's commands leave shells and build tools below that. Killing
  * only the process Nightshift spawned orphans the rest, they keep the captured
  * pipes open, and a cancel that was supposed to be bounded hangs instead.
  */

@@ -47,8 +47,6 @@ const DECISION = {
 
 const REPAIR_REQUEST = {
   objective: "Make the test gate pass on the base.",
-  // Narrower than the program's: a repair takes the whole program scope anyway.
-  scope: { includes: ["src/**"] },
   acceptance: ["npm test passes on a fresh checkout"],
   risk: "low",
 };
@@ -117,7 +115,7 @@ describe("a repair through delegate (D-P15-04)", () => {
     expect(world.emitted).toEqual([]);
   });
 
-  it("is admitted on a planned run, with the program's whole scope, high risk and its recorded decision", async () => {
+  it("is admitted on a planned run, with high risk, no path scope and its recorded decision", async () => {
     const world = await plannedRun();
     const result = await world.call("delegate", {
       ...REPAIR_REQUEST,
@@ -141,7 +139,8 @@ describe("a repair through delegate (D-P15-04)", () => {
       gates: ["test"],
       decisionId: decision?.decisionId,
     });
-    expect(job.scope).toEqual(world.program.scope);
+    // A repair carries no path scope, like every job (the owner's ruling, 2026-10-09).
+    expect(job).not.toHaveProperty("scope");
     expect(job.risk).toBe("high");
     expect(job.strandId).toBeUndefined();
     // The orchestrator's objective first, then Nightshift's paragraph and the decision.
@@ -170,7 +169,7 @@ describe("a repair through delegate (D-P15-04)", () => {
     });
     expect(result.ok, JSON.stringify(result)).toBe(true);
     expect(world.submitted[0]?.repair?.cause).toBe("flaky");
-    expect(world.submitted[0]?.scope).toEqual(world.program.scope);
+    expect(world.submitted[0]).not.toHaveProperty("scope");
   });
 
   it("is refused to a sub-program's orchestrator", async () => {

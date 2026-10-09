@@ -7,7 +7,7 @@
  */
 import { z } from "zod";
 import { DecisionIdSchema, ProgramIdSchema, RunIdSchema } from "../ids.js";
-import { IsoTimestampSchema, programScoped, RiskLevelSchema, ScopeSchema } from "./common.js";
+import { IsoTimestampSchema, PathGlobSchema, programScoped, RiskLevelSchema } from "./common.js";
 import { ComputeChoiceSchema } from "./compute.js";
 import {
   MAX_RATIFICATION_HISTORY,
@@ -145,6 +145,27 @@ export const stricterExaminationPolicy = (
         high: stricterRequirement(a.high, b.high),
       };
 
+/**
+ * What a program says about where its work lies and what no agent may do.
+ *
+ * Since the owner's ruling of 2026-10-09 nothing here confines, refuses or fails
+ * a job for the paths it changes: a job's reach is the environment it runs in.
+ *
+ * - `includes` and `excludes` are planning information. `plan check` holds each
+ *   strand's planned paths inside them and finds strands that may overlap.
+ * - `forbiddenActions` are rules, not paths ("deploy any stack", "push to
+ *   main"), and every agent's brief lists them.
+ * - `permissions` is read so a contract written before the ruling parses, and
+ *   is told to nobody.
+ */
+export const ProgramContractScopeSchema = z.strictObject({
+  includes: z.array(PathGlobSchema).min(1),
+  excludes: z.array(PathGlobSchema),
+  permissions: z.array(z.string().min(1)).optional(),
+  forbiddenActions: z.array(z.string().min(1)),
+});
+export type ProgramContractScope = z.infer<typeof ProgramContractScopeSchema>;
+
 export const DelegationLimitsSchema = z.strictObject({
   maxDepth: z.int().min(1),
   maxConcurrency: z.int().min(1),
@@ -187,10 +208,10 @@ export const ProgramContractSchema = z
     objective: z.string().min(1),
     repository: RepositorySchema,
     successCriteria: z.array(SuccessCriterionSchema).min(1),
-    /** Prose guidance for the orchestrator. Unlike `scope`, not machine-enforced. */
+    /** Prose guidance, told to agents in their briefs. */
     constraints: z.array(z.string().min(1)),
-    /** The root authority every execution node inherits from and may only narrow. */
-    scope: ScopeSchema,
+    /** Planning information and the forbidden actions every agent is told. Confines no job. */
+    scope: ProgramContractScopeSchema,
     /** What makes a checkout usable before anything runs in it. Absent means nothing does. */
     setup: z.array(SetupStepSchema).optional(),
     verification: z.array(VerificationStepSchema).min(1),

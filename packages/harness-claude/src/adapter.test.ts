@@ -10,7 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExecutionNode, RouteTarget, Scope } from "@nightshift/contracts";
+import type { ExecutionNode, RouteTarget } from "@nightshift/contracts";
 import {
   createFixtures,
   createSteppingClock,
@@ -179,21 +179,10 @@ const MCP: McpLaunch = {
 const MODEL: RouteTarget = { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" };
 
 const startInput = (
-  overrides: {
-    readonly permissions?: readonly string[];
-    readonly transcriptPath?: string;
-    readonly events?: HookEvent[];
-  } = {},
+  overrides: { readonly transcriptPath?: string; readonly events?: HookEvent[] } = {},
 ): HarnessStartInput => {
   const fixtures = createFixtures();
-  const node: ExecutionNode = makeRootNode(fixtures, {
-    scope: {
-      includes: ["src/**"],
-      excludes: [],
-      permissions: [...(overrides.permissions ?? ["fs.read", "fs.write"])],
-      forbiddenActions: ["deploy"],
-    } satisfies Scope,
-  });
+  const node: ExecutionNode = makeRootNode(fixtures);
   const events = overrides.events ?? [];
   return {
     agent: makeAgent(fixtures, node.executionNodeId),
@@ -245,7 +234,7 @@ describe("the launch, against a fake spawn", () => {
   it("runs `claude` in the worktree with the documented command line", async () => {
     const { spawn, calls } = fakeSpawn();
     const { fs } = fakeFileSystem();
-    await harnessWith(spawn, fs).start(startInput({ permissions: ["fs.read"] }));
+    await harnessWith(spawn, fs).start(startInput());
 
     expect(calls).toHaveLength(1);
     const call = calls[0];

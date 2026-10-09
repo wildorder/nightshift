@@ -36,8 +36,8 @@ export type ExecutionLocation = z.infer<typeof ExecutionLocationSchema>;
 
 /**
  * A path glob within the repository. Absolute paths and `..` traversal are
- * rejected: scope containment in `core` compares repository-relative paths, and
- * either of those would make containment unsound.
+ * rejected: the plan checks in `core` compare repository-relative paths, and
+ * either of those would make their containment and overlap answers unsound.
  */
 export const PathGlobSchema = z
   .string()
@@ -50,35 +50,20 @@ export const PathGlobSchema = z
   });
 export type PathGlob = z.infer<typeof PathGlobSchema>;
 
-/** A capability an execution node may exercise, for example `shell.exec`. */
-export const PermissionSchema = z.string().min(1);
-export type Permission = z.infer<typeof PermissionSchema>;
-
 /**
- * The effective authority of an execution node. Children may narrow any of
- * these four fields and may never widen them (A-11); `core` enforces that
- * structurally.
+ * Until the owner's ruling of 2026-10-09 an execution node and a Job Contract
+ * carried a path scope, and a job was refused, confined or failed for the paths
+ * it changed. Jobs carry no path scope now: a job's reach is the environment it
+ * runs in. A record stored before the ruling still has the key; it is dropped on
+ * read, and nothing writes it again.
  */
-export const ScopeSchema = z.strictObject({
-  includes: z.array(PathGlobSchema).min(1),
-  excludes: z.array(PathGlobSchema),
-  permissions: z.array(PermissionSchema),
-  forbiddenActions: z.array(z.string().min(1)),
-});
-export type Scope = z.infer<typeof ScopeSchema>;
-
-/**
- * A scope as *requested* by a delegating orchestrator. An omitted field means
- * "inherit the parent's unchanged", which is deliberately different from an
- * empty array (which would mean "narrow to nothing").
- */
-export const ScopeRequestSchema = z.strictObject({
-  includes: z.array(PathGlobSchema).min(1),
-  excludes: z.array(PathGlobSchema).optional(),
-  permissions: z.array(PermissionSchema).optional(),
-  forbiddenActions: z.array(z.string().min(1)).optional(),
-});
-export type ScopeRequest = z.infer<typeof ScopeRequestSchema>;
+export const dropRetiredScope = (raw: unknown): unknown => {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw) || !("scope" in raw)) {
+    return raw;
+  }
+  const { scope: _retired, ...rest } = raw as { scope?: unknown };
+  return rest;
+};
 
 /** A git commit SHA-1, as written by the harnesses Nightshift drives. */
 export const CommitShaSchema = z

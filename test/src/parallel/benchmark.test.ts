@@ -57,7 +57,6 @@ const runTree = async (maxConcurrency: number) => {
   ] as const) {
     const result = await driver.call("delegate", {
       objective,
-      scope: { includes: ["src/**", "test/**"] },
       acceptance: ["node --test passes"],
       ...extra,
     });

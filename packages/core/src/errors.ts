@@ -9,7 +9,6 @@
 /** Discriminator for every domain failure. Exhaustive by construction. */
 export type DomainErrorCode =
   | "ownership_violation"
-  | "scope_widening"
   | "tree_structure"
   | "cycle"
   | "depth_limit_exceeded"
@@ -45,19 +44,6 @@ export class OwnershipViolationError extends DomainError {
     readonly actual: string,
   ) {
     super(`${field} mismatch: expected ${expected}, received ${actual}`);
-  }
-}
-
-/**
- * A child tried to claim authority its parent does not hold (A-11). `reasons`
- * lists every widening found, not just the first, so a caller can fix the whole
- * request in one pass.
- */
-export class ScopeWideningError extends DomainError {
-  readonly code = "scope_widening" as const;
-
-  constructor(readonly reasons: readonly string[]) {
-    super(`child scope would widen its parent's authority: ${reasons.join("; ")}`);
   }
 }
 
@@ -108,7 +94,7 @@ export class ConcurrencyLimitExceededError extends DomainError {
 }
 
 /**
- * A delegation was refused for a reason other than a limit or a scope widening:
+ * A delegation was refused for a reason other than a limit:
  * the parent is terminal, or it is a leaf job with no delegation authority.
  */
 export class DelegationRefusedError extends DomainError {

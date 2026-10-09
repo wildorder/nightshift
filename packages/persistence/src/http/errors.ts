@@ -2,7 +2,7 @@
  * Turning a control-plane refusal back into a typed failure.
  *
  * The point is that a caller can write `catch (error) { if (error instanceof
- * ScopeWideningError) … }` whether its stores are in memory, on DynamoDB, or
+ * DepthLimitExceededError) … }` whether its stores are in memory, on DynamoDB, or
  * across the network. A refusal that arrived as a 403 with a JSON body would
  * otherwise be a different kind of thing from the same refusal raised locally,
  * and every call site would need two branches.
@@ -12,8 +12,8 @@
  * The API answers `{ error: { code, message } }`. `code` is a stable
  * `DomainErrorCode` and is what selects the class; `message` is the domain
  * error's own message and is preserved verbatim. The **structured fields are
- * not on the wire** — a `ScopeWideningError` carries `reasons`, a
- * `DepthLimitExceededError` carries two numbers, and the API sends neither.
+ * not on the wire** — a `DepthLimitExceededError` carries two numbers, a
+ * `CycleError` a node, and the API sends neither.
  * So a reconstructed error carries the message in whatever field its class
  * requires, and nothing more.
  *
@@ -34,7 +34,6 @@ import {
   OutcomeReasonRequiredError,
   OwnershipViolationError,
   ReversibilitySoftenedError,
-  ScopeWideningError,
   StaleWriteError,
   TreeStructureError,
   VerificationEvidenceError,
@@ -79,7 +78,6 @@ export class ControlPlaneUnreachableError extends Error {
  */
 const DOMAIN_ERRORS: Readonly<Record<DomainErrorCode, (message: string) => DomainError>> = {
   ownership_violation: (message) => new OwnershipViolationError("projectId", "", message),
-  scope_widening: (message) => new ScopeWideningError([message]),
   tree_structure: (message) => new TreeStructureError(message),
   cycle: (message) => new CycleError(message, ""),
   depth_limit_exceeded: () => new DepthLimitExceededError(0, 0),

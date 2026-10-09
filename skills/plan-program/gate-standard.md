@@ -89,17 +89,20 @@ source; listen on port 0 and read the port back; isolate the shared state.
 ## 6. Can be kept healthy by the work
 
 **Means.** A registry or allow-list that new work must extend (a suite list, a
-route table a test enumerates, a lint allow-list, a snapshot index) is reachable
-from the strands that will extend it.
+route table a test enumerates, a lint allow-list, a snapshot index) is one the
+plan knows about: the strands that extend it say so, and do not extend it at the
+same time.
 
 **Check.** For each gate, ask what a new module, test or route has to be added
-to before the gate counts it or lets it pass. Smell: that registry sits outside
-every strand's scope (`scripts/test-suites.json` when the strands own `src/**`),
-so no job can add to it and the gate fails, or silently skips the new work.
+to before the gate counts it or lets it pass. Smell: that registry lies outside
+every strand's planned paths (`scripts/test-suites.json` when the strands are
+planned in `src/**`), so nothing tells the work it must be extended and the gate
+fails, or silently skips the new work; or strands that run at once all extend it,
+and conflict.
 
-**Typical fix.** Put the registry in the scope of the strands that extend it;
-or replace it with discovery by convention (a glob) so there is nothing to
-extend.
+**Typical fix.** Name the registry in the planned paths of the strands that
+extend it, and order them; or replace it with discovery by convention (a glob)
+so there is nothing to extend.
 
 ## 7. Costs what it should
 

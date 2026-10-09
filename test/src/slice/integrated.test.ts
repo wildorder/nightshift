@@ -23,7 +23,6 @@ import { PROGRAM_BRANCH } from "./fixture-repo.js";
 
 const DELEGATION = {
   objective: "Add a median helper to src/math.js, with tests for odd and even lengths.",
-  scope: { includes: ["src/**", "test/**"] },
   acceptance: ["median([3,1,2]) is 2", "median([1,2,3,4]) is 2.5", "the existing tests still pass"],
 };
 
@@ -49,7 +48,7 @@ afterEach(async () => {
 });
 
 /** Starts a run and delegates the fixture job. */
-const delegated = async (script: "implement" | "implement-broken" | "out-of-scope") => {
+const delegated = async (script: "implement" | "implement-broken" | "beyond-the-plan") => {
   mcp = await startOrchestrator({ context: ctx(), script });
   const started = await mcp.call("run.start", {
     programContractPath: "nightshift.program.json",
@@ -214,5 +213,32 @@ describe("a job that works, end to end", () => {
     expect(
       await tryRevParse(nodeGitRunner, ctx().fixture.repo, sealedRef(String(report.nodeId))),
     ).toBe(report.commitSha);
+  });
+});
+
+/**
+ * The owner's ruling, 2026-10-09: a job carries no path scope. Through the real
+ * server binary and a real worker-role server, a job that changes a file outside
+ * where the program's plan expects work (`src/**`, `test/**`) completes, is
+ * verified and integrates, the README with the rest.
+ */
+describe("a job that changes a file outside the program's planned paths", () => {
+  it("completes, verifies and integrates, the README with the rest", async () => {
+    const { job, scope, mcp: driver } = await delegated("beyond-the-plan");
+    const report = await settled(driver, job.jobId);
+    expect(report.status, JSON.stringify(report)).toBe("integrated");
+
+    const verifications = await ctx().stores.verifications.listByNode(
+      scope,
+      String(report.nodeId) as never,
+    );
+    expect(verifications.map((verification) => verification.outcome)).toEqual(["passed"]);
+    expect(await revParse(nodeGitRunner, ctx().fixture.repo, PROGRAM_BRANCH)).toBe(
+      String(report.commitSha),
+    );
+    const readme = await readFile(join(ctx().fixture.repo, "README.md"), "utf8");
+    expect(readme).toContain("median: the middle value of a list.");
+    const math = await readFile(join(ctx().fixture.repo, "src", "math.js"), "utf8");
+    expect(math).toContain("median");
   });
 });

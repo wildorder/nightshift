@@ -152,7 +152,8 @@ test/        cross-package fixtures and conformance suites
 - Nothing executes without a Nightshift execution identity.
 - Every aggregate is project scoped: `projectId` / `programId` / `runId`.
 - Children may narrow inherited authority; never widen it. Enforce structurally,
-  not by prompt.
+  not by prompt. Authority is depth, delegation and what a token reaches; it is
+  never a path scope, which no job carries (owner's ruling, 2026-10-09).
 - Large output goes to S3, never DynamoDB.
 - An irreversible external effect is never recorded as reversible.
 
@@ -252,9 +253,9 @@ the lasting ones are A-27 … A-32 in `docs/architecture.md`.
   reference the packages its suites drive.
 - Nightshift owns every commit. Workers never commit. Job completion snapshots
   the worktree into one Nightshift-authored commit with `Nightshift-Run`,
-  `Nightshift-Node` and `Nightshift-Job` trailers; out-of-scope changes fail the
-  job. Sealed and checkpoint refs live under `refs/nightshift/`. Integration is
-  `--ff-only`. Nothing is pushed.
+  `Nightshift-Node` and `Nightshift-Job` trailers. No change is refused for the
+  path it touches (owner's ruling, 2026-10-09). Sealed and checkpoint refs live
+  under `refs/nightshift/`. Integration is `--ff-only`. Nothing is pushed.
 - Only the execution layer writes a `Verification`. No MCP tool creates one.
   Verification runs the Program Contract's steps on a clean checkout of the
   candidate commit with a sanitized environment.
@@ -267,9 +268,10 @@ the lasting ones are A-27 … A-32 in `docs/architecture.md`.
 - `npm test` includes the offline slice suite and must stay runnable with no
   AWS credentials, no Claude Code sign-in and no network beyond loopback. The
   real-harness, real-control-plane run is `npm run slice`, opt-in, never in CI.
-- Worker permissions vocabulary: `fs.read`, `fs.write`, `shell.exec`, mapped to
-  harness tool policy inside the adapter. Workers never get git write access
-  and never have a human answering prompts.
+- There is no worker permissions vocabulary any more (owner's ruling,
+  2026-10-09): `ProgramContract.scope.permissions` is read so old contracts parse
+  and is told to nobody. Workers never get git write access and never have a
+  human answering prompts.
 - Starting a run is `nightshift run <contract> [--remote]`; the MCP `run.start`
   calls the same function. `--remote` is refused until the remote-runner
   program (P10 after the 2026-09-21 restaging in `docs/programs/staging.md`).
@@ -341,6 +343,14 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   must never stop for approval or be denied a tool nobody listed. Do not
   reintroduce an allow-list, a sandbox mode or an approval policy in an adapter.
   `--approve-for-me` is not used.
+- **Jobs carry no path scope** (owner's ruling, 2026-10-09: "give them the scope
+  to do the job"). No job, node, delegation, brief or tool input names the paths
+  a job may change, and nothing confines, refuses or fails a job for the paths
+  it changes. A job's reach is its environment. The program's `forbiddenActions`
+  are rules, not paths, and every agent's brief lists them, read from the program
+  contract. A plan's strand scopes are planning information only (overlap and
+  strand-vs-program checks, and guidance in a strand's brief). A record stored
+  before the ruling keeps its `scope`, dropped on read.
 - `ExecutionNodeStatus.succeeded` is legal for `program` and `sub-program`
   nodes only. A job node's table, and the A-05 property tests, are untouched.
 - The AgentCore harness worker, Bedrock, and anything that runs on a runtime
@@ -616,8 +626,9 @@ decisions are A-42, A-43 and A-44.
   CLI and the MCP server all need them. A strand's heading begins with its id. A
   strand's Job Contract is built by `strand.delegate` from the ratified plan **as
   the control plane holds it**, from nothing the caller says but the strand id:
-  the section verbatim, then the answered decisions that touch it, then the other
-  strands' scopes. Do not let a root orchestrator write a strand's objective.
+  the section verbatim, then the answered decisions that touch it, then where the
+  plan expects the other strands' work. Do not let a root orchestrator write a
+  strand's objective.
 - **The root of a planned run delegates strands only** (`plan_fixes_strands`),
   and `run.finish succeeded` is refused unless every strand succeeded. The engine
   reads where strands stand from the run's records on every pass
@@ -771,11 +782,11 @@ program needs and cannot derive; full account in
   ChatGPT login. `RouteUsage` records what each harness said. Normalising is
   P8's job.
 - What bounds a worker is **not** the harness: A-29 (Nightshift owns every
-  commit and checks every changed path against scope before integrating), the
-  execution token, and the environment allowlist. `Scope.permissions` is told to
-  the worker and reported, not enforced. A worker can write outside its worktree
-  and reach the network; on the operator's machine it is trusted as the operator
-  is, until P10.
+  commit and integrates only what it verified), the execution token, and the
+  environment allowlist. Since 2026-10-09 no path scope and no permission list
+  is told to a worker or checked (owner's ruling). A worker can write outside its
+  worktree and reach the network; on the operator's machine it is trusted as the
+  operator is, and remotely its reach is the runner's machine (P10).
 - The one list that remains is a **deny** of git write commands, on both
   adapters: Claude's `--disallowedTools` patterns (verified to hold in
   `bypassPermissions`), and for Codex a `git` guard script on

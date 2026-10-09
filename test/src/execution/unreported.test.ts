@@ -78,7 +78,6 @@ const rig = async (script: (world: World, context: ScriptContext) => ReturnType<
     ...made.scope,
     jobContractId: made.ids.next("job"),
     objective: "median helper",
-    scope: { includes: ["src/**", "test/**"] },
     acceptance: ["node --test passes"],
     dependencies: [],
     risk: "low",
@@ -87,7 +86,6 @@ const rig = async (script: (world: World, context: ScriptContext) => ReturnType<
   });
   const submitted = await engine.submit({
     job,
-    scope: made.session.program.scope,
     depth: 1,
     parentNodeId: made.session.rootNodeId,
     route: ROUTE,

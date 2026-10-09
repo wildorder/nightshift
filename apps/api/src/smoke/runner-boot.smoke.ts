@@ -419,11 +419,8 @@ const runOnce = async (
   expectStatus(
     await api.put(
       `${run.path}/nodes/${rootNodeId}`,
-      // The root node's authority is the program's, exactly: a strand that
-      // needs test/** is delegated from a node that holds it.
       makeRootNode(fixtures, {
         status: "validated",
-        scope: program.scope,
         plan: { planHash: planHashValue, planDocument },
       }),
     ),
@@ -1076,11 +1073,8 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
           ]
         : [{ id: "test", command: "npm test" }],
       scope: {
-        // The root node the proof makes carries the fixture scope; the program
-        // may only be at least as wide and forbid exactly what the node does.
         includes: strand.includes,
         excludes: HEAVY ? [] : ["src/generated/**"],
-        permissions: ["fs.read", "fs.write", "shell.exec"],
         forbiddenActions: ["deploy to production"],
       },
       strands: [

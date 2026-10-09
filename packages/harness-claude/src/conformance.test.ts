@@ -59,9 +59,10 @@ describe("the conformance fixture", () => {
     expect(fixture.longRunning().worktree).toBe("/state/nightshift/worktrees/run_1/node_1");
   });
 
-  it("gives both workers a scope that grants no permission at all", () => {
+  it("tells both workers the program forbids committing and pushing, and limits no path", () => {
     for (const input of [fixture.completing(), fixture.longRunning()]) {
-      expect(input.node.scope.permissions).toEqual([]);
+      expect(input.program.scope.forbiddenActions).toEqual(["commit", "push"]);
+      expect(input.node).not.toHaveProperty("scope");
     }
   });
 

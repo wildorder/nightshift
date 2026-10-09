@@ -64,7 +64,6 @@ const rig = async () => {
       ...made.scope,
       jobContractId: made.ids.next("job"),
       objective,
-      scope: { includes: ["src/**", "test/**"] },
       acceptance: ["node --test passes"],
       dependencies: [],
       risk: "low",
@@ -74,7 +73,6 @@ const rig = async () => {
     return (
       await engine.submit({
         job,
-        scope: made.session.program.scope,
         depth: 1,
         parentNodeId: made.session.rootNodeId,
         route: ROUTE,

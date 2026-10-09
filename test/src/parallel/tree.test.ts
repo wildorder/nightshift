@@ -47,8 +47,6 @@ afterEach(async () => {
   context = undefined;
 });
 
-const SCOPE = { includes: ["src/**", "test/**"] };
-
 const begin = async (limits: { maxDepth: number; maxConcurrency: number }) => {
   const ctx = await createLocalContext({ delegationLimits: limits });
   context = ctx;
@@ -67,7 +65,6 @@ const begin = async (limits: { maxDepth: number; maxConcurrency: number }) => {
   const delegate = async (objective: string, extra: Record<string, unknown> = {}) => {
     const result = await driver.call("delegate", {
       objective,
-      scope: SCOPE,
       acceptance: ["node --test passes"],
       ...extra,
     });
@@ -133,7 +130,6 @@ describe("the Stage 5 tree", () => {
     );
     const c = await run.delegate("Add the c1 and c2 modules, each with its test.", {
       kind: "sub-program",
-      scope: { includes: ["src/**", "test/**"] },
     });
 
     // SC-P6-05: the limit is two and A and B hold both slots, so C queues.
@@ -285,18 +281,11 @@ describe("the Stage 5 tree", () => {
     expect(status).toBe("interrupted");
   });
 
-  it("refuses depth and scope from a sub-orchestrator exactly as from the root (SC-P6-04, SC-P6-06)", async () => {
+  it("refuses depth from a sub-orchestrator as from the root (SC-P6-04, SC-P6-06)", async () => {
     const run = await begin({ maxDepth: 1, maxConcurrency: 2 });
-    // The root may delegate one level. Its own widening is refused...
-    const wide = await run.driver.call("delegate", {
-      objective: "[add-module wide] Too wide.",
-      scope: { includes: ["**"] },
-      acceptance: ["x"],
-    });
-    expect(wide).toMatchObject({ ok: false, code: "scope_widening" });
-
-    // ...and a sub-program's children would be depth 2, which this program
-    // forbids: C starts, is refused both delegations by the API, and fails.
+    // The root may delegate one level, and a sub-program's children would be
+    // depth 2, which this program forbids: C starts, is refused both delegations
+    // by the API, and fails.
     const c = await run.delegate("Add the c1 and c2 modules.", { kind: "sub-program" });
     const statuses = await run.waitAll([c]);
     expect(statuses[String(c.jobId)]).toBe("failed");
