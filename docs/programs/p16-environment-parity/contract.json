@@ -228,6 +228,7 @@
         "excludes": ["infra/**"]
       },
       "acceptance": [
+        "The project environment reaches every project process on the machine explicitly: ExecutionEnvironment carries it, and setup, verification, flaky reruns, examination checkouts, gate repairs, the gate audit and prerequisite checks each pass it to the step runner; the runner and the engine's MCP server no longer adopt it into their own process environment, and Nightshift's own processes run in the image's environment (D-10)",
         "The gate standard gains rule 8, declares its runtimes, and the mechanical audit reports a used runtime with no pin, pins that disagree, and an auditing machine whose runtime does not satisfy its pin, each naming the files and versions; the planning skill turns each into a decision",
         "auditGates treats exit 75 with a NIGHTSHIFT_DEFER line as deferred, on the laptop and the machine, sharing job verification's deferSignalOf",
         "A prerequisite check records where it ran, and a run trusts only checks made where it runs; the machine runs every verifyCommand as a worker user in the project's environment before its audit (D-08)",
@@ -387,6 +388,18 @@
       "answer": "Detach: the machine carries on, and `nightshift remote status --watch` reattaches",
       "rationale": "Low risk, taken at the leaning under the owner's standing review style unless the owner objects: closing a terminal must never kill a run; `remote cancel` stays the one way to stop it.",
       "touches": ["S-03"]
+    },
+    {
+      "id": "D-10",
+      "question": "How does the project environment reach every step on the machine?",
+      "options": [
+        "Threaded explicitly: ExecutionEnvironment carries it and every step runner is passed it; Nightshift's own processes never adopt it",
+        "Adopted into the engine process's environment at boot, so every step inherits it"
+      ],
+      "leaning": "Threaded explicitly: ExecutionEnvironment carries it and every step runner is passed it; Nightshift's own processes never adopt it",
+      "answer": "Threaded explicitly: ExecutionEnvironment carries it and every step runner is passed it; Nightshift's own processes never adopt it",
+      "rationale": "The first run built the second option because three callers were outside S-01's path scope; that was a workaround, and the owner ruled path scopes out of Nightshift entirely on 2026-10-09 (\"give them the scope to do the job\"). With no scope in the way, the root fix is to pass the environment to the processes that are the project's, and keep Nightshift's own processes in the image's environment.",
+      "touches": ["S-02"]
     }
   ]
 }

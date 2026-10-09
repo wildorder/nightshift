@@ -187,3 +187,4 @@ landed, in plain terms, for whoever reads this next.
 |------|----------|-----------|
 | 2026-10-09 | Plan drafted: D-01 … D-09 proposed | Agent |
 | 2026-10-09 | D-03, D-05, D-06, D-07 and D-08 answered by the owner at the leanings. D-04 widened by the owner from Node to every language runtime through one polyglot version manager: "nightshift should work on any environment". D-01, D-02 and D-09 taken at the leanings under the owner's standing review style | Human |
+| 2026-10-09 | The first run cancelled after S-01 landed an ambient-environment workaround forced by path scopes. Path scopes removed from Nightshift (PR #12, the owner's ruling). D-10 added to S-02: the project environment is threaded explicitly | Human |

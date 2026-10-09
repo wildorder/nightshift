@@ -256,6 +256,23 @@ repaired exactly as today.
 
 #### Approach
 
+**The project environment, explicitly (D-10).**
+
+- The first run landed S-01 with the runner and the engine's MCP server
+  adopting the project environment into their own process environment.
+- They did that because three callers, `examine.ts`, `gate-repair.ts` and
+  `flaky.ts`, lay outside S-01's path scope.
+- Path scopes are gone (the owner's ruling, 2026-10-09). So this strand
+  threads the environment instead:
+  - `ExecutionEnvironment` carries the project environment;
+  - every step runner that runs the project's code is passed it: setup,
+    verification, flaky reruns, examination checkouts, gate repairs, the
+    machine's audit and prerequisite checks;
+  - the adoption into `process.env` (`nightshift-runner.ts`, and the MCP
+    server's file at startup) is removed.
+- Nightshift's own processes run in the image's environment. The agent CLIs
+  keep their launch through the image's Node, which S-01 built.
+
 **The audit checks runtimes (SC-08).**
 
 - The gate standard gains rule 8, *declares its runtimes*. The numbers never
@@ -437,6 +454,8 @@ The answers and the owner's reasons live in the contract. Leanings:
 - **D-08** A prerequisite check records where it ran, and a run trusts only
   its own location's.
 - **D-09** Ctrl-C detaches, and `remote status --watch` reattaches.
+- **D-10** The project environment is threaded explicitly to every project
+  process; Nightshift's own processes never adopt it.
 
 ## Verification cost
 
