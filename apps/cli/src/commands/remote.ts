@@ -17,6 +17,8 @@ import {
   type Dispatch,
   DispatchSchema,
   type DispatchToolchain,
+  type EnvironmentFaultPayload,
+  type Event,
   OrgConfigSchema,
   type ProgramContract,
   ProjectSchema,
@@ -25,6 +27,7 @@ import {
 import {
   chooseTier,
   dispatchToolchain,
+  environmentFaultOf,
   estimateUsd,
   isPlanned,
   mayDispatch,
@@ -35,6 +38,7 @@ import {
   parseRuntimeVersion,
   RUNTIME_VERSION_COMMANDS,
   type RunScope,
+  renderEnvironmentFault,
   resolvePins,
   runHoursOf,
 } from "@nightshift/core";
@@ -401,8 +405,31 @@ const dispatchOf = async (
   return { scope: { ...programScope, runId: "" as never }, dispatch: undefined };
 };
 
-/** What `remote status` prints: the machine, its spend, and why it failed when it did. */
-export const describeDispatch = (dispatch: Dispatch): string[] => {
+/** An environment fault's cause, and the fault side by side when the events were read. */
+const environmentFaultLines = (
+  dispatch: Dispatch,
+  fault: EnvironmentFaultPayload | undefined,
+): string[] => {
+  if (dispatch.failure?.code !== "environment_fault") return [];
+  return [
+    "  cause: the machine, not the project. A gate green in the reference audit on your laptop " +
+      "failed on the machine; nothing was repaired and nothing in the project was changed.",
+    ...(fault === undefined
+      ? []
+      : renderEnvironmentFault(fault).map((line) => (line === "" ? "" : `    ${line}`))),
+  ];
+};
+
+/**
+ * What `remote status` prints: the machine, its spend, and why it failed when
+ * it did. An environment fault (P16 D-07) is said as the cause it is, and,
+ * when the run's `environment.fault` events could be read, shown side by side:
+ * each gate, both verdicts, both Nodes and the last of both outputs.
+ */
+export const describeDispatch = (
+  dispatch: Dispatch,
+  fault?: EnvironmentFaultPayload | undefined,
+): string[] => {
   const lines = [
     `run ${dispatch.runId}: ${dispatch.status}, generation ${dispatch.generation}, ` +
       `${dispatch.tier} (${dispatch.instanceType}) at $${dispatch.usdPerHour.toFixed(4)}/h`,
@@ -422,6 +449,7 @@ export const describeDispatch = (dispatch: Dispatch): string[] => {
     lines.push(`  publication blocked: ${dispatch.publication.blocked}`);
   if (dispatch.failure !== undefined)
     lines.push(`  failure ${dispatch.failure.code}: ${dispatch.failure.message}`);
+  lines.push(...environmentFaultLines(dispatch, fault));
   if (dispatch.cleanup.snapshotId !== undefined) {
     lines.push(
       `  snapshot ${dispatch.cleanup.snapshotId}${dispatch.cleanup.volumeDeleted ? ", volume deleted" : ""}`,
@@ -449,10 +477,40 @@ export const remoteStatus = async (
   options: RemoteOptions,
 ): Promise<number> => {
   const { files, session } = await openFor(environment, options);
-  const { dispatch } = await dispatchOf(environment, session, files, options.run);
+  const { scope, dispatch } = await dispatchOf(environment, session, files, options.run);
   if (dispatch === undefined) return 1;
-  for (const line of describeDispatch(dispatch)) environment.out(line);
+  const fault =
+    dispatch.failure?.code === "environment_fault"
+      ? await environmentFaultOfRun(session, scope)
+      : undefined;
+  for (const line of describeDispatch(dispatch, fault)) environment.out(line);
   return 0;
+};
+
+/**
+ * The run's environment fault, from its events, for `remote status` to show
+ * side by side; `undefined` when there is none or they cannot be read, and the
+ * dispatch's own failure message says the cause either way.
+ */
+export const environmentFaultOfRun = async (
+  session: Pick<Session, "stores">,
+  scope: RunScope,
+): Promise<EnvironmentFaultPayload | undefined> => {
+  try {
+    const events: Event[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await session.stores.events.listByRun(
+        scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      events.push(...page.items);
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return environmentFaultOf(events);
+  } catch {
+    return undefined;
+  }
 };
 
 const post = async (

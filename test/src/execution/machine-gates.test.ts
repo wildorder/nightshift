@@ -17,11 +17,12 @@ import {
   type ProgramContract,
   type ReferenceGate,
 } from "@nightshift/contracts";
-import { createFixtures, makeDispatch } from "@nightshift/core";
+import { createFixtures, gatherReport, makeDispatch, renderReport } from "@nightshift/core";
 import { startRun } from "@nightshift/execution";
 import { auditThenRoot, type MachineAuditContext, type Runtime } from "@nightshift/mcp";
 import {
   createFetchTransport,
+  createHttpArtifactBodyStore,
   createHttpPlanning,
   staticTokenProvider,
 } from "@nightshift/persistence/http";
@@ -47,6 +48,11 @@ const machine = async (
     recorded?: Recorded[];
     /** The laptop's reference audit (P16 D-06): its gates, and its Node. */
     reference?: { gates: ReferenceGate[]; node?: string };
+    /**
+     * Bodies as a machine's runtime has them (`createRuntime`): the plane's
+     * signed upload, and no way to read one back.
+     */
+    writeOnlyBodies?: boolean;
   } = {},
 ) => {
   const world: BaseWorld = await createBaseWorld({ program });
@@ -126,7 +132,15 @@ const machine = async (
   const runtime = {
     git: world.git,
     stores: world.stores,
-    bodies: world.bodies,
+    bodies:
+      input.writeOnlyBodies === true
+        ? createHttpArtifactBodyStore({
+            transport: createFetchTransport({
+              endpoint: world.plane.url,
+              tokens: staticTokenProvider("ignored-by-the-local-plane"),
+            }),
+          })
+        : world.bodies,
     ids: world.ids,
     clock: world.clock,
     paths: localPathsIn(world.stateDir),
@@ -385,6 +399,85 @@ describe("the gate audit on a run's machine", () => {
         executionNodeId: started.rootNode.executionNodeId,
         kind: "verification-log",
       });
+    });
+
+    it("records the fault with both outputs' tails on a machine whose bodies cannot be read back (F-01)", async () => {
+      const { world, started, ended, rootStarted } = await machine(
+        {
+          verification: [
+            { id: "build", command: `node -e "process.exit(0)"` },
+            { id: "unit", command: BROKEN },
+          ],
+        },
+        {
+          writeOnlyBodies: true,
+          reference: {
+            node: "20.0.1",
+            gates: [
+              { id: "build", kind: "check", verdict: "passed" },
+              {
+                id: "unit",
+                kind: "check",
+                verdict: "passed",
+                // Kept on the laptop, and unreadable here: the tail travels inline.
+                outputArtifactId: REFERENCE_OUTPUT,
+                outputTail: "Tests  12 passed (12)",
+              },
+            ],
+          },
+        },
+      );
+      expect(rootStarted).toBe(false);
+      expect(ended?.failure.code).toBe("environment_fault");
+      const events = await eventsOf(world, started.run.runId);
+      const payload = EnvironmentFaultPayloadSchema.parse(
+        events.find((event) => event.type === "environment.fault")?.payload,
+      );
+      expect(payload.gates).toHaveLength(1);
+      expect(payload.gates[0]).toMatchObject({
+        id: "unit",
+        reference: "passed",
+        machine: "failed",
+        referenceOutputArtifactId: REFERENCE_OUTPUT,
+        referenceTail: "Tests  12 passed (12)",
+      });
+      expect(payload.gates[0]?.machineTail).toContain("the base is broken");
+
+      // The report reads it from the event alone, side by side.
+      const report = await gatherReport(world.stores, {
+        projectId: world.program.projectId,
+        programId: world.program.programId,
+        runId: started.run.runId,
+      });
+      expect(report.gateHealth.environmentFault?.gates[0]?.referenceTail).toBe(
+        "Tests  12 passed (12)",
+      );
+      const text = renderReport(report);
+      expect(text).toContain("| `unit` |");
+      expect(text).toContain("Tests  12 passed (12)");
+      expect(text).toContain("the base is broken");
+      expect(text).toContain("Node 20.0.1");
+    });
+
+    it("still records the fault when the reference carried no tail and its artifact cannot be read", async () => {
+      const { world, started, ended } = await machine(
+        { verification: [{ id: "unit", command: BROKEN }] },
+        {
+          writeOnlyBodies: true,
+          reference: {
+            gates: [
+              { id: "unit", kind: "check", verdict: "passed", outputArtifactId: REFERENCE_OUTPUT },
+            ],
+          },
+        },
+      );
+      expect(ended?.failure.code).toBe("environment_fault");
+      const events = await eventsOf(world, started.run.runId);
+      const payload = EnvironmentFaultPayloadSchema.parse(
+        events.find((event) => event.type === "environment.fault")?.payload,
+      );
+      expect(payload.gates[0]?.referenceTail).toBeUndefined();
+      expect(payload.gates[0]?.machineTail).toContain("the base is broken");
     });
 
     it("failed on both is a red base as today: gate.red, and the root starts", async () => {

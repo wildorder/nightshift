@@ -14,23 +14,47 @@ import type {
   ReferenceAudit,
   ReferenceGate,
 } from "@nightshift/contracts";
-import { referenceGateRan } from "@nightshift/contracts";
+import { MAX_REFERENCE_OUTPUT_TAIL_CHARS, referenceGateRan } from "@nightshift/contracts";
 import type { GateAudit } from "./gate-audit.js";
+import { readableTail } from "./output-tail.js";
 
-/** Each audited gate's verdict, with the artifact holding its output when it ran and one was kept. */
+/**
+ * What the tails of one reference may come to together, in characters: the
+ * dispatch carrying them is one control-plane record, far below its item limit
+ * at this size, however many gates the program has.
+ */
+export const MAX_REFERENCE_TAILS_CHARS = 64_000;
+
+/**
+ * Each audited gate's verdict, with the artifact holding its output when it ran
+ * and one was kept, and the last of that output inline: the machine shows it
+ * beside its own when the gate faults, and cannot read the artifact back.
+ */
 export const referenceGatesOf = (
   audit: Pick<GateAudit, "gates">,
   outputs: ReadonlyMap<string, ArtifactId> = new Map(),
-): ReferenceGate[] =>
-  audit.gates.map((gate) => {
-    const outputArtifactId = referenceGateRan(gate.verdict) ? outputs.get(gate.id) : undefined;
+): ReferenceGate[] => {
+  const ran = audit.gates.filter(
+    (gate) => referenceGateRan(gate.verdict) && gate.result !== undefined,
+  ).length;
+  const perGate = Math.min(
+    MAX_REFERENCE_OUTPUT_TAIL_CHARS,
+    Math.floor(MAX_REFERENCE_TAILS_CHARS / Math.max(1, ran)),
+  );
+  return audit.gates.map((gate) => {
+    const ranHere = referenceGateRan(gate.verdict);
+    const outputArtifactId = ranHere ? outputs.get(gate.id) : undefined;
+    const tail =
+      ranHere && gate.result !== undefined ? readableTail(gate.result.output, perGate) : "";
     return {
       id: gate.id,
       kind: gate.kind,
       verdict: gate.verdict,
       ...(outputArtifactId === undefined ? {} : { outputArtifactId }),
+      ...(tail === "" ? {} : { outputTail: tail }),
     };
   });
+};
 
 export interface ReferenceAuditInput {
   readonly audit: Pick<GateAudit, "base" | "gates">;

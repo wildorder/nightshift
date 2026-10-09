@@ -30,6 +30,8 @@ export interface ComparedGate {
   readonly outcome: GateAgreement;
   /** The laptop's output tail, when the reference kept one. */
   readonly referenceOutputArtifactId?: ArtifactId;
+  /** The last of the laptop's output, as the reference carried it inline. */
+  readonly referenceOutputTail?: string;
 }
 
 export interface GateComparison {
@@ -72,6 +74,7 @@ export const compareWithReference = (
       ...(laptop?.outputArtifactId === undefined
         ? {}
         : { referenceOutputArtifactId: laptop.outputArtifactId }),
+      ...(laptop?.outputTail === undefined ? {} : { referenceOutputTail: laptop.outputTail }),
     };
   });
   return {

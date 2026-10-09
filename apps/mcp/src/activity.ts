@@ -172,8 +172,12 @@ const environmentFaultText = (p: Record<string, unknown>): string => {
       })
     : [];
   const node = (value: unknown): string => (typeof value === "string" ? value : "none");
+  const part =
+    typeof p.part === "number" && typeof p.parts === "number"
+      ? ` (part ${p.part} of ${p.parts})`
+      : "";
   return (
-    `environment fault: ${short(gates.join(", "))}; Node ${node(p.referenceNode)} on the ` +
+    `environment fault${part}: ${short(gates.join(", "))}; Node ${node(p.referenceNode)} on the ` +
     `reference, ${node(p.machineNode)} on the machine. The machine is at fault, not the base: ` +
     "nothing is repaired, and the run is cancelled"
   );

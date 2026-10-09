@@ -58,9 +58,13 @@ export {
   type WorkerLaunchIdentity,
 } from "./environment.js";
 export {
+  boundEnvironmentFault,
   environmentFaultReason,
+  type FaultOutputs,
+  MIN_ENVIRONMENT_FAULT_TAIL_CHARS,
   type RecordEnvironmentFaultInput,
   recordEnvironmentFault,
+  splitEnvironmentFault,
 } from "./environment-fault.js";
 export {
   arbitrateAll,
@@ -124,6 +128,7 @@ export {
   type EventOutbox,
   type OutboxOptions,
 } from "./outbox.js";
+export { lastChars, readableOutput, readableTail } from "./output-tail.js";
 export {
   PREFLIGHT_TIMEOUT_MS,
   type PreflightCheck,
@@ -145,6 +150,7 @@ export {
   recordRedBase,
 } from "./red-base.js";
 export {
+  MAX_REFERENCE_TAILS_CHARS,
   type ReferenceAuditInput,
   referenceAuditOf,
   referenceGatesOf,

@@ -138,6 +138,9 @@ export type ReferenceGateVerdict = z.infer<typeof ReferenceGateVerdictSchema>;
 export const referenceGateRan = (verdict: ReferenceGateVerdict): boolean =>
   verdict === "passed" || verdict === "failed" || verdict === "deferred";
 
+/** The most of one gate's output a reference audit carries inline. */
+export const MAX_REFERENCE_OUTPUT_TAIL_CHARS = 2000;
+
 export const ReferenceGateSchema = z.strictObject({
   /** The gate's id as the audit names it: `setup:<id>` for a setup step. */
   id: z.string().min(1),
@@ -150,6 +153,12 @@ export const ReferenceGateSchema = z.strictObject({
    * gate's.
    */
   outputArtifactId: ArtifactIdSchema.optional(),
+  /**
+   * The last of that output, inline, so the machine can show it beside its own
+   * when the gate faults without reading the artifact back: a machine's body
+   * store can write but not read (P16 D-07).
+   */
+  outputTail: z.string().max(MAX_REFERENCE_OUTPUT_TAIL_CHARS).optional(),
 });
 export type ReferenceGate = z.infer<typeof ReferenceGateSchema>;
 
@@ -181,6 +190,11 @@ export const ReferenceAuditSchema = z
         (gate) => gate.outputArtifactId === undefined || referenceGateRan(gate.verdict),
       ),
     { message: "only a gate that ran carries an output artifact", path: ["gates"] },
+  )
+  .refine(
+    (value) =>
+      value.gates.every((gate) => gate.outputTail === undefined || referenceGateRan(gate.verdict)),
+    { message: "only a gate that ran carries an output tail", path: ["gates"] },
   );
 export type ReferenceAudit = z.infer<typeof ReferenceAuditSchema>;
 

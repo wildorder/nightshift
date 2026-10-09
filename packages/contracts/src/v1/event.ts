@@ -190,6 +190,9 @@ export const EventSchema = z
 export type Event = z.infer<typeof EventSchema>;
 
 /** One gate the reference audit and the machine disagree on (P16 D-07). */
+/** The most of one output an `environment.fault` gate carries inline. */
+export const MAX_ENVIRONMENT_FAULT_TAIL_CHARS = 2000;
+
 export const EnvironmentFaultGateSchema = z.strictObject({
   id: z.string().min(1),
   command: z.string(),
@@ -202,17 +205,43 @@ export const EnvironmentFaultGateSchema = z.strictObject({
   referenceOutputArtifactId: ArtifactIdSchema.optional(),
   /** The machine's output tail, on the run's program node. */
   machineOutputArtifactId: ArtifactIdSchema.optional(),
+  /**
+   * The last of the laptop's output, inline, so a reader shows it beside the
+   * machine's without reading an artifact. Bounded with `machineTail` so the
+   * event stays within `MAX_INLINE_PAYLOAD_BYTES`; absent on older events.
+   */
+  referenceTail: z.string().max(MAX_ENVIRONMENT_FAULT_TAIL_CHARS).optional(),
+  /** The last of the machine's output, inline, bounded as `referenceTail` is. */
+  machineTail: z.string().max(MAX_ENVIRONMENT_FAULT_TAIL_CHARS).optional(),
 });
 export type EnvironmentFaultGate = z.infer<typeof EnvironmentFaultGateSchema>;
 
-/** The payload of an `environment.fault` event, for the report and the Studio to read. */
-export const EnvironmentFaultPayloadSchema = z.strictObject({
-  /** The commit both audits were of. */
-  baseCommit: CommitShaSchema,
-  gates: z.array(EnvironmentFaultGateSchema).min(1),
-  /** `node --version` where the reference audit ran, without the `v`; absent when there was none. */
-  referenceNode: z.string().min(1).optional(),
-  /** `node --version` on the machine, as a worker user in the project environment; absent when there was none. */
-  machineNode: z.string().min(1).optional(),
-});
+/**
+ * The payload of an `environment.fault` event, for the report and the Studio to read.
+ *
+ * A fault of many gates is written as several events, `part` 1 to `parts`, so
+ * each stays within `MAX_INLINE_PAYLOAD_BYTES` and every gate keeps a readable
+ * tail of both outputs; a reader takes the gates of every part. A fault that
+ * fits in one event has neither field.
+ */
+export const EnvironmentFaultPayloadSchema = z
+  .strictObject({
+    /** The commit both audits were of. */
+    baseCommit: CommitShaSchema,
+    gates: z.array(EnvironmentFaultGateSchema).min(1),
+    /** `node --version` where the reference audit ran, without the `v`; absent when there was none. */
+    referenceNode: z.string().min(1).optional(),
+    /** `node --version` on the machine, as a worker user in the project environment; absent when there was none. */
+    machineNode: z.string().min(1).optional(),
+    /** Which of the fault's events this is, from 1, when it took more than one. */
+    part: z.int().min(1).optional(),
+    /** How many events the fault took, when more than one. */
+    parts: z.int().min(2).optional(),
+  })
+  .refine(
+    (value) =>
+      (value.part === undefined) === (value.parts === undefined) &&
+      (value.part === undefined || value.parts === undefined || value.part <= value.parts),
+    { message: "part and parts come together, and part is at most parts", path: ["part"] },
+  );
 export type EnvironmentFaultPayload = z.infer<typeof EnvironmentFaultPayloadSchema>;

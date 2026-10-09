@@ -17,12 +17,14 @@ import {
   type Fixtures,
   makeCheckpoint,
   makeDispatch,
+  makeEvent,
   makeProgramContract,
   makeProject,
   makeRootNode,
   makeRun,
 } from "@nightshift/core";
 import type { GitRunner } from "@nightshift/execution";
+import { createInMemoryStores } from "@nightshift/persistence/memory";
 import { afterEach, describe, expect, it } from "vitest";
 import { UsageError } from "../failures.js";
 import { openSession } from "../session.js";
@@ -36,7 +38,12 @@ import {
   TEST_SUBJECT,
   type TestEnvironment,
 } from "../testing/harness.js";
-import { assertRemoteReady, describeDispatch, dispatchRun } from "./remote.js";
+import {
+  assertRemoteReady,
+  describeDispatch,
+  dispatchRun,
+  environmentFaultOfRun,
+} from "./remote.js";
 
 const HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const BEHIND = "b1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
@@ -325,5 +332,93 @@ describe("remote status (P16 SC-07)", () => {
   it("says nothing of a failure when there is none", () => {
     const lines = describeDispatch(makeDispatch(createFixtures(), { status: "running" }));
     expect(lines.some((line) => line.includes("failure"))).toBe(false);
+  });
+
+  const fault = {
+    baseCommit: "c".repeat(40),
+    referenceNode: "24.4.1",
+    machineNode: "18.20.4",
+    gates: [
+      {
+        id: "unit",
+        command: "npm test",
+        kind: "check" as const,
+        reference: "passed" as const,
+        machine: "failed" as const,
+        referenceTail: "Tests  12 passed (12)",
+        machineTail: "TypeError: fetch is not a function",
+      },
+    ],
+  };
+  const faulted = (f: Fixtures) =>
+    makeDispatch(f, {
+      status: "failed",
+      failure: {
+        code: "environment_fault",
+        message:
+          "environment fault: unit (`npm test`) passed in the reference audit of cccccccc and failed " +
+          "on this machine (Node 24.4.1 on the reference, 18.20.4 on the machine).",
+      },
+    });
+
+  it("says an environment fault's cause, and shows it side by side from the run's events", () => {
+    const lines = describeDispatch(faulted(createFixtures()), fault as never);
+    expect(lines).toContain(
+      "  failure environment_fault: environment fault: unit (`npm test`) passed in the reference audit " +
+        "of cccccccc and failed on this machine (Node 24.4.1 on the reference, 18.20.4 on the machine).",
+    );
+    expect(lines.some((line) => line.startsWith("  cause: the machine, not the project."))).toBe(
+      true,
+    );
+    const text = lines.join("\n");
+    expect(text).toContain(
+      "    | Gate | Command | Reference (Node 24.4.1) | Machine (Node 18.20.4) |",
+    );
+    expect(text).toContain("    | `unit` | `npm test` | passed | failed |");
+    expect(text).toContain("    Tests  12 passed (12)");
+    expect(text).toContain("    TypeError: fetch is not a function");
+  });
+
+  it("still says the cause when the run's events cannot be read", () => {
+    const lines = describeDispatch(faulted(createFixtures()));
+    expect(lines.some((line) => line.startsWith("  failure environment_fault: "))).toBe(true);
+    expect(lines.some((line) => line.startsWith("  cause: the machine, not the project."))).toBe(
+      true,
+    );
+    expect(lines.some((line) => line.includes("| Gate |"))).toBe(false);
+  });
+
+  it("reads the fault from every part of the run's environment.fault events", async () => {
+    const f = createFixtures();
+    const stores = createInMemoryStores();
+    const second = { ...fault.gates[0], id: "lint", command: "npm run lint" };
+    await stores.events.append(
+      makeEvent(f, {
+        type: "environment.fault",
+        source: "control-plane",
+        payload: { ...fault, part: 1, parts: 2 },
+      }),
+    );
+    await stores.events.append(
+      makeEvent(f, {
+        type: "environment.fault",
+        source: "control-plane",
+        payload: { ...fault, gates: [second], part: 2, parts: 2 },
+      }),
+    );
+    const read = await environmentFaultOfRun({ stores }, f.scope);
+    expect(read?.gates.map((gate) => gate.id)).toEqual(["unit", "lint"]);
+    expect(read).not.toHaveProperty("part");
+
+    const failing = {
+      ...stores,
+      events: {
+        ...stores.events,
+        listByRun: async () => {
+          throw new Error("the control plane is unreachable");
+        },
+      },
+    };
+    expect(await environmentFaultOfRun({ stores: failing }, f.scope)).toBeUndefined();
   });
 });

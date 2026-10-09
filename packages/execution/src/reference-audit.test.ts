@@ -2,11 +2,16 @@ import {
   type ArtifactId,
   type CommitSha,
   DispatchInputSchema,
+  MAX_REFERENCE_OUTPUT_TAIL_CHARS,
   ReferenceAuditSchema,
 } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import type { AuditedGate, GateAudit } from "./gate-audit.js";
-import { referenceAuditOf, referenceGatesOf } from "./reference-audit.js";
+import {
+  MAX_REFERENCE_TAILS_CHARS,
+  referenceAuditOf,
+  referenceGatesOf,
+} from "./reference-audit.js";
 
 const BASE = "b".repeat(40) as CommitSha;
 const ART = "art_01M4AAAAAAAAAAAAAAAAAAAAAA" as ArtifactId;
@@ -93,5 +98,68 @@ describe("the reference audit a dispatch carries (P16 D-06)", () => {
     const reference = referenceAuditOf({ audit, auditedAt: "2026-10-09T12:00:00.000Z" });
     expect("node" in reference).toBe(false);
     expect(reference.gates.every((entry) => entry.outputArtifactId === undefined)).toBe(true);
+  });
+
+  it("carries the last of each output that ran inline, so a machine that cannot read the artifact still shows it", () => {
+    const ran = (id: string, verdict: AuditedGate["verdict"], output: string): AuditedGate => ({
+      ...gate(id, "check", verdict),
+      result: {
+        stepId: id,
+        command: "true",
+        exitCode: verdict === "passed" ? 0 : 1,
+        durationMs: 1,
+        output: new TextEncoder().encode(output),
+        timedOut: false,
+      },
+    });
+    const long = `${"x".repeat(5000)}\n\u001b[32m 12 passed\u001b[0m\n\n`;
+    const reference = referenceAuditOf({
+      audit: {
+        base: BASE,
+        gates: [
+          ran("unit", "passed", long),
+          ran("lint", "failed", "1 error"),
+          gate("e2e", "check", "waiting"),
+        ],
+      },
+      auditedAt: "2026-10-09T12:00:00.000Z",
+    });
+    const [unit, lint, e2e] = reference.gates;
+    expect(unit?.outputTail).toMatch(/x\n 12 passed$/);
+    expect(unit?.outputTail?.length).toBe(MAX_REFERENCE_OUTPUT_TAIL_CHARS);
+    expect(lint?.outputTail).toBe("1 error");
+    expect(e2e).not.toHaveProperty("outputTail");
+    expect(ReferenceAuditSchema.parse(reference)).toEqual(reference);
+    // A gate that did not run carries no tail.
+    expect(
+      ReferenceAuditSchema.safeParse({
+        ...reference,
+        gates: [{ id: "e2e", kind: "check", verdict: "waiting", outputTail: "?" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("shares the tails' room among many gates", () => {
+    const gates = Array.from(
+      { length: 100 },
+      (_, i): AuditedGate => ({
+        ...gate(`g${i}`, "check", "passed"),
+        result: {
+          stepId: `g${i}`,
+          command: "true",
+          exitCode: 0,
+          durationMs: 1,
+          output: new TextEncoder().encode("y".repeat(5000)),
+          timedOut: false,
+        },
+      }),
+    );
+    const reference = referenceAuditOf({
+      audit: { base: BASE, gates },
+      auditedAt: "2026-10-09T12:00:00.000Z",
+    });
+    const total = reference.gates.reduce((sum, entry) => sum + (entry.outputTail?.length ?? 0), 0);
+    expect(total).toBeLessThanOrEqual(MAX_REFERENCE_TAILS_CHARS);
+    expect(reference.gates.every((entry) => (entry.outputTail?.length ?? 0) >= 600)).toBe(true);
   });
 });

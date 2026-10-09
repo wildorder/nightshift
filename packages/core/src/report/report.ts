@@ -21,6 +21,7 @@ import {
   type Agent,
   type CarriedStrand,
   type Decision,
+  type EnvironmentFaultPayload,
   type Event,
   type Examination,
   type ExecutionNode,
@@ -58,6 +59,7 @@ import {
   renderCorrections,
   renderDecisionGraph,
 } from "./decision-graph.js";
+import { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
 import { storyStatuses } from "./stories.js";
 
 export const DEPARTURE_PREFIX = "DEPARTURE:";
@@ -204,6 +206,11 @@ export interface GateHealthReport {
     | undefined;
   /** The run's `gate.red` event: the gates red on the commit it started from. */
   readonly red: { readonly baseCommit: string; readonly failing: readonly string[] } | undefined;
+  /**
+   * The run's `environment.fault` (P16 D-07): gates green in the laptop's
+   * reference audit and red on the machine, every part's gates together.
+   */
+  readonly environmentFault?: EnvironmentFaultPayload | undefined;
   readonly repairs: readonly RepairReport[];
   readonly flakes: readonly FlakeReport[];
 }
@@ -584,9 +591,11 @@ const gatherGateHealth = async (
       ),
     );
 
+  const environmentFault = environmentFaultOf(events);
   return {
     audit: auditOf(await stores.gateHealth.get(scope.projectId)),
     red,
+    ...(environmentFault === undefined ? {} : { environmentFault }),
     repairs,
     flakes,
   };
@@ -861,11 +870,23 @@ const renderRepair = (repair: RepairReport): string[] => [
 
 /**
  * Gate health (D-P15-09): the project's audit, whether the run started red,
- * what it repaired under which decision, and every check that flaked. Repair
+ * an environment fault side by side (P16 D-07), what it repaired under which decision, and every check that flaked. Repair
  * jobs sit outside every strand, so this is the only place they appear.
  */
-const renderGateHealth = ({ audit, red, repairs, flakes }: GateHealthReport): string[] => {
-  if (audit === undefined && red === undefined && repairs.length === 0 && flakes.length === 0) {
+const renderGateHealth = ({
+  audit,
+  red,
+  environmentFault,
+  repairs,
+  flakes,
+}: GateHealthReport): string[] => {
+  if (
+    audit === undefined &&
+    red === undefined &&
+    environmentFault === undefined &&
+    repairs.length === 0 &&
+    flakes.length === 0
+  ) {
     return [
       "## Gate health",
       "",
@@ -890,6 +911,7 @@ const renderGateHealth = ({ audit, red, repairs, flakes }: GateHealthReport): st
           `The base was red: ${red.failing.join(", ")} failed on \`${red.baseCommit.slice(0, 8)}\`, so the run repaired it before the strands.`,
           "",
         ]),
+    ...(environmentFault === undefined ? [] : renderEnvironmentFault(environmentFault)),
     ...(repairs.length === 0 ? [] : ["Repairs:", "", ...repairs.flatMap(renderRepair), ""]),
     ...(flakes.length === 0
       ? []
