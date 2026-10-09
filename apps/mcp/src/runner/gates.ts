@@ -18,6 +18,7 @@ import { prerequisitesOf } from "@nightshift/core";
 import {
   auditGates,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
+  deferralOf,
   type ExecutionEnvironment,
   type GateAudit,
   recordRedBase,
@@ -82,10 +83,24 @@ export const auditOnMachine = async (
     }),
     onStep: (result) =>
       log(
-        `gate audit: ${result.stepId} ${result.exitCode === 0 ? "ok" : `exited ${result.exitCode}`} ` +
-          `in ${(result.durationMs / 1000).toFixed(1)}s`,
+        `gate audit: ${result.stepId} ${
+          result.exitCode === 0
+            ? "ok"
+            : deferralOf(result) === undefined
+              ? `exited ${result.exitCode}`
+              : "deferred"
+        } in ${(result.durationMs / 1000).toFixed(1)}s`,
       ),
   });
+  // Deferred is not red (D-P7-10): it is said, with what it waits for, and the root starts.
+  for (const gate of audit.gates.filter((candidate) => candidate.verdict === "deferred")) {
+    log(
+      `gate audit: ${gate.id} deferred` +
+        (gate.deferral === undefined
+          ? ""
+          : `: ${gate.deferral.prerequisiteId} ${gate.deferral.description}`),
+    );
+  }
   if (!audit.red) return { audit };
 
   const run = await runtime.stores.runs.get(context.scope, context.scope.runId);

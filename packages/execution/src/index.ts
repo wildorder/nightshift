@@ -79,9 +79,11 @@ export {
 export {
   type AuditedGate,
   auditGates,
+  deferralOf,
   type GateAudit,
   type GateAuditInput,
   type GateVerdict,
+  gateVerdictOf,
   outputTail,
 } from "./gate-audit.js";
 export {

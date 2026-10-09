@@ -6,14 +6,17 @@
  * in a fresh checkout, exactly as verification would run them (see
  * `auditGates`). Deterministic: commands and exit codes, no model. What it finds
  * is printed as it goes and summed up at the end: a gate that failed is red,
- * and no job can pass verification on that base; one that needs an unmet
- * prerequisite did not run.
+ * and no job can pass verification on that base; one that deferred (exit 75
+ * and a `NIGHTSHIFT_DEFER` line) said a human must supply something first, and
+ * is neither red nor passed; one that needs an unmet prerequisite did not run.
  */
 import type { ProgramContract } from "@nightshift/contracts";
 import { prerequisitesOf } from "@nightshift/core";
 import {
+  type AuditedGate,
   auditGates,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
+  deferralOf,
   type GateAudit,
   outputTail,
   revParse,
@@ -29,6 +32,13 @@ export interface GatesOptions {
 }
 
 const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
+
+/** A step's progress verdict: a deferral (D-P7-10) is said as one, not as a failure. */
+export const stepVerdict = (result: NonNullable<AuditedGate["result"]>): string => {
+  if (result.exitCode === 0) return "ok  ";
+  if (result.timedOut) return "FAIL (timed out)";
+  return deferralOf(result) === undefined ? `FAIL (exited ${result.exitCode})` : "DEFERRED";
+};
 
 /** Audits `contract`'s gates on its program branch's head, printing each step as it ends. */
 export const auditProgramGates = async (
@@ -62,13 +72,9 @@ export const auditProgramGates = async (
     // The scratch goes where a run's would: short, under the state directory.
     paths: createLocalPaths(environment.paths),
     onStep: (result) => {
-      const verdict =
-        result.exitCode === 0
-          ? "ok  "
-          : result.timedOut
-            ? "FAIL (timed out)"
-            : `FAIL (exited ${result.exitCode})`;
-      say(`  ${result.stepId.padEnd(width)}  ${verdict}  ${seconds(result.durationMs)}`);
+      say(
+        `  ${result.stepId.padEnd(width)}  ${stepVerdict(result)}  ${seconds(result.durationMs)}`,
+      );
     },
   });
 };
@@ -85,6 +91,25 @@ const describeRed = (environment: CliEnvironment, audit: GateAudit, sha: string)
   environment.err(
     `No job can pass verification on ${sha} while ${audit.failing.join(", ")} ${verb}: every job runs every gate.`,
   );
+};
+
+/** Each deferred gate, with what it said it is missing and the gates it left unrun. */
+const describeDeferred = (say: (line: string) => void, audit: GateAudit): void => {
+  for (const gate of audit.gates.filter((candidate) => candidate.verdict === "deferred")) {
+    const deferral = gate.deferral;
+    say(
+      deferral === undefined
+        ? `DEFERRED ${gate.id}`
+        : `DEFERRED ${gate.id}: ${deferral.prerequisiteId} ${deferral.description}`,
+    );
+    if (deferral !== undefined && deferral.remediation !== "") {
+      say(`    to fix: ${deferral.remediation}`);
+    }
+  }
+  const unrun = audit.gates.filter((gate) => gate.verdict === "unrun").map((gate) => gate.id);
+  if (unrun.length > 0 && audit.deferred.some((id) => id.startsWith("setup:"))) {
+    say(`  not run: ${unrun.join(", ")}, behind the deferred setup`);
+  }
 };
 
 const describeMissingSetup = (say: (line: string) => void, lockfiles: readonly string[]): void => {
@@ -111,9 +136,22 @@ export const describeAudit = (
   for (const gate of audit.gates.filter((candidate) => candidate.verdict === "waiting")) {
     say(`  not run: ${gate.id} waits on ${gate.waitingOn.join(", ")}`);
   }
+  describeDeferred(say, audit);
   describeRed(environment, audit, sha);
   describeMissingSetup(say, audit.lockfilesWithoutSetup);
-  if (!audit.red) say(`the gates pass on ${sha}`);
+  if (audit.red) return;
+  // Deferred, or left unrun behind a deferred setup: not red, and not passed either.
+  const unproven = audit.gates
+    .filter((gate) => gate.verdict === "deferred" || gate.verdict === "unrun")
+    .map((gate) => gate.id);
+  if (unproven.length === 0) {
+    say(`the gates pass on ${sha}`);
+    return;
+  }
+  say(
+    `no gate is red on ${sha}, but the gates do not pass yet: ${unproven.join(", ")} ` +
+      `${unproven.length === 1 ? "is" : "are"} deferred or not run until a human supplies what the deferral names`,
+  );
 };
 
 /**

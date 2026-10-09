@@ -74,6 +74,7 @@ export const recordRedBase = async (
       }),
     );
   }
+  // Only the red ones: a `deferred` gate is not red (D-P7-10), and its output is not a failure's.
   for (const gate of input.audit.gates.filter((candidate) => candidate.verdict === "failed")) {
     const last = gate.result;
     if (last === undefined) continue;
