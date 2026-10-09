@@ -22,10 +22,12 @@
 const UNIVERSAL_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 /**
- * The project environment a machine's engine runs in (P16 S-01): its
- * Docker, the caches on the volume, and the pinned runtimes it chose. The
- * engine's own process carries them, so every step it runs inherits them,
- * whichever path launched the step. None is a secret: each names a socket, a
+ * The variables of the project environment (P16 S-01): Docker, the caches on
+ * the volume, and the pinned runtimes. On a machine the engine never carries
+ * them (D-10): its caller hands the project environment to a step whole,
+ * through `env`, which is applied over this base and so is never filtered by
+ * it. They are passed through from the parent so a developer's own, on a
+ * laptop, reach a step as they did. None is a secret: each names a socket, a
  * directory or a version.
  */
 export const PROJECT_ENV_ALLOWLIST: readonly string[] = [

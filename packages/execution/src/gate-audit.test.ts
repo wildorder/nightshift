@@ -53,7 +53,11 @@ type Gates = Pick<ProgramContract, "setup" | "verification">;
 
 const audit = async (
   program: Gates,
-  options: { files?: Record<string, string>; unmet?: readonly string[] } = {},
+  options: {
+    files?: Record<string, string>;
+    unmet?: readonly string[];
+    env?: Readonly<Record<string, string>>;
+  } = {},
 ) => {
   const { repo, base } = await repository(options.files);
   const progress: StepResult[] = [];
@@ -66,12 +70,41 @@ const audit = async (
     workDir: await temporary("nightshift-audit-work-"),
     paths: { scratch: (checkout: string) => `${checkout}-scratch` },
     timeoutMs: TIMEOUT_MS,
+    ...(options.env === undefined ? {} : { env: options.env }),
     onStep: (step) => progress.push(step),
   });
   return { result, progress, repo };
 };
 
 describe("the gate audit", () => {
+  it("gives setup and every check the project environment whole, under the scratch, and adopts none of it (P16, D-10)", async () => {
+    const before = { ...process.env };
+    const projectEnv: Record<string, string> = {
+      NS_PROJECT_ONLY: "from-project",
+      DOCKER_HOST: "unix:///run/ns-audit-test/docker.sock",
+      npm_config_cache: "/ns-audit-test/stores/npm",
+      JAVA_HOME: "/ns-audit-test/runtimes/java",
+      TMPDIR: "/not-the-scratch",
+    };
+    const probe = `node -e "const e=process.env;process.exit(e.NS_PROJECT_ONLY==='from-project'&&e.DOCKER_HOST==='unix:///run/ns-audit-test/docker.sock'&&e.npm_config_cache==='/ns-audit-test/stores/npm'&&e.JAVA_HOME==='/ns-audit-test/runtimes/java'&&e.TMPDIR!=='/not-the-scratch'?0:1)"`;
+    const { result } = await audit(
+      {
+        setup: [{ id: "install", command: probe }],
+        verification: [{ id: "probe", command: probe }],
+      },
+      { env: projectEnv },
+    );
+    expect(result.gates.map((gate) => [gate.id, gate.verdict])).toEqual([
+      ["setup:install", "passed"],
+      ["probe", "passed"],
+    ]);
+    expect({ ...process.env }).toEqual(before);
+
+    // Without it, as on a laptop, the same probe fails: nothing else supplied them.
+    const { result: laptop } = await audit({ verification: [{ id: "probe", command: probe }] });
+    expect(laptop.failing).toEqual(["probe"]);
+  });
+
   it("runs setup and every check once, in order, and a base that passes is not red", async () => {
     const { result, progress } = await audit({
       setup: [{ id: "install", command: INSTALL }],

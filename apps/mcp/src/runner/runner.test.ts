@@ -941,7 +941,7 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
 });
 
 describe("the root's project environment (P16 S-01)", () => {
-  it("carries the project environment over the parent's, and names its file", () => {
+  it("names the project environment's file and never carries the environment itself (D-10)", () => {
     const layout = layoutOf("/workspace", f.scope.runId);
     const projectEnv = {
       PATH: "/workspace/stores/runtimes/installs/node/22.11.0/bin:/usr/local/bin:/usr/bin:/bin",
@@ -960,9 +960,11 @@ describe("the root's project environment (P16 S-01)", () => {
       parentEnv: { PATH: "/usr/bin", HOME: "/home/engine" },
     });
     expect(env).toMatchObject({
-      ...projectEnv,
+      PATH: "/usr/bin",
       HOME: "/home/engine",
       NIGHTSHIFT_PROJECT_ENV_FILE: `/workspace/runs/${f.scope.runId}/project.env`,
     });
+    expect(env.npm_config_cache).toBeUndefined();
+    expect(env.NIGHTSHIFT_RUNTIMES).toBeUndefined();
   });
 });

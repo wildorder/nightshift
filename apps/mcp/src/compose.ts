@@ -185,6 +185,11 @@ export interface Runtime {
   readonly reclaim?: ExecutionEnvironment["reclaim"];
   /** P10 (T4): where a worker's token file lives on a machine; absent on a laptop. */
   readonly workerTokens?: ExecutionEnvironment["workerTokens"];
+  /**
+   * P16 (D-10): the project environment the runner wrote, given to every
+   * project step the engine runs; absent on a laptop. Never this process's own.
+   */
+  readonly projectEnv?: ExecutionEnvironment["projectEnv"];
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
   /**
@@ -527,6 +532,7 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
   const workerUsers = Number.parseInt(env[WORKER_USERS_ENV] ?? "", 10);
   const credentialRoot = env[WORKER_CREDENTIAL_DIR_ENV];
   // The project environment the runner wrote (P16 S-01): only on a machine.
+  // Threaded to the steps and the worker users, never adopted (D-10).
   const projectEnv = await readProjectEnv(env);
   const runAs =
     Number.isFinite(workerUsers) && workerUsers > 0
@@ -543,6 +549,7 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     ...(runAs === undefined ? {} : { runAs }),
     ...(runAs === undefined ? {} : { reclaim: createReclaim(userInfo().username) }),
     ...(runAs === undefined ? {} : { workerTokens: createWorkerTokenFiles(runAs) }),
+    ...(projectEnv === undefined ? {} : { projectEnv }),
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
     prerequisites: createHttpPlanning({ transport }),

@@ -13,7 +13,6 @@
  * would corrupt its own framing, which is why every diagnostic here is stderr.
  */
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { adoptProjectEnv } from "../project-env.js";
 import { createNightshiftServer } from "../server.js";
 
 const say = (line: string): void => {
@@ -21,9 +20,6 @@ const say = (line: string): void => {
 };
 
 const main = async (): Promise<void> => {
-  // On a machine, the project environment the runner wrote (P16 S-01).
-  const adopted = await adoptProjectEnv(process.env);
-  if (adopted > 0) say(`project environment: ${adopted} variable(s)`);
   const server = await createNightshiftServer({ env: process.env });
   say(`role ${server.role}; control plane ${server.endpoint}`);
 

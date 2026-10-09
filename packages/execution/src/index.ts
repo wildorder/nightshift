@@ -175,6 +175,7 @@ export {
   discardScratch,
   ensureScratch,
   freshScratch,
+  projectStepEnv,
   type RunScratchAs,
   type ScratchPaths,
   scratchEnv,

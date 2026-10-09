@@ -36,9 +36,6 @@ runRunner({
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
   onToken: (token, scope) => installTokenFile(scope.runId, token),
   work: async (context) => {
-    // The engine runs in the project environment from here on (P16 S-01): the
-    // gate audit's steps, and every process it launches, inherit it.
-    Object.assign(process.env, context.projectEnv);
     // `running` first: the plane hands the org's provider keys to a running
     // engine and to nothing else (D-P10-23), on the next beat.
     context.heartbeat.report("running");
@@ -68,7 +65,8 @@ runRunner({
       parentEnv: process.env,
     });
     const runtime = await createRuntime(env, "orchestrator");
-    // The base's gates, on this machine, before any agent is paid for. A red
+    // The base's gates, on this machine, before any agent is paid for, in the
+    // project environment `context` carries (P16, D-10). A red
     // base is recorded and the root starts: its first job is the repair
     // (D-P15-03). A gate green in the reference and red here is an
     // environment fault (P16 D-07): the root never starts, and the dispatch

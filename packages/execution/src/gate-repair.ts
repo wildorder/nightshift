@@ -62,7 +62,7 @@ import {
 import { fingerprintAtCommit, gitBlobReader } from "./gate-fingerprint.js";
 import { type GitRunner, revParse, tryGit } from "./git/index.js";
 import { recordArtifact } from "./runner.js";
-import { discardScratch, freshScratch, scratchEnv } from "./scratch.js";
+import { discardScratch, freshScratch, projectStepEnv } from "./scratch.js";
 import { setupLog } from "./setup.js";
 
 /** What a verification runs: setup first, then the gates. */
@@ -607,7 +607,8 @@ export const prepareSetupReference = async (
       setup,
       cwd: session.repoPath,
       timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
-      env: scratchEnv(dir),
+      // On a machine, in the project environment (P16, D-10), as every setup is.
+      env: projectStepEnv(environment.projectEnv, dir),
     });
     const artifactId = await recordArtifact(environment, {
       scope: session.scope,

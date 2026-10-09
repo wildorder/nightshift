@@ -4,10 +4,13 @@
  * On a machine the runner computes one environment for every project process
  * (`projectEnvironment` in `runner/workspace.ts`) and writes it to
  * `<run>/project.env`, `KEY=VALUE` a line. The orchestrator-role server it
- * launches is told the file's path, takes the environment as its own, so every
- * step the engine runs inherits it, and gives it to each worker user through
- * `RunAs.env`. The boot proof reads the same file. Nothing in it is a secret:
- * it names directories, a socket and versions.
+ * launches is told the file's path, reads it (`createRuntime`), and threads it
+ * explicitly (P16, D-10): to every project step it runs, through
+ * `ExecutionEnvironment.projectEnv`, and to each worker user, through
+ * `RunAs.env`. No Nightshift process takes it as its own: the runner, the MCP
+ * servers and the agent CLIs stay in the image's environment. The boot proof
+ * reads the same file. Nothing in it is a secret: it names directories, a
+ * socket and versions.
  */
 import { readFile } from "node:fs/promises";
 
@@ -40,16 +43,4 @@ export const readProjectEnv = async (
   const path = env[PROJECT_ENV_FILE_ENV];
   if (path === undefined || path === "") return undefined;
   return parseProjectEnv(await readFile(path, "utf8"));
-};
-
-/**
- * Makes the project environment this process's own, when `env` names its file
- * (P16 S-01): every step the engine runs then inherits it, by whichever path
- * launched it. Nothing on a laptop.
- */
-export const adoptProjectEnv = async (env: NodeJS.ProcessEnv): Promise<number> => {
-  const project = await readProjectEnv(env);
-  if (project === undefined) return 0;
-  Object.assign(env, project);
-  return Object.keys(project).length;
 };

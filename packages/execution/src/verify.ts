@@ -78,7 +78,7 @@ import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import { type GateDefinitions, gateDefinitions } from "./gate-repair.js";
 import { pristineCheckout, provisionalRef, updateRef } from "./git/index.js";
 import { recordArtifact, stepsAs } from "./runner.js";
-import { discardScratch, freshScratch, scratchEnv } from "./scratch.js";
+import { discardScratch, freshScratch, projectStepEnv } from "./scratch.js";
 
 export interface VerifyInput {
   readonly session: RunSession;
@@ -254,7 +254,8 @@ export const verifyNode = async (
   // fails, nothing is checked, and the record says so with setup's own output.
   // As the worker the worktree belongs to (D-P10-25), never as the engine, and
   // with a temp directory of its own that nothing before it wrote into and
-  // nothing after it inherits (scratch.ts).
+  // nothing after it inherits (scratch.ts). On a machine, in the project
+  // environment (P16, D-10), given here rather than inherited.
   const as = stepsAs(environment, { agentId: input.agentId, role: "worker" });
   const scratch = await freshScratch(environment.paths, input.worktree, as.as);
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
@@ -264,7 +265,7 @@ export const verifyNode = async (
     cwd: input.worktree,
     reference: input.session.repoPath,
     timeoutMs,
-    env: scratchEnv(scratch),
+    env: projectStepEnv(environment.projectEnv, scratch),
     ...as,
   }).finally(() => discardScratch(environment.paths, input.worktree, as.as));
   const results = checkout.checks;
@@ -294,14 +295,16 @@ export const verifyNode = async (
   }
 
   // Each check that failed, and did not declare a deferral, runs once more on
-  // this same checkout as the same worker (D-P15-06, flaky.ts). One whose rerun
-  // passes is a flake: recorded as passed, with its first run beside it.
+  // this same checkout as the same worker, in the same project environment
+  // (D-P15-06, flaky.ts). One whose rerun passes is a flake: recorded as
+  // passed, with its first run beside it.
   const reruns = await rerunFailures({
     steps: runnable,
     first: results,
     cwd: input.worktree,
     paths: environment.paths,
     timeoutMs,
+    ...(environment.projectEnv === undefined ? {} : { projectEnv: environment.projectEnv }),
     ...as,
   });
   const checkCommands = await withFlakes(

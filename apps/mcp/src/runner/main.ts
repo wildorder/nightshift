@@ -77,8 +77,9 @@ export interface RunnerContext {
   readonly program: ProgramContract;
   /**
    * The one project environment (P16 S-01): the pinned runtimes first on PATH
-   * and the stores. The engine takes it as its own, so every step it runs
-   * inherits it, and each worker user gets it through `RunAs.env`.
+   * and the stores. Handed explicitly to every project step (P16, D-10): the
+   * gate audit's here, the engine's through `ExecutionEnvironment.projectEnv`,
+   * each worker user's through `RunAs.env`. Never the runner's own.
    */
   readonly projectEnv: Readonly<Record<string, string>>;
   /** Where it was written, for the processes the runner launches: `<run>/project.env`. */

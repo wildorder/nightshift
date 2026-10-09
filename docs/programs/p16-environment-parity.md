@@ -97,11 +97,15 @@ landed, in plain terms, for whoever reads this next.
   pinned; `DOCKER_HOST` on a worker's own socket when a uid is given. It is
   written once to `<run>/project.env`
   (`apps/mcp/src/project-env.ts`), which the orchestrator-role server reads
-  at startup and adopts into its own `process.env`
-  (`adoptProjectEnv`), so every step the engine runs inherits it by whichever
-  path launched it, and which each worker user gets through `RunAs.env`
-  (`createWorkerUsers({ projectEnv })` in `apps/mcp/src/run-as.ts`). The boot
-  proof reads the same file.
+  at startup (`createRuntime` in `apps/mcp/src/compose.ts`) and threads
+  explicitly (S-02, D-10): `ExecutionEnvironment.projectEnv` is given to
+  every step that runs the project's code (setup, verification and its
+  reruns, examination checkouts, the setup reference), the runner gives
+  `context.projectEnv` to the machine's audit and prerequisite checks, and
+  each worker user gets it through `RunAs.env`
+  (`createWorkerUsers({ projectEnv })` in `apps/mcp/src/run-as.ts`). No
+  Nightshift process adopts it into its own `process.env`. The boot proof
+  reads the same file.
 - **Docker per worker, on its first connection**, not at boot
   (`infra/cdk/src/lib/runner-image.ts`): each worker's rootless daemon is
   installed by Docker's own `dockerd-rootless-setuptool.sh` while it still
@@ -142,7 +146,9 @@ landed, in plain terms, for whoever reads this next.
    `gate-repair.ts`'s setup reference, and `flaky.ts`'s reruns — were outside
    S-01's scope; they get the project environment anyway because they run
    inside the engine process and inherit it, but S-02, which owns those
-   files, may thread it through explicitly instead.
+   files, may thread it through explicitly instead. **Undone by S-02
+   (D-10):** the project environment is now threaded explicitly to each of
+   those call sites, and neither the runner nor the MCP server adopts it.
 4. **The pinned Rust toolchain's home moved onto the volume.** The image's
    own `rustup` home (`/opt/rust/rustup`) is root's and read-only past
    install, so it can hold only the image's stable toolchain. A project

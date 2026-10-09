@@ -31,7 +31,7 @@ import {
   setupFailed,
 } from "@nightshift/verification";
 import { addDetachedWorktree, type GitRunner, pruneWorktrees, tryGit } from "./git/index.js";
-import { discardScratch, freshScratch, type ScratchPaths, scratchEnv } from "./scratch.js";
+import { discardScratch, freshScratch, projectStepEnv, type ScratchPaths } from "./scratch.js";
 
 /**
  * - `passed`: it exited 0.
@@ -128,7 +128,7 @@ const runOnce = async (
   const scratch = await freshScratch(input.paths, checkout, input.as);
   const how = {
     timeoutMs: input.timeoutMs,
-    env: { ...(input.env ?? {}), ...scratchEnv(scratch) },
+    env: projectStepEnv(input.env, scratch),
     ...(input.as === undefined ? {} : { as: input.as }),
   };
   const prepared = await runSetupSteps({

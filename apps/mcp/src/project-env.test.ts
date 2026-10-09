@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  adoptProjectEnv,
   formatProjectEnv,
   PROJECT_ENV_FILE_ENV,
   parseProjectEnv,
@@ -35,16 +34,5 @@ describe("the project environment's file (P16 S-01)", () => {
     const file = join(dir, "project.env");
     writeFileSync(file, formatProjectEnv(env));
     expect(await readProjectEnv({ [PROJECT_ENV_FILE_ENV]: file })).toEqual(env);
-
-    const engine: NodeJS.ProcessEnv = {
-      [PROJECT_ENV_FILE_ENV]: file,
-      PATH: "/usr/bin",
-      HOME: "/h",
-    };
-    expect(await adoptProjectEnv(engine)).toBe(3);
-    expect(engine).toMatchObject({ ...env, HOME: "/h" });
-    const laptop: NodeJS.ProcessEnv = { PATH: "/usr/bin" };
-    expect(await adoptProjectEnv(laptop)).toBe(0);
-    expect(laptop).toEqual({ PATH: "/usr/bin" });
   });
 });

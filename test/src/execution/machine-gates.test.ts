@@ -162,6 +162,42 @@ describe("the gate audit on a run's machine", () => {
     expect(result.audit?.red).toBe(false);
   });
 
+  it("gives the audit's setup and checks, and the prerequisite checks, the project environment whole, adopting none of it (P16, D-10)", async () => {
+    const before = { ...process.env };
+    const projectEnv = {
+      NS_PROJECT_ONLY: "from-project",
+      DOCKER_HOST: "unix:///run/ns-machine-test/docker.sock",
+      npm_config_cache: "/ns-machine-test/stores/npm",
+      CARGO_HOME: "/ns-machine-test/stores/cargo",
+      RUSTUP_TOOLCHAIN: "1.82.0",
+    };
+    const probe = `node -e "const e=process.env;process.exit(e.NS_PROJECT_ONLY==='from-project'&&e.DOCKER_HOST==='unix:///run/ns-machine-test/docker.sock'&&e.npm_config_cache==='/ns-machine-test/stores/npm'&&e.CARGO_HOME==='/ns-machine-test/stores/cargo'&&e.RUSTUP_TOOLCHAIN==='1.82.0'?0:1)"`;
+    const recorded: Recorded[] = [];
+    const { result } = await machine(
+      {
+        prerequisites: [
+          {
+            id: "HP-01",
+            description: "The project environment.",
+            remediation: "None.",
+            verifyCommand: probe,
+            status: "pending",
+          },
+        ],
+        setup: [{ id: "install", command: probe }],
+        verification: [{ id: "probe", command: probe, requires: ["HP-01"] }],
+      },
+      { recorded, projectEnv },
+    );
+    expect(recorded.map((check) => [check.prerequisiteId, check.exitCode])).toEqual([["HP-01", 0]]);
+    expect(result.audit?.gates.map((gate) => [gate.id, gate.verdict])).toEqual([
+      ["setup:install", "passed"],
+      ["probe", "passed"],
+    ]);
+    expect({ ...process.env }).toEqual(before);
+    expect(process.env.NS_PROJECT_ONLY).toBeUndefined();
+  });
+
   it("lets the root start when the base's gates pass", async () => {
     const { result, run } = await machine({
       verification: [{ id: "test", command: `node -e "process.exit(0)"` }],
