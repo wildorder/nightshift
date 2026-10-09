@@ -95,21 +95,22 @@ export type MeasuredToolchain =
 const isMeasurable = (runtime: string): runtime is PinnedRuntime =>
   (PINNED_RUNTIMES as readonly string[]).includes(runtime);
 
-/** The pin files as committed at `sha`; a file the commit lacks is not there. */
-const pinFilesAt = async (
+/** `files` as committed at `sha`; a file the commit lacks is not there. */
+export const filesAt = async (
   git: GitRunner,
   repoPath: string,
   sha: string,
+  files: readonly string[],
 ): Promise<Record<string, string>> => {
-  const files: Record<string, string> = {};
-  for (const file of PIN_FILES) {
+  const found: Record<string, string> = {};
+  for (const file of files) {
     const shown = await git(["show", `${sha}:${file}`], { cwd: repoPath });
-    if (shown.exitCode === 0) files[file] = shown.stdout;
+    if (shown.exitCode === 0) found[file] = shown.stdout;
   }
-  return files;
+  return found;
 };
 
-type Measurement =
+export type Measurement =
   | { readonly kind: "version"; readonly version: string }
   | { readonly kind: "missing" }
   | { readonly kind: "refused"; readonly message: string };
@@ -117,7 +118,7 @@ type Measurement =
 const firstLine = (text: string): string => text.trim().split(/\r?\n/)[0] ?? "";
 
 /** One runtime's `--version` on this machine. */
-const measureRuntime = async (
+export const measureRuntime = async (
   exec: Exec | undefined,
   repoPath: string,
   runtime: PinnedRuntime,
@@ -166,7 +167,7 @@ export const measureToolchain = async (
   repoPath: string,
   baseSha: string,
 ): Promise<MeasuredToolchain> => {
-  const resolution = resolvePins(await pinFilesAt(deps.git, repoPath, baseSha));
+  const resolution = resolvePins(await filesAt(deps.git, repoPath, baseSha, PIN_FILES));
   if (!resolution.ok) return { ok: false, conflict: true, message: resolution.message };
 
   const pins = resolution.pins.filter((pin) => isMeasurable(pin.runtime));

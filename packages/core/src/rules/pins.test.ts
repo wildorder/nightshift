@@ -7,8 +7,12 @@ import {
   dispatchToolchain,
   type Pin,
   parseRuntimeVersion,
+  RUNTIME_MARKER_FILES,
   RUNTIME_VERSION_COMMANDS,
+  type RuntimeFinding,
   resolvePins,
+  runtimeFindings,
+  runtimesToMeasure,
   satisfiesPin,
 } from "./pins.js";
 
@@ -272,5 +276,178 @@ describe("dispatchToolchain", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.message.split("\n")).toHaveLength(2);
+  });
+});
+
+describe("runtimeFindings (rule 8, declares its runtimes)", () => {
+  const cases: ReadonlyArray<{
+    readonly name: string;
+    readonly files: Record<string, string>;
+    readonly measured?: Record<string, string | undefined>;
+    readonly findings: readonly RuntimeFinding[];
+  }> = [
+    { name: "an empty repository", files: {}, findings: [] },
+    {
+      name: "a pinned, met runtime",
+      files: { "package.json": "{}", ".nvmrc": "24\n" },
+      measured: { node: "24.1.0" },
+      findings: [],
+    },
+    {
+      name: "package.json with no Node pin",
+      files: { "package.json": "{}" },
+      findings: [{ kind: "unpinned", runtime: "node", marker: "package.json" }],
+    },
+    {
+      name: "engines.node counts as Node's pin",
+      files: { "package.json": JSON.stringify({ engines: { node: ">=24 <25" } }) },
+      measured: { node: "24.3.0" },
+      findings: [],
+    },
+    {
+      name: "each Python marker, named once, by the first present",
+      files: { "requirements.txt": "", "pyproject.toml": "", Pipfile: "" },
+      findings: [{ kind: "unpinned", runtime: "python", marker: "pyproject.toml" }],
+    },
+    {
+      name: "setup.py",
+      files: { "setup.py": "" },
+      findings: [{ kind: "unpinned", runtime: "python", marker: "setup.py" }],
+    },
+    {
+      name: "a Gemfile",
+      files: { Gemfile: "" },
+      findings: [{ kind: "unpinned", runtime: "ruby", marker: "Gemfile" }],
+    },
+    {
+      name: "go.mod, which is not itself a pin",
+      files: { "go.mod": "module x\n\ngo 1.22\n" },
+      findings: [{ kind: "unpinned", runtime: "go", marker: "go.mod" }],
+    },
+    {
+      name: "go.mod with Go pinned in .tool-versions",
+      files: { "go.mod": "module x\n", ".tool-versions": "golang 1.22.4\n" },
+      measured: { go: "1.22.4" },
+      findings: [],
+    },
+    {
+      name: "a Cargo.toml",
+      files: { "Cargo.toml": "" },
+      findings: [{ kind: "unpinned", runtime: "rust", marker: "Cargo.toml" }],
+    },
+    {
+      name: "each Java marker",
+      files: { "build.gradle.kts": "", "build.gradle": "" },
+      findings: [{ kind: "unpinned", runtime: "java", marker: "build.gradle" }],
+    },
+    {
+      name: "pom.xml",
+      files: { "pom.xml": "" },
+      findings: [{ kind: "unpinned", runtime: "java", marker: "pom.xml" }],
+    },
+    {
+      name: "pins that disagree, naming both files and specs, not judged against the machine",
+      files: { "package.json": "{}", ".nvmrc": "22\n", ".node-version": "24\n" },
+      measured: { node: "20.0.0" },
+      findings: [
+        {
+          kind: "conflicting",
+          runtime: "node",
+          a: { spec: "22", source: ".nvmrc" },
+          b: { spec: "24", source: ".node-version" },
+        },
+      ],
+    },
+    {
+      name: "a measured runtime that does not satisfy its pin",
+      files: { ".nvmrc": "24\n" },
+      measured: { node: "v22.22.0" },
+      findings: [
+        { kind: "unmet", runtime: "node", spec: "24", source: ".nvmrc", measured: "22.22.0" },
+      ],
+    },
+    {
+      name: "a measured runtime that names no exact version",
+      files: { ".nvmrc": "22\n" },
+      measured: { node: "22" },
+      findings: [{ kind: "unmet", runtime: "node", spec: "22", source: ".nvmrc", measured: "22" }],
+    },
+    {
+      name: "a pinned runtime missing from the machine",
+      files: { ".python-version": "3.12\n" },
+      findings: [{ kind: "unmet", runtime: "python", spec: "3.12", source: ".python-version" }],
+    },
+    {
+      name: "an unmeasurable tool, pinned, never judged",
+      files: { ".tool-versions": "terraform 1.9.0\n" },
+      findings: [],
+    },
+    {
+      name: "an unmeasurable tool whose pins disagree, skipped",
+      files: { ".tool-versions": "terraform 1.9.0\nterraform 1.10.0\n" },
+      findings: [],
+    },
+    {
+      name: "an unmeasurable conflict beside a measurable one: only the measurable is reported",
+      files: {
+        ".tool-versions": "terraform 1.9.0\nterraform 1.10.0\nnodejs 24.1.0\n",
+        ".nvmrc": "22",
+      },
+      measured: { node: "22.1.0" },
+      findings: [
+        {
+          kind: "conflicting",
+          runtime: "node",
+          a: { spec: "22", source: ".nvmrc" },
+          b: { spec: "24.1.0", source: ".tool-versions" },
+        },
+      ],
+    },
+    {
+      name: "several findings at once",
+      files: { "package.json": "{}", Gemfile: "", ".ruby-version": "3.3.0\n" },
+      measured: { ruby: "3.2.2" },
+      findings: [
+        { kind: "unpinned", runtime: "node", marker: "package.json" },
+        {
+          kind: "unmet",
+          runtime: "ruby",
+          spec: "3.3.0",
+          source: ".ruby-version",
+          measured: "3.2.2",
+        },
+      ],
+    },
+  ];
+
+  for (const { name, files, measured, findings } of cases) {
+    it(name, () => {
+      expect(runtimeFindings(files, measured ?? {})).toEqual(findings);
+    });
+  }
+
+  it("never reports a runtime Nightshift does not install", () => {
+    const found = runtimeFindings(
+      { ".tool-versions": "terraform 1.9.0\nterraform 1.10.0\nnodejs 22\nnodejs 24\n" },
+      {},
+    );
+    expect(found.map((finding) => finding.runtime)).toEqual(["node"]);
+  });
+
+  it("measures each agreed, installable pin, even beside a conflict", () => {
+    expect(
+      runtimesToMeasure({
+        ".nvmrc": "22",
+        ".node-version": "24",
+        ".python-version": "3.12",
+        ".tool-versions": "terraform 1.9.0\nruby 3.3.0\n",
+      }),
+    ).toEqual(["python", "ruby"]);
+  });
+
+  it("names a marker for every runtime it installs", () => {
+    expect(new Set(Object.values(RUNTIME_MARKER_FILES))).toEqual(
+      new Set(["node", "python", "ruby", "go", "java", "rust"]),
+    );
   });
 });

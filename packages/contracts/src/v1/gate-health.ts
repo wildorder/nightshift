@@ -21,8 +21,12 @@ import { PrincipalSchema } from "./principal.js";
 export const GateHealthVerdictSchema = z.enum(["healthy", "repairing"]);
 export type GateHealthVerdict = z.infer<typeof GateHealthVerdictSchema>;
 
-/** The rules of the gate standard (§4.1), numbered 1 to 7. */
-export const GATE_STANDARD_RULES = 7;
+/**
+ * The rules of the gate standard (§4.1), numbered 1 to 8. Rule 8, "declares
+ * its runtimes", was added by P16 S-02 (SC-08): the repository pins every
+ * language runtime it uses, and the gates are audited on those versions.
+ */
+export const GATE_STANDARD_RULES = 8;
 
 /**
  * A file path inside the repository, in one canonical, portable spelling:

@@ -201,6 +201,27 @@ describe("the gate audit (P15, D-P15-01, D-P15-05)", () => {
       expect(step, phrase).toContain(phrase);
     }
     expect(text).toContain("no gate-health record for the project");
+  });
+
+  it("states rule 8 in step 3a, turns its findings into decisions, and says a remote run audits again (P16 SC-08)", async () => {
+    const text = await readFile(skill("SKILL.md"), "utf8");
+    const step = text
+      .slice(text.indexOf("## 3a. Audit the gates"), text.indexOf("## 4. Propose the seams"))
+      .replace(/\s+/g, " ");
+    for (const phrase of [
+      "**8. Declares its runtimes**: the repository pins every language runtime it uses, in one file per runtime, and the gates are audited on those versions.",
+      "`nightshift gates {id}` checks it mechanically and prints its findings",
+      "**Each rule-8 finding becomes a decision recorded against rule 8**",
+      "pin the runtime, reconcile the pins, or fix the laptop's runtime",
+      "A remote run audits the gates again at dispatch: a reference audit on the laptop at the exact base it dispatches, then the machine's own audit, compared gate by gate.",
+      "the standard's number (1–8)",
+    ]) {
+      expect(step, phrase).toContain(phrase);
+    }
+    // gate-standard.md is embedded byte-for-byte in the harness and stays as it
+    // is; rule 8 lives in the skill until it can be added there.
+    const standard = await readFile(skill("gate-standard.md"), "utf8");
+    expect(standard).not.toMatch(/^## 8\. /m);
     expect(text).toContain("no `S-00` strand\nor a strand that does not depend on it");
   });
 });

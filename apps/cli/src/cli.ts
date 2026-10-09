@@ -431,7 +431,7 @@ const doGates = async (environment: CliEnvironment, args: readonly string[]): Pr
     return recordGates(environment, { ...where, ...(findings === undefined ? {} : { findings }) });
   }
   if (values.recorded === true) return recordedGates(environment, where);
-  return gates(environment, where);
+  return (await gates(environment, where)).exitCode;
 };
 
 const doResume = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {

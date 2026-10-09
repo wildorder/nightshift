@@ -428,6 +428,30 @@ describe("the gate-health audit through the CLI (D-P15-07, D-P15-08)", () => {
     expect(await record()).toEqual(healthy);
   }, 120_000);
 
+  it("prints rule 8's findings at the audited commit, not the working tree (P16 SC-08)", async () => {
+    // The fixture's package.json says Node and nothing pins it; a Python pin no
+    // machine meets; a Gemfile with no Ruby pin.
+    await writeFile(join(fixture.repo, ".python-version"), "1.0\n");
+    await writeFile(join(fixture.repo, "Gemfile"), "source 'https://rubygems.org'\n");
+    commit("runtimes, half pinned");
+    // Uncommitted: a Node pin in the working tree is not the audited commit's.
+    await writeFile(join(fixture.repo, ".nvmrc"), "24\n");
+    const head = git("rev-parse", PROGRAM_BRANCH);
+
+    expect(await cli("gates", PROGRAM), said()).toBe(0);
+    expect(said()).toContain(`rule 8, declares its runtimes: 3 findings on ${head.slice(0, 8)}`);
+    expect(said()).toContain(
+      "package.json says this repository uses node, and no file pins its version",
+    );
+    expect(said()).toContain(
+      "Gemfile says this repository uses ruby, and no file pins its version",
+    );
+    expect(said()).toMatch(
+      /\.python-version pins python 1\.0, (?:and python was not found|but this machine runs python )/,
+    );
+    expect(said()).not.toContain(".nvmrc");
+  }, 120_000);
+
   it("says plainly when nobody is signed in, and plan check counts it as a reason", async () => {
     await rm(credentialsPath(op.environment.paths));
     expect(await cli("gates", PROGRAM, "--record")).toBe(1);

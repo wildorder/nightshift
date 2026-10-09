@@ -11,7 +11,14 @@
  * is neither red nor passed; one that needs an unmet prerequisite did not run.
  */
 import type { ProgramContract } from "@nightshift/contracts";
-import { prerequisitesOf } from "@nightshift/core";
+import {
+  PIN_FILES,
+  prerequisitesOf,
+  RUNTIME_MARKER_FILES,
+  type RuntimeFinding,
+  runtimeFindings,
+  runtimesToMeasure,
+} from "@nightshift/core";
 import {
   type AuditedGate,
   auditGates,
@@ -25,6 +32,7 @@ import { createLocalPaths } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession, type Session } from "../session.js";
+import { filesAt, measureRuntime } from "./remote.js";
 
 export interface GatesOptions {
   readonly id: string;
@@ -203,16 +211,93 @@ export const auditContractOf = async (
   };
 };
 
-/** Exit code 0 unless a gate is red. A missing setup is said, not counted. */
+// ── rule 8, declares its runtimes (P16 S-02, SC-08) ─────────────────────────
+
+/** Every file rule 8 reads: the pin files, then the files that say a runtime is used. */
+const RUNTIME_FILES: readonly string[] = [
+  ...new Set([...PIN_FILES, ...Object.keys(RUNTIME_MARKER_FILES)]),
+];
+
+/**
+ * Rule 8's mechanical audit at `sha`, the commit the gates were audited on:
+ * the pin and marker files as committed there, never the working tree, and
+ * each pinned runtime's version on this machine, measured as `run --remote`
+ * measures it. A runtime that cannot be run or names no exact version counts
+ * as not found. Deterministic: files and `--version`, no model.
+ */
+export const auditProgramRuntimes = async (
+  environment: Pick<CliEnvironment, "git" | "exec">,
+  repoPath: string,
+  sha: string,
+): Promise<RuntimeFinding[]> => {
+  const files = await filesAt(environment.git, repoPath, sha, RUNTIME_FILES);
+  const measured: Record<string, string | undefined> = {};
+  for (const runtime of runtimesToMeasure(files)) {
+    const measurement = await measureRuntime(environment.exec, repoPath, runtime);
+    if (measurement.kind === "version") measured[runtime] = measurement.version;
+  }
+  return runtimeFindings(files, measured);
+};
+
+const describeRuntimeFinding = (finding: RuntimeFinding): string => {
+  switch (finding.kind) {
+    case "unpinned":
+      return (
+        `${finding.marker} says this repository uses ${finding.runtime}, and no file pins its version: ` +
+        `pin ${finding.runtime} in one file`
+      );
+    case "conflicting":
+      return (
+        `${finding.a.source} pins ${finding.runtime} ${finding.a.spec} but ${finding.b.source} pins ` +
+        `${finding.b.spec}: make them agree`
+      );
+    case "unmet":
+      return finding.measured === undefined
+        ? `${finding.source} pins ${finding.runtime} ${finding.spec}, and ${finding.runtime} was not found on this machine`
+        : `${finding.source} pins ${finding.runtime} ${finding.spec}, but this machine runs ${finding.runtime} ${finding.measured}`;
+  }
+};
+
+/**
+ * Rule 8's findings, under their heading. Each is for the planning skill to
+ * turn into a decision against rule 8; none makes a gate red.
+ */
+export const describeRuntimeFindings = (
+  say: (line: string) => void,
+  findings: readonly RuntimeFinding[],
+  sha: string,
+): void => {
+  if (findings.length === 0) {
+    say(
+      `rule 8, declares its runtimes: every runtime used on ${sha.slice(0, 8)} is pinned and met`,
+    );
+    return;
+  }
+  say(
+    `rule 8, declares its runtimes: ${findings.length} finding${findings.length === 1 ? "" : "s"} on ${sha.slice(0, 8)}`,
+  );
+  for (const finding of findings) say(`  RUNTIME ${describeRuntimeFinding(finding)}`);
+};
+
+export interface GatesResult {
+  /** 0 unless a gate is red. Rule 8's findings are said, not counted. */
+  readonly exitCode: number;
+  readonly audit: GateAudit;
+  readonly runtimeFindings: readonly RuntimeFinding[];
+}
+
+/** Exit code 0 unless a gate is red. A missing setup and rule 8's findings are said, not counted. */
 export const gates = async (
   environment: CliEnvironment,
   options: GatesOptions,
-): Promise<number> => {
+): Promise<GatesResult> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment).catch(() => undefined);
   const contract = await auditContractOf(environment, files, session);
   const audit = await auditProgramGates(environment, contract, repoPath);
   describeAudit(environment, audit);
-  return audit.red ? 1 : 0;
+  const runtimes = await auditProgramRuntimes(environment, repoPath, audit.base);
+  describeRuntimeFindings(environment.out, runtimes, audit.base);
+  return { exitCode: audit.red ? 1 : 0, audit, runtimeFindings: runtimes };
 };

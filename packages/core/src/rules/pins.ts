@@ -186,8 +186,10 @@ const conflictMessage = (conflicts: readonly PinConflict[]): string =>
     )
     .join("\n");
 
-/** Every pinned runtime, from the files present, or the files that disagree. */
-export const resolvePins = (files: Readonly<Record<string, string>>): PinResolution => {
+/** Every pin the files state, the first per runtime, and every pin that disagrees with it. */
+const collectPins = (
+  files: Readonly<Record<string, string>>,
+): { pins: Pin[]; conflicts: PinConflict[] } => {
   const found: Pin[] = [];
   let engines: Pin | undefined;
   for (const file of PIN_FILES) {
@@ -212,6 +214,12 @@ export const resolvePins = (files: Readonly<Record<string, string>>): PinResolut
       });
     }
   }
+  return { pins, conflicts };
+};
+
+/** Every pinned runtime, from the files present, or the files that disagree. */
+export const resolvePins = (files: Readonly<Record<string, string>>): PinResolution => {
+  const { pins, conflicts } = collectPins(files);
   return conflicts.length > 0
     ? { ok: false, conflicts, message: conflictMessage(conflicts) }
     : { ok: true, pins };
@@ -427,4 +435,112 @@ export const dispatchToolchain = (
   return refusals.length > 0
     ? { ok: false, message: refusals.join("\n") }
     : { ok: true, toolchain };
+};
+
+// ── rule 8, declares its runtimes (S-02, SC-08) ─────────────────────────────
+
+/**
+ * The files at a repository's root that say plainly it uses a runtime, in the
+ * order a finding names them. `go.mod` is a marker, not a pin: `resolvePins`
+ * does not read it, so a Go project pins Go in `.go-version` or
+ * `.tool-versions`.
+ */
+export const RUNTIME_MARKER_FILES: Readonly<Record<string, PinnedRuntime>> = {
+  "package.json": "node",
+  "pyproject.toml": "python",
+  "requirements.txt": "python",
+  "setup.py": "python",
+  Pipfile: "python",
+  Gemfile: "ruby",
+  "go.mod": "go",
+  "Cargo.toml": "rust",
+  "pom.xml": "java",
+  "build.gradle": "java",
+  "build.gradle.kts": "java",
+};
+
+/** What rule 8's mechanical audit finds, each naming the files and versions. */
+export type RuntimeFinding =
+  /** The repository plainly uses `runtime` (`marker` says so) and pins no version of it. */
+  | { readonly kind: "unpinned"; readonly runtime: PinnedRuntime; readonly marker: string }
+  /** Two pin files disagree about `runtime`. */
+  | {
+      readonly kind: "conflicting";
+      readonly runtime: PinnedRuntime;
+      readonly a: { readonly spec: string; readonly source: string };
+      readonly b: { readonly spec: string; readonly source: string };
+    }
+  /**
+   * The auditing machine's `runtime` does not satisfy its pin, or names no
+   * exact version; `measured` is absent when the runtime was not found.
+   */
+  | {
+      readonly kind: "unmet";
+      readonly runtime: PinnedRuntime;
+      readonly spec: string;
+      readonly source: string;
+      readonly measured?: string;
+    };
+
+const isPinnedRuntime = (runtime: string): runtime is PinnedRuntime =>
+  (PINNED_RUNTIMES as readonly string[]).includes(runtime);
+
+/**
+ * The runtimes `runtimeFindings` judges against the auditing machine: each
+ * measurable runtime with one agreed pin. A runtime whose pins disagree is
+ * not among them, and neither is a tool Nightshift does not install.
+ */
+export const runtimesToMeasure = (files: Readonly<Record<string, string>>): PinnedRuntime[] => {
+  const { pins, conflicts } = collectPins(files);
+  const conflicting = new Set(conflicts.map((conflict) => conflict.runtime));
+  return pins
+    .map((pin) => pin.runtime)
+    .filter((runtime): runtime is PinnedRuntime => isPinnedRuntime(runtime))
+    .filter((runtime) => !conflicting.has(runtime));
+};
+
+/**
+ * Rule 8's findings on a checkout: `files` holds the pin files and marker
+ * files present at its root, `measured` each pinned runtime's exact version
+ * on the auditing machine (absent where it was not found). Only runtimes
+ * Nightshift measures and installs (`PINNED_RUNTIMES`) are judged: a pinned
+ * tool such as `terraform` in `.tool-versions` is skipped, its conflicts
+ * included. A runtime whose pins disagree is reported once as conflicting and
+ * not judged against the machine, since there is no one pin to meet.
+ */
+export const runtimeFindings = (
+  files: Readonly<Record<string, string>>,
+  measured: Readonly<Record<string, string | undefined>>,
+): RuntimeFinding[] => {
+  const { pins, conflicts } = collectPins(files);
+  const findings: RuntimeFinding[] = [];
+  // Kept in step with `runtimesToMeasure`, which says what `measured` should hold.
+  const pinned = new Set<string>([...pins, ...conflicts].map((pin) => pin.runtime));
+
+  const unpinned = new Set<PinnedRuntime>();
+  for (const [marker, runtime] of Object.entries(RUNTIME_MARKER_FILES)) {
+    if (files[marker] === undefined || pinned.has(runtime) || unpinned.has(runtime)) continue;
+    unpinned.add(runtime);
+    findings.push({ kind: "unpinned", runtime, marker });
+  }
+
+  const conflicting = new Set<string>();
+  for (const conflict of conflicts) {
+    const { runtime } = conflict;
+    if (!isPinnedRuntime(runtime)) continue;
+    conflicting.add(runtime);
+    findings.push({ kind: "conflicting", runtime, a: conflict.a, b: conflict.b });
+  }
+
+  for (const pin of pins) {
+    const { runtime } = pin;
+    if (!isPinnedRuntime(runtime) || conflicting.has(runtime)) continue;
+    const version = measured[runtime]?.trim().replace(/^v(?=\d)/, "");
+    const at = { kind: "unmet", runtime, spec: pin.spec, source: pin.source } as const;
+    if (version === undefined || version === "") findings.push(at);
+    else if (!isExactRuntimeVersion(runtime, version) || !satisfiesPin(version, pin.spec)) {
+      findings.push({ ...at, measured: version });
+    }
+  }
+  return findings;
 };

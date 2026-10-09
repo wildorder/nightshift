@@ -144,12 +144,31 @@ The rest of the plan is written into these same files in step 8.
    `repairing` record, not signed in) means audit; say which it was.
 2. **Run the gates.** `nightshift gates {id}`, in the foreground. It runs setup
    and every check once in a fresh checkout of the base, exactly as
-   verification will, and prints each gate's verdict and time.
+   verification will, and prints each gate's verdict and time. It then prints
+   **rule 8's findings** at the audited commit, naming the files and versions
+   (see below).
 3. **Review the gate machinery** against `gate-standard.md` beside this skill:
-   its seven numbered rules, how to check each, and the typical fixes. Read the
-   package scripts and their `pre`/`post` hooks, the test and build configs,
-   anything that assumes CI's environment, the registries a new test or module
-   must be added to, and the `setup` and `verification` in
+   its seven numbered rules, how to check each, and the typical fixes. The
+   standard has an eighth rule that `gate-standard.md` does not yet spell out:
+
+   **8. Declares its runtimes**: the repository pins every language runtime it
+   uses, in one file per runtime, and the gates are audited on those versions.
+   `nightshift gates {id}` checks it mechanically and prints its findings under
+   "rule 8, declares its runtimes": a runtime the repository plainly uses with
+   no pin (`package.json` and nothing pinning Node, `pyproject.toml` and
+   nothing pinning Python, `go.mod` and no `.go-version`, and so on); pins
+   that disagree (`.nvmrc` says 22, `.node-version` says 24); a runtime on
+   this machine that does not satisfy its pin, or is not installed. **Each
+   rule-8 finding becomes a decision recorded against rule 8**, like any other
+   finding below: pin the runtime, reconcile the pins, or fix the laptop's
+   runtime. It is settled now, with the human here, so a remote run does not
+   discover it. A remote run audits the gates again at dispatch: a reference
+   audit on the laptop at the exact base it dispatches, then the machine's own
+   audit, compared gate by gate.
+
+   Read the package scripts and their `pre`/`post` hooks, the test and build
+   configs, anything that assumes CI's environment, the registries a new test
+   or module must be added to, and the `setup` and `verification` in
    `nightshift.config.json` and the contract. **Name every gate-machinery path
    you read**: they are what the record is fingerprinted on.
 4. **Each finding becomes a decision** `D-nn`, in the contract's `decisions`
@@ -182,7 +201,7 @@ The rest of the plan is written into these same files in step 8.
 
    `machinery` lists **every** gate-machinery path you named, so changing any of
    them later brings the audit back; `findings` may be empty; each finding's
-   `rule` is the standard's number (1–7) and its `paths` are the machinery it
+   `rule` is the standard's number (1–8) and its `paths` are the machinery it
    touched. Then `nightshift gates {id} --record --findings <file>`. It runs the
    mechanical audit itself and writes the record: `healthy` with no findings
    and green gates, `repairing` otherwise. It needs the human signed in
