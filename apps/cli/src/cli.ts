@@ -64,7 +64,8 @@ Usage:
   nightshift gates <program> [--record [--findings <file>] | --recorded] [--repo <path>]
   nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--repo <path>]
   nightshift run <program> --remote [--compute good|better|best] [--repo <path>]
-  nightshift remote status|cancel|resume <program> [--run <id>] [--repo <path>]
+  nightshift remote status <program> [--watch] [--run <id>] [--repo <path>]
+  nightshift remote cancel|resume <program> [--run <id>] [--repo <path>]
   nightshift resume <program> [--run <id>] [--repo <path>]
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision reverse <program> <decisionId> --choice <new> --reason <why> [--run <id>] [--repo <path>]
@@ -104,6 +105,13 @@ runs nothing, and says whether the record still holds for the gates now.
 \`plan check\` is READY only on a healthy record that holds, or a repairing one
 whose findings are answered by the plan's decisions, with a gate-health strand
 S-00 that every other strand depends on.
+
+\`run <program> --remote\` dispatches the run to a machine and stays attached:
+WAIT while the machine comes up and audits the gates against your laptop's,
+then OK GO once it agrees, and you can close the laptop. An environment fault
+or a failed dispatch exits 1. Ctrl-C detaches without cancelling anything;
+\`remote status <program> --watch\` reattaches to the same display, and
+\`remote cancel <program>\` stops the machine.
 
 \`nightshift login\` needs no flags: the CLI knows where the control plane is.
 Over SSH, add --no-browser and paste the address your browser lands on.
@@ -431,7 +439,7 @@ const doGates = async (environment: CliEnvironment, args: readonly string[]): Pr
     return recordGates(environment, { ...where, ...(findings === undefined ? {} : { findings }) });
   }
   if (values.recorded === true) return recordedGates(environment, where);
-  return gates(environment, where);
+  return (await gates(environment, where)).exitCode;
 };
 
 const doResume = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
@@ -610,17 +618,26 @@ const doOrg = async (environment: CliEnvironment, args: readonly string[]): Prom
 
 /** `nightshift remote status|cancel|resume <program>` (P10, D-P10-18). */
 const doRemote = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift remote status|cancel|resume <program> [--run <id>] [--repo <path>]";
+  const usage =
+    "nightshift remote status <program> [--watch] [--run <id>] [--repo <path>]\n" +
+    "nightshift remote cancel|resume <program> [--run <id>] [--repo <path>]";
   const [verb, ...rest] = args;
   if (verb !== "status" && verb !== "cancel" && verb !== "resume") {
     throw new UsageError("`nightshift remote` takes `status`, `cancel` or `resume`", usage);
   }
-  const { id, repo, values } = programArgs(rest, usage, { run: { type: "string" } });
+  const { id, repo, values } = programArgs(rest, usage, {
+    run: { type: "string" },
+    watch: { type: "boolean" },
+  });
   const runId = optional(values, "run");
+  if (values.watch === true && verb !== "status") {
+    throw new UsageError("--watch is for `nightshift remote status`", usage);
+  }
   const options = {
     id,
     ...(repo === undefined ? {} : { repo }),
     ...(runId === undefined ? {} : { run: runId }),
+    ...(values.watch === true ? { watch: true } : {}),
   };
   if (verb === "status") return remoteStatus(environment, options);
   if (verb === "cancel") return remoteCancel(environment, options);

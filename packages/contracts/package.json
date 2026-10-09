@@ -6,6 +6,7 @@
   "description": "Versioned domain schemas and types. Imports nothing but zod.",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }

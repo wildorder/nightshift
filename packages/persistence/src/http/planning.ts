@@ -11,6 +11,7 @@
  */
 import { createHash } from "node:crypto";
 import {
+  type CheckDispatch,
   type PlanDocumentResponse,
   PlanDocumentResponseSchema,
   PlanDocumentUploadResponseSchema,
@@ -51,8 +52,18 @@ export interface PlanningClient {
   /** The ratified document, by its hash. `undefined` when the control plane holds none. */
   planDocument(scope: ProgramScope, sha256: string): Promise<PlanDocumentResponse | undefined>;
   prerequisites(scope: ProgramScope): Promise<readonly Prerequisite[]>;
-  /** The preflight's only word: the exit code of the `verifyCommand` it ran. */
+  /** The preflight's only word: the exit code of the `verifyCommand` it ran, on the laptop. */
   recordCheck(scope: ProgramScope, prerequisiteId: string, exitCode: number): Promise<Prerequisite>;
+  /**
+   * A run's machine's check, under the dispatch it ran under (P16, D-08): kept
+   * apart from the laptop's, and never moving `status`.
+   */
+  recordMachineCheck(
+    scope: ProgramScope,
+    prerequisiteId: string,
+    exitCode: number,
+    dispatch: CheckDispatch,
+  ): Promise<Prerequisite>;
   recordDiscovered(
     scope: ProgramScope,
     prerequisiteId: string,
@@ -157,7 +168,16 @@ export const createHttpPlanning = (options: HttpPlanningOptions): PlanningClient
         await send(transport, {
           method: "PUT",
           path: routes.prerequisite(scope, prerequisiteId),
-          body: { kind: "check", exitCode },
+          body: { kind: "check", exitCode, where: "laptop" },
+        }),
+      ),
+
+    recordMachineCheck: async (scope, prerequisiteId, exitCode, dispatch) =>
+      PrerequisiteSchema.parse(
+        await send(transport, {
+          method: "PUT",
+          path: routes.prerequisite(scope, prerequisiteId),
+          body: { kind: "check", exitCode, where: "machine", dispatch },
         }),
       ),
 

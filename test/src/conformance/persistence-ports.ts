@@ -308,6 +308,66 @@ export const describePortConformance = <S extends ProjectStores>(
       });
     });
 
+    describe("a program contract changed in place (P16, D-08)", () => {
+      it("changes nothing, and calls nothing, when no contract is stored", async () => {
+        let called = false;
+        const result = await stores.programContracts.update(
+          a.scope.projectId,
+          a.scope.programId,
+          (current) => {
+            called = true;
+            return current;
+          },
+        );
+        expect(result).toBeUndefined();
+        expect(called).toBe(false);
+      });
+
+      it("stores the change and returns it; a change of undefined leaves the contract", async () => {
+        const contract = makeProgramContract(a);
+        await stores.programContracts.put(contract);
+        const changed = await stores.programContracts.update(
+          a.scope.projectId,
+          a.scope.programId,
+          (current) => ({ ...current, outOfScope: ["a UI"] }),
+        );
+        expect(changed?.outOfScope).toEqual(["a UI"]);
+        expect(
+          (await stores.programContracts.get(a.scope.projectId, a.scope.programId))?.outOfScope,
+        ).toEqual(["a UI"]);
+        const left = await stores.programContracts.update(
+          a.scope.projectId,
+          a.scope.programId,
+          () => undefined,
+        );
+        expect(left).toEqual(changed);
+        // A plain put still replaces the whole contract, and update still works after it.
+        await stores.programContracts.put(contract);
+        await stores.programContracts.update(a.scope.projectId, a.scope.programId, (current) => ({
+          ...current,
+          outOfScope: ["a CLI"],
+        }));
+        expect(
+          (await stores.programContracts.get(a.scope.projectId, a.scope.programId))?.outOfScope,
+        ).toEqual(["a CLI"]);
+      });
+
+      it("lands every one of overlapping changes: none undoes another", async () => {
+        await stores.programContracts.put(makeProgramContract(a));
+        const writers = ["one", "two", "three", "four"];
+        await Promise.all(
+          writers.map((writer) =>
+            stores.programContracts.update(a.scope.projectId, a.scope.programId, (current) => ({
+              ...current,
+              outOfScope: [...(current.outOfScope ?? []), writer],
+            })),
+          ),
+        );
+        const stored = await stores.programContracts.get(a.scope.projectId, a.scope.programId);
+        expect([...(stored?.outOfScope ?? [])].sort()).toEqual([...writers].sort());
+      });
+    });
+
     describe("an org's configuration (P8, D-P8-02)", () => {
       const configOf = (orgId: OrgConfig["orgId"], version: number): OrgConfig => ({
         schemaVersion: 1,

@@ -204,9 +204,11 @@ const harnessWith = (
   extra: {
     readonly platform?: NodeJS.Platform;
     readonly kill?: (pid: number, signal: NodeJS.Signals) => void;
+    readonly launcher?: { readonly file: string; readonly args: readonly string[] };
   } = {},
 ) =>
   createClaudeHarness({
+    ...(extra.launcher === undefined ? {} : { launcher: extra.launcher }),
     spawn,
     fs,
     clock: createSteppingClock(Date.UTC(2026, 8, 15, 12, 0, 0), 1),
@@ -835,5 +837,34 @@ describe("running as another user (P10, D-P10-25)", () => {
     await handle.exit;
     const started = events.find((event) => event.type === "agent.started");
     expect(started?.payload).toMatchObject({ user: "worker-2" });
+  });
+});
+
+describe("launching through the image's Node (P16 S-01)", () => {
+  const launcher = {
+    file: "/usr/local/bin/node",
+    args: ["/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"],
+  };
+
+  it("spawns the launcher with the CLI's script before claude's own arguments", async () => {
+    const { spawn, calls } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    await harnessWith(spawn, fs, { launcher }).start(startInput());
+    expect(calls[0]?.file).toBe("/usr/local/bin/node");
+    expect(calls[0]?.args.slice(0, 3)).toEqual([launcher.args[0], "-p", "--input-format"]);
+  });
+
+  it("does so as another user too, through sudo", async () => {
+    const { spawn, calls } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    await harnessWith(spawn, fs, { platform: "linux", launcher }).start({
+      ...startInput(),
+      runAs: { user: "worker-2", grant: async () => undefined },
+    });
+    const args = calls[0]?.args ?? [];
+    expect(calls[0]?.file).toBe("sudo");
+    const shell = args.indexOf("sh");
+    expect(args.slice(shell + 3, shell + 6)).toEqual([launcher.file, launcher.args[0], "-p"]);
+    expect(args).not.toContain("claude");
   });
 });

@@ -46,11 +46,18 @@ const NEEDS_INSTALL = `node -e "process.exit(require('fs').existsSync('node_modu
 const PASS = `node -e "process.exit(0)"`;
 const FAIL = `node -e "console.log('the build is broken');process.exit(1)"`;
 
+const DEFER = `node -e "console.log('NIGHTSHIFT_DEFER HP-07 a cloud login');console.log('NIGHTSHIFT_REMEDIATION run aws sso login');process.exit(75)"`;
+const EXIT_75 = `node -e "console.log('just a tempfail');process.exit(75)"`;
+
 type Gates = Pick<ProgramContract, "setup" | "verification">;
 
 const audit = async (
   program: Gates,
-  options: { files?: Record<string, string>; unmet?: readonly string[] } = {},
+  options: {
+    files?: Record<string, string>;
+    unmet?: readonly string[];
+    env?: Readonly<Record<string, string>>;
+  } = {},
 ) => {
   const { repo, base } = await repository(options.files);
   const progress: StepResult[] = [];
@@ -63,12 +70,41 @@ const audit = async (
     workDir: await temporary("nightshift-audit-work-"),
     paths: { scratch: (checkout: string) => `${checkout}-scratch` },
     timeoutMs: TIMEOUT_MS,
+    ...(options.env === undefined ? {} : { env: options.env }),
     onStep: (step) => progress.push(step),
   });
   return { result, progress, repo };
 };
 
 describe("the gate audit", () => {
+  it("gives setup and every check the project environment whole, under the scratch, and adopts none of it (P16, D-10)", async () => {
+    const before = { ...process.env };
+    const projectEnv: Record<string, string> = {
+      NS_PROJECT_ONLY: "from-project",
+      DOCKER_HOST: "unix:///run/ns-audit-test/docker.sock",
+      npm_config_cache: "/ns-audit-test/stores/npm",
+      JAVA_HOME: "/ns-audit-test/runtimes/java",
+      TMPDIR: "/not-the-scratch",
+    };
+    const probe = `node -e "const e=process.env;process.exit(e.NS_PROJECT_ONLY==='from-project'&&e.DOCKER_HOST==='unix:///run/ns-audit-test/docker.sock'&&e.npm_config_cache==='/ns-audit-test/stores/npm'&&e.JAVA_HOME==='/ns-audit-test/runtimes/java'&&e.TMPDIR!=='/not-the-scratch'?0:1)"`;
+    const { result } = await audit(
+      {
+        setup: [{ id: "install", command: probe }],
+        verification: [{ id: "probe", command: probe }],
+      },
+      { env: projectEnv },
+    );
+    expect(result.gates.map((gate) => [gate.id, gate.verdict])).toEqual([
+      ["setup:install", "passed"],
+      ["probe", "passed"],
+    ]);
+    expect({ ...process.env }).toEqual(before);
+
+    // Without it, as on a laptop, the same probe fails: nothing else supplied them.
+    const { result: laptop } = await audit({ verification: [{ id: "probe", command: probe }] });
+    expect(laptop.failing).toEqual(["probe"]);
+  });
+
   it("runs setup and every check once, in order, and a base that passes is not red", async () => {
     const { result, progress } = await audit({
       setup: [{ id: "install", command: INSTALL }],
@@ -119,6 +155,64 @@ describe("the gate audit", () => {
     expect(result.failing).toEqual(["setup:install"]);
     expect(result.gates.find((gate) => gate.id === "test")?.verdict).toBe("unrun");
     expect(result.red).toBe(true);
+  });
+
+  it("calls a check that exits 75 with a NIGHTSHIFT_DEFER line deferred, not failed, and not red", async () => {
+    const { result } = await audit({
+      verification: [
+        { id: "cloud", command: DEFER },
+        { id: "lint", command: PASS },
+      ],
+    });
+
+    const cloud = result.gates.find((gate) => gate.id === "cloud");
+    expect(cloud?.verdict).toBe("deferred");
+    expect(cloud?.deferral).toEqual({
+      prerequisiteId: "HP-07",
+      description: "a cloud login",
+      remediation: "run aws sso login",
+    });
+    expect(result.gates.find((gate) => gate.id === "lint")?.verdict).toBe("passed");
+    expect(result.red).toBe(false);
+    expect(result.failing).toEqual([]);
+    expect(result.deferred).toEqual(["cloud"]);
+  });
+
+  it("calls a check that exits 75 without the line failed", async () => {
+    const { result } = await audit({ verification: [{ id: "flaky", command: EXIT_75 }] });
+
+    const flaky = result.gates.find((gate) => gate.id === "flaky");
+    expect(flaky?.verdict).toBe("failed");
+    expect(flaky?.deferral).toBeUndefined();
+    expect(result.red).toBe(true);
+    expect(result.failing).toEqual(["flaky"]);
+    expect(result.deferred).toEqual([]);
+  });
+
+  it("calls a check that exits 0 passed, with no deferral", async () => {
+    const { result } = await audit({ verification: [{ id: "ok", command: PASS }] });
+
+    expect(result.gates[0]).toMatchObject({ id: "ok", verdict: "passed" });
+    expect(result.gates[0]?.deferral).toBeUndefined();
+    expect(result.red).toBe(false);
+    expect(result.deferred).toEqual([]);
+  });
+
+  it("leaves the checks behind a deferred setup unrun, and the base not red", async () => {
+    const { result, progress } = await audit({
+      setup: [{ id: "login", command: DEFER }],
+      verification: [{ id: "test", command: PASS }],
+    });
+
+    expect(progress.map((step) => step.stepId)).toEqual(["setup:login"]);
+    expect(result.gates.map((gate) => [gate.id, gate.verdict])).toEqual([
+      ["setup:login", "deferred"],
+      ["test", "unrun"],
+    ]);
+    expect(result.gates[0]?.deferral?.prerequisiteId).toBe("HP-07");
+    expect(result.red).toBe(false);
+    expect(result.failing).toEqual([]);
+    expect(result.deferred).toEqual(["setup:login"]);
   });
 
   it("names the lockfiles a program with no setup leaves uninstalled", async () => {

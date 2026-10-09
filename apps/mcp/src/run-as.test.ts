@@ -10,6 +10,30 @@ afterEach(() => {
 });
 
 describe("the worker users (D-P10-25)", () => {
+  it("gives every user the project environment, its credential directory beside it (P16 S-01)", () => {
+    const root = mkdtempSync(join(tmpdir(), "ns-runas-"));
+    dirs.push(root);
+    mkdirSync(join(root, "worker-1", "CODEX_HOME"), { recursive: true });
+    const projectEnv = {
+      PATH: "/workspace/stores/runtimes/installs/node/22.11.0/bin:/usr/local/bin:/usr/bin:/bin",
+      npm_config_cache: "/workspace/stores/npm",
+    };
+    const runAs = createWorkerUsers({
+      count: 2,
+      credentialRoot: root,
+      projectEnv,
+      exec: async () => undefined,
+    });
+    const first = runAs({ agentId: "agent_1", role: "worker" });
+    const second = runAs({ agentId: "agent_2", role: "worker" });
+    expect(first?.env).toEqual({
+      ...projectEnv,
+      CODEX_HOME: join(root, "worker-1", "CODEX_HOME"),
+    });
+    // No DOCKER_HOST of the engine's: the wrapper gives each user its own socket.
+    expect(second?.env).toEqual(projectEnv);
+  });
+
   it("hands users out round-robin, grants by chown, and names a credential directory the user has", () => {
     const root = mkdtempSync(join(tmpdir(), "ns-runas-"));
     dirs.push(root);

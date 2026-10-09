@@ -16,6 +16,7 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path/posix";
 import { credentialPlacement, PROVIDERS, type Provider } from "@nightshift/contracts";
+import { PROJECT_ENV_FILE_ENV } from "../project-env.js";
 import type { Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
 import type { RunnerContext } from "./main.js";
@@ -136,8 +137,8 @@ export interface RootEnvironmentInput {
 /**
  * The environment the root's runtime and the processes it launches run in:
  * the plane, the token file, the state directory on the volume, the
- * publication base, and the machine's toolchain. Nothing from this process
- * that names a credential.
+ * publication base, the machine's toolchain, and the file the project
+ * environment is in. Nothing from this process that names a credential.
  */
 export const rootEnvironment = (input: RootEnvironmentInput): Record<string, string> => {
   const { context } = input;
@@ -163,6 +164,10 @@ export const rootEnvironment = (input: RootEnvironmentInput): Record<string, str
       env[key] = value;
     }
   }
+  // The project environment's file (P16 S-01), not the environment itself: the
+  // engine the root launches reads it and gives it to each project step and
+  // worker user, and runs in the image's environment itself (D-10).
+  if (context.projectEnv !== undefined) env[PROJECT_ENV_FILE_ENV] = context.projectEnvFile;
   for (const [name, value] of Object.entries(input.providerKeys ?? {})) env[name] = value;
   env.NIGHTSHIFT_API_ENDPOINT = input.apiEndpoint;
   env.NIGHTSHIFT_API_TOKEN_FILE = tokenFile(context.scope.runId);

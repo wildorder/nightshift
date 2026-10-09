@@ -13,6 +13,20 @@
  * that lets `engine` run commands as a worker and nothing else, and a boot unit
  * that mounts the workspace volume and closes the instance metadata endpoint to
  * everyone but `engine`.
+ *
+ * P16 S-01 adds two things. mise, the polyglot version manager, is on the image
+ * for the engine alone (D-04): a pinned, checksum-verified binary at
+ * `/usr/local/bin/mise` with a system config that reads the projects' idiomatic
+ * version files, and never a shell hook or a shim, so projects never see it.
+ * The engine installs a dispatch's runtimes with it under `RUNTIMES_DIR`.
+ * And every worker's rootless Docker starts on the first connection to its
+ * socket (D-05): `dockerd-rootless-setuptool.sh` installs each worker's
+ * `docker.service` while the daemon still listens on the conventional
+ * `/run/user/<uid>/docker.sock` (the tool smoke-tests exactly that socket), and
+ * only then is the daemon moved to a private socket, `docker.service` disabled,
+ * and an enabled `docker.socket` put on the conventional path that activates a
+ * `systemd-socket-proxyd` service, which pulls the daemon up and forwards to it.
+ * An idle worker has the socket listening and no dockerd.
  */
 
 /** Pinned toolchain. Every version is a decision; none is "latest". */
@@ -25,7 +39,34 @@ export const RUNNER_TOOLCHAIN = {
   /** Docker's rootless extras (rootlesskit and the setup tool), from Docker's static builds. */
   dockerRootlessExtras: "27.5.1",
   slirp4netns: "1.3.1",
+  /** The polyglot version manager the engine installs a project's runtimes with (D-04). */
+  mise: "2026.10.5",
 } as const;
+
+/**
+ * The sha256 of each architecture's mise binary, from that release's
+ * SHASUMS256.txt. Pinned here rather than fetched beside the binary, so a
+ * tampered release fails the build instead of vouching for itself.
+ */
+export const MISE_SHA256: Readonly<Record<"arm64" | "x86_64", string>> = {
+  arm64: "a30504fb4fc738cba08a1fe7db7a8b2554af8543748720a138b329eedbf0c19f",
+  x86_64: "8a223b5f8ca71100220a3e5bef259614c348e7b1d80e6b15c2a9c9aa3affe5e4",
+};
+
+/** Where the engine has mise install a dispatch's runtimes (`MISE_DATA_DIR`), on the warm volume. */
+export const RUNTIMES_DIR = "/workspace/stores/runtimes";
+/** mise's system config: the only mise configuration on the image. */
+export const MISE_SYSTEM_CONFIG = "/etc/mise/config.toml";
+
+/** Where AL2023's systemd keeps the proxy that stands in front of each worker's daemon. */
+export const SOCKET_PROXYD = "/usr/lib/systemd/systemd-socket-proxyd";
+/**
+ * Each worker's Docker socket, the one projects get as `DOCKER_HOST`; `%t` is
+ * the user's runtime directory, `/run/user/<uid>`. It belongs to `docker.socket`.
+ */
+export const DOCKER_SOCKET = "%t/docker.sock";
+/** The real rootless daemon's socket, private behind the proxy. */
+export const DOCKER_PRIVATE_SOCKET = "%t/docker-rootless/docker.sock";
 
 /** The repository the runner is built from on the image, and where it lands. */
 export const RUNNER_REPOSITORY = "https://github.com/wildorder/nightshift.git";
@@ -63,16 +104,29 @@ export type ImageArchitecture = (typeof IMAGE_ARCHITECTURES)[number];
 
 /** How each upstream names the architecture in its download. */
 const ARCH_NAMES: Readonly<
-  Record<ImageArchitecture, { node: string; docker: string; slirp: string; uv: string }>
+  Record<
+    ImageArchitecture,
+    { node: string; docker: string; slirp: string; uv: string; mise: string }
+  >
 > = {
   arm64: {
     node: "linux-arm64",
     docker: "aarch64",
     slirp: "aarch64",
     uv: "aarch64-unknown-linux-gnu",
+    mise: "linux-arm64",
   },
-  x86_64: { node: "linux-x64", docker: "x86_64", slirp: "x86_64", uv: "x86_64-unknown-linux-gnu" },
+  x86_64: {
+    node: "linux-x64",
+    docker: "x86_64",
+    slirp: "x86_64",
+    uv: "x86_64-unknown-linux-gnu",
+    mise: "linux-x64",
+  },
 };
+
+const miseAsset = (architecture: ImageArchitecture): string =>
+  `mise-v${RUNNER_TOOLCHAIN.mise}-${ARCH_NAMES[architecture].mise}`;
 
 export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): string =>
   component(
@@ -116,6 +170,8 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
         // kernel's overlay2 works in a user namespace on AL2023, so no fuse-overlayfs.
         `curl -fsSL https://download.docker.com/linux/static/stable/${ARCH_NAMES[architecture].docker}/docker-rootless-extras-${RUNNER_TOOLCHAIN.dockerRootlessExtras}.tgz -o /tmp/rootless.tgz`,
         "tar -xzf /tmp/rootless.tgz -C /tmp && install -m 0755 /tmp/docker-rootless-extras/* /usr/local/bin/",
+        // The setup tool runs `docker` from its own directory to smoke-test the daemon.
+        "ln -sfn /usr/bin/docker /usr/local/bin/docker",
         `curl -fsSL https://github.com/rootless-containers/slirp4netns/releases/download/v${RUNNER_TOOLCHAIN.slirp4netns}/slirp4netns-${ARCH_NAMES[architecture].slirp} -o /usr/local/bin/slirp4netns && chmod 0755 /usr/local/bin/slirp4netns`,
         "rootlesskit --version && slirp4netns --version",
       ]),
@@ -131,8 +187,43 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
         `curl -fsSL https://github.com/astral-sh/uv/releases/download/${RUNNER_TOOLCHAIN.uv}/uv-${ARCH_NAMES[architecture].uv}.tar.gz -o /tmp/uv.tar.gz`,
         `tar -xzf /tmp/uv.tar.gz -C /tmp && install -m 0755 /tmp/uv-${ARCH_NAMES[architecture].uv}/uv /usr/local/bin/uv`,
       ]),
+      shell("mise", [
+        "set -euo pipefail",
+        // For the engine only (D-04): no activation in any profile or rc file and
+        // no shims directory on PATH. The engine runs it with MISE_DATA_DIR at
+        // RUNTIMES_DIR and puts each runtime's own bin first on a project's PATH.
+        `curl -fsSL https://github.com/jdx/mise/releases/download/v${RUNNER_TOOLCHAIN.mise}/${miseAsset(architecture)} -o /tmp/${miseAsset(architecture)}`,
+        `echo '${MISE_SHA256[architecture]}  /tmp/${miseAsset(architecture)}' | sha256sum --check --strict -`,
+        `install -m 0755 /tmp/${miseAsset(architecture)} /usr/local/bin/mise`,
+        // Idiomatic version files (.nvmrc, .node-version, .python-version) are off
+        // unless a tool is named here.
+        "mkdir -p /etc/mise",
+        `printf '%s\\n' '[settings]' 'idiomatic_version_file_enable_tools = ["node", "python"]' > ${MISE_SYSTEM_CONFIG}`,
+        "mise --version",
+      ]),
     ].join("\n"),
   );
+
+/**
+ * A command run as a worker against its own systemd user manager. `$uid` is the
+ * worker's uid, set by the line that runs it; the PATH puts the rootless extras
+ * first, and is the one the setup tool writes into the worker's `docker.service`.
+ */
+const asWorker = (worker: string, command: string): string =>
+  `sudo -u ${worker} -H env XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin ${command}`;
+
+/** The user units every worker's Docker is made of (D-05), as `printf` lines that write them. */
+const dockerUserUnits = (): string[] => [
+  "mkdir -p /etc/systemd/user/docker.service.d",
+  // The setup tool's own ExecStart, with the daemon moved to the private socket.
+  // No setup flags are lost: --skip-iptables is not used (AL2023's kernel has
+  // ip_tables built in), so the tool's ExecStart has none.
+  `printf '%s\\n' '[Service]' 'ExecStartPre=/usr/bin/mkdir -p %t/docker-rootless' 'ExecStart=' 'ExecStart=/usr/local/bin/dockerd-rootless.sh -H unix://${DOCKER_PRIVATE_SOCKET}' > /etc/systemd/user/docker.service.d/nightshift-private-socket.conf`,
+  // Service= names the proxy: a connection activates it, never dockerd, and
+  // docker.service inherits no descriptor from a socket that does not trigger it.
+  `printf '%s\\n' '[Unit]' 'Description=The worker Docker socket: the first connection starts the rootless daemon (D-05)' '[Socket]' 'ListenStream=${DOCKER_SOCKET}' 'SocketMode=0600' 'Service=docker-proxy.service' '[Install]' 'WantedBy=sockets.target' > /etc/systemd/user/docker.socket`,
+  `printf '%s\\n' '[Unit]' 'Description=Forwards the worker Docker socket to its rootless daemon (D-05)' 'Requires=docker.service' 'After=docker.service' '[Service]' 'ExecStartPre=/usr/bin/timeout 60 /bin/sh -c "until [ -S ${DOCKER_PRIVATE_SOCKET} ]; do sleep 0.2; done"' 'ExecStart=${SOCKET_PROXYD} ${DOCKER_PRIVATE_SOCKET}' > /etc/systemd/user/docker-proxy.service`,
+];
 
 /** The users, the sudoers rule, the firewall unit and the runner's units (D-P10-17). */
 export const containmentComponent = (): string => {
@@ -161,6 +252,32 @@ export const containmentComponent = (): string => {
             `echo "${worker}:${100000 + index * 65536}:65536" >> /etc/subuid && echo "${worker}:${100000 + index * 65536}:65536" >> /etc/subgid`,
         ),
         `echo "${ENGINE_USER}:${100000 + WORKER_USERS * 65536}:65536" >> /etc/subuid`,
+      ]),
+      shell("rootless-docker", [
+        "set -euo pipefail",
+        "cd /",
+        // First each worker's docker.service, installed by Docker's own tool while
+        // the daemon listens on the conventional /run/user/<uid>/docker.sock: the
+        // tool starts the daemon and smoke-tests exactly that socket with
+        // `docker version`, so nothing may move the daemon off it yet. The tool
+        // enables and starts docker.service; it is disabled and stopped at once,
+        // because no worker's daemon starts at boot (D-05).
+        ...workers.map(
+          (worker) =>
+            `uid=$(id -u ${worker}) && systemctl start user@$uid.service && ${asWorker(worker, "dockerd-rootless-setuptool.sh install")} && ${asWorker(worker, "systemctl --user disable --now docker.service")}`,
+        ),
+        // Then the daemon moves to a private socket, and the worker's socket path
+        // belongs to docker.socket, which activates the proxy.
+        ...dockerUserUnits(),
+        ...workers.map(
+          (worker) =>
+            `uid=$(id -u ${worker}) && ${asWorker(worker, "systemctl --user daemon-reload")} && ${asWorker(worker, "systemctl --user enable docker.socket")}`,
+        ),
+        // An idle worker after boot: the socket enabled, the daemon not.
+        ...workers.map(
+          (worker) =>
+            `uid=$(id -u ${worker}) && [ "$(${asWorker(worker, "systemctl --user is-enabled docker.service")} || true)" = disabled ] && [ "$(${asWorker(worker, "systemctl --user is-enabled docker.socket")})" = enabled ] && systemctl stop user@$uid.service`,
+        ),
       ]),
       shell("sudoers", [
         "set -euo pipefail",

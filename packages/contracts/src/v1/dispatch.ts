@@ -14,7 +14,7 @@
  * is `core`'s (`rules/dispatch.ts`); this is only the record.
  */
 import { z } from "zod";
-import { AgentIdSchema } from "../ids.js";
+import { AgentIdSchema, ArtifactIdSchema } from "../ids.js";
 import { CommitShaSchema, IsoTimestampSchema, runScoped } from "./common.js";
 import { ComputeTierSchema } from "./compute.js";
 
@@ -44,13 +44,176 @@ export const DispatchAttemptSchema = z.strictObject({
 });
 export type DispatchAttempt = z.infer<typeof DispatchAttemptSchema>;
 
-/** What was authorised: a repository, a branch, the exact base and the ratified plan (D-P10-02). */
-export const DispatchInputSchema = z.strictObject({
-  repositoryUrl: z.string().min(1),
-  branch: z.string().min(1),
-  baseSha: CommitShaSchema,
-  planHash: z.string().min(1),
+/**
+ * Whether `version` names exactly one release of `runtime` (P16 D-03), as the
+ * runtime's own `--version` reports it. A partial version (`22`, `3.12`) is a
+ * pin, not a version: it would leave the patch to the machine, which may then
+ * run a different build from the one the audit certified.
+ *
+ * - node, java and any runtime not listed: `X.Y.Z` (java may add a fourth
+ *   component; its GA releases report `21`, which the CLI's parser reads as
+ *   `21.0.0`);
+ * - python: `X.Y.Z`, optionally a pre-release (`3.13.0rc1`);
+ * - ruby: `X.Y.Z`, optionally a pre-release (`3.4.0preview1`);
+ * - go: `X.Y.Z`; `X.Y` only before Go 1.21, whose first releases were named
+ *   so (`go1.20`), or with a pre-release (`1.22rc1`);
+ * - rust: `X.Y.Z`, optionally `-beta.N` or `-nightly`.
+ */
+export const isExactRuntimeVersion = (runtime: string, version: string): boolean => {
+  switch (runtime) {
+    case "python":
+      return /^\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?$/.test(version);
+    case "ruby":
+      return /^\d+\.\d+\.\d+(?:-?(?:preview|rc)\d+)?$/.test(version);
+    case "go": {
+      const match = /^(\d+)\.(\d+)(\.\d+)?((?:rc|beta)\d+)?$/.exec(version);
+      if (match === null) return false;
+      if (match[3] !== undefined || match[4] !== undefined) return true;
+      return Number(match[1]) === 1 && Number(match[2]) < 21;
+    }
+    case "java":
+      return /^\d+\.\d+\.\d+(?:\.\d+)*$/.test(version);
+    case "rust":
+      return /^\d+\.\d+\.\d+(?:-(?:beta(?:\.\d+)?|nightly))?$/.test(version);
+    default:
+      return /^\d+\.\d+\.\d+$/.test(version);
+  }
+};
+
+/** Where a runtime's version came from: the project's pin, or the image when the project pins none. */
+export const RuntimeVersionSourceSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("pin"),
+    /** The pin file, repository-root relative; `package.json#volta.node` for a field. */
+    file: z.string().min(1),
+    /** The pin's text: a version, a partial version or a range. */
+    spec: z.string().min(1),
+  }),
+  z.strictObject({ kind: z.literal("image") }),
+]);
+export type RuntimeVersionSource = z.infer<typeof RuntimeVersionSourceSchema>;
+
+/** One runtime the machine installs, at the exact version the reference audit ran on (P16 D-03). */
+export const RuntimeVersionSchema = z
+  .strictObject({
+    /** mise's tool name: `node`, `python`, `ruby`, `go`, `java`, `rust`. */
+    runtime: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    /** Exact, never a pin or a range: see `isExactRuntimeVersion`. */
+    version: z.string().min(1),
+    source: RuntimeVersionSourceSchema,
+  })
+  .refine((value) => isExactRuntimeVersion(value.runtime, value.version), {
+    message: "version must be an exact version of the runtime, not a partial version or a range",
+    path: ["version"],
+  });
+export type RuntimeVersion = z.infer<typeof RuntimeVersionSchema>;
+
+/** The runtimes a dispatch carries, one entry per runtime. */
+export const DispatchToolchainSchema = z
+  .array(RuntimeVersionSchema)
+  .refine(
+    (toolchain) => new Set(toolchain.map((entry) => entry.runtime)).size === toolchain.length,
+    { message: "a runtime appears at most once" },
+  );
+export type DispatchToolchain = z.infer<typeof DispatchToolchainSchema>;
+
+/**
+ * One gate's verdict in the reference audit, as the gate audit gave it:
+ *
+ * - `passed`, `failed`: the laptop's evidence, which the machine must agree with;
+ * - `deferred`, `waiting`, `unrun`: no evidence from the laptop (a deferral, an
+ *   unmet prerequisite, or a setup that failed before it), so the machine's own
+ *   result stands.
+ */
+export const ReferenceGateVerdictSchema = z.enum([
+  "passed",
+  "failed",
+  "deferred",
+  "waiting",
+  "unrun",
+]);
+export type ReferenceGateVerdict = z.infer<typeof ReferenceGateVerdictSchema>;
+
+/** A gate with this verdict ran, so it has an output: `passed`, `failed` or `deferred`. */
+export const referenceGateRan = (verdict: ReferenceGateVerdict): boolean =>
+  verdict === "passed" || verdict === "failed" || verdict === "deferred";
+
+/** The most of one gate's output a reference audit carries inline. */
+export const MAX_REFERENCE_OUTPUT_TAIL_CHARS = 2000;
+
+export const ReferenceGateSchema = z.strictObject({
+  /** The gate's id as the audit names it: `setup:<id>` for a setup step. */
+  id: z.string().min(1),
+  kind: z.enum(["setup", "check"]),
+  verdict: ReferenceGateVerdictSchema,
+  /**
+   * The artifact, on the run's program node, holding the gate's output tail.
+   * Any gate that ran may carry one (P16 D-07), so a fault can show the
+   * laptop's output beside the machine's; earlier references kept only a failed
+   * gate's.
+   */
+  outputArtifactId: ArtifactIdSchema.optional(),
+  /**
+   * The last of that output, inline, so the machine can show it beside its own
+   * when the gate faults without reading the artifact back: a machine's body
+   * store can write but not read (P16 D-07).
+   */
+  outputTail: z.string().max(MAX_REFERENCE_OUTPUT_TAIL_CHARS).optional(),
 });
+export type ReferenceGate = z.infer<typeof ReferenceGateSchema>;
+
+/**
+ * The reference audit (P16 D-06): the gate audit `run --remote` ran on the
+ * laptop at the base it dispatches, with the laptop's own prerequisite checks.
+ * The machine audits the same base and compares its verdicts with these.
+ */
+export const ReferenceAuditSchema = z
+  .strictObject({
+    /** The commit audited: the dispatch's `baseSha`. */
+    base: CommitShaSchema,
+    /** The Node the audit ran on, exact, as `node --version` reports it without the `v`. Absent when there was none. */
+    node: z.string().min(1).optional(),
+    auditedAt: IsoTimestampSchema,
+    gates: z.array(ReferenceGateSchema),
+  })
+  .refine((value) => value.node === undefined || isExactRuntimeVersion("node", value.node), {
+    message: "node must be an exact Node version (X.Y.Z, without the v)",
+    path: ["node"],
+  })
+  .refine((value) => new Set(value.gates.map((gate) => gate.id)).size === value.gates.length, {
+    message: "a gate appears at most once",
+    path: ["gates"],
+  })
+  .refine(
+    (value) =>
+      value.gates.every(
+        (gate) => gate.outputArtifactId === undefined || referenceGateRan(gate.verdict),
+      ),
+    { message: "only a gate that ran carries an output artifact", path: ["gates"] },
+  )
+  .refine(
+    (value) =>
+      value.gates.every((gate) => gate.outputTail === undefined || referenceGateRan(gate.verdict)),
+    { message: "only a gate that ran carries an output tail", path: ["gates"] },
+  );
+export type ReferenceAudit = z.infer<typeof ReferenceAuditSchema>;
+
+/** What was authorised: a repository, a branch, the exact base and the ratified plan (D-P10-02). */
+export const DispatchInputSchema = z
+  .strictObject({
+    repositoryUrl: z.string().min(1),
+    branch: z.string().min(1),
+    baseSha: CommitShaSchema,
+    planHash: z.string().min(1),
+    /** The runtime versions the machine installs (P16 D-03). Absent on dispatches from before P16. */
+    toolchain: DispatchToolchainSchema.optional(),
+    /** The laptop's gate audit of `baseSha` (P16 D-06). Absent on dispatches from before it. */
+    reference: ReferenceAuditSchema.optional(),
+  })
+  .refine((value) => value.reference === undefined || value.reference.base === value.baseSha, {
+    message: "the reference audit must be of the base dispatched",
+    path: ["reference", "base"],
+  });
 export type DispatchInput = z.infer<typeof DispatchInputSchema>;
 
 export const DispatchSpendSchema = z.strictObject({
@@ -126,8 +289,37 @@ export const DispatchFailureCodeSchema = z.enum([
   "run_cap",
   "cancelled",
   "input_refused",
+  /** The runner could not prepare the workspace: mount, clone, checkout or setup (P16 SC-07). */
+  "setup_failed",
+  /** A gate green in the reference audit is red on the machine (P16 D-07). */
+  "environment_fault",
 ]);
 export type DispatchFailureCode = z.infer<typeof DispatchFailureCodeSchema>;
+
+/**
+ * The failures a runner may report itself, through its heartbeat (P16 SC-07,
+ * D-07). Every other code is the plane's to write: a runner cannot say it was
+ * cancelled or ran over a cap.
+ */
+export const RunnerFailureCodeSchema = DispatchFailureCodeSchema.extract([
+  "setup_failed",
+  "environment_fault",
+]);
+export type RunnerFailureCode = z.infer<typeof RunnerFailureCodeSchema>;
+
+/** Why a dispatch ended `failed`, as its record holds it. */
+export const DispatchFailureSchema = z.strictObject({
+  code: DispatchFailureCodeSchema,
+  message: z.string().min(1),
+});
+export type DispatchFailure = z.infer<typeof DispatchFailureSchema>;
+
+/** A failure the runner reports with its `stopped`: one of its own codes, and the cause. */
+export const RunnerFailureSchema = z.strictObject({
+  code: RunnerFailureCodeSchema,
+  message: z.string().min(1),
+});
+export type RunnerFailure = z.infer<typeof RunnerFailureSchema>;
 
 /**
  * Where the workspace lives and how fast its volume is (D-P10-27). Absent or
@@ -144,6 +336,87 @@ export const DispatchWorkspaceSchema = z.strictObject({
   throughputMiBps: z.int().min(125).max(1000).optional(),
 });
 export type DispatchWorkspace = z.infer<typeof DispatchWorkspaceSchema>;
+
+/** Where the runner has got to, in the order it happens (P16 S-03). */
+export const RunnerStageSchema = z.enum([
+  "up",
+  "workspace",
+  "toolchain",
+  "setup",
+  "prerequisites",
+  "audit",
+]);
+export type RunnerStage = z.infer<typeof RunnerStageSchema>;
+
+/** One gate of the machine's audit as it finishes, with the reference's verdict beside it. */
+export const MachineGateProgressSchema = z.strictObject({
+  id: z.string().min(1).max(200),
+  kind: z.enum(["setup", "check"]),
+  machine: ReferenceGateVerdictSchema,
+  /** Absent when the reference has no such gate. */
+  reference: ReferenceGateVerdictSchema.optional(),
+});
+export type MachineGateProgress = z.infer<typeof MachineGateProgressSchema>;
+
+/**
+ * The audit's outcome against the reference: `agrees` (OK GO), `red` (a red
+ * base both agree on: OK GO, the run repairs it), `fault` (an environment
+ * fault, D-07), `skipped` (a replacement machine, generation > 1, which does
+ * not audit again).
+ */
+export const MachineAuditVerdictSchema = z.enum(["agrees", "red", "fault", "skipped"]);
+export type MachineAuditVerdict = z.infer<typeof MachineAuditVerdictSchema>;
+
+/** The audit's gates kept on a report are dropped past this many. */
+export const MAX_PROGRESS_GATES = 200;
+
+/** Only `audit` carries gates or a verdict; every other stage carries neither. */
+const onlyAuditCarriesGatesOrVerdict = (value: {
+  readonly stage: RunnerStage;
+  readonly gates?: readonly unknown[] | undefined;
+  readonly verdict?: unknown;
+}): boolean =>
+  value.stage === "audit" || (value.gates === undefined && value.verdict === undefined);
+
+/** What a heartbeat says about the runner's progress. */
+export const RunnerProgressSchema = z
+  .strictObject({
+    stage: RunnerStageSchema,
+    /** One line of what is happening within the stage, e.g. "cloning", "node 22.22.0, python 3.12.8", "setup install". */
+    detail: z.string().min(1).max(500).optional(),
+    /** The audit's gates finished so far; only at stage `audit`. */
+    gates: z.array(MachineGateProgressSchema).max(MAX_PROGRESS_GATES).optional(),
+    /** Set once the comparison with the reference is made; only at stage `audit`. */
+    verdict: MachineAuditVerdictSchema.optional(),
+  })
+  .refine(onlyAuditCarriesGatesOrVerdict, {
+    message: "gates and verdict are only reported at stage `audit`",
+    path: ["stage"],
+  });
+export type RunnerProgress = z.infer<typeof RunnerProgressSchema>;
+
+/** The latest progress, as the dispatch keeps it. */
+export const DispatchProgressSchema = z
+  .strictObject({
+    stage: RunnerStageSchema,
+    /** One line of what is happening within the stage. */
+    detail: z.string().min(1).max(500).optional(),
+    /** The audit's gates finished so far; only at stage `audit`. */
+    gates: z.array(MachineGateProgressSchema).max(MAX_PROGRESS_GATES).optional(),
+    /** Set once the comparison with the reference is made; only at stage `audit`. */
+    verdict: MachineAuditVerdictSchema.optional(),
+    /** The generation that reported it. */
+    generation: z.int().min(1),
+    /** When the plane first heard this stage from this generation. */
+    stageStartedAt: IsoTimestampSchema,
+    /** When the plane last heard any progress. */
+    updatedAt: IsoTimestampSchema,
+  })
+  .refine(onlyAuditCarriesGatesOrVerdict, {
+    message: "gates and verdict are only reported at stage `audit`",
+    path: ["stage"],
+  });
+export type DispatchProgress = z.infer<typeof DispatchProgressSchema>;
 
 export const DispatchSchema = z.strictObject({
   ...runScoped,
@@ -174,13 +447,13 @@ export const DispatchSchema = z.strictObject({
   spend: DispatchSpendSchema,
   publication: DispatchPublicationSchema,
   cleanup: DispatchCleanupSchema,
-  failure: z
-    .strictObject({ code: DispatchFailureCodeSchema, message: z.string().min(1) })
-    .optional(),
+  failure: DispatchFailureSchema.optional(),
   /** The root orchestrator's harness session, so a replacement resumes it (D-P10-20). */
   rootSessionId: z.string().min(1).optional(),
   /** `sha256` per lockfile path, as the runner last reported them, for the warm cache (D-P10-15). */
   lockfileHashes: z.record(z.string().min(1), z.string().min(1)).optional(),
+  /** The runner's latest progress, P16 S-03. */
+  progress: DispatchProgressSchema.optional(),
   requestedAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
 });
@@ -210,19 +483,31 @@ export const HeartbeatReportSchema = z.enum(["ready", "running", "stopped"]);
 export type HeartbeatReport = z.infer<typeof HeartbeatReportSchema>;
 
 /** `POST …/runs/{runId}/dispatch/heartbeat`. */
-export const HeartbeatBodySchema = z.strictObject({
-  generation: z.int().min(1),
-  /** A milestone reached since the last heartbeat, when there is one. */
-  report: HeartbeatReportSchema.optional(),
-  /** Seconds the machine has been metered for, since this attempt started. */
-  meteredSeconds: z.int().min(0),
-  samples: z.array(UtilizationSampleSchema),
-  /** The first setup's duration, once, when it is known. */
-  setupSeconds: z.number().min(0).optional(),
-  /** `sha256` per lockfile path, for the warm cache's record (D-P10-15). */
-  lockfileHashes: z.record(z.string().min(1), z.string().min(1)).optional(),
-  rootSessionId: z.string().min(1).optional(),
-});
+export const HeartbeatBodySchema = z
+  .strictObject({
+    generation: z.int().min(1),
+    /** A milestone reached since the last heartbeat, when there is one. */
+    report: HeartbeatReportSchema.optional(),
+    /**
+     * Why the runner stopped, when it stopped because it could not go on (P16
+     * SC-07, D-07): the dispatch ends `failed` with it. Only with `stopped`.
+     */
+    failure: RunnerFailureSchema.optional(),
+    /** Seconds the machine has been metered for, since this attempt started. */
+    meteredSeconds: z.int().min(0),
+    samples: z.array(UtilizationSampleSchema),
+    /** The first setup's duration, once, when it is known. */
+    setupSeconds: z.number().min(0).optional(),
+    /** `sha256` per lockfile path, for the warm cache's record (D-P10-15). */
+    lockfileHashes: z.record(z.string().min(1), z.string().min(1)).optional(),
+    rootSessionId: z.string().min(1).optional(),
+    /** Where the runner has got to, P16 S-03. */
+    progress: RunnerProgressSchema.optional(),
+  })
+  .refine((body) => body.failure === undefined || body.report === "stopped", {
+    message: "a failure is reported only with `stopped`",
+    path: ["failure"],
+  });
 export type HeartbeatBody = z.infer<typeof HeartbeatBodySchema>;
 
 /**

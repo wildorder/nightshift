@@ -28,6 +28,26 @@ const routedText: Render = (p) => {
     : `routed to ${where} by ${String(p.ruleId ?? "its rule")}`;
 };
 
+/** The gates the machine disagrees with the reference on, and both Nodes (P16 D-07). */
+const environmentFaultText: Render = (p) => {
+  const gates = Array.isArray(p.gates)
+    ? p.gates.map((gate) => {
+        const g = (gate ?? {}) as Record<string, unknown>;
+        return `${String(g.id)} (${String(g.reference)} on the reference, ${String(g.machine)} here)`;
+      })
+    : [];
+  const node = (value: unknown): string => (typeof value === "string" ? value : "none");
+  const part =
+    typeof p.part === "number" && typeof p.parts === "number"
+      ? ` (part ${p.part} of ${p.parts})`
+      : "";
+  return (
+    `environment fault${part}: ${short(gates.join(", "))}; Node ${node(p.referenceNode)} on the ` +
+    `reference, ${node(p.machineNode)} on the machine. The machine is at fault, not the base: ` +
+    "nothing is repaired, and the run is cancelled"
+  );
+};
+
 const RENDER: Readonly<Record<string, Render>> = {
   "run.created": () => "run created",
   "run.started": () => "run started",
@@ -88,6 +108,7 @@ const RENDER: Readonly<Record<string, Render>> = {
   "finding.ruled": (p) => `the arbiter ${String(p.ruling)} ${String(p.findingId)}`,
   "run.budget_spent": (p) =>
     `budget spent: ${String(p.budget)} ${String(p.spent)} of ${String(p.limit)}; nothing new starts`,
+  "environment.fault": environmentFaultText,
   "decision.recorded": (p) => `decided: ${short(p.choice ?? p.decisionId)}`,
   "decision.overridden": (p) => `decision overridden: ${short(p.choice ?? p.decisionId)}`,
   "checkpoint.created": (p) => `checkpoint ${String(p.commitSha ?? "").slice(0, 8)}`,

@@ -6,6 +6,7 @@
   "description": "CLI: nightshift run, nightshift run --remote. A thin client (A-16).",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }

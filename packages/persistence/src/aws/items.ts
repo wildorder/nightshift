@@ -16,7 +16,15 @@ export interface Parser<T> {
   parse(value: unknown): T;
 }
 
-const KEY_ATTRIBUTES = new Set(["PK", "SK", "GSI1PK", "GSI1SK"]);
+/**
+ * The item's revision, beside its keys and like them no field of the record: a
+ * token a record whose writers must not undo each other is written with, and
+ * conditioned on (P16, D-08). Upper case, as the keys are, so no contract field
+ * can be named like it.
+ */
+export const REVISION_ATTRIBUTE = "REV";
+
+const KEY_ATTRIBUTES = new Set(["PK", "SK", "GSI1PK", "GSI1SK", REVISION_ATTRIBUTE]);
 
 /**
  * DynamoDB refuses any item over 400 KB. The guard below stops short of it so the

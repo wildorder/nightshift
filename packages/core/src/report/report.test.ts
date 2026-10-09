@@ -17,6 +17,7 @@ import {
   RunSchema,
 } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
+import { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
 import { type RunReport, renderReport } from "./report.js";
 
 const program = ProgramContractSchema.parse(
@@ -349,5 +350,76 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
     expect(text).toContain("(flaky) of build: running");
     expect(text).toContain("Decision: not on the record.");
     expect(text).not.toContain("New gate definitions");
+  });
+});
+
+describe("the report's environment fault (P16 S-02, D-07)", () => {
+  const environmentFault: NonNullable<RunReport["gateHealth"]["environmentFault"]> = {
+    baseCommit: "c".repeat(40) as never,
+    referenceNode: "24.4.1",
+    machineNode: "18.20.4",
+    gates: [
+      {
+        id: "unit",
+        command: "npm test",
+        kind: "check",
+        reference: "passed",
+        machine: "failed",
+        referenceTail: "Tests  12 passed (12)",
+        machineTail: "TypeError: fetch is not a function\n Tests  1 failed | 11 passed (12)",
+      },
+      { id: "e2e", command: "npm run e2e", kind: "check", reference: "passed", machine: "failed" },
+    ],
+  };
+
+  it("shows each gate, both verdicts, both tails and both Nodes side by side", () => {
+    const text = renderReport(
+      report({
+        gateHealth: { audit: undefined, red: undefined, environmentFault, repairs: [], flakes: [] },
+      }),
+    );
+    const section = text.slice(text.indexOf("## Gate health"), text.indexOf("## Strands"));
+    expect(section).not.toContain("No gate-health record, no red base");
+    expect(section).toContain(
+      "Environment fault: 2 gates passed in the reference audit of `cccccccc`",
+    );
+    expect(section).toContain(
+      "| Gate | Command | Reference (Node 24.4.1) | Machine (Node 18.20.4) |",
+    );
+    expect(section).toContain("| `unit` | `npm test` | passed | failed |");
+    expect(section).toContain("| `e2e` | `npm run e2e` | passed | failed |");
+    expect(section).toContain(
+      "`unit`, the reference (Node 24.4.1), passed:\n\n```text\nTests  12 passed (12)\n```",
+    );
+    expect(section).toContain(
+      "`unit`, the machine (Node 18.20.4), failed:\n\n```text\nTypeError: fetch is not a function\n Tests  1 failed | 11 passed (12)\n```",
+    );
+    expect(section).toContain("`e2e`, the machine (Node 18.20.4), failed:\n\n(no output was kept)");
+  });
+
+  it("gathers every part of a fault written as several events, each gate once", () => {
+    const [unit, e2e] = environmentFault.gates;
+    const part = (n: number, gates: unknown[]) => ({
+      type: "environment.fault" as const,
+      payload: { ...environmentFault, gates, part: n, parts: 2 },
+    });
+    const gathered = environmentFaultOf([
+      part(2, [e2e]),
+      { type: "gate.red" as const, payload: { baseCommit: "x", failing: [] } },
+      part(1, [unit]),
+    ]);
+    expect(gathered).toEqual(environmentFault);
+    expect(environmentFaultOf([])).toBeUndefined();
+  });
+
+  it("puts a fence around a tail no backtick in it can close", () => {
+    const text = renderEnvironmentFault({
+      ...environmentFault,
+      gates: environmentFault.gates.slice(0, 1).map((gate) => ({
+        ...gate,
+        machineTail: "see ```code```",
+      })),
+    }).join("\n");
+    expect(text).toContain("````text\nsee ```code```\n````");
   });
 });

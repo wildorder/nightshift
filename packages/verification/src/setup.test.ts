@@ -3,9 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  formatRuntimes,
   INSTALL_MARKER,
+  installHashes,
   lockfileHashes,
+  RUNTIMES_ENV,
   readInstallMarker,
+  runtimeHashes,
   writeInstallMarker,
 } from "./install.js";
 import { runCheckoutSteps, runSetupSteps, setupAsStep } from "./setup.js";
@@ -275,5 +279,60 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
       reference: treeless,
     });
     expect(text(results[0])).not.toContain("[setup skipped]");
+  });
+});
+
+describe("the runtimes an installed tree was made for (P16 S-01)", () => {
+  const LOCK = '{"lockfileVersion":3,"packages":{}}';
+  const harmlessInstall = { id: "install", command: "npm install --version" };
+  const marked = async (runtimes: Readonly<Record<string, string>>): Promise<string> => {
+    const dir = await scratch();
+    await writeFile(join(dir, "package-lock.json"), LOCK, "utf8");
+    await mkdir(join(dir, "node_modules"), { recursive: true });
+    await writeInstallMarker(dir, await installHashes(dir, runtimes));
+    return dir;
+  };
+
+  it("reads and writes the engine's runtimes as marker entries, in a stable order", () => {
+    const value = formatRuntimes([
+      { runtime: "python", version: "3.12.1" },
+      { runtime: "node", version: "22.11.0" },
+    ]);
+    expect(value).toBe("node@22.11.0 python@3.12.1");
+    expect(runtimeHashes(value)).toEqual({ "runtime:node": "22.11.0", "runtime:python": "3.12.1" });
+    expect(runtimeHashes(undefined)).toEqual({});
+    expect(runtimeHashes(" @1 node@ x ")).toEqual({});
+  });
+
+  it("adds them only beside lockfiles, so a checkout without one still never skips", async () => {
+    const dir = await scratch();
+    expect(await installHashes(dir, { "runtime:node": "22.11.0" })).toEqual({});
+  });
+
+  it("installs again over a tree made for another Node, and marks the tree with this one", async () => {
+    const dir = await marked({ "runtime:node": "22.11.0" });
+    const results = await runSetupSteps({
+      setup: [harmlessInstall],
+      cwd: dir,
+      timeoutMs: 60_000,
+      env: { [RUNTIMES_ENV]: "node@24.1.0" },
+    });
+    expect(new TextDecoder().decode(results[0]?.output)).not.toContain("[setup skipped]");
+    expect(results[0]?.exitCode).toBe(0);
+    expect(await readInstallMarker(dir)).toEqual({
+      ...(await lockfileHashes(dir)),
+      "runtime:node": "24.1.0",
+    });
+  });
+
+  it("skips the install when the tree was made for these lockfiles and these runtimes", async () => {
+    const dir = await marked({ "runtime:node": "24.1.0" });
+    const results = await runSetupSteps({
+      setup: [{ id: "install", command: "npm ci --prefer-offline" }],
+      cwd: dir,
+      timeoutMs: 30_000,
+      env: { [RUNTIMES_ENV]: "node@24.1.0" },
+    });
+    expect(new TextDecoder().decode(results[0]?.output)).toContain("[setup skipped]");
   });
 });

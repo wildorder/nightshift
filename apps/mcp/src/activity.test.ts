@@ -68,3 +68,40 @@ describe("gate health in the Meanwhile lines (P15)", () => {
     ]);
   });
 });
+
+describe("an environment fault in the Meanwhile lines (P16 D-07)", () => {
+  it("names the disagreeing gates and both Nodes", async () => {
+    const f = createFixtures();
+    const stores = createInMemoryStores();
+    await stores.executionNodes.put(makeRootNode(f));
+    await stores.events.append(
+      makeEvent(f, {
+        type: "environment.fault",
+        executionNodeId: f.rootNodeId,
+        payload: {
+          baseCommit: "a".repeat(40),
+          gates: [
+            {
+              id: "test",
+              command: "npm test",
+              kind: "check",
+              reference: "passed",
+              machine: "failed",
+            },
+          ],
+          referenceNode: "22.22.0",
+          machineNode: "20.11.1",
+        },
+        occurredAt: "2026-10-07T03:01:00.000Z",
+      }),
+    );
+
+    const lines = renderActivity(await createActivityFeed(stores, f.scope).since());
+
+    expect(lines).toEqual([
+      "03:01 root — environment fault: test (passed on the reference, failed here); Node 22.22.0 " +
+        "on the reference, 20.11.1 on the machine. The machine is at fault, not the base: nothing " +
+        "is repaired, and the run is cancelled",
+    ]);
+  });
+});

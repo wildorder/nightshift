@@ -15,6 +15,7 @@ export {
   renderCorrections,
   renderDecisionGraph,
 } from "./decision-graph.js";
+export { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
 export {
   DEPARTURE_PREFIX,
   type FlakeReport,

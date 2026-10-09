@@ -29,7 +29,9 @@ import {
   type Prerequisite,
   PrerequisiteIdSchema,
   type PrerequisiteListResponse,
+  type PrerequisiteWriteBody,
   PrerequisiteWriteBodySchema,
+  type Principal,
   type ProgramContract,
   ProgramContractSchema,
   type Ratification,
@@ -45,6 +47,8 @@ import {
   planHash,
   prerequisitesOf,
   splitPlanSections,
+  withLaptopCheck,
+  withMachineCheck,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError, parseBody } from "../http.js";
 import { assertChainMatches, type PathParams, programScopeFrom } from "../params.js";
@@ -146,9 +150,9 @@ export const getPlanDocument: Handler = async ({ deps, params }) => {
 };
 
 /**
- * A prerequisite keeps the check it already passed only while its
- * `verifyCommand` is the one that was run; anything a client says about status
- * is dropped. Hurdles the engine discovered (D-P7-10) are the control plane's
+ * A prerequisite keeps the checks it already has, the laptop's and the
+ * machines', only while its `verifyCommand` is the one that was run; anything a
+ * client says about status or checks is dropped. Hurdles the engine discovered (D-P7-10) are the control plane's
  * own record and survive a re-ratification.
  */
 const carryPrerequisites = (
@@ -158,16 +162,24 @@ const carryPrerequisites = (
   const before = existing === undefined ? [] : prerequisitesOf(existing);
   const planned = prerequisitesOf(next)
     .filter((prerequisite) => prerequisite.discoveredInRunId === undefined)
-    .map(({ status: _status, lastCheck: _lastCheck, ...prerequisite }): Prerequisite => {
-      const was = before.find((candidate) => candidate.id === prerequisite.id);
-      return was !== undefined && was.verifyCommand === prerequisite.verifyCommand
-        ? {
-            ...prerequisite,
-            status: was.status,
-            ...(was.lastCheck === undefined ? {} : { lastCheck: was.lastCheck }),
-          }
-        : { ...prerequisite, status: "pending" };
-    });
+    .map(
+      ({
+        status: _status,
+        lastCheck: _lastCheck,
+        machineChecks: _machineChecks,
+        ...prerequisite
+      }): Prerequisite => {
+        const was = before.find((candidate) => candidate.id === prerequisite.id);
+        return was !== undefined && was.verifyCommand === prerequisite.verifyCommand
+          ? {
+              ...prerequisite,
+              status: was.status,
+              ...(was.lastCheck === undefined ? {} : { lastCheck: was.lastCheck }),
+              ...(was.machineChecks === undefined ? {} : { machineChecks: was.machineChecks }),
+            }
+          : { ...prerequisite, status: "pending" };
+      },
+    );
   const discovered = before.filter(
     (prerequisite) =>
       prerequisite.discoveredInRunId !== undefined &&
@@ -318,51 +330,133 @@ const prerequisiteIdFrom = (params: PathParams): string => {
   return result.data;
 };
 
-export const putPrerequisite: Handler = async ({ deps, request, params }) => {
-  const body = parseBody(PrerequisiteWriteBodySchema, request.body);
-  const scope = programScopeFrom(params);
-  const id = prerequisiteIdFrom(params);
-  const program = await requireProgram(deps.stores, scope);
-  const all = [...prerequisitesOf(program)];
-  const index = all.findIndex((candidate) => candidate.id === id);
-  const existing = all[index];
+/**
+ * Who may record a check where (P16, D-08). A laptop check, which moves
+ * `status`, is a human's preflight; no execution token writes one. A machine
+ * check is the engine's, and only under its own dispatch: the run and the
+ * generation its token was minted for.
+ */
+const assertCheckSite = (principal: Principal, body: PrerequisiteCheckBody): void => {
+  if (body.where !== "machine") {
+    if (principal.kind === "execution") {
+      throw new HttpError(
+        403,
+        "execution_forbidden_operation",
+        "a laptop check is the preflight's; an execution records a check only as where: machine",
+      );
+    }
+    return;
+  }
+  if (principal.kind !== "execution" || principal.role !== "engine") {
+    throw new HttpError(
+      403,
+      "prerequisite_check_site",
+      "a machine check is recorded by the engine on the run's machine, under its own dispatch",
+    );
+  }
+  if (
+    body.dispatch?.runId !== principal.runId ||
+    body.dispatch.generation !== principal.generation
+  ) {
+    throw new HttpError(
+      403,
+      "execution_out_of_scope",
+      "an engine records a machine check only under its own dispatch: its run and its generation",
+    );
+  }
+};
 
-  let next: Prerequisite;
-  if (body.kind === "check") {
-    if (existing === undefined) {
-      throw new HttpError(404, "not_found", `program ${scope.programId} has no prerequisite ${id}`);
-    }
-    next = {
-      ...existing,
-      status: body.exitCode === 0 ? "satisfied" : "pending",
-      lastCheck: { exitCode: body.exitCode, checkedAt: nowIso(deps.clock) },
-    };
-    all[index] = next;
-  } else {
-    if (existing !== undefined) {
-      // A hurdle met twice is one hurdle; a planned id is never overwritten by a run.
-      if (existing.discoveredInRunId === body.runId) return { status: 200, body: existing };
-      throw new HttpError(409, "conflict", `prerequisite ${id} already exists`);
-    }
-    const run = await deps.stores.runs.get(scope, body.runId);
-    if (run === undefined) {
-      throw new HttpError(404, "not_found", `run ${body.runId} does not exist in this program`);
-    }
-    next = {
+type PrerequisiteCheckBody = Extract<PrerequisiteWriteBody, { kind: "check" }>;
+
+type PrerequisiteWrite = { readonly status: 200 | 201; readonly body: Prerequisite };
+
+/**
+ * A check applied where it ran. A machine's is kept apart and never moves the
+ * laptop's status; the laptop's leaves the machines' checks as they were.
+ */
+const checked = (
+  existing: Prerequisite,
+  body: PrerequisiteCheckBody,
+  checkedAt: string,
+): Prerequisite =>
+  body.where === "machine" && body.dispatch !== undefined
+    ? withMachineCheck(existing, { ...body.dispatch, exitCode: body.exitCode, checkedAt })
+    : withLaptopCheck(existing, { exitCode: body.exitCode, checkedAt });
+
+/** A hurdle the engine met (D-P7-10): new, or the same run's again; a planned id is never overwritten. */
+const discovered = (
+  existing: Prerequisite | undefined,
+  id: string,
+  body: Extract<PrerequisiteWriteBody, { kind: "discovered" }>,
+): PrerequisiteWrite => {
+  if (existing !== undefined) {
+    if (existing.discoveredInRunId === body.runId) return { status: 200, body: existing };
+    throw new HttpError(409, "conflict", `prerequisite ${id} already exists`);
+  }
+  return {
+    status: 201,
+    body: {
       id,
       description: body.description,
       remediation: body.remediation,
       verifyCommand: body.verifyCommand,
       status: "pending",
       discoveredInRunId: body.runId,
-    };
-    all.push(next);
-  }
+    },
+  };
+};
 
-  // Neither write touches what was ratified: statuses and discovered hurdles
-  // are outside the plan hash, so the contract stays ratified as it was.
-  await deps.stores.programContracts.put(
-    ProgramContractSchema.parse({ ...program, prerequisites: all }),
+export const putPrerequisite: Handler = async ({ deps, request, params, principal }) => {
+  const body = parseBody(PrerequisiteWriteBodySchema, request.body);
+  const scope = programScopeFrom(params);
+  const id = prerequisiteIdFrom(params);
+  if (body.kind === "check") assertCheckSite(principal, body);
+  await requireProgram(deps.stores, scope);
+  if (body.kind === "discovered") {
+    const run = await deps.stores.runs.get(scope, body.runId);
+    if (run === undefined) {
+      throw new HttpError(404, "not_found", `run ${body.runId} does not exist in this program`);
+    }
+  }
+  const checkedAt = nowIso(deps.clock);
+
+  // One atomic change to the stored contract, applied again to whatever another
+  // writer left if one got in between: a laptop check and a machine check that
+  // overlap both land, and neither undoes the other (P16, D-08). So everything
+  // below is decided from `current`, never from an earlier read.
+  let outcome: PrerequisiteWrite | undefined;
+  const stored = await deps.stores.programContracts.update(
+    scope.projectId,
+    scope.programId,
+    (current) => {
+      const all = [...prerequisitesOf(current)];
+      const index = all.findIndex((candidate) => candidate.id === id);
+      const existing = all[index];
+      if (body.kind === "check") {
+        if (existing === undefined) {
+          throw new HttpError(
+            404,
+            "not_found",
+            `program ${scope.programId} has no prerequisite ${id}`,
+          );
+        }
+        const next = checked(existing, body, checkedAt);
+        all[index] = next;
+        outcome = { status: 200, body: next };
+      } else {
+        outcome = discovered(existing, id, body);
+        // A hurdle met twice is one hurdle: nothing to write.
+        if (existing !== undefined) return undefined;
+        all.push(outcome.body);
+      }
+      // Neither write touches what was ratified: statuses, checks and discovered
+      // hurdles are outside the plan hash, so the contract stays ratified as it was.
+      return ProgramContractSchema.parse({ ...current, prerequisites: all });
+    },
   );
-  return { status: existing === undefined ? 201 : 200, body: next };
+  if (stored === undefined || outcome === undefined) {
+    // Gone between the first read and the change.
+    throw new HttpError(404, "not_found", `program ${scope.programId} does not exist`);
+  }
+  return outcome;
 };

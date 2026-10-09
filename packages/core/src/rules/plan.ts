@@ -938,7 +938,8 @@ const canonical = (value: unknown): unknown => {
  * What of a contract is *approved*. Left out: the ratification's own record
  * (`status`, `planHash`, `planDocument`, `conversation`, `ratifications`), or
  * ratifying would change the hash; each prerequisite's `status` and
- * `lastCheck`, which preflight writes; and prerequisites the engine discovered
+ * `lastCheck`, which preflight writes, and its `machineChecks`, which a run's
+ * machine writes (P16, D-08); and prerequisites the engine discovered
  * mid-run (D-P7-10). An absent planned field and an empty one are the same plan.
  *
  * P14's fields are left out when empty rather than normalised to empty, so a
@@ -966,7 +967,7 @@ const approvedContent = (contract: ProgramContract): unknown => {
     outOfScope: contract.outOfScope ?? [],
     prerequisites: prerequisitesOf(contract)
       .filter((prerequisite) => prerequisite.discoveredInRunId === undefined)
-      .map(({ status: _s, lastCheck: _c, ...prerequisite }) => prerequisite),
+      .map(({ status: _s, lastCheck: _c, machineChecks: _m, ...prerequisite }) => prerequisite),
   };
 };
 

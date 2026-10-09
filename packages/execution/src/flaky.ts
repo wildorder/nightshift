@@ -34,9 +34,9 @@ import { recordArtifact } from "./runner.js";
 import {
   discardScratch,
   freshScratch,
+  projectStepEnv,
   type RunScratchAs,
   type ScratchPaths,
-  scratchEnv,
 } from "./scratch.js";
 
 export interface RerunInput {
@@ -50,13 +50,18 @@ export interface RerunInput {
   readonly timeoutMs: number;
   /** Whoever ran the first run, so the rerun is the same identity (D-P10-25). */
   readonly as?: RunScratchAs;
+  /**
+   * The project environment the first run had (P16, D-10), so the rerun runs
+   * in exactly the same one, whether or not it runs as a worker.
+   */
+  readonly projectEnv?: Readonly<Record<string, string>>;
   /** Leave the rerun's scratch for whoever works in the checkout next (the examiner). */
   readonly keepScratch?: boolean;
 }
 
 /** Reruns each failed check once, with a scratch of its own. Empty when nothing failed. */
 export const rerunFailures = async (input: RerunInput): Promise<readonly CheckRerun[]> => {
-  const { steps, first, cwd, paths, timeoutMs, as, keepScratch } = input;
+  const { steps, first, cwd, paths, timeoutMs, as, keepScratch, projectEnv } = input;
   if (first.every((result) => result.exitCode === 0)) return [];
   const scratch = await freshScratch(paths, cwd, as);
   const ran = rerunFailedChecks({
@@ -64,7 +69,7 @@ export const rerunFailures = async (input: RerunInput): Promise<readonly CheckRe
     first,
     cwd,
     timeoutMs,
-    env: scratchEnv(scratch),
+    env: projectStepEnv(projectEnv, scratch),
     ...(as === undefined ? {} : { as }),
   });
   return keepScratch === true ? ran : ran.finally(() => discardScratch(paths, cwd, as));

@@ -20,6 +20,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommitSha, ProgramContract, VerificationStep } from "@nightshift/contracts";
 import {
+  type DeferSignal,
+  deferSignalOf,
   LOCKFILES,
   type RunVerificationInput,
   runSetupSteps,
@@ -29,15 +31,18 @@ import {
   setupFailed,
 } from "@nightshift/verification";
 import { addDetachedWorktree, type GitRunner, pruneWorktrees, tryGit } from "./git/index.js";
-import { discardScratch, freshScratch, type ScratchPaths, scratchEnv } from "./scratch.js";
+import { discardScratch, freshScratch, projectStepEnv, type ScratchPaths } from "./scratch.js";
 
 /**
  * - `passed`: it exited 0.
  * - `failed`: it did not. A failed check means the base cannot pass this gate.
+ * - `deferred`: it said it could not run for want of something only a human
+ *   can supply (exit 75 and a `NIGHTSHIFT_DEFER` line, D-P7-10), as
+ *   verification would defer it. Not a failure: the base is not red for it.
  * - `waiting`: it needs a human prerequisite nobody has met, so it did not run.
- * - `unrun`: setup failed before it, or an earlier setup step did.
+ * - `unrun`: an earlier setup step failed or deferred, so it did not run.
  */
-export type GateVerdict = "passed" | "failed" | "waiting" | "unrun";
+export type GateVerdict = "passed" | "failed" | "deferred" | "waiting" | "unrun";
 
 export interface AuditedGate {
   readonly id: string;
@@ -48,6 +53,8 @@ export interface AuditedGate {
   readonly verdict: GateVerdict;
   /** The unmet prerequisites, when `waiting`. */
   readonly waitingOn: readonly string[];
+  /** What it said it was missing, when `deferred`. */
+  readonly deferral?: DeferSignal;
 }
 
 export interface GateAudit {
@@ -56,6 +63,8 @@ export interface GateAudit {
   /** True when some gate failed: no job can pass verification on this base. */
   readonly red: boolean;
   readonly failing: readonly string[];
+  /** The gates that deferred: not red, but not proven to pass either. */
+  readonly deferred: readonly string[];
   /**
    * Lockfiles at the base when the program declares no setup. Every
    * verification then starts with nothing installed, and only an install folded
@@ -85,9 +94,23 @@ export interface GateAuditInput {
   readonly onStep?: (result: StepResult) => void;
 }
 
-const verdictOf = (result: StepResult | undefined): GateVerdict => {
+/** The deferral a step declared, read as verification reads it (`deferSignalOf`). */
+export const deferralOf = (result: StepResult): DeferSignal | undefined =>
+  deferSignalOf(result.exitCode, new TextDecoder().decode(result.output));
+
+/** What one step's result makes of its gate. */
+export const gateVerdictOf = (result: StepResult | undefined): GateVerdict => {
   if (result === undefined) return "unrun";
-  return result.exitCode === 0 ? "passed" : "failed";
+  if (result.exitCode === 0) return "passed";
+  return deferralOf(result) === undefined ? "failed" : "deferred";
+};
+
+const judged = (result: StepResult | undefined): Pick<AuditedGate, "verdict" | "deferral"> => {
+  const deferral = result === undefined ? undefined : deferralOf(result);
+  return {
+    verdict: gateVerdictOf(result),
+    ...(deferral === undefined ? {} : { deferral }),
+  };
 };
 
 /** Setup, then, when it passed, each runnable check, in `checkout`. */
@@ -105,7 +128,7 @@ const runOnce = async (
   const scratch = await freshScratch(input.paths, checkout, input.as);
   const how = {
     timeoutMs: input.timeoutMs,
-    env: { ...(input.env ?? {}), ...scratchEnv(scratch) },
+    env: projectStepEnv(input.env, scratch),
     ...(input.as === undefined ? {} : { as: input.as }),
   };
   const prepared = await runSetupSteps({
@@ -173,7 +196,7 @@ export const auditGates = async (input: GateAuditInput): Promise<GateAudit> => {
         command: step.command,
         kind: "setup",
         ...(result === undefined ? {} : { result }),
-        verdict: verdictOf(result),
+        ...judged(result),
         waitingOn: [],
       };
     }),
@@ -185,18 +208,21 @@ export const auditGates = async (input: GateAuditInput): Promise<GateAudit> => {
         command: step.command,
         kind: "check",
         ...(result === undefined ? {} : { result }),
-        verdict: waiting.length > 0 ? "waiting" : verdictOf(result),
+        ...(waiting.length > 0 ? { verdict: "waiting" as const } : judged(result)),
         waitingOn: waiting,
       };
     }),
   ];
   // A failed setup step is what left the checks `unrun`; it is the one named.
   const failing = gates.filter((gate) => gate.verdict === "failed").map((gate) => gate.id);
+  // A deferred one leaves them `unrun` too, and is named here, not as red.
+  const deferred = gates.filter((gate) => gate.verdict === "deferred").map((gate) => gate.id);
   return {
     base: input.base,
     gates,
     red: failing.length > 0,
     failing,
+    deferred,
     lockfilesWithoutSetup: await lockfilesWithoutSetupAt(input),
   };
 };

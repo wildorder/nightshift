@@ -6,6 +6,7 @@
   "description": "Harness adapter contract. Contains no provider code.",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }

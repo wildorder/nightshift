@@ -6,6 +6,7 @@
   "description": "Codex harness adapter.",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }

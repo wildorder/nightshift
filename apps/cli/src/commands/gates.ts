@@ -6,14 +6,24 @@
  * in a fresh checkout, exactly as verification would run them (see
  * `auditGates`). Deterministic: commands and exit codes, no model. What it finds
  * is printed as it goes and summed up at the end: a gate that failed is red,
- * and no job can pass verification on that base; one that needs an unmet
- * prerequisite did not run.
+ * and no job can pass verification on that base; one that deferred (exit 75
+ * and a `NIGHTSHIFT_DEFER` line) said a human must supply something first, and
+ * is neither red nor passed; one that needs an unmet prerequisite did not run.
  */
-import type { ProgramContract } from "@nightshift/contracts";
-import { prerequisitesOf } from "@nightshift/core";
+import type { CommitSha, ProgramContract } from "@nightshift/contracts";
 import {
+  PIN_FILES,
+  prerequisitesOf,
+  RUNTIME_MARKER_FILES,
+  type RuntimeFinding,
+  runtimeFindings,
+  runtimesToMeasure,
+} from "@nightshift/core";
+import {
+  type AuditedGate,
   auditGates,
   DEFAULT_VERIFICATION_TIMEOUT_MS,
+  deferralOf,
   type GateAudit,
   outputTail,
   revParse,
@@ -22,6 +32,7 @@ import { createLocalPaths } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession, type Session } from "../session.js";
+import { filesAt, measureRuntime } from "./remote.js";
 
 export interface GatesOptions {
   readonly id: string;
@@ -30,24 +41,48 @@ export interface GatesOptions {
 
 const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
 
-/** Audits `contract`'s gates on its program branch's head, printing each step as it ends. */
+/** A step's progress verdict: a deferral (D-P7-10) is said as one, not as a failure. */
+export const stepVerdict = (result: NonNullable<AuditedGate["result"]>): string => {
+  if (result.exitCode === 0) return "ok  ";
+  if (result.timedOut) return "FAIL (timed out)";
+  return deferralOf(result) === undefined ? `FAIL (exited ${result.exitCode})` : "DEFERRED";
+};
+
+/** Where an audit runs and what it counts as unmet, when not its defaults. */
+export interface AuditAt {
+  /** The commit audited. Absent, the program branch's head. */
+  readonly base?: CommitSha;
+  /**
+   * The prerequisites not satisfied, as checked by the caller. Absent, those
+   * `contract` does not record as satisfied.
+   */
+  readonly unmet?: ReadonlySet<string>;
+}
+
+/**
+ * Audits `contract`'s gates on its program branch's head, or on `at.base`,
+ * printing each step as it ends.
+ */
 export const auditProgramGates = async (
   environment: CliEnvironment,
   contract: ProgramContract,
   repoPath: string,
   say: (line: string) => void = environment.out,
+  at: AuditAt = {},
 ): Promise<GateAudit> => {
   const branch = contract.repository.programBranch;
-  const base = await revParse(environment.git, repoPath, branch);
+  const base = at.base ?? (await revParse(environment.git, repoPath, branch));
   say(
     `auditing the gates on ${branch} at ${base.slice(0, 8)}: setup and every check, ` +
       "in a fresh checkout, as verification runs them",
   );
-  const unmet = new Set(
-    prerequisitesOf(contract)
-      .filter((prerequisite) => prerequisite.status !== "satisfied")
-      .map((prerequisite) => prerequisite.id),
-  );
+  const unmet =
+    at.unmet ??
+    new Set(
+      prerequisitesOf(contract)
+        .filter((prerequisite) => prerequisite.status !== "satisfied")
+        .map((prerequisite) => prerequisite.id),
+    );
   const width = Math.max(
     ...(contract.setup ?? []).map((step) => `setup:${step.id}`.length),
     ...contract.verification.map((step) => step.id.length),
@@ -62,13 +97,9 @@ export const auditProgramGates = async (
     // The scratch goes where a run's would: short, under the state directory.
     paths: createLocalPaths(environment.paths),
     onStep: (result) => {
-      const verdict =
-        result.exitCode === 0
-          ? "ok  "
-          : result.timedOut
-            ? "FAIL (timed out)"
-            : `FAIL (exited ${result.exitCode})`;
-      say(`  ${result.stepId.padEnd(width)}  ${verdict}  ${seconds(result.durationMs)}`);
+      say(
+        `  ${result.stepId.padEnd(width)}  ${stepVerdict(result)}  ${seconds(result.durationMs)}`,
+      );
     },
   });
 };
@@ -85,6 +116,25 @@ const describeRed = (environment: CliEnvironment, audit: GateAudit, sha: string)
   environment.err(
     `No job can pass verification on ${sha} while ${audit.failing.join(", ")} ${verb}: every job runs every gate.`,
   );
+};
+
+/** Each deferred gate, with what it said it is missing and the gates it left unrun. */
+const describeDeferred = (say: (line: string) => void, audit: GateAudit): void => {
+  for (const gate of audit.gates.filter((candidate) => candidate.verdict === "deferred")) {
+    const deferral = gate.deferral;
+    say(
+      deferral === undefined
+        ? `DEFERRED ${gate.id}`
+        : `DEFERRED ${gate.id}: ${deferral.prerequisiteId} ${deferral.description}`,
+    );
+    if (deferral !== undefined && deferral.remediation !== "") {
+      say(`    to fix: ${deferral.remediation}`);
+    }
+  }
+  const unrun = audit.gates.filter((gate) => gate.verdict === "unrun").map((gate) => gate.id);
+  if (unrun.length > 0 && audit.deferred.some((id) => id.startsWith("setup:"))) {
+    say(`  not run: ${unrun.join(", ")}, behind the deferred setup`);
+  }
 };
 
 const describeMissingSetup = (say: (line: string) => void, lockfiles: readonly string[]): void => {
@@ -111,9 +161,22 @@ export const describeAudit = (
   for (const gate of audit.gates.filter((candidate) => candidate.verdict === "waiting")) {
     say(`  not run: ${gate.id} waits on ${gate.waitingOn.join(", ")}`);
   }
+  describeDeferred(say, audit);
   describeRed(environment, audit, sha);
   describeMissingSetup(say, audit.lockfilesWithoutSetup);
-  if (!audit.red) say(`the gates pass on ${sha}`);
+  if (audit.red) return;
+  // Deferred, or left unrun behind a deferred setup: not red, and not passed either.
+  const unproven = audit.gates
+    .filter((gate) => gate.verdict === "deferred" || gate.verdict === "unrun")
+    .map((gate) => gate.id);
+  if (unproven.length === 0) {
+    say(`the gates pass on ${sha}`);
+    return;
+  }
+  say(
+    `no gate is red on ${sha}, but the gates do not pass yet: ${unproven.join(", ")} ` +
+      `${unproven.length === 1 ? "is" : "are"} deferred or not run until a human supplies what the deferral names`,
+  );
 };
 
 /**
@@ -165,16 +228,93 @@ export const auditContractOf = async (
   };
 };
 
-/** Exit code 0 unless a gate is red. A missing setup is said, not counted. */
+// ── rule 8, declares its runtimes (P16 S-02, SC-08) ─────────────────────────
+
+/** Every file rule 8 reads: the pin files, then the files that say a runtime is used. */
+const RUNTIME_FILES: readonly string[] = [
+  ...new Set([...PIN_FILES, ...Object.keys(RUNTIME_MARKER_FILES)]),
+];
+
+/**
+ * Rule 8's mechanical audit at `sha`, the commit the gates were audited on:
+ * the pin and marker files as committed there, never the working tree, and
+ * each pinned runtime's version on this machine, measured as `run --remote`
+ * measures it. A runtime that cannot be run or names no exact version counts
+ * as not found. Deterministic: files and `--version`, no model.
+ */
+export const auditProgramRuntimes = async (
+  environment: Pick<CliEnvironment, "git" | "exec">,
+  repoPath: string,
+  sha: string,
+): Promise<RuntimeFinding[]> => {
+  const files = await filesAt(environment.git, repoPath, sha, RUNTIME_FILES);
+  const measured: Record<string, string | undefined> = {};
+  for (const runtime of runtimesToMeasure(files)) {
+    const measurement = await measureRuntime(environment.exec, repoPath, runtime);
+    if (measurement.kind === "version") measured[runtime] = measurement.version;
+  }
+  return runtimeFindings(files, measured);
+};
+
+const describeRuntimeFinding = (finding: RuntimeFinding): string => {
+  switch (finding.kind) {
+    case "unpinned":
+      return (
+        `${finding.marker} says this repository uses ${finding.runtime}, and no file pins its version: ` +
+        `pin ${finding.runtime} in one file`
+      );
+    case "conflicting":
+      return (
+        `${finding.a.source} pins ${finding.runtime} ${finding.a.spec} but ${finding.b.source} pins ` +
+        `${finding.b.spec}: make them agree`
+      );
+    case "unmet":
+      return finding.measured === undefined
+        ? `${finding.source} pins ${finding.runtime} ${finding.spec}, and ${finding.runtime} was not found on this machine`
+        : `${finding.source} pins ${finding.runtime} ${finding.spec}, but this machine runs ${finding.runtime} ${finding.measured}`;
+  }
+};
+
+/**
+ * Rule 8's findings, under their heading. Each is for the planning skill to
+ * turn into a decision against rule 8; none makes a gate red.
+ */
+export const describeRuntimeFindings = (
+  say: (line: string) => void,
+  findings: readonly RuntimeFinding[],
+  sha: string,
+): void => {
+  if (findings.length === 0) {
+    say(
+      `rule 8, declares its runtimes: every runtime used on ${sha.slice(0, 8)} is pinned and met`,
+    );
+    return;
+  }
+  say(
+    `rule 8, declares its runtimes: ${findings.length} finding${findings.length === 1 ? "" : "s"} on ${sha.slice(0, 8)}`,
+  );
+  for (const finding of findings) say(`  RUNTIME ${describeRuntimeFinding(finding)}`);
+};
+
+export interface GatesResult {
+  /** 0 unless a gate is red. Rule 8's findings are said, not counted. */
+  readonly exitCode: number;
+  readonly audit: GateAudit;
+  readonly runtimeFindings: readonly RuntimeFinding[];
+}
+
+/** Exit code 0 unless a gate is red. A missing setup and rule 8's findings are said, not counted. */
 export const gates = async (
   environment: CliEnvironment,
   options: GatesOptions,
-): Promise<number> => {
+): Promise<GatesResult> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment).catch(() => undefined);
   const contract = await auditContractOf(environment, files, session);
   const audit = await auditProgramGates(environment, contract, repoPath);
   describeAudit(environment, audit);
-  return audit.red ? 1 : 0;
+  const runtimes = await auditProgramRuntimes(environment, repoPath, audit.base);
+  describeRuntimeFindings(environment.out, runtimes, audit.base);
+  return { exitCode: audit.red ? 1 : 0, audit, runtimeFindings: runtimes };
 };

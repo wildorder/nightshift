@@ -157,6 +157,15 @@ export interface ExecutionEnvironment {
    * lasts as long as it lasts.
    */
   readonly workerTokens?: WorkerTokenFiles;
+  /**
+   * P16 (D-10): the project environment, on a machine: the pinned runtimes
+   * first on PATH, the stores on the volume, Rust's and Java's homes. Every
+   * step that runs the project's code (setup, verification and its reruns,
+   * an examination's checkout, the setup reference) is given it, under the
+   * step's own scratch; this process never takes it as its own. Absent on a
+   * laptop, where a step runs in the developer's environment as it always has.
+   */
+  readonly projectEnv?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -200,6 +209,7 @@ export type LandingEnvironment = Pick<
   | "prerequisites"
   | "runAs"
   | "reclaim"
+  | "projectEnv"
 >;
 
 /** Reads the program's prerequisites. Satisfied by `persistence/http`'s planning client. */

@@ -283,6 +283,19 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     },
     get: async (projectId: ProjectId, programId: ProgramId) =>
       programContracts.get(`${projectPrefix({ projectId })}${programId}`),
+    // Read, change and write with nothing awaited between, in one transaction
+    // under SQLite: no other write can land in the middle.
+    update: async (projectId, programId, change) =>
+      atomically(() => {
+        const key = `${projectPrefix({ projectId })}${programId}`;
+        const current = programContracts.get(key);
+        if (current === undefined) return undefined;
+        const changed = change(current);
+        if (changed === undefined) return current;
+        const parsed = ProgramContractSchema.parse(changed);
+        programContracts.set(key, parsed);
+        return parsed;
+      }),
     listByProject: async (projectId: ProjectId, page?: PageRequest) =>
       paginate(programContracts.scan(projectPrefix({ projectId })), page),
   };

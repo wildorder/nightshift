@@ -27,6 +27,12 @@
  * failed install never writes one, so the old record stands and no longer
  * matches), seeds nothing, and the checkout installs for itself.
  *
+ * On a machine the record also names the pinned runtimes' versions (P16
+ * S-01), as `runtime:<name>` entries beside the lockfiles': a tree built for
+ * another Node is not this one's, so a pin change installs again. The
+ * engine's environment says which runtimes it runs in (`RUNTIMES_ENV`); a
+ * laptop's says none, and its records are the lockfiles alone.
+ *
  * A skipped step is still recorded, under its own id, with the reason: a
  * cache hit is visible in the evidence and is never mistaken for a run of the
  * command (SC-P10-08).
@@ -89,6 +95,41 @@ export const lockfileHashes = async (dir: string): Promise<Record<string, string
     }
   }
   return hashes;
+};
+
+/** The engine's pinned runtimes, `node@22.11.0 python@3.12.1`, set on a machine (P16 S-01). */
+export const RUNTIMES_ENV = "NIGHTSHIFT_RUNTIMES";
+
+/** The value of `RUNTIMES_ENV` for these runtimes, in a stable order. */
+export const formatRuntimes = (
+  runtimes: readonly { readonly runtime: string; readonly version: string }[],
+): string =>
+  [...runtimes]
+    .sort((a, b) => a.runtime.localeCompare(b.runtime))
+    .map(({ runtime, version }) => `${runtime}@${version}`)
+    .join(" ");
+
+/** `RUNTIMES_ENV`'s value as marker entries: `{ "runtime:node": "22.11.0" }`. */
+export const runtimeHashes = (value: string | undefined): Record<string, string> => {
+  const hashes: Record<string, string> = {};
+  for (const entry of (value ?? "").split(/\s+/)) {
+    const at = entry.indexOf("@");
+    if (at <= 0 || at === entry.length - 1) continue;
+    hashes[`runtime:${entry.slice(0, at)}`] = entry.slice(at + 1);
+  }
+  return hashes;
+};
+
+/**
+ * What an installed tree under `dir` is marked with: its lockfiles' hashes
+ * and, when there are lockfiles, the runtimes it is installed for.
+ */
+export const installHashes = async (
+  dir: string,
+  runtimes: Readonly<Record<string, string>>,
+): Promise<Record<string, string>> => {
+  const hashes = await lockfileHashes(dir);
+  return Object.keys(hashes).length === 0 ? hashes : { ...hashes, ...runtimes };
 };
 
 export const hasInstalledTree = (dir: string): Promise<boolean> =>
@@ -236,8 +277,10 @@ export const planInstall = async (
   cwd: string,
   setup: readonly SetupStep[],
   reference: string | undefined,
+  /** The runtimes the steps run on, as `runtimeHashes` gives them; none on a laptop. */
+  runtimes: Readonly<Record<string, string>> = runtimeHashes(process.env[RUNTIMES_ENV]),
 ): Promise<InstallPlan> => {
-  const hashes = await lockfileHashes(cwd);
+  const hashes = await installHashes(cwd, runtimes);
   if (!setup.some((step) => isInstallStep(step.command))) {
     return { skipInstalls: false, reason: "setup has no install step", hashes, seeded: 0 };
   }

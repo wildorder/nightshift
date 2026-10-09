@@ -349,6 +349,8 @@ export interface WorldOptions extends BaseWorldOptions {
    * forbids fails here, offline, rather than on a machine.
    */
   readonly engine?: boolean;
+  /** The project environment a machine's engine threads to every project step (P16, D-10). */
+  readonly projectEnv?: Readonly<Record<string, string>>;
 }
 
 /** A base world with a started, attached run — what the execution tests drive. */
@@ -456,6 +458,7 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
     workerEnvironment: workerEnvironmentIn(base),
     verificationTimeoutMs: options.verificationTimeoutMs ?? 60_000,
     cancelGraceMs: 2_000,
+    ...(options.projectEnv === undefined ? {} : { projectEnv: options.projectEnv }),
   };
 
   return {

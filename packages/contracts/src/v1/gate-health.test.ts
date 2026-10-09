@@ -48,6 +48,11 @@ describe("GateHealth", () => {
     expect(GateHealthSchema.safeParse({ ...example(), verdict: "healthy" }).success).toBe(false);
   });
 
+  it("accepts a finding against rule 8, declares its runtimes (P16 SC-08)", () => {
+    const runtimes = { ...finding, rule: 8, found: "package.json uses node and nothing pins it" };
+    expect(GateHealthSchema.safeParse({ ...example(), findings: [runtimes] }).success).toBe(true);
+  });
+
   it("refuses an unknown verdict", () => {
     expect(GateHealthSchema.safeParse({ ...example(), verdict: "broken" }).success).toBe(false);
   });
@@ -67,7 +72,7 @@ describe("GateHealth", () => {
       { ...finding, id: "F-1" },
       { ...finding, id: "f-01" },
       { ...finding, rule: 0 },
-      { ...finding, rule: 8 },
+      { ...finding, rule: 9 },
       { ...finding, rule: 1.5 },
       { ...finding, found: "" },
       { ...finding, decisionId: "" },

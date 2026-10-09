@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import {
   API_ENDPOINT_ENV,
   API_TOKEN_ENV,
+  agentLauncher,
   createWorkerLaunchForTest,
   harnessModuleSpecifier,
 } from "./compose.js";
@@ -126,5 +127,32 @@ describe("the worker's launch environment", () => {
         ...Object.values(WORKER_IDENTITY_ENV),
       ].sort(),
     );
+  });
+});
+
+describe("agentLauncher (P16 S-01)", () => {
+  const deps = (
+    files: Readonly<Record<string, string>>,
+    links: Readonly<Record<string, string>>,
+  ) => ({
+    path: "/usr/local/bin:/usr/bin:/bin",
+    exists: (path: string) => path in links || path in files,
+    realpath: (path: string) => links[path] ?? path,
+    firstLine: (path: string) => files[path]?.split("\n", 1)[0],
+  });
+
+  it("runs the image's claude through the image's Node by absolute path", () => {
+    const script = "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js";
+    expect(
+      agentLauncher(
+        "claude",
+        deps({ [script]: "#!/usr/bin/env node\n" }, { "/usr/local/bin/claude": script }),
+        "/usr/local/bin/node",
+      ),
+    ).toEqual({ file: "/usr/local/bin/node", args: [script] });
+  });
+
+  it("leaves a CLI the image does not have to be found by name", () => {
+    expect(agentLauncher("codex", deps({}, {}), "/usr/local/bin/node")).toBeUndefined();
   });
 });

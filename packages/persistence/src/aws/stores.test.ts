@@ -137,6 +137,61 @@ describe("DynamoDB adapter specifics", () => {
     });
   });
 
+  describe("a program contract changed in place (P16, D-08)", () => {
+    const keyOf = () => keys.programContract(f.scope.projectId, f.scope.programId);
+    const revisionOf = async (): Promise<unknown> =>
+      (await table.get({ TableName: tableName, Key: keyOf() })).Item?.REV;
+
+    it("writes a fresh revision with every write, and never reads it back as part of the record", async () => {
+      const contract = makeProgramContract(f);
+      await stores.programContracts.put(contract);
+      const first = await revisionOf();
+      expect(typeof first).toBe("string");
+      expect(await stores.programContracts.get(f.scope.projectId, f.scope.programId)).toEqual(
+        contract,
+      );
+      await stores.programContracts.update(f.scope.projectId, f.scope.programId, (current) => ({
+        ...current,
+        outOfScope: ["a UI"],
+      }));
+      expect(await revisionOf()).not.toBe(first);
+      expect((await stores.programContracts.listByProject(f.scope.projectId)).items).toEqual([
+        { ...contract, outOfScope: ["a UI"] },
+      ]);
+    });
+
+    it("changes an item written before revisions, which has none", async () => {
+      const contract = makeProgramContract(f);
+      await table.put({ TableName: tableName, Item: { ...contract, ...keyOf() } });
+      expect(await revisionOf()).toBeUndefined();
+      await stores.programContracts.update(f.scope.projectId, f.scope.programId, (current) => ({
+        ...current,
+        outOfScope: ["a UI"],
+      }));
+      expect(
+        (await stores.programContracts.get(f.scope.projectId, f.scope.programId))?.outOfScope,
+      ).toEqual(["a UI"]);
+    });
+
+    it("reads again when another write landed between its read and its write", async () => {
+      const contract = makeProgramContract(f);
+      await stores.programContracts.put(contract);
+      let calls = 0;
+      await stores.programContracts.update(f.scope.projectId, f.scope.programId, (current) => {
+        calls += 1;
+        if (calls === 1) {
+          // Another writer, after this one read: its change must survive.
+          void stores.programContracts.put({ ...contract, outOfScope: ["theirs"] });
+        }
+        return { ...current, outOfScope: [...(current.outOfScope ?? []), "mine"] };
+      });
+      expect(calls).toBe(2);
+      expect(
+        (await stores.programContracts.get(f.scope.projectId, f.scope.programId))?.outOfScope,
+      ).toEqual(["theirs", "mine"]);
+    });
+  });
+
   describe("a project's gate health (P15, D-P15-07)", () => {
     it("is one row under the project's partition, replaced by each put", async () => {
       await stores.gateHealth.put(makeGateHealth(f));

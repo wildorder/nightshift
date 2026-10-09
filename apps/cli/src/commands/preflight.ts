@@ -73,7 +73,9 @@ export const preflight = async (
   const result = await runPreflight({
     contract: recorded,
     cwd: repoPath,
+    // The laptop's own checks (P16, D-08): a run's machine makes its own.
     record: planning.recordCheck,
+    site: { where: "laptop" },
     recheck: options.recheck,
     clock: environment.clock,
   });

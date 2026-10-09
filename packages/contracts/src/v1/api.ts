@@ -26,6 +26,8 @@ import { ExaminationSchema } from "./examination.js";
 import { ExecutionNodeSchema } from "./execution-node.js";
 import { JobContractSchema } from "./job-contract.js";
 import {
+  CheckDispatchSchema,
+  CheckSiteSchema,
   MAX_PLAN_DOCUMENT_BYTES,
   PlanDocumentRefSchema,
   PlanHashSchema,
@@ -269,16 +271,26 @@ export type RatificationRequestBody = z.infer<typeof RatificationRequestBodySche
 /**
  * `PUT …/programs/{programId}/prerequisites/{prerequisiteId}`, one of:
  *
- * - `check`: the deterministic preflight ran the `verifyCommand` and this is
- *   its exit code. Zero satisfies the prerequisite; anything else leaves or
- *   returns it to `pending`. There is no way to say "satisfied" without one.
+ * - `check`: a deterministic run of the `verifyCommand`, and its exit code,
+ *   saying where it ran (P16, D-08). On the `laptop` (the default, as before
+ *   P16), the preflight's: zero satisfies the prerequisite; anything else leaves
+ *   or returns it to `pending`. There is no way to say "satisfied" without one.
+ *   On a `machine`, the engine's, under the `dispatch` it names: kept among the
+ *   prerequisite's `machineChecks`, and `status` is untouched.
  * - `discovered`: the engine met a hurdle nobody planned for (D-P7-10).
  */
 export const PrerequisiteWriteBodySchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("check"),
-    exitCode: z.int(),
-  }),
+  z
+    .strictObject({
+      kind: z.literal("check"),
+      exitCode: z.int(),
+      where: CheckSiteSchema.optional(),
+      dispatch: CheckDispatchSchema.optional(),
+    })
+    .refine((body) => (body.where === "machine") === (body.dispatch !== undefined), {
+      message: "a machine check names the dispatch it ran under, and only a machine check does",
+      path: ["dispatch"],
+    }),
   z.strictObject({
     kind: z.literal("discovered"),
     runId: RunIdSchema,

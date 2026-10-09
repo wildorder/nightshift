@@ -73,6 +73,7 @@ import type {
 } from "@nightshift/harness";
 import {
   agentStatusForExit,
+  type CliLauncher,
   commandAs,
   hookTypeForExit,
   promptFor,
@@ -178,6 +179,13 @@ interface RunState {
 }
 
 export interface ClaudeHarnessOptions {
+  /**
+   * What is spawned in place of `claude` by name: `file ...args <cli args>`
+   * (P16 S-01). On a machine, the image's Node and the CLI's script, so a
+   * project's pinned Node first on `PATH` cannot run the CLI. Absent, `claude`
+   * is found on `PATH` as before.
+   */
+  readonly launcher?: CliLauncher;
   /** Injected so a test can assert the command line without a real CLI. */
   readonly spawn?: SpawnLike;
   /** Injected so a test needs no temporary directory. */
@@ -211,6 +219,7 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
   const clock = options.clock ?? systemClock;
   const platform = options.platform ?? process.platform;
   const parentEnv = options.env ?? process.env;
+  const launcher = options.launcher;
   const kill =
     options.kill ??
     ((pid, signal) => {
@@ -347,7 +356,12 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
 
     let child: SpawnedChild;
     try {
-      const command = commandAs(input.runAs, CLAUDE_COMMAND, args, env);
+      const command = commandAs(
+        input.runAs,
+        launcher?.file ?? CLAUDE_COMMAND,
+        [...(launcher?.args ?? []), ...args],
+        env,
+      );
       child = spawn(command.file, command.args, {
         cwd: input.worktree,
         env: command.env,

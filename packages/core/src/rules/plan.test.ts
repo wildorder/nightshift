@@ -1,4 +1,4 @@
-import type { ProgramContract, Strand } from "@nightshift/contracts";
+import { type ProgramContract, RunIdSchema, type Strand } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { createFixtures, makeProgramContract } from "../testing/index.js";
 import { emptyConversation, keepMessages } from "./conversation.js";
@@ -347,6 +347,27 @@ describe("planHash", () => {
     });
     expect(planHash(ratified, PLAN, fake)).toEqual(planHash(contract, PLAN, fake));
     expect(samePlanContent(ratified, contract)).toBe(true);
+  });
+
+  it("does not move when a machine checks a prerequisite (P16, D-08)", () => {
+    const contract = planned();
+    const checked = planned({
+      prerequisites: (contract.prerequisites ?? []).map((prerequisite) => ({
+        ...prerequisite,
+        machineChecks: [
+          {
+            where: "machine" as const,
+            runId: RunIdSchema.parse("run_01M4FQ2A0RVJBX1N6EAAYM96MV"),
+            generation: 1,
+            exitCode: 1,
+            checkedAt: contract.createdAt,
+          },
+        ],
+      })),
+    });
+    expect(checked.prerequisites?.length).toBeGreaterThan(0);
+    expect(planHash(checked, PLAN, fake)).toEqual(planHash(contract, PLAN, fake));
+    expect(samePlanContent(checked, contract)).toBe(true);
   });
 
   it("moves when the plan or anything approved in the contract changes", () => {

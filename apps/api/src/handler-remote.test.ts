@@ -16,6 +16,7 @@ import type { GitHubAppClient } from "@nightshift/core";
 import {
   createFixedClock,
   createFixtures,
+  createSteppingClock,
   type Fixtures,
   LEASE_SECONDS,
   makeComputeUtilization,
@@ -233,6 +234,40 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     expect(again.body).toEqual(first);
     const other = await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody("good", "key-2"));
     expect(other.status).toBe(409);
+  });
+
+  it("stores the laptop's reference audit unchanged, and refuses one of another base (P16 D-06)", async () => {
+    const w = await setup();
+    await seed(w);
+    const reference = {
+      base: SHA,
+      node: "22.22.0",
+      auditedAt: "2026-10-09T12:00:00.000Z",
+      gates: [
+        { id: "setup:install", kind: "setup", verdict: "passed" },
+        {
+          id: "test",
+          kind: "check",
+          verdict: "failed",
+          outputArtifactId: "art_01M4AAAAAAAAAAAAAAAAAAAAAA",
+        },
+        { id: "e2e", kind: "check", verdict: "waiting" },
+      ],
+    };
+    const body = dispatchBody();
+    const other = await call(w, "POST", `${w.paths.run}/dispatch`, {
+      ...body,
+      input: { ...body.input, reference: { ...reference, base: "c".repeat(40) } },
+    });
+    expect(other.status).toBe(400);
+    const response = await call(w, "POST", `${w.paths.run}/dispatch`, {
+      ...body,
+      input: { ...body.input, reference },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect((response.body as Dispatch).input.reference).toEqual(reference);
+    const stored = (await call(w, "GET", `${w.paths.run}/dispatch`)).body as Dispatch;
+    expect(stored.input.reference).toEqual(reference);
   });
 
   it("refuses a local run, a run already started, an unratified plan and a changed plan", async () => {
@@ -567,6 +602,136 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
     );
     expect(code(response)).toBe("no_machine");
   });
+
+  it("stores the runner's reported progress, in the order a later beat replaces it (P16 S-03)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const first = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "toolchain", detail: "node 22.22.0" } }),
+      engine(w, dispatch),
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    let stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored?.progress).toMatchObject({
+      stage: "toolchain",
+      detail: "node 22.22.0",
+      generation: 1,
+      stageStartedAt: NOW,
+      updatedAt: NOW,
+    });
+
+    const second = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "setup", detail: "setup install" } }),
+      engine(w, dispatch),
+    );
+    expect(second.status).toBe(200);
+    stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored?.progress).toMatchObject({ stage: "setup", detail: "setup install" });
+  });
+
+  it("keeps the stored progress on a beat that reports none", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "toolchain", detail: "node 22.22.0" } }),
+      engine(w, dispatch),
+    );
+    const before = (await w.stores.dispatches.get(w.f.scope))?.progress;
+    const quiet = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1),
+      engine(w, dispatch),
+    );
+    expect(quiet.status).toBe(200);
+    expect((await w.stores.dispatches.get(w.f.scope))?.progress).toEqual(before);
+  });
+
+  it("resets stageStartedAt on a stage change, and keeps it on the same stage", async () => {
+    // A clock that moves, so a kept vs. a reset `stageStartedAt` are distinguishable.
+    const stepped = await setup();
+    const w = {
+      ...stepped,
+      deps: { ...stepped.deps, clock: createSteppingClock(Date.parse(NOW), 1000) },
+    };
+    const dispatch = await provisioned(w, await dispatched(w));
+    await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "toolchain" } }),
+      engine(w, dispatch),
+    );
+    const afterFirst = (await w.stores.dispatches.get(w.f.scope))?.progress;
+
+    await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "toolchain", detail: "still toolchain" } }),
+      engine(w, dispatch),
+    );
+    const sameStage = (await w.stores.dispatches.get(w.f.scope))?.progress;
+    expect(sameStage?.updatedAt).not.toBe(afterFirst?.updatedAt);
+    expect(sameStage?.stageStartedAt).toBe(afterFirst?.stageStartedAt);
+
+    await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { progress: { stage: "setup" } }),
+      engine(w, dispatch),
+    );
+    const changedStage = (await w.stores.dispatches.get(w.f.scope))?.progress;
+    expect(changedStage?.stage).toBe("setup");
+    expect(changedStage?.stageStartedAt).not.toBe(afterFirst?.stageStartedAt);
+  });
+
+  it("stores progress reported alongside stopped", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await w.stores.dispatches.put({ ...dispatch, status: "running" });
+    const response = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped", progress: { stage: "audit", verdict: "agrees" } }),
+      engine(w, dispatch),
+    );
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored?.status).toBe("stopped");
+    expect(stored?.progress).toMatchObject({ stage: "audit", verdict: "agrees" });
+  });
+
+  it("refuses a progress with gates at a non-audit stage", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const response = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, {
+        progress: {
+          stage: "setup",
+          gates: [{ id: "test", kind: "check", machine: "passed" }],
+        },
+      }),
+      engine(w, dispatch),
+    );
+    expect(response.status).toBe(400);
+    expect((await w.stores.dispatches.get(w.f.scope))?.progress).toBeUndefined();
+  });
 });
 
 describe("cancel and resume", () => {
@@ -601,6 +766,69 @@ describe("cancel and resume", () => {
       engine(w, dispatch),
     );
     expect(ended.body).toMatchObject({ status: "stopped", stop: true });
+  });
+
+  it("ends a provisioning dispatch failed when the runner could not prepare the workspace (P16 SC-07)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const failure = { code: "setup_failed", message: "`npm ci` exited with code 1" };
+    const ended = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped", failure }),
+      engine(w, dispatch),
+    );
+    expect(ended.status, JSON.stringify(ended.body)).toBe(200);
+    expect(ended.body).toMatchObject({ status: "failed", stop: true });
+    expect((ended.body as { token?: string }).token).toBeUndefined();
+    const stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored).toMatchObject({ status: "failed", failure, instanceId: "i-1" });
+    // The lease is not extended: the reconciler cleans a settled dispatch up.
+    expect(stored?.leaseExpiresAt).toBe(dispatch.leaseExpiresAt);
+  });
+
+  it("ends a running dispatch failed with an environment fault (P16 D-07)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await w.stores.dispatches.put({ ...dispatch, status: "running" });
+    const failure = { code: "environment_fault", message: "test is green in the audit, red here" };
+    const ended = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped", failure }),
+      engine(w, dispatch),
+    );
+    expect(ended.body).toMatchObject({ status: "failed", stop: true });
+    expect(await w.stores.dispatches.get(w.f.scope)).toMatchObject({ status: "failed", failure });
+  });
+
+  it("leaves a provisioning dispatch as it is on a stopped with no failure", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const ended = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped" }),
+      engine(w, dispatch),
+    );
+    expect(ended.body).toMatchObject({ status: "provisioning", stop: false });
+  });
+
+  it("refuses a failure code only the plane may write", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const refused = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped", failure: { code: "cancelled", message: "no" } }),
+      engine(w, dispatch),
+    );
+    expect(refused.status).toBe(400);
+    expect((await w.stores.dispatches.get(w.f.scope))?.status).toBe("provisioning");
   });
 
   it("resumes a settled dispatch from its snapshot, within retention, and refuses otherwise", async () => {

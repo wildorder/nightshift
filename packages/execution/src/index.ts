@@ -58,6 +58,15 @@ export {
   type WorkerLaunchIdentity,
 } from "./environment.js";
 export {
+  boundEnvironmentFault,
+  environmentFaultReason,
+  type FaultOutputs,
+  MIN_ENVIRONMENT_FAULT_TAIL_CHARS,
+  type RecordEnvironmentFaultInput,
+  recordEnvironmentFault,
+  splitEnvironmentFault,
+} from "./environment-fault.js";
+export {
   arbitrateAll,
   carriedExamination,
   continuedByNightshift,
@@ -79,11 +88,20 @@ export {
 export {
   type AuditedGate,
   auditGates,
+  deferralOf,
   type GateAudit,
   type GateAuditInput,
   type GateVerdict,
+  gateVerdictOf,
   outputTail,
 } from "./gate-audit.js";
+export {
+  type ComparedGate,
+  compareWithReference,
+  type GateAgreement,
+  type GateComparison,
+  gateAgreement,
+} from "./gate-comparison.js";
 export {
   fingerprintAtCommit,
   gitBlobReader,
@@ -110,6 +128,7 @@ export {
   type EventOutbox,
   type OutboxOptions,
 } from "./outbox.js";
+export { lastChars, readableOutput, readableTail } from "./output-tail.js";
 export {
   PREFLIGHT_TIMEOUT_MS,
   type PreflightCheck,
@@ -123,7 +142,19 @@ export {
   repairProvisionalLine,
 } from "./provisional-line.js";
 export * from "./publish.js";
-export { gateRedPayload, type RecordRedBaseInput, recordRedBase } from "./red-base.js";
+export {
+  gateRedPayload,
+  type RecordGateOutputsInput,
+  type RecordRedBaseInput,
+  recordGateOutputs,
+  recordRedBase,
+} from "./red-base.js";
+export {
+  MAX_REFERENCE_TAILS_CHARS,
+  type ReferenceAuditInput,
+  referenceAuditOf,
+  referenceGatesOf,
+} from "./reference-audit.js";
 export {
   deferredLine,
   type ResumeResult,
@@ -150,6 +181,7 @@ export {
   discardScratch,
   ensureScratch,
   freshScratch,
+  projectStepEnv,
   type RunScratchAs,
   type ScratchPaths,
   scratchEnv,

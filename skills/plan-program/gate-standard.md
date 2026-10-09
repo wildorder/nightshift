@@ -120,3 +120,23 @@ tool's own caching or parallelism. Or lower `maxConcurrency`. Never drop a
 check from verification, defer it, or run it for some strands only to save
 time: every landing is verified against every gate, and that is what keeps
 unverified work from integrating.
+
+## 8. Declares its runtimes
+
+**Means.** The repository pins every language runtime it uses, in one file
+per runtime (`.nvmrc`, `.node-version`, `.tool-versions` or `package.json`'s
+`volta`/`engines` for Node; `.python-version`; `.ruby-version`;
+`.go-version`; `.java-version`; `rust-toolchain.toml`; and so on), and the
+gates are audited on those versions.
+
+**Check.** `nightshift gates {id}` prints this rule's findings mechanically
+(via `resolvePins`): a runtime the repository plainly uses with no pin
+(`package.json` and nothing pinning Node, `pyproject.toml` and nothing
+pinning Python, `go.mod` and no `.go-version`, and so on); pins that disagree
+(naming both files and the versions); and a runtime on the auditing machine
+that does not satisfy its pin, or is not installed.
+
+**Typical fix.** Add the pin file; reconcile pins that disagree; install the
+pinned version on the machine that is missing it or running another. A
+remote run's machine installs the pinned versions itself, and refuses at
+dispatch a laptop whose runtime violates its own pin.

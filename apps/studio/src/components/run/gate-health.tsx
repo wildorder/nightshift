@@ -1,9 +1,11 @@
 /**
  * Gate health on the run's Status tab (P15, D-P15-09, SC-P15-09): the same
  * `RunReport.gateHealth` that `nightshift report` renders. The project's audit,
- * whether the run started red, each repair with the decision it was made under
+ * whether the run started red, an environment fault side by side (P16 D-07),
+ * each repair with the decision it was made under
  * and the gate definitions it landed, and each check that flaked.
  */
+import type { EnvironmentFaultPayload } from "@nightshift/contracts";
 import type { GateHealthReport, RepairReport, RunScope } from "@nightshift/core";
 import { Link } from "react-router";
 import { shortId, shortSha, when } from "../../lib/format.js";
@@ -14,8 +16,73 @@ const CAUSE_WORD: Readonly<Record<RepairReport["cause"], string>> = {
   flaky: "flaky",
 };
 
-const isEmpty = ({ audit, red, repairs, flakes }: GateHealthReport): boolean =>
-  audit === undefined && red === undefined && repairs.length === 0 && flakes.length === 0;
+const isEmpty = ({ audit, red, environmentFault, repairs, flakes }: GateHealthReport): boolean =>
+  audit === undefined &&
+  red === undefined &&
+  environmentFault === undefined &&
+  repairs.length === 0 &&
+  flakes.length === 0;
+
+const nodeOf = (version: string | undefined): string =>
+  version === undefined ? "no Node" : `Node ${version}`;
+
+/** One side of a faulted gate: its verdict, and the last of its output. */
+const Side = ({
+  verdict,
+  tail,
+  side,
+}: {
+  readonly verdict: string;
+  readonly tail: string | undefined;
+  readonly side: "reference" | "machine";
+}) => (
+  <td className="p-2 align-top" data-side={side}>
+    <StatusBadge status={verdict} />
+    {tail === undefined ? (
+      <p className="mt-1 text-xs text-muted-foreground">No output was kept.</p>
+    ) : (
+      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 font-mono text-xs">
+        {tail}
+      </pre>
+    )}
+  </td>
+);
+
+/**
+ * Green on the laptop, red on the machine (P16 D-07): each gate with the
+ * reference's verdict and output beside the machine's, under both Nodes.
+ */
+const EnvironmentFault = ({ fault }: { readonly fault: EnvironmentFaultPayload }) => (
+  <div data-environment-fault="">
+    <h3 className="mb-1 font-medium text-status-danger-foreground">Environment fault</h3>
+    <p className="mb-2">
+      {fault.gates.length === 1 ? "A gate" : `${fault.gates.length} gates`} passed in the reference
+      audit of <code>{shortSha(fault.baseCommit)}</code> and failed on the run's machine. The
+      machine is at fault, not the project: nothing was repaired, and the run was cancelled.
+    </p>
+    <table className="w-full table-fixed border-collapse text-left">
+      <thead>
+        <tr className="border-b border-border text-xs text-muted-foreground">
+          <th className="w-1/5 p-2 font-medium">Gate</th>
+          <th className="p-2 font-medium">Reference ({nodeOf(fault.referenceNode)})</th>
+          <th className="p-2 font-medium">Machine ({nodeOf(fault.machineNode)})</th>
+        </tr>
+      </thead>
+      <tbody>
+        {fault.gates.map((gate) => (
+          <tr key={gate.id} className="border-b border-border" data-gate={gate.id}>
+            <td className="p-2 align-top">
+              <span className="font-medium">{gate.id}</span>
+              <code className="block break-all text-xs text-muted-foreground">{gate.command}</code>
+            </td>
+            <Side verdict={gate.reference} tail={gate.referenceTail} side="reference" />
+            <Side verdict={gate.machine} tail={gate.machineTail} side="machine" />
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+);
 
 const Steps = ({
   title,
@@ -88,7 +155,7 @@ export const GateHealthView = ({
       </p>
     );
   }
-  const { audit, red, repairs, flakes } = gateHealth;
+  const { audit, red, environmentFault, repairs, flakes } = gateHealth;
   return (
     <div className="grid gap-3 text-sm">
       {audit === undefined ? (
@@ -118,6 +185,7 @@ export const GateHealthView = ({
           <code>{shortSha(red.baseCommit)}</code>, so the run repaired it before the strands.
         </p>
       )}
+      {environmentFault === undefined ? null : <EnvironmentFault fault={environmentFault} />}
       {repairs.length === 0 ? null : (
         <div>
           <h3 className="mb-1 font-medium">Repairs</h3>

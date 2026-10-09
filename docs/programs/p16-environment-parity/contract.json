@@ -1,0 +1,405 @@
+{
+  "schemaVersion": 1,
+  "programId": "prog_01M4FK6FCPPDRQXMDKANPYXDTK",
+  "status": "planning",
+  "objective": "Make a remote run's machine the environment the plan's gate audit certified, and make the developer's walk-away moment the moment the machine has proved it: the machine runs the language runtime versions the project pins (Node, Python, Ruby, Go, Java, Rust and the rest) and gives agents and gates a working Docker, re-checks the human prerequisites itself, reports a gate that is green in the recorded audit and red on the machine as an environment fault instead of repairing the project, and `nightshift run --remote` waits with the developer until the machine's audit agrees, then says go. The authority is docs/programs/p16-environment-parity.md.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p16-environment-parity"
+  },
+  "createdAt": "2026-10-09T06:00:00Z",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "A developer who plans a program on their laptop and dispatches it with `nightshift run --remote`",
+      "problem": "The machine is not the environment the planning audit certified. It runs whatever runtimes the image ships (Node 24) whatever the project pins, and its worker users have no Docker, so gates that were green on the laptop fail or defer on the machine. keki-backend's lightning-ux started red on 2026-10-08 and no strand ran.",
+      "outcome": "The machine runs the runtime versions the project pins, for any language, and gives agents and gates a working Docker, so a gate that is green where the plan was audited is green where the run runs.",
+      "words": [
+        "It did the gate audit that we just literally shipped. then it fails on the gates not setup right? what the hell?",
+        "i mean it simply cannot happen, it is a product destoyer.",
+        "wouldn't that be best practice for devs to pin the same version they actually have installed so tests are accurate?"
+      ]
+    },
+    {
+      "id": "US-02",
+      "who": "The same developer, when the machine still differs from where the plan was audited",
+      "problem": "The run blames the project. A prerequisite checked on the laptop is trusted on a machine where it is not true, a deferral counts as a failure, the run calls the base red and opens a repair job that would change the product's code to suit Nightshift's machine, and the report never says the machine was the cause.",
+      "outcome": "The machine checks every prerequisite itself. A gate that is green in the recorded audit and red on the machine is reported as an environment fault with both outputs side by side, the run stops there, and the project's code is never changed to work around the machine."
+    },
+    {
+      "id": "US-03",
+      "who": "The same developer, at the moment they dispatch",
+      "problem": "`run --remote` returns as soon as the machine is requested, which is when the developer leaves, before anything has shown the machine can run the program. A doomed run is found the next morning.",
+      "outcome": "`run --remote` stays with them through boot, setup, the machine's prerequisite checks and its gate audit, showing WAIT, and says OK GO only when the machine agrees with the planning audit. If it does not, they see why within minutes, still at the keyboard.",
+      "words": [
+        "i don't think it's unreasonable to ask the user to WAIT until nightshift says OK YOU CAN GO NOW. it could even be funny in some terminal art showing wait vs ok go."
+      ]
+    }
+  ],
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "On a remote machine, every setup step, verification step, prerequisite check, gate-audit step and agent shell runs the version of each language runtime the project pins (Node, Python, Ruby, Go, Java, Rust and any other the version manager supports, from their standard pin files), as named on the dispatch, while Nightshift's own runner, servers and agent CLIs stay on the image's Node; a runtime the project does not pin is the image's, as today",
+      "serves": ["US-01"]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "On a remote machine, `docker info` succeeds for every worker user and a gate can start a Postgres container and connect to it from the host, and a project that never touches Docker starts no Docker daemon; the runner's boot proof (`npm run runner:boot`) checks all of this as a worker user, instead of by hand",
+      "serves": ["US-01"]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "Before its gate audit, the machine runs every prerequisite's verifyCommand on itself, as a worker user in the project's environment, and records each result as the machine's; the laptop's check never stands in for it",
+      "serves": ["US-02"]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "A gate audit, on the laptop or the machine, treats a step that exits 75 with a NIGHTSHIFT_DEFER line as deferred, never failed, exactly as job verification does",
+      "serves": ["US-02"]
+    },
+    {
+      "id": "SC-05",
+      "outcome": "A gate that passed in the run's reference audit and fails on the machine is an environment fault: the run stops at the audit before any strand starts, no gate.red is recorded and no repair job is opened, and the report and `remote status` show both outputs side by side; a gate red in both is a red base and is repaired as today",
+      "serves": ["US-02"]
+    },
+    {
+      "id": "SC-06",
+      "outcome": "`nightshift run --remote` stays attached through the reference audit, boot, setup, the machine's prerequisite checks and its gate audit, shows WAIT and what the machine is doing while they run, and shows OK GO only when the machine's audit agrees with the reference; on an environment fault it shows the side by side and exits non-zero; Ctrl-C detaches and `nightshift remote status --watch` reattaches",
+      "serves": ["US-03"]
+    },
+    {
+      "id": "SC-07",
+      "outcome": "A setup or workspace failure on the machine ends the dispatch as failed with its cause, instead of leaving it provisioning until the reconciler gives up",
+      "serves": ["US-02", "US-03"]
+    },
+    {
+      "id": "SC-08",
+      "outcome": "The planning gate audit reports, under a new eighth rule of the gate standard (declares its runtimes), a language runtime the repository uses but does not pin, pin files that disagree, and a runtime on the auditing machine that does not satisfy its pin; each is a finding the human answers like any other",
+      "serves": ["US-01"]
+    }
+  ],
+  "constraints": [
+    "docs/programs/p16-environment-parity.md is the authority: its decisions and design hold, and a departure is recorded.",
+    "A machine never changes a project's code, configuration or pins to suit itself; the machine adapts to the project.",
+    "The gate audit stays deterministic; only repair jobs use a model.",
+    "Every existing suite stays green, on Linux and Windows; no suite is carved out."
+  ],
+  "outOfScope": [
+    "Deploying the API, the runner stack or the Studio, and building runner images: the owner does these after the program lands, then runs the boot proof and keki-backend's lightning-ux remotely as the exit trial",
+    "Reproducing OS packages and system libraries: the environment-fault guard names a gate that differs because of them",
+    "Rootful Docker, or one Docker daemon shared between worker users",
+    "The tier probe that scans a repository (D-P10-14): only its rule table exists, and nothing here needs it",
+    "Studio screens for the machine's boot progress beyond narrating the new events"
+  ],
+  "scope": {
+    "includes": [
+      "apps/**",
+      "packages/**",
+      "infra/**",
+      "skills/**",
+      "test/**",
+      "docs/**",
+      "scripts/**",
+      ".nvmrc",
+      ".node-version",
+      "package.json",
+      "vitest.config.ts",
+      "tsconfig.base.json",
+      "AGENTS.md",
+      "README.md"
+    ],
+    "excludes": [
+      ".github/**",
+      "docs/programs/p16-environment-parity/contract.json",
+      "docs/programs/p16-environment-parity/plan.md",
+      "docs/programs/p16-environment-parity/conversation.md"
+    ],
+    "permissions": ["fs.read", "fs.write", "shell.exec"],
+    "forbiddenActions": [
+      "deploy any stack or stage (cdk deploy, npm run deploy, npm run image:build)",
+      "write to the dev or any hosted control plane outside the run's own records",
+      "push to main",
+      "read legacy history or the nightshift-archive repository (AGENTS.md greenfield boundary)"
+    ]
+  },
+  "strands": [
+    {
+      "id": "S-00",
+      "name": "Gate health",
+      "scope": {
+        "summary": "Nightshift's own Node pin and how its tests resolve the workspace packages (D-01, D-02)",
+        "includes": [
+          ".nvmrc",
+          ".node-version",
+          "package.json",
+          "vitest.config.ts",
+          "apps/*/vitest.config.ts",
+          "test/vitest.config.ts",
+          "packages/*/package.json",
+          "apps/*/package.json",
+          "infra/cdk/package.json",
+          "tsconfig.base.json"
+        ],
+        "excludes": ["apps/**/src/**", "packages/**/src/**"]
+      },
+      "acceptance": [
+        "The repository pins one Node version, and it agrees with package.json engines (D-01)",
+        "Tests resolve the workspace packages from their sources, so a test sees a change without a build first (D-02)",
+        "`nightshift gates p16-environment-parity` is green"
+      ],
+      "successCriteria": [],
+      "dependsOn": [],
+      "prerequisites": []
+    },
+    {
+      "id": "S-01",
+      "name": "The machine runs the project's environment",
+      "scope": {
+        "summary": "Resolving the project's runtime pins, a polyglot version manager on the image that installs them, putting them in front of every project process on the machine, rootless Docker per worker user, and the boot proof that checks it all",
+        "includes": [
+          "packages/core/src/rules/**",
+          "packages/core/src/index.ts",
+          "packages/contracts/src/v1/**",
+          "packages/contracts/src/index.ts",
+          "packages/verification/src/**",
+          "packages/execution/src/setup.ts",
+          "packages/execution/src/verify.ts",
+          "packages/execution/src/runner.ts",
+          "packages/execution/src/gate-audit.ts",
+          "packages/execution/src/preflight.ts",
+          "packages/execution/src/environment.ts",
+          "packages/execution/src/index.ts",
+          "packages/harness/src/**",
+          "packages/harness-claude/src/**",
+          "packages/harness-codex/src/**",
+          "apps/mcp/src/**",
+          "apps/cli/src/commands/run-program.ts",
+          "apps/cli/src/commands/remote.ts",
+          "apps/cli/src/commands/gates.ts",
+          "apps/api/src/operations/dispatch.ts",
+          "apps/api/src/smoke/**",
+          "infra/cdk/src/lib/runner-image.ts",
+          "infra/cdk/src/lib/runner-image.test.ts",
+          "infra/cdk/src/lib/runner-stack.ts",
+          "infra/cdk/src/lib/runner-stack.test.ts",
+          "scripts/runner-boot.mjs",
+          "test/src/**",
+          "docs/programs/p16-environment-parity.md",
+          "AGENTS.md"
+        ],
+        "excludes": ["apps/studio/**"]
+      },
+      "acceptance": [
+        "A pure rule reads a checkout's standard pin files for every runtime (.tool-versions, .nvmrc, .node-version, .python-version, .ruby-version, .go-version, .java-version, rust-toolchain.toml, package.json volta and engines as a last resort for Node) and refuses pin files that disagree for one runtime, naming both; tested table-driven (D-03)",
+        "The reference audit records the version of each pinned runtime it ran with; dispatch refuses one that violates its pin, naming both versions, and the dispatch carries the exact versions the machine must run (D-03)",
+        "The image carries one polyglot version manager (mise) for the engine's use; at boot the machine installs the dispatch's runtimes through it into the warm volume, verified as the manager verifies them, and every setup step, verification step, gate-audit step, prerequisite check and agent shell finds them first on PATH; Nightshift's runner, MCP servers, claude and codex keep the image's Node (D-04)",
+        "The image gives every worker user rootless Docker that starts on the first connection to its socket, and DOCKER_HOST reaches gates and agents through the run-as wrapper (D-05)",
+        "The runner boot proof checks, as a worker user, the runtime versions a fixture with Node and Python pins asks for, `docker info`, a Postgres container a host-side client connects to, and that an idle worker has no Docker daemon running",
+        "Every existing suite stays green"
+      ],
+      "successCriteria": ["SC-01", "SC-02"],
+      "dependsOn": ["S-00"],
+      "prerequisites": []
+    },
+    {
+      "id": "S-02",
+      "name": "The audit tells the machine from the code",
+      "scope": {
+        "summary": "Deferral-aware audits, prerequisite checks made where the run runs, the reference audit, the environment-fault outcome and how it ends the run and the dispatch",
+        "includes": [
+          "packages/core/src/**",
+          "packages/contracts/src/**",
+          "packages/verification/src/**",
+          "packages/execution/src/**",
+          "packages/persistence/src/**",
+          "apps/api/src/**",
+          "apps/mcp/src/**",
+          "apps/cli/src/**",
+          "apps/studio/src/lib/narrate.ts",
+          "apps/studio/src/lib/narrate.test.ts",
+          "apps/studio/src/components/run/gate-health.tsx",
+          "apps/studio/src/components/run/gate-health.test.tsx",
+          "skills/**",
+          "test/src/**",
+          "docs/programs/p16-environment-parity.md",
+          "AGENTS.md"
+        ],
+        "excludes": ["infra/**"]
+      },
+      "acceptance": [
+        "The project environment reaches every project process on the machine explicitly: ExecutionEnvironment carries it, and setup, verification, flaky reruns, examination checkouts, gate repairs, the gate audit and prerequisite checks each pass it to the step runner; the runner and the engine's MCP server no longer adopt it into their own process environment, and Nightshift's own processes run in the image's environment (D-10)",
+        "The gate standard gains rule 8, declares its runtimes, and the mechanical audit reports a used runtime with no pin, pins that disagree, and an auditing machine whose runtime does not satisfy its pin, each naming the files and versions; the planning skill turns each into a decision",
+        "auditGates treats exit 75 with a NIGHTSHIFT_DEFER line as deferred, on the laptop and the machine, sharing job verification's deferSignalOf",
+        "A prerequisite check records where it ran, and a run trusts only checks made where it runs; the machine runs every verifyCommand as a worker user in the project's environment before its audit (D-08)",
+        "`run --remote` runs the reference audit on the laptop at the exact base, with prerequisites checked there, and records its per-gate verdicts with the dispatch (D-06)",
+        "The machine compares its audit with the reference gate by gate: agreement on red is a red base and is repaired as today; passed in the reference and red on the machine is an environment fault that records its own event with both outputs, opens no repair, and ends the run and the dispatch with that cause (D-07)",
+        "A workspace or setup failure on the machine ends the dispatch as failed with its cause",
+        "The report and `remote status` show an environment fault side by side; the Studio narrates the new events",
+        "Every existing suite stays green"
+      ],
+      "successCriteria": ["SC-03", "SC-04", "SC-05", "SC-07", "SC-08"],
+      "dependsOn": ["S-00", "S-01"],
+      "prerequisites": []
+    },
+    {
+      "id": "S-03",
+      "name": "Wait, then go",
+      "scope": {
+        "summary": "The machine's progress reported through the heartbeat, and `run --remote` staying attached with WAIT and OK GO",
+        "includes": [
+          "apps/cli/src/**",
+          "packages/contracts/src/v1/dispatch.ts",
+          "packages/contracts/src/v1/dispatch.test.ts",
+          "packages/core/src/rules/dispatch.ts",
+          "packages/core/src/rules/dispatch.test.ts",
+          "apps/api/src/operations/dispatch.ts",
+          "apps/api/src/handler-remote.test.ts",
+          "apps/mcp/src/runner/**",
+          "apps/mcp/src/bin/nightshift-runner.ts",
+          "test/src/cli/**",
+          "docs/programs/p16-environment-parity.md",
+          "README.md"
+        ],
+        "excludes": ["infra/**", "apps/studio/**"]
+      },
+      "acceptance": [
+        "The runner reports its progress (machine up, workspace, Node and Docker ready, prerequisites, audit with its verdict) through the heartbeat, and the dispatch record holds the latest",
+        "`run --remote` stays attached and renders WAIT with the current stage, then OK GO only when the machine's audit agrees with the reference; plain lines when stdout is not a terminal",
+        "On an environment fault or a failed dispatch it renders the cause and the side by side, and exits non-zero",
+        "Ctrl-C detaches without cancelling and says how to reattach; `nightshift remote status --watch` reattaches to the same display (D-09)",
+        "Every existing suite stays green"
+      ],
+      "successCriteria": ["SC-06"],
+      "dependsOn": ["S-00", "S-02"],
+      "prerequisites": []
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "Nightshift pins Node twice and the pins disagree (.nvmrc 22; .node-version and engines 24). Which pin stays?",
+      "options": [
+        "One pin: .node-version at 24, .nvmrc removed",
+        "One pin: .nvmrc at 24, .node-version removed, and CI pointed at it",
+        "Both, at 24"
+      ],
+      "leaning": "One pin: .node-version at 24, .nvmrc removed",
+      "answer": "One pin: .node-version at 24, .nvmrc removed",
+      "rationale": "Low risk, taken at the leaning under the owner's standing review style unless the owner objects. Revised during planning: CI's setup-node reads .node-version, and the program may not touch .github/**, so .node-version is the pin that stays; CI, the image and engines already say 24.",
+      "touches": ["S-00"]
+    },
+    {
+      "id": "D-02",
+      "question": "The test gate reads the build gate's output, because the workspace packages resolve to their compiled dist. Fix it or leave it?",
+      "options": [
+        "Resolve the workspace packages from source in tests, through a source export condition",
+        "Leave it: verification runs build before test"
+      ],
+      "leaning": "Resolve the workspace packages from source in tests, through a source export condition",
+      "answer": "Resolve the workspace packages from source in tests, through a source export condition",
+      "rationale": "Low risk, taken at the leaning under the owner's standing review style unless the owner objects: an agent that edits a package and runs only the tests gets stale results, as happened building D-P10-29; the build gate still compiles everything.",
+      "touches": ["S-00"]
+    },
+    {
+      "id": "D-03",
+      "question": "Which version of each pinned runtime does the machine run?",
+      "options": [
+        "The project's pin files alone",
+        "Exactly the versions the laptop's reference audit ran on",
+        "The pins decide; the reference audit's exact versions are used when they satisfy the pins, and a reference audit on a runtime that violates its pin is refused at dispatch with both versions named"
+      ],
+      "leaning": "The pins decide; the reference audit's exact versions are used when they satisfy the pins, and a reference audit on a runtime that violates its pin is refused at dispatch with both versions named",
+      "touches": ["S-01", "S-02"],
+      "answer": "The pins decide; the reference audit's exact versions are used when they satisfy the pins, and a reference audit on a runtime that violates its pin is refused at dispatch with both versions named",
+      "rationale": "The owner chose it, adding: \"this is going to be a major issue moving forward. nightshift should work on any environment, and we are super narrow on what we support.\" That widened the program from Node to every language runtime (D-04). The owner's own laptop runs Node 22.22.0 on this repository's pin of 24: the refusal names such a mismatch before a machine is paid for."
+    },
+    {
+      "id": "D-04",
+      "question": "How does the machine get the project's runtimes, and which runtimes?",
+      "options": [
+        "Every language runtime, through one polyglot version manager (mise) on the image honouring the standard pin files, installed into the warm volume",
+        "Node only, from a verified download of the official build cached on the warm volume",
+        "The project's dev container: gates and agents run inside it"
+      ],
+      "leaning": "Every language runtime, through one polyglot version manager (mise) on the image honouring the standard pin files, installed into the warm volume",
+      "answer": "Every language runtime, through one polyglot version manager (mise) on the image honouring the standard pin files, installed into the warm volume",
+      "rationale": "The owner's answer, replacing the earlier Node-only leaning after noting that Nightshift should work on any environment: one manager covers Node, Python, Ruby, Go, Java and the rest from the files projects already commit; rustup on the image already honours rust-toolchain.toml. The dev container was weighed as the widest reach and left for later: every job in a container under rootless Docker is a program of its own.",
+      "touches": ["S-01"]
+    },
+    {
+      "id": "D-05",
+      "question": "When does a worker user's Docker run?",
+      "options": [
+        "Started by the first connection to its socket, so a project that never uses Docker pays nothing",
+        "Every worker's daemon started at boot",
+        "Started only for projects that declare a Docker prerequisite"
+      ],
+      "leaning": "Started by the first connection to its socket, so a project that never uses Docker pays nothing",
+      "touches": ["S-01"],
+      "answer": "Started by the first connection to its socket, so a project that never uses Docker pays nothing",
+      "rationale": "The owner's choice, after asking whether a project with no Docker in its tests would get Docker anyway: a project that never touches Docker pays nothing; the socket-proxy pattern is the fallback inside this answer if rootless Docker's own activation does not work on the image."
+    },
+    {
+      "id": "D-06",
+      "question": "What is the machine's audit compared against, to tell an environment fault from a red base?",
+      "options": [
+        "A reference audit on the laptop at dispatch, at the exact base, with prerequisites checked there, recorded with the dispatch",
+        "Per-gate results kept in the planning gate-health record",
+        "No comparison: a gate red on the machine is a red base unless the machine's own prerequisite checks explain it"
+      ],
+      "leaning": "A reference audit on the laptop at dispatch, at the exact base, with prerequisites checked there, recorded with the dispatch",
+      "touches": ["S-02", "S-03"],
+      "answer": "A reference audit on the laptop at dispatch, at the exact base, with prerequisites checked there, recorded with the dispatch",
+      "rationale": "The owner's choice: the laptop's audit at the exact base is the only reference with the prerequisites checked and the gates that matter actually run; it also catches a red base before a machine is paid for. The owner accepts the longer wait."
+    },
+    {
+      "id": "D-07",
+      "question": "What does a run do on an environment fault?",
+      "options": [
+        "Stop at the audit before any strand starts, end the dispatch, report both outputs side by side",
+        "Carry on, treating the disagreeing gates as deferred until the owner is back"
+      ],
+      "leaning": "Stop at the audit before any strand starts, end the dispatch, report both outputs side by side",
+      "touches": ["S-02", "S-03"],
+      "answer": "Stop at the audit before any strand starts, end the dispatch, report both outputs side by side",
+      "rationale": "The owner's choice: a few minutes of machine time and the cause shown at the keyboard, rather than a night of work verified against gates that cannot be trusted on that machine."
+    },
+    {
+      "id": "D-08",
+      "question": "Where does a prerequisite check count?",
+      "options": [
+        "Each check records where it ran, and a run trusts only checks made where it runs",
+        "The latest check anywhere sets the program's status, as today"
+      ],
+      "leaning": "Each check records where it ran, and a run trusts only checks made where it runs",
+      "touches": ["S-02"],
+      "answer": "Each check records where it ran, and a run trusts only checks made where it runs",
+      "rationale": "The owner's choice: keki's HP-01 was checked on the laptop and trusted on a machine that lacked Docker; a check means something only where it ran, and neither location overwrites the other."
+    },
+    {
+      "id": "D-09",
+      "question": "What does Ctrl-C do while `run --remote` shows WAIT?",
+      "options": [
+        "Detach: the machine carries on, and `nightshift remote status --watch` reattaches",
+        "Cancel the dispatch"
+      ],
+      "leaning": "Detach: the machine carries on, and `nightshift remote status --watch` reattaches",
+      "answer": "Detach: the machine carries on, and `nightshift remote status --watch` reattaches",
+      "rationale": "Low risk, taken at the leaning under the owner's standing review style unless the owner objects: closing a terminal must never kill a run; `remote cancel` stays the one way to stop it.",
+      "touches": ["S-03"]
+    },
+    {
+      "id": "D-10",
+      "question": "How does the project environment reach every step on the machine?",
+      "options": [
+        "Threaded explicitly: ExecutionEnvironment carries it and every step runner is passed it; Nightshift's own processes never adopt it",
+        "Adopted into the engine process's environment at boot, so every step inherits it"
+      ],
+      "leaning": "Threaded explicitly: ExecutionEnvironment carries it and every step runner is passed it; Nightshift's own processes never adopt it",
+      "answer": "Threaded explicitly: ExecutionEnvironment carries it and every step runner is passed it; Nightshift's own processes never adopt it",
+      "rationale": "The first run built the second option because three callers were outside S-01's path scope; that was a workaround, and the owner ruled path scopes out of Nightshift entirely on 2026-10-09 (\"give them the scope to do the job\"). With no scope in the way, the root fix is to pass the environment to the processes that are the project's, and keep Nightshift's own processes in the image's environment.",
+      "touches": ["S-02"]
+    }
+  ]
+}

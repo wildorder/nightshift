@@ -22,6 +22,30 @@
 const UNIVERSAL_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 /**
+ * The variables of the project environment (P16 S-01): Docker, the caches on
+ * the volume, and the pinned runtimes. On a machine the engine never carries
+ * them (D-10): its caller hands the project environment to a step whole,
+ * through `env`, which is applied over this base and so is never filtered by
+ * it. They are passed through from the parent so a developer's own, on a
+ * laptop, reach a step as they did. None is a secret: each names a socket, a
+ * directory or a version.
+ */
+export const PROJECT_ENV_ALLOWLIST: readonly string[] = [
+  "DOCKER_HOST",
+  "npm_config_cache",
+  "PNPM_HOME",
+  "npm_config_store_dir",
+  "CARGO_HOME",
+  "RUSTUP_HOME",
+  // The exact Rust the dispatch pinned, over a `rust-toolchain.toml` channel.
+  "RUSTUP_TOOLCHAIN",
+  "PIP_CACHE_DIR",
+  "UV_CACHE_DIR",
+  "PLAYWRIGHT_BROWSERS_PATH",
+  "JAVA_HOME",
+];
+
+/**
  * POSIX essentials. Locale and timezone are here because leaving them unset
  * changes a tool's output (sort order, date formatting) rather than sandboxing
  * anything, and `TMPDIR` because a build tool that cannot find a temp directory
@@ -40,6 +64,7 @@ export const POSIX_ENV_ALLOWLIST: readonly string[] = [
   "SHELL",
   "USER",
   "LOGNAME",
+  ...PROJECT_ENV_ALLOWLIST,
 ];
 
 /**

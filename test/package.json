@@ -22,22 +22,27 @@
   },
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./conformance": {
+      "source": "./src/conformance/persistence-ports.ts",
       "types": "./dist/conformance/persistence-ports.d.ts",
       "default": "./dist/conformance/persistence-ports.js"
     },
     "./conformance/harness": {
+      "source": "./src/conformance/harness.ts",
       "types": "./dist/conformance/harness.d.ts",
       "default": "./dist/conformance/harness.js"
     },
     "./slice": {
+      "source": "./src/slice/index.ts",
       "types": "./dist/slice/index.d.ts",
       "default": "./dist/slice/index.js"
     },
     "./harness": {
+      "source": "./src/harness/scripted.ts",
       "types": "./dist/harness/scripted.d.ts",
       "default": "./dist/harness/scripted.js"
     }

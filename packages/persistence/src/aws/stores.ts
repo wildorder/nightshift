@@ -5,6 +5,7 @@
  * suite is the specification this module is held to. Keys come only from
  * `keys.ts`; records are re-parsed through their schemas on the way in and out.
  */
+import { randomUUID } from "node:crypto";
 import {
   AgentSchema,
   ArtifactSchema,
@@ -41,7 +42,7 @@ import {
   StaleWriteError,
 } from "@nightshift/core";
 import { createEventStore } from "./events.js";
-import { fromItem, type Item, type Parser, toItem } from "./items.js";
+import { fromItem, type Item, type Parser, REVISION_ATTRIBUTE, toItem } from "./items.js";
 import { keys, type NodeIndexKey, type TableKey } from "./keys.js";
 import { type PartitionQuery, queryAll, queryPage } from "./query.js";
 import { conditionFailures, isConditionalCheckFailure, type TableClient } from "./table-client.js";
@@ -67,6 +68,9 @@ export class CredentialsTableUnavailableError extends Error {
     );
   }
 }
+
+/** How often a contended `programContracts.update` reads again before it gives up. */
+const MAX_UPDATE_ATTEMPTS = 8;
 
 const noCredentialsTable = async (): Promise<never> => {
   throw new CredentialsTableUnavailableError();
@@ -303,17 +307,62 @@ export const createAwsStores = ({
       },
     },
 
+    // Every write gives the item a fresh revision, and `update` writes only if
+    // the revision it read is still the stored one, reading again when it is
+    // not: a laptop's prerequisite check and a machine's that overlap both land
+    // (P16, D-08). A plain `put` is unconditional, as it always was.
     programContracts: {
       put: async (contract) => {
         const parsed = ProgramContractSchema.parse(contract);
-        await putRecord(
-          "ProgramContract",
-          keys.programContract(parsed.projectId, parsed.programId),
-          parsed,
-        );
+        await table.put({
+          TableName: tableName,
+          Item: {
+            ...toItem(
+              "ProgramContract",
+              keys.programContract(parsed.projectId, parsed.programId),
+              parsed,
+            ),
+            [REVISION_ATTRIBUTE]: randomUUID(),
+          },
+        });
       },
       get: (projectId, programId) =>
         getRecord(ProgramContractSchema, keys.programContract(projectId, programId)),
+      update: async (projectId, programId, change) => {
+        const key = keys.programContract(projectId, programId);
+        for (let attempt = 1; ; attempt += 1) {
+          const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
+          if (output.Item === undefined) return undefined;
+          const current = fromItem(ProgramContractSchema, output.Item);
+          const changed = change(current);
+          if (changed === undefined) return current;
+          const parsed = ProgramContractSchema.parse(changed);
+          const read = output.Item[REVISION_ATTRIBUTE];
+          try {
+            await table.put({
+              TableName: tableName,
+              Item: {
+                ...toItem("ProgramContract", key, parsed),
+                [REVISION_ATTRIBUTE]: randomUUID(),
+              },
+              // An item written before revisions has none; it must still have none.
+              ...(typeof read === "string"
+                ? {
+                    ConditionExpression: "#rev = :rev",
+                    ExpressionAttributeNames: { "#rev": REVISION_ATTRIBUTE },
+                    ExpressionAttributeValues: { ":rev": read },
+                  }
+                : {
+                    ConditionExpression: "attribute_exists(#pk) AND attribute_not_exists(#rev)",
+                    ExpressionAttributeNames: { "#pk": "PK", "#rev": REVISION_ATTRIBUTE },
+                  }),
+            });
+            return parsed;
+          } catch (error) {
+            if (!isConditionalCheckFailure(error) || attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+          }
+        }
+      },
       listByProject: (projectId, page) =>
         listPage(ProgramContractSchema, inTable(keys.programContractPartition(projectId)), page),
     },

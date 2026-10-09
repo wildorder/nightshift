@@ -16,24 +16,45 @@ import {
   DEFAULT_COMPUTE_CEILINGS,
   type Dispatch,
   DispatchSchema,
+  type DispatchToolchain,
+  type EnvironmentFaultPayload,
+  type Event,
   OrgConfigSchema,
   type ProgramContract,
   ProjectSchema,
+  type ReferenceAudit,
 } from "@nightshift/contracts";
 import {
   chooseTier,
+  dispatchToolchain,
+  environmentFaultOf,
   estimateUsd,
   isPlanned,
   mayDispatch,
+  PIN_FILES,
+  PINNED_RUNTIMES,
+  type Pin,
+  type PinnedRuntime,
+  parseRuntimeVersion,
+  RUNTIME_VERSION_COMMANDS,
   type RunScope,
+  renderEnvironmentFault,
+  resolvePins,
   runHoursOf,
 } from "@nightshift/core";
-import { currentBranch, isDirty, type StartedRun, tryRevParse } from "@nightshift/execution";
+import {
+  currentBranch,
+  type GitRunner,
+  isDirty,
+  type StartedRun,
+  tryRevParse,
+} from "@nightshift/execution";
 import { ControlPlaneError, routes, send } from "@nightshift/persistence/http";
-import type { CliEnvironment } from "../environment.js";
+import type { CliEnvironment, Exec } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { type ProgramFiles, readConfig, readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession, type Session } from "../session.js";
+import { STAGE_WORDS, watchDispatch } from "./watch.js";
 
 /** What `--remote` says for a contract that is not a ratified planned program (D-P10-09). */
 /**
@@ -51,7 +72,152 @@ export interface RemoteReadiness {
   readonly baseSha: string;
   readonly tier: ComputeTier;
   readonly source: string;
+  /**
+   * The runtimes the machine installs, at the laptop's exact versions (P16
+   * D-03). Absent when the project pins none: every runtime is then the image's.
+   */
+  readonly toolchain?: DispatchToolchain;
 }
+
+/** What measuring the laptop's runtimes needs: git, to read the pins, and a way to run `node --version`. */
+export interface ToolchainDeps {
+  readonly git: GitRunner;
+  /** Absent where the CLI can run nothing; a pinned runtime is then unmeasured, and refused. */
+  readonly exec?: Exec | undefined;
+}
+
+export type MeasuredToolchain =
+  | {
+      readonly ok: true;
+      /** One entry per pinned runtime, at the version measured here. */
+      readonly toolchain: DispatchToolchain;
+      /** The runtimes Nightshift installs that the project does not pin: the image's. */
+      readonly unpinned: readonly PinnedRuntime[];
+      /** Pinned tools Nightshift cannot measure or install (a `.tool-versions` line for `terraform`). */
+      readonly unmeasurable: readonly Pin[];
+    }
+  | { readonly ok: false; readonly conflict: boolean; readonly message: string };
+
+const isMeasurable = (runtime: string): runtime is PinnedRuntime =>
+  (PINNED_RUNTIMES as readonly string[]).includes(runtime);
+
+/** `files` as committed at `sha`; a file the commit lacks is not there. */
+export const filesAt = async (
+  git: GitRunner,
+  repoPath: string,
+  sha: string,
+  files: readonly string[],
+): Promise<Record<string, string>> => {
+  const found: Record<string, string> = {};
+  for (const file of files) {
+    const shown = await git(["show", `${sha}:${file}`], { cwd: repoPath });
+    if (shown.exitCode === 0) found[file] = shown.stdout;
+  }
+  return found;
+};
+
+export type Measurement =
+  | { readonly kind: "version"; readonly version: string }
+  | { readonly kind: "missing" }
+  | { readonly kind: "refused"; readonly message: string };
+
+const firstLine = (text: string): string => text.trim().split(/\r?\n/)[0] ?? "";
+
+/** One runtime's `--version` on this machine. */
+export const measureRuntime = async (
+  exec: Exec | undefined,
+  repoPath: string,
+  runtime: PinnedRuntime,
+): Promise<Measurement> => {
+  const [file, ...args] = RUNTIME_VERSION_COMMANDS[runtime];
+  if (exec === undefined || file === undefined) return { kind: "missing" };
+  const command = [file, ...args].join(" ");
+  let result: Awaited<ReturnType<Exec>>;
+  try {
+    result = await exec(file, args, { cwd: repoPath });
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "ENOENT") return { kind: "missing" };
+    return {
+      kind: "refused",
+      message: `\`${command}\` could not be run: ${(error as Error).message}`,
+    };
+  }
+  if (result.exitCode !== 0) {
+    const said = firstLine(result.stderr) || firstLine(result.stdout);
+    return {
+      kind: "refused",
+      message: `\`${command}\` failed with exit code ${result.exitCode}${said === "" ? "" : `: ${said}`}`,
+    };
+  }
+  // `java -version` writes to stderr.
+  const version = parseRuntimeVersion(runtime, `${result.stdout}\n${result.stderr}`);
+  if (version === undefined) {
+    const said = firstLine(result.stdout) || firstLine(result.stderr);
+    return {
+      kind: "refused",
+      message: `\`${command}\` printed no exact ${runtime} version${said === "" ? "" : ` (it said "${said}")`}`,
+    };
+  }
+  return { kind: "version", version };
+};
+
+/**
+ * The versions a dispatch carries (P16 S-01, D-03): the pins as committed at
+ * `baseSha`, never the working tree, each met by the version of the runtime
+ * this machine runs. Refused when pin files disagree, a pinned runtime is not
+ * installed here, or its version does not satisfy its pin. The reference
+ * audit (S-02) records the same measurement.
+ */
+export const measureToolchain = async (
+  deps: ToolchainDeps,
+  repoPath: string,
+  baseSha: string,
+): Promise<MeasuredToolchain> => {
+  const resolution = resolvePins(await filesAt(deps.git, repoPath, baseSha, PIN_FILES));
+  if (!resolution.ok) return { ok: false, conflict: true, message: resolution.message };
+
+  const pins = resolution.pins.filter((pin) => isMeasurable(pin.runtime));
+  const unmeasurable = resolution.pins.filter((pin) => !isMeasurable(pin.runtime));
+  const measured: Record<string, string | undefined> = {};
+  const refusals: string[] = [];
+  const carried: Pin[] = [];
+  for (const pin of pins) {
+    const measurement = await measureRuntime(deps.exec, repoPath, pin.runtime as PinnedRuntime);
+    if (measurement.kind === "refused") {
+      refusals.push(
+        `this project pins ${pin.runtime} ${pin.spec} (${pin.source}) but ${measurement.message}`,
+      );
+      continue;
+    }
+    if (measurement.kind === "version") measured[pin.runtime] = measurement.version;
+    carried.push(pin);
+  }
+  const resolved = dispatchToolchain(carried, measured);
+  if (!resolved.ok || refusals.length > 0) {
+    const message = [...(resolved.ok ? [] : [resolved.message]), ...refusals].join("\n");
+    return { ok: false, conflict: false, message };
+  }
+  return {
+    ok: true,
+    toolchain: resolved.toolchain,
+    unpinned: PINNED_RUNTIMES.filter((runtime) => !pins.some((pin) => pin.runtime === runtime)),
+    unmeasurable,
+  };
+};
+
+/** One line: what the machine will run, and that the rest is the image's. */
+const describeToolchain = (toolchain: DispatchToolchain | undefined): string => {
+  if (toolchain === undefined || toolchain.length === 0) {
+    return "runtimes: this project pins none, so the machine runs the image's";
+  }
+  const pinned = toolchain
+    .map(
+      (entry) =>
+        `${entry.runtime} ${entry.version}${entry.source.kind === "pin" ? ` (${entry.source.file})` : " (the image's)"}`,
+    )
+    .join(", ");
+  return `runtimes: the machine runs ${pinned}, as measured here; any runtime the project does not pin is the image's`;
+};
 
 const parseTier = (value: string | undefined): ComputeTier | undefined => {
   if (value === undefined) return undefined;
@@ -112,6 +278,23 @@ export const assertRemoteReady = async (
       `note: the checkout is on ${onBranch}; the run dispatches ${branch} at ${head.slice(0, 12)} regardless`,
     );
   }
+  // P16 S-01: the pins at the commit dispatched, met by this laptop's runtimes,
+  // before anything is written to the plane or a machine is paid for.
+  const measured = await measureToolchain(environment, repoPath, head);
+  if (!measured.ok) {
+    throw new UsageError(
+      measured.message,
+      measured.conflict
+        ? "Make the pin files agree, then commit and push; the machine installs one version of each runtime."
+        : "Switch to the pinned version with your version manager (nvm, mise, asdf, pyenv, rbenv…) and audit again, " +
+            "or change the pin and commit it; the machine runs exactly the versions your audit ran on.",
+    );
+  }
+  for (const pin of measured.unmeasurable) {
+    environment.err(
+      `note: ${pin.source} pins ${pin.runtime} ${pin.spec}; Nightshift does not install ${pin.runtime}, so the machine runs the image's, if it has one`,
+    );
+  }
   const config = await readConfig(repoPath);
   const choice = chooseTier(parseTier(computeFlag), contract.compute, config?.compute);
   return {
@@ -120,6 +303,8 @@ export const assertRemoteReady = async (
     baseSha: head,
     tier: choice.tier,
     source: choice.source,
+    // Absent rather than empty: the dispatch then says nothing it did not measure.
+    ...(measured.toolchain.length === 0 ? {} : { toolchain: measured.toolchain }),
   };
 };
 
@@ -138,6 +323,8 @@ export const dispatchRun = async (
   session: Session,
   started: StartedRun,
   readiness: RemoteReadiness,
+  /** The laptop's gate audit of `readiness.baseSha` (P16 D-06), carried to the machine. */
+  reference?: ReferenceAudit,
 ): Promise<Dispatch> => {
   const contract: ProgramContract = started.program;
   const scope: RunScope = {
@@ -176,18 +363,22 @@ export const dispatchRun = async (
           branch: readiness.branch,
           baseSha: readiness.baseSha,
           planHash: contract.planHash,
+          ...(readiness.toolchain === undefined ? {} : { toolchain: readiness.toolchain }),
+          ...(reference === undefined ? {} : { reference }),
         },
       },
     }),
   );
+  // Here, not in readiness: the run id stays the first line of stdout.
+  environment.out(describeToolchain(readiness.toolchain));
   environment.out(
     `dispatched on ${readiness.tier} (${spec.instanceType}, ${spec.vcpu} vCPU, ${spec.memoryGiB} GiB, ` +
       `$${spec.usdPerHour.toFixed(4)}/h, chosen by ${readiness.source}); ` +
       `up to $${estimated.toFixed(2)} at the run's ${hours}-hour ceiling`,
   );
   environment.out(
-    `dispatch ${dispatch.status}: the machine is provisioned without you. ` +
-      `\`nightshift remote status ${contract.programId}\` follows it; you can close the laptop.`,
+    `dispatch ${dispatch.status}: the machine is being provisioned. You wait here until it has ` +
+      "audited the gates and agrees with your laptop; Ctrl-C detaches, and the machine carries on.",
   );
   return dispatch;
 };
@@ -215,7 +406,37 @@ const dispatchOf = async (
   return { scope: { ...programScope, runId: "" as never }, dispatch: undefined };
 };
 
-const describe = (dispatch: Dispatch): string[] => {
+/** An environment fault's cause, and the fault side by side when the events were read. */
+export const environmentFaultLines = (
+  dispatch: Dispatch,
+  fault: EnvironmentFaultPayload | undefined,
+): string[] => {
+  if (dispatch.failure?.code !== "environment_fault") return [];
+  return [
+    "  cause: the machine, not the project. A gate green in the reference audit on your laptop " +
+      "failed on the machine; nothing was repaired and nothing in the project was changed.",
+    ...(fault === undefined
+      ? []
+      : renderEnvironmentFault(fault).map((line) => (line === "" ? "" : `    ${line}`))),
+  ];
+};
+
+/** The runner's latest progress (P16 S-03), in one line: stage, detail and verdict. */
+const progressLine = (progress: NonNullable<Dispatch["progress"]>): string =>
+  `  progress: ${progress.stage} (${STAGE_WORDS[progress.stage]})` +
+  (progress.detail === undefined ? "" : `: ${progress.detail}`) +
+  (progress.verdict === undefined ? "" : `; verdict ${progress.verdict}`);
+
+/**
+ * What `remote status` prints: the machine, its spend, and why it failed when
+ * it did. An environment fault (P16 D-07) is said as the cause it is, and,
+ * when the run's `environment.fault` events could be read, shown side by side:
+ * each gate, both verdicts, both Nodes and the last of both outputs.
+ */
+export const describeDispatch = (
+  dispatch: Dispatch,
+  fault?: EnvironmentFaultPayload | undefined,
+): string[] => {
   const lines = [
     `run ${dispatch.runId}: ${dispatch.status}, generation ${dispatch.generation}, ` +
       `${dispatch.tier} (${dispatch.instanceType}) at $${dispatch.usdPerHour.toFixed(4)}/h`,
@@ -229,12 +450,14 @@ const describe = (dispatch: Dispatch): string[] => {
       `  attempt ${attempt.generation} (${attempt.reason}) from ${attempt.startedAt}${attempt.endedAt === undefined ? "" : ` to ${attempt.endedAt}`}`,
     );
   }
+  if (dispatch.progress !== undefined) lines.push(progressLine(dispatch.progress));
   if (dispatch.publication.head !== undefined)
     lines.push(`  published ${dispatch.publication.head}`);
   if (dispatch.publication.blocked !== undefined)
     lines.push(`  publication blocked: ${dispatch.publication.blocked}`);
   if (dispatch.failure !== undefined)
-    lines.push(`  ${dispatch.failure.code}: ${dispatch.failure.message}`);
+    lines.push(`  failure ${dispatch.failure.code}: ${dispatch.failure.message}`);
+  lines.push(...environmentFaultLines(dispatch, fault));
   if (dispatch.cleanup.snapshotId !== undefined) {
     lines.push(
       `  snapshot ${dispatch.cleanup.snapshotId}${dispatch.cleanup.volumeDeleted ? ", volume deleted" : ""}`,
@@ -248,6 +471,8 @@ export interface RemoteOptions {
   readonly id: string;
   readonly repo?: string;
   readonly run?: string;
+  /** `remote status --watch`: stay attached, as `run --remote` does (P16 S-03). */
+  readonly watch?: boolean;
 }
 
 const openFor = async (environment: CliEnvironment, options: RemoteOptions) => {
@@ -262,10 +487,42 @@ export const remoteStatus = async (
   options: RemoteOptions,
 ): Promise<number> => {
   const { files, session } = await openFor(environment, options);
-  const { dispatch } = await dispatchOf(environment, session, files, options.run);
+  const { scope, dispatch } = await dispatchOf(environment, session, files, options.run);
   if (dispatch === undefined) return 1;
-  for (const line of describe(dispatch)) environment.out(line);
+  if (options.watch === true)
+    return watchDispatch(environment, session, { program: options.id, scope });
+  const fault =
+    dispatch.failure?.code === "environment_fault"
+      ? await environmentFaultOfRun(session, scope)
+      : undefined;
+  for (const line of describeDispatch(dispatch, fault)) environment.out(line);
   return 0;
+};
+
+/**
+ * The run's environment fault, from its events, for `remote status` to show
+ * side by side; `undefined` when there is none or they cannot be read, and the
+ * dispatch's own failure message says the cause either way.
+ */
+export const environmentFaultOfRun = async (
+  session: Pick<Session, "stores">,
+  scope: RunScope,
+): Promise<EnvironmentFaultPayload | undefined> => {
+  try {
+    const events: Event[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await session.stores.events.listByRun(
+        scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      events.push(...page.items);
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return environmentFaultOf(events);
+  } catch {
+    return undefined;
+  }
 };
 
 const post = async (
@@ -283,7 +540,7 @@ const post = async (
         path: verb === "cancel" ? routes.dispatchCancel(scope) : routes.dispatchResume(scope),
       }),
     );
-    for (const line of describe(next)) environment.out(line);
+    for (const line of describeDispatch(next)) environment.out(line);
     return 0;
   } catch (error) {
     if (error instanceof ControlPlaneError) {

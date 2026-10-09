@@ -173,6 +173,21 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
   Node 24 runtime (moved from 22 in P12, D-P12-02). Package names are
   `@nightshift/<dir-name>`. `node:sqlite` is used under `packages/persistence/src/local/`
   only (P12), the local instance's store.
+  **(P16 S-01, 2026-10-09.)** This Node 24 is Nightshift's own: on a
+  dispatched machine, `claude`, `codex`, the MCP servers and the runner
+  itself always launch on the image's Node, by absolute path or by resolving
+  the bin on the image's own `PATH` (`resolveNodeCli` in
+  `packages/harness/src/node-cli.ts`), never on a project's pinned one. A
+  project's own pinned runtimes (Node, Python, Ruby, Go, Java, Rust) are
+  installed by the engine with `mise` into `/workspace/stores/runtimes`
+  before setup, and reach only the "project environment" — setup, the gate
+  audit, and each worker's agent — through `PATH`, never the engine's own
+  process. That one environment is computed by `projectEnvironment` in
+  `apps/mcp/src/runner/workspace.ts`, written once to `<run>/project.env`,
+  and adopted by the engine's own process and handed to each worker user
+  through `RunAs.env`; each worker also gets its own rootless Docker socket,
+  which starts on the connection that first uses it, not at boot. Full
+  account in `docs/programs/p16-environment-parity.md` §S-01 as built.
 - Formatter and linter: Biome, one config at the repo root. No ESLint, no
   Prettier.
 - Tests: vitest; property tests with fast-check. Test files sit beside the code

@@ -50,6 +50,16 @@ export const scratchEnv = (dir: string): Readonly<Record<string, string>> => ({
   TMP: dir,
 });
 
+/**
+ * What a project step is given beyond the sanitized base (P16, D-10): the
+ * project environment when there is one, whole, and the scratch over it, so
+ * the step's temp directory is always its own.
+ */
+export const projectStepEnv = (
+  projectEnv: Readonly<Record<string, string>> | undefined,
+  dir: string,
+): Readonly<Record<string, string>> => ({ ...(projectEnv ?? {}), ...scratchEnv(dir) });
+
 const runToEnd = (invocation: StepInvocation): Promise<void> =>
   new Promise((resolve) => {
     const child = spawn(invocation.file, [...invocation.args], {

@@ -47,7 +47,16 @@ import type {
   WorkerLaunchIdentity,
 } from "@nightshift/execution";
 import { createEventOutbox, createPublicationQueue, nodeGitRunner } from "@nightshift/execution";
-import type { Harness, HarnessHandle, McpLaunch, TranscriptSource } from "@nightshift/harness";
+import {
+  type CliLauncher,
+  type Harness,
+  type HarnessHandle,
+  type McpLaunch,
+  type NodeCliDeps,
+  nodeCliDeps,
+  resolveNodeCli,
+  type TranscriptSource,
+} from "@nightshift/harness";
 import { claudeTranscriptSource, createClaudeHarness } from "@nightshift/harness-claude";
 import { codexTranscriptSource, createCodexHarness } from "@nightshift/harness-codex";
 import {
@@ -58,12 +67,14 @@ import {
   createHttpStores,
   createLocalPaths,
   createTokenProvider,
+  type PlanningClient,
   requireProfile,
   routes,
   send,
   staticTokenProvider,
   type Transport,
 } from "@nightshift/persistence/http";
+import { readProjectEnv } from "./project-env.js";
 import {
   type Env,
   EXECUTION_TOKEN_ENV,
@@ -73,6 +84,7 @@ import {
 } from "./role.js";
 import { createReclaim, createWorkerUsers } from "./run-as.js";
 import type { PlaneFactory } from "./runner/plane.js";
+import { IMAGE_PATH } from "./runner/workspace.js";
 import { createWorkerTokenFiles } from "./worker-token-files.js";
 
 /**
@@ -156,8 +168,12 @@ export interface Runtime {
    * suite that runs no planned program need not supply one.
    */
   readonly planText?: (scope: ProgramScope, sha256: string) => Promise<string | undefined>;
-  /** The program's prerequisites as they stand now, for deferring a check that needs one (D-P7-10). */
-  readonly prerequisites?: PrerequisiteBook;
+  /**
+   * The program's prerequisites as they stand now, for deferring a check that
+   * needs one (D-P7-10); and, on a run's machine, where its own checks are
+   * recorded before its gate audit (P16, D-08).
+   */
+  readonly prerequisites?: PrerequisiteBook & Pick<PlanningClient, "recordMachineCheck">;
   /**
    * P10 (D-P10-22): the publication hook for a run, when this process is a
    * machine's engine. The session installs it on the run's environment.
@@ -169,6 +185,11 @@ export interface Runtime {
   readonly reclaim?: ExecutionEnvironment["reclaim"];
   /** P10 (T4): where a worker's token file lives on a machine; absent on a laptop. */
   readonly workerTokens?: ExecutionEnvironment["workerTokens"];
+  /**
+   * P16 (D-10): the project environment the runner wrote, given to every
+   * project step the engine runs; absent on a laptop. Never this process's own.
+   */
+  readonly projectEnv?: ExecutionEnvironment["projectEnv"];
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
   /**
@@ -308,18 +329,32 @@ export const harnessModuleSpecifier = (specifier: string): string => {
  * first job is routed to it: a machine without Codex runs a Claude job without
  * anything Codex-shaped being built, looked up or complained about.
  */
-const constructAdapter = (harness: string, env: Env): Harness => {
+const constructAdapter = (harness: string, env: Env, onMachine: boolean): Harness => {
+  const launcher = onMachine ? agentLauncher(harness) : undefined;
   switch (harness) {
     case "claude":
-      return createClaudeHarness({ env });
+      return createClaudeHarness({ env, ...(launcher === undefined ? {} : { launcher }) });
     case "codex":
-      return createCodexHarness({ env });
+      return createCodexHarness({ env, ...(launcher === undefined ? {} : { launcher }) });
     default:
       // `ruleRoute` refuses a harness the compatibility table does not know before anything is
       // persisted, so this is a bug in the table rather than a user's mistake.
       throw new Error(`no adapter is wired for the "${harness}" harness`);
   }
 };
+
+/**
+ * How an agent CLI is launched on a machine (P16 S-01): `claude` and `codex`
+ * found on the image's PATH and run through the image's Node by absolute path
+ * (`process.execPath`, which the runner's unit sets to `/usr/local/bin/node`),
+ * so a project's pinned Node first on PATH cannot run them. `undefined` when
+ * the bin is not on the image's PATH: it is then started by name, as on a laptop.
+ */
+export const agentLauncher = (
+  bin: string,
+  deps: NodeCliDeps = nodeCliDeps(IMAGE_PATH),
+  nodePath: string = process.execPath,
+): CliLauncher | undefined => resolveNodeCli(bin, nodePath, deps);
 
 /**
  * A `Harness` that hands each worker to the adapter its route named.
@@ -356,10 +391,10 @@ export const createRoutedHarness = (construct: (harness: string) => Harness): Ha
   };
 };
 
-const createHarness = async (env: Env): Promise<Harness> => {
+const createHarness = async (env: Env, onMachine: boolean): Promise<Harness> => {
   const specifier = env[HARNESS_MODULE_ENV];
   if (specifier === undefined || specifier === "") {
-    return createRoutedHarness((harness) => constructAdapter(harness, env));
+    return createRoutedHarness((harness) => constructAdapter(harness, env, onMachine));
   }
 
   const module: unknown = await import(harnessModuleSpecifier(specifier));
@@ -496,11 +531,15 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
   const publication = createPublication(env, transport, bodies, ids);
   const workerUsers = Number.parseInt(env[WORKER_USERS_ENV] ?? "", 10);
   const credentialRoot = env[WORKER_CREDENTIAL_DIR_ENV];
+  // The project environment the runner wrote (P16 S-01): only on a machine.
+  // Threaded to the steps and the worker users, never adopted (D-10).
+  const projectEnv = await readProjectEnv(env);
   const runAs =
     Number.isFinite(workerUsers) && workerUsers > 0
       ? createWorkerUsers({
           count: workerUsers,
           ...(credentialRoot === undefined || credentialRoot === "" ? {} : { credentialRoot }),
+          ...(projectEnv === undefined ? {} : { projectEnv }),
         })
       : undefined;
   return {
@@ -510,13 +549,14 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     ...(runAs === undefined ? {} : { runAs }),
     ...(runAs === undefined ? {} : { reclaim: createReclaim(userInfo().username) }),
     ...(runAs === undefined ? {} : { workerTokens: createWorkerTokenFiles(runAs) }),
+    ...(projectEnv === undefined ? {} : { projectEnv }),
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
     prerequisites: createHttpPlanning({ transport }),
     stores: createHttpStores({ transport }),
     bodies,
     tokens: createHttpExecutionTokenMinter({ transport }),
-    harness: await createHarness(env),
+    harness: await createHarness(env, projectEnv !== undefined),
     paths: createLocalPaths({ env }),
     git: nodeGitRunner,
     ids,

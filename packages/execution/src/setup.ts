@@ -22,7 +22,7 @@ import {
 } from "./environment.js";
 import { gateDefinitions } from "./gate-repair.js";
 import { recordArtifact } from "./runner.js";
-import { freshScratch, scratchEnv } from "./scratch.js";
+import { freshScratch, projectStepEnv } from "./scratch.js";
 
 export interface PrepareCheckoutInput {
   readonly session: RunSession;
@@ -51,7 +51,8 @@ export const prepareCheckout = async (
     // match (D-P10-24); the install runs only when they do not.
     reference: input.session.repoPath,
     timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
-    env: scratchEnv(scratch),
+    // The project environment, on a machine (D-10), under the scratch.
+    env: projectStepEnv(environment.projectEnv, scratch),
   });
   const artifactId = await recordArtifact(environment, {
     scope: input.session.scope,

@@ -6,10 +6,12 @@
   "description": "Control-plane HTTP runtime.",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./testing": {
+      "source": "./src/testing/local-control-plane.ts",
       "types": "./dist/testing/local-control-plane.d.ts",
       "default": "./dist/testing/local-control-plane.js"
     }

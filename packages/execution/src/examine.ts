@@ -104,7 +104,7 @@ import {
 import { createHookSink } from "./hook-sink.js";
 import { programRulings, rulingsCarriedBy } from "./rulings.js";
 import { recordArtifact, runAsOf } from "./runner.js";
-import { discardScratch, ensureScratch, freshScratch, scratchEnv } from "./scratch.js";
+import { discardScratch, ensureScratch, freshScratch, projectStepEnv } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
 
 /** The environment variable an examiner's server reads its examination's frame from. */
@@ -669,6 +669,7 @@ const candidateVerification = async (
   // The checkout is new and holds only what is committed, so setup comes first;
   // it also leaves the checkout usable for the examiner who works in it. The
   // checks get a fresh scratch (scratch.ts), which the examiner then inherits.
+  // On a machine, in the project environment, as the queue's are (D-10).
   const scratch = await freshScratch(environment.paths, checkout);
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const ran = await runCheckoutSteps({
@@ -677,7 +678,7 @@ const candidateVerification = async (
     cwd: checkout,
     reference: input.session.repoPath,
     timeoutMs,
-    env: scratchEnv(scratch),
+    env: projectStepEnv(environment.projectEnv, scratch),
   });
   const results = [...ran.setup, ...ran.checks];
   const logs = new Map<string, Verification["commands"][number]["logArtifactId"]>();
@@ -702,6 +703,7 @@ const candidateVerification = async (
     paths: environment.paths,
     timeoutMs,
     keepScratch: true,
+    ...(environment.projectEnv === undefined ? {} : { projectEnv: environment.projectEnv }),
   });
   const commands = await withFlakes(
     environment,

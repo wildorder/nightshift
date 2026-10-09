@@ -187,6 +187,12 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     },
     get: (projectId: ProjectId, programId: ProgramId) =>
       getOrUndefined(transport, ProgramContractSchema, routes.program(projectId, programId)),
+    update: async () => {
+      throw new Error(
+        "the control plane changes a stored program contract in place; there is no route that " +
+          "takes the change. Use PUT .../prerequisites/{prerequisiteId} for a prerequisite.",
+      );
+    },
     listByProject: async (projectId, page) =>
       readPage(
         ProgramContractSchema,
