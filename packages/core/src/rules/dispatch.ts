@@ -20,6 +20,7 @@ import type {
   DispatchStatus,
   GitHubInstallation,
   PublicationIntent,
+  RunnerFailure,
 } from "@nightshift/contracts";
 import { computeTierRank, MAX_RESOLVED_INTENTS } from "@nightshift/contracts";
 import { IllegalTransitionError } from "../errors.js";
@@ -127,6 +128,42 @@ export const transitionDispatch = (
     throw new IllegalTransitionError(dispatch.status, event);
   }
   return { ...dispatch, status: to, updatedAt: at };
+};
+
+/** Where a runner's own failure is heard: a machine the runner holds, not yet told to stop. */
+export const RUNNER_FAILABLE_STATUSES: readonly DispatchStatus[] = [
+  "provisioning",
+  "ready",
+  "running",
+];
+
+/**
+ * The runner's `stopped`, as its heartbeat reports it (D-P10-18, P16 SC-07).
+ *
+ * With a failure, from `provisioning`, `ready` or `running`, the dispatch is
+ * `failed` with it: a workspace that could not be prepared, or an environment
+ * fault, ends the dispatch with its cause instead of waiting for the reconciler
+ * to give up on the lease. Without one, from `stopping`, `ready` or `running`,
+ * the dispatch is `stopped`, as it always was. A `stopping` dispatch was told
+ * to stop by the plane, whose reason it keeps; a failure reported then only
+ * settles it `stopped`. Anywhere else the report changes nothing.
+ */
+export const runnerStopped = (
+  dispatch: Dispatch,
+  failure: RunnerFailure | undefined,
+  at: string,
+): Dispatch => {
+  if (failure !== undefined && RUNNER_FAILABLE_STATUSES.includes(dispatch.status)) {
+    return transitionDispatch({ ...dispatch, failure }, "fail", at);
+  }
+  if (
+    dispatch.status === "stopping" ||
+    dispatch.status === "running" ||
+    dispatch.status === "ready"
+  ) {
+    return transitionDispatch(dispatch, "stopped", at);
+  }
+  return dispatch;
 };
 
 /** How often the runner heartbeats (D-P10-18). */

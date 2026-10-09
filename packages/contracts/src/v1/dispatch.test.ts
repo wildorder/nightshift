@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  DispatchFailureCodeSchema,
   DispatchInputSchema,
   DispatchToolchainSchema,
+  HeartbeatBodySchema,
   isExactRuntimeVersion,
   RuntimeVersionSchema,
 } from "./dispatch.js";
@@ -67,6 +69,57 @@ describe("the versions a dispatch carries are exact (P16 D-03)", () => {
   it("carries each runtime once", () => {
     expect(
       DispatchToolchainSchema.safeParse([nodePin("22.22.0"), nodePin("22.22.1")]).success,
+    ).toBe(false);
+  });
+});
+
+describe("a heartbeat can say why the runner stopped (P16 SC-07, D-07)", () => {
+  const beat = { generation: 1, meteredSeconds: 30, samples: [] };
+
+  it("knows the runner's two failure codes", () => {
+    expect(DispatchFailureCodeSchema.options).toContain("setup_failed");
+    expect(DispatchFailureCodeSchema.options).toContain("environment_fault");
+  });
+
+  it("accepts stopped with a setup failure or an environment fault", () => {
+    for (const code of ["setup_failed", "environment_fault"]) {
+      const parsed = HeartbeatBodySchema.parse({
+        ...beat,
+        report: "stopped",
+        failure: { code, message: "npm ci exited 1" },
+      });
+      expect(parsed.failure).toEqual({ code, message: "npm ci exited 1" });
+    }
+  });
+
+  it("leaves the failure optional", () => {
+    expect(HeartbeatBodySchema.parse({ ...beat, report: "stopped" }).failure).toBeUndefined();
+  });
+
+  it("refuses a code only the plane may write", () => {
+    for (const code of ["cancelled", "run_cap", "wall_clock", "provisioning_failed"]) {
+      expect(
+        HeartbeatBodySchema.safeParse({
+          ...beat,
+          report: "stopped",
+          failure: { code, message: "no" },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("refuses a failure without stopped, or without a message", () => {
+    const failure = { code: "setup_failed", message: "clone failed" };
+    expect(HeartbeatBodySchema.safeParse({ ...beat, failure }).success).toBe(false);
+    expect(HeartbeatBodySchema.safeParse({ ...beat, report: "ready", failure }).success).toBe(
+      false,
+    );
+    expect(
+      HeartbeatBodySchema.safeParse({
+        ...beat,
+        report: "stopped",
+        failure: { code: "setup_failed", message: "" },
+      }).success,
     ).toBe(false);
   });
 });

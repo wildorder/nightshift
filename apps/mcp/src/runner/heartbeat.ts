@@ -13,6 +13,7 @@ import {
   type HeartbeatReport,
   type HeartbeatResponse,
   HeartbeatResponseSchema,
+  type RunnerFailure,
   type UtilizationSample,
 } from "@nightshift/contracts";
 import { HEARTBEAT_INTERVAL_SECONDS, LEASE_MISSES } from "@nightshift/core";
@@ -31,8 +32,12 @@ export interface HeartbeatOptions {
 }
 
 export interface Heartbeat {
-  /** Something to tell the plane on the next beat. */
-  report(milestone: HeartbeatReport): void;
+  /**
+   * Something to tell the plane on the next beat. `stopped` may carry why the
+   * runner could not go on (P16 SC-07, D-07): the plane then ends the dispatch
+   * `failed` with it.
+   */
+  report(milestone: HeartbeatReport, failure?: RunnerFailure): void;
   /** The last response; `undefined` before the first beat. */
   readonly last: HeartbeatResponse | undefined;
   /** Beats until told to stop or until the plane is lost; resolves with the reason. */
@@ -40,7 +45,7 @@ export interface Heartbeat {
   /** Ends the loop after the current beat. */
   end(): void;
   /** One more beat carrying `milestone`, after the loop has ended: the runner's last word. */
-  farewell(milestone: HeartbeatReport): Promise<void>;
+  farewell(milestone: HeartbeatReport, failure?: RunnerFailure): Promise<void>;
   /** What setup took and which lockfiles the checkout has, sent once on the next beat (T3). */
   describeSetup(setupSeconds: number, lockfileHashes: Readonly<Record<string, string>>): void;
 }
@@ -54,7 +59,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
   const startedAt = options.now();
   // Milestones wait their turn: `ready` then `stopped` arrive as two beats, in
   // order, never one overwriting the other unsent.
-  const pending: HeartbeatReport[] = [];
+  const pending: { report: HeartbeatReport; failure?: RunnerFailure }[] = [];
   let setup: { setupSeconds: number; lockfileHashes: Record<string, string> } | undefined;
   let last: HeartbeatResponse | undefined;
   let ended = false;
@@ -64,14 +69,15 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     const sample = await options.sample();
     // Taken now, so a milestone reported while this beat is in flight waits
     // for the next one rather than being cleared unsent.
-    const report = pending.shift();
+    const next = pending.shift();
     const described = setup;
     setup = undefined;
     const body: HeartbeatBody = {
       generation: options.generation,
       meteredSeconds: Math.max(0, Math.floor((options.now() - startedAt) / 1000)),
       samples: sample === undefined ? [] : [sample],
-      ...(report === undefined ? {} : { report }),
+      ...(next === undefined ? {} : { report: next.report }),
+      ...(next?.failure === undefined ? {} : { failure: next.failure }),
       ...(described === undefined ? {} : described),
     };
     let response: HeartbeatResponse;
@@ -79,7 +85,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
       response = HeartbeatResponseSchema.parse(await options.post(body));
     } catch (error) {
       // Unsent: say it again next time, ahead of anything reported since.
-      if (report !== undefined) pending.unshift(report);
+      if (next !== undefined) pending.unshift(next);
       setup ??= described;
       throw error;
     }
@@ -88,8 +94,8 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
   };
 
   return {
-    report: (milestone) => {
-      pending.push(milestone);
+    report: (milestone, failure) => {
+      pending.push(failure === undefined ? { report: milestone } : { report: milestone, failure });
     },
     describeSetup: (setupSeconds, lockfileHashes) => {
       setup = { setupSeconds, lockfileHashes: { ...lockfileHashes } };
@@ -100,10 +106,10 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     end: () => {
       ended = true;
     },
-    farewell: async (milestone) => {
+    farewell: async (milestone, failure) => {
       // Everything still queued goes first, in order: a `ready` the loop had
       // not yet carried when the plane said stop is not lost to the farewell.
-      pending.push(milestone);
+      pending.push(failure === undefined ? { report: milestone } : { report: milestone, failure });
       while (pending.length > 0) {
         try {
           last = await beat();

@@ -2,14 +2,20 @@
  * The runner on a run's machine (P10, T2, T3): boot, bootstrap, heartbeat,
  * workspace, and then the work.
  *
- * Order: who am I (tags), my first token (SSM), the volume mounted, the
- * heartbeat started so the plane knows the machine is up and hands back the
- * clone's credential, the workspace prepared on the volume (mirror, checkout
- * at the authorised SHA, plan hashed, setup run), `ready` reported, and then
+ * Order: who am I (tags), my first token (SSM), the heartbeat started so the
+ * plane knows the machine is up and hands back the clone's credential, the
+ * volume mounted, the workspace prepared on the volume (mirror, checkout at
+ * the authorised SHA, plan hashed, setup run), `ready` reported, and then
  * whatever work T4 supplies (the headless root) until it ends or the plane
  * says stop.
+ *
+ * A machine that cannot prepare its workspace, from the mount to setup, says
+ * so: its last heartbeat is `stopped` with `setup_failed` and the cause, and
+ * the dispatch ends `failed` (P16 SC-07) instead of waiting for the reconciler
+ * to give up on the lease. The work can end the dispatch the same way, with a
+ * failure of its own (`environment_fault`, D-07).
  */
-import type { Dispatch, ProgramContract } from "@nightshift/contracts";
+import type { Dispatch, ProgramContract, RunnerFailure } from "@nightshift/contracts";
 import type { RunScope } from "@nightshift/core";
 import { WORKER_GROUP } from "../run-as.js";
 import { type RunnerIdentity, readIdentity, takeFirstToken } from "./bootstrap.js";
@@ -39,8 +45,11 @@ export interface RunnerOptions {
   readonly sidecarIntervalMs?: number;
   /** The plane, from the composition root (AR-2) or a test's fake. */
   readonly plane: PlaneFactory;
-  /** What runs between `ready` and the stop: the headless root (T4). Absent, the runner waits. */
-  readonly work?: (context: RunnerContext) => Promise<void>;
+  /**
+   * What runs between `ready` and the stop: the headless root (T4). Absent, the
+   * runner waits. Resolving with a failure ends the dispatch `failed` with it.
+   */
+  readonly work?: (context: RunnerContext) => Promise<RunnerWorkEnd | undefined>;
   /**
    * Told every engine token, the first and each renewal (D-P10-20), so the
    * composition can place it where the root's processes read it.
@@ -50,6 +59,11 @@ export interface RunnerOptions {
   readonly credentialTimeoutMs?: number;
   /** The runner's own PATH, kept in the project environment after the runtimes and the image's. */
   readonly inheritedPath?: string;
+}
+
+/** How the work ends the dispatch when it cannot go on: the failure the plane records. */
+export interface RunnerWorkEnd {
+  readonly failure: RunnerFailure;
 }
 
 export interface RunnerContext {
@@ -87,6 +101,16 @@ const renewableToken = (
   };
 };
 
+/** The most of a cause the dispatch's record keeps: setup's output can run long. */
+const MAX_CAUSE_LENGTH = 2000;
+
+/** An error as one line of cause, never empty and never past `MAX_CAUSE_LENGTH`. */
+const causeOf = (error: unknown): string => {
+  const said = (error instanceof Error ? error.message : String(error)).trim();
+  const cause = said === "" ? "an error with no message" : said;
+  return cause.length <= MAX_CAUSE_LENGTH ? cause : `${cause.slice(0, MAX_CAUSE_LENGTH - 1)}…`;
+};
+
 /** Waits for the heartbeat to bring the clone's credential, or gives up. */
 const awaitGithubToken = async (
   heartbeat: Heartbeat,
@@ -119,49 +143,8 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   await onToken?.(await token.provider.idToken(), identity.scope);
   const plane = options.plane(identity.apiEndpoint, token.provider);
 
-  // The workspace goes on the instance's local disk when it has one (D-P10-27),
-  // with the volume mounted beside it as the sidecar; on the volume itself when
-  // the record says so or the instance type has no local disk.
-  const asked = (await plane.dispatch(identity.scope))?.workspace?.disk;
-  const localDisk = asked === "volume" ? undefined : await findLocalDisk(machine);
-  const sidecar =
-    localDisk === undefined ? undefined : (options.sidecar ?? `${options.workspace}-sidecar`);
-  await mountWorkspace(machine, {
-    device: options.device,
-    mountPoint: sidecar ?? options.workspace,
-    owner: options.engineUser,
-    group: WORKER_GROUP,
-  });
-  if (localDisk !== undefined && sidecar !== undefined) {
-    await mountWorkspace(machine, {
-      device: options.device,
-      mountPoint: options.workspace,
-      owner: options.engineUser,
-      group: WORKER_GROUP,
-      disk: "local",
-    });
-    if (await sidecarHoldsCopy(machine, sidecar)) {
-      const started = machine.now();
-      await restoreFromSidecar(machine, sidecar, options.workspace);
-      log(
-        `workspace restored from the sidecar in ${((machine.now() - started) / 1000).toFixed(1)}s`,
-      );
-    }
-    log(`workspace mounted at ${options.workspace} (local NVMe; sidecar at ${sidecar})`);
-  } else {
-    log(
-      `workspace mounted at ${options.workspace} (volume${asked === "volume" ? ", as the record asks" : "; no local disk"})`,
-    );
-  }
-  let sync: SidecarSync | undefined;
-  const settle = async () => {
-    if (sync === undefined) return;
-    const started = machine.now();
-    await sync.stop();
-    sync = undefined;
-    log(`sidecar: final copy took ${((machine.now() - started) / 1000).toFixed(1)}s`);
-  };
-
+  // Beating before the volume is mounted, so a mount that fails can still be
+  // reported; the disk samples read the root's until the mount is there.
   const heartbeat = createHeartbeat({
     generation: identity.generation,
     post: (body) => plane.heartbeat(identity.scope, body),
@@ -173,11 +156,55 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   });
   const beating = heartbeat.run();
 
-  // The workspace (T3): what the run is, from the plane; the clone's
-  // credential, from the heartbeat; then the volume filled and setup run.
+  let sync: SidecarSync | undefined;
+  const settle = async () => {
+    if (sync === undefined) return;
+    const started = machine.now();
+    await sync.stop();
+    sync = undefined;
+    log(`sidecar: final copy took ${((machine.now() - started) / 1000).toFixed(1)}s`);
+  };
+
+  // The workspace (T3): the volume mounted; what the run is, from the plane;
+  // the clone's credential, from the heartbeat; then the volume filled and
+  // setup run. Any of it failing ends the dispatch `failed` (P16 SC-07).
   const layout = layoutOf(options.workspace, identity.scope.runId);
   let context: RunnerContext;
   try {
+    // The workspace goes on the instance's local disk when it has one (D-P10-27),
+    // with the volume mounted beside it as the sidecar; on the volume itself when
+    // the record says so or the instance type has no local disk.
+    const asked = (await plane.dispatch(identity.scope))?.workspace?.disk;
+    const localDisk = asked === "volume" ? undefined : await findLocalDisk(machine);
+    const sidecar =
+      localDisk === undefined ? undefined : (options.sidecar ?? `${options.workspace}-sidecar`);
+    await mountWorkspace(machine, {
+      device: options.device,
+      mountPoint: sidecar ?? options.workspace,
+      owner: options.engineUser,
+      group: WORKER_GROUP,
+    });
+    if (localDisk !== undefined && sidecar !== undefined) {
+      await mountWorkspace(machine, {
+        device: options.device,
+        mountPoint: options.workspace,
+        owner: options.engineUser,
+        group: WORKER_GROUP,
+        disk: "local",
+      });
+      if (await sidecarHoldsCopy(machine, sidecar)) {
+        const started = machine.now();
+        await restoreFromSidecar(machine, sidecar, options.workspace);
+        log(
+          `workspace restored from the sidecar in ${((machine.now() - started) / 1000).toFixed(1)}s`,
+        );
+      }
+      log(`workspace mounted at ${options.workspace} (local NVMe; sidecar at ${sidecar})`);
+    } else {
+      log(
+        `workspace mounted at ${options.workspace} (volume${asked === "volume" ? ", as the record asks" : "; no local disk"})`,
+      );
+    }
     const [dispatch, program] = await Promise.all([
       plane.dispatch(identity.scope),
       plane.program(identity.scope),
@@ -232,13 +259,15 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
       projectEnvFile: prepared.environmentFile,
     };
   } catch (error) {
-    log(
-      `the workspace could not be prepared: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    const cause = causeOf(error);
+    log(`the workspace could not be prepared: ${cause}`);
     await settle();
     heartbeat.end();
     await beating;
-    await heartbeat.farewell("stopped");
+    await heartbeat.farewell("stopped", {
+      code: "setup_failed",
+      message: `the workspace could not be prepared: ${cause}`,
+    });
     return 1;
   }
 
@@ -246,20 +275,25 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   // the plane says stop, and a promise that never settles is what "no work"
   // means to the race below.
   const working = (
-    options.work === undefined ? new Promise<void>(() => undefined) : options.work(context)
+    options.work === undefined
+      ? new Promise<RunnerWorkEnd | undefined>(() => undefined)
+      : options.work(context)
   )
-    .then(() => "worked" as const)
+    .then((ended) => (ended ? ended.failure : ("worked" as const)))
     .catch((error: unknown) => {
-      log(`the work failed: ${error instanceof Error ? error.message : String(error)}`);
+      log(`the work failed: ${causeOf(error)}`);
       return "failed" as const;
     });
 
   const outcome = await Promise.race([beating, working]);
-  if (outcome === "worked" || outcome === "failed") {
+  if (outcome !== "stop" && outcome !== "lost") {
     // The work ended; the sidecar gets its last copy, then the plane is told
-    // and the last beat goes out.
+    // and the last beat goes out, with the work's failure when it gave one.
+    const failure = typeof outcome === "object" ? outcome : undefined;
+    if (failure !== undefined)
+      log(`the work ended the dispatch: ${failure.code}: ${failure.message}`);
     await settle();
-    heartbeat.report("stopped");
+    heartbeat.report("stopped", failure);
     heartbeat.end();
     await beating;
     return outcome === "worked" ? 0 : 1;

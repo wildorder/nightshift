@@ -603,6 +603,69 @@ describe("cancel and resume", () => {
     expect(ended.body).toMatchObject({ status: "stopped", stop: true });
   });
 
+  it("ends a provisioning dispatch failed when the runner could not prepare the workspace (P16 SC-07)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const failure = { code: "setup_failed", message: "`npm ci` exited with code 1" };
+    const ended = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped", failure }),
+      engine(w, dispatch),
+    );
+    expect(ended.status, JSON.stringify(ended.body)).toBe(200);
+    expect(ended.body).toMatchObject({ status: "failed", stop: true });
+    expect((ended.body as { token?: string }).token).toBeUndefined();
+    const stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored).toMatchObject({ status: "failed", failure, instanceId: "i-1" });
+    // The lease is not extended: the reconciler cleans a settled dispatch up.
+    expect(stored?.leaseExpiresAt).toBe(dispatch.leaseExpiresAt);
+  });
+
+  it("ends a running dispatch failed with an environment fault (P16 D-07)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await w.stores.dispatches.put({ ...dispatch, status: "running" });
+    const failure = { code: "environment_fault", message: "test is green in the audit, red here" };
+    const ended = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped", failure }),
+      engine(w, dispatch),
+    );
+    expect(ended.body).toMatchObject({ status: "failed", stop: true });
+    expect(await w.stores.dispatches.get(w.f.scope)).toMatchObject({ status: "failed", failure });
+  });
+
+  it("leaves a provisioning dispatch as it is on a stopped with no failure", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const ended = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped" }),
+      engine(w, dispatch),
+    );
+    expect(ended.body).toMatchObject({ status: "provisioning", stop: false });
+  });
+
+  it("refuses a failure code only the plane may write", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const refused = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "stopped", failure: { code: "cancelled", message: "no" } }),
+      engine(w, dispatch),
+    );
+    expect(refused.status).toBe(400);
+    expect((await w.stores.dispatches.get(w.f.scope))?.status).toBe("provisioning");
+  });
+
   it("resumes a settled dispatch from its snapshot, within retention, and refuses otherwise", async () => {
     const w = await setup();
     const dispatch = await dispatched(w);

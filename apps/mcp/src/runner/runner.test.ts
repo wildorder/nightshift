@@ -228,6 +228,31 @@ describe("the heartbeat (D-P10-18)", () => {
     expect(heartbeat.last?.status).toBe("stopping");
   });
 
+  it("carries a failure with stopped, in the farewell and in a report", async () => {
+    const { post, bodies } = plane([response()]);
+    const heartbeat = createHeartbeat({
+      generation: 2,
+      post,
+      installToken: () => undefined,
+      sample: async () => undefined,
+      sleep: async () => undefined,
+      now: () => 0,
+      log: () => undefined,
+    });
+    heartbeat.report("ready");
+    heartbeat.end();
+    await heartbeat.run();
+    await heartbeat.farewell("stopped", { code: "setup_failed", message: "clone failed" });
+    expect(bodies).toEqual([
+      expect.objectContaining({ report: "ready" }),
+      expect.objectContaining({
+        report: "stopped",
+        failure: { code: "setup_failed", message: "clone failed" },
+      }),
+    ]);
+    expect((bodies[0] as { failure?: unknown }).failure).toBeUndefined();
+  });
+
   it("gives up after three failures in a row, so a lost plane means a lost lease here too", async () => {
     const { post } = plane([new Error("ECONNREFUSED")]);
     const heartbeat = createHeartbeat({
@@ -737,7 +762,145 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     });
     expect(code).toBe(1);
     expect(lines.join("\n")).toContain("the plan changed");
-    expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped" });
+    // Ended failed with its cause (P16 SC-07), not left for the reconciler.
+    const last = plane.heartbeats.at(-1) as { report?: string; failure?: { message: string } };
+    expect(last).toMatchObject({ report: "stopped", failure: { code: "setup_failed" } });
+    expect(last.failure?.message).toContain("the plan changed");
+  });
+
+  it("reports a failed setup step as setup_failed, with the step's cause", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) => {
+        const joined = [file, ...args].join(" ");
+        if (joined.includes("rev-parse --is-bare-repository")) return fail();
+        if (joined.includes("rev-parse --git-dir")) return fail();
+        if (joined.includes("status --porcelain")) return ok("");
+        if (file === "env" && args.includes("bash") && joined.includes("npm ci")) {
+          return fail("npm ERR! missing lockfile");
+        }
+        if (file === "env" && args.includes("bash")) return ok("");
+        return undefined;
+      },
+    });
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    let worked = false;
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      work: async () => {
+        worked = true;
+      },
+    });
+    expect(code).toBe(1);
+    expect(worked).toBe(false);
+    expect(plane.heartbeats.some((body) => (body as { report?: string }).report === "ready")).toBe(
+      false,
+    );
+    const last = plane.heartbeats.at(-1) as { report?: string; failure?: { message: string } };
+    expect(last).toMatchObject({ report: "stopped", failure: { code: "setup_failed" } });
+    expect(last.failure?.message).toContain("setup install exited 1: npm ERR! missing lockfile");
+  });
+
+  it("reports a workspace volume that cannot be mounted as setup_failed", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) =>
+        file === "sudo" && args[0] === "mount" ? fail("wrong fs type, bad superblock") : undefined,
+    });
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    const lines: string[] = [];
+    const code = await runRunner({
+      machine,
+      log: (line) => lines.push(line),
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+    });
+    expect(code).toBe(1);
+    expect(machine.commands.some((command) => command.includes("clone"))).toBe(false);
+    const last = plane.heartbeats.at(-1) as { report?: string; failure?: { message: string } };
+    expect(last).toMatchObject({ report: "stopped", failure: { code: "setup_failed" } });
+    expect(last.failure?.message).toContain("mount /dev/xvdf failed: wrong fs type");
+  });
+
+  it("reports a workspace volume that never attaches as setup_failed", async () => {
+    const machine = fakeMachine({
+      exec: (file) => {
+        if (file === "test") return fail();
+        if (file === "lsblk") return ok("/dev/nvme0n1 disk /\n");
+        return undefined;
+      },
+    });
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+    });
+    expect(code).toBe(1);
+    const last = plane.heartbeats.at(-1) as { report?: string; failure?: { message: string } };
+    expect(last).toMatchObject({ report: "stopped", failure: { code: "setup_failed" } });
+    expect(last.failure?.message).toContain("could not find the workspace volume");
+  });
+
+  it("forwards a failure the work ends with as stopped with that failure (P16 D-07)", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const failure = {
+      code: "environment_fault" as const,
+      message: "test is green in the reference audit and red on the machine",
+    };
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      work: async () => ({ failure }),
+    });
+    expect(code).toBe(1);
+    expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped", failure });
+  });
+
+  it("reports stopped without a failure when the work ends on its own", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      work: async () => undefined,
+    });
+    expect(code).toBe(0);
+    const last = plane.heartbeats.at(-1) as { report?: string; failure?: unknown };
+    expect(last.report).toBe("stopped");
+    expect(last.failure).toBeUndefined();
   });
 });
 

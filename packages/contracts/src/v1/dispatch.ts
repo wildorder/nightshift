@@ -201,8 +201,37 @@ export const DispatchFailureCodeSchema = z.enum([
   "run_cap",
   "cancelled",
   "input_refused",
+  /** The runner could not prepare the workspace: mount, clone, checkout or setup (P16 SC-07). */
+  "setup_failed",
+  /** A gate green in the reference audit is red on the machine (P16 D-07). */
+  "environment_fault",
 ]);
 export type DispatchFailureCode = z.infer<typeof DispatchFailureCodeSchema>;
+
+/**
+ * The failures a runner may report itself, through its heartbeat (P16 SC-07,
+ * D-07). Every other code is the plane's to write: a runner cannot say it was
+ * cancelled or ran over a cap.
+ */
+export const RunnerFailureCodeSchema = DispatchFailureCodeSchema.extract([
+  "setup_failed",
+  "environment_fault",
+]);
+export type RunnerFailureCode = z.infer<typeof RunnerFailureCodeSchema>;
+
+/** Why a dispatch ended `failed`, as its record holds it. */
+export const DispatchFailureSchema = z.strictObject({
+  code: DispatchFailureCodeSchema,
+  message: z.string().min(1),
+});
+export type DispatchFailure = z.infer<typeof DispatchFailureSchema>;
+
+/** A failure the runner reports with its `stopped`: one of its own codes, and the cause. */
+export const RunnerFailureSchema = z.strictObject({
+  code: RunnerFailureCodeSchema,
+  message: z.string().min(1),
+});
+export type RunnerFailure = z.infer<typeof RunnerFailureSchema>;
 
 /**
  * Where the workspace lives and how fast its volume is (D-P10-27). Absent or
@@ -249,9 +278,7 @@ export const DispatchSchema = z.strictObject({
   spend: DispatchSpendSchema,
   publication: DispatchPublicationSchema,
   cleanup: DispatchCleanupSchema,
-  failure: z
-    .strictObject({ code: DispatchFailureCodeSchema, message: z.string().min(1) })
-    .optional(),
+  failure: DispatchFailureSchema.optional(),
   /** The root orchestrator's harness session, so a replacement resumes it (D-P10-20). */
   rootSessionId: z.string().min(1).optional(),
   /** `sha256` per lockfile path, as the runner last reported them, for the warm cache (D-P10-15). */
@@ -285,19 +312,29 @@ export const HeartbeatReportSchema = z.enum(["ready", "running", "stopped"]);
 export type HeartbeatReport = z.infer<typeof HeartbeatReportSchema>;
 
 /** `POST …/runs/{runId}/dispatch/heartbeat`. */
-export const HeartbeatBodySchema = z.strictObject({
-  generation: z.int().min(1),
-  /** A milestone reached since the last heartbeat, when there is one. */
-  report: HeartbeatReportSchema.optional(),
-  /** Seconds the machine has been metered for, since this attempt started. */
-  meteredSeconds: z.int().min(0),
-  samples: z.array(UtilizationSampleSchema),
-  /** The first setup's duration, once, when it is known. */
-  setupSeconds: z.number().min(0).optional(),
-  /** `sha256` per lockfile path, for the warm cache's record (D-P10-15). */
-  lockfileHashes: z.record(z.string().min(1), z.string().min(1)).optional(),
-  rootSessionId: z.string().min(1).optional(),
-});
+export const HeartbeatBodySchema = z
+  .strictObject({
+    generation: z.int().min(1),
+    /** A milestone reached since the last heartbeat, when there is one. */
+    report: HeartbeatReportSchema.optional(),
+    /**
+     * Why the runner stopped, when it stopped because it could not go on (P16
+     * SC-07, D-07): the dispatch ends `failed` with it. Only with `stopped`.
+     */
+    failure: RunnerFailureSchema.optional(),
+    /** Seconds the machine has been metered for, since this attempt started. */
+    meteredSeconds: z.int().min(0),
+    samples: z.array(UtilizationSampleSchema),
+    /** The first setup's duration, once, when it is known. */
+    setupSeconds: z.number().min(0).optional(),
+    /** `sha256` per lockfile path, for the warm cache's record (D-P10-15). */
+    lockfileHashes: z.record(z.string().min(1), z.string().min(1)).optional(),
+    rootSessionId: z.string().min(1).optional(),
+  })
+  .refine((body) => body.failure === undefined || body.report === "stopped", {
+    message: "a failure is reported only with `stopped`",
+    path: ["failure"],
+  });
 export type HeartbeatBody = z.infer<typeof HeartbeatBodySchema>;
 
 /**

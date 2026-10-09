@@ -36,7 +36,7 @@ import {
   TEST_SUBJECT,
   type TestEnvironment,
 } from "../testing/harness.js";
-import { assertRemoteReady, dispatchRun } from "./remote.js";
+import { assertRemoteReady, describeDispatch, dispatchRun } from "./remote.js";
 
 const HEAD = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const BEHIND = "b1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
@@ -301,5 +301,29 @@ describe("dispatchRun", () => {
       ),
     ).rejects.toThrow(/ceiling is good/);
     expect(plane.calls.some((call) => call.path.endsWith("/dispatch"))).toBe(false);
+  });
+});
+
+describe("remote status (P16 SC-07)", () => {
+  it("shows a failed dispatch's code and message", () => {
+    const f = createFixtures();
+    const lines = describeDispatch(
+      makeDispatch(f, {
+        status: "failed",
+        failure: {
+          code: "setup_failed",
+          message: "the workspace could not be prepared: setup install exited 1",
+        },
+      }),
+    );
+    expect(lines[0]).toContain(": failed,");
+    expect(lines).toContain(
+      "  failure setup_failed: the workspace could not be prepared: setup install exited 1",
+    );
+  });
+
+  it("says nothing of a failure when there is none", () => {
+    const lines = describeDispatch(makeDispatch(createFixtures(), { status: "running" }));
+    expect(lines.some((line) => line.includes("failure"))).toBe(false);
   });
 });

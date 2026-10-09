@@ -28,6 +28,7 @@ import {
   nextGeneration,
   recordIntent,
   runHoursOf,
+  runnerStopped,
   transitionDispatch,
 } from "./dispatch.js";
 
@@ -306,5 +307,48 @@ describe("publication intents (D-P10-22)", () => {
     expect(resolved).toHaveLength(20);
     expect(resolved.at(-1)?.head).toBe((24).toString(16).padStart(40, "0"));
     expect(next.publication.intents.at(-1)?.status).toBe("pending");
+  });
+});
+
+describe("the runner's stopped (P16 SC-07)", () => {
+  const setupFailed = { code: "setup_failed" as const, message: "`npm ci` exited 1" };
+  const fault = { code: "environment_fault" as const, message: "test is red on the machine" };
+
+  it("fails a provisioning dispatch with the setup failure and its cause", () => {
+    const next = runnerStopped(at("provisioning"), setupFailed, LATER);
+    expect(next.status).toBe("failed");
+    expect(next.failure).toEqual(setupFailed);
+    expect(next.updatedAt).toBe(LATER);
+  });
+
+  it("fails a ready or running dispatch with the failure reported", () => {
+    for (const status of ["ready", "running"] as const) {
+      const next = runnerStopped(at(status), fault, LATER);
+      expect(next.status).toBe("failed");
+      expect(next.failure).toEqual(fault);
+    }
+  });
+
+  it("stops a dispatch as before when there is no failure", () => {
+    for (const status of ["ready", "running", "stopping"] as const) {
+      const next = runnerStopped(at(status), undefined, LATER);
+      expect(next.status).toBe("stopped");
+      expect(next.failure).toBeUndefined();
+    }
+    expect(runnerStopped(at("provisioning"), undefined, LATER).status).toBe("provisioning");
+  });
+
+  it("keeps the plane's reason on a dispatch it told to stop", () => {
+    const cancelled = { code: "cancelled" as const, message: "cancelled by the operator" };
+    const next = runnerStopped(at("stopping", { failure: cancelled }), setupFailed, LATER);
+    expect(next.status).toBe("stopped");
+    expect(next.failure).toEqual(cancelled);
+  });
+
+  it("changes nothing on a settled dispatch", () => {
+    for (const status of ["stopped", "failed", "requested"] as const) {
+      const dispatch = at(status);
+      expect(runnerStopped(dispatch, setupFailed, LATER)).toBe(dispatch);
+    }
   });
 });

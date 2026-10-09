@@ -396,7 +396,8 @@ const dispatchOf = async (
   return { scope: { ...programScope, runId: "" as never }, dispatch: undefined };
 };
 
-const describe = (dispatch: Dispatch): string[] => {
+/** What `remote status` prints: the machine, its spend, and why it failed when it did. */
+export const describeDispatch = (dispatch: Dispatch): string[] => {
   const lines = [
     `run ${dispatch.runId}: ${dispatch.status}, generation ${dispatch.generation}, ` +
       `${dispatch.tier} (${dispatch.instanceType}) at $${dispatch.usdPerHour.toFixed(4)}/h`,
@@ -415,7 +416,7 @@ const describe = (dispatch: Dispatch): string[] => {
   if (dispatch.publication.blocked !== undefined)
     lines.push(`  publication blocked: ${dispatch.publication.blocked}`);
   if (dispatch.failure !== undefined)
-    lines.push(`  ${dispatch.failure.code}: ${dispatch.failure.message}`);
+    lines.push(`  failure ${dispatch.failure.code}: ${dispatch.failure.message}`);
   if (dispatch.cleanup.snapshotId !== undefined) {
     lines.push(
       `  snapshot ${dispatch.cleanup.snapshotId}${dispatch.cleanup.volumeDeleted ? ", volume deleted" : ""}`,
@@ -445,7 +446,7 @@ export const remoteStatus = async (
   const { files, session } = await openFor(environment, options);
   const { dispatch } = await dispatchOf(environment, session, files, options.run);
   if (dispatch === undefined) return 1;
-  for (const line of describe(dispatch)) environment.out(line);
+  for (const line of describeDispatch(dispatch)) environment.out(line);
   return 0;
 };
 
@@ -464,7 +465,7 @@ const post = async (
         path: verb === "cancel" ? routes.dispatchCancel(scope) : routes.dispatchResume(scope),
       }),
     );
-    for (const line of describe(next)) environment.out(line);
+    for (const line of describeDispatch(next)) environment.out(line);
     return 0;
   } catch (error) {
     if (error instanceof ControlPlaneError) {
