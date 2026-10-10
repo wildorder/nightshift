@@ -75,7 +75,6 @@ import {
   fixtureToolchain,
   parseExitMarked,
   parseProjectEnv,
-  parseWorkerNumbers,
   withExitMarker,
 } from "./runner-boot-env.js";
 
@@ -85,6 +84,9 @@ import {
  * verification is the real typecheck and test suite, minutes not seconds.
  * The same installation grants it. Needs the bench types and the key.
  */
+/** The one user project code runs as on a machine: the image's (`infra/cdk`, D-P10-30). */
+const PROJECT_USER = "project";
+
 const HEAVY = process.env.NIGHTSHIFT_SMOKE_BENCH_HEAVY === "1";
 /** The fixture repository and the installation that grants it (H-P10-04, H-P10-05). */
 const FIXTURE_REPOSITORY = HEAVY
@@ -792,17 +794,17 @@ const runToTheEnd = async (
     const lines = (await journal(stopped.instanceId))
       .split("\n")
       .filter((line) => line.trim() !== "");
-    // D-P10-25: every job's agent ran as a worker user. Each agent's start
+    // D-P10-30: every job's agent ran as the project user. Each agent's start
     // event says which user it ran as; the record, not the machine.
     const startedEvents = (await api.get(`${run.path}/events?limit=500`)).body as {
       items?: { type: string; payload?: { user?: string } }[];
     };
     const asWorkers = (startedEvents.items ?? []).filter(
-      (event) => event.type === "agent.started" && /^worker-\d+$/.test(event.payload?.user ?? ""),
+      (event) => event.type === "agent.started" && event.payload?.user === PROJECT_USER,
     ).length;
     findings.processesAsWorkers = asWorkers;
-    say(`${name}: ${asWorkers} processes started as worker users`);
-    expect(asWorkers, "no process ran as a worker user").toBeGreaterThan(0);
+    say(`${name}: ${asWorkers} processes started as the project user`);
+    expect(asWorkers, "no process ran as the project user").toBeGreaterThan(0);
     say(
       `${name}: the runner said:\n  ${lines
         .filter((line) => !line.includes("COMMAND="))
@@ -884,13 +886,13 @@ const checkEnvironmentParity = async (outcome: RunOutcome): Promise<void> => {
   expect(toolchain, "the dispatch carries no toolchain").toBeDefined();
   if (instanceId === undefined || toolchain === undefined) return;
 
-  const numbers = parseWorkerNumbers(
-    await onMachine(instanceId, "ls -d /home/worker-* 2>/dev/null"),
-  );
-  expect(numbers.length, "fewer than two worker users on the machine").toBeGreaterThanOrEqual(2);
-  // A worker the runtimes are checked as; Docker is checked on a machine of
-  // its own (`checkDockerOnImage`).
-  const activeWorker = `worker-${numbers[0]}`;
+  // All project code runs as the one project user (D-P10-30).
+  const users = await onMachine(instanceId, "ls -d /home/* 2>/dev/null");
+  expect(users, "the machine has no project user").toContain(`/home/${PROJECT_USER}`);
+  expect(users, "the machine still has worker users").not.toMatch(/\/home\/worker-/);
+  // The runtimes are checked as the project user; Docker on a machine of its
+  // own (`checkDockerOnImage`).
+  const activeWorker = PROJECT_USER;
 
   const envText = await onMachine(
     instanceId,
@@ -999,14 +1001,10 @@ const checkDockerOnImage = async (): Promise<void> => {
         await onMachine(instanceId, withExitMarker(commandLine(wrapped)), timeoutSeconds),
       );
     };
-    const numbers = parseWorkerNumbers(
-      await onMachine(instanceId, "ls -d /home/worker-* 2>/dev/null"),
-    );
-    expect(numbers.length, "fewer than two worker users on the image").toBeGreaterThanOrEqual(2);
-    // One worker stays untouched, to show an idle worker has no daemon; another
-    // is used as a project's would be.
-    const idleWorker = `worker-${numbers[numbers.length - 1]}`;
-    const activeWorker = `worker-${numbers[0]}`;
+    // The project user, idle at boot (no daemon), then used as a project's code
+    // would be.
+    const idleWorker = PROJECT_USER;
+    const activeWorker = PROJECT_USER;
     // First, before any Docker use: the idle worker has no dockerd, while its
     // own docker-proxy.socket is listening (D-05).
     const idle = await run(idleWorker, "sh", [

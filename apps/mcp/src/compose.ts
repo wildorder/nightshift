@@ -82,7 +82,7 @@ import {
   type Role,
   workerLaunchEnv,
 } from "./role.js";
-import { createReclaim, createWorkerUsers } from "./run-as.js";
+import { createProjectUser, createReclaim } from "./run-as.js";
 import type { PlaneFactory } from "./runner/plane.js";
 import { IMAGE_PATH } from "./runner/workspace.js";
 import { createWorkerTokenFiles } from "./worker-token-files.js";
@@ -140,13 +140,13 @@ export const PUBLISH_BASE_ENV = "NIGHTSHIFT_PUBLISH_BASE";
 /** Where the packs are written before upload; the run's directory on the volume. */
 export const PUBLISH_PACK_DIR_ENV = "NIGHTSHIFT_PUBLISH_PACK_DIR";
 /**
- * P10 (D-P10-25): how many `worker-N` users the machine has; set by the runner
- * on the orchestrator-role server it launches. Present, every job's agent runs
- * as one of them; absent, as this process.
+ * P10 (D-P10-30): the user project code runs as on a machine; set by the runner
+ * on the orchestrator-role server it launches. Present, every step and every
+ * job's agent runs as it; absent, as this process.
  */
-export const WORKER_USERS_ENV = "NIGHTSHIFT_WORKER_USERS";
-/** Where a worker's own credential directories are, `<root>/<user>/<VAR>`. */
-export const WORKER_CREDENTIAL_DIR_ENV = "NIGHTSHIFT_WORKER_CREDENTIAL_DIR";
+export const PROJECT_USER_ENV = "NIGHTSHIFT_PROJECT_USER";
+/** Where the project user's own credential directories are, `<root>/<VAR>`. */
+export const PROJECT_CREDENTIAL_DIR_ENV = "NIGHTSHIFT_PROJECT_CREDENTIAL_DIR";
 
 export interface Runtime {
   readonly stores: ProjectStores;
@@ -529,15 +529,15 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
   const ids = createUlidIdGenerator();
   const bodies = createHttpArtifactBodyStore({ transport });
   const publication = createPublication(env, transport, bodies, ids);
-  const workerUsers = Number.parseInt(env[WORKER_USERS_ENV] ?? "", 10);
-  const credentialRoot = env[WORKER_CREDENTIAL_DIR_ENV];
+  const projectUser = env[PROJECT_USER_ENV];
+  const credentialRoot = env[PROJECT_CREDENTIAL_DIR_ENV];
   // The project environment the runner wrote (P16 S-01): only on a machine.
   // Threaded to the steps and the worker users, never adopted (D-10).
   const projectEnv = await readProjectEnv(env);
   const runAs =
-    Number.isFinite(workerUsers) && workerUsers > 0
-      ? createWorkerUsers({
-          count: workerUsers,
+    projectUser !== undefined && projectUser !== ""
+      ? createProjectUser({
+          user: projectUser,
           ...(credentialRoot === undefined || credentialRoot === "" ? {} : { credentialRoot }),
           ...(projectEnv === undefined ? {} : { projectEnv }),
         })

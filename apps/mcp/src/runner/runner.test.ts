@@ -850,6 +850,34 @@ describe("the workspace (T3, D-P10-15)", () => {
     expect([...machine.files.values()].join("\n")).not.toContain("ghs_read");
   });
 
+  it("hands the stores and the checkout to the project user, then runs setup as it (D-P10-30)", async () => {
+    const machine = gitMachine(true);
+    await prepareWorkspace(machine, {
+      layout,
+      dispatch,
+      program,
+      planText,
+      githubToken: "ghs_read",
+      log: () => undefined,
+      projectUser: "project",
+    });
+    const handOver = machine.commands.findIndex(
+      (c) => c.startsWith("sudo -n chown -R project:nightshift") && c.includes(layout.stores),
+    );
+    const setup = machine.commands.findIndex(
+      (c) => c.startsWith("sudo -n -u project -H env") && c.includes("npm ci --prefer-offline"),
+    );
+    expect(handOver, machine.commands.join("\n")).toBeGreaterThan(-1);
+    expect(machine.commands[handOver]).toContain(layout.checkout);
+    expect(setup).toBeGreaterThan(handOver);
+    // Group-writable, as every project process writes.
+    expect(machine.commands[setup]).toContain("umask 002 &&");
+    // No setup step ran as the engine.
+    expect(
+      machine.commands.some((c) => c.startsWith("env ") && c.includes("npm ci --prefer-offline")),
+    ).toBe(false);
+  });
+
   it("fetches a warm mirror instead of cloning, and refuses a changed plan before touching git", async () => {
     const machine = gitMachine(true);
     const prepared = await prepareWorkspace(machine, {
@@ -1325,7 +1353,7 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
       } as never,
       apiEndpoint: "https://api.dev.nightshift.invalid",
       providerKeys: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x" },
-      workerUsers: 16,
+      projectUser: "project",
       parentEnv: { PATH: "/usr/bin", HOME: "/home/engine", SECRET: "never" },
     });
     expect(env).toMatchObject({
@@ -1337,8 +1365,8 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
       NIGHTSHIFT_PUBLISH_BASE: "b".repeat(40),
       NIGHTSHIFT_PINNED_RUN: `${f.scope.projectId}/${f.scope.programId}/${f.scope.runId}`,
       CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x",
-      NIGHTSHIFT_WORKER_USERS: "16",
-      NIGHTSHIFT_WORKER_CREDENTIAL_DIR: `/dev/shm/nightshift/${f.scope.runId}/workers`,
+      NIGHTSHIFT_PROJECT_USER: "project",
+      NIGHTSHIFT_PROJECT_CREDENTIAL_DIR: `/dev/shm/nightshift/${f.scope.runId}/project`,
     });
     expect(env.SECRET).toBeUndefined();
     // Every id in the pin is one the server will parse.

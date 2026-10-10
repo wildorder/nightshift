@@ -1,20 +1,24 @@
 /**
- * The worker users on a machine (P10, D-P10-25).
+ * The project user on a machine (P10, D-P10-30, amending D-P10-25).
  *
- * `engine` runs the engine; each job's agent runs as one of `worker-1` …
- * `worker-N`, which the image created, in the `nightshift` group with
- * `engine`. The users are handed out round-robin, one per agent for as long as
- * the engine runs: N is at least the program's concurrency ceiling, so two live
- * jobs never share one, and a user is reused only after its job is long gone. Granting a path means `chown` to the user,
+ * `engine` runs the engine and holds its token and the placed credentials;
+ * all project code runs as the one `project` user the image created, in the
+ * `nightshift` group with `engine`: the setup at boot, every checkout's
+ * setup, the gates, and every job's agent. Jobs are collaborators, not
+ * tenants: they already share the checkout, and as one user they share the
+ * package stores the way a developer's machine does. (Sixteen `worker-N`
+ * users could not: pnpm hard-links store files and then chmods them, and only
+ * a file's owner may, so keki-backend's install failed on the machine with
+ * EPERM, 2026-10-10.) Granting a path means `chown` to the project user,
  * which `engine` may do as root (the image's sudoers rule); signalling means
  * `kill` as the user, since `engine` may not signal another user's processes.
- * A credential a worker needs as a file (Codex's login) is a copy under
- * `<credentialRoot>/<user>/`, placed by the runner and named here by variable.
+ * A credential the project user needs as a file (Codex's login) is a copy
+ * under `<credentialRoot>/<VAR>`, placed by the runner and named here.
  *
- * On a machine each user's environment is also the project's (P16 S-01): the
- * pinned runtimes first on PATH and the stores, from the runner's
- * `project.env`. Its `DOCKER_HOST` is the run-as wrapper's default, the
- * user's own rootless socket under `/run/user/<uid>` (`commandAs`).
+ * Its environment is also the project's (P16 S-01): the pinned runtimes first
+ * on PATH and the stores, from the runner's `project.env`. Its `DOCKER_HOST`
+ * is the run-as wrapper's default, the user's own rootless socket under
+ * `/run/user/<uid>` (`commandAs`).
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -23,11 +27,15 @@ import type { RunAs } from "@nightshift/harness";
 
 export const WORKER_GROUP = "nightshift";
 
-export interface WorkerUsersOptions {
-  readonly count: number;
-  /** Where per-user credential directories live, by variable name: `<root>/<user>/<VAR>`. */
+/** The one user project code runs as on a machine (D-P10-30). */
+export const PROJECT_USER = "project";
+
+export interface ProjectUserOptions {
+  /** The user's name; the image's is {@link PROJECT_USER}. */
+  readonly user: string;
+  /** Where the user's credential directories live, by variable name: `<root>/<VAR>`. */
   readonly credentialRoot?: string;
-  /** The project environment every worker's processes run in (P16 S-01); absent on a laptop. */
+  /** The project environment its processes run in (P16 S-01); absent on a laptop. */
   readonly projectEnv?: Readonly<Record<string, string>>;
   /** Injected by the tests; the real one runs `sudo`. */
   readonly exec?: (file: string, args: readonly string[]) => Promise<void>;
@@ -41,45 +49,32 @@ const sudo = (file: string, args: readonly string[]): Promise<void> =>
     });
   });
 
-/** The variables a worker's credential directory may name. */
+/** The variables the project user's credential directory may name. */
 const CREDENTIAL_DIRECTORY_VARIABLES = ["CODEX_HOME"] as const;
 
-export const workerUserName = (index: number): string => `worker-${index + 1}`;
-
-/** Which users exist, from the image's count: the environment says `NIGHTSHIFT_WORKER_USERS=16`. */
-export const createWorkerUsers = (
-  options: WorkerUsersOptions,
-): ((agent: { readonly agentId: string; readonly role: string }) => RunAs | undefined) => {
+/** Every agent and every step runs as the same project user: one `RunAs`, whoever asks. */
+export const createProjectUser = (
+  options: ProjectUserOptions,
+): ((agent: { readonly agentId: string; readonly role: string }) => RunAs) => {
   const run = options.exec ?? sudo;
-  let next = 0;
-  // An agent keeps its user: the engine asks again when it verifies the
-  // agent's worktree as its owner (D-P10-25).
-  const assigned = new Map<string, RunAs>();
-  return (agent) => {
-    if (options.count <= 0) return undefined;
-    const kept = assigned.get(agent.agentId);
-    if (kept !== undefined) return kept;
-    const user = workerUserName(next % options.count);
-    next += 1;
-    const env: Record<string, string> = { ...(options.projectEnv ?? {}) };
-    if (options.credentialRoot !== undefined) {
-      for (const variable of CREDENTIAL_DIRECTORY_VARIABLES) {
-        const directory = join(options.credentialRoot, user, variable);
-        if (existsSync(directory)) env[variable] = directory;
-      }
+  const { user } = options;
+  const env: Record<string, string> = { ...(options.projectEnv ?? {}) };
+  if (options.credentialRoot !== undefined) {
+    for (const variable of CREDENTIAL_DIRECTORY_VARIABLES) {
+      const directory = join(options.credentialRoot, variable);
+      if (existsSync(directory)) env[variable] = directory;
     }
-    const runAs: RunAs = {
-      user,
-      ...(Object.keys(env).length === 0 ? {} : { env }),
-      grant: (path) => run("chown", ["-R", `${user}:${WORKER_GROUP}`, path]),
-      kill: (pid, signal) => {
-        // The process group as the user; errors here are a dead tree already.
-        run("sudo", ["-u", user, "kill", `-${signal}`, "--", `-${pid}`]).catch(() => undefined);
-      },
-    };
-    assigned.set(agent.agentId, runAs);
-    return runAs;
+  }
+  const runAs: RunAs = {
+    user,
+    ...(Object.keys(env).length === 0 ? {} : { env }),
+    grant: (path) => run("chown", ["-R", `${user}:${WORKER_GROUP}`, path]),
+    kill: (pid, signal) => {
+      // The process group as the user; errors here are a dead tree already.
+      run("sudo", ["-u", user, "kill", `-${signal}`, "--", `-${pid}`]).catch(() => undefined);
+    },
   };
+  return () => runAs;
 };
 
 /**

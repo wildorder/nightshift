@@ -193,6 +193,12 @@ export interface PrepareInput {
   readonly log: (line: string) => void;
   /** The runner's own PATH, kept after the project's runtimes and the image's PATH. */
   readonly inheritedPath?: string;
+  /**
+   * The user project code runs as (D-P10-30). Present, the stores and the
+   * checkout are handed to it and the setup runs as it, so every store entry
+   * and the installed tree are its own; absent (the tests), as this process.
+   */
+  readonly projectUser?: string;
   /** Told where the workspace has got to (P16 S-03): the runner's heartbeat carries it. */
   readonly onProgress?: (progress: RunnerProgress) => void;
 }
@@ -507,20 +513,39 @@ export const prepareWorkspace = async (
   const environmentFile = `${layout.run}/project.env`;
   await machine.writeFile(environmentFile, formatProjectEnv(env));
 
-  // The program's setup, once, in the project environment (D-P10-15). Its
-  // duration is the warm-versus-cold number. Not a login shell: a profile
-  // would put the image's PATH and rustup home back over the project's.
+  // The stores and the checkout are the project user's (D-P10-30): package
+  // managers hard-link store files into node_modules and then chmod them, and
+  // only a file's owner may. A warm volume carries entries an earlier run's
+  // users wrote, so ownership is handed over on every boot, not only the first.
+  if (input.projectUser !== undefined) {
+    await run(
+      machine,
+      "sudo",
+      ["-n", "chown", "-R", `${input.projectUser}:${WORKER_GROUP}`, layout.stores, layout.checkout],
+      "hand the stores and the checkout to the project user",
+    );
+  }
+
+  // The program's setup, once, in the project environment (D-P10-15), as the
+  // project user. Its duration is the warm-versus-cold number. Not a login
+  // shell: a profile would put the image's PATH and rustup home back over the
+  // project's. Group-writable, as every project process writes (D-P10-25).
   const startedAt = machine.now();
   if ((program.setup ?? []).length === 0) progress("setup", "no setup steps");
   for (const step of program.setup ?? []) {
     log(`setup ${step.id}: ${step.command}`);
     progress("setup", `setup ${step.id}`.slice(0, 500));
-    const result = await machine.exec("env", [
+    const command = [
+      "env",
       ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
       "bash",
       "-c",
-      `cd ${JSON.stringify(layout.checkout)} && ${step.command}`,
-    ]);
+      `umask 002 && cd ${JSON.stringify(layout.checkout)} && ${step.command}`,
+    ];
+    const result =
+      input.projectUser === undefined
+        ? await machine.exec(command[0] ?? "env", command.slice(1))
+        : await machine.exec("sudo", ["-n", "-u", input.projectUser, "-H", ...command]);
     if (result.exitCode !== 0) {
       throw new WorkspaceError(
         `setup ${step.id} exited ${result.exitCode}: ${result.stderr.trim().slice(-2000)}`,

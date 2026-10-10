@@ -21,9 +21,9 @@ import type { Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
 import type { RunnerContext } from "./main.js";
 
-/** Where a worker's own credential copies live: `<root>/<user>/<VAR>/…`, each the user's alone. */
-export const workerCredentialRoot = (runId: string): string =>
-  join(tokenDirectory(runId), "workers");
+/** Where the project user's own credential copies live: `<root>/<VAR>/…`, the user's alone (D-P10-30). */
+export const projectCredentialRoot = (runId: string): string =>
+  join(tokenDirectory(runId), "project");
 
 /**
  * Where the engine's token lives: RAM, this run's directory. The directory is
@@ -78,11 +78,12 @@ export const awaitProviderCredentials = async (
 export const placeProviderCredentials = async (
   runId: string,
   credentials: Partial<Record<Provider, string>>,
-  workers: {
-    readonly users: readonly string[];
+  project: {
+    /** The project user (D-P10-30); absent, nobody but the engine needs a copy. */
+    readonly user?: string;
     /** `chown -R user:group path` as root; the image's sudoers rule allows exactly this. */
     readonly grant: (user: string, path: string) => Promise<void>;
-  } = { users: [], grant: async () => undefined },
+  } = { grant: async () => undefined },
 ): Promise<Record<string, string>> => {
   const env: Record<string, string> = {};
   for (const [provider, secret] of Object.entries(credentials) as [Provider, string][]) {
@@ -97,27 +98,21 @@ export const placeProviderCredentials = async (
     await writeFile(path, secret, { mode: 0o600 });
     await chmod(path, 0o600);
     env[placement.env] = directory;
-    // Each worker user gets a copy of its own (D-P10-25): the engine's stays the
-    // engine's. The directory of copies is traversable (0711, like the run's),
-    // and each user's own directory under it is the user's, whole: a recursive
-    // mkdir made the parents 0700 and the engine's, so the worker could not
-    // reach the copy made for it, and every Codex examiner on FoodFly's first
-    // runs died at start with "Permission denied" (2026-10-05).
-    const copies = workerCredentialRoot(runId);
-    await mkdir(copies, { recursive: true, mode: 0o711 });
-    await chmod(copies, 0o711);
-    for (const user of workers.users) {
-      const mine = join(copies, user);
+    // The project user gets a copy of its own (D-P10-30): the engine's stays
+    // the engine's. The copies' directory is the user's, whole, and traversable
+    // by anyone and listable by nobody (0711): the engine, no longer its owner
+    // once it is handed over, must still see that `CODEX_HOME` exists to name
+    // it in the user's environment (`run-as.ts`), while the copy inside stays
+    // 0700 and the user's. A recursive mkdir made parents the engine's and
+    // 0700, and every Codex examiner on FoodFly's first runs died at start
+    // with "Permission denied" (2026-10-05), hence the explicit modes.
+    if (project.user !== undefined) {
+      const mine = projectCredentialRoot(runId);
       const own = join(mine, placement.env);
       await mkdir(own, { recursive: true, mode: 0o700 });
       await writeFile(join(own, placement.file), secret, { mode: 0o600 });
-      // The user's directory is traversable by anyone and listable by nobody
-      // (0711): the engine, which is not its owner once it is handed over,
-      // must still be able to see that `<user>/CODEX_HOME` exists to name it
-      // in the worker's environment (`run-as.ts`); the copy inside stays 0700
-      // and the user's. Set before the chown, which keeps modes.
       await chmod(mine, 0o711);
-      await workers.grant(user, mine);
+      await project.grant(project.user, mine);
     }
   }
   return env;
@@ -126,8 +121,8 @@ export const placeProviderCredentials = async (
 export interface RootEnvironmentInput {
   readonly context: RunnerContext;
   readonly apiEndpoint: string;
-  /** How many `worker-N` users the image made (D-P10-25); 0 or absent runs every agent as the engine. */
-  readonly workerUsers?: number;
+  /** The user project code runs as (D-P10-30); absent runs every agent as the engine. */
+  readonly projectUser?: string;
   /** The provider keys, by their environment variable names. */
   readonly providerKeys?: Readonly<Record<string, string>>;
   /** This process's environment, for PATH, HOME and the toolchain. */
@@ -173,9 +168,9 @@ export const rootEnvironment = (input: RootEnvironmentInput): Record<string, str
   env.NIGHTSHIFT_API_TOKEN_FILE = tokenFile(context.scope.runId);
   env.NIGHTSHIFT_STATE_DIR = context.layout.run;
   env.NIGHTSHIFT_PUBLISH_BASE = context.dispatch.input.baseSha;
-  if (input.workerUsers !== undefined && input.workerUsers > 0) {
-    env.NIGHTSHIFT_WORKER_USERS = String(input.workerUsers);
-    env.NIGHTSHIFT_WORKER_CREDENTIAL_DIR = workerCredentialRoot(context.scope.runId);
+  if (input.projectUser !== undefined && input.projectUser !== "") {
+    env.NIGHTSHIFT_PROJECT_USER = input.projectUser;
+    env.NIGHTSHIFT_PROJECT_CREDENTIAL_DIR = projectCredentialRoot(context.scope.runId);
   }
   // The root's server attaches to this run and no other (D-P10-20).
   env.NIGHTSHIFT_PINNED_RUN = `${context.scope.projectId}/${context.scope.programId}/${context.scope.runId}`;

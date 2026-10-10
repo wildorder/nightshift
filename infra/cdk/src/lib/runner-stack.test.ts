@@ -6,7 +6,7 @@ import { App, Token } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { dataExportName } from "./data-exports.js";
-import { ENGINE_USER, RUNNER_TOOLCHAIN, WORKER_USERS } from "./runner-image.js";
+import { ENGINE_USER, PROJECT_USER, RUNNER_TOOLCHAIN } from "./runner-image.js";
 import {
   AMI_VERSION_TAG,
   ARCHITECTURE_TAG,
@@ -171,15 +171,17 @@ describe("NightshiftRunnerStack", () => {
       expect(data).not.toMatch(/@latest/);
     });
 
-    it("lays down the engine, the worker users, the sudoers rule and the IMDS firewall", () => {
+    it("lays down the engine and the project user, the sudoers rule and the IMDS firewall", () => {
       const data = resourcesOf(synth().template, "AWS::ImageBuilder::Component")
         .map((component) => String(component.Properties?.Data))
         .join("\n");
       expect(data).toContain(`useradd --system --create-home --home-dir /home/${ENGINE_USER}`);
       expect(data).toContain(
-        `worker-${WORKER_USERS}; do { useradd --create-home --home-dir /home/$w`,
+        `for w in ${PROJECT_USER}; do { useradd --create-home --home-dir /home/$w`,
       );
-      expect(data).toContain(`${ENGINE_USER} ALL=(WORKERS) NOPASSWD: ALL`);
+      expect(data).toContain(`${ENGINE_USER} ALL=(PROJECT) NOPASSWD: ALL`);
+      // One project user, no worker-N users (D-P10-30).
+      expect(data).not.toMatch(/worker-\d/);
       expect(data).toContain("169.254.169.254");
       expect(data).toContain(`meta skuid != \\"${ENGINE_USER}\\"`);
       expect(data).toContain("systemctl disable --now docker.service");

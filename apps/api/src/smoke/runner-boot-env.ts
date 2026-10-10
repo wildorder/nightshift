@@ -154,7 +154,3 @@ export const parseExitMarked = (
   if (match?.[1] === undefined) return { body: output, exitCode: Number.NaN };
   return { body: output.slice(0, match.index), exitCode: Number(match[1]) };
 };
-
-/** The worker numbers named by a directory listing of `/home/worker-*`, sorted ascending. */
-export const parseWorkerNumbers = (lsOutput: string): number[] =>
-  Array.from(lsOutput.matchAll(/worker-(\d+)/g), (match) => Number(match[1])).sort((a, b) => a - b);

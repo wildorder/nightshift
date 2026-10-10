@@ -19,11 +19,11 @@ import {
   IMAGE_COMPONENT_MAX_CHARS,
   MISE_SHA256,
   MISE_SYSTEM_CONFIG,
+  PROJECT_USER,
   RUNNER_TOOLCHAIN,
   RUNTIMES_DIR,
   runnerComponent,
   toolchainComponent,
-  WORKER_USERS,
 } from "./runner-image.js";
 
 /** A component's shell commands, in the order the build runs them, unquoted. */
@@ -44,7 +44,8 @@ const unitWrittenTo = (commands: readonly string[], path: string): string => {
     .join("\n");
 };
 
-const workers = Array.from({ length: WORKER_USERS }, (_, index) => `worker-${index + 1}`);
+// One project user runs all project code (D-P10-30).
+const workers = [PROJECT_USER];
 
 /**
  * The one command that runs `step` for every worker: a loop over all of them,
