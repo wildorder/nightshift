@@ -27,7 +27,7 @@
  * proof checks the machine as a worker user, through the run sandbox's own
  * wrapper (`commandAs`, never a login shell) and the project environment the
  * runner wrote to `project.env`: an idle worker has no `dockerd` while its
- * `docker.socket` listens, `node` and `python` answer the toolchain's
+ * `docker-proxy.socket` listens, `node` and `python` answer the toolchain's
  * versions, `docker info` succeeds, and a `postgres:16` container's published
  * port answers a host-side client. These checks stay; they are not by-hand
  * checks to be deleted once run, as the P10 T2 checks were in T3.
@@ -916,15 +916,15 @@ const checkEnvironmentParity = async (outcome: RunOutcome): Promise<void> => {
   };
 
   // First, before any Docker use: the idle worker has no dockerd, while its
-  // own docker.socket is listening (D-05).
+  // own docker-proxy.socket is listening (D-05).
   const idle = await run(idleWorker, "sh", [
     "-c",
-    `pgrep -u ${idleWorker} dockerd >/dev/null 2>&1; echo DOCKERD=$?; systemctl --user is-active docker.socket 2>&1`,
+    `pgrep -u ${idleWorker} dockerd >/dev/null 2>&1; echo DOCKERD=$?; systemctl --user is-active docker-proxy.socket 2>&1`,
   ]);
   const idleLines = idle.body.trim().split("\n");
   say(`environment parity: ${idleWorker} (idle) says ${idleLines.join(", ")}`);
   expect(idleLines[0], `${idleWorker} has a dockerd process`).toBe("DOCKERD=1");
-  expect(idleLines[1], `${idleWorker}'s docker.socket is not listening`).toBe("active");
+  expect(idleLines[1], `${idleWorker}'s docker-proxy.socket is not listening`).toBe("active");
 
   for (const entry of toolchain) {
     if (entry.runtime !== "node" && entry.runtime !== "python") continue;
@@ -938,6 +938,38 @@ const checkEnvironmentParity = async (outcome: RunOutcome): Promise<void> => {
 
   const dockerInfo = await run(activeWorker, "docker", ["info"]);
   expect(dockerInfo.exitCode, `docker info failed as ${activeWorker}`).toBe(0);
+
+  // `docker exec` carries a command's own exit code and output. Through
+  // systemd-socket-proxyd it returned 0 with nothing (2026-10-10), so every
+  // readiness check written as `docker exec … pg_isready` passed at once.
+  const execProbe = "nightshift-boot-exec";
+  try {
+    expect(
+      (
+        await run(
+          activeWorker,
+          "docker",
+          ["run", "-d", "--rm", "--name", execProbe, "alpine:3", "sleep", "120"],
+          120,
+        )
+      ).exitCode,
+      "starting the exec probe container failed",
+    ).toBe(0);
+    const executed = await run(activeWorker, "docker", [
+      "exec",
+      execProbe,
+      "sh",
+      "-c",
+      "echo exec-ok; exit 7",
+    ]);
+    say(
+      `environment parity: docker exec answered exit ${executed.exitCode}, ${JSON.stringify(executed.body.trim())}`,
+    );
+    expect(executed.exitCode, "docker exec lost the command's exit code").toBe(7);
+    expect(executed.body.trim(), "docker exec lost the command's output").toBe("exec-ok");
+  } finally {
+    await run(activeWorker, "docker", ["rm", "-f", execProbe], 30);
+  }
 
   const port = 55432;
   const container = "nightshift-boot-pg";
@@ -962,24 +994,29 @@ const checkEnvironmentParity = async (outcome: RunOutcome): Promise<void> => {
     );
     expect(started.exitCode, "starting a postgres:16 container failed").toBe(0);
 
-    // A host-side client against the published port, not the container's own
-    // network namespace: `pg_isready` on the host if it exists, else the same
-    // image's `pg_isready` from a throwaway container on the host's network.
-    const waitScript = [
-      "end=$(( $(date +%s) + 60 ))",
-      "ok=0",
-      'while [ "$(date +%s)" -lt "$end" ]; do',
-      `  if command -v pg_isready >/dev/null 2>&1 && pg_isready -h 127.0.0.1 -p ${port} -t 2 >/dev/null 2>&1; then ok=1; break; fi`,
-      `  if docker run --rm --network host postgres:16 pg_isready -h 127.0.0.1 -p ${port} -t 2 >/dev/null 2>&1; then ok=1; break; fi`,
-      "  sleep 2",
+    // As a project's test script does it (keki-backend's scripts/test-docker.sh):
+    // wait with `docker exec … pg_isready` inside the container, then connect at
+    // once from the machine itself, as the worker, through the published port.
+    // The client is Node on the machine speaking Postgres's opening message (an
+    // SSLRequest, answered `S` or `N`), never a container on Docker's network:
+    // under rootless Docker that network is Docker's own namespace, not the
+    // machine, and the check it made could not see what keki's migrations met.
+    const readyScript = [
+      "end=$(( $(date +%s) + 90 ))",
+      `until docker exec ${container} pg_isready --quiet --host 127.0.0.1; do`,
+      '  [ "$(date +%s)" -lt "$end" ] || { echo NOT_READY; exit 1; }',
+      "  sleep 1",
       "done",
-      "echo READY=$ok",
+      `node -e "const s=require('net').connect(${port},'127.0.0.1',()=>s.write(Buffer.from([0,0,0,8,4,210,22,47])));s.on('data',d=>{console.log('ANSWER='+d.toString());s.destroy()});s.on('close',()=>process.exit(0));s.on('error',e=>{console.log('ERROR='+e.message);process.exit(0)});setTimeout(()=>{console.log('TIMEOUT');process.exit(0)},10000)"`,
     ].join("\n");
-    const ready = await run(activeWorker, "sh", ["-c", waitScript], 90);
-    say(`environment parity: postgres:16's published port ${ready.body.trim()}`);
-    expect(ready.body.trim(), "the published port never answered a host-side client").toBe(
-      "READY=1",
+    const ready = await run(activeWorker, "sh", ["-c", readyScript], 150);
+    say(
+      `environment parity: postgres:16 from the machine, at once after pg_isready: ${ready.body.trim()}`,
     );
+    expect(
+      ready.body.trim(),
+      "a client on the machine was not answered at once after pg_isready",
+    ).toMatch(/^ANSWER=[SN]$/m);
   } finally {
     await run(activeWorker, "docker", ["stop", container], 30);
   }

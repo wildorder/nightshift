@@ -11,8 +11,10 @@
 import { describe, expect, it } from "vitest";
 import {
   containmentComponent,
+  DOCKER_FORWARD,
   DOCKER_PRIVATE_SOCKET,
   DOCKER_SOCKET,
+  DOCKER_SOCKET_UNIT,
   IMAGE_ARCHITECTURES,
   IMAGE_COMPONENT_MAX_CHARS,
   MISE_SHA256,
@@ -20,7 +22,6 @@ import {
   RUNNER_TOOLCHAIN,
   RUNTIMES_DIR,
   runnerComponent,
-  SOCKET_PROXYD,
   toolchainComponent,
   WORKER_USERS,
 } from "./runner-image.js";
@@ -145,12 +146,14 @@ describe("the runner image", () => {
         -1,
       );
       const override = commands.findIndex((c) => c.endsWith(`> ${dropIn}`));
-      const socket = commands.findIndex((c) => c.endsWith("> /etc/systemd/user/docker.socket"));
+      const socket = commands.findIndex((c) =>
+        c.endsWith(`> /etc/systemd/user/${DOCKER_SOCKET_UNIT}`),
+      );
       const proxy = commands.findIndex((c) =>
-        c.endsWith("> /etc/systemd/user/docker-proxy.service"),
+        c.endsWith("> /etc/systemd/user/docker-proxy@.service"),
       );
       const firstEnable = commands.findIndex((c) =>
-        c.includes("systemctl --user enable docker.socket"),
+        c.includes(`systemctl --user enable ${DOCKER_SOCKET_UNIT}`),
       );
       expect(lastSetup).toBeGreaterThan(-1);
       for (const step of [override, socket, proxy, firstEnable]) {
@@ -159,11 +162,11 @@ describe("the runner image", () => {
       expect(firstEnable).toBeGreaterThan(Math.max(override, socket, proxy));
     });
 
-    it("leaves every worker's docker.service disabled and stopped, and its docker.socket enabled", () => {
+    it("leaves every worker's docker.service disabled and stopped, and its socket enabled", () => {
       expect(everyWorker(commands, "systemctl --user disable --now docker.service")).toContain(
         "sudo -u $w ",
       );
-      expect(everyWorker(commands, "systemctl --user enable docker.socket")).toContain(
+      expect(everyWorker(commands, `systemctl --user enable ${DOCKER_SOCKET_UNIT}`)).toContain(
         "sudo -u $w ",
       );
       expect(
@@ -171,7 +174,7 @@ describe("the runner image", () => {
       ).toBe(false);
       const check = everyWorker(commands, "is-enabled docker.service");
       expect(check).toContain("= disabled ]");
-      expect(check).toContain('is-enabled docker.socket)" = enabled ]');
+      expect(check).toContain(`is-enabled ${DOCKER_SOCKET_UNIT})" = enabled ]`);
     });
 
     it("keeps the rootful system units disabled", () => {
@@ -180,17 +183,21 @@ describe("the runner image", () => {
       );
     });
 
-    it("puts docker.socket on the worker's socket path, activating the proxy and never dockerd", () => {
+    it("puts the worker's socket on its conventional path, one forwarder per connection, never dockerd", () => {
       expect(DOCKER_SOCKET).toBe("%t/docker.sock");
-      expect(unitWrittenTo(commands, "/etc/systemd/user/docker.socket").split("\n")).toEqual(
+      expect(DOCKER_SOCKET_UNIT).toBe("docker-proxy.socket");
+      const lines = unitWrittenTo(commands, `/etc/systemd/user/${DOCKER_SOCKET_UNIT}`).split("\n");
+      expect(lines).toEqual(
         expect.arrayContaining([
           "[Socket]",
           "ListenStream=%t/docker.sock",
           "SocketMode=0600",
-          "Service=docker-proxy.service",
+          "Accept=yes",
           "WantedBy=sockets.target",
         ]),
       );
+      // Accept=yes starts the template named after the socket, so no Service= line.
+      expect(lines.some((line) => line.startsWith("Service="))).toBe(false);
     });
 
     it("moves the daemon to a private socket, different from the worker's", () => {
@@ -204,16 +211,24 @@ describe("the runner image", () => {
       ]);
     });
 
-    it("forwards through systemd-socket-proxyd, which pulls the daemon up and waits for it, bounded", () => {
-      const lines = unitWrittenTo(commands, "/etc/systemd/user/docker-proxy.service").split("\n");
+    it("forwards each connection with socat, which carries exec's upgraded stream, after pulling the daemon up", () => {
+      // systemd-socket-proxyd made every `docker exec` return 0 with no output
+      // (2026-10-10); socat carries each direction's close on its own.
+      expect(DOCKER_FORWARD).toBe("/usr/bin/socat -t 86400 STDIO");
+      expect(
+        commandsOf(toolchainComponent()).some((c) => /dnf -y install docker .*\bsocat\b/.test(c)),
+      ).toBe(true);
+      const lines = unitWrittenTo(commands, "/etc/systemd/user/docker-proxy@.service").split("\n");
       expect(lines).toEqual(
         expect.arrayContaining([
           "Requires=docker.service",
           "After=docker.service",
-          `ExecStart=${SOCKET_PROXYD} ${DOCKER_PRIVATE_SOCKET}`,
+          `ExecStart=${DOCKER_FORWARD} UNIX-CONNECT:${DOCKER_PRIVATE_SOCKET}`,
+          "StandardInput=socket",
+          "StandardOutput=socket",
         ]),
       );
-      expect(SOCKET_PROXYD).toBe("/usr/lib/systemd/systemd-socket-proxyd");
+      expect(commands.some((c) => c.includes("systemd-socket-proxyd"))).toBe(false);
       const wait = lines.find((line) => line.startsWith("ExecStartPre="));
       expect(wait).toContain("/usr/bin/timeout 60");
       expect(wait).toContain(`[ -S ${DOCKER_PRIVATE_SOCKET} ]`);
