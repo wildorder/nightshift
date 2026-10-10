@@ -196,13 +196,31 @@ const journal = async (
   );
 };
 
+/**
+ * Git against GitHub, as the operator: the fixture repository is private, and
+ * the credential git's own helper holds on a developer machine may not reach
+ * it. The operator's `gh` login is the identity this proof already runs under
+ * (it records the App installation and seals the org's credentials), so every
+ * call that reaches GitHub authenticates through it and nothing else.
+ */
+const githubGit = (
+  args: readonly string[],
+  options: { readonly cwd?: string; readonly encoding?: "utf8" } = {},
+) =>
+  execFileSync(
+    "git",
+    ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential", ...args],
+    {
+      ...options,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    },
+  );
+
 /** The branch's head at GitHub, which is what the dispatch binds (D-P10-02). */
 const remoteHead = (): string => {
-  const listed = execFileSync(
-    "git",
-    ["ls-remote", FIXTURE_REPOSITORY, `refs/heads/${FIXTURE_BRANCH}`],
-    { encoding: "utf8" },
-  );
+  const listed = githubGit(["ls-remote", FIXTURE_REPOSITORY, `refs/heads/${FIXTURE_BRANCH}`], {
+    encoding: "utf8",
+  }) as string;
   const sha = listed.split(/\s+/)[0];
   if (sha === undefined || !/^[0-9a-f]{40}$/.test(sha)) {
     throw new Error(`git ls-remote found no ${FIXTURE_BRANCH} at ${FIXTURE_REPOSITORY}`);
@@ -337,14 +355,10 @@ const resetFixtureBranch = (sha: string): void => {
   const scratch = mkdtempSync(join(tmpdir(), "nightshift-fixture-reset-"));
   try {
     execFileSync("git", ["init", "-q"], { cwd: scratch });
-    execFileSync("git", ["fetch", "-q", FIXTURE_REPOSITORY, FIXTURE_BRANCH], { cwd: scratch });
-    execFileSync(
-      "git",
-      ["push", "-q", "-f", FIXTURE_REPOSITORY, `${sha}:refs/heads/${FIXTURE_BRANCH}`],
-      {
-        cwd: scratch,
-      },
-    );
+    githubGit(["fetch", "-q", FIXTURE_REPOSITORY, FIXTURE_BRANCH], { cwd: scratch });
+    githubGit(["push", "-q", "-f", FIXTURE_REPOSITORY, `${sha}:refs/heads/${FIXTURE_BRANCH}`], {
+      cwd: scratch,
+    });
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -352,15 +366,15 @@ const resetFixtureBranch = (sha: string): void => {
 
 /**
  * The fixture's pin files as committed at `sha` (P16 S-01), from a scratch
- * clone holding just that commit. GitHub serves an arbitrary reachable commit
- * to `git fetch <url> <sha>` for a public repository, so no API token is
- * needed.
+ * clone holding just that commit. GitHub serves a reachable commit to
+ * `git fetch <url> <sha>`; the fixture is private, so the fetch goes as the
+ * operator (`githubGit`).
  */
 const fixturePinFilesAt = (sha: string): Record<string, string> => {
   const scratch = mkdtempSync(join(tmpdir(), "nightshift-fixture-pins-"));
   try {
     execFileSync("git", ["init", "-q"], { cwd: scratch });
-    execFileSync("git", ["fetch", "-q", "--depth", "1", FIXTURE_REPOSITORY, sha], { cwd: scratch });
+    githubGit(["fetch", "-q", "--depth", "1", FIXTURE_REPOSITORY, sha], { cwd: scratch });
     const files: Record<string, string> = {};
     for (const file of PIN_FILES) {
       try {
