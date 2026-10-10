@@ -123,8 +123,28 @@ export const commandLine = (command: ShellCommand): string =>
     ...command.args.map(shellQuote),
   ].join(" ");
 
-/** `script`, with its exit code printed on its own last line, for a caller that gets only stdout back. */
-export const withExitMarker = (script: string): string => `${script}\nprintf '\\nEXIT:%s\\n' "$?"`;
+/** How much of a command's output `withExitMarker` keeps: well under SSM's limit on what it returns. */
+export const EXIT_MARKED_TAIL_BYTES = 4000;
+
+/**
+ * `script`, with its exit code printed on its own last line, for a caller that
+ * gets only stdout back. The output is captured and only its tail printed,
+ * before the marker: SSM truncates what it returns, so a long output such as
+ * `docker info` printed whole lost the marker and read as no exit code at all
+ * (2026-10-09). The tail is enough for any check this proof makes. The script
+ * runs in a subshell, so one that calls `exit` still reaches the marker.
+ */
+export const withExitMarker = (script: string): string =>
+  [
+    "nightshift_out=$(mktemp)",
+    "(",
+    script,
+    ') >"$nightshift_out" 2>&1',
+    "nightshift_code=$?",
+    `tail -c ${EXIT_MARKED_TAIL_BYTES} "$nightshift_out"`,
+    'rm -f "$nightshift_out"',
+    `printf '\\nEXIT:%s\\n' "$nightshift_code"`,
+  ].join("\n");
 
 /** The `withExitMarker` marker, split back off: the command's own output, and its exit code. */
 export const parseExitMarked = (

@@ -1,7 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
   commandLine,
   DEFAULT_EXACT_VERSIONS,
+  EXIT_MARKED_TAIL_BYTES,
   fixtureToolchain,
   parseExitMarked,
   parseProjectEnv,
@@ -139,8 +141,18 @@ describe("withExitMarker / parseExitMarked", () => {
     expect(parseExitMarked("\nEXIT:1\n")).toEqual({ body: "", exitCode: 1 });
   });
 
-  it("builds a script that prints the marker last", () => {
-    expect(withExitMarker("echo hi")).toBe("echo hi\nprintf '\\nEXIT:%s\\n' \"$?\"");
+  it("prints the command's output and then its exit code, through a real shell", () => {
+    const ran = spawnSync("sh", ["-c", withExitMarker("echo hi; exit 3")], { encoding: "utf8" });
+    expect(parseExitMarked(ran.stdout)).toEqual({ body: "hi\n", exitCode: 3 });
+  });
+
+  it("keeps the marker when the output is far longer than what SSM returns", () => {
+    const ran = spawnSync("sh", ["-c", withExitMarker("yes line | head -n 20000")], {
+      encoding: "utf8",
+    });
+    const parsed = parseExitMarked(ran.stdout);
+    expect(parsed.exitCode).toBe(0);
+    expect(parsed.body.length).toBeLessThanOrEqual(EXIT_MARKED_TAIL_BYTES);
   });
 });
 
