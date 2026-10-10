@@ -888,9 +888,8 @@ const checkEnvironmentParity = async (outcome: RunOutcome): Promise<void> => {
     await onMachine(instanceId, "ls -d /home/worker-* 2>/dev/null"),
   );
   expect(numbers.length, "fewer than two worker users on the machine").toBeGreaterThanOrEqual(2);
-  // The highest-numbered worker is the one this single-strand program never
-  // delegates to; a lower one does the job, and gets the Docker checks.
-  const idleWorker = `worker-${numbers[numbers.length - 1]}`;
+  // A worker the runtimes are checked as; Docker is checked on a machine of
+  // its own (`checkDockerOnImage`).
   const activeWorker = `worker-${numbers[0]}`;
 
   const envText = await onMachine(
@@ -915,110 +914,200 @@ const checkEnvironmentParity = async (outcome: RunOutcome): Promise<void> => {
     return parseExitMarked(output);
   };
 
-  // First, before any Docker use: the idle worker has no dockerd, while its
-  // own docker-proxy.socket is listening (D-05).
-  const idle = await run(idleWorker, "sh", [
-    "-c",
-    `pgrep -u ${idleWorker} dockerd >/dev/null 2>&1; echo DOCKERD=$?; systemctl --user is-active docker-proxy.socket 2>&1`,
-  ]);
-  const idleLines = idle.body.trim().split("\n");
-  say(`environment parity: ${idleWorker} (idle) says ${idleLines.join(", ")}`);
-  expect(idleLines[0], `${idleWorker} has a dockerd process`).toBe("DOCKERD=1");
-  expect(idleLines[1], `${idleWorker}'s docker-proxy.socket is not listening`).toBe("active");
-
   for (const entry of toolchain) {
     if (entry.runtime !== "node" && entry.runtime !== "python") continue;
     const checked = await run(activeWorker, entry.runtime, ["--version"]);
-    expect(checked.exitCode, `${entry.runtime} --version failed as ${activeWorker}`).toBe(0);
+    expect(
+      checked.exitCode,
+      `${entry.runtime} --version failed as ${activeWorker}: ${checked.body.slice(-800)}`,
+    ).toBe(0);
     expect(
       checked.body,
       `${activeWorker}'s ${entry.runtime} is not the toolchain's ${entry.version}`,
     ).toContain(entry.version);
   }
+};
 
-  const dockerInfo = await run(activeWorker, "docker", ["info"]);
-  expect(dockerInfo.exitCode, `docker info failed as ${activeWorker}`).toBe(0);
-
-  // `docker exec` carries a command's own exit code and output. Through
-  // systemd-socket-proxyd it returned 0 with nothing (2026-10-10), so every
-  // readiness check written as `docker exec … pg_isready` passed at once.
-  const execProbe = "nightshift-boot-exec";
+/**
+ * Each worker user's Docker, on a machine of its own launched from the image
+ * the dispatcher would use (P16 S-01, D-05). Not the cold run's machine: that
+ * run ends on its own when its root finishes, and Nightshift terminates the
+ * machine then, so checks made there race the run (2026-10-10). Docker is the
+ * image's property, not a run's, so it is checked where nothing else is
+ * happening: every worker idle at boot, then one used as a project would.
+ */
+const checkDockerOnImage = async (): Promise<void> => {
+  const outputs = runnerOutputs();
+  const imageVersion = outputs.ImageVersion ?? "";
+  const images = JSON.parse(
+    aws([
+      "ec2",
+      "describe-images",
+      "--owners",
+      "self",
+      "--filters",
+      `Name=tag:nightshift:amiVersion,Values=${imageVersion}`,
+      "Name=tag:nightshift:architecture,Values=x86_64",
+      "Name=state,Values=available",
+    ]),
+  ) as { Images: { ImageId: string; CreationDate: string }[] };
+  const image = [...images.Images].sort((a, b) => b.CreationDate.localeCompare(a.CreationDate))[0];
+  expect(image, `no available x86_64 image for version ${imageVersion}`).toBeDefined();
+  if (image === undefined) return;
+  const launched = JSON.parse(
+    aws([
+      "ec2",
+      "run-instances",
+      "--launch-template",
+      `LaunchTemplateId=${outputs.LaunchTemplateId ?? ""}`,
+      "--image-id",
+      image.ImageId,
+      "--instance-type",
+      "c8id.2xlarge",
+      "--subnet-id",
+      (outputs.MachineSubnetIds ?? "").split(",")[0] ?? "",
+      "--tag-specifications",
+      "ResourceType=instance,Tags=[{Key=Name,Value=nightshift-boot-docker}]",
+    ]),
+  ) as { Instances: { InstanceId: string }[] };
+  const instanceId = launched.Instances[0]?.InstanceId ?? "";
+  say(`docker parity: ${instanceId} from ${image.ImageId} (image ${imageVersion})`);
   try {
-    expect(
-      (
-        await run(
-          activeWorker,
-          "docker",
-          ["run", "-d", "--rm", "--name", execProbe, "alpine:3", "sleep", "120"],
-          120,
-        )
-      ).exitCode,
-      "starting the exec probe container failed",
-    ).toBe(0);
-    const executed = await run(activeWorker, "docker", [
-      "exec",
-      execProbe,
-      "sh",
+    for (let waited = 0; ; waited += 10_000) {
+      const online = aws([
+        "ssm",
+        "describe-instance-information",
+        "--filters",
+        `Key=InstanceIds,Values=${instanceId}`,
+        "--query",
+        "InstanceInformationList[0].PingStatus",
+      ]).includes("Online");
+      if (online) break;
+      expect(waited, `${instanceId} never came online in SSM`).toBeLessThan(600_000);
+      await sleep(10_000);
+    }
+    const run = async (
+      user: string,
+      file: string,
+      args: readonly string[],
+      timeoutSeconds = 60,
+    ): Promise<{ readonly body: string; readonly exitCode: number }> => {
+      const wrapped = commandAs({ user, grant: async () => {} }, file, args, {
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+      });
+      return parseExitMarked(
+        await onMachine(instanceId, withExitMarker(commandLine(wrapped)), timeoutSeconds),
+      );
+    };
+    const numbers = parseWorkerNumbers(
+      await onMachine(instanceId, "ls -d /home/worker-* 2>/dev/null"),
+    );
+    expect(numbers.length, "fewer than two worker users on the image").toBeGreaterThanOrEqual(2);
+    // One worker stays untouched, to show an idle worker has no daemon; another
+    // is used as a project's would be.
+    const idleWorker = `worker-${numbers[numbers.length - 1]}`;
+    const activeWorker = `worker-${numbers[0]}`;
+    // First, before any Docker use: the idle worker has no dockerd, while its
+    // own docker-proxy.socket is listening (D-05).
+    const idle = await run(idleWorker, "sh", [
       "-c",
-      "echo exec-ok; exit 7",
+      `pgrep -u ${idleWorker} dockerd >/dev/null 2>&1; echo DOCKERD=$?; systemctl --user is-active docker-proxy.socket 2>&1`,
     ]);
-    say(
-      `environment parity: docker exec answered exit ${executed.exitCode}, ${JSON.stringify(executed.body.trim())}`,
-    );
-    expect(executed.exitCode, "docker exec lost the command's exit code").toBe(7);
-    expect(executed.body.trim(), "docker exec lost the command's output").toBe("exec-ok");
-  } finally {
-    await run(activeWorker, "docker", ["rm", "-f", execProbe], 30);
-  }
+    const idleLines = idle.body.trim().split("\n");
+    say(`environment parity: ${idleWorker} (idle) says ${idleLines.join(", ")}`);
+    expect(idleLines[0], `${idleWorker} has a dockerd process`).toBe("DOCKERD=1");
+    expect(idleLines[1], `${idleWorker}'s docker-proxy.socket is not listening`).toBe("active");
 
-  const port = 55432;
-  const container = "nightshift-boot-pg";
-  const password = randomUUID();
-  try {
-    const started = await run(
-      activeWorker,
-      "docker",
-      [
-        "run",
-        "-d",
-        "--rm",
-        "--name",
-        container,
-        "-p",
-        `127.0.0.1:${port}:5432`,
-        "-e",
-        `POSTGRES_PASSWORD=${password}`,
-        "postgres:16",
-      ],
-      180,
-    );
-    expect(started.exitCode, "starting a postgres:16 container failed").toBe(0);
-
-    // As a project's test script does it (keki-backend's scripts/test-docker.sh):
-    // wait with `docker exec … pg_isready` inside the container, then connect at
-    // once from the machine itself, as the worker, through the published port.
-    // The client is Node on the machine speaking Postgres's opening message (an
-    // SSLRequest, answered `S` or `N`), never a container on Docker's network:
-    // under rootless Docker that network is Docker's own namespace, not the
-    // machine, and the check it made could not see what keki's migrations met.
-    const readyScript = [
-      "end=$(( $(date +%s) + 90 ))",
-      `until docker exec ${container} pg_isready --quiet --host 127.0.0.1; do`,
-      '  [ "$(date +%s)" -lt "$end" ] || { echo NOT_READY; exit 1; }',
-      "  sleep 1",
-      "done",
-      `node -e "const s=require('net').connect(${port},'127.0.0.1',()=>s.write(Buffer.from([0,0,0,8,4,210,22,47])));s.on('data',d=>{console.log('ANSWER='+d.toString());s.destroy()});s.on('close',()=>process.exit(0));s.on('error',e=>{console.log('ERROR='+e.message);process.exit(0)});setTimeout(()=>{console.log('TIMEOUT');process.exit(0)},10000)"`,
-    ].join("\n");
-    const ready = await run(activeWorker, "sh", ["-c", readyScript], 150);
-    say(
-      `environment parity: postgres:16 from the machine, at once after pg_isready: ${ready.body.trim()}`,
-    );
+    const dockerInfo = await run(activeWorker, "docker", ["info"], 120);
     expect(
-      ready.body.trim(),
-      "a client on the machine was not answered at once after pg_isready",
-    ).toMatch(/^ANSWER=[SN]$/m);
+      dockerInfo.exitCode,
+      `docker info failed as ${activeWorker}: ${dockerInfo.body.slice(-800)}`,
+    ).toBe(0);
+
+    // `docker exec` carries a command's own exit code and output. Through
+    // systemd-socket-proxyd it returned 0 with nothing (2026-10-10), so every
+    // readiness check written as `docker exec … pg_isready` passed at once.
+    const execProbe = "nightshift-boot-exec";
+    try {
+      expect(
+        (
+          await run(
+            activeWorker,
+            "docker",
+            ["run", "-d", "--rm", "--name", execProbe, "alpine:3", "sleep", "120"],
+            120,
+          )
+        ).exitCode,
+        "starting the exec probe container failed",
+      ).toBe(0);
+      const executed = await run(activeWorker, "docker", [
+        "exec",
+        execProbe,
+        "sh",
+        "-c",
+        "echo exec-ok; exit 7",
+      ]);
+      say(
+        `environment parity: docker exec answered exit ${executed.exitCode}, ${JSON.stringify(executed.body.trim())}`,
+      );
+      expect(executed.exitCode, "docker exec lost the command's exit code").toBe(7);
+      expect(executed.body.trim(), "docker exec lost the command's output").toBe("exec-ok");
+    } finally {
+      await run(activeWorker, "docker", ["rm", "-f", execProbe], 30);
+    }
+
+    const port = 55432;
+    const container = "nightshift-boot-pg";
+    const password = randomUUID();
+    try {
+      const started = await run(
+        activeWorker,
+        "docker",
+        [
+          "run",
+          "-d",
+          "--rm",
+          "--name",
+          container,
+          "-p",
+          `127.0.0.1:${port}:5432`,
+          "-e",
+          `POSTGRES_PASSWORD=${password}`,
+          "postgres:16",
+        ],
+        180,
+      );
+      expect(started.exitCode, "starting a postgres:16 container failed").toBe(0);
+
+      // As a project's test script does it (keki-backend's scripts/test-docker.sh):
+      // wait with `docker exec … pg_isready` inside the container, then connect at
+      // once from the machine itself, as the worker, through the published port.
+      // The client is Node on the machine speaking Postgres's opening message (an
+      // SSLRequest, answered `S` or `N`), never a container on Docker's network:
+      // under rootless Docker that network is Docker's own namespace, not the
+      // machine, and the check it made could not see what keki's migrations met.
+      const readyScript = [
+        "end=$(( $(date +%s) + 90 ))",
+        `until docker exec ${container} pg_isready --quiet --host 127.0.0.1; do`,
+        '  [ "$(date +%s)" -lt "$end" ] || { echo NOT_READY; exit 1; }',
+        "  sleep 1",
+        "done",
+        `node -e "const s=require('net').connect(${port},'127.0.0.1',()=>s.write(Buffer.from([0,0,0,8,4,210,22,47])));s.on('data',d=>{console.log('ANSWER='+d.toString());s.destroy()});s.on('close',()=>process.exit(0));s.on('error',e=>{console.log('ERROR='+e.message);process.exit(0)});setTimeout(()=>{console.log('TIMEOUT');process.exit(0)},10000)"`,
+      ].join("\n");
+      const ready = await run(activeWorker, "sh", ["-c", readyScript], 150);
+      say(
+        `environment parity: postgres:16 from the machine, at once after pg_isready: ${ready.body.trim()}`,
+      );
+      expect(
+        ready.body.trim(),
+        "a client on the machine was not answered at once after pg_isready",
+      ).toMatch(/^ANSWER=[SN]$/m);
+    } finally {
+      await run(activeWorker, "docker", ["stop", container], 30);
+    }
   } finally {
-    await run(activeWorker, "docker", ["stop", container], 30);
+    aws(["ec2", "terminate-instances", "--instance-ids", instanceId]);
+    say(`docker parity: terminated ${instanceId}`);
   }
 };
 
@@ -1203,9 +1292,10 @@ describe("two runs of the fixture, cold then warm (P10, T3, SC-P10-08)", () => {
     expect((await api.get(`${projectPath}/warm-cache`)).status).toBe(404);
     const cold = await runOnce("cold", baseSha, program);
     findings.cold = { secondsToReady: cold.secondsToReady, setupSeconds: cold.setupSeconds };
-    // P16 S-01: right after `ready`, before the root has started and so
-    // before any agent has touched a worker, the machine itself is checked.
+    // P16 S-01: right after `ready`, the run's runtimes as a worker user, while
+    // the run is still going; then Docker, on a machine of its own.
     await checkEnvironmentParity(cold);
+    await checkDockerOnImage();
     // The walk-away fixture (`npm run remote`): the cold run is also the one
     // whose machine is killed, and it must still end published (T6, T8).
     const coldCleaned =
