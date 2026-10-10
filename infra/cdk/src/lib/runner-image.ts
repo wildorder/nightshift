@@ -24,9 +24,15 @@
  * `docker.service` while the daemon still listens on the conventional
  * `/run/user/<uid>/docker.sock` (the tool smoke-tests exactly that socket), and
  * only then is the daemon moved to a private socket, `docker.service` disabled,
- * and an enabled `docker.socket` put on the conventional path that activates a
- * `systemd-socket-proxyd` service, which pulls the daemon up and forwards to it.
- * An idle worker has the socket listening and no dockerd.
+ * and an enabled `docker-proxy.socket` put on the conventional path. Each
+ * connection to it starts one `docker-proxy@` instance, a `socat` that pulls
+ * the daemon up and carries that connection to it, half-closes included. An
+ * idle worker has the socket listening and no dockerd.
+ *
+ * Not `systemd-socket-proxyd` (2026-10-10): it does not carry the upgraded
+ * stream `docker exec` and `docker attach` use, so every `docker exec` returned
+ * 0 with no output. keki-backend's readiness check (`docker exec … pg_isready`)
+ * then "passed" at once, and its migrations met a database still starting.
  */
 
 /** Pinned toolchain. Every version is a decision; none is "latest". */
@@ -58,11 +64,18 @@ export const RUNTIMES_DIR = "/workspace/stores/runtimes";
 /** mise's system config: the only mise configuration on the image. */
 export const MISE_SYSTEM_CONFIG = "/etc/mise/config.toml";
 
-/** Where AL2023's systemd keeps the proxy that stands in front of each worker's daemon. */
-export const SOCKET_PROXYD = "/usr/lib/systemd/systemd-socket-proxyd";
+/**
+ * What carries one connection from a worker's socket to its daemon: `socat`,
+ * which forwards both directions and each direction's close on its own, as
+ * Docker's upgraded exec and attach streams need. `-t` keeps the other
+ * direction open after one closes, for as long as an exec's output runs.
+ */
+export const DOCKER_FORWARD = "/usr/bin/socat -t 86400 STDIO";
+/** The socket unit, and so (with `Accept=yes`) the per-connection template's name. */
+export const DOCKER_SOCKET_UNIT = "docker-proxy.socket";
 /**
  * Each worker's Docker socket, the one projects get as `DOCKER_HOST`; `%t` is
- * the user's runtime directory, `/run/user/<uid>`. It belongs to `docker.socket`.
+ * the user's runtime directory, `/run/user/<uid>`. It belongs to `docker-proxy.socket`.
  */
 export const DOCKER_SOCKET = "%t/docker.sock";
 /** The real rootless daemon's socket, private behind the proxy. */
@@ -142,7 +155,7 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
         "dnf -y install git tar gzip xz unzip jq nftables shadow-utils sudo rsync",
         // Docker from AL2023; its rootless pieces come from Docker's static builds
         // below, because AL2023 packages neither rootlesskit nor slirp4netns.
-        "dnf -y install docker shadow-utils-subid iptables-nft",
+        "dnf -y install docker shadow-utils-subid iptables-nft socat",
         "dnf -y install gcc gcc-c++ make cmake pkgconf openssl-devel python3 python3-pip",
         // Chromium's shared libraries, for playwright and puppeteer (the audit's Keki
         // and Keyart). Not strict: a library AL2023 names differently is reported by
@@ -222,10 +235,10 @@ const dockerUserUnits = (): string[] => [
   // No setup flags are lost: --skip-iptables is not used (AL2023's kernel has
   // ip_tables built in), so the tool's ExecStart has none.
   `printf '%s\\n' '[Service]' 'ExecStartPre=/usr/bin/mkdir -p %t/docker-rootless' 'ExecStart=' 'ExecStart=/usr/local/bin/dockerd-rootless.sh -H unix://${DOCKER_PRIVATE_SOCKET}' > /etc/systemd/user/docker.service.d/nightshift-private-socket.conf`,
-  // Service= names the proxy: a connection activates it, never dockerd, and
-  // docker.service inherits no descriptor from a socket that does not trigger it.
-  `printf '%s\\n' '[Unit]' 'Description=The worker Docker socket: the first connection starts the rootless daemon (D-05)' '[Socket]' 'ListenStream=${DOCKER_SOCKET}' 'SocketMode=0600' 'Service=docker-proxy.service' '[Install]' 'WantedBy=sockets.target' > /etc/systemd/user/docker.socket`,
-  `printf '%s\\n' '[Unit]' 'Description=Forwards the worker Docker socket to its rootless daemon (D-05)' 'Requires=docker.service' 'After=docker.service' '[Service]' 'ExecStartPre=/usr/bin/timeout 60 /bin/sh -c "until [ -S ${DOCKER_PRIVATE_SOCKET} ]; do sleep 0.2; done"' 'ExecStart=${SOCKET_PROXYD} ${DOCKER_PRIVATE_SOCKET}' > /etc/systemd/user/docker-proxy.service`,
+  // Accept=yes: each connection is its own docker-proxy@ instance, never
+  // dockerd, and docker.service inherits no descriptor from the socket.
+  `printf '%s\\n' '[Unit]' 'Description=The worker Docker socket: the first connection starts the rootless daemon (D-05)' '[Socket]' 'ListenStream=${DOCKER_SOCKET}' 'SocketMode=0600' 'Accept=yes' '[Install]' 'WantedBy=sockets.target' > /etc/systemd/user/${DOCKER_SOCKET_UNIT}`,
+  `printf '%s\\n' '[Unit]' 'Description=Carries one connection on the worker Docker socket to its rootless daemon (D-05)' 'Requires=docker.service' 'After=docker.service' '[Service]' 'ExecStartPre=/usr/bin/timeout 60 /bin/sh -c "until [ -S ${DOCKER_PRIVATE_SOCKET} ]; do sleep 0.2; done"' 'ExecStart=${DOCKER_FORWARD} UNIX-CONNECT:${DOCKER_PRIVATE_SOCKET}' 'StandardInput=socket' 'StandardOutput=socket' 'StandardError=journal' > /etc/systemd/user/docker-proxy@.service`,
 ];
 
 /** The users, the sudoers rule, the firewall unit and the runner's units (D-P10-17). */
@@ -263,11 +276,11 @@ export const containmentComponent = (): string => {
         // because no worker's daemon starts at boot (D-05).
         `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && systemctl start user@$uid.service && ${asWorker("$w", "dockerd-rootless-setuptool.sh install")} && ${asWorker("$w", "systemctl --user disable --now docker.service")}; } || exit 1; done`,
         // Then the daemon moves to a private socket, and the worker's socket path
-        // belongs to docker.socket, which activates the proxy.
+        // belongs to docker-proxy.socket, each of whose connections is forwarded.
         ...dockerUserUnits(),
-        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && ${asWorker("$w", "systemctl --user daemon-reload")} && ${asWorker("$w", "systemctl --user enable docker.socket")}; } || exit 1; done`,
+        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && ${asWorker("$w", "systemctl --user daemon-reload")} && ${asWorker("$w", `systemctl --user enable ${DOCKER_SOCKET_UNIT}`)}; } || exit 1; done`,
         // An idle worker after boot: the socket enabled, the daemon not.
-        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && [ "$(${asWorker("$w", "systemctl --user is-enabled docker.service")} || true)" = disabled ] && [ "$(${asWorker("$w", "systemctl --user is-enabled docker.socket")})" = enabled ] && systemctl stop user@$uid.service; } || exit 1; done`,
+        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && [ "$(${asWorker("$w", "systemctl --user is-enabled docker.service")} || true)" = disabled ] && [ "$(${asWorker("$w", `systemctl --user is-enabled ${DOCKER_SOCKET_UNIT}`)})" = enabled ] && systemctl stop user@$uid.service; } || exit 1; done`,
       ]),
       shell("sudoers", [
         "set -euo pipefail",
