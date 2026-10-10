@@ -56,7 +56,7 @@ Usage:
   nightshift local [--port <n>] [--state <dir>] [--no-open]
   nightshift use <stage>
   nightshift project create --name <name> [--description <text>]
-  nightshift init [--project <id> | --name <name>] [--yes] [--repo <path>]
+  nightshift init [--project <id> | --name <name>] [--clients <claude,codex,cursor|all|none>] [--yes] [--repo <path>]
   nightshift plan check <program> [--repo <path>]
   nightshift plan ratify <program> [--repo <path>]
   nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>]
@@ -334,7 +334,8 @@ const programArgs = (
 };
 
 const doInit = async (environment: CliEnvironment, args: readonly string[]): Promise<void> => {
-  const usage = "nightshift init [--project <id> | --name <name>] [--yes] [--repo <path>]";
+  const usage =
+    "nightshift init [--project <id> | --name <name>] [--clients <claude,codex,cursor|all|none>] [--yes] [--repo <path>]";
   const { values } = parse(
     {
       args: [...args],
@@ -342,6 +343,7 @@ const doInit = async (environment: CliEnvironment, args: readonly string[]): Pro
         repo: { type: "string" },
         project: { type: "string" },
         name: { type: "string" },
+        clients: { type: "string" },
         yes: { type: "boolean", default: false },
       },
       allowPositionals: false,
@@ -352,7 +354,9 @@ const doInit = async (environment: CliEnvironment, args: readonly string[]): Pro
   const repo = optional(values, "repo");
   const project = optional(values, "project");
   const name = optional(values, "name");
+  const clients = optional(values, "clients");
   await init(environment, {
+    ...(clients === undefined ? {} : { clients }),
     ...(repo === undefined ? {} : { repo }),
     ...(project === undefined ? {} : { project }),
     ...(name === undefined ? {} : { name }),

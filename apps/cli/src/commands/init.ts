@@ -7,16 +7,13 @@
  * 1. a control-plane **project**, unless the config already names one;
  * 2. **`nightshift.config.json`**, with verification steps detected from
  *    `package.json` and confirmed by the human (or taken as found with `--yes`);
- * 3. the **skills**, copied to the operator's `~/.claude/skills/`, never into the
- *    repository: what a public repository contains is its owner's call;
- * 4. the **MCP server**, registered for this directory at Claude Code's *local*
- *    scope, which also writes nothing into the repository.
+ * 3. the **skills**, copied to the selected clients' user skill directories;
+ * 4. the **MCP server**, registered with each selected client, outside the repo.
  *
  * It does not sign anyone up and installs nothing from a registry: `init` sets up
  * a repository for a user who already has an account (P7 §5, out of scope).
  */
 import { cp, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
   NIGHTSHIFT_CONFIG_FILE,
@@ -28,6 +25,14 @@ import {
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { readConfig, resolveFrom } from "../program-files.js";
+import {
+  clientSkillsPath,
+  INIT_CLIENTS,
+  type InitClient,
+  mcpAddArgs,
+  parseInitClients,
+  registerClientMcp,
+} from "./init-clients.js";
 import { createProject } from "./project-create.js";
 
 export interface InitOptions {
@@ -38,6 +43,8 @@ export interface InitOptions {
   readonly name?: string;
   /** Ask nothing: take what was detected. */
   readonly yes: boolean;
+  /** Comma-separated clients, or all/none. Required when there is no prompt. */
+  readonly clients?: string;
 }
 
 export interface InitResult {
@@ -165,16 +172,19 @@ const confirmVerification = async (
   if (answer !== undefined && /^n/i.test(answer.trim())) {
     throw new UsageError(
       "nothing was written",
-      `Write ${NIGHTSHIFT_CONFIG_FILE} by hand, or run \`nightshift init --yes\` and edit it.`,
+      `Write ${NIGHTSHIFT_CONFIG_FILE} by hand, or run \`nightshift init --yes --clients <choice>\` and edit it.`,
     );
   }
   return detected;
 };
 
-const installSkills = async (environment: CliEnvironment): Promise<string[]> => {
+const installSkills = async (
+  environment: CliEnvironment,
+  client: InitClient,
+): Promise<string[]> => {
   const source = environment.assets?.skillsDir;
   if (source === undefined || !(await exists(source))) return [];
-  const target = join(environment.paths.home ?? homedir(), ".claude", "skills");
+  const target = clientSkillsPath(environment, client);
   const names = (await readdir(source, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
@@ -184,27 +194,24 @@ const installSkills = async (environment: CliEnvironment): Promise<string[]> => 
   return names;
 };
 
-/** Registered when `claude mcp get nightshift` says so, from inside the repository. */
-const registerMcp = async (
+const selectClients = async (
   environment: CliEnvironment,
-  repoPath: string,
-): Promise<"already" | "registered" | "unavailable"> => {
-  const server = environment.assets?.mcpServerPath;
-  const exec = environment.exec;
-  if (server === undefined || exec === undefined) return "unavailable";
-  try {
-    const found = await exec("claude", ["mcp", "get", "nightshift"], { cwd: repoPath });
-    if (found.exitCode === 0) return "already";
-    const added = await exec(
-      "claude",
-      ["mcp", "add", "--scope", "local", "nightshift", "--", "node", server],
-      { cwd: repoPath },
+  options: InitOptions,
+): Promise<InitClient[]> => {
+  let selection = options.clients;
+  if (selection === undefined && !options.yes) {
+    environment.out("Where should Nightshift install MCP and skills?");
+    for (const [client, details] of Object.entries(INIT_CLIENTS)) {
+      environment.out(
+        `  ${client}: ${details.name}; skills ~/${details.skills}/skills; MCP ${details.scope}`,
+      );
+    }
+    selection = await ask(
+      environment,
+      "Choose one or more (comma-separated): claude, codex, cursor, all, or none:",
     );
-    return added.exitCode === 0 ? "registered" : "unavailable";
-  } catch {
-    // No Claude Code on this machine. Said below, with the command to run later.
-    return "unavailable";
   }
+  return parseInitClients(selection);
 };
 
 export const init = async (
@@ -218,7 +225,7 @@ export const init = async (
       "Nightshift works in a clone: run `nightshift init` at its root, or pass --repo.",
     );
   }
-
+  const clients = await selectClients(environment, options);
   const existing = await readConfig(repoPath);
   let projectId = existing?.projectId ?? options.project;
   let configWritten = false;
@@ -242,40 +249,62 @@ export const init = async (
   }
   if (projectId === undefined) throw new Error("unreachable: a config always names a project");
 
-  const skillsInstalled = await installSkills(environment);
-  const mcp = await registerMcp(environment, repoPath);
-
   environment.out(
     configWritten
       ? `wrote ${NIGHTSHIFT_CONFIG_FILE} for project ${projectId}. Commit it: a program inherits what its contract does not state.`
       : `${NIGHTSHIFT_CONFIG_FILE} already names project ${projectId}; left as it is`,
   );
-  environment.out(
-    skillsInstalled.length > 0
-      ? `installed skills to ~/.claude/skills: ${skillsInstalled.join(", ")}`
-      : "skills not installed: this build of the CLI does not carry them",
-  );
-  if (mcp === "unavailable") {
-    environment.out(
-      "the MCP server was not registered: Claude Code was not found. When it is installed, run in this directory:",
-    );
-    environment.out(
-      `  claude mcp add --scope local nightshift -- node ${environment.assets?.mcpServerPath ?? "<path to nightshift-mcp.js>"}`,
-    );
-  } else {
-    environment.out(
-      mcp === "already"
-        ? "the Nightshift MCP server is already registered for this directory"
-        : "registered the Nightshift MCP server for this directory (local scope; nothing written to the repository)",
-    );
-  }
+  const installation = await installClients(environment, repoPath, clients);
   environment.out(
     "Routing and examination are your org's: its ladders, rules and prices, and what each risk " +
       "is examined by. See them with `nightshift org config get`; this repository only narrows them.",
   );
   environment.out(
-    "Next: plan a program with the plan-program skill, in Claude Code, in this directory.",
+    "Next: plan a program with the plan-program skill, in your preferred client, in this directory.",
   );
 
-  return { projectId, configWritten, skillsInstalled, mcpRegistered: mcp !== "unavailable" };
+  return { projectId, configWritten, ...installation };
+};
+
+const installClients = async (
+  environment: CliEnvironment,
+  repoPath: string,
+  clients: readonly InitClient[],
+): Promise<Pick<InitResult, "skillsInstalled" | "mcpRegistered">> => {
+  const skillsInstalled = new Set<string>();
+  let mcpRegistered = clients.length > 0;
+  if (clients.length === 0) environment.out("MCP and skills installation skipped (none selected).");
+  for (const client of clients) {
+    const details = INIT_CLIENTS[client];
+    const installed = await installSkills(environment, client);
+    installed.forEach((skill) => {
+      skillsInstalled.add(skill);
+    });
+    environment.out(
+      installed.length > 0
+        ? `${details.name}: installed skills to ${clientSkillsPath(environment, client)}: ${installed.join(", ")}`
+        : `${details.name}: skills not installed: this build of the CLI does not carry them`,
+    );
+    const mcp = await registerClientMcp(environment, repoPath, client);
+    if (mcp === "unavailable") {
+      mcpRegistered = false;
+      environment.out(
+        `${details.name}: MCP server was not registered; the client CLI or bundled server is unavailable, or registration failed.`,
+      );
+      if (client !== "cursor") {
+        const args = mcpAddArgs(
+          client,
+          environment.assets?.mcpServerPath ?? "<path to nightshift-mcp.js>",
+        );
+        environment.out(
+          `  ${client} ${args.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg)).join(" ")}`,
+        );
+      }
+    } else {
+      environment.out(
+        `${details.name}: Nightshift MCP server ${mcp === "already" ? "already registered" : "registered"} (${details.scope})`,
+      );
+    }
+  }
+  return { skillsInstalled: [...skillsInstalled], mcpRegistered };
 };

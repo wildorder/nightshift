@@ -49,7 +49,7 @@ const environment = (overrides: Partial<CliEnvironment> = {}): CliEnvironment =>
 const cli = async (env: CliEnvironment, ...argv: string[]): Promise<number> => {
   op.out.length = 0;
   op.err.length = 0;
-  return runCli(env, ["init", "--repo", fixture.repo, ...argv]);
+  return runCli(env, ["init", "--repo", fixture.repo, "--clients", "claude", ...argv]);
 };
 
 beforeEach(async () => {
@@ -168,6 +168,100 @@ describe("nightshift init (SC-P7-13)", () => {
     expect(await cli(missing, "--yes")).toBe(0);
     expect(op.out.join("\n")).toContain("claude mcp add --scope local nightshift -- node");
     expect(await readConfig(fixture.repo)).toBeDefined();
+  });
+
+  it("offers all clients interactively and installs only the selected ones", async () => {
+    const answers = ["codex,cursor", ""];
+    const env = environment({
+      readPaste: () => ({ line: Promise.resolve(answers.shift()), cancel: () => undefined }),
+    });
+    expect(await runCli(env, ["init", "--repo", fixture.repo])).toBe(0);
+    expect(op.out.join("\n")).toContain("claude: Claude Code");
+    expect(op.out.join("\n")).toContain("codex: Codex");
+    expect(op.out.join("\n")).toContain("cursor: Cursor");
+    for (const directory of [".agents", ".cursor"]) {
+      expect(
+        await readFile(join(home, directory, "skills", "plan-program", "SKILL.md"), "utf8"),
+      ).toBe("# plan-program\n");
+    }
+    await expect(
+      readFile(join(home, ".claude", "skills", "plan-program", "SKILL.md")),
+    ).rejects.toThrow();
+    expect(calls).toEqual([
+      ["codex", "mcp", "get", "nightshift"],
+      ["codex", "mcp", "add", "nightshift", "--", "node", join(assets, "nightshift-mcp.js")],
+    ]);
+    expect(JSON.parse(await readFile(join(home, ".cursor", "mcp.json"), "utf8"))).toEqual({
+      mcpServers: { nightshift: { command: "node", args: [join(assets, "nightshift-mcp.js")] } },
+    });
+    for (const directory of [".claude", ".agents", ".cursor"]) {
+      await expect(readFile(join(fixture.repo, directory, "mcp.json"))).rejects.toThrow();
+    }
+  });
+
+  it("merges Cursor settings and leaves an existing registration unchanged on rerun", async () => {
+    const file = join(home, ".cursor", "mcp.json");
+    await mkdir(join(home, ".cursor"));
+    const other = { command: "other", args: ["keep"] };
+    await writeFile(file, JSON.stringify({ mcpServers: { other }, custom: true }));
+    expect(await cli(environment(), "--yes", "--clients", "cursor")).toBe(0);
+    const first = await readFile(file, "utf8");
+    expect(JSON.parse(first)).toMatchObject({ mcpServers: { other }, custom: true });
+    expect(await cli(environment(), "--yes", "--clients", "cursor")).toBe(0);
+    expect(await readFile(file, "utf8")).toBe(first);
+    expect(calls).toEqual([]);
+    expect(op.out.join("\n")).toContain("Cursor: Nightshift MCP server already registered");
+  });
+
+  it.each(["{ broken", "[]", '{"mcpServers":[]}'])(
+    "does not overwrite malformed Cursor settings: %s",
+    async (contents) => {
+      const file = join(home, ".cursor", "mcp.json");
+      await mkdir(join(home, ".cursor"));
+      await writeFile(file, contents);
+      expect(await cli(environment(), "--yes", "--clients", "cursor")).not.toBe(0);
+      expect(await readFile(file, "utf8")).toBe(contents);
+    },
+  );
+
+  it("installs all clients even when one CLI is unavailable", async () => {
+    const env = environment({
+      exec: async (file, args) => {
+        calls.push([file, ...args]);
+        if (file === "claude") throw new Error("not installed");
+        return { exitCode: args[1] === "get" ? 1 : 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(await cli(env, "--yes", "--clients", "all")).toBe(0);
+    for (const directory of [".claude", ".agents", ".cursor"]) {
+      expect(
+        await readFile(join(home, directory, "skills", "nightshift", "SKILL.md"), "utf8"),
+      ).toBe("# nightshift\n");
+    }
+    expect(calls.some((call) => call[0] === "codex" && call[2] === "add")).toBe(true);
+    expect(op.out.join("\n")).toContain("Claude Code: MCP server was not registered");
+    expect(op.out.join("\n")).toContain("Cursor: Nightshift MCP server registered");
+  });
+
+  it("allows opting out and requires a valid explicit choice without a terminal", async () => {
+    const env = environment({
+      readPaste: () => ({ line: Promise.resolve(undefined), cancel: () => undefined }),
+    });
+    for (const args of [
+      ["--yes"],
+      [],
+      ["--yes", "--clients", "typo"],
+      ["--yes", "--clients", "none,codex"],
+    ]) {
+      expect(await runCli(env, ["init", "--repo", fixture.repo, ...args])).toBe(2);
+      expect(await readConfig(fixture.repo)).toBeUndefined();
+      expect(calls).toEqual([]);
+    }
+    expect(await cli(environment(), "--yes", "--clients", "none")).toBe(0);
+    expect(await readConfig(fixture.repo)).toBeDefined();
+    expect(calls).toEqual([]);
+    await expect(readFile(join(home, ".cursor", "mcp.json"))).rejects.toThrow();
+    expect(op.out.join("\n")).toContain("installation skipped");
   });
 
   it("refuses a directory that is not a repository, or has nothing to verify with", async () => {

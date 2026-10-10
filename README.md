@@ -38,7 +38,13 @@ Then, in another terminal, in a repository of yours:
 nightshift init                          # the project, its config, the skills and the MCP server
 ```
 
-In Claude Code, ask it to plan something (`/plan-program`). It writes
+`init` asks where to install MCP and skills: Claude Code, Codex, Cursor, any
+combination, or none. Skills are installed in your home directory. Claude's MCP
+registration is local to the repository; Codex and Cursor use user-wide MCP
+settings. For unattended setup, select explicitly, for example
+`nightshift init --yes --clients codex,cursor` (or `--clients none` to skip).
+
+In your selected client, ask it to use the `plan-program` skill. It writes
 `docs/programs/<id>/plan.md` and `contract.json` with you, and when
 `nightshift plan check <id>` says `READY` you ratify it:
 
