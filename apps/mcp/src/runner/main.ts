@@ -59,6 +59,8 @@ export interface RunnerOptions {
   readonly credentialTimeoutMs?: number;
   /** The runner's own PATH, kept in the project environment after the runtimes and the image's. */
   readonly inheritedPath?: string;
+  /** The user project code runs as (D-P10-30); absent, the setup runs as this process. */
+  readonly projectUser?: string;
 }
 
 /** How the work ends the dispatch when it cannot go on: the failure the plane records. */
@@ -237,6 +239,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
       log,
       onProgress: (progress) => heartbeat.progress(progress),
       ...(options.inheritedPath === undefined ? {} : { inheritedPath: options.inheritedPath }),
+      ...(options.projectUser === undefined ? {} : { projectUser: options.projectUser }),
     });
     log(
       `workspace ${prepared.warm ? "warm" : "cold"}: setup took ${prepared.setupSeconds.toFixed(1)}s`,

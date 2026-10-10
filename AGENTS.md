@@ -181,12 +181,19 @@ decision IDs live in `docs/programs/p1-foundation.md` §Ratified decisions.
   project's own pinned runtimes (Node, Python, Ruby, Go, Java, Rust) are
   installed by the engine with `mise` into `/workspace/stores/runtimes`
   before setup, and reach only the "project environment" — setup, the gate
-  audit, and each worker's agent — through `PATH`, never the engine's own
+  audit, and each job's agent — through `PATH`, never the engine's own
   process. That one environment is computed by `projectEnvironment` in
   `apps/mcp/src/runner/workspace.ts`, written once to `<run>/project.env`,
-  and adopted by the engine's own process and handed to each worker user
-  through `RunAs.env`; each worker also gets its own rootless Docker socket,
-  which starts on the connection that first uses it, not at boot. Full
+  threaded explicitly to every project step (D-10) and handed to the project
+  user through `RunAs.env`; the project user also gets its own rootless Docker
+  socket, which starts on the connection that first uses it, not at boot.
+- **All project code on a machine runs as one `project` user** (D-P10-30,
+  amending D-P10-25, 2026-10-10): setup at boot, every checkout's setup, the
+  gates and every job's agent. Only `engine` is separate, because it holds the
+  engine token and the placed credentials. Sixteen `worker-N` users could not
+  share package stores: pnpm hard-links store files and then chmods them, and
+  only a file's owner may (keki's install failed with EPERM). The boot hands
+  the stores and the checkout to `project` before setup. Full
   account in `docs/programs/p16-environment-parity.md` §S-01 as built.
 - Formatter and linter: Biome, one config at the repo root. No ESLint, no
   Prettier.
@@ -730,7 +737,7 @@ A-40 and A-41.
   verifies and integrates under an `engine` token (`createWorld({ engine: true })`);
   a feature that adds a read or write to the launch path runs there too.
 - **The engine takes back what it granted before removing it.** A worktree
-  handed to a worker user (D-P10-25) is released through `releaseWorktree`,
+  handed to the project user (D-P10-30) is released through `releaseWorktree`,
   which calls the environment's `reclaim` (a root `chown` to the engine on a
   machine) and then `removeWorktree`, which frees the branch or throws git's
   reason. Never `.catch(() => {})` a removal: a branch left silently is a

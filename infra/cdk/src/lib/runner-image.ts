@@ -9,8 +9,9 @@
  * commit the pipeline was told.
  *
  * The containment D-P10-17 asks for is laid down here too: an `engine` user the
- * runner runs as, sixteen `worker-N` users with rootless Docker, a sudoers rule
- * that lets `engine` run commands as a worker and nothing else, and a boot unit
+ * runner runs as, one `project` user that runs all project code, with rootless
+ * Docker (D-P10-30), a sudoers rule that lets `engine` run commands as it and
+ * little else, and a boot unit
  * that mounts the workspace volume and closes the instance metadata endpoint to
  * everyone but `engine`.
  *
@@ -19,15 +20,15 @@
  * `/usr/local/bin/mise` with a system config that reads the projects' idiomatic
  * version files, and never a shell hook or a shim, so projects never see it.
  * The engine installs a dispatch's runtimes with it under `RUNTIMES_DIR`.
- * And every worker's rootless Docker starts on the first connection to its
- * socket (D-05): `dockerd-rootless-setuptool.sh` installs each worker's
+ * And the project user's rootless Docker starts on the first connection to its
+ * socket (D-05): `dockerd-rootless-setuptool.sh` installs the user's
  * `docker.service` while the daemon still listens on the conventional
  * `/run/user/<uid>/docker.sock` (the tool smoke-tests exactly that socket), and
  * only then is the daemon moved to a private socket, `docker.service` disabled,
  * and an enabled `docker-proxy.socket` put on the conventional path. Each
  * connection to it starts one `docker-proxy@` instance, a `socat` that pulls
  * the daemon up and carries that connection to it, half-closes included. An
- * idle worker has the socket listening and no dockerd.
+ * idle project user has the socket listening and no dockerd.
  *
  * Not `systemd-socket-proxyd` (2026-10-10): it does not carry the upgraded
  * stream `docker exec` and `docker attach` use, so every `docker exec` returned
@@ -87,8 +88,12 @@ export const RUNNER_INSTALL_DIR = "/opt/nightshift";
 export const RUNNER_WORKSPACE = "/workspace";
 /** The device the dispatch Lambda attaches the workspace volume as (T3). */
 export const WORKSPACE_DEVICE = "/dev/xvdf";
-/** How many worker users the image carries: the largest tier's vCPUs. */
-export const WORKER_USERS = 16;
+/**
+ * The one user project code runs as on a machine (D-P10-30, amending
+ * D-P10-25): setup, gates and every job's agent. Sixteen `worker-N` users could
+ * not share package stores, since only a file's owner may chmod it.
+ */
+export const PROJECT_USER = "project";
 
 /** Image Builder's limit on a component's inline document, in characters. */
 export const IMAGE_COMPONENT_MAX_CHARS = 16_000;
@@ -243,10 +248,11 @@ const dockerUserUnits = (): string[] => [
 
 /** The users, the sudoers rule, the firewall unit and the runner's units (D-P10-17). */
 export const containmentComponent = (): string => {
-  const workers = Array.from({ length: WORKER_USERS }, (_, index) => `worker-${index + 1}`);
+  // A list of one: the steps below stay loops that stop on the first failure.
+  const workers = [PROJECT_USER];
   return component(
     "nightshift-containment",
-    "The engine and worker users, rootless Docker per worker, the sudoers rule and the IMDS firewall",
+    "The engine and project users, the project user's rootless Docker, the sudoers rule and the IMDS firewall",
     [
       shell("users", [
         "set -euo pipefail",
@@ -263,7 +269,7 @@ export const containmentComponent = (): string => {
         // unrolled form passed it at sixteen workers (2026-10-09).
         // Each worker's subordinate ids are one block, for rootless Docker.
         `i=0; for w in ${workers.join(" ")}; do { useradd --create-home --home-dir /home/$w --shell /bin/bash -G ${WORKER_GROUP} $w && loginctl enable-linger $w && echo "$w:$((100000 + i * 65536)):65536" >> /etc/subuid && echo "$w:$((100000 + i * 65536)):65536" >> /etc/subgid; } || exit 1; i=$((i + 1)); done`,
-        `echo "${ENGINE_USER}:${100000 + WORKER_USERS * 65536}:65536" >> /etc/subuid`,
+        `echo "${ENGINE_USER}:${100000 + workers.length * 65536}:65536" >> /etc/subuid`,
       ]),
       shell("rootless-docker", [
         "set -euo pipefail",
@@ -284,10 +290,10 @@ export const containmentComponent = (): string => {
       ]),
       shell("sudoers", [
         "set -euo pipefail",
-        // `engine` may become any worker (to start a worker's process in its
+        // `engine` may become the project user (to start project processes in
         // worktree) and run exactly the root commands the runner needs at boot.
         // No password, no shell escape, nothing else.
-        `printf '%s\\n' 'Defaults:${ENGINE_USER} !requiretty' 'Runas_Alias WORKERS = ${workers.join(", ")}' '${ENGINE_USER} ALL=(WORKERS) NOPASSWD: ALL' '${ENGINE_USER} ALL=(root) NOPASSWD: /usr/sbin/nft, /usr/bin/mount, /usr/bin/umount, /usr/sbin/mkfs.ext4, /usr/sbin/blkid, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/rsync, /usr/bin/loginctl, /usr/bin/machinectl, /usr/bin/systemctl' > /etc/sudoers.d/nightshift-engine`,
+        `printf '%s\\n' 'Defaults:${ENGINE_USER} !requiretty' 'Runas_Alias PROJECT = ${workers.join(", ")}' '${ENGINE_USER} ALL=(PROJECT) NOPASSWD: ALL' '${ENGINE_USER} ALL=(root) NOPASSWD: /usr/sbin/nft, /usr/bin/mount, /usr/bin/umount, /usr/sbin/mkfs.ext4, /usr/sbin/blkid, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/rsync, /usr/bin/loginctl, /usr/bin/machinectl, /usr/bin/systemctl' > /etc/sudoers.d/nightshift-engine`,
         "chmod 0440 /etc/sudoers.d/nightshift-engine && visudo -cf /etc/sudoers.d/nightshift-engine",
       ]),
       shell("imds-firewall", [
@@ -322,7 +328,7 @@ export const runnerComponent = (commit: string): string =>
       ]),
       shell("unit", [
         "set -euo pipefail",
-        `printf '%s\\n' '[Unit]' 'Description=Nightshift runner: the engine on this machine' 'After=network-online.target nightshift-imds.service' 'Wants=network-online.target' '[Service]' 'Type=simple' 'User=${ENGINE_USER}' 'UMask=0002' 'WorkingDirectory=${RUNNER_INSTALL_DIR}' 'Environment=NIGHTSHIFT_WORKSPACE=${RUNNER_WORKSPACE}' 'Environment=NIGHTSHIFT_WORKER_USERS=${WORKER_USERS}' 'Environment=NIGHTSHIFT_WORKSPACE_DEVICE=${WORKSPACE_DEVICE}' 'ExecStart=/usr/local/bin/node ${RUNNER_INSTALL_DIR}/apps/mcp/dist/bin/nightshift-runner.js' 'Restart=on-failure' 'RestartSec=5' 'StandardOutput=journal' 'StandardError=journal' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/nightshift-runner.service`,
+        `printf '%s\\n' '[Unit]' 'Description=Nightshift runner: the engine on this machine' 'After=network-online.target nightshift-imds.service' 'Wants=network-online.target' '[Service]' 'Type=simple' 'User=${ENGINE_USER}' 'UMask=0002' 'WorkingDirectory=${RUNNER_INSTALL_DIR}' 'Environment=NIGHTSHIFT_WORKSPACE=${RUNNER_WORKSPACE}' 'Environment=NIGHTSHIFT_PROJECT_USER=${PROJECT_USER}' 'Environment=NIGHTSHIFT_WORKSPACE_DEVICE=${WORKSPACE_DEVICE}' 'ExecStart=/usr/local/bin/node ${RUNNER_INSTALL_DIR}/apps/mcp/dist/bin/nightshift-runner.js' 'Restart=on-failure' 'RestartSec=5' 'StandardOutput=journal' 'StandardError=journal' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/nightshift-runner.service`,
         "systemctl enable nightshift-runner.service",
       ]),
     ].join("\n"),

@@ -1,9 +1,10 @@
 /**
- * Running an agent's process as another operating-system user (P10, D-P10-25).
+ * Running an agent's process as another operating-system user (P10, D-P10-25,
+ * D-P10-30).
  *
- * On a machine the engine runs as `engine` and every job's agent as one of the
- * `worker-N` users, so code a worker runs cannot read the engine's token or
- * credentials. The adapter does not know users; it is handed this and wraps
+ * On a machine the engine runs as `engine` and all project code, every job's
+ * agent included, as the one `project` user, so code a project runs cannot
+ * read the engine's token or credentials. The adapter does not know users; it is handed this and wraps
  * the command it would have spawned: `sudo -n -u <user> -H env K=V… sh -c
  * '<RUN_AS_SHELL_LINE>' <command> <args>`. The environment the adapter
  * sanitised is passed whole through `env`, less the variables that name the

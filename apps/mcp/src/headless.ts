@@ -123,8 +123,8 @@ export const rootLaunch = (
     "NIGHTSHIFT_API_TOKEN",
     "NIGHTSHIFT_API_TOKEN_FILE",
     "NIGHTSHIFT_PINNED_RUN",
-    "NIGHTSHIFT_WORKER_USERS",
-    "NIGHTSHIFT_WORKER_CREDENTIAL_DIR",
+    "NIGHTSHIFT_PROJECT_USER",
+    "NIGHTSHIFT_PROJECT_CREDENTIAL_DIR",
     // The project environment's file (P16 S-01): the engine threads it to project steps (D-10).
     "NIGHTSHIFT_PROJECT_ENV_FILE",
     "NIGHTSHIFT_PUBLISH_BASE",

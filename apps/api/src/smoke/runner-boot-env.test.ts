@@ -7,7 +7,6 @@ import {
   fixtureToolchain,
   parseExitMarked,
   parseProjectEnv,
-  parseWorkerNumbers,
   withExitMarker,
 } from "./runner-boot-env.js";
 
@@ -153,17 +152,5 @@ describe("withExitMarker / parseExitMarked", () => {
     const parsed = parseExitMarked(ran.stdout);
     expect(parsed.exitCode).toBe(0);
     expect(parsed.body.length).toBeLessThanOrEqual(EXIT_MARKED_TAIL_BYTES);
-  });
-});
-
-describe("parseWorkerNumbers", () => {
-  it("extracts and sorts worker numbers from a directory listing", () => {
-    expect(parseWorkerNumbers("/home/worker-1\n/home/worker-16\n/home/worker-2\n")).toEqual([
-      1, 2, 16,
-    ]);
-  });
-
-  it("is empty for no workers", () => {
-    expect(parseWorkerNumbers("")).toEqual([]);
   });
 });

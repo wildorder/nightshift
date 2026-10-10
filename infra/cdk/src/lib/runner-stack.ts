@@ -31,10 +31,10 @@ import {
   containmentComponent,
   IMAGE_ARCHITECTURES,
   type ImageArchitecture,
+  PROJECT_USER,
   RUNNER_TOOLCHAIN,
   runnerComponent,
   toolchainComponent,
-  WORKER_USERS,
 } from "./runner-image.js";
 import { assertValidStage, type NightshiftStackProps, stackNameFor } from "./stack-props.js";
 
@@ -617,7 +617,7 @@ export class NightshiftRunnerStack extends Stack {
       value: publisherFunction.functionArn,
       exportName: runnerExportName(stage, "PublisherFunctionArn"),
     });
-    new CfnOutput(this, "WorkerUsers", { value: String(WORKER_USERS) });
+    new CfnOutput(this, "ProjectUser", { value: PROJECT_USER });
     new CfnOutput(this, "Toolchain", { value: JSON.stringify(RUNNER_TOOLCHAIN) });
   }
 

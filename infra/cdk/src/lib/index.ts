@@ -23,10 +23,10 @@ export {
 } from "./hostnames.js";
 export {
   ENGINE_USER,
+  PROJECT_USER,
   RUNNER_INSTALL_DIR,
   RUNNER_TOOLCHAIN,
   RUNNER_WORKSPACE,
-  WORKER_USERS,
   WORKSPACE_DEVICE,
 } from "./runner-image.js";
 export {

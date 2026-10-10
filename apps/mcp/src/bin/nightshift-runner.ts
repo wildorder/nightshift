@@ -10,7 +10,6 @@ import type { RunnerProgress } from "@nightshift/contracts";
 import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import { createRunnerPlane, createRuntime } from "../compose.js";
 import { describeHeadlessEnding, runHeadless } from "../headless.js";
-import { workerUserName } from "../run-as.js";
 import { auditThenRoot } from "../runner/gates.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
@@ -34,6 +33,10 @@ runRunner({
   sidecar: process.env.NIGHTSHIFT_SIDECAR ?? "/workspace-sidecar",
   engineUser: process.env.NIGHTSHIFT_ENGINE_USER ?? "engine",
   ...(process.env.PATH === undefined ? {} : { inheritedPath: process.env.PATH }),
+  ...(process.env.NIGHTSHIFT_PROJECT_USER === undefined ||
+  process.env.NIGHTSHIFT_PROJECT_USER === ""
+    ? {}
+    : { projectUser: process.env.NIGHTSHIFT_PROJECT_USER }),
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
   onToken: (token, scope) => installTokenFile(scope.runId, token),
   work: async (context) => {
@@ -45,9 +48,9 @@ runRunner({
       context.machine,
       3 * 60_000,
     );
-    const workerUsers = Number.parseInt(process.env.NIGHTSHIFT_WORKER_USERS ?? "0", 10) || 0;
+    const projectUser = process.env.NIGHTSHIFT_PROJECT_USER;
     const providerKeys = await placeProviderCredentials(context.scope.runId, credentials, {
-      users: Array.from({ length: workerUsers }, (_, index) => workerUserName(index)),
+      ...(projectUser === undefined || projectUser === "" ? {} : { user: projectUser }),
       grant: async (user, path) => {
         const owned = await context.machine.exec("sudo", ["chown", "-R", `${user}:${user}`, path]);
         if (owned.exitCode !== 0) throw new Error(`chown ${path} to ${user}: ${owned.stderr}`);
@@ -62,7 +65,7 @@ runRunner({
       context,
       apiEndpoint: context.identity.apiEndpoint,
       providerKeys,
-      workerUsers,
+      ...(projectUser === undefined || projectUser === "" ? {} : { projectUser }),
       parentEnv: process.env,
     });
     const runtime = await createRuntime(env, "orchestrator");
