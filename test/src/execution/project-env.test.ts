@@ -5,8 +5,8 @@
  * (`ExecutionEnvironment.projectEnv`) and gives it, whole, to every step that
  * runs the project's code: the setup that prepares a checkout, verification's
  * first run and its rerun of a failed check (with or without a worker user),
- * an examined job's candidate check, and the setup reference in the program
- * checkout. It never takes it as its own: `process.env` is the same after.
+ * and an examined job's candidate check. It never takes it as its own:
+ * `process.env` is the same after. Attaching never runs project setup.
  *
  * Each probe below records, outside any checkout, whether the variables only
  * the project environment carries reached it, and fails on its first
@@ -35,7 +35,6 @@ import {
   EXAMINATION_CONTEXT_ENV,
   type ExaminationContext,
   type ExecutionEnvironment,
-  prepareSetupReference,
   runJob,
 } from "@nightshift/execution";
 import type { HarnessExit, HarnessStartInput } from "@nightshift/harness";
@@ -304,20 +303,19 @@ describe("the project environment, threaded to every project step (P16, D-10)", 
     expectUntouched(before);
   });
 
-  it("reaches the setup reference in the program checkout", async () => {
+  it("does not run setup in the operator's checkout when the engine attaches", async () => {
     const before = snapshot();
     const setup = await probe();
     const world = await worldWith({ setup: [{ id: "install", command: setup.command }] });
 
-    expect(
-      await prepareSetupReference(
-        world.environment,
-        world.session,
-        world.session.rootNodeId,
-        "for the test",
-      ),
-    ).toBe(true);
-    expect(await setup.runs()).toEqual(["ok"]);
+    const engine = createEngine({
+      environment: world.environment,
+      session: world.session,
+      mcp: () => ({ name: "nightshift", command: process.execPath, args: [], env: {} }),
+    });
+    await engine.settled();
+    expect(await setup.runs()).toEqual([]);
+    await engine.close("test over");
     expectUntouched(before);
   });
 
@@ -329,14 +327,10 @@ describe("the project environment, threaded to every project step (P16, D-10)", 
     );
 
     expect(world.environment.projectEnv).toBeUndefined();
-    expect(
-      await prepareSetupReference(
-        world.environment,
-        world.session,
-        world.session.rootNodeId,
-        "for the test",
-      ),
-    ).toBe(false);
-    expect(await setup.runs()).toEqual(["missing"]);
+    const nodeId = await runDirect(world);
+    expect((await world.stores.executionNodes.get(world.scope, nodeId))?.status).toBe(
+      "verification_failed",
+    );
+    expect(await setup.runs()).toEqual(["missing", "missing"]);
   });
 });

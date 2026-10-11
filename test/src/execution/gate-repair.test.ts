@@ -6,8 +6,8 @@
  * A repair's commit changes `nightshift.config.json`; the engine reads the
  * merged definitions at the program head when it lands, records
  * `gate.repaired` (and a decision when they changed), uses them for every
- * verification after, prepares the program checkout as the setup reference,
- * and rewrites the project's gate-health record. None of it touches the
+ * verification after, and rewrites the optional gate-health record without
+ * installing in the operator's checkout. None of it touches the
  * stored Program Contract.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -37,7 +37,7 @@ import {
   resumeDeferred,
   revParse,
 } from "@nightshift/execution";
-import { lockfileHashes, readInstallMarker } from "@nightshift/verification";
+import { readInstallMarker } from "@nightshift/verification";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakeHarness, type ScriptContext } from "./fake-harness.js";
 import { cleanupWorlds, createWorld, eventsOf, PROGRAM_BRANCH, type World } from "./world.js";
@@ -195,7 +195,6 @@ const rig = async (
     session: made.session,
     mcp,
     mergeQueue: queue,
-    prepareReference: true,
   });
   const submit: Rig["submit"] = async (objective, extra, on = engine) => {
     const job = JobContractSchema.parse({
@@ -334,18 +333,14 @@ describe("a repair that changes a gate definition (P15, D-P15-04, SC-P15-07)", (
       (await world.stores.executionNodes.get(world.scope, world.session.rootNodeId))?.plan,
     ).toEqual(rootBefore?.plan);
 
-    // The program checkout is the setup reference: at the start, and after the repair.
+    // Neither attach nor repair landing installs into the operator's checkout.
     const progress = (await eventsOf(world)).filter(
       (event) => event.type === "node.progress" && "setupReference" in event.payload,
     );
-    expect(progress.map((event) => event.executionNodeId)).toEqual([
-      world.session.rootNodeId,
-      repair.nodeId,
-    ]);
+    expect(progress).toEqual([]);
     expect(await readFile(join(`${world.repo}.tmp`, "keep"), "utf8")).toBe("the operator's own\n");
     const marker = await readInstallMarker(world.repo);
-    expect(marker).toEqual(await lockfileHashes(world.repo));
-    expect(Object.keys(marker ?? {})).toEqual(["package-lock.json"]);
+    expect(marker).toBeUndefined();
 
     // The gate-health record stands at the head the repair made, fingerprinted
     // there; a later landing that is not a repair leaves it be.
@@ -522,7 +517,7 @@ describe("a repair that changes a gate definition (P15, D-P15-04, SC-P15-07)", (
 });
 
 describe("a repair that lands through `nightshift resume` (P15, D-P15-11)", () => {
-  it("records the change, prepares the setup reference and rewrites the gate-health record", async () => {
+  it("records the change without installing into the program checkout", async () => {
     let met = false;
     const hp01 = (): Prerequisite => ({
       id: "HP-01",
@@ -570,8 +565,8 @@ describe("a repair that lands through `nightshift resume` (P15, D-P15-11)", () =
         "setupReference" in event.payload &&
         event.executionNodeId === repair.nodeId,
     );
-    expect(reference).toHaveLength(1);
-    expect(await readInstallMarker(world.repo)).toEqual(await lockfileHashes(world.repo));
+    expect(reference).toHaveLength(0);
+    expect(await readInstallMarker(world.repo)).toBeUndefined();
     const head = await revParse(world.git, world.repo, PROGRAM_BRANCH);
     expect((await world.stores.gateHealth.get(world.program.projectId))?.commit).toBe(head);
   }, 120_000);

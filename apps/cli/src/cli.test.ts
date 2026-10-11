@@ -35,6 +35,12 @@ describe("the command line", () => {
 
     expect(await runCli(created.environment, ["--help"])).toBe(0);
     expect(created.out.join("\n")).toBe(USAGE);
+    expect(USAGE).toContain("Gate-health records are optional diagnostics");
+    expect(USAGE).toContain("Failing baseline checks do not prevent work from starting");
+    expect(USAGE).toContain("must still pass before integration");
+    expect(USAGE).not.toContain("S-00 that every other strand depends on");
+    expect(USAGE).not.toContain("stops when a gate fails");
+    expect(USAGE).not.toContain("audits the gates against your laptop's");
   });
 
   it("prints usage and fails when given nothing, because nothing was asked", async () => {

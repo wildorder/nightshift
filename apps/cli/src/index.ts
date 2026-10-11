@@ -17,7 +17,6 @@
 export { openBrowser, openerFor } from "./browser.js";
 export { runCli, USAGE, VERSION } from "./cli.js";
 export {
-  gateHealthReadiness,
   type RecordedGatesOptions,
   type RecordGatesOptions,
   recordedGates,

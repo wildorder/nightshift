@@ -105,8 +105,8 @@ export const EventTypeSchema = z.enum([
   // Gate health — P15.
   /**
    * Added in P15 (D-P15-03). The run's one mechanical pass at the start found
-   * these gates red; the run repairs them first, and the strands wait on the
-   * repair alone. Payload: `baseCommit` and `failing` (the step ids).
+   * these gates red. Diagnostic evidence, not a scheduling dependency.
+   * Payload: `baseCommit` and `failing` (the step ids).
    */
   "gate.red",
   /**

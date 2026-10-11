@@ -15,7 +15,6 @@ import {
   dispatchRun,
   type Exec,
   type Session,
-  UsageError,
 } from "@nightshift/cli";
 import {
   DEFAULT_COMPUTE_CEILINGS,
@@ -135,124 +134,20 @@ const operatorWith = async (
   return { operator, environment: { ...operator.environment, exec } };
 };
 
-const refusalOf = async (promise: Promise<unknown>): Promise<UsageError> => {
-  const error = await promise.then(
-    () => undefined,
-    (thrown: unknown) => thrown,
-  );
-  expect(error).toBeInstanceOf(UsageError);
-  return error as UsageError;
-};
-
-describe("run --remote measures the laptop's runtimes against the pins (P16 S-01)", () => {
-  it("reads the pins at the dispatched commit, not the working tree, and carries the exact version", async () => {
-    // keki: `.nvmrc` says 22; the checkout, on another branch, says 24.
-    const { repo, head } = await repositoryPinning({ ".nvmrc": "22\n" }, { ".nvmrc": "24\n" });
-    const { exec, ran } = laptop({ node: "v22.22.0\n" });
-    const { operator, environment } = await operatorWith(exec);
-
-    const readiness = await assertRemoteReady(environment, ratified(), repo, undefined);
-
-    expect(readiness.baseSha).toBe(head);
-    expect(readiness.toolchain).toEqual([
-      { runtime: "node", version: "22.22.0", source: { kind: "pin", file: ".nvmrc", spec: "22" } },
-    ]);
-    expect(ran).toEqual([{ file: "node", args: ["--version"], cwd: repo }]);
-    // Nothing on stdout before the run exists: the run id is its first line.
-    expect(operator.out).toEqual([]);
-  });
-
-  it("carries no toolchain, and runs nothing, when the project pins nothing", async () => {
-    const { repo } = await repositoryPinning({ "package.json": '{"name":"fixture"}\n' });
+describe("remote preparation does not depend on laptop runtimes", () => {
+  it.each([
+    { ".nvmrc": "24\n" },
+    { ".python-version": "3.12.4\n" },
+    { ".tool-versions": "nodejs 24\npython 3.12\nruby 3.3\n" },
+    { "package.json": '{"name":"fixture"}' },
+  ])("dispatches without probing local installations: %j", async (pins) => {
+    const { repo, head } = await repositoryPinning(pins);
     const { exec, ran } = laptop({});
     const { environment } = await operatorWith(exec);
-
     const readiness = await assertRemoteReady(environment, ratified(), repo, undefined);
-
+    expect(readiness.baseSha).toBe(head);
     expect(readiness.toolchain).toBeUndefined();
     expect(ran).toEqual([]);
-  });
-
-  it("refuses a laptop whose runtime violates its pin, naming both versions", async () => {
-    const { repo } = await repositoryPinning({ ".node-version": "24\n" });
-    const { exec } = laptop({ node: "v22.22.0\n" });
-    const { operator, environment } = await operatorWith(exec);
-
-    const refusal = await refusalOf(assertRemoteReady(environment, ratified(), repo, undefined));
-
-    expect(refusal.message).toBe(
-      "your audit ran on node 22.22.0; this project pins 24 (.node-version)",
-    );
-    expect(refusal.usage).toMatch(/version manager/);
-    expect(refusal.usage).toMatch(/change the pin/);
-    expect(operator.out).toEqual([]);
-  });
-
-  it("refuses a pinned runtime that is not installed on the laptop", async () => {
-    const { repo } = await repositoryPinning({ ".nvmrc": "22\n", ".python-version": "3.12.4\n" });
-    const { exec } = laptop({ node: "v22.22.0\n" });
-    const { environment } = await operatorWith(exec);
-
-    const refusal = await refusalOf(assertRemoteReady(environment, ratified(), repo, undefined));
-
-    expect(refusal.message).toBe(
-      "this project pins python 3.12.4 (.python-version) but python was not found on this machine",
-    );
-  });
-
-  it("refuses a version command that fails, or prints no exact version", async () => {
-    const { repo } = await repositoryPinning({ ".nvmrc": "22\n", ".ruby-version": "3.3.0\n" });
-    const exec: Exec = async (file) =>
-      file === "node"
-        ? { exitCode: 0, stdout: "v22\n", stderr: "" }
-        : { exitCode: 1, stdout: "", stderr: "rbenv: version `3.3.0' is not installed\n" };
-    const { environment } = await operatorWith(exec);
-
-    const refusal = await refusalOf(assertRemoteReady(environment, ratified(), repo, undefined));
-
-    expect(refusal.message).toContain("`node --version` printed no exact node version");
-    expect(refusal.message).toContain(
-      "this project pins ruby 3.3.0 (.ruby-version) but `ruby --version` failed with exit code 1: " +
-        "rbenv: version `3.3.0' is not installed",
-    );
-  });
-
-  it("refuses pin files that disagree, naming both, before running anything", async () => {
-    const { repo } = await repositoryPinning({
-      ".nvmrc": "22\n",
-      ".tool-versions": "nodejs 24.1.0\n",
-    });
-    const { exec, ran } = laptop({ node: "v22.22.0\n" });
-    const { environment } = await operatorWith(exec);
-
-    const refusal = await refusalOf(assertRemoteReady(environment, ratified(), repo, undefined));
-
-    expect(refusal.message).toContain(".nvmrc pins node 22");
-    expect(refusal.message).toContain(".tool-versions pins 24.1.0");
-    expect(refusal.usage).toMatch(/agree/);
-    expect(ran).toEqual([]);
-  });
-
-  it("measures every pinned runtime, java from stderr", async () => {
-    const { repo } = await repositoryPinning({
-      ".tool-versions": "nodejs 22.22.0\npython 3.12\njava 21\nterraform 1.9.0\n",
-    });
-    const { exec } = laptop({
-      node: "v22.22.0\n",
-      python: "Python 3.12.4\n",
-      java: 'openjdk version "21.0.4" 2024-07-16\n',
-    });
-    const { operator, environment } = await operatorWith(exec);
-
-    const readiness = await assertRemoteReady(environment, ratified(), repo, undefined);
-
-    expect(readiness.toolchain?.map(({ runtime, version }) => `${runtime} ${version}`)).toEqual([
-      "node 22.22.0",
-      "python 3.12.4",
-      "java 21.0.4",
-    ]);
-    // A tool Nightshift cannot measure is said, on stderr, and left to the image.
-    expect(operator.err.join("\n")).toMatch(/\.tool-versions pins terraform 1\.9\.0/);
   });
 });
 

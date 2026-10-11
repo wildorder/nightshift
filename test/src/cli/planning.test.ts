@@ -183,12 +183,12 @@ describe("nightshift plan check", () => {
     expect(said).toContain("S-01 has no section in the plan document");
   });
 
-  it("is NOT READY when the gates changed since they were audited, alongside the plan's own reasons", async () => {
+  it("reports the plan's own reasons without requiring a fresh gate audit", async () => {
     await breakAGate();
     await writeProgram({ prerequisites: [] });
     expect(await cli("plan", "check", PROGRAM)).toBe(1);
     const said = op.err.join("\n");
-    expect(said).toContain("the gates changed since they were audited at");
+    expect(said).not.toContain("the gates changed since they were audited at");
     expect(said).toContain("HP-01");
   });
 
@@ -357,8 +357,8 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     const said = op.err.join("\n");
     expect(said).toContain("RED   broken failed on");
     expect(said).toContain("the base is broken");
-    expect(said).toContain("The base is red");
-    expect(said).toContain("its first job is a repair of broken");
+    expect(said).toContain("The base has failing checks (broken)");
+    expect(said).not.toContain("its first job is a repair");
     expect(said).not.toContain("Nothing was started");
 
     const runs = await stores().runs.listByProgram(

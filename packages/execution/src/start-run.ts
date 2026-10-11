@@ -63,8 +63,8 @@ export interface StartRunInput {
   /**
    * P15 (D-P15-03): the gates the audit found red on the base, by id. The run
    * starts all the same, and records them as a `gate.red` event on its program
-   * node: its first job is their repair, and the engine holds the strands until
-   * it lands. Absent, or empty, when the base is green or was not audited here.
+   * node as diagnostic evidence, without adding a scheduling dependency.
+   * Absent, or empty, when the base is green or was not audited here.
    */
   readonly red?: readonly string[];
 }

@@ -113,7 +113,6 @@ export {
   type GateSession,
   gateDefinitions,
   gateDefinitionsAt,
-  prepareSetupReference,
   type ReconcileGateRepairsInput,
   reconcileGateRepairs,
   withGateDefinitions,

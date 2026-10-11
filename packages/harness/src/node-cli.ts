@@ -4,12 +4,13 @@
  * `claude` and `codex` are bins whose `#!/usr/bin/env node` shebang runs them
  * on whichever Node is first on `PATH`. On a machine that is the project's
  * pinned Node, which may be one the CLI does not support. So the composition
- * resolves the bin on the image's own `PATH` (a POSIX one: this is for the
- * machine) and launches it as `<image node> <script>`; a native binary is
- * launched by its real path.
+ * resolves the bin on the engine's `PATH` and launches it as
+ * `<engine node> <script>`; a native binary is launched by its real path.
+ * On Windows, npm's .cmd shim is resolved to its script: a bare spawn cannot
+ * execute the shim, and a shell would reinterpret the agent's arguments.
  */
-import { closeSync, existsSync, openSync, readSync, realpathSync } from "node:fs";
-import { join } from "node:path/posix";
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
+import { posix, win32 } from "node:path";
 
 /** What an adapter spawns in place of a CLI's name: `file ...args <cli args>`. */
 export interface CliLauncher {
@@ -18,12 +19,15 @@ export interface CliLauncher {
 }
 
 export interface NodeCliDeps {
-  /** The POSIX `PATH` the bin is looked for on: the image's, not the project's. */
+  readonly platform?: NodeJS.Platform;
+  /** The engine's PATH, before any project runtime is added. */
   readonly path: string;
   readonly exists: (path: string) => boolean;
   readonly realpath: (path: string) => string;
   /** The file's first line, or `undefined` when it cannot be read. */
   readonly firstLine: (path: string) => string | undefined;
+  /** Contents of an npm Windows command shim, never executed as shell text. */
+  readonly readShim?: (path: string) => string;
 }
 
 /** The first line of a file, from its first few hundred bytes. */
@@ -41,32 +45,59 @@ const readFirstLine = (path: string): string | undefined => {
   }
 };
 
-export const nodeCliDeps = (path: string): NodeCliDeps => ({
+export const nodeCliDeps = (path: string, platform: NodeJS.Platform = "linux"): NodeCliDeps => ({
   path,
+  platform,
   exists: existsSync,
   realpath: realpathSync,
   firstLine: readFirstLine,
+  readShim: (path) => readFileSync(path, "utf8"),
 });
 
 /** `#!/usr/bin/env node`, `#!/usr/bin/env -S node …`, `#!/usr/local/bin/node`. */
 const NODE_SHEBANG = /^#!\s*(?:\S*\/env\s+(?:-S\s+)?)?(?:\S*\/)?node(?:\s|$)/;
 
+const windowsLauncher = (
+  dir: string,
+  binName: string,
+  nodePath: string,
+  deps: NodeCliDeps,
+): CliLauncher | undefined => {
+  const native = win32.join(dir, `${binName}.exe`);
+  if (deps.exists(native)) return { file: deps.realpath(native), args: [] };
+  const shim = win32.join(dir, `${binName}.cmd`);
+  if (!deps.exists(shim) || deps.readShim === undefined) return undefined;
+  // npm's cmd-shim invokes "%_prog%" "%dp0%\\<entry>" %*.
+  // Resolve that entry instead of putting the agent's prompt through cmd.exe.
+  const entry = /"%_prog%"\s+"%dp0%[\\/]([^"\r\n]+)"\s+%\*/i.exec(deps.readShim(shim))?.[1];
+  if (entry === undefined) return undefined;
+  const script = win32.resolve(dir, entry);
+  return deps.exists(script) ? { file: nodePath, args: [deps.realpath(script)] } : undefined;
+};
+
 /**
  * How to launch `binName` from `deps.path` on `nodePath`: a script with a Node
  * shebang as `nodePath <script>`, anything else by its real path. `undefined`
- * when the bin is not on that `PATH`, so the caller launches it by name.
+ * when no supported launcher is found on that PATH.
  */
 export const resolveNodeCli = (
   binName: string,
   nodePath: string,
   deps: NodeCliDeps,
 ): CliLauncher | undefined => {
-  for (const dir of deps.path.split(":")) {
+  const windows = deps.platform === "win32";
+  const paths = windows ? win32 : posix;
+  for (const dir of deps.path.split(paths.delimiter)) {
     if (dir === "") continue;
-    const candidate = join(dir, binName);
+    if (windows) {
+      const launcher = windowsLauncher(dir, binName, nodePath, deps);
+      if (launcher !== undefined) return launcher;
+    }
+    const candidate = paths.join(dir, binName);
     if (!deps.exists(candidate)) continue;
     const real = deps.realpath(candidate);
     const line = deps.firstLine(real) ?? "";
+    if (windows && !NODE_SHEBANG.test(line)) continue;
     return NODE_SHEBANG.test(line) ? { file: nodePath, args: [real] } : { file: real, args: [] };
   }
   return undefined;

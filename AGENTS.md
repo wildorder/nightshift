@@ -636,8 +636,10 @@ decisions are A-42, A-43 and A-44.
   the section verbatim, then the answered decisions that touch it, then where the
   plan expects the other strands' work. Do not let a root orchestrator write a
   strand's objective.
-- **The root of a planned run delegates strands only** (`plan_fixes_strands`),
-  and `run.finish succeeded` is refused unless every strand succeeded. The engine
+- **The root of a planned run delegates its ratified strands and may delegate
+  bounded supporting jobs**, including environment or baseline fixes, without
+  a special repair role. `run.finish succeeded` is refused unless every strand
+  succeeded. The engine
   reads where strands stand from the run's records on every pass
   (`strandAttempts`, `strandOutcomes`), never from memory, so an engine that
   attaches to a run under way gates as the first one did.

@@ -62,7 +62,7 @@ import {
 import type { AgentTask, McpLaunch } from "@nightshift/harness";
 import type { ExecutionEnvironment, RunSession, WorkerLaunchIdentity } from "./environment.js";
 import { arbitrateAll, fixOf, latestExamination, rulingDue } from "./examine.js";
-import { prepareSetupReference, reconcileGateRepairs } from "./gate-repair.js";
+import { reconcileGateRepairs } from "./gate-repair.js";
 import { baseRef, git, jobBranch, revParse } from "./git/index.js";
 import { createMergeQueue, type MergeQueue } from "./merge-queue.js";
 import { attemptsOf, delegateJob, type StartedJob, startJob } from "./runner.js";
@@ -84,13 +84,6 @@ export interface EngineOptions {
   readonly route?: (job: JobContract, context: RouteContext) => RouteChoice;
   /** How often the run's nodes are read while a sub-orchestrator is running. */
   readonly discoveryIntervalMs?: number;
-  /**
-   * P15 (D-P15-11): run the current setup once in the program checkout before
-   * the first job starts, so every worktree is seeded from it. For an engine
-   * attaching to a new run on a laptop; not per job, not for an engine that
-   * re-attaches, and not on a machine, whose workspace already ran setup there.
-   */
-  readonly prepareReference?: boolean;
 }
 
 /** What the router is told beyond the job itself (P8). Structural, so this package names no router. */
@@ -178,11 +171,6 @@ export type WaitingReason =
   | { readonly kind: "parent_full"; readonly running: number; readonly maxConcurrency: number }
   /** A strand held until the strands it depends on have succeeded (P7, D-P7-04). */
   | { readonly kind: "strands"; readonly waitingFor: readonly string[] }
-  /**
-   * P15 (D-P15-03): the run started on a red base, and the work waits on its
-   * repair alone. `gates` are the red gates' ids, as the `gate.red` event names them.
-   */
-  | { readonly kind: "repair"; readonly gates: readonly string[] }
   | { readonly kind: "wall_clock_spent"; readonly maxWallClockSeconds: number }
   /** P8 (D-P8-08): the run has spent its dollars or its tokens. Nothing new starts. */
   | {
@@ -221,8 +209,8 @@ export interface Engine {
   /**
    * Requeues a node that ended `failed`, `verification_failed` or `interrupted`
    * as a new attempt (D-P6-06): fresh worktree from the current head, new agent,
-   * new routing decision. False when this engine does not hold the job or the
-   * node is not retryable.
+   * new routing decision. Also recovers a durable queued attempt not held by
+   * this engine. False when already scheduled here or not retryable.
    */
   retry(jobContractId: JobContractId): Promise<boolean>;
   /**
@@ -291,16 +279,12 @@ export const createEngine = (options: EngineOptions): Engine => {
 
   // --- The gates as the run's repairs left them (P15, D-P15-04, D-P15-11) -----------
   //
-  // Before anything starts: whatever a repair's landing left unrecorded (its
-  // `gate.repaired`, the gate-health record) is made from the run's records,
-  // and a new run's program checkout is prepared as the setup reference. In the
-  // merge queue's order, so it never races a landing in the same checkout.
+  // Recover the definitions of explicit repairs already landed. This records
+  // evidence only: a red baseline never adds a scheduling dependency, and setup
+  // runs in execution-owned checkouts, not the operator's program checkout.
   const ready = queue
     .exclusive(async () => {
       await reconcileGateRepairs(environment, session, { nodeId: session.rootNodeId });
-      if (options.prepareReference === true) {
-        await prepareSetupReference(environment, session, session.rootNodeId, "at the run's start");
-      }
     })
     .catch(() => {});
 
@@ -328,6 +312,7 @@ export const createEngine = (options: EngineOptions): Engine => {
   // --- The pump ------------------------------------------------------------------------
   let pumping: Promise<void> | undefined;
   let again = false;
+  let retryPump: ReturnType<typeof setTimeout> | undefined;
 
   const pump = (): Promise<void> => {
     if (pumping !== undefined) {
@@ -345,7 +330,15 @@ export const createEngine = (options: EngineOptions): Engine => {
       } while (again);
     })()
       .catch(() => {
-        // The control plane was unreachable. Whatever settles next pumps again.
+        // Accepted work remains ours when the control plane is unreachable.
+        // It needs another attempt even if no running worker can wake the pump.
+        if (!closed && pending.length > 0 && retryPump === undefined) {
+          retryPump = setTimeout(() => {
+            retryPump = undefined;
+            void pump();
+          }, options.discoveryIntervalMs ?? DEFAULT_DISCOVERY_INTERVAL_MS);
+          retryPump.unref?.();
+        }
       })
       .finally(() => {
         pumping = undefined;
@@ -440,13 +433,16 @@ export const createEngine = (options: EngineOptions): Engine => {
     await ready;
     if (await holding()) return false;
 
+    // A retry may enter the queue while the records are being read. Only judge
+    // entries already queued when this snapshot began; an older failed record
+    // must not withdraw the retry that replaced it.
+    const candidates = [...pending];
     const nodes = await readNodes();
     const tree = buildTree(nodes);
     const outcomes = planned ? await readStrandOutcomes(nodes) : {};
-    const red = await redBase(nodes);
-    for (const entry of [...pending]) {
-      const free =
-        !heldForRepair(entry, red) && !heldByStrands(entry, outcomes) && mayStartNow(tree, entry);
+    for (const entry of candidates) {
+      if (!pending.includes(entry)) continue;
+      const free = !heldByStrands(entry, outcomes) && mayStartNow(tree, entry);
       if (free && (await start(entry))) return true;
     }
     return false;
@@ -475,97 +471,6 @@ export const createEngine = (options: EngineOptions): Engine => {
       cursor = page.cursor;
     } while (cursor !== undefined);
     return strandOutcomes(strandAttempts(nodes, strandOfJob), session.run.carriedStrands ?? []);
-  };
-
-  // --- Repair first: a red base (P15, D-P15-03, SC-P15-05) ---------------------------
-  //
-  // A run that started on a red base carries a `gate.red` event on its program
-  // node, written before any orchestrator attaches (`startRun` locally, the
-  // runner's gate audit remotely). Until a `red_base` repair has landed, the work
-  // that needs green gates waits on it: every strand, and on an unplanned run
-  // every non-repair job directly under the program node. Read from the run's
-  // records, never remembered from a submission, so an engine that attaches to a
-  // run under way holds exactly as the one that started it did.
-  let redEvent: Promise<readonly string[] | undefined> | undefined;
-  let repaired = false;
-
-  /** The red gates the run started with, from its `gate.red` event; undefined when it started green. */
-  const readRedGates = async (): Promise<readonly string[] | undefined> => {
-    let gates: string[] | undefined;
-    let cursor: string | undefined;
-    do {
-      const page = await stores.events.listByRun(
-        session.scope,
-        cursor === undefined ? {} : { cursor },
-      );
-      for (const event of page.items) {
-        if (event.type === "gate.red")
-          gates = [...new Set([...(gates ?? []), ...failingOf(event.payload)])];
-      }
-      cursor = page.cursor;
-    } while (cursor !== undefined);
-    return gates;
-  };
-
-  /** True once a job whose contract repairs the red base has been integrated. */
-  const repairLanded = async (nodes: readonly ExecutionNode[]): Promise<boolean> => {
-    const integrated = new Set(
-      nodes
-        .filter((node) => node.status === "integrated" && node.jobContractId !== null)
-        .map((node) => node.jobContractId),
-    );
-    if (integrated.size === 0) return false;
-    let cursor: string | undefined;
-    do {
-      const page = await stores.jobContracts.listByRun(
-        session.scope,
-        cursor === undefined ? {} : { cursor },
-      );
-      if (
-        page.items.some(
-          (job) => job.repair?.cause === "red_base" && integrated.has(job.jobContractId),
-        )
-      ) {
-        return true;
-      }
-      cursor = page.cursor;
-    } while (cursor !== undefined);
-    return false;
-  };
-
-  /** Whether a submission is work the red base holds: a strand, or (unplanned) a root job. */
-  const needsGreenBase = (submission: Submission): boolean =>
-    submission.job.repair === undefined &&
-    (submission.job.strandId !== undefined ||
-      (!planned && submission.parentNodeId === session.rootNodeId));
-
-  /**
-   * The red gates still unrepaired, or undefined when nothing is held. The
-   * `gate.red` event is read once, because it is written before any engine
-   * attaches; a landed repair, once seen, stays landed.
-   */
-  const redBase = async (
-    nodes: readonly ExecutionNode[],
-  ): Promise<readonly string[] | undefined> => {
-    if (repaired || !pending.some((entry) => needsGreenBase(entry.submission))) return undefined;
-    redEvent ??= readRedGates().catch((error: unknown) => {
-      redEvent = undefined;
-      throw error;
-    });
-    const gates = await redEvent;
-    if (gates === undefined) return undefined;
-    if (await repairLanded(nodes)) {
-      repaired = true;
-      return undefined;
-    }
-    return gates;
-  };
-
-  /** True while the run's red base is unrepaired and `entry` needs it green. Records why. */
-  const heldForRepair = (entry: Pending, red: readonly string[] | undefined): boolean => {
-    if (red === undefined || !needsGreenBase(entry.submission)) return false;
-    entry.waiting = { kind: "repair", gates: red };
-    return true;
   };
 
   /** True while a strand's dependencies have not all succeeded. Records what it waits for. */
@@ -714,7 +619,12 @@ export const createEngine = (options: EngineOptions): Engine => {
         };
         return false;
       }
-      // A launch that failed has already ended its node durably (`startJob`).
+      // A slot write can fail before startJob enters its launch cleanup. Keep
+      // accepted work until its durable record actually says it has left queue.
+      // A failed read also leaves it in hand for the pump's next attempt.
+      const stored = await stores.executionNodes.get(session.scope, entry.node.executionNodeId);
+      if (stored?.status === "queued") throw error;
+      // A launch that failed after claiming its slot ended its node durably.
       remove(entry);
       return true;
     }
@@ -769,16 +679,29 @@ export const createEngine = (options: EngineOptions): Engine => {
 
   const retryJob = async (jobContractId: JobContractId): Promise<boolean> => {
     if (closed) return false;
+    const nodeId =
+      nodeOfJob.get(jobContractId) ??
+      (await readNodes()).find((candidate) => candidate.jobContractId === jobContractId)
+        ?.executionNodeId;
+    if (nodeId === undefined) return false;
+    if (pending.some((entry) => entry.node.executionNodeId === nodeId)) return false;
+    const node = await stores.executionNodes.get(session.scope, nodeId);
+    if (node === undefined) return false;
+    // An explicit retry also recovers an accepted queue entry whose engine
+    // disappeared. It is already queued: do not rewrite it or announce it twice.
+    if (node.status === "queued") {
+      if (active.has(nodeId)) return false;
+      const adopted = await adopt(node);
+      if (adopted) await pump();
+      return adopted;
+    }
+    if (!RETRYABLE_STATUSES.includes(node.status)) return false;
     const known =
       submissions.has(jobContractId) && nodeOfJob.has(jobContractId)
         ? undefined
         : await recoverSubmission(jobContractId);
     const submission = known?.submission ?? submissions.get(jobContractId);
-    const nodeId = known?.nodeId ?? nodeOfJob.get(jobContractId);
-    if (submission === undefined || nodeId === undefined) return false;
-    if (pending.some((entry) => entry.node.executionNodeId === nodeId)) return false;
-    const node = await stores.executionNodes.get(session.scope, nodeId);
-    if (node === undefined || !RETRYABLE_STATUSES.includes(node.status)) return false;
+    if (submission === undefined) return false;
     // The attempt has ended on the record, but the engine may not have let go
     // of it yet: its departure (cancelling its subtree, parking its strand) runs
     // after the worker's terminal write. An observer who has read `failed` and
@@ -948,6 +871,9 @@ export const createEngine = (options: EngineOptions): Engine => {
     }
 
     const queued = await enqueued(node, job);
+    // Discovery and an explicit retry can both read the same durable queue
+    // entry. Claim it after the final await so only one caller schedules it.
+    if (held(id)) return false;
     const submission: Submission = {
       job,
       depth: node.depth,
@@ -1325,6 +1251,8 @@ export const createEngine = (options: EngineOptions): Engine => {
 
     close: async (reason) => {
       closed = true;
+      if (retryPump !== undefined) clearTimeout(retryPump);
+      retryPump = undefined;
       if (watching !== undefined) clearTimeout(watching);
       watching = undefined;
       // A launch already under way finishes first. Its node has taken its slot
@@ -1349,14 +1277,6 @@ export const createEngine = (options: EngineOptions): Engine => {
 
     discover,
   };
-};
-
-/** The red gates a `gate.red` payload names. */
-const failingOf = (payload: unknown): readonly string[] => {
-  const failing = (payload as { failing?: unknown }).failing;
-  return Array.isArray(failing)
-    ? failing.filter((gate): gate is string => typeof gate === "string")
-    : [];
 };
 
 const messageOf = (error: unknown): string =>

@@ -227,9 +227,7 @@ const describeJob = (report: Readonly<Record<string, unknown>>): string => {
   const verification = report.verification as { outcome?: string } | null;
   const verified =
     verification === null ? "" : ` Verification ${verification.outcome ?? "unknown"}.`;
-  const waiting = report.waitingFor as { kind?: string; gates?: readonly string[] } | null;
-  const held = waiting?.kind === "repair" ? ` Queued: ${waitsForRepair(waiting.gates ?? [])}` : "";
-  return `Job ${String(report.jobContractId)} is ${status}.${held}${commit}${verified}${reason}${nextStepFor(report)}`;
+  return `Job ${String(report.jobContractId)} is ${status}.${commit}${verified}${reason}${nextStepFor(report)}`;
 };
 
 /**
@@ -696,7 +694,6 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           nodeId: submitted.nodeId,
           status: submitted.status,
           waitingFor: waiting?.kind === "strands" ? waiting.waitingFor : [],
-          waitingForRepair: waiting?.kind === "repair" ? waiting.gates : [],
           harness: route.target.harness,
           model: route.target.model,
         });
@@ -710,9 +707,9 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       description:
         "Validate a Job Contract, persist it with its node, agent and routing decision, and start " +
         "a worker in an isolated worktree. Returns once the worker is running; wait with job.wait. " +
-        "With `repair`, it opens a repair of a red or flaky gate (P15): the one job a planned run " +
-        "adds outside its strands. A repair carries its `decision`, recorded in the same call, and " +
-        "its risk is high, whatever you ask for.",
+        "A planned run may delegate supporting work without changing its ratified strands. " +
+        "Optional `repair` metadata records a gate-definition change with its decision and high-risk review; " +
+        "ordinary fixes need no repair metadata.",
       inputSchema: {
         objective: z.string().min(1),
         acceptance: z.array(z.string().min(1)).min(1),
@@ -730,12 +727,11 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     async (input) =>
       guarded(async () => {
         const attached = requireAttached(state);
-        // P15 (D-P15-04): a repair is the one job a planned run adds outside its
-        // strands, so it is admitted before the plan's refusal below.
+        // Explicit gate-definition repairs retain their evidence. Ordinary
+        // authorized work, including fixes, needs no special repair ceremony.
         if (input.repair !== undefined) {
           return await delegateRepair(state, attached, input, input.repair);
         }
-        refuseOnPlannedRun(attached);
 
         // 1. A valid Job Contract before anything else (A-03). An invalid one
         //    never becomes a node, so nothing is persisted on this path.
@@ -880,11 +876,12 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
   server.registerTool(
     "job.retry",
     {
-      title: "Retry a job that failed",
+      title: "Retry a failed job or recover a queued attempt",
       description:
         "Runs it again from the current program head as a new attempt: fresh worktree, new agent. " +
         "For a job that ended failed (an integration_conflict, say), verification_failed or " +
         "interrupted. Read its outcomeReason first: a retry repeats the delegation as written. " +
+        "Also recovers an already accepted queued attempt after reattaching, without queuing a duplicate. " +
         "Where it runs is Nightshift's: after a failure of the work (verification, a worker's " +
         "own failure, an examination) it climbs one rung of its ladder; after a conflict, a stale " +
         "base or an interrupt it keeps the model it had, because those say nothing about the model.",
@@ -903,13 +900,13 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           const report = await jobReport(deps, jobId);
           throw new ToolRefusal(
             "validation_failed",
-            `job ${jobId} is ${String(report.status)}, and only a job this session delegated that ` +
-              "ended failed, verification_failed or interrupted can be retried.",
+            `job ${jobId} is ${String(report.status)}; retry needs a failed, verification_failed or ` +
+              "interrupted job, or a queued attempt this engine has not already scheduled.",
             { status: report.status },
           );
         }
         const report = await jobReport(deps, jobId);
-        return ok(`Job ${jobId} is going round again. ${describeJob(report)}`, report);
+        return ok(`Job ${jobId} is scheduled. ${describeJob(report)}`, report);
       }),
   );
 
@@ -1114,8 +1111,7 @@ type RepairInput = z.infer<typeof REPAIR_INPUT>;
 
 const CAUSE_SENTENCE: Readonly<Record<RepairCause, string>> = {
   red_base:
-    "These gates were red on the base this run started from. The strands wait on this repair " +
-    "alone: fix them first.",
+    "These gates were red on the base this run started from. Fix them without weakening required verification.",
   flaky:
     "These gates failed and then passed when verification reran them on the same commit: they " +
     "are flaky. The work that met the flake landed; this repair runs off the blocking path.",
@@ -1203,10 +1199,7 @@ const delegateRepair = async (
   return ok(
     `Delegated repair ${job.jobContractId} (${repair.cause}: ${repair.gates.join(", ")}) as node ` +
       `${submitted.nodeId}, with decision ${decisionId}. It is examined at high risk. ` +
-      (repair.cause === "red_base"
-        ? "The strands wait on it: wait for it with job.wait before anything else."
-        : "It is off the blocking path: carry on with the strands, and do not finish the run " +
-          "while it is in flight.") +
+      "Wait for it with job.wait; unrelated work may continue." +
       (started === undefined ? " It is queued until its parent has a free slot." : ""),
     {
       jobId: job.jobContractId,
@@ -1292,25 +1285,6 @@ const pinsOf = (input: {
   effort: input.effort,
 });
 
-/**
- * A delegation that is not a repair: refused on a planned run, whose plan fixed
- * the seams (D-P7-04).
- */
-const refuseOnPlannedRun = (attached: AttachedRun): void => {
-  if (attached.planSections !== undefined) {
-    // The root of a planned run delegates strands and nothing else: how a
-    // strand divides is its own orchestrator's, one level down.
-    throw new ToolRefusal(
-      "plan_fixes_strands",
-      "this run follows a ratified plan, so the program node delegates its strands and " +
-        "nothing else. Use strand.delegate { strandId }; a strand's own orchestrator " +
-        "decides its jobs. A strand cannot be added or dropped without ratifying the plan again. " +
-        "The one exception is a repair of a red or flaky gate: delegate with `repair` and its decision.",
-      { strands: strandsOf(attached.session.program).map((strand) => strand.id) },
-    );
-  }
-};
-
 /** The contract, validated. An invalid one never becomes a node. */
 /**
  * A strand's Job Contract, built from the ratified plan and from nothing the
@@ -1375,11 +1349,6 @@ const submitStrand = async (
   }
 };
 
-/** P15 (D-P15-03): what a submission held for the red base's repair waits on. */
-const waitsForRepair = (gates: readonly string[]): string =>
-  `the run started on a red base, so it waits for the repair of ${gates.join(", ")} to land, ` +
-  "and starts once it has. Delegate that repair first if nobody has.";
-
 /** A delegated job that did not start at once, and why. */
 const describeQueuedJob = (
   jobId: string,
@@ -1387,9 +1356,9 @@ const describeQueuedJob = (
   waiting: ReturnType<AttachedRun["engine"]["waiting"]>,
 ): string =>
   `Delegated job ${jobId} as node ${nodeId}. It is queued: ` +
-  (waiting?.kind === "repair"
-    ? waitsForRepair(waiting.gates)
-    : "its parent's concurrency limit is full, and it starts when a slot frees.") +
+  (waiting?.kind === "strands"
+    ? `waiting for ${waiting.waitingFor.join(", ")}.`
+    : "waiting for execution capacity or the run's budget.") +
   " Wait for it with job.wait.";
 
 const describeStrandSubmission = (
@@ -1399,9 +1368,6 @@ const describeStrandSubmission = (
 ): string => {
   if (submitted.status === "running") {
     return `Strand ${strandId} is running as node ${submitted.nodeId}.`;
-  }
-  if (waiting?.kind === "repair") {
-    return `Strand ${strandId} is queued as node ${submitted.nodeId}: ${waitsForRepair(waiting.gates)}`;
   }
   if (waiting?.kind !== "strands") {
     return `Strand ${strandId} is queued as node ${submitted.nodeId}; it starts when a slot frees.`;

@@ -19,7 +19,7 @@ import {
   type RouteChoice,
   type Strand,
 } from "@nightshift/contracts";
-import { isSettled, nowIso } from "@nightshift/core";
+import { isSettled, nowIso, transition } from "@nightshift/core";
 import {
   completeJob,
   createEngine,
@@ -481,6 +481,144 @@ describe("the merge queue (D-P6-05, D-P6-06)", () => {
     expect(await r.engine.retry(a.jobId)).toBe(false);
   });
 
+  it("keeps a queued job after a transient slot-write failure and starts it without another delegation", async () => {
+    let attempts = 0;
+    const releaseWorker = barrier();
+    const r = await rig({
+      alpha: async () => {
+        attempts += 1;
+        await releaseWorker.opened;
+        return "fail";
+      },
+    });
+    const nodes = r.world.stores.executionNodes;
+    const put = nodes.put.bind(nodes);
+    let refused = false;
+    const spy = vi.spyOn(nodes, "put").mockImplementation(async (node) => {
+      if (node.kind === "job" && node.status === "running" && !refused) {
+        refused = true;
+        throw new Error("control plane temporarily unavailable");
+      }
+      await put(node);
+    });
+    try {
+      const alpha = await r.submit("alpha");
+      expect(refused).toBe(true);
+      expect(await r.status(alpha.nodeId)).toBe("queued");
+      expect(r.engine.snapshot().queued).toContain(alpha.nodeId);
+      await vi.waitFor(() => expect(attempts).toBe(1), { timeout: 30_000 });
+      expect(r.engine.snapshot().queued).not.toContain(alpha.nodeId);
+      releaseWorker.open();
+      await r.until(alpha.nodeId, settled);
+    } finally {
+      releaseWorker.open();
+      spy.mockRestore();
+      await r.engine.close("test over");
+    }
+  });
+
+  it("does not drop an accepted retry against a pump snapshot taken before it was queued", async () => {
+    const releaseWorker = barrier();
+    let attempts = 0;
+    const r = await rig(
+      {
+        alpha: async () => {
+          attempts += 1;
+          return "fail";
+        },
+        gamma: async () => {
+          await releaseWorker.opened;
+          return "fail";
+        },
+        beta: async () => "fail",
+      },
+      { maxConcurrency: 1 },
+    );
+    const alpha = await r.submit("alpha");
+    await r.until(alpha.nodeId, settled);
+    await vi.waitFor(() => expect(r.engine.snapshot().running).toHaveLength(0));
+    await r.engine.settled();
+    const gamma = await r.submit("gamma");
+    const captured = barrier();
+    const releaseSnapshot = barrier();
+    const nodes = r.world.stores.executionNodes;
+    const list = nodes.listByRun.bind(nodes);
+    const spy = vi.spyOn(nodes, "listByRun").mockImplementationOnce(async (...args) => {
+      const snapshot = await list(...args);
+      captured.open();
+      await releaseSnapshot.opened;
+      return snapshot;
+    });
+    try {
+      const beta = r.submit("beta");
+      await captured.opened;
+      const retry = r.engine.retry(alpha.jobId);
+      await vi.waitFor(() => expect(r.engine.snapshot().queued).toContain(alpha.nodeId));
+      releaseSnapshot.open();
+      expect(await retry).toBe(true);
+      await beta;
+      expect(r.engine.snapshot().queued).toContain(alpha.nodeId);
+      releaseWorker.open();
+      await r.until(gamma.nodeId, settled);
+      await vi.waitFor(() => expect(attempts).toBe(2), { timeout: 30_000 });
+      await r.until(alpha.nodeId, settled);
+    } finally {
+      releaseSnapshot.open();
+      releaseWorker.open();
+      spy.mockRestore();
+      await r.engine.close("test over");
+    }
+  });
+
+  it("recovers an already queued retry only when explicitly requested on a replacement engine", async () => {
+    let attempts = 0;
+    const releaseWorker = barrier();
+    const r = await rig({
+      alpha: async () => {
+        attempts += 1;
+        if (attempts > 1) await releaseWorker.opened;
+        return "fail";
+      },
+    });
+    const alpha = await r.submit("alpha");
+    await r.until(alpha.nodeId, settled);
+    await vi.waitFor(() => expect(r.engine.snapshot().running).toHaveLength(0));
+    await r.engine.close("original engine stopped");
+    const failed = await r.world.stores.executionNodes.get(r.world.scope, alpha.nodeId);
+    if (failed === undefined) throw new Error("missing failed job");
+    const { outcomeReason: _reason, ...queued } = transition(
+      failed,
+      "retry",
+      nowIso(r.environment.clock),
+    );
+    await r.world.stores.executionNodes.put({ ...queued, commitSha: null });
+    const queuedEvents = (await eventsOf(r.world)).filter((event) => event.type === "node.queued");
+    const resumed = createEngine({
+      environment: r.environment,
+      session: r.world.session,
+      mcp,
+      mergeQueue: r.queue,
+      route: () => ROUTE,
+    });
+    try {
+      await resumed.settled();
+      expect(attempts).toBe(1);
+      expect(resumed.snapshot().queued).toHaveLength(0);
+      const accepted = await Promise.all([resumed.retry(alpha.jobId), resumed.retry(alpha.jobId)]);
+      expect(accepted.sort()).toEqual([false, true]);
+      await vi.waitFor(() => expect(attempts).toBe(2));
+      expect(await resumed.retry(alpha.jobId)).toBe(false);
+      expect(
+        (await eventsOf(r.world)).filter((event) => event.type === "node.queued"),
+      ).toHaveLength(queuedEvents.length);
+      releaseWorker.open();
+      await r.until(alpha.nodeId, settled);
+    } finally {
+      releaseWorker.open();
+      await resumed.close("test over");
+    }
+  });
+
   it("lets an engine that did not delegate a job retry it from the record, as a replacement machine's root must (P10, T6)", async () => {
     const rewrite =
       (body: string): Work =>
@@ -694,9 +832,9 @@ const expectStartedAfterDependencies = (
   }
 };
 
-// --- P15: repair first ----------------------------------------------------------------------
+// --- Baseline diagnostics never impose a global scheduling dependency ------------------------
 
-/** A repair of the red base's gates (D-P15-03): outside every strand, never held by the base. */
+/** An explicitly requested repair remains supported, but is not a prerequisite for other work. */
 const redBaseRepair = (gates: readonly string[]): Partial<JobContract> => ({
   repair: {
     cause: "red_base",
@@ -705,30 +843,21 @@ const redBaseRepair = (gates: readonly string[]): Partial<JobContract> => ({
   },
 });
 
-describe("a run that starts on a red base repairs it first (P15, D-P15-03, SC-P15-05)", () => {
-  it("holds a strand on the repair, lands the repair, then starts the strand", async () => {
-    const r = await rig(
-      { repair: addModule("repair"), s01: addModule("s01") },
-      { strands: [strandOf("S-01")], red: ["build"] },
-    );
+describe("a red baseline is diagnostic, not a global scheduling dependency", () => {
+  it("starts and verifies an ordinary strand without a special repair or decision", async () => {
+    const r = await rig({ s01: addModule("s01") }, { strands: [strandOf("S-01")], red: ["build"] });
     const s01 = await r.submit("s01", "S-01");
-    expect(await r.status(s01.nodeId)).toBe("queued");
-    expect(r.engine.waiting(s01.jobId)).toEqual({ kind: "repair", gates: ["build"] });
-
-    const repair = await r.submit("repair of the build", undefined, redBaseRepair(["build"]));
-    expect(r.engine.waiting(repair.jobId)).toBeUndefined();
-    await r.until(repair.nodeId, (status) => status === "integrated");
+    expect(r.engine.waiting(s01.jobId)).toBeUndefined();
     await r.until(s01.nodeId, (status) => status === "integrated");
-
-    // From the record, never from timing: the strand started after the repair landed.
     await r.world.outbox.flush();
     const events = await eventsOf(r.world);
-    expect(indexOfEvent(events, "node.started", s01.nodeId)).toBeGreaterThan(
-      indexOfEvent(events, "node.integrated", repair.nodeId),
-    );
+    expect(events.some((event) => event.type === "gate.red")).toBe(true);
+    expect(events.filter((event) => event.type === "node.started")).toHaveLength(1);
+    expect(events.some((event) => event.type === "gate.repaired")).toBe(false);
+    expect(await log(r.world)).toContain("s01: done");
   }, 60_000);
 
-  it("keeps the strands held when the repair fails, and an engine attaching later holds them too", async () => {
+  it("lets an unrelated strand finish even when an explicitly requested repair fails", async () => {
     const r = await rig(
       { repair: givesUp, s01: addModule("s01") },
       { strands: [strandOf("S-01")], red: ["build", "test"] },
@@ -736,45 +865,30 @@ describe("a run that starts on a red base repairs it first (P15, D-P15-03, SC-P1
     const s01 = await r.submit("s01", "S-01");
     const repair = await r.submit("repair of the gates", undefined, redBaseRepair(["build"]));
     expect(await r.until(repair.nodeId, settled)).toBe("failed");
-    await r.engine.settled();
-    expect(await r.status(s01.nodeId)).toBe("queued");
-    expect(r.engine.waiting(s01.jobId)).toEqual({ kind: "repair", gates: ["build", "test"] });
-
-    // Derived from the records, not remembered: a second engine reads the same hold.
-    const attached = createEngine({
-      environment: r.environment,
-      session: {
-        ...r.world.session,
-        program: { ...r.world.session.program, status: "planning", strands: [strandOf("S-01")] },
-      },
-      mcp,
-      mergeQueue: r.queue,
-      route: () => ROUTE,
-    });
-    await attached.discover();
-    await attached.settled();
-    expect(await r.status(s01.nodeId)).toBe("queued");
-    expect(attached.waiting(s01.jobId)).toEqual({ kind: "repair", gates: ["build", "test"] });
-    await attached.close("test over");
+    expect(await r.until(s01.nodeId, settled)).toBe("integrated");
+    expect(r.engine.waiting(s01.jobId)).toBeUndefined();
   }, 60_000);
 
-  it("holds a non-repair job under the root of an unplanned run, but not the repair", async () => {
-    const r = await rig(
-      { alpha: addModule("alpha"), repair: addModule("repair") },
-      { red: ["lint"] },
-    );
+  it("starts an ordinary job in an unplanned run without repairing first", async () => {
+    const r = await rig({ alpha: addModule("alpha") }, { red: ["lint"] });
     const alpha = await r.submit("alpha module");
-    expect(r.engine.waiting(alpha.jobId)).toEqual({ kind: "repair", gates: ["lint"] });
-    const repair = await r.submit("repair of lint", undefined, redBaseRepair(["lint"]));
-    await r.until(repair.nodeId, (status) => status === "integrated");
+    expect(r.engine.waiting(alpha.jobId)).toBeUndefined();
     await r.until(alpha.nodeId, (status) => status === "integrated");
   }, 60_000);
 
-  it("holds nothing on a run that started green", async () => {
-    const r = await rig({ s01: addModule("s01") }, { strands: [strandOf("S-01")] });
+  it("still refuses integration when a required verification command actually fails", async () => {
+    const r = await rig(
+      { s01: addModule("s01") },
+      {
+        strands: [strandOf("S-01")],
+        red: ["test"],
+        program: { verification: [{ id: "test", command: 'node -e "process.exit(1)"' }] },
+      },
+    );
     const s01 = await r.submit("s01", "S-01");
-    expect(r.engine.waiting(s01.jobId)?.kind).not.toBe("repair");
-    await r.until(s01.nodeId, (status) => status === "integrated");
+    expect(r.engine.waiting(s01.jobId)).toBeUndefined();
+    expect(await r.until(s01.nodeId, settled)).toBe("verification_failed");
+    expect(await log(r.world)).toBe("");
   }, 60_000);
 });
 

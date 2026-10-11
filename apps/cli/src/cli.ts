@@ -95,21 +95,22 @@ the run, for your own orchestrator session to attach to. A check that needs
 something only you can supply does not stop the night: the work carries on a
 provisional line, and \`resume\` runs those checks and lands it when you are back.
 \`gates <program>\` runs the program's setup and every check on the program
-branch, in a fresh checkout, as verification will. \`run\` does the same before it
-creates a run, and stops when a gate fails, because no job could then pass
-verification. \`gates <program> --record\` runs that audit and keeps it as the
+branch, in a fresh checkout, as verification will. A local \`run\` records this
+baseline before starting; a remote run records its baseline on its machine.
+Failing baseline checks do not prevent work from starting. Required verification
+must still pass before integration. \`gates <program> --record\` keeps the audit as the
 project's gate-health record, fingerprinted over the gates' commands, the
 lockfiles and the gate machinery --findings names: healthy, or repairing when
 the review found something to fix. A red gate needs a finding. \`--recorded\`
 runs nothing, and says whether the record still holds for the gates now.
-\`plan check\` is READY only on a healthy record that holds, or a repairing one
-whose findings are answered by the plan's decisions, with a gate-health strand
-S-00 that every other strand depends on.
+Gate-health records are optional diagnostics, not requirements for \`plan check\`
+or ratification. No special gate-health strand or global repair dependency is required.
 
 \`run <program> --remote\` dispatches the run to a machine and stays attached:
-WAIT while the machine comes up and audits the gates against your laptop's,
-then OK GO once it agrees, and you can close the laptop. An environment fault
-or a failed dispatch exits 1. Ctrl-C detaches without cancelling anything;
+WAIT while the machine comes up and prepares the repository, then OK GO once
+the orchestrator is running, and you can close the laptop. No laptop audit or
+laptop-to-machine gate agreement is required. A failed dispatch exits 1.
+Ctrl-C detaches without cancelling anything;
 \`remote status <program> --watch\` reattaches to the same display, and
 \`remote cancel <program>\` stops the machine.
 

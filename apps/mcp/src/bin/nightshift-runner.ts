@@ -70,11 +70,8 @@ runRunner({
     });
     const runtime = await createRuntime(env, "orchestrator");
     // The base's gates, on this machine, before any agent is paid for, in the
-    // project environment `context` carries (P16, D-10). A red
-    // base is recorded and the root starts: its first job is the repair
-    // (D-P15-03). A gate green in the reference and red here is an
-    // environment fault (P16 D-07): the root never starts, and the dispatch
-    // ends failed with it.
+    // project environment `context` carries. A red baseline is recorded for
+    // the root to address; laptop results never decide whether it may start.
     // Where the audit has got to goes to the heartbeat (P16 S-03).
     const audited = {
       ...context,

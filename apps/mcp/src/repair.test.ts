@@ -79,6 +79,7 @@ const plannedRun = async (options: { planned?: boolean } = {}) => {
     },
     ...(options.planned === false ? {} : { planSections: { strands: {} } }),
     engine: {
+      waiting: () => undefined,
       submit: async (submission: { job: JobContract }) => {
         submitted.push(submission.job);
         return { nodeId: "node_submitted", status: "running", started: undefined };
@@ -152,12 +153,14 @@ describe("a repair through delegate (D-P15-04)", () => {
     expect(job.objective).toContain(DECISION.rationale);
   });
 
-  it("still refuses an ordinary delegation on a planned run as plan_fixes_strands", async () => {
+  it("admits an ordinary supporting fix on a planned run without repair metadata or a decision", async () => {
     const world = await plannedRun();
     const result = await world.call("delegate", { ...REPAIR_REQUEST });
-    expect(result.ok).toBe(false);
-    expect(result.code).toBe("plan_fixes_strands");
-    expect(world.submitted).toEqual([]);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(world.submitted).toHaveLength(1);
+    expect(world.submitted[0]?.repair).toBeUndefined();
+    expect(world.submitted[0]?.risk).toBe("low");
+    expect((await world.stores.decisions.listByRun(world.f.scope)).items).toEqual([]);
   });
 
   it("delegates an unplanned run's repair the same way", async () => {

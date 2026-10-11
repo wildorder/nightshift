@@ -1,6 +1,6 @@
 /**
- * `nightshift gates {id} --record` and `--recorded`, and what `plan check`
- * asks of the gates (P15, D-P15-01, D-P15-02, D-P15-07, D-P15-08).
+ * Optional `nightshift gates {id} --record` and `--recorded` diagnostics.
+ * These records do not control plan readiness or ratification.
  *
  * `--record` runs the mechanical audit exactly as `nightshift gates` does and
  * writes the project's gate-health record over the control plane: `healthy`
@@ -21,7 +21,7 @@ import {
   RepositoryPathSchema,
   UserPrincipalSchema,
 } from "@nightshift/contracts";
-import { gateHealthReasons, nowIso, type PlanReason } from "@nightshift/core";
+import { nowIso } from "@nightshift/core";
 import { type GateAudit, revParse } from "@nightshift/execution";
 import { isTokenProfile, tokenClaims } from "@nightshift/persistence/http";
 import { z } from "zod";
@@ -347,36 +347,4 @@ export const recordedGates = async (
   }
   environment.out("the record holds: the gates are healthy and unchanged since the audit");
   return 0;
-};
-
-/**
- * `plan check`'s gate-health reasons (D-P15-08). Never throws: a record that
- * cannot be read, or a fingerprint that cannot be computed, is itself a reason.
- */
-export const gateHealthReadiness = async (
-  environment: CliEnvironment,
-  repoPath: string,
-  files: ProgramFiles,
-): Promise<PlanReason[]> => {
-  const read = await readRecord(environment, files.contract.projectId);
-  if (!read.ok) {
-    return [
-      {
-        kind: "gate_health_unreadable",
-        message: `could not read the project's gate-health record: ${read.why}`,
-      },
-    ];
-  }
-  if (read.record === undefined) return gateHealthReasons(files.contract, undefined, "", files.id);
-  try {
-    const { fingerprint } = await currentFingerprint(environment, repoPath, files, read.record);
-    return gateHealthReasons(files.contract, read.record, fingerprint, files.id);
-  } catch (error) {
-    return [
-      {
-        kind: "gate_health_unreadable",
-        message: `could not fingerprint the gates on ${files.contract.repository.programBranch}: ${describeFailure(error).summary}`,
-      },
-    ];
-  }
 };

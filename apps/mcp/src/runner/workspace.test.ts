@@ -13,6 +13,7 @@ import {
   layoutOf,
   prepareWorkspace,
   projectEnvironment,
+  resolveProjectRuntimes,
   rustToolchainName,
   storesEnvironment,
   toolchainDetail,
@@ -82,6 +83,62 @@ const fakeMachine = (
     now: () => 0,
   };
 };
+
+describe("repository runtimes resolved on the machine", () => {
+  it("resolves a range remotely and installs the selected exact runtime", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) =>
+        file === "mise" && args[0] === "ls-remote" ? ok("20.19.0\n22.11.0\n24.0.0\n") : undefined,
+    });
+    machine.files.set(`${layout.checkout}/.nvmrc`, ">=22 <23\n");
+    const toolchain = await resolveProjectRuntimes(machine, layout);
+    expect(toolchain).toEqual([
+      { runtime: "node", version: "22.11.0", source: pin(".nvmrc", ">=22 <23") },
+    ]);
+    await installRuntimes(machine, layout, toolchain, () => undefined);
+    expect(machine.commands.some((command) => command.includes("mise install node@22.11.0"))).toBe(
+      true,
+    );
+    expect(projectEnvironment(layout, toolchain).PATH).toContain("node/22.11.0/bin");
+  });
+
+  it("uses exact declarations without a version lookup, and image defaults when undeclared", async () => {
+    const machine = fakeMachine();
+    expect(await resolveProjectRuntimes(machine, layout)).toEqual([]);
+    machine.files.set(`${layout.checkout}/.python-version`, "3.12.1\n");
+    expect(await resolveProjectRuntimes(machine, layout)).toEqual([
+      { runtime: "python", version: "3.12.1", source: pin(".python-version", "3.12.1") },
+    ]);
+    expect(machine.commands).toEqual([]);
+  });
+
+  it("reports a real resolution failure without inventing a version", async () => {
+    const machine = fakeMachine({ exec: () => fail("registry unavailable") });
+    machine.files.set(`${layout.checkout}/.nvmrc`, "22\n");
+    await expect(resolveProjectRuntimes(machine, layout)).rejects.toThrow("registry unavailable");
+  });
+
+  it("resolves Rust channels through rustup and Java ranges from vendor listings", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) =>
+        file === "mise" && args[0] === "ls-remote"
+          ? ok("temurin-21.0.4+7\nzulu-21.0.5+11\ntemurin-22.0.1+8\n")
+          : undefined,
+    });
+    machine.files.set(`${layout.checkout}/rust-toolchain`, "stable\n");
+    machine.files.set(`${layout.checkout}/.java-version`, "21\n");
+    const versions = await resolveProjectRuntimes(machine, layout);
+    expect(versions).toEqual(
+      expect.arrayContaining([
+        { runtime: "rust", version: "1.79.0", source: pin("rust-toolchain", "stable") },
+        { runtime: "java", version: "21.0.5", source: pin(".java-version", "21") },
+      ]),
+    );
+    expect(machine.commands.some((command) => command.includes("toolchain install stable"))).toBe(
+      true,
+    );
+  });
+});
 
 describe("projectEnvironment (P16 S-01)", () => {
   it("puts each pinned runtime's bin first on PATH, then the image's and the runner's", () => {
@@ -298,6 +355,28 @@ describe("prepareWorkspace in the project environment (P16 S-01)", () => {
     expect(prepared.environment).toEqual(
       projectEnvironment(layout, TOOLCHAIN, undefined, "/usr/local/bin:/usr/bin:/bin"),
     );
+  });
+
+  it("resolves declared runtimes from the remote checkout before setup when dispatch has no laptop toolchain", async () => {
+    const machine = fakeMachine();
+    machine.files.set(`${layout.checkout}/.node-version`, "22.11.0\n");
+    const { toolchain: _legacy, ...remoteInput } = dispatch.input;
+    const prepared = await prepareWorkspace(machine, {
+      layout,
+      dispatch: { ...dispatch, input: remoteInput },
+      program,
+      planText,
+      githubToken: "ghs_read",
+      log: () => undefined,
+    });
+    const installed = machine.commands.findIndex((command) =>
+      command.includes("mise install node@22.11.0"),
+    );
+    const setup = machine.commands.findIndex((command) => command.includes("npm ci"));
+    expect(installed).toBeGreaterThan(-1);
+    expect(setup).toBeGreaterThan(installed);
+    expect(prepared.environment.PATH).toContain("node/22.11.0/bin");
+    expect(prepared.lockfileHashes["runtime:node"]).toBe("22.11.0");
   });
 
   it("writes the project environment to project.env for the engine and the boot proof", async () => {

@@ -10,9 +10,9 @@
  */
 export const GATE_STANDARD = `# Nightshift's gate standard
 
-What a Nightshift-healthy gate set is. The planning audit (\`plan-program\`, step
-3a) judges a repository's gates against it, and so does the examiner of a run's
-repair job.
+Optional troubleshooting guidance for repository checks, also used by the
+examiner of an explicitly delegated repair. These are not planning readiness
+requirements: no audit or certification is required before work can start.
 
 Nightshift runs every gate, on every job, in a fresh checkout nobody is
 watching. A gate that only passes on the developer's machine, or on the second
@@ -47,8 +47,8 @@ in a checkout with nothing else in it.
 finding. Read what it said: a missing file nobody commits, an env var only the
 developer's shell sets, a step that only CI's image provides.
 
-**Typical fix.** Fix the red gate on the base before anything else is built,
-or commit (or generate in setup) what it was missing. A gate that cannot be
+**Typical fix.** Repair the failure within authorized work, or commit (or
+generate in setup) what it was missing. A gate that cannot be
 made to pass is removed from verification only with the human's answer, and the
 plan says what checks its ground instead.
 
@@ -148,6 +148,6 @@ that does not satisfy its pin, or is not installed.
 
 **Typical fix.** Add the pin file; reconcile pins that disagree; install the
 pinned version on the machine that is missing it or running another. A
-remote run's machine installs the pinned versions itself, and refuses at
-dispatch a laptop whose runtime violates its own pin.
+remote run's machine installs the pinned versions itself; the laptop's runtime
+is not a remote dispatch prerequisite.
 `;

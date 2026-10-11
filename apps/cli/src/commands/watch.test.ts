@@ -155,10 +155,10 @@ describe("watchDispatch without a terminal", () => {
       "[total 0:05] dispatch provisioning: the machine is being provisioned",
       "[stage 0:10, total 0:30] the machine is up",
       "[stage 0:05, total 0:50] the project's runtimes: node 22.22.0",
-      "[stage 0:20, total 1:40] the machine's gate audit, against your laptop's",
-      "  gate unit: machine passed, reference passed",
-      "  gate lint: machine failed, reference passed  << disagrees: passed on your laptop, failed on the machine",
-      "[stage 0:30, total 1:50] verdict: the machine agrees with your laptop",
+      "[stage 0:20, total 1:40] the machine's baseline checks",
+      "  gate unit: machine passed",
+      "  gate lint: machine failed",
+      "[stage 0:30, total 1:50] verdict: the machine's baseline passed",
     ]);
     expect(h.sleeps.every((ms) => ms === POLL_MS)).toBe(true);
   });
@@ -177,10 +177,8 @@ describe("watchDispatch on a terminal", () => {
     const text = out.join("\n");
     expect(text).toContain("  the project's runtimes: node 22.22.0");
     expect(text).toContain("  stage 0:23, total 1:43");
-    expect(text).toContain("    unit: machine passed, reference passed");
-    expect(text).toContain(
-      "    lint: machine failed, reference passed  << disagrees: passed on your laptop, failed on the machine",
-    );
+    expect(text).toContain("    unit: machine passed");
+    expect(text).toContain("    lint: machine failed");
     // The frame's line count is what the next redraw moves up over.
     const first = out.findIndex((line) => line.includes(`${ESC}[`));
     expect(out[first]).toContain(`${ESC}[${first}A`);
@@ -194,17 +192,19 @@ describe("watchDispatch's endings", () => {
     const text = h.created.out.join("\n");
     expect(text).toContain(OK_GO_BANNER.join("\n"));
     expect(text).toContain(
-      "the machine agrees with your laptop: you can close it now. `nightshift remote status p1-fixture` follows the run.",
+      "the machine is ready: you can close your laptop now. `nightshift remote status p1-fixture` follows the run.",
     );
     expect(h.created.interruptHandlers()).toBe(0);
   });
 
-  it("OK GO on red, saying the run starts by repairing the base", async () => {
+  it("OK GO on red, reporting baseline failures without mandatory repair", async () => {
     const h = await harness([running(at(1, "audit", { verdict: "red" }))]);
     expect(await watch(h)).toBe(0);
     const text = h.created.out.join("\n");
     expect(text).toContain(OK_GO_BANNER.join("\n"));
-    expect(text).toContain("the base is red on both, so the run starts by repairing it.");
+    expect(text).toContain(
+      "the baseline has failing checks; agents receive the failures as context.",
+    );
   });
 
   it("OK GO on skipped, saying a replacement machine carries on", async () => {
@@ -339,7 +339,7 @@ describe("watchDispatch's endings", () => {
     ]);
     expect(await watch(h)).toBe(1);
     expect(h.created.out.join("\n")).toContain(
-      "the dispatch is stopping before the machine agreed with your laptop",
+      "the dispatch is stopping before the machine was ready",
     );
   });
 
@@ -429,9 +429,9 @@ describe("nightshift remote status", () => {
     expect(await runCli(created.environment, argv), created.err.join("\n")).toBe(0);
     const text = created.out.join("\n");
     expect(text).toContain(WAIT_BANNER.join("\n"));
-    expect(text).toContain("the machine's gate audit, against your laptop's");
-    expect(text).toContain("  gate unit: machine passed, reference passed");
-    expect(text).toContain("  gate lint: machine passed, reference passed");
+    expect(text).toContain("the machine's baseline checks");
+    expect(text).toContain("  gate unit: machine passed");
+    expect(text).toContain("  gate lint: machine passed");
     expect(text).toContain(OK_GO_BANNER.join("\n"));
     expect(postsToThePlane(plane.requests)).toEqual([]);
   });
@@ -498,7 +498,9 @@ describe("nightshift remote status", () => {
       repo,
     ];
     expect(await runCli(created.environment, argv)).toBe(1);
-    expect(created.out.join("\n")).toContain("the dispatch is stopped before the machine agreed");
+    expect(created.out.join("\n")).toContain(
+      "the dispatch is stopped before the machine was ready",
+    );
   });
 
   it("without --watch prints the dispatch and one progress line", async () => {
@@ -509,7 +511,7 @@ describe("nightshift remote status", () => {
     expect(await runCli(created.environment, argv)).toBe(0);
     const progress = created.out.filter((line) => line.startsWith("  progress:"));
     expect(progress).toEqual([
-      "  progress: audit (the machine's gate audit, against your laptop's): 3 of 6 gates; verdict agrees",
+      "  progress: audit (the machine's baseline checks): 3 of 6 gates; verdict agrees",
     ]);
     expect(created.out.join("\n")).not.toContain(WAIT_BANNER[0]);
   });

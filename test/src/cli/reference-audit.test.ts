@@ -210,160 +210,46 @@ afterEach(async () => {
   await rm(tokens, { recursive: true, force: true });
 });
 
-describe("run --remote audits on the laptop, at the base it dispatches (P16 D-06)", () => {
-  it("carries every gate's verdict, the Node it ran on, and the output of each gate that ran", async () => {
-    const head = git("rev-parse", PROGRAM_BRANCH);
-    expect(await cli(remoteEnvironment(), "run", PROGRAM, "--remote")).toBe(0);
-
-    expect(op.out[0]).toMatch(/^run_/);
-    const said = op.err.join("\n");
-    expect(said).toContain(`auditing the gates on ${PROGRAM_BRANCH} at ${head.slice(0, 8)}`);
-    expect(said).toContain("RED   broken failed on");
-    expect(said).toContain("the run is dispatched anyway");
-    expect(said).toContain("the machine audits the same base");
-    expect(said).not.toContain("its first job is a repair");
-
-    expect(dispatched).toHaveLength(1);
-    const input = dispatched[0];
-    expect(input?.baseSha).toBe(head);
-    // P16 S-03: it stayed attached until the machine agreed.
-    expect(op.out.join("\n")).toContain(
-      "the machine agrees with your laptop: you can close it now.",
-    );
-    const reference = input?.reference;
-    expect(reference?.base).toBe(head);
-    expect(reference?.node).toBe("22.22.0");
-    const verdicts = Object.fromEntries(
-      (reference?.gates ?? []).map((gate) => [gate.id, gate.verdict]),
-    );
-    expect(verdicts).toMatchObject({
-      broken: "failed",
-      // Satisfied by preflight on this laptop just now, and by the laptop's own
-      // check of a later strand's prerequisite: both ran (F-01).
-      "needs-first": "passed",
-      "needs-later": "passed",
-      "needs-unmet": "waiting",
-    });
-
-    const [run] = await runsOf();
-    if (run === undefined) throw new Error("no run");
-    expect(run.location).toBe("remote");
-    const scope = { projectId: run.projectId, programId: run.programId, runId: run.runId };
-    const events = (await stores().events.listByRun(scope)).items;
-    // The machine decides red; the laptop writes none.
-    expect(events.some((event) => event.type === "gate.red")).toBe(false);
-    expect(events.find((event) => event.type === "run.created")?.payload).toMatchObject({
-      baseCommit: head,
-    });
-
-    const broken = reference?.gates.find((gate) => gate.id === "broken");
-    expect(broken?.outputArtifactId).toMatch(/^art_/);
-    // Passed ones too (P16 D-07): a fault on the machine shows the laptop's output beside its own.
-    for (const gate of reference?.gates ?? []) {
-      if (gate.verdict === "waiting" || gate.verdict === "unrun") {
-        expect(gate.outputArtifactId, gate.id).toBeUndefined();
-      } else {
-        expect(gate.outputArtifactId, gate.id).toMatch(/^art_/);
-      }
-    }
-    const passed = reference?.gates.find((gate) => gate.id === "needs-first");
-    expect(await stores().artifacts.get(scope, passed?.outputArtifactId as never)).toMatchObject({
-      executionNodeId: run.rootNodeId,
-      kind: "verification-log",
-    });
-    const artifact = await stores().artifacts.get(scope, broken?.outputArtifactId as never);
-    expect(artifact).toMatchObject({
-      executionNodeId: run.rootNodeId,
-      kind: "verification-log",
-    });
-  });
-
-  it("refuses a branch that moved during the audit, and starts nothing", async () => {
-    const head = git("rev-parse", PROGRAM_BRANCH);
-    const moved = git(
-      "-c",
-      "user.name=t",
-      "-c",
-      "user.email=t@example.test",
-      "commit-tree",
-      `${head}^{tree}`,
-      "-p",
-      head,
-      "-m",
-      "moved",
-    );
-    // The audit's checkout is removed at its end: the branch moves then, here and at origin.
-    const moving: GitRunner = async (args, options) => {
-      const result = await op.environment.git(args, options);
-      if (args[0] === "worktree" && args[1] === "remove") {
-        git("update-ref", `refs/heads/${PROGRAM_BRANCH}`, moved);
-        git("update-ref", `refs/remotes/origin/${PROGRAM_BRANCH}`, moved);
-      }
-      return result;
-    };
-
-    expect(await cli(remoteEnvironment(moving), "run", PROGRAM, "--remote")).not.toBe(0);
-
-    expect(op.err.join("\n")).toContain("moved from");
-    expect(await runsOf()).toEqual([]);
-    expect(dispatched).toEqual([]);
-  });
-
-  it("starts the run at the audited base even when the branch moves as the run is made", async () => {
-    const head = git("rev-parse", PROGRAM_BRANCH);
-    const moved = git(
-      "-c",
-      "user.name=t",
-      "-c",
-      "user.email=t@example.test",
-      "commit-tree",
-      `${head}^{tree}`,
-      "-p",
-      head,
-      "-m",
-      "moved",
-    );
-    // After the last check that the branch has not moved: the next read is `startRun`'s.
-    let originReads = 0;
-    const moving: GitRunner = async (args, options) => {
-      const result = await op.environment.git(args, options);
-      if (args[0] === "rev-parse" && args[1] === `refs/remotes/origin/${PROGRAM_BRANCH}`) {
-        originReads += 1;
-        if (originReads === 2) git("update-ref", `refs/heads/${PROGRAM_BRANCH}`, moved);
-      }
-      return result;
-    };
-
-    expect(await cli(remoteEnvironment(moving), "run", PROGRAM, "--remote")).toBe(0);
-
-    const [run] = await runsOf();
-    if (run === undefined) throw new Error("no run");
-    const scope = { projectId: run.projectId, programId: run.programId, runId: run.runId };
-    const events = (await stores().events.listByRun(scope)).items;
-    expect(events.find((event) => event.type === "run.created")?.payload).toMatchObject({
-      baseCommit: head,
-    });
-    expect(events.find((event) => event.type === "checkpoint.created")?.payload).toMatchObject({
-      commitSha: head,
-    });
-    // The branch did move, after the last check and before the run was made.
-    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(moved);
-    expect(dispatched[0]?.baseSha).toBe(head);
-    expect(dispatched[0]?.reference?.base).toBe(head);
-  });
-
-  it("refuses a laptop whose Node violates its pin before the audit runs", async () => {
+describe("remote runs establish their baseline on the remote machine", () => {
+  it("dispatches without laptop gates, prerequisite checks, runtime probes, or reference artifacts", async () => {
+    await rm(token("HP-01"));
     await writeFile(join(fixture.repo, ".nvmrc"), "24\n");
-    commit("pin node 24");
+    commit("pin remote runtime");
     git("push", "-q", "origin", PROGRAM_BRANCH);
-    await recordHealthyGates(op, fixture.repo, PROGRAM);
-
-    expect(await cli(remoteEnvironment(), "run", PROGRAM, "--remote")).not.toBe(0);
-
-    const said = op.err.join("\n");
-    expect(said).toContain("this project pins 24");
-    expect(said).not.toContain("auditing the gates");
-    expect(await runsOf()).toEqual([]);
+    const head = git("rev-parse", PROGRAM_BRANCH);
+    const invoked: string[] = [];
+    const environment = remoteEnvironment();
+    expect(
+      await cli(
+        {
+          ...environment,
+          exec: async (file) => {
+            invoked.push(file);
+            throw new Error("no local tools");
+          },
+        },
+        "run",
+        PROGRAM,
+        "--remote",
+      ),
+    ).toBe(0);
+    expect(invoked).toEqual([]);
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]?.baseSha).toBe(head);
+    expect(dispatched[0]?.reference).toBeUndefined();
+    expect(dispatched[0]?.toolchain).toBeUndefined();
+    expect(op.err.join("\n")).not.toContain("auditing the gates");
+    const [run] = await runsOf();
+    expect(run?.location).toBe("remote");
+    if (run === undefined) throw new Error("no run");
+    const events = (
+      await stores().events.listByRun({
+        projectId: run.projectId,
+        programId: run.programId,
+        runId: run.runId,
+      })
+    ).items;
+    expect(events.some((event) => event.type === "gate.red")).toBe(false);
   });
 });
 
@@ -371,7 +257,7 @@ describe("a local run is unchanged", () => {
   it("records gate.red itself, and carries no reference anywhere", async () => {
     expect(await cli(remoteEnvironment(), "run", PROGRAM, "--attended")).toBe(0);
     const said = op.err.join("\n");
-    expect(said).toContain("its first job is a repair of broken");
+    expect(said).toContain("The base has failing checks (broken)");
     expect(said).not.toContain("the reference audit");
     const [run] = await runsOf();
     if (run === undefined) throw new Error("no run");

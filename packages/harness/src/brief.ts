@@ -366,8 +366,7 @@ const ROOT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "execution.status",
   "run.activity",
   "strand.delegate",
-  // P15 (D-P15-04): for a repair of a gate alone. The tool refuses anything else
-  // on a planned run as plan_fixes_strands.
+  // Bounded supporting work is allowed within the program's authority.
   "delegate",
   "job.wait",
   "job.get",
@@ -566,43 +565,33 @@ const describeStrand = (strand: NonNullable<ProgramContract["strands"]>[number])
  * Its job is narrow on purpose. A human already fixed the seams, the approach
  * and the expensive decisions, and each strand's own orchestrator decides that
  * strand's jobs. What is left for the root is to get every strand delegated,
- * wait, retry what is worth retrying, and end the run truthfully. The rules that
- * matter are structural as well as stated: the root of a planned run *cannot*
- * delegate anything but a strand, and a strand's brief is built from the plan,
- * not from anything the root writes.
+ * wait, delegate bounded supporting work where needed, retry what is worth
+ * retrying, and end truthfully. A strand's brief is built from the plan, not
+ * from anything the root writes.
  *
  * `job.objective` carries the plan document, so the adapter contract is the one
  * every other node is started through.
  */
 /**
- * What the root of a planned run does when a gate breaks (P15, D-P15-03,
- * D-P15-04, D-P15-06): it repairs, it never re-plans, and every repair carries
- * its decision. `skills/run-program/SKILL.md` says the same to an interactive root.
+ * Baseline context and optional repair delegation; the interactive run skill
+ * carries the same guidance.
  */
 const REPAIRING_GATES = [
-  "WHEN A GATE BREAKS — repair it; never re-plan",
+  "WHEN A GATE BREAKS",
   "",
-  "  A gate is a setup or verification step. The run repairs a broken one itself, with a",
-  "  repair job: the one job you add outside the strands. It may change anything (setup and",
-  "  gate commands included), and is examined at high risk.",
+  "  A red baseline is context, not a global hold. Delegate ordinary bounded supporting",
+  "  work to address setup or check failures within the program's authority. Required",
+  "  verification must still pass before integration; do not weaken checks to pass.",
+  "  A flake does not mandate a repair job. Investigate when useful, without blocking",
+  "  unrelated work.",
   "",
+  "  You may optionally open a dedicated repair:",
   "    nightshift delegate { objective, acceptance,",
   "      repair: { cause, gates, decision: { context, alternatives, choice, rationale,",
   "                                          reversibility } } }",
-  "",
-  "  Every repair carries its decision, recorded in the same call; without one it is refused",
-  "  (repair_needs_decision). Say which gates broke, how, and what the repair will do.",
-  "",
-  "  A RED BASE (`gate.red`): the base this run started from fails its gates. Your first act",
-  "    is a repair { cause: red_base } naming the failing gates, before anything else. The",
-  "    strands are held until it lands; wait for it with job.wait.",
-  "  A FLAKE (`gate.flaked`): a check failed and passed when rerun on the same commit. The",
-  "    work landed and nothing is blocked. Open one repair { cause: flaky } per flaky gate,",
-  "    off the blocking path: no strand waits on it, and you carry on with the strands.",
-  "",
-  "  The fix must keep each gate at least as strong. A weakened gate (a retry wrapper, a",
-  "  looser assertion, a deleted or skipped test, a removed check) is a blocking finding",
-  "  unless the decision says why. Do not run.finish while a repair is still in flight.",
+  "  This explicit repair mechanism uses high-risk examination and requires its decision",
+  "  (repair_needs_decision). It is not required for ordinary supporting work.",
+  "  Do not run.finish while a repair or any other job is still in flight.",
 ].join("\n");
 
 export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
@@ -633,9 +622,8 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
     [
       "WHAT YOU DO",
       "",
-      "  0. If the run started red (a `gate.red` line: the base fails its own gates), your first",
-      "     act is a repair, before any strand: see WHEN A GATE BREAKS. The strands are held",
-      "     until it lands.",
+      "  0. Read any baseline failures as context. They do not hold the strands; use bounded",
+      "     supporting jobs when needed, within the program's authority.",
       "  1. Delegate EVERY strand, now, all of them, in any order:",
       "       nightshift strand.delegate { strandId }",
       "     You say which strand and nothing else. Its orchestrator is handed its section of",
@@ -657,7 +645,7 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       "     a human can supply. It is not a failure and there is nothing to retry. Its work is",
       "     kept on a provisional line, later strands build on it, and job.wait treats it as",
       "     settled. Carry on with everything else.",
-      "  6. When every strand has succeeded, is deferred, or is parked, and no repair is still",
+      "  6. When every strand has succeeded, is deferred, or is parked, and no job is still",
       "     in flight:",
       "       nightshift run.finish { outcome, reason }",
       '     "succeeded" only if every strand succeeded. "deferred" when nothing failed and some',
@@ -665,11 +653,11 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       "     reason that names what was parked and why. A human reads it in the morning.",
     ].join("\n"),
     [
-      "YOU DO NOT WRITE CODE, AND YOU DO NOT PLAN JOBS",
+      "YOU DO NOT WRITE CODE; DELEGATE IT",
       "",
-      "  Every change is made by a worker a strand's orchestrator delegates. Nothing you edit",
-      "  is ever collected, and the plain delegate tool is refused to you, but for a repair",
-      "  (below). Your working",
+      "  Every change is made by a delegated worker. Strand orchestrators cut their own jobs;",
+      "  you may use plain delegate for bounded supporting work. Nothing you edit is collected.",
+      "  Your working",
       `  directory is a checkout to read: ${worktree}`,
       "",
       "  Record what you decide (a retry, giving up on a strand) with decision.record: the",

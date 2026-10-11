@@ -77,7 +77,7 @@ describe("the examiner's brief for a repair (D-P15-04, SC-P15-08)", () => {
 });
 
 describe("the planned root's brief (P15)", () => {
-  it("says to repair a red base first, repair a flake off the blocking path, and not finish mid-repair", () => {
+  it("allows ordinary supporting jobs without a mandatory repair workflow", () => {
     const f = createFixtures();
     const program = makeProgramContract(f, {
       status: "planning",
@@ -100,13 +100,14 @@ describe("the planned root's brief (P15)", () => {
       worktree: "/tmp/root",
     });
     expect(brief).toContain("WHEN A GATE BREAKS");
-    expect(brief).toContain("If the run started red");
+    expect(brief).toContain("A red baseline is context, not a global hold");
+    expect(brief).toContain("A flake does not mandate a repair job");
+    expect(brief).toContain("You may optionally open a dedicated repair");
     expect(brief).toContain(
-      "is a repair { cause: red_base } naming the failing gates, before anything else",
+      "Do not run.finish while a repair or any other job is still in flight.",
     );
-    expect(brief).toContain("Open one repair { cause: flaky } per flaky gate");
-    expect(brief).toContain("off the blocking path");
-    expect(brief).toContain("Do not run.finish while a repair is still in flight.");
+    expect(brief).not.toContain("strands are held");
+    expect(brief).not.toContain("Open one repair");
     expect(brief).toContain("repair_needs_decision");
   });
 });

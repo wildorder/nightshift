@@ -1,12 +1,11 @@
 /**
- * The gate-health audit and `plan check`'s D-08 rule, end to end through the
- * real CLI (P15, S-01; D-P15-01, D-P15-02, D-P15-07, D-P15-08): `gates
- * --record`, the record read back over the control plane, `plan check` READY
- * or not, `gates --recorded`, a stale fingerprint after a machinery change, and
- * a repairing record answered by the plan.
+ * Optional gate-health diagnostics and independent readiness through the real
+ * CLI: recorded audits remain useful, but absent, stale, and repairing records
+ * never block plan checking or ratification.
  *
  * Real: the CLI, the API handler over a socket, a signed-in operator, git, the
- * gates themselves in a fresh checkout. Nothing is scripted.
+ * gates themselves in a fresh checkout. Offline readiness additionally asserts
+ * that neither git fingerprinting nor network access is attempted.
  */
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -20,7 +19,7 @@ import {
   credentialsPath,
   staticTokenProvider,
 } from "@nightshift/persistence/http";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Operator, SUBJECT, signIn } from "../cli/operator.js";
 import {
   authoredProgram,
@@ -163,22 +162,23 @@ afterEach(async () => {
   await rm(outside, { recursive: true, force: true });
 });
 
-describe("the gate-health audit through the CLI (D-P15-07, D-P15-08)", () => {
-  it("is NOT READY with no record, READY once a healthy audit is recorded, and stale after a machinery change", async () => {
-    // Not ready for two reasons, said together: one the files', one the gates'.
+describe("optional gate-health diagnostics through the CLI", () => {
+  it("checks and ratifies without an audit, and a stale optional audit does not block readiness", async () => {
+    expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
+    expect(await cli("plan", "ratify", PROGRAM), said()).toBe(0);
+    // Actual unresolved plan decisions still block readiness.
     const { answer: _answer, ...open } = (contract.decisions ?? [])[0] as PlannedDecision;
     await writeProgram({ decisions: [open] });
     commit("an open question");
     expect(await cli("plan", "check", PROGRAM)).toBe(1);
-    expect(op.err[0]).toBe("NOT READY: 2 reasons");
+    expect(op.err[0]).toBe("NOT READY: 1 reason");
     expect(said()).toContain("decision D-01 has no answer");
-    expect(said()).toContain("the project's gates have never been audited");
-    expect(said()).toContain(`\`nightshift gates ${PROGRAM} --record\``);
+    expect(said()).not.toContain("the project's gates have never been audited");
     expect(await cli("gates", PROGRAM, "--recorded")).toBe(1);
     expect(said()).toContain("no gate-health record");
     // Ratify applies the same readiness, and ratifies nothing.
     expect(await cli("plan", "ratify", PROGRAM)).toBe(1);
-    expect(said()).toContain("the project's gates have never been audited");
+    expect(said()).toContain("decision D-01 has no answer");
 
     await writeProgram();
     commit("answer it");
@@ -221,9 +221,8 @@ describe("the gate-health audit through the CLI (D-P15-07, D-P15-08)", () => {
       `${JSON.stringify({ ...pkg, scripts: { ...pkg.scripts, pretest: "echo hi" } }, null, 2)}\n`,
     );
     commit("a pre-hook");
-    expect(await cli("plan", "check", PROGRAM)).toBe(1);
-    expect(op.err[0]).toBe("NOT READY: 1 reason");
-    expect(said()).toContain(`the gates changed since they were audited at ${head.slice(0, 8)}`);
+    expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
+    expect(await cli("plan", "ratify", PROGRAM), said()).toBe(0);
     expect(await cli("gates", PROGRAM, "--recorded")).toBe(1);
     expect(said()).toContain("does not match");
     expect(said()).toContain("stale");
@@ -243,7 +242,7 @@ describe("the gate-health audit through the CLI (D-P15-07, D-P15-08)", () => {
     expect(op.out[0]).toBe("READY");
   }, 120_000);
 
-  it("records a review's findings as repairing, READY only once each is answered and S-00 comes first", async () => {
+  it("keeps repairing diagnostics without requiring their decisions or an S-00 strand in the plan", async () => {
     await writeProgram({
       decisions: [
         ...(contract.decisions ?? []),
@@ -281,40 +280,13 @@ describe("the gate-health audit through the CLI (D-P15-07, D-P15-08)", () => {
     expect(await cli("plan", "check", PROGRAM)).toBe(1);
     const reasons = said();
     expect(reasons).toContain("decision D-02 has no answer");
-    expect(reasons).toContain("gate finding F-01 (rule 1) waits on decision D-02");
-    expect(reasons).toContain("there is no gate-health strand S-00");
-    for (const id of ["S-01", "S-02", "S-03"]) {
-      expect(reasons).toContain(`${id} does not depend on S-00`);
-    }
-
-    // Answered, with S-00 every other strand depends on.
-    const answered = (contract.decisions ?? []).concat({
-      id: "D-02",
-      question: "The tests reinstall in a pre-hook: move the install to setup?",
-      options: ["move it", "leave it"],
-      answer: "move it",
-      touches: "all",
-    });
-    const s00 = strand("S-00", "z", {
-      name: "The gate health",
-      scope: { summary: "the gate helpers", includes: ["test/gate/**"], excludes: [] },
-    });
-    const rest = (contract.strands ?? []).map((s) => ({
-      ...s,
-      dependsOn: [...s.dependsOn, "S-00"],
-    }));
-    await writeProgram({
-      decisions: answered,
-      strands: [s00, ...rest.slice(0, 2), contract.strands?.[2] as Strand],
-    });
-    commit("answer it, but forget a strand");
-    expect(await cli("plan", "check", PROGRAM)).toBe(1);
     expect(op.err[0]).toBe("NOT READY: 1 reason");
-    expect(said()).toContain("S-03 does not depend on S-00");
-    expect(said()).not.toContain("S-01 does not depend");
+    expect(reasons).not.toContain("gate finding");
+    expect(reasons).not.toContain("S-00");
 
-    await writeProgram({ decisions: answered, strands: [s00, ...rest] });
-    commit("answer it");
+    // The optional record can reference a decision absent from this plan.
+    await writeProgram();
+    commit("keep gate recommendations outside this program");
     expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
     expect(op.out[0]).toBe("READY");
     expect(await cli("plan", "ratify", PROGRAM), said()).toBe(0);
@@ -452,7 +424,7 @@ describe("the gate-health audit through the CLI (D-P15-07, D-P15-08)", () => {
     expect(said()).not.toContain(".nvmrc");
   }, 120_000);
 
-  it("says plainly when nobody is signed in, and plan check counts it as a reason", async () => {
+  it("requires sign-in for optional records but checks an ordinary plan offline without git or network", async () => {
     await rm(credentialsPath(op.environment.paths));
     expect(await cli("gates", PROGRAM, "--record")).toBe(1);
     expect(said()).toContain("you are not signed in: run `nightshift login`");
@@ -462,8 +434,19 @@ describe("the gate-health audit through the CLI (D-P15-07, D-P15-08)", () => {
     expect(await cli("gates", PROGRAM, "--recorded")).toBe(1);
     expect(said()).toContain("cannot read the project's gate-health record");
 
-    expect(await cli("plan", "check", PROGRAM)).toBe(1);
-    expect(said()).toContain("could not read the project's gate-health record");
+    const fetch = vi.fn().mockRejectedValue(new Error("network must not be used"));
+    const git = vi.fn().mockRejectedValue(new Error("fingerprinting must not be used"));
+    expect(
+      await runCli({ ...op.environment, fetch, git }, [
+        "plan",
+        "check",
+        PROGRAM,
+        "--repo",
+        fixture.repo,
+      ]),
+    ).toBe(0);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(git).not.toHaveBeenCalled();
     expect(await record()).toBeUndefined();
   }, 60_000);
 });

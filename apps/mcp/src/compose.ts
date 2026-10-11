@@ -330,7 +330,15 @@ export const harnessModuleSpecifier = (specifier: string): string => {
  * anything Codex-shaped being built, looked up or complained about.
  */
 const constructAdapter = (harness: string, env: Env, onMachine: boolean): Harness => {
-  const launcher = onMachine ? agentLauncher(harness) : undefined;
+  const launcher = agentLauncher(
+    harness,
+    onMachine
+      ? nodeCliDeps(IMAGE_PATH)
+      : nodeCliDeps(
+          Object.entries(env).find(([key]) => key.toUpperCase() === "PATH")?.[1] ?? "",
+          process.platform,
+        ),
+  );
   switch (harness) {
     case "claude":
       return createClaudeHarness({ env, ...(launcher === undefined ? {} : { launcher }) });
@@ -344,11 +352,12 @@ const constructAdapter = (harness: string, env: Env, onMachine: boolean): Harnes
 };
 
 /**
- * How an agent CLI is launched on a machine (P16 S-01): `claude` and `codex`
- * found on the image's PATH and run through the image's Node by absolute path
+ * How an agent CLI is launched: `claude` and `codex` found on the engine's
+ * PATH and run through the engine's Node by absolute path
  * (`process.execPath`, which the runner's unit sets to `/usr/local/bin/node`),
  * so a project's pinned Node first on PATH cannot run them. `undefined` when
- * the bin is not on the image's PATH: it is then started by name, as on a laptop.
+ * the bin is not on that PATH: it is then started by name. Local composition
+ * supplies the laptop's PATH and platform, including Windows npm shims.
  */
 export const agentLauncher = (
   bin: string,

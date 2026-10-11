@@ -13,11 +13,8 @@
  * 3. the gate audit (`gates.ts`): setup and every check, once, on the base. A
  *    gate that fails does not stop the run (P15, D-P15-03): the run is started
  *    on a red base, which it records as `gate.red` on its program node, and its
- *    first job is the repair; the engine holds the strands until it lands. A
- *    remote run's audit here is its reference (P16 D-06): after the remote
- *    checks, at exactly the base dispatched, with every prerequisite checked on
- *    this laptop. It goes with the dispatch, and its machine audits the base
- *    again and decides whether it is red; nothing here writes `gate.red` for it;
+ *    baseline is available for diagnosis and authorized repair. A
+ *    remote run establishes its baseline on its own machine, not the laptop;
  * 4. the run, its program node, and the human's decisions (`startRun`), with
  *    each red gate's output kept on the program node;
  * 5. the headless root orchestrator, as a process, waited for;
@@ -30,14 +27,7 @@
 
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  type ArtifactId,
-  type CommitSha,
-  type Decision,
-  isExactRuntimeVersion,
-  type Prerequisite,
-  type ProgramContract,
-} from "@nightshift/contracts";
+import type { ArtifactId, Decision, Prerequisite, ProgramContract } from "@nightshift/contracts";
 import {
   gatherReport,
   irreversibleConfirmationContext,
@@ -53,9 +43,7 @@ import {
   type GateAudit,
   type GitRunner,
   type PreflightResult,
-  recordGateOutputs,
   recordRedBase,
-  referenceAuditOf,
   requireRatifiedPlan,
   runPreflight,
   type StartedRun,
@@ -68,8 +56,8 @@ import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import type { ProgramFiles } from "../program-files.js";
 import type { Session } from "../session.js";
-import { type AuditAt, auditProgramGates, describeAudit } from "./gates.js";
-import { assertRemoteReady, dispatchRun, measureRuntime, type RemoteReadiness } from "./remote.js";
+import { auditProgramGates, describeAudit } from "./gates.js";
+import { assertRemoteReady, dispatchRun, type RemoteReadiness } from "./remote.js";
 import { watchDispatch } from "./watch.js";
 
 export const REPORT_FILE = "report.md";
@@ -123,11 +111,6 @@ const preflightFirstStrands = async (
   session: Session,
   ratified: ProgramContract,
   repoPath: string,
-  /**
-   * Say which later prerequisites are unmet. A remote run checks them on the
-   * laptop before its reference audit, and says so from what it found then.
-   */
-  noteLater = true,
 ): Promise<PreflightResult | undefined> => {
   const needed = firstStrandPrerequisites(ratified);
   // A local run runs here, so the laptop's checks are the ones that count (P16, D-08).
@@ -156,50 +139,8 @@ const preflightFirstStrands = async (
     );
     return undefined;
   }
-  if (noteLater) noteLaterUnmet(environment.out, later);
+  noteLaterUnmet(environment.out, later);
   return result;
-};
-
-/**
- * The prerequisites unmet on this laptop, now (P16 D-06): the reference audit
- * counts only what was checked here. Each one preflight has just checked keeps
- * that result; every other is checked again, satisfied or not, and recorded as
- * preflight records it. None of these stops the run: preflight already refused
- * for the first strands, and the rest only defer the checks that need them.
- */
-const unmetOnThisLaptop = async (
-  environment: CliEnvironment,
-  session: Session,
-  ratified: ProgramContract,
-  repoPath: string,
-  preflight: PreflightResult,
-): Promise<ReadonlySet<string>> => {
-  const status = new Map(
-    preflight.checks.map((check) => [check.prerequisite.id, check.prerequisite.status]),
-  );
-  const rest = prerequisitesOf(ratified)
-    .map((prerequisite) => prerequisite.id)
-    .filter((id) => !status.has(id));
-  if (rest.length > 0) {
-    const planning = createHttpPlanning({ transport: session.transport });
-    const rechecked = await runPreflight({
-      contract: ratified,
-      cwd: repoPath,
-      record: planning.recordCheck,
-      only: rest,
-      recheck: true,
-      clock: environment.clock,
-    });
-    for (const check of rechecked.checks) {
-      status.set(check.prerequisite.id, check.prerequisite.status);
-    }
-  }
-  const unmet = prerequisitesOf(ratified).filter(
-    (prerequisite) => status.get(prerequisite.id) !== "satisfied",
-  );
-  // On stderr: the run id stays the first line of stdout.
-  noteLaterUnmet(environment.err, unmet);
-  return new Set(unmet.map((prerequisite) => prerequisite.id));
 };
 
 const launchOrchestrator = async (
@@ -302,7 +243,7 @@ const recordConfirmations = async (
 
 /**
  * The gate audit, said. A red one does not stop the run (D-P15-03): it is
- * returned, and the run records it and repairs it first.
+ * returned, and the run records it as diagnostic evidence.
  */
 const auditBeforeStart = async (
   environment: CliEnvironment,
@@ -312,8 +253,8 @@ const auditBeforeStart = async (
   const audit = await auditAndSay(environment, ratified, repoPath);
   if (audit.red) {
     environment.err(
-      `The base is red, so the run starts anyway and its first job is a repair of ${audit.failing.join(", ")}; ` +
-        "the strands wait for it to land.",
+      `The base has failing checks (${audit.failing.join(", ")}); the run starts with this baseline ` +
+        "available for diagnosis and authorized repair. Required verification still applies before integration.",
     );
   }
   return audit;
@@ -324,69 +265,17 @@ const auditAndSay = async (
   environment: CliEnvironment,
   ratified: ProgramContract,
   repoPath: string,
-  at: AuditAt = {},
 ): Promise<GateAudit> => {
   const say = environment.err;
-  const audit = await auditProgramGates(environment, ratified, repoPath, say, at);
+  const audit = await auditProgramGates(environment, ratified, repoPath, say);
   describeAudit(environment, audit, say);
   return audit;
 };
 
-/** The reference audit, kept until the run exists to hold its outputs. */
-interface ReferenceEvidence {
-  readonly audit: GateAudit;
-  readonly node: string | undefined;
-  readonly auditedAt: string;
-}
-
-/** `node --version` here, exact and without the `v`, as `run --remote` measures it; `undefined` when there is none. */
-const nodeOnThisLaptop = async (
-  environment: CliEnvironment,
-  repoPath: string,
-): Promise<string | undefined> => {
-  const measured = await measureRuntime(environment.exec, repoPath, "node");
-  return measured.kind === "version" && isExactRuntimeVersion("node", measured.version)
-    ? measured.version
-    : undefined;
-};
-
 /**
- * A remote run's reference audit (P16 D-06), on this laptop at exactly
- * `readiness.baseSha`, with the prerequisites as checked here. A red base
- * still dispatches: the machine audits the same base and must agree before
- * anything is repaired, so nothing here records `gate.red`.
- */
-const referenceAuditBeforeStart = async (
-  environment: CliEnvironment,
-  session: Session,
-  ratified: ProgramContract,
-  repoPath: string,
-  readiness: RemoteReadiness,
-  preflight: PreflightResult,
-): Promise<ReferenceEvidence> => {
-  const unmet = await unmetOnThisLaptop(environment, session, ratified, repoPath, preflight);
-  environment.err(
-    "the reference audit: the gates run here first, and the machine audits the same base and compares",
-  );
-  const audit = await auditAndSay(environment, ratified, repoPath, {
-    base: readiness.baseSha as CommitSha,
-    unmet,
-  });
-  const auditedAt = nowIso(environment.clock);
-  if (audit.red) {
-    environment.err(
-      `The base is red here (${audit.failing.join(", ")}), and the run is dispatched anyway: the machine ` +
-        "audits the same base, and only if it agrees is the base red there and repaired first. " +
-        "A gate red here and green there is the machine's to explain.",
-    );
-  }
-  return { audit, node: await nodeOnThisLaptop(environment, repoPath), auditedAt };
-};
-
-/**
- * The run is made at the base audited and dispatched, or not at all (P16
- * D-06). A branch that moved during the audit is refused here, before
- * anything is written; `startRun` is then held to the audited commit, so a
+ * The run is made at the dispatched base, or not at all. A branch that moved
+ * during dispatch preparation is refused before anything is written;
+ * `startRun` is then held to the dispatched commit, so a
  * move after this check cannot make the run start elsewhere.
  */
 const requireBaseUnmoved = async (
@@ -404,31 +293,25 @@ const requireBaseUnmoved = async (
   if (moved === undefined && here !== undefined) return;
   throw new UsageError(
     `${readiness.branch} moved from ${readiness.baseSha.slice(0, 12)} to ${(moved ?? "nothing").slice(0, 12)} ` +
-      "while its gates were audited; nothing was started",
-    "Run this again: the audit and the dispatch must be of the same commit.",
+      "while preparing dispatch; nothing was started",
+    "Run this again: the run and dispatch must name the same commit.",
   );
 };
 
 /** `git`, except that the program branch resolves to `sha`: `startRun` reads its base so. */
-const atAuditedBase =
+const atDispatchedBase =
   (git: GitRunner, branch: string, sha: string): GitRunner =>
   async (args, options) =>
     args.length === 2 && args[0] === "rev-parse" && args[1] === branch
       ? { stdout: `${sha}\n`, stderr: "", exitCode: 0 }
       : git(args, options);
 
-/**
- * The audit's outputs, kept on the run's program node: a local run's red
- * gates, beside its `gate.red`; a remote run's reference keeps every gate that
- * ran, passed ones included, so an environment fault on the machine can show
- * the laptop's output beside its own (P16 D-07).
- */
+/** Keep failing baseline output on the run's program node. */
 const keepAuditOutput = async (
   environment: CliEnvironment,
   session: Session,
   started: StartedRun,
   audit: GateAudit | undefined,
-  reference: boolean,
 ): Promise<ReadonlyMap<string, ArtifactId>> => {
   if (audit === undefined) return new Map();
   const { projectId, programId, runId } = started.run;
@@ -443,59 +326,44 @@ const keepAuditOutput = async (
     nodeId: started.rootNode.executionNodeId,
     writerId: `run-${runId}-gates`,
   };
-  if (reference) {
-    // No `gate.red` here: the machine writes it if its own audit agrees (P16 D-06).
-    return recordGateOutputs(writer, { ...target, gates: audit.gates });
-  }
   if (!audit.red) return new Map();
   // `startRun` wrote `gate.red`, with the run's other start events.
   return recordRedBase(writer, { ...target, audit, event: false });
 };
 
-/** What is settled before the run exists: a local run's audit, or a remote run's readiness and reference. */
+/** What is settled before the run exists: a local run's audit, or a remote run's dispatch readiness. */
 interface BeforeStart {
   readonly audit?: GateAudit;
-  readonly remote?: { readonly readiness: RemoteReadiness; readonly reference: ReferenceEvidence };
+  readonly remote?: { readonly readiness: RemoteReadiness };
 }
 
 const beforeStart = async (
   environment: CliEnvironment,
-  session: Session,
   ratified: ProgramContract,
   options: RunProgramOptions,
-  preflight: PreflightResult,
 ): Promise<BeforeStart> => {
   // The gates, before anything is created. A red base starts the run all the
-  // same: its first job is the repair (D-P15-03).
+  // same: this is baseline evidence, not a scheduling prerequisite.
   if (options.remote !== true) {
     return { audit: await auditBeforeStart(environment, ratified, options.repoPath) };
   }
   // P10: everything the checkout can say against a remote dispatch, before the
   // run exists (SC-P10-02). The ratified record, not the file: ratification
   // lives on the control plane, and contract.json's status stays `planning`.
-  // A toolchain refusal (P16 D-03) comes here, before the long audit.
+  // Runtime installation and prerequisite checks belong to the remote machine.
   const readiness = await assertRemoteReady(
     environment,
     ratified,
     options.repoPath,
     options.compute,
   );
-  // P16 D-06: the reference audit, at the base dispatched.
-  const reference = await referenceAuditBeforeStart(
-    environment,
-    session,
-    ratified,
-    options.repoPath,
-    readiness,
-    preflight,
-  );
   await requireBaseUnmoved(environment, options.repoPath, readiness);
-  return { remote: { readiness, reference } };
+  return { remote: { readiness } };
 };
 
 /**
  * The run, after what was settled before it. A remote run is made at the base
- * its reference audited and its dispatch names, whatever the branch says now.
+ * its dispatch names, whatever the branch says now.
  */
 const startAfter = async (
   deps: StartRunEnvironment,
@@ -509,7 +377,7 @@ const startAfter = async (
       ? deps
       : {
           ...deps,
-          git: atAuditedBase(deps.git, remote.readiness.branch, remote.readiness.baseSha),
+          git: atDispatchedBase(deps.git, remote.readiness.branch, remote.readiness.baseSha),
         },
     {
       program: files.contract,
@@ -522,7 +390,7 @@ const startAfter = async (
   );
   if (remote !== undefined && started.baseCommit !== remote.readiness.baseSha) {
     throw new Error(
-      `run ${started.run.runId} started at ${started.baseCommit}, not the audited ${remote.readiness.baseSha}`,
+      `run ${started.run.runId} started at ${started.baseCommit}, not the dispatched ${remote.readiness.baseSha}`,
     );
   }
   return started;
@@ -553,30 +421,20 @@ export const runProgram = async (
     git: environment.git,
   };
   const ratified = await requireRatifiedPlan(session.stores, files.contract, files.planText);
-  const preflight = await preflightFirstStrands(
-    environment,
-    session,
-    ratified,
-    options.repoPath,
-    options.remote !== true,
-  );
-  if (preflight === undefined) {
+  if (
+    options.remote !== true &&
+    (await preflightFirstStrands(environment, session, ratified, options.repoPath)) === undefined
+  ) {
     return { started: undefined, exitCode: 1 };
   }
 
   const confirming = await requireConfirmations(session, ratified, options);
 
-  const before = await beforeStart(environment, session, ratified, options, preflight);
+  const before = await beforeStart(environment, ratified, options);
   const remote = before.remote;
 
   const started = await startAfter(deps, files, options, before);
-  const outputs = await keepAuditOutput(
-    environment,
-    session,
-    started,
-    before.audit ?? remote?.reference.audit,
-    remote !== undefined,
-  );
+  await keepAuditOutput(environment, session, started, before.audit);
   await recordConfirmations(environment, session, started, confirming);
   const sayCarried = (): void => {
     for (const carried of started.run.carriedStrands ?? []) {
@@ -590,14 +448,8 @@ export const runProgram = async (
   if (remote !== undefined) {
     environment.out(started.run.runId);
     sayCarried();
-    await dispatchRun(
-      environment,
-      session,
-      started,
-      remote.readiness,
-      referenceAuditOf({ ...remote.reference, outputs }),
-    );
-    // P16 S-03: stay with the developer until the machine's audit agrees.
+    await dispatchRun(environment, session, started, remote.readiness);
+    // Stay attached through preparation and the machine's own baseline.
     const exitCode = await watchDispatch(environment, session, {
       program: files.id,
       scope: {

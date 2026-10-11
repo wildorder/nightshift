@@ -30,12 +30,17 @@ import type {
   RunnerProgress,
   RuntimeVersion,
 } from "@nightshift/contracts";
+import { isExactRuntimeVersion } from "@nightshift/contracts";
 import {
   isInstallStep,
+  PIN_FILES,
+  PINNED_RUNTIMES,
   parseRuntimeVersion,
   planHash,
   RUNTIME_VERSION_COMMANDS,
   type RunScope,
+  resolvePins,
+  satisfiesPin,
 } from "@nightshift/core";
 import {
   formatRuntimes,
@@ -386,6 +391,68 @@ export const installRuntimes = async (
   await machine.exec("chmod", ["-R", "g+rX,g-w", dir]);
 };
 
+/** Resolve repository declarations on the execution machine, never from laptop installations. */
+export const resolveProjectRuntimes = async (
+  machine: Machine,
+  layout: WorkspaceLayout,
+): Promise<DispatchToolchain> => {
+  const files: Record<string, string> = {};
+  for (const file of PIN_FILES) {
+    const content = await machine.readFile(`${layout.checkout}/${file}`);
+    if (content !== undefined) files[file] = content;
+  }
+  const resolution = resolvePins(files);
+  if (!resolution.ok) throw new WorkspaceError(resolution.message);
+  const toolchain: RuntimeVersion[] = [];
+  for (const pin of resolution.pins) {
+    if (!(PINNED_RUNTIMES as readonly string[]).includes(pin.runtime)) continue;
+    const source = { kind: "pin" as const, file: pin.source, spec: pin.spec };
+    let version = pin.spec.replace(/^v(?=\d)/, "");
+    if (pin.runtime === "rust" && /^(stable|beta|nightly)(?:-\d{4}-\d{2}-\d{2})?$/.test(version)) {
+      const probe = await installRust(
+        machine,
+        layout,
+        { runtime: "rust", version, source },
+        () => undefined,
+      );
+      const result = await machine.exec(probe.file, probe.args);
+      const resolved = parseRuntimeVersion("rust", `${result.stdout}\n${result.stderr}`);
+      if (result.exitCode !== 0 || resolved === undefined || !satisfiesPin(resolved, pin.spec)) {
+        throw new WorkspaceError(
+          `rust ${pin.spec} could not be resolved: ${result.stderr.trim() || result.stdout.trim()}`,
+        );
+      }
+      version = resolved;
+    } else if (!isExactRuntimeVersion(pin.runtime, version)) {
+      const listed = await machine.exec("mise", ["ls-remote", pin.runtime]);
+      if (listed.exitCode !== 0) throw failed(`resolve ${pin.runtime} ${pin.spec}`, listed);
+      const candidates = listed.stdout
+        .split(/\s+/)
+        .map((candidate) =>
+          pin.runtime === "java"
+            ? (/(?:^|-)(\d+\.\d+\.\d+(?:\.\d+)*)(?:\+[^\s]+)?$/.exec(candidate)?.[1] ?? candidate)
+            : candidate,
+        )
+        .filter(
+          (candidate) =>
+            isExactRuntimeVersion(pin.runtime, candidate) && satisfiesPin(candidate, pin.spec),
+        );
+      const resolved = candidates
+        .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))
+        .at(-1);
+      if (resolved === undefined)
+        throw new WorkspaceError(`no ${pin.runtime} version satisfies ${pin.spec} (${pin.source})`);
+      version = resolved;
+    }
+    toolchain.push({
+      runtime: pin.runtime,
+      version,
+      source,
+    });
+  }
+  return toolchain;
+};
+
 export const prepareWorkspace = async (
   machine: Machine,
   input: PrepareInput,
@@ -506,7 +573,7 @@ export const prepareWorkspace = async (
 
   // The pinned runtimes, before setup (P16 S-01, D-04), and the one project
   // environment, written where the engine's processes and the boot proof read it.
-  const toolchain = dispatch.input.toolchain;
+  const toolchain = dispatch.input.toolchain ?? (await resolveProjectRuntimes(machine, layout));
   progress("toolchain", toolchainDetail(toolchain));
   await installRuntimes(machine, layout, toolchain, log);
   const env = projectEnvironment(layout, toolchain, undefined, input.inheritedPath);

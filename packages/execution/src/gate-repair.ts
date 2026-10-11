@@ -3,13 +3,12 @@
  * D-P15-11, SC-P15-07).
  *
  * A repair job may change anything, setup and the gate commands included, and a
- * changed definition applies to the verifications after it lands. Three things
- * follow, and all three are here:
+ * changed definition applies to the verifications after it lands:
  *
  * - **The run's current definitions.** The ratified contract's setup and
  *   verification, unless a landed repair changed them, in which case the latest
  *   `gate.repaired` event that says so carries the new ones. Derived from the
- *   run's records, as strand gating and red-base holding are, so an engine that
+ *   run's records, as strand gating is, so an engine that
  *   re-attaches and `nightshift resume` read the same definitions; kept in
  *   memory, and refreshed when this process writes a `gate.repaired`. The
  *   stored Program Contract and its plan hash are never touched: the change is
@@ -20,11 +19,9 @@
  *   to what). A change is also a Decision, so the report's reader sees it as
  *   one. The project's gate-health record, when there is one, is rewritten at
  *   the new head with the fingerprint recomputed there.
- * - **The setup reference.** The program checkout is what every new worktree
- *   is seeded from (D-P10-24), so after a repair lands, and once at a new run's
- *   start, the current setup runs there, writing the install marker as any
- *   setup does. Preparation, never a verdict: a failure is reported and the run
- *   goes on, because each worktree still runs setup itself.
+ *
+ * Setup runs only in execution-owned checkouts. Landing or attaching never
+ * installs dependencies in the operator's program checkout.
  *
  * Every step is derived from the records and converges when repeated: a landing
  * reconciles every integrated repair, not only its own, so a write that failed
@@ -53,17 +50,9 @@ import {
   VerificationStepSchema,
 } from "@nightshift/contracts";
 import { type GateHealthStore, nowIso, type ProjectStores } from "@nightshift/core";
-import { runSetupSteps, setupFailed } from "@nightshift/verification";
-import {
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
-  type LandingEnvironment,
-  type RunSession,
-} from "./environment.js";
+import type { LandingEnvironment, RunSession } from "./environment.js";
 import { fingerprintAtCommit, gitBlobReader } from "./gate-fingerprint.js";
 import { type GitRunner, revParse, tryGit } from "./git/index.js";
-import { recordArtifact } from "./runner.js";
-import { discardScratch, freshScratch, projectStepEnv } from "./scratch.js";
-import { setupLog } from "./setup.js";
 
 /** What a verification runs: setup first, then the gates. */
 export interface GateDefinitions {
@@ -145,7 +134,7 @@ const deriveGateDefinitions = async (
  * The run's current setup and verification: the ratified contract's, or what
  * the latest landed repair that changed them made them. The one answer every
  * reader uses: verification, a candidate's checks, a checkout's preparation,
- * an agent's brief, and the setup reference.
+ * and an agent's brief.
  */
 export const gateDefinitions = (
   environment: Pick<LandingEnvironment, "stores">,
@@ -580,67 +569,6 @@ const rewriteGateHealth = async (
   await store.put(rewritten);
 };
 
-// --- The setup reference (D-P15-11) ------------------------------------------------------
-
-/**
- * The current setup, once, in the program checkout, writing the install marker
- * as any setup does, so later worktrees are seeded from it (D-P10-24). Run as
- * the engine, never as a worker, and with the checkout's own scratch from the
- * paths port: under Nightshift's state directory, never beside the operator's
- * checkout, where nothing is Nightshift's to delete. Never throws: a
- * failure is reported on `nodeId`, and each worktree still runs setup itself.
- */
-export const prepareSetupReference = async (
-  environment: LandingEnvironment,
-  session: RunSession,
-  nodeId: ExecutionNodeId,
-  why: string,
-): Promise<boolean> => {
-  let scratch: string | undefined;
-  try {
-    const { setup } = await gateDefinitions(environment, session);
-    if (setup.length === 0) return true;
-    // Short enough for sockets (scratch.ts).
-    const dir = await freshScratch(environment.paths, session.repoPath);
-    scratch = dir;
-    const results = await runSetupSteps({
-      setup,
-      cwd: session.repoPath,
-      timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
-      // On a machine, in the project environment (P16, D-10), as every setup is.
-      env: projectStepEnv(environment.projectEnv, dir),
-    });
-    const artifactId = await recordArtifact(environment, {
-      scope: session.scope,
-      nodeId,
-      kind: "build-log",
-      contentType: "text/plain; charset=utf-8",
-      bytes: setupLog(results),
-    });
-    const failed = setupFailed(results) ? results.at(-1) : undefined;
-    environment.outbox.emit({
-      type: "node.progress",
-      source: "control-plane",
-      payload: {
-        message:
-          failed === undefined
-            ? `the program checkout was prepared as the setup reference ${why}`
-            : `setup failed in the program checkout ${why}: ${failed.stepId} exited ${failed.exitCode}; ` +
-              "each worktree still runs setup itself",
-        setupReference: session.repoPath,
-        setupLogArtifactId: artifactId,
-      },
-      executionNodeId: nodeId,
-    });
-    return failed === undefined;
-  } catch (error) {
-    warn(environment, nodeId, `the program checkout could not be prepared ${why}`, error);
-    return false;
-  } finally {
-    if (scratch !== undefined) await discardScratch(environment.paths, session.repoPath);
-  }
-};
-
 // --- The landing ---------------------------------------------------------------------------
 
 const warn = (
@@ -670,8 +598,7 @@ export interface ReconcileGateRepairsInput {
 /**
  * Brings the run's records up to date with its landed repairs: `gate.repaired`
  * (and the decision, when the definitions changed) for each that has none, and
- * the gate-health record. When `landed` is itself a repair, the program
- * checkout is then prepared as the setup reference. Called on every landing,
+ * the optional gate-health record. Called on every landing,
  * by the merge queue, a readmitted dispute and `nightshift resume` alike
  * (`integrateNode`), and when an engine attaches. Never throws: what failed is
  * reported, and the next reconciliation makes it.
@@ -706,14 +633,5 @@ export const reconcileGateRepairs = async (
     } catch (error) {
       warn(environment, at, "the project's gate-health record could not be updated", error);
     }
-  }
-  const repair = repairs.find((candidate) => candidate.node.executionNodeId === input.landed);
-  if (repair !== undefined) {
-    await prepareSetupReference(
-      environment,
-      session,
-      repair.node.executionNodeId,
-      `after repair ${repair.job.jobContractId} landed`,
-    );
   }
 };

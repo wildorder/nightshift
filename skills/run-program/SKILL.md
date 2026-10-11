@@ -46,38 +46,29 @@ Check, and say what you find, without fixing anything the human did not ask for:
   the verification's cost is what this machine will do at once: with a setup of
   `npm ci`, a gate of build + typecheck + lint + test and `maxConcurrency` 2,
   expect up to two installs and two full gates running together.
-- **Setup.** Every checkout Nightshift creates starts with nothing that is not
-  committed, and the contract's `setup` is what prepares it. A repository that
-  needs installed dependencies and has no `setup` will fail its checks for
-  reasons that have nothing to do with the work. Say so before starting, and send
-  it back to planning: the fix is a `setup` in `nightshift.config.json` or the
-  contract, never an install folded into the gate. Say it once, and let the human choose
-  `--model` or lower the limit in `nightshift.config.json` if they want.
-- **The gates.** `nightshift run` audits them before it creates anything: setup
-  and every check, once, in a fresh checkout of the program branch, as
-  verification will run them. It prints the audit on stderr and stops with exit 1
-  when a gate fails, because no job could then pass verification. Relay what it
-  said: which gate, and the end of its output. The fix is the human's, in the
-  repository. `nightshift gates {id}` runs the same audit on its own, for a human
-  who wants to know before deciding.
+- **Setup and baseline.** Use the repository's declared setup and runtimes.
+  Remote runs prepare and check the actual remote environment; they do not need
+  a laptop gate audit or a parity certificate. A failed baseline check is
+  reported to agents, not a reason to require a separate repair strand.
+  `nightshift gates {id}` is an optional diagnostic, not a prerequisite.
+  Required verification still decides whether a candidate may integrate.
 
 ## 2. Attended: this session orchestrates
 
 1. `nightshift run {id} --attended` creates the run and prints its id. It runs
    preflight first and stops with remediations if a first strand's prerequisite
-   is unmet, then the gate audit, and stops if a gate is red (section 1). The
-   audit runs the whole gate once, so expect it to take that long.
-2. `run.attach { runId, model: "<the model you are>" }`. If the run started
-   red (a `gate.red` line in `Meanwhile:`: the base fails its own gates), your
-   **first act is a repair**, before any strand (section 2a). The strands are
-   held until it lands.
+   is unmet. The baseline runs the configured checks once; expect their usual
+   duration.
+2. `run.attach { runId, model: "<the model you are>" }`. Read any baseline
+   failures as context for the work. A red baseline does not hold every strand
+   or mandate a special repair job.
 3. `strand.delegate { strandId }` for **every** strand, at once. You name the
    strand and nothing else: its orchestrator is handed its plan section
    verbatim, the human's decisions that touch it, and where the plan expects
    the other strands' work. Nightshift holds a strand until what it depends on has succeeded, so
-   do not sequence them yourself. Plain `delegate` is refused: the plan fixes
-   the strands, and how each divides into jobs is its orchestrator's call. The
-   one exception is a repair of a gate (section 2a).
+   do not sequence them yourself. The root may also use plain `delegate` for
+   bounded supporting work, including setup or baseline fixes. This does not
+   replace the ratified strands or widen the program's authority.
    A strand an earlier run of this same plan already finished, whose work is
    on the program branch, is **carried over**: `run.attach` names it, it counts
    as succeeded, and `strand.delegate` refuses it as `strand_carried`. That is
@@ -114,19 +105,18 @@ Check, and say what you find, without fixing anything the human did not ask for:
 You do not write code during the run, and you do not touch the checkout: every
 landing fast-forwards the branch it is on.
 
-### 2a. When a gate breaks: repair it, never re-plan
+### 2a. When a gate breaks
 
-A gate is a setup or verification step. A run repairs a broken gate itself, with
-a **repair job**: the one job the root adds outside the strands (D-P15-04). Only
-the root may; a strand's orchestrator is refused. A repair may change anything
-it needs (setup and the gate commands in
-`nightshift.config.json` or the contract included), and is examined at high
-risk against Nightshift's gate standard. **Every repair carries its decision**,
-recorded in the same call; without one it is refused as `repair_needs_decision`:
+Read the failure and distinguish an environment problem from a defect in the
+work. Ordinary authorized jobs may repair setup or a failing check as part of
+their objective. Do not disable or weaken required checks merely to make a
+candidate pass.
+
+A root may optionally open a dedicated repair outside the planned strands:
 
 ```text
 delegate {
-  objective: "Make the test gate pass on the base: …",
+  objective: "Fix the test failure: …",
   acceptance: ["npm run test passes on a fresh checkout", …],
   repair: {
     cause: "red_base" | "flaky",
@@ -136,19 +126,10 @@ delegate {
 }
 ```
 
-- **A red base** (`gate.red`: "the base is red"). Your first act is one repair
-  `{ cause: "red_base" }` naming the failing gates, before any strand. The
-  strands are held until it lands; wait for it with `job.wait`.
-- **A flake** (`gate.flaked`: a check failed and passed when rerun on the same
-  commit). The work landed and nothing is blocked. Open **one repair per flaky
-  gate**, `{ cause: "flaky" }`, off the blocking path: no strand waits on it,
-  and you carry on with the strands.
-- **The gate standard holds.** The fix must keep each gate at least as strong.
-  Weakening a gate (a retry wrapper, a looser assertion, a deleted or skipped
-  test, a removed check) is a blocking finding unless the decision says why.
-- **Do not `run.finish` while a repair is in flight.** A `gate.repaired` line
-  says one landed, under which decision, and whether the gate definitions
-  changed (later verifications use the new ones).
+This explicit repair mechanism requires its decision and high-risk examination.
+It is not required merely because the baseline is red or a check flaked. A
+flake is reported; do not automatically add repair work for every flaky gate.
+Any repair you do delegate must settle before finishing, like other work.
 
 ## 3. Dark: nightshift runs it alone
 

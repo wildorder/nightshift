@@ -34,8 +34,6 @@ export type RefusalCode =
   | "validation_failed"
   | "depth_limit_exceeded"
   | "concurrency_limit_exceeded"
-  /** P7: a planned run. The plan names the strands; the root neither adds nor drops one. */
-  | "plan_fixes_strands"
   | "strand_blocked"
   /** A strand an earlier run of the same plan built, carried over: succeeded here already. */
   | "strand_carried"

@@ -574,15 +574,14 @@ describe("the audit's progress (P16 S-03)", () => {
     return { gates, faults: gates.slice(0, faults), red };
   };
 
-  it("names each finished gate as the reference does, with both verdicts", () => {
+  it("reports the actual machine verdict, ignoring historic laptop references", () => {
     expect(
       gateProgressOf(step("setup:install", 0) as never, { program, dispatch: withReference }),
-    ).toEqual({ id: "setup:install", kind: "setup", machine: "passed", reference: "passed" });
+    ).toEqual({ id: "setup:install", kind: "setup", machine: "passed" });
     expect(gateProgressOf(step("unit", 1) as never, { program, dispatch: withReference })).toEqual({
       id: "unit",
       kind: "check",
       machine: "failed",
-      reference: "passed",
     });
     expect(
       gateProgressOf(step("unit", 75, "NIGHTSHIFT_DEFER HP-01 needs docker\n") as never, {
@@ -592,8 +591,8 @@ describe("the audit's progress (P16 S-03)", () => {
     ).toMatchObject({ id: "unit", kind: "check", machine: expect.any(String) });
   });
 
-  it("gives the verdict: a fault outranks red, and red outranks agreement", () => {
-    expect(auditVerdictOf(compared(1, ["gate-0"]))).toBe("fault");
+  it("gives the baseline verdict without promoting reference mismatches to faults", () => {
+    expect(auditVerdictOf(compared(1, ["gate-0"]))).toBe("red");
     expect(auditVerdictOf(compared(0, ["gate-0"]))).toBe("red");
     expect(auditVerdictOf(compared(0, []))).toBe("agrees");
   });

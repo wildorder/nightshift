@@ -67,6 +67,12 @@ the program branch until they are back.
 
 What Nightshift provides beneath it:
 
+Environment preparation serves execution, not certification. Nightshift uses the
+repository's setup, runtimes and checks on the machine doing the work. A red
+baseline informs the agents; it does not require a special planning strand or
+block all work. Planning needs no gate-health certificate, and remote dispatch
+needs no laptop parity audit. Required verification still decides what lands.
+
 1. **Controlled delegation.** Every delegated unit passes through Nightshift as a
    validated, persisted contract. Nothing executes without a Nightshift identity.
 2. **Deterministic verification.** `implemented ≠ verified`. A worker may report

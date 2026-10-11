@@ -1,43 +1,7 @@
-/**
- * The gate audit on a run's own machine, before the root orchestrator starts.
- *
- * A laptop run is audited by `nightshift run` before the run exists. A remote
- * run cannot be: the gates that matter are this machine's, with its toolchain,
- * its stores and its worker users. So the runner audits the base here, once,
- * with the same environment and the same users verification will use. A gate
- * that fails does not stop the run (P15, D-P15-03): it is recorded as a
- * `gate.red` event on the run's program node, with each red gate's output beside
- * it, and the root starts. Its first job is the repair, and the engine holds the
- * strands until that lands.
- *
- * Before the audit the machine checks the human prerequisites itself (P16,
- * D-08): every `verifyCommand`, as a worker user in the project environment,
- * each recorded through `prerequisite.put` as a machine check under this
- * dispatch. The audit's `unmet` set is built from those checks alone. A
- * prerequisite the laptop's preflight satisfied is no evidence here: Docker on
- * the laptop says nothing of Docker on this machine.
- *
- * The audit is then compared with the laptop's reference, gate by gate (P16
- * S-02). A gate green there and red here is an environment fault (D-07): the
- * machine is at fault, not the project. It is recorded as `environment.fault`
- * on the program node, with both outputs and both Nodes; no `gate.red` is
- * written, even for gates red on both; the run is cancelled before the root
- * starts, and the dispatch ends `failed` with `environment_fault`. A dispatch
- * without a reference (from before P16) is audited exactly as it was.
- *
- * Only on a dispatch's first machine. A replacement (T6) resumes a run that
- * has already started; its base was audited when it began.
- *
- * As it goes, the audit says where it has got to (P16 S-03), through the
- * context's `onProgress`, which the runner hands to its heartbeat:
- * `prerequisites` while they are checked, then `audit` with each gate as it
- * finishes beside the reference's verdict, and last the verdict: `agrees`,
- * `red`, `fault`, or `skipped` on a replacement machine.
- */
+/** The actual machine baseline is diagnostic evidence, never a laptop-parity prerequisite. */
 import {
   type CheckDispatch,
   type CommitSha,
-  type EnvironmentFaultPayload,
   MAX_PROGRESS_GATES,
   type MachineAuditVerdict,
   type MachineGateProgress,
@@ -48,7 +12,6 @@ import {
   nowIso,
   parseRuntimeVersion,
   prerequisitesOf,
-  transitionRun,
   unmetPrerequisitesAt,
 } from "@nightshift/core";
 import {
@@ -57,11 +20,9 @@ import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   deferralOf,
   type ExecutionEnvironment,
-  environmentFaultReason,
   type GateAudit,
   type GateComparison,
   gateVerdictOf,
-  recordEnvironmentFault,
   recordRedBase,
   runPreflight,
   stepsAs,
@@ -87,28 +48,22 @@ export const SKIPPED_AUDIT_DETAIL = "a replacement machine; the first one's audi
 
 /**
  * One finished step of the audit as the heartbeat carries it: its gate's id
- * and kind as the audit and the reference name them (`setup:<id>`), its
- * verdict here, and the reference's beside it when the reference has the gate.
+ * and kind (`setup:<id>`) and the actual machine's verdict.
  */
 export const gateProgressOf = (
   result: StepResult,
   context: Pick<MachineAuditContext, "dispatch" | "program">,
 ): MachineGateProgress => {
   const setup = new Set((context.program.setup ?? []).map((step) => setupAsStep(step).id));
-  const reference = context.dispatch.input.reference?.gates.find(
-    (gate) => gate.id === result.stepId,
-  );
   return {
     id: result.stepId,
     kind: setup.has(result.stepId) ? "setup" : "check",
     machine: gateVerdictOf(result),
-    ...(reference === undefined ? {} : { reference: reference.verdict }),
   };
 };
 
-/** The audit's verdict against the reference: a fault outranks red, and red outranks agreement. */
+/** The actual machine's baseline verdict. */
 export const auditVerdictOf = (comparison: GateComparison): MachineAuditVerdict => {
-  if (comparison.faults.length > 0) return "fault";
   return comparison.red.length > 0 ? "red" : "agrees";
 };
 
@@ -129,14 +84,8 @@ export const auditProgressOf = (comparison: GateComparison): RunnerProgress => (
 /** What the audit found; absent on a replacement machine, which does not audit. A red one does not stop the root. */
 export interface MachineAuditResult {
   readonly audit?: GateAudit;
-  /** The audit compared with the dispatch's reference; with none, every gate is the machine's own. */
+  /** The actual machine's results in the progress representation. */
   readonly comparison?: GateComparison;
-  /** Gates green in the reference and red here (P16 D-07): the root must not start. */
-  readonly fault?: {
-    readonly payload: EnvironmentFaultPayload;
-    /** The run's `outcomeReason`, and the dispatch failure's message. */
-    readonly reason: string;
-  };
 }
 
 /** What the runner says of a red base: the red gates, by id and command. */
@@ -147,7 +96,7 @@ export const redReason = (audit: GateAudit): string => {
     .join(", ");
   return (
     `the gate audit on ${audit.base.slice(0, 8)} found ${named} failing; the run starts, and its ` +
-    "first job is their repair. Each gate's output is on the run's program node."
+    "baseline evidence is on the program node for diagnosis and authorized repair."
   );
 };
 
@@ -252,59 +201,6 @@ export const nodeOnMachine = async (
   }
 };
 
-/**
- * Green on the laptop and red here (P16 D-07): `environment.fault` on the
- * program node, with each disagreeing gate's machine output and both Nodes;
- * then the run, still `pending`, is cancelled with the fault as its reason.
- */
-const recordFault = async (
-  runtime: MachineAuditRuntime,
-  context: MachineAuditContext,
-  audit: GateAudit,
-  comparison: GateComparison,
-  log: (line: string) => void,
-): Promise<NonNullable<MachineAuditResult["fault"]>> => {
-  const referenceNode = context.dispatch.input.reference?.node;
-  const machineNode = await nodeOnMachine(runtime, context);
-  const run = await runtime.stores.runs.get(context.scope, context.scope.runId);
-  const unrecorded: EnvironmentFaultPayload = {
-    baseCommit: audit.base,
-    gates: comparison.faults.map((gate) => ({
-      id: gate.id,
-      command: gate.command,
-      kind: gate.kind,
-      reference: gate.reference ?? "unrun",
-      machine: gate.machine,
-      ...(gate.referenceOutputArtifactId === undefined
-        ? {}
-        : { referenceOutputArtifactId: gate.referenceOutputArtifactId }),
-    })),
-    ...(referenceNode === undefined ? {} : { referenceNode }),
-    ...(machineNode === undefined ? {} : { machineNode }),
-  };
-  const payload =
-    run === undefined
-      ? unrecorded
-      : await recordEnvironmentFault(runtime, {
-          scope: context.scope,
-          nodeId: run.rootNodeId,
-          audit,
-          comparison,
-          referenceNode,
-          machineNode,
-          writerId: `${context.dispatch.engineAgentId}-gates`,
-        });
-  const reason = environmentFaultReason(payload);
-  // `pending → cancelled`: the table has no `pending → failed` (D-07).
-  if (run?.status === "pending") {
-    await runtime.stores.runs.put(
-      transitionRun(run, "cancel", { endedAt: nowIso(runtime.clock), outcomeReason: reason }),
-    );
-  }
-  log(`gate audit: ${reason}`);
-  return { payload, reason };
-};
-
 export const auditOnMachine = async (
   runtime: MachineAuditRuntime,
   context: MachineAuditContext,
@@ -318,7 +214,7 @@ export const auditOnMachine = async (
   const base = context.dispatch.input.baseSha.slice(0, 8);
   log(`gate audit: setup and every check, on ${base}`);
   context.onProgress?.({ stage: "audit", detail: `setup and every check, on ${base}` });
-  // Each gate as it finishes, beside the reference's verdict.
+  // Each gate as it finishes on this machine.
   const finished: MachineGateProgress[] = [];
   const audit = await auditGates({
     git: runtime.git,
@@ -356,25 +252,10 @@ export const auditOnMachine = async (
           : `: ${gate.deferral.prerequisiteId} ${gate.deferral.description}`),
     );
   }
-  const comparison = compareWithReference(context.dispatch.input.reference, audit);
-  // The verdict goes to the heartbeat before anything is recorded: on a fault,
-  // it reaches the plane before or with the `stopped` that ends the dispatch.
+  const comparison = compareWithReference(undefined, audit);
+  // Report the machine's own baseline; historical references do not affect execution.
   context.onProgress?.(auditProgressOf(comparison));
-  for (const gate of comparison.gates.filter(
-    (candidate) => candidate.reference === "failed" && candidate.machine === "passed",
-  )) {
-    log(`gate audit: ${gate.id} failed in the reference audit and passes here; it is not red`);
-  }
-  // A fault outranks a red base: no `gate.red`, so nothing is repaired (D-07).
-  if (comparison.faults.length > 0) {
-    return {
-      audit,
-      comparison,
-      fault: await recordFault(runtime, context, audit, comparison, log),
-    };
-  }
-  // With no fault, every gate failing here is red: the machine's own result, or both agree.
-  if (comparison.red.length === 0) return { audit, comparison };
+  if (!audit.red) return { audit, comparison };
 
   const run = await runtime.stores.runs.get(context.scope, context.scope.runId);
   if (run !== undefined) {
@@ -390,11 +271,7 @@ export const auditOnMachine = async (
   return { audit, comparison };
 };
 
-/**
- * The audit, then the root (P16 D-07): an environment fault ends the work with
- * `environment_fault` (`ended`) before the root is started, or paid for;
- * anything else, red base included, starts it.
- */
+/** Record the machine baseline and start the root, including when checks are red. */
 export const auditThenRoot = async (
   runtime: MachineAuditRuntime,
   context: MachineAuditContext,
@@ -402,12 +279,6 @@ export const auditThenRoot = async (
   root: () => Promise<void>,
 ): Promise<{ readonly audited: MachineAuditResult; readonly ended?: RunnerWorkEnd }> => {
   const audited = await auditOnMachine(runtime, context, log);
-  if (audited.fault !== undefined) {
-    return {
-      audited,
-      ended: { failure: { code: "environment_fault", message: audited.fault.reason } },
-    };
-  }
   await root();
   return { audited };
 };

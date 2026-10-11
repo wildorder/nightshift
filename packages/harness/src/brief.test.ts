@@ -137,14 +137,16 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     expect(brief).toContain(`nightshift run.attach { runId: "${root.runId}"`);
     expect(brief).toContain("S-02 Strand S-02\n    depends on: S-01\n    needs: HP-01");
     expect(brief).toContain("nightshift strand.delegate { strandId }");
-    expect(brief).toContain("YOU DO NOT WRITE CODE, AND YOU DO NOT PLAN JOBS");
+    expect(brief).toContain("YOU DO NOT WRITE CODE; DELEGATE IT");
     expect(brief).toContain("D-01: REST or RPC? → REST");
     expect(brief).not.toContain("D-02");
     // The plan as ratified, whole, is part of the brief.
     expect(brief).toContain("THE PLAN, AS RATIFIED\n\n# The plan\n\n### S-01 First\n\nA module.");
     expect(nightshiftToolNames("program", planned)).toContain("strand.delegate");
-    // For a repair of a gate alone (P15, D-P15-04): the tool refuses anything else.
+    // Supporting jobs do not need special repair metadata.
     expect(nightshiftToolNames("program", planned)).toContain("delegate");
+    expect(brief).toContain("you may use plain delegate for bounded supporting work");
+    expect(brief).not.toContain("plain delegate tool is refused");
   });
 
   it("leaves a program node of an unplanned contract exactly as it was", () => {

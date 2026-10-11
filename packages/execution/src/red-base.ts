@@ -1,12 +1,9 @@
 /**
  * A red base, kept on the run (P15, D-P15-03, SC-P15-05).
  *
- * A gate audit that finds the base red no longer stops the run: the run starts,
- * its first job is the repair, and the engine holds the strands until the
- * repair lands. What the audit found is kept on the run's program node, where
- * the report, the Studio and the repair's worker find it: the `gate.red` event
- * that the engine's hold is read from, and each red gate's last output as a
- * verification log.
+ * A red baseline is evidence, not a scheduling hold. Keep its failing checks
+ * and logs on the run's program node so the agent can address them within the
+ * authorized work. Every candidate must still pass required verification.
  *
  * Shared by `nightshift run` on a laptop and the runner on a machine of its own,
  * so the two record a red base the same way.
@@ -57,9 +54,8 @@ export const recordRedBase = async (
     writerId: input.writerId,
   });
   if (input.event) {
-    // Written directly, not through the outbox: the engine's hold is read from
-    // it, so it is durable before the root starts or the call fails. The key is
-    // deterministic, so a repeated audit of the same run converges.
+    // Persist the baseline before the root starts. The deterministic key makes
+    // recording the same baseline idempotent.
     const at = nowIso(environment.clock);
     await environment.stores.events.append(
       EventSchema.parse({

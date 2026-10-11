@@ -26,20 +26,15 @@ import {
 } from "@nightshift/contracts";
 import {
   chooseTier,
-  dispatchToolchain,
   environmentFaultOf,
   estimateUsd,
   isPlanned,
   mayDispatch,
-  PIN_FILES,
-  PINNED_RUNTIMES,
-  type Pin,
   type PinnedRuntime,
   parseRuntimeVersion,
   RUNTIME_VERSION_COMMANDS,
   type RunScope,
   renderEnvironmentFault,
-  resolvePins,
   runHoursOf,
 } from "@nightshift/core";
 import {
@@ -73,33 +68,11 @@ export interface RemoteReadiness {
   readonly tier: ComputeTier;
   readonly source: string;
   /**
-   * The runtimes the machine installs, at the laptop's exact versions (P16
-   * D-03). Absent when the project pins none: every runtime is then the image's.
+   * Exact runtimes retained on older dispatches. New dispatches resolve the
+   * repository's declarations on the execution machine.
    */
   readonly toolchain?: DispatchToolchain;
 }
-
-/** What measuring the laptop's runtimes needs: git, to read the pins, and a way to run `node --version`. */
-export interface ToolchainDeps {
-  readonly git: GitRunner;
-  /** Absent where the CLI can run nothing; a pinned runtime is then unmeasured, and refused. */
-  readonly exec?: Exec | undefined;
-}
-
-export type MeasuredToolchain =
-  | {
-      readonly ok: true;
-      /** One entry per pinned runtime, at the version measured here. */
-      readonly toolchain: DispatchToolchain;
-      /** The runtimes Nightshift installs that the project does not pin: the image's. */
-      readonly unpinned: readonly PinnedRuntime[];
-      /** Pinned tools Nightshift cannot measure or install (a `.tool-versions` line for `terraform`). */
-      readonly unmeasurable: readonly Pin[];
-    }
-  | { readonly ok: false; readonly conflict: boolean; readonly message: string };
-
-const isMeasurable = (runtime: string): runtime is PinnedRuntime =>
-  (PINNED_RUNTIMES as readonly string[]).includes(runtime);
 
 /** `files` as committed at `sha`; a file the commit lacks is not there. */
 export const filesAt = async (
@@ -161,54 +134,10 @@ export const measureRuntime = async (
   return { kind: "version", version };
 };
 
-/**
- * The versions a dispatch carries (P16 S-01, D-03): the pins as committed at
- * `baseSha`, never the working tree, each met by the version of the runtime
- * this machine runs. Refused when pin files disagree, a pinned runtime is not
- * installed here, or its version does not satisfy its pin. The reference
- * audit (S-02) records the same measurement.
- */
-export const measureToolchain = async (
-  deps: ToolchainDeps,
-  repoPath: string,
-  baseSha: string,
-): Promise<MeasuredToolchain> => {
-  const resolution = resolvePins(await filesAt(deps.git, repoPath, baseSha, PIN_FILES));
-  if (!resolution.ok) return { ok: false, conflict: true, message: resolution.message };
-
-  const pins = resolution.pins.filter((pin) => isMeasurable(pin.runtime));
-  const unmeasurable = resolution.pins.filter((pin) => !isMeasurable(pin.runtime));
-  const measured: Record<string, string | undefined> = {};
-  const refusals: string[] = [];
-  const carried: Pin[] = [];
-  for (const pin of pins) {
-    const measurement = await measureRuntime(deps.exec, repoPath, pin.runtime as PinnedRuntime);
-    if (measurement.kind === "refused") {
-      refusals.push(
-        `this project pins ${pin.runtime} ${pin.spec} (${pin.source}) but ${measurement.message}`,
-      );
-      continue;
-    }
-    if (measurement.kind === "version") measured[pin.runtime] = measurement.version;
-    carried.push(pin);
-  }
-  const resolved = dispatchToolchain(carried, measured);
-  if (!resolved.ok || refusals.length > 0) {
-    const message = [...(resolved.ok ? [] : [resolved.message]), ...refusals].join("\n");
-    return { ok: false, conflict: false, message };
-  }
-  return {
-    ok: true,
-    toolchain: resolved.toolchain,
-    unpinned: PINNED_RUNTIMES.filter((runtime) => !pins.some((pin) => pin.runtime === runtime)),
-    unmeasurable,
-  };
-};
-
 /** One line: what the machine will run, and that the rest is the image's. */
 const describeToolchain = (toolchain: DispatchToolchain | undefined): string => {
   if (toolchain === undefined || toolchain.length === 0) {
-    return "runtimes: this project pins none, so the machine runs the image's";
+    return "runtimes: the machine resolves the repository's declared versions; undeclared runtimes use the image's";
   }
   const pinned = toolchain
     .map(
@@ -216,7 +145,7 @@ const describeToolchain = (toolchain: DispatchToolchain | undefined): string => 
         `${entry.runtime} ${entry.version}${entry.source.kind === "pin" ? ` (${entry.source.file})` : " (the image's)"}`,
     )
     .join(", ");
-  return `runtimes: the machine runs ${pinned}, as measured here; any runtime the project does not pin is the image's`;
+  return `runtimes: the machine runs ${pinned}, as recorded on this dispatch; any runtime the project does not pin is the image's`;
 };
 
 const parseTier = (value: string | undefined): ComputeTier | undefined => {
@@ -278,23 +207,6 @@ export const assertRemoteReady = async (
       `note: the checkout is on ${onBranch}; the run dispatches ${branch} at ${head.slice(0, 12)} regardless`,
     );
   }
-  // P16 S-01: the pins at the commit dispatched, met by this laptop's runtimes,
-  // before anything is written to the plane or a machine is paid for.
-  const measured = await measureToolchain(environment, repoPath, head);
-  if (!measured.ok) {
-    throw new UsageError(
-      measured.message,
-      measured.conflict
-        ? "Make the pin files agree, then commit and push; the machine installs one version of each runtime."
-        : "Switch to the pinned version with your version manager (nvm, mise, asdf, pyenv, rbenv…) and audit again, " +
-            "or change the pin and commit it; the machine runs exactly the versions your audit ran on.",
-    );
-  }
-  for (const pin of measured.unmeasurable) {
-    environment.err(
-      `note: ${pin.source} pins ${pin.runtime} ${pin.spec}; Nightshift does not install ${pin.runtime}, so the machine runs the image's, if it has one`,
-    );
-  }
   const config = await readConfig(repoPath);
   const choice = chooseTier(parseTier(computeFlag), contract.compute, config?.compute);
   return {
@@ -303,8 +215,6 @@ export const assertRemoteReady = async (
     baseSha: head,
     tier: choice.tier,
     source: choice.source,
-    // Absent rather than empty: the dispatch then says nothing it did not measure.
-    ...(measured.toolchain.length === 0 ? {} : { toolchain: measured.toolchain }),
   };
 };
 
@@ -323,7 +233,7 @@ export const dispatchRun = async (
   session: Session,
   started: StartedRun,
   readiness: RemoteReadiness,
-  /** The laptop's gate audit of `readiness.baseSha` (P16 D-06), carried to the machine. */
+  /** Historical reference evidence, retained for older callers but not required or enforced. */
   reference?: ReferenceAudit,
 ): Promise<Dispatch> => {
   const contract: ProgramContract = started.program;
@@ -378,7 +288,7 @@ export const dispatchRun = async (
   );
   environment.out(
     `dispatch ${dispatch.status}: the machine is being provisioned. You wait here until it has ` +
-      "audited the gates and agrees with your laptop; Ctrl-C detaches, and the machine carries on.",
+      "prepared the environment and recorded its gate baseline; Ctrl-C detaches, and the machine carries on.",
   );
   return dispatch;
 };

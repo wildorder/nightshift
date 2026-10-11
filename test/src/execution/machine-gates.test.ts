@@ -5,21 +5,19 @@
  * output kept beside it, and the root starts: its first job is the repair. Everything a machine adds (the volume, the worker
  * users) is out of the picture; the checkout is the fixture repository.
  */
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { encodeTestPrincipal } from "@nightshift/api/testing";
-import {
-  type ArtifactId,
-  type CheckDispatch,
-  type CommitSha,
-  type Dispatch,
-  EnvironmentFaultPayloadSchema,
-  type Prerequisite,
-  type ProgramContract,
-  type ReferenceGate,
-  type RunnerProgress,
+import type {
+  ArtifactId,
+  CheckDispatch,
+  CommitSha,
+  Dispatch,
+  Prerequisite,
+  ProgramContract,
+  ReferenceGate,
+  RunnerProgress,
 } from "@nightshift/contracts";
-import { createFixtures, gatherReport, makeDispatch, renderReport } from "@nightshift/core";
+import { createFixtures, makeDispatch } from "@nightshift/core";
 import { startRun } from "@nightshift/execution";
 import { auditThenRoot, type MachineAuditContext, type Runtime } from "@nightshift/mcp";
 import {
@@ -245,18 +243,18 @@ describe("the gate audit on a run's machine", () => {
     expect(progress[0]?.detail).toMatch(/^setup and every check, on [0-9a-f]{8}$/);
     expect(progress[1]).toEqual({
       stage: "audit",
-      gates: [{ id: "setup:install", kind: "setup", machine: "passed", reference: "passed" }],
+      gates: [{ id: "setup:install", kind: "setup", machine: "passed" }],
     });
     expect(progress[2]?.gates).toEqual([
-      { id: "setup:install", kind: "setup", machine: "passed", reference: "passed" },
-      { id: "test", kind: "check", machine: "passed", reference: "passed" },
+      { id: "setup:install", kind: "setup", machine: "passed" },
+      { id: "test", kind: "check", machine: "passed" },
     ]);
     expect(progress[2]?.verdict).toBeUndefined();
     expect(progress.at(-1)).toEqual({
       stage: "audit",
       gates: [
-        { id: "setup:install", kind: "setup", machine: "passed", reference: "passed" },
-        { id: "test", kind: "check", machine: "passed", reference: "passed" },
+        { id: "setup:install", kind: "setup", machine: "passed" },
+        { id: "test", kind: "check", machine: "passed" },
       ],
       verdict: "agrees",
     });
@@ -268,7 +266,7 @@ describe("the gate audit on a run's machine", () => {
     });
     expect(result.audit?.red).toBe(true);
     expect(run?.status).toBe("pending");
-    expect(lines.at(-1)).toContain("first job is their repair");
+    expect(lines.at(-1)).toContain("diagnosis and authorized repair");
     const scope = {
       projectId: world.program.projectId,
       programId: world.program.programId,
@@ -389,172 +387,29 @@ describe("the gate audit on a run's machine", () => {
         })
       ).items;
 
-    it("passed on the reference and failed here is an environment fault: no gate.red, the run cancelled, the root never started", async () => {
-      const { world, result, run, started, lines, ended, rootStarted, progress } = await machine(
-        program,
-        {
-          // The runner hands the audit the project environment it set up; here,
-          // this host's PATH, so the Node the audit measures is the one on it.
-          projectEnv: { PATH: process.env.PATH ?? "" },
-          reference: {
-            node: "20.0.1",
-            gates: [
-              { id: "build", kind: "check", verdict: "passed" },
-              { id: "unit", kind: "check", verdict: "passed", outputArtifactId: REFERENCE_OUTPUT },
-              // Red on both: still no gate.red, since the fault outranks it.
-              { id: "lint", kind: "check", verdict: "failed" },
-            ],
-          },
-        },
-      );
-      // What `node --version` answers on that PATH, which on a CI host need not
-      // be the Node running this test (an image's /usr/local/bin can hold another).
-      const machineNode = execFileSync("node", ["--version"], {
-        env: { PATH: process.env.PATH ?? "" },
-        encoding: "utf8",
-      })
-        .trim()
-        .replace(/^v/, "");
-      expect(result.comparison?.faults.map((gate) => gate.id)).toEqual(["unit"]);
-
-      expect(rootStarted).toBe(false);
-      expect(ended?.failure.code).toBe("environment_fault");
-      expect(ended?.failure.message).toContain("unit");
-      expect(ended?.failure.message).toContain("20.0.1");
-      expect(ended?.failure.message).toContain(machineNode);
-      expect(ended?.failure.message).not.toContain("lint");
-      // The heartbeat hears the fault, every gate with the reference's verdict beside it.
-      expect(progress.at(-1)).toEqual({
-        stage: "audit",
-        gates: [
-          { id: "build", kind: "check", machine: "passed", reference: "passed" },
-          { id: "unit", kind: "check", machine: "failed", reference: "passed" },
-          { id: "lint", kind: "check", machine: "failed", reference: "failed" },
-        ],
-        verdict: "fault",
-      });
-      expect(progress.filter((given) => given.verdict !== undefined)).toHaveLength(1);
-
-      expect(run?.status).toBe("cancelled");
-      expect(run?.outcomeReason).toBe(ended?.failure.message);
-      expect(run?.outcomeReason).toContain("environment fault");
-      expect(lines.join("\n")).toContain("environment fault");
-
-      const events = await eventsOf(world, started.run.runId);
-      expect(events.some((event) => event.type === "gate.red")).toBe(false);
-      const faults = events.filter((event) => event.type === "environment.fault");
-      expect(faults).toHaveLength(1);
-      expect(faults[0]?.executionNodeId).toBe(started.rootNode.executionNodeId);
-      expect(faults[0]?.source).toBe("control-plane");
-      const payload = EnvironmentFaultPayloadSchema.parse(faults[0]?.payload);
-      expect(payload).toMatchObject({
-        baseCommit: started.baseCommit,
-        referenceNode: "20.0.1",
-        machineNode,
-        gates: [
-          {
-            id: "unit",
-            command: BROKEN,
-            kind: "check",
-            reference: "passed",
-            machine: "failed",
-            referenceOutputArtifactId: REFERENCE_OUTPUT,
-          },
-        ],
-      });
-      const machineOutput = payload.gates[0]?.machineOutputArtifactId;
-      expect(machineOutput).toMatch(/^art_/);
-      const artifact = await world.stores.artifacts.get(
-        {
-          projectId: world.program.projectId,
-          programId: world.program.programId,
-          runId: started.run.runId,
-        },
-        machineOutput as ArtifactId,
-      );
-      expect(artifact).toMatchObject({
-        executionNodeId: started.rootNode.executionNodeId,
-        kind: "verification-log",
-      });
-    });
-
-    it("records the fault with both outputs' tails on a machine whose bodies cannot be read back (F-01)", async () => {
-      const { world, started, ended, rootStarted } = await machine(
-        {
-          verification: [
-            { id: "build", command: `node -e "process.exit(0)"` },
-            { id: "unit", command: BROKEN },
+    it("a historic laptop mismatch cannot cancel the run or prevent the root starting", async () => {
+      const { world, result, run, started, ended, rootStarted, progress } = await machine(program, {
+        writeOnlyBodies: true,
+        reference: {
+          node: "20.0.1",
+          gates: [
+            { id: "build", kind: "check", verdict: "passed" },
+            { id: "unit", kind: "check", verdict: "passed", outputArtifactId: REFERENCE_OUTPUT },
+            { id: "lint", kind: "check", verdict: "failed" },
           ],
         },
-        {
-          writeOnlyBodies: true,
-          reference: {
-            node: "20.0.1",
-            gates: [
-              { id: "build", kind: "check", verdict: "passed" },
-              {
-                id: "unit",
-                kind: "check",
-                verdict: "passed",
-                // Kept on the laptop, and unreadable here: the tail travels inline.
-                outputArtifactId: REFERENCE_OUTPUT,
-                outputTail: "Tests  12 passed (12)",
-              },
-            ],
-          },
-        },
-      );
-      expect(rootStarted).toBe(false);
-      expect(ended?.failure.code).toBe("environment_fault");
-      const events = await eventsOf(world, started.run.runId);
-      const payload = EnvironmentFaultPayloadSchema.parse(
-        events.find((event) => event.type === "environment.fault")?.payload,
-      );
-      expect(payload.gates).toHaveLength(1);
-      expect(payload.gates[0]).toMatchObject({
-        id: "unit",
-        reference: "passed",
-        machine: "failed",
-        referenceOutputArtifactId: REFERENCE_OUTPUT,
-        referenceTail: "Tests  12 passed (12)",
       });
-      expect(payload.gates[0]?.machineTail).toContain("the base is broken");
-
-      // The report reads it from the event alone, side by side.
-      const report = await gatherReport(world.stores, {
-        projectId: world.program.projectId,
-        programId: world.program.programId,
-        runId: started.run.runId,
-      });
-      expect(report.gateHealth.environmentFault?.gates[0]?.referenceTail).toBe(
-        "Tests  12 passed (12)",
-      );
-      const text = renderReport(report);
-      expect(text).toContain("| `unit` |");
-      expect(text).toContain("Tests  12 passed (12)");
-      expect(text).toContain("the base is broken");
-      expect(text).toContain("Node 20.0.1");
-    });
-
-    it("still records the fault when the reference carried no tail and its artifact cannot be read", async () => {
-      const { world, started, ended } = await machine(
-        { verification: [{ id: "unit", command: BROKEN }] },
-        {
-          writeOnlyBodies: true,
-          reference: {
-            gates: [
-              { id: "unit", kind: "check", verdict: "passed", outputArtifactId: REFERENCE_OUTPUT },
-            ],
-          },
-        },
-      );
-      expect(ended?.failure.code).toBe("environment_fault");
+      expect(rootStarted).toBe(true);
+      expect(ended).toBeUndefined();
+      expect(run?.status).toBe("pending");
+      expect(result.audit?.failing).toEqual(["unit", "lint"]);
+      expect(progress.at(-1)?.verdict).toBe("red");
       const events = await eventsOf(world, started.run.runId);
-      const payload = EnvironmentFaultPayloadSchema.parse(
-        events.find((event) => event.type === "environment.fault")?.payload,
-      );
-      expect(payload.gates[0]?.referenceTail).toBeUndefined();
-      expect(payload.gates[0]?.machineTail).toContain("the base is broken");
+      expect(events.some((event) => event.type === "environment.fault")).toBe(false);
+      expect(events.find((event) => event.type === "gate.red")?.payload).toEqual({
+        baseCommit: started.baseCommit,
+        failing: ["unit", "lint"],
+      });
     });
 
     it("failed on both is a red base as today: gate.red, and the root starts", async () => {
@@ -572,7 +427,7 @@ describe("the gate audit on a run's machine", () => {
       expect(run?.status).toBe("pending");
       expect(progress.at(-1)).toEqual({
         stage: "audit",
-        gates: [{ id: "unit", kind: "check", machine: "failed", reference: "failed" }],
+        gates: [{ id: "unit", kind: "check", machine: "failed" }],
         verdict: "red",
       });
       const events = await eventsOf(world, started.run.runId);

@@ -170,60 +170,31 @@ describe("the gate audit (P15, D-P15-01, D-P15-05)", () => {
     expect(text).toContain("Never drop a\ncheck from verification");
   });
 
-  it("audits the gates between reading the code and proposing the seams, and the human waits", async () => {
+  it("offers diagnostics without gate certification or a compulsory repair strand", async () => {
     const text = await readFile(skill("SKILL.md"), "utf8");
-    const headings = text.split("\n").filter((line) => /^## /.test(line));
-    const at = (heading: string): number => headings.indexOf(heading);
-    expect(at("## 3a. Audit the gates")).toBe(
-      at("## 3. Read the code before you propose anything") + 1,
-    );
-    expect(at("## 4. Propose the seams")).toBe(at("## 3a. Audit the gates") + 1);
-
-    const step = text.slice(
-      text.indexOf("## 3a. Audit the gates"),
-      text.indexOf("## 4. Propose the seams"),
-    );
-    for (const phrase of [
-      "**The human waits for it, on purpose**",
-      "`nightshift gates {id} --recorded`",
-      "**Exit 0**",
-      "`nightshift gates {id}`",
-      "`gate-standard.md`",
-      "**Name every gate-machinery path",
-      'answered "leave it"',
-      "`S-00`",
-      '`dependsOn`\n   includes `"S-00"`',
-      "nightshift gates {id} --record --findings <file>",
-      '"machinery"',
-      '"decisionId"',
-      // The gate commands read the program's files: the step drafts them first (F-01).
-      "git branch program/{id} main",
-    ]) {
-      expect(step, phrase).toContain(phrase);
-    }
-    expect(text).toContain("no gate-health record for the project");
+    expect(text).toContain("`nightshift gates {id}` runs an **optional diagnostic**");
+    expect(text).toContain("special gate-health strand is required for `READY` or ratification");
+    expect(text).toContain("required verification must still pass");
+    expect(text).not.toContain("--record --findings");
+    expect(text).not.toContain('includes "S-00"');
+    expect(text).not.toContain("**The human waits for it, on purpose**");
+    const template = await readFile(skill("templates", "plan.md"), "utf8");
+    expect(template).not.toContain("### S-00");
   });
 
-  it("states rule 8 in step 3a, turns its findings into decisions, and says a remote run audits again (P16 SC-08)", async () => {
+  it("uses the remote environment without requiring laptop parity", async () => {
     const text = await readFile(skill("SKILL.md"), "utf8");
-    const step = text
-      .slice(text.indexOf("## 3a. Audit the gates"), text.indexOf("## 4. Propose the seams"))
-      .replace(/\s+/g, " ");
-    for (const phrase of [
-      "**8. Declares its runtimes**: the repository pins every language runtime it uses, in one file per runtime, and the gates are audited on those versions.",
-      "`nightshift gates {id}` checks it mechanically and prints its findings",
-      "**Each rule-8 finding becomes a decision recorded against rule 8**",
-      "pin the runtime, reconcile the pins, or fix the laptop's runtime",
-      "A remote run audits the gates again at dispatch: a reference audit on the laptop at the exact base it dispatches, then the machine's own audit, compared gate by gate.",
-      "the standard's number (1–8)",
-    ]) {
-      expect(step, phrase).toContain(phrase);
-    }
-    // gate-standard.md is embedded byte-for-byte in the harness and now spells
-    // out rule 8 itself.
-    const standard = await readFile(skill("gate-standard.md"), "utf8");
-    expect(standard).toMatch(/^## 8\. Declares its runtimes$/m);
-    expect(text).toContain("no `S-00` strand\nor a strand that does not depend on it");
+    expect(text).toContain(
+      "a laptop audit or laptop/remote parity comparison is not a dispatch prerequisite",
+    );
+    const run = await readFile(
+      fileURLToPath(new URL("../../../skills/run-program/SKILL.md", import.meta.url)),
+      "utf8",
+    );
+    expect(run).toContain("A red baseline does not hold every strand");
+    expect(run).toContain("do not automatically add repair work for every flaky gate");
+    expect(run).not.toContain("**first act is a repair**");
+    expect(run).not.toContain("Plain `delegate` is refused");
   });
 });
 

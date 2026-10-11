@@ -151,15 +151,14 @@ const RENDER: Readonly<Record<string, Render>> = {
   "finding.ruled": (p) => `the arbiter ${String(p.ruling)} ${String(p.findingId)}`,
   "run.budget_spent": (p) =>
     `budget spent: ${String(p.budget)} ${String(p.spent)} of ${String(p.limit)}; nothing new starts`,
-  // P15: a gate that broke, and what the root does about it (D-P15-03, D-P15-04, D-P15-06).
+  // Baseline and flake evidence inform the agent; neither adds a workflow prerequisite.
   "gate.red": (p) =>
-    `the base is red: ${listOf(p.failing)}; the run repairs it first — delegate a repair ` +
-    "{ cause: red_base } before anything else; strands wait on it",
+    `the base is red: ${listOf(p.failing)}; use the logs to address it within the authorized work; ` +
+    "required verification still must pass before integration",
   // P16: green on the laptop and red on the machine is the machine's fault, not the base's (D-07).
   "environment.fault": (p) => environmentFaultText(p),
   "gate.flaked": (p, _context, who) =>
-    `${listOf(p.stepIds)} flaked on ${who}: the work landed; open a repair { cause: flaky } off ` +
-    "the blocking path",
+    `${listOf(p.stepIds)} flaked on ${who}: the work landed; investigate if needed, without blocking unrelated work`,
   "gate.repaired": (p, context, who) => repairedText(p, context, who),
 };
 

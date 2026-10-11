@@ -2,10 +2,10 @@
  * The attached display (P16 S-03, D-09): `nightshift run --remote` after its
  * dispatch, and `nightshift remote status <program> --watch`.
  *
- * It polls the dispatch and shows WAIT while the machine comes up and audits
- * the gates against the laptop's reference, then OK GO once the machine agrees:
- * that is the moment the developer may walk away. An environment fault, any
- * other failure, or a dispatch stopped from elsewhere ends it with exit 1.
+ * It polls the dispatch and shows WAIT while the machine prepares its workspace
+ * and checks its baseline, then OK GO when ready. Baseline failures are context
+ * for the agents, not a laptop parity requirement. Historical environment faults,
+ * other failures, or a dispatch stopped elsewhere end it with exit 1.
  * Ctrl-C only detaches: nothing is ever cancelled from here.
  *
  * On a terminal each poll redraws the frame in place. Anywhere else (a pipe, a
@@ -33,7 +33,7 @@ const FAULT_READS = 3;
 /** The exit code of a Ctrl-C detach. */
 export const EXIT_DETACHED = 130;
 
-/** The banner while the machine has not yet agreed. */
+/** The banner while the machine prepares its workspace. */
 export const WAIT_BANNER: readonly string[] = [
   "#   #   ###   ###  #####",
   "#   #  #   #   #     #",
@@ -58,7 +58,7 @@ export const STAGE_WORDS: Readonly<Record<RunnerStage, string>> = {
   toolchain: "the project's runtimes",
   setup: "setup",
   prerequisites: "prerequisite checks",
-  audit: "the machine's gate audit, against your laptop's",
+  audit: "the machine's baseline checks",
 };
 
 const LIVE: ReadonlySet<Dispatch["status"]> = new Set([
@@ -81,13 +81,7 @@ export const elapsed = (fromIso: string, nowMs: number): string => {
 export const stageWords = (progress: DispatchProgress): string =>
   `${STAGE_WORDS[progress.stage]}${progress.detail === undefined ? "" : `: ${progress.detail}`}`;
 
-/** Passed on the reference, failed on the machine: the disagreement an environment fault is. */
-const disagrees = (gate: MachineGateProgress): boolean =>
-  gate.reference === "passed" && gate.machine === "failed";
-
-const gateLine = (gate: MachineGateProgress): string =>
-  `${gate.id}: machine ${gate.machine}, reference ${gate.reference ?? "none"}` +
-  (disagrees(gate) ? "  << disagrees: passed on your laptop, failed on the machine" : "");
+const gateLine = (gate: MachineGateProgress): string => `${gate.id}: machine ${gate.machine}`;
 
 const verdictLine = (progress: DispatchProgress): string | undefined => {
   switch (progress.verdict) {
@@ -96,9 +90,9 @@ const verdictLine = (progress: DispatchProgress): string | undefined => {
     case "fault":
       return FAULT_PENDING;
     case "agrees":
-      return "verdict: the machine agrees with your laptop";
+      return "verdict: the machine's baseline passed";
     case "red":
-      return "verdict: the base is red on both, as on your laptop";
+      return "verdict: the machine's baseline has failing checks";
     case "skipped":
       return "verdict: a replacement machine, which does not audit again";
   }
@@ -282,10 +276,10 @@ const reattach = (program: string): string => `\`nightshift remote status ${prog
 const goLines = (program: string, verdict: "agrees" | "red" | "skipped"): string[] => [
   ...OK_GO_BANNER,
   "",
-  "the machine agrees with your laptop: you can close it now. " +
+  "the machine is ready: you can close your laptop now. " +
     `\`nightshift remote status ${program}\` follows the run.`,
   ...(verdict === "red"
-    ? ["the base is red on both, so the run starts by repairing it."]
+    ? ["the baseline has failing checks; agents receive the failures as context."]
     : verdict === "skipped"
       ? ["a replacement machine carries on the audited run; it does not audit again."]
       : []),
@@ -301,7 +295,7 @@ const faultLines = (dispatch: Dispatch, fault: EnvironmentFaultPayload | undefin
 ];
 
 const stoppedLines = (dispatch: Dispatch, program: string): string[] => [
-  `the dispatch is ${dispatch.status} before the machine agreed with your laptop` +
+  `the dispatch is ${dispatch.status} before the machine was ready` +
     (dispatch.failure === undefined
       ? ""
       : ` (${dispatch.failure.code}: ${dispatch.failure.message})`) +

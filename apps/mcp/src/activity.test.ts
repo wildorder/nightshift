@@ -59,10 +59,10 @@ describe("gate health in the Meanwhile lines (P15)", () => {
     const lines = renderActivity(await createActivityFeed(stores, f.scope).since());
 
     expect(lines).toEqual([
-      "03:01 root — the base is red: build, test; the run repairs it first — delegate a repair " +
-        "{ cause: red_base } before anything else; strands wait on it",
-      "03:02 Add a median helper. — lint flaked on Add a median helper.: the work landed; open a " +
-        "repair { cause: flaky } off the blocking path",
+      "03:01 root — the base is red: build, test; use the logs to address it within the authorized work; " +
+        "required verification still must pass before integration",
+      "03:02 Add a median helper. — lint flaked on Add a median helper.: the work landed; " +
+        "investigate if needed, without blocking unrelated work",
       `03:03 root — repair ${repair.jobContractId} landed (red_base test) under decision ` +
         `${decisionId}; the gate definitions changed, and later verifications use them`,
     ]);
