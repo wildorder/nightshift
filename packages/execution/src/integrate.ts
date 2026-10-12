@@ -44,8 +44,10 @@ import {
   isDirty,
   revParse,
   sealedRef,
+  tryGit,
   updateRef,
 } from "./git/index.js";
+import { checkpointOfCandidate } from "./recover-candidate.js";
 import { releaseWorktree } from "./release-worktree.js";
 import { discardScratch } from "./scratch.js";
 import { stampJobDecisions } from "./stamp.js";
@@ -108,7 +110,7 @@ const blockingReason = async (
     return `program_checkout_dirty: the checkout at ${repo} has uncommitted changes, and Nightshift will not fast-forward over them`;
   }
   const head = await revParse(environment.git, repo, programBranch);
-  if (head !== input.base) {
+  if (head !== input.base && head !== input.commitSha) {
     // Named rather than reconciled: rebasing verified work onto a moved base
     // would mean verifying something nobody verified. P6 does this properly.
     return `stale_base: the worktree was cut from ${input.base} but "${programBranch}" is now at ${head}. Reconciling a moved base arrives in P6.`;
@@ -124,71 +126,117 @@ export const integrateNode = async (
   const repo = input.session.repoPath;
 
   const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
-  if (node === undefined || node.status !== "verified") {
+  if (
+    node === undefined ||
+    !["verified", "examining", "sealed", "integrated"].includes(node.status)
+  ) {
     return { kind: "refused", reason: "the node is not verified" };
   }
+  if (node.commitSha !== input.commitSha)
+    return { kind: "refused", reason: "the candidate does not match the recorded commit" };
+  const verified = (await stores.verifications.listByNode(input.session.scope, input.nodeId)).some(
+    (record) =>
+      record.commitSha === input.commitSha &&
+      record.outcome === "passed" &&
+      record.phase !== "candidate",
+  );
+  if (!verified)
+    return { kind: "refused", reason: "no passing queue verification exists for this commit" };
 
   // --- Seal: the commit becomes addressable, whatever happens next -------------
   await updateRef(runner, repo, sealedRef(input.nodeId), input.commitSha);
   let sealed: ExecutionNode;
-  if (input.examination === undefined) {
+  if (node.status === "sealed" || node.status === "integrated") {
+    sealed = node;
+  } else if (input.examination === undefined && node.status === "verified") {
     sealed = transition(node, "seal", nowIso(clock));
   } else {
     // The examination that cleared it, carried or made here (D-P8-09).
-    const examining = transition(node, "begin_examination", nowIso(clock));
+    if (input.examination === undefined)
+      return { kind: "refused", reason: "the examination is missing" };
+    const examining =
+      node.status === "examining" ? node : transition(node, "begin_examination", nowIso(clock));
     await stores.executionNodes.put(examining);
     sealed = transition(examining, "examination_passed", nowIso(clock));
   }
   await stores.executionNodes.put(sealed);
 
   // --- Integrate ---------------------------------------------------------------
-  const blocked = await blockingReason(environment, input);
+  const alreadyLanded =
+    (node.status === "sealed" || node.status === "integrated") &&
+    (
+      await tryGit(
+        runner,
+        [
+          "merge-base",
+          "--is-ancestor",
+          input.commitSha,
+          input.session.program.repository.programBranch,
+        ],
+        { cwd: repo },
+      )
+    ).exitCode === 0;
+  const blocked = alreadyLanded ? undefined : await blockingReason(environment, input);
   if (blocked !== undefined) {
     await failSealed(environment, input, blocked);
     return { kind: "refused", reason: blocked };
   }
 
-  const merged = await fastForward(runner, repo, input.commitSha, clock.now());
+  const merged = alreadyLanded
+    ? { ok: true as const }
+    : await fastForward(runner, repo, input.commitSha, clock.now());
   if (!merged.ok) {
     const reason = `stale_base: the program branch could not be fast-forwarded onto ${input.commitSha}: ${merged.detail}`;
     await failSealed(environment, input, reason);
     return { kind: "refused", reason };
   }
 
-  const integrated = transition(sealed, "integrate", nowIso(clock));
+  const integrated =
+    sealed.status === "integrated" ? sealed : transition(sealed, "integrate", nowIso(clock));
   await stores.executionNodes.put(integrated);
-  outbox.emit({
-    type: "node.integrated",
-    source: "control-plane",
-    payload: {
-      commitSha: input.commitSha,
-      programBranch: input.session.program.repository.programBranch,
-      sealedRef: sealedRef(input.nodeId),
-    },
-    executionNodeId: input.nodeId,
-    agentId: input.agentId,
-  });
+  if (node.status !== "integrated")
+    outbox.emit({
+      type: "node.integrated",
+      source: "control-plane",
+      payload: {
+        commitSha: input.commitSha,
+        programBranch: input.session.program.repository.programBranch,
+        sealedRef: sealedRef(input.nodeId),
+      },
+      executionNodeId: input.nodeId,
+      agentId: input.agentId,
+    });
 
   // --- Checkpoint ---------------------------------------------------------------
-  const checkpointId = environment.ids.next("ckpt");
+  // A crash after the checkpoint write must not manufacture another rollback
+  // point for the same landing on every restart.
+  const existingCheckpoint = await checkpointOfCandidate(
+    environment,
+    input.session.scope,
+    input.nodeId,
+    input.commitSha,
+  );
+  const checkpointId = existingCheckpoint ?? environment.ids.next("ckpt");
   const ref = checkpointRef(checkpointId);
   await updateRef(runner, repo, ref, input.commitSha);
-  await stores.checkpoints.put({
-    schemaVersion: 1,
-    ...input.session.scope,
-    checkpointId,
-    executionNodeId: input.nodeId,
-    commitSha: input.commitSha,
-    ref,
-    label: `integrated ${input.nodeId}`,
-    createdAt: nowIso(clock),
-  });
-  outbox.emit({
-    type: "checkpoint.created",
-    source: "control-plane",
-    payload: { checkpointId, ref, commitSha: input.commitSha },
-    executionNodeId: input.nodeId,
-  });
+  if (existingCheckpoint === undefined)
+    await stores.checkpoints.put({
+      schemaVersion: 1,
+      ...input.session.scope,
+      checkpointId,
+      executionNodeId: input.nodeId,
+      commitSha: input.commitSha,
+      ref,
+      label: `integrated ${input.nodeId}`,
+      createdAt: nowIso(clock),
+    });
+  if (existingCheckpoint === undefined)
+    outbox.emit({
+      type: "checkpoint.created",
+      source: "control-plane",
+      payload: { checkpointId, ref, commitSha: input.commitSha },
+      executionNodeId: input.nodeId,
+    });
 
   // --- Publication (P10, D-P10-22) ------------------------------------------------
   // The branch moved here; on a machine the publisher moves GitHub's copy. The

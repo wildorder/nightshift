@@ -2,8 +2,8 @@
  * What the Nightshift runner image is made of (P10, D-P10-16).
  *
  * EC2 Image Builder components, as the YAML documents Image Builder runs on a
- * build instance, each pinned to a version. The image is Amazon Linux 2023 on
- * arm64 with everything a worker legitimately needs (Node, git, Docker without
+ * build instance, each pinned to a version. The image is Ubuntu 24.04 LTS on
+ * arm64 and x86_64 with the shared toolchain (Node, git, Docker without
  * root, a browser's libraries, build tools, Rust, pnpm, Python, the two harness
  * CLIs) and the Nightshift runner itself, built from this repository at the
  * commit the pipeline was told.
@@ -48,7 +48,15 @@ export const RUNNER_TOOLCHAIN = {
   slirp4netns: "1.3.1",
   /** The polyglot version manager the engine installs a project's runtimes with (D-04). */
   mise: "2026.10.5",
+  /** Bootstrap's CLI, independent of the project's Python and the base image. */
+  awscli: "2.37.12",
 } as const;
+
+/** SHA-256 of AWS's versioned Linux installers, checked before extraction. */
+export const AWSCLI_SHA256: Readonly<Record<"arm64" | "x86_64", string>> = {
+  arm64: "829c76096e05f743267d75098bc7cc7cfae799fc7e568554ebaa6d78e6aba753",
+  x86_64: "e6d3c672fb36ed4b12c354c39a993eee2b34da1437cafb10bac4480840cfa83f",
+};
 
 /**
  * The sha256 of each architecture's mise binary, from that release's
@@ -127,7 +135,7 @@ export type ImageArchitecture = (typeof IMAGE_ARCHITECTURES)[number];
 const ARCH_NAMES: Readonly<
   Record<
     ImageArchitecture,
-    { node: string; docker: string; slirp: string; uv: string; mise: string }
+    { node: string; docker: string; slirp: string; uv: string; mise: string; awscli: string }
   >
 > = {
   arm64: {
@@ -136,6 +144,7 @@ const ARCH_NAMES: Readonly<
     slirp: "aarch64",
     uv: "aarch64-unknown-linux-gnu",
     mise: "linux-arm64",
+    awscli: "aarch64",
   },
   x86_64: {
     node: "linux-x64",
@@ -143,6 +152,7 @@ const ARCH_NAMES: Readonly<
     slirp: "x86_64",
     uv: "x86_64-unknown-linux-gnu",
     mise: "linux-x64",
+    awscli: "x86_64",
   },
 };
 
@@ -156,17 +166,32 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
     [
       shell("packages", [
         "set -euo pipefail",
-        "dnf -y update --security",
-        "dnf -y install git tar gzip xz unzip jq nftables shadow-utils sudo rsync",
-        // Docker from AL2023; its rootless pieces come from Docker's static builds
-        // below, because AL2023 packages neither rootlesskit nor slirp4netns.
-        "dnf -y install docker shadow-utils-subid iptables-nft socat",
-        "dnf -y install gcc gcc-c++ make cmake pkgconf openssl-devel python3 python3-pip",
-        // Chromium's shared libraries, for playwright and puppeteer (the audit's Keki
-        // and Keyart). Not strict: a library AL2023 names differently is reported by
-        // the browser measurement (T2 §15), not a reason the whole image fails.
-        "dnf -y --setopt=strict=0 install atk at-spi2-atk cups-libs libXcomposite libXdamage libXrandr libXfixes libXext libX11 pango alsa-lib nss nspr libxkbcommon mesa-libgbm libdrm expat glib2 dbus-libs",
+        "export DEBIAN_FRONTEND=noninteractive",
+        "apt-get -o Acquire::Retries=3 update",
+        "apt-get -y -o Dpkg::Options::=--force-confold upgrade",
+        "apt-get -y install ca-certificates curl git tar gzip xz-utils unzip jq nftables passwd sudo rsync util-linux e2fsprogs",
+        // Preserve EC2's attachment names on Nitro (for example /dev/xvdf).
+        // Without these udev rules, Ubuntu exposes only nvme names and a host
+        // with both local NVMe and EBS cannot identify its workspace volume.
+        "apt-get -y install amazon-ec2-utils",
+        // Keep Docker rootless under the project user. The static rootless tools
+        // below retain their existing pins; the daemon comes from Ubuntu.
+        "apt-get -y install docker.io uidmap iptables socat dbus-user-session systemd-container apparmor fuse-overlayfs",
+        "apt-get -y install build-essential cmake pkgconf libssl-dev python3 python3-pip python3-venv",
+        // Noble's Chromium dependencies. Missing packages fail the image build,
+        // not a project's later browser launch. Browser binaries remain project-owned.
+        "apt-get -y install libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 libx11-6 libpango-1.0-0 libasound2t64 libnss3 libnspr4 libxkbcommon0 libgbm1 libdrm2 libexpat1 libglib2.0-0t64 libdbus-1-3 libatspi2.0-0t64 libcairo2 fonts-liberation xvfb",
         "systemctl disable --now docker.service docker.socket || true",
+      ]),
+      shell("aws-cli", [
+        "set -euo pipefail",
+        // Noble does not ship awscli in its release package indexes. Bootstrap
+        // invokes it before the first heartbeat; install AWS's bundled runtime.
+        `curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-${ARCH_NAMES[architecture].awscli}-${RUNNER_TOOLCHAIN.awscli}.zip -o /tmp/nightshift-awscli.zip`,
+        `echo '${AWSCLI_SHA256[architecture]}  /tmp/nightshift-awscli.zip' | sha256sum --check --strict -`,
+        "unzip -q /tmp/nightshift-awscli.zip -d /tmp/nightshift-awscli",
+        "/tmp/nightshift-awscli/aws/install --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin",
+        "aws --version",
       ]),
       shell("node", [
         "set -euo pipefail",
@@ -188,12 +213,16 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
       shell("rootless-docker", [
         "set -euo pipefail",
         // rootlesskit, dockerd-rootless.sh and dockerd-rootless-setuptool.sh; the
-        // kernel's overlay2 works in a user namespace on AL2023, so no fuse-overlayfs.
+        // daemon stays rootless; fuse-overlayfs is available as a storage fallback.
         `curl -fsSL https://download.docker.com/linux/static/stable/${ARCH_NAMES[architecture].docker}/docker-rootless-extras-${RUNNER_TOOLCHAIN.dockerRootlessExtras}.tgz -o /tmp/rootless.tgz`,
         "tar -xzf /tmp/rootless.tgz -C /tmp && install -m 0755 /tmp/docker-rootless-extras/* /usr/local/bin/",
         // The setup tool runs `docker` from its own directory to smoke-test the daemon.
         "ln -sfn /usr/bin/docker /usr/local/bin/docker",
         `curl -fsSL https://github.com/rootless-containers/slirp4netns/releases/download/v${RUNNER_TOOLCHAIN.slirp4netns}/slirp4netns-${ARCH_NAMES[architecture].slirp} -o /usr/local/bin/slirp4netns && chmod 0755 /usr/local/bin/slirp4netns`,
+        // Ubuntu 24.04 restricts unprivileged user namespaces. Allow only our
+        // rootlesskit path rather than disabling AppArmor or the host restriction.
+        "printf '%s\\n' 'abi <abi/4.0>,' 'include <tunables/global>' '/usr/local/bin/rootlesskit flags=(unconfined) {' '  userns,' '}' > /etc/apparmor.d/nightshift-rootlesskit",
+        "apparmor_parser -r /etc/apparmor.d/nightshift-rootlesskit",
         "rootlesskit --version && slirp4netns --version",
       ]),
       shell("rust-and-uv", [
@@ -237,8 +266,7 @@ const asWorker = (worker: string, command: string): string =>
 const dockerUserUnits = (): string[] => [
   "mkdir -p /etc/systemd/user/docker.service.d",
   // The setup tool's own ExecStart, with the daemon moved to the private socket.
-  // No setup flags are lost: --skip-iptables is not used (AL2023's kernel has
-  // ip_tables built in), so the tool's ExecStart has none.
+  // No setup flags are lost: --skip-iptables is not used.
   `printf '%s\\n' '[Service]' 'ExecStartPre=/usr/bin/mkdir -p %t/docker-rootless' 'ExecStart=' 'ExecStart=/usr/local/bin/dockerd-rootless.sh -H unix://${DOCKER_PRIVATE_SOCKET}' > /etc/systemd/user/docker.service.d/nightshift-private-socket.conf`,
   // Accept=yes: each connection is its own docker-proxy@ instance, never
   // dockerd, and docker.service inherits no descriptor from the socket.
@@ -267,9 +295,9 @@ export const containmentComponent = (): string => {
         // One loop per step over the workers, never a line per worker: an Image
         // Builder component's document is capped at 16,000 characters, and the
         // unrolled form passed it at sixteen workers (2026-10-09).
-        // Each worker's subordinate ids are one block, for rootless Docker.
-        `i=0; for w in ${workers.join(" ")}; do { useradd --create-home --home-dir /home/$w --shell /bin/bash -G ${WORKER_GROUP} $w && loginctl enable-linger $w && echo "$w:$((100000 + i * 65536)):65536" >> /etc/subuid && echo "$w:$((100000 + i * 65536)):65536" >> /etc/subgid; } || exit 1; i=$((i + 1)); done`,
-        `echo "${ENGINE_USER}:${100000 + workers.length * 65536}:65536" >> /etc/subuid`,
+        // Let useradd allocate unused subordinate ranges: Ubuntu's existing
+        // login user may already own 100000:65536. Never append overlapping ids.
+        `for w in ${workers.join(" ")}; do { useradd --create-home --home-dir /home/$w --shell /bin/bash -G ${WORKER_GROUP} -K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536 $w && loginctl enable-linger $w; } || exit 1; done`,
       ]),
       shell("rootless-docker", [
         "set -euo pipefail",

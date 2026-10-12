@@ -64,7 +64,17 @@ import type { ExecutionEnvironment, RunSession, WorkerLaunchIdentity } from "./e
 import { arbitrateAll, fixOf, latestExamination, rulingDue } from "./examine.js";
 import { reconcileGateRepairs } from "./gate-repair.js";
 import { baseRef, git, jobBranch, revParse } from "./git/index.js";
-import { createMergeQueue, type MergeQueue } from "./merge-queue.js";
+import {
+  createMergeQueue,
+  type MergeQueue,
+  RECOVERABLE_CANDIDATE_STATUSES,
+} from "./merge-queue.js";
+import {
+  checkpointOfCandidate,
+  failRecoveredCandidate,
+  recoverCandidate,
+  settleRecoveredRoute,
+} from "./recover-candidate.js";
 import { attemptsOf, delegateJob, type StartedJob, startJob } from "./runner.js";
 
 export interface EngineOptions {
@@ -169,6 +179,11 @@ export interface Submitted {
 /** Why a queued node is not running yet. For `job.get`, and for a human. */
 export type WaitingReason =
   | { readonly kind: "parent_full"; readonly running: number; readonly maxConcurrency: number }
+  | {
+      readonly kind: "parent_inactive";
+      readonly parentNodeId: ExecutionNodeId;
+      readonly status: ExecutionNode["status"];
+    }
   /** A strand held until the strands it depends on have succeeded (P7, D-P7-04). */
   | { readonly kind: "strands"; readonly waitingFor: readonly string[] }
   | { readonly kind: "wall_clock_spent"; readonly maxWallClockSeconds: number }
@@ -198,6 +213,10 @@ export interface EngineSnapshot {
 }
 
 export interface Engine {
+  /** After fencing the old engine, schedule durable work. Does not wait for verification. */
+  recover(): Promise<void>;
+  /** Prepare/repair the shared environment with scheduling paused, while held queue entries survive. */
+  withEnvironment<T>(task: () => Promise<T>): Promise<T>;
   /** Records a delegation and starts it if a slot is free. */
   submit(submission: Submission): Promise<Submitted>;
   /** The running job for a Job Contract, if this engine started it and it has not ended. */
@@ -241,8 +260,13 @@ export interface Engine {
    * Stops scheduling and withdraws everything queued, each node durably
    * `cancelled`. Running jobs are the caller's to stop (`shutdown` does, within
    * one grace period); this only guarantees nothing new starts.
+   * `preserveWork` is a process restart: keeps accepted records and suppresses
+   * cancellation of a stopped sub-program's descendants.
    */
-  close(reason: string): Promise<readonly ExecutionNodeId[]>;
+  close(
+    reason: string,
+    options?: { readonly preserveWork?: boolean },
+  ): Promise<readonly ExecutionNodeId[]>;
   /**
    * Where every strand of a planned run stands, from the run's own records.
    * Empty for a run with no plan. A strand nobody has delegated is absent.
@@ -272,6 +296,8 @@ export const createEngine = (options: EngineOptions): Engine => {
   const departures = new Map<ExecutionNodeId, Promise<void>>();
   const nodeOfJob = new Map<JobContractId, ExecutionNodeId>();
   let closed = false;
+  let preservingWork = false;
+  let preparing = false;
 
   // --- The route onto the branch: one per run, and it is here (D-P6-05) -------------
   const queue = options.mergeQueue ?? createMergeQueue(environment);
@@ -426,7 +452,7 @@ export const createEngine = (options: EngineOptions): Engine => {
 
   /** True when nothing may start at all: closed, idle, or out of time or money. */
   const holding = async (): Promise<boolean> =>
-    closed || pending.length === 0 || wallClockSpent() || (await budgetExhausted());
+    closed || preparing || pending.length === 0 || wallClockSpent() || (await budgetExhausted());
 
   /** Starts the first queued node that may start. False when none could. */
   const startNext = async (): Promise<boolean> => {
@@ -552,6 +578,16 @@ export const createEngine = (options: EngineOptions): Engine => {
       remove(entry);
       return false;
     }
+    const parent =
+      entry.node.parentNodeId === null ? undefined : tree.nodes.get(entry.node.parentNodeId);
+    if (parent?.kind === "sub-program" && parent.status !== "running") {
+      entry.waiting = {
+        kind: "parent_inactive",
+        parentNodeId: parent.executionNodeId,
+        status: parent.status,
+      };
+      return false;
+    }
     const slot = maySlotStart(tree, id, limits);
     if (slot.free) return true;
     entry.waiting = {
@@ -592,7 +628,7 @@ export const createEngine = (options: EngineOptions): Engine => {
         .then(async () => {
           // An orchestrator that has gone leaves nobody to answer for what it
           // delegated: whatever is still in flight under it stops (D-P6-08).
-          if (orchestrates) await cancelSubtree(started.nodeId).catch(() => {});
+          if (orchestrates && !preservingWork) await cancelSubtree(started.nodeId).catch(() => {});
           await park().catch(() => {});
         })
         .finally(() => {
@@ -648,9 +684,7 @@ export const createEngine = (options: EngineOptions): Engine => {
   ): Promise<{ submission: Submission; nodeId: ExecutionNodeId } | undefined> => {
     const job = await stores.jobContracts.get(session.scope, jobContractId);
     if (job === undefined) return undefined;
-    const node = (await stores.executionNodes.listByRun(session.scope, { limit: 500 })).items.find(
-      (candidate) => candidate.jobContractId === jobContractId,
-    );
+    const node = (await readNodes()).find((candidate) => candidate.jobContractId === jobContractId);
     if (node === undefined) return undefined;
     const last = attemptsOf(
       await stores.routingDecisions.listByNode(session.scope, node.executionNodeId),
@@ -783,10 +817,89 @@ export const createEngine = (options: EngineOptions): Engine => {
   };
 
   const held = (nodeId: ExecutionNodeId): boolean =>
-    active.has(nodeId) || pending.some((entry) => entry.node.executionNodeId === nodeId);
+    active.has(nodeId) ||
+    recoveringCandidates.has(nodeId) ||
+    pending.some((entry) => entry.node.executionNodeId === nodeId);
+
+  const recoveringCandidates = new Set<ExecutionNodeId>();
+  let recovery: Promise<void> | undefined;
+  const recover = (): Promise<void> => {
+    if (preparing)
+      return Promise.reject(new Error("environment preparation is already in progress"));
+    recovery ??= (async () => {
+      await ready;
+      if (closed) return;
+      const nodes = (await readNodes()).sort(
+        (a, b) =>
+          Number(a.status === "implemented") - Number(b.status === "implemented") ||
+          a.executionNodeId.localeCompare(b.executionNodeId),
+      );
+      // Restore candidates before admitting queued workers. Verification runs
+      // in the normal queue, not inside the attach request's timeout.
+      for (const node of nodes) {
+        if (closed) break;
+        if (
+          node.kind !== "job" ||
+          held(node.executionNodeId) ||
+          !RECOVERABLE_CANDIDATE_STATUSES.has(node.status)
+        )
+          continue;
+        if (
+          node.status === "integrated" &&
+          (await checkpointOfCandidate(
+            environment,
+            session.scope,
+            node.executionNodeId,
+            node.commitSha,
+          )) !== undefined
+        )
+          continue;
+        recoveringCandidates.add(node.executionNodeId);
+        try {
+          const candidate = await recoverCandidate(environment, session, node);
+          if (closed) {
+            recoveringCandidates.delete(node.executionNodeId);
+            break;
+          }
+          void queue
+            .integrate(candidate)
+            .then(() => settleRecoveredRoute(environment, session, node.executionNodeId))
+            .catch(async (error: unknown) => {
+              const current = await stores.executionNodes.get(session.scope, node.executionNodeId);
+              if (current !== undefined && RECOVERABLE_CANDIDATE_STATUSES.has(current.status)) {
+                await failRecoveredCandidate(
+                  environment,
+                  current,
+                  `recovery_failed: ${messageOf(error)}`,
+                );
+              }
+            })
+            .catch(() => {})
+            .finally(() => {
+              recoveringCandidates.delete(node.executionNodeId);
+              void pump();
+            });
+        } catch (error) {
+          const reason = `recovery_missing_evidence: ${messageOf(error)}`;
+          try {
+            await failRecoveredCandidate(environment, node, reason);
+          } finally {
+            recoveringCandidates.delete(node.executionNodeId);
+          }
+          await settleRecoveredRoute(environment, session, node.executionNodeId);
+        }
+      }
+      // Adoption writes no routing record until the existing queued attempt
+      // actually starts, and held() makes repeated recovery/discovery harmless.
+      await discover();
+    })().finally(() => {
+      recovery = undefined;
+    });
+    return recovery;
+  };
 
   const discover = async (): Promise<void> => {
-    if (closed) return;
+    if (closed || preparing) return;
     let found = false;
     for (const node of await readNodes()) found = (await consider(node)) || found;
     if (found) await pump();
@@ -968,6 +1081,7 @@ export const createEngine = (options: EngineOptions): Engine => {
   const disputeNode = async (nodeId: ExecutionNodeId, reason: string): Promise<DisputeResult> => {
     const found = await disputable(nodeId);
     if ("refused" in found) return { kind: "refused", reason: found.refused };
+    if (preparing) return { kind: "refused", reason: "environment preparation is in progress" };
     const { node, examination, job, services } = found;
 
     arbitrating.add(nodeId);
@@ -1157,6 +1271,33 @@ export const createEngine = (options: EngineOptions): Engine => {
   };
 
   return {
+    recover,
+    withEnvironment: async (task) => {
+      if (preparing) throw new Error("environment preparation is already in progress");
+      preparing = true;
+      try {
+        await ready;
+        while (pumping !== undefined) await pumping;
+        const merge = queue.activity();
+        if (
+          closed ||
+          active.size > 0 ||
+          recovery !== undefined ||
+          recoveringCandidates.size > 0 ||
+          arbitrating.size > 0 ||
+          merge.integrating !== undefined ||
+          merge.waiting.length > 0
+        ) {
+          throw new Error(
+            "environment_busy: wait for running jobs, verification and examination to finish before preparing the environment",
+          );
+        }
+        return await queue.exclusive(task);
+      } finally {
+        preparing = false;
+        void pump();
+      }
+    },
     submit: async (submission) => {
       if (closed) throw new Error("this run's engine has stopped and takes no more work");
       await assertStrandMayBeDelegated(submission);
@@ -1214,7 +1355,15 @@ export const createEngine = (options: EngineOptions): Engine => {
       return disputeNode(nodeId, reason);
     },
 
-    idle: () => active.size === 0 && pending.length === 0 && arbitrating.size === 0,
+    idle: () =>
+      active.size === 0 &&
+      !preparing &&
+      recovery === undefined &&
+      pending.length === 0 &&
+      arbitrating.size === 0 &&
+      recoveringCandidates.size === 0 &&
+      queue.activity().integrating === undefined &&
+      queue.activity().waiting.length === 0,
 
     releaseSettled: async (graceMs) => {
       const stored = new Map((await readNodes()).map((node) => [node.executionNodeId, node]));
@@ -1249,7 +1398,8 @@ export const createEngine = (options: EngineOptions): Engine => {
 
     jobs: () => [...active.values()],
 
-    close: async (reason) => {
+    close: async (reason, closeOptions) => {
+      if (!closed) preservingWork = closeOptions?.preserveWork === true;
       closed = true;
       if (retryPump !== undefined) clearTimeout(retryPump);
       retryPump = undefined;
@@ -1260,6 +1410,12 @@ export const createEngine = (options: EngineOptions): Engine => {
       // returns; stopping now would leave it running with nothing to stop it.
       // Once it is in `jobs()`, shutdown interrupts it like the rest.
       while (pumping !== undefined) await pumping;
+      if (preservingWork) {
+        // Only the process is stopping. The records remain accepted work for
+        // its replacement; no cancellation cascades from a stopped parent.
+        pending.length = 0;
+        return [];
+      }
       const withdrawn: ExecutionNodeId[] = [];
       for (const entry of [...pending]) {
         withdrawn.push(entry.node.executionNodeId);

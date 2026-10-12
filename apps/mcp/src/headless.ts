@@ -29,7 +29,6 @@ import {
   type RunId,
 } from "@nightshift/contracts";
 import {
-  canTransition,
   canTransitionAgent,
   isPlanned,
   isSettled,
@@ -127,6 +126,7 @@ export const rootLaunch = (
     "NIGHTSHIFT_PROJECT_CREDENTIAL_DIR",
     // The project environment's file (P16 S-01): the engine threads it to project steps (D-10).
     "NIGHTSHIFT_PROJECT_ENV_FILE",
+    "NIGHTSHIFT_REMOTE_WORKSPACE",
     "NIGHTSHIFT_PUBLISH_BASE",
     "NIGHTSHIFT_PUBLISH_PACK_DIR",
     // The org's provider keys, as the heartbeat handed them to the engine on a
@@ -189,22 +189,17 @@ const requireRecords = async (
 
 /** What the orphan sweep did to the lost machine's work, for the root's brief. */
 export interface Orphans {
-  /** Interrupted: were running, verifying or examining; `job_retry` takes them up from their kept work. */
+  /** Workers/orchestrators that were running; an explicit retry keeps their work. */
   readonly interrupted: readonly string[];
-  /** Failed: were implemented and awaiting verification that never ran; `job_retry` reruns them. */
-  readonly failed: readonly string[];
-  /** Cancelled: were queued in an engine that is gone; their strands are delegated again. */
-  readonly cancelled: readonly string[];
+  /** Accepted jobs and completed candidates, adopted by the engine without redelegating. */
+  readonly preserved: readonly string[];
 }
 
 /**
- * The nodes and agents the lost machine left in flight, settled on the record
- * so the root can take them up (T6). The transition table decides what each
- * becomes: a node that was running, verifying or examining is `interrupted`
- * (retryable); one implemented but not yet verified is `failed` (retryable);
- * one queued in the dead engine is `cancelled`, and its strand is delegated
- * anew. Started agents of all of them, and the lost machine's root, are
- * interrupted.
+ * Interrupt dead agent processes, not their durable work. Queued jobs and
+ * completed candidates retain their states for Engine.recover; only running
+ * worker/sub-program nodes require an explicit retry. The root node itself
+ * remains running while its old agent is interrupted and replaced.
  */
 export const interruptOrphans = async (
   stores: Pick<NightshiftStores, "executionNodes" | "agents">,
@@ -212,65 +207,63 @@ export const interruptOrphans = async (
   at: string,
   generation: number,
 ): Promise<Orphans> => {
-  const reason = `the machine running this was lost; the run resumed on a replacement at generation ${generation}`;
+  const reason = `the runner process ended; the run resumed at generation ${generation}`;
   const interrupted: string[] = [];
-  const failed: string[] = [];
-  const cancelled: string[] = [];
-  const nodes = (await stores.executionNodes.listByRun(scope, { limit: 500 })).items;
+  const preserved: string[] = [];
   const interruptAgentsOf = async (nodeId: ExecutionNode["executionNodeId"]) => {
     for (const agent of await stores.agents.listByNode(scope, nodeId)) {
       if (!canTransitionAgent(agent.status, "interrupt")) continue;
       await stores.agents.put(transitionAgent(agent, "interrupt", { at, outcomeReason: reason }));
     }
   };
-  for (const node of nodes) {
-    if (node.kind === "program") {
-      // The lost machine's root: this process starts its own.
+  let cursor: string | undefined;
+  do {
+    const page = await stores.executionNodes.listByRun(scope, {
+      limit: 500,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    for (const node of page.items) {
       await interruptAgentsOf(node.executionNodeId);
-      continue;
+      if (node.kind === "program") continue;
+      if (node.status === "running") {
+        await stores.executionNodes.put({
+          ...transition(node, "interrupt", at),
+          outcomeReason: reason,
+        });
+        interrupted.push(node.executionNodeId);
+      } else if (
+        ["queued", "implemented", "verifying", "verified", "examining", "sealed"].includes(
+          node.status,
+        )
+      ) {
+        preserved.push(node.executionNodeId);
+      }
     }
-    const event = canTransition(node.status, "interrupt")
-      ? "interrupt"
-      : node.status === "implemented"
-        ? "fail"
-        : node.status === "queued"
-          ? "cancel"
-          : undefined;
-    if (event === undefined) continue;
-    await stores.executionNodes.put({ ...transition(node, event, at), outcomeReason: reason });
-    (event === "interrupt" ? interrupted : event === "fail" ? failed : cancelled).push(
-      node.executionNodeId,
-    );
-    await interruptAgentsOf(node.executionNodeId);
-  }
-  return { interrupted, failed, cancelled };
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  return { interrupted, preserved };
 };
 
 /** What a resuming root is told before the plan. */
 export const recoveryNote = (generation: number, orphans: Orphans): string => {
   const lines = [
-    `# This run is resuming after a machine failure (replacement machine, generation ${generation})`,
+    `# This run is resuming after a runner restart (generation ${generation})`,
     "",
-    "The machine running this run was lost and this is its replacement. The run's record on the",
-    "control plane is complete: strands already integrated stay integrated, and nothing lands",
-    "twice. Attach to this run with `run.attach`, then read the state of every strand.",
+    "The previous runner process stopped, or its machine was replaced. Attach to this run with",
+    "`run.attach`: the engine adopts retained queued jobs and completed candidates from the",
+    "control-plane records. Read every strand's current state before doing more work.",
   ];
-  if (orphans.interrupted.length + orphans.failed.length + orphans.cancelled.length === 0) {
+  if (orphans.interrupted.length + orphans.preserved.length === 0) {
     lines.push("No job was in flight when the machine was lost.");
   }
   if (orphans.interrupted.length > 0) {
     lines.push(
-      `${orphans.interrupted.length} job(s) were in flight and are marked interrupted (${orphans.interrupted.join(", ")}); their worktrees, with whatever work was done, were restored from the sidecar. Retry each with job_retry: the retry starts from the kept work.`,
+      `${orphans.interrupted.length} running node(s) are marked interrupted (${orphans.interrupted.join(", ")}). Inspect their kept work and retry with job.retry. Retry interrupted sub-program parents before their children: retained queued children can proceed once their parent runs again. Do not redelegate the same strands.`,
     );
   }
-  if (orphans.failed.length > 0) {
+  if (orphans.preserved.length > 0) {
     lines.push(
-      `${orphans.failed.length} job(s) had been implemented but never verified and are marked failed (${orphans.failed.join(", ")}). Retry each with job_retry.`,
-    );
-  }
-  if (orphans.cancelled.length > 0) {
-    lines.push(
-      `${orphans.cancelled.length} job(s) were queued and never started and are marked cancelled (${orphans.cancelled.join(", ")}). Delegate their strands again.`,
+      `${orphans.preserved.length} accepted job(s) or completed candidate(s) were preserved (${orphans.preserved.join(", ")}). The engine resumes their existing queue/verification/examination/integration stages; do not retry or redelegate them merely because the runner restarted.`,
     );
   }
   lines.push(
@@ -285,6 +278,19 @@ const carriedNote = (carried: NonNullable<Run["carriedStrands"]>): string =>
   "landed is on the program branch this run starts from. They count as succeeded here; do not " +
   `delegate them: ${carried.map((strand) => `${strand.strandId} (run ${strand.fromRunId})`).join(", ")}. ` +
   "Delegate every other strand as usual.";
+
+/** Preparation is an observable operation the root can repair, not an admission gate. */
+export const remoteEnvironmentNote = [
+  "# Project environment on this machine",
+  "Attach with run.attach, then inspect environment.status. For an unprepared or interrupted",
+  "environment, call environment.prepare; it starts asynchronously, so follow environment.status",
+  "for progress and the setup log. If preparation fails, diagnose its recorded error, repair the",
+  "environment or repository setup, then call environment.prepare again. A setup failure does",
+  "not end this run and does not require a new run or a special repair strand. Run project",
+  "commands as the project user, not as the engine; environment.prepare does that for setup.",
+  "Use this information to sequence useful work; preparation is not a delegation certificate.",
+  "Required verification and examination still decide what can integrate.",
+].join("\n");
 
 /**
  * Starts the root orchestrator and waits for it to go. Resolves with how the
@@ -310,7 +316,7 @@ export const runHeadless = async (
   // are interrupted on the record, so the root can retry them (T6).
   const orphans = resuming
     ? await interruptOrphans(stores, scope, nowIso(clock), input.recovering?.generation ?? 0)
-    : { interrupted: [], failed: [], cancelled: [] };
+    : { interrupted: [], preserved: [] };
 
   // Not persisted: the program node has no Job Contract. It carries the plan to
   // the brief through the one adapter contract every node is started with.
@@ -320,6 +326,7 @@ export const runHeadless = async (
     jobContractId: ids.next("job"),
     objective: [
       ...(resuming ? [recoveryNote(input.recovering?.generation ?? 0, orphans)] : []),
+      ...(env.NIGHTSHIFT_REMOTE_WORKSPACE === undefined ? [] : [remoteEnvironmentNote]),
       ...(run.carriedStrands === undefined || run.carriedStrands.length === 0
         ? []
         : [carriedNote(run.carriedStrands)]),

@@ -212,11 +212,16 @@ export const verifyNode = async (
   // The run's gates as they stand now: a repair that lands while this runs
   // changes the next verification, never this one (D-P15-04).
   const gates: GateDefinitions = await gateDefinitions(environment, input.session);
-  const verifying = transition(
-    input.node,
-    input.resuming === true ? "resume_verification" : "begin_verification",
-    nowIso(clock),
-  );
+  // A fenced engine may have died while running these checks. Restart the
+  // commands on the same clean commit, not the worker that produced it.
+  const verifying =
+    input.node.status === "verifying"
+      ? input.node
+      : transition(
+          input.node,
+          input.resuming === true ? "resume_verification" : "begin_verification",
+          nowIso(clock),
+        );
   await stores.executionNodes.put(verifying);
   const startedAt = nowIso(clock);
   outbox.emit({

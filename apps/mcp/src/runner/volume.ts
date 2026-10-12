@@ -21,8 +21,15 @@ export interface VolumeOptions {
 /** The model string EC2 gives an instance-store NVMe controller. */
 const INSTANCE_STORE_MODEL = "Instance Storage";
 
-/** The instance's local NVMe disk if it has one: unmounted, named by EC2 as instance storage. */
-export const findLocalDisk = async (machine: Machine): Promise<string | undefined> => {
+/**
+ * The instance's local NVMe: prefer its surviving workspace mount on process
+ * restart, otherwise an unmounted instance-store disk. Never adopt a disk
+ * mounted for some other purpose merely because its model is instance storage.
+ */
+export const findLocalDisk = async (
+  machine: Machine,
+  workspaceMount?: string,
+): Promise<string | undefined> => {
   const listed = await machine.exec("lsblk", ["-dnpo", "NAME,TYPE,MOUNTPOINT,MODEL"]);
   if (listed.exitCode !== 0) throw new VolumeError(`lsblk failed: ${listed.stderr}`);
   const candidates = listed.stdout
@@ -31,14 +38,20 @@ export const findLocalDisk = async (machine: Machine): Promise<string | undefine
     .filter((line) => line !== "")
     .map((line) => {
       const [name, type, ...rest] = line.split(/\s+/);
-      return { name, type, rest: rest.join(" ") };
+      return {
+        name,
+        type,
+        rest: rest.join(" "),
+        workspace: workspaceMount !== undefined && rest[0] === workspaceMount,
+      };
     })
     .filter(
       (disk) =>
         disk.type === "disk" &&
         disk.rest.includes(INSTANCE_STORE_MODEL) &&
-        !disk.rest.startsWith("/"),
+        (!disk.rest.startsWith("/") || disk.workspace),
     )
+    .sort((a, b) => Number(b.workspace) - Number(a.workspace))
     .map((disk) => disk.name)
     .filter((name): name is string => name !== undefined);
   return candidates[0];

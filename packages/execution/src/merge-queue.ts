@@ -67,6 +67,16 @@ interface Waiting {
   readonly done: () => void;
 }
 
+/** Durable stages owned by the queue, including a landing whose acknowledgement was lost. */
+export const RECOVERABLE_CANDIDATE_STATUSES = new Set([
+  "implemented",
+  "verifying",
+  "verified",
+  "examining",
+  "sealed",
+  "integrated",
+]);
+
 export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue => {
   const { stores, clock, outbox, git: runner } = environment;
   const waiting = new Map<ExecutionNodeId, Waiting>();
@@ -121,14 +131,21 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     const node = await stores.executionNodes
       .get(entry.candidate.session.scope, nodeId)
       .catch(() => undefined);
-    if (node?.status === "implemented") return node;
+    if (node !== undefined && RECOVERABLE_CANDIDATE_STATUSES.has(node.status)) return node;
     waiting.delete(nodeId);
     entry.done();
     return undefined;
   };
 
   const processNext = async (): Promise<void> => {
-    const next = nextToIntegrate(await readyNodes());
+    const nodes = await readyNodes();
+    // Keep core's delegation order; these later stages were already selected
+    // by this queue before the process died, so finish them first.
+    const next =
+      nodes
+        .filter((node) => node.status !== "implemented")
+        .sort((a, b) => a.executionNodeId.localeCompare(b.executionNodeId))[0] ??
+      nextToIntegrate(nodes);
     if (next === undefined) return;
 
     const entry = waiting.get(next.executionNodeId);
@@ -161,6 +178,43 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
       candidate.session.program.repository.programBranch,
       runId,
     );
+    if (["verified", "examining", "sealed", "integrated"].includes(implemented.status)) {
+      const verification = (
+        await stores.verifications.listByNode(candidate.session.scope, candidate.nodeId)
+      )
+        .filter(
+          (record) =>
+            record.commitSha === implemented.commitSha &&
+            record.outcome === "passed" &&
+            record.phase !== "candidate",
+        )
+        .sort((a, b) => a.endedAt.localeCompare(b.endedAt))
+        .at(-1);
+      if (verification === undefined || implemented.commitSha === null) {
+        throw new Error(
+          "recovery_missing_evidence: no passing queue verification for the recorded commit",
+        );
+      }
+      if (implemented.status === "sealed" || implemented.status === "integrated") {
+        await integrateNode(environment, { ...candidate, commitSha: implemented.commitSha });
+      } else {
+        await examineAndLand(candidate, candidate.base, implemented.commitSha, verification);
+      }
+      return;
+    }
+    if (implemented.status === "verifying" && head !== candidate.base) {
+      // There is no evidence yet. Keep its commit, and use the table's retry
+      // edges to reconcile and check it against the new head without a worker.
+      let restarted = transition(implemented, "interrupt", nowIso(clock));
+      await stores.executionNodes.put(restarted);
+      restarted = transition(restarted, "retry", nowIso(clock));
+      await stores.executionNodes.put(restarted);
+      restarted = transition(restarted, "start", nowIso(clock));
+      await stores.executionNodes.put(restarted);
+      restarted = transition(restarted, "report_implemented", nowIso(clock));
+      await stores.executionNodes.put(restarted);
+      implemented = restarted;
+    }
     const node =
       head === candidate.base ? implemented : await reconcile(candidate, implemented, head);
     if (node === undefined) return;
@@ -281,9 +335,20 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
 
   const failNode = async (candidate: IntegrationCandidate, reason: string): Promise<void> => {
     const node = await stores.executionNodes.get(candidate.session.scope, candidate.nodeId);
-    if (node === undefined || node.status !== "implemented") return;
+    if (
+      node === undefined ||
+      !RECOVERABLE_CANDIDATE_STATUSES.has(node.status) ||
+      node.status === "integrated"
+    )
+      return;
+    const event =
+      node.status === "implemented"
+        ? "fail"
+        : node.status === "verifying" || node.status === "examining"
+          ? "interrupt"
+          : "cancel";
     await stores.executionNodes.put({
-      ...transition(node, "fail", nowIso(clock)),
+      ...transition(node, event, nowIso(clock)),
       outcomeReason: reason,
     });
     outbox.emit({

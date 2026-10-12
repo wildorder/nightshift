@@ -10,6 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  AWSCLI_SHA256,
   containmentComponent,
   DOCKER_FORWARD,
   DOCKER_PRIVATE_SOCKET,
@@ -61,6 +62,80 @@ const everyWorker = (commands: readonly string[], step: string): string => {
 };
 
 describe("the runner image", () => {
+  describe("Ubuntu 24.04", () => {
+    for (const architecture of IMAGE_ARCHITECTURES) {
+      it(`installs strict, noninteractive Ubuntu packages on ${architecture}`, () => {
+        const commands = commandsOf(toolchainComponent(architecture));
+        expect(commands).toContain("export DEBIAN_FRONTEND=noninteractive");
+        expect(commands).toContain("apt-get -o Acquire::Retries=3 update");
+        const packages = commands.filter((c) => c.startsWith("apt-get -y install ")).join(" ");
+        for (const name of [
+          "ca-certificates",
+          "curl",
+          "amazon-ec2-utils",
+          "uidmap",
+          "dbus-user-session",
+          "systemd-container",
+          "apparmor",
+          "fuse-overlayfs",
+          "python3-venv",
+          "libasound2t64",
+          "libatk1.0-0t64",
+          "libgbm1",
+          "libnss3",
+          "xvfb",
+        ])
+          expect(packages.split(" ")).toContain(name);
+        expect(commands.join("\n")).not.toMatch(/\bdnf\b|strict=0|--ignore-missing/);
+        expect(commands).toContain("aws --version");
+      });
+    }
+
+    for (const architecture of IMAGE_ARCHITECTURES) {
+      it(`installs a pinned AWS CLI with its own runtime on ${architecture}`, () => {
+        const commands = commandsOf(toolchainComponent(architecture));
+        const arch = architecture === "arm64" ? "aarch64" : "x86_64";
+        const download = commands.findIndex((c) =>
+          c.includes(
+            `https://awscli.amazonaws.com/awscli-exe-linux-${arch}-${RUNNER_TOOLCHAIN.awscli}.zip`,
+          ),
+        );
+        const checksum = commands.indexOf(
+          `echo '${AWSCLI_SHA256[architecture]}  /tmp/nightshift-awscli.zip' | sha256sum --check --strict -`,
+        );
+        const extract = commands.indexOf(
+          "unzip -q /tmp/nightshift-awscli.zip -d /tmp/nightshift-awscli",
+        );
+        const install = commands.indexOf(
+          "/tmp/nightshift-awscli/aws/install --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin",
+        );
+        expect(download).toBeGreaterThan(-1);
+        expect(checksum).toBeGreaterThan(download);
+        expect(extract).toBeGreaterThan(checksum);
+        expect(install).toBeGreaterThan(extract);
+        expect(commands.indexOf("aws --version")).toBeGreaterThan(install);
+      });
+    }
+
+    it("allows the pinned rootlesskit's user namespaces without disabling host AppArmor", () => {
+      const commands = commandsOf(toolchainComponent());
+      expect(unitWrittenTo(commands, "/etc/apparmor.d/nightshift-rootlesskit")).toBe(
+        "abi <abi/4.0>,\ninclude <tunables/global>\n/usr/local/bin/rootlesskit flags=(unconfined) {\n  userns,\n}",
+      );
+      expect(commands).toContain("apparmor_parser -r /etc/apparmor.d/nightshift-rootlesskit");
+      expect(commands.join("\n")).not.toMatch(
+        /apparmor_restrict_unprivileged_userns=0|disable.*apparmor/,
+      );
+    });
+
+    it("allocates subordinate ids without overlapping Ubuntu's existing user", () => {
+      const commands = commandsOf(containmentComponent());
+      const create = everyWorker(commands, "useradd --create-home");
+      expect(create).toContain("-K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536");
+      expect(commands.join("\n")).not.toMatch(/>> \/etc\/sub(uid|gid)/);
+    });
+  });
+
   // Image Builder refuses a component document over 16,000 characters, and
   // only at deploy: P16's containment component reached 31,163 (2026-10-09).
   it("keeps every component's document under Image Builder's limit", () => {
@@ -217,7 +292,9 @@ describe("the runner image", () => {
       // (2026-10-10); socat carries each direction's close on its own.
       expect(DOCKER_FORWARD).toBe("/usr/bin/socat -t 86400 STDIO");
       expect(
-        commandsOf(toolchainComponent()).some((c) => /dnf -y install docker .*\bsocat\b/.test(c)),
+        commandsOf(toolchainComponent()).some((c) =>
+          /apt-get -y install docker.io .*\bsocat\b/.test(c),
+        ),
       ).toBe(true);
       const lines = unitWrittenTo(commands, "/etc/systemd/user/docker-proxy@.service").split("\n");
       expect(lines).toEqual(

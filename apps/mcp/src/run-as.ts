@@ -58,23 +58,30 @@ export const createProjectUser = (
 ): ((agent: { readonly agentId: string; readonly role: string }) => RunAs) => {
   const run = options.exec ?? sudo;
   const { user } = options;
-  const env: Record<string, string> = { ...(options.projectEnv ?? {}) };
+  const credentials: Record<string, string> = {};
   if (options.credentialRoot !== undefined) {
     for (const variable of CREDENTIAL_DIRECTORY_VARIABLES) {
       const directory = join(options.credentialRoot, variable);
-      if (existsSync(directory)) env[variable] = directory;
+      if (existsSync(directory)) credentials[variable] = directory;
     }
   }
+  const env: Record<string, string> = { ...(options.projectEnv ?? {}), ...credentials };
   const runAs: RunAs = {
     user,
-    ...(Object.keys(env).length === 0 ? {} : { env }),
+    ...(options.projectEnv === undefined && Object.keys(credentials).length === 0 ? {} : { env }),
     grant: (path) => run("chown", ["-R", `${user}:${WORKER_GROUP}`, path]),
     kill: (pid, signal) => {
       // The process group as the user; errors here are a dead tree already.
       run("sudo", ["-u", user, "kill", `-${signal}`, "--", `-${pid}`]).catch(() => undefined);
     },
   };
-  return () => runAs;
+  return () => {
+    // Explicit setup can replace the project's runtimes between jobs. Keep the
+    // RunAs identity stable, but never capture the boot-time PATH forever.
+    for (const key of Object.keys(env)) delete env[key];
+    Object.assign(env, options.projectEnv, credentials);
+    return runAs;
+  };
 };
 
 /**

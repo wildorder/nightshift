@@ -315,7 +315,13 @@ describe("the Stage 5 tree", () => {
     const rename = await run.delegate("[rename-sum] Rename sum to total.");
     const caller = await run.delegate("[call-sum] Add range, which uses sum.");
     const second = await run.waitAll([rename, caller]);
-    expect(Object.values(second).sort()).toEqual(["integrated", "verification_failed"]);
+    const explanations = await Promise.all(
+      [rename, caller].map((job) => run.driver.call("job.get", { jobId: job.jobId })),
+    );
+    expect(Object.values(second).sort(), JSON.stringify(explanations)).toEqual([
+      "integrated",
+      "verification_failed",
+    ]);
 
     // The branch still passes the program's own checks.
     const math = await readFile(join(run.ctx.fixture.repo, "src", "math.js"), "utf8");

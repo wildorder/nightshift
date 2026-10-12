@@ -4,33 +4,30 @@
  *
  * Order: who am I (tags), my first token (SSM), the heartbeat started so the
  * plane knows the machine is up and hands back the clone's credential, the
- * volume mounted, the workspace prepared on the volume (mirror, checkout at
- * the authorised SHA, plan hashed, setup run), `ready` reported, and then
+ * volume mounted, the checkout prepared or recovered, `ready` reported, and then
  * whatever work T4 supplies (the headless root) until it ends or the plane
  * says stop.
  *
- * A machine that cannot prepare its workspace, from the mount to setup, says
+ * A machine that cannot establish its identity, mount or checkout says
  * so: its last heartbeat is `stopped` with `setup_failed` and the cause, and
- * the dispatch ends `failed` (P16 SC-07) instead of waiting for the reconciler
- * to give up on the lease. The work can end the dispatch the same way, with a
+ * the dispatch ends `failed` instead of waiting for the reconciler
+ * to give up on the lease. Project setup failures are handled by the live
+ * orchestrator instead. The work can end the dispatch with a
  * failure of its own (`environment_fault`, D-07).
  */
 import type { Dispatch, ProgramContract, RunnerFailure } from "@nightshift/contracts";
 import type { RunScope } from "@nightshift/core";
 import { WORKER_GROUP } from "../run-as.js";
-import { type RunnerIdentity, readIdentity, takeFirstToken } from "./bootstrap.js";
+import { bootstrapEngineToken, type RunnerIdentity, readIdentity } from "./bootstrap.js";
 import { createHeartbeat, type Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
 import type { EngineTokens, PlaneFactory, RunnerPlane } from "./plane.js";
+import { ProjectSetupStatusSchema } from "./project-setup.js";
+import { recoverLocalWorkspace } from "./recovery.js";
 import { createSampler } from "./sampler.js";
-import {
-  restoreFromSidecar,
-  type SidecarSync,
-  sidecarHoldsCopy,
-  startSidecarSync,
-} from "./sidecar.js";
+import { type SidecarSync, startSidecarSync } from "./sidecar.js";
 import { findLocalDisk, mountWorkspace } from "./volume.js";
-import { layoutOf, prepareWorkspace, type WorkspaceLayout } from "./workspace.js";
+import { layoutOf, prepareCheckout, type WorkspaceLayout } from "./workspace.js";
 
 export interface RunnerOptions {
   readonly machine: Machine;
@@ -55,6 +52,7 @@ export interface RunnerOptions {
    * composition can place it where the root's processes read it.
    */
   readonly onToken?: (token: string, scope: RunScope) => Promise<void>;
+  readonly readCachedToken?: (scope: RunScope) => Promise<string | undefined>;
   /** How long to wait for the plane to hand over the clone's credential. */
   readonly credentialTimeoutMs?: number;
   /** The runner's own PATH, kept in the project environment after the runtimes and the image's. */
@@ -94,12 +92,13 @@ const renewableToken = (
   onToken: ((token: string) => Promise<void>) | undefined,
 ) => {
   let current = initial;
+  let saving = Promise.resolve();
   const provider: EngineTokens = { idToken: async () => current };
   return {
     provider,
     install: (token: string) => {
       current = token;
-      void onToken?.(token).catch(() => undefined);
+      saving = saving.then(() => onToken?.(token)).catch(() => undefined);
     },
   };
 };
@@ -139,12 +138,26 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   const identity = await readIdentity(machine);
   log(`run ${identity.scope.runId}, generation ${identity.generation}, on ${identity.instanceId}`);
   const onToken = options.onToken;
+  const readCachedToken = options.readCachedToken;
   const token = renewableToken(
-    await takeFirstToken(machine, identity),
+    await bootstrapEngineToken(machine, identity, {
+      ...(readCachedToken === undefined
+        ? {}
+        : { readCachedToken: () => readCachedToken(identity.scope) }),
+      ...(onToken === undefined
+        ? {}
+        : { installToken: (initial: string) => onToken(initial, identity.scope) }),
+    }),
     onToken === undefined ? undefined : (renewed) => onToken(renewed, identity.scope),
   );
   await onToken?.(await token.provider.idToken(), identity.scope);
   const plane = options.plane(identity.apiEndpoint, token.provider);
+  const initialDispatch = await plane.dispatch(identity.scope);
+  const attempt = initialDispatch?.attempts.find(
+    (entry) => entry.generation === identity.generation,
+  );
+  const sample = createSampler(machine, options.workspace).sample;
+  let setupAttempt = 0;
 
   // Beating before the volume is mounted, so a mount that fails can still be
   // reported; the disk samples read the root's until the mount is there.
@@ -152,7 +165,28 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     generation: identity.generation,
     post: (body) => plane.heartbeat(identity.scope, body),
     installToken: token.install,
-    sample: createSampler(machine, options.workspace).sample,
+    sample: async () => {
+      const saved = await machine.readFile(
+        `${options.workspace}/runs/${identity.scope.runId}/project-setup.json`,
+      );
+      if (saved !== undefined) {
+        try {
+          const status = ProjectSetupStatusSchema.parse(JSON.parse(saved));
+          if (
+            status.state === "ready" &&
+            status.prepared !== undefined &&
+            status.attempt > setupAttempt
+          ) {
+            heartbeat.describeSetup(status.prepared.setupSeconds, status.prepared.lockfileHashes);
+            setupAttempt = status.attempt;
+          }
+        } catch {
+          /* A status write in progress is retried on the next sample. */
+        }
+      }
+      return sample();
+    },
+    ...(attempt === undefined ? {} : { startedAt: Date.parse(attempt.startedAt) }),
     sleep: machine.sleep,
     now: machine.now,
     log,
@@ -160,6 +194,12 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   // The first beat says the machine is up (P16 S-03).
   heartbeat.progress({ stage: "up", detail: `on ${identity.instanceId}` });
   const beating = heartbeat.run();
+  const first = await Promise.race([heartbeat.first(), beating]);
+  if (typeof first === "string" || first.stop) {
+    heartbeat.end();
+    await beating;
+    return first === "lost" ? 3 : 0;
+  }
 
   let sync: SidecarSync | undefined;
   const settle = async () => {
@@ -171,8 +211,8 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   };
 
   // The workspace (T3): the volume mounted; what the run is, from the plane;
-  // the clone's credential, from the heartbeat; then the volume filled and
-  // setup run. Any of it failing ends the dispatch `failed` (P16 SC-07).
+  // the clone's credential, from the heartbeat; then a usable checkout.
+  // Runtime installation and project setup happen after the root starts.
   const layout = layoutOf(options.workspace, identity.scope.runId);
   let context: RunnerContext;
   try {
@@ -181,7 +221,8 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     // the record says so or the instance type has no local disk.
     heartbeat.progress({ stage: "workspace", detail: "mounting the volume" });
     const asked = (await plane.dispatch(identity.scope))?.workspace?.disk;
-    const localDisk = asked === "volume" ? undefined : await findLocalDisk(machine);
+    const localDisk =
+      asked === "volume" ? undefined : await findLocalDisk(machine, options.workspace);
     const sidecar =
       localDisk === undefined ? undefined : (options.sidecar ?? `${options.workspace}-sidecar`);
     await mountWorkspace(machine, {
@@ -198,13 +239,12 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
         group: WORKER_GROUP,
         disk: "local",
       });
-      if (await sidecarHoldsCopy(machine, sidecar)) {
-        const started = machine.now();
-        await restoreFromSidecar(machine, sidecar, options.workspace);
-        log(
-          `workspace restored from the sidecar in ${((machine.now() - started) / 1000).toFixed(1)}s`,
-        );
-      }
+      const recovered = await recoverLocalWorkspace(machine, {
+        workspace: options.workspace,
+        sidecar,
+        identity,
+      });
+      log(`local workspace ${recovered}`);
       log(`workspace mounted at ${options.workspace} (local NVMe; sidecar at ${sidecar})`);
     } else {
       log(
@@ -225,26 +265,21 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     if (planDocument === undefined) {
       throw new Error("the ratified plan's document is not on the plane");
     }
-    const githubToken = await awaitGithubToken(
-      heartbeat,
-      machine,
-      options.credentialTimeoutMs ?? 2 * 60_000,
-    );
-    const prepared = await prepareWorkspace(machine, {
+    const prepared = await prepareCheckout(machine, {
       layout,
       dispatch,
       program,
       planText: planDocument.text,
-      githubToken,
+      githubToken: () =>
+        awaitGithubToken(heartbeat, machine, options.credentialTimeoutMs ?? 2 * 60_000),
       log,
       onProgress: (progress) => heartbeat.progress(progress),
       ...(options.inheritedPath === undefined ? {} : { inheritedPath: options.inheritedPath }),
       ...(options.projectUser === undefined ? {} : { projectUser: options.projectUser }),
     });
     log(
-      `workspace ${prepared.warm ? "warm" : "cold"}: setup took ${prepared.setupSeconds.toFixed(1)}s`,
+      `workspace ${prepared.warm ? "warm" : "cold"}: checkout ready; project setup belongs to the orchestrator`,
     );
-    heartbeat.describeSetup(prepared.setupSeconds, prepared.lockfileHashes);
     if (sidecar !== undefined) {
       sync = startSidecarSync(machine, {
         workspace: options.workspace,
@@ -294,6 +329,14 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     });
 
   const outcome = await Promise.race([beating, working]);
+  if (outcome === "failed") {
+    // A process crash is not a request to finish the dispatch. Keep its
+    // durable run alive for systemd restart (or lease-based replacement).
+    await settle();
+    heartbeat.end();
+    await beating;
+    return 1;
+  }
   if (outcome !== "stop" && outcome !== "lost") {
     // The work ended; the sidecar gets its last copy, then the plane is told
     // and the last beat goes out, with the work's failure when it gave one.

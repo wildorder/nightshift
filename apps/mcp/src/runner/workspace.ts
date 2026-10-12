@@ -12,11 +12,10 @@
  *
  * A fresh volume gets all of it made; a warm one (from the project's snapshot)
  * gets the mirror fetched and the checkout moved to the SHA, with the stores
- * and the last installed tree already there. Then the plan on the checkout is
- * hashed against the dispatch's `planHash`, the dispatch's pinned runtimes are
- * installed (P16 S-01, D-04), and the program's `setup` runs once in the
- * checkout in the project environment. Only after that does the runner say
- * `ready`.
+ * and the last installed tree already there. A same-run restart instead keeps
+ * the existing checkout and its head. Checkout preparation establishes engine
+ * readiness; project runtime installation and setup are a separate, retryable
+ * operation requested by the orchestrator.
  *
  * The clone's credential is the read token the heartbeat carried; it is given
  * to git through a credential helper that reads an environment variable the
@@ -50,7 +49,7 @@ import {
   RUNTIMES_ENV,
   runtimeHashes,
 } from "@nightshift/verification";
-import { formatProjectEnv } from "../project-env.js";
+import { formatProjectEnv, parseProjectEnv } from "../project-env.js";
 import { WORKER_GROUP } from "../run-as.js";
 import type { CommandResult, Machine } from "./machine.js";
 
@@ -194,7 +193,7 @@ export interface PrepareInput {
   /** The ratified plan's text, read from the plane, to be hashed against the dispatch. */
   readonly planText: string;
   /** The GitHub read token the heartbeat carried. */
-  readonly githubToken: string;
+  readonly githubToken: string | (() => Promise<string>);
   readonly log: (line: string) => void;
   /** The runner's own PATH, kept after the project's runtimes and the image's PATH. */
   readonly inheritedPath?: string;
@@ -231,8 +230,8 @@ const gitWithToken = async (
 ) => {
   // The helper echoes the token from the environment of this one invocation.
   // The `${…}` is the shell's, not JavaScript's: git runs this line in sh.
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion, on purpose
   const helper =
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell expansion, on purpose
     '!f() { echo username=x-access-token; echo "password=${NIGHTSHIFT_GIT_TOKEN}"; }; f';
   return machine.exec("env", [
     `NIGHTSHIFT_GIT_TOKEN=${token}`,
@@ -252,6 +251,12 @@ const run = async (machine: Machine, file: string, args: readonly string[], what
     throw new WorkspaceError(`${what}: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
   }
   return result;
+};
+
+const writeAtomically = async (machine: Machine, path: string, value: string): Promise<void> => {
+  const temporary = `${path}.next`;
+  await machine.writeFile(temporary, value);
+  await run(machine, "mv", ["-f", temporary, path], `save ${path}`);
 };
 
 /** A TOML string array, `key = ["a", "b"]`, from a `rust-toolchain.toml`; empty when absent. */
@@ -453,10 +458,7 @@ export const resolveProjectRuntimes = async (
   return toolchain;
 };
 
-export const prepareWorkspace = async (
-  machine: Machine,
-  input: PrepareInput,
-): Promise<Prepared> => {
+export const prepareCheckout = async (machine: Machine, input: PrepareInput): Promise<Prepared> => {
   const { layout, dispatch, program, log } = input;
   const progress = (stage: RunnerProgress["stage"], detail: string): void =>
     input.onProgress?.({ stage, detail });
@@ -475,6 +477,56 @@ export const prepareWorkspace = async (
     await run(machine, "mkdir", ["-p", dir], `mkdir ${dir}`);
   }
 
+  const checkoutMarker = `${layout.run}/checkout.json`;
+  const identity = JSON.stringify({
+    runId: dispatch.runId,
+    baseSha: dispatch.input.baseSha,
+    branch: program.repository.programBranch,
+  });
+  const previous = await machine.readFile(checkoutMarker);
+  if (previous !== undefined && previous.trim() !== identity) {
+    throw new WorkspaceError("the checkout belongs to a different run or dispatched base");
+  }
+  const existingCheckout = await machine.exec("git", [
+    "-C",
+    layout.checkout,
+    "rev-parse",
+    "--git-dir",
+  ]);
+  const recovering =
+    previous !== undefined || (dispatch.generation > 1 && existingCheckout.exitCode === 0);
+  if (recovering) {
+    await run(
+      machine,
+      "git",
+      ["-C", layout.checkout, "merge-base", "--is-ancestor", dispatch.input.baseSha, "HEAD"],
+      "recover the existing checkout without rewinding it",
+    );
+    const branch = await run(
+      machine,
+      "git",
+      ["-C", layout.checkout, "branch", "--show-current"],
+      "read the recovered branch",
+    );
+    if (branch.stdout.trim() !== program.repository.programBranch) {
+      throw new WorkspaceError(
+        "the recovered checkout is not on the program branch; it was left untouched",
+      );
+    }
+    const environmentFile = `${layout.run}/project.env`;
+    const saved = await machine.readFile(environmentFile);
+    const environment =
+      saved === undefined
+        ? projectEnvironment(layout, undefined, undefined, input.inheritedPath)
+        : parseProjectEnv(saved);
+    await writeAtomically(machine, environmentFile, formatProjectEnv(environment));
+    await writeAtomically(machine, checkoutMarker, identity);
+    log("resuming the existing checkout; preserving its head, worktrees and local changes");
+    return { setupSeconds: 0, lockfileHashes: {}, warm: true, environment, environmentFile };
+  }
+  const githubToken =
+    typeof input.githubToken === "string" ? input.githubToken : await input.githubToken();
+
   // The mirror: fetched when it is there, cloned when it is not.
   const mirrored = await machine.exec("git", [
     "-C",
@@ -486,7 +538,7 @@ export const prepareWorkspace = async (
   if (warm) {
     log("warm volume: fetching the mirror");
     progress("workspace", "fetching the mirror");
-    const fetched = await gitWithToken(machine, layout.mirror, input.githubToken, [
+    const fetched = await gitWithToken(machine, layout.mirror, githubToken, [
       "fetch",
       "--prune",
       "origin",
@@ -495,7 +547,7 @@ export const prepareWorkspace = async (
   } else {
     log("cold volume: cloning the mirror");
     progress("workspace", "cloning the mirror");
-    const cloned = await gitWithToken(machine, undefined, input.githubToken, [
+    const cloned = await gitWithToken(machine, undefined, githubToken, [
       "clone",
       "--mirror",
       cloneUrl,
@@ -518,7 +570,7 @@ export const prepareWorkspace = async (
 
   // The checkout: made from the mirror, moved to the SHA; a divergent one is remade.
   progress("workspace", `checking out ${dispatch.input.baseSha.slice(0, 8)}`);
-  const checkedOut = await machine.exec("git", ["-C", layout.checkout, "rev-parse", "--git-dir"]);
+  const checkedOut = existingCheckout;
   const fresh = checkedOut.exitCode !== 0;
   if (fresh) {
     await run(
@@ -571,14 +623,55 @@ export const prepareWorkspace = async (
   await machine.exec("chmod", ["-R", "g+rwX", layout.root]);
   await machine.exec("find", [layout.root, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"]);
 
+  const environment = projectEnvironment(layout, undefined, undefined, input.inheritedPath);
+  const environmentFile = `${layout.run}/project.env`;
+  await writeAtomically(machine, environmentFile, formatProjectEnv(environment));
+  await writeAtomically(machine, checkoutMarker, identity);
+  return { setupSeconds: 0, lockfileHashes: {}, warm, environment, environmentFile };
+};
+
+export type PrepareProjectInput = Omit<PrepareInput, "planText" | "githubToken">;
+
+/** Retryable project setup. Never moves or resets the checkout. */
+export const prepareProject = async (
+  machine: Machine,
+  input: PrepareProjectInput,
+): Promise<Prepared> => {
+  const { layout, program, log } = input;
+  const progress = (stage: RunnerProgress["stage"], detail: string): void =>
+    input.onProgress?.({ stage, detail });
+
   // The pinned runtimes, before setup (P16 S-01, D-04), and the one project
   // environment, written where the engine's processes and the boot proof read it.
-  const toolchain = dispatch.input.toolchain ?? (await resolveProjectRuntimes(machine, layout));
+  if (input.projectUser !== undefined) {
+    await run(
+      machine,
+      "mkdir",
+      ["-p", runtimesDir(layout), `${layout.stores}/mise-cache`],
+      "prepare runtime stores",
+    );
+    await run(
+      machine,
+      "sudo",
+      [
+        "-n",
+        "chown",
+        "-R",
+        `engine:${WORKER_GROUP}`,
+        runtimesDir(layout),
+        `${layout.stores}/mise-cache`,
+      ],
+      "restore engine ownership of runtime stores",
+    );
+  }
+  // The checkout is repairable. A dispatch-time observation must not keep an
+  // old pin alive after the project has corrected it.
+  const toolchain = await resolveProjectRuntimes(machine, layout);
   progress("toolchain", toolchainDetail(toolchain));
   await installRuntimes(machine, layout, toolchain, log);
   const env = projectEnvironment(layout, toolchain, undefined, input.inheritedPath);
   const environmentFile = `${layout.run}/project.env`;
-  await machine.writeFile(environmentFile, formatProjectEnv(env));
+  await writeAtomically(machine, environmentFile, formatProjectEnv(env));
 
   // The stores and the checkout are the project user's (D-P10-30): package
   // managers hard-link store files into node_modules and then chmod them, and
@@ -590,6 +683,19 @@ export const prepareWorkspace = async (
       "sudo",
       ["-n", "chown", "-R", `${input.projectUser}:${WORKER_GROUP}`, layout.stores, layout.checkout],
       "hand the stores and the checkout to the project user",
+    );
+    await run(
+      machine,
+      "sudo",
+      [
+        "-n",
+        "chown",
+        "-R",
+        `engine:${WORKER_GROUP}`,
+        runtimesDir(layout),
+        `${layout.stores}/mise-cache`,
+      ],
+      "keep runtime stores owned by the engine",
     );
   }
 
@@ -613,6 +719,8 @@ export const prepareWorkspace = async (
       input.projectUser === undefined
         ? await machine.exec(command[0] ?? "env", command.slice(1))
         : await machine.exec("sudo", ["-n", "-u", input.projectUser, "-H", ...command]);
+    if (result.stdout.trim()) log(result.stdout);
+    if (result.stderr.trim()) log(result.stderr);
     if (result.exitCode !== 0) {
       throw new WorkspaceError(
         `setup ${step.id} exited ${result.exitCode}: ${result.stderr.trim().slice(-2000)}`,
@@ -641,7 +749,17 @@ export const prepareWorkspace = async (
       `${JSON.stringify(lockfileHashes, null, 2)}\n`,
     );
   }
-  return { setupSeconds, lockfileHashes, warm, environment: env, environmentFile };
+  return { setupSeconds, lockfileHashes, warm: true, environment: env, environmentFile };
+};
+
+/** Compatibility for callers explicitly requesting checkout and project setup together. */
+export const prepareWorkspace = async (
+  machine: Machine,
+  input: PrepareInput,
+): Promise<Prepared> => {
+  const checkout = await prepareCheckout(machine, input);
+  const project = await prepareProject(machine, input);
+  return { ...project, warm: checkout.warm };
 };
 
 export type { RunScope };

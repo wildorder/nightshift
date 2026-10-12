@@ -10,6 +10,16 @@ afterEach(() => {
 });
 
 describe("the project user (D-P10-30)", () => {
+  it("refreshes project variables between jobs without retaining removed runtime pins", () => {
+    const projectEnv: Record<string, string> = { PATH: "/old/node/bin", RUSTUP_TOOLCHAIN: "old" };
+    const runAs = createProjectUser({ user: PROJECT_USER, projectEnv });
+    const first = runAs({ agentId: "one", role: "worker" });
+    projectEnv.PATH = "/new/node/bin";
+    delete projectEnv.RUSTUP_TOOLCHAIN;
+    const next = runAs({ agentId: "two", role: "examiner" });
+    expect(next).toBe(first);
+    expect(next.env).toEqual({ PATH: "/new/node/bin" });
+  });
   it("is the one user for every agent and step, with the project environment and its credential directory", () => {
     const root = mkdtempSync(join(tmpdir(), "ns-runas-"));
     dirs.push(root);

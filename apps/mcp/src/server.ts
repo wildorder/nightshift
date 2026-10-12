@@ -37,7 +37,12 @@ import { pinnedRunOf } from "./headless.js";
 import { jobWaitCap, registerOrchestratorTools } from "./orchestrator.js";
 import type { Env, Role } from "./role.js";
 import { roleFrom, workerIdentityFrom } from "./role.js";
-import { createCheckpointAt, DEFAULT_CONTRACT_FILE, type OrchestratorSession } from "./session.js";
+import {
+  type AttachedRun,
+  createCheckpointAt,
+  DEFAULT_CONTRACT_FILE,
+  type OrchestratorSession,
+} from "./session.js";
 import { registerSubOrchestratorTools } from "./sub-orchestrator.js";
 import { registerWorkerTools } from "./worker.js";
 
@@ -46,6 +51,40 @@ export const SERVER_VERSION = "0.1.0";
 
 /** Long enough to drain a healthy queue, short enough not to hang an exit. */
 export const SHUTDOWN_DEADLINE_MS = 5_000;
+
+/**
+ * A remote engine's process ending is not the run ending. Keep accepted work
+ * and the live run/root records for the replacement process; explicit terminal
+ * outcomes still use normal shutdown. If the plane cannot answer, preserve
+ * rather than interpreting missing information as cancellation authority.
+ */
+export const suspendRemoteRun = async (
+  state: OrchestratorSession,
+  attached: AttachedRun,
+  reason: string,
+): Promise<boolean> => {
+  if (state.pinnedRun === undefined) return false;
+  const { environment, session, engine, outbox } = attached;
+  const run = await environment.stores.runs
+    .get(session.scope, session.scope.runId)
+    .catch(() => undefined);
+  if (run !== undefined && run.status !== "running" && run.status !== "pending") return false;
+  await engine.close(`the remote engine process stopped: ${reason}`, { preserveWork: true });
+  await Promise.all(
+    engine.jobs().map(async (job) => {
+      const node = await environment.stores.executionNodes
+        .get(session.scope, job.nodeId)
+        .catch(() => undefined);
+      // Candidates are already durable. Do not let shutdown turn an in-flight
+      // verifier/examiner into a failed worker attempt or wait for its verdict.
+      if (node?.status !== "running") return;
+      await job.stop("interrupted").catch(() => undefined);
+    }),
+  );
+  await outbox.flush(SHUTDOWN_DEADLINE_MS);
+  await outbox.spill(environment.paths.spool(session.scope.runId));
+  return true;
+};
 
 export interface NightshiftServer {
   readonly role: Role;
@@ -291,7 +330,7 @@ const buildOrchestrator = (
       if (stopped) return;
       stopped = true;
       const attached = state.current;
-      if (attached !== undefined) {
+      if (attached !== undefined && !(await suspendRemoteRun(state, attached, reason))) {
         // Nothing new starts, everything queued is withdrawn, and then every
         // worker in flight is interrupted together (D-P6-08).
         await attached.engine.close(`the run was interrupted: ${reason}`).catch(() => []);

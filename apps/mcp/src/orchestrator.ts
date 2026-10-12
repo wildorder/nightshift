@@ -433,6 +433,86 @@ const assertEndingExplained = (outcome: string, reason: string | undefined): voi
 export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorDeps): void => {
   const { state } = deps;
 
+  const projectSetup = state.runtime.projectSetup;
+  let setupStarting = false;
+  let dispatching = 0;
+  const dispatchGuarded: typeof guarded = (operation) =>
+    guarded(async () => {
+      if (setupStarting || projectSetup?.preparing) {
+        throw new ToolRefusal(
+          "job_running",
+          "Project preparation is changing the environment. Poll environment.status before starting work.",
+        );
+      }
+      dispatching += 1;
+      try {
+        return await operation();
+      } finally {
+        dispatching -= 1;
+      }
+    });
+  if (projectSetup !== undefined) {
+    const setupRoot = () => {
+      const attached = requireAttached(state);
+      const scope = attached.session.scope;
+      if (
+        scope.projectId !== projectSetup.scope.projectId ||
+        scope.programId !== projectSetup.scope.programId ||
+        scope.runId !== projectSetup.scope.runId ||
+        state.rootAgentId !== attached.session.orchestratorAgentId
+      ) {
+        throw new ToolRefusal(
+          "pinned_run",
+          "Only this machine's attached root may prepare its project environment.",
+        );
+      }
+      return attached;
+    };
+    server.registerTool(
+      "environment.status",
+      {
+        title: "Read project preparation status",
+        description:
+          "Read progress and diagnostics for this remote run's project setup. Setup failure does not end the run.",
+        inputSchema: {},
+      },
+      async () =>
+        guarded(async () => {
+          setupRoot();
+          const status = await projectSetup.status();
+          return ok(status.detail, { ...status });
+        }),
+    );
+    server.registerTool(
+      "environment.prepare",
+      {
+        title: "Prepare or retry the project environment",
+        description:
+          "Start this run's declared runtime installation and project setup without resetting the checkout. Returns immediately; poll environment.status. Safe to retry after a failure. Requires no jobs in flight while changing the environment; it is not a prerequisite for delegation.",
+        inputSchema: {},
+      },
+      async () =>
+        guarded(async () => {
+          const attached = setupRoot();
+          if (!projectSetup.preparing && dispatching > 0) {
+            throw new ToolRefusal(
+              "job_running",
+              "Wait for in-flight work before changing the project's runtimes or installed dependencies.",
+            );
+          }
+          setupStarting = true;
+          try {
+            const status = await projectSetup.prepare((task) =>
+              attached.engine.withEnvironment(task),
+            );
+            return ok(status.detail, { ...status });
+          } finally {
+            setupStarting = false;
+          }
+        }),
+    );
+  }
+
   // --- Runs -------------------------------------------------------------------
 
   server.registerTool(
@@ -658,7 +738,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       },
     },
     async (input) =>
-      guarded(async () => {
+      dispatchGuarded(async () => {
         const attached = requireAttached(state);
         const carried = attached.session.run.carriedStrands?.find(
           (strand) => strand.strandId === input.strandId,
@@ -725,7 +805,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       },
     },
     async (input) =>
-      guarded(async () => {
+      dispatchGuarded(async () => {
         const attached = requireAttached(state);
         // Explicit gate-definition repairs retain their evidence. Ordinary
         // authorized work, including fixes, needs no special repair ceremony.
@@ -888,7 +968,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       inputSchema: { jobId: z.string().min(1) },
     },
     async ({ jobId }) =>
-      guarded(async () => {
+      dispatchGuarded(async () => {
         const attached = requireAttached(state);
         const retried = await attached.engine.retry(jobId as never).catch((error: unknown) => {
           // Two fixes of blocking findings, or an upheld one (D-P8-13): not a third.
@@ -924,7 +1004,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       inputSchema: { jobId: z.string().min(1), reason: z.string().min(1) },
     },
     async ({ jobId, reason }) =>
-      guarded(async () => {
+      dispatchGuarded(async () => {
         const attached = requireAttached(state);
         const result = await attached.engine.dispute(jobId as never, reason);
         if (result.kind === "refused") throw new ToolRefusal("validation_failed", result.reason);

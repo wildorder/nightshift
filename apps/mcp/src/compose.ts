@@ -25,6 +25,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   CommitShaSchema,
   HeartbeatResponseSchema,
+  type ProgramContract,
   ProgramIdSchema,
   ProjectIdSchema,
   RunIdSchema,
@@ -46,7 +47,13 @@ import type {
   WorkerEnvironment,
   WorkerLaunchIdentity,
 } from "@nightshift/execution";
-import { createEventOutbox, createPublicationQueue, nodeGitRunner } from "@nightshift/execution";
+import {
+  createEventOutbox,
+  createPublicationQueue,
+  gateDefinitions,
+  gateDefinitionsAt,
+  nodeGitRunner,
+} from "@nightshift/execution";
 import {
   type CliLauncher,
   type Harness,
@@ -74,6 +81,7 @@ import {
   staticTokenProvider,
   type Transport,
 } from "@nightshift/persistence/http";
+import { pinnedRunOf } from "./headless.js";
 import { readProjectEnv } from "./project-env.js";
 import {
   type Env,
@@ -83,8 +91,14 @@ import {
   workerLaunchEnv,
 } from "./role.js";
 import { createProjectUser, createReclaim } from "./run-as.js";
+import { nodeMachine } from "./runner/machine.js";
 import type { PlaneFactory } from "./runner/plane.js";
-import { IMAGE_PATH } from "./runner/workspace.js";
+import {
+  createProjectSetup,
+  type ProjectSetup,
+  REMOTE_WORKSPACE_ENV,
+} from "./runner/project-setup.js";
+import { IMAGE_PATH, layoutOf } from "./runner/workspace.js";
 import { createWorkerTokenFiles } from "./worker-token-files.js";
 
 /**
@@ -149,6 +163,8 @@ export const PROJECT_USER_ENV = "NIGHTSHIFT_PROJECT_USER";
 export const PROJECT_CREDENTIAL_DIR_ENV = "NIGHTSHIFT_PROJECT_CREDENTIAL_DIR";
 
 export interface Runtime {
+  /** Remote root's explicit, retryable setup; absent from local and worker servers. */
+  readonly projectSetup?: ProjectSetup;
   readonly stores: ProjectStores;
   readonly bodies: ArtifactBodyStore;
   /** Mints a worker's execution token. The orchestrator's session may; a worker's cannot. */
@@ -533,6 +549,67 @@ const createPublication = (
     });
 };
 
+/** Read only committed setup fixes using the same inheritance as verification. */
+export const projectSetupProgram = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  program: ProgramContract,
+  checkout: string,
+  git: GitRunner = nodeGitRunner,
+): Promise<ProgramContract> => {
+  const session = { scope, program };
+  const current = await gateDefinitions({ stores }, session);
+  const definitions = await gateDefinitionsAt(git, checkout, "HEAD", session, current);
+  // Neither verification nor execution authority is changed by environment preparation.
+  return { ...program, setup: [...definitions.setup] };
+};
+
+const remoteProjectSetup = (
+  env: Env,
+  role: Role,
+  stores: ProjectStores,
+  projectEnv: Record<string, string> | undefined,
+): ProjectSetup | undefined => {
+  const remoteRoot = env[REMOTE_WORKSPACE_ENV];
+  const projectUser = env[PROJECT_USER_ENV];
+  const pinned = pinnedRunOf(env.NIGHTSHIFT_PINNED_RUN);
+  if (role !== "orchestrator" || !remoteRoot || !pinned || !projectEnv || !projectUser) {
+    return undefined;
+  }
+  const setupScope = {
+    projectId: ProjectIdSchema.parse(pinned.projectId),
+    programId: ProgramIdSchema.parse(pinned.programId),
+    runId: RunIdSchema.parse(pinned.runId),
+  };
+  return createProjectSetup({
+    machine: nodeMachine,
+    scope: setupScope,
+    layout: layoutOf(remoteRoot, setupScope.runId),
+    projectEnv,
+    projectUser,
+    load: async () => {
+      const [dispatch, program] = await Promise.all([
+        stores.dispatches.get(setupScope),
+        stores.programContracts.get(setupScope.projectId, setupScope.programId),
+      ]);
+      if (dispatch === undefined || program === undefined) {
+        throw new Error(
+          "The pinned run's dispatch or program is unavailable; preparation can be retried.",
+        );
+      }
+      return {
+        dispatch,
+        program: await projectSetupProgram(
+          stores,
+          setupScope,
+          program,
+          layoutOf(remoteRoot, setupScope.runId).checkout,
+        ),
+      };
+    },
+  });
+};
+
 export const createRuntime = async (env: Env, role: Role = "orchestrator"): Promise<Runtime> => {
   const { transport, endpoint } = await createTransport(env, role);
   const ids = createUlidIdGenerator();
@@ -540,9 +617,10 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
   const publication = createPublication(env, transport, bodies, ids);
   const projectUser = env[PROJECT_USER_ENV];
   const credentialRoot = env[PROJECT_CREDENTIAL_DIR_ENV];
-  // The project environment the runner wrote (P16 S-01): only on a machine.
-  // Threaded to the steps and the worker users, never adopted (D-10).
+  // This object stays shared by execution and runAs; preparation refreshes it in place.
   const projectEnv = await readProjectEnv(env);
+  const stores = createHttpStores({ transport });
+  const projectSetup = remoteProjectSetup(env, role, stores, projectEnv);
   const runAs =
     projectUser !== undefined && projectUser !== ""
       ? createProjectUser({
@@ -559,10 +637,11 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     ...(runAs === undefined ? {} : { reclaim: createReclaim(userInfo().username) }),
     ...(runAs === undefined ? {} : { workerTokens: createWorkerTokenFiles(runAs) }),
     ...(projectEnv === undefined ? {} : { projectEnv }),
+    ...(projectSetup === undefined ? {} : { projectSetup }),
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
     prerequisites: createHttpPlanning({ transport }),
-    stores: createHttpStores({ transport }),
+    stores,
     bodies,
     tokens: createHttpExecutionTokenMinter({ transport }),
     harness: await createHarness(env, projectEnv !== undefined),

@@ -856,7 +856,8 @@ const finishSubProgram = async (
 
     const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
     if (node !== undefined && node.status === "running") {
-      const stopped = exit.kind === "cancelled" ? "cancel" : "fail";
+      const stopped =
+        exit.kind === "cancelled" ? "cancel" : exit.kind === "interrupted" ? "interrupt" : "fail";
       const why =
         exit.kind === "completed"
           ? "the sub-program's orchestrator exited without ending its sub-program"
@@ -866,7 +867,12 @@ const finishSubProgram = async (
         outcomeReason: why,
       });
       outbox.emit({
-        type: stopped === "cancel" ? "node.cancelled" : "node.failed",
+        type:
+          stopped === "cancel"
+            ? "node.cancelled"
+            : stopped === "interrupt"
+              ? "node.interrupted"
+              : "node.failed",
         source: "control-plane",
         payload: { reason: why },
         executionNodeId: input.nodeId,

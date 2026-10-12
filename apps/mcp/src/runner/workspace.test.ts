@@ -43,6 +43,14 @@ interface FakeMachine extends Machine {
   readonly files: Map<string, string>;
 }
 
+const moveFile = (files: Map<string, string>, args: readonly string[]) => {
+  const from = args.at(-2) ?? "";
+  const to = args.at(-1) ?? "";
+  const text = files.get(from);
+  if (text !== undefined) files.set(to, text);
+  files.delete(from);
+};
+
 /** Every command recorded; each runtime's `--version` reports what `versions` says. */
 const fakeMachine = (
   options: {
@@ -65,6 +73,7 @@ const fakeMachine = (
       commands.push(line);
       const custom = options.exec?.(file, args);
       if (custom !== undefined) return custom;
+      if (file === "mv") moveFile(files, args);
       if (line.includes("rev-parse --is-bare-repository")) return ok("true\n");
       if (line.includes("rev-parse --git-dir")) return ok(".git\n");
       const binary = (file === "env" ? args.find((arg) => !arg.includes("=")) : file) ?? "";
@@ -308,8 +317,11 @@ describe("prepareWorkspace in the project environment (P16 S-01)", () => {
     },
   });
 
-  const prepare = (machine: Machine, onProgress?: (progress: RunnerProgress) => void) =>
-    prepareWorkspace(machine, {
+  const prepare = async (machine: Machine, onProgress?: (progress: RunnerProgress) => void) => {
+    // Explicit preparation reads the current checkout, not a stale dispatch snapshot.
+    await machine.writeFile(`${layout.checkout}/.node-version`, "22.11.0\n");
+    await machine.writeFile(`${layout.checkout}/.python-version`, "3.12.1\n");
+    return prepareWorkspace(machine, {
       layout,
       dispatch,
       program,
@@ -319,6 +331,7 @@ describe("prepareWorkspace in the project environment (P16 S-01)", () => {
       inheritedPath: "/usr/local/bin:/usr/bin:/bin",
       ...(onProgress === undefined ? {} : { onProgress }),
     });
+  };
 
   it("says where it has got to (P16 S-03): the mirror, the checkout, the exact runtimes, each setup step", async () => {
     const machine = fakeMachine();

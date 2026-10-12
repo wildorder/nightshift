@@ -68,12 +68,11 @@ export type RunnerExportKey = (typeof RUNNER_EXPORT_KEYS)[number];
 export const runnerExportName = (stage: string, key: RunnerExportKey): string =>
   `nightshift-${stage}-runner-${key}`;
 
-/** The latest Amazon Linux 2023 AMI per architecture, resolved by CloudFormation at deploy time. */
-export const AL2023_PARAMETERS: Readonly<Record<ImageArchitecture, string>> = {
-  arm64: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64",
-  x86_64: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64",
+/** Canonical's Ubuntu 24.04 LTS server AMIs, resolved at image-recipe deployment. */
+export const UBUNTU_PARAMETERS: Readonly<Record<ImageArchitecture, string>> = {
+  arm64: "/aws/service/canonical/ubuntu/server/noble/stable/current/arm64/hvm/ebs-gp3/ami-id",
+  x86_64: "/aws/service/canonical/ubuntu/server/noble/stable/current/amd64/hvm/ebs-gp3/ami-id",
 };
-export const AL2023_ARM64_PARAMETER = AL2023_PARAMETERS.arm64;
 /** The instance each image is built on: its own architecture. */
 const BUILDER_INSTANCE_TYPES: Readonly<Record<ImageArchitecture, string>> = {
   arm64: "m7g.large",
@@ -209,11 +208,11 @@ export class NightshiftRunnerStack extends Stack {
       const recipe = new imagebuilder.CfnImageRecipe(this, `RunnerRecipe${suffix}`, {
         name: `nightshift-${stage}-runner${nameSuffix}`,
         version: imageVersion,
-        parentImage: `{{resolve:ssm:${AL2023_PARAMETERS[architecture]}}}`,
+        parentImage: `{{resolve:ssm:${UBUNTU_PARAMETERS[architecture]}}}`,
         components: components.map((component) => ({ componentArn: component.attrArn })),
         blockDeviceMappings: [
           {
-            deviceName: "/dev/xvda",
+            deviceName: "/dev/sda1",
             ebs: { volumeSize: 40, volumeType: "gp3", deleteOnTermination: true },
           },
         ],

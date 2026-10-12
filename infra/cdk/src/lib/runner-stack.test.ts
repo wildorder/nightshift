@@ -122,15 +122,27 @@ describe("NightshiftRunnerStack", () => {
   });
 
   describe("the image (D-P10-16, D-P10-17)", () => {
-    it("builds an arm64 image and an x86_64 image, each from its own Amazon Linux 2023, three versioned components apiece, run by hand", () => {
+    it("builds both architectures from Canonical Ubuntu 24.04, with three versioned components apiece, run by hand", () => {
       const { template } = synth();
       const recipes = template.findResources("AWS::ImageBuilder::ImageRecipe");
       const ids = Object.keys(recipes);
       expect(ids).toHaveLength(2);
       const x86 = recipes[ids.find((id) => id.startsWith("RunnerRecipeX86")) ?? ""] as Resource;
       const arm = recipes[ids.find((id) => !id.startsWith("RunnerRecipeX86")) ?? ""] as Resource;
-      expect(arm?.Properties?.ParentImage).toContain("al2023-ami-kernel-default-arm64");
-      expect(x86?.Properties?.ParentImage).toContain("al2023-ami-kernel-default-x86_64");
+      expect(arm?.Properties?.ParentImage).toBe(
+        "{{resolve:ssm:/aws/service/canonical/ubuntu/server/noble/stable/current/arm64/hvm/ebs-gp3/ami-id}}",
+      );
+      expect(x86?.Properties?.ParentImage).toBe(
+        "{{resolve:ssm:/aws/service/canonical/ubuntu/server/noble/stable/current/amd64/hvm/ebs-gp3/ami-id}}",
+      );
+      for (const recipe of [arm, x86]) {
+        expect(recipe.Properties?.BlockDeviceMappings).toEqual([
+          {
+            DeviceName: "/dev/sda1",
+            Ebs: { VolumeSize: 40, VolumeType: "gp3", DeleteOnTermination: true },
+          },
+        ]);
+      }
       expect(arm?.Properties?.Version).toBe("1.0.0");
       const components = resourcesOf(template, "AWS::ImageBuilder::Component");
       expect(components).toHaveLength(6);

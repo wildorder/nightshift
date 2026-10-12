@@ -540,6 +540,10 @@ export const attachRun = async (
     ...(planSections === undefined ? {} : { planSections }),
   };
   state.current = attached;
+  // A dispatched run's accepted jobs and completed candidates survive the MCP
+  // process. Bind the session before recovery launches anything: workers may
+  // immediately call back through the server using their execution identities.
+  if (state.pinnedRun !== undefined) await attached.engine.recover();
   return attached;
 };
 

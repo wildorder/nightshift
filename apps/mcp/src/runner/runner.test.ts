@@ -81,6 +81,15 @@ const fakeMachine = (
       commands.push([file, ...args].join(" "));
       const custom = overrides.exec?.(file, args);
       if (custom !== undefined) return custom;
+      if (file === "mv" && args[0] === "-f") {
+        const source = args[1] ?? "";
+        const destination = args[2] ?? "";
+        const value = files.get(source);
+        if (value === undefined) return fail("missing source");
+        files.set(destination, value);
+        files.delete(source);
+        return ok();
+      }
       if (file === "aws" && args[1] === "get-parameter") {
         return parameterPresent ? ok("eyJ.first.token\n") : fail("ParameterNotFound");
       }
@@ -986,7 +995,7 @@ describe("the runner end to end over fakes (T2, T3)", () => {
   });
   const dispatch = makeDispatch(f, {
     status: "provisioning",
-    generation: 2,
+    generation: 1,
     input: {
       repositoryUrl: "https://github.com/wildorder/fixture",
       branch: "program/fixture",
@@ -1006,7 +1015,99 @@ describe("the runner end to end over fakes (T2, T3)", () => {
       },
     });
 
-  it("with no work yet, prepares the workspace, reports ready with setup's facts, and stays until told to stop", async () => {
+  it("does not mount or mutate a workspace before an accepted live heartbeat", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "stopping",
+      stop: true,
+    }));
+    let worked = false;
+    const code = await runRunner({
+      machine,
+      plane: plane.planeFor,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      log: () => undefined,
+      work: async () => {
+        worked = true;
+      },
+    });
+    expect(code).toBe(0);
+    expect(worked).toBe(false);
+    expect(
+      machine.commands.some(
+        (command) =>
+          command.includes("mount") || command.includes("clone") || command.startsWith("mkdir"),
+      ),
+    ).toBe(false);
+  });
+
+  it("stops after rejected heartbeats without touching the workspace", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      plane: (endpoint, tokens) => ({
+        ...plane.planeFor(endpoint, tokens),
+        heartbeat: async () => {
+          throw new Error("superseded engine");
+        },
+      }),
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      log: () => undefined,
+    });
+    expect(code).toBe(3);
+    expect(
+      machine.commands.some(
+        (command) =>
+          command.includes("mount") || command.includes("clone") || command.startsWith("mkdir"),
+      ),
+    ).toBe(false);
+  });
+
+  it("reports successful asynchronous setup metadata through the existing heartbeat", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      plane: plane.planeFor,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      log: () => undefined,
+      work: async (context) => {
+        await machine.writeFile(
+          `${context.layout.run}/project-setup.json`,
+          JSON.stringify({
+            state: "ready",
+            attempt: 1,
+            updatedAt: machine.now(),
+            detail: "ready",
+            prepared: {
+              setupSeconds: 12,
+              lockfileHashes: { "package-lock.json": "abc" },
+              warm: false,
+            },
+          }),
+        );
+      },
+    });
+    expect(code).toBe(0);
+    expect(plane.heartbeats).toContainEqual(
+      expect.objectContaining({ setupSeconds: 12, lockfileHashes: { "package-lock.json": "abc" } }),
+    );
+  });
+
+  it("reports engine ready without running project setup, and stays until told to stop", async () => {
     const machine = gitMachine();
     // Each stage the runner reaches is a beat of its own (P16 S-03): the stop comes after them.
     const plane = fakePlane(program, dispatch, planText, (beat) =>
@@ -1031,7 +1132,9 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     expect(tokensInstalled[0]).toBe("eyJ.first.token");
     expect(tokensInstalled.at(-1)).toMatch(/^eyJ\.renewed\./);
     const ready = plane.heartbeats.find((body) => (body as { report?: string }).report === "ready");
-    expect(ready).toMatchObject({ report: "ready", setupSeconds: expect.any(Number) });
+    expect(ready).toMatchObject({ report: "ready" });
+    expect(ready).not.toHaveProperty("setupSeconds");
+    expect(machine.commands.some((command) => command.includes("npm ci"))).toBe(false);
     expect(plane.heartbeats.at(-1)).toMatchObject({ report: "stopped" });
     expect(plane.tokensSeen[0]).toBe("eyJ.first.token");
     expect(plane.tokensSeen.at(-1)).toMatch(/^eyJ\.renewed\./);
@@ -1125,7 +1228,7 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     return stages;
   };
 
-  it("says it is up on the first beat, then the workspace, the toolchain and setup, in order (P16 S-03)", async () => {
+  it("reports up and workspace before starting the orchestrator, without project setup stages", async () => {
     const machine = gitMachine();
     const plane = fakePlane(program, dispatch, planText, (beat) =>
       beat < 12 ? { status: "ready", stop: false } : { status: "stopping", stop: true },
@@ -1142,10 +1245,7 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     expect(plane.heartbeats[0]).toMatchObject({
       progress: { stage: "up", detail: "on i-0123456789abcdef0" },
     });
-    expect(stagesHeard(plane.heartbeats)).toEqual(["up", "workspace", "toolchain", "setup"]);
-    const heard = plane.heartbeats.map((body) => (body as { progress?: RunnerProgress }).progress);
-    expect(heard).toContainEqual({ stage: "toolchain", detail: "the image's runtimes" });
-    expect(heard).toContainEqual({ stage: "setup", detail: "setup install" });
+    expect(stagesHeard(plane.heartbeats)).toEqual(["up", "workspace"]);
   });
 
   it("gets an audit's fault to the plane no later than the stopped beat that ends the dispatch", async () => {
@@ -1203,7 +1303,7 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     expect(last.failure?.message).toContain("the plan changed");
   });
 
-  it("reports a failed setup step as setup_failed, with the step's cause", async () => {
+  it("starts the orchestrator even when the project's setup command would fail", async () => {
     const machine = fakeMachine({
       exec: (file, args) => {
         const joined = [file, ...args].join(" ");
@@ -1233,14 +1333,15 @@ describe("the runner end to end over fakes (T2, T3)", () => {
         worked = true;
       },
     });
-    expect(code).toBe(1);
-    expect(worked).toBe(false);
+    expect(code).toBe(0);
+    expect(worked).toBe(true);
     expect(plane.heartbeats.some((body) => (body as { report?: string }).report === "ready")).toBe(
-      false,
+      true,
     );
     const last = plane.heartbeats.at(-1) as { report?: string; failure?: { message: string } };
-    expect(last).toMatchObject({ report: "stopped", failure: { code: "setup_failed" } });
-    expect(last.failure?.message).toContain("setup install exited 1: npm ERR! missing lockfile");
+    expect(last).toMatchObject({ report: "stopped" });
+    expect(last.failure).toBeUndefined();
+    expect(machine.commands.some((command) => command.includes("npm ci"))).toBe(false);
   });
 
   it("reports a workspace volume that cannot be mounted as setup_failed", async () => {
@@ -1336,6 +1437,29 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     const last = plane.heartbeats.at(-1) as { report?: string; failure?: unknown };
     expect(last.report).toBe("stopped");
     expect(last.failure).toBeUndefined();
+  });
+
+  it("leaves the dispatch recoverable after an unexpected root process failure", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      plane: plane.planeFor,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      log: () => undefined,
+      work: async () => {
+        throw new Error("root process crashed");
+      },
+    });
+    expect(code).toBe(1);
+    expect(
+      plane.heartbeats.some((body) => (body as { report?: string }).report === "stopped"),
+    ).toBe(false);
   });
 });
 

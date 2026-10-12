@@ -40,6 +40,7 @@ export interface HeartbeatOptions {
   readonly now: () => number;
   readonly log: (line: string) => void;
   readonly intervalMs?: number;
+  readonly startedAt?: number;
 }
 
 export interface Heartbeat {
@@ -59,6 +60,7 @@ export interface Heartbeat {
   readonly last: HeartbeatResponse | undefined;
   /** Beats until told to stop or until the plane is lost; resolves with the reason. */
   run(): Promise<"stop" | "lost">;
+  first(): Promise<HeartbeatResponse>;
   /** Ends the loop after the current beat. */
   end(): void;
   /** One more beat carrying `milestone`, after the loop has ended: the runner's last word. */
@@ -82,7 +84,11 @@ export class HeartbeatLostError extends Error {
 
 export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
   const intervalMs = options.intervalMs ?? HEARTBEAT_INTERVAL_SECONDS * 1000;
-  const startedAt = options.now();
+  const startedAt = options.startedAt ?? options.now();
+  let firstResponse: (response: HeartbeatResponse) => void = () => undefined;
+  const first = new Promise<HeartbeatResponse>((resolve) => {
+    firstResponse = resolve;
+  });
   // Milestones wait their turn: `ready` then `stopped` arrive as two beats, in
   // order, never one overwriting the other unsent.
   const pending: { report: HeartbeatReport; failure?: RunnerFailure }[] = [];
@@ -131,8 +137,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     // Taken now, so a milestone or progress reported while this beat is in
     // flight waits for the next one rather than being cleared unsent.
     const next = pending.shift();
-    const described = setup;
-    setup = undefined;
+    let described: typeof setup;
     // `stopped` ends the dispatch, so it carries the newest progress (an
     // audit's `fault`) and nothing is left to follow it.
     const progress = next?.report === "stopped" ? unsent.splice(0).at(-1) : unsent.shift();
@@ -141,6 +146,8 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     let response: HeartbeatResponse;
     try {
       const sample = await options.sample();
+      described = setup;
+      setup = undefined;
       const body: HeartbeatBody = {
         generation: options.generation,
         meteredSeconds: Math.max(0, Math.floor((options.now() - startedAt) / 1000)),
@@ -165,6 +172,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
   };
 
   return {
+    first: () => first,
     report: (milestone, failure) => {
       pending.push(failure === undefined ? { report: milestone } : { report: milestone, failure });
     },
@@ -209,6 +217,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
         let missed = false;
         try {
           last = await beat();
+          firstResponse(last);
           misses = 0;
           if (last.stop) {
             options.log(`the plane says stop: dispatch is ${last.status}`);

@@ -10,7 +10,12 @@
  * carries, deletes it, and holds the token in memory. Nothing of this is on
  * disk afterwards.
  */
-import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
+import {
+  ExecutionTokenClaimsSchema,
+  ProgramIdSchema,
+  ProjectIdSchema,
+  RunIdSchema,
+} from "@nightshift/contracts";
 import type { RunScope } from "@nightshift/core";
 import type { Machine } from "./machine.js";
 
@@ -84,14 +89,14 @@ export const readIdentity = async (machine: Machine): Promise<RunnerIdentity> =>
 };
 
 /**
- * The first engine token: read once, deleted at once. A machine that boots
- * again (a reboot, not a replacement) finds no parameter and must not start:
- * the reconciler will have replaced it, and a second engine for one run is the
- * one thing D-P10-18 forbids.
+ * The first engine token: read once and deleted after its optional RAM-only
+ * cache is installed. Caching before deletion closes the crash gap between
+ * consuming the bootstrap parameter and making process restart possible.
  */
 export const takeFirstToken = async (
   machine: Machine,
   identity: RunnerIdentity,
+  beforeDelete?: (token: string) => Promise<void>,
 ): Promise<string> => {
   const name = firstTokenParameter(identity);
   const read = await machine.exec("aws", [
@@ -113,6 +118,7 @@ export const takeFirstToken = async (
   }
   const token = read.stdout.trim();
   if (token.length === 0) throw new BootstrapError(`the parameter at ${name} is empty`);
+  await beforeDelete?.(token);
   const deleted = await machine.exec("aws", ["ssm", "delete-parameter", "--name", name]);
   if (deleted.exitCode !== 0) {
     throw new BootstrapError(
@@ -121,4 +127,60 @@ export const takeFirstToken = async (
     );
   }
   return token;
+};
+
+/**
+ * Resume a process using its last renewed token on engine-only tmpfs, or take
+ * the first token on a new machine. These decoded claims only select a cache;
+ * they never authorize work. The caller must obtain an accepted heartbeat
+ * before touching the workspace. The API checks signature, expiry and the
+ * dispatch generation, including replacement while this process was down.
+ *
+ * A reboot clears tmpfs. An expired/missing cache and consumed first token
+ * deliberately leave recovery to the reconciler, not a persistent secret or
+ * an unbounded retry with guessed authority.
+ */
+export const bootstrapEngineToken = async (
+  machine: Machine,
+  identity: RunnerIdentity,
+  options: {
+    readonly readCachedToken?: () => Promise<string | undefined>;
+    readonly installToken?: (token: string) => Promise<void>;
+  } = {},
+): Promise<string> => {
+  const cached = (await options.readCachedToken?.())?.trim();
+  if (cached !== undefined && cached !== "") {
+    try {
+      const parts = cached.split(".");
+      if (parts.length !== 3) throw new Error("not a JWT");
+      const claims = ExecutionTokenClaimsSchema.parse(
+        JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")),
+      );
+      const principal = claims.nightshift;
+      if (
+        principal.role === "engine" &&
+        principal.projectId === identity.scope.projectId &&
+        principal.programId === identity.scope.programId &&
+        principal.runId === identity.scope.runId &&
+        principal.generation === identity.generation &&
+        claims.sub === principal.agentId &&
+        claims.iss === identity.apiEndpoint.replace(/\/$/, "") &&
+        claims.exp > Math.floor(machine.now() / 1000)
+      ) {
+        return cached;
+      }
+    } catch {
+      // A partial or foreign cache is not authority; only a fresh dispatch's
+      // bootstrap parameter can replace it. Never include token bytes in errors.
+    }
+  }
+  try {
+    return await takeFirstToken(machine, identity, options.installToken);
+  } catch (error) {
+    if (!(error instanceof BootstrapError)) throw error;
+    throw new BootstrapError(
+      `${error.message} No usable same-generation engine token remains in RAM; ` +
+        "the reconciler must replace this machine if the run is still active.",
+    );
+  }
 };

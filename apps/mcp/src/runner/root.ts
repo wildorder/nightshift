@@ -13,7 +13,7 @@
  * launches is told the branch's head at GitHub, so every landing raises a
  * publication intent (D-P10-22).
  */
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path/posix";
 import { credentialPlacement, PROVIDERS, type Provider } from "@nightshift/contracts";
 import { PROJECT_ENV_FILE_ENV } from "../project-env.js";
@@ -40,8 +40,10 @@ export const installTokenFile = async (runId: string, token: string): Promise<vo
   await mkdir(dir, { recursive: true, mode: 0o711 });
   await chmod(dir, 0o711);
   const path = tokenFile(runId);
-  await writeFile(path, `${token}\n`, { mode: 0o600 });
-  await chmod(path, 0o600);
+  const temporary = `${path}.next`;
+  await writeFile(temporary, `${token}\n`, { mode: 0o600 });
+  await chmod(temporary, 0o600);
+  await rename(temporary, path);
 };
 
 /**
@@ -167,6 +169,7 @@ export const rootEnvironment = (input: RootEnvironmentInput): Record<string, str
   env.NIGHTSHIFT_API_ENDPOINT = input.apiEndpoint;
   env.NIGHTSHIFT_API_TOKEN_FILE = tokenFile(context.scope.runId);
   env.NIGHTSHIFT_STATE_DIR = context.layout.run;
+  env.NIGHTSHIFT_REMOTE_WORKSPACE = context.layout.root;
   env.NIGHTSHIFT_PUBLISH_BASE = context.dispatch.input.baseSha;
   if (input.projectUser !== undefined && input.projectUser !== "") {
     env.NIGHTSHIFT_PROJECT_USER = input.projectUser;

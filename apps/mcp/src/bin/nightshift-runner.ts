@@ -6,11 +6,9 @@
  * root until it finishes or the plane says stop.
  */
 import { readFile } from "node:fs/promises";
-import type { RunnerProgress } from "@nightshift/contracts";
 import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import { createRunnerPlane, createRuntime } from "../compose.js";
 import { describeHeadlessEnding, runHeadless } from "../headless.js";
-import { auditThenRoot } from "../runner/gates.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
 import {
@@ -18,6 +16,7 @@ import {
   installTokenFile,
   placeProviderCredentials,
   rootEnvironment,
+  tokenFile,
 } from "../runner/root.js";
 
 const say = (line: string): void => {
@@ -39,6 +38,14 @@ runRunner({
     : { projectUser: process.env.NIGHTSHIFT_PROJECT_USER }),
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
   onToken: (token, scope) => installTokenFile(scope.runId, token),
+  readCachedToken: async (scope) => {
+    try {
+      return await readFile(tokenFile(scope.runId), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  },
   work: async (context) => {
     // `running` first: the plane hands the org's provider keys to a running
     // engine and to nothing else (D-P10-23), on the next beat.
@@ -69,62 +76,55 @@ runRunner({
       parentEnv: process.env,
     });
     const runtime = await createRuntime(env, "orchestrator");
-    // The base's gates, on this machine, before any agent is paid for, in the
-    // project environment `context` carries. A red baseline is recorded for
-    // the root to address; laptop results never decide whether it may start.
-    // Where the audit has got to goes to the heartbeat (P16 S-03).
-    const audited = {
-      ...context,
-      onProgress: (progress: RunnerProgress) => context.heartbeat.progress(progress),
-    };
-    const { ended } = await auditThenRoot(runtime, audited, say, async () => {
-      say(`root starting in ${context.layout.checkout}`);
-      const result = await runHeadless(runtime, env, {
-        scope: context.scope,
-        repoPath: context.layout.checkout,
-        // A replacement machine resumes the run the lost one was running (T6).
-        ...(context.dispatch.generation > 1
-          ? { recovering: { generation: context.dispatch.generation } }
-          : {}),
-      });
-      say(describeHeadlessEnding(result));
-      // The root's transcript, as an artifact on its node: the one durable
-      // record of what the orchestrator did, when the machine is long gone.
-      try {
-        const bytes = await readFile(result.transcript);
-        if (bytes.byteLength > 0) {
-          const outbox = createEventOutbox({
-            events: runtime.stores.events,
-            scope: context.scope,
-            clock: runtime.clock,
-            ids: runtime.ids,
-            writerId: `${result.agentId}-runner`,
-          });
-          const artifactId = await recordArtifact(
-            { ...runtime, outbox },
-            {
-              scope: context.scope,
-              nodeId: result.run.rootNodeId,
-              kind: "transcript",
-              contentType: "application/x-ndjson",
-              bytes: new Uint8Array(bytes),
-            },
-          );
-          await outbox.flush(5_000).catch(() => undefined);
-          say(`root transcript recorded as ${artifactId}`);
-        }
-      } catch (error) {
-        say(
-          `the root's transcript could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      if (result.exit.kind !== "completed") {
-        throw new Error(
-          `the root ended ${result.exit.kind}; run ${result.run.runId} is ${result.run.status}`,
-        );
-      }
+    // Start intelligence before project setup; the root can inspect, repair and retry it.
+    say(`root starting in ${context.layout.checkout}`);
+    const result = await runHeadless(runtime, env, {
+      scope: context.scope,
+      repoPath: context.layout.checkout,
+      // A replacement machine resumes the run the lost one was running (T6).
+      recovering: { generation: context.dispatch.generation },
     });
-    return ended;
+    say(describeHeadlessEnding(result));
+    // The root's transcript, as an artifact on its node: the one durable
+    // record of what the orchestrator did, when the machine is long gone.
+    try {
+      const bytes = await readFile(result.transcript);
+      if (bytes.byteLength > 0) {
+        const outbox = createEventOutbox({
+          events: runtime.stores.events,
+          scope: context.scope,
+          clock: runtime.clock,
+          ids: runtime.ids,
+          writerId: `${result.agentId}-runner`,
+        });
+        const artifactId = await recordArtifact(
+          { ...runtime, outbox },
+          {
+            scope: context.scope,
+            nodeId: result.run.rootNodeId,
+            kind: "transcript",
+            contentType: "application/x-ndjson",
+            bytes: new Uint8Array(bytes),
+          },
+        );
+        await outbox.flush(5_000).catch(() => undefined);
+        say(`root transcript recorded as ${artifactId}`);
+      }
+    } catch (error) {
+      say(
+        `the root's transcript could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (
+      result.exit.kind !== "completed" ||
+      result.run.status === "running" ||
+      result.run.status === "pending"
+    ) {
+      throw new Error(
+        `the root ended ${result.exit.kind}; run ${result.run.runId} is ${result.run.status}`,
+      );
+    }
+    return undefined;
   },
 })
   .then((code) => {

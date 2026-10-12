@@ -1501,8 +1501,9 @@ export const examineInQueue = async (
           : outcome.reason;
       const { stores, clock, outbox } = environment;
       const node = await stores.executionNodes.get(input.session.scope, input.node.executionNodeId);
-      if (node !== undefined && node.status === "verified") {
-        const examining = transition(node, "begin_examination", nowIso(clock));
+      if (node !== undefined && (node.status === "verified" || node.status === "examining")) {
+        const examining =
+          node.status === "examining" ? node : transition(node, "begin_examination", nowIso(clock));
         await stores.executionNodes.put(examining);
         await stores.executionNodes.put({
           ...transition(examining, "examination_failed", nowIso(clock)),
