@@ -66,7 +66,10 @@ describe("nightshift org config (D-P8-02)", () => {
       ...seeded,
       routingPolicy: {
         ...seeded.routingPolicy,
-        rules: [{ id: "R-all", when: {}, start: { ladder: "codex", tier: "standard" } }],
+        roles: {
+          ...seeded.routingPolicy.roles,
+          implementer: [{ harness: "codex", model: "gpt-6-sol" }],
+        },
       },
     };
     await writeFile(file, JSON.stringify(edited));
@@ -75,8 +78,8 @@ describe("nightshift org config (D-P8-02)", () => {
 
     expect(await cli("org", "config", "get", "--org", op.orgId)).toBe(0);
     const now = OrgConfigSchema.parse(JSON.parse(op.out.join("\n")));
-    expect(now.routingPolicy.rules.map((rule) => rule.id)).toEqual(["R-all"]);
-    expect(now.routingPolicy.ladders).toEqual(DEFAULT_ROUTING_POLICY.ladders);
+    expect(now.routingPolicy.roles.implementer).toEqual([{ harness: "codex", model: "gpt-6-sol" }]);
+    expect(now.routingPolicy.roles.examiner).toEqual(DEFAULT_ROUTING_POLICY.roles.examiner);
 
     // The same file again was read at version 0, which is gone.
     expect(await cli("org", "config", "set", file, "--org", op.orgId)).toBe(1);

@@ -205,11 +205,11 @@ describe("the nightshift skill (P8)", () => {
       "utf8",
     );
     for (const phrase of [
-      "**Leaving a field unset is the conservative choice, not the cheap one**",
+      "**Leaving a field unset is the conservative choice**",
       "`testability`",
       "At most **two** fixes",
       "finding.dispute { jobId, reason }",
-      "climbs one rung",
+      "moves one place down",
     ]) {
       expect(text, phrase).toContain(phrase);
     }

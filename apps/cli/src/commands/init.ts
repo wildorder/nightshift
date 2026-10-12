@@ -256,7 +256,7 @@ export const init = async (
   );
   const installation = await installClients(environment, repoPath, clients);
   environment.out(
-    "Routing and examination are your org's: its ladders, rules and prices, and what each risk " +
+    "Routing and examination are your org's: which models run each role, in order, and what each risk " +
       "is examined by. See them with `nightshift org config get`; this repository only narrows them.",
   );
   environment.out(

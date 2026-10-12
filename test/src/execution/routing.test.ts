@@ -33,19 +33,16 @@ afterEach(cleanupWorlds);
 
 const target = (model: string): RouteTarget => ({ harness: "fake", provider: "anthropic", model });
 
-const choice = (model: string, rungIndex: number): RouteChoice => ({
+const choice = (model: string, position: number): RouteChoice => ({
   target: target(model),
   eligibleOptions: [{ target: target(model), eligible: true }],
   ruleId: "R-test",
   wasOverride: false,
-  ladder: "fake",
-  rung: {
-    tier: rungIndex === 0 ? "cheap" : rungIndex === 1 ? "standard" : "frontier",
-    index: rungIndex,
-  },
+  role: "implementer",
+  position,
 });
 
-/** A three-rung ladder the test's router climbs, skipping whatever it is told is unavailable. */
+/** A three-route list the test's router moves down, skipping whatever it is told is unavailable. */
 const LADDER = ["cheap-a", "cheap-b", "strong"] as const;
 
 const router =
@@ -56,13 +53,13 @@ const router =
       context.previous === undefined
         ? 0
         : context.previous.climb
-          ? Math.min((context.previous.rungIndex ?? 0) + 1, LADDER.length - 1)
-          : (context.previous.rungIndex ?? 0);
+          ? Math.min((context.previous.position ?? 0) + 1, LADDER.length - 1)
+          : (context.previous.position ?? 0);
     for (let index = from; index < LADDER.length; index += 1) {
       const model = LADDER[index] as string;
       if (!context.unavailable.some((route) => route.model === model)) return choice(model, index);
     }
-    throw new Error("nothing is left on the ladder");
+    throw new Error("nothing is left on the list");
   };
 
 type Behaviour = (
@@ -205,7 +202,7 @@ describe("a route that cannot start falls back on the same node (D-P8-06, SC-P8-
     expect(types).not.toContain("node.failed");
   });
 
-  it("fails the node, saying so, when no route on the ladder can start", async () => {
+  it("fails the node, saying so, when no route on the list can start", async () => {
     const { world, submit } = await rig(async (context) =>
       unavailableExit(context.input.model.model),
     );
@@ -213,7 +210,7 @@ describe("a route that cannot start falls back on the same node (D-P8-06, SC-P8-
     expect(await until(world, nodeId, (status) => isSettled(status as never))).toBe("failed");
     const node = await world.stores.executionNodes.get(world.scope, nodeId);
     expect(node?.outcomeReason).toMatch(
-      /^route_unavailable: .*no other route on this run's ladders could start/,
+      /^route_unavailable: .*no other route on the role's list could start/,
     );
     const decisions = await world.stores.routingDecisions.listByNode(world.scope, nodeId);
     expect(decisions.map((decision) => decision.outcome).sort()).toEqual([
@@ -262,7 +259,7 @@ describe("a usage limit after work began (D-P8-06, as amended 2026-10-12)", () =
 });
 
 describe("a retry asks the router with the attempt it replaces (D-P8-07, SC-P8-06)", () => {
-  it("climbs one rung after the model failed the job", async () => {
+  it("moves one place down the list after the model failed the job", async () => {
     const { world, engine, calls, submit } = await rig(async (context, finish) => {
       if (context.input.model.model !== "strong" && context.input.model.model !== "cheap-b") {
         return { kind: "failed", exitCode: 1 };
@@ -280,7 +277,7 @@ describe("a retry asks the router with the attempt it replaces (D-P8-07, SC-P8-0
     const retryCall = calls.at(-1);
     expect(retryCall?.previous).toMatchObject({
       target: { model: "cheap-a" },
-      rungIndex: 0,
+      position: 0,
       climb: true,
     });
     const decisions = await routesSettled(world, nodeId);

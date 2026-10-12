@@ -74,6 +74,8 @@ const lineOf = (
     wasOverride: decision.wasOverride,
     ladder: decision.ladder ?? null,
     rung: decision.rung ?? null,
+    role: decision.role ?? null,
+    position: decision.position ?? null,
     classification: decision.classification ?? null,
     policyVersion: decision.policyVersion ?? null,
     chosen: decision.chosen,

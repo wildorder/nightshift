@@ -371,7 +371,7 @@ export const registerSubOrchestratorTools = (
       description:
         "Runs it again from the current program head, as a new attempt. For a job that ended failed, " +
         "verification_failed or interrupted; read its outcomeReason first. After a failure of the " +
-        "work it runs one rung higher on its ladder; after a conflict or an interrupt, on the same model.",
+        "work it runs on the next model on the role's preference list; after a conflict or an interrupt, on the same model.",
       inputSchema: { jobId: z.string().min(1) },
     },
     async ({ jobId }) =>

@@ -341,7 +341,10 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   `packages/routing`, intersected with the Program Contract's policy; never a
   one-to-one provider→harness map. The human picks the orchestrator's model;
   Nightshift picks workers'; an orchestrator's request is an override within
-  policy.
+  policy. **Since 2026-10-12 (A-56, D-RR-01) the org's policy is an ordered list
+  of models per role** (orchestrator, implementer, examiner, arbiter): no
+  ladders, tiers or rules. Do not reintroduce them; a stored ladder config is
+  only ever read, through `rolesFromLadders`.
 - **Workers run with permissions bypassed, and no adapter passes a list of
   allowed tools** (owner's ruling, 2026-09-19, A-39, amending D-P3-15 and D-P5-02). Limit a
   worker's reach by the environment it runs in, never by a list.

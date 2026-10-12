@@ -107,13 +107,14 @@ worth more than "robust".
 
 ### Say what the job is, and Nightshift says where it runs
 
-Where a job runs is the org's routing policy, not yours: **ladders** of models
-(one per provider, cheap to frontier), and **rules** that say where a job starts
-from what it says about itself. So say it honestly:
+Where a job runs is the org's routing policy, not yours: for each role
+(orchestrator, implementer, examiner, arbiter) an **ordered list** of models. A
+job runs on the first model on its role's list that can run now. What a job says
+about itself still matters, so say it honestly:
 
 - `risk`: what goes wrong if this is wrong. It also decides **examination**:
   under the usual policy low is not examined, medium is examined by a different
-  model, high by another provider's frontier model, and at both a material
+  model, high by another provider's model, and at both a material
   finding stops it landing until it is fixed or an arbiter rules. Minor findings
   are reported and never stop anything.
 - `ambiguity`: how much of the job is judgement rather than specification. Say
@@ -121,28 +122,28 @@ from what it says about itself. So say it honestly:
   know it is done: a copy change, a rename, a deletion, a function whose behaviour
   and tests you specified. Split work so the mechanical parts are such jobs.
 - `testability`: `strong` when the program's own checks exercise this change, so a
-  cheap model's mistake would be caught; `weak` when they touch it in passing;
-  `none` when nothing checks it. Only a job that is low risk, unambiguous and
-  strongly tested usually starts on the cheap rung.
+  mistake would be caught; `weak` when they touch it in passing; `none` when
+  nothing checks it.
 - `jobKind`: `implement`, `fix`, `refactor`, `test` or `docs`.
 
-**Leaving a field unset is the conservative choice, not the cheap one**: unset
-risk is the program's default, ambiguity medium, testability weak. Do not label a
-job low risk to get it a cheaper model or to skip its examiner; the
-classification is on every routing record and in the report.
+**Leaving a field unset is the conservative choice**: unset risk is the
+program's default, ambiguity medium, testability weak. Do not label a job low
+risk to skip its examiner; the classification is on every routing record and in
+the report.
 
-You may pin `ladder`, `tier`, `harness`, `model` or `effort` when you know
-better than the rules. A pin is honoured only within the run's policy, recorded
+You may pin `harness`, `model` or `effort` when you know better than the org's
+lists. A pin is honoured only within the run's policy, recorded
 as an override, and never skips examination or escalation. One outside the policy
 is refused with the reason.
 
-A route that cannot start (rate-limited, not signed in) falls back by itself: the
-next model on the same rung, then the same tier on the other provider's ladder,
-then one rung up. You see nothing of it but a line in `job.wait`.
+A route that cannot serve (a usage limit, not signed in) falls back by itself to
+the next model on the role's list, even mid-job: the next model carries on in the
+same worktree from the work so far. A limited model comes back once its limit
+resets. You see nothing of it but a line in `job.wait`.
 
 `delegate` returns as soon as the worker is running. You get back `jobId`,
 `nodeId`, `agentId`, the worktree path, the `harness`, `provider` and `model` it
-was routed to, and the rule, ladder and tier that put it there.
+was routed to, and its `role` and `position` on that role's list.
 
 ## Delegate work that can run together, together
 
@@ -211,7 +212,7 @@ it repeats the delegation exactly as written, so ask first whether the delegatio
 was the problem. Nightshift never resolves a conflict for you.
 
 Where a retry runs is Nightshift's: after a failure of the work (verification, the
-worker's own failure, an examination) it **climbs one rung** of its ladder; after
+worker's own failure, an examination) it **moves one place down** the role's list; after
 a conflict, a stale base or an interrupt it keeps the model it had, because those
 say nothing about the model.
 
@@ -226,10 +227,10 @@ When a material finding stops a job, it ends `failed` with an `outcomeReason`
 beginning `examination_failed:` and naming the findings. You have two moves:
 
 - **Fix it**: `job.retry { jobId }`. The findings go into the worker's brief and
-  it climbs a rung; the fix is examined again. At most **two** fixes; a third is
+  it moves one place down the list; the fix is examined again. At most **two** fixes; a third is
   refused.
 - **Dispute it**: `finding.dispute { jobId, reason }`, when the examiner is wrong.
-  An **arbiter** (a fresh frontier invocation, on a model neither side used when there is one) rules.
+  An **arbiter** (a fresh invocation from the arbiter's list, on a model neither side used when there is one) rules.
   Overturned, the work that was examined lands as it is. Upheld, the ruling is
   final: Nightshift starts the next attempt itself, with the ruling as a binding
   instruction, and its examination checks only that the ruling was carried out.

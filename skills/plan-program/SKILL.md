@@ -265,7 +265,7 @@ The audit discovers; it never blocks.
 
 Every strand's work is routed and examined by its **risk**, under the org's
 policy (`nightshift org config get` shows it): usually low is not examined, medium
-is examined by a different model and high by another provider's frontier model,
+is examined by a different model and high by another provider's model,
 and at both a material finding stops it landing until it is fixed or ruled on. The contract's `defaultRisk` is what a strand's jobs get when nobody
 says otherwise, so set it to what this program actually risks, and say in a
 strand's section when part of it is riskier than the rest: its orchestrator will

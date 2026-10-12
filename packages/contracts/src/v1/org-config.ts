@@ -111,38 +111,35 @@ export const DEFAULT_EXAMINATION_POLICY: ExaminationPolicy = {
 };
 
 /**
- * What a new org starts with: one ladder per harness that runs on the
- * operator's own sign-in, cheapest first, as checked against each CLI's own
- * model list on 2026-09-25 (P8 §3.1). A starting point for an org to replace,
- * not a recommendation; the models are the ones the owner's org uses.
+ * What a new org starts with: for each role, Anthropic's model then OpenAI's
+ * at the same standing, so a usage limit on either falls back to the other.
+ * The implementer starts on each provider's workhorse and escalates to its
+ * frontier model on a retry. A starting point for an org to replace, not a
+ * recommendation.
  */
 export const DEFAULT_ROUTING_POLICY: RoutingPolicy = {
-  ladders: {
-    claude: [
-      { tier: "cheap", routes: [{ harness: "claude", model: "claude-haiku-4-5-20251001" }] },
-      { tier: "standard", routes: [{ harness: "claude", model: "claude-sonnet-5" }] },
-      { tier: "frontier", routes: [{ harness: "claude", model: "claude-opus-5-5" }] },
+  roles: {
+    orchestrator: [
+      { harness: "claude", model: "claude-opus-5-5" },
+      { harness: "codex", model: "gpt-6-astra" },
     ],
-    codex: [
-      { tier: "cheap", routes: [{ harness: "codex", model: "gpt-6-luna" }] },
-      { tier: "standard", routes: [{ harness: "codex", model: "gpt-6-sol" }] },
-      { tier: "frontier", routes: [{ harness: "codex", model: "gpt-6-astra" }] },
+    implementer: [
+      { harness: "claude", model: "claude-sonnet-5" },
+      { harness: "codex", model: "gpt-6-sol" },
+      { harness: "claude", model: "claude-opus-5-5" },
+      { harness: "codex", model: "gpt-6-astra" },
+    ],
+    examiner: [
+      { harness: "codex", model: "gpt-6-astra" },
+      { harness: "claude", model: "claude-opus-5-5" },
+      { harness: "codex", model: "gpt-6-sol" },
+      { harness: "claude", model: "claude-sonnet-5" },
+    ],
+    arbiter: [
+      { harness: "claude", model: "claude-opus-5-5" },
+      { harness: "codex", model: "gpt-6-astra" },
     ],
   },
-  rules: [
-    {
-      id: "R-orchestrate",
-      when: { kind: ["orchestrate"] },
-      start: { ladder: "claude", tier: "frontier" },
-    },
-    { id: "R-high", when: { risk: ["high"] }, start: { ladder: "claude", tier: "frontier" } },
-    {
-      id: "R-bounded",
-      when: { risk: ["low"], ambiguity: ["low"], testability: ["strong"] },
-      start: { ladder: "claude", tier: "cheap" },
-    },
-    { id: "R-default", when: {}, start: { ladder: "claude", tier: "standard" } },
-  ],
   unavailable: [],
   prices: {},
 };
