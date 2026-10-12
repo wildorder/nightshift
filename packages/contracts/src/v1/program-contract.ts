@@ -102,11 +102,22 @@ export type ModelPolicy = z.infer<typeof ModelPolicySchema>;
  * Examination is risk-based, never blanket ceremony, so `required: false` is a
  * legitimate setting for low risk.
  */
+/**
+ * What happens when no examiner independent enough can run **now**, because a
+ * usage limit has the routes the policy asks for out (amending D-P8-10,
+ * 2026-10-12): `wait` holds the job until the first of them resets, and is what
+ * an absent setting means; `strongest` examines at once on the strongest route
+ * that can run, whatever model or provider built the work, and says so.
+ */
+export const IndependenceFallbackSchema = z.enum(["wait", "strongest"]);
+export type IndependenceFallback = z.infer<typeof IndependenceFallbackSchema>;
+
 export const ExaminationRequirementSchema = z.strictObject({
   required: z.boolean(),
   mustDifferModel: z.boolean(),
   mustDifferProvider: z.boolean(),
   blockOnMaterialFindings: z.boolean(),
+  whenIndependentUnavailable: IndependenceFallbackSchema.optional(),
 });
 export type ExaminationRequirement = z.infer<typeof ExaminationRequirementSchema>;
 
@@ -118,15 +129,32 @@ export const ExaminationPolicySchema = z.strictObject({
 });
 export type ExaminationPolicy = z.infer<typeof ExaminationPolicySchema>;
 
+/**
+ * `strongest` only where the org (`a`) says it and the narrower (`b`) does not
+ * say `wait`. An org that says nothing waits, and nothing narrower can loosen
+ * that, so the field stays absent.
+ */
+const stricterFallback = (
+  a: IndependenceFallback | undefined,
+  b: IndependenceFallback | undefined,
+): IndependenceFallback | undefined => {
+  if (a === undefined) return undefined;
+  return a === "strongest" && b !== "wait" ? "strongest" : "wait";
+};
+
 const stricterRequirement = (
   a: ExaminationRequirement,
   b: ExaminationRequirement,
-): ExaminationRequirement => ({
-  required: a.required || b.required,
-  mustDifferModel: a.mustDifferModel || b.mustDifferModel,
-  mustDifferProvider: a.mustDifferProvider || b.mustDifferProvider,
-  blockOnMaterialFindings: a.blockOnMaterialFindings || b.blockOnMaterialFindings,
-});
+): ExaminationRequirement => {
+  const fallback = stricterFallback(a.whenIndependentUnavailable, b.whenIndependentUnavailable);
+  return {
+    required: a.required || b.required,
+    mustDifferModel: a.mustDifferModel || b.mustDifferModel,
+    mustDifferProvider: a.mustDifferProvider || b.mustDifferProvider,
+    blockOnMaterialFindings: a.blockOnMaterialFindings || b.blockOnMaterialFindings,
+    ...(fallback === undefined ? {} : { whenIndependentUnavailable: fallback }),
+  };
+};
 
 /**
  * The stricter of two policies, level by level and field by field (P8,

@@ -585,7 +585,95 @@ describe("a route that could not start (P8, D-P8-06)", () => {
         content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }],
       },
     });
-    expect(play(`${toolUse}\n${refusal(429)}\n`).interpreter.outcome.unavailable).toBeUndefined();
+    expect(
+      play(`${toolUse}
+${refusal(404)}
+`).interpreter.outcome.unavailable,
+    ).toBeUndefined();
+  });
+
+  it("is claimed for a usage limit even after work began, with the work said to have begun", () => {
+    const toolUse = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }],
+      },
+    });
+    const outcome = play(`${toolUse}
+${refusal(429)}
+`).interpreter.outcome;
+    expect(outcome.unavailable).toMatch(/^the provider answered 429 after work began: /);
+    expect(outcome.workBegan).toBe(true);
+  });
+
+  // The shape of a subscription's session limit, as Claude Code records it
+  // (2026-10): a rejecting `rate_limit_event`, then an assistant message with
+  // `error: "rate_limit"` and the words the human would see.
+  const limitFrames = (resultStatus?: number): string =>
+    [
+      { type: "system", subtype: "init", session_id: "s1" },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }],
+        },
+      },
+      {
+        type: "rate_limit_event",
+        rate_limit_info: { status: "rejected", resetsAt: 1789162800, rateLimitType: "five_hour" },
+      },
+      {
+        type: "assistant",
+        error: "rate_limit",
+        message: {
+          content: [
+            {
+              type: "text",
+              text: "You've hit your session limit · resets 2:40pm (America/Los_Angeles)",
+            },
+          ],
+        },
+      },
+      {
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        ...(resultStatus === undefined
+          ? {}
+          : { terminal_reason: "api_error", api_error_status: resultStatus }),
+        result: "You've hit your session limit · resets 2:40pm (America/Los_Angeles)",
+      },
+    ]
+      .map((frame) => JSON.stringify(frame))
+      .join("\n");
+
+  it("reads a session limit and when it resets, with or without a status on the result", () => {
+    for (const status of [429, undefined]) {
+      const outcome = play(`${limitFrames(status)}
+`).interpreter.outcome;
+      expect(outcome.unavailable).toBe(
+        "the provider answered 429 after work began: You've hit your session limit · resets 2:40pm (America/Los_Angeles)",
+      );
+      expect(outcome.availableAgainAt).toBe(new Date(1789162800 * 1000).toISOString());
+      expect(outcome.workBegan).toBe(true);
+    }
+  });
+
+  it("ignores a rate limit that allowed the request", () => {
+    const allowed = JSON.stringify({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed_warning", resetsAt: 1789162800 },
+    });
+    const failed = JSON.stringify({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+    });
+    expect(
+      play(`${allowed}
+${failed}
+`).interpreter.outcome.unavailable,
+    ).toBeUndefined();
   });
 
   it("is not claimed for an error that is not the route's", () => {

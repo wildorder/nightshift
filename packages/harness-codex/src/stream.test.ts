@@ -242,9 +242,47 @@ describe("a route that could not start (P8, D-P8-06)", () => {
       frames(
         { type: "thread.started", thread_id: "th" },
         { type: "item.started", item: { id: "i1", type: "command_execution", command: "ls" } },
-        { type: "turn.failed", error: { message: "usage limit reached" } },
+        { type: "turn.failed", error: { message: unsupported } },
       ),
     );
     expect(outcome.unavailable).toBeUndefined();
+  });
+
+  it("is claimed for a usage limit after a command has run, with when it resets", () => {
+    const { outcome } = interpret(
+      frames(
+        { type: "thread.started", thread_id: "th" },
+        { type: "item.started", item: { id: "i1", type: "command_execution", command: "ls" } },
+        {
+          type: "turn.failed",
+          error: {
+            message:
+              "You've hit your usage limit. Upgrade to Pro, or try again in 2 hours 5 minutes.",
+          },
+        },
+      ),
+    );
+    expect(outcome.unavailable).toMatch(/^the provider answered 429 after work began: /);
+    expect(outcome.workBegan).toBe(true);
+    expect(outcome.availableAgainAt).toBe("2026-09-19T02:05:00.000Z");
+  });
+
+  it("reads a structured usage-limit error's own reset", () => {
+    const error = JSON.stringify({
+      type: "error",
+      error: {
+        type: "usage_limit_reached",
+        message: "The usage limit has been reached",
+        resets_in_seconds: 600,
+      },
+    });
+    const { outcome } = interpret(
+      frames({ type: "thread.started", thread_id: "th" }, { type: "error", message: error }),
+    );
+    expect(outcome.unavailable).toBe(
+      "the provider answered 429 before any work began: The usage limit has been reached",
+    );
+    expect(outcome.availableAgainAt).toBe("2026-09-19T00:10:00.000Z");
+    expect(outcome.workBegan).toBe(false);
   });
 });

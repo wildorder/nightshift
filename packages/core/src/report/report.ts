@@ -689,7 +689,7 @@ const renderRoutes = (job: JobReport): string[] =>
 
 const renderExaminations = (job: JobReport): string[] =>
   job.examinations.flatMap((examination) => [
-    `  - Examined by ${examination.examinerRoute.model}${examination.fixAttempt > 0 ? ` (fix ${examination.fixAttempt})` : ""}: ${examination.outcome}${examination.blocking ? ", blocking" : ", advisory"}`,
+    `  - Examined by ${examination.examinerRoute.model}${examination.fixAttempt > 0 ? ` (fix ${examination.fixAttempt})` : ""}: ${examination.outcome}${examination.blocking ? ", blocking" : ", advisory"}${examination.independenceWaived === undefined ? "" : ` (independence waived: ${examination.independenceWaived.reason})`}`,
     ...examination.questions.map(
       (qa) =>
         `    - Asked: ${qa.question} Answered (${qa.answeredBy === "resumed_session" ? "resumed session" : "from its transcript"}): ${qa.answer}`,

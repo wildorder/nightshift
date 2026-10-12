@@ -303,8 +303,17 @@ export type HarnessExit =
        * model not offered, rate-limited — before any work began. Only the adapter
        * can tell that from a run that started and failed, so it says so here, with
        * the provider's own words. The execution layer falls back on it.
+       *
+       * Also set when a usage or rate limit stopped the route **after** work
+       * began (the amendment to D-P8-06, 2026-10-12): the route cannot serve
+       * now, whatever it had done, and `workBegan` says the worktree may hold
+       * its partial change.
        */
       readonly unavailable?: string;
+      /** When the provider said the limit resets, where it said (ISO 8601). */
+      readonly availableAgainAt?: string;
+      /** True when `unavailable` came after the agent had started working. */
+      readonly workBegan?: boolean;
     }
   /**
    * The process was killed by a signal. Windows reports no signal for a killed
@@ -427,12 +436,20 @@ export const describeExit = (exit: HarnessExit): string => {
  * for it (429, 529). Shared so every adapter draws the line in the same place;
  * each finds the status and the message in its own stream. `undefined` when the
  * error is anything else, or work had already begun: that is a failure.
+ *
+ * A usage or rate limit (429) is the exception (amending D-P8-06, 2026-10-12):
+ * it says nothing about the work or the model, only that this route has no
+ * capacity now, so it is a route that cannot serve whenever it arrives.
  */
 export const routeUnavailableReason = (input: {
   readonly status: number | undefined;
   readonly message: string;
   readonly workBegan: boolean;
 }): string | undefined => {
+  if (input.status === 429) {
+    const when = input.workBegan ? "after work began" : "before any work began";
+    return `the provider answered 429 ${when}: ${input.message}`.slice(0, 600);
+  }
   if (input.workBegan || input.status === undefined) return undefined;
   const always = [401, 403, 404, 429, 529];
   const aboutTheModel = input.status === 400 && /\bmodel\b/i.test(input.message);
@@ -441,4 +458,14 @@ export const routeUnavailableReason = (input: {
     0,
     600,
   );
+};
+
+/**
+ * A provider's reset time, given in epoch seconds, as ISO 8601; `undefined`
+ * when it is not a plausible time. Both harnesses report resets this way.
+ */
+export const isoFromEpochSeconds = (value: unknown): string | undefined => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  const at = new Date(value * 1000);
+  return Number.isNaN(at.getTime()) ? undefined : at.toISOString();
 };

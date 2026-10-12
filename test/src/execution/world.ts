@@ -26,13 +26,16 @@ import {
   type LocalControlPlane,
   startLocalControlPlane,
 } from "@nightshift/api/testing";
-import type {
-  Agent,
-  CommitSha,
-  ProgramContract,
-  ProgramId,
-  Project,
-  ProjectId,
+import {
+  type Agent,
+  type CommitSha,
+  DEFAULT_ROUTING_POLICY,
+  type ExaminationPolicy,
+  type OrgId,
+  type ProgramContract,
+  type ProgramId,
+  type Project,
+  type ProjectId,
 } from "@nightshift/contracts";
 import {
   createFixtures,
@@ -351,6 +354,8 @@ export interface WorldOptions extends BaseWorldOptions {
   readonly engine?: boolean;
   /** The project environment a machine's engine threads to every project step (P16, D-10). */
   readonly projectEnv?: Readonly<Record<string, string>>;
+  /** The org's examination policy, written before the run starts and records it. */
+  readonly examinationPolicy?: ExaminationPolicy;
 }
 
 /** A base world with a started, attached run — what the execution tests drive. */
@@ -360,6 +365,18 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
   );
   const { repo, stateDir, stores, bodies, ids, clock, program } = base;
 
+  if (options.examinationPolicy !== undefined) {
+    const project = await stores.projects.get(program.projectId);
+    await stores.orgConfigs.put({
+      schemaVersion: 1,
+      orgId: project?.orgId as OrgId,
+      installations: [],
+      version: 1,
+      updatedAt: nowIso(clock),
+      routingPolicy: DEFAULT_ROUTING_POLICY,
+      examinationPolicy: options.examinationPolicy,
+    });
+  }
   const started = await startRun(
     { stores, clock, ids, git: nodeGitRunner },
     { program, repoPath: repo, ...(options.red === undefined ? {} : { red: options.red }) },

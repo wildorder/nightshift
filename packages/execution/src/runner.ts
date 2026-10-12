@@ -97,6 +97,7 @@ import {
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
 import { releaseWorktree } from "./release-worktree.js";
+import { unavailableUntil } from "./route-availability.js";
 import { programRulings } from "./rulings.js";
 import { discardScratch, ensureScratch } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
@@ -141,9 +142,10 @@ export type IntegrateCandidate = (candidate: IntegrationCandidate) => Promise<vo
 /**
  * Where a job goes next when its route could not start (P8, D-P8-06), or
  * `undefined` when nothing is left. The engine supplies it: it holds the run's
- * list of unavailable routes and the router.
+ * list of unavailable routes and the router. `until` is when a limited route
+ * may serve again; absent, it is out for the run.
  */
-export type Reroute = (failed: RouteTarget) => RouteChoice | undefined;
+export type Reroute = (failed: RouteTarget, until?: string) => RouteChoice | undefined;
 
 /** One attempt's records, before its process exists. */
 interface AttemptIdentity {
@@ -443,9 +445,12 @@ export const startJob = async (
      * gives; the node stays `running` throughout, so nobody waiting on it sees a
      * failure that was not the work's. `undefined` when there is nowhere left.
      */
-    const relaunch = async (failed: RouteTarget): Promise<Attempt | undefined> => {
+    const relaunch = async (
+      failed: RouteTarget,
+      stopped: { readonly until?: string; readonly workBegan: boolean },
+    ): Promise<Attempt | undefined> => {
       if (input.reroute === undefined || stopMode !== undefined) return undefined;
-      const next = input.reroute(failed);
+      const next = input.reroute(failed, stopped.until);
       if (next === undefined) return undefined;
       const last = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId)).at(
         -1,
@@ -455,6 +460,11 @@ export const startJob = async (
         (last?.attempt ?? 0) + 1,
         last?.routingDecisionId ?? null,
       );
+      // A limit that stopped the route mid-job (D-P8-06, as amended 2026-10-12):
+      // what it did so far is kept, and the next route carries on from it.
+      if (stopped.workBegan && !orchestrates) {
+        unfinished = (await keepUnfinished(worktree, last?.attempt ?? 1)) ?? unfinished;
+      }
       await cleanCheckout(environment.git, worktree, base);
       // The clean took the carried work with it; the next route starts from it too.
       carried = await carryInto();
@@ -850,7 +860,18 @@ const finishSubProgram = async (
     const reported = await untilReported(environment, input, await input.current().handle.exit);
     const settledExit = reported.exit;
     usage = reported.usage;
-    const { exit, reason } = observed(input, settledExit);
+    const { exit, reason: described } = observed(input, settledExit);
+    // An orchestrator stopped by a limit is not relaunched in place: what it
+    // delegated is on the record, and a retry on the next route takes over.
+    // Its route is out until the limit resets, and the retry does not climb.
+    let reason = described;
+    if (exit.kind === "failed" && exit.unavailable !== undefined) {
+      environment.routes?.markUnavailable(
+        input.current().routingDecision.chosen,
+        unavailableUntil(exit, clock),
+      );
+      reason = `route_unavailable: ${exit.unavailable}`;
+    }
     await recordAgentEnd(environment, input, exit, reason);
     await uploadTranscript(environment, input);
 
@@ -946,7 +967,10 @@ interface FinishInput {
   /** Why we asked the worker to stop, when we did. See `StartedJob.stop`. */
   stopMode(): "cancelled" | "interrupted" | undefined;
   /** Starts the job again on the next route when this one could not start, or says there is none. */
-  relaunch(failed: RouteTarget): Promise<Attempt | undefined>;
+  relaunch(
+    failed: RouteTarget,
+    stopped: { readonly until?: string; readonly workBegan: boolean },
+  ): Promise<Attempt | undefined>;
   /** Resumes the current attempt's session with a reminder to report. */
   resumeSession(sessionId: string, reminder: number, of: number): Promise<Attempt | undefined>;
   readonly integrate?: IntegrateCandidate;
@@ -971,6 +995,7 @@ const examinedBesideQueue = async (
     commitSha: node.commitSha,
     base: input.base,
     phase: "candidate",
+    stopped: () => input.stopMode() !== undefined,
   });
   switch (outcome.kind) {
     case "not_required":
@@ -1052,7 +1077,13 @@ const throughFallbacks = async (
     await recordAgentEnd(environment, input, exit, `route_unavailable: ${exit.unavailable}`);
     await uploadTranscript(environment, input);
     await recordRouteResult(environment, input, exit.usage, "unavailable");
-    const next = await input.relaunch(refused.routingDecision.chosen).catch(() => undefined);
+    const until = unavailableUntil(exit, environment.clock);
+    const next = await input
+      .relaunch(refused.routingDecision.chosen, {
+        ...(until === undefined ? {} : { until }),
+        workBegan: exit.workBegan === true,
+      })
+      .catch(() => undefined);
     if (next === undefined) {
       const unavailable = `${exit.unavailable}; and no other route on this run's ladders could start`;
       return { exit: { ...exit, unavailable }, recorded: true };

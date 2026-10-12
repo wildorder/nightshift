@@ -1,7 +1,15 @@
 import { createFixtures, makeAgent, makeNode, makeRootNode, makeRun } from "@nightshift/core";
 import { createInMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it } from "vitest";
-import { interruptOrphans, recoveryNote, remoteEnvironmentNote, rootLaunch } from "./headless.js";
+import {
+  type HeadlessInput,
+  interruptOrphans,
+  type RootLaunch,
+  recoveryNote,
+  remoteEnvironmentNote,
+  replacingLimitedRoots,
+  rootLaunch,
+} from "./headless.js";
 
 describe("resuming a run on a replacement machine (P10, T6)", () => {
   it("interrupts what the lost machine had in flight, its agents and the old root's, and leaves settled work alone", async () => {
@@ -110,5 +118,69 @@ describe("the remote root owns retryable project setup", () => {
     expect(remoteEnvironmentNote).toContain("environment.prepare again");
     expect(remoteEnvironmentNote).toContain("project user, not as the engine");
     expect(remoteEnvironmentNote).toContain("not a delegation certificate");
+  });
+});
+
+describe("a root stopped by a usage limit (D-P8-06, as amended 2026-10-12)", () => {
+  const scope = {
+    projectId: "proj_01",
+    programId: "prog_01",
+    runId: "run_01",
+  } as unknown as HeadlessInput["scope"];
+  const clock = { now: () => Date.parse("2026-10-12T10:00:00.000Z") };
+  const limited = {
+    kind: "failed" as const,
+    exitCode: 1,
+    unavailable: "the provider answered 429 after work began: You've hit your session limit",
+    availableAgainAt: "2026-10-12T15:00:00.000Z",
+    workBegan: true,
+  };
+  const run = (status: string) => ({ runId: "run_01", rootNodeId: "node_root", status }) as never;
+  const route = (model: string) => ({ harness: "h", provider: "p", model });
+
+  it("is replaced on the next route, told why, unpinned, with every transcript kept", async () => {
+    const launches: Parameters<RootLaunch>[] = [];
+    const launch: RootLaunch = async (...args) => {
+      launches.push(args);
+      const first = launches.length === 1;
+      return {
+        exit: first ? limited : { kind: "completed" },
+        run: run(first ? "running" : "succeeded"),
+        agentId: `agent_${launches.length}` as never,
+        transcript: `t${launches.length}`,
+        route: route(first ? "opus" : "astra"),
+      };
+    };
+    const result = await replacingLimitedRoots(
+      clock,
+      { scope, repoPath: "/repo", harness: "h", model: "opus" },
+      launch,
+    );
+    expect(result.exit.kind).toBe("completed");
+    expect(result.transcripts.map((t) => t.path)).toEqual(["t1", "t2"]);
+    const [, second] = launches;
+    expect(second?.[0]).toEqual({ scope, repoPath: "/repo", recovering: { generation: 0 } });
+    expect(second?.[1]).toEqual([{ harness: "h", model: "opus" }]);
+    expect(second?.[2]).toMatch(/stopped by a usage limit[\s\S]*It ran on opus/);
+  });
+
+  it("leaves every other ending to the run: a failure, or a run no longer running", async () => {
+    for (const [exit, status] of [
+      [{ kind: "failed" as const, exitCode: 1 }, "running"],
+      [limited, "interrupted"],
+    ] as const) {
+      let launched = 0;
+      await replacingLimitedRoots(clock, { scope, repoPath: "/repo" }, async () => {
+        launched += 1;
+        return {
+          exit,
+          run: run(status),
+          agentId: "agent_1" as never,
+          transcript: "t",
+          route: route("opus"),
+        };
+      });
+      expect(launched).toBe(1);
+    }
   });
 });

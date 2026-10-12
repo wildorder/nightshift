@@ -85,35 +85,38 @@ runRunner({
       recovering: { generation: context.dispatch.generation },
     });
     say(describeHeadlessEnding(result));
-    // The root's transcript, as an artifact on its node: the one durable
-    // record of what the orchestrator did, when the machine is long gone.
-    try {
-      const bytes = await readFile(result.transcript);
-      if (bytes.byteLength > 0) {
-        const outbox = createEventOutbox({
-          events: runtime.stores.events,
-          scope: context.scope,
-          clock: runtime.clock,
-          ids: runtime.ids,
-          writerId: `${result.agentId}-runner`,
-        });
-        const artifactId = await recordArtifact(
-          { ...runtime, outbox },
-          {
+    // Each root's transcript, as an artifact on its node: the one durable
+    // record of what the orchestrator did, when the machine is long gone. More
+    // than one when a usage limit replaced a root (D-P8-06, as amended 2026-10-12).
+    for (const { agentId, path } of result.transcripts) {
+      try {
+        const bytes = await readFile(path);
+        if (bytes.byteLength > 0) {
+          const outbox = createEventOutbox({
+            events: runtime.stores.events,
             scope: context.scope,
-            nodeId: result.run.rootNodeId,
-            kind: "transcript",
-            contentType: "application/x-ndjson",
-            bytes: new Uint8Array(bytes),
-          },
+            clock: runtime.clock,
+            ids: runtime.ids,
+            writerId: `${agentId}-runner`,
+          });
+          const artifactId = await recordArtifact(
+            { ...runtime, outbox },
+            {
+              scope: context.scope,
+              nodeId: result.run.rootNodeId,
+              kind: "transcript",
+              contentType: "application/x-ndjson",
+              bytes: new Uint8Array(bytes),
+            },
+          );
+          await outbox.flush(5_000).catch(() => undefined);
+          say(`root ${agentId}'s transcript recorded as ${artifactId}`);
+        }
+      } catch (error) {
+        say(
+          `root ${agentId}'s transcript could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
         );
-        await outbox.flush(5_000).catch(() => undefined);
-        say(`root transcript recorded as ${artifactId}`);
       }
-    } catch (error) {
-      say(
-        `the root's transcript could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
     if (
       result.exit.kind !== "completed" ||

@@ -25,6 +25,7 @@ import {
   type JobContract,
   JobContractSchema,
   type ProgramContract,
+  type RouteTarget,
   type Run,
   type RunId,
 } from "@nightshift/contracts";
@@ -42,10 +43,12 @@ import {
   addDetachedWorktree,
   createEventOutbox,
   createHookSink,
+  createRouteAvailability,
   freshScratch,
   pruneWorktrees,
   revParse,
   tryGit,
+  unavailableUntil,
 } from "@nightshift/execution";
 import {
   describeExit,
@@ -100,7 +103,16 @@ export interface HeadlessResult {
   readonly run: Run;
   readonly agentId: Agent["agentId"];
   readonly transcript: string;
+  /** Every root's transcript, in order, when a limit replaced one (D-P8-06, as amended 2026-10-12). */
+  readonly transcripts: readonly { readonly agentId: Agent["agentId"]; readonly path: string }[];
 }
+
+/**
+ * How many times a root stopped by a usage limit is replaced on another route
+ * before the run is left to the runner's own recovery. More than any ladder set
+ * has providers.
+ */
+const MAX_ROOT_RELAUNCHES = 4;
 
 export class HeadlessRefusal extends Error {
   override readonly name = "HeadlessRefusal";
@@ -298,11 +310,78 @@ export const remoteEnvironmentNote = [
  * exits without `run.finish` leaves a run its own server's shutdown has
  * interrupted, and the caller reports that rather than guessing.
  */
-export const runHeadless = async (
+export const runHeadless = (
   runtime: Runtime,
   env: Env,
   input: HeadlessInput,
+): Promise<HeadlessResult> =>
+  replacingLimitedRoots(runtime.clock, input, (launch, unavailable, limitNote) =>
+    launchRoot(runtime, env, launch, unavailable, limitNote),
+  );
+
+/** One root's launch and how it ended, and the route it ran on. */
+export type RootLaunch = (
+  input: HeadlessInput,
+  unavailable: readonly { readonly harness: string; readonly model: string }[],
+  limitNote: string | undefined,
+) => Promise<Omit<HeadlessResult, "transcripts"> & { readonly route: RouteTarget }>;
+
+/**
+ * A root a usage limit stopped, on a run still running, is replaced by one on
+ * the next route (D-P8-06, as amended 2026-10-12). It takes over as a runner
+ * restart's root does: what the last one had in flight is on the record. Every
+ * other ending is the run's, as it always was.
+ */
+export const replacingLimitedRoots = async (
+  clock: Runtime["clock"],
+  input: HeadlessInput,
+  launchOne: RootLaunch,
 ): Promise<HeadlessResult> => {
+  const routes = createRouteAvailability(clock);
+  const transcripts: { agentId: Agent["agentId"]; path: string }[] = [];
+  let launch: HeadlessInput = input;
+  let limitNote: string | undefined;
+  for (let relaunch = 0; ; relaunch += 1) {
+    const ended = await launchOne(launch, routes.unavailable(), limitNote);
+    transcripts.push({ agentId: ended.agentId, path: ended.transcript });
+    const { exit } = ended;
+    if (
+      exit.kind !== "failed" ||
+      exit.unavailable === undefined ||
+      ended.run.status !== "running" ||
+      relaunch >= MAX_ROOT_RELAUNCHES
+    ) {
+      const { route: _route, ...result } = ended;
+      return { ...result, transcripts };
+    }
+    routes.markUnavailable(ended.route, unavailableUntil(exit, clock));
+    limitNote = rootLimitNote(ended.route.model, exit.unavailable);
+    // The human's pin was for the route that is now out: the next root is routed.
+    launch = {
+      scope: input.scope,
+      repoPath: input.repoPath,
+      recovering: { generation: input.recovering?.generation ?? 0 },
+    };
+  }
+};
+
+/** What a root that replaces one a usage limit stopped is told first. */
+const rootLimitNote = (model: string, reason: string): string =>
+  [
+    "# The previous orchestrator was stopped by a usage limit",
+    "",
+    `It ran on ${model} and the provider stopped it (${reason}). You take over on another`,
+    "route. Its delegations, and anything it recorded, are on the control plane: read them",
+    "before acting, and carry on from there.",
+  ].join("\n");
+
+const launchRoot = async (
+  runtime: Runtime,
+  env: Env,
+  input: HeadlessInput,
+  unavailable: readonly { readonly harness: string; readonly model: string }[],
+  limitNote: string | undefined,
+): Promise<Omit<HeadlessResult, "transcripts"> & { readonly route: RouteTarget }> => {
   const { stores, clock, ids } = runtime;
   const { scope } = input;
   const { program, run, rootNode, planText } = await requireRecords(runtime, scope);
@@ -325,6 +404,7 @@ export const runHeadless = async (
     ...scope,
     jobContractId: ids.next("job"),
     objective: [
+      ...(limitNote === undefined ? [] : [limitNote]),
       ...(resuming ? [recoveryNote(input.recovering?.generation ?? 0, orphans)] : []),
       ...(env.NIGHTSHIFT_REMOTE_WORKSPACE === undefined ? [] : [remoteEnvironmentNote]),
       ...(run.carriedStrands === undefined || run.carriedStrands.length === 0
@@ -343,7 +423,7 @@ export const runHeadless = async (
   // otherwise the run's rules place an orchestrator, as for any other (D-P8-04).
   const route = routeJob(run, program, brief, {
     pins: { harness: input.harness, model: input.model },
-    unavailable: [],
+    unavailable,
   });
 
   const agent: Agent = {
@@ -406,7 +486,7 @@ export const runHeadless = async (
   await outbox.flush(5_000).catch(() => {});
 
   const ended = (await stores.runs.get(scope, scope.runId)) ?? run;
-  return { exit, run: ended, agentId: agent.agentId, transcript };
+  return { exit, run: ended, agentId: agent.agentId, transcript, route: route.target };
 };
 
 export const describeHeadlessEnding = (result: HeadlessResult): string =>

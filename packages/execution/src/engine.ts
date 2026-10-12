@@ -75,6 +75,7 @@ import {
   recoverCandidate,
   settleRecoveredRoute,
 } from "./recover-candidate.js";
+import { createRouteAvailability } from "./route-availability.js";
 import { attemptsOf, delegateJob, type StartedJob, startJob } from "./runner.js";
 
 export interface EngineOptions {
@@ -213,6 +214,8 @@ export interface EngineSnapshot {
 }
 
 export interface Engine {
+  /** The routes that cannot serve in this run now (D-P8-06), for a first delegation's routing. */
+  unavailableRoutes(): readonly Pick<RouteTarget, "harness" | "model">[];
   /** After fencing the old engine, schedule durable work. Does not wait for verification. */
   recover(): Promise<void>;
   /** Prepare/repair the shared environment with scheduling paused, while held queue entries survive. */
@@ -285,7 +288,11 @@ interface Pending {
 }
 
 export const createEngine = (options: EngineOptions): Engine => {
-  const { environment, session } = options;
+  const { session } = options;
+  // One record of what cannot serve, shared by every job, examiner and arbiter
+  // this engine runs (D-P8-06, as amended 2026-10-12).
+  const routes = options.environment.routes ?? createRouteAvailability(options.environment.clock);
+  const environment: ExecutionEnvironment = { ...options.environment, routes };
   const { stores, clock, outbox } = environment;
   const limits = session.program.delegationLimits;
   const maxWallClockSeconds = session.program.costPolicy.maxWallClockSeconds;
@@ -426,24 +433,17 @@ export const createEngine = (options: EngineOptions): Engine => {
 
   // --- Fallback (P8, D-P8-06) ------------------------------------------------------------
   //
-  // A route that could not start is skipped for the rest of the run, by every job.
-  const unavailable: Pick<RouteTarget, "harness" | "model">[] = [];
-
+  // A route that could not start is skipped by every job: for the rest of the
+  // run, or until its usage limit resets (as amended 2026-10-12).
   const rerouteFor =
     (submission: Submission) =>
-    (failed: RouteTarget): RouteChoice | undefined => {
-      if (
-        !unavailable.some(
-          (route) => route.harness === failed.harness && route.model === failed.model,
-        )
-      ) {
-        unavailable.push({ harness: failed.harness, model: failed.model });
-      }
+    (failed: RouteTarget, until?: string): RouteChoice | undefined => {
+      routes.markUnavailable(failed, until);
       if (options.route === undefined) return undefined;
       try {
         return options.route(submission.job, {
           pins: submission.pins,
-          unavailable: [...unavailable],
+          unavailable: routes.unavailable(),
         });
       } catch {
         return undefined;
@@ -977,7 +977,7 @@ export const createEngine = (options: EngineOptions): Engine => {
     let route: RouteChoice;
     try {
       if (options.route === undefined) throw new Error("this engine was given no way to route it");
-      route = options.route(job, { unavailable: [...unavailable], previous });
+      route = options.route(job, { unavailable: routes.unavailable(), previous });
     } catch (error) {
       await refuse(node, `the delegation could not be routed: ${messageOf(error)}`);
       return false;
@@ -1012,7 +1012,7 @@ export const createEngine = (options: EngineOptions): Engine => {
     try {
       return options.route(submission.job, {
         pins: submission.pins,
-        unavailable: [...unavailable],
+        unavailable: routes.unavailable(),
         previous:
           last === undefined
             ? undefined
@@ -1271,6 +1271,7 @@ export const createEngine = (options: EngineOptions): Engine => {
   };
 
   return {
+    unavailableRoutes: () => routes.unavailable(),
     recover,
     withEnvironment: async (task) => {
       if (preparing) throw new Error("environment preparation is already in progress");

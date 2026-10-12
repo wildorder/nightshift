@@ -223,6 +223,27 @@ describe("an examiner's verdict (D-P8-10, SC-P8-10)", () => {
     expect(errorCode(response)).toBe("examiner_not_independent");
   });
 
+  it("is refused when it claims a waiver the run's policy does not allow (as amended 2026-10-12)", async () => {
+    const w = await setup("high");
+    const { principal } = await w.agent("examiner", "claude", "anthropic", "claude-opus-5-5");
+    const verdict = {
+      ...w.examination(principal.agentId, {
+        harness: "claude",
+        provider: "anthropic",
+        model: "claude-opus-5-5",
+      }),
+      independenceWaived: { reason: "the other provider was rate-limited" },
+    };
+    const response = await w.call(
+      "PUT",
+      `${w.run}/examinations/${verdict.examinationId}`,
+      verdict,
+      principal,
+    );
+    expect(response.status).toBe(403);
+    expect(errorCode(response)).toBe("examiner_not_independent");
+  });
+
   it("is refused when it names another examiner, or a route it did not run", async () => {
     const w = await setup("medium");
     const { principal } = await w.agent("examiner", "codex", "openai", "gpt-6-sol");

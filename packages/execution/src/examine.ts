@@ -49,11 +49,13 @@ import type {
   ExaminationFinding,
   ExaminationId,
   ExaminationQuestion,
+  ExaminationRequirement,
   ExaminationRuling,
   ExecutionNode,
   ExecutionNodeId,
   JobContract,
   RouteChoice,
+  RouteTarget,
   RoutingDecision,
   Verification,
   VerificationStep,
@@ -102,6 +104,7 @@ import {
   updateRef,
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
+import { unavailableUntil } from "./route-availability.js";
 import { programRulings, rulingsCarriedBy } from "./rulings.js";
 import { recordArtifact, runAsOf } from "./runner.js";
 import { discardScratch, ensureScratch, freshScratch, projectStepEnv } from "./scratch.js";
@@ -127,6 +130,8 @@ export interface ExaminationContext {
   readonly questions: readonly ExaminationQuestion[];
   /** The arbiter's rulings the attempt carried out: the examination checks only these. */
   readonly followsRulings?: readonly ExaminationRuling[];
+  /** Why this examiner is less independent than the policy asks, when the policy let it be. */
+  readonly independenceWaived?: { readonly reason: string };
 }
 
 /** What an arbiter rules on. */
@@ -165,6 +170,12 @@ export interface ExamineInput {
   readonly phase: "candidate" | "queue";
   /** In the queue, the verification already run on the head, which is the evidence. */
   readonly verification?: Verification;
+  /**
+   * True once the job has been asked to stop. Beside the queue, an examination
+   * that waits for a limited examiner (D-P8-10, as amended 2026-10-12) stops
+   * waiting on it; in the queue nothing waits.
+   */
+  readonly stopped?: () => boolean;
 }
 
 const MAX_DIFF_CHARS = 120_000;
@@ -341,6 +352,227 @@ export const parseAnswers = (
 // ---------------------------------------------------------------------------
 
 /**
+ * How many examiner routes one examination tries when limits stop them, before
+ * it gives up as it always did. More than any ladder set has providers.
+ */
+const MAX_EXAMINER_ROUTES = 4;
+
+/** How often a wait for a limited examiner looks at the clock and at whether the job was stopped. */
+const LIMIT_WAIT_POLL_MS = 60_000;
+
+const progress = (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  message: string,
+): void => {
+  environment.outbox.emit({
+    type: "node.progress",
+    source: "control-plane",
+    payload: { message },
+    executionNodeId: input.node.executionNodeId,
+  });
+};
+
+/** Whether a helper's last exit says its route cannot serve now, and until when. */
+const limitOf = (
+  exit: HarnessExit | undefined,
+  environment: ExecutionEnvironment,
+): { readonly reason: string; readonly until?: string } | undefined => {
+  if (exit?.kind !== "failed" || exit.unavailable === undefined) return undefined;
+  const until = unavailableUntil(exit, environment.clock);
+  return { reason: exit.unavailable, ...(until === undefined ? {} : { until }) };
+};
+
+const sameRoute = (
+  a: Pick<RouteTarget, "harness" | "model">,
+  b: Pick<RouteTarget, "harness" | "model">,
+): boolean => a.harness === b.harness && a.model === b.model;
+
+/**
+ * The examiner's route (D-P8-10), or why there is none. When the independence
+ * the policy asks for is only out of reach because limited routes are out
+ * (amending D-P8-10, 2026-10-12), the requirement's `whenIndependentUnavailable`
+ * decides: `strongest` examines now on the strongest route that can run;
+ * `wait`, or nothing said, holds the examination until the first of those
+ * routes resets. Only beside the queue: the queue is the one serial path, and
+ * nothing waits in it.
+ */
+const examinerFor = async (
+  environment: ExecutionEnvironment,
+  services: ExaminationServices,
+  input: ExamineInput,
+  implementer: RouteTarget,
+  requirement: ExaminationRequirement,
+): Promise<RoutedExaminer | string> => {
+  for (;;) {
+    const unavailable = environment.routes?.unavailable() ?? [];
+    const independent = (out: readonly Pick<RouteTarget, "harness" | "model">[]) =>
+      services.examinerRoute({
+        job: input.job,
+        implementer,
+        mustDifferModel: requirement.mustDifferModel,
+        mustDifferProvider: requirement.mustDifferProvider,
+        unavailable: out,
+      });
+    let refused: string;
+    try {
+      return { route: independent(unavailable) };
+    } catch (error) {
+      refused = `examiner_failed: no examiner could be routed: ${messageOf(error)}`;
+    }
+    const until = independentReturn(environment.routes, unavailable, independent);
+    if (until === undefined) return refused;
+    if (requirement.whenIndependentUnavailable === "strongest") {
+      return strongestExaminer(environment, services, input, implementer, unavailable, until);
+    }
+    if (input.phase === "queue" || input.stopped === undefined) {
+      return `${refused}; an independent examiner returns at ${until}`;
+    }
+    const stopped = await waitUntil(environment, input, until, input.stopped);
+    if (stopped) return `${refused}; stopped while waiting until ${until}`;
+  }
+};
+
+interface RoutedExaminer {
+  readonly route: RouteChoice;
+  /** Why it is less independent than the policy asks, when the policy let it be. */
+  readonly waived?: { readonly reason: string };
+}
+
+/**
+ * When an independent examiner could run again, if only limits stand in its
+ * way: the earliest reset among the limited routes, each of which would let
+ * one run. `undefined` when none would, or none is coming back.
+ */
+const independentReturn = (
+  routes: ExecutionEnvironment["routes"],
+  unavailable: readonly Pick<RouteTarget, "harness" | "model">[],
+  independent: (out: readonly Pick<RouteTarget, "harness" | "model">[]) => RouteChoice,
+): string | undefined => {
+  if (routes === undefined) return undefined;
+  const wouldServe = (route: Pick<RouteTarget, "harness" | "model">): boolean => {
+    try {
+      independent(unavailable.filter((other) => !sameRoute(other, route)));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const blocking = unavailable.filter(
+    (route) => routes.earliestReturn([route]) !== undefined && wouldServe(route),
+  );
+  return blocking.length === 0 ? undefined : routes.earliestReturn(blocking);
+};
+
+/** The strongest route that can run now, as `strongest` allows, and why it is not independent. */
+const strongestExaminer = (
+  environment: ExecutionEnvironment,
+  services: ExaminationServices,
+  input: ExamineInput,
+  implementer: RouteTarget,
+  unavailable: readonly Pick<RouteTarget, "harness" | "model">[],
+  until: string,
+): RoutedExaminer | string => {
+  let route: RouteChoice;
+  try {
+    route = services.strongestExaminerRoute({ job: input.job, implementer, unavailable });
+  } catch (error) {
+    return `examiner_failed: no examiner could be routed: ${messageOf(error)}`;
+  }
+  const limits = `no examiner independent enough could run until ${until} (usage limits)`;
+  progress(
+    environment,
+    input,
+    `${limits}; examining now on the strongest route, ${route.target.model}, as the policy allows`,
+  );
+  return {
+    route,
+    waived: {
+      reason: `${limits}; examined on the strongest route, ${route.target.model}, as the policy allows`,
+    },
+  };
+};
+
+/** Waits until `until`, as `wait` says. True when the job was stopped first. */
+const waitUntil = async (
+  environment: ExecutionEnvironment,
+  input: ExamineInput,
+  until: string,
+  stopped: () => boolean,
+): Promise<boolean> => {
+  progress(
+    environment,
+    input,
+    `no examiner independent enough can run until ${until} (usage limits); waiting for it, as the policy says`,
+  );
+  const sleep =
+    environment.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const at = Date.parse(until);
+  while (environment.clock.now() < at) {
+    if (stopped()) return true;
+    await sleep(Math.min(LIMIT_WAIT_POLL_MS, at - environment.clock.now()));
+  }
+  return false;
+};
+
+/**
+ * The examiner's verdict, from the first route that gives one. A limit that
+ * stops an examiner (D-P8-06, as amended 2026-10-12) puts its route out until
+ * it resets, and the next one examines; any other ending is the examination's.
+ */
+const examineOnSomeRoute = async (
+  environment: ExecutionEnvironment,
+  services: ExaminationServices,
+  input: ExamineInput,
+  work: {
+    readonly checkout: string;
+    readonly gathered: Exclude<Awaited<ReturnType<typeof gatherEvidence>>, { kind: string }>;
+    readonly builder: NonNullable<Awaited<ReturnType<typeof builderOf>>>;
+    readonly requirement: ExaminationRequirement;
+  },
+): Promise<Examination | string> => {
+  const { gathered, builder, requirement } = work;
+  for (let attempt = 1; ; attempt += 1) {
+    const routed = await examinerFor(environment, services, input, builder.route, requirement);
+    if (typeof routed === "string") return routed;
+    const { route } = routed;
+    const frame: Omit<ExaminationContext, "round" | "questions"> = {
+      examinationId: environment.ids.next("exam"),
+      verificationId: gathered.verification.verificationId,
+      commitSha: input.commitSha,
+      patchId: gathered.patchId,
+      implementerAgentId: builder.agent.agentId,
+      examinerRoute: route.target,
+      requiredByRisk: input.job.risk,
+      blocking: requirement.blockOnMaterialFindings,
+      fixAttempt: gathered.evidence.fixAttempt,
+      ...(gathered.evidence.rulings === undefined
+        ? {}
+        : { followsRulings: gathered.evidence.rulings }),
+      ...(routed.waived === undefined ? {} : { independenceWaived: routed.waived }),
+    };
+    const ran = await runExaminer(environment, services, input, {
+      checkout: work.checkout,
+      route,
+      evidence: gathered.evidence,
+      frame,
+      implementer: builder.agent,
+    });
+    if ("examination" in ran) return ran.examination;
+    const routes = environment.routes;
+    if (ran.limited === undefined || routes === undefined || attempt >= MAX_EXAMINER_ROUTES) {
+      return ran.reason;
+    }
+    routes.markUnavailable(route.target, ran.limited.until);
+    progress(
+      environment,
+      input,
+      `the examiner on ${route.target.model} could not serve (${ran.limited.reason}); routing another`,
+    );
+  }
+};
+
+/**
  * Examines one job's work, when the run's policy says to (D-P8-09 … D-P8-15).
  * Never moves the node: what its outcome means for the node is the caller's.
  */
@@ -371,41 +603,11 @@ export const examine = async (
     const gathered = await gatherEvidence(environment, input, checkout, requirement);
     if ("kind" in gathered) return gathered;
 
-    let route: RouteChoice;
-    try {
-      route = services.examinerRoute({
-        job: input.job,
-        implementer: builder.route,
-        mustDifferModel: requirement.mustDifferModel,
-        mustDifferProvider: requirement.mustDifferProvider,
-      });
-    } catch (error) {
-      return {
-        kind: "examiner_failed",
-        reason: `examiner_failed: no examiner could be routed: ${messageOf(error)}`,
-      };
-    }
-
-    const frame: Omit<ExaminationContext, "round" | "questions"> = {
-      examinationId: environment.ids.next("exam"),
-      verificationId: gathered.verification.verificationId,
-      commitSha: input.commitSha,
-      patchId: gathered.patchId,
-      implementerAgentId: builder.agent.agentId,
-      examinerRoute: route.target,
-      requiredByRisk: input.job.risk,
-      blocking: requirement.blockOnMaterialFindings,
-      fixAttempt: gathered.evidence.fixAttempt,
-      ...(gathered.evidence.rulings === undefined
-        ? {}
-        : { followsRulings: gathered.evidence.rulings }),
-    };
-    const examination = await runExaminer(environment, services, input, {
+    const examination = await examineOnSomeRoute(environment, services, input, {
       checkout,
-      route,
-      evidence: gathered.evidence,
-      frame,
-      implementer: builder.agent,
+      gathered,
+      builder,
+      requirement,
     });
     if (typeof examination === "string") return { kind: "examiner_failed", reason: examination };
     announceVerdict(environment, input, examination);
@@ -971,7 +1173,13 @@ const runExaminer = async (
   services: ExaminationServices,
   input: ExamineInput,
   run: ExaminerRun,
-): Promise<Examination | string> => {
+): Promise<
+  | { readonly examination: Examination }
+  | {
+      readonly reason: string;
+      readonly limited?: { readonly reason: string; readonly until?: string } | undefined;
+    }
+> => {
   const helper = await createHelper(environment, input, "examiner", run.route);
   const launchFor = (round: 1 | 2, questions: readonly ExaminationQuestion[]): McpLaunch =>
     services.mcp({
@@ -1046,7 +1254,11 @@ const runExaminer = async (
   }
 
   await endHelper(environment, input, helper, exits, examination !== undefined);
-  return examination ?? "examiner_failed: the examiner ended without submitting a verdict";
+  if (examination !== undefined) return { examination };
+  return {
+    reason: "examiner_failed: the examiner ended without submitting a verdict",
+    limited: limitOf(exits.at(-1), environment),
+  };
 };
 
 /** The questions an `examination.asked` payload carries. */
@@ -1309,57 +1521,72 @@ const rule = async (
     readonly implementer: Agent | undefined;
   },
 ): Promise<Decision | undefined> => {
-  let route: RouteChoice;
-  try {
-    route = services.arbiterRoute({
-      job: input.job,
-      implementer:
-        ruling.implementer === undefined
-          ? ruling.examination.examinerRoute
-          : {
-              harness: ruling.implementer.harness,
-              provider: ruling.implementer.provider,
-              model: ruling.implementer.model,
-            },
-      examiner: ruling.examination.examinerRoute,
-    });
-  } catch {
-    return undefined;
-  }
-  const helper = await createHelper(environment, input, "arbiter", route);
-  const exit = await runHelper(environment, input, helper, {
-    worktree: ruling.checkout,
-    task: {
-      kind: "arbitrate",
-      finding: ruling.finding,
-      dispute: ruling.dispute,
-      questions: ruling.examination.questions,
-      diff: ruling.diff,
-    },
-    mcp: services.mcp({
-      projectId: input.session.scope.projectId,
-      programId: input.session.scope.programId,
-      runId: input.session.scope.runId,
-      nodeId: input.node.executionNodeId,
-      agentId: helper.agent.agentId,
-      jobContractId: input.job.jobContractId,
+  const implementer =
+    ruling.implementer === undefined
+      ? ruling.examination.examinerRoute
+      : {
+          harness: ruling.implementer.harness,
+          provider: ruling.implementer.provider,
+          model: ruling.implementer.model,
+        };
+  // A limit that stops an arbiter sends the ruling to the next route (D-P8-06,
+  // as amended 2026-10-12). An arbiter that did not rule for any other reason
+  // is not replaced.
+  for (let attempt = 1; attempt <= MAX_EXAMINER_ROUTES; attempt += 1) {
+    let route: RouteChoice;
+    try {
+      route = services.arbiterRoute({
+        job: input.job,
+        implementer,
+        examiner: ruling.examination.examinerRoute,
+        unavailable: environment.routes?.unavailable() ?? [],
+      });
+    } catch {
+      return undefined;
+    }
+    const helper = await createHelper(environment, input, "arbiter", route);
+    const exit = await runHelper(environment, input, helper, {
       worktree: ruling.checkout,
-      role: "arbiter",
-      executionToken: helper.token ?? "",
-      extraEnv: {
-        [RULING_CONTEXT_ENV]: JSON.stringify({
-          examinationId: ruling.examination.examinationId,
-          findingId: ruling.finding.id,
-          checkpointBefore: ruling.checkpointBefore,
-        } satisfies RulingContext),
+      task: {
+        kind: "arbitrate",
+        finding: ruling.finding,
+        dispute: ruling.dispute,
+        questions: ruling.examination.questions,
+        diff: ruling.diff,
       },
-    }),
-  });
-  const decision = [...(await environment.stores.decisions.listByRun(input.session.scope)).items]
-    .filter((candidate) => candidate.agentId === helper.agent.agentId)
-    .at(-1);
-  await endHelper(environment, input, helper, [exit], decision !== undefined);
-  return decision;
+      mcp: services.mcp({
+        projectId: input.session.scope.projectId,
+        programId: input.session.scope.programId,
+        runId: input.session.scope.runId,
+        nodeId: input.node.executionNodeId,
+        agentId: helper.agent.agentId,
+        jobContractId: input.job.jobContractId,
+        worktree: ruling.checkout,
+        role: "arbiter",
+        executionToken: helper.token ?? "",
+        extraEnv: {
+          [RULING_CONTEXT_ENV]: JSON.stringify({
+            examinationId: ruling.examination.examinationId,
+            findingId: ruling.finding.id,
+            checkpointBefore: ruling.checkpointBefore,
+          } satisfies RulingContext),
+        },
+      }),
+    });
+    const decision = [...(await environment.stores.decisions.listByRun(input.session.scope)).items]
+      .filter((candidate) => candidate.agentId === helper.agent.agentId)
+      .at(-1);
+    await endHelper(environment, input, helper, [exit], decision !== undefined);
+    const limited = decision === undefined ? limitOf(exit, environment) : undefined;
+    if (limited === undefined || environment.routes === undefined) return decision;
+    environment.routes.markUnavailable(route.target, limited.until);
+    progress(
+      environment,
+      input,
+      `the arbiter on ${route.target.model} could not serve (${limited.reason}); routing another`,
+    );
+  }
+  return undefined;
 };
 
 /** The rest of a ruled-on decision, once the work it let land has a checkpoint (D-P8-13). */

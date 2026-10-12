@@ -408,7 +408,15 @@ const exitFor = (
     kind: "failed",
     exitCode: code ?? UNKNOWN_EXIT_CODE,
     ...said,
-    ...(outcome.unavailable === undefined ? {} : { unavailable: outcome.unavailable }),
+    ...(outcome.unavailable === undefined
+      ? {}
+      : {
+          unavailable: outcome.unavailable,
+          ...(outcome.availableAgainAt === undefined
+            ? {}
+            : { availableAgainAt: outcome.availableAgainAt }),
+          ...(outcome.workBegan === true ? { workBegan: true } : {}),
+        }),
   };
 };
 
