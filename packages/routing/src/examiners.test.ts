@@ -2,7 +2,12 @@
 import { DEFAULT_ROUTING_POLICY, type ModelPolicy } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { RoutingRefusedError } from "./errors.js";
-import { arbiterRoute, arbiterSharesModelWith, examinerRoute } from "./examiners.js";
+import {
+  arbiterRoute,
+  arbiterSharesModelWith,
+  examinerRoute,
+  strongestExaminerRoute,
+} from "./examiners.js";
 
 const BOTH: ModelPolicy = {
   allowedProviders: ["anthropic", "openai"],
@@ -49,6 +54,33 @@ describe("examinerRoute (D-P8-10)", () => {
         mustDifferProvider: true,
       }),
     ).toThrow(RoutingRefusedError);
+  });
+});
+
+describe("strongestExaminerRoute (D-P8-10, as amended 2026-10-12)", () => {
+  it("is another provider's frontier model when one can run", () => {
+    const route = strongestExaminerRoute({ ...base, implementer: SONNET });
+    expect(route.target.model).toBe("gpt-6-astra");
+    expect(route.rung?.tier).toBe("frontier");
+  });
+
+  it("stays on the frontier with the implementer's provider when the other is limited", () => {
+    const route = strongestExaminerRoute({
+      ...base,
+      implementer: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
+      unavailable: [{ harness: "claude", model: "claude-opus-5-5" }],
+    });
+    expect(route.target.model).toBe("gpt-6-astra");
+    expect(route.rung?.tier).toBe("frontier");
+  });
+
+  it("takes the implementer's own model only when nothing else at the top can run", () => {
+    const route = strongestExaminerRoute({
+      ...base,
+      implementer: ASTRA,
+      unavailable: [{ harness: "claude", model: "claude-opus-5-5" }],
+    });
+    expect(route.target.model).toBe(ASTRA.model);
   });
 });
 

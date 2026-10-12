@@ -12,6 +12,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AGGREGATE_EXAMPLES,
+  DEFAULT_EXAMINATION_POLICY,
   type Decision,
   type Examination,
   ExaminationSchema,
@@ -87,6 +88,8 @@ interface Scenario {
    * something else, which must not block.
    */
   readonly rulingCarried?: (rulingAttempt: number) => boolean;
+  /** Examiner models a usage limit stops, the first time each is started. */
+  readonly limitedExaminers?: readonly string[];
 }
 
 interface Seen {
@@ -95,6 +98,8 @@ interface Seen {
   readonly resumes: (string | undefined)[];
   /** Whether each agent's checkout was there when it started. */
   readonly checkouts: boolean[];
+  /** The model of every examiner started, in order. */
+  readonly examinerModels: string[];
 }
 
 const helperStores = (world: World, input: HarnessStartInput) =>
@@ -116,7 +121,7 @@ const play =
     seen.checkouts.push(existsSync(input.worktree));
     switch (input.agent.role) {
       case "examiner":
-        return examiner(w, input, scenario);
+        return examinerUnlessLimited(w, input, scenario, seen);
       case "answerer": {
         if (input.resume !== undefined && scenario.builderSession === false)
           return { kind: "failed", exitCode: 1 };
@@ -159,6 +164,28 @@ const play =
       }
     }
   };
+
+/** A usage limit, the first time an examiner on a limited model starts; otherwise the examiner. */
+const examinerUnlessLimited = async (
+  world: World,
+  input: HarnessStartInput,
+  scenario: Scenario,
+  seen: Seen,
+): Promise<HarnessExit> => {
+  const model = input.model.model;
+  const startedBefore = seen.examinerModels.includes(model);
+  seen.examinerModels.push(model);
+  if (scenario.limitedExaminers?.includes(model) !== true || startedBefore) {
+    return examiner(world, input, scenario);
+  }
+  return {
+    kind: "failed",
+    exitCode: 1,
+    unavailable: "the provider answered 429 after work began: You have hit your usage limit",
+    availableAgainAt: new Date(world.environment.clock.now() + 600_000).toISOString(),
+    workBegan: true,
+  };
+};
 
 const examiner = async (
   world: World,
@@ -218,6 +245,9 @@ const examiner = async (
     blocking: context.blocking,
     fixAttempt: context.fixAttempt,
     questions: context.questions,
+    ...(context.independenceWaived === undefined
+      ? {}
+      : { independenceWaived: context.independenceWaived }),
     outcome: findings.length === 0 ? "passed" : "findings_raised",
     findings,
     createdAt: nowIso(world.environment.clock),
@@ -324,20 +354,38 @@ const arbiter = async (
 
 interface RigOptions {
   readonly program?: Partial<ProgramContract>;
+  /** The examiner's routing, in place of always `EXAMINER`. */
+  readonly services?: Partial<
+    Pick<ExaminationServices, "examinerRoute" | "strongestExaminerRoute">
+  >;
+  /** What the org says when no independent examiner can run now, at high risk. */
+  readonly whenIndependentUnavailable?: "wait" | "strongest";
   /** The prerequisites as the control plane would answer them, read on every verification. */
   readonly prerequisites?: () => readonly Prerequisite[];
 }
 
 const rig = async (scenario: Scenario, options: RigOptions = {}) => {
   let world: World | undefined;
-  const seen: Seen = { roles: [], tasks: [], resumes: [], checkouts: [] };
+  const seen: Seen = { roles: [], tasks: [], resumes: [], checkouts: [], examinerModels: [] };
   const made = await createWorld({
     harness: createFakeHarness({ script: play(() => world as World, scenario, seen) }),
     ...(options.program === undefined ? {} : { program: options.program }),
+    ...(options.whenIndependentUnavailable === undefined
+      ? {}
+      : {
+          examinationPolicy: {
+            ...DEFAULT_EXAMINATION_POLICY,
+            high: {
+              ...DEFAULT_EXAMINATION_POLICY.high,
+              whenIndependentUnavailable: options.whenIndependentUnavailable,
+            },
+          },
+        }),
   });
   world = made;
   const services: ExaminationServices = {
-    examinerRoute: () => choice(EXAMINER),
+    examinerRoute: options.services?.examinerRoute ?? (() => choice(EXAMINER)),
+    strongestExaminerRoute: options.services?.strongestExaminerRoute ?? (() => choice(EXAMINER)),
     arbiterRoute: () => choice(ARBITER),
     mcp: (identity) => ({
       name: "nightshift",
@@ -362,6 +410,8 @@ const rig = async (scenario: Scenario, options: RigOptions = {}) => {
   const environment: ExecutionEnvironment = {
     ...made.environment,
     examination: services,
+    // A wait for a limited examiner passes on the stepping clock, not in real time.
+    sleep: async () => {},
     ...(book === undefined ? {} : { prerequisites: book }),
   };
   const engine = createEngine({
@@ -517,6 +567,69 @@ describe("examination beside the merge queue (D-P8-09)", () => {
     expect(await settledIdle(world, engine, nodeId)).toBe("failed");
     const node = await world.stores.executionNodes.get(world.scope, nodeId);
     expect(node?.outcomeReason).toMatch(/^examiner_failed: /);
+  });
+});
+
+describe("an examiner stopped by a usage limit (D-P8-06, D-P8-10, as amended 2026-10-12)", () => {
+  const SOL = target("openai", "gpt-6-sol");
+  /** Astra while it can run, Sol after it; nothing once both are out. */
+  const independent: ExaminationServices["examinerRoute"] = (input) => {
+    const out = (model: string) => (input.unavailable ?? []).some((route) => route.model === model);
+    if (!out(EXAMINER.model)) return choice(EXAMINER);
+    if (!out(SOL.model)) return choice(SOL);
+    throw new Error("nothing independent enough can run");
+  };
+  /** Astra or nothing: the only route independent enough. */
+  const astraOnly: ExaminationServices["examinerRoute"] = (input) => {
+    if ((input.unavailable ?? []).some((route) => route.model === EXAMINER.model)) {
+      throw new Error("nothing independent enough can run");
+    }
+    return choice(EXAMINER);
+  };
+  const progressOf = async (world: World): Promise<readonly string[]> =>
+    (await eventsOf(world))
+      .filter((event) => event.type === "node.progress")
+      .map((event) => String(event.payload.message));
+
+  it("examines on the next independent route, and keeps the limited one out", async () => {
+    const { world, engine, nodeId, seen } = await rig(
+      { risk: "high", limitedExaminers: [EXAMINER.model] },
+      { services: { examinerRoute: independent } },
+    );
+    expect(await settledIdle(world, engine, nodeId)).toBe("integrated");
+    expect(seen.examinerModels).toEqual([EXAMINER.model, SOL.model]);
+    const [examination] = await examinationsOf(world, nodeId);
+    expect(examination?.examinerRoute.model).toBe(SOL.model);
+    expect(engine.unavailableRoutes()).toEqual([{ harness: "fake", model: EXAMINER.model }]);
+  });
+
+  it("examines at once on the strongest route when the policy says so", async () => {
+    const { world, engine, nodeId, seen } = await rig(
+      { risk: "high", limitedExaminers: [EXAMINER.model] },
+      {
+        whenIndependentUnavailable: "strongest",
+        services: { examinerRoute: astraOnly, strongestExaminerRoute: () => choice(ARBITER) },
+      },
+    );
+    expect(await settledIdle(world, engine, nodeId)).toBe("integrated");
+    expect(seen.examinerModels).toEqual([EXAMINER.model, ARBITER.model]);
+    expect(
+      (await progressOf(world)).some((message) =>
+        message.includes("examining now on the strongest route"),
+      ),
+    ).toBe(true);
+  });
+
+  it("waits for the independent route to reset when the policy says nothing", async () => {
+    const { world, engine, nodeId, seen } = await rig(
+      { risk: "high", limitedExaminers: [EXAMINER.model] },
+      { services: { examinerRoute: astraOnly, strongestExaminerRoute: () => choice(ARBITER) } },
+    );
+    expect(await settledIdle(world, engine, nodeId)).toBe("integrated");
+    expect(seen.examinerModels).toEqual([EXAMINER.model, EXAMINER.model]);
+    expect((await progressOf(world)).some((message) => message.includes("waiting for it"))).toBe(
+      true,
+    );
   });
 });
 

@@ -17,6 +17,7 @@ import type {
   Prerequisite,
   ProgramContract,
   RouteChoice,
+  RouteTarget,
   RoutingDecision,
   Run,
   RunId,
@@ -35,6 +36,7 @@ import type { Harness, McpLaunch, RunAs } from "@nightshift/harness";
 import type { GitRunner } from "./git/index.js";
 import type { EventOutbox } from "./outbox.js";
 import type { PublishLanding } from "./publish.js";
+import type { RouteAvailability } from "./route-availability.js";
 import type { WorkerTokenFiles } from "./worker-tokens.js";
 
 /**
@@ -127,6 +129,14 @@ export interface ExecutionEnvironment {
    */
   readonly examination?: ExaminationServices;
   /**
+   * The run's record of routes that cannot serve now (D-P8-06, as amended
+   * 2026-10-12), shared by the engine, the root's delegations and the
+   * examiner. Absent, the engine keeps its own and the examiner none.
+   */
+  readonly routes?: RouteAvailability;
+  /** Waits `ms`; tests advance their clock with it. Absent, a timer. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  /**
    * P10 (D-P10-22): called after every landing that moved the program branch,
    * with the new head, so a machine's engine can ask the publisher to move
    * GitHub's copy. Installed by the runner's composition only; a local run,
@@ -179,12 +189,25 @@ export interface ExaminationServices {
     readonly implementer: RoutingDecision["chosen"];
     readonly mustDifferModel: boolean;
     readonly mustDifferProvider: boolean;
+    /** Routes that cannot serve now (D-P8-06). */
+    readonly unavailable?: readonly Pick<RouteTarget, "harness" | "model">[];
+  }): RouteChoice;
+  /**
+   * The strongest route that can run now, whatever built the work: the
+   * examiner when the independent one is limited and the policy says
+   * `strongest` (D-P8-10, as amended 2026-10-12).
+   */
+  strongestExaminerRoute(input: {
+    readonly job: JobContract;
+    readonly implementer: RoutingDecision["chosen"];
+    readonly unavailable?: readonly Pick<RouteTarget, "harness" | "model">[];
   }): RouteChoice;
   /** The highest-tier route, a model neither side used when there is one (D-P8-13, as amended). */
   arbiterRoute(input: {
     readonly job: JobContract;
     readonly implementer: RoutingDecision["chosen"];
     readonly examiner: RoutingDecision["chosen"];
+    readonly unavailable?: readonly Pick<RouteTarget, "harness" | "model">[];
   }): RouteChoice;
   /** The MCP launch for an examiner's or an arbiter's server, carrying its identity. */
   mcp(identity: WorkerLaunchIdentity): McpLaunch;

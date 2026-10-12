@@ -142,6 +142,9 @@ export const registerExaminerTools = (server: McpServer, deps: HelperDeps): void
           ...(context.followsRulings === undefined
             ? {}
             : { followsRulings: context.followsRulings }),
+          ...(context.independenceWaived === undefined
+            ? {}
+            : { independenceWaived: context.independenceWaived }),
           outcome: findings.length === 0 && outcome === "findings_raised" ? "passed" : outcome,
           findings: findings.map((finding, index) => ({
             id: `F-${String(index + 1).padStart(2, "0")}`,

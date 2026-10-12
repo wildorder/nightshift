@@ -56,7 +56,11 @@
  * - `{"type":"result","subtype":"success"|"error_during_execution"|…,
  *    "is_error":bool,"terminal_reason":"completed"|"aborted_streaming"|…,
  *    "permission_denials":[…],"num_turns":N,"total_cost_usd":N}`
- * - `rate_limit_event`, `system`/`thinking_tokens`,
+ * - `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"|"rejected"|…,
+ *    "resetsAt":epochSeconds,"rateLimitType":"five_hour"|…}}`; a rejection is
+ *   kept, and an errored result after it is a route that cannot serve (D-P8-06,
+ *   as amended 2026-10-12).
+ * - `system`/`thinking_tokens`,
  *   `system`/`background_tasks_changed` and the rest are ignored by name rather
  *   than by a catch-all, so a new frame type is a silent no-op and never a crash.
  *
@@ -73,6 +77,7 @@ import {
   type HookEvent,
   type HookEventType,
   type HookSink,
+  isoFromEpochSeconds,
   routeUnavailableReason,
 } from "@nightshift/harness";
 
@@ -272,9 +277,16 @@ export interface StreamOutcome {
   /**
    * P8 (D-P8-06): why the route could not start, when the `result` frame was a
    * provider error (`terminal_reason: "api_error"` with an `api_error_status`)
-   * before any tool was called. `routeUnavailableReason` draws the line.
+   * before any tool was called. `routeUnavailableReason` draws the line. A
+   * usage limit sets it whenever it arrives: a `rate_limit_event` whose status
+   * is `rejected`, an assistant message with `error: "rate_limit"`, or a 429
+   * (amending D-P8-06, 2026-10-12).
    */
   readonly unavailable?: string;
+  /** When the rejecting limit resets, from its `resetsAt` (ISO 8601). */
+  readonly availableAgainAt?: string;
+  /** True when `unavailable` was set after the first tool call. */
+  readonly workBegan?: boolean;
   /**
    * What the `result` frame said the run cost (contract v1, D-P5-01):
    * `usage.input_tokens`, `usage.output_tokens`, `total_cost_usd` and
@@ -364,6 +376,8 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let sessionId: string | undefined;
   let usage: RouteUsage | undefined;
   let unavailable: string | undefined;
+  /** Set by a rejecting `rate_limit_event` or an assistant message that hit the limit. */
+  let limited: { message: string; resetsAt?: string } | undefined;
   let resultText: string | undefined;
   let toolCalls = 0;
   let idle = false;
@@ -504,7 +518,27 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     });
   };
 
+  const handleRateLimit = (frame: Frame): void => {
+    const info = isRecord(frame.rate_limit_info) ? frame.rate_limit_info : {};
+    const status = str(info.status);
+    if (status === undefined || status.startsWith("allowed")) return;
+    const resetsAt = isoFromEpochSeconds(info.resetsAt);
+    limited = {
+      message: `the ${str(info.rateLimitType) ?? "usage"} limit was reached`,
+      ...optionalField("resetsAt", resetsAt),
+    };
+  };
+
   const handleAssistant = (frame: Frame): void => {
+    if (frame.error === "rate_limit") {
+      const text = contentBlocksOf(frame)
+        .map((block) => (isRecord(block) ? str(block.text) : undefined))
+        .find((value) => value !== undefined);
+      limited = {
+        ...limited,
+        message: text ?? limited?.message ?? "the usage limit was reached",
+      };
+    }
     for (const block of contentBlocksOf(frame)) {
       if (isRecord(block) && block.type === "tool_use") handleToolUse(block);
     }
@@ -538,6 +572,13 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
       unavailable = routeUnavailableReason({
         status: tokenCount(frame.api_error_status),
         message: str(frame.result) ?? "the provider refused the request",
+        workBegan: toolCalls > 0,
+      });
+    }
+    if (resultErrored && unavailable === undefined && limited !== undefined) {
+      unavailable = routeUnavailableReason({
+        status: 429,
+        message: limited.message,
         workBegan: toolCalls > 0,
       });
     }
@@ -598,8 +639,11 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
       case "result":
         handleResult(frame);
         return;
+      case "rate_limit_event":
+        handleRateLimit(frame);
+        return;
       default:
-        // `rate_limit_event`, `stream_event`, `prompt_suggestion`, …
+        // `stream_event`, `prompt_suggestion`, …
         return;
     }
   };
@@ -645,6 +689,12 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         ...optionalField("sessionId", sessionId),
         ...optionalField("usage", usage),
         ...optionalField("unavailable", unavailable),
+        ...(unavailable === undefined
+          ? {}
+          : {
+              ...optionalField("availableAgainAt", limited?.resetsAt),
+              workBegan: toolCalls > 0,
+            }),
         ...optionalField("resultText", resultText),
         startEmitted,
         unparseableLines,

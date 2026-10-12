@@ -339,6 +339,9 @@ export const OrgSettingsPage = () => {
                     {label}
                   </th>
                 ))}
+                <th className="p-1 text-left font-normal">
+                  If that examiner is rate-limited, use the strongest model now
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -363,6 +366,27 @@ export const OrgSettingsPage = () => {
                       />
                     </td>
                   ))}
+                  <td className="p-1">
+                    <input
+                      type="checkbox"
+                      aria-label={`${risk} whenIndependentUnavailable`}
+                      checked={
+                        draft.examinationPolicy[risk].whenIndependentUnavailable === "strongest"
+                      }
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          examinationPolicy: {
+                            ...draft.examinationPolicy,
+                            [risk]: {
+                              ...draft.examinationPolicy[risk],
+                              whenIndependentUnavailable: e.target.checked ? "strongest" : "wait",
+                            },
+                          },
+                        })
+                      }
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -80,6 +80,7 @@ const plannedRun = async (options: { planned?: boolean } = {}) => {
     ...(options.planned === false ? {} : { planSections: { strands: {} } }),
     engine: {
       waiting: () => undefined,
+      unavailableRoutes: () => [],
       submit: async (submission: { job: JobContract }) => {
         submitted.push(submission.job);
         return { nodeId: "node_submitted", status: "running", started: undefined };

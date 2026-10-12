@@ -185,6 +185,13 @@ export const ExaminationSchema = z
      * `concerns` one of these can block.
      */
     followsRulings: z.array(ExaminationRulingSchema).min(1).optional(),
+    /**
+     * Present when this examiner is not as independent as the policy asks,
+     * because usage limits had every route that is out and the policy says
+     * `strongest` (D-P8-10, as amended 2026-10-12). Says why, for the report.
+     * The control plane accepts it only under that policy.
+     */
+    independenceWaived: z.strictObject({ reason: z.string().min(1).max(600) }).optional(),
     outcome: ExaminationOutcomeSchema,
     findings: z.array(ExaminationFindingSchema),
     reportArtifactId: ArtifactIdSchema.optional(),

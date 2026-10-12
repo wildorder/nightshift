@@ -30,6 +30,7 @@ export {
   arbiterSharesModelWith,
   examinerRoute,
   type HelperRouteInput,
+  strongestExaminerRoute,
 } from "./examiners.js";
 export {
   firstMatchingRule,

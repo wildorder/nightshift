@@ -135,6 +135,26 @@ export const examinerRoute = (
   });
 };
 
+/**
+ * The examiner when the one independence asks for cannot run now and the
+ * policy says `strongest` (amending D-P8-10, 2026-10-12): the highest tier
+ * that can run, and on it another provider's model, then another model, then
+ * the implementer's own. A fresh invocation either way, never the builder's agent.
+ */
+export const strongestExaminerRoute = (
+  input: HelperRouteInput & { readonly implementer: RouteTarget },
+): RouteChoice => {
+  const preference = (candidate: Candidate): number => {
+    const target = eligible(input, candidate).target;
+    if (target.provider !== input.implementer.provider) return 0;
+    return target.model === input.implementer.model ? 2 : 1;
+  };
+  const ordered = [...everyRoute(input.policy)].sort(
+    (a, b) => tierRank(b.tier) - tierRank(a.tier) || preference(a) - preference(b),
+  );
+  return choose(input, "examiner-strongest", ordered, () => undefined);
+};
+
 /** Which side of a dispute an arbiter on `target` shares a model with, if either. */
 export const arbiterSharesModelWith = (
   target: Pick<RouteTarget, "model">,

@@ -191,6 +191,7 @@ const runThroughEngine = async (world: World, risk: RiskLevel): Promise<Executio
     ...world.environment,
     examination: {
       examinerRoute: () => choice(EXAMINER),
+      strongestExaminerRoute: () => choice(EXAMINER),
       arbiterRoute: () => choice(EXAMINER),
       mcp: (identity) => ({
         name: "nightshift",

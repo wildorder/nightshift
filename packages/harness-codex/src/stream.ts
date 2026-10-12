@@ -39,6 +39,7 @@ import {
   type HookEvent,
   type HookEventType,
   type HookSink,
+  isoFromEpochSeconds,
   routeUnavailableReason,
 } from "@nightshift/harness";
 
@@ -75,9 +76,14 @@ export interface StreamOutcome {
   /**
    * P8 (D-P8-06): why the route could not start, when a turn failed with a
    * provider error before any tool item began. `routeUnavailableReason` draws
-   * the line.
+   * the line. A usage limit sets it whenever it arrives (amending D-P8-06,
+   * 2026-10-12).
    */
   readonly unavailable?: string;
+  /** When the limit resets, where Codex said (ISO 8601). */
+  readonly availableAgainAt?: string;
+  /** True when `unavailable` was set after the first work item began. */
+  readonly workBegan?: boolean;
   /** Token counts, summed over every completed turn. Absent until one reports. */
   readonly usage?: RouteUsage;
   readonly startEmitted: boolean;
@@ -119,23 +125,58 @@ const bound = (payload: Readonly<Record<string, unknown>>): Readonly<Record<stri
  */
 const providerErrorOf = (
   frame: Frame,
-): { readonly status: number | undefined; readonly message: string } => {
+  nowMs: number,
+): {
+  readonly status: number | undefined;
+  readonly message: string;
+  readonly resetsAt?: string | undefined;
+} => {
   const raw = (isRecord(frame.error) ? str(frame.error.message) : str(frame.message)) ?? "";
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (isRecord(parsed)) {
-      const inner = isRecord(parsed.error) ? str(parsed.error.message) : undefined;
-      return { status: count(parsed.status), message: inner ?? raw };
-    }
+    parsed = JSON.parse(raw);
   } catch {
     // Not JSON: the words are all there is.
   }
-  return { status: /usage limit|rate limit/i.test(raw) ? 429 : undefined, message: raw };
+  if (isRecord(parsed)) return structuredErrorOf(parsed, raw, nowMs);
+  return {
+    status: /usage limit|rate limit/i.test(raw) ? 429 : undefined,
+    message: raw,
+    resetsAt: resetInWords(raw, nowMs),
+  };
 };
 
-const unavailableOf = (frame: Frame, workBegan: boolean): string | undefined => {
-  const { status, message } = providerErrorOf(frame);
-  return routeUnavailableReason({ status, message, workBegan });
+/** The API's own error, as Codex carries it: a status, and a usage limit read as the 429 it is. */
+const structuredErrorOf = (parsed: Frame, raw: string, nowMs: number) => {
+  const inner = isRecord(parsed.error) ? parsed.error : {};
+  const message = str(inner.message) ?? raw;
+  const limited = str(inner.type) === "usage_limit_reached";
+  return {
+    status: count(parsed.status) ?? (limited ? 429 : undefined),
+    message,
+    resetsAt: resetOf(inner, nowMs) ?? resetInWords(message, nowMs),
+  };
+};
+
+/** A usage-limit error's own reset: `resets_at` (epoch seconds) or `resets_in_seconds`. */
+const resetOf = (error: Frame, nowMs: number): string | undefined => {
+  const at = isoFromEpochSeconds(error.resets_at);
+  if (at !== undefined) return at;
+  const inSeconds = count(error.resets_in_seconds);
+  return inSeconds === undefined ? undefined : new Date(nowMs + inSeconds * 1000).toISOString();
+};
+
+/** "try again in 2 hours 5 minutes", read as a time from now. A clock time is not read: its zone is unknown. */
+const resetInWords = (message: string, nowMs: number): string | undefined => {
+  const phrase = /try again in ([^.]+)/i.exec(message)?.[1];
+  if (phrase === undefined) return undefined;
+  const unit = (pattern: RegExp): number => Number(pattern.exec(phrase)?.[1] ?? 0);
+  const seconds =
+    unit(/(\d+)\s*d(?:ays?)?\b/i) * 86_400 +
+    unit(/(\d+)\s*h(?:ours?|rs?)?\b/i) * 3_600 +
+    unit(/(\d+)\s*m(?:in(?:ute)?s?)?\b/i) * 60 +
+    unit(/(\d+)\s*s(?:ec(?:ond)?s?)?\b/i);
+  return seconds > 0 ? new Date(nowMs + seconds * 1000).toISOString() : undefined;
 };
 
 export const createStreamInterpreter = (input: StreamInterpreterInput): StreamInterpreter => {
@@ -146,6 +187,23 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let threadId: string | undefined;
   let usage: RouteUsage | undefined;
   let unavailable: string | undefined;
+  let availableAgainAt: string | undefined;
+  let unavailableAfterWork = false;
+  /** A bare `error`: kept for the failure, and a usage limit can arrive this way before the turn fails. */
+  const handleError = (frame: Frame): void => {
+    failure ??= failureOf(frame);
+    if (providerErrorOf(frame, input.clock.now()).status === 429) classify(frame);
+  };
+  /** The first provider error that makes the route unable to serve, kept for the exit. */
+  const classify = (frame: Frame): void => {
+    if (unavailable !== undefined) return;
+    const workBegan = workItems > 0;
+    const { status, message, resetsAt } = providerErrorOf(frame, input.clock.now());
+    unavailable = routeUnavailableReason({ status, message, workBegan });
+    if (unavailable === undefined) return;
+    availableAgainAt = resetsAt;
+    unavailableAfterWork = workBegan;
+  };
   let lastMessage: string | undefined;
   let workItems = 0;
   let startEmitted = false;
@@ -286,10 +344,10 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         return;
       case "turn.failed":
         failure = failureOf(frame);
-        unavailable ??= unavailableOf(frame, workItems > 0);
+        classify(frame);
         return;
       case "error":
-        failure ??= failureOf(frame);
+        handleError(frame);
         return;
       default:
         return;
@@ -318,6 +376,12 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         ...optionalField("threadId", threadId),
         ...optionalField("usage", usage),
         ...optionalField("unavailable", unavailable),
+        ...(unavailable === undefined
+          ? {}
+          : {
+              ...optionalField("availableAgainAt", availableAgainAt),
+              workBegan: unavailableAfterWork,
+            }),
         ...optionalField("lastMessage", lastMessage),
         startEmitted,
         unparseableLines,

@@ -21,7 +21,12 @@ import type {
   WorkerLaunchIdentity,
 } from "@nightshift/execution";
 import type { McpLaunch } from "@nightshift/harness";
-import { arbiterRoute, examinerRoute, ruleRoute } from "@nightshift/routing";
+import {
+  arbiterRoute,
+  examinerRoute,
+  ruleRoute,
+  strongestExaminerRoute,
+} from "@nightshift/routing";
 
 /** The seeded default a run that recorded no policy is read against (a run started before P8). */
 const SEEDED = defaultOrgConfig(
@@ -61,6 +66,7 @@ export const examinationServices = (
   };
   return {
     examinerRoute: (input) => examinerRoute({ ...base, ...input }),
+    strongestExaminerRoute: (input) => strongestExaminerRoute({ ...base, ...input }),
     arbiterRoute: (input) => arbiterRoute({ ...base, ...input }),
     mcp,
   };

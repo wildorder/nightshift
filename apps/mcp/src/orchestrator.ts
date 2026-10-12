@@ -1511,7 +1511,11 @@ const checkDelegationOrRefuse = async (
 /** Routing, with its own refusal surfaced as a validation failure. */
 const chooseRoute = (attached: AttachedRun, job: JobContract, pins: RoutePins): RouteChoice => {
   try {
-    return routeJob(attached.session.run, attached.session.program, job, { pins, unavailable: [] });
+    // What a limit has out of service now is out for a first delegation too (D-P8-06).
+    return routeJob(attached.session.run, attached.session.program, job, {
+      pins,
+      unavailable: attached.engine.unavailableRoutes(),
+    });
   } catch (error) {
     if (error instanceof RoutingRefusedError) {
       throw new ToolRefusal("validation_failed", error.message, {

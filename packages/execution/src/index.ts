@@ -160,6 +160,13 @@ export {
   type ResumeSession,
   resumeDeferred,
 } from "./resume.js";
+export {
+  createRouteAvailability,
+  DEFAULT_LIMIT_COOLDOWN_MS,
+  type RouteAvailability,
+  type UnavailableRoute,
+  unavailableUntil,
+} from "./route-availability.js";
 export { programRulings, rulingsCarriedBy } from "./rulings.js";
 export {
   type DelegateJobInput,

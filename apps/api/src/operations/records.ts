@@ -428,7 +428,15 @@ const assertExaminerIndependent = async (
       "the examination's blocking flag disagrees with the run's policy",
     );
   }
-  const problems = mayExamine(requirement, routeOf(implementer), routeOf(examiner));
+  // The policy may let an examiner be less independent while usage limits
+  // have the independent routes out (D-P8-10, as amended 2026-10-12), never
+  // let an agent examine its own work.
+  const waivable =
+    examination.independenceWaived !== undefined &&
+    requirement.whenIndependentUnavailable === "strongest";
+  const problems = mayExamine(requirement, routeOf(implementer), routeOf(examiner)).filter(
+    (problem) => !waivable || problem.reason === "same_agent",
+  );
   if (problems.length > 0) {
     throw new HttpError(
       403,

@@ -5,7 +5,7 @@
  * nothing new (D-P8-08). Over the fake harness, real git and the production API
  * handler, with a router the test controls so the engine is what is under test.
  */
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type ExecutionNodeId,
@@ -221,6 +221,43 @@ describe("a route that cannot start falls back on the same node (D-P8-06, SC-P8-
       "unavailable",
       "unavailable",
     ]);
+  });
+});
+
+describe("a usage limit after work began (D-P8-06, as amended 2026-10-12)", () => {
+  it("carries on in the same worktree on the next route, with the work so far", async () => {
+    const seen: { carried?: readonly string[] | undefined; partial?: string | undefined } = {};
+    const { world, submit, calls } = await rig(async (context, finish) => {
+      if (context.input.model.model === "cheap-a") {
+        await writeModule(context.worktree, "partial");
+        return {
+          kind: "failed",
+          exitCode: 1,
+          unavailable: "the provider answered 429 after work began: You've hit your session limit",
+          availableAgainAt: "2099-01-01T00:00:00.000Z",
+          workBegan: true,
+        };
+      }
+      seen.carried = context.input.carriedOver?.paths;
+      seen.partial = await readFile(join(context.worktree, "src", "partial.js"), "utf8").catch(
+        () => undefined,
+      );
+      await writeModule(context.worktree, "rest");
+      await finish("partial and rest: done");
+      return { kind: "completed" };
+    });
+    const { nodeId } = await submit("limited mid-job");
+    expect(await until(world, nodeId, (status) => isSettled(status as never))).toBe("integrated");
+
+    expect(seen.partial).toBe("export const partial = 1;\n");
+    expect(seen.carried).toEqual(["src/partial.js"]);
+    const decisions = await routesSettled(world, nodeId);
+    expect(decisions.map((decision) => [decision.chosen.model, decision.outcome])).toEqual([
+      ["cheap-a", "unavailable"],
+      ["cheap-b", "verified"],
+    ]);
+    // The limited route is out for the next job too, until it resets.
+    expect(calls.at(-1)?.unavailable).toEqual([{ harness: "fake", model: "cheap-a" }]);
   });
 });
 
