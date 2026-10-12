@@ -353,7 +353,7 @@ export const parseAnswers = (
 
 /**
  * How many examiner routes one examination tries when limits stop them, before
- * it gives up as it always did. More than any ladder set has providers.
+ * it gives up as it always did. More than any examiner list is long in practice.
  */
 const MAX_EXAMINER_ROUTES = 4;
 
@@ -1015,8 +1015,8 @@ const createHelper = async (
     usage: {},
     outcome: "pending",
     previousRouteId: null,
-    ...(route.ladder === undefined ? {} : { ladder: route.ladder }),
-    ...(route.rung === undefined ? {} : { rung: route.rung }),
+    ...(route.role === undefined ? {} : { role: route.role }),
+    ...(route.position === undefined ? {} : { position: route.position }),
     ...(route.policyVersion === undefined ? {} : { policyVersion: route.policyVersion }),
     purpose,
     createdAt: nowIso(clock),

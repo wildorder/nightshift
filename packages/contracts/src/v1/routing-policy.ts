@@ -1,21 +1,26 @@
 /**
- * Routing policy — where a job goes, as an organisation's standing choice (P8,
- * D-P8-02 … D-P8-07).
+ * Routing policy — who runs each role, as an organisation's standing choice
+ * (P8, D-P8-02; replaced by per-role preferences on 2026-10-12, D-RR-01).
  *
- * An org holds **ladders**, one or more, each an ordered list of **rungs**. A rung
- * is one or more **routes** in preference order, and carries a **tier**
- * (`cheap`, `standard`, `frontier`), so rules and examiners can speak across
- * ladders of different lengths without pretending they are the same. A route is
- * a harness and a model, with an optional reasoning **effort** the adapter passes
- * to its harness.
+ * An org holds one ordered list of routes per **role**: the orchestrator, the
+ * implementer that does a job's work, the examiner, and the arbiter. A route is
+ * a harness and a model, with an optional reasoning **effort** the adapter
+ * passes to its harness. The first route in a role's list that can run now is
+ * the one it runs on; a route that cannot (a usage limit, not signed in, a
+ * model not offered) is passed over for the next. A retry after the work failed
+ * moves one place down the list, so a list that starts cheap escalates.
  *
- * **Rules** say where a job starts: the first rule whose `when` matches the
- * job's classification names a ladder and a tier. Nothing here chooses a route;
- * `packages/routing` does, from this and nothing else, deterministically.
+ * Nothing here chooses a route: `packages/routing` does, from this and nothing
+ * else, deterministically.
  *
- * A repository's `nightshift.config.json` and a program's contract may **narrow**
- * this policy and never widen it (D-P8-03). `core`'s `effectivePolicy` decides
- * which is which.
+ * Ladders, tiers and first-match rules (D-P8-02 … D-P8-07 as first built) are
+ * gone. A configuration or a run recorded with them is read as the role lists
+ * their search order meant ({@link rolesFromLadders}), so nothing stored needs
+ * rewriting.
+ *
+ * A repository's `nightshift.config.json` and a program's contract may
+ * **narrow** this policy and never widen it (D-P8-03). `core`'s
+ * `effectivePolicy` decides which is which.
  */
 import { z } from "zod";
 import { AmbiguityLevelSchema, RiskLevelSchema } from "./common.js";
@@ -24,7 +29,10 @@ import { AmbiguityLevelSchema, RiskLevelSchema } from "./common.js";
 export const EffortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
 export type Effort = z.infer<typeof EffortSchema>;
 
-/** A rung's standing, comparable across ladders. Ordered: cheap < standard < frontier. */
+/**
+ * A rung's standing under the ladders routing replaced. Kept only so a routing
+ * decision recorded under them still parses and reads.
+ */
 export const TierSchema = z.enum(["cheap", "standard", "frontier"]);
 export type Tier = z.infer<typeof TierSchema>;
 
@@ -49,15 +57,15 @@ export const JobKindSchema = z.enum([
 export type JobKind = z.infer<typeof JobKindSchema>;
 
 /**
- * What routing matched a job on (D-P8-01), with every conservative default
- * already filled in. Recorded on each routing decision, so the decision explains
- * itself and the dataset needs no join (SC-11).
+ * What a job says about itself (D-P8-01), with every conservative default
+ * already filled in. Recorded on each routing decision for the dataset; no
+ * longer what picks a route.
  */
 export const ClassificationSchema = z.strictObject({
   risk: RiskLevelSchema,
   ambiguity: AmbiguityLevelSchema,
   testability: TestabilitySchema,
-  /** Absent when the delegator said nothing: a rule on `kind` then does not match. */
+  /** Absent when the delegator said nothing. */
   kind: JobKindSchema.optional(),
 });
 export type Classification = z.infer<typeof ClassificationSchema>;
@@ -70,42 +78,23 @@ export const RouteSpecSchema = z.strictObject({
 });
 export type RouteSpec = z.infer<typeof RouteSpecSchema>;
 
-export const RungSchema = z.strictObject({
-  tier: TierSchema,
-  /** In preference order. A rung's later routes are its fallbacks (D-P8-06). */
-  routes: z.array(RouteSpecSchema).min(1),
-});
-export type Rung = z.infer<typeof RungSchema>;
+/** Who a route is chosen for. A sub-program's orchestrator is an `orchestrator`. */
+export const RoutingRoleSchema = z.enum(["orchestrator", "implementer", "examiner", "arbiter"]);
+export type RoutingRole = z.infer<typeof RoutingRoleSchema>;
 
-/** Cheapest first. Tiers never go down as the ladder climbs. */
-export const LadderSchema = z
-  .array(RungSchema)
-  .min(1)
-  .refine(
-    (rungs) =>
-      rungs.every(
-        (rung, index) =>
-          index === 0 || tierRank(rung.tier) >= tierRank(rungs[index - 1]?.tier ?? "cheap"),
-      ),
-    { message: "a ladder's tiers must not go down as it climbs" },
-  );
-export type Ladder = z.infer<typeof LadderSchema>;
+export const ROUTING_ROLES: readonly RoutingRole[] = RoutingRoleSchema.options;
 
-/** The classification a rule matches on. A field absent from `when` matches anything. */
-export const RuleConditionSchema = z.strictObject({
-  risk: z.array(RiskLevelSchema).min(1).optional(),
-  ambiguity: z.array(AmbiguityLevelSchema).min(1).optional(),
-  testability: z.array(TestabilitySchema).min(1).optional(),
-  kind: z.array(JobKindSchema).min(1).optional(),
-});
-export type RuleCondition = z.infer<typeof RuleConditionSchema>;
+/** A role's routes, in preference order: the first that can run is the one that does. */
+export const RoleRoutesSchema = z.array(RouteSpecSchema).min(1);
+export type RoleRoutes = z.infer<typeof RoleRoutesSchema>;
 
-export const RoutingRuleSchema = z.strictObject({
-  id: z.string().min(1),
-  when: RuleConditionSchema,
-  start: z.strictObject({ ladder: z.string().min(1), tier: TierSchema }),
+export const RolePreferencesSchema = z.strictObject({
+  orchestrator: RoleRoutesSchema,
+  implementer: RoleRoutesSchema,
+  examiner: RoleRoutesSchema,
+  arbiter: RoleRoutesSchema,
 });
-export type RoutingRule = z.infer<typeof RoutingRuleSchema>;
+export type RolePreferences = z.infer<typeof RolePreferencesSchema>;
 
 /** Dollars per million tokens, for an **estimate** when a harness reports no cost (D-P8-08). */
 export const ModelPriceSchema = z.strictObject({
@@ -116,38 +105,99 @@ export const ModelPriceSchema = z.strictObject({
 });
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 
-const isUnconditional = (condition: RuleCondition): boolean =>
-  Object.values(condition).every((value) => value === undefined);
+const RolePolicySchema = z.strictObject({
+  roles: RolePreferencesSchema,
+  /** Routes nobody may start this run (D-P8-06). Matched on harness and model. */
+  unavailable: z.array(RouteSpecSchema),
+  prices: z.record(z.string().min(1), ModelPriceSchema),
+});
 
-export const RoutingPolicySchema = z
-  .strictObject({
-    /** Ladder name → rungs. Object order is the order ladders are tried in a fallback. */
-    ladders: z.record(z.string().min(1), LadderSchema),
-    rules: z.array(RoutingRuleSchema).min(1),
-    /** Routes nobody may start this run (D-P8-06). Matched on harness and model. */
-    unavailable: z.array(RouteSpecSchema),
-    prices: z.record(z.string().min(1), ModelPriceSchema),
-  })
-  .refine((policy) => Object.keys(policy.ladders).length > 0, {
-    message: "a routing policy needs at least one ladder",
-    path: ["ladders"],
-  })
-  .refine((policy) => new Set(policy.rules.map((rule) => rule.id)).size === policy.rules.length, {
-    message: "rule ids must be unique",
-    path: ["rules"],
-  })
-  .refine((policy) => isUnconditional(policy.rules.at(-1)?.when ?? {}), {
-    message: "the last rule must match everything (an empty `when`), so every job has a route",
-    path: ["rules"],
-  })
-  .refine(
-    (policy) => policy.rules.every((rule) => policy.ladders[rule.start.ladder] !== undefined),
-    {
-      message: "every rule must start on a ladder the policy has",
-      path: ["rules"],
-    },
+// --- The ladders this replaced, read once and never written -------------------------
+
+const LegacyRungSchema = z.object({ tier: TierSchema, routes: z.array(RouteSpecSchema).min(1) });
+const LegacyRuleSchema = z.object({
+  id: z.string(),
+  when: z.object({ kind: z.array(z.string()).optional() }).passthrough(),
+  start: z.object({ ladder: z.string(), tier: TierSchema }),
+});
+const LegacyPolicySchema = z.object({
+  ladders: z.record(z.string(), z.array(LegacyRungSchema).min(1)),
+  rules: z.array(LegacyRuleSchema).min(1),
+  unavailable: z.array(RouteSpecSchema).default([]),
+  prices: z.record(z.string(), ModelPriceSchema).default({}),
+});
+type LegacyPolicy = z.infer<typeof LegacyPolicySchema>;
+
+const pushUnique = (into: RouteSpec[], route: RouteSpec): void => {
+  if (!into.some((seen) => sameRoute(seen, route))) into.push(route);
+};
+
+/** The ladders' search order from `(ladder, tier)` up: each rung, then that tier on every other ladder. */
+const searchOrder = (policy: LegacyPolicy, ladder: string, tier: Tier): RouteSpec[] => {
+  const own = policy.ladders[ladder] ?? Object.values(policy.ladders)[0] ?? [];
+  const from = Math.max(
+    0,
+    own.findIndex((rung) => tierRank(rung.tier) >= tierRank(tier)),
   );
-export type RoutingPolicy = z.infer<typeof RoutingPolicySchema>;
+  const order: RouteSpec[] = [];
+  for (const rung of own.slice(from)) {
+    for (const route of rung.routes) pushUnique(order, route);
+    for (const route of sameTierElsewhere(policy, ladder, rung.tier)) pushUnique(order, route);
+  }
+  return order;
+};
+
+/** Every route at `tier` on the ladders other than `ladder`, in their order. */
+const sameTierElsewhere = (policy: LegacyPolicy, ladder: string, tier: Tier): RouteSpec[] =>
+  Object.entries(policy.ladders)
+    .filter(([name]) => name !== ladder)
+    .flatMap(([, rungs]) => rungs.filter((rung) => rung.tier === tier))
+    .flatMap((rung) => rung.routes);
+
+/** Every route, strongest tier first, the ladders interleaved in their order. */
+const strongestFirst = (policy: LegacyPolicy): RouteSpec[] => {
+  const order: RouteSpec[] = [];
+  for (const tier of [...TIER_ORDER].reverse()) {
+    for (const rungs of Object.values(policy.ladders)) {
+      for (const rung of rungs) {
+        if (rung.tier !== tier) continue;
+        for (const route of rung.routes) pushUnique(order, route);
+      }
+    }
+  }
+  return order;
+};
+
+/**
+ * The role lists a ladder configuration meant: the orchestrator's rule's search
+ * order, the default rule's for the implementer, and every route strongest
+ * first for the examiner and the arbiter, who were chosen from the top.
+ */
+export const rolesFromLadders = (legacy: unknown): z.input<typeof RolePolicySchema> => {
+  const policy = LegacyPolicySchema.parse(legacy);
+  const fallbackRule = policy.rules.at(-1) as LegacyPolicy["rules"][number];
+  const orchestrateRule =
+    policy.rules.find((rule) => rule.when.kind?.includes("orchestrate") === true) ?? fallbackRule;
+  return {
+    roles: {
+      orchestrator: searchOrder(policy, orchestrateRule.start.ladder, orchestrateRule.start.tier),
+      implementer: searchOrder(policy, fallbackRule.start.ladder, fallbackRule.start.tier),
+      examiner: strongestFirst(policy),
+      arbiter: strongestFirst(policy),
+    },
+    unavailable: policy.unavailable,
+    prices: policy.prices,
+  };
+};
+
+const isLegacy = (value: unknown): boolean =>
+  typeof value === "object" && value !== null && "ladders" in value && !("roles" in value);
+
+export const RoutingPolicySchema = z.preprocess(
+  (value) => (isLegacy(value) ? rolesFromLadders(value) : value),
+  RolePolicySchema,
+);
+export type RoutingPolicy = z.infer<typeof RolePolicySchema>;
 
 /** Whether two route specs name the same harness and model. Effort is not identity. */
 export const sameRoute = (
@@ -157,26 +207,32 @@ export const sameRoute = (
 
 /**
  * What a repository or a program may say about routing (D-P8-03): **only ever
- * less** than the org allows. Keep some ladders, forbid some routes, start no
- * job below a tier. Anything that would add a model, a harness or a ladder is a
- * widening, and `effectivePolicy` in `core` refuses it by name.
+ * less** than the org allows. Keep only some harnesses, forbid some routes.
+ * Which providers may run at all is `modelPolicy`'s.
  */
-export const RoutingNarrowingSchema = z.strictObject({
-  /** Keep only these of the org's ladders. Naming one the org lacks is a widening. */
-  ladders: z.array(z.string().min(1)).min(1).optional(),
-  /** Never start these routes, whatever the rung. Effort is not matched. */
+const RoutingNarrowingObjectSchema = z.strictObject({
+  /** Keep only routes on these harnesses. */
+  harnesses: z.array(z.string().min(1)).min(1).optional(),
+  /** Never start these routes, whatever the role. Effort is not matched. */
   forbid: z
     .array(z.strictObject({ harness: z.string().min(1), model: z.string().min(1) }))
     .optional(),
-  /** Start no job below this tier: every rule's starting tier is raised to it. */
-  minimumTier: TierSchema.optional(),
 });
-export type RoutingNarrowing = z.infer<typeof RoutingNarrowingSchema>;
 
 /**
- * Two narrowings as one, each keeping everything the other took away: the
- * ladders both keep, every route either forbids, the higher minimum tier.
+ * A narrowing written for the ladders kept the ladders it named, and every
+ * ladder was named for its harness, so `ladders` reads as `harnesses`. A
+ * `minimumTier` has nothing left to mean and is refused, not dropped: dropping
+ * it would widen what the repository asked for.
  */
+export const RoutingNarrowingSchema = z.preprocess((value) => {
+  if (typeof value !== "object" || value === null || !("ladders" in value)) return value;
+  const { ladders, ...rest } = value as { ladders?: unknown } & Record<string, unknown>;
+  return { ...rest, harnesses: ladders };
+}, RoutingNarrowingObjectSchema);
+export type RoutingNarrowing = z.infer<typeof RoutingNarrowingObjectSchema>;
+
+/** The harnesses both keep: absent means every one. */
 const keptByBoth = (
   a: readonly string[] | undefined,
   b: readonly string[] | undefined,
@@ -186,24 +242,17 @@ const keptByBoth = (
   return a.filter((name) => b.includes(name));
 };
 
-const higherTier = (a: Tier | undefined, b: Tier | undefined): Tier | undefined => {
-  if (a === undefined) return b;
-  if (b === undefined) return a;
-  return tierRank(a) >= tierRank(b) ? a : b;
-};
-
+/** Two narrowings as one, each keeping everything the other took away. */
 export const combineNarrowings = (
   a: RoutingNarrowing | undefined,
   b: RoutingNarrowing | undefined,
 ): RoutingNarrowing | undefined => {
   if (a === undefined) return b;
   if (b === undefined) return a;
-  const ladders = keptByBoth(a.ladders, b.ladders);
+  const harnesses = keptByBoth(a.harnesses, b.harnesses);
   const forbid = [...(a.forbid ?? []), ...(b.forbid ?? [])];
-  const minimumTier = higherTier(a.minimumTier, b.minimumTier);
   return {
-    ...(ladders === undefined ? {} : { ladders }),
+    ...(harnesses === undefined ? {} : { harnesses }),
     ...(forbid.length === 0 ? {} : { forbid }),
-    ...(minimumTier === undefined ? {} : { minimumTier }),
   };
 };

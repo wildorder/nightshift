@@ -659,8 +659,8 @@ export const startJob = async (
       usage: {},
       outcome: "pending",
       previousRouteId: attempt === 1 ? null : previousRouteId,
-      ...(route.ladder === undefined ? {} : { ladder: route.ladder }),
-      ...(route.rung === undefined ? {} : { rung: route.rung }),
+      ...(route.role === undefined ? {} : { role: route.role }),
+      ...(route.position === undefined ? {} : { position: route.position }),
       ...(route.classification === undefined ? {} : { classification: route.classification }),
       ...(route.policyVersion === undefined ? {} : { policyVersion: route.policyVersion }),
       createdAt: nowIso(clock),
@@ -673,8 +673,8 @@ export const startJob = async (
         ruleId: routingDecision.ruleId,
         wasOverride: routingDecision.wasOverride,
         chosen: routingDecision.chosen,
-        ...(route.ladder === undefined ? {} : { ladder: route.ladder }),
-        ...(route.rung === undefined ? {} : { rung: route.rung }),
+        ...(route.role === undefined ? {} : { role: route.role }),
+        ...(route.position === undefined ? {} : { position: route.position }),
         attempt,
       },
       executionNodeId: nodeId,
@@ -1085,7 +1085,7 @@ const throughFallbacks = async (
       })
       .catch(() => undefined);
     if (next === undefined) {
-      const unavailable = `${exit.unavailable}; and no other route on this run's ladders could start`;
+      const unavailable = `${exit.unavailable}; and no other route on the role's list could start`;
       return { exit: { ...exit, unavailable }, recorded: true };
     }
     exit = await next.handle.exit;

@@ -1,11 +1,12 @@
 /**
- * Where a job runs, for everything this app routes (P8, D-P8-04 … D-P8-07).
+ * Where a job runs, for everything this app routes (P8, D-RR-01).
  *
  * One function, used by the root's `delegate` and `strand.delegate`, by the
  * engine for what a sub-program's orchestrator delegates, for a retry and for a
  * fallback, and by the headless root: the run's effective policy (what it
  * recorded when it started, `policyOfRun`), the program's `modelPolicy`, and
- * the job's own classification (`classificationOf`), handed to `ruleRoute`.
+ * the job's role (an `orchestrate` job is an orchestrator's, every other an
+ * implementer's), handed to `roleRoute`.
  */
 import {
   defaultOrgConfig,
@@ -24,7 +25,7 @@ import type { McpLaunch } from "@nightshift/harness";
 import {
   arbiterRoute,
   examinerRoute,
-  ruleRoute,
+  roleRoute,
   strongestExaminerRoute,
 } from "@nightshift/routing";
 
@@ -41,10 +42,11 @@ export const routeJob = (
   context: RouteContext = { unavailable: [] },
 ): RouteChoice => {
   const policy = policyOfRun(run, program, SEEDED);
-  return ruleRoute({
+  return roleRoute({
     policy: policy.routingPolicy,
     policyVersion: policy.orgConfigVersion,
     modelPolicy: program.modelPolicy,
+    role: job.kind === "orchestrate" ? "orchestrator" : "implementer",
     classification: classificationOf(job),
     pins: context.pins,
     unavailable: context.unavailable,
@@ -52,7 +54,7 @@ export const routeJob = (
   });
 };
 
-/** Who examines and who arbitrates, over the run's own ladders (D-P8-10, D-P8-13). */
+/** Who examines and who arbitrates, from the run's own role lists (D-P8-10, D-P8-13). */
 export const examinationServices = (
   run: Pick<Run, "policy">,
   program: ProgramContract,

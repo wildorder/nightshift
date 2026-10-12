@@ -12,7 +12,12 @@
 import { z } from "zod";
 import { ExecutionNodeIdSchema, RoutingDecisionIdSchema } from "../ids.js";
 import { IsoTimestampSchema, runScoped } from "./common.js";
-import { ClassificationSchema, EffortSchema, TierSchema } from "./routing-policy.js";
+import {
+  ClassificationSchema,
+  EffortSchema,
+  RoutingRoleSchema,
+  TierSchema,
+} from "./routing-policy.js";
 
 /** A harness, provider and model triple Nightshift can dispatch to. */
 export const RouteTargetSchema = z.strictObject({
@@ -92,9 +97,10 @@ export interface RouteChoice {
   readonly ruleId: string;
   /** True when an orchestrator pinned the target rather than policy selecting it. */
   readonly wasOverride: boolean;
-  /** P8: where on the org's ladders the route sits, when a ladder chose it. */
-  readonly ladder?: string;
-  readonly rung?: RungPosition;
+  /** The role whose list the route came from (D-RR-01). */
+  readonly role?: z.infer<typeof RoutingRoleSchema>;
+  /** Its place in that list, 0 first (D-RR-01). */
+  readonly position?: number;
   /** P8: the classification the rule matched, defaults filled in. */
   readonly classification?: z.infer<typeof ClassificationSchema>;
   /** P8: the org configuration version the effective policy was narrowed from. */
@@ -132,6 +138,13 @@ export const RoutingDecisionSchema = z
      */
     ladder: z.string().min(1).optional(),
     rung: RungPositionSchema.optional(),
+    /**
+     * D-RR-01 (2026-10-12): the role whose preference list chose the route, and
+     * its place in that list, 0 first. Set on every decision made since; a
+     * decision made by a ladder has `ladder` and `rung` instead.
+     */
+    role: RoutingRoleSchema.optional(),
+    position: z.int().min(0).optional(),
     /**
      * P8: what the route was for, when it was not the job's own work: an
      * examiner, a builder answering an examiner's questions, or an arbiter. Absent
@@ -176,6 +189,9 @@ export const RoutingDatasetLineSchema = z.strictObject({
   wasOverride: z.boolean(),
   ladder: z.string().min(1).nullable(),
   rung: RungPositionSchema.nullable(),
+  /** D-RR-01: the role and place in its list, for decisions made since ladders went. */
+  role: RoutingRoleSchema.nullable().optional(),
+  position: z.int().min(0).nullable().optional(),
   classification: ClassificationSchema.nullable(),
   policyVersion: z.int().min(0).nullable(),
   chosen: RouteTargetSchema,

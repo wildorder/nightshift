@@ -530,7 +530,7 @@ export const attachRun = async (
       session,
       mcp: (identity) => state.workerLaunch(identity),
       // For what a sub-program's orchestrator delegates (D-P6-01), for a retry
-      // and for a fallback: routed here, by the same rules over the same ladders
+      // and for a fallback: routed here, by the same role lists
       // as the root's own delegations (D-P8-04).
       route: (job, context) => routeJob(started, program, job, context),
     }),

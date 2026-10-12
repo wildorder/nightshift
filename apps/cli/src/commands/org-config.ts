@@ -1,9 +1,9 @@
 /**
  * `nightshift org config get | set <file>` (P8, D-P8-02).
  *
- * An organisation's routing and examination policy: its ladders, its rules, its
- * prices, and the examination every project in it gets unless a repository or a
- * program asks for more. `get` prints what a run would get (the seeded default
+ * An organisation's routing and examination policy: which models run each role,
+ * in order of preference (D-RR-01), its prices, and the examination every
+ * project in it gets unless a repository or a program asks for more. `get` prints what a run would get (the seeded default
  * at version 0 when nobody has written one); `set` writes a file of the same
  * shape on top of the version it was read at, and the control plane refuses a
  * write that lost a race, or a policy that is not one, with every reason.

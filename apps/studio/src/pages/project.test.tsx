@@ -108,8 +108,12 @@ describe("the project page", () => {
           runId: f.ids.next("run"),
           policy: {
             routingPolicy: {
-              ladders: { claude: [{ tier: "cheap", routes: [{ harness: "claude", model: "m" }] }] },
-              rules: [{ id: "R", when: {}, start: { ladder: "claude", tier: "cheap" } }],
+              roles: {
+                orchestrator: [{ harness: "claude", model: "m" }],
+                implementer: [{ harness: "claude", model: "m" }],
+                examiner: [{ harness: "claude", model: "m" }],
+                arbiter: [{ harness: "claude", model: "m" }],
+              },
               unavailable: [],
               prices: {},
             },

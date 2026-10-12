@@ -10,10 +10,10 @@
  *
  * Two runs, because a run fixes its policy when it starts (D-P8-03):
  *
- * - **Run A**, under an org configuration whose Claude cheap rung is a model
- *   that does not exist: a bounded job falls back across ladders to Codex's
- *   cheap rung, the unavailable attempt recorded.
- * - **Run B**, under the default ladders: a bounded job on the cheap rung; a
+ * - **Run A**, under an org configuration whose implementer's first route is a
+ *   model that does not exist: a job falls back to the next on the list, the
+ *   unavailable attempt recorded.
+ * - **Run B**, under the default role lists: a job on the implementer's first route; a
  *   pinned override; a job whose first verification fails on purpose and whose
  *   retry climbs; a medium-risk job examined by a different model; and two
  *   high-risk jobs with a planted defect, examined by the other provider's
@@ -179,7 +179,7 @@ const describeRoutes = (routes: readonly RoutingDecision[]): string =>
   routes
     .map(
       (route) =>
-        `${route.purpose ?? "work"} ${route.chosen.model} [${route.ladder ?? "-"}/${route.rung?.tier ?? "-"} ${route.ruleId}] ${route.outcome}` +
+        `${route.purpose ?? "work"} ${route.chosen.model} [${route.role ?? "-"}#${route.position ?? "-"} ${route.ruleId}] ${route.outcome}` +
         (route.usage.actualCostUsd !== undefined
           ? ` $${route.usage.actualCostUsd.toFixed(3)}`
           : route.usage.estimatedCostUsd !== undefined
@@ -265,10 +265,15 @@ const rulingCarriedOut = async (
 // --- the suite ----------------------------------------------------------------------
 
 describe("routing and examination, with real models, against the deployed control plane", () => {
-  it("preflight: every route on the org's ladders answers a one-line prompt headless", async () => {
-    const routes = Object.values(DEFAULT_ROUTING_POLICY.ladders).flatMap((ladder) =>
-      ladder.flatMap((rung) => rung.routes),
-    );
+  it("preflight: every route on the org's role lists answers a one-line prompt headless", async () => {
+    const routes = Object.values(DEFAULT_ROUTING_POLICY.roles)
+      .flat()
+      .filter(
+        (route, index, all) =>
+          all.findIndex(
+            (other) => other.harness === route.harness && other.model === route.model,
+          ) === index,
+      );
     for (const route of routes) {
       const out =
         route.harness === "claude"
@@ -295,19 +300,19 @@ describe("routing and examination, with real models, against the deployed contro
     }
   });
 
-  it("run A: a route that cannot start falls back across ladders (SC-P8-05)", async () => {
+  it("run A: a route that cannot start falls back to the next on the list (SC-P8-05)", async () => {
     const broken: RoutingPolicy = {
       ...DEFAULT_ROUTING_POLICY,
-      ladders: {
-        ...DEFAULT_ROUTING_POLICY.ladders,
-        claude: [
-          { tier: "cheap", routes: [{ harness: "claude", model: "claude-nonexistent-9" }] },
-          ...(DEFAULT_ROUTING_POLICY.ladders.claude ?? []).slice(1),
+      roles: {
+        ...DEFAULT_ROUTING_POLICY.roles,
+        implementer: [
+          { harness: "claude", model: "claude-nonexistent-9" },
+          ...DEFAULT_ROUTING_POLICY.roles.implementer.slice(1),
         ],
       },
     };
     await writeOrgConfig(broken, 0);
-    const started = await startRun("run A (a Claude cheap rung that cannot start)");
+    const started = await startRun("run A (an implementer route that cannot start)");
     try {
       const began = Date.now();
       const job = await delegate(started, {
@@ -328,8 +333,8 @@ describe("routing and examination, with real models, against the deployed contro
       });
       expect(work.at(-1)).toMatchObject({
         outcome: "verified",
-        ladder: "codex",
-        rung: { tier: "cheap" },
+        role: "implementer",
+        position: 1,
       });
     } finally {
       await finish(started);
@@ -337,18 +342,18 @@ describe("routing and examination, with real models, against the deployed contro
     }
   });
 
-  describe("run B, under the default ladders", () => {
+  describe("run B, under the default role lists", () => {
     let started: Started;
 
     beforeAll(async () => {
-      started = await startRun("run B (the default ladders)");
+      started = await startRun("run B (the default role lists)");
     });
 
     afterAll(async () => {
       if (started !== undefined) await finish(started);
     });
 
-    it("lands a bounded job on the cheap rung (SC-P8-17)", async () => {
+    it("lands a job on the implementer's first route (SC-P8-17)", async () => {
       const began = Date.now();
       const job = await delegate(started, {
         objective:
@@ -359,13 +364,15 @@ describe("routing and examination, with real models, against the deployed contro
         testability: "strong",
         jobKind: "implement",
       });
-      const { result, routes } = await settled(started, job.jobId, job.nodeId, "cheap rung", began);
+      const { result, routes } = await settled(
+        started,
+        job.jobId,
+        job.nodeId,
+        "first route",
+        began,
+      );
       expect(result.status).toBe("integrated");
-      expect(routes[0]).toMatchObject({
-        ladder: "claude",
-        rung: { tier: "cheap" },
-        ruleId: "R-bounded",
-      });
+      expect(routes[0]).toMatchObject({ role: "implementer", position: 0, ruleId: "implementer" });
     });
 
     it("honours a pinned model as an override (SC-P8-04)", async () => {
@@ -390,7 +397,7 @@ describe("routing and examination, with real models, against the deployed contro
       expect(routes[0]).toMatchObject({ wasOverride: true, chosen: { model: "gpt-6-sol" } });
     });
 
-    it("climbs one rung when a retry follows a failed verification (SC-P8-06)", async () => {
+    it("moves one place down the list when a retry follows a failed verification (SC-P8-06)", async () => {
       const began = Date.now();
       const job = await delegate(started, {
         objective:
@@ -413,7 +420,7 @@ describe("routing and examination, with real models, against the deployed contro
       const second = await settled(started, job.jobId, job.nodeId, "escalation, retry", began);
       expect(second.result.status).toBe("integrated");
       const work = second.routes.filter((route) => route.purpose === undefined);
-      expect(work.map((route) => route.rung?.tier)).toEqual(["cheap", "standard"]);
+      expect(work.map((route) => route.position)).toEqual([0, 1]);
       expect(work[1]?.previousRouteId).toBe(work[0]?.routingDecisionId);
     });
 

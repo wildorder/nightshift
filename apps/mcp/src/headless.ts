@@ -109,8 +109,8 @@ export interface HeadlessResult {
 
 /**
  * How many times a root stopped by a usage limit is replaced on another route
- * before the run is left to the runner's own recovery. More than any ladder set
- * has providers.
+ * before the run is left to the runner's own recovery. More than an
+ * orchestrator's list is long in practice.
  */
 const MAX_ROOT_RELAUNCHES = 4;
 

@@ -3,6 +3,7 @@ import {
   DEFAULT_ROUTING_POLICY,
   type ExaminationPolicy,
   type OrgConfig,
+  RoutingNarrowingSchema,
 } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import {
@@ -106,59 +107,63 @@ describe("effectivePolicy (D-P8-03)", () => {
     expect(result.examinationPolicy.high).toEqual(DEFAULT_EXAMINATION_POLICY.high);
   });
 
-  it("keeps only the ladders named, and moves a rule off a dropped ladder", () => {
+  it("keeps only the harnesses named, every role's order kept", () => {
     const result = requireEffectivePolicy(org, {
       examinationPolicy: OFF,
-      routing: { ladders: ["codex"] },
+      routing: { harnesses: ["codex"] },
     });
-    expect(Object.keys(result.routingPolicy.ladders)).toEqual(["codex"]);
-    expect(result.routingPolicy.rules.every((rule) => rule.start.ladder === "codex")).toBe(true);
-  });
-
-  it("drops forbidden routes, and a rung or ladder left empty", () => {
-    const result = requireEffectivePolicy(org, {
-      examinationPolicy: OFF,
-      routing: { forbid: [{ harness: "claude", model: "claude-haiku-4-5-20251001" }] },
-    });
-    expect(result.routingPolicy.ladders.claude?.map((rung) => rung.tier)).toEqual([
-      "standard",
-      "frontier",
+    for (const list of Object.values(result.routingPolicy.roles)) {
+      expect(list.every((route) => route.harness === "codex")).toBe(true);
+    }
+    expect(result.routingPolicy.roles.implementer.map((route) => route.model)).toEqual([
+      "gpt-6-sol",
+      "gpt-6-astra",
     ]);
   });
 
-  it("raises every rule's start to the minimum tier, and never lowers one", () => {
+  it("reads a narrowing written for ladders as the harnesses they were named for", () => {
+    const routing = RoutingNarrowingSchema.parse({ ladders: ["claude"] });
+    expect(routing).toEqual({ harnesses: ["claude"] });
+    const result = requireEffectivePolicy(org, { examinationPolicy: OFF, routing });
+    expect(result.routingPolicy.roles.examiner.map((route) => route.harness)).toEqual([
+      "claude",
+      "claude",
+    ]);
+    // A minimum tier has nothing left to mean; dropping it would widen.
+    expect(RoutingNarrowingSchema.safeParse({ minimumTier: "standard" }).success).toBe(false);
+  });
+
+  it("drops forbidden routes from every role", () => {
     const result = requireEffectivePolicy(org, {
       examinationPolicy: OFF,
-      routing: { minimumTier: "standard" },
+      routing: { forbid: [{ harness: "claude", model: "claude-sonnet-5" }] },
     });
-    const tiers = Object.fromEntries(
-      result.routingPolicy.rules.map((rule) => [rule.id, rule.start.tier]),
-    );
-    expect(tiers).toEqual({
-      "R-orchestrate": "frontier",
-      "R-high": "frontier",
-      "R-bounded": "standard",
-      "R-default": "standard",
-    });
+    expect(result.routingPolicy.roles.implementer.map((route) => route.model)).toEqual([
+      "gpt-6-sol",
+      "claude-opus-5-5",
+      "gpt-6-astra",
+    ]);
   });
 
-  it("refuses a ladder the org does not have, by name", () => {
+  it("refuses a narrowing that leaves a role no route, naming the role", () => {
     const result = effectivePolicy(org, {
       examinationPolicy: OFF,
-      routing: { ladders: ["claude", "bedrock"] },
+      routing: {
+        forbid: [
+          { harness: "claude", model: "claude-opus-5-5" },
+          { harness: "codex", model: "gpt-6-astra" },
+        ],
+      },
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.widenings.map((w) => w.detail).join()).toContain('"bedrock"');
-  });
-
-  it("refuses a narrowing that leaves no route", () => {
-    const forbidAll = Object.values(DEFAULT_ROUTING_POLICY.ladders).flatMap((ladder) =>
-      ladder.flatMap((rung) => rung.routes.map(({ harness, model }) => ({ harness, model }))),
-    );
-    const result = effectivePolicy(org, { examinationPolicy: OFF, routing: { forbid: forbidAll } });
-    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.widenings.map((w) => w.detail).join()).toContain("orchestrator");
+    }
     expect(() =>
-      requireEffectivePolicy(org, { examinationPolicy: OFF, routing: { forbid: forbidAll } }),
+      requireEffectivePolicy(org, {
+        examinationPolicy: OFF,
+        routing: { forbid: DEFAULT_ROUTING_POLICY.roles.arbiter },
+      }),
     ).toThrow(PolicyWideningError);
   });
 });

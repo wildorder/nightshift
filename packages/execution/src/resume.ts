@@ -506,8 +506,7 @@ const retryFailedCheck = async (
         : {
             previous: {
               target: last.chosen,
-              ladder: last.ladder,
-              rungIndex: last.rung?.index,
+              position: last.position,
               climb: true,
             },
           }),

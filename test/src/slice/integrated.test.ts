@@ -162,9 +162,9 @@ describe("a job that works, end to end", () => {
       scope,
       String(job.nodeId) as never,
     );
-    // P8: the org's rules over its ladders. An unclassified job starts standard.
-    expect(routing[0]?.ruleId).toBe("R-default");
-    expect(routing[0]?.ladder).toBe("claude");
+    // D-RR-01: the implementer's list, its first route.
+    expect(routing[0]?.ruleId).toBe("implementer");
+    expect(routing[0]?.role).toBe("implementer");
     expect(routing[0]?.eligibleOptions.length).toBeGreaterThan(0);
 
     await settled(driver, job.jobId);

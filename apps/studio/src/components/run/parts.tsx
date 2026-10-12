@@ -81,8 +81,11 @@ export const Routes_ = ({ routes }: { readonly routes: readonly RoutingDecision[
               {route.wasOverride ? " override" : ""}
             </td>
             <td className="p-1">
-              {route.ladder ?? "—"}
-              {route.rung === undefined ? "" : ` ${route.rung.tier}[${route.rung.index}]`}
+              {route.position !== undefined
+                ? `${route.role ?? "?"} choice ${route.position + 1}`
+                : route.ladder === undefined
+                  ? "—"
+                  : `${route.ladder}${route.rung === undefined ? "" : ` ${route.rung.tier}`}`}
             </td>
             <td className="p-1">{route.ruleId}</td>
             <td className="p-1">

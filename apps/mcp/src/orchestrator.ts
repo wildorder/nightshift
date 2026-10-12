@@ -45,8 +45,6 @@ import {
   ReversibilitySchema,
   StrandIdSchema,
   type Testability,
-  type Tier,
-  TierSchema,
 } from "@nightshift/contracts";
 import {
   buildTree,
@@ -820,7 +818,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         // 2. Delegation authority and depth, from `core`.
         const check = await checkDelegationOrRefuse(state, attached);
 
-        // 3. Where it runs, and why: the run's rules over its ladders (D-P8-04).
+        // 3. Where it runs, and why: the run's role lists (D-RR-01).
         const pins = pinsOf(input);
         const route = chooseRoute(attached, job, pins);
 
@@ -858,8 +856,8 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
             model: route.target.model,
             wasOverride: route.wasOverride,
             ruleId: route.ruleId,
-            ladder: route.ladder ?? null,
-            tier: route.rung?.tier ?? null,
+            role: route.role ?? null,
+            position: route.position ?? null,
           },
         );
       }),
@@ -963,8 +961,8 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         "interrupted. Read its outcomeReason first: a retry repeats the delegation as written. " +
         "Also recovers an already accepted queued attempt after reattaching, without queuing a duplicate. " +
         "Where it runs is Nightshift's: after a failure of the work (verification, a worker's " +
-        "own failure, an examination) it climbs one rung of its ladder; after a conflict, a stale " +
-        "base or an interrupt it keeps the model it had, because those say nothing about the model.",
+        "own failure, an examination) it moves one place down the role's preference list; after a " +
+        "conflict, a stale base or an interrupt it keeps the model it had, because those say nothing about the model.",
       inputSchema: { jobId: z.string().min(1) },
     },
     async ({ jobId }) =>
@@ -1294,8 +1292,8 @@ const delegateRepair = async (
       model: route.target.model,
       wasOverride: route.wasOverride,
       ruleId: route.ruleId,
-      ladder: route.ladder ?? null,
-      tier: route.rung?.tier ?? null,
+      role: route.role ?? null,
+      position: route.position ?? null,
     },
   );
 };
@@ -1306,8 +1304,6 @@ const delegateRepair = async (
 
 /** What `delegate` was called with. */
 type DelegateRequest = Omit<DelegateInput, "repair"> & {
-  readonly ladder?: string | undefined;
-  readonly tier?: Tier | undefined;
   readonly harness?: string | undefined;
   readonly effort?: Effort | undefined;
 };
@@ -1327,39 +1323,31 @@ interface DelegateInput {
 }
 
 /**
- * What a delegation may pin (D-P8-05): a ladder, a tier, a harness, a model, an
- * effort. Each is honoured only within the run's policy, and recorded as an
- * override. A pin never skips examination or escalation.
+ * What a delegation may pin (D-P8-05): a harness, a model, an effort. Each is
+ * honoured only within the run's policy, and recorded as an override. A pin
+ * never skips examination or escalation.
  */
 const PIN_INPUTS = {
-  ladder: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "Pin a ladder of the org's (a provider's): only when you know better than the rules.",
-    ),
-  tier: TierSchema.optional().describe(
-    "Pin where on the ladder to start: cheap, standard or frontier.",
-  ),
   harness: z
     .string()
     .min(1)
     .optional()
-    .describe("Pin a harness. Must be one the org's ladders use."),
-  model: z.string().min(1).optional().describe("Pin a model. Must be on the org's ladders."),
+    .describe("Pin a harness. Must be one the org's role lists use."),
+  model: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Pin a model, only when you know better than the org's preferences. Must be on one of its role lists.",
+    ),
   effort: EffortSchema.optional().describe("Pin a reasoning effort for the route."),
 };
 
 const pinsOf = (input: {
-  readonly ladder?: string | undefined;
-  readonly tier?: Tier | undefined;
   readonly harness?: string | undefined;
   readonly model?: string | undefined;
   readonly effort?: Effort | undefined;
 }): RoutePins => ({
-  ladder: input.ladder,
-  tier: input.tier,
   harness: input.harness,
   model: input.model,
   effort: input.effort,

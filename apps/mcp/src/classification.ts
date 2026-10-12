@@ -20,16 +20,14 @@ export const CLASSIFICATION_INPUTS = {
       "acceptance criteria say exactly what to change and how to know it is done, so no design " +
       "choice is left to the worker (a copy change, a rename, a deletion, a function whose " +
       "behaviour and tests you have specified). medium: some choices are the worker's. high: " +
-      "the worker has to work out what is wanted. Unset is medium. A job that is low risk, low " +
-      "ambiguity and strongly tested starts on the cheapest model, so say low when it is true.",
+      "the worker has to work out what is wanted. Unset is medium.",
   ),
   testability: TestabilitySchema.optional().describe(
-    "strong: the program's own checks exercise this change, so a cheap model's mistake is caught; " +
+    "strong: the program's own checks exercise this change, so a mistake is caught; " +
       "weak: they touch it only in passing; none: nothing checks it. Leave it unset if unsure: " +
       "unset is treated as weak, the conservative choice, not the cheap one.",
   ),
   jobKind: JobKindSchema.optional().describe(
-    "What kind of work it is: implement, fix, refactor, test, docs. Routing rules may start " +
-      "some kinds lower or higher on the ladder.",
+    "What kind of work it is: implement, fix, refactor, test, docs.",
   ),
 };

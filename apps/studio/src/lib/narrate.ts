@@ -20,9 +20,12 @@ const routedText: Render = (p) => {
   const model = String(chosen.model ?? "a model");
   if (p.purpose !== undefined) return `${String(p.purpose)} route: ${model}`;
   const attempt = typeof p.attempt === "number" ? p.attempt : 1;
-  const rung = (p.rung ?? {}) as { tier?: unknown };
   const where =
-    p.ladder === undefined ? model : `${model} (${String(p.ladder)}, ${String(rung.tier ?? "?")})`;
+    typeof p.position === "number"
+      ? `${model} (${String(p.role ?? "its role")}'s choice ${p.position + 1})`
+      : p.ladder === undefined
+        ? model
+        : `${model} (${String(p.ladder)})`;
   return attempt > 1
     ? `attempt ${attempt} on ${where}`
     : `routed to ${where} by ${String(p.ruleId ?? "its rule")}`;

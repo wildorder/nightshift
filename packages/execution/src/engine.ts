@@ -33,7 +33,6 @@ import {
   type RouteChoice,
   type RouteTarget,
   type RouteUsage,
-  type Tier,
 } from "@nightshift/contracts";
 import {
   blockedBy,
@@ -105,8 +104,8 @@ export interface RouteContext {
   readonly previous?:
     | {
         readonly target: RouteTarget;
-        readonly ladder?: string | undefined;
-        readonly rungIndex?: number | undefined;
+        /** Its place on its role's list (D-RR-01), when a list chose it. */
+        readonly position?: number | undefined;
         readonly climb: boolean;
       }
     | undefined;
@@ -116,8 +115,6 @@ export interface RouteContext {
 
 /** The pins a delegation may carry (D-P8-05). */
 export interface RoutePins {
-  readonly ladder?: string | undefined;
-  readonly tier?: Tier | undefined;
   readonly harness?: string | undefined;
   readonly model?: string | undefined;
   readonly effort?: Effort | undefined;
@@ -699,8 +696,8 @@ export const createEngine = (options: EngineOptions): Engine => {
         eligibleOptions: last.eligibleOptions,
         ruleId: last.ruleId,
         wasOverride: last.wasOverride,
-        ...(last.ladder === undefined ? {} : { ladder: last.ladder }),
-        ...(last.rung === undefined ? {} : { rung: last.rung }),
+        ...(last.role === undefined ? {} : { role: last.role }),
+        ...(last.position === undefined ? {} : { position: last.position }),
         ...(last.classification === undefined ? {} : { classification: last.classification }),
         ...(last.policyVersion === undefined ? {} : { policyVersion: last.policyVersion }),
       },
@@ -1018,8 +1015,7 @@ export const createEngine = (options: EngineOptions): Engine => {
             ? undefined
             : {
                 target: last.chosen,
-                ladder: last.ladder,
-                rungIndex: last.rung?.index,
+                position: last.position,
                 climb: failureClimbs(node),
               },
       });
@@ -1189,7 +1185,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       last.outcome === "verification_failed" ||
       (last.outcome === "failed" &&
         failureClimbs({ status: "failed", outcomeReason: reason ?? "" }));
-    return { target: last.chosen, ladder: last.ladder, rungIndex: last.rung?.index, climb };
+    return { target: last.chosen, position: last.position, climb };
   };
 
   /** Why a node last failed, as its `node.failed` event said. */

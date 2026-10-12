@@ -669,12 +669,19 @@ const duration = (run: Run): string => {
   return minutes === 0 ? `${seconds} s` : `${minutes} min ${seconds % 60} s`;
 };
 
+/** Where a route sat: its role's choice (D-RR-01), or the ladder of a route made before. */
+const placeOf = (route: RoutingDecision): string | undefined => {
+  if (route.position !== undefined) return `${route.role ?? "?"}'s choice ${route.position + 1}`;
+  if (route.ladder !== undefined) return `${route.ladder}, ${route.rung?.tier ?? "?"}`;
+  return undefined;
+};
+
 /** One route, as a reader wants it: where, by which rule, and how it ended. */
 const describeRoute = (route: RoutingDecision): string => {
+  const place = placeOf(route);
+  const effort = route.chosen.effort === undefined ? "" : `, ${route.chosen.effort} effort`;
   const where =
-    route.ladder === undefined
-      ? route.chosen.model
-      : `${route.chosen.model} (${route.ladder}, ${route.rung?.tier ?? "?"}${route.chosen.effort === undefined ? "" : `, ${route.chosen.effort} effort`})`;
+    place === undefined ? route.chosen.model : `${route.chosen.model} (${place}${effort})`;
   const how = route.wasOverride ? "pinned" : route.ruleId;
   return `${where} by ${how}: ${route.outcome}`;
 };

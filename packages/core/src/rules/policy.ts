@@ -4,8 +4,8 @@
  * Three pure functions, each the only way its fact is read:
  *
  * - {@link classificationOf}: what a job says about itself, with the
- *   **conservative** default for anything it left unsaid, so an unclassified job
- *   never lands on the cheapest rung by accident (D-P8-01).
+ *   **conservative** default for anything it left unsaid (D-P8-01). Recorded on
+ *   each routing decision; since D-RR-01 it no longer picks the route.
  * - {@link effectivePolicy}: the org's routing and examination policy, narrowed
  *   by the program's contract (which already carries its repository's narrowing,
  *   `inheritFromConfig`). Narrowing can only take away; anything that would add
@@ -24,19 +24,18 @@ import {
   type ExaminationRequirement,
   type ExecutionNode,
   type JobContract,
-  type Ladder,
   type ModelPrice,
   type OrgConfig,
   type ProgramContract,
   type RiskLevel,
+  ROUTING_ROLES,
+  type RouteSpec,
   type RouteUsage,
   type RoutingPolicy,
-  type RoutingRule,
+  type RoutingRole,
   type Run,
   sameRoute,
   stricterExaminationPolicy,
-  type Tier,
-  tierRank,
 } from "@nightshift/contracts";
 
 /**
@@ -63,7 +62,7 @@ export const conservativeDefaults = (
 
 /** A refusal to widen, naming what was asked for. */
 export interface Widening {
-  readonly field: "ladders" | "routes";
+  readonly field: "routes";
   readonly detail: string;
 }
 
@@ -71,80 +70,41 @@ export type EffectivePolicyResult =
   | { readonly ok: true; readonly policy: EffectivePolicy }
   | { readonly ok: false; readonly widenings: readonly Widening[] };
 
-/** A rule with its start raised to `minimum`, if it starts below it. */
-const raiseStart = (rule: RoutingRule, minimum: Tier | undefined): RoutingRule =>
-  minimum === undefined || tierRank(rule.start.tier) >= tierRank(minimum)
-    ? rule
-    : { ...rule, start: { ...rule.start, tier: minimum } };
-
 /**
  * The org's routing and examination, narrowed by `contract` (D-P8-03).
  *
- * Routing: keep the ladders the contract keeps, drop the routes it forbids and
- * any rung or ladder left empty, and raise every rule's starting tier to the
- * contract's minimum. A rule whose ladder was dropped starts on the first ladder
- * left, at the same tier. Examination: the stricter of the two, field by field.
+ * Routing: every role keeps its order, less the routes on harnesses the
+ * contract does not keep and the routes it forbids (D-RR-01). Examination: the
+ * stricter of the two, field by field.
  *
- * Refused, with every reason at once: a ladder the org does not have, or a
- * narrowing that leaves no route at all.
+ * Refused, with every reason at once: a narrowing that leaves a role nothing
+ * to run on.
  */
 export const effectivePolicy = (
   org: Pick<OrgConfig, "routingPolicy" | "examinationPolicy" | "version">,
   contract: Pick<ProgramContract, "routing" | "examinationPolicy">,
 ): EffectivePolicyResult => {
   const narrowing = contract.routing;
-  const widenings: Widening[] = [];
-  const orgLadders = Object.keys(org.routingPolicy.ladders);
+  const forbidden = narrowing?.forbid ?? [];
+  const keeps = (route: RouteSpec): boolean =>
+    (narrowing?.harnesses === undefined || narrowing.harnesses.includes(route.harness)) &&
+    !forbidden.some((banned) => sameRoute(banned, route));
 
-  for (const name of narrowing?.ladders ?? []) {
-    if (!orgLadders.includes(name)) {
+  const widenings: Widening[] = [];
+  const roles = {} as Record<RoutingRole, RouteSpec[]>;
+  for (const role of ROUTING_ROLES) {
+    roles[role] = org.routingPolicy.roles[role].filter(keeps);
+    if (roles[role].length === 0) {
       widenings.push({
-        field: "ladders",
-        detail: `ladder "${name}" is not one the org has (${orgLadders.join(", ")}); a program may only keep the org's ladders, not add one`,
+        field: "routes",
+        detail: `the narrowing leaves the ${role} no route at all: every route on its list is on a harness it drops or forbidden`,
       });
     }
   }
-
-  const kept =
-    narrowing?.ladders === undefined
-      ? orgLadders
-      : orgLadders.filter((name) => narrowing.ladders?.includes(name));
-  const forbidden = narrowing?.forbid ?? [];
-  const ladders: Record<string, Ladder> = {};
-  for (const name of kept) {
-    const rungs = (org.routingPolicy.ladders[name] ?? [])
-      .map((rung) => ({
-        ...rung,
-        routes: rung.routes.filter(
-          (route) => !forbidden.some((banned) => sameRoute(banned, route)),
-        ),
-      }))
-      .filter((rung) => rung.routes.length > 0);
-    if (rungs.length > 0) ladders[name] = rungs as Ladder;
-  }
-
-  const remaining = Object.keys(ladders);
-  if (remaining.length === 0) {
-    widenings.push({
-      field: "routes",
-      detail:
-        "the narrowing leaves no route at all: every ladder was dropped or every route on it forbidden",
-    });
-  }
   if (widenings.length > 0) return { ok: false, widenings };
 
-  const first = remaining[0] as string;
-  const rules = org.routingPolicy.rules.map((rule) => {
-    const onKeptLadder: RoutingRule =
-      ladders[rule.start.ladder] === undefined
-        ? { ...rule, start: { ...rule.start, ladder: first } }
-        : rule;
-    return raiseStart(onKeptLadder, narrowing?.minimumTier);
-  });
-
   const routingPolicy: RoutingPolicy = {
-    ladders,
-    rules,
+    roles: roles as RoutingPolicy["roles"],
     unavailable: org.routingPolicy.unavailable,
     prices: org.routingPolicy.prices,
   };
@@ -187,7 +147,8 @@ export const examinationRequirementFor = (
 ): ExaminationRequirement => policy[risk];
 
 /**
- * Whether a retry after this ending should climb a rung (D-P8-07). A
+ * Whether a retry after this ending should move down its role's list (D-P8-07,
+ * as D-RR-01 keeps it). A
  * verification, examination or worker failure says something about the model;
  * a merge conflict, a stale base, an interrupt or an unavailable route says
  * nothing about it, and the retry keeps the route.

@@ -1,4 +1,4 @@
-/** Who examines and who arbitrates, over the default ladders (D-P8-10, D-P8-13, SC-P8-09). */
+/** Who examines and who arbitrates, from their roles' lists (D-P8-10, D-P8-13, D-RR-01). */
 import { DEFAULT_ROUTING_POLICY, type ModelPolicy } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { RoutingRefusedError } from "./errors.js";
@@ -14,33 +14,43 @@ const BOTH: ModelPolicy = {
   allowedModels: [],
   forbiddenModels: [],
 };
+// The default examiner list: Astra, Opus, Sol, Sonnet. The arbiter's: Opus, Astra.
 const base = { policy: DEFAULT_ROUTING_POLICY, policyVersion: 1, modelPolicy: BOTH };
 const SONNET = { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" };
+const OPUS = { harness: "claude", provider: "anthropic", model: "claude-opus-5-5" };
 const ASTRA = { harness: "codex", provider: "openai", model: "gpt-6-astra" };
 
 describe("examinerRoute (D-P8-10)", () => {
-  it("examines high risk by the other provider's frontier model", () => {
+  it("is the first route on the examiner's list", () => {
     const route = examinerRoute({
       ...base,
-      job: { risk: "high" },
       implementer: SONNET,
       mustDifferModel: true,
       mustDifferProvider: true,
     });
     expect(route.target).toMatchObject({ provider: "openai", model: "gpt-6-astra" });
-    expect(route.rung?.tier).toBe("frontier");
+    expect(route).toMatchObject({ role: "examiner", position: 0, ruleId: "examiner" });
   });
 
-  it("examines medium risk by a different model at the standard tier", () => {
+  it("passes over a route as independent as the policy asks", () => {
     const route = examinerRoute({
       ...base,
-      job: { risk: "medium" },
-      implementer: SONNET,
+      implementer: ASTRA,
       mustDifferModel: true,
       mustDifferProvider: false,
     });
-    expect(route.target.model).not.toBe(SONNET.model);
-    expect(route.rung?.tier).toBe("standard");
+    expect(route.target.model).toBe(OPUS.model);
+  });
+
+  it("passes over a limited route to the next independent one", () => {
+    const route = examinerRoute({
+      ...base,
+      implementer: SONNET,
+      mustDifferModel: true,
+      mustDifferProvider: true,
+      unavailable: [{ harness: "codex", model: "gpt-6-astra" }],
+    });
+    expect(route.target.model).toBe("gpt-6-sol");
   });
 
   it("refuses when the program permits nothing independent enough", () => {
@@ -48,7 +58,6 @@ describe("examinerRoute (D-P8-10)", () => {
       examinerRoute({
         ...base,
         modelPolicy: { ...BOTH, allowedProviders: ["anthropic"] },
-        job: { risk: "high" },
         implementer: SONNET,
         mustDifferModel: true,
         mustDifferProvider: true,
@@ -58,57 +67,38 @@ describe("examinerRoute (D-P8-10)", () => {
 });
 
 describe("strongestExaminerRoute (D-P8-10, as amended 2026-10-12)", () => {
-  it("is another provider's frontier model when one can run", () => {
-    const route = strongestExaminerRoute({ ...base, implementer: SONNET });
-    expect(route.target.model).toBe("gpt-6-astra");
-    expect(route.rung?.tier).toBe("frontier");
-  });
-
-  it("stays on the frontier with the implementer's provider when the other is limited", () => {
+  it("is the first route on the examiner's list that can run, whatever built the work", () => {
     const route = strongestExaminerRoute({
       ...base,
-      implementer: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
-      unavailable: [{ harness: "claude", model: "claude-opus-5-5" }],
+      implementer: OPUS,
+      unavailable: [{ harness: "codex", model: "gpt-6-astra" }],
     });
-    expect(route.target.model).toBe("gpt-6-astra");
-    expect(route.rung?.tier).toBe("frontier");
-  });
-
-  it("takes the implementer's own model only when nothing else at the top can run", () => {
-    const route = strongestExaminerRoute({
-      ...base,
-      implementer: ASTRA,
-      unavailable: [{ harness: "claude", model: "claude-opus-5-5" }],
-    });
-    expect(route.target.model).toBe(ASTRA.model);
+    expect(route.target.model).toBe(OPUS.model);
+    expect(route.ruleId).toBe("examiner-strongest");
   });
 });
 
 describe("arbiterRoute (D-P8-13)", () => {
-  it("is a frontier model neither side used", () => {
-    const route = arbiterRoute({ ...base, implementer: SONNET, examiner: ASTRA });
-    expect(route.target.model).toBe("claude-opus-5-5");
-    expect(route.rung?.tier).toBe("frontier");
+  it("is the first route on the arbiter's list neither side used", () => {
+    const route = arbiterRoute({ ...base, implementer: OPUS, examiner: SONNET });
+    expect(route.target.model).toBe(ASTRA.model);
   });
 
-  it("never goes below frontier: with both frontier models taken, it reuses the examiner's, fresh (as amended 2026-09-26)", () => {
-    const opus = { harness: "claude", provider: "anthropic", model: "claude-opus-5-5" };
-    const route = arbiterRoute({ ...base, implementer: opus, examiner: ASTRA });
-    expect(route.target.model).toBe(ASTRA.model);
-    expect(route.rung?.tier).toBe("frontier");
-    expect(arbiterSharesModelWith(route.target, { implementer: opus, examiner: ASTRA })).toBe(
-      "examiner",
+  it("takes a side's model, fresh, when every route on the list is a side's", () => {
+    const route = arbiterRoute({ ...base, implementer: OPUS, examiner: ASTRA });
+    expect(route.target.model).toBe(OPUS.model);
+    expect(arbiterSharesModelWith(route.target, { implementer: OPUS, examiner: ASTRA })).toBe(
+      "implementer",
     );
   });
 
-  it("takes the implementer's frontier model only when the examiner's cannot run", () => {
-    const opus = { harness: "claude", provider: "anthropic", model: "claude-opus-5-5" };
+  it("takes the other side's model when the first cannot run", () => {
     const route = arbiterRoute({
       ...base,
-      implementer: opus,
+      implementer: OPUS,
       examiner: ASTRA,
-      unavailable: [{ harness: "codex", model: ASTRA.model }],
+      unavailable: [{ harness: "claude", model: OPUS.model }],
     });
-    expect(route.target.model).toBe(opus.model);
+    expect(route.target.model).toBe(ASTRA.model);
   });
 });

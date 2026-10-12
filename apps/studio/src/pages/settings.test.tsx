@@ -6,24 +6,33 @@ import { describe, expect, it } from "vitest";
 import { mountStudio } from "../test-support.js";
 
 describe("organisation settings", () => {
-  it("edits the examination policy and a ladder, and saves as the next version", async () => {
+  it("edits the examination policy and a role's list, and saves as the next version", async () => {
     const { stores, orgId } = await mountStudio(async (stores, f, orgId) => {
       await stores.projects.put(makeProject(f, { orgId }));
     }, "/settings");
     await waitFor(() => expect(screen.getByText(/configuration version 0/)).toBeTruthy());
 
     await userEvent.click(screen.getByLabelText("low required"));
-    const model = screen.getAllByLabelText("model")[0];
-    if (model === undefined) throw new Error("no route row");
-    await userEvent.clear(model);
-    await userEvent.type(model, "claude-haiku-next");
+    // The implementer's first choice becomes Fable, and Astra moves to the top of the examiner's list.
+    await userEvent.selectOptions(
+      screen.getByLabelText("Implementer choice 1"),
+      "claude-fable-5-1",
+    );
+    await userEvent.click(screen.getByLabelText("Move Examiner choice 2 up"));
     await userEvent.click(screen.getByRole("button", { name: /Save as version 1/ }));
 
     await waitFor(() => expect(screen.getByText("Saved.")).toBeTruthy());
     const stored = await stores.orgConfigs.get(orgId);
     expect(stored?.version).toBe(1);
     expect(stored?.examinationPolicy.low.required).toBe(true);
-    expect(stored?.routingPolicy.ladders.claude?.[0]?.routes[0]?.model).toBe("claude-haiku-next");
+    expect(stored?.routingPolicy.roles.implementer[0]).toEqual({
+      harness: "claude",
+      model: "claude-fable-5-1",
+    });
+    expect(stored?.routingPolicy.roles.examiner.slice(0, 2).map((route) => route.model)).toEqual([
+      "claude-opus-5-5",
+      "gpt-6-astra",
+    ]);
     await waitFor(() => expect(screen.getByText(/configuration version 1/)).toBeTruthy());
   });
 
@@ -52,10 +61,10 @@ describe("organisation settings", () => {
       await stores.projects.put(makeProject(f, { orgId }));
     }, "/settings");
     await waitFor(() => expect(screen.getByText(/configuration version 0/)).toBeTruthy());
-    const rules = screen.getByLabelText("Rules");
-    await userEvent.clear(rules);
-    await userEvent.type(rules, "[[]");
+    await userEvent.click(screen.getByRole("button", { name: "Add a model to Orchestrator" }));
     await userEvent.click(screen.getByRole("button", { name: /Save as version 1/ }));
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/routing policy/));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toMatch(/Orchestrator has a row with no model/),
+    );
   });
 });

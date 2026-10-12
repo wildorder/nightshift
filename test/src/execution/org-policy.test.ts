@@ -68,12 +68,12 @@ describe("the same fixture under two org configurations (SC-P8-14)", () => {
     const before = await started();
     expect(before).toMatchObject({
       version: 0,
-      route: { ruleId: "R-bounded", ladder: "claude", rung: { tier: "cheap" } },
+      route: { ruleId: "implementer", position: 0, target: { model: "claude-sonnet-5" } },
       examined: { required: false },
     });
 
-    // The owner edits the configuration: bounded work starts on Codex's
-    // workhorse rung, and low-risk work is examined and blocks.
+    // The owner edits the configuration: work starts on Codex's workhorse, and
+    // low-risk work is examined and blocks.
     await stores.orgConfigs.put({
       schemaVersion: 1,
       orgId,
@@ -82,7 +82,13 @@ describe("the same fixture under two org configurations (SC-P8-14)", () => {
       updatedAt: nowIso(clock),
       routingPolicy: {
         ...DEFAULT_ROUTING_POLICY,
-        rules: [{ id: "R-codex", when: {}, start: { ladder: "codex", tier: "standard" } }],
+        roles: {
+          ...DEFAULT_ROUTING_POLICY.roles,
+          implementer: [
+            { harness: "codex", model: "gpt-6-sol" },
+            { harness: "claude", model: "claude-sonnet-5" },
+          ],
+        },
       },
       examinationPolicy: {
         ...DEFAULT_EXAMINATION_POLICY,
@@ -94,9 +100,9 @@ describe("the same fixture under two org configurations (SC-P8-14)", () => {
     expect(after).toMatchObject({
       version: 1,
       route: {
-        ruleId: "R-codex",
-        ladder: "codex",
-        rung: { tier: "standard" },
+        ruleId: "implementer",
+        role: "implementer",
+        position: 0,
         target: { model: "gpt-6-sol" },
       },
       examined: { required: true, blockOnMaterialFindings: true },

@@ -1,16 +1,25 @@
 /**
- * Settings › organisation (T3, D-P11-10): the org's routing and examination
- * policy, edited and saved with the version it was read at. A save over a newer
- * version is refused by the store (`StaleWriteError`) and shown as such, never
- * retried silently.
+ * Settings › organisation (T3, D-P11-10; by role since D-RR-01): which models
+ * run each role, in order of preference, and how work is examined, edited and
+ * saved with the version it was read at. A save over a newer version is refused
+ * by the store (`StaleWriteError`) and shown as such, never retried silently.
  */
-import type { ExaminationPolicy, OrgConfig, RouteSpec, RoutingPolicy } from "@nightshift/contracts";
+import type {
+  ExaminationPolicy,
+  OrgConfig,
+  RolePreferences,
+  RouteSpec,
+  RoutingPolicy,
+  RoutingRole,
+} from "@nightshift/contracts";
 import {
+  catalogEntry,
   defaultOrgConfig,
   EffortSchema,
   ExaminationPolicySchema,
+  MODEL_CATALOG,
+  ROUTING_ROLES,
   RoutingPolicySchema,
-  TierSchema,
 } from "@nightshift/contracts";
 import { StaleWriteError } from "@nightshift/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,20 +33,44 @@ const REQUIREMENTS = [
   ["required", "Examined"],
   ["mustDifferModel", "By a different model"],
   ["mustDifferProvider", "By a different provider"],
-  ["blockOnMaterialFindings", "A material finding blocks landing"],
+  ["blockOnMaterialFindings", "A serious finding blocks landing"],
 ] as const;
 
+/** What each role is, said the way a person would. */
+const ROLES: Readonly<Record<RoutingRole, { readonly title: string; readonly about: string }>> = {
+  orchestrator: {
+    title: "Orchestrator",
+    about: "Plans the run and hands out the work.",
+  },
+  implementer: {
+    title: "Implementer",
+    about:
+      "Writes the code for each job. When a job's work fails and is retried, the retry moves to the next model down this list.",
+  },
+  examiner: {
+    title: "Examiner",
+    about:
+      "Reviews finished work before it lands. Takes the first model that is independent enough of the one that wrote the code.",
+  },
+  arbiter: {
+    title: "Arbiter",
+    about:
+      "Settles a dispute between the implementer and the examiner. Prefers a model neither of them used.",
+  },
+};
+
+/** The `<select>` value for a model outside the catalog. */
+const OTHER = "__other__";
+
 interface Draft {
-  readonly ladders: RoutingPolicy["ladders"];
-  readonly rulesJson: string;
+  readonly roles: RolePreferences;
   readonly unavailableJson: string;
   readonly pricesJson: string;
   readonly examinationPolicy: ExaminationPolicy;
 }
 
 const draftOf = (config: OrgConfig): Draft => ({
-  ladders: config.routingPolicy.ladders,
-  rulesJson: JSON.stringify(config.routingPolicy.rules, null, 2),
+  roles: config.routingPolicy.roles,
   unavailableJson: JSON.stringify(config.routingPolicy.unavailable, null, 2),
   pricesJson: JSON.stringify(config.routingPolicy.prices, null, 2),
   examinationPolicy: config.examinationPolicy,
@@ -57,11 +90,18 @@ const parseJson = (text: string, what: string): unknown => {
 export const policiesOf = (
   draft: Draft,
 ): { readonly routingPolicy: RoutingPolicy; readonly examinationPolicy: ExaminationPolicy } => {
+  for (const role of ROUTING_ROLES) {
+    if (draft.roles[role].length === 0) {
+      throw new Error(`${ROLES[role].title} needs at least one model.`);
+    }
+    if (draft.roles[role].some((route) => route.model.trim() === "")) {
+      throw new Error(`${ROLES[role].title} has a row with no model chosen.`);
+    }
+  }
   const routing = RoutingPolicySchema.safeParse({
-    ladders: draft.ladders,
-    rules: parseJson(draft.rulesJson, "rules"),
-    unavailable: parseJson(draft.unavailableJson, "unavailable routes"),
-    prices: parseJson(draft.pricesJson, "prices"),
+    roles: draft.roles,
+    unavailable: parseJson(draft.unavailableJson, "Routes nobody may use"),
+    prices: parseJson(draft.pricesJson, "Prices"),
   });
   if (!routing.success) {
     throw new Error(
@@ -73,150 +113,177 @@ export const policiesOf = (
   return { routingPolicy: routing.data, examinationPolicy: examination.data };
 };
 
-const RouteRow = ({
+const field = "h-8 rounded-md border border-input bg-background px-2 text-sm";
+
+/** One place on a role's list: which model, how hard it thinks, and where it sits. */
+const ChoiceRow = ({
+  role,
+  index,
+  count,
   route,
   onChange,
+  onMove,
   onRemove,
 }: {
+  readonly role: RoutingRole;
+  readonly index: number;
+  readonly count: number;
   readonly route: RouteSpec;
   readonly onChange: (next: RouteSpec) => void;
+  readonly onMove: (by: -1 | 1) => void;
   readonly onRemove: () => void;
-}) => (
-  <div className="flex items-center gap-1 text-sm">
-    <input
-      aria-label="harness"
-      className="w-24 h-8 rounded-md border border-input bg-background px-2 text-sm"
-      value={route.harness}
-      onChange={(e) => onChange({ ...route, harness: e.target.value })}
-    />
-    <input
-      aria-label="model"
-      className="w-56 h-8 rounded-md border border-input bg-background px-2 text-sm"
-      value={route.model}
-      onChange={(e) => onChange({ ...route, model: e.target.value })}
-    />
-    <select
-      aria-label="effort"
-      className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-      value={route.effort ?? ""}
-      onChange={(e) => {
-        const { effort: _effort, ...rest } = route;
-        onChange(
-          e.target.value === "" ? rest : { ...rest, effort: EffortSchema.parse(e.target.value) },
-        );
-      }}
-    >
-      <option value="">(default effort)</option>
-      {EffortSchema.options.map((effort) => (
-        <option key={effort} value={effort}>
-          {effort}
+}) => {
+  const known = catalogEntry(route.model);
+  const [other, setOther] = useState(known === undefined && route.model !== "");
+  const name = `${ROLES[role].title} choice ${index + 1}`;
+  return (
+    <li className="flex flex-wrap items-center gap-2 text-sm">
+      <span className="w-6 text-right tabular-nums text-muted-foreground">{index + 1}.</span>
+      <select
+        aria-label={name}
+        className={`${field} w-56`}
+        value={other ? OTHER : (known?.model ?? "")}
+        onChange={(e) => {
+          if (e.target.value === OTHER) {
+            setOther(true);
+            return;
+          }
+          setOther(false);
+          const entry = catalogEntry(e.target.value);
+          if (entry !== undefined)
+            onChange({ ...route, harness: entry.harness, model: entry.model });
+        }}
+      >
+        <option value="" disabled>
+          Choose a model…
         </option>
-      ))}
-    </select>
-    <button type="button" className="text-xs underline" onClick={onRemove}>
-      remove
-    </button>
-  </div>
-);
+        {(["Anthropic", "OpenAI"] as const).map((provider) => (
+          <optgroup key={provider} label={provider}>
+            {MODEL_CATALOG.filter((entry) => entry.provider === provider).map((entry) => (
+              <option key={entry.model} value={entry.model}>
+                {entry.label}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+        <option value={OTHER}>Another model…</option>
+      </select>
+      {other ? (
+        <>
+          <select
+            aria-label={`${name} harness`}
+            className={field}
+            value={route.harness}
+            onChange={(e) => onChange({ ...route, harness: e.target.value })}
+          >
+            <option value="claude">Claude Code</option>
+            <option value="codex">Codex</option>
+          </select>
+          <input
+            aria-label={`${name} model id`}
+            placeholder="model id"
+            className={`${field} w-48`}
+            value={route.model}
+            onChange={(e) => onChange({ ...route, model: e.target.value })}
+          />
+        </>
+      ) : null}
+      <select
+        aria-label={`${name} effort`}
+        className={field}
+        value={route.effort ?? ""}
+        onChange={(e) => {
+          const { effort: _effort, ...rest } = route;
+          onChange(
+            e.target.value === "" ? rest : { ...rest, effort: EffortSchema.parse(e.target.value) },
+          );
+        }}
+      >
+        <option value="">Default thinking</option>
+        {EffortSchema.options.map((effort) => (
+          <option key={effort} value={effort}>
+            {effort} thinking
+          </option>
+        ))}
+      </select>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={`Move ${name} up`}
+        disabled={index === 0}
+        onClick={() => onMove(-1)}
+      >
+        ↑
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={`Move ${name} down`}
+        disabled={index === count - 1}
+        onClick={() => onMove(1)}
+      >
+        ↓
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={`Remove ${name}`}
+        disabled={count === 1}
+        onClick={onRemove}
+      >
+        Remove
+      </Button>
+    </li>
+  );
+};
 
-const Ladders = ({
-  ladders,
+/** A role's list, in order of preference. */
+const RoleList = ({
+  role,
+  routes,
   onChange,
 }: {
-  readonly ladders: RoutingPolicy["ladders"];
-  readonly onChange: (next: RoutingPolicy["ladders"]) => void;
+  readonly role: RoutingRole;
+  readonly routes: readonly RouteSpec[];
+  readonly onChange: (next: RouteSpec[]) => void;
 }) => (
-  <div className="flex flex-col gap-3">
-    {Object.entries(ladders).map(([name, rungs]) => (
-      <fieldset key={name} className="rounded-lg border p-3">
-        <legend className="px-1 font-medium">{name}</legend>
-        {rungs.map((rung, r) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: rungs are positional and edited by position
-          <div key={`${name}-${r}`} className="mb-2 ml-2">
-            <div className="flex items-center gap-2 text-sm">
-              <select
-                aria-label={`${name} rung ${r + 1} tier`}
-                className="h-8 rounded-md border border-input bg-background px-2 text-sm"
-                value={rung.tier}
-                onChange={(e) =>
-                  onChange({
-                    ...ladders,
-                    [name]: rungs.map((x, i) =>
-                      i === r ? { ...x, tier: TierSchema.parse(e.target.value) } : x,
-                    ),
-                  })
-                }
-              >
-                {TierSchema.options.map((tier) => (
-                  <option key={tier} value={tier}>
-                    {tier}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="text-xs underline"
-                onClick={() =>
-                  onChange({
-                    ...ladders,
-                    [name]: rungs.map((x, i) =>
-                      i === r ? { ...x, routes: [...x.routes, { harness: "", model: "" }] } : x,
-                    ),
-                  })
-                }
-              >
-                add route
-              </button>
-              <button
-                type="button"
-                className="text-xs underline"
-                onClick={() => onChange({ ...ladders, [name]: rungs.filter((_, i) => i !== r) })}
-              >
-                remove rung
-              </button>
-            </div>
-            {rung.routes.map((route, i) => (
-              <RouteRow
-                // biome-ignore lint/suspicious/noArrayIndexKey: routes are positional and edited by position
-                key={`${name}-${r}-${i}`}
-                route={route}
-                onChange={(next) =>
-                  onChange({
-                    ...ladders,
-                    [name]: rungs.map((x, ri) =>
-                      ri === r
-                        ? { ...x, routes: x.routes.map((y, yi) => (yi === i ? next : y)) }
-                        : x,
-                    ),
-                  })
-                }
-                onRemove={() =>
-                  onChange({
-                    ...ladders,
-                    [name]: rungs.map((x, ri) =>
-                      ri === r ? { ...x, routes: x.routes.filter((_, yi) => yi !== i) } : x,
-                    ),
-                  })
-                }
-              />
-            ))}
-          </div>
-        ))}
-        <button
-          type="button"
-          className="ml-2 text-xs underline"
-          onClick={() =>
-            onChange({
-              ...ladders,
-              [name]: [...rungs, { tier: "frontier", routes: [{ harness: "", model: "" }] }],
-            })
-          }
-        >
-          add rung
-        </button>
-      </fieldset>
-    ))}
-  </div>
+  <fieldset className="rounded-lg border p-3">
+    <legend className="px-1 font-medium">{ROLES[role].title}</legend>
+    <p className="mb-2 text-xs text-muted-foreground">{ROLES[role].about}</p>
+    <ol className="flex flex-col gap-1">
+      {routes.map((route, index) => (
+        <ChoiceRow
+          // biome-ignore lint/suspicious/noArrayIndexKey: a choice is its place on the list
+          key={`${role}-${index}-${route.model}`}
+          role={role}
+          index={index}
+          count={routes.length}
+          route={route}
+          onChange={(next) => onChange(routes.map((r, i) => (i === index ? next : r)))}
+          onMove={(by) => {
+            const next = [...routes];
+            const [moved] = next.splice(index, 1);
+            if (moved !== undefined) next.splice(index + by, 0, moved);
+            onChange(next);
+          }}
+          onRemove={() => onChange(routes.filter((_, i) => i !== index))}
+        />
+      ))}
+    </ol>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="mt-2"
+      aria-label={`Add a model to ${ROLES[role].title}`}
+      onClick={() => onChange([...routes, { harness: "claude", model: "" }])}
+    >
+      Add a model
+    </Button>
+  </fieldset>
 );
 
 export const OrgSettingsPage = () => {
@@ -322,14 +389,37 @@ export const OrgSettingsPage = () => {
       )}
 
       <form
-        className="flex flex-col gap-4"
+        className="flex flex-col gap-6"
         onSubmit={(event) => {
           event.preventDefault();
           save.mutate();
         }}
       >
+        <div className="flex flex-col gap-3">
+          <div>
+            <h2 className="font-semibold">Who runs what</h2>
+            <p className="text-sm text-muted-foreground">
+              Each role tries its models in order. If one has hit a usage limit or can't start, the
+              next one takes over, and the limited one comes back once its limit resets.
+            </p>
+          </div>
+          {ROUTING_ROLES.map((role) => (
+            <RoleList
+              key={role}
+              role={role}
+              routes={draft.roles[role]}
+              onChange={(routes) =>
+                setDraft({ ...draft, roles: { ...draft.roles, [role]: routes } })
+              }
+            />
+          ))}
+        </div>
+
         <div>
-          <h2 className="mb-1 font-semibold">Examination policy</h2>
+          <h2 className="font-semibold">Review</h2>
+          <p className="mb-2 text-sm text-muted-foreground">
+            How work is examined before it lands, by the risk the job was given.
+          </p>
           <table className="text-sm">
             <thead>
               <tr>
@@ -340,7 +430,8 @@ export const OrgSettingsPage = () => {
                   </th>
                 ))}
                 <th className="p-1 text-left font-normal">
-                  If that examiner is rate-limited, use the strongest model now
+                  If no independent examiner is free, review now with the first available (instead
+                  of waiting)
                 </th>
               </tr>
             </thead>
@@ -393,33 +484,35 @@ export const OrgSettingsPage = () => {
           </table>
         </div>
 
-        <div>
-          <h2 className="mb-1 font-semibold">Ladders</h2>
-          <Ladders
-            ladders={draft.ladders}
-            onChange={(ladders) => setDraft({ ...draft, ladders })}
-          />
-        </div>
-
-        {(
-          [
-            ["rulesJson", "Rules", "first match wins; the last must match everything"],
-            ["unavailableJson", "Unavailable routes", "routes the ladders may not use right now"],
-            ["pricesJson", "Prices", "per model, dollars per million tokens"],
-          ] as const
-        ).map(([key, label, hint]) => (
-          <div key={key}>
-            <h2 className="mb-1 font-semibold">{label}</h2>
-            <p className="mb-1 text-xs text-muted-foreground">{hint}</p>
-            <textarea
-              aria-label={label}
-              className="w-full rounded-md border border-input bg-background p-2 font-mono text-xs"
-              rows={8}
-              value={draft[key]}
-              onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
-            />
-          </div>
-        ))}
+        <details>
+          <summary className="cursor-pointer text-sm font-semibold">Advanced</summary>
+          {(
+            [
+              [
+                "unavailableJson",
+                "Routes nobody may use",
+                "Models to skip for every role, e.g. one being retired.",
+              ],
+              [
+                "pricesJson",
+                "Prices",
+                "Per model, dollars per million tokens, for cost estimates.",
+              ],
+            ] as const
+          ).map(([key, label, hint]) => (
+            <div key={key} className="mt-3">
+              <h3 className="mb-1 text-sm font-medium">{label}</h3>
+              <p className="mb-1 text-xs text-muted-foreground">{hint}</p>
+              <textarea
+                aria-label={label}
+                className="w-full rounded-md border border-input bg-background p-2 font-mono text-xs"
+                rows={6}
+                value={draft[key]}
+                onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+              />
+            </div>
+          ))}
+        </details>
 
         <div className="flex items-center gap-3">
           <Button type="submit" disabled={save.isPending}>

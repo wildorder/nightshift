@@ -1,12 +1,12 @@
 /**
  * `@nightshift/routing` — model and harness selection.
  *
- * P8's rule, `ruleRoute` (D-P8-04 … D-P8-07): the first rule of an org's
- * policy that matches a job's classification names a ladder and a tier, and
- * the first eligible route from there, sideways then across then up, is the
- * choice. Eligible means the compatibility table can run it, the program's
- * model policy permits it, it is not unavailable, and it satisfies the
- * orchestrator's pins. Every option considered is recorded, with why not.
+ * `roleRoute` (D-RR-01, replacing P8's ladders and rules): the first eligible
+ * route on the role's list in the org's policy is the choice, and a retry after
+ * the work failed starts one place further down. Eligible means the
+ * compatibility table can run it, the program's model policy permits it, it is
+ * not unavailable, and it satisfies the orchestrator's pins. Every option
+ * considered is recorded, with why not.
  *
  * P5's `configuredRoute` is retired: a run that recorded no policy is routed
  * over the seeded org default, narrowed by its contract (`policyOfRun`).
@@ -33,10 +33,9 @@ export {
   strongestExaminerRoute,
 } from "./examiners.js";
 export {
-  firstMatchingRule,
+  type Candidate,
   type PreviousAttempt,
+  type RoleRouteInput,
   type RoutePins,
-  type RuleRouteInput,
-  ruleMatches,
-  ruleRoute,
-} from "./rules.js";
+  roleRoute,
+} from "./roles.js";
