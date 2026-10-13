@@ -23,7 +23,6 @@ const MCP: McpLaunch = {
 
 describe("the command line (D-P5-02)", () => {
   const args = buildCodexArgs({
-    prompt: "-- a brief that starts like a flag",
     model: { harness: "codex", provider: "openai", model: "gpt-5.5" },
     worktree: "/state/wt/1",
     mcp: MCP,
@@ -49,7 +48,8 @@ describe("the command line (D-P5-02)", () => {
       "--skip-git-repo-check",
       "-m",
       "gpt-5.5",
-      "-- a brief that starts like a flag",
+      // The brief arrives on stdin, never as an argument (E2BIG, 2026-10-13).
+      "-",
     ]);
   });
 
@@ -126,7 +126,6 @@ describe.skipIf(process.platform === "win32")("the git guard (rule 5)", () => {
 describe("a rung's reasoning effort (P8)", () => {
   it("is passed as model_reasoning_effort when the route names one, and not otherwise", () => {
     const base = {
-      prompt: "BRIEF",
       worktree: "/state/wt/1",
       mcp: MCP,
     };
@@ -146,14 +145,13 @@ describe("a rung's reasoning effort (P8)", () => {
 describe("resuming a thread (P8, D-P8-15)", () => {
   it("is `exec resume`, with no -C and the thread before the brief", () => {
     const args = buildCodexArgs({
-      prompt: "ANSWER",
       model: { harness: "codex", provider: "openai", model: "gpt-6-sol" },
       worktree: "/state/wt/1",
       resumeSessionId: "01a0d7e4-2e3c-7c23-9051-e526953d7a48",
     });
     expect(args.slice(0, 3)).toEqual(["exec", "resume", "--json"]);
     expect(args).not.toContain("-C");
-    expect(args.slice(-2)).toEqual(["01a0d7e4-2e3c-7c23-9051-e526953d7a48", "ANSWER"]);
+    expect(args.slice(-2)).toEqual(["01a0d7e4-2e3c-7c23-9051-e526953d7a48", "-"]);
     expect(args.join(" ")).not.toContain("mcp_servers");
   });
 });

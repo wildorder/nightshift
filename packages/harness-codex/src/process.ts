@@ -36,10 +36,18 @@ export interface ChildOutputStream {
   on(event: "data", listener: (chunk: Uint8Array) => void): void;
 }
 
+/** The child's stdin, as this adapter writes it: the brief, then an end. */
+export interface ChildInputStream {
+  end(data: string): unknown;
+  /** A write to a child that has already gone is an `EPIPE` here, not a crash. */
+  on(event: "error", listener: (error: Error) => void): unknown;
+}
+
 /** A spawned Codex process, as this adapter observes it. */
 export interface SpawnedChild {
   /** Absent when the spawn failed before the OS assigned a pid. */
   readonly pid?: number | undefined;
+  readonly stdin: ChildInputStream | null;
   readonly stdout: ChildOutputStream | null;
   readonly stderr: ChildOutputStream | null;
   /**
@@ -62,13 +70,12 @@ export interface SpawnOptions {
   readonly detached: boolean;
   readonly windowsHide: boolean;
   /**
-   * `ignore` for stdin, pipes for the rest.
-   *
-   * Not cosmetic: `codex exec` reads a piped stdin and appends it to the prompt
-   * as a `<stdin>` block, and with an inherited one it prints "Reading
-   * additional input from stdin..." and waits. Observed on 0.154.0.
+   * Pipes for all three for Codex itself: the brief goes in on stdin, which the
+   * adapter closes once it is written (`taskkill` takes none). `codex exec -` reads its prompt from stdin; with an
+   * inherited stdin it would print "Reading additional input from stdin..."
+   * and wait. Observed on 0.154.0.
    */
-  readonly stdio: readonly ["ignore", "pipe", "pipe"];
+  readonly stdio: readonly ["pipe" | "ignore", "pipe", "pipe"];
 }
 
 export type SpawnLike = (

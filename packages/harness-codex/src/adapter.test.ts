@@ -49,6 +49,16 @@ class FakeChild implements SpawnedChild {
   private readonly errors: ((error: Error) => void)[] = [];
   private closed = false;
 
+  /** What the adapter wrote to stdin, and whether it closed it. */
+  brief: string | undefined;
+  stdinEnded = false;
+  readonly stdin = {
+    end: (data: string) => {
+      this.brief = data;
+      this.stdinEnded = true;
+    },
+    on: (_: "error", _listener: (error: Error) => void) => undefined,
+  };
   readonly stdout = { on: (_: "data", l: (chunk: Uint8Array) => void) => this.out.push(l) };
   readonly stderr = { on: (_: "data", l: (chunk: Uint8Array) => void) => this.err.push(l) };
 
@@ -191,8 +201,8 @@ afterEach(() => {
 });
 
 describe("what it launches", () => {
-  it("spawns codex exec in the worktree, in its own process group, with stdin ignored", async () => {
-    const { calls, input } = await run((child) => child.close(0));
+  it("spawns codex exec in the worktree, in its own process group, with the brief on stdin", async () => {
+    const { calls, input, children } = await run((child) => child.close(0));
     expect(calls).toHaveLength(1);
     expect(calls[0]?.file).toBe("codex");
     expect(calls[0]?.args.slice(0, 4)).toEqual(["exec", "--json", "-C", input.worktree]);
@@ -200,10 +210,13 @@ describe("what it launches", () => {
     expect(calls[0]?.options).toMatchObject({
       cwd: input.worktree,
       detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
-    // The brief is the last argument, and it is the shared one plus Codex's own.
-    const prompt = calls[0]?.args.at(-1) ?? "";
+    // The brief is on stdin, closed after it, and never an argument: one over
+    // 128 KiB is E2BIG (2026-10-13). It is the shared one plus Codex's own.
+    expect(calls[0]?.args.at(-1)).toBe("-");
+    expect(children[0]?.stdinEnded).toBe(true);
+    const prompt = children[0]?.brief ?? "";
     expect(prompt).toContain("You are a Nightshift worker");
     expect(prompt).toContain("HOW THE NIGHTSHIFT TOOLS REACH YOU");
   });
