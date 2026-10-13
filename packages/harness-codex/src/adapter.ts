@@ -245,7 +245,6 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
     }
 
     const args = buildCodexArgs({
-      prompt,
       model: input.model,
       worktree: input.worktree,
       ...(input.mcp === undefined ? {} : { mcp: input.mcp }),
@@ -270,13 +269,19 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
         env: command.env,
         detached: platform !== "win32",
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
       transcript?.close();
       return failToLaunch(`could not start ${CODEX_COMMAND}: ${messageOf(error)}`);
     }
     state.child = child;
+    // The brief, whole, on stdin, which then closes: `codex exec -` reads it
+    // to the end and starts.
+    child.stdin?.on("error", () => {
+      // The child went before reading it; `close` reports how.
+    });
+    child.stdin?.end(prompt);
 
     let stderrTail = "";
     const decoder = new TextDecoder("utf-8");

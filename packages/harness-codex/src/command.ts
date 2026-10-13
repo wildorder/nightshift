@@ -125,7 +125,6 @@ export const mcpOverrides = (mcp: McpLaunch): readonly string[] => {
 };
 
 export interface CodexCommandInput {
-  readonly prompt: string;
   readonly model: RouteTarget;
   readonly worktree: string;
   /** Absent for an agent that reaches no Nightshift tool: an answering builder (D-P8-15). */
@@ -163,10 +162,13 @@ export const buildCodexArgs = (input: CodexCommandInput): readonly string[] => [
   ...(input.model.effort === undefined
     ? []
     : ["-c", `model_reasoning_effort=${tomlString(input.model.effort)}`]),
-  // The thread to continue, then the brief: positional, after every option, so
-  // a brief can never be read as one.
+  // The thread to continue, then `-`: the brief arrives on stdin. Never as an
+  // argument: Linux refuses to start a process with one over 128 KiB
+  // (`E2BIG`), and an examiner's brief carries the diff. Every examination of
+  // a large change on Codex failed to launch that way (keki-backend,
+  // 2026-10-13).
   ...(input.resumeSessionId === undefined ? [] : [input.resumeSessionId]),
-  input.prompt,
+  "-",
 ];
 
 /**
