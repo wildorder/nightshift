@@ -366,6 +366,7 @@ Each task passes §8 before the next starts; T5 and T7 may run beside T4 and T6.
 | 2026-10-08 | D-P10-28 (an org holds a set of installations, one per GitHub account; `org github remove` added; dispatch, heartbeat and publisher use the installation granting the repository) agreed and built in a coding-agent session | Human |
 | 2026-10-08 | D-P10-29 (the engine reads its whole program and writes only its own run; a suite launches under an engine token; a failed launch releases its worktree; the engine reclaims before removing) agreed and built | Human |
 | 2026-10-10 | D-P10-30 (one project user per run's machine, amending D-P10-25) agreed and built | Human |
+| 2026-10-13 | **A warm start restores fast** (amends D-P10-15, D-P10-27). Measured on keki-backend: a new run spent ~30 minutes restoring a 7 GB warm cache at 3–4 MB/s, because a volume made from a snapshot loads each block from S3 on first read, and the cache held 668,679 files, 69 % of them earlier runs' worktrees. Two changes: the warm volume is created with EBS's Provisioned Rate for Volume Initialization at 300 MiB/s (`WARM_RESTORE_RATE_MIBPS`), so the snapshot is pulled down whole at once; and a restore copies everything but other runs' directories under `runs/` (`restoreFilters`), a recovery keeping its own. The next sync's `--delete` drops the old runs from the sidecar, so later snapshots stop carrying them. | Human (asked for both); agent |
 
 ## 14. Retained research
 

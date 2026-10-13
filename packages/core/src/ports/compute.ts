@@ -41,6 +41,13 @@ export interface LaunchRequest {
     readonly device: string;
     readonly sizeGiB: number;
     readonly fromSnapshotId?: string;
+    /**
+     * With `fromSnapshotId`: the rate, in MiB/s, at which EBS pulls the whole
+     * snapshot down after creation (Provisioned Rate for Volume
+     * Initialization). Absent, blocks load lazily on first read, which a
+     * restore of many small files turns into minutes per gigabyte.
+     */
+    readonly initializationRateMiBps?: number;
     /** gp3 provisioned IOPS and throughput; absent is the baseline (3,000 and 125). */
     readonly iops?: number;
     readonly throughputMiBps?: number;

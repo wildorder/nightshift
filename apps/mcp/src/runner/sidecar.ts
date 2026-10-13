@@ -19,13 +19,19 @@ export class SidecarError extends Error {
   override readonly name = "SidecarError";
 }
 
-const rsync = async (machine: Machine, from: string, to: string): Promise<void> => {
+const rsync = async (
+  machine: Machine,
+  from: string,
+  to: string,
+  filters: readonly string[] = [],
+): Promise<void> => {
   const copied = await machine.exec("sudo", [
     "rsync",
     "-aHAX",
     "--delete",
     "--numeric-ids",
     `--exclude=/${SIDECAR_MARKER}`,
+    ...filters,
     `${from}/`,
     `${to}/`,
   ]);
@@ -39,12 +45,26 @@ const rsync = async (machine: Machine, from: string, to: string): Promise<void> 
 export const sidecarHoldsCopy = async (machine: Machine, sidecar: string): Promise<boolean> =>
   (await machine.exec("test", ["-f", `${sidecar}/${SIDECAR_MARKER}`])).exitCode === 0;
 
+/**
+ * The rsync filters a restore copies under: everything but other runs'
+ * directories. A warm start's volume is the project's last snapshot, which
+ * holds the runs that made it; their worktrees, each with its own
+ * dependencies, were 69 % of keki-backend's 668,679 files (2026-10-13) and are
+ * no use to this run. A recovery keeps its own run's. The next sync to the
+ * sidecar deletes the rest there, so they stop riding along in snapshots.
+ */
+export const restoreFilters = (runId: string): readonly string[] => [
+  `--include=/runs/${runId}/`,
+  "--exclude=/runs/*",
+];
+
 /** The sidecar's copy onto the workspace, before the workspace is prepared. */
 export const restoreFromSidecar = async (
   machine: Machine,
   sidecar: string,
   workspace: string,
-): Promise<void> => rsync(machine, sidecar, workspace);
+  runId: string,
+): Promise<void> => rsync(machine, sidecar, workspace, restoreFilters(runId));
 
 /** The workspace onto the sidecar, and the marker that says a copy is there. */
 export const syncToSidecar = async (
