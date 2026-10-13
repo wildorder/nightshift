@@ -20,12 +20,15 @@ import {
 import { createHttpPlanning, sha256Hex } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
+import { publishProgramBranch } from "../program-branch.js";
 import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession } from "../session.js";
 
 export interface PlanOptions {
   readonly id: string;
   readonly repo?: string;
+  /** `ratify` only. False, as `--no-push` asks: leave the program branch where it is. */
+  readonly push?: boolean;
 }
 
 export interface PlanCheckResult {
@@ -202,5 +205,27 @@ export const planRatify = async (
   environment.out(
     `An edit to ${files.directory}/ after this is refused by \`nightshift run\` until it is ratified again.`,
   );
+  // Ratified means dispatchable from anywhere: the program branch goes to
+  // GitHub now, fast-forward only (2026-10-13). A failure here does not undo
+  // the ratification; \`nightshift run --remote\` pushes it again.
+  if (options.push !== false) {
+    try {
+      await publishProgramBranch(
+        environment.git,
+        repoPath,
+        files.contract.repository.programBranch,
+        {
+          push: true,
+          out: (line) => environment.out(line),
+        },
+      );
+    } catch (error) {
+      environment.err(
+        `ratified, but the program branch is not at GitHub yet: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      if (error instanceof UsageError && error.usage !== undefined) environment.err(error.usage);
+      environment.err("`nightshift run --remote` pushes it once that is resolved.");
+    }
+  }
   return 0;
 };
