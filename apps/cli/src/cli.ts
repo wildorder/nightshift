@@ -263,7 +263,8 @@ const doProject = async (environment: CliEnvironment, args: readonly string[]): 
 };
 
 const doRun = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift run <program | contract> [--repo <path>] [--remote [--compute <tier>]]";
+  const usage =
+    "nightshift run <program | contract> [--repo <path>] [--remote [--compute <tier>] [--no-push]]";
   const { values, positionals } = parse(
     {
       args: [...args],
@@ -271,6 +272,7 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
         repo: { type: "string" },
         remote: { type: "boolean", default: false },
         compute: { type: "string" },
+        "no-push": { type: "boolean", default: false },
         attended: { type: "boolean", default: false },
         harness: { type: "string" },
         model: { type: "string" },
@@ -300,6 +302,7 @@ const doRun = async (environment: CliEnvironment, args: readonly string[]): Prom
     ...(repo === undefined ? {} : { repo }),
     remote: values.remote === true,
     ...(compute === undefined ? {} : { compute }),
+    ...(values["no-push"] === true ? { push: false } : {}),
     attended: values.attended === true,
     ...(harness === undefined ? {} : { harness }),
     ...(model === undefined ? {} : { model }),
@@ -400,8 +403,16 @@ const doPlan = async (environment: CliEnvironment, args: readonly string[]): Pro
       usage,
     );
   }
-  const { id, repo } = programArgs(rest, usage);
-  const options = { id, ...(repo === undefined ? {} : { repo }) };
+  const { id, repo, values } = programArgs(
+    rest,
+    usage,
+    subcommand === "ratify" ? { "no-push": { type: "boolean" } } : {},
+  );
+  const options = {
+    id,
+    ...(repo === undefined ? {} : { repo }),
+    ...(values["no-push"] === true ? { push: false } : {}),
+  };
   return subcommand === "check"
     ? planCheck(environment, options)
     : planRatify(environment, options);

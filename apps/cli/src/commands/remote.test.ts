@@ -121,6 +121,7 @@ const environmentWith = async (git: GitRunner) => {
 describe("assertRemoteReady (SC-P10-02, the CLI's half)", () => {
   const f = createFixtures();
 
+  // With --no-push; what it does without is program-branch.test.ts's, over real git.
   it("refuses an unratified plan, a dirty tree, an unpushed branch and a moved head, in that order", async () => {
     const planning = ratified(f, {
       status: "planning",
@@ -139,12 +140,18 @@ describe("assertRemoteReady (SC-P10-02, the CLI's half)", () => {
 
     const unpushed = await environmentWith(gitAnswering({ head: HEAD }));
     await expect(
-      assertRemoteReady(unpushed.created.environment, ratified(f), unpushed.repoPath, undefined),
+      assertRemoteReady(
+        unpushed.created.environment,
+        ratified(f),
+        unpushed.repoPath,
+        undefined,
+        false,
+      ),
     ).rejects.toThrow(/has not been pushed/);
 
     const moved = await environmentWith(gitAnswering({ head: HEAD, origin: BEHIND }));
     await expect(
-      assertRemoteReady(moved.created.environment, ratified(f), moved.repoPath, undefined),
+      assertRemoteReady(moved.created.environment, ratified(f), moved.repoPath, undefined, false),
     ).rejects.toThrow(/at origin/);
   });
 

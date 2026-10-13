@@ -450,12 +450,18 @@ yes, do all of this yourself and stop at the run:
    reproduce.
 3. **Ratify.** `nightshift plan ratify {id}`. It refuses a plan that is not
    READY or has uncommitted changes; if it refuses, fix that and run it again,
-   never work around it.
+   never work around it. It then pushes the program branch to origin,
+   fast-forward only, because a remote run clones it from GitHub: read its
+   output. If it printed `ratified, but the program branch is not at GitHub
+   yet`, resolve what it names (pull when origin is ahead; stop and tell the
+   human when the branch has diverged, never force) and push it yourself with
+   `git push -u origin program/{id}`. The plan is not ready to hand over until
+   origin has the commit it was ratified from.
 4. **Preflight.** `nightshift preflight {id}` when the contract has any
    prerequisite. Print what is unmet, with its remediation, and stop there: those
    are the human's to do before anything runs.
-5. **Hand over.** Say the plan is ratified, name the plan hash it printed, and
-   say the next step is `/run-program {id}`, which starts the unattended run from
+5. **Hand over.** Say the plan is ratified and pushed, name the plan hash it
+   printed, and say the next step is `/run-program {id}`, which starts the unattended run from
    this session, or `nightshift run {id}` from a terminal. Do not start the run
    yourself; that is the other skill's, and the human may want to read the
    commit first.

@@ -76,6 +76,8 @@ export interface RunProgramOptions {
   /** P10: dispatch the run to a machine of its own instead of orchestrating here. */
   readonly remote?: boolean;
   readonly compute?: string;
+  /** False, as `--no-push` asks: refuse an unpushed program branch rather than push it. */
+  readonly push?: boolean;
 }
 
 export interface RunProgramResult {
@@ -356,6 +358,7 @@ const beforeStart = async (
     ratified,
     options.repoPath,
     options.compute,
+    options.push !== false,
   );
   await requireBaseUnmoved(environment, options.repoPath, readiness);
   return { remote: { readiness } };
