@@ -85,7 +85,7 @@ import {
   type McpLaunch,
   refusingWorkerTools,
 } from "@nightshift/harness";
-import { runCheckoutSteps, toVerificationCommands } from "@nightshift/verification";
+import { deferSignalOf, runCheckoutSteps, toVerificationCommands } from "@nightshift/verification";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExaminationServices,
@@ -106,9 +106,10 @@ import {
 import { createHookSink } from "./hook-sink.js";
 import { unavailableUntil } from "./route-availability.js";
 import { programRulings, rulingsCarriedBy } from "./rulings.js";
-import { recordArtifact, runAsOf } from "./runner.js";
+import { recordArtifact, runAsOf, stepsAs } from "./runner.js";
 import { discardScratch, ensureScratch, freshScratch, projectStepEnv } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
+import { announceSteps } from "./verify.js";
 
 /** The environment variable an examiner's server reads its examination's frame from. */
 export const EXAMINATION_CONTEXT_ENV = "NIGHTSHIFT_EXAMINATION";
@@ -871,8 +872,18 @@ const candidateVerification = async (
   // The checkout is new and holds only what is committed, so setup comes first;
   // it also leaves the checkout usable for the examiner who works in it. The
   // checks get a fresh scratch (scratch.ts), which the examiner then inherits.
-  // On a machine, in the project environment, as the queue's are (D-10).
-  const scratch = await freshScratch(environment.paths, checkout);
+  // On a machine, in the project environment, and **as the project's user**,
+  // exactly as the queue's are (D-10, D-P10-30): run as the engine, a check
+  // could not reach what only the project user can, its rootless Docker
+  // socket first (keki-backend, 2026-10-13: every Docker-backed gate failed).
+  const worker = await implementerOf(environment, input);
+  const runAs = environment.runAs?.({ agentId: worker?.agentId ?? "", role: "worker" });
+  const as = stepsAs(environment, { agentId: worker?.agentId ?? "", role: "worker" });
+  const scratch = await freshScratch(environment.paths, checkout, as.as);
+  if (runAs !== undefined) {
+    await runAs.grant(checkout);
+    await runAs.grant(scratch);
+  }
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const ran = await runCheckoutSteps({
     setup: gates.setup,
@@ -881,7 +892,24 @@ const candidateVerification = async (
     reference: input.session.repoPath,
     timeoutMs,
     env: projectStepEnv(environment.projectEnv, scratch),
+    onStep: announceSteps(environment, {
+      nodeId: input.node.executionNodeId,
+      label: "candidate verification",
+    }),
+    ...as,
   });
+  // A check that declared it could not run (exit 75 and a NIGHTSHIFT_DEFER
+  // line) is a hurdle, not a failure of the work: the job goes on to the queue,
+  // whose verification records the prerequisite and defers the check, and it
+  // is examined at resume once that check passes (D-P8-14), as a planned one is.
+  if (
+    ran.checks.some(
+      (result) =>
+        deferSignalOf(result.exitCode, new TextDecoder().decode(result.output)) !== undefined,
+    )
+  ) {
+    return "postponed";
+  }
   const results = [...ran.setup, ...ran.checks];
   const logs = new Map<string, Verification["commands"][number]["logArtifactId"]>();
   for (const result of results) {
@@ -905,6 +933,7 @@ const candidateVerification = async (
     paths: environment.paths,
     timeoutMs,
     keepScratch: true,
+    ...(as.as === undefined ? {} : { as: as.as }),
     ...(environment.projectEnv === undefined ? {} : { projectEnv: environment.projectEnv }),
   });
   const commands = await withFlakes(
@@ -913,7 +942,7 @@ const candidateVerification = async (
     toVerificationCommands(results, logs as never),
     reruns,
   );
-  const workerId = (await implementerOf(environment, input))?.agentId;
+  const workerId = worker?.agentId;
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
     ...input.session.scope,

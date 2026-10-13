@@ -69,7 +69,24 @@ export interface RunVerificationInput {
   readonly sink?: StepSink;
   /** Injected so durations are deterministic under test. */
   readonly clock?: Clock;
+  /**
+   * Told as each step starts and ends, so a caller can say where a long
+   * verification is while it runs, not only once it is over (2026-10-13: two
+   * queued verifications sat for an hour with nothing on the record).
+   */
+  readonly onStep?: (event: StepEvent) => void;
 }
+
+/** A step starting, or ending with its exit code and how long it took. */
+export type StepEvent =
+  | { readonly stepId: string; readonly phase: "started" }
+  | {
+      readonly stepId: string;
+      readonly phase: "finished";
+      readonly exitCode: number;
+      readonly durationMs: number;
+      readonly timedOut: boolean;
+    };
 
 /**
  * The exit code recorded for a step the timeout killed. 124 is what GNU
@@ -231,19 +248,26 @@ export const runVerificationSteps = async (
   const clock = input.clock ?? systemClock;
   const results: StepResult[] = [];
   for (const step of input.steps) {
-    results.push(
-      await runStep({
-        step,
-        cwd: input.cwd,
-        env,
-        timeoutMs: input.timeoutMs,
-        spawn,
-        sink: input.sink,
-        clock,
-        platform,
-        ...(input.as === undefined ? {} : { as: input.as }),
-      }),
-    );
+    input.onStep?.({ stepId: step.id, phase: "started" });
+    const result = await runStep({
+      step,
+      cwd: input.cwd,
+      env,
+      timeoutMs: input.timeoutMs,
+      spawn,
+      sink: input.sink,
+      clock,
+      platform,
+      ...(input.as === undefined ? {} : { as: input.as }),
+    });
+    input.onStep?.({
+      stepId: step.id,
+      phase: "finished",
+      exitCode: result.exitCode,
+      durationMs: result.durationMs,
+      timedOut: result.timedOut,
+    });
+    results.push(result);
   }
   return results;
 };

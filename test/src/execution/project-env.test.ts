@@ -12,8 +12,9 @@
  * the project environment carries reached it, and fails on its first
  * `failures` runs so a rerun happens.
  */
+import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import {
   type Examination,
@@ -35,6 +36,7 @@ import {
   EXAMINATION_CONTEXT_ENV,
   type ExaminationContext,
   type ExecutionEnvironment,
+  type PrerequisiteBook,
   runJob,
 } from "@nightshift/execution";
 import type { HarnessExit, HarnessStartInput } from "@nightshift/harness";
@@ -45,7 +47,7 @@ import {
 } from "@nightshift/persistence/http";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakeHarness, type ScriptContext } from "./fake-harness.js";
-import { cleanupWorlds, createWorld, type World } from "./world.js";
+import { cleanupWorlds, createWorld, eventsOf, type World } from "./world.js";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -199,9 +201,15 @@ const runDirect = async (world: World): Promise<ExecutionNodeId> => {
   return started.nodeId;
 };
 
-const runThroughEngine = async (world: World, risk: RiskLevel): Promise<ExecutionNodeId> => {
+const runThroughEngine = async (
+  world: World,
+  risk: RiskLevel,
+  extra: Partial<ExecutionEnvironment> = {},
+  done: (status: string) => boolean = (status) => isSettled(status as never),
+): Promise<ExecutionNodeId> => {
   const environment: ExecutionEnvironment = {
     ...world.environment,
+    ...extra,
     examination: {
       examinerRoute: () => choice(EXAMINER),
       strongestExaminerRoute: () => choice(EXAMINER),
@@ -233,7 +241,7 @@ const runThroughEngine = async (world: World, risk: RiskLevel): Promise<Executio
   const deadline = Date.now() + 60_000;
   for (;;) {
     const status = (await world.stores.executionNodes.get(world.scope, nodeId))?.status;
-    if (status !== undefined && isSettled(status) && engine.idle()) break;
+    if (status !== undefined && done(status) && engine.idle()) break;
     if (Date.now() > deadline) throw new Error(`node ${nodeId} is still ${status}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -334,4 +342,102 @@ describe("the project environment, threaded to every project step (P16, D-10)", 
     );
     expect(await setup.runs()).toEqual(["missing", "missing"]);
   });
+});
+
+describe("an examined job's candidate check, as the queue's (keki-backend, 2026-10-13)", () => {
+  /** A prerequisites book that knows of none and accepts what a step discovers. */
+  const book: PrerequisiteBook = {
+    prerequisites: async () => [],
+    recordDiscovered: async (_scope, id, hurdle) => ({
+      id,
+      description: hurdle.description,
+      remediation: hurdle.remediation,
+      verifyCommand: hurdle.verifyCommand,
+      status: "pending",
+      discoveredInRunId: hurdle.runId,
+    }),
+  };
+
+  it("defers a check that declares it cannot run, instead of failing the job", async () => {
+    const world = await worldWith({
+      verification: [
+        {
+          id: "docker",
+          command: `"${process.execPath}" -e "console.log('NIGHTSHIFT_DEFER HP-01 Docker is unavailable to the runner');process.exit(75)"`,
+        },
+      ],
+    });
+    const nodeId = await runThroughEngine(
+      world,
+      "medium",
+      { prerequisites: book },
+      (status) => status === "deferred" || isSettled(status as never),
+    );
+    expect((await world.stores.executionNodes.get(world.scope, nodeId))?.status).toBe("deferred");
+    // Examined at resume, once the check passes (D-P8-14): nobody examined it yet.
+    expect(await world.stores.examinations.listByNode(world.scope, nodeId)).toEqual([]);
+    const verifications = await verificationsOf(world, nodeId);
+    expect(verifications.every((verification) => verification.phase !== "candidate")).toBe(true);
+    expect(commandOf(verifications.at(-1), "docker")?.deferred).toEqual({
+      prerequisiteId: "HP-01",
+    });
+  }, 60_000);
+
+  // Run-as goes through `sudo`; CI's Linux runners have it passwordless, to the
+  // same user, which is all this needs: sudo marks the child with SUDO_USER.
+  const sudoWorks = (() => {
+    if (process.platform !== "linux") return false;
+    try {
+      execFileSync("sudo", ["-n", "true"], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  it.skipIf(!sudoWorks)(
+    "runs setup and checks as the project's user, in a checkout granted to it",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "ns-candidate-as-"));
+      dirs.push(dir);
+      const file = join(dir, "runs");
+      const check = `"${process.execPath}" -e "require('fs').appendFileSync('${file}',(process.env.SUDO_USER?'as':'engine')+' ')"`;
+      const world = await worldWith({ verification: [{ id: "who", command: check }] });
+      const granted: string[] = [];
+      const nodeId = await runThroughEngine(world, "medium", {
+        runAs: () => ({
+          user: userInfo().username,
+          grant: async (path) => {
+            granted.push(path);
+          },
+        }),
+      });
+      expect((await world.stores.executionNodes.get(world.scope, nodeId))?.status).toBe(
+        "integrated",
+      );
+      const runs = (await readFile(file, "utf8")).split(" ").filter((run) => run !== "");
+      // The candidate check beside the queue, then the queue's: both as the user.
+      expect(runs.length).toBeGreaterThanOrEqual(2);
+      expect(runs.every((run) => run === "as")).toBe(true);
+      expect(granted.some((path) => path.includes("-examined-"))).toBe(true);
+    },
+    60_000,
+  );
+});
+
+describe("a verification says where it is while it runs (2026-10-13)", () => {
+  it("puts the clean and each step, started and finished, on the node's record", async () => {
+    const check = await probe();
+    const world = await worldWith({ verification: [{ id: "probe", command: check.command }] });
+    const nodeId = await runDirect(world);
+    expect((await world.stores.executionNodes.get(world.scope, nodeId))?.status).toBe("integrated");
+    const messages = (await eventsOf(world))
+      .filter((event) => event.executionNodeId === nodeId && event.type === "verification.progress")
+      .map((event) => String(event.payload.message));
+    expect(messages).toContain("verification: cleaning the checkout");
+    expect(messages).toContain("verification: probe started");
+    expect(
+      messages.some((message) => /^verification: probe exited 0 after [\d.]+ s$/.test(message)),
+    ).toBe(true);
+  }, 60_000);
 });

@@ -131,6 +131,26 @@ describe("runVerificationSteps, with an injected spawn", () => {
     expect(calls[0]?.options.windowsVerbatimArguments).toBe(process.platform === "win32");
   });
 
+  it("says as each step starts and ends, with its exit code (2026-10-13)", async () => {
+    const { spawn } = fakeSpawn((child, call) =>
+      child.close(call.args.at(-1)?.includes("bad") ? 3 : 0),
+    );
+    const events: unknown[] = [];
+    await runVerificationSteps({
+      steps: [step("lint", "npm run lint"), step("test", "npm run bad")],
+      cwd: CWD,
+      timeoutMs: 1_000,
+      spawn,
+      onStep: (event) => events.push(event),
+    });
+    expect(events).toEqual([
+      { stepId: "lint", phase: "started" },
+      expect.objectContaining({ stepId: "lint", phase: "finished", exitCode: 0, timedOut: false }),
+      { stepId: "test", phase: "started" },
+      expect.objectContaining({ stepId: "test", phase: "finished", exitCode: 3 }),
+    ]);
+  });
+
   it("runs a step through the wrapper it is given, with the wrapper's file, arguments and environment", async () => {
     const { calls, spawn } = fakeSpawn((child) => child.close(0));
     await runVerificationSteps({

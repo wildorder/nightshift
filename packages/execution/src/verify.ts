@@ -50,6 +50,7 @@ import type {
   ArtifactId,
   CommitSha,
   ExecutionNode,
+  ExecutionNodeId,
   JobContract,
   Verification,
   VerificationStep,
@@ -66,11 +67,13 @@ import {
   type DeferSignal,
   deferSignalOf,
   runCheckoutSteps,
+  type StepEvent,
   setupAsStep,
   toVerificationCommands,
 } from "@nightshift/verification";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
+  type ExecutionEnvironment,
   type LandingEnvironment,
   type RunSession,
 } from "./environment.js";
@@ -197,6 +200,31 @@ const recordDiscovered = async (
     });
 };
 
+/**
+ * A verification's progress as it happens, on the node's record: each step as
+ * it starts and as it ends, with its exit code and time. Without it a long
+ * verification was silent until its last step finished, and two queued ones
+ * that sat for an hour could not be told from stuck ones (keki-backend,
+ * 2026-10-13). Its own event type: `node.progress` is the worker's.
+ */
+export const announceSteps =
+  (
+    environment: Pick<ExecutionEnvironment, "outbox">,
+    at: { readonly nodeId: ExecutionNodeId; readonly label: string },
+  ) =>
+  (event: StepEvent): void => {
+    const message =
+      event.phase === "started"
+        ? `${at.label}: ${event.stepId} started`
+        : `${at.label}: ${event.stepId} ${event.timedOut ? "timed out" : `exited ${event.exitCode}`} after ${(event.durationMs / 1000).toFixed(1)} s`;
+    environment.outbox.emit({
+      type: "verification.progress",
+      source: "control-plane",
+      payload: { message, ...event },
+      executionNodeId: at.nodeId,
+    });
+  };
+
 export const verifyNode = async (
   environment: LandingEnvironment,
   input: VerifyInput,
@@ -240,6 +268,16 @@ export const verifyNode = async (
 
   // Exactly what would integrate, and nothing the worker or an earlier
   // verification left behind, ignored files included.
+  const announce = announceSteps(environment, {
+    nodeId: input.node.executionNodeId,
+    label: "verification",
+  });
+  outbox.emit({
+    type: "verification.progress",
+    source: "control-plane",
+    payload: { message: "verification: cleaning the checkout" },
+    executionNodeId: input.node.executionNodeId,
+  });
   await pristineCheckout(environment.git, input.worktree, commitSha);
 
   // A step that needs a human prerequisite nobody has met **cannot run**, and is
@@ -271,6 +309,7 @@ export const verifyNode = async (
     reference: input.session.repoPath,
     timeoutMs,
     env: projectStepEnv(environment.projectEnv, scratch),
+    onStep: announce,
     ...as,
   }).finally(() => discardScratch(environment.paths, input.worktree, as.as));
   const results = checkout.checks;

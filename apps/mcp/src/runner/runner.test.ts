@@ -1281,6 +1281,25 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     expect(bodies[stopped]).toMatchObject({ failure: { code: "environment_fault" } });
   });
 
+  it("says the orchestrator is running once the work starts, not the last boot step (2026-10-13)", async () => {
+    const machine = gitMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      work: async () => undefined,
+    });
+    expect(code).toBe(0);
+    expect(stagesHeard(plane.heartbeats)).toEqual(["up", "workspace", "orchestrating"]);
+  });
+
   it("stops and says so when the workspace cannot be made", async () => {
     const machine = gitMachine();
     const plane = fakePlane(program, dispatch, "# Another plan\n", () => ({

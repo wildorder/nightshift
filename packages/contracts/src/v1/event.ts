@@ -89,6 +89,13 @@ export const EventTypeSchema = z.enum([
   "tool.completed",
   // Verification and examination — Nightshift authority.
   "verification.requested",
+  /**
+   * Added 2026-10-13. Where a running verification is: the checkout's clean,
+   * or a step starting or ending with its exit code and time. Nightshift's own,
+   * never the worker's `node.progress`. Payload: `message`, and `stepId`,
+   * `phase` and, at the end, `exitCode`, `durationMs`, `timedOut`.
+   */
+  "verification.progress",
   "verification.completed",
   "examination.requested",
   "examination.completed",
