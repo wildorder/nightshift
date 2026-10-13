@@ -88,6 +88,7 @@ const RENDER: Readonly<Record<string, Render>> = {
   "tool.completed": (p) =>
     `${String(p.tool ?? "a tool").replace(/^mcp__nightshift__/, "")} returned`,
   "verification.requested": () => "verification requested",
+  "verification.progress": (p) => String(p.message ?? "verification running"),
   "verification.completed": (p) => {
     if (p.outcome === "failed") {
       const steps = listOf(p.failingSteps);

@@ -59,6 +59,7 @@ export const STAGE_WORDS: Readonly<Record<RunnerStage, string>> = {
   setup: "setup",
   prerequisites: "prerequisite checks",
   audit: "the machine's baseline checks",
+  orchestrating: "the orchestrator is running",
 };
 
 const LIVE: ReadonlySet<Dispatch["status"]> = new Set([

@@ -317,6 +317,11 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   // With no work yet (T3), the runner's job is to stay: it heartbeats until
   // the plane says stop, and a promise that never settles is what "no work"
   // means to the race below.
+  // A stage of its own once the work (the root) starts, so the record stops
+  // showing the last boot step for the whole run (2026-10-13).
+  if (options.work !== undefined) {
+    heartbeat.progress({ stage: "orchestrating", detail: "the root orchestrator is starting" });
+  }
   const working = (
     options.work === undefined
       ? new Promise<RunnerWorkEnd | undefined>(() => undefined)

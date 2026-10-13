@@ -345,6 +345,12 @@ export const RunnerStageSchema = z.enum([
   "setup",
   "prerequisites",
   "audit",
+  /**
+   * The machine is ready and the root orchestrator is running (2026-10-13).
+   * Without it the last boot stage ("checking out …") stood on the record for
+   * the whole run, and a working run read as a stuck one.
+   */
+  "orchestrating",
 ]);
 export type RunnerStage = z.infer<typeof RunnerStageSchema>;
 
