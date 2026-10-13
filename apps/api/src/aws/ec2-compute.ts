@@ -17,7 +17,12 @@ import {
   TerminateInstancesCommand,
 } from "@aws-sdk/client-ec2";
 import { DeleteParameterCommand, PutParameterCommand, type SSMClient } from "@aws-sdk/client-ssm";
-import type { ComputeControl, FirstTokenStore, InstanceDescription } from "@nightshift/core";
+import type {
+  ComputeControl,
+  FirstTokenStore,
+  InstanceDescription,
+  LaunchRequest,
+} from "@nightshift/core";
 
 export interface Ec2ComputeOptions {
   readonly ec2: EC2Client;
@@ -28,6 +33,27 @@ export interface Ec2ComputeOptions {
 
 const tagList = (tags: Readonly<Record<string, string>>) =>
   Object.entries(tags).map(([Key, Value]) => ({ Key, Value }));
+
+/**
+ * The workspace volume's EBS settings: gp3, kept when the instance goes, and
+ * when it comes from a warm snapshot, pulled down at the requested rate rather
+ * than lazily on first read.
+ */
+const ebsOf = (volume: NonNullable<LaunchRequest["volume"]>) => ({
+  VolumeType: "gp3" as const,
+  VolumeSize: volume.sizeGiB,
+  DeleteOnTermination: false,
+  ...(volume.iops === undefined ? {} : { Iops: volume.iops }),
+  ...(volume.throughputMiBps === undefined ? {} : { Throughput: volume.throughputMiBps }),
+  ...(volume.fromSnapshotId === undefined
+    ? {}
+    : {
+        SnapshotId: volume.fromSnapshotId,
+        ...(volume.initializationRateMiBps === undefined
+          ? {}
+          : { VolumeInitializationRate: volume.initializationRateMiBps }),
+      }),
+});
 
 export const createEc2Compute = (options: Ec2ComputeOptions): ComputeControl => {
   const { ec2 } = options;
@@ -66,18 +92,7 @@ export const createEc2Compute = (options: Ec2ComputeOptions): ComputeControl => 
                 BlockDeviceMappings: [
                   {
                     DeviceName: request.volume.device,
-                    Ebs: {
-                      VolumeType: "gp3",
-                      VolumeSize: request.volume.sizeGiB,
-                      DeleteOnTermination: false,
-                      ...(request.volume.iops === undefined ? {} : { Iops: request.volume.iops }),
-                      ...(request.volume.throughputMiBps === undefined
-                        ? {}
-                        : { Throughput: request.volume.throughputMiBps }),
-                      ...(request.volume.fromSnapshotId === undefined
-                        ? {}
-                        : { SnapshotId: request.volume.fromSnapshotId }),
-                    },
+                    Ebs: ebsOf(request.volume),
                   },
                 ],
               }),

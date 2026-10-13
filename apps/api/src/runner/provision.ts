@@ -102,6 +102,15 @@ export const isCapacityRefusal = (error: unknown): boolean =>
  * version still holds the stores and the clone; only the image changed, so it
  * is reused.
  */
+/**
+ * How fast EBS pulls a warm snapshot down onto a new volume, in MiB/s: the
+ * most it offers. Left lazy, a snapshot-backed volume fetches each block from
+ * S3 on first read, and the runner's restore of the cache (hundreds of
+ * thousands of small files) ran at 3–4 MB/s: a 7 GB cache took half an hour
+ * (keki-backend, 2026-10-13). Charged per GB initialised.
+ */
+export const WARM_RESTORE_RATE_MIBPS = 300;
+
 const warmSnapshotOf = (cache: WarmCache | undefined): string | undefined =>
   cache?.current.snapshotId;
 
@@ -208,7 +217,9 @@ export const provisionDispatch = async (
             volume: {
               device: WORKSPACE_DEVICE,
               sizeGiB: spec.volumeGiB,
-              ...(fromSnapshotId === undefined ? {} : { fromSnapshotId }),
+              ...(fromSnapshotId === undefined
+                ? {}
+                : { fromSnapshotId, initializationRateMiBps: WARM_RESTORE_RATE_MIBPS }),
               ...(dispatch.workspace?.iops === undefined ? {} : { iops: dispatch.workspace.iops }),
               ...(dispatch.workspace?.throughputMiBps === undefined
                 ? {}

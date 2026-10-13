@@ -155,6 +155,12 @@ describe("local workspace restart recovery", () => {
     expect(await recoverLocalWorkspace(machine, options)).toBe("restored");
     expect(await recoverLocalWorkspace(machine, options)).toBe("preserved");
     expect(calls.filter((call) => call.startsWith("sudo rsync"))).toHaveLength(1);
+    // Only this run's directory of `runs/` comes back: other runs' worktrees
+    // were most of a warm snapshot's files (2026-10-13).
+    const restore = calls.find((call) => call.startsWith("sudo rsync")) ?? "";
+    expect(restore).toContain(`--include=/runs/${identity.scope.runId}/`);
+    expect(restore).toContain("--exclude=/runs/*");
+    expect(restore.indexOf("--include=/runs/")).toBeLessThan(restore.indexOf("--exclude=/runs/*"));
   });
 
   it("retries an interrupted restore instead of preserving a partial copy", async () => {

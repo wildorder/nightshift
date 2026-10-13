@@ -250,6 +250,8 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
     );
     await provisionDispatch(w.deps(), w.f.scope);
     expect(w.compute.launches[0]?.volume?.fromSnapshotId).toBe("snap-warm");
+    // Pulled down at full rate, not lazily on first read (2026-10-13).
+    expect(w.compute.launches[0]?.volume?.initializationRateMiBps).toBe(300);
   });
 
   it("records a failure and removes the parked token when the launch fails", async () => {

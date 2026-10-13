@@ -742,9 +742,10 @@ describe("the durability sidecar (D-P10-27)", () => {
     expect(await sidecarHoldsCopy(empty, "/workspace-sidecar")).toBe(false);
     const full = fakeMachine();
     expect(await sidecarHoldsCopy(full, "/workspace-sidecar")).toBe(true);
-    await restoreFromSidecar(full, "/workspace-sidecar", "/workspace");
+    await restoreFromSidecar(full, "/workspace-sidecar", "/workspace", "run_01");
+    // Everything but other runs' directories: a warm snapshot's old runs stay behind.
     expect(full.commands.at(-1)).toContain(
-      "rsync -aHAX --delete --numeric-ids --exclude=/.nightshift-sidecar /workspace-sidecar/ /workspace/",
+      "rsync -aHAX --delete --numeric-ids --exclude=/.nightshift-sidecar --include=/runs/run_01/ --exclude=/runs/* /workspace-sidecar/ /workspace/",
     );
   });
 

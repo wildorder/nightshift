@@ -107,7 +107,7 @@ export const recoverLocalWorkspace = async (
     return "empty";
   }
   await mark("restoring");
-  await restoreFromSidecar(machine, sidecar, workspace);
+  await restoreFromSidecar(machine, sidecar, workspace, identity.scope.runId);
   await mark("ready");
   return "restored";
 };
