@@ -37,6 +37,24 @@ const VALUED_FLAGS = new Set([
 const stackNamed = passthrough.some(
   (arg, i) => !arg.startsWith("-") && !(i > 0 && VALUED_FLAGS.has(passthrough[i - 1])),
 );
+// The API is built with a dispatcher only when the runner's commit is given:
+// without it every remote run is refused with `dispatch_unavailable`. So a
+// deploy that includes the API must say which runner it dispatches to.
+const stackNames = passthrough.filter(
+  (arg, i) => !arg.startsWith("-") && !(i > 0 && VALUED_FLAGS.has(passthrough[i - 1])),
+);
+const runnerGiven = passthrough.some(
+  (arg, i) =>
+    (arg === "-c" || arg === "--context") && passthrough[i + 1]?.startsWith("runnerCommit="),
+);
+if ((!stackNamed || stackNames.includes("NightshiftApi")) && !runnerGiven) {
+  console.error(
+    "Refusing to deploy the API without its runner: pass -c runnerCommit=<full sha> -c imageVersion=<current>, " +
+      "or the API is built with no dispatcher and every remote run is refused.",
+  );
+  process.exit(1);
+}
+
 const cdkArgs = [
   "cdk",
   "deploy",
