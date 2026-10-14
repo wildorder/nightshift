@@ -225,12 +225,24 @@ export const DispatchSpendSchema = z.strictObject({
 });
 export type DispatchSpend = z.infer<typeof DispatchSpendSchema>;
 
+/**
+ * Where one intent stands (D-P10-22). `pending` waits for the publisher;
+ * `published` is at GitHub. The rest block publication: `conflict` (someone
+ * else moved the branch), `protected` (a protection rule refused), `forbidden`
+ * (the GitHub App lacks a permission the push needs, such as `workflows` for a
+ * change under `.github/workflows/`), `error` (a push that kept failing). An
+ * intent that builds on a blocked one is `held`: nothing is wrong with it, it
+ * waits behind the block. A retry (`POST …/publication/retry`) puts every
+ * unpublished intent back to `pending`, in order, once the cause is fixed.
+ */
 export const PublicationIntentStatusSchema = z.enum([
   "pending",
   "published",
   "conflict",
   "protected",
+  "forbidden",
   "error",
+  "held",
 ]);
 export type PublicationIntentStatus = z.infer<typeof PublicationIntentStatusSchema>;
 
@@ -259,7 +271,11 @@ export const PublicationIntentBodySchema = PublicationIntentSchema.pick({
 });
 export type PublicationIntentBody = z.infer<typeof PublicationIntentBodySchema>;
 
-/** Resolved intents are dropped past this many, the newest kept, so the record stays small. */
+/**
+ * Published intents are dropped past this many, the newest kept, so the record
+ * stays small. An unpublished intent is never dropped: its bundle is the only
+ * way its commits reach GitHub without the machine.
+ */
 export const MAX_RESOLVED_INTENTS = 20;
 
 export const DispatchPublicationSchema = z.strictObject({

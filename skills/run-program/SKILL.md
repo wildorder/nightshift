@@ -156,6 +156,12 @@ some work is deferred, 1 otherwise, and always writes
 it, in this order:
 
 1. The one line: succeeded, deferred, or failed, and how many strands each way.
+   For a remote run, then whether **GitHub has the work**. A report that opens
+   with **NOT ON GITHUB** has not delivered, whatever its strands did: say so
+   first, with the cause it names (often a permission the Nightshift GitHub App
+   lacks, such as Workflows for a change under `.github/workflows/`), and that
+   `nightshift resume {id}` publishes every held landing from the run's stored
+   bundles once the human has fixed it. No machine is needed and nothing is lost.
 2. Every **arbiter ruling**, before anything else: an agent decided a disputed
    finding, the work moved on because of it, and the human has the last word.
    Name the finding, the ruling and why, and say how to reverse it:
@@ -191,7 +197,10 @@ then `/plan-program` to plan the correction from the brief, with them.
 
 ## Resuming
 
-`nightshift resume {id}` is for a run that ended deferred. Run preflight first;
+`nightshift resume {id}` is for a run that ended deferred. When the latest run is
+remote and GitHub lacks some of its landings, resume first asks the plane to
+publish them from the run's stored bundles, waits for the publisher, and says
+what GitHub has; it exits 1 while anything is still refused. For deferred checks, run preflight first;
 resume refuses while anything the deferred checks need is unmet, and touches
 nothing if the checkout cannot be landed on. It runs the deferred checks over the
 provisional commits in order, lands what passes on the program branch unchanged,
@@ -206,4 +215,5 @@ saying so. Read the rewritten report to the human as above.
 - Mark a prerequisite satisfied by any means but `nightshift preflight`.
 - Retry, cancel or "help" a job by hand while the run is up. The engine
   retries; the report explains.
-- Summarise the report as "done" when it says deferred or parked.
+- Summarise the report as "done" when it says deferred or parked, or when it
+  says NOT ON GITHUB.

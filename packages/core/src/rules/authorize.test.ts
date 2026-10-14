@@ -173,6 +173,7 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.heartbeat": "forbidden",
   "publication.request": "forbidden",
   "publication.list": "forbidden",
+  "publication.retry": "forbidden",
   "computeUtilization.get": "forbidden",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",

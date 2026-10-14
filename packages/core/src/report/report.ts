@@ -40,6 +40,7 @@ import {
   VerificationStepSchema,
 } from "@nightshift/contracts";
 import type { ProjectStores } from "../ports/stores.js";
+import { type PublicationState, publicationStateOf } from "../rules/dispatch.js";
 import { buildTree, descendantsOf, type ExecutionTree } from "../rules/execution-tree.js";
 import type { RunScope } from "../rules/ownership.js";
 import {
@@ -160,6 +161,17 @@ export interface RunReport {
   readonly unreviewed?: readonly UnreviewedReport[];
   /** P15: the gates' audit, the red base, every repair and every flake (D-P15-09). */
   readonly gateHealth: GateHealthReport;
+  /**
+   * A remote run's landings as GitHub has them (2026-10-14): the machine lands
+   * on its own clone, and only the publisher moves GitHub's copy. Absent for a
+   * local run, which publishes nothing.
+   */
+  readonly publication?: PublicationReport;
+}
+
+export interface PublicationReport {
+  readonly branch: string;
+  readonly state: PublicationState;
 }
 
 /** One repair job (D-P15-03, D-P15-04): what it repaired, under which decision, and how it ended. */
@@ -702,7 +714,54 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
     rulings,
     unreviewed,
     gateHealth: await gatherGateHealth(stores, scope, records),
+    ...(await gatherPublication(stores, scope, program.repository.programBranch)),
   };
+};
+
+const gatherPublication = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  branch: string,
+): Promise<{ readonly publication?: PublicationReport }> => {
+  const dispatch = await stores.dispatches.get(scope).catch(() => undefined);
+  if (dispatch === undefined) return {};
+  return { publication: { branch, state: publicationStateOf(dispatch.publication) } };
+};
+
+/**
+ * Whether GitHub has the run's work, said before anything else: a run whose
+ * landings are not all at GitHub has not delivered, whatever its strands did.
+ */
+const renderPublication = (publication: PublicationReport | undefined): string[] => {
+  if (publication === undefined) return [];
+  const { branch, state } = publication;
+  if (state.kind === "none") return [];
+  if (state.kind === "published") {
+    return [
+      `GitHub has every landing: \`${branch}\` is at \`${state.head?.slice(0, 12) ?? "?"}\`.`,
+      "",
+    ];
+  }
+  const count = state.unpublished.length;
+  const landings = `${count} landing${count === 1 ? "" : "s"}`;
+  return [
+    "## NOT ON GITHUB — read this first",
+    "",
+    state.kind === "blocked"
+      ? `${landings} of this run are not on GitHub's \`${branch}\`. ${state.blocked ?? ""}`.trimEnd()
+      : `${landings} of this run were still waiting for the publisher when this report was written.`,
+    "",
+    `GitHub's \`${branch}\` is at \`${state.head?.slice(0, 12) ?? "the run's base"}\`; the run's work ends at \`${state.tip?.slice(0, 12) ?? "?"}\`.`,
+    "Every landing is kept in the run's stored bundles. Once the cause is fixed, `nightshift resume <program>` publishes them in order; no machine is needed.",
+    "",
+    "| Landing | State | Why |",
+    "|---|---|---|",
+    ...state.unpublished.map(
+      (intent) =>
+        `| \`${intent.head.slice(0, 12)}\` | ${intent.status} | ${cell(intent.status === "held" ? "behind the block above" : (intent.detail ?? ""))} |`,
+    ),
+    "",
+  ];
 };
 
 // --- rendering ----------------------------------------------------------------
@@ -1114,6 +1173,7 @@ export const renderReport = (report: RunReport): string => {
     "",
     `${succeeded} of ${strands.length} strands succeeded; ${provisional} deferred; ${strands.filter(isParked).length} parked. Wall clock ${duration(run)}.`,
     "",
+    ...renderPublication(report.publication),
     ...renderCorrections(report.corrections),
     ...renderRulings(report.rulings),
     ...renderUnreviewed(report.unreviewed),

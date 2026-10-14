@@ -14,10 +14,12 @@
  * number moves.
  */
 import type {
+  CommitSha,
   ComputeCeilings,
   ComputeTier,
   Dispatch,
   DispatchProgress,
+  DispatchPublication,
   DispatchStatus,
   GitHubInstallation,
   PublicationIntent,
@@ -368,10 +370,36 @@ export const runHoursOf = (
     ? ceilings.maxRunHours
     : Math.min(maxWallClockSeconds / 3600, ceilings.maxRunHours);
 
+/** The intents in the order the engine asked for them: each one's predecessor is the head before it. */
+export const chainOrder = (intents: readonly PublicationIntent[]): PublicationIntent[] =>
+  intents
+    .map((intent, index) => ({ intent, index }))
+    .sort((a, b) => a.intent.requestedAt.localeCompare(b.intent.requestedAt) || a.index - b.index)
+    .map(({ intent }) => intent);
+
+/**
+ * The record kept small: published intents past `MAX_RESOLVED_INTENTS` are
+ * dropped, oldest first. Nothing unpublished is ever dropped, because its
+ * bundle is the only way its commits reach GitHub once the machine is gone.
+ */
+const trimmed = (intents: readonly PublicationIntent[]): PublicationIntent[] => {
+  const ordered = chainOrder(intents);
+  const published = ordered.filter((intent) => intent.status === "published");
+  const dropped = new Set(
+    published
+      .slice(0, Math.max(0, published.length - MAX_RESOLVED_INTENTS))
+      .map((intent) => intent.head),
+  );
+  return ordered.filter((intent) => !dropped.has(intent.head));
+};
+
+/** Whether an intent's status stops publication: anything but waiting or done. */
+export const blocksPublication = (status: PublicationIntent["status"]): boolean =>
+  status !== "pending" && status !== "published";
+
 /**
  * Records a publication intent (D-P10-22): one pending intent per branch head,
- * and a second request for a head already pending or published is the same
- * intent. Resolved intents past `MAX_RESOLVED_INTENTS` are dropped, newest kept.
+ * and a second request for a head already recorded is the same intent.
  */
 export const recordIntent = (
   dispatch: Dispatch,
@@ -381,13 +409,6 @@ export const recordIntent = (
   const existing = dispatch.publication.intents.find((candidate) => candidate.head === intent.head);
   if (existing !== undefined) return { dispatch, created: false };
   const pending: PublicationIntent = { ...intent, status: "pending", requestedAt: at };
-  const resolved = dispatch.publication.intents.filter(
-    (candidate) => candidate.status !== "pending",
-  );
-  const unresolved = dispatch.publication.intents.filter(
-    (candidate) => candidate.status === "pending",
-  );
-  const kept = resolved.slice(Math.max(0, resolved.length - MAX_RESOLVED_INTENTS));
   return {
     created: true,
     dispatch: {
@@ -395,7 +416,7 @@ export const recordIntent = (
       publication: {
         ...dispatch.publication,
         lastIntentAt: at,
-        intents: [...kept, ...unresolved, pending],
+        intents: trimmed([...dispatch.publication.intents, pending]),
       },
       updatedAt: at,
     },
@@ -408,10 +429,8 @@ export const hasPendingIntent = (dispatch: Dispatch): boolean =>
 
 /**
  * Resolves a publication intent (D-P10-22): the publisher's word on one head.
- * `published` moves the record's branch head to the intent's; `conflict`,
- * `protected` and `error` block publication with the detail, which the report
- * carries. Resolved intents past `MAX_RESOLVED_INTENTS` are dropped, newest
- * kept, pending ones always kept.
+ * `published` moves the record's branch head to the intent's; every other
+ * status blocks publication with the detail, which the report carries.
  */
 export const resolveIntent = (
   dispatch: Dispatch,
@@ -425,21 +444,107 @@ export const resolveIntent = (
       ? { ...intent, status, resolvedAt: at, ...(detail === undefined ? {} : { detail }) }
       : intent,
   );
-  const resolved = intents.filter((intent) => intent.status !== "pending");
-  const pending = intents.filter((intent) => intent.status === "pending");
-  const kept = resolved.slice(Math.max(0, resolved.length - MAX_RESOLVED_INTENTS));
   return {
     ...dispatch,
     publication: {
       ...dispatch.publication,
       ...(status === "published" ? { head } : {}),
       ...(status === "published" ? {} : { blocked: detail ?? `${status} at ${head}` }),
-      intents: [...kept, ...pending],
+      intents: trimmed(intents),
     },
     updatedAt: at,
   };
 };
 
-/** The oldest pending intent, which is the one the publisher resolves next. */
+/**
+ * Holds every pending intent behind a blocked one: each builds on commits
+ * GitHub does not have, so none can go before it. Nothing is wrong with them,
+ * and the block's own reason stays the record's.
+ */
+export const holdBehind = (dispatch: Dispatch, blockedHead: CommitSha, at: string): Dispatch => {
+  const detail = `waiting behind ${blockedHead.slice(0, 12)}, which could not be published`;
+  const intents = dispatch.publication.intents.map((intent) =>
+    intent.status === "pending"
+      ? { ...intent, status: "held" as const, resolvedAt: at, detail }
+      : intent,
+  );
+  return { ...dispatch, publication: { ...dispatch.publication, intents }, updatedAt: at };
+};
+
+/**
+ * Every unpublished intent back to `pending`, in the order they were asked
+ * for, and the block lifted: a human has fixed the cause (granted the App a
+ * permission, lifted a rule, reconciled the branch). The publisher then pushes
+ * them from their bundles; the machine need not exist. Answers how many.
+ */
+export const rearmPublication = (
+  dispatch: Dispatch,
+  at: string,
+): { readonly dispatch: Dispatch; readonly rearmed: number } => {
+  let rearmed = 0;
+  const intents = dispatch.publication.intents.map((intent): PublicationIntent => {
+    if (!blocksPublication(intent.status)) return intent;
+    rearmed += 1;
+    const { resolvedAt: _resolvedAt, detail: _detail, ...rest } = intent;
+    return { ...rest, status: "pending" };
+  });
+  if (rearmed === 0 && dispatch.publication.blocked === undefined) return { dispatch, rearmed };
+  const { blocked: _blocked, ...publication } = dispatch.publication;
+  return {
+    rearmed,
+    dispatch: { ...dispatch, publication: { ...publication, intents }, updatedAt: at },
+  };
+};
+
+/** The oldest pending intent in the chain, which is the one the publisher resolves next. */
 export const nextPendingIntent = (dispatch: Dispatch): PublicationIntent | undefined =>
-  dispatch.publication.intents.find((intent) => intent.status === "pending");
+  chainOrder(dispatch.publication.intents).find((intent) => intent.status === "pending");
+
+/**
+ * The head the engine last asked to publish, which the next landing's intent
+ * builds on: a resumed machine carries the chain on from here, not from the
+ * base it was first dispatched at.
+ */
+export const publicationTip = (dispatch: Dispatch): CommitSha =>
+  chainOrder(dispatch.publication.intents).at(-1)?.head ??
+  dispatch.publication.head ??
+  dispatch.input.baseSha;
+
+/** What GitHub has of a run's landings, for the report, the CLI and `run.finish`. */
+export interface PublicationState {
+  /**
+   * `none`: nothing was asked for (a local run, or nothing landed).
+   * `published`: GitHub has every landing. `pending`: the publisher has not
+   * finished. `blocked`: some landings cannot reach GitHub until a human acts.
+   */
+  readonly kind: "none" | "published" | "pending" | "blocked";
+  /** GitHub's program branch as last published, when anything was. */
+  readonly head?: CommitSha;
+  /** The newest head the engine asked for. */
+  readonly tip?: CommitSha;
+  /** Every intent not yet at GitHub, oldest first. */
+  readonly unpublished: readonly PublicationIntent[];
+  /** Why, when blocked. */
+  readonly blocked?: string;
+}
+
+export const publicationStateOf = (publication: DispatchPublication): PublicationState => {
+  const ordered = chainOrder(publication.intents);
+  const unpublished = ordered.filter((intent) => intent.status !== "published");
+  const tip = ordered.at(-1)?.head;
+  const common = {
+    unpublished,
+    ...(publication.head === undefined ? {} : { head: publication.head }),
+    ...(tip === undefined ? {} : { tip }),
+  };
+  if (ordered.length === 0) return { kind: "none", ...common };
+  const blocking = unpublished.find((intent) => blocksPublication(intent.status));
+  if (blocking !== undefined) {
+    return {
+      kind: "blocked",
+      ...common,
+      blocked: publication.blocked ?? blocking.detail ?? `${blocking.status} at ${blocking.head}`,
+    };
+  }
+  return { kind: unpublished.length > 0 ? "pending" : "published", ...common };
+};

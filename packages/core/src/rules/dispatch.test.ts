@@ -23,6 +23,7 @@ import {
   type DispatchTransitionEvent,
   foldProgress,
   hasPendingIntent,
+  holdBehind,
   isCurrentGeneration,
   isDispatchTerminal,
   LEASE_SECONDS,
@@ -32,7 +33,12 @@ import {
   mayResume,
   nextDispatchStatus,
   nextGeneration,
+  nextPendingIntent,
+  publicationStateOf,
+  publicationTip,
+  rearmPublication,
   recordIntent,
+  resolveIntent,
   runHoursOf,
   runnerStopped,
   transitionDispatch,
@@ -313,6 +319,116 @@ describe("publication intents (D-P10-22)", () => {
     expect(resolved).toHaveLength(20);
     expect(resolved.at(-1)?.head).toBe((24).toString(16).padStart(40, "0"));
     expect(next.publication.intents.at(-1)?.status).toBe("pending");
+  });
+});
+
+describe("a publication that cannot reach GitHub (2026-10-14)", () => {
+  const sha = (n: number) => n.toString(16).padStart(40, "0");
+  const minute = (n: number) => new Date(Date.parse(AT) + n * 60_000).toISOString();
+  /** A chain of `count` intents from the base, each asked a minute after the last. */
+  const chain = (count: number) => {
+    let dispatch = at("running", {
+      input: { ...at("running").input, baseSha: sha(0) },
+    });
+    for (let n = 1; n <= count; n += 1) {
+      dispatch = recordIntent(
+        dispatch,
+        { head: sha(n) as never, expectedPredecessor: sha(n - 1) as never, bundleKey: `b/${n}` },
+        minute(n),
+      ).dispatch;
+    }
+    return dispatch;
+  };
+
+  it("never drops an unpublished intent, however many there are: its bundle is the only copy", () => {
+    let dispatch = chain(3);
+    for (const n of [1, 2, 3]) {
+      dispatch = resolveIntent(dispatch, sha(n) as never, "published", undefined, minute(30));
+    }
+    dispatch = recordIntent(
+      dispatch,
+      { head: sha(4) as never, expectedPredecessor: sha(3) as never, bundleKey: "b/4" },
+      minute(40),
+    ).dispatch;
+    dispatch = resolveIntent(dispatch, sha(4) as never, "forbidden", "no workflows", minute(41));
+    for (let n = 5; n <= 40; n += 1) {
+      dispatch = recordIntent(
+        dispatch,
+        { head: sha(n) as never, expectedPredecessor: sha(n - 1) as never, bundleKey: `b/${n}` },
+        minute(40 + n),
+      ).dispatch;
+      dispatch = holdBehind(dispatch, sha(4) as never, minute(40 + n));
+    }
+    const unpublished = dispatch.publication.intents.filter((i) => i.status !== "published");
+    expect(unpublished).toHaveLength(37);
+    expect(unpublished[0]?.head).toBe(sha(4));
+    expect(dispatch.publication.blocked).toBe("no workflows");
+  });
+
+  it("holds what builds on a block, then re-arms all of it, in order, and lifts the block", () => {
+    let dispatch = chain(3);
+    dispatch = resolveIntent(dispatch, sha(1) as never, "published", undefined, minute(10));
+    dispatch = resolveIntent(dispatch, sha(2) as never, "forbidden", "no workflows", minute(11));
+    dispatch = holdBehind(dispatch, sha(2) as never, minute(11));
+    expect(dispatch.publication.intents.map((i) => i.status)).toEqual([
+      "published",
+      "forbidden",
+      "held",
+    ]);
+    expect(nextPendingIntent(dispatch)).toBeUndefined();
+    expect(publicationStateOf(dispatch.publication)).toMatchObject({
+      kind: "blocked",
+      blocked: "no workflows",
+      head: sha(1),
+      tip: sha(3),
+    });
+
+    const { dispatch: rearmed, rearmed: count } = rearmPublication(dispatch, minute(60));
+    expect(count).toBe(2);
+    expect(rearmed.publication.blocked).toBeUndefined();
+    expect(rearmed.publication.intents.map((i) => i.status)).toEqual([
+      "published",
+      "pending",
+      "pending",
+    ]);
+    expect(rearmed.publication.intents[1]?.detail).toBeUndefined();
+    expect(nextPendingIntent(rearmed)?.head).toBe(sha(2));
+    expect(publicationStateOf(rearmed.publication).kind).toBe("pending");
+  });
+
+  it("re-arms nothing when nothing is blocked", () => {
+    const dispatch = chain(2);
+    expect(rearmPublication(dispatch, minute(60))).toEqual({ dispatch, rearmed: 0 });
+  });
+
+  it("takes the next intent in the order the engine asked, whatever the record's order", () => {
+    const dispatch = chain(3);
+    const shuffled = {
+      ...dispatch,
+      publication: {
+        ...dispatch.publication,
+        intents: [...dispatch.publication.intents].reverse(),
+      },
+    };
+    expect(nextPendingIntent(shuffled)?.head).toBe(sha(1));
+  });
+
+  it("carries a resumed machine's chain on from its tip, not the base it was dispatched at", () => {
+    expect(publicationTip(chain(0))).toBe(sha(0));
+    expect(publicationTip(chain(3))).toBe(sha(3));
+  });
+
+  it("says published only when GitHub has every landing, and none when nothing was asked", () => {
+    expect(publicationStateOf(chain(0).publication).kind).toBe("none");
+    let dispatch = chain(2);
+    dispatch = resolveIntent(dispatch, sha(1) as never, "published", undefined, minute(10));
+    expect(publicationStateOf(dispatch.publication).kind).toBe("pending");
+    dispatch = resolveIntent(dispatch, sha(2) as never, "published", undefined, minute(11));
+    expect(publicationStateOf(dispatch.publication)).toMatchObject({
+      kind: "published",
+      unpublished: [],
+      head: sha(2),
+    });
   });
 });
 

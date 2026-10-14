@@ -589,6 +589,14 @@ export class NightshiftRunnerStack extends Stack {
       // reserved concurrency: a new account's concurrency quota leaves nothing
       // to reserve, and a lock works at any quota.
     });
+    // The reconciler asks the publisher again for any intent still pending: a
+    // passing push failure is retried, and a run's last landing is never left
+    // waiting for a next one that will not come.
+    publisherFunction.grantInvoke(reconcilerRole);
+    reconcilerFunction.addEnvironment(
+      "NIGHTSHIFT_PUBLISHER_FUNCTION_ARN",
+      publisherFunction.functionArn,
+    );
 
     // --- Outputs ------------------------------------------------------------------
     new CfnOutput(this, "ImagePipelineArn", { value: pipeline.attrArn });
