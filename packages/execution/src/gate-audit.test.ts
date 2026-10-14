@@ -3,6 +3,7 @@
  * how often, where, and what it concludes. Every command is `node -e`, so the
  * suite runs the same on both CI runners.
  */
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,6 +58,7 @@ const audit = async (
     files?: Record<string, string>;
     unmet?: readonly string[];
     env?: Readonly<Record<string, string>>;
+    reclaim?: (path: string) => Promise<void>;
   } = {},
 ) => {
   const { repo, base } = await repository(options.files);
@@ -71,6 +73,7 @@ const audit = async (
     paths: { scratch: (checkout: string) => `${checkout}-scratch` },
     timeoutMs: TIMEOUT_MS,
     ...(options.env === undefined ? {} : { env: options.env }),
+    ...(options.reclaim === undefined ? {} : { reclaim: options.reclaim }),
     onStep: (step) => progress.push(step),
   });
   return { result, progress, repo };
@@ -238,5 +241,25 @@ describe("the gate audit", () => {
     expect(worktrees.match(/^worktree /gm)).toHaveLength(1);
     const work = made.find((dir) => dir.includes("nightshift-audit-work-"));
     expect(work === undefined ? [] : await readdir(work)).toEqual([]);
+  });
+
+  it("takes the checkout and its scratch back from the project user before removing them", async () => {
+    // On a machine the steps run as the project user (D-P10-30), whose tools
+    // leave directories the engine cannot delete inside; the engine reclaims
+    // first (D-P10-29), while the tree is still there to take back.
+    const reclaimed: { path: string; present: boolean }[] = [];
+    await audit(
+      { verification: [{ id: "build", command: PASS }] },
+      {
+        reclaim: async (path) => {
+          reclaimed.push({ path, present: existsSync(path) });
+        },
+      },
+    );
+    const checkout = reclaimed.find(
+      (call) => /audit-[0-9a-f]{12}$/.test(call.path) && call.present,
+    );
+    expect(checkout).toBeDefined();
+    expect(reclaimed).toContainEqual({ path: `${checkout?.path}-scratch`, present: true });
   });
 });

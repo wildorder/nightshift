@@ -188,7 +188,7 @@ export {
   ensureScratch,
   freshScratch,
   projectStepEnv,
-  type RunScratchAs,
+  type Reclaim,
   type ScratchPaths,
   scratchEnv,
   scratchOf,

@@ -34,7 +34,7 @@ import { projectEnvironment } from "./workspace.js";
 
 export type MachineAuditRuntime = Pick<
   Runtime,
-  "git" | "stores" | "bodies" | "ids" | "clock" | "runAs" | "paths" | "prerequisites"
+  "git" | "stores" | "bodies" | "ids" | "clock" | "runAs" | "reclaim" | "paths" | "prerequisites"
 >;
 
 export type MachineAuditContext = Pick<RunnerContext, "scope" | "layout" | "dispatch" | "program"> &
@@ -227,8 +227,10 @@ export const auditOnMachine = async (
     paths: runtime.paths,
     // The project environment setup ran in (P16 S-01): the pinned runtimes and the stores.
     env: environmentOf(context),
-    // As verification on this machine runs its steps (D-P10-25).
+    // As verification on this machine runs its steps (D-P10-25), and taken
+    // back by the engine before it goes (D-P10-29).
     ...asWorker(runtime, context),
+    ...(runtime.reclaim === undefined ? {} : { reclaim: runtime.reclaim }),
     onStep: (result) => {
       log(
         `gate audit: ${result.stepId} ${

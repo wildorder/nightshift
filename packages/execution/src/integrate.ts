@@ -273,7 +273,7 @@ export const integrateNode = async (
       );
     },
   );
-  await discardScratch(environment.paths, input.worktree);
+  await discardScratch(environment.paths, input.worktree, environment.reclaim);
 
   // --- What a repair did to the gates (P15, D-P15-04, D-P15-07, D-P15-11) ----------
   // Every landing passes here, whoever lands it (the merge queue, a readmitted

@@ -28,14 +28,19 @@ import type {
   VerificationStep,
 } from "@nightshift/contracts";
 import { flakyStepIds } from "@nightshift/contracts";
-import { type CheckRerun, rerunFailedChecks, type StepResult } from "@nightshift/verification";
+import {
+  type CheckRerun,
+  type RunVerificationInput,
+  rerunFailedChecks,
+  type StepResult,
+} from "@nightshift/verification";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import { recordArtifact } from "./runner.js";
 import {
   discardScratch,
   freshScratch,
   projectStepEnv,
-  type RunScratchAs,
+  type Reclaim,
   type ScratchPaths,
 } from "./scratch.js";
 
@@ -49,7 +54,9 @@ export interface RerunInput {
   readonly paths: ScratchPaths;
   readonly timeoutMs: number;
   /** Whoever ran the first run, so the rerun is the same identity (D-P10-25). */
-  readonly as?: RunScratchAs;
+  readonly as?: RunVerificationInput["as"];
+  /** The engine's, so the rerun's scratch can go whatever the rerun left in it (scratch.ts). */
+  readonly reclaim?: Reclaim;
   /**
    * The project environment the first run had (P16, D-10), so the rerun runs
    * in exactly the same one, whether or not it runs as a worker.
@@ -61,9 +68,9 @@ export interface RerunInput {
 
 /** Reruns each failed check once, with a scratch of its own. Empty when nothing failed. */
 export const rerunFailures = async (input: RerunInput): Promise<readonly CheckRerun[]> => {
-  const { steps, first, cwd, paths, timeoutMs, as, keepScratch, projectEnv } = input;
+  const { steps, first, cwd, paths, timeoutMs, as, reclaim, keepScratch, projectEnv } = input;
   if (first.every((result) => result.exitCode === 0)) return [];
-  const scratch = await freshScratch(paths, cwd, as);
+  const scratch = await freshScratch(paths, cwd, reclaim);
   const ran = rerunFailedChecks({
     steps,
     first,
@@ -72,7 +79,7 @@ export const rerunFailures = async (input: RerunInput): Promise<readonly CheckRe
     env: projectStepEnv(projectEnv, scratch),
     ...(as === undefined ? {} : { as }),
   });
-  return keepScratch === true ? ran : ran.finally(() => discardScratch(paths, cwd, as));
+  return keepScratch === true ? ran : ran.finally(() => discardScratch(paths, cwd, reclaim));
 };
 
 /**

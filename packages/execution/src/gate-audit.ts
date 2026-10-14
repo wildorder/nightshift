@@ -31,7 +31,13 @@ import {
   setupFailed,
 } from "@nightshift/verification";
 import { addDetachedWorktree, type GitRunner, pruneWorktrees, tryGit } from "./git/index.js";
-import { discardScratch, freshScratch, projectStepEnv, type ScratchPaths } from "./scratch.js";
+import {
+  discardScratch,
+  freshScratch,
+  projectStepEnv,
+  type Reclaim,
+  type ScratchPaths,
+} from "./scratch.js";
 
 /**
  * - `passed`: it exited 0.
@@ -90,6 +96,8 @@ export interface GateAuditInput {
   readonly env?: Readonly<Record<string, string>>;
   /** Who each step runs as, as verification's do on a machine (D-P10-25). Absent, as this process. */
   readonly as?: RunVerificationInput["as"];
+  /** Takes the checkout back from that user before removing it (D-P10-29). Absent, nothing to take back. */
+  readonly reclaim?: Reclaim;
   /** After each step, for a caller that shows progress. */
   readonly onStep?: (result: StepResult) => void;
 }
@@ -125,7 +133,7 @@ const runOnce = async (
     input.onStep?.(result);
   };
   // A temp directory of its own, as a verification gets (scratch.ts).
-  const scratch = await freshScratch(input.paths, checkout, input.as);
+  const scratch = await freshScratch(input.paths, checkout, input.reclaim);
   const how = {
     timeoutMs: input.timeoutMs,
     env: projectStepEnv(input.env, scratch),
@@ -169,6 +177,7 @@ export const auditGates = async (input: GateAuditInput): Promise<GateAudit> => {
   const parent = temporary ? await mkdtemp(join(tmpdir(), "nightshift-gates-")) : input.workDir;
   await mkdir(parent, { recursive: true });
   const checkout = join(parent, `audit-${input.base.slice(0, 12)}`);
+  await input.reclaim?.(checkout).catch(() => undefined);
   await rm(checkout, { recursive: true, force: true });
   await pruneWorktrees(input.git, input.repoPath);
   await addDetachedWorktree(input.git, { repo: input.repoPath, path: checkout, base: input.base });
@@ -177,7 +186,9 @@ export const auditGates = async (input: GateAuditInput): Promise<GateAudit> => {
   try {
     results = await runOnce(input, checkout, runnable);
   } finally {
-    await discardScratch(input.paths, checkout, input.as);
+    await discardScratch(input.paths, checkout, input.reclaim);
+    // The steps ran as the project user; the engine takes the checkout back first.
+    await input.reclaim?.(checkout).catch(() => undefined);
     await tryGit(input.git, ["worktree", "remove", "--force", checkout], {
       cwd: input.repoPath,
     }).catch(() => undefined);
