@@ -24,21 +24,20 @@
  * checkout's length, and broke tsx under a gate audit (keki-backend,
  * 2026-10-07).
  *
- * On a machine a checkout's processes run as its worker (D-P10-25), and the
- * tools they run make owner-only directories the engine cannot delete. So a
- * scratch is removed as that worker when there is one, then by this process
- * for whatever is left.
+ * On a machine a checkout's processes run as the project user (D-P10-30), and
+ * the tools they run make directories the engine cannot delete inside. So the
+ * engine takes a scratch back before removing it (`reclaim`), as it takes back
+ * every tree it granted (D-P10-29): one rule for everything project code wrote.
  */
-import { spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import type { LocalPaths } from "@nightshift/core";
-import type { StepInvocation } from "@nightshift/verification";
+import type { ExecutionEnvironment } from "./environment.js";
 
 /** Where checkouts' scratches live: the paths port's. */
 export type ScratchPaths = Pick<LocalPaths, "scratch">;
 
-/** Wraps a command so it runs as the checkout's worker, as verification steps are. */
-export type RunScratchAs = (invocation: StepInvocation) => StepInvocation;
+/** The engine's reclaim, when there is one: `environment.reclaim`. */
+export type Reclaim = ExecutionEnvironment["reclaim"];
 
 /** Where `checkout`'s scratch lives. */
 export const scratchOf = (paths: ScratchPaths, checkout: string): string => paths.scratch(checkout);
@@ -60,28 +59,14 @@ export const projectStepEnv = (
   dir: string,
 ): Readonly<Record<string, string>> => ({ ...(projectEnv ?? {}), ...scratchEnv(dir) });
 
-const runToEnd = (invocation: StepInvocation): Promise<void> =>
-  new Promise((resolve) => {
-    const child = spawn(invocation.file, [...invocation.args], {
-      env: { ...invocation.env },
-      stdio: "ignore",
-    });
-    child.on("error", () => resolve());
-    child.on("close", () => resolve());
-  });
-
 /** Removes `checkout`'s scratch, whoever wrote into it. Never throws: a leftover is not a failure. */
 export const discardScratch = async (
   paths: ScratchPaths,
   checkout: string,
-  as?: RunScratchAs,
+  reclaim?: Reclaim,
 ): Promise<void> => {
   const dir = scratchOf(paths, checkout);
-  if (as !== undefined) {
-    await runToEnd(
-      as({ file: "rm", args: ["-rf", dir], env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } }),
-    );
-  }
+  await reclaim?.(dir).catch(() => undefined);
   await rm(dir, { recursive: true, force: true }).catch(() => undefined);
 };
 
@@ -89,9 +74,9 @@ export const discardScratch = async (
 export const freshScratch = async (
   paths: ScratchPaths,
   checkout: string,
-  as?: RunScratchAs,
+  reclaim?: Reclaim,
 ): Promise<string> => {
-  await discardScratch(paths, checkout, as);
+  await discardScratch(paths, checkout, reclaim);
   const dir = scratchOf(paths, checkout);
   await mkdir(dir, { recursive: true });
   return dir;

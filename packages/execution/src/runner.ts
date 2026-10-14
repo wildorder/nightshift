@@ -384,7 +384,7 @@ export const startJob = async (
       // A worktree that will not go fails this launch with git's reason, rather
       // than leaving its branch for the new worktree to collide with.
       await releaseWorktree(environment, session.repoPath, worktree, branch, nodeId);
-      await discardScratch(environment.paths, worktree);
+      await discardScratch(environment.paths, worktree, environment.reclaim);
       await pruneWorktrees(environment.git, session.repoPath);
     }
     if (orchestrates) {
@@ -814,7 +814,7 @@ export const startJob = async (
       jobBranch(session.scope.runId, nodeId),
       nodeId,
     )
-      .then(() => discardScratch(environment.paths, worktree))
+      .then(() => discardScratch(environment.paths, worktree, environment.reclaim))
       .catch((cleanup: unknown) => {
         // The node still ends; the next launch at this node names the cause.
         console.error(`node ${nodeId}: ${cleanup instanceof Error ? cleanup.message : cleanup}`);
@@ -914,7 +914,7 @@ const finishSubProgram = async (
         `node ${input.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
       );
     });
-    await discardScratch(environment.paths, input.worktree);
+    await discardScratch(environment.paths, input.worktree, environment.reclaim);
     await recordRouteResult(environment, input, usage);
     // What the strand's decisions produced, now that its work has all landed
     // or stopped (P9, D-P9-01).

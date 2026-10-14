@@ -300,7 +300,7 @@ export const verifyNode = async (
   // nothing after it inherits (scratch.ts). On a machine, in the project
   // environment (P16, D-10), given here rather than inherited.
   const as = stepsAs(environment, { agentId: input.agentId, role: "worker" });
-  const scratch = await freshScratch(environment.paths, input.worktree, as.as);
+  const scratch = await freshScratch(environment.paths, input.worktree, environment.reclaim);
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const checkout = await runCheckoutSteps({
     setup: gates.setup,
@@ -311,7 +311,7 @@ export const verifyNode = async (
     env: projectStepEnv(environment.projectEnv, scratch),
     onStep: announce,
     ...as,
-  }).finally(() => discardScratch(environment.paths, input.worktree, as.as));
+  }).finally(() => discardScratch(environment.paths, input.worktree, environment.reclaim));
   const results = checkout.checks;
 
   // Each step's whole output, in S3 and referenced — never inline (A-08).
@@ -349,6 +349,7 @@ export const verifyNode = async (
     paths: environment.paths,
     timeoutMs,
     ...(environment.projectEnv === undefined ? {} : { projectEnv: environment.projectEnv }),
+    ...(environment.reclaim === undefined ? {} : { reclaim: environment.reclaim }),
     ...as,
   });
   const checkCommands = await withFlakes(

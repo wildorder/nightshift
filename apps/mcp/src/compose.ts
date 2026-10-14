@@ -635,7 +635,7 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     ...(publication === undefined ? {} : { publication }),
     ...(runAs === undefined ? {} : { runAs }),
     ...(runAs === undefined ? {} : { reclaim: createReclaim(userInfo().username) }),
-    ...(runAs === undefined ? {} : { workerTokens: createWorkerTokenFiles(runAs) }),
+    ...(runAs === undefined ? {} : { workerTokens: createWorkerTokenFiles() }),
     ...(projectEnv === undefined ? {} : { projectEnv }),
     ...(projectSetup === undefined ? {} : { projectSetup }),
     planText: async (scope, sha256) =>

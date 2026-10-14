@@ -846,7 +846,7 @@ const removeCheckout = async (
       `examination checkout ${path}: ${error instanceof Error ? error.message : error}`,
     );
   });
-  await discardScratch(environment.paths, path);
+  await discardScratch(environment.paths, path, environment.reclaim);
   await pruneWorktrees(environment.git, input.session.repoPath).catch(() => {});
 };
 
@@ -923,7 +923,7 @@ const candidateVerification = async (
   const worker = await implementerOf(environment, input);
   const runAs = environment.runAs?.({ agentId: worker?.agentId ?? "", role: "worker" });
   const as = stepsAs(environment, { agentId: worker?.agentId ?? "", role: "worker" });
-  const scratch = await freshScratch(environment.paths, checkout, as.as);
+  const scratch = await freshScratch(environment.paths, checkout, environment.reclaim);
   if (runAs !== undefined) {
     await runAs.grant(checkout);
     await runAs.grant(scratch);
@@ -978,6 +978,7 @@ const candidateVerification = async (
     timeoutMs,
     keepScratch: true,
     ...(as.as === undefined ? {} : { as: as.as }),
+    ...(environment.reclaim === undefined ? {} : { reclaim: environment.reclaim }),
     ...(environment.projectEnv === undefined ? {} : { projectEnv: environment.projectEnv }),
   });
   const commands = await withFlakes(

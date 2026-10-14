@@ -1,9 +1,8 @@
-/** A checkout's scratch: beside it, fresh when asked, gone when discarded, removed as its worker when there is one. */
+/** A checkout's scratch: beside it, fresh when asked, gone when discarded, taken back by the engine first when it was granted. */
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { StepInvocation } from "@nightshift/verification";
 import { afterEach, describe, expect, it } from "vitest";
 import { discardScratch, ensureScratch, freshScratch, scratchEnv, scratchOf } from "./scratch.js";
 
@@ -47,18 +46,22 @@ describe("a checkout's scratch", () => {
     expect(await readdir(await ensureScratch(paths, path))).toEqual(["mine"]);
   });
 
-  it("goes when discarded, removed as the checkout's worker first when there is one", async () => {
+  it("goes when discarded, taken back by the engine first when there is a reclaim", async () => {
     const path = await checkout();
     await writeFile(join(await freshScratch(paths, path), "f"), "x");
-    const asked: StepInvocation[] = [];
-    await discardScratch(paths, path, (invocation) => {
-      asked.push(invocation);
-      return invocation;
+    const reclaimed: string[] = [];
+    await discardScratch(paths, path, async (dir) => {
+      reclaimed.push(dir);
+      expect(existsSync(dir)).toBe(true);
     });
     expect(existsSync(scratchOf(paths, path))).toBe(false);
-    expect(asked.map((invocation) => [invocation.file, ...invocation.args])).toEqual([
-      ["rm", "-rf", scratchOf(paths, path)],
-    ]);
+    expect(reclaimed).toEqual([scratchOf(paths, path)]);
+    // A reclaim that fails does not keep the scratch from being tried.
+    await writeFile(join(await freshScratch(paths, path), "f"), "x");
+    await discardScratch(paths, path, async () => {
+      throw new Error("sudo: a password is required");
+    });
+    expect(existsSync(scratchOf(paths, path))).toBe(false);
     // Discarding what is not there is not a failure.
     await expect(discardScratch(paths, path)).resolves.toBeUndefined();
   });
