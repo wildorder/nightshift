@@ -267,6 +267,21 @@ describe("a route that could not start (P8, D-P8-06)", () => {
     expect(outcome.availableAgainAt).toBe("2026-09-19T02:05:00.000Z");
   });
 
+  it("reads an expired login in words as the 401 it is, from a turn or a bare error (2026-10-13)", () => {
+    for (const frame of [
+      {
+        type: "turn.failed",
+        error: { message: "unexpected status 401 Unauthorized: token expired" },
+      },
+      { type: "error", message: "unexpected status 401 Unauthorized: token expired" },
+    ]) {
+      const { outcome } = interpret(frames({ type: "thread.started", thread_id: "th" }, frame));
+      expect(outcome.unavailable).toBe(
+        "the provider answered 401 before any work began: unexpected status 401 Unauthorized: token expired",
+      );
+    }
+  });
+
   it("reads a structured usage-limit error's own reset", () => {
     const error = JSON.stringify({
       type: "error",

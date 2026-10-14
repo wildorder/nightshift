@@ -80,6 +80,7 @@ import {
 } from "@nightshift/core";
 import {
   type AgentTask,
+  describeExit,
   type ExaminationEvidence,
   type HarnessExit,
   type McpLaunch,
@@ -157,8 +158,23 @@ export type ExaminationOutcome =
   | { readonly kind: "candidate_failed"; readonly verification: Verification }
   /** Some check needs a human prerequisite: examined at resume, after its checks pass (D-P8-14). */
   | { readonly kind: "postponed" }
-  /** Nothing to judge with: no examiner could be routed or it gave no verdict. Not the work's failure. */
-  | { readonly kind: "examiner_failed"; readonly reason: string };
+  /**
+   * Nothing to judge with: no examiner could be routed, or every one that ran
+   * gave no verdict. Not the work's failure: it goes on unreviewed, for a human
+   * (the owner's ruling, 2026-10-13). `patchId` names the change, when known.
+   */
+  | {
+      readonly kind: "examiner_failed";
+      readonly reason: string;
+      readonly patchId?: string;
+      /**
+       * True when examiners were tried and none could review (a limit, a
+       * login, a launch, no verdict): the work goes on unreviewed. False when
+       * this engine cannot examine at all (no examination services, the
+       * builder not on record): a fault to see, which fails as it always did.
+       */
+      readonly skippable: boolean;
+    };
 
 export interface ExamineInput {
   readonly session: RunSession;
@@ -404,9 +420,10 @@ const examinerFor = async (
   input: ExamineInput,
   implementer: RouteTarget,
   requirement: ExaminationRequirement,
+  passedOver: readonly Pick<RouteTarget, "harness" | "model">[] = [],
 ): Promise<RoutedExaminer | string> => {
   for (;;) {
-    const unavailable = environment.routes?.unavailable() ?? [];
+    const unavailable = [...(environment.routes?.unavailable() ?? []), ...passedOver];
     const independent = (out: readonly Pick<RouteTarget, "harness" | "model">[]) =>
       services.examinerRoute({
         job: input.job,
@@ -533,9 +550,22 @@ const examineOnSomeRoute = async (
   },
 ): Promise<Examination | string> => {
   const { gathered, builder, requirement } = work;
+  // Every examiner that could not review, and why: passed over for this
+  // examination, the next on the list tries (the owner's ruling, 2026-10-13).
+  const passedOver: RouteTarget[] = [];
+  const why: string[] = [];
+  const noneCould = (last: string) =>
+    why.length === 0 ? last : `examiner_failed: no examiner could review it: ${why.join("; ")}`;
   for (let attempt = 1; ; attempt += 1) {
-    const routed = await examinerFor(environment, services, input, builder.route, requirement);
-    if (typeof routed === "string") return routed;
+    const routed = await examinerFor(
+      environment,
+      services,
+      input,
+      builder.route,
+      requirement,
+      passedOver,
+    );
+    if (typeof routed === "string") return noneCould(routed);
     const { route } = routed;
     const frame: Omit<ExaminationContext, "round" | "questions"> = {
       examinationId: environment.ids.next("exam"),
@@ -560,15 +590,20 @@ const examineOnSomeRoute = async (
       implementer: builder.agent,
     });
     if ("examination" in ran) return ran.examination;
-    const routes = environment.routes;
-    if (ran.limited === undefined || routes === undefined || attempt >= MAX_EXAMINER_ROUTES) {
-      return ran.reason;
+    // A limit puts the route out for the run, until it resets (D-P8-06); any
+    // other ending passes it over for this examination only.
+    if (ran.limited !== undefined && environment.routes !== undefined) {
+      environment.routes.markUnavailable(route.target, ran.limited.until);
+    } else {
+      passedOver.push(route.target);
     }
-    routes.markUnavailable(route.target, ran.limited.until);
+    const because = ran.limited?.reason ?? ran.ended;
+    why.push(`${route.target.model} (${because})`);
+    if (attempt >= MAX_EXAMINER_ROUTES) return noneCould(ran.reason);
     progress(
       environment,
       input,
-      `the examiner on ${route.target.model} could not serve (${ran.limited.reason}); routing another`,
+      `the examiner on ${route.target.model} could not review (${because}); trying the next`,
     );
   }
 };
@@ -587,6 +622,7 @@ export const examine = async (
   if (services === undefined) {
     return {
       kind: "examiner_failed",
+      skippable: false,
       reason:
         "examiner_failed: this run's policy requires an examiner, and this execution environment has none",
     };
@@ -595,6 +631,7 @@ export const examine = async (
   if (builder === undefined) {
     return {
       kind: "examiner_failed",
+      skippable: false,
       reason: "examiner_failed: the work's own route and agent are not on the record",
     };
   }
@@ -610,7 +647,14 @@ export const examine = async (
       builder,
       requirement,
     });
-    if (typeof examination === "string") return { kind: "examiner_failed", reason: examination };
+    if (typeof examination === "string") {
+      return {
+        kind: "examiner_failed",
+        reason: examination,
+        patchId: gathered.patchId,
+        skippable: true,
+      };
+    }
     announceVerdict(environment, input, examination);
     // Awaited here, not returned as a promise: the `finally` below removes the
     // checkout, and an arbiter `verdictOf` starts works in it. Returned
@@ -1206,6 +1250,8 @@ const runExaminer = async (
   | { readonly examination: Examination }
   | {
       readonly reason: string;
+      /** How its process ended, for the record of why it was passed over. */
+      readonly ended: string;
       readonly limited?: { readonly reason: string; readonly until?: string } | undefined;
     }
 > => {
@@ -1284,9 +1330,16 @@ const runExaminer = async (
 
   await endHelper(environment, input, helper, exits, examination !== undefined);
   if (examination !== undefined) return { examination };
+  const last = exits.at(-1);
   return {
     reason: "examiner_failed: the examiner ended without submitting a verdict",
-    limited: limitOf(exits.at(-1), environment),
+    ended:
+      last === undefined
+        ? "it never ran"
+        : last.kind === "completed"
+          ? "it ended without a verdict"
+          : describeExit(last),
+    limited: limitOf(last, environment),
   };
 };
 
@@ -1715,6 +1768,36 @@ const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /**
+ * Work no examiner could review goes on unreviewed, its checks having passed,
+ * and says so: the owner reviews it when the work is done (the owner's ruling,
+ * 2026-10-13: a review that cannot happen never holds the build up, fails a
+ * job or throws its work away). Remembered by patch id, so the queue does not
+ * try again on the serial path.
+ */
+export const skipReview = (
+  environment: ExecutionEnvironment,
+  input: Pick<ExamineInput, "node" | "job" | "commitSha">,
+  outcome: { readonly reason: string; readonly patchId?: string },
+  where: string,
+): void => {
+  if (outcome.patchId !== undefined) {
+    environment.skippedReviews?.set(input.node.executionNodeId, outcome.patchId);
+  }
+  environment.outbox.emit({
+    type: "examination.skipped",
+    source: "control-plane",
+    payload: {
+      reason: outcome.reason,
+      risk: input.job.risk,
+      commitSha: input.commitSha,
+      ...(outcome.patchId === undefined ? {} : { patchId: outcome.patchId }),
+      where,
+    },
+    executionNodeId: input.node.executionNodeId,
+  });
+};
+
+/**
  * The examination gate in the merge queue (D-P8-09), after the node is
  * `verified` on the program head: nothing to do when the policy asks for no
  * examination; the examination of the same change when there is one that lets
@@ -1737,8 +1820,13 @@ export const examineInQueue = async (
     input.session.scope,
     input.node.executionNodeId,
   );
-  const carried = carriedExamination(examinations, patchIdOf(diff));
+  const patchId = patchIdOf(diff);
+  const carried = carriedExamination(examinations, patchId);
   if (carried !== undefined) return { kind: "land", examination: carried };
+  // Its review was skipped beside the queue: no second round on the serial path.
+  if (environment.skippedReviews?.get(input.node.executionNodeId) === patchId) {
+    return { kind: "land" };
+  }
 
   const outcome = await examine(environment, { ...input, phase: "queue" });
   switch (outcome.kind) {
@@ -1747,32 +1835,42 @@ export const examineInQueue = async (
       return { kind: "land" };
     case "cleared":
       return { kind: "land", examination: outcome.examination };
+    case "examiner_failed":
+      if (outcome.skippable) {
+        skipReview(environment, input, outcome, "in the merge queue");
+        return { kind: "land" };
+      }
+      return stopInQueue(environment, input, outcome.reason);
     case "candidate_failed":
+      return stopInQueue(environment, input, "examination_failed: its checks failed");
     case "blocked":
     case "upheld":
-    case "examiner_failed": {
-      const reason =
-        outcome.kind === "candidate_failed"
-          ? "examination_failed: its checks failed"
-          : outcome.reason;
-      const { stores, clock, outbox } = environment;
-      const node = await stores.executionNodes.get(input.session.scope, input.node.executionNodeId);
-      if (node !== undefined && (node.status === "verified" || node.status === "examining")) {
-        const examining =
-          node.status === "examining" ? node : transition(node, "begin_examination", nowIso(clock));
-        await stores.executionNodes.put(examining);
-        await stores.executionNodes.put({
-          ...transition(examining, "examination_failed", nowIso(clock)),
-          outcomeReason: reason,
-        });
-        outbox.emit({
-          type: "node.failed",
-          source: "control-plane",
-          payload: { reason, examined: "in the merge queue" },
-          executionNodeId: input.node.executionNodeId,
-        });
-      }
-      return { kind: "stopped" };
-    }
+      return stopInQueue(environment, input, outcome.reason);
   }
+};
+
+/** A node the queue's examination stopped, ended `examination_failed` through P1's table. */
+const stopInQueue = async (
+  environment: ExecutionEnvironment,
+  input: Pick<ExamineInput, "session" | "node">,
+  reason: string,
+): Promise<{ readonly kind: "stopped" }> => {
+  const { stores, clock, outbox } = environment;
+  const node = await stores.executionNodes.get(input.session.scope, input.node.executionNodeId);
+  if (node !== undefined && (node.status === "verified" || node.status === "examining")) {
+    const examining =
+      node.status === "examining" ? node : transition(node, "begin_examination", nowIso(clock));
+    await stores.executionNodes.put(examining);
+    await stores.executionNodes.put({
+      ...transition(examining, "examination_failed", nowIso(clock)),
+      outcomeReason: reason,
+    });
+    outbox.emit({
+      type: "node.failed",
+      source: "control-plane",
+      payload: { reason, examined: "in the merge queue" },
+      executionNodeId: input.node.executionNodeId,
+    });
+  }
+  return { kind: "stopped" };
 };

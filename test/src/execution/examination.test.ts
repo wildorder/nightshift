@@ -24,7 +24,7 @@ import {
   type RouteChoice,
   type RouteTarget,
 } from "@nightshift/contracts";
-import { isSettled, nowIso } from "@nightshift/core";
+import { gatherReport, isSettled, nowIso, renderReport } from "@nightshift/core";
 import {
   carriedExamination,
   completeJob,
@@ -90,6 +90,8 @@ interface Scenario {
   readonly rulingCarried?: (rulingAttempt: number) => boolean;
   /** Examiner models a usage limit stops, the first time each is started. */
   readonly limitedExaminers?: readonly string[];
+  /** Examiner models that cannot even start (a launch failure, an expired login): always. */
+  readonly brokenExaminers?: readonly string[];
 }
 
 interface Seen {
@@ -175,6 +177,9 @@ const examinerUnlessLimited = async (
   const model = input.model.model;
   const startedBefore = seen.examinerModels.includes(model);
   seen.examinerModels.push(model);
+  if (scenario.brokenExaminers?.includes(model) === true) {
+    return { kind: "failed", exitCode: 127 };
+  }
   if (scenario.limitedExaminers?.includes(model) !== true || startedBefore) {
     return examiner(world, input, scenario);
   }
@@ -384,7 +389,14 @@ const rig = async (scenario: Scenario, options: RigOptions = {}) => {
   });
   world = made;
   const services: ExaminationServices = {
-    examinerRoute: options.services?.examinerRoute ?? (() => choice(EXAMINER)),
+    examinerRoute:
+      options.services?.examinerRoute ??
+      ((input) => {
+        if ((input.unavailable ?? []).some((route) => route.model === EXAMINER.model)) {
+          throw new Error("no examiner left on the list");
+        }
+        return choice(EXAMINER);
+      }),
     strongestExaminerRoute: options.services?.strongestExaminerRoute ?? (() => choice(EXAMINER)),
     arbiterRoute: () => choice(ARBITER),
     mcp: (identity) => ({
@@ -559,14 +571,46 @@ describe("examination beside the merge queue (D-P8-09)", () => {
     expect(examination?.findings[0]?.resolution).toBe("unresolved");
   });
 
-  it("fails the job, not climbing, when the examiner gives no verdict: a finding without evidence is refused", async () => {
-    const { world, engine, nodeId } = await rig({
+  // The owner's ruling, 2026-10-13: a review that cannot happen never fails a
+  // job, holds the build up, or throws its work away.
+  it("lands verified work unreviewed, and says so, when no examiner gives a verdict", async () => {
+    const { world, engine, nodeId, seen } = await rig({
       risk: "high",
       findings: () => [{ severity: "material", evidence: false }],
     });
-    expect(await settledIdle(world, engine, nodeId)).toBe("failed");
-    const node = await world.stores.executionNodes.get(world.scope, nodeId);
-    expect(node?.outcomeReason).toMatch(/^examiner_failed: /);
+    expect(await settledIdle(world, engine, nodeId)).toBe("integrated");
+    expect(seen.roles.filter((role) => role === "worker")).toHaveLength(1);
+    // One examiner beside the queue, and no second round in the queue.
+    expect(seen.examinerModels).toEqual([EXAMINER.model]);
+    const skipped = (await eventsOf(world)).filter(
+      (event) => event.type === "examination.skipped" && event.executionNodeId === nodeId,
+    );
+    expect(skipped).toHaveLength(1);
+    expect(String(skipped[0]?.payload.reason)).toMatch(/no examiner could review it: gpt-6-astra/);
+    const report = renderReport(await gatherReport(world.stores, world.scope));
+    expect(report).toContain("## Not reviewed — review these");
+    expect(report).toContain(String(nodeId));
+  });
+
+  it("passes over an examiner that cannot start, and the next on the list reviews", async () => {
+    const SOL = target("openai", "gpt-6-sol");
+    const { world, engine, nodeId, seen } = await rig(
+      { risk: "high", brokenExaminers: [EXAMINER.model] },
+      {
+        services: {
+          examinerRoute: (input) =>
+            (input.unavailable ?? []).some((route) => route.model === EXAMINER.model)
+              ? choice(SOL)
+              : choice(EXAMINER),
+        },
+      },
+    );
+    expect(await settledIdle(world, engine, nodeId)).toBe("integrated");
+    expect(seen.examinerModels).toEqual([EXAMINER.model, SOL.model]);
+    const [examination] = await examinationsOf(world, nodeId);
+    expect(examination?.examinerRoute.model).toBe(SOL.model);
+    // Passed over for this examination only: not out for the run.
+    expect(engine.unavailableRoutes()).toEqual([]);
   });
 });
 

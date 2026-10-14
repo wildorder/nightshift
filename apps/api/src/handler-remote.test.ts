@@ -527,6 +527,53 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
     });
   });
 
+  it("keeps a refreshed Codex login the engine offers, only when it is the same account and newer (2026-10-13)", async () => {
+    const w = await setup();
+    const login = (refreshed: string, account = "acct-1", token = "a") =>
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        last_refresh: refreshed,
+        tokens: {
+          account_id: account,
+          access_token: `tok-${token}`,
+          refresh_token: `ref-${token}`,
+        },
+      });
+    const sealedAt = login("2026-10-02T06:31:35.000Z");
+    await call(w, "PUT", `/orgs/${w.orgId}/credentials/openai`, { key: sealedAt });
+    const dispatch = await provisioned(w, await dispatched(w));
+    await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "ready" }),
+      engine(w, dispatch),
+    );
+    const beat = (refreshed?: string) =>
+      call(
+        w,
+        "POST",
+        `${w.paths.run}/dispatch/heartbeat`,
+        heartbeatBody(1, {
+          report: "running",
+          ...(refreshed === undefined ? {} : { refreshedCredentials: { openai: refreshed } }),
+        }),
+        engine(w, dispatch),
+      );
+    // What the next beat hands the engine is the sealed copy, opened.
+    const sealedNow = async () => (await beat()).body as { credentials?: Record<string, string> };
+
+    // Older, or another account's: refused, the sealed copy as it was.
+    await beat(login("2026-10-01T00:00:00.000Z", "acct-1", "old"));
+    await beat(login("2026-10-14T00:00:00.000Z", "acct-2", "other"));
+    expect((await sealedNow()).credentials?.openai).toBe(sealedAt);
+
+    // The same account, refreshed since: kept, and the next run is given it.
+    const fresh = login("2026-10-14T03:00:00.000Z", "acct-1", "fresh");
+    expect((await beat(fresh)).status).toBe(200);
+    expect((await sealedNow()).credentials?.openai).toBe(fresh);
+  });
+
   it("refuses a stale generation at the gate, and a human's stale heartbeat in the body", async () => {
     const w = await setup();
     const dispatch = await provisioned(w, await dispatched(w));

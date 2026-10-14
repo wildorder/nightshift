@@ -99,6 +99,13 @@ export const EventTypeSchema = z.enum([
   "verification.completed",
   "examination.requested",
   "examination.completed",
+  /**
+   * Added 2026-10-13, the owner's ruling. No examiner could review the work
+   * (none could be routed, or each that ran gave no verdict), so it went on
+   * unreviewed, its checks having passed, for a human to review. Payload:
+   * `reason`, `risk`, `commitSha`, `patchId`, `where`.
+   */
+  "examination.skipped",
   /** Added in P8 (D-P8-15). The examiner put questions to the builder. Payload: the questions. */
   "examination.asked",
   /** Added in P8 (D-P8-15). The builder answered. Payload: the answers, and how. */

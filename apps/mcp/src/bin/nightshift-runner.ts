@@ -16,6 +16,7 @@ import {
   installTokenFile,
   placeProviderCredentials,
   rootEnvironment,
+  startCodexWatch,
   tokenFile,
 } from "../runner/root.js";
 
@@ -68,6 +69,9 @@ runRunner({
         ? "the org set no provider credential; the root starts with none"
         : `provider credentials placed: ${Object.keys(providerKeys).join(", ")}`,
     );
+    // A Codex login the agents refresh goes back to the org, so the next run
+    // starts from a live one (2026-10-13).
+    const codexWatch = startCodexWatch({ context, credentials, projectUser, log: say });
     const env = rootEnvironment({
       context,
       apiEndpoint: context.identity.apiEndpoint,
@@ -83,7 +87,7 @@ runRunner({
       repoPath: context.layout.checkout,
       // A replacement machine resumes the run the lost one was running (T6).
       recovering: { generation: context.dispatch.generation },
-    });
+    }).finally(() => codexWatch.stop());
     say(describeHeadlessEnding(result));
     // Each root's transcript, as an artifact on its node: the one durable
     // record of what the orchestrator did, when the machine is long gone. More

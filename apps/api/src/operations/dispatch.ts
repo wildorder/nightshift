@@ -24,11 +24,13 @@ import {
   HeartbeatBodySchema,
   type HeartbeatResponse,
   HeartbeatResponseSchema,
+  lastFourOf,
   type OrgComputeUsage,
   type OrgId,
   PROVIDERS,
   type Provider,
   type RunId,
+  refreshedCodexLogin,
 } from "@nightshift/contracts";
 import {
   attemptsExhausted,
@@ -402,6 +404,9 @@ export const heartbeat: Handler = async (context) => {
   await deps.stores.dispatches.put(dispatch);
 
   const project = await requireProject(deps.stores, scope.projectId);
+  if (live && body.refreshedCredentials?.openai !== undefined) {
+    await keepRefreshedLogin(deps, project.orgId, scope.runId, body.refreshedCredentials.openai);
+  }
   if (meteredUsd !== previousUsd) {
     const usage = await usageOf(deps, project.orgId, at);
     await deps.stores.computeLedger.put({
@@ -473,6 +478,48 @@ const renewedToken = async (
   } catch (error) {
     if (error instanceof EngineTokenExpiredError) return {};
     throw error;
+  }
+};
+
+/**
+ * A Codex login the run's machine refreshed, sealed in place of the org's when
+ * it is the same account and newer (2026-10-13): a ChatGPT login's refresh
+ * token works once, so the copy a run starts from must be the newest there is.
+ * Never fails the heartbeat: a refusal or a fault is logged, without the
+ * secret, and the old copy stays.
+ */
+const keepRefreshedLogin = async (
+  deps: ApiDeps,
+  orgId: OrgId,
+  runId: string,
+  offered: string,
+): Promise<void> => {
+  if (deps.envelope === undefined) return;
+  try {
+    const sealed = await deps.stores.credentials.sealed(orgId, "openai");
+    if (sealed === undefined) return;
+    const current = await deps.envelope.open(orgId, "openai", sealed);
+    const verdict = refreshedCodexLogin(current, offered);
+    if (!verdict.accept) {
+      if (current !== offered) {
+        console.warn(`dispatch ${runId}: a refreshed Codex login was not kept: ${verdict.reason}`);
+      }
+      return;
+    }
+    const next = await deps.envelope.seal(orgId, "openai", offered);
+    await deps.stores.credentials.put({
+      schemaVersion: 1,
+      orgId,
+      provider: "openai",
+      ciphertext: next.ciphertext,
+      wrappedKey: next.wrappedKey,
+      lastFour: lastFourOf(offered),
+      setAt: nowIso(deps.clock),
+    });
+  } catch (error) {
+    console.error(
+      `dispatch ${runId}: could not keep a refreshed Codex login: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 };
 

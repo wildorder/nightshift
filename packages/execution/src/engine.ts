@@ -289,7 +289,11 @@ export const createEngine = (options: EngineOptions): Engine => {
   // One record of what cannot serve, shared by every job, examiner and arbiter
   // this engine runs (D-P8-06, as amended 2026-10-12).
   const routes = options.environment.routes ?? createRouteAvailability(options.environment.clock);
-  const environment: ExecutionEnvironment = { ...options.environment, routes };
+  const environment: ExecutionEnvironment = {
+    ...options.environment,
+    routes,
+    skippedReviews: options.environment.skippedReviews ?? new Map(),
+  };
   const { stores, clock, outbox } = environment;
   const limits = session.program.delegationLimits;
   const maxWallClockSeconds = session.program.costPolicy.maxWallClockSeconds;

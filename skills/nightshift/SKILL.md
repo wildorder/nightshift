@@ -223,6 +223,12 @@ model or provider that sees the work and the checks but not the worker's account
 of it. It may ask the worker up to three questions. Its findings each point at
 evidence: lines of code, a command and its output, or a clause of the contract.
 
+A review that **cannot happen** never stops a job. An examiner that cannot run
+(an expired login, a usage limit, a launch failure, no verdict) is passed over
+for the next on the list; when none can, the work lands unreviewed with its
+checks passed, and the report lists it under "Not reviewed" for the human. Do
+not retry or redelegate a job for that: it has already landed.
+
 When a material finding stops a job, it ends `failed` with an `outcomeReason`
 beginning `examination_failed:` and naming the findings. You have two moves:
 

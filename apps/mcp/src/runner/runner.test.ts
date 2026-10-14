@@ -268,6 +268,32 @@ describe("the heartbeat (D-P10-18)", () => {
     expect((bodies[0] as { failure?: unknown }).failure).toBeUndefined();
   });
 
+  it("carries an offered login on the next beat, again after a failed one, and then not again (2026-10-13)", async () => {
+    const { post, bodies } = plane([new Error("ECONNRESET"), response(), response()]);
+    const heartbeat = createHeartbeat({
+      generation: 2,
+      post,
+      installToken: () => undefined,
+      sample: async () => undefined,
+      sleep: async () => undefined,
+      now: () => 0,
+      log: () => undefined,
+    });
+    heartbeat.offerCredentials({ openai: '{"tokens":{}}' });
+    heartbeat.report("ready");
+    heartbeat.report("running");
+    heartbeat.end();
+    await heartbeat.run().catch(() => undefined);
+    await heartbeat.farewell("stopped");
+    const carried = bodies.map(
+      (body) => (body as { refreshedCredentials?: unknown }).refreshedCredentials,
+    );
+    // The failed beat carried it; the next carried it again; the rest did not.
+    expect(carried[0]).toEqual({ openai: '{"tokens":{}}' });
+    expect(carried[1]).toEqual({ openai: '{"tokens":{}}' });
+    expect(carried.slice(2).every((value) => value === undefined)).toBe(true);
+  });
+
   it("gives up after three failures in a row, so a lost plane means a lost lease here too", async () => {
     const { post } = plane([new Error("ECONNREFUSED")]);
     const heartbeat = createHeartbeat({

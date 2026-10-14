@@ -134,6 +134,12 @@ export interface ExecutionEnvironment {
    * examiner. Absent, the engine keeps its own and the examiner none.
    */
   readonly routes?: RouteAvailability;
+  /**
+   * Work whose review was skipped because no examiner could review it, by node,
+   * with the patch id it was skipped for: the queue lands that change without
+   * trying again, on the one serial path (2026-10-13). The engine keeps one.
+   */
+  readonly skippedReviews?: Map<string, string>;
   /** Waits `ms`; tests advance their clock with it. Absent, a timer. */
   readonly sleep?: (ms: number) => Promise<void>;
   /**

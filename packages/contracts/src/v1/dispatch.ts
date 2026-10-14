@@ -509,6 +509,15 @@ export const HeartbeatBodySchema = z
     rootSessionId: z.string().min(1).optional(),
     /** Where the runner has got to, P16 S-03. */
     progress: RunnerProgressSchema.optional(),
+    /**
+     * A provider login the machine's agents refreshed, offered back so the
+     * org's sealed copy stays alive (2026-10-13). Only `openai`, a Codex
+     * login file; the plane keeps it only when `refreshedCodexLogin` accepts.
+     */
+    refreshedCredentials: z
+      .strictObject({ openai: z.string().min(8).max(65_536) })
+      .partial()
+      .optional(),
   })
   .refine((body) => body.failure === undefined || body.report === "stopped", {
     message: "a failure is reported only with `stopped`",
