@@ -62,6 +62,53 @@ export const isCodexAuthFile = (secret: string): boolean => {
   }
 };
 
+interface CodexLogin {
+  readonly lastRefresh?: number;
+  readonly accountId?: string;
+}
+
+const codexLoginOf = (secret: string): CodexLogin | undefined => {
+  if (!isCodexAuthFile(secret)) return undefined;
+  const parsed = JSON.parse(secret) as {
+    last_refresh?: unknown;
+    tokens?: { account_id?: unknown } | null;
+  };
+  const at = typeof parsed.last_refresh === "string" ? Date.parse(parsed.last_refresh) : Number.NaN;
+  const account = parsed.tokens?.account_id;
+  return {
+    ...(Number.isNaN(at) ? {} : { lastRefresh: at }),
+    ...(typeof account === "string" && account.length > 0 ? { accountId: account } : {}),
+  };
+};
+
+/**
+ * Whether `offered`, a Codex login a run's machine refreshed, may replace the
+ * org's sealed `current` (2026-10-13). A ChatGPT login rotates its refresh
+ * token on every refresh, so a copy that is never written back is dead after
+ * the first refresh anywhere: every Codex agent then got a 401. Only the same
+ * account, and only a newer refresh, so a stale or foreign file never
+ * overwrites a good one.
+ */
+export const refreshedCodexLogin = (
+  current: string,
+  offered: string,
+): { readonly accept: true } | { readonly accept: false; readonly reason: string } => {
+  const was = codexLoginOf(current);
+  const now = codexLoginOf(offered);
+  if (was === undefined)
+    return { accept: false, reason: "the sealed credential is not a Codex login" };
+  if (now === undefined) return { accept: false, reason: "what was offered is not a Codex login" };
+  if (was.accountId !== undefined && now.accountId !== was.accountId) {
+    return { accept: false, reason: "it is a different ChatGPT account's login" };
+  }
+  if (now.lastRefresh === undefined)
+    return { accept: false, reason: "it says nothing of when it was refreshed" };
+  if (was.lastRefresh !== undefined && now.lastRefresh <= was.lastRefresh) {
+    return { accept: false, reason: "it is no newer than the sealed one" };
+  }
+  return { accept: true };
+};
+
 /** How a stored credential reaches the harness on a machine: a variable, or a file a variable points at. */
 export type CredentialPlacement =
   | { readonly kind: "env"; readonly name: string }

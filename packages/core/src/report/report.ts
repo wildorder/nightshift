@@ -156,6 +156,8 @@ export interface RunReport {
   readonly usage: readonly UsageRow[];
   /** P8: the arbiter's rulings, which lead the report (D-P8-13). */
   readonly rulings: readonly RulingReport[];
+  /** Work that went on unreviewed because no examiner could review it, for a human (2026-10-13). */
+  readonly unreviewed?: readonly UnreviewedReport[];
   /** P15: the gates' audit, the red base, every repair and every flake (D-P15-09). */
   readonly gateHealth: GateHealthReport;
 }
@@ -373,6 +375,65 @@ const whoRuled = (
     ? { arbiterModel, sharesModelWith: "implementer" }
     : { arbiterModel };
 };
+
+/** One change no examiner could review: where it is, and why nobody did. */
+export interface UnreviewedReport {
+  readonly nodeId: string;
+  readonly objective?: string;
+  readonly commitSha?: string;
+  readonly risk?: string;
+  readonly reason: string;
+}
+
+/** The run's skipped reviews, the latest per node: what a human still has to review. */
+const unreviewedOf = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  records: Records,
+): Promise<UnreviewedReport[]> => {
+  const events = await readAll<Event>((page) => stores.events.listByRun(scope, page));
+  const latest = new Map<string, Event>();
+  for (const event of events) {
+    if (event.type === "examination.skipped" && event.executionNodeId !== null) {
+      latest.set(event.executionNodeId, event);
+    }
+  }
+  return [...latest.values()].map((event) => {
+    const node = records.tree.nodes.get(event.executionNodeId as never);
+    const job =
+      node?.jobContractId === null || node === undefined
+        ? undefined
+        : records.jobOf.get(node.jobContractId);
+    const commitSha =
+      typeof event.payload.commitSha === "string" ? event.payload.commitSha : undefined;
+    const risk = typeof event.payload.risk === "string" ? event.payload.risk : undefined;
+    return {
+      nodeId: String(event.executionNodeId),
+      ...(job === undefined ? {} : { objective: firstLine(job.objective) }),
+      ...(commitSha === undefined ? {} : { commitSha }),
+      ...(risk === undefined ? {} : { risk }),
+      reason: String(event.payload.reason ?? "no examiner could review it"),
+    };
+  });
+};
+
+/** Unreviewed work, second only to the arbiter's rulings: it is the human's to review. */
+const renderUnreviewed = (unreviewed: readonly UnreviewedReport[] | undefined): string[] =>
+  unreviewed === undefined || unreviewed.length === 0
+    ? []
+    : [
+        "## Not reviewed — review these",
+        "",
+        "No examiner could review this work, so it went on with its checks passed and nobody's review. Review it yourself:",
+        "",
+        ...unreviewed.map(
+          (item) =>
+            `- \`${item.nodeId}\`${item.objective === undefined ? "" : ` ${item.objective}`}${
+              item.commitSha === undefined ? "" : ` at \`${item.commitSha.slice(0, 12)}\``
+            }${item.risk === undefined ? "" : ` (${item.risk} risk)`}: ${item.reason}`,
+        ),
+        "",
+      ];
 
 /** The arbiter's rulings, from the examinations that cite them, with any human reversal (D-P8-13). */
 const rulingsOf = (records: Records): RulingReport[] => {
@@ -611,6 +672,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   const blocked = blockedBy(program, records.outcomes);
   const strands = strandsOf(program).map((strand) => strandReportOf(records, strand, blocked));
   const rulings = rulingsOf(records);
+  const unreviewed = await unreviewedOf(stores, scope, records);
 
   return {
     program,
@@ -638,6 +700,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
     corrections: await gatherCorrections(stores, program),
     usage: usageOf([...records.routesOf.values()].flat()),
     rulings,
+    unreviewed,
     gateHealth: await gatherGateHealth(stores, scope, records),
   };
 };
@@ -1053,6 +1116,7 @@ export const renderReport = (report: RunReport): string => {
     "",
     ...renderCorrections(report.corrections),
     ...renderRulings(report.rulings),
+    ...renderUnreviewed(report.unreviewed),
     ...renderStories(report),
     ...renderDepartures(strands),
     ...renderGateHealth(report.gateHealth),

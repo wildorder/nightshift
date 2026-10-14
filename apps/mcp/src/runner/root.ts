@@ -13,13 +13,122 @@
  * launches is told the branch's head at GitHub, so every landing raises a
  * publication intent (D-P10-22).
  */
-import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path/posix";
-import { credentialPlacement, PROVIDERS, type Provider } from "@nightshift/contracts";
+import {
+  CODEX_AUTH_FILE,
+  CODEX_HOME_ENV,
+  credentialPlacement,
+  isCodexAuthFile,
+  PROVIDERS,
+  type Provider,
+  refreshedCodexLogin,
+} from "@nightshift/contracts";
 import { PROJECT_ENV_FILE_ENV } from "../project-env.js";
 import type { Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
 import type { RunnerContext } from "./main.js";
+
+/** How often the agents' Codex login is looked at for a refresh to save back. */
+export const CODEX_LOGIN_WATCH_MS = 5 * 60_000;
+
+/** The Codex login files on a machine: the engine's copy, and the project user's (D-P10-30). */
+export const codexLoginPaths = (
+  runId: string,
+): { readonly engine: string; readonly project: string } => ({
+  engine: join(tokenDirectory(runId), "codex", CODEX_AUTH_FILE),
+  project: join(projectCredentialRoot(runId), CODEX_HOME_ENV, CODEX_AUTH_FILE),
+});
+
+/**
+ * Watches the run's Codex logins and offers a refreshed one back to the plane
+ * (2026-10-13). A ChatGPT login rotates its refresh token on every refresh;
+ * the run's copies are on tmpfs and go with the machine, so a refresh here
+ * that was not saved left the org's sealed copy dead, and the next run's every
+ * Codex agent got a 401. `read` answers the copies as they are now (a missing
+ * or unreadable one is left out); the newest that `refreshedCodexLogin` takes
+ * over the last one offered is offered. `stop` looks one last time.
+ */
+export const watchCodexLogin = (options: {
+  readonly sealed: string;
+  readonly read: () => Promise<readonly string[]>;
+  readonly offer: (login: string) => void;
+  readonly log: (line: string) => void;
+  readonly intervalMs?: number;
+}): { readonly check: () => Promise<void>; readonly stop: () => Promise<void> } => {
+  let latest = options.sealed;
+  const check = async (): Promise<void> => {
+    try {
+      for (const copy of await options.read()) {
+        if (copy === latest || !refreshedCodexLogin(latest, copy).accept) continue;
+        latest = copy;
+        options.offer(copy);
+        options.log("the agents' Codex login was refreshed; offered it back to the org");
+      }
+    } catch (error) {
+      options.log(
+        `could not look at the Codex login: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+  const timer = setInterval(() => void check(), options.intervalMs ?? CODEX_LOGIN_WATCH_MS);
+  timer.unref?.();
+  return {
+    check,
+    stop: async () => {
+      clearInterval(timer);
+      await check();
+    },
+  };
+};
+
+/** Whether `credentials` carries a Codex login file to watch. */
+export const codexLoginOf = (
+  credentials: Partial<Record<Provider, string>>,
+): string | undefined => {
+  const login = credentials.openai;
+  return login !== undefined && isCodexAuthFile(login) ? login : undefined;
+};
+
+/**
+ * The run's Codex logins watched, when the org's `openai` credential is one:
+ * the engine's copy read directly, the project user's through `sudo` as that
+ * user, since its copy is the user's alone (D-P10-30).
+ */
+export const startCodexWatch = (options: {
+  readonly context: Pick<RunnerContext, "scope" | "machine" | "heartbeat">;
+  readonly credentials: Partial<Record<Provider, string>>;
+  /** Empty or absent: no project user, so only the engine's copy is read. */
+  readonly projectUser?: string | undefined;
+  readonly log: (line: string) => void;
+}): { readonly stop: () => Promise<void> } => {
+  const sealed = codexLoginOf(options.credentials);
+  if (sealed === undefined) return { stop: async () => undefined };
+  const { context } = options;
+  const projectUser = options.projectUser === "" ? undefined : options.projectUser;
+  const paths = codexLoginPaths(context.scope.runId);
+  return watchCodexLogin({
+    sealed,
+    read: async () => {
+      const copies: string[] = [];
+      const engine = await readFile(paths.engine, "utf8").catch(() => undefined);
+      if (engine !== undefined) copies.push(engine);
+      if (projectUser !== undefined) {
+        const read = await context.machine.exec("sudo", [
+          "-n",
+          "-u",
+          projectUser,
+          "cat",
+          paths.project,
+        ]);
+        if (read.exitCode === 0) copies.push(read.stdout);
+      }
+      return copies;
+    },
+    offer: (login) => context.heartbeat.offerCredentials({ openai: login }),
+    log: options.log,
+  });
+};
 
 /** Where the project user's own credential copies live: `<root>/<VAR>/…`, the user's alone (D-P10-30). */
 export const projectCredentialRoot = (runId: string): string =>

@@ -76,7 +76,7 @@ import {
   type RunSession,
   type WorkerLaunchIdentity,
 } from "./environment.js";
-import { examine } from "./examine.js";
+import { examine, skipReview } from "./examine.js";
 import { gateDefinitions, withGateDefinitions } from "./gate-repair.js";
 import {
   addDetachedWorktree,
@@ -1005,9 +1005,22 @@ const examinedBesideQueue = async (
     case "candidate_failed":
       await endExamined(environment, input, "verification_failed", undefined, outcome.verification);
       return false;
+    case "examiner_failed":
+      // Examiners were tried and none could review it: on to the queue
+      // unreviewed, for a human. An engine that cannot examine at all fails.
+      if (outcome.skippable) {
+        skipReview(
+          environment,
+          { node, job: input.job, commitSha: node.commitSha },
+          outcome,
+          "beside the queue",
+        );
+        return true;
+      }
+      await endExamined(environment, input, "fail", outcome.reason);
+      return false;
     case "blocked":
     case "upheld":
-    case "examiner_failed":
       await endExamined(environment, input, "fail", outcome.reason);
       return false;
   }

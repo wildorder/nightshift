@@ -139,11 +139,20 @@ const providerErrorOf = (
     // Not JSON: the words are all there is.
   }
   if (isRecord(parsed)) return structuredErrorOf(parsed, raw, nowMs);
-  return {
-    status: /usage limit|rate limit/i.test(raw) ? 429 : undefined,
-    message: raw,
-    resetsAt: resetInWords(raw, nowMs),
-  };
+  return { status: statusInWords(raw), message: raw, resetsAt: resetInWords(raw, nowMs) };
+};
+
+/**
+ * The status a plain-text provider error names. A limit reads as the 429 it
+ * is; an expired or revoked login as the 401 or 403 it is (keki-backend,
+ * 2026-10-13: every Codex examiner got a 401 in words, was read as a plain
+ * failure, and no other examiner was tried).
+ */
+const statusInWords = (raw: string): number | undefined => {
+  if (/usage limit|rate limit/i.test(raw)) return 429;
+  if (/\b401\b|unauthori[sz]ed/i.test(raw)) return 401;
+  if (/\b403\b|forbidden/i.test(raw)) return 403;
+  return undefined;
 };
 
 /** The API's own error, as Codex carries it: a status, and a usage limit read as the 429 it is. */
@@ -192,7 +201,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   /** A bare `error`: kept for the failure, and a usage limit can arrive this way before the turn fails. */
   const handleError = (frame: Frame): void => {
     failure ??= failureOf(frame);
-    if (providerErrorOf(frame, input.clock.now()).status === 429) classify(frame);
+    if (providerErrorOf(frame, input.clock.now()).status !== undefined) classify(frame);
   };
   /** The first provider error that makes the route unable to serve, kept for the exit. */
   const classify = (frame: Frame): void => {

@@ -67,6 +67,11 @@ export interface Heartbeat {
   farewell(milestone: HeartbeatReport, failure?: RunnerFailure): Promise<void>;
   /** What setup took and which lockfiles the checkout has, sent once on the next beat (T3). */
   describeSetup(setupSeconds: number, lockfileHashes: Readonly<Record<string, string>>): void;
+  /**
+   * A provider login the agents refreshed, offered to the plane on the next
+   * beat, and again until one carries it (2026-10-13). The newest offer wins.
+   */
+  offerCredentials(credentials: NonNullable<HeartbeatBody["refreshedCredentials"]>): void;
 }
 
 /** The least time between beats woken by a progress that is not a new stage or verdict. */
@@ -93,6 +98,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
   // order, never one overwriting the other unsent.
   const pending: { report: HeartbeatReport; failure?: RunnerFailure }[] = [];
   let setup: { setupSeconds: number; lockfileHashes: Record<string, string> } | undefined;
+  let offered: HeartbeatBody["refreshedCredentials"];
   // The progress the plane has not yet had, the newest of each stage in turn,
   // and the last one given.
   const unsent: RunnerProgress[] = [];
@@ -138,6 +144,8 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     // flight waits for the next one rather than being cleared unsent.
     const next = pending.shift();
     let described: typeof setup;
+    const offering = offered;
+    offered = undefined;
     // `stopped` ends the dispatch, so it carries the newest progress (an
     // audit's `fault`) and nothing is left to follow it.
     const progress = next?.report === "stopped" ? unsent.splice(0).at(-1) : unsent.shift();
@@ -156,6 +164,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
         ...(next?.failure === undefined ? {} : { failure: next.failure }),
         ...(described === undefined ? {} : described),
         ...(progress === undefined ? {} : { progress }),
+        ...(offering === undefined ? {} : { refreshedCredentials: offering }),
       };
       response = HeartbeatResponseSchema.parse(await options.post(body));
     } catch (error) {
@@ -164,6 +173,7 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
       // exception: a newer one given meanwhile is the one to send.
       if (next !== undefined) pending.unshift(next);
       setup ??= described;
+      offered ??= offering;
       if (progress !== undefined && unsent.length === 0) unsent.push(progress);
       throw error;
     }
@@ -187,6 +197,9 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     },
     describeSetup: (setupSeconds, lockfileHashes) => {
       setup = { setupSeconds, lockfileHashes: { ...lockfileHashes } };
+    },
+    offerCredentials: (credentials) => {
+      offered = { ...offered, ...credentials };
     },
     get last() {
       return last;
