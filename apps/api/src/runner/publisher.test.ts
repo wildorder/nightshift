@@ -22,6 +22,7 @@ import {
   makeProject,
   nextUserId,
   nowIso,
+  rearmPublication,
   recordIntent,
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
@@ -175,7 +176,7 @@ describe("the publisher (D-P10-22)", () => {
     ]);
   });
 
-  it("records a conflict, never forces, and marks every later intent as superseded", async () => {
+  it("records a conflict, never forces, and holds every later intent behind it", async () => {
     const w = await world();
     const head = branchHead();
     // Someone else moves the branch directly.
@@ -193,11 +194,8 @@ describe("the publisher (D-P10-22)", () => {
     expect(branchHead()).toBe(theirs);
     const after = await w.dispatch();
     expect(after.publication.blocked).toContain("someone else moved");
-    expect(after.publication.intents.map((intent) => intent.status)).toEqual([
-      "conflict",
-      "conflict",
-    ]);
-    expect(after.publication.intents[1]?.detail).toContain("superseded");
+    expect(after.publication.intents.map((intent) => intent.status)).toEqual(["conflict", "held"]);
+    expect(after.publication.intents[1]?.detail).toContain("waiting behind");
     expect(await publishNext(w.deps, w.f.scope)).toBe("nothing_pending");
     // Reset the fixture branch for the tests that follow.
     git(work, "push", "-q", "-f", bare(), `${later}:refs/heads/program/fixture`);
@@ -248,6 +246,90 @@ describe("the publisher (D-P10-22)", () => {
     const step = await publishNext(w.deps, w.f.scope);
     expect(["retrying", "error", "conflict"]).toContain(step);
     expect(branchHead()).toBe(head);
+  });
+});
+
+describe("a publication the App was not allowed to make (2026-10-14)", () => {
+  /** GitHub, in memory: refuses workflow pushes until the App is granted `workflows`. */
+  const gitHub = (start: string) => {
+    const state = { head: start, workflows: false, pushes: [] as string[] };
+    const remote: GitRemote = {
+      advertise: async () => new Map([["refs/heads/program/fixture", state.head]]),
+      push: async ({ expectedOld, newOid }) => {
+        if (!state.workflows) {
+          return {
+            kind: "rejected",
+            reason:
+              "refusing to allow a GitHub App to create or update workflow `.github/workflows/deploy-dev.yml` without `workflows` permission",
+          };
+        }
+        if (expectedOld !== state.head) return { kind: "rejected", reason: "stale info" };
+        state.head = newOid;
+        state.pushes.push(newOid);
+        return { kind: "ok" };
+      },
+    };
+    return { state, remote };
+  };
+  const sha = (digit: string) => digit.repeat(40);
+
+  it("is forbidden, says how to fix it, and holds what lands after it rather than calling it a conflict", async () => {
+    const hub = gitHub(sha("1"));
+    const w = await world(hub.remote);
+    await w.intend(sha("2"), sha("1"), new Uint8Array([1]));
+    expect(await publishNext(w.deps, w.f.scope)).toBe("forbidden");
+    let after = await w.dispatch();
+    expect(after.publication.intents[0]?.status).toBe("forbidden");
+    expect(after.publication.blocked).toContain("Workflows: Read and write");
+    expect(after.publication.blocked).toContain("nightshift resume");
+
+    // A landing after the block: held behind it, never "someone else moved".
+    await w.intend(sha("3"), sha("2"), new Uint8Array([1]));
+    expect(await publishNext(w.deps, w.f.scope)).toBe("held");
+    after = await w.dispatch();
+    expect(after.publication.intents.map((intent) => intent.status)).toEqual(["forbidden", "held"]);
+    expect(after.publication.blocked).toContain("Workflows");
+    expect(JSON.stringify(after.publication)).not.toContain("someone else moved");
+  });
+
+  it("publishes everything held, in order, once the App is granted and a retry is asked for", async () => {
+    const hub = gitHub(sha("1"));
+    const w = await world(hub.remote);
+    await w.intend(sha("2"), sha("1"), new Uint8Array([1]));
+    await w.intend(sha("3"), sha("2"), new Uint8Array([1]));
+    await w.intend(sha("4"), sha("3"), new Uint8Array([1]));
+    await publishAll(w.deps, w.f.scope);
+    expect((await w.dispatch()).publication.intents.map((intent) => intent.status)).toEqual([
+      "forbidden",
+      "held",
+      "held",
+    ]);
+
+    hub.state.workflows = true;
+    const { dispatch: rearmed, rearmed: count } = rearmPublication(await w.dispatch(), NOW);
+    expect(count).toBe(3);
+    await w.stores.dispatches.put(rearmed);
+    expect(await publishAll(w.deps, w.f.scope)).toEqual({ published: 3, nothing_pending: 1 });
+    expect(hub.state.pushes).toEqual([sha("2"), sha("3"), sha("4")]);
+    const after = await w.dispatch();
+    expect(after.publication.head).toBe(sha("4"));
+    expect(after.publication.blocked).toBeUndefined();
+  });
+
+  it("counts a branch a human already pushed further along the chain as published up to there", async () => {
+    const hub = gitHub(sha("3"));
+    const w = await world(hub.remote);
+    await w.intend(sha("2"), sha("1"), new Uint8Array([1]));
+    await w.intend(sha("3"), sha("2"), new Uint8Array([1]));
+    await w.intend(sha("4"), sha("3"), new Uint8Array([1]));
+    expect(await publishNext(w.deps, w.f.scope)).toBe("already_published");
+    const after = await w.dispatch();
+    expect(after.publication.intents.map((intent) => intent.status)).toEqual([
+      "published",
+      "published",
+      "pending",
+    ]);
+    expect(after.publication.head).toBe(sha("3"));
   });
 });
 

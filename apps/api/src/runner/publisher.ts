@@ -3,24 +3,32 @@
  * order, by pushing the program branch at GitHub with a lease at the Git
  * transport. Holds the GitHub App's key; nothing on a machine ever does.
  *
- * For each pending intent, oldest first: the branch's current head is read from
- * the remote's advertisement. If it is already the intent's head, the push
- * happened and the reply was lost: `published`. If it is not the intent's
- * predecessor, something else moved the branch: `conflict`, recorded with the
- * remote head, never retried with force, and every later intent in the chain is
- * a conflict too. Otherwise the pack is fetched from the artifact bucket and
- * pushed as `<predecessor> <head> refs/heads/<branch>`, which the remote accepts
- * only if the ref still holds the predecessor. A refusal names its reason:
- * `non-fast-forward` is a conflict, a protection rule is `protected`, anything
- * else is an error that is retried on the next invocation, three times, then
- * blocks. Two invocations for one run never push at once: the first takes a
+ * For each pending intent, oldest first: an intent whose predecessor could
+ * not be published is `held` behind it, because GitHub lacks what it builds
+ * on. Otherwise the branch's current head is read from the remote's
+ * advertisement. If it is already the intent's head, or a later one's in the
+ * chain, the push happened (a lost reply, or a human pushed): `published`, up
+ * to there. If it is not the intent's predecessor, something else moved the
+ * branch: `conflict`, recorded with the remote head, never retried with force.
+ * Otherwise the pack is fetched from the artifact bucket and pushed as
+ * `<predecessor> <head> refs/heads/<branch>`, which the remote accepts only if
+ * the ref still holds the predecessor. A refusal names its reason:
+ * `non-fast-forward` is a conflict, a protection rule is `protected`, a
+ * permission the App lacks (a workflow file without `workflows`) is
+ * `forbidden`, anything else is an error that is retried on the next
+ * invocation, three times, then blocks. Whatever blocks holds every intent
+ * after it, until a human fixes the cause and asks for a retry
+ * (`POST …/publication/retry`, `nightshift resume`). Two invocations for one run never push at once: the first takes a
  * lock row for the run, resolves every pending intent, releases, and looks
  * once more, so an intent recorded while it held the lock is not left behind.
  */
 import type { Dispatch, PublicationIntent } from "@nightshift/contracts";
 import {
+  blocksPublication,
   type Clock,
+  chainOrder,
   type GitHubAppClient,
+  holdBehind,
   installationGranting,
   type NightshiftStores,
   nextPendingIntent,
@@ -113,6 +121,8 @@ export type PublishStep =
   | "already_published"
   | "conflict"
   | "protected"
+  | "forbidden"
+  | "held"
   | "retrying"
   | "error"
   | "not_configured";
@@ -122,17 +132,46 @@ const attemptOf = (intent: PublicationIntent): number => {
   return match?.[1] === undefined ? 0 : Number.parseInt(match[1], 10);
 };
 
-const classify = (reason: string): "conflict" | "protected" | "error" => {
+export const classify = (reason: string): "conflict" | "protected" | "forbidden" | "error" => {
   const lowered = reason.toLowerCase();
   if (lowered.includes("non-fast-forward") || lowered.includes("fetch first")) return "conflict";
   if (lowered.includes("failed to lock") || lowered.includes("stale info")) return "conflict";
+  // GitHub refuses an App's push that touches `.github/workflows/` without the
+  // `workflows` permission; retrying cannot change that, a human must grant it.
+  if (lowered.includes("permission") || lowered.includes("not allowed to push")) return "forbidden";
   if (lowered.includes("protected") || lowered.includes("hook declined")) return "protected";
   return "error";
 };
 
+/** What the human reads when the App lacks a permission: the cause, the fix, and GitHub's words. */
+export const forbiddenDetail = (branch: string, reason: string): string =>
+  (/workflow/i.test(reason)
+    ? `GitHub refused ${branch}: the Nightshift GitHub App may not change files under .github/workflows/. ` +
+      'Give the App "Workflows: Read and write" and have the installation accept it'
+    : `GitHub refused ${branch}: the Nightshift GitHub App lacks a permission this push needs. ` +
+      "Grant it and have the installation accept it") +
+  `, then run \`nightshift resume\` for the program to publish from the run's stored bundles. GitHub said: ${reason}`;
+
 /** The GitHub clone URL a contract's `repository.url` means. */
 export const cloneUrlOf = (repositoryUrl: string): string =>
   `${repositoryUrl.replace(/\.git$/, "").replace(/\/$/, "")}.git`;
+
+/** The program, its GitHub repository, and the org's installation that grants it, or `undefined`. */
+const targetOf = async (deps: PublisherDeps, scope: RunScope) => {
+  const program = await deps.stores.programContracts.get(scope.projectId, scope.programId);
+  const project = await deps.stores.projects.get(scope.projectId);
+  const orgConfig =
+    project === undefined ? undefined : await deps.stores.orgConfigs.get(project.orgId);
+  const repository = program === undefined ? undefined : repositoryNameOf(program.repository.url);
+  const installation =
+    repository === undefined
+      ? undefined
+      : installationGranting(orgConfig?.installations ?? [], repository);
+  if (program === undefined || repository === undefined || installation === undefined) {
+    return undefined;
+  }
+  return { program, repository, installation };
+};
 
 /**
  * Resolves the oldest pending intent of the run's dispatch. Returns what
@@ -148,16 +187,18 @@ export const publishNext = async (deps: PublisherDeps, scope: RunScope): Promise
   const at = nowIso(deps.clock);
   const put = (next: Dispatch) => deps.stores.dispatches.put(next);
 
-  const program = await deps.stores.programContracts.get(scope.projectId, scope.programId);
-  const project = await deps.stores.projects.get(scope.projectId);
-  const orgConfig =
-    project === undefined ? undefined : await deps.stores.orgConfigs.get(project.orgId);
-  const repository = program === undefined ? undefined : repositoryNameOf(program.repository.url);
-  const installation =
-    repository === undefined
-      ? undefined
-      : installationGranting(orgConfig?.installations ?? [], repository);
-  if (program === undefined || repository === undefined || installation === undefined) {
+  // Behind a block, nothing can go: GitHub lacks the commits this one builds on.
+  const before = dispatch.publication.intents.find(
+    (candidate) => candidate.head === intent.expectedPredecessor,
+  );
+  if (before !== undefined && blocksPublication(before.status)) {
+    log(`${scope.runId}: ${intent.head.slice(0, 12)} held behind ${before.head.slice(0, 12)}`);
+    await put(holdBehind(dispatch, before.head, at));
+    return "held";
+  }
+
+  const target = await targetOf(deps, scope);
+  if (target === undefined) {
     await put(
       resolveIntent(
         dispatch,
@@ -169,6 +210,7 @@ export const publishNext = async (deps: PublisherDeps, scope: RunScope): Promise
     );
     return "not_configured";
   }
+  const { program, repository, installation } = target;
   const branch = program.repository.programBranch;
   const ref = `refs/heads/${branch}`;
   const { token } = await deps.github.writeToken(installation.installationId, repository);
@@ -177,15 +219,16 @@ export const publishNext = async (deps: PublisherDeps, scope: RunScope): Promise
 
   const advertised = await remote.advertise(repositoryUrl, authorization);
   const current = advertised.get(ref) ?? ZERO_OID;
-  if (current === intent.head) {
-    log(`${scope.runId}: ${branch} already at ${intent.head.slice(0, 12)}; the reply was lost`);
-    await put(resolveIntent(dispatch, intent.head, "published", "already at the head", at));
+  const already = publishedUpTo(dispatch, intent, current, at);
+  if (already !== undefined) {
+    log(`${scope.runId}: ${branch} already at ${current.slice(0, 12)}`);
+    await put(already);
     return "already_published";
   }
   if (current !== intent.expectedPredecessor) {
     const detail = `the branch is at ${current.slice(0, 12)}, not the ${intent.expectedPredecessor.slice(0, 12)} the run built on; someone else moved ${branch}`;
     log(`${scope.runId}: conflict: ${detail}`);
-    await put(conflictChain(dispatch, intent.head, detail, at));
+    await put(blockChain(dispatch, intent.head, "conflict", detail, at));
     return "conflict";
   }
 
@@ -205,59 +248,91 @@ export const publishNext = async (deps: PublisherDeps, scope: RunScope): Promise
     await put(resolveIntent(dispatch, intent.head, "published", undefined, at));
     return "published";
   }
-  const reason = outcome.kind === "rejected" ? outcome.reason : outcome.detail;
-  const kind = outcome.kind === "rejected" ? classify(reason) : "error";
-  if (kind === "conflict") {
-    await put(conflictChain(dispatch, intent.head, `the remote refused the lease: ${reason}`, at));
-    return "conflict";
-  }
-  if (kind === "protected") {
-    await put(
-      resolveIntent(dispatch, intent.head, "protected", `${branch} is protected: ${reason}`, at),
-    );
-    return "protected";
-  }
-  const attempt = attemptOf(intent) + 1;
-  if (attempt >= PUBLISH_ATTEMPTS) {
-    await put(
-      resolveIntent(
-        dispatch,
-        intent.head,
-        "error",
-        `attempt ${attempt} failed: ${reason}; giving up`,
-        at,
-      ),
-    );
-    return "error";
-  }
-  log(`${scope.runId}: push failed (attempt ${attempt}): ${reason}`);
-  await put({
-    ...dispatch,
-    publication: {
-      ...dispatch.publication,
-      intents: dispatch.publication.intents.map((candidate) =>
-        candidate.head === intent.head
-          ? { ...candidate, detail: `attempt ${attempt} failed: ${reason}` }
-          : candidate,
-      ),
-    },
-    updatedAt: at,
-  });
-  return "retrying";
+  const refusal = refused(dispatch, intent, branch, outcome, at);
+  log(`${scope.runId}: ${refusal.step}: ${refusal.reason}`);
+  await put(refusal.next);
+  return refusal.step;
 };
 
-/** A conflict at one head is a conflict for every intent that builds on it. */
-const conflictChain = (dispatch: Dispatch, head: string, detail: string, at: string): Dispatch => {
-  let next = resolveIntent(dispatch, head, "conflict", detail, at);
-  for (const later of next.publication.intents.filter((intent) => intent.status === "pending")) {
-    next = resolveIntent(
-      next,
-      later.head,
-      "conflict",
-      `superseded by the conflict at ${head.slice(0, 12)}`,
-      at,
-    );
+/**
+ * A push GitHub did not take, as the record it leaves: a lease refusal is a
+ * conflict, a rule is `protected`, a missing permission is `forbidden`, each
+ * holding what builds on it; anything else is retried, then blocks as `error`.
+ */
+const refused = (
+  dispatch: Dispatch,
+  intent: PublicationIntent,
+  branch: string,
+  outcome: Exclude<PushOutcome, { kind: "ok" }>,
+  at: string,
+): { readonly next: Dispatch; readonly step: PublishStep; readonly reason: string } => {
+  const reason = outcome.kind === "rejected" ? outcome.reason : outcome.detail;
+  const kind = outcome.kind === "rejected" ? classify(reason) : "error";
+  const block = (status: "conflict" | "protected" | "forbidden" | "error", detail: string) => ({
+    next: blockChain(dispatch, intent.head, status, detail, at),
+    step: status,
+    reason,
+  });
+  if (kind === "conflict") return block("conflict", `the remote refused the lease: ${reason}`);
+  if (kind === "protected") return block("protected", `${branch} is protected: ${reason}`);
+  if (kind === "forbidden") return block("forbidden", forbiddenDetail(branch, reason));
+  const attempt = attemptOf(intent) + 1;
+  if (attempt >= PUBLISH_ATTEMPTS) {
+    return block("error", `attempt ${attempt} failed: ${reason}; giving up`);
   }
+  return {
+    step: "retrying",
+    reason: `attempt ${attempt} failed: ${reason}`,
+    next: {
+      ...dispatch,
+      publication: {
+        ...dispatch.publication,
+        intents: dispatch.publication.intents.map((candidate) =>
+          candidate.head === intent.head
+            ? { ...candidate, detail: `attempt ${attempt} failed: ${reason}` }
+            : candidate,
+        ),
+      },
+      updatedAt: at,
+    },
+  };
+};
+
+/**
+ * When GitHub is already at this intent's head or a later one of the chain, the
+ * push happened (a lost reply, or a human pushed the commits): every intent up
+ * to there is published. `undefined` when GitHub is not on the chain from here.
+ */
+const publishedUpTo = (
+  dispatch: Dispatch,
+  intent: PublicationIntent,
+  current: string,
+  at: string,
+): Dispatch | undefined => {
+  const chain = chainOrder(dispatch.publication.intents);
+  const from = chain.findIndex((candidate) => candidate.head === intent.head);
+  const reached = chain.findIndex((candidate) => candidate.head === current);
+  if (from < 0 || reached < from) return undefined;
+  return chain
+    .slice(from, reached + 1)
+    .reduce(
+      (next, done) => resolveIntent(next, done.head, "published", "already at GitHub", at),
+      dispatch,
+    );
+};
+
+/**
+ * A block at one head holds every intent that builds on it: they are not
+ * conflicts, nothing is wrong with them, and they go once the block is fixed.
+ */
+const blockChain = (
+  dispatch: Dispatch,
+  head: PublicationIntent["head"],
+  status: "conflict" | "protected" | "forbidden" | "error",
+  detail: string,
+  at: string,
+): Dispatch => {
+  const next = holdBehind(resolveIntent(dispatch, head, status, detail, at), head, at);
   return { ...next, publication: { ...next.publication, blocked: detail } };
 };
 

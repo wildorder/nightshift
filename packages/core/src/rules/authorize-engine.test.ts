@@ -53,6 +53,7 @@ const FORBIDDEN: readonly Operation[] = [
   "dispatch.create",
   "dispatch.cancel",
   "dispatch.resume",
+  "publication.retry",
   "computeRecommendation.get",
   "warmCache.get",
   "orgCredential.put",

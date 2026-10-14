@@ -12,6 +12,11 @@
  * 3. on a failure, records it as one, discards what was built on it and says so;
  * 4. rewrites `report.md` from the control plane.
  *
+ * Before any of that, a remote run whose landings never reached GitHub has
+ * them published (2026-10-14): the plane retries them from the run's stored
+ * bundles, once the human has fixed what refused them. That is the latest run
+ * unless `--run` names one, and needs no machine.
+ *
  * Step 2 runs in `apps/mcp`'s `nightshift-resume`, a process of its own, because
  * deferred work the run's policy says to examine is examined there once its
  * checks pass (P8, D-P8-14), and an examiner is an agent the CLI may not start
@@ -42,6 +47,7 @@ import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession, type Session } from "../session.js";
+import { republishRun, unpublishedOf } from "./republish.js";
 import { REPORT_FILE } from "./run-program.js";
 
 export interface ResumeOptions {
@@ -178,6 +184,26 @@ export const resume = async (
   const candidates = (await runsOf(session, program)).filter(
     (run) => options.run === undefined || run.runId === options.run,
   );
+
+  // A remote run's landings GitHub lacks go first: the latest run's, or the
+  // named one's. An older run's are not retried behind a newer run's back.
+  const newest = candidates[0];
+  let republished = false;
+  if (newest !== undefined && (await unpublishedOf(session, newest)).length > 0) {
+    const outcome = await republishRun(
+      environment,
+      session,
+      newest,
+      program.repository.programBranch,
+    );
+    const report = await gatherReport(session.stores, sessionFor(newest).scope);
+    const reportPath = join(repoPath, files.directory, REPORT_FILE);
+    await writeFile(reportPath, renderReport(report));
+    environment.out(`report: ${reportPath}`);
+    if (outcome !== "published") return 1;
+    republished = true;
+  }
+
   let chosen: Run | undefined;
   for (const run of candidates) {
     if ((await deferredLine(landingFor(run), sessionFor(run))).length > 0) {
@@ -186,6 +212,7 @@ export const resume = async (
     }
   }
   if (chosen === undefined) {
+    if (republished) return 0;
     environment.out(
       options.run === undefined
         ? `nothing to resume: no run of \`${options.id}\` has deferred work in this repository`

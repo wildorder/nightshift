@@ -935,6 +935,53 @@ describe("publication intents (D-P10-22)", () => {
     const listed = await call(w, "GET", `${w.paths.run}/publication`);
     expect((listed.body as { intents: unknown[] }).intents).toHaveLength(1);
   });
+
+  it("retries a settled run's blocked landings for a human, and never for the engine (2026-10-14)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const at = "2026-10-14T05:00:00.000Z";
+    await w.stores.dispatches.put({
+      ...dispatch,
+      status: "stopped",
+      publication: {
+        blocked: "GitHub refused: no workflows",
+        intents: [
+          {
+            head: SHA_B,
+            expectedPredecessor: SHA,
+            bundleKey: "bundles/b.bundle",
+            status: "forbidden",
+            requestedAt: at,
+            resolvedAt: at,
+            detail: "GitHub refused: no workflows",
+          },
+        ],
+      },
+    } as Dispatch);
+    const refused = await call(
+      w,
+      "POST",
+      `${w.paths.run}/publication/retry`,
+      undefined,
+      engine(w, dispatch),
+    );
+    expect(refused.status).toBe(403);
+
+    publishRequests.length = 0;
+    const retried = await call(w, "POST", `${w.paths.run}/publication/retry`);
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(retried.body).toMatchObject({ rearmed: 1 });
+    expect(publishRequests).toEqual([w.f.scope.runId]);
+    const after = await w.stores.dispatches.get(w.f.scope);
+    expect(after?.publication.blocked).toBeUndefined();
+    expect(after?.publication.intents[0]).toMatchObject({ head: SHA_B, status: "pending" });
+
+    // Nothing blocked: nothing re-armed, and the publisher is not asked.
+    publishRequests.length = 0;
+    const idle = await call(w, "POST", `${w.paths.run}/publication/retry`);
+    expect(idle.body).toMatchObject({ rearmed: 0 });
+    expect(publishRequests).toEqual([]);
+  });
 });
 
 describe("compute records (D-P10-14, D-P10-15)", () => {

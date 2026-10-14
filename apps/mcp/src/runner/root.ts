@@ -24,6 +24,7 @@ import {
   type Provider,
   refreshedCodexLogin,
 } from "@nightshift/contracts";
+import { publicationTip } from "@nightshift/core";
 import { PROJECT_ENV_FILE_ENV } from "../project-env.js";
 import type { Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
@@ -279,7 +280,9 @@ export const rootEnvironment = (input: RootEnvironmentInput): Record<string, str
   env.NIGHTSHIFT_API_TOKEN_FILE = tokenFile(context.scope.runId);
   env.NIGHTSHIFT_STATE_DIR = context.layout.run;
   env.NIGHTSHIFT_REMOTE_WORKSPACE = context.layout.root;
-  env.NIGHTSHIFT_PUBLISH_BASE = context.dispatch.input.baseSha;
+  // The chain's tip, not the dispatched base: a resumed machine's next landing
+  // builds on what the run already asked to publish (2026-10-14).
+  env.NIGHTSHIFT_PUBLISH_BASE = publicationTip(context.dispatch);
   if (input.projectUser !== undefined && input.projectUser !== "") {
     env.NIGHTSHIFT_PROJECT_USER = input.projectUser;
     env.NIGHTSHIFT_PROJECT_CREDENTIAL_DIR = projectCredentialRoot(context.scope.runId);

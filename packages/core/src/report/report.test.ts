@@ -423,3 +423,61 @@ describe("the report's environment fault (P16 S-02, D-07)", () => {
     expect(text).toContain("````text\nsee ```code```\n````");
   });
 });
+
+describe("the report's publication (2026-10-14)", () => {
+  const sha = (digit: string) => digit.repeat(40);
+  const intent = (digit: string, status: string, detail?: string) => ({
+    head: sha(digit),
+    expectedPredecessor: sha("0"),
+    bundleKey: `b/${digit}`,
+    status,
+    requestedAt: "2026-10-14T05:00:00.000Z",
+    ...(detail === undefined ? {} : { detail }),
+  });
+
+  it("leads with NOT ON GITHUB when landings were refused, before rulings, with each one and the way out", () => {
+    const text = renderReport(
+      report({
+        rulings: [{ ruling, nodeId: "node_x", finding: "F-01 a finding" }],
+        publication: {
+          branch: "program/edge",
+          state: {
+            kind: "blocked",
+            head: sha("1") as never,
+            tip: sha("3") as never,
+            blocked: "GitHub refused program/edge: no workflows",
+            unpublished: [
+              intent("2", "forbidden", "GitHub refused program/edge: no workflows"),
+              intent("3", "held", "waiting behind 222222222222"),
+            ] as never,
+          },
+        },
+      }),
+    );
+    const publication = text.indexOf("## NOT ON GITHUB");
+    expect(publication).toBeGreaterThan(0);
+    expect(publication).toBeLessThan(text.indexOf("## Arbiter rulings"));
+    expect(text).toContain("2 landings of this run are not on GitHub's `program/edge`.");
+    expect(text).toContain("GitHub refused program/edge: no workflows");
+    expect(text).toContain("`nightshift resume <program>` publishes them");
+    expect(text).toContain("| `222222222222` | forbidden |");
+    expect(text).toContain("| `333333333333` | held | behind the block above |");
+  });
+
+  it("says in one line that GitHub has every landing", () => {
+    const text = renderReport(
+      report({
+        publication: {
+          branch: "program/edge",
+          state: { kind: "published", head: sha("3") as never, unpublished: [] },
+        },
+      }),
+    );
+    expect(text).toContain("GitHub has every landing: `program/edge` is at `333333333333`.");
+    expect(text).not.toContain("NOT ON GITHUB");
+  });
+
+  it("says nothing about GitHub for a local run", () => {
+    expect(renderReport(report())).not.toContain("GitHub has");
+  });
+});

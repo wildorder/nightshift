@@ -6,14 +6,18 @@
  * a `stopping` one whose runner went quiet is terminated; a `stopped` one has
  * its volume snapshotted into the project's warm cache and deleted. T6: a live
  * one whose lease lapsed is terminated and replaced on its volume, generation
- * plus one, until the attempts run out.
+ * plus one, until the attempts run out. And any dispatch, live or settled,
+ * that still holds a pending publication intent has the publisher asked again:
+ * a push that failed for a passing reason is retried, and the last landing of a
+ * run is never left waiting for a next one that will not come (2026-10-14).
  *
  * Composition only: the rules are `runner/provision.ts` and `runner/cleanup.ts`.
  */
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { KMSClient } from "@aws-sdk/client-kms";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { SSMClient } from "@aws-sdk/client-ssm";
-import { systemClock } from "@nightshift/core";
+import { hasPendingIntent, systemClock } from "@nightshift/core";
 import { createAwsClients, createAwsStores } from "@nightshift/persistence/aws";
 import { createEc2Compute, createSsmFirstTokens } from "../aws/ec2-compute.js";
 import { loadConfig, loadRunnerConfig, loadTokenConfig } from "../config.js";
@@ -47,6 +51,24 @@ const provision = {
   imageVersion: runner.imageVersion,
   subnetIds: runner.subnetIds,
   subnetZones: runner.subnetZones,
+};
+
+const publisherFunctionArn = config.publisherFunctionArn;
+const lambda = new LambdaClient({});
+/** The publisher, asked asynchronously, as the API asks it when an intent is recorded. */
+const askPublisher = async (scope: {
+  readonly projectId: string;
+  readonly programId: string;
+  readonly runId: string;
+}): Promise<void> => {
+  if (publisherFunctionArn === undefined) return;
+  await lambda.send(
+    new InvokeCommand({
+      FunctionName: publisherFunctionArn,
+      InvocationType: "Event",
+      Payload: Buffer.from(JSON.stringify(scope)),
+    }),
+  );
 };
 
 /** A `requested` dispatch older than this was not picked up by the API's invocation. */
@@ -96,6 +118,10 @@ export const handler = async (): Promise<Record<string, number>> => {
       } else if (dispatch.status === "stopped" || dispatch.status === "failed") {
         if (!dispatch.cleanup.volumeDeleted)
           count(`cleanup:${await cleanupStopped(cleanup, dispatch)}`);
+      }
+      if (hasPendingIntent(dispatch)) {
+        await askPublisher(scope);
+        count("publish:asked");
       }
     } catch (error) {
       count("error");

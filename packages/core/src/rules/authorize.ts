@@ -133,6 +133,7 @@ export type Operation =
   // Publication of the program branch (D-P10-22).
   | "publication.request"
   | "publication.list"
+  | "publication.retry"
   // What the machine was asked to do, and what the project should run on (D-P10-14).
   | "computeUtilization.get"
   | "computeRecommendation.get"
@@ -292,6 +293,7 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.heartbeat": "forbidden",
   "publication.request": "forbidden",
   "publication.list": "forbidden",
+  "publication.retry": "forbidden",
   "computeUtilization.get": "forbidden",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",
@@ -406,6 +408,7 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "dispatch.heartbeat": "forbidden",
   "publication.request": "forbidden",
   "publication.list": "forbidden",
+  "publication.retry": "forbidden",
   "computeUtilization.get": "forbidden",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",
@@ -549,6 +552,8 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.heartbeat": "own_run",
   "publication.request": "own_run",
   "publication.list": "own_program",
+  // A retry is a human's, after fixing what blocked publication.
+  "publication.retry": "forbidden",
   "computeUtilization.get": "own_program",
   "computeRecommendation.get": "forbidden",
   "warmCache.get": "forbidden",

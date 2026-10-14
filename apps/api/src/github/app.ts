@@ -7,7 +7,11 @@
  * acting in one customer's installation, scoped to named repositories and to
  * the permissions asked for. Here only `contents: read` is ever asked: the
  * machines clone with it. The publisher asks for `write` in T4, in its own
- * function, which is the only one that holds that.
+ * function, which is the only one that holds that, and with it `workflows:
+ * write`: GitHub refuses an App's push that touches `.github/workflows/`
+ * without it (2026-10-14, a run's deploy-workflow change blocked everything
+ * landed after it). An installation that has not yet accepted that permission
+ * gets a token without it, and such a push is then refused as `forbidden`.
  */
 import { createSign } from "node:crypto";
 import type { GitHubAppClient } from "@nightshift/core";
@@ -88,12 +92,23 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
     contents: "read" | "write",
   ) => {
     const names = repositories.map((repository) => repository.split("/")[1]).filter(Boolean);
-    const { status, body } = await call<{ token?: string; expires_at?: string; message?: string }>(
-      await asApp(),
-      "POST",
-      `/app/installations/${installationId}/access_tokens`,
-      { permissions: { contents, metadata: "read" }, repositories: names },
+    const mint = async (permissions: Record<string, string>) =>
+      call<{ token?: string; expires_at?: string; message?: string }>(
+        await asApp(),
+        "POST",
+        `/app/installations/${installationId}/access_tokens`,
+        { permissions, repositories: names },
+      );
+    let { status, body } = await mint(
+      contents === "write"
+        ? { contents, workflows: "write", metadata: "read" }
+        : { contents, metadata: "read" },
     );
+    // 422: the installation has not granted `workflows` (yet). Publish what can
+    // be published; a workflow change is then refused, and says how to fix it.
+    if (contents === "write" && status === 422) {
+      ({ status, body } = await mint({ contents, metadata: "read" }));
+    }
     if (status !== 201 || body.token === undefined || body.expires_at === undefined) {
       throw new GitHubError(status, "access_tokens", body.message ?? "no token");
     }

@@ -32,6 +32,7 @@ import {
   mayDispatch,
   type PinnedRuntime,
   parseRuntimeVersion,
+  publicationStateOf,
   RUNTIME_VERSION_COMMANDS,
   type RunScope,
   renderEnvironmentFault,
@@ -347,10 +348,19 @@ export const describeDispatch = (
     );
   }
   if (dispatch.progress !== undefined) lines.push(progressLine(dispatch.progress));
+  const publication = publicationStateOf(dispatch.publication);
   if (dispatch.publication.head !== undefined)
     lines.push(`  published ${dispatch.publication.head}`);
-  if (dispatch.publication.blocked !== undefined)
-    lines.push(`  publication blocked: ${dispatch.publication.blocked}`);
+  if (publication.kind === "blocked") {
+    const count = publication.unpublished.length;
+    lines.push(
+      `  publication blocked: ${publication.blocked}`,
+      `  NOT ON GITHUB: ${count} landing${count === 1 ? "" : "s"} of this run; once the cause is fixed, \`nightshift resume <program>\` publishes them`,
+    );
+  } else if (publication.kind === "pending") {
+    const count = publication.unpublished.length;
+    lines.push(`  publishing: ${count} landing${count === 1 ? "" : "s"} waiting for the publisher`);
+  }
   if (dispatch.failure !== undefined)
     lines.push(`  failure ${dispatch.failure.code}: ${dispatch.failure.message}`);
   lines.push(...environmentFaultLines(dispatch, fault));

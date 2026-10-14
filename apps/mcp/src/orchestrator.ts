@@ -70,11 +70,13 @@ import {
   type RoutePins,
   StrandBlockedError,
   StrandDelegationError,
+  tryRevParse,
 } from "@nightshift/execution";
 import { RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
 import { type ActivityFeed, createActivityFeed, renderActivity } from "./activity.js";
 import { CLASSIFICATION_INPUTS } from "./classification.js";
+import { fullyPublished, settlePublication, unpublishedReason } from "./publication-settle.js";
 import type { RefusalCode } from "./results.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 import { routeJob } from "./routing.js";
@@ -343,6 +345,39 @@ const endRun = async (
   await attached.outbox.flush(5_000);
 };
 
+/**
+ * On a machine, what the run's ending becomes once GitHub's copy is known
+ * (2026-10-14). Work GitHub lacks is not done: a `succeeded` run whose landings
+ * did not all publish ends `deferred` (interrupted) with the cause and the way
+ * to publish them; any other ending keeps its outcome and gains that sentence.
+ * A local run publishes nothing and is left as asked.
+ */
+const publicationEnding = async (
+  state: OrchestratorSession,
+  attached: AttachedRun,
+  outcome: "succeeded" | "failed" | "cancelled" | "deferred",
+  reason: string | undefined,
+): Promise<{
+  readonly ending: "succeeded" | "failed" | "cancelled" | "deferred";
+  readonly why: string | undefined;
+}> => {
+  const publish = attached.environment.publish;
+  if (publish === undefined) return { ending: outcome, why: reason };
+  const { scope, repoPath, program } = attached.session;
+  const branch = program.repository.programBranch;
+  const published = await settlePublication({
+    read: () => state.runtime.stores.dispatches.get(scope),
+    republishHead: async () => {
+      const head = await tryRevParse(attached.environment.git, repoPath, `refs/heads/${branch}`);
+      if (head !== undefined) await publish({ head, programBranch: branch, repoPath });
+    },
+  });
+  if (fullyPublished(published)) return { ending: outcome, why: reason };
+  const unpublished = unpublishedReason(published);
+  if (outcome === "succeeded") return { ending: "deferred", why: unpublished };
+  return { ending: outcome, why: reason === undefined ? unpublished : `${reason} ${unpublished}` };
+};
+
 /** `docs/programs/{id}/report.md` for a planned run; nothing for any other. */
 const writeReport = async (
   state: OrchestratorSession,
@@ -607,7 +642,9 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
       description:
         "Give the run a terminal status. Refused while a job is running. `deferred` is for a " +
         "planned run whose remaining work waits on a human prerequisite: the run is recorded as " +
-        "interrupted, its provisional work is kept, and `nightshift resume` takes it from there.",
+        "interrupted, its provisional work is kept, and `nightshift resume` takes it from there. " +
+        "On a machine, the run first waits for GitHub to have every landing; a run whose work " +
+        "GitHub lacks is never `succeeded`: it ends deferred, and says why.",
       inputSchema: {
         outcome: z.enum(["succeeded", "failed", "cancelled", "deferred"]),
         reason: z.string().min(1).optional(),
@@ -619,17 +656,19 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         await assertNoJobRunning(deps, attached);
         assertEndingExplained(outcome, reason);
         await assertEndingIsTrue(attached, outcome);
-        await endRun(state, attached, outcome, reason);
+        const { ending, why } = await publicationEnding(state, attached, outcome, reason);
+        await endRun(state, attached, ending, why);
         // A planned run's report, beside its plan, as `nightshift run` writes it
         // for a run nobody watched: written from the control plane alone.
         const reportPath = await writeReport(state, attached);
         return ok(
-          `Run ${attached.session.scope.runId} is ${outcome}.` +
+          `Run ${attached.session.scope.runId} is ${ending}.` +
+            (ending === outcome ? "" : ` ${why}`) +
             (reportPath === undefined ? "" : ` The report is at ${reportPath}.`),
           {
             ...(reportPath === undefined ? {} : { reportPath }),
             runId: attached.session.scope.runId,
-            outcome,
+            outcome: ending,
           },
         );
       }),

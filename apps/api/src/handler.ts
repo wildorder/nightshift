@@ -61,7 +61,7 @@ import {
   putProject,
   putRun,
 } from "./operations/projects.js";
-import { listPublication, requestPublication } from "./operations/publication.js";
+import { listPublication, requestPublication, retryPublication } from "./operations/publication.js";
 import {
   getArtifact,
   getCheckpoint,
@@ -255,6 +255,12 @@ export const ROUTES: readonly Route[] = [
     path: `${RUN}/publication`,
     operation: "publication.list",
     handler: listPublication,
+  },
+  {
+    method: "POST",
+    path: `${RUN}/publication/retry`,
+    operation: "publication.retry",
+    handler: retryPublication,
   },
   {
     method: "GET",

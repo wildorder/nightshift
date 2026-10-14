@@ -5,7 +5,7 @@
  * generation.
  */
 import { PublicationIntentBodySchema } from "@nightshift/contracts";
-import { nowIso, recordIntent } from "@nightshift/core";
+import { nowIso, rearmPublication, recordIntent } from "@nightshift/core";
 import { HttpError, parseBody } from "../http.js";
 import { runScopeFrom } from "../params.js";
 import type { Handler } from "../router.js";
@@ -33,6 +33,27 @@ export const requestPublication: Handler = async ({ deps, request, params }) => 
   }
   const intent = next.publication.intents.find((candidate) => candidate.head === body.head);
   return { status: created ? 201 : 200, body: intent };
+};
+
+/**
+ * `POST …/publication/retry` — a human fixed what blocked publication (granted
+ * the App a permission, lifted a rule, reconciled the branch): every
+ * unpublished intent goes back to pending, in order, and the publisher pushes
+ * them from their bundles. Any dispatch status: the machine need not exist.
+ * Answers the publication as it stands once the publisher has been asked.
+ */
+export const retryPublication: Handler = async ({ deps, params }) => {
+  const scope = runScopeFrom(params);
+  const dispatch = await requireDispatch(deps, scope);
+  const { dispatch: next, rearmed } = rearmPublication(dispatch, nowIso(deps.clock));
+  if (next !== dispatch) await deps.stores.dispatches.put(next);
+  if (rearmed > 0) {
+    await deps.dispatcher?.publish?.(scope).catch((error: unknown) => {
+      console.error(`publication ${scope.runId}: the publisher could not be invoked`, error);
+    });
+  }
+  const after = (await deps.stores.dispatches.get(scope)) ?? next;
+  return { status: 200, body: { rearmed, publication: after.publication } };
 };
 
 export const listPublication: Handler = async ({ deps, params }) => ({
