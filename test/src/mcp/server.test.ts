@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { RunScope } from "@nightshift/core";
 import { completeJob, createEventOutbox, nodeGitRunner, revParse } from "@nightshift/execution";
 import type { Harness } from "@nightshift/harness";
 import {
@@ -589,6 +590,108 @@ describe("job.wait", () => {
     expect(DEFAULT_JOB_WAIT_CAP_SECONDS).toBeLessThan(60);
 
     await mcp.call("job.cancel", { jobId: job.jobId });
+    await mcp.stop();
+  });
+});
+
+describe("the end gates (A-57)", () => {
+  const LANDING = [
+    { id: "test", command: "node --test" },
+    { id: "shape", command: 'node -e "process.exit(0)"' },
+  ];
+  const RED_END = {
+    id: "e2e",
+    command: `node -e "console.log('the suite is red');process.exit(1)"`,
+    at: "end" as const,
+  };
+  const GREEN_END = { id: "e2e", command: 'node -e "process.exit(0)"', at: "end" as const };
+
+  /** Lands one job and returns its verification's step ids and the run's scope. */
+  const landOne = async (world: BaseWorld, mcp: Harnessed) => {
+    const started = await mcp.call("run.start", {
+      programContractPath: CONTRACT_FILE,
+      model: MODEL,
+      repoPath: world.repo,
+    });
+    expect(started.ok, JSON.stringify(started)).toBe(true);
+    const delegated = await mcp.call("delegate", DELEGATION);
+    expect(delegated.ok, JSON.stringify(delegated)).toBe(true);
+    let waited = await mcp.call("job.wait", { jobId: delegated.jobId, timeoutSeconds: 30 });
+    while (waited.timedOut === true) {
+      waited = await mcp.call("job.wait", { jobId: delegated.jobId, timeoutSeconds: 30 });
+    }
+    expect(waited.status, JSON.stringify(waited)).toBe("integrated");
+    const verification = waited.verification as { commands: { stepId: string }[] };
+    const scope = {
+      projectId: world.program.projectId,
+      programId: world.program.programId,
+      runId: started.runId,
+    } as RunScope;
+    return { steps: verification.commands.map((command) => command.stepId), scope };
+  };
+
+  /** `run.finish succeeded`, called again while the gates run, as an orchestrator would. */
+  const finish = async (mcp: Harnessed) => {
+    let finished = await mcp.call("run.finish", { outcome: "succeeded" });
+    while (finished.ok === true && finished.outcome === "verifying") {
+      finished = await mcp.call("run.finish", { outcome: "succeeded" });
+    }
+    return finished;
+  };
+
+  const runVerifications = async (world: BaseWorld, scope: RunScope) => {
+    const nodes = await world.stores.executionNodes.listByRun(scope);
+    const root = nodes.items.find((node) => node.kind === "program");
+    if (root === undefined) throw new Error("no program node");
+    return (await world.stores.verifications.listByNode(scope, root.executionNodeId)).filter(
+      (verification) => verification.phase === "run",
+    );
+  };
+
+  it("never run on a job; a red one refuses `succeeded` with its log, and answers from the record until the head moves", async () => {
+    const world = await createBaseWorld({ program: { verification: [...LANDING, RED_END] } });
+    const mcp = await start(world, createFakeHarness({ script: implementWell(world) }));
+    const { steps, scope } = await landOne(world, mcp);
+    expect(steps).toEqual(["test", "shape"]);
+
+    const refused = await finish(mcp);
+    expect(refused.ok).toBe(false);
+    expect(refused.code).toBe("end_gates_failed");
+    const failing = refused.failing as { stepId: string; exitCode: number; logTail: string }[];
+    expect(failing.map((step) => [step.stepId, step.exitCode])).toEqual([["e2e", 1]]);
+    expect(failing[0]?.logTail).toContain("the suite is red");
+    expect(await runVerifications(world, scope)).toHaveLength(1);
+
+    // Nothing landed since: the same answer, and the suite was not run again.
+    const again = await finish(mcp);
+    expect(again.code).toBe("end_gates_failed");
+    expect(await runVerifications(world, scope)).toHaveLength(1);
+
+    // The run can still end, honestly.
+    const failed = await mcp.call("run.finish", {
+      outcome: "failed",
+      reason: "the end gates are red",
+    });
+    expect(failed.ok, JSON.stringify(failed)).toBe(true);
+    await mcp.stop();
+  });
+
+  it("pass on the program head, and the run succeeds with the record on the program node", async () => {
+    const world = await createBaseWorld({ program: { verification: [...LANDING, GREEN_END] } });
+    const mcp = await start(world, createFakeHarness({ script: implementWell(world) }));
+    const { steps, scope } = await landOne(world, mcp);
+    expect(steps).toEqual(["test", "shape"]);
+
+    const finished = await finish(mcp);
+    expect(finished.ok, JSON.stringify(finished)).toBe(true);
+    expect(finished.outcome).toBe("succeeded");
+
+    const [verification, ...rest] = await runVerifications(world, scope);
+    expect(rest).toEqual([]);
+    expect(verification?.outcome).toBe("passed");
+    expect(verification?.jobContractId).toBeNull();
+    expect(verification?.commands.map((command) => command.stepId)).toEqual(["e2e"]);
+    expect(verification?.commitSha).toBe(await revParse(nodeGitRunner, world.repo, PROGRAM_BRANCH));
     await mcp.stop();
   });
 });

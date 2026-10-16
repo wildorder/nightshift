@@ -14,9 +14,11 @@ Optional troubleshooting guidance for repository checks, also used by the
 examiner of an explicitly delegated repair. These are not planning readiness
 requirements: no audit or certification is required before work can start.
 
-Nightshift runs every gate, on every job, in a fresh checkout nobody is
-watching. A gate that only passes on the developer's machine, or on the second
-try, or after another gate has run, fails the run at 3 a.m. and lands nothing.
+Nightshift runs every gate in a fresh checkout nobody is watching: the landing
+gates on every job, the gates declared \`at: "end"\` once on the program head
+when the run finishes. A gate that only passes on the developer's machine, or
+on the second try, or after another gate has run, fails the run at 3 a.m. and
+lands nothing.
 
 The rules are numbered, and a finding names its rule by number. **The numbers
 never change.** The standard is short on purpose: report what breaks a run or

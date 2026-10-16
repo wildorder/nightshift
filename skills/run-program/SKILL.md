@@ -100,7 +100,9 @@ Check, and say what you find, without fixing anything the human did not ask for:
    is still in flight**:
    `run.finish { outcome, reason }` — `succeeded` only if every strand did;
    `deferred` when nothing failed and some work waits; otherwise `failed`,
-   naming what was parked. Then read the report (section 4).
+   naming what was parked. `succeeded` first runs the contract's **end gates**
+   (section 2b); a long suite answers `outcome: verifying`, so call it again
+   until it answers otherwise. Then read the report (section 4).
 
 You do not write code during the run, and you do not touch the checkout: every
 landing fast-forwards the branch it is on.
@@ -130,6 +132,24 @@ This explicit repair mechanism requires its decision and high-risk examination.
 It is not required merely because the baseline is red or a check flaked. A
 flake is reported; do not automatically add repair work for every flaky gate.
 Any repair you do delegate must settle before finishing, like other work.
+
+### 2b. When an end gate fails
+
+A verification step declared `at: "end"` (an end-to-end suite, say) runs on
+every job's checkout **never**: it runs once, on the program head, when you ask
+`run.finish { outcome: "succeeded" }`, and again after each fix that lands.
+Nightshift runs it; you read the answer.
+
+- `outcome: "verifying"`: the gates are still running. Call `run.finish` again.
+- Refused `end_gates_failed`: the refusal names each failing step with the
+  tail of its log. Read it as you would a job's failed verification, then
+  `delegate` an ordinary job whose objective is the failure and whose
+  acceptance is that the gate's command exits 0 — not a `repair`: the gate is
+  right, the work is not. Wait for it to land, then `run.finish` again.
+- The run ends `deferred` when an end gate waits on a human prerequisite.
+
+A head that already passed its end gates is not checked twice: finishing again
+with nothing landed answers from the record.
 
 ## 3. Dark: nightshift runs it alone
 

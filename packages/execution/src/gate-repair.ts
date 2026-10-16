@@ -46,6 +46,7 @@ import {
   programContractPath,
   type SetupStep,
   SetupStepSchema,
+  stepRunsAt,
   type VerificationStep,
   VerificationStepSchema,
 } from "@nightshift/contracts";
@@ -59,6 +60,14 @@ export interface GateDefinitions {
   readonly setup: readonly SetupStep[];
   readonly verification: readonly VerificationStep[];
 }
+
+/** The steps a job's verification runs: every step not held for the run's end (A-57). */
+export const landingSteps = (gates: GateDefinitions): readonly VerificationStep[] =>
+  gates.verification.filter((step) => stepRunsAt(step) === "landing");
+
+/** The run's end gates: the steps declared `at: "end"`, run once the work has landed (A-57). */
+export const endSteps = (gates: GateDefinitions): readonly VerificationStep[] =>
+  gates.verification.filter((step) => stepRunsAt(step) === "end");
 
 /** What reading the run's definitions needs of a session. */
 export type GateSession = Pick<RunSession, "scope" | "program">;

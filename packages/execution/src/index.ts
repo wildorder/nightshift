@@ -29,6 +29,11 @@ export {
 } from "./carry-over.js";
 export { routingDataset } from "./dataset.js";
 export {
+  type EndGatesResult,
+  type FailedEndGate,
+  verifyRunHead,
+} from "./end-gates.js";
+export {
   createEngine,
   DEFAULT_DISCOVERY_INTERVAL_MS,
   type DisputeResult,
@@ -109,10 +114,12 @@ export {
   sha256Bytes,
 } from "./gate-fingerprint.js";
 export {
+  endSteps,
   type GateDefinitions,
   type GateSession,
   gateDefinitions,
   gateDefinitionsAt,
+  landingSteps,
   type ReconcileGateRepairsInput,
   reconcileGateRepairs,
   withGateDefinitions,

@@ -92,7 +92,8 @@ export const VerificationSchema = z
     ...runScoped,
     verificationId: VerificationIdSchema,
     executionNodeId: ExecutionNodeIdSchema,
-    jobContractId: JobContractIdSchema,
+    /** `null` exactly for a `run` verification: the program node has no job (A-57). */
+    jobContractId: JobContractIdSchema.nullable(),
     /** The agent whose work is under verification, not a verifying agent. */
     agentId: AgentIdSchema,
     commitSha: CommitShaSchema,
@@ -101,8 +102,12 @@ export const VerificationSchema = z
      * its own base, beside the merge queue, before it is examined. It verifies
      * nothing on its own: only a `queue` verification on the program head can
      * make a node `verified`. Absent reads as `queue`.
+     *
+     * `run` (A-57): the run's end gates, the steps declared `at: "end"`, on the
+     * program head once the work has landed. Recorded on the program node; it
+     * verifies no job, and `succeeded` is refused until it has passed.
      */
-    phase: z.enum(["candidate", "queue"]).optional(),
+    phase: z.enum(["candidate", "queue", "run"]).optional(),
     /** Set when this verification evidences a specific program success criterion. */
     criterionId: z.string().min(1).optional(),
     commands: z.array(VerificationCommandResultSchema).min(1),
@@ -114,6 +119,10 @@ export const VerificationSchema = z
     message:
       "outcome must agree with the commands: failed when any step that ran exited non-zero, otherwise deferred when any step could not run, otherwise passed",
     path: ["outcome"],
+  })
+  .refine((value) => (value.jobContractId === null) === (value.phase === "run"), {
+    message: "a run verification has no job; every other verification names one",
+    path: ["jobContractId"],
   });
 export type Verification = z.infer<typeof VerificationSchema>;
 
