@@ -12,7 +12,7 @@
  * a slow gate is not thereby a whole-system gate (the owner, 2026-10-16).
  */
 import type { PlannedStep, VerificationPlan } from "./model.js";
-import { END_GATE_RUNS } from "./model.js";
+import { END_GATE_RUNS, humanDuration as ms } from "./model.js";
 import type { ResolvedCommand, ResolvedLine } from "./resolve.js";
 
 export interface ContractEdit {
@@ -192,15 +192,50 @@ export const recommend = (
     });
   }
 
-  return found.sort((a, b) => (b.savingMs ?? -1) - (a.savingMs ?? -1));
+  return groupFacts(found).sort((a, b) => (b.savingMs ?? -1) - (a.savingMs ?? -1));
 };
 
-const ms = (value: number): string => {
-  if (value < 60_000) return `${(value / 1000).toFixed(1)}s`;
-  const totalSeconds = Math.round(value / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
-  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+/**
+ * Facts that say the same thing of several steps — three gates through one
+ * script that starts the same service — become one line naming them all.
+ */
+const groupFacts = (recommendations: readonly Recommendation[]): Recommendation[] => {
+  const groups = new Map<string, Recommendation[]>();
+  const order: (Recommendation | string)[] = [];
+  for (const recommendation of recommendations) {
+    const line = recommendation.evidence[0]?.replace(/^\S+ resolves to /, "");
+    if (
+      recommendation.savingMs !== undefined ||
+      recommendation.rule === undefined ||
+      line === undefined
+    ) {
+      order.push(recommendation);
+      continue;
+    }
+    const key = `${recommendation.rule}|${line}|${recommendation.fix}`;
+    const group = groups.get(key);
+    if (group === undefined) {
+      groups.set(key, [recommendation]);
+      order.push(key);
+    } else {
+      group.push(recommendation);
+    }
+  }
+  return order.map((entry) => {
+    if (typeof entry !== "string") return entry;
+    const group = groups.get(entry) ?? [];
+    const [first] = group;
+    if (first === undefined) throw new Error("an empty group of facts");
+    if (group.length === 1) return first;
+    const ids = group.map((recommendation) => recommendation.stepId);
+    const named = `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}`;
+    return {
+      ...first,
+      stepId: ids.join(", "),
+      title: first.title.replace(`${first.stepId} starts `, `${named} start `),
+      evidence: first.evidence.map((line, index) =>
+        index === 0 ? line.replace(`${first.stepId} resolves`, `${named} resolve`) : line,
+      ),
+    };
+  });
 };

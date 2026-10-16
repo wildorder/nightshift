@@ -7,7 +7,7 @@
 | Base branch | `main` |
 | Program branch | `program/p17-verification-forecast` |
 | Source stage | none: the owner's direction of 2026-10-16 (§3.1), after keki-backend's `lightning-ux` runs took the night several times over on gates |
-| Status | **Ratified 2026-10-16** (D-P17-01 … D-P17-08, with the owner's amendments in §12); being built directly in a coding-agent session |
+| Status | **Built 2026-10-16** in a coding-agent session (PR #31). D-P17-01 … D-P17-08 ratified with the owner's amendments (§12). SC-P17-08 met on keki-backend's `lightning-ux` (§12) |
 | Depends on | A-52 (the mechanical gate audit), P15 (the gate standard, the gate-health record, the report's gate-health section), P16 (the runtime measurement in `nightshift gates`), A-57 (end gates) |
 | Blocking decisions | none: D-P17-01 … D-P17-08 ratified |
 
@@ -305,4 +305,5 @@ As P15. Nothing here writes to a product repository.
 | Date | Decision | By |
 |------|----------|----|
 | 2026-10-16 | Contract drafted from the owner's direction (§3.1); D-P17-01 … D-P17-08 proposed | Agent, for human ratification |
+| 2026-10-16 | **Built** (T1–T6, PR #31). The keki-backend trial (SC-P17-08): one landing measured at 8m 27s on the laptop, 16m 55s for an examined job, 1h 24m projected for ten; the first recommendation is `e2e` at the end (saves ≈ 26m over ten landings), evidenced by `scripts/test-docker.sh:262: pnpm exec playwright test`, with the contract edit; `build`, `db-test` and `e2e` are reported once under rule 7 as starting a service through `docker run` at `scripts/test-docker.sh:171`, unpriced because the script prints within half a second, so the start is not visible from outside. Two things the trial taught the catalogue: a tool is matched where a line *runs* it, not where an `echo` names it; and a script that does several things by its first argument is read for the mode it was called with (`case`, first match wins, `*` the default). The run's two red gates were keki's own flakes (a same-millisecond `updated_at` assertion; a crawl spec) | Agent; the owner's trial follows |
 | 2026-10-16 | D-P17-01 … D-P17-08 ratified. Amendments: the planning agent runs the forecast and surfaces its recommendations to the human before the run (D-P17-03); the facts to steps go in (D-P17-06); the diagnostic never edits and never gets in the way (D-P17-08); the whole-system-gate entry fires on tool signatures only, never on time alone ("i don't think we should tell people to move to the end based on time alone.. that would be just wrong") | Human |

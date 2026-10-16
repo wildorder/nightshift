@@ -260,6 +260,41 @@ describe("the catalogue", () => {
     expect(fact?.evidence[1]).toContain("not visible");
   });
 
+  it("says one shared service start once, naming every step that goes through it", () => {
+    const shared = { source: "scripts/test-docker.sh:171", text: "docker run --detach --rm \\" };
+    const through = (id: string) => ({
+      stepId: id,
+      command: `bash verify.sh ${id}`,
+      lines: [{ source: "contract", text: `bash verify.sh ${id}` }, shared],
+      unresolved: [],
+    });
+    const chatty = forecast({
+      setup: [],
+      verification: [
+        { id: "build", command: "bash verify.sh build" },
+        { id: "db-test", command: "bash verify.sh db-test" },
+        { id: "e2e", command: "bash verify.sh e2e" },
+      ],
+      measured: new Map([
+        ["build", measured(45_000, 500)],
+        ["db-test", measured(170_000, 500)],
+        ["e2e", measured(200_000, 500)],
+      ]),
+      landings: { count: 10, source: "given" },
+    });
+    const facts = recommend(
+      chatty,
+      new Map([
+        ["build", through("build")],
+        ["db-test", through("db-test")],
+        ["e2e", through("e2e")],
+      ]),
+    ).filter((r) => r.rule === 7);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]?.title).toBe("build, db-test and e2e start a service every time");
+    expect(facts[0]?.evidence[0]).toContain("build, db-test and e2e resolve to");
+  });
+
   it("does not treat an end gate as a landing gate, and lists facts last", () => {
     const all = recommend(plan(), resolved);
     expect(all.find((r) => r.stepId === "nightly")).toBeUndefined();
