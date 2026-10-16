@@ -75,7 +75,7 @@ const unquote = (word: string): string => word.replace(/^["']|["']$/g, "");
  * A shell word's value, when it is known: a literal, a positional argument
  * (`$1`, `${1:-}`), or a variable assigned from one. `undefined` when it is not.
  */
-const valueOf = (
+const shellValue = (
   word: string,
   args: readonly string[],
   vars: ReadonlyMap<string, string>,
@@ -119,7 +119,7 @@ export const activeLines = (
     const opening = CASE_OPEN.exec(text);
     if (opening !== null) {
       cases.push({
-        subject: running() ? valueOf(opening[1] ?? "", args, vars) : undefined,
+        subject: running() ? shellValue(opening[1] ?? "", args, vars) : undefined,
         active: false,
         matched: false,
       });
@@ -152,7 +152,7 @@ export const activeLines = (
     if (!running()) return;
     const assignment = ASSIGNMENT.exec(text);
     if (assignment !== null) {
-      const value = valueOf(assignment[2] ?? "", args, vars);
+      const value = shellValue(assignment[2] ?? "", args, vars);
       if (value !== undefined) vars.set(assignment[1] ?? "", value);
     }
     lines.push({ number: index + 1, text });
@@ -212,7 +212,7 @@ export const resolveCommand = async (
           .trim()
           .split(/\s+/)
           .filter((word) => word !== "")
-          .map((word) => valueOf(word, args, vars) ?? word);
+          .map((word) => shellValue(word, args, vars) ?? word);
         const key = `file:${file}:${given.join(" ")}`;
         if (seen.has(key)) continue;
         seen.add(key);
