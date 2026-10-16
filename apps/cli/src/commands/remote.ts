@@ -175,10 +175,12 @@ export const assertRemoteReady = async (
       "Run `nightshift plan check` and `nightshift plan ratify` first.",
     );
   }
+  // The machine runs exactly what is pushed, and the plan is held to its hash,
+  // so uncommitted work elsewhere in the checkout changes nothing about the
+  // run: it is said, so nobody expects it there, and never refused (2026-10-16).
   if (await isDirty(environment.git, repoPath)) {
-    throw new UsageError(
-      "the checkout has uncommitted changes; remote dispatch needs a clean tree",
-      "Commit or stash them: the machine checks out exactly what is pushed, and a dirty tree means the plan was made against something else.",
+    environment.err(
+      "note: the checkout has uncommitted changes; they are not part of the run, which dispatches what is pushed",
     );
   }
   // The machine clones from GitHub, never from this checkout: the branch is

@@ -427,7 +427,9 @@ describe("optional gate-health diagnostics through the CLI", () => {
   it("requires sign-in for optional records but checks an ordinary plan offline without git or network", async () => {
     await rm(credentialsPath(op.environment.paths));
     expect(await cli("gates", PROGRAM, "--record")).toBe(1);
-    expect(said()).toContain("you are not signed in: run `nightshift login`");
+    expect(said()).toContain(
+      "you are not signed in, or your sign-in has expired: run `nightshift login`",
+    );
     expect(said()).toContain("Nothing was recorded.");
     expect(said()).not.toContain("auditing the gates on");
 
@@ -448,5 +450,34 @@ describe("optional gate-health diagnostics through the CLI", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(git).not.toHaveBeenCalled();
     expect(await record()).toBeUndefined();
+  }, 60_000);
+});
+
+describe("the forecast checks prerequisites here and now (2026-10-16)", () => {
+  /** The one document `gates --json` writes to stdout. */
+  const forecastOf = (): {
+    unmetPrerequisites: string[];
+    plan: { steps: { id: string; measured?: unknown }[] };
+  } => JSON.parse(op.out.join("\n"));
+
+  it("runs a gate whose prerequisite is met on this machine, whatever the contract file's status says", async () => {
+    await writeFile(join(outside, "release-token"), "present");
+    op.out.length = 0;
+    expect(await cli("gates", PROGRAM, "--json")).toBe(0);
+    const forecast = forecastOf();
+    expect(forecast.unmetPrerequisites).toEqual([]);
+    const check = forecast.plan.steps.find((step) => step.id === "release-check");
+    expect(check?.measured).toBeDefined();
+    expect(op.err.join("\n")).toContain("HP-01  met");
+  }, 60_000);
+
+  it("leaves a gate untimed when its prerequisite is unmet here, and says so", async () => {
+    op.out.length = 0;
+    expect(await cli("gates", PROGRAM, "--json")).toBe(0);
+    const forecast = forecastOf();
+    expect(forecast.unmetPrerequisites).toEqual(["HP-01"]);
+    const check = forecast.plan.steps.find((step) => step.id === "release-check");
+    expect(check?.measured).toBeUndefined();
+    expect(op.err.join("\n")).toContain("HP-01  UNMET");
   }, 60_000);
 });

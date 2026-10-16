@@ -31,6 +31,7 @@ import type {
   ProgramScope,
   ProjectStores,
   RunScope,
+  RunSite,
 } from "@nightshift/core";
 import type { Harness, McpLaunch, RunAs } from "@nightshift/harness";
 import type { GitRunner } from "./git/index.js";
@@ -122,6 +123,12 @@ export interface ExecutionEnvironment {
    * contract's own copy is the only one there is.
    */
   readonly prerequisites?: PrerequisiteBook;
+  /**
+   * Where this engine runs, for judging a prerequisite met (D-P7-10): on the
+   * laptop, the laptop's last check; on a run's machine, that machine's own
+   * check for its dispatch generation, never the laptop's. Absent: the laptop.
+   */
+  readonly site?: RunSite;
   /**
    * P8: who examines and who arbitrates, supplied by the composition root,
    * because routing is not this package's. Absent, a job whose risk requires
@@ -236,6 +243,7 @@ export type LandingEnvironment = Pick<
   | "publish"
   | "verificationTimeoutMs"
   | "prerequisites"
+  | "site"
   | "runAs"
   | "reclaim"
   | "projectEnv"

@@ -8,6 +8,8 @@
  * because the hash has to name something git can reproduce; then it uploads the
  * plan document and records the hash. If the upload fails, nothing is ratified.
  */
+
+import type { ProgramContract } from "@nightshift/contracts";
 import {
   CONFIRMED_CLASSES,
   checkPlan,
@@ -22,7 +24,7 @@ import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { publishProgramBranch } from "../program-branch.js";
 import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
-import { openSession } from "../session.js";
+import { openSession, type Session } from "../session.js";
 
 export interface PlanOptions {
   readonly id: string;
@@ -160,18 +162,23 @@ const uncommittedChanges = async (
     .filter((line) => line !== "");
 };
 
-export const planRatify = async (
+/**
+ * Ratifies the plan on disk: READY, committed, uploaded and recorded under its
+ * hash. The one way a plan is ratified, by `nightshift plan ratify` and by
+ * `nightshift run`, whose asking to run a plan is the human's approval of it
+ * (2026-10-16). `undefined`, with the reasons said, when it cannot be.
+ */
+export const ratifyPlan = async (
   environment: CliEnvironment,
-  options: PlanOptions,
-): Promise<number> => {
-  const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
-
+  session: Session,
+  repoPath: string,
+  files: ProgramFiles,
+): Promise<ProgramContract | undefined> => {
   const result = readinessOf(files);
   if (!result.ready) {
     printReasons(environment, result);
     environment.err("Nothing was ratified. Fix the plan and run `nightshift plan check` again.");
-    return 1;
+    return undefined;
   }
 
   const dirty = await uncommittedChanges(environment, repoPath, files);
@@ -181,10 +188,9 @@ export const planRatify = async (
     );
     for (const line of dirty) environment.err(`  ${line}`);
     environment.err("Commit them, then ratify. Nothing was ratified.");
-    return 1;
+    return undefined;
   }
 
-  const session = await openSession(environment);
   const planning = createHttpPlanning({ transport: session.transport });
   // Upload first, then record: if the upload fails this throws, and nothing was asked for.
   const ratified = await planning.ratify(files.contract, files.planText, files.conversationText);
@@ -202,9 +208,18 @@ export const planRatify = async (
   }
   environment.out(`  stories   ${(ratified.stories ?? []).map((story) => story.id).join(", ")}`);
   environment.out(`  strands   ${(ratified.strands ?? []).map((strand) => strand.id).join(", ")}`);
-  environment.out(
-    `An edit to ${files.directory}/ after this is refused by \`nightshift run\` until it is ratified again.`,
-  );
+  return ratified;
+};
+
+export const planRatify = async (
+  environment: CliEnvironment,
+  options: PlanOptions,
+): Promise<number> => {
+  const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
+  const files = await readProgramFiles(repoPath, options.id);
+  const session = await openSession(environment);
+  const ratified = await ratifyPlan(environment, session, repoPath, files);
+  if (ratified === undefined) return 1;
   // Ratified means dispatchable from anywhere: the program branch goes to
   // GitHub now, fast-forward only (2026-10-13). A failure here does not undo
   // the ratification; \`nightshift run --remote\` pushes it again.

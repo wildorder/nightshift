@@ -63,6 +63,7 @@ import {
   nowIso,
   prerequisitesOf,
   transition,
+  unmetPrerequisitesAt,
 } from "@nightshift/core";
 import {
   type DeferSignal,
@@ -163,9 +164,8 @@ const unmetPrerequisites = async (
           projectId: program.projectId,
           programId: program.programId,
         });
-  return new Set(
-    current.filter((prerequisite) => prerequisite.status !== "satisfied").map((p) => p.id),
-  );
+  // Met where this engine runs: on a machine, by that machine's own check.
+  return unmetPrerequisitesAt(current, environment.site ?? { where: "laptop" });
 };
 
 /**

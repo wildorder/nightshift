@@ -229,6 +229,19 @@ describe("the catalogue", () => {
     expect(all.find((r) => r.rule === 7)?.stepId).toBe("db-test");
   });
 
+  it("recommends the end for an untimed whole-system gate without putting a number on it", () => {
+    const untimed = forecast({
+      setup: [],
+      verification: [{ id: "e2e", command: "npm run test:e2e", requires: ["HP-01"] }],
+      measured: new Map(),
+      landings: { count: 10, source: "default" },
+    });
+    const [first] = recommend(untimed, resolved);
+    expect(first).toMatchObject({ rule: 9, stepId: "e2e", edit: { set: { at: "end" } } });
+    expect(first?.savingMs).toBeUndefined();
+    expect(first?.evidence[1]).toBe("not timed: the audit did not run it");
+  });
+
   it("never recommends the end on time alone", () => {
     // unit is the slowest landing step here and resolves to nothing whole-system.
     const slow = forecast({

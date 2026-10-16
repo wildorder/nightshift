@@ -106,18 +106,25 @@ export const recommend = (
     // Rule 9: a whole-system gate on every landing.
     const wholeSystem = step.kind === "landing" ? matching(lines, WHOLE_SYSTEM) : undefined;
     if (wholeSystem !== undefined) {
-      const perRun = measured?.durationMs ?? 0;
-      const saving = Math.max(0, perRun * landings - perRun * END_GATE_RUNS);
+      // Never a number for a step the audit did not time: unmeasured is not zero.
+      const perRun = measured?.durationMs;
       found.push({
         rule: 9,
         title: `${step.id} at the end`,
         stepId: step.id,
         evidence: [
           `${step.id} resolves to ${quote(wholeSystem)}: a whole-system gate proves the program, not a job`,
-          ...(measured === undefined ? [] : [`measured ${ms(perRun)} per landing`]),
+          perRun === undefined
+            ? "not timed: the audit did not run it"
+            : `measured ${ms(perRun)} per landing`,
         ],
-        formula: `${ms(perRun)} × ${landings} landings − ${ms(perRun)} × ${END_GATE_RUNS} runs at the end`,
-        savingMs: saving,
+        formula:
+          perRun === undefined
+            ? `its time × (${landings} landings − ${END_GATE_RUNS} runs at the end)`
+            : `${ms(perRun)} × ${landings} landings − ${ms(perRun)} × ${END_GATE_RUNS} runs at the end`,
+        ...(perRun === undefined
+          ? {}
+          : { savingMs: Math.max(0, perRun * landings - perRun * END_GATE_RUNS) }),
         fix: `declare it an end gate: it runs once when the run finishes, and again after each fix that lands (A-57)`,
         edit: { stepId: step.id, set: { at: "end" } },
       });

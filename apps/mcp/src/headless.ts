@@ -134,6 +134,8 @@ export const rootLaunch = (
     "NIGHTSHIFT_API_TOKEN",
     "NIGHTSHIFT_API_TOKEN_FILE",
     "NIGHTSHIFT_PINNED_RUN",
+    // Which machine, so prerequisites are judged by its own check (D-P7-10).
+    "NIGHTSHIFT_DISPATCH_GENERATION",
     "NIGHTSHIFT_PROJECT_USER",
     "NIGHTSHIFT_PROJECT_CREDENTIAL_DIR",
     // The project environment's file (P16 S-01): the engine threads it to project steps (D-10).

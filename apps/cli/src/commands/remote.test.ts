@@ -122,7 +122,7 @@ describe("assertRemoteReady (SC-P10-02, the CLI's half)", () => {
   const f = createFixtures();
 
   // With --no-push; what it does without is program-branch.test.ts's, over real git.
-  it("refuses an unratified plan, a dirty tree, an unpushed branch and a moved head, in that order", async () => {
+  it("refuses an unratified plan, an unpushed branch and a moved head, and only notes a dirty tree", async () => {
     const planning = ratified(f, {
       status: "planning",
       planHash: undefined,
@@ -133,10 +133,12 @@ describe("assertRemoteReady (SC-P10-02, the CLI's half)", () => {
       assertRemoteReady(created.environment, planning, repoPath, undefined),
     ).rejects.toThrow(/not ratified/);
 
+    // The machine runs what is pushed: uncommitted work elsewhere is said, never refused.
     const dirty = await environmentWith(gitAnswering({ dirty: true, head: HEAD, origin: HEAD }));
     await expect(
       assertRemoteReady(dirty.created.environment, ratified(f), dirty.repoPath, undefined),
-    ).rejects.toThrow(/uncommitted changes/);
+    ).resolves.toMatchObject({ baseSha: HEAD });
+    expect(dirty.created.err.join("\n")).toContain("they are not part of the run");
 
     const unpushed = await environmentWith(gitAnswering({ head: HEAD }));
     await expect(

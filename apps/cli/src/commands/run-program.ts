@@ -31,9 +31,7 @@ import type { ArtifactId, Decision, Prerequisite, ProgramContract } from "@night
 import {
   gatherReport,
   irreversibleConfirmationContext,
-  isMetAt,
   nowIso,
-  prerequisitesOf,
   type RunReport,
   renderReport,
   strandsOf,
@@ -42,6 +40,8 @@ import {
 import {
   type GateAudit,
   type GitRunner,
+  PlanChangedError,
+  PlanNotRatifiedError,
   type PreflightResult,
   recordRedBase,
   requireRatifiedPlan,
@@ -57,6 +57,7 @@ import { UsageError } from "../failures.js";
 import type { ProgramFiles } from "../program-files.js";
 import type { Session } from "../session.js";
 import { auditProgramGates, describeAudit } from "./gates.js";
+import { ratifyPlan } from "./plan.js";
 import { assertRemoteReady, dispatchRun, type RemoteReadiness } from "./remote.js";
 import { watchDispatch } from "./watch.js";
 
@@ -115,20 +116,24 @@ const preflightFirstStrands = async (
   repoPath: string,
 ): Promise<PreflightResult | undefined> => {
   const needed = firstStrandPrerequisites(ratified);
-  // A local run runs here, so the laptop's checks are the ones that count (P16, D-08).
+  // A local run runs here, so the laptop's checks are the ones that count (P16,
+  // D-08), and every one is checked now, once for the run: a status recorded
+  // last week is no evidence of today (2026-10-16).
   const laptop = { where: "laptop" } as const;
-  const later = prerequisitesOf(ratified).filter(
-    (prerequisite) => !isMetAt(prerequisite, laptop) && !needed.includes(prerequisite.id),
-  );
   const planning = createHttpPlanning({ transport: session.transport });
-  const result = await runPreflight({
+  const checked = await runPreflight({
     contract: ratified,
     cwd: repoPath,
     record: planning.recordCheck,
     site: laptop,
-    only: needed,
+    recheck: true,
     clock: environment.clock,
   });
+  const result = {
+    ...checked,
+    pending: checked.pending.filter((prerequisite) => needed.includes(prerequisite.id)),
+  };
+  const later = checked.pending.filter((prerequisite) => !needed.includes(prerequisite.id));
   for (const prerequisite of result.pending) {
     environment.err(`UNMET ${prerequisite.id}  ${prerequisite.description}`);
     for (const line of prerequisite.remediation.trimEnd().split("\n")) {
@@ -411,6 +416,32 @@ const exitCodeFor = (report: RunReport): number => {
   return broke ? 1 : EXIT_DEFERRED;
 };
 
+/**
+ * The ratified record a run executes. Asking to run a plan is approving it
+ * (2026-10-16): when the plan on disk is not the one the control plane holds
+ * ratified — never ratified, or edited since — it is ratified here, under the
+ * same rules as `nightshift plan ratify` (READY, committed), and then held to
+ * its hash like any other. `undefined`, with the reasons said, when it cannot be.
+ */
+const ratifiedForRun = async (
+  environment: CliEnvironment,
+  session: Session,
+  files: ProgramFiles,
+  repoPath: string,
+): Promise<ProgramContract | undefined> => {
+  try {
+    return await requireRatifiedPlan(session.stores, files.contract, files.planText);
+  } catch (error) {
+    if (!(error instanceof PlanNotRatifiedError) && !(error instanceof PlanChangedError))
+      throw error;
+  }
+  environment.out(
+    `ratifying ${files.directory}: asking to run a plan approves it, so it is recorded under its hash first`,
+  );
+  if ((await ratifyPlan(environment, session, repoPath, files)) === undefined) return undefined;
+  return requireRatifiedPlan(session.stores, files.contract, files.planText);
+};
+
 export const runProgram = async (
   environment: CliEnvironment,
   session: Session,
@@ -423,7 +454,8 @@ export const runProgram = async (
     ids: environment.ids,
     git: environment.git,
   };
-  const ratified = await requireRatifiedPlan(session.stores, files.contract, files.planText);
+  const ratified = await ratifiedForRun(environment, session, files, options.repoPath);
+  if (ratified === undefined) return { started: undefined, exitCode: 1 };
   if (
     options.remote !== true &&
     (await preflightFirstStrands(environment, session, ratified, options.repoPath)) === undefined
