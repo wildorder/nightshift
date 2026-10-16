@@ -30,6 +30,13 @@ export interface StepResult {
   readonly command: string;
   readonly exitCode: number;
   readonly durationMs: number;
+  /**
+   * How long the step was quiet before its first byte of output (P17,
+   * D-P17-05): the whole duration when it never spoke. Nightshift cannot see
+   * inside a step; it can see when the step first said something, and a long
+   * silence at the start of a gate is usually a service starting.
+   */
+  readonly quietMs: number;
   /** The captured combined stdout and stderr, as bytes. */
   readonly output: Uint8Array;
   /** True when the per-step timeout killed the process tree. */
@@ -85,6 +92,7 @@ export type StepEvent =
       readonly phase: "finished";
       readonly exitCode: number;
       readonly durationMs: number;
+      readonly quietMs: number;
       readonly timedOut: boolean;
     };
 
@@ -141,6 +149,7 @@ const runStep = (input: StepRunInput): Promise<StepResult> =>
     const { step } = input;
     const startedAt = input.clock.now();
     const captured: Uint8Array[] = [];
+    let firstOutputAt: number | undefined;
     let timedOut = false;
     let settled = false;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
@@ -159,6 +168,11 @@ const runStep = (input: StepRunInput): Promise<StepResult> =>
     };
 
     const note = (text: string): void => record("stderr", encoder.encode(text));
+    /** The child's own output, not a note of ours: the first marks the end of the quiet start. */
+    const heard = (stream: "stdout" | "stderr", bytes: Uint8Array): void => {
+      firstOutputAt ??= input.clock.now();
+      record(stream, bytes);
+    };
 
     const finish = (exitCode: number): void => {
       if (settled) return;
@@ -172,6 +186,7 @@ const runStep = (input: StepRunInput): Promise<StepResult> =>
         // The contract wants a non-negative integer, and an injected clock is
         // under no obligation to move forward.
         durationMs: Math.max(0, Math.round(input.clock.now() - startedAt)),
+        quietMs: Math.max(0, Math.round((firstOutputAt ?? input.clock.now()) - startedAt)),
         output: concatChunks(captured),
         timedOut,
       });
@@ -200,8 +215,8 @@ const runStep = (input: StepRunInput): Promise<StepResult> =>
       return;
     }
 
-    child.stdout?.on("data", (chunk) => record("stdout", chunk));
-    child.stderr?.on("data", (chunk) => record("stderr", chunk));
+    child.stdout?.on("data", (chunk) => heard("stdout", chunk));
+    child.stderr?.on("data", (chunk) => heard("stderr", chunk));
 
     child.on("error", (error) => {
       // The child never ran, or could not be signalled. Either way the reason
@@ -265,6 +280,7 @@ export const runVerificationSteps = async (
       phase: "finished",
       exitCode: result.exitCode,
       durationMs: result.durationMs,
+      quietMs: result.quietMs,
       timedOut: result.timedOut,
     });
     results.push(result);

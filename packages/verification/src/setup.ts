@@ -43,6 +43,7 @@ const skippedStep = (step: SetupStep, reason: string): StepResult => ({
   command: step.command,
   exitCode: 0,
   durationMs: 0,
+  quietMs: 0,
   output: new TextEncoder().encode(`[setup skipped] ${reason}\n`),
   timedOut: false,
 });

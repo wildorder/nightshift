@@ -86,7 +86,12 @@ import {
   type McpLaunch,
   refusingWorkerTools,
 } from "@nightshift/harness";
-import { deferSignalOf, runCheckoutSteps, toVerificationCommands } from "@nightshift/verification";
+import {
+  deferSignalOf,
+  runCheckoutSteps,
+  toVerificationCommands,
+  verificationFacts,
+} from "@nightshift/verification";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExaminationServices,
@@ -102,6 +107,7 @@ import {
   effectiveHead,
   git,
   pruneWorktrees,
+  tryRevParse,
   updateRef,
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
@@ -931,13 +937,21 @@ const candidateVerification = async (
     await runAs.grant(scratch);
   }
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
+  // Told to every step (D-P17-06): the record's id, minted first, the commit,
+  // and the job's base it was cut from.
+  const verificationId = environment.ids.next("ver");
+  const baseSha = await tryRevParse(environment.git, input.session.repoPath, `${input.commitSha}^`);
+  const projectEnv = {
+    ...(environment.projectEnv ?? {}),
+    ...verificationFacts({ verificationId, headSha: input.commitSha, baseSha }),
+  };
   const ran = await runCheckoutSteps({
     setup: gates.setup,
     steps,
     cwd: checkout,
     reference: input.session.repoPath,
     timeoutMs,
-    env: projectStepEnv(environment.projectEnv, scratch),
+    env: projectStepEnv(projectEnv, scratch),
     onStep: announceSteps(environment, {
       nodeId: input.node.executionNodeId,
       label: "candidate verification",
@@ -981,7 +995,7 @@ const candidateVerification = async (
     keepScratch: true,
     ...(as.as === undefined ? {} : { as: as.as }),
     ...(environment.reclaim === undefined ? {} : { reclaim: environment.reclaim }),
-    ...(environment.projectEnv === undefined ? {} : { projectEnv: environment.projectEnv }),
+    projectEnv,
   });
   const commands = await withFlakes(
     environment,
@@ -993,7 +1007,7 @@ const candidateVerification = async (
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
     ...input.session.scope,
-    verificationId: environment.ids.next("ver"),
+    verificationId,
     executionNodeId: input.node.executionNodeId,
     jobContractId: input.job.jobContractId,
     agentId: workerId,

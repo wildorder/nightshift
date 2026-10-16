@@ -29,6 +29,7 @@ import {
   type StepResult,
   setupAsStep,
   setupFailed,
+  verificationFacts,
 } from "@nightshift/verification";
 import { addDetachedWorktree, type GitRunner, pruneWorktrees, tryGit } from "./git/index.js";
 import {
@@ -132,11 +133,17 @@ const runOnce = async (
     results.set(result.stepId, result);
     input.onStep?.(result);
   };
-  // A temp directory of its own, as a verification gets (scratch.ts).
+  // A temp directory of its own, as a verification gets (scratch.ts), and the
+  // same facts a verification's steps get (D-P17-06): an id of the audit's own,
+  // the commit, and no base, since an audit verifies a head, not a change.
   const scratch = await freshScratch(input.paths, checkout, input.reclaim);
+  const facts = verificationFacts({
+    verificationId: `audit_${input.base.slice(0, 12)}_${Date.now().toString(36)}`,
+    headSha: input.base,
+  });
   const how = {
     timeoutMs: input.timeoutMs,
-    env: projectStepEnv(input.env, scratch),
+    env: projectStepEnv({ ...(input.env ?? {}), ...facts }, scratch),
     ...(input.as === undefined ? {} : { as: input.as }),
   };
   const prepared = await runSetupSteps({

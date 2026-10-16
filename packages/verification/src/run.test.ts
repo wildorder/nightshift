@@ -215,7 +215,9 @@ describe("runVerificationSteps, with an injected spawn", () => {
     expect(results[0]?.command).toBe("true");
     expect(results[0]?.exitCode).toBe(0);
     expect(results[0]?.timedOut).toBe(false);
-    expect(results[0]?.durationMs).toBe(5);
+    // The clock is read at the start, at the first output, and at the end.
+    expect(results[0]?.quietMs).toBe(5);
+    expect(results[0]?.durationMs).toBe(10);
     // Both pipes land in one buffer, in arrival order.
     expect(decode(results[0]?.output ?? new Uint8Array())).toBe("out-err");
   });
@@ -531,5 +533,36 @@ describe("runVerificationSteps, with real processes", () => {
 
     expect(results[0]?.exitCode).toBe(0);
     expect(decode(results[0]?.output ?? new Uint8Array()).trim()).toBe('say "hi"');
+  });
+});
+
+describe("a step's quiet start (D-P17-05)", () => {
+  it("ends at the child's first byte, and lasts the whole step when it never speaks", async () => {
+    let now = 0;
+    const clock = { now: () => now };
+    const { spawn } = fakeSpawn((child, call) => {
+      if (call.args.join(" ").includes("quiet")) {
+        now = 5_000;
+        child.close(0);
+        return;
+      }
+      now = 1_200;
+      child.stdout.emit("starting\n");
+      now = 4_000;
+      child.close(0);
+    });
+    const [talks, quiet] = await runVerificationSteps({
+      steps: [
+        { id: "talks", command: "echo talks" },
+        { id: "quiet", command: "echo quiet" },
+      ],
+      cwd: ".",
+      timeoutMs: 60_000,
+      spawn,
+      clock,
+    });
+    expect(talks).toMatchObject({ quietMs: 1_200, durationMs: 4_000 });
+    // Started at 4 000 on the same clock, and silent until it closed at 5 000.
+    expect(quiet).toMatchObject({ quietMs: 1_000, durationMs: 1_000 });
   });
 });

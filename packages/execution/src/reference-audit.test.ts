@@ -109,6 +109,7 @@ describe("the reference audit a dispatch carries (P16 D-06)", () => {
         exitCode: verdict === "passed" ? 0 : 1,
         durationMs: 1,
         output: new TextEncoder().encode(output),
+        quietMs: 0,
         timedOut: false,
       },
     });
@@ -150,6 +151,7 @@ describe("the reference audit a dispatch carries (P16 D-06)", () => {
           exitCode: 0,
           durationMs: 1,
           output: new TextEncoder().encode("y".repeat(5000)),
+          quietMs: 0,
           timedOut: false,
         },
       }),

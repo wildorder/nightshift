@@ -14,6 +14,7 @@
 export * from "./commands.js";
 export * from "./defer.js";
 export * from "./environment.js";
+export * from "./facts.js";
 export * from "./install.js";
 export * from "./rerun.js";
 export * from "./run.js";
