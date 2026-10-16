@@ -47,10 +47,6 @@ describe("a worker's token file", () => {
     const path = await tokens.place(scope, agent, "first");
     expect(path).toBe(workerTokenFile("run_1", "agent_1", directory));
     expect(await readFile(path, "utf8")).toBe("first\n");
-    expect(await mode(path)).toBe(0o640);
-    expect(await mode(join(directory("run_1"), "agents", agent))).toBe(0o710);
-    expect(await mode(join(directory("run_1"), "agents"))).toBe(0o2711);
-    expect(await mode(directory("run_1"))).toBe(0o711);
     expect(grouped).toEqual([`nightshift ${join(directory("run_1"), "agents")}`]);
 
     // The renewal: the same process writes the same file again, and nothing is
@@ -59,6 +55,25 @@ describe("a worker's token file", () => {
     expect(await readFile(path, "utf8")).toBe("second\n");
     expect(await readdir(join(directory("run_1"), "agents", agent))).toEqual(["token"]);
   });
+
+  /**
+   * POSIX modes only: Windows has no group or setgid bits, and `stat` there
+   * reports 0o666 for any writable file. Machines run Linux, where these hold.
+   */
+  it.skipIf(process.platform === "win32")(
+    "lets the worker read its own token and nobody list another's",
+    async () => {
+      const { files: tokens, directory } = await files();
+      const path = await tokens.place(scope, agent, "first");
+      expect(await mode(path)).toBe(0o640);
+      expect(await mode(join(directory("run_1"), "agents", agent))).toBe(0o710);
+      expect(await mode(join(directory("run_1"), "agents"))).toBe(0o2711);
+      expect(await mode(directory("run_1"))).toBe(0o711);
+      // A renewal keeps the file's mode.
+      await tokens.place(scope, agent, "second");
+      expect(await mode(path)).toBe(0o640);
+    },
+  );
 
   it("goes with the worker, and is not missed twice", async () => {
     const { files: tokens, directory } = await files();
