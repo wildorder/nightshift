@@ -39,24 +39,49 @@ export interface Recommendation {
   readonly edit?: ContractEdit;
 }
 
-/** Tool signatures: what a resolved line says it runs. */
+/**
+ * Tool signatures, matched against what a line *runs*: the command words of
+ * each segment, with the wrappers that run something else stripped (`exec`,
+ * `npx`, `pnpm exec`, `VAR=value` prefixes). Never against a line's whole
+ * text: an `echo 'usage: … <playwright args>'` names a tool and runs nothing
+ * (keki-backend's `scripts/test-docker.sh`, 2026-10-16).
+ */
 const WHOLE_SYSTEM =
-  /\b(playwright|cypress|webdriver(?:io)?|puppeteer|selenium|detox|nightwatch|testcafe)\b/i;
+  /^(playwright|cypress|wdio|webdriver(?:io)?|puppeteer|selenium|detox|nightwatch|testcafe)\b/i;
 const SERVICE_START =
-  /\b(docker(?:-compose)?\s+(?:compose\s+)?(?:up|run|start)|testcontainers|pg_ctl\s+start|postgres\s+-D|mysqld|redis-server|mongod|localstack|supabase\s+start|sst\s+dev)\b/i;
+  /^(docker(?:-compose)?\s+(?:compose\s+)?(?:up|run|start)|testcontainers|pg_ctl\s+start|postgres\s+-D|mysqld|redis-server|mongod|localstack|supabase\s+start|sst\s+dev)\b/i;
 const INSTALL_IN_GATE =
-  /\b(npm\s+(?:ci|install|i)\b|pnpm\s+(?:install|i)\b|yarn(?:\s+install)?\s*$|pip\s+install|poetry\s+install|bundle\s+install|cargo\s+fetch|go\s+mod\s+download|prisma\s+generate|graphql-codegen|openapi-generator)/i;
+  /^(npm\s+(?:ci|install|i)\b|pnpm\s+(?:install|i)\b|yarn(?:\s+install)?\s*$|pip3?\s+install|poetry\s+install|bundle\s+install|cargo\s+fetch|go\s+mod\s+download|prisma\s+generate|graphql-codegen|openapi-generator)/i;
+
+/** Words that run something else, dropped from the front of a segment. */
+const WRAPPERS =
+  /^(?:exec|time|nice|sudo|env|npx|bunx|yarn\s+exec|yarn\s+run|pnpm\s+exec|pnpm\s+dlx|[A-Z_][A-Z0-9_]*=\S*)\s+/i;
+
+/** The command words of each segment of a line: what it runs, not what it says. */
+export const commandWordsOf = (text: string): string[] =>
+  text
+    .split(/\s*(?:&&|\|\||;|\|)\s*/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== "")
+    .map((segment) => {
+      let words = segment;
+      while (WRAPPERS.test(words)) words = words.replace(WRAPPERS, "");
+      return words;
+    });
 
 /** A gate quiet for at least this long before its first output looks like a service starting (rule 7). */
 export const QUIET_START_THRESHOLD_MS = 60_000;
 
+const runs = (line: ResolvedLine, pattern: RegExp): boolean =>
+  commandWordsOf(line.text).some((words) => pattern.test(words));
+
 const matching = (lines: readonly ResolvedLine[], pattern: RegExp): ResolvedLine | undefined =>
-  lines.find((line) => pattern.test(line.text));
+  lines.find((line) => runs(line, pattern));
 
 /** The resolved lines that match any signature: what the record keeps as evidence (D-P17-07). */
 export const signatureLines = (lines: readonly ResolvedLine[]): readonly ResolvedLine[] =>
   lines.filter((line) =>
-    [WHOLE_SYSTEM, SERVICE_START, INSTALL_IN_GATE].some((pattern) => pattern.test(line.text)),
+    [WHOLE_SYSTEM, SERVICE_START, INSTALL_IN_GATE].some((pattern) => runs(line, pattern)),
   );
 
 const quote = (line: ResolvedLine): string => `${line.source}: \`${line.text}\``;

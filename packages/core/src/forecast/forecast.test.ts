@@ -152,6 +152,43 @@ describe("the catalogue", () => {
     expect(first?.evidence[0]).toContain("playwright test");
   });
 
+  it("matches a tool only where it runs, not where a line merely names it", () => {
+    const usage = new Map([
+      [
+        "db-test",
+        {
+          stepId: "db-test",
+          command: "bash scripts/test-docker.sh test",
+          lines: [
+            { source: "contract", text: "bash scripts/test-docker.sh test" },
+            {
+              source: "scripts/test-docker.sh:43",
+              text: "echo 'usage: scripts/test-docker.sh test | e2e [<playwright args>]' >&2",
+            },
+            { source: "scripts/test-docker.sh:171", text: "docker run --detach --rm \\" },
+            { source: "scripts/test-docker.sh:232", text: "pnpm exec vitest run --maxWorkers=1" },
+          ],
+          unresolved: [],
+        },
+      ],
+      [
+        "e2e",
+        {
+          stepId: "e2e",
+          command: "npm run test:e2e",
+          lines: [
+            { source: "contract", text: "npm run test:e2e" },
+            { source: "package.json → scripts.test:e2e", text: "CI=1 npx playwright test" },
+          ],
+          unresolved: [],
+        },
+      ],
+    ]);
+    const all = recommend(plan(), usage);
+    expect(all.filter((r) => r.rule === 9).map((r) => r.stepId)).toEqual(["e2e"]);
+    expect(all.find((r) => r.rule === 7)?.stepId).toBe("db-test");
+  });
+
   it("never recommends the end on time alone", () => {
     // unit is the slowest landing step here and resolves to nothing whole-system.
     const slow = forecast({
