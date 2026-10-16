@@ -50,8 +50,21 @@ export const VerificationStepSchema = z.strictObject({
    * the step has run and passed.
    */
   requires: z.array(PrerequisiteIdSchema).optional(),
+  /**
+   * When the step runs (A-57). `landing`, the default: on every job's
+   * verification, in the merge queue, on the program head it is about to join.
+   * `end`: once, when the run's work has all landed, on the program head, and
+   * again after each fix that lands; never per job. For a gate that proves the
+   * whole and costs too much to pay on every landing: an end-to-end suite
+   * against a built, migrated system. The gate audit before a run runs both.
+   */
+  at: z.enum(["landing", "end"]).optional(),
 });
 export type VerificationStep = z.infer<typeof VerificationStepSchema>;
+
+/** Where a step runs; absent reads as `landing`. */
+export const stepRunsAt = (step: Pick<VerificationStep, "at">): "landing" | "end" =>
+  step.at ?? "landing";
 
 /**
  * One command that prepares a checkout before anything runs in it: installing

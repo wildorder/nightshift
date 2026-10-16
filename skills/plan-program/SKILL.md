@@ -167,6 +167,16 @@ install into `verification`, and never make a check install conditionally: that
 hides a missing `setup` behind a slower gate. Setup runs often, so prefer a
 command that is quick when there is nothing to do.
 
+**A gate that proves the whole runs at the end.** A verification step runs on
+every job's landing unless it says `"at": "end"`: then it runs once, on the
+program head, when the run finishes as succeeded, and again after each fix that
+lands. Put a whole-system gate there — an end-to-end suite against a built,
+migrated system, anything that costs minutes and proves the program rather than
+a job — and keep the landing gates the ones that catch a job's own mistakes
+(build, typecheck, lint, unit). A run that paid for its end-to-end suite on
+every landing took the night several times over (keki-backend, 2026-10-15).
+The gate audit before the run still runs both.
+
 Consider verification cost when choosing concurrency. Use measured durations
 when available; measuring them is not a prerequisite to writing the plan.
 

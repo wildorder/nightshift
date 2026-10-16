@@ -47,6 +47,8 @@ export type RefusalCode =
   /** P10: a machine's server is the engine of one dispatched run and starts no other. */
   | "pinned_run"
   | "job_running"
+  /** `run.finish succeeded` while the end gates fail on the program head (A-57). */
+  | "end_gates_failed"
   | "not_found"
   | "control_plane_error"
   | "internal_error";

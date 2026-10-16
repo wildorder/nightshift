@@ -279,6 +279,13 @@ run.finish { outcome: "succeeded" | "failed" | "cancelled", reason }
 
 Refused while a job is still running. Anything but `succeeded` needs a reason.
 
+`succeeded` first runs the contract's **end gates** — the verification steps
+declared `at: "end"`, which no job's verification runs — on the program head.
+A long suite answers `outcome: "verifying"`: call `run.finish` again. A
+failure is refused as `end_gates_failed`, with each failing step's log tail:
+delegate a job that fixes the work (acceptance: the gate's command exits 0),
+wait for it to land, and finish again; the gates run once more on the new head.
+
 ## What you must not do
 
 - **Do not edit the Program Contract.** You may revise your own plan

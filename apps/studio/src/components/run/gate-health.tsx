@@ -202,9 +202,15 @@ export const GateHealthView = ({
           <ul className="ml-4 list-disc">
             {flakes.map((flake) => (
               <li key={`${flake.verificationId}/${flake.stepId}`}>
-                <code>{flake.stepId}</code> on job{" "}
-                <span className="font-mono">{shortId(flake.jobContractId)}</span> at{" "}
-                <code>{shortSha(flake.commitSha)}</code>
+                <code>{flake.stepId}</code>{" "}
+                {flake.jobContractId === null ? (
+                  "in the end gates"
+                ) : (
+                  <>
+                    on job <span className="font-mono">{shortId(flake.jobContractId)}</span>
+                  </>
+                )}{" "}
+                at <code>{shortSha(flake.commitSha)}</code>
                 <span className="text-muted-foreground">
                   {" "}
                   — first run exited {flake.firstExitCode}, the rerun passed

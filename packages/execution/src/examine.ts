@@ -94,7 +94,7 @@ import {
   type RunSession,
 } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
-import { gateDefinitions, withGateDefinitions } from "./gate-repair.js";
+import { gateDefinitions, landingSteps, withGateDefinitions } from "./gate-repair.js";
 import {
   addDetachedWorktree,
   changedPaths,
@@ -897,7 +897,9 @@ const candidateVerification = async (
   checkout: string,
 ): Promise<Verification | "postponed"> => {
   const gates = await gateDefinitions(environment, input.session);
-  const steps: readonly VerificationStep[] = gates.verification;
+  // The job's gates, as the queue's verification has them; the run's end gates
+  // are the run's to pass, once its work has landed (A-57).
+  const steps: readonly VerificationStep[] = landingSteps(gates);
   if (steps.some((step) => (step.requires ?? []).length > 0)) {
     const current =
       environment.prerequisites === undefined

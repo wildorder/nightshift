@@ -195,7 +195,8 @@ export interface RepairReport {
 /** One check that failed and then passed on a rerun on the same commit (D-P15-06). */
 export interface FlakeReport {
   readonly stepId: string;
-  readonly jobContractId: string;
+  /** `null` when the flake was in the run's end gates, which verify no job (A-57). */
+  readonly jobContractId: string | null;
   readonly executionNodeId: string;
   readonly commitSha: string;
   readonly verificationId: string;
@@ -1049,7 +1050,7 @@ const renderGateHealth = ({
           "",
           ...flakes.map(
             (flake) =>
-              `- \`${flake.stepId}\` on job \`${flake.jobContractId}\` (node \`${flake.executionNodeId}\`) at \`${flake.commitSha.slice(0, 8)}\`: first run exited ${flake.firstExitCode}; verification \`${flake.verificationId}\`.`,
+              `- \`${flake.stepId}\` ${flake.jobContractId === null ? "in the end gates" : `on job \`${flake.jobContractId}\``} (node \`${flake.executionNodeId}\`) at \`${flake.commitSha.slice(0, 8)}\`: first run exited ${flake.firstExitCode}; verification \`${flake.verificationId}\`.`,
           ),
           "",
         ]),

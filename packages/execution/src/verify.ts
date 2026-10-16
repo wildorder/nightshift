@@ -52,6 +52,7 @@ import type {
   ExecutionNode,
   ExecutionNodeId,
   JobContract,
+  JobContractId,
   Verification,
   VerificationStep,
 } from "@nightshift/contracts";
@@ -78,7 +79,7 @@ import {
   type RunSession,
 } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
-import { type GateDefinitions, gateDefinitions } from "./gate-repair.js";
+import { type GateDefinitions, gateDefinitions, landingSteps } from "./gate-repair.js";
 import { pristineCheckout, provisionalRef, updateRef } from "./git/index.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 import { discardScratch, freshScratch, projectStepEnv } from "./scratch.js";
@@ -147,10 +148,10 @@ const deferOnTheLine = async (
  */
 const unmetPrerequisites = async (
   environment: LandingEnvironment,
-  input: VerifyInput,
+  session: RunSession,
   steps: readonly VerificationStep[],
 ): Promise<ReadonlySet<string>> => {
-  const { program } = input.session;
+  const { program } = session;
   if (steps.every((step) => (step.requires ?? []).length === 0)) {
     return new Set();
   }
@@ -173,13 +174,13 @@ const unmetPrerequisites = async (
  */
 const recordDiscovered = async (
   environment: LandingEnvironment,
-  input: VerifyInput,
+  session: RunSession,
   steps: readonly VerificationStep[],
   stepId: string,
   signal: DeferSignal,
 ): Promise<void> => {
   if (environment.prerequisites === undefined) return;
-  const { program, scope } = input.session;
+  const { program, scope } = session;
   const step = steps.find((candidate) => candidate.id === stepId);
   await environment.prerequisites
     .recordDiscovered(
@@ -225,60 +226,52 @@ export const announceSteps =
     });
   };
 
-export const verifyNode = async (
+export interface RunVerificationInput {
+  readonly session: RunSession;
+  /** The node the record and its artifacts belong to: a job's, or the program node's for the run's end gates. */
+  readonly nodeId: ExecutionNodeId;
+  /** `null` for the run's end gates: the program node has no job (A-57). */
+  readonly jobContractId: JobContractId | null;
+  /** The agent whose work is under verification, and who the steps run as on a machine. */
+  readonly agentId: AgentId;
+  /** A clean checkout of `commitSha`, ready for setup. */
+  readonly checkout: string;
+  readonly commitSha: CommitSha;
+  readonly gates: GateDefinitions;
+  /** The steps to run, from `gates.verification`: a job's landing steps, or the run's end gates. */
+  readonly steps: readonly VerificationStep[];
+  /** Absent for the queue's own verification, as the record has always read it. */
+  readonly phase?: "run";
+  /** How progress lines name this verification. */
+  readonly label: string;
+  /** `nightshift resume`: the preflight has passed, and every step now runs. */
+  readonly resuming?: boolean;
+}
+
+export interface RunVerificationResult {
+  readonly verification: Verification;
+  /** The prerequisites the deferred steps wait on, planned and discovered. */
+  readonly waitingOn: readonly string[];
+  /** What `announceFlakes` said, for the completion event. */
+  readonly flakyPayload: ReturnType<typeof announceFlakes>;
+}
+
+/**
+ * Runs `steps` on `checkout` and writes the `Verification`: setup first, each
+ * step's output as an artifact, the failed checks once more (D-P15-06), the
+ * deferrals planned and declared (D-P7-10), the record in the contract's own
+ * order. The one way a verification is made, whatever is being verified: a
+ * job's commit in the queue, or the program head at the run's end (A-57).
+ * What the record then means for a node is the caller's.
+ */
+export const runVerification = async (
   environment: LandingEnvironment,
-  input: VerifyInput,
-): Promise<VerifyResult> => {
-  const { stores, clock, outbox } = environment;
-  const commitSha = input.node.commitSha;
-  if (commitSha === null) {
-    // `markImplemented` records the commit, so an implemented node without one
-    // is a defect rather than a state to handle gracefully.
-    throw new Error(`node ${input.node.executionNodeId} is implemented but carries no commit`);
-  }
-
-  // The run's gates as they stand now: a repair that lands while this runs
-  // changes the next verification, never this one (D-P15-04).
-  const gates: GateDefinitions = await gateDefinitions(environment, input.session);
-  // A fenced engine may have died while running these checks. Restart the
-  // commands on the same clean commit, not the worker that produced it.
-  const verifying =
-    input.node.status === "verifying"
-      ? input.node
-      : transition(
-          input.node,
-          input.resuming === true ? "resume_verification" : "begin_verification",
-          nowIso(clock),
-        );
-  await stores.executionNodes.put(verifying);
+  input: RunVerificationInput,
+): Promise<RunVerificationResult> => {
+  const { stores, clock } = environment;
+  const { session, gates, steps } = input;
   const startedAt = nowIso(clock);
-  outbox.emit({
-    type: "verification.requested",
-    source: "control-plane",
-    payload: {
-      commitSha,
-      steps: [
-        ...gates.setup.map((step) => setupAsStep(step).id),
-        ...gates.verification.map((step) => step.id),
-      ],
-    },
-    executionNodeId: input.node.executionNodeId,
-    agentId: input.agentId,
-  });
-
-  // Exactly what would integrate, and nothing the worker or an earlier
-  // verification left behind, ignored files included.
-  const announce = announceSteps(environment, {
-    nodeId: input.node.executionNodeId,
-    label: "verification",
-  });
-  outbox.emit({
-    type: "verification.progress",
-    source: "control-plane",
-    payload: { message: "verification: cleaning the checkout" },
-    executionNodeId: input.node.executionNodeId,
-  });
-  await pristineCheckout(environment.git, input.worktree, commitSha);
+  const announce = announceSteps(environment, { nodeId: input.nodeId, label: input.label });
 
   // A step that needs a human prerequisite nobody has met **cannot run**, and is
   // deferred; every other step runs (D-P7-10). When resuming, the preflight has
@@ -286,10 +279,9 @@ export const verifyNode = async (
   const unmet =
     input.resuming === true
       ? new Set<string>()
-      : await unmetPrerequisites(environment, input, gates.verification);
+      : await unmetPrerequisites(environment, session, steps);
   const waitingOf = (step: VerificationStep): readonly string[] =>
     (step.requires ?? []).filter((id) => unmet.has(id));
-  const steps = gates.verification;
   const runnable = steps.filter((step) => waitingOf(step).length === 0);
 
   // Setup first: the checkout holds only what is committed, so setup is what
@@ -300,26 +292,26 @@ export const verifyNode = async (
   // nothing after it inherits (scratch.ts). On a machine, in the project
   // environment (P16, D-10), given here rather than inherited.
   const as = stepsAs(environment, { agentId: input.agentId, role: "worker" });
-  const scratch = await freshScratch(environment.paths, input.worktree, environment.reclaim);
+  const scratch = await freshScratch(environment.paths, input.checkout, environment.reclaim);
   const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const checkout = await runCheckoutSteps({
     setup: gates.setup,
     steps: runnable,
-    cwd: input.worktree,
-    reference: input.session.repoPath,
+    cwd: input.checkout,
+    reference: session.repoPath,
     timeoutMs,
     env: projectStepEnv(environment.projectEnv, scratch),
     onStep: announce,
     ...as,
-  }).finally(() => discardScratch(environment.paths, input.worktree, environment.reclaim));
+  }).finally(() => discardScratch(environment.paths, input.checkout, environment.reclaim));
   const results = checkout.checks;
 
   // Each step's whole output, in S3 and referenced — never inline (A-08).
   const logArtifactIds = new Map<string, ArtifactId>();
   for (const result of [...checkout.setup, ...results]) {
     const artifactId = await recordArtifact(environment, {
-      scope: input.session.scope,
-      nodeId: input.node.executionNodeId,
+      scope: session.scope,
+      nodeId: input.nodeId,
       kind: "verification-log",
       contentType: "text/plain; charset=utf-8",
       bytes: result.output,
@@ -334,7 +326,7 @@ export const verifyNode = async (
   for (const result of results) {
     const signal = deferSignalOf(result.exitCode, new TextDecoder().decode(result.output));
     if (signal === undefined) continue;
-    await recordDiscovered(environment, input, steps, result.stepId, signal);
+    await recordDiscovered(environment, session, steps, result.stepId, signal);
     discovered.set(result.stepId, signal.prerequisiteId);
   }
 
@@ -345,7 +337,7 @@ export const verifyNode = async (
   const reruns = await rerunFailures({
     steps: runnable,
     first: results,
-    cwd: input.worktree,
+    cwd: input.checkout,
     paths: environment.paths,
     timeoutMs,
     ...(environment.projectEnv === undefined ? {} : { projectEnv: environment.projectEnv }),
@@ -354,7 +346,7 @@ export const verifyNode = async (
   });
   const checkCommands = await withFlakes(
     environment,
-    { scope: input.session.scope, nodeId: input.node.executionNodeId },
+    { scope: session.scope, nodeId: input.nodeId },
     toVerificationCommands(results, logArtifactIds),
     reruns,
   );
@@ -382,14 +374,15 @@ export const verifyNode = async (
 
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
-    ...input.session.scope,
+    ...session.scope,
     verificationId: environment.ids.next("ver"),
-    executionNodeId: input.node.executionNodeId,
-    jobContractId: input.job.jobContractId,
+    executionNodeId: input.nodeId,
+    jobContractId: input.jobContractId,
     // The agent whose work is under verification, not a verifying agent: nothing
     // verifies, in the sense of an agent. A command does.
     agentId: input.agentId,
-    commitSha,
+    commitSha: input.commitSha,
+    ...(input.phase === undefined ? {} : { phase: input.phase }),
     commands,
     outcome: outcomeOfCommands(commands),
     startedAt,
@@ -398,6 +391,70 @@ export const verifyNode = async (
   await stores.verifications.put(verification);
   // A flake lands the work, and is still seen: the root repairs it off the path.
   const flakyPayload = announceFlakes(environment, verification, input.agentId);
+  return { verification, waitingOn, flakyPayload };
+};
+
+export const verifyNode = async (
+  environment: LandingEnvironment,
+  input: VerifyInput,
+): Promise<VerifyResult> => {
+  const { stores, clock, outbox } = environment;
+  const commitSha = input.node.commitSha;
+  if (commitSha === null) {
+    // `markImplemented` records the commit, so an implemented node without one
+    // is a defect rather than a state to handle gracefully.
+    throw new Error(`node ${input.node.executionNodeId} is implemented but carries no commit`);
+  }
+
+  // The run's gates as they stand now: a repair that lands while this runs
+  // changes the next verification, never this one (D-P15-04). A job's
+  // verification is the landing steps; the end gates are the run's (A-57).
+  const gates: GateDefinitions = await gateDefinitions(environment, input.session);
+  const steps = landingSteps(gates);
+  // A fenced engine may have died while running these checks. Restart the
+  // commands on the same clean commit, not the worker that produced it.
+  const verifying =
+    input.node.status === "verifying"
+      ? input.node
+      : transition(
+          input.node,
+          input.resuming === true ? "resume_verification" : "begin_verification",
+          nowIso(clock),
+        );
+  await stores.executionNodes.put(verifying);
+  outbox.emit({
+    type: "verification.requested",
+    source: "control-plane",
+    payload: {
+      commitSha,
+      steps: [...gates.setup.map((step) => setupAsStep(step).id), ...steps.map((step) => step.id)],
+    },
+    executionNodeId: input.node.executionNodeId,
+    agentId: input.agentId,
+  });
+
+  // Exactly what would integrate, and nothing the worker or an earlier
+  // verification left behind, ignored files included.
+  outbox.emit({
+    type: "verification.progress",
+    source: "control-plane",
+    payload: { message: "verification: cleaning the checkout" },
+    executionNodeId: input.node.executionNodeId,
+  });
+  await pristineCheckout(environment.git, input.worktree, commitSha);
+
+  const { verification, waitingOn, flakyPayload } = await runVerification(environment, {
+    session: input.session,
+    nodeId: input.node.executionNodeId,
+    jobContractId: input.job.jobContractId,
+    agentId: input.agentId,
+    checkout: input.worktree,
+    commitSha,
+    gates,
+    steps,
+    label: "verification",
+    ...(input.resuming === undefined ? {} : { resuming: input.resuming }),
+  });
 
   const at = nowIso(clock);
   const nothingFailed = verification.outcome !== "failed";
@@ -418,7 +475,7 @@ export const verifyNode = async (
         verificationId: verification.verificationId,
         outcome: verification.outcome,
         commitSha,
-        deferredSteps: commands
+        deferredSteps: verification.commands
           .filter((command) => command.deferred !== undefined)
           .map((command) => command.stepId),
         waitingOn,

@@ -65,12 +65,14 @@ import {
 } from "@nightshift/core";
 import {
   continuedByNightshift,
+  type EndGatesResult,
   endProgramNode,
   FixLimitError,
   type RoutePins,
   StrandBlockedError,
   StrandDelegationError,
   tryRevParse,
+  verifyRunHead,
 } from "@nightshift/execution";
 import { RoutingRefusedError } from "@nightshift/routing";
 import { z } from "zod";
@@ -378,6 +380,100 @@ const publicationEnding = async (
   return { ending: outcome, why: reason === undefined ? unpublished : `${reason} ${unpublished}` };
 };
 
+/**
+ * The run's end gates, one run at a time per attached run (A-57). A second
+ * `run.finish` while they run joins the run in flight rather than starting
+ * another; once they have answered, the next call asks again, and gets the
+ * record back unless the head has moved.
+ */
+const endGatesInFlight = new WeakMap<AttachedRun, Promise<EndGatesResult>>();
+
+const endGates = (attached: AttachedRun): Promise<EndGatesResult> => {
+  const pending = endGatesInFlight.get(attached);
+  if (pending !== undefined) return pending;
+  const started: Promise<EndGatesResult> = verifyRunHead(
+    attached.environment,
+    attached.session,
+  ).finally(() => {
+    if (endGatesInFlight.get(attached) === started) endGatesInFlight.delete(attached);
+  });
+  endGatesInFlight.set(attached, started);
+  return started;
+};
+
+const STILL_RUNNING = Symbol("still running");
+
+/**
+ * Waits for the end gates, at most `capSeconds`: below the harness's own tool
+ * timeout, as `job.wait` is, so a long suite answers "still running" and the
+ * orchestrator calls `run.finish` again rather than losing the call.
+ */
+const awaitEndGates = async (
+  attached: AttachedRun,
+  capSeconds: number,
+): Promise<EndGatesResult | typeof STILL_RUNNING> => {
+  let timer: NodeJS.Timeout | undefined;
+  const elapsed = new Promise<typeof STILL_RUNNING>((resolve) => {
+    timer = setTimeout(() => resolve(STILL_RUNNING), capSeconds * 1000);
+  });
+  try {
+    return await Promise.race([endGates(attached), elapsed]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
+/**
+ * `succeeded` means the end gates passed on the head the run leaves behind
+ * (A-57). Failed, they are the orchestrator's to fix: the refusal carries each
+ * failing step with the tail of its log, for a job that fixes it. Deferred,
+ * the run ends `deferred` with what they wait on, as unpublished work does.
+ */
+const endGatesEnding = async (
+  attached: AttachedRun,
+  outcome: "succeeded" | "failed" | "cancelled" | "deferred",
+  reason: string | undefined,
+  capSeconds: number,
+): Promise<
+  | { readonly kind: "ended"; readonly outcome: typeof outcome; readonly why: string | undefined }
+  | { readonly kind: "running"; readonly head: string }
+> => {
+  if (outcome !== "succeeded") return { kind: "ended", outcome, why: reason };
+  const result = await awaitEndGates(attached, capSeconds);
+  if (result === STILL_RUNNING) {
+    const branch = attached.session.program.repository.programBranch;
+    const head = await tryRevParse(
+      attached.environment.git,
+      attached.session.repoPath,
+      `refs/heads/${branch}`,
+    );
+    return { kind: "running", head: head ?? branch };
+  }
+  if (result.status === "failed") {
+    throw new ToolRefusal(
+      "end_gates_failed",
+      `Not finished: the end gates failed on ${result.commitSha.slice(0, 8)}: ${result.failing
+        .map((step) => `${step.stepId} exited ${step.exitCode ?? "without a code"}`)
+        .join(", ")}. Read each failing step's log tail below, delegate a job that fixes the ` +
+        "work so the gate passes (its acceptance: the gate's command exits 0), wait for it to " +
+        "land, then call run.finish again: the end gates run once more on the new head.",
+      {
+        commitSha: result.commitSha,
+        verificationId: result.verification.verificationId,
+        failing: result.failing,
+      },
+    );
+  }
+  if (result.status === "deferred") {
+    return {
+      kind: "ended",
+      outcome: "deferred",
+      why: `the end gates wait on ${result.waitingOn.join(", ")} (verification ${result.verification.verificationId}); nightshift resume runs them once it is met.`,
+    };
+  }
+  return { kind: "ended", outcome, why: reason };
+};
+
 /** `docs/programs/{id}/report.md` for a planned run; nothing for any other. */
 const writeReport = async (
   state: OrchestratorSession,
@@ -640,7 +736,11 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     {
       title: "Finish the run",
       description:
-        "Give the run a terminal status. Refused while a job is running. `deferred` is for a " +
+        "Give the run a terminal status. Refused while a job is running. `succeeded` first runs " +
+        'the contract\'s end gates (the verification steps declared `at: "end"`) on the program ' +
+        "head: a long suite answers `outcome: verifying`, so call again; a failure is refused " +
+        "with each failing step's log tail, for a job that fixes it, after which `succeeded` runs " +
+        "them again on the new head. `deferred` is for a " +
         "planned run whose remaining work waits on a human prerequisite: the run is recorded as " +
         "interrupted, its provisional work is kept, and `nightshift resume` takes it from there. " +
         "On a machine, the run first waits for GitHub to have every landing; a run whose work " +
@@ -656,7 +756,15 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         await assertNoJobRunning(deps, attached);
         assertEndingExplained(outcome, reason);
         await assertEndingIsTrue(attached, outcome);
-        const { ending, why } = await publicationEnding(state, attached, outcome, reason);
+        const gated = await endGatesEnding(attached, outcome, reason, jobWaitCap(deps.env));
+        if (gated.kind === "running") {
+          return ok(
+            `Not finished yet: the end gates are running on ${gated.head.slice(0, 8)}. ` +
+              "This call is capped below the harness's tool timeout; call run.finish again.",
+            { runId: attached.session.scope.runId, outcome: "verifying", head: gated.head },
+          );
+        }
+        const { ending, why } = await publicationEnding(state, attached, gated.outcome, gated.why);
         await endRun(state, attached, ending, why);
         // A planned run's report, beside its plan, as `nightshift run` writes it
         // for a run nobody watched: written from the control plane alone.
