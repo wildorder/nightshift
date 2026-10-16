@@ -119,19 +119,27 @@ so there is nothing to extend.
 ## 7. Costs what it should
 
 **Means.** One verification's time, multiplied by \`maxConcurrency\`, is said out
-loud in the plan. Every job is verified on a clean checkout with every gate.
+loud in the plan. Every job is verified on a clean checkout with every landing
+gate; a gate that proves the whole program runs at the end (rule 9).
 
-**Check.** Read the durations \`nightshift gates {id}\` printed and the
-contract's \`maxConcurrency\`. Smells: one gate dominating the total, work
+**Check.** Read the verification plan \`nightshift gates {id}\` prints: each
+step's measured duration, how long it was quiet before its first output, and
+what a landing costs. Smells: one landing gate dominating the total, work
 repeated across gates (a build each gate redoes), a whole-repository run where
-the tool can be told what to cover.
+the tool can be told what to cover, a gate quiet for a minute or more before
+it says anything (a service starting on every verification).
 
 **Typical fix.** Make the gate cheaper without making it check less: move
 shared work into setup, stop gates repeating each other's build, use the
-tool's own caching or parallelism. Or lower \`maxConcurrency\`. Never drop a
-check from verification, defer it, or run it for some strands only to save
-time: every landing is verified against every gate, and that is what keeps
-unverified work from integrating.
+tool's own caching or parallelism. A service a gate needs (a database, a
+broker) is the project's to keep alive across verifications, with each
+verification given state of its own: a database created from a template named
+by a hash of the migrations, named for the verification by
+\`NIGHTSHIFT_VERIFICATION_ID\`, dropped afterwards. State keyed by content, never
+by the last run. Or lower \`maxConcurrency\`. Never drop a check from
+verification or run it for some strands only to save time: every landing is
+verified against every landing gate, and that is what keeps unverified work
+from integrating.
 
 ## 8. Declares its runtimes
 
@@ -152,4 +160,20 @@ that does not satisfy its pin, or is not installed.
 pinned version on the machine that is missing it or running another. A
 remote run's machine installs the pinned versions itself; the laptop's runtime
 is not a remote dispatch prerequisite.
+
+## 9. Proves the whole at the end
+
+**Means.** A gate that proves the program rather than a job — an end-to-end
+suite against a built, migrated system — is declared \`"at": "end"\`. It runs
+once, on the program head, when the run finishes as succeeded, and again after
+each fix that lands; never per job. The gates that catch a job's own mistakes
+(build, typecheck, lint, unit) stay landing gates.
+
+**Check.** Read what each landing gate resolves to. A browser-driven or
+end-to-end runner (Playwright, Cypress, WebDriver) on every landing is a
+finding. Time alone is not: a slow unit suite is a slow landing gate, not a
+whole-system gate.
+
+**Typical fix.** Set \`"at": "end"\` on the step in the program contract. The
+gate audit before the run still runs it.
 `;

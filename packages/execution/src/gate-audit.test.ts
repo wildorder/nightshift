@@ -76,7 +76,7 @@ const audit = async (
     ...(options.reclaim === undefined ? {} : { reclaim: options.reclaim }),
     onStep: (step) => progress.push(step),
   });
-  return { result, progress, repo };
+  return { result, progress, repo, base };
 };
 
 describe("the gate audit", () => {
@@ -241,6 +241,33 @@ describe("the gate audit", () => {
     expect(worktrees.match(/^worktree /gm)).toHaveLength(1);
     const work = made.find((dir) => dir.includes("nightshift-audit-work-"));
     expect(work === undefined ? [] : await readdir(work)).toEqual([]);
+  });
+
+  it("tells every step the verification it runs in: an id and the commit, and no base (D-P17-06)", async () => {
+    const { result, base } = await audit({
+      setup: [
+        {
+          id: "env",
+          command: `node -e "console.log(JSON.stringify({id:process.env.NIGHTSHIFT_VERIFICATION_ID,head:process.env.NIGHTSHIFT_HEAD_SHA,base:process.env.NIGHTSHIFT_BASE_SHA??null}))"`,
+        },
+      ],
+      verification: [
+        {
+          id: "same",
+          command: `node -e "console.log(process.env.NIGHTSHIFT_VERIFICATION_ID)"`,
+        },
+      ],
+    });
+    const said = (id: string) =>
+      new TextDecoder()
+        .decode(result.gates.find((gate) => gate.id === id)?.result?.output ?? new Uint8Array())
+        .trim();
+    const setup = JSON.parse(said("setup:env")) as { id: string; head: string; base: null };
+    expect(setup.id).toMatch(/^audit_[0-9a-f]{12}_/);
+    expect(setup.head).toBe(base);
+    expect(setup.base).toBeNull();
+    // One id for the whole audit: setup and checks agree.
+    expect(said("same")).toBe(setup.id);
   });
 
   it("takes the checkout and its scratch back from the project user before removing them", async () => {

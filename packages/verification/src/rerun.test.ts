@@ -24,6 +24,7 @@ const result = (stepId: string, exitCode: number, output = ""): StepResult => ({
   exitCode,
   durationMs: 1,
   output: new TextEncoder().encode(output),
+  quietMs: 0,
   timedOut: false,
 });
 

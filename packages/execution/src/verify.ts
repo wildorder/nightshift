@@ -71,6 +71,7 @@ import {
   type StepEvent,
   setupAsStep,
   toVerificationCommands,
+  verificationFacts,
 } from "@nightshift/verification";
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
@@ -80,7 +81,7 @@ import {
 } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import { type GateDefinitions, gateDefinitions, landingSteps } from "./gate-repair.js";
-import { pristineCheckout, provisionalRef, updateRef } from "./git/index.js";
+import { pristineCheckout, provisionalRef, tryRevParse, updateRef } from "./git/index.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 import { discardScratch, freshScratch, projectStepEnv } from "./scratch.js";
 
@@ -237,6 +238,12 @@ export interface RunVerificationInput {
   /** A clean checkout of `commitSha`, ready for setup. */
   readonly checkout: string;
   readonly commitSha: CommitSha;
+  /**
+   * The commit `commitSha` is being landed onto, told to every step as
+   * `NIGHTSHIFT_BASE_SHA` (D-P17-06). Absent where there is none: the end gates
+   * verify a head, not a change.
+   */
+  readonly baseSha?: CommitSha | undefined;
   readonly gates: GateDefinitions;
   /** The steps to run, from `gates.verification`: a job's landing steps, or the run's end gates. */
   readonly steps: readonly VerificationStep[];
@@ -272,6 +279,13 @@ export const runVerification = async (
   const { session, gates, steps } = input;
   const startedAt = nowIso(clock);
   const announce = announceSteps(environment, { nodeId: input.nodeId, label: input.label });
+  // The record's id is minted first, so every step can be told it (D-P17-06):
+  // a project's script names what it keeps per verification by it.
+  const verificationId = environment.ids.next("ver");
+  const projectEnv = {
+    ...(environment.projectEnv ?? {}),
+    ...verificationFacts({ verificationId, headSha: input.commitSha, baseSha: input.baseSha }),
+  };
 
   // A step that needs a human prerequisite nobody has met **cannot run**, and is
   // deferred; every other step runs (D-P7-10). When resuming, the preflight has
@@ -300,7 +314,7 @@ export const runVerification = async (
     cwd: input.checkout,
     reference: session.repoPath,
     timeoutMs,
-    env: projectStepEnv(environment.projectEnv, scratch),
+    env: projectStepEnv(projectEnv, scratch),
     onStep: announce,
     ...as,
   }).finally(() => discardScratch(environment.paths, input.checkout, environment.reclaim));
@@ -340,7 +354,7 @@ export const runVerification = async (
     cwd: input.checkout,
     paths: environment.paths,
     timeoutMs,
-    ...(environment.projectEnv === undefined ? {} : { projectEnv: environment.projectEnv }),
+    projectEnv,
     ...(environment.reclaim === undefined ? {} : { reclaim: environment.reclaim }),
     ...as,
   });
@@ -375,7 +389,7 @@ export const runVerification = async (
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
     ...session.scope,
-    verificationId: environment.ids.next("ver"),
+    verificationId,
     executionNodeId: input.nodeId,
     jobContractId: input.jobContractId,
     // The agent whose work is under verification, not a verifying agent: nothing
@@ -443,6 +457,11 @@ export const verifyNode = async (
   });
   await pristineCheckout(environment.git, input.worktree, commitSha);
 
+  // What the commit is landing onto: its parent, since a snapshot has one and
+  // the queue replayed it onto the program head (D-P17-06).
+  const baseSha = (await tryRevParse(environment.git, input.session.repoPath, `${commitSha}^`)) as
+    | CommitSha
+    | undefined;
   const { verification, waitingOn, flakyPayload } = await runVerification(environment, {
     session: input.session,
     nodeId: input.node.executionNodeId,
@@ -450,6 +469,7 @@ export const verifyNode = async (
     agentId: input.agentId,
     checkout: input.worktree,
     commitSha,
+    baseSha,
     gates,
     steps,
     label: "verification",

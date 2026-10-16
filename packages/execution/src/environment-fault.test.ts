@@ -218,6 +218,7 @@ const auditedGate = (id: string, output: string): AuditedGate => ({
     exitCode: 1,
     durationMs: 1,
     output: new TextEncoder().encode(output),
+    quietMs: 0,
     timedOut: false,
   },
 });

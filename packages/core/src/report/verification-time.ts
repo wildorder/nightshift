@@ -1,0 +1,165 @@
+/**
+ * Where the run's verification time went (P17, D-P17-07): per step and phase,
+ * summed from the run's `Verification` records; the forecast beside it when
+ * the project's gate-health record kept one; and the catalogue's
+ * recommendations re-priced with the run's real durations.
+ */
+import {
+  type ProgramContract,
+  SETUP_STEP_ID_PREFIX,
+  stepRunsAt,
+  type Verification,
+  type VerificationForecast,
+} from "@nightshift/contracts";
+import { type Recommendation, recommend } from "../forecast/catalogue.js";
+import { END_GATE_RUNS, forecast, type MeasuredStep } from "../forecast/model.js";
+import { resolvedFromRecord } from "../forecast/record.js";
+
+export type VerificationPhase = "queue" | "candidate" | "run";
+export const VERIFICATION_PHASES: readonly VerificationPhase[] = ["queue", "candidate", "run"];
+
+export interface PhaseTime {
+  readonly runs: number;
+  readonly totalMs: number;
+}
+
+export interface StepTimeReport {
+  readonly id: string;
+  readonly kind: "setup" | "landing" | "end";
+  /** Times the step ran and had an exit code; a deferred step did not run. */
+  readonly runs: number;
+  readonly totalMs: number;
+  /** Quiet before the first output, summed over the runs that measured it. */
+  readonly quietMs: number;
+  readonly byPhase: Readonly<Record<VerificationPhase, PhaseTime>>;
+  /** The forecast's one measured run, when the record kept one. */
+  readonly forecastMs?: number;
+}
+
+export interface ForecastSummary {
+  readonly machine: string;
+  readonly landings: number;
+  readonly landingMs: number;
+  readonly projectedMs: number;
+}
+
+export interface VerificationTimeReport {
+  readonly steps: readonly StepTimeReport[];
+  /** Jobs that integrated: the run's actual landings. */
+  readonly landings: number;
+  readonly verifications: number;
+  readonly totalMs: number;
+  readonly forecast?: ForecastSummary;
+  /** The catalogue over this run's durations, with the record's evidence. */
+  readonly recommendations: readonly Recommendation[];
+}
+
+const emptyPhases = (): Record<VerificationPhase, { runs: number; totalMs: number }> => ({
+  queue: { runs: 0, totalMs: 0 },
+  candidate: { runs: 0, totalMs: 0 },
+  run: { runs: 0, totalMs: 0 },
+});
+
+const kindOf = (program: ProgramContract, id: string): StepTimeReport["kind"] => {
+  if (id.startsWith(SETUP_STEP_ID_PREFIX)) return "setup";
+  const step = program.verification.find((candidate) => candidate.id === id);
+  return step === undefined ? "landing" : stepRunsAt(step);
+};
+
+const summarise = (record: VerificationForecast): ForecastSummary => {
+  const cost = (kind: "setup" | "landing" | "end"): number =>
+    record.steps
+      .filter((step) => step.kind === kind && step.seeded !== true)
+      .reduce((total, step) => total + step.durationMs, 0);
+  const landingMs = cost("setup") + cost("landing");
+  const endGatesMs = record.steps.some((step) => step.kind === "end")
+    ? cost("setup") + cost("end")
+    : 0;
+  return {
+    machine: record.machine,
+    landings: record.landings,
+    landingMs,
+    projectedMs: record.landings * landingMs + END_GATE_RUNS * endGatesMs,
+  };
+};
+
+export const verificationTimeOf = (
+  program: ProgramContract,
+  verifications: readonly Verification[],
+  landings: number,
+  record: VerificationForecast | undefined,
+): VerificationTimeReport => {
+  // The contract's order first, then any step a repair added along the way.
+  const order = [
+    ...(program.setup ?? []).map((step) => `${SETUP_STEP_ID_PREFIX}${step.id}`),
+    ...program.verification.map((step) => step.id),
+  ];
+  const totals = new Map<
+    string,
+    { runs: number; totalMs: number; quietMs: number; phases: ReturnType<typeof emptyPhases> }
+  >();
+  for (const id of order)
+    totals.set(id, { runs: 0, totalMs: 0, quietMs: 0, phases: emptyPhases() });
+  for (const verification of verifications) {
+    const phase: VerificationPhase = verification.phase ?? "queue";
+    for (const command of verification.commands) {
+      if (command.exitCode === undefined) continue;
+      let total = totals.get(command.stepId);
+      if (total === undefined) {
+        total = { runs: 0, totalMs: 0, quietMs: 0, phases: emptyPhases() };
+        totals.set(command.stepId, total);
+      }
+      total.runs += 1;
+      total.totalMs += command.durationMs;
+      total.quietMs += command.quietMs ?? 0;
+      total.phases[phase].runs += 1;
+      total.phases[phase].totalMs += command.durationMs;
+    }
+  }
+  const forecastOf = new Map((record?.steps ?? []).map((step) => [step.id, step]));
+  const steps: StepTimeReport[] = [...totals.entries()].map(([id, total]) => {
+    const forecastMs = forecastOf.get(id)?.durationMs;
+    return {
+      id,
+      kind: kindOf(program, id),
+      runs: total.runs,
+      totalMs: total.totalMs,
+      quietMs: total.quietMs,
+      byPhase: total.phases,
+      ...(forecastMs === undefined ? {} : { forecastMs }),
+    };
+  });
+
+  // The catalogue over what this run measured: each step's average run, and
+  // the landings it actually made. The evidence is the record's.
+  const measured = new Map<string, MeasuredStep>(
+    steps
+      .filter((step) => step.runs > 0)
+      .map((step) => [
+        step.id,
+        {
+          durationMs: Math.round(step.totalMs / step.runs),
+          quietMs: Math.round(step.quietMs / step.runs),
+          exitCode: 0,
+        },
+      ]),
+  );
+  const recommendations = recommend(
+    forecast({
+      setup: program.setup ?? [],
+      verification: program.verification,
+      measured,
+      landings: { count: Math.max(1, landings), source: "last run" },
+    }),
+    resolvedFromRecord(record),
+  ).filter((recommendation) => recommendation.savingMs !== undefined);
+
+  return {
+    steps,
+    landings,
+    verifications: verifications.length,
+    totalMs: steps.reduce((total, step) => total + step.totalMs, 0),
+    ...(record === undefined ? {} : { forecast: summarise(record) }),
+    recommendations,
+  };
+};

@@ -34,6 +34,11 @@ export const VerificationCommandResultSchema = z
     /** Absent exactly when the step was deferred: a step that did not run has no exit code. */
     exitCode: z.int().optional(),
     durationMs: z.int().min(0),
+    /**
+     * How long the step was quiet before its first output (P17, D-P17-05);
+     * absent on records written before it was measured, and on a deferred step.
+     */
+    quietMs: z.int().min(0).optional(),
     /** Full output lives in S3. Never inline it here (A-08). */
     logArtifactId: ArtifactIdSchema.optional(),
     /**

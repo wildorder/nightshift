@@ -1,0 +1,241 @@
+/**
+ * The catalogue (P17, D-P17-03, D-P17-04): what the forecast recommends, and
+ * on what evidence.
+ *
+ * Each entry names a gate-standard rule, says what it read, quotes the
+ * evidence it matched, and states its saving as a formula over measured
+ * numbers. Deterministic: signatures and arithmetic, no model. A match is
+ * evidence quoted, never a verdict; the thresholds are named here and printed
+ * with the evidence, so a reader sees why a line fired.
+ *
+ * The whole-system entry fires on tool signatures only, never on time alone:
+ * a slow gate is not thereby a whole-system gate (the owner, 2026-10-16).
+ */
+import type { PlannedStep, VerificationPlan } from "./model.js";
+import { END_GATE_RUNS, humanDuration as ms } from "./model.js";
+import type { ResolvedCommand, ResolvedLine } from "./resolve.js";
+
+export interface ContractEdit {
+  /** The step the edit is on. */
+  readonly stepId: string;
+  /** The field and value to set on it. */
+  readonly set: Readonly<Record<string, string>>;
+}
+
+export interface Recommendation {
+  /** The gate-standard rule it serves; absent for a fact that saves nothing. */
+  readonly rule?: number;
+  readonly title: string;
+  readonly stepId: string;
+  /** What was read, quoted. */
+  readonly evidence: readonly string[];
+  /** Measured × stated, as the reader can check it. */
+  readonly formula: string;
+  /** Absent for a fact; 0 is a real "nothing to save". */
+  readonly savingMs?: number;
+  /** The fix, as a sentence. */
+  readonly fix: string;
+  /** When the fix is a contract edit, exactly which (D-P17-08). */
+  readonly edit?: ContractEdit;
+}
+
+/**
+ * Tool signatures, matched against what a line *runs*: the command words of
+ * each segment, with the wrappers that run something else stripped (`exec`,
+ * `npx`, `pnpm exec`, `VAR=value` prefixes). Never against a line's whole
+ * text: an `echo 'usage: … <playwright args>'` names a tool and runs nothing
+ * (keki-backend's `scripts/test-docker.sh`, 2026-10-16).
+ */
+const WHOLE_SYSTEM =
+  /^(playwright|cypress|wdio|webdriver(?:io)?|puppeteer|selenium|detox|nightwatch|testcafe)\b/i;
+const SERVICE_START =
+  /^(docker(?:-compose)?\s+(?:compose\s+)?(?:up|run|start)|testcontainers|pg_ctl\s+start|postgres\s+-D|mysqld|redis-server|mongod|localstack|supabase\s+start|sst\s+dev)\b/i;
+const INSTALL_IN_GATE =
+  /^(npm\s+(?:ci|install|i)\b|pnpm\s+(?:install|i)\b|yarn(?:\s+install)?\s*$|pip3?\s+install|poetry\s+install|bundle\s+install|cargo\s+fetch|go\s+mod\s+download|prisma\s+generate|graphql-codegen|openapi-generator)/i;
+
+/** Words that run something else, dropped from the front of a segment. */
+const WRAPPERS =
+  /^(?:exec|time|nice|sudo|env|npx|bunx|yarn\s+exec|yarn\s+run|pnpm\s+exec|pnpm\s+dlx|[A-Z_][A-Z0-9_]*=\S*)\s+/i;
+
+/** The command words of each segment of a line: what it runs, not what it says. */
+export const commandWordsOf = (text: string): string[] =>
+  text
+    .split(/\s*(?:&&|\|\||;|\|)\s*/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== "")
+    .map((segment) => {
+      let words = segment;
+      while (WRAPPERS.test(words)) words = words.replace(WRAPPERS, "");
+      return words;
+    });
+
+/** A gate quiet for at least this long before its first output looks like a service starting (rule 7). */
+export const QUIET_START_THRESHOLD_MS = 60_000;
+
+const runs = (line: ResolvedLine, pattern: RegExp): boolean =>
+  commandWordsOf(line.text).some((words) => pattern.test(words));
+
+const matching = (lines: readonly ResolvedLine[], pattern: RegExp): ResolvedLine | undefined =>
+  lines.find((line) => runs(line, pattern));
+
+/** The resolved lines that match any signature: what the record keeps as evidence (D-P17-07). */
+export const signatureLines = (lines: readonly ResolvedLine[]): readonly ResolvedLine[] =>
+  lines.filter((line) =>
+    [WHOLE_SYSTEM, SERVICE_START, INSTALL_IN_GATE].some((pattern) => runs(line, pattern)),
+  );
+
+const quote = (line: ResolvedLine): string => `${line.source}: \`${line.text}\``;
+
+const measuredOf = (step: PlannedStep) => step.measured;
+
+/**
+ * The recommendations for a plan, most time saved first; facts (no saving)
+ * last. `resolved` is by step id.
+ */
+export const recommend = (
+  plan: VerificationPlan,
+  resolved: ReadonlyMap<string, ResolvedCommand>,
+): readonly Recommendation[] => {
+  const landings = plan.landings.count;
+  const found: Recommendation[] = [];
+
+  for (const step of plan.steps) {
+    const lines = resolved.get(step.id)?.lines ?? [{ source: "contract", text: step.command }];
+    const measured = measuredOf(step);
+
+    // Rule 9: a whole-system gate on every landing.
+    const wholeSystem = step.kind === "landing" ? matching(lines, WHOLE_SYSTEM) : undefined;
+    if (wholeSystem !== undefined) {
+      const perRun = measured?.durationMs ?? 0;
+      const saving = Math.max(0, perRun * landings - perRun * END_GATE_RUNS);
+      found.push({
+        rule: 9,
+        title: `${step.id} at the end`,
+        stepId: step.id,
+        evidence: [
+          `${step.id} resolves to ${quote(wholeSystem)}: a whole-system gate proves the program, not a job`,
+          ...(measured === undefined ? [] : [`measured ${ms(perRun)} per landing`]),
+        ],
+        formula: `${ms(perRun)} × ${landings} landings − ${ms(perRun)} × ${END_GATE_RUNS} runs at the end`,
+        savingMs: saving,
+        fix: `declare it an end gate: it runs once when the run finishes, and again after each fix that lands (A-57)`,
+        edit: { stepId: step.id, set: { at: "end" } },
+      });
+    }
+
+    // Rule 7: a service started on every verification. Priced only when the
+    // step was quiet long enough to see the start; a step that prints while its
+    // service comes up is reported as a fact, since the time cannot be seen.
+    const service = step.kind === "setup" ? undefined : matching(lines, SERVICE_START);
+    if (service !== undefined && measured !== undefined) {
+      const quiet = measured.quietMs;
+      const seen = quiet >= QUIET_START_THRESHOLD_MS;
+      const fix =
+        "keep the service alive across verifications and give each verification its own state " +
+        "(a database from a template, named by NIGHTSHIFT_VERIFICATION_ID); state keyed by content, never by the last run";
+      found.push(
+        seen
+          ? {
+              rule: 7,
+              title: `${step.id} starts a service every time`,
+              stepId: step.id,
+              evidence: [
+                `${step.id} resolves to ${quote(service)}`,
+                `quiet for ${ms(quiet)} of ${ms(measured.durationMs)} before its first output (over the ${ms(QUIET_START_THRESHOLD_MS)} threshold: usually a service starting)`,
+              ],
+              formula: `${ms(quiet)} quiet × ${landings} landings`,
+              savingMs: quiet * landings,
+              fix,
+            }
+          : {
+              rule: 7,
+              title: `${step.id} starts a service every time`,
+              stepId: step.id,
+              evidence: [
+                `${step.id} resolves to ${quote(service)}`,
+                `it printed within ${ms(quiet)}, so how long the service takes to come up is not visible from outside; the step would have to say`,
+              ],
+              formula: "not priced: the start is not visible",
+              fix,
+            },
+      );
+    }
+
+    // Rule 1: setup folded into a gate.
+    const install = step.kind === "setup" ? undefined : matching(lines, INSTALL_IN_GATE);
+    if (install !== undefined) {
+      found.push({
+        rule: 1,
+        title: `${step.id} installs inside a gate`,
+        stepId: step.id,
+        evidence: [`${step.id} resolves to ${quote(install)}`],
+        formula:
+          measured === undefined
+            ? "unmeasured"
+            : `up to ${ms(measured.durationMs)} × ${landings} landings; setup is seeded when the lockfiles match`,
+        ...(measured === undefined ? {} : { savingMs: measured.durationMs * landings }),
+        fix: "move the install or codegen to `setup`, which runs once per checkout and is skipped when nothing changed",
+      });
+    }
+  }
+
+  // A fact, not a saving: what examination costs in gates.
+  if (plan.examinedJobMs > 0) {
+    found.push({
+      title: "an examined job verifies twice",
+      stepId: "*",
+      evidence: [
+        `a candidate check on the job's base, then the queue's on the program head (D-P8-09): ${ms(plan.examinedJobMs)} per examined job`,
+      ],
+      formula: `2 × ${ms(plan.landingMs)}`,
+      fix: "nothing to change here; the examination policy decides which jobs are examined",
+    });
+  }
+
+  return groupFacts(found).sort((a, b) => (b.savingMs ?? -1) - (a.savingMs ?? -1));
+};
+
+/**
+ * Facts that say the same thing of several steps — three gates through one
+ * script that starts the same service — become one line naming them all.
+ */
+const groupFacts = (recommendations: readonly Recommendation[]): Recommendation[] => {
+  const groups = new Map<string, Recommendation[]>();
+  const order: (Recommendation | string)[] = [];
+  for (const recommendation of recommendations) {
+    const line = recommendation.evidence[0]?.replace(/^\S+ resolves to /, "");
+    if (
+      recommendation.savingMs !== undefined ||
+      recommendation.rule === undefined ||
+      line === undefined
+    ) {
+      order.push(recommendation);
+      continue;
+    }
+    const key = `${recommendation.rule}|${line}|${recommendation.fix}`;
+    const group = groups.get(key);
+    if (group === undefined) {
+      groups.set(key, [recommendation]);
+      order.push(key);
+    } else {
+      group.push(recommendation);
+    }
+  }
+  return order.map((entry) => {
+    if (typeof entry !== "string") return entry;
+    const group = groups.get(entry) ?? [];
+    const [first] = group;
+    if (first === undefined) throw new Error("an empty group of facts");
+    if (group.length === 1) return first;
+    const ids = group.map((recommendation) => recommendation.stepId);
+    const named = `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}`;
+    return {
+      ...first,
+      stepId: ids.join(", "),
+      title: first.title.replace(`${first.stepId} starts `, `${named} start `),
+      evidence: first.evidence.map((line, index) =>
+        index === 0 ? line.replace(`${first.stepId} resolves`, `${named} resolve`) : line,
+      ),
+    };
+  });
+};

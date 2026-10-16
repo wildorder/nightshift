@@ -11,13 +11,24 @@
  * is neither red nor passed; one that needs an unmet prerequisite did not run.
  */
 import type { CommitSha, ProgramContract } from "@nightshift/contracts";
+import { SETUP_STEP_ID_PREFIX } from "@nightshift/contracts";
 import {
+  DEFAULT_LANDINGS,
+  forecast,
+  humanDuration,
+  type LandingsSource,
+  type MeasuredStep,
   PIN_FILES,
   prerequisitesOf,
+  type Recommendation,
+  type ResolvedCommand,
   RUNTIME_MARKER_FILES,
   type RuntimeFinding,
+  recommend,
+  resolveCommand,
   runtimeFindings,
   runtimesToMeasure,
+  type VerificationPlan,
 } from "@nightshift/core";
 import {
   type AuditedGate,
@@ -37,6 +48,8 @@ import { filesAt, measureRuntime } from "./remote.js";
 export interface GatesOptions {
   readonly id: string;
   readonly repo?: string;
+  /** The landings the projection assumes (P17, D-P17-02). Absent, the last run's, else the default. */
+  readonly landings?: number;
 }
 
 const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
@@ -296,14 +309,178 @@ export const describeRuntimeFindings = (
   for (const finding of findings) say(`  RUNTIME ${describeRuntimeFinding(finding)}`);
 };
 
+// ── the verification plan (P17, D-P17-01 … D-P17-04, D-P17-08) ──────────────
+
+/** What the audit measured, by step id; setup the reference seeded costs a landing nothing. */
+export const measuredFromAudit = (audit: GateAudit): Map<string, MeasuredStep> => {
+  const measured = new Map<string, MeasuredStep>();
+  for (const gate of audit.gates) {
+    if (gate.result === undefined) continue;
+    const seeded =
+      gate.kind === "setup" &&
+      new TextDecoder().decode(gate.result.output).startsWith("[setup skipped]");
+    measured.set(gate.id, {
+      durationMs: gate.result.durationMs,
+      quietMs: gate.result.quietMs,
+      exitCode: gate.result.exitCode,
+      ...(seeded ? { seeded } : {}),
+    });
+  }
+  return measured;
+};
+
+/**
+ * How many landings the projection assumes, and why that number: given, else
+ * the last ended run's integrated jobs, else the default. Always said.
+ */
+export const landingsFor = async (
+  session: Session | undefined,
+  contract: ProgramContract,
+  given: number | undefined,
+): Promise<{ readonly count: number; readonly source: LandingsSource }> => {
+  if (given !== undefined) return { count: given, source: "given" };
+  if (session !== undefined) {
+    const scope = { projectId: contract.projectId, programId: contract.programId };
+    const runs = await session.stores.runs.listByProgram(scope).catch(() => undefined);
+    const last = [...(runs?.items ?? [])]
+      .filter((run) => run.endedAt !== undefined && run.endedAt !== null)
+      .sort((a, b) => String(a.endedAt).localeCompare(String(b.endedAt)))
+      .at(-1);
+    if (last !== undefined) {
+      const nodes = await session.stores.executionNodes
+        .listByRun({ ...scope, runId: last.runId })
+        .catch(() => undefined);
+      const landed = (nodes?.items ?? []).filter(
+        (node) => node.kind === "job" && node.status === "integrated",
+      ).length;
+      if (landed > 0) return { count: landed, source: "last run" };
+    }
+  }
+  return { count: DEFAULT_LANDINGS, source: "default" };
+};
+
+/** Each gate's command resolved through the repository as committed at `sha` (D-P17-04). */
+export const resolveGates = async (
+  environment: Pick<CliEnvironment, "git">,
+  repoPath: string,
+  sha: string,
+  contract: ProgramContract,
+): Promise<Map<string, ResolvedCommand>> => {
+  const read = async (path: string): Promise<string | undefined> => {
+    const shown = await environment.git(["show", `${sha}:${path}`], { cwd: repoPath });
+    return shown.exitCode === 0 ? shown.stdout : undefined;
+  };
+  const resolved = new Map<string, ResolvedCommand>();
+  for (const step of contract.setup ?? []) {
+    const id = `${SETUP_STEP_ID_PREFIX}${step.id}`;
+    resolved.set(id, await resolveCommand(id, step.command, read));
+  }
+  for (const step of contract.verification) {
+    resolved.set(step.id, await resolveCommand(step.id, step.command, read));
+  }
+  return resolved;
+};
+
+const KIND_LABEL = { setup: "setup  ", landing: "landing", end: "end    " } as const;
+
+/** The plan, as §4.1 of P17 lays it out: measured numbers, labelled. */
+export const describePlan = (
+  say: (line: string) => void,
+  plan: VerificationPlan,
+  sha: string,
+  machine: string,
+): void => {
+  say("");
+  say(`verification plan at ${sha.slice(0, 8)}, measured once on this machine (${machine})`);
+  say("");
+  const width = Math.max(...plan.steps.map((step) => step.id.length), 8);
+  let lastKind: string | undefined;
+  for (const step of plan.steps) {
+    const kind = step.kind === lastKind ? "       " : KIND_LABEL[step.kind];
+    lastKind = step.kind;
+    const measured = step.measured;
+    const time =
+      measured === undefined
+        ? "not run".padStart(8)
+        : humanDuration(measured.durationMs).padStart(8);
+    const notes: string[] = [];
+    if (measured?.seeded === true) notes.push("seeded from the program checkout");
+    if (measured !== undefined && measured.quietMs >= 60_000)
+      notes.push(`quiet for ${humanDuration(measured.quietMs)} before its first line`);
+    if (step.kind === "end") notes.push("runs once when the run finishes (A-57)");
+    say(
+      `  ${kind}  ${step.id.padEnd(width)}  ${time}${notes.length === 0 ? "" : `   ${notes.join("; ")}`}`,
+    );
+  }
+  say("");
+  say(`  one landing         ${humanDuration(plan.landingMs).padStart(8)}   (every job)`);
+  say(
+    `  one examined job    ${humanDuration(plan.examinedJobMs).padStart(8)}   (candidate check, then the queue's)`,
+  );
+  say(
+    `  end gates           ${(plan.endGatesMs === 0 ? "none" : humanDuration(plan.endGatesMs)).padStart(8)}`,
+  );
+  say("");
+  const source =
+    plan.landings.source === "given"
+      ? "as given"
+      : plan.landings.source === "last run"
+        ? "the last run's; set with --landings"
+        : "the default; set with --landings";
+  say(
+    `  projected: ${plan.landings.count} landings (${source}) ≈ ${humanDuration(plan.projectedMs)} of verification`,
+  );
+  if (plan.unmeasured.length > 0) {
+    say(`  not in the total, not run by the audit: ${plan.unmeasured.join(", ")}`);
+  }
+};
+
+/** Each recommendation: rule, evidence, formula, the fix, and the edit when there is one. */
+export const describeRecommendations = (
+  say: (line: string) => void,
+  recommendations: readonly Recommendation[],
+  contractPath: string,
+): void => {
+  say("");
+  if (recommendations.every((recommendation) => recommendation.savingMs === undefined)) {
+    say("recommendations: none; the catalogue found nothing to move or to keep alive");
+  } else {
+    say("recommendations, by time saved");
+  }
+  recommendations.forEach((recommendation, index) => {
+    say("");
+    const saving =
+      recommendation.savingMs === undefined
+        ? ""
+        : `saves ≈ ${humanDuration(recommendation.savingMs)}`;
+    say(`  ${index + 1}. ${recommendation.title.padEnd(52)} ${saving}`.trimEnd());
+    if (recommendation.rule !== undefined) say(`     rule ${recommendation.rule}`);
+    for (const line of recommendation.evidence) say(`     ${line}`);
+    say(`     ${recommendation.formula}`);
+    say(`     fix: ${recommendation.fix}`);
+    if (recommendation.edit !== undefined) {
+      const set = Object.entries(recommendation.edit.set)
+        .map(([key, value]) => `"${key}": "${value}"`)
+        .join(", ");
+      say(`     edit ${contractPath}: on the step "${recommendation.edit.stepId}", set ${set}`);
+    }
+  });
+};
+
 export interface GatesResult {
-  /** 0 unless a gate is red. Rule 8's findings are said, not counted. */
+  /** 0 unless a gate is red. Rule 8's findings and the recommendations are said, not counted. */
   readonly exitCode: number;
   readonly audit: GateAudit;
   readonly runtimeFindings: readonly RuntimeFinding[];
+  readonly plan: VerificationPlan;
+  readonly recommendations: readonly Recommendation[];
 }
 
-/** Exit code 0 unless a gate is red. A missing setup and rule 8's findings are said, not counted. */
+/**
+ * Exit code 0 unless a gate is red. A missing setup, rule 8's findings, the
+ * verification plan and its recommendations are said, not counted (P17: the
+ * diagnostic never gets in the way and never edits).
+ */
 export const gates = async (
   environment: CliEnvironment,
   options: GatesOptions,
@@ -316,5 +493,17 @@ export const gates = async (
   describeAudit(environment, audit);
   const runtimes = await auditProgramRuntimes(environment, repoPath, audit.base);
   describeRuntimeFindings(environment.out, runtimes, audit.base);
-  return { exitCode: audit.red ? 1 : 0, audit, runtimeFindings: runtimes };
+  const plan = forecast({
+    setup: contract.setup ?? [],
+    verification: contract.verification,
+    measured: measuredFromAudit(audit),
+    landings: await landingsFor(session, contract, options.landings),
+  });
+  describePlan(environment.out, plan, audit.base, `${process.platform} ${process.arch}`);
+  const recommendations = recommend(
+    plan,
+    await resolveGates(environment, repoPath, audit.base, contract),
+  );
+  describeRecommendations(environment.out, recommendations, files.contractPath);
+  return { exitCode: audit.red ? 1 : 0, audit, runtimeFindings: runtimes, plan, recommendations };
 };

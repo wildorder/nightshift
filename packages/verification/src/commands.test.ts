@@ -14,6 +14,7 @@ const result = (stepId: string, exitCode: number): StepResult => ({
   exitCode,
   durationMs: 12,
   output: new TextEncoder().encode("log"),
+  quietMs: 0,
   timedOut: false,
 });
 
@@ -30,8 +31,22 @@ describe("toVerificationCommands", () => {
     );
 
     expect(commands).toEqual([
-      { stepId: "lint", command: "run lint", exitCode: 0, durationMs: 12, logArtifactId: lintLog },
-      { stepId: "test", command: "run test", exitCode: 1, durationMs: 12, logArtifactId: testLog },
+      {
+        stepId: "lint",
+        command: "run lint",
+        exitCode: 0,
+        durationMs: 12,
+        quietMs: 0,
+        logArtifactId: lintLog,
+      },
+      {
+        stepId: "test",
+        command: "run test",
+        exitCode: 1,
+        durationMs: 12,
+        quietMs: 0,
+        logArtifactId: testLog,
+      },
     ]);
   });
 
@@ -56,7 +71,13 @@ describe("toVerificationCommands", () => {
 
   it("carries the output nowhere: bytes stay out of the record (A-08)", () => {
     const commands = toVerificationCommands([result("lint", 0)], new Map());
-    expect(Object.keys(commands[0] ?? {})).toEqual(["stepId", "command", "exitCode", "durationMs"]);
+    expect(Object.keys(commands[0] ?? {})).toEqual([
+      "stepId",
+      "command",
+      "exitCode",
+      "durationMs",
+      "quietMs",
+    ]);
   });
 });
 

@@ -105,7 +105,19 @@ const world = () => {
     corrections: [],
     usage: [],
     rulings: [],
-    gateHealth: { audit: undefined, red: undefined, repairs: [], flakes: [] },
+    gateHealth: {
+      audit: undefined,
+      red: undefined,
+      repairs: [],
+      flakes: [],
+      verificationTime: {
+        steps: [],
+        landings: 0,
+        verifications: 0,
+        totalMs: 0,
+        recommendations: [],
+      },
+    },
   };
   return { root, nodes, contracts, report, decision, s1, s2, s3 };
 };

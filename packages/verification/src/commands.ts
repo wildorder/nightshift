@@ -31,6 +31,7 @@ export const toVerificationCommands = (
       command: result.command,
       exitCode: result.exitCode,
       durationMs: result.durationMs,
+      quietMs: result.quietMs,
     };
     const logArtifactId = logArtifactIds.get(result.stepId);
     return logArtifactId === undefined ? base : { ...base, logArtifactId };

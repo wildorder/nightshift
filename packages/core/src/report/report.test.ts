@@ -52,7 +52,13 @@ const report = (patch: Partial<RunReport> = {}): RunReport => ({
   corrections: [],
   usage: [],
   rulings: [],
-  gateHealth: { audit: undefined, red: undefined, repairs: [], flakes: [] },
+  gateHealth: {
+    audit: undefined,
+    red: undefined,
+    repairs: [],
+    flakes: [],
+    verificationTime: { steps: [], landings: 0, verifications: 0, totalMs: 0, recommendations: [] },
+  },
   ...patch,
 });
 
@@ -273,6 +279,56 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
         firstExitCode: 1,
       },
     ],
+    verificationTime: {
+      steps: [
+        {
+          id: "build",
+          kind: "landing",
+          runs: 12,
+          totalMs: 12 * 41_000,
+          quietMs: 0,
+          byPhase: {
+            queue: { runs: 10, totalMs: 10 * 41_000 },
+            candidate: { runs: 2, totalMs: 2 * 41_000 },
+            run: { runs: 0, totalMs: 0 },
+          },
+          forecastMs: 39_000,
+        },
+        {
+          id: "e2e",
+          kind: "landing",
+          runs: 12,
+          totalMs: 12 * 700_000,
+          quietMs: 12 * 30_000,
+          byPhase: {
+            queue: { runs: 10, totalMs: 10 * 700_000 },
+            candidate: { runs: 2, totalMs: 2 * 700_000 },
+            run: { runs: 0, totalMs: 0 },
+          },
+        },
+      ],
+      landings: 10,
+      verifications: 12,
+      totalMs: 12 * 41_000 + 12 * 700_000,
+      forecast: {
+        machine: "darwin arm64",
+        landings: 12,
+        landingMs: 739_000,
+        projectedMs: 8_868_000,
+      },
+      recommendations: [
+        {
+          rule: 9,
+          title: "e2e at the end",
+          stepId: "e2e",
+          evidence: ["e2e resolves to package.json → scripts.test:e2e: `playwright test`"],
+          formula: "11m 40s × 10 landings − 11m 40s × 2 runs at the end",
+          savingMs: 700_000 * 8,
+          fix: "declare it an end gate",
+          edit: { stepId: "e2e", set: { at: "end" } },
+        },
+      ],
+    },
   };
   const strand = {
     id: "S-01",
@@ -287,6 +343,20 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
     nodeIds: [],
     jobs: [],
   };
+
+  it("shows where the verification time went, the forecast beside it, and what would save time (P17)", () => {
+    const text = renderReport(report({ strands: [strand], gateHealth }));
+    expect(text).toContain("### Verification time");
+    expect(text).toContain(
+      "2h 28m across 12 verifications and 10 landings; the forecast assumed 12 landings at 12m 19s each, ≈ 2h 27m, measured on darwin arm64.",
+    );
+    expect(text).toContain("| `e2e` | 12 | 2h 20m | 11m 40s | 30.0s | 10 / 2 / 0 | — |");
+    expect(text).toContain("| `build` | 12 | 8m 12s | 41.0s | 0.0s | 10 / 2 / 0 | 39.0s |");
+    expect(text).toContain(
+      "- **e2e at the end** (rule 9): saves ≈ 1h 33m — 11m 40s × 10 landings − 11m 40s × 2 runs at the end.",
+    );
+    expect(text).toContain('Edit the contract: on `e2e`, set `"at": "end"`.');
+  });
 
   it("shows the audit, the red base, each repair with its decision and new definitions, and each flake", () => {
     const text = renderReport(report({ strands: [strand], gateHealth }));
@@ -375,7 +445,20 @@ describe("the report's environment fault (P16 S-02, D-07)", () => {
   it("shows each gate, both verdicts, both tails and both Nodes side by side", () => {
     const text = renderReport(
       report({
-        gateHealth: { audit: undefined, red: undefined, environmentFault, repairs: [], flakes: [] },
+        gateHealth: {
+          audit: undefined,
+          red: undefined,
+          environmentFault,
+          repairs: [],
+          flakes: [],
+          verificationTime: {
+            steps: [],
+            landings: 0,
+            verifications: 0,
+            totalMs: 0,
+            recommendations: [],
+          },
+        },
       }),
     );
     const section = text.slice(text.indexOf("## Gate health"), text.indexOf("## Strands"));
