@@ -21,7 +21,7 @@ import {
   RepositoryPathSchema,
   UserPrincipalSchema,
 } from "@nightshift/contracts";
-import { nowIso } from "@nightshift/core";
+import { forecast, nowIso, recommend, toForecastRecord } from "@nightshift/core";
 import { type GateAudit, revParse } from "@nightshift/execution";
 import { isTokenProfile, tokenClaims } from "@nightshift/persistence/http";
 import { z } from "zod";
@@ -30,7 +30,16 @@ import { describeFailure, UsageError } from "../failures.js";
 import { fingerprintAtCommit, gitBlobReader, type ReadBlob } from "../gate-fingerprint.js";
 import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
 import { type FreshSession, openFreshSession, openSession, type Session } from "../session.js";
-import { auditContractOf, auditProgramGates, describeAudit } from "./gates.js";
+import {
+  auditContractOf,
+  auditProgramGates,
+  describeAudit,
+  describePlan,
+  describeRecommendations,
+  landingsFor,
+  measuredFromAudit,
+  resolveGates,
+} from "./gates.js";
 
 export interface RecordGatesOptions {
   readonly id: string;
@@ -244,6 +253,17 @@ export const recordGates = async (
     environment.err(refusal);
     return 1;
   }
+  // The verification plan and its recommendations, as `gates` prints them (P17).
+  const machine = `${process.platform} ${process.arch}`;
+  const plan = forecast({
+    setup: contract.setup ?? [],
+    verification: contract.verification,
+    measured: measuredFromAudit(audit),
+    landings: await landingsFor(signed.session, contract, undefined),
+  });
+  describePlan(environment.out, plan, audit.base, machine);
+  const resolved = await resolveGates(environment, repoPath, audit.base, contract);
+  describeRecommendations(environment.out, recommend(plan, resolved), files.contractPath);
 
   const machinery = sortedUnique([
     ...review.machinery,
@@ -261,6 +281,9 @@ export const recordGates = async (
     machinery,
     auditedBy: principalOf(signed.session, signed.orgId),
     auditedAt: nowIso(environment.clock),
+    // The forecast of this same audit (P17, D-P17-07), for the report to place
+    // beside what the run actually takes.
+    forecast: toForecastRecord(plan, resolved, machine),
   };
   await signed.session.stores.gateHealth.put(record);
   describeRecord(environment, record);

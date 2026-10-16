@@ -128,7 +128,9 @@ describe("the run page's gate health", () => {
     // The changed definitions themselves, not a count of them.
     expect(within(card).getByText(/New gate definitions/)).toBeTruthy();
     expect(within(card).getByText("tsc -p tsconfig.build.json")).toBeTruthy();
-    expect(within(card).getByText("e2e")).toBeTruthy();
+    // The new definitions name e2e, and so does the verification-time table (P17).
+    expect(within(card).getAllByText("e2e").length).toBeGreaterThan(0);
+    expect(within(card).getByText(/Verification time/)).toBeTruthy();
     expect(within(card).getByText(/first run exited 3, the rerun passed/)).toBeTruthy();
     expect(within(card).queryByText(/No gate-health record, no red base/)).toBeNull();
   });

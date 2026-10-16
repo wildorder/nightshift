@@ -39,6 +39,7 @@ import {
   type VerificationStep,
   VerificationStepSchema,
 } from "@nightshift/contracts";
+import { humanDuration } from "../forecast/model.js";
 import type { ProjectStores } from "../ports/stores.js";
 import { type PublicationState, publicationStateOf } from "../rules/dispatch.js";
 import { buildTree, descendantsOf, type ExecutionTree } from "../rules/execution-tree.js";
@@ -62,6 +63,7 @@ import {
 } from "./decision-graph.js";
 import { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
 import { storyStatuses } from "./stories.js";
+import { type VerificationTimeReport, verificationTimeOf } from "./verification-time.js";
 
 export const DEPARTURE_PREFIX = "DEPARTURE:";
 
@@ -228,6 +230,8 @@ export interface GateHealthReport {
   readonly environmentFault?: EnvironmentFaultPayload | undefined;
   readonly repairs: readonly RepairReport[];
   readonly flakes: readonly FlakeReport[];
+  /** Where the run's verification time went, the forecast beside it, and what would save time (P17). */
+  readonly verificationTime: VerificationTimeReport;
 }
 
 interface PageOf<T> {
@@ -642,8 +646,10 @@ const gatherGateHealth = async (
       ];
     });
 
+  // Every node's: the jobs' queue and candidate checks, and the program node's
+  // end gates (A-57).
   const verifications: Verification[] = [];
-  for (const node of nodes.filter((candidate) => candidate.kind === "job")) {
+  for (const node of nodes) {
     verifications.push(...(await stores.verifications.listByNode(scope, node.executionNodeId)));
   }
   const flakes = verifications
@@ -666,12 +672,22 @@ const gatherGateHealth = async (
     );
 
   const environmentFault = environmentFaultOf(events);
+  const record = await stores.gateHealth.get(scope.projectId);
+  const landings = nodes.filter(
+    (node) => node.kind === "job" && node.status === "integrated",
+  ).length;
   return {
-    audit: auditOf(await stores.gateHealth.get(scope.projectId)),
+    audit: auditOf(record),
     red,
     ...(environmentFault === undefined ? {} : { environmentFault }),
     repairs,
     flakes,
+    verificationTime: verificationTimeOf(
+      records.program,
+      verifications,
+      landings,
+      record?.forecast,
+    ),
   };
 };
 
@@ -1003,19 +1019,73 @@ const renderRepair = (repair: RepairReport): string[] => [
  * an environment fault side by side (P16 D-07), what it repaired under which decision, and every check that flaked. Repair
  * jobs sit outside every strand, so this is the only place they appear.
  */
+/**
+ * Where the verification time went (P17, D-P17-07): each step's runs and total
+ * by phase, the forecast's one run beside it, and the recommendations re-priced
+ * with this run's durations. Nothing when nothing was verified.
+ */
+const renderVerificationTime = (time: VerificationTimeReport): string[] => {
+  if (time.verifications === 0) return [];
+  const forecast = time.forecast;
+  return [
+    "### Verification time",
+    "",
+    `${humanDuration(time.totalMs)} across ${time.verifications} verification${time.verifications === 1 ? "" : "s"} and ${time.landings} landing${time.landings === 1 ? "" : "s"}` +
+      (forecast === undefined
+        ? "."
+        : `; the forecast assumed ${forecast.landings} landings at ${humanDuration(forecast.landingMs)} each, ≈ ${humanDuration(forecast.projectedMs)}, measured on ${forecast.machine}.`),
+    "",
+    "| Step | Runs | Total | Per run | Quiet start | Queue / candidate / end | Forecast per run |",
+    "|------|------|-------|---------|-------------|-------------------------|------------------|",
+    ...time.steps.map((step) => {
+      const per = step.runs === 0 ? "—" : humanDuration(step.totalMs / step.runs);
+      const quiet = step.runs === 0 ? "—" : humanDuration(step.quietMs / step.runs);
+      const phases = `${step.byPhase.queue.runs} / ${step.byPhase.candidate.runs} / ${step.byPhase.run.runs}`;
+      const forecastPer = step.forecastMs === undefined ? "—" : humanDuration(step.forecastMs);
+      return `| \`${step.id}\` | ${step.runs} | ${humanDuration(step.totalMs)} | ${per} | ${quiet} | ${phases} | ${forecastPer} |`;
+    }),
+    "",
+    ...(time.recommendations.length === 0
+      ? [
+          forecast === undefined
+            ? "No recommendations: run `nightshift gates <program> --record` before a run to keep what the gates resolve to, and the report prices them here."
+            : "No recommendations from the catalogue for this run's durations.",
+          "",
+        ]
+      : [
+          "Recommendations, priced with this run's durations:",
+          "",
+          ...time.recommendations.map(
+            (recommendation) =>
+              `- **${recommendation.title}**${recommendation.rule === undefined ? "" : ` (rule ${recommendation.rule})`}: saves ≈ ${humanDuration(recommendation.savingMs ?? 0)} — ${recommendation.formula}. ${recommendation.evidence.join("; ")}. Fix: ${recommendation.fix}.` +
+              (recommendation.edit === undefined
+                ? ""
+                : ` Edit the contract: on \`${recommendation.edit.stepId}\`, set ${Object.entries(
+                    recommendation.edit.set,
+                  )
+                    .map(([key, value]) => `\`"${key}": "${value}"\``)
+                    .join(", ")}.`),
+          ),
+          "",
+        ]),
+  ];
+};
+
 const renderGateHealth = ({
   audit,
   red,
   environmentFault,
   repairs,
   flakes,
+  verificationTime,
 }: GateHealthReport): string[] => {
   if (
     audit === undefined &&
     red === undefined &&
     environmentFault === undefined &&
     repairs.length === 0 &&
-    flakes.length === 0
+    flakes.length === 0 &&
+    verificationTime.verifications === 0
   ) {
     return [
       "## Gate health",
@@ -1054,6 +1124,7 @@ const renderGateHealth = ({
           ),
           "",
         ]),
+    ...renderVerificationTime(verificationTime),
   ];
 };
 

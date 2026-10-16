@@ -10,6 +10,7 @@
  * integration are the execution layer's job.
  */
 export * from "./errors.js";
+export * from "./forecast/index.js";
 export * from "./ids.js";
 export * from "./ports/index.js";
 export * from "./report/index.js";

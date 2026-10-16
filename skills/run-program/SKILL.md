@@ -196,6 +196,12 @@ it, in this order:
    `nightshift resume {id}`.
 6. What the examiners found that did not stop anything (minor findings), and
    where the routes climbed or fell back: the report's per-job lines.
+7. Where the **verification time** went (the report's *Verification time*
+   table under Gate health): the steps that took the night, forecast against
+   actual when a forecast was recorded, and the recommendations priced with
+   the run's real durations. Say the top one or two in time saved, with the
+   edit when there is one; the human decides whether to take it into the next
+   plan.
 7. The success criteria table and what it cost, saying which figures are
    estimates.
 8. The **decision graph**: every decision the run recorded, with what was weighed

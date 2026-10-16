@@ -299,7 +299,7 @@ describe("optional gate-health diagnostics through the CLI", () => {
       [
         {
           machinery: ["..\\outside.js", "/etc/passwd"],
-          findings: [{ id: "F-1", rule: 9, found: "", decisionId: "D-01", paths: [] }],
+          findings: [{ id: "F-1", rule: 10, found: "", decisionId: "D-01", paths: [] }],
         },
         ["machinery.0", "machinery.1", "findings.0.id", "findings.0.rule", "findings.0.found"],
       ],

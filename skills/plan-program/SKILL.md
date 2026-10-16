@@ -115,10 +115,28 @@ Read the repository's existing setup and verification commands. Use those
 commands and its declared runtimes; do not require the repository to adopt a
 new gate structure before planning can continue.
 
-When useful, `nightshift gates {id}` runs an **optional diagnostic** on a
-fresh checkout. `gate-standard.md` offers troubleshooting guidance, not
-certification criteria. No audit record, fingerprint, gate finding decision or
+`nightshift gates {id}` runs an **optional diagnostic** on a fresh checkout:
+run it once the contract's setup and verification are drafted. It runs them as
+verification will and prints the **verification plan** (P17): every step's
+measured duration and when it runs, what one landing and
+one examined job cost, the night's projection with the landings it assumed,
+and **recommendations** ranked by time saved — each a gate-standard rule, the
+evidence it read (what the command resolves to, how long a step was quiet
+before its first output), the saving as a formula, and the exact contract edit
+when the fix is one. Read it and surface the recommendations to the human
+before the run, in their words: "e2e at the end saves about two hours; db-test
+starts a database on every verification". A recommendation that changes the
+contract (`"at": "end"`) is a decision the human takes here, and you make the
+edit; one that changes the project (keep a service alive, move an install to
+setup) is theirs to take to the code, now or later. The command never edits and
+never fails the plan on a recommendation.
+
+`gate-standard.md` offers troubleshooting guidance, not certification criteria.
+No audit record, fingerprint, gate finding decision or
 special gate-health strand is required for `READY` or ratification.
+`nightshift gates {id} --record` keeps the forecast with the project's
+gate-health record, so the run's report can show what the night actually cost
+against it.
 
 Remote runs prepare their own environment and establish their baseline there;
 a laptop audit or laptop/remote parity comparison is not a dispatch prerequisite.

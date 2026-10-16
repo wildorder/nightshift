@@ -26,7 +26,7 @@ export type GateHealthVerdict = z.infer<typeof GateHealthVerdictSchema>;
  * its runtimes", was added by P16 S-02 (SC-08): the repository pins every
  * language runtime it uses, and the gates are audited on those versions.
  */
-export const GATE_STANDARD_RULES = 8;
+export const GATE_STANDARD_RULES = 9;
 
 /**
  * A file path inside the repository, in one canonical, portable spelling:
@@ -76,6 +76,39 @@ export type GateFinding = z.infer<typeof GateFindingSchema>;
 
 const unique = (values: readonly string[]): boolean => new Set(values).size === values.length;
 
+/** One line of what a gate's command resolves to, kept as evidence for a recommendation. */
+export const ForecastEvidenceSchema = z.strictObject({
+  source: z.string().min(1),
+  text: z.string().min(1),
+});
+
+/** One step as the forecast measured it (P17, D-P17-07). */
+export const ForecastStepSchema = z.strictObject({
+  id: z.string().min(1),
+  kind: z.enum(["setup", "landing", "end"]),
+  durationMs: z.int().min(0),
+  /** Quiet before its first output (D-P17-05). */
+  quietMs: z.int().min(0),
+  /** Setup the reference seeded, so it cost nothing. */
+  seeded: z.boolean().optional(),
+  /** The resolved lines that matched a catalogue signature; the report re-prices from them. */
+  evidence: z.array(ForecastEvidenceSchema).optional(),
+});
+export type ForecastStep = z.infer<typeof ForecastStepSchema>;
+
+/**
+ * The verification forecast `nightshift gates --record` keeps with the record
+ * (P17, D-P17-07): each step measured once, where, and the landings assumed.
+ * The report places it beside what the run actually took.
+ */
+export const VerificationForecastSchema = z.strictObject({
+  /** Where it was measured: `darwin arm64`, `linux x64`. */
+  machine: z.string().min(1),
+  landings: z.int().min(1),
+  steps: z.array(ForecastStepSchema),
+});
+export type VerificationForecast = z.infer<typeof VerificationForecastSchema>;
+
 export const GateHealthSchema = z
   .strictObject({
     ...projectScoped,
@@ -98,6 +131,8 @@ export const GateHealthSchema = z
     /** Who recorded it: the signed-in operator, or a run's engine. */
     auditedBy: PrincipalSchema,
     auditedAt: IsoTimestampSchema,
+    /** The verification forecast of the same audit (P17); absent on records made before it. */
+    forecast: VerificationForecastSchema.optional(),
   })
   .refine((record) => record.verdict !== "healthy" || record.findings.length === 0, {
     message: "a healthy verdict has no findings",

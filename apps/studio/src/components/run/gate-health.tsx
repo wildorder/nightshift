@@ -6,7 +6,13 @@
  * and the gate definitions it landed, and each check that flaked.
  */
 import type { EnvironmentFaultPayload } from "@nightshift/contracts";
-import type { GateHealthReport, RepairReport, RunScope } from "@nightshift/core";
+import type {
+  GateHealthReport,
+  RepairReport,
+  RunScope,
+  VerificationTimeReport,
+} from "@nightshift/core";
+import { humanDuration } from "@nightshift/core";
 import { Link } from "react-router";
 import { shortId, shortSha, when } from "../../lib/format.js";
 import { StatusBadge } from "../status-badge.js";
@@ -16,12 +22,105 @@ const CAUSE_WORD: Readonly<Record<RepairReport["cause"], string>> = {
   flaky: "flaky",
 };
 
-const isEmpty = ({ audit, red, environmentFault, repairs, flakes }: GateHealthReport): boolean =>
+const isEmpty = ({
+  audit,
+  red,
+  environmentFault,
+  repairs,
+  flakes,
+  verificationTime,
+}: GateHealthReport): boolean =>
   audit === undefined &&
   red === undefined &&
   environmentFault === undefined &&
   repairs.length === 0 &&
-  flakes.length === 0;
+  flakes.length === 0 &&
+  verificationTime.verifications === 0;
+
+/**
+ * Where the verification time went (P17, D-P17-07): each step's runs and total
+ * by phase, the forecast's one run beside it, and what would save time.
+ */
+const VerificationTime = ({ time }: { readonly time: VerificationTimeReport }) => {
+  if (time.verifications === 0) return null;
+  const forecast = time.forecast;
+  return (
+    <div data-verification-time="">
+      <h3 className="mb-1 font-medium">Verification time</h3>
+      <p className="mb-2">
+        {humanDuration(time.totalMs)} across {time.verifications} verification
+        {time.verifications === 1 ? "" : "s"} and {time.landings} landing
+        {time.landings === 1 ? "" : "s"}
+        {forecast === undefined ? null : (
+          <span className="text-muted-foreground">
+            {" "}
+            — the forecast assumed {forecast.landings} landings at{" "}
+            {humanDuration(forecast.landingMs)} each, ≈ {humanDuration(forecast.projectedMs)},
+            measured on {forecast.machine}
+          </span>
+        )}
+      </p>
+      <table className="w-full text-left text-xs">
+        <thead className="text-muted-foreground">
+          <tr>
+            <th className="p-1">Step</th>
+            <th className="p-1">Runs</th>
+            <th className="p-1">Total</th>
+            <th className="p-1">Per run</th>
+            <th className="p-1">Quiet start</th>
+            <th className="p-1">Queue / candidate / end</th>
+            <th className="p-1">Forecast per run</th>
+          </tr>
+        </thead>
+        <tbody>
+          {time.steps.map((step) => (
+            <tr key={step.id}>
+              <td className="p-1">
+                <code>{step.id}</code>
+              </td>
+              <td className="p-1">{step.runs}</td>
+              <td className="p-1">{humanDuration(step.totalMs)}</td>
+              <td className="p-1">
+                {step.runs === 0 ? "—" : humanDuration(step.totalMs / step.runs)}
+              </td>
+              <td className="p-1">
+                {step.runs === 0 ? "—" : humanDuration(step.quietMs / step.runs)}
+              </td>
+              <td className="p-1">
+                {step.byPhase.queue.runs} / {step.byPhase.candidate.runs} / {step.byPhase.run.runs}
+              </td>
+              <td className="p-1">
+                {step.forecastMs === undefined ? "—" : humanDuration(step.forecastMs)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {time.recommendations.length === 0 ? null : (
+        <ul className="ml-4 mt-2 list-disc">
+          {time.recommendations.map((recommendation) => (
+            <li key={`${recommendation.stepId}/${recommendation.title}`}>
+              <span className="font-medium">{recommendation.title}</span>
+              {recommendation.rule === undefined ? null : ` (rule ${recommendation.rule})`}: saves ≈{" "}
+              {humanDuration(recommendation.savingMs ?? 0)}{" "}
+              <span className="text-muted-foreground">
+                — {recommendation.formula}. {recommendation.evidence.join("; ")}. Fix:{" "}
+                {recommendation.fix}.
+                {recommendation.edit === undefined
+                  ? null
+                  : ` Edit the contract: on ${recommendation.edit.stepId}, set ${Object.entries(
+                      recommendation.edit.set,
+                    )
+                      .map(([key, value]) => `"${key}": "${value}"`)
+                      .join(", ")}.`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
 
 const nodeOf = (version: string | undefined): string =>
   version === undefined ? "no Node" : `Node ${version}`;
@@ -155,7 +254,7 @@ export const GateHealthView = ({
       </p>
     );
   }
-  const { audit, red, environmentFault, repairs, flakes } = gateHealth;
+  const { audit, red, environmentFault, repairs, flakes, verificationTime } = gateHealth;
   return (
     <div className="grid gap-3 text-sm">
       {audit === undefined ? (
@@ -220,6 +319,7 @@ export const GateHealthView = ({
           </ul>
         </div>
       )}
+      <VerificationTime time={verificationTime} />
     </div>
   );
 };

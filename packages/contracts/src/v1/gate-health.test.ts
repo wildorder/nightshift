@@ -72,7 +72,7 @@ describe("GateHealth", () => {
       { ...finding, id: "F-1" },
       { ...finding, id: "f-01" },
       { ...finding, rule: 0 },
-      { ...finding, rule: 9 },
+      { ...finding, rule: 10 },
       { ...finding, rule: 1.5 },
       { ...finding, found: "" },
       { ...finding, decisionId: "" },

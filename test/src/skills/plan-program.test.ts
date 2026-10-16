@@ -145,13 +145,13 @@ describe("the skill", () => {
 });
 
 describe("the gate audit (P15, D-P15-01, D-P15-05)", () => {
-  it("ships a gate standard whose rules are numbered 1 to 8", async () => {
+  it("ships a gate standard whose rules are numbered 1 to 9", async () => {
     const text = await readFile(skill("gate-standard.md"), "utf8");
     const rules = text
       .split("\n")
       .filter((line) => /^## \d+\. /.test(line))
       .map((line) => Number(/^## (\d+)\./.exec(line)?.[1]));
-    expect(rules).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(rules).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     for (const phrase of [
       "Declares setup",
       "Passes on a fresh checkout of the base",
@@ -160,6 +160,7 @@ describe("the gate audit (P15, D-P15-01, D-P15-05)", () => {
       "Is deterministic",
       "Can be kept healthy by the work",
       "Costs what it should",
+      "Proves the whole at the end",
       "Declares its runtimes",
       "pretest: npm ci",
       "**Typical fix.**",
@@ -167,7 +168,7 @@ describe("the gate audit (P15, D-P15-01, D-P15-05)", () => {
       expect(text, phrase).toContain(phrase);
     }
     // Rule 7 makes a gate cheaper; it never takes a check out of verification.
-    expect(text).toContain("Never drop a\ncheck from verification");
+    expect(text.replace(/\s+/g, " ")).toContain("Never drop a check from verification");
   });
 
   it("offers diagnostics without gate certification or a compulsory repair strand", async () => {
