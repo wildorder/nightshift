@@ -104,6 +104,46 @@ describe("the resolver", () => {
     ]);
   });
 
+  it("reads a script for the mode it was called with, through a wrapper that forwards it", async () => {
+    const modal: Record<string, string> = {
+      "package.json": JSON.stringify({ scripts: {} }),
+      "verify.sh": [
+        'MODE="${1:-}"',
+        'case "$MODE" in',
+        "  test | e2e | build) ;;",
+        "  *) echo 'usage: verify.sh test|e2e|build' >&2; exit 2 ;;",
+        "esac",
+        'exec bash scripts/run.sh "$MODE"',
+      ].join("\n"),
+      "scripts/run.sh": [
+        'MODE="$1"',
+        "docker run --detach --rm postgres",
+        'case "$MODE" in',
+        "  test)",
+        "    pnpm exec vitest run",
+        "    ;;",
+        "  e2e)",
+        "    export PLAYWRIGHT_BASE_URL=http://localhost:3000",
+        "    pnpm exec playwright test",
+        "    ;;",
+        "  build)",
+        "    pnpm -r build",
+        "    ;;",
+        "esac",
+      ].join("\n"),
+    };
+    const readModal = async (path: string) => modal[path];
+    const test = await resolveCommand("db-test", "bash verify.sh test", readModal);
+    const texts = test.lines.map((line) => line.text);
+    expect(texts).toContain("docker run --detach --rm postgres");
+    expect(texts).toContain("pnpm exec vitest run");
+    expect(texts.some((text) => text.includes("playwright"))).toBe(false);
+    expect(texts.some((text) => text.includes("usage:"))).toBe(false);
+    const e2e = await resolveCommand("e2e", "bash verify.sh e2e", readModal);
+    expect(e2e.lines.map((line) => line.text)).toContain("pnpm exec playwright test");
+    expect(e2e.lines.some((line) => line.text === "pnpm exec vitest run")).toBe(false);
+  });
+
   it("reports what it could not follow instead of guessing", async () => {
     const resolved = await resolveCommand("x", "npm run nothing && bash scripts/gone.sh", read);
     expect(resolved.unresolved).toEqual(["nothing", "scripts/gone.sh"]);
@@ -205,6 +245,19 @@ describe("the catalogue", () => {
     expect(quiet).toMatchObject({ stepId: "db-test", savingMs: (3 * 60_000 + 5_000) * 12 });
     expect(quiet?.evidence[1]).toContain(`over the ${QUIET_START_THRESHOLD_MS / 1000}`.slice(0, 8));
     expect(quiet?.fix).toContain("NIGHTSHIFT_VERIFICATION_ID");
+  });
+
+  it("reports a service start it cannot time as a fact, not a saving", () => {
+    const chatty = forecast({
+      setup: [],
+      verification: [{ id: "db-test", command: "bash scripts/db.sh test" }],
+      measured: new Map([["db-test", measured(170_000, 500)]]),
+      landings: { count: 10, source: "given" },
+    });
+    const [fact] = recommend(chatty, resolved);
+    expect(fact).toMatchObject({ rule: 7, stepId: "db-test" });
+    expect(fact?.savingMs).toBeUndefined();
+    expect(fact?.evidence[1]).toContain("not visible");
   });
 
   it("does not treat an end gate as a landing gate, and lists facts last", () => {

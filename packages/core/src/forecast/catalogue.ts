@@ -123,28 +123,42 @@ export const recommend = (
       });
     }
 
-    // Rule 7: a service started on every verification.
+    // Rule 7: a service started on every verification. Priced only when the
+    // step was quiet long enough to see the start; a step that prints while its
+    // service comes up is reported as a fact, since the time cannot be seen.
     const service = step.kind === "setup" ? undefined : matching(lines, SERVICE_START);
     if (service !== undefined && measured !== undefined) {
       const quiet = measured.quietMs;
-      const loud = quiet >= QUIET_START_THRESHOLD_MS;
-      found.push({
-        rule: 7,
-        title: `${step.id} starts a service every time`,
-        stepId: step.id,
-        evidence: [
-          `${step.id} resolves to ${quote(service)}`,
-          `quiet for ${ms(quiet)} of ${ms(measured.durationMs)} before its first output` +
-            (loud
-              ? ` (over the ${ms(QUIET_START_THRESHOLD_MS)} threshold: usually a service starting)`
-              : ` (under the ${ms(QUIET_START_THRESHOLD_MS)} threshold)`),
-        ],
-        formula: `${ms(quiet)} quiet × ${landings} landings`,
-        savingMs: quiet * landings,
-        fix:
-          "keep the service alive across verifications and give each verification its own state " +
-          "(a database from a template, named by NIGHTSHIFT_VERIFICATION_ID); state keyed by content, never by the last run",
-      });
+      const seen = quiet >= QUIET_START_THRESHOLD_MS;
+      const fix =
+        "keep the service alive across verifications and give each verification its own state " +
+        "(a database from a template, named by NIGHTSHIFT_VERIFICATION_ID); state keyed by content, never by the last run";
+      found.push(
+        seen
+          ? {
+              rule: 7,
+              title: `${step.id} starts a service every time`,
+              stepId: step.id,
+              evidence: [
+                `${step.id} resolves to ${quote(service)}`,
+                `quiet for ${ms(quiet)} of ${ms(measured.durationMs)} before its first output (over the ${ms(QUIET_START_THRESHOLD_MS)} threshold: usually a service starting)`,
+              ],
+              formula: `${ms(quiet)} quiet × ${landings} landings`,
+              savingMs: quiet * landings,
+              fix,
+            }
+          : {
+              rule: 7,
+              title: `${step.id} starts a service every time`,
+              stepId: step.id,
+              evidence: [
+                `${step.id} resolves to ${quote(service)}`,
+                `it printed within ${ms(quiet)}, so how long the service takes to come up is not visible from outside; the step would have to say`,
+              ],
+              formula: "not priced: the start is not visible",
+              fix,
+            },
+      );
     }
 
     // Rule 1: setup folded into a gate.
