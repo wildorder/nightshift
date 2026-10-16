@@ -124,6 +124,8 @@ export const buildEnvironment = (
   // P10 (D-P10-25): on a machine, every job's agent runs as a worker user.
   ...(runtime.runAs === undefined ? {} : { runAs: runtime.runAs }),
   ...(runtime.reclaim === undefined ? {} : { reclaim: runtime.reclaim }),
+  // On a machine, prerequisites are judged by its own check (D-P7-10).
+  ...(runtime.site === undefined ? {} : { site: runtime.site }),
   // P16 (D-10): on a machine, every project step runs in the project environment.
   ...(runtime.projectEnv === undefined ? {} : { projectEnv: runtime.projectEnv }),
   // P10 (T4): on a machine, a worker's token is a file the engine keeps fresh.

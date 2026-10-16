@@ -199,6 +199,8 @@ export interface Runtime {
   readonly runAs?: ExecutionEnvironment["runAs"];
   /** P10 (D-P10-25): takes a granted path back for the engine; with `runAs`. */
   readonly reclaim?: ExecutionEnvironment["reclaim"];
+  /** On a run's machine, which one: its run and dispatch generation (D-P7-10). */
+  readonly site?: ExecutionEnvironment["site"];
   /** P10 (T4): where a worker's token file lives on a machine; absent on a laptop. */
   readonly workerTokens?: ExecutionEnvironment["workerTokens"];
   /**
@@ -610,6 +612,20 @@ const remoteProjectSetup = (
   });
 };
 
+/**
+ * The machine this engine runs on, when it is a run's machine: the run it is
+ * pinned to and the dispatch generation the runner named. Absent on a laptop.
+ */
+export const machineSiteOf = (env: Env): ExecutionEnvironment["site"] => {
+  const pinned = pinnedRunOf(env.NIGHTSHIFT_PINNED_RUN);
+  const generation = Number.parseInt(env.NIGHTSHIFT_DISPATCH_GENERATION ?? "", 10);
+  if (pinned === undefined || !Number.isInteger(generation) || generation < 1) return undefined;
+  return {
+    where: "machine",
+    dispatch: { runId: RunIdSchema.parse(pinned.runId), generation },
+  };
+};
+
 export const createRuntime = async (env: Env, role: Role = "orchestrator"): Promise<Runtime> => {
   const { transport, endpoint } = await createTransport(env, role);
   const ids = createUlidIdGenerator();
@@ -621,6 +637,7 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
   const projectEnv = await readProjectEnv(env);
   const stores = createHttpStores({ transport });
   const projectSetup = remoteProjectSetup(env, role, stores, projectEnv);
+  const site = machineSiteOf(env);
   const runAs =
     projectUser !== undefined && projectUser !== ""
       ? createProjectUser({
@@ -638,6 +655,7 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     ...(runAs === undefined ? {} : { workerTokens: createWorkerTokenFiles() }),
     ...(projectEnv === undefined ? {} : { projectEnv }),
     ...(projectSetup === undefined ? {} : { projectSetup }),
+    ...(site === undefined ? {} : { site }),
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
     prerequisites: createHttpPlanning({ transport }),

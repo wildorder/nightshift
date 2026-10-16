@@ -77,6 +77,7 @@ import {
   policyOfRun,
   transition,
   transitionAgent,
+  unmetPrerequisitesAt,
 } from "@nightshift/core";
 import {
   type AgentTask,
@@ -914,9 +915,8 @@ const candidateVerification = async (
             projectId: input.session.program.projectId,
             programId: input.session.program.programId,
           });
-    const unmet = new Set(
-      current.filter((prerequisite) => prerequisite.status !== "satisfied").map((p) => p.id),
-    );
+    // Met where this engine runs: on a machine, by that machine's own check.
+    const unmet = unmetPrerequisitesAt(current, environment.site ?? { where: "laptop" });
     if (steps.some((step) => (step.requires ?? []).some((id) => unmet.has(id)))) return "postponed";
   }
 

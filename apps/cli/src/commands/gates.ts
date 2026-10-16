@@ -18,6 +18,7 @@ import {
   humanDuration,
   type LandingsSource,
   type MeasuredStep,
+  nowIso,
   PIN_FILES,
   prerequisitesOf,
   type Recommendation,
@@ -29,6 +30,7 @@ import {
   runtimeFindings,
   runtimesToMeasure,
   type VerificationPlan,
+  withLaptopCheck,
 } from "@nightshift/core";
 import {
   type AuditedGate,
@@ -38,10 +40,12 @@ import {
   type GateAudit,
   outputTail,
   revParse,
+  runPreflight,
 } from "@nightshift/execution";
 import { createLocalPaths } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
-import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
+import { describeFailure } from "../failures.js";
+import { readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession, type Session } from "../session.js";
 import { filesAt, measureRuntime } from "./remote.js";
 
@@ -50,6 +54,11 @@ export interface GatesOptions {
   readonly repo?: string;
   /** The landings the projection assumes (P17, D-P17-02). Absent, the last run's, else the default. */
   readonly landings?: number;
+  /**
+   * The forecast as one JSON document on stdout, for an agent to read and say
+   * in plain words (P17, D-P17-03); the progress lines go to stderr.
+   */
+  readonly json?: boolean;
 }
 
 const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
@@ -192,53 +201,50 @@ export const describeAudit = (
   );
 };
 
-/**
- * The contract the gates are audited by: the control plane's record when the
- * plan is ratified, for its prerequisites' statuses (only `preflight` sets
- * them, there); the files on disk while it is still being planned. Shared by
- * `gates` and `gates --record`, so a record is of the audit `gates` would run.
- */
-export const auditContractOf = async (
-  environment: CliEnvironment,
-  files: ProgramFiles,
-  session: Session | undefined,
-): Promise<ProgramContract> => {
-  // Always the plan on disk: it is what `plan check` and ratification judge,
-  // and while a ratified program is re-planned it differs from the record (a
-  // new setup, a gate-health strand). The record is read only for what lives
-  // on the control plane: which prerequisites preflight found satisfied. An
-  // audit of the record instead fingerprinted the last ratified gates, and
-  // `plan check` refused it as stale on the same commit (keki-backend,
-  // 2026-10-07).
-  const recorded = await session?.stores.programContracts
-    .get(files.contract.projectId, files.contract.programId)
-    .catch(() => undefined);
-  if (recorded === undefined) {
-    environment.out(
-      "the control plane holds no record of this program (or is out of reach): prerequisites count as the contract file states them",
-    );
-    return files.contract;
+/** "Not signed in", said plainly, or whatever else kept the control plane out of reach. */
+export const sessionProblem = (error: unknown): string => {
+  const failure = describeFailure(error);
+  if (failure.code === "not_logged_in") {
+    return "you are not signed in, or your sign-in has expired: run `nightshift login`";
   }
-  const statusOf = new Map(
-    prerequisitesOf(recorded).map((prerequisite) => [prerequisite.id, prerequisite]),
-  );
-  return {
-    ...files.contract,
-    ...(files.contract.prerequisites === undefined
-      ? {}
-      : {
-          prerequisites: files.contract.prerequisites.map((prerequisite) => {
-            const known = statusOf.get(prerequisite.id);
-            return known === undefined
-              ? prerequisite
-              : {
-                  ...prerequisite,
-                  status: known.status,
-                  ...(known.lastCheck === undefined ? {} : { lastCheck: known.lastCheck }),
-                };
-          }),
-        }),
-  };
+  return `the control plane could not be reached (${failure.code}): ${failure.summary}${
+    failure.advice === undefined ? "" : ` ${failure.advice}`
+  }`;
+};
+
+/**
+ * The prerequisites unmet **here and now** (2026-10-16): each one's verify
+ * command, run on this machine in the repository, as `nightshift preflight`
+ * runs it. Never a status a file or a record claims: those are only what was
+ * true when someone last looked, and the audit then skipped every gate that
+ * needs Docker on a laptop with Docker running. Each check is said as it ends.
+ */
+export const prerequisitesUnmetHere = async (
+  environment: Pick<CliEnvironment, "clock" | "out">,
+  contract: ProgramContract,
+  repoPath: string,
+): Promise<ReadonlySet<string>> => {
+  const prerequisites = prerequisitesOf(contract);
+  if (prerequisites.length === 0) return new Set();
+  const byId = new Map(prerequisites.map((prerequisite) => [prerequisite.id, prerequisite]));
+  const checked = await runPreflight({
+    contract,
+    cwd: repoPath,
+    recheck: true,
+    clock: environment.clock,
+    // Nothing is recorded: the audit is a diagnostic, and a run checks again for itself.
+    record: async (_scope, prerequisiteId, exitCode) => {
+      const prerequisite = byId.get(prerequisiteId);
+      if (prerequisite === undefined) throw new Error(`no prerequisite ${prerequisiteId}`);
+      return withLaptopCheck(prerequisite, { exitCode, checkedAt: nowIso(environment.clock) });
+    },
+  });
+  for (const check of checked.checks) {
+    environment.out(
+      `  ${check.prerequisite.id}  ${check.exitCode === 0 ? "met  " : `UNMET (exited ${check.exitCode})`}  ${check.prerequisite.description}`,
+    );
+  }
+  return new Set(checked.pending.map((prerequisite) => prerequisite.id));
 };
 
 // ── rule 8, declares its runtimes (P16 S-02, SC-08) ─────────────────────────
@@ -442,10 +448,10 @@ export const describeRecommendations = (
   contractPath: string,
 ): void => {
   say("");
-  if (recommendations.every((recommendation) => recommendation.savingMs === undefined)) {
+  if (recommendations.every((recommendation) => recommendation.rule === undefined)) {
     say("recommendations: none; the catalogue found nothing to move or to keep alive");
   } else {
-    say("recommendations, by time saved");
+    say("recommendations, by time saved (an untimed one has no number, never a zero)");
   }
   recommendations.forEach((recommendation, index) => {
     say("");
@@ -487,23 +493,54 @@ export const gates = async (
 ): Promise<GatesResult> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const files = await readProgramFiles(repoPath, options.id);
-  const session = await openSession(environment).catch(() => undefined);
-  const contract = await auditContractOf(environment, files, session);
-  const audit = await auditProgramGates(environment, contract, repoPath);
-  describeAudit(environment, audit);
+  const contract = files.contract;
+  // With --json, everything a person reads goes to stderr and stdout carries
+  // the one document an agent reads.
+  const json = options.json === true;
+  const human: CliEnvironment = json ? { ...environment, out: environment.err } : environment;
+  // The control plane is only asked how many landings the last run made; the
+  // audit itself needs nothing from it. Signed out, it says so and goes on.
+  const session = await openSession(environment).catch((error: unknown) => {
+    human.err(`note: ${sessionProblem(error)}; the projection assumes the default landings`);
+    return undefined;
+  });
+  const unmet = await prerequisitesUnmetHere(human, contract, repoPath);
+  const audit = await auditProgramGates(human, contract, repoPath, human.out, {
+    unmet,
+  });
+  describeAudit(human, audit);
   const runtimes = await auditProgramRuntimes(environment, repoPath, audit.base);
-  describeRuntimeFindings(environment.out, runtimes, audit.base);
+  describeRuntimeFindings(human.out, runtimes, audit.base);
   const plan = forecast({
     setup: contract.setup ?? [],
     verification: contract.verification,
     measured: measuredFromAudit(audit),
     landings: await landingsFor(session, contract, options.landings),
   });
-  describePlan(environment.out, plan, audit.base, `${process.platform} ${process.arch}`);
+  const machine = `${process.platform} ${process.arch}`;
+  describePlan(human.out, plan, audit.base, machine);
   const recommendations = recommend(
     plan,
     await resolveGates(environment, repoPath, audit.base, contract),
   );
-  describeRecommendations(environment.out, recommendations, files.contractPath);
+  describeRecommendations(human.out, recommendations, files.contractPath);
+  if (json) {
+    environment.out(
+      JSON.stringify(
+        {
+          program: contract.programId,
+          commit: audit.base,
+          machine,
+          red: audit.red,
+          failing: audit.failing,
+          unmetPrerequisites: [...unmet],
+          plan,
+          recommendations,
+        },
+        null,
+        2,
+      ),
+    );
+  }
   return { exitCode: audit.red ? 1 : 0, audit, runtimeFindings: runtimes, plan, recommendations };
 };

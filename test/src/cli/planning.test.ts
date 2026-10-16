@@ -280,9 +280,19 @@ describe("nightshift preflight (SC-P7-05)", () => {
 });
 
 describe("nightshift run {id} (SC-P7-04)", () => {
-  it("refuses a planned program that is not ratified, before writing anything", async () => {
+  it("ratifies a READY, committed plan that was never ratified, then runs it (2026-10-16)", async () => {
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended")).toBe(0);
+    expect(op.out.join("\n")).toContain("asking to run a plan approves it");
+    const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(recorded?.status).toBe("ratified");
+    expect(recorded?.ratifications).toHaveLength(1);
+  });
+
+  it("refuses to ratify an uncommitted plan, and starts nothing", async () => {
+    await writeFile(programPath("plan.md"), `${PLAN}\nAn uncommitted thought.\n`);
     expect(await cli("run", PROGRAM)).toBe(1);
-    expect(op.err.join("\n")).toContain("has not been ratified");
+    expect(op.err.join("\n")).toContain("the plan has uncommitted changes");
     expect(
       await stores().programContracts.get(contract.projectId, contract.programId),
     ).toBeUndefined();
@@ -319,14 +329,14 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     });
   });
 
-  it("refuses a plan edited after ratification until it is ratified again", async () => {
+  it("ratifies a plan edited and committed after ratification again, and runs the new one", async () => {
     await cli("plan", "ratify", PROGRAM);
     await writeFile(programPath("plan.md"), `${PLAN}\nA quiet change of mind.\n`);
+    // Uncommitted, the edit is refused: a hash must name something git has.
     expect(await cli("run", PROGRAM)).toBe(1);
-    expect(op.err.join("\n")).toContain("has changed since it was ratified");
+    expect(op.err.join("\n")).toContain("the plan has uncommitted changes");
 
     commit("change the plan");
-    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
     await writeFile(join(fixture.repo, "release-token"), "present");
     expect(await cli("run", PROGRAM, "--attended")).toBe(0);
     const recorded = await stores().programContracts.get(contract.projectId, contract.programId);

@@ -116,7 +116,8 @@ commands and its declared runtimes; do not require the repository to adopt a
 new gate structure before planning can continue.
 
 `nightshift gates {id}` runs an **optional diagnostic** on a fresh checkout:
-run it once the contract's setup and verification are drafted. It runs them as
+run `nightshift gates {id} --json` once the contract's setup and verification
+are drafted (one document on stdout for you to read; progress on stderr). It runs them as
 verification will and prints the **verification plan** (P17): every step's
 measured duration and when it runs, what one landing and
 one examined job cost, the night's projection with the landings it assumed,
@@ -458,10 +459,12 @@ yours to fix; bring the human what is theirs (an unanswered decision, a boundary
 to move). For an overlap it shows both scopes and the globs that intersect: the
 fix is a narrower scope, an `excludes`, or an honest `dependsOn`.
 
-When it says `READY`, tell the human, and ask one question: **"Ratify this
-plan and hand it to the run?"** Ratifying is their judgement that this is the
-plan they want run; your job is to make saying yes cost nothing. When they say
-yes, do all of this yourself and stop at the run:
+When it says `READY`, tell the human, and ask one question: **"Run it?"**
+(or, when they want to look first, "Ratify it to run later?"). Asking to run a
+plan is approving it: `nightshift run {id}` ratifies a READY, committed plan
+itself and then runs it, so there is no separate ceremony for the human to
+remember (2026-10-16). Your job is to make saying yes cost nothing. When they
+say yes, do all of this yourself:
 
 1. **The program branch.** The contract's `repository.programBranch` (say
    `program/{id}`) must exist and be **checked out**: Nightshift integrates by
@@ -476,26 +479,20 @@ yes, do all of this yourself and stop at the run:
    `git add nightshift.config.json docs/programs/{id} && git commit -m "plan: {id}"`.
    A plan is ratified from a commit, so its hash names something git can
    reproduce.
-3. **Ratify.** `nightshift plan ratify {id}`. It refuses a plan that is not
-   READY or has uncommitted changes; if it refuses, fix that and run it again,
-   never work around it. It then pushes the program branch to origin,
-   fast-forward only, because a remote run clones it from GitHub: read its
-   output. If it printed `ratified, but the program branch is not at GitHub
-   yet`, resolve what it names (pull when origin is ahead; stop and tell the
-   human when the branch has diverged, never force) and push it yourself with
-   `git push -u origin program/{id}`. The plan is not ready to hand over until
-   origin has the commit it was ratified from.
-4. **Preflight.** `nightshift preflight {id}` when the contract has any
-   prerequisite. Print what is unmet, with its remediation, and stop there: those
-   are the human's to do before anything runs.
-5. **Hand over.** Say the plan is ratified and pushed, name the plan hash it
-   printed, and say the next step is `/run-program {id}`, which starts the unattended run from
-   this session, or `nightshift run {id}` from a terminal. Do not start the run
-   yourself; that is the other skill's, and the human may want to read the
-   commit first.
+3. **Run it, or ratify it.** When they said run: `nightshift run {id} --remote`
+   (or without `--remote` to run here, or `/run-program {id}` to orchestrate it
+   from this session), in the background, and say the run id and how to watch
+   it (`nightshift remote status {id} --watch`). It ratifies
+   the plan, pushes the program branch (fast-forward only) and checks every
+   prerequisite where the work runs. When they said ratify only:
+   `nightshift plan ratify {id}`. Either refuses a plan that is not READY or has
+   uncommitted changes; fix that and run it again, never work around it. A
+   command that says the sign-in has expired means `nightshift login` for the
+   human, nothing else.
 
-You never mark a prerequisite satisfied: only `nightshift preflight` does, from
-the exit code of its `verifyCommand`.
+Prerequisites are checked by their `verifyCommand` where the work runs, once
+per run: on this machine by `nightshift run` and `nightshift gates`, and on a
+run's machine by the machine itself. You never mark one satisfied.
 
 ## Correcting a reversed decision
 

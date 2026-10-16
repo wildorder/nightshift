@@ -61,7 +61,7 @@ Usage:
   nightshift plan ratify <program> [--repo <path>]
   nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>]
   nightshift preflight <program> [--repo <path>] [--recheck]
-  nightshift gates <program> [--record [--findings <file>] | --recorded] [--landings <n>] [--repo <path>]
+  nightshift gates <program> [--record [--findings <file>] | --recorded] [--landings <n>] [--json] [--repo <path>]
   nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--repo <path>]
   nightshift run <program> --remote [--compute good|better|best] [--repo <path>]
   nightshift remote status <program> [--watch] [--run <id>] [--repo <path>]
@@ -432,7 +432,7 @@ const doPreflight = async (
 };
 
 const GATES_USAGE =
-  "nightshift gates <program> [--record [--findings <file>] | --recorded] [--landings <n>] [--repo <path>]";
+  "nightshift gates <program> [--record [--findings <file>] | --recorded] [--landings <n>] [--json] [--repo <path>]";
 
 const doGates = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const { id, repo, values } = programArgs(args, GATES_USAGE, {
@@ -440,6 +440,7 @@ const doGates = async (environment: CliEnvironment, args: readonly string[]): Pr
     findings: { type: "string" },
     recorded: { type: "boolean" },
     landings: { type: "string" },
+    json: { type: "boolean" },
   });
   const findings = optional(values, "findings");
   const landingsGiven = optional(values, "landings");
@@ -461,8 +462,13 @@ const doGates = async (environment: CliEnvironment, args: readonly string[]): Pr
     return recordGates(environment, { ...where, ...(findings === undefined ? {} : { findings }) });
   }
   if (values.recorded === true) return recordedGates(environment, where);
-  return (await gates(environment, { ...where, ...(landings === undefined ? {} : { landings }) }))
-    .exitCode;
+  return (
+    await gates(environment, {
+      ...where,
+      ...(landings === undefined ? {} : { landings }),
+      ...(values.json === true ? { json: true } : {}),
+    })
+  ).exitCode;
 };
 
 const doResume = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {

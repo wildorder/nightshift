@@ -206,11 +206,14 @@ export const auditOnMachine = async (
   context: MachineAuditContext,
   log: (line: string) => void,
 ): Promise<MachineAuditResult> => {
+  // Every machine checks the prerequisites for itself, a replacement too: a
+  // prerequisite is met where the work runs, by this generation's own check,
+  // and without one every check that needs it would defer on the new machine.
+  const unmet = await checkPrerequisitesOnMachine(runtime, context, log);
   if (context.dispatch.generation > 1) {
     context.onProgress?.({ stage: "audit", verdict: "skipped", detail: SKIPPED_AUDIT_DETAIL });
     return {};
   }
-  const unmet = await checkPrerequisitesOnMachine(runtime, context, log);
   const base = context.dispatch.input.baseSha.slice(0, 8);
   log(`gate audit: setup and every check, on ${base}`);
   context.onProgress?.({ stage: "audit", detail: `setup and every check, on ${base}` });

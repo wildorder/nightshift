@@ -17,6 +17,7 @@ import {
   agentLauncher,
   createWorkerLaunchForTest,
   harnessModuleSpecifier,
+  machineSiteOf,
 } from "./compose.js";
 import { EXECUTION_TOKEN_ENV, EXECUTION_TOKEN_FILE_ENV, WORKER_IDENTITY_ENV } from "./role.js";
 
@@ -154,5 +155,23 @@ describe("agentLauncher (P16 S-01)", () => {
 
   it("leaves a CLI the image does not have to be found by name", () => {
     expect(agentLauncher("codex", deps({}, {}), "/usr/local/bin/node")).toBeUndefined();
+  });
+});
+
+describe("the engine's site (D-P7-10, 2026-10-16)", () => {
+  it("is the run's machine and generation when the runner names both, and the laptop otherwise", () => {
+    expect(
+      machineSiteOf({
+        NIGHTSHIFT_PINNED_RUN: "proj_1/prog_1/run_01HZZZZZZZZZZZZZZZZZZZZZZZ",
+        NIGHTSHIFT_DISPATCH_GENERATION: "2",
+      }),
+    ).toEqual({
+      where: "machine",
+      dispatch: { runId: "run_01HZZZZZZZZZZZZZZZZZZZZZZZ", generation: 2 },
+    });
+    expect(
+      machineSiteOf({ NIGHTSHIFT_PINNED_RUN: "proj_1/prog_1/run_01HZZZZZZZZZZZZZZZZZZZZZZZ" }),
+    ).toBeUndefined();
+    expect(machineSiteOf({})).toBeUndefined();
   });
 });

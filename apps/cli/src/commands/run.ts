@@ -46,6 +46,8 @@ export interface RunOptions {
   readonly confirmIrreversible?: readonly string[];
   /** With `--remote` (P10, D-P10-14): the tier, else the contract's, the config's, the recommendation, `good`. */
   readonly compute?: string;
+  /** False, as `--no-push` asks: refuse an unpushed program branch rather than push it. */
+  readonly push?: boolean;
 }
 
 export interface RunResult {
@@ -146,6 +148,7 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
       attended: options.attended === true,
       remote: options.remote,
       ...(options.compute === undefined ? {} : { compute: options.compute }),
+      ...(options.push === undefined ? {} : { push: options.push }),
       ...(options.harness === undefined ? {} : { harness: options.harness }),
       ...(options.model === undefined ? {} : { model: options.model }),
       ...(options.confirmIrreversible === undefined

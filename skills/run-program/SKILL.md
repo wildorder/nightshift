@@ -35,9 +35,11 @@ Check, and say what you find, without fixing anything the human did not ask for:
   run. Nightshift integrates by fast-forwarding the branch the checkout is on and
   refuses a dirty tree; a run started on the wrong branch fails its first landing
   hours later.
-- **The plan is ratified and unchanged.** `nightshift plan check {id}` says
-  `READY`. The run itself refuses an edited plan; this only saves the wait.
-- **Prerequisites.** `nightshift preflight {id}` when the contract has any. An
+- **The plan is READY and committed.** `nightshift plan check {id}` says
+  `READY`. `nightshift run` ratifies it if it is not ratified yet, or was edited
+  since: asking to run a plan is approving it.
+- **Prerequisites.** `nightshift run` checks every one where the work runs, once
+  for the run; `nightshift preflight {id}` shows the same ahead of time. An
   unmet prerequisite that a *first* strand needs stops the run before it starts;
   one that only a later strand or a verification step needs does not: the work
   carries on a provisional line and the checks that need it are deferred until
@@ -236,9 +238,8 @@ saying so. Read the rewritten report to the human as above.
 ## What you must not do
 
 - Start a run on a branch other than the program branch, or with a dirty tree.
-- Edit the plan or the contract to get past a refusal. `plan_not_ratified` and
-  `plan_changed` mean ratify again, after the human has looked.
-- Mark a prerequisite satisfied by any means but `nightshift preflight`.
+- Edit the plan or the contract to get past a refusal.
+- Mark a prerequisite satisfied by any means but its `verifyCommand` passing.
 - Retry, cancel or "help" a job by hand while the run is up. The engine
   retries; the report explains.
 - Summarise the report as "done" when it says deferred or parked, or when it

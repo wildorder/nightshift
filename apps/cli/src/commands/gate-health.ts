@@ -26,19 +26,20 @@ import { type GateAudit, revParse } from "@nightshift/execution";
 import { isTokenProfile, tokenClaims } from "@nightshift/persistence/http";
 import { z } from "zod";
 import type { CliEnvironment } from "../environment.js";
-import { describeFailure, UsageError } from "../failures.js";
+import { UsageError } from "../failures.js";
 import { fingerprintAtCommit, gitBlobReader, type ReadBlob } from "../gate-fingerprint.js";
 import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
 import { type FreshSession, openFreshSession, openSession, type Session } from "../session.js";
 import {
-  auditContractOf,
   auditProgramGates,
   describeAudit,
   describePlan,
   describeRecommendations,
   landingsFor,
   measuredFromAudit,
+  prerequisitesUnmetHere,
   resolveGates,
+  sessionProblem,
 } from "./gates.js";
 
 export interface RecordGatesOptions {
@@ -148,15 +149,6 @@ const reviewProblems = async (
   return problems;
 };
 
-/** "Not signed in", said plainly, or whatever else kept the control plane out of reach. */
-const sessionProblem = (error: unknown): string => {
-  const failure = describeFailure(error);
-  if (failure.code === "not_logged_in") return "you are not signed in: run `nightshift login`";
-  return `the control plane could not be reached (${failure.code}): ${failure.summary}${
-    failure.advice === undefined ? "" : ` ${failure.advice}`
-  }`;
-};
-
 /** The signed-in operator, as the record names them. The control plane holds it to the caller. */
 const principalOf = (session: FreshSession, orgId: string) =>
   UserPrincipalSchema.parse({
@@ -238,7 +230,7 @@ export const recordGates = async (
   if (signed === undefined) return 1;
 
   // The contract `nightshift gates` would audit, so the record is of that audit.
-  const contract = await auditContractOf(environment, files, signed.session);
+  const contract = files.contract;
   const branch = contract.repository.programBranch;
   const read = gitBlobReader(repoPath);
   const head = await revParse(environment.git, repoPath, branch);
@@ -246,7 +238,10 @@ export const recordGates = async (
   const problems = await reviewProblems(review, files.contract, read, head);
   if (problems.length > 0) return refuse(environment, problems, options.findings ?? "the audit");
 
-  const audit = await auditProgramGates(environment, contract, repoPath);
+  const unmet = await prerequisitesUnmetHere(environment, contract, repoPath);
+  const audit = await auditProgramGates(environment, contract, repoPath, environment.out, {
+    unmet,
+  });
   describeAudit(environment, audit);
   const refusal = auditRefusal(options.id, branch, head, audit, review);
   if (refusal !== undefined) {
