@@ -496,3 +496,38 @@ describe("every agent's brief, after jobs lost their path scope", () => {
     expect(briefs["sub-program orchestrator"]).not.toContain("WHERE THE PLAN EXPECTS");
   });
 });
+
+describe("a strand's plan reviewer (P18, D-P18-01)", () => {
+  it("is told to review the split before anything is built, and given one tool to say so", () => {
+    const f = createFixtures();
+    const brief = renderWorkerBrief({
+      job: makeJobContract(f, {
+        objective: "### S-01 The admin shell",
+        acceptance: ["Every admin page renders in the shell"],
+        strandId: "S-01",
+      }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: makeProgramContract(f),
+      worktree: "/tmp/strand",
+      task: {
+        kind: "review_plan",
+        plan: "J1: SurfaceShell\nJ2: AdminShell, on J1",
+        round: 1,
+        of: 2,
+      },
+    });
+    expect(brief).toContain("You are an independent reviewer for Nightshift");
+    expect(brief).toContain("J2: AdminShell, on J1");
+    expect(brief).toContain("Every admin page renders in the shell");
+    expect(brief).toContain("plan.review.submit");
+    // Not the strand orchestrator's brief, which would have it delegate.
+    expect(brief).not.toContain("strand.plan");
+    expect(nightshiftToolNames("sub-program", undefined, "examiner", "review_plan")).toEqual([
+      "plan.review.submit",
+    ]);
+    expect(nightshiftToolNames("job", undefined, "examiner")).toEqual([
+      "examination.ask",
+      "examination.submit",
+    ]);
+  });
+});

@@ -76,7 +76,12 @@ import {
 } from "./recover-candidate.js";
 import { createRouteAvailability } from "./route-availability.js";
 import { attemptsOf, delegateJob, type StartedJob, startJob } from "./runner.js";
-import { MAX_STRAND_FIX_ROUNDS, strandContinuing, strandFailures } from "./strand.js";
+import {
+  MAX_STRAND_FIX_ROUNDS,
+  strandContinuing,
+  strandFailures,
+  strandLandingFailed,
+} from "./strand.js";
 import { planStateOf, reviewPending, reviewStrandPlan } from "./strand-plan.js";
 
 export interface EngineOptions {
@@ -503,7 +508,22 @@ export const createEngine = (options: EngineOptions): Engine => {
       }
       cursor = page.cursor;
     } while (cursor !== undefined);
-    return strandOutcomes(strandAttempts(nodes, strandOfJob), session.run.carriedStrands ?? []);
+    const outcomes: Record<string, StrandOutcomes[string]> = {
+      ...strandOutcomes(strandAttempts(nodes, strandOfJob), session.run.carriedStrands ?? []),
+    };
+    // A strand whose landing failed and whose own orchestrator is fixing it is
+    // still in hand, not failed: nothing that depends on it is parked for it
+    // (P18, D-P18-05; admin-redesign, 2026-10-17, parked S-02 mid-fix).
+    for (const node of nodes) {
+      if (!strandLandingFailed(node) || node.jobContractId === null) continue;
+      const strandId = strandOfJob.get(node.jobContractId);
+      if (strandId === undefined || outcomes[strandId] !== "failed") continue;
+      const rounds = attemptsOf(
+        await stores.routingDecisions.listByNode(session.scope, node.executionNodeId),
+      ).length;
+      if (strandContinuing(node, rounds) !== undefined) outcomes[strandId] = "running";
+    }
+    return outcomes;
   };
 
   /** True while a strand's dependencies have not all succeeded. Records what it waits for. */

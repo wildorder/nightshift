@@ -83,6 +83,7 @@ import {
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import { type GateDefinitions, gateDefinitions, landingSteps } from "./gate-repair.js";
 import { pristineCheckout, provisionalRef, tryRevParse, updateRef } from "./git/index.js";
+import { unmetWhereThisRuns } from "./prerequisites-here.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 import { discardScratch, freshScratch, projectStepEnv } from "./scratch.js";
 
@@ -157,15 +158,13 @@ const unmetPrerequisites = async (
   if (steps.every((step) => (step.requires ?? []).length === 0)) {
     return new Set();
   }
-  const current =
-    environment.prerequisites === undefined
-      ? prerequisitesOf(program)
-      : await environment.prerequisites.prerequisites({
-          projectId: program.projectId,
-          programId: program.programId,
-        });
-  // Met where this engine runs: on a machine, by that machine's own check.
-  return unmetPrerequisitesAt(current, environment.site ?? { where: "laptop" });
+  // Without a control plane to ask, the contract's own copy is all there is.
+  if (environment.prerequisites === undefined) {
+    return unmetPrerequisitesAt(prerequisitesOf(program), { where: "laptop" });
+  }
+  // Met where this engine runs: on a machine, by that machine's own check,
+  // made now when it has none (prerequisites-here.ts).
+  return unmetWhereThisRuns(environment, session, steps);
 };
 
 /**

@@ -170,6 +170,8 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
       return renderContinueBrief(input, input.task);
     case "strand_fix":
       return renderStrandFixBrief(input.task);
+    case "review_plan":
+      return renderPlanReviewBrief(input, input.task);
     default:
       break;
   }
@@ -345,7 +347,10 @@ export const nightshiftToolNames = (
   program?: ProgramContract,
   /** P8: an examiner's, an arbiter's and an answerer's surfaces are their own. */
   role?: AgentRole,
+  /** P18: an examiner reviewing a strand's job plan has one tool of its own. */
+  task?: AgentTask["kind"],
 ): readonly string[] => {
+  if (role === "examiner" && task === "review_plan") return ["plan.review.submit"];
   if (role === "examiner") return ["examination.ask", "examination.submit"];
   if (role === "arbiter") return ["finding.rule"];
   if (role === "answerer") return [];
@@ -777,6 +782,54 @@ const renderCarriedOver = (work: CarriedOverWork): string =>
   ].join("\n");
 
 /**
+ * An independent examiner reviewing a strand's job plan before anything is
+ * built (P18, D-P18-01): the plan, the strand it must build, and one verdict.
+ */
+const renderPlanReviewBrief = (
+  input: WorkerBriefInput,
+  task: Extract<AgentTask, { kind: "review_plan" }>,
+): string =>
+  `${present(
+    [
+      "You are an independent reviewer for Nightshift. A strand's orchestrator has split its",
+      "strand into jobs, and nothing has been built yet. Review the split, not code: whether",
+      "building these jobs, as written, delivers the strand's acceptance, quickly and without",
+      "the jobs tripping over each other.",
+      "",
+      `Review ${task.round} of ${task.of}.`,
+    ].join("\n"),
+    ["THE STRAND", `  ${input.job.objective}`].join("\n"),
+    ["ITS ACCEPTANCE CRITERIA", numbered(input.job.acceptance)].join("\n"),
+    ["THE JOB PLAN", indent(task.plan, 2)].join("\n"),
+    [
+      "WHAT TO CHECK",
+      "",
+      "  - Coverage: every acceptance criterion is delivered by some job's acceptance.",
+      "  - Dependencies are real: a job depends on another only when it cannot be built until",
+      "    that exists. A needless dependency serialises work that could run at once.",
+      "  - Jobs that run at the same time do not change the same files: read the code at",
+      `    ${input.worktree} to see what each job will actually touch.`,
+      "  - Each job is worth its cost: a worker's start and its own tests. Splitting finer",
+      "    than that wastes time; one job doing everything builds nothing in parallel.",
+      "  - The branch still builds after each merge, in the order the dependencies allow.",
+      "",
+      "  A finding is MATERIAL when building the plan as it stands would miss the acceptance,",
+      "  make jobs conflict, or waste real time. Anything else is minor. Do not rewrite the",
+      "  plan; say what is wrong and why, with the job ids it is about.",
+    ].join("\n"),
+    [
+      "HOW TO FINISH — exactly once",
+      "",
+      "  nightshift plan.review.submit { verdict, summary, findings }",
+      "    verdict: sound (build it as planned) or revise (change it first).",
+      "    findings: [{ severity: material | minor, summary, jobs? }]",
+      "",
+      "  Read the code you need, then submit. You change nothing.",
+    ].join("\n"),
+    headlessSession("plan.review.submit"),
+  ).join("\n\n")}\n`;
+
+/**
  * A strand's orchestrator, resumed because its strand's landing failed (P18,
  * D-P18-05). The same session: it knows its plan, its jobs and the code.
  */
@@ -1183,6 +1236,6 @@ export const promptFor = (
     : withAddendum(
         brief,
         input.mcp.name,
-        nightshiftToolNames(input.node.kind, input.program, input.agent.role),
+        nightshiftToolNames(input.node.kind, input.program, input.agent.role, input.task?.kind),
       );
 };

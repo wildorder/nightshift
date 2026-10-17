@@ -14,8 +14,10 @@
  * Nothing here decides anything. A caller supplies the commits and the paths;
  * these functions run the commands and report what happened.
  */
+import { realpath, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { CommitSha } from "@nightshift/contracts";
-import { type GitOptions, type GitRunner, git, tryGit } from "./runner.js";
+import { GitError, type GitOptions, type GitRunner, git, tryGit } from "./runner.js";
 
 const trimmed = (value: string): string => value.trim();
 
@@ -159,7 +161,9 @@ export const addDetachedWorktree = async (
  * `refs/nightshift/sealed/<nodeId>` and deleting the branch loses nothing, and
  * by a launch that failed before any work existed. A worktree that was never
  * made, or whose directory is already gone, is forgotten and its branch freed.
- * One that is there and will not go is left whole, and the call throws with
+ * Git can unregister a worktree even when Windows cannot delete its directory.
+ * Finish that deletion with bounded filesystem retries before freeing its refs.
+ * A still-registered worktree is left alone, and the call throws with
  * git's own reason: a branch left behind silently is how a retry of the same
  * job later failed with "a branch named … already exists" and no cause (keki,
  * 2026-10-08).
@@ -173,10 +177,34 @@ export const removeWorktree = async (
 ): Promise<void> => {
   await repoWrite(repo, async () => {
     const removed = await tryGit(runner, ["worktree", "remove", "--force", path], { cwd: repo });
-    if (removed.exitCode !== 0) await tryGit(runner, ["worktree", "prune"], { cwd: repo });
+    if (removed.exitCode !== 0) await git(runner, ["worktree", "prune"], { cwd: repo });
+    // Check registration independently of the branch: detached and locked
+    // worktrees must not be erased by filesystem cleanup either.
+    const listed = await git(runner, ["worktree", "list", "--porcelain", "-z"], { cwd: repo });
+    const canonical = async (value: string): Promise<string> => {
+      const absolute = await realpath(resolve(repo, value)).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return resolve(repo, value);
+        },
+      );
+      return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+    };
+    const paths = await Promise.all(
+      listed
+        .split("\0")
+        .filter((field) => field.startsWith("worktree "))
+        .map((field) => canonical(field.slice(9))),
+    );
+    const registered = paths.includes(await canonical(path));
+    if (registered) throw new GitError(["worktree", "remove", "--force", path], repo, removed);
+    await rm(resolve(repo, path), {
+      recursive: true,
+      force: true,
+      maxRetries: PERMISSION_RETRIES,
+      retryDelay: 100,
+    });
     const deleted = await tryGit(runner, ["branch", "-D", branch], { cwd: repo });
-    if (nodeId !== undefined)
-      await tryGit(runner, ["update-ref", "-d", baseRef(nodeId)], { cwd: repo });
     const left = await tryGit(
       runner,
       ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
@@ -189,6 +217,15 @@ export const removeWorktree = async (
         .join("; ");
       throw new Error(`could not remove the worktree at ${path} and its branch ${branch}: ${why}`);
     }
+    if (nodeId !== undefined)
+      await git(runner, ["update-ref", "-d", baseRef(nodeId)], { cwd: repo });
+  }).catch((error: unknown) => {
+    throw new Error(
+      `could not remove the worktree at ${path} and its branch ${branch}: ${String(error)}`,
+      {
+        cause: error,
+      },
+    );
   });
 };
 

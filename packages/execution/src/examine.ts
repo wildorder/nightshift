@@ -77,7 +77,6 @@ import {
   policyOfRun,
   transition,
   transitionAgent,
-  unmetPrerequisitesAt,
 } from "@nightshift/core";
 import {
   type AgentTask,
@@ -112,6 +111,7 @@ import {
   updateRef,
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
+import { unmetWhereThisRuns } from "./prerequisites-here.js";
 import { unavailableUntil } from "./route-availability.js";
 import { programRulings, rulingsCarriedBy } from "./rulings.js";
 import { recordArtifact, runAsOf, stepsAs } from "./runner.js";
@@ -908,15 +908,9 @@ const candidateVerification = async (
   // are the run's to pass, once its work has landed (A-57).
   const steps: readonly VerificationStep[] = landingSteps(gates);
   if (steps.some((step) => (step.requires ?? []).length > 0)) {
-    const current =
-      environment.prerequisites === undefined
-        ? []
-        : await environment.prerequisites.prerequisites({
-            projectId: input.session.program.projectId,
-            programId: input.session.program.programId,
-          });
-    // Met where this engine runs: on a machine, by that machine's own check.
-    const unmet = unmetPrerequisitesAt(current, environment.site ?? { where: "laptop" });
+    // Met where this engine runs: on a machine, by that machine's own check,
+    // made now when it has none (prerequisites-here.ts).
+    const unmet = await unmetWhereThisRuns(environment, input.session, steps);
     if (steps.some((step) => (step.requires ?? []).some((id) => unmet.has(id)))) return "postponed";
   }
 

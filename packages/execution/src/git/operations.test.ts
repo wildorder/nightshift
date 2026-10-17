@@ -8,7 +8,7 @@
  *
  * `git` is on the path on both CI runners, which is stated in the contract §7.
  */
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommitSha } from "@nightshift/contracts";
@@ -32,7 +32,7 @@ import {
   tryRevParse,
   updateRef,
 } from "./operations.js";
-import { GitError, git, nodeGitRunner } from "./runner.js";
+import { GitError, type GitRunner, git, nodeGitRunner } from "./runner.js";
 
 const AT = Date.parse("2026-09-15T12:00:00.000Z");
 const PROGRAM_BRANCH = "program/test";
@@ -114,6 +114,59 @@ describe("the working tree", () => {
 });
 
 describe("worktrees", () => {
+  it.each([0, 1])(
+    "removes an unregistered directory left by git (exit %i) so the same job can start again",
+    async (exitCode) => {
+      const { repo, base } = await repository();
+      const path = join(repo, "..", "wt-leftover");
+      const branch = jobBranch("run_a", "node_leftover");
+      await addWorktree(nodeGitRunner, { repo, path, branch, base });
+      const leavesDirectory: GitRunner = async (args, options) => {
+        const result = await nodeGitRunner(args, options);
+        if (args[0] === "worktree" && args[1] === "remove") {
+          expect(result.exitCode).toBe(0);
+          await mkdir(join(path, "ignored"), { recursive: true });
+          await writeFile(join(path, "ignored", "cache"), "left behind");
+          return { ...result, exitCode, stderr: "failed to delete directory: Permission denied" };
+        }
+        return result;
+      };
+      await removeWorktree(leavesDirectory, repo, path, branch);
+      await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+      await addWorktree(nodeGitRunner, { repo, path, branch, base });
+      expect(await revParse(nodeGitRunner, path, "HEAD")).toBe(base);
+    },
+  );
+
+  it("cleans a leftover directory when an earlier removal already freed the branch", async () => {
+    const { repo, base } = await repository();
+    const path = join(repo, "..", "wt-orphan");
+    const branch = jobBranch("run_a", "node_orphan");
+    await mkdir(path);
+    await writeFile(join(path, "cache"), "left behind");
+    await removeWorktree(nodeGitRunner, repo, path, branch);
+    await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    await addWorktree(nodeGitRunner, { repo, path, branch, base });
+  });
+
+  it("retries a transient Windows removal failure before returning control to the job", async () => {
+    const { repo, base } = await repository();
+    const path = join(repo, "..", "wt-busy");
+    const branch = jobBranch("run_a", "node_busy");
+    await addWorktree(nodeGitRunner, { repo, path, branch, base });
+    let removals = 0;
+    const busyOnce: GitRunner = async (args, options) => {
+      if (args[0] === "worktree" && args[1] === "remove" && ++removals === 1) {
+        return { exitCode: 1, stdout: "", stderr: "Permission denied" };
+      }
+      return nodeGitRunner(args, options);
+    };
+    await removeWorktree(busyOnce, repo, path, branch);
+    expect(removals).toBe(2);
+    await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    await addWorktree(nodeGitRunner, { repo, path, branch, base });
+  });
+
   it("creates one on its own branch at the base, and removes it with its refs", async () => {
     const { repo, base } = await repository();
     const path = join(repo, "..", "wt");
@@ -157,6 +210,7 @@ describe("worktrees", () => {
       /could not remove the worktree at .* and its branch .*locked/,
     );
     expect(await tryRevParse(nodeGitRunner, repo, branch)).toBe(base);
+    expect(await readFile(join(path, "src", "a.ts"), "utf8")).toContain("export const a");
   });
 });
 

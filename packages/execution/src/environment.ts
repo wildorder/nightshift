@@ -11,6 +11,7 @@
 
 import type {
   AgentId,
+  CheckDispatch,
   ExecutionNodeId,
   JobContract,
   JobContractId,
@@ -262,6 +263,16 @@ export interface PrerequisiteBook {
       readonly remediation: string;
       readonly verifyCommand: string;
     },
+  ): Promise<Prerequisite>;
+  /**
+   * Records one run of a prerequisite's check on a run's machine, under its
+   * dispatch generation (P16, D-08). Absent where there is no machine.
+   */
+  recordMachineCheck?(
+    scope: ProgramScope,
+    prerequisiteId: string,
+    exitCode: number,
+    dispatch: CheckDispatch,
   ): Promise<Prerequisite>;
 }
 

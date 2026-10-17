@@ -23,6 +23,7 @@ import {
 } from "../testing/harness.js";
 import {
   EXIT_DETACHED,
+  endingOf,
   MAX_POLL_FAILURES,
   OK_GO_BANNER,
   POLL_MS,
@@ -522,5 +523,14 @@ describe("nightshift remote status", () => {
     expect(await runCli(created.environment, ["remote", "cancel", "p1-fixture", "--watch"])).toBe(
       2,
     );
+  });
+});
+
+describe("the machine is ready when its root orchestrates (2026-10-17)", () => {
+  it("says go once the root is orchestrating on this generation, with no audit verdict", () => {
+    expect(endingOf(running(at(300, "orchestrating")))).toEqual({ kind: "go", verdict: "started" });
+    // A replacement's root is the one that counts.
+    expect(endingOf(running(at(300, "orchestrating"), { generation: 2 }))).toBeUndefined();
+    expect(endingOf(running(at(60, "workspace")))).toBeUndefined();
   });
 });
