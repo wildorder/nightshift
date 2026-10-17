@@ -55,16 +55,22 @@ export const createWorkerTokenFiles = (options: WorkerTokenFileOptions = {}): Wo
     place: async (scope: RunScope, agentId, token) => {
       const agents = join(directory(scope.runId), "agents");
       const dir = workerTokenDirectory(scope.runId, agentId, directory);
-      await mkdir(dir, { recursive: true });
       // The run's directory is traversable by everyone on the way down, and
-      // not listable (root.ts). The agents' directory is the group's and
-      // set-group-id, so each worker's directory and file beneath it are the
-      // group's too, whatever this process's own group is; the worker may
-      // enter its directory and read its file, and only the engine may write.
+      // not listable (root.ts). The agents' directory and the worker's own are
+      // the group's, and set-group-id so the token file made in the worker's
+      // takes the group too, whatever this process's own group is: the worker
+      // may enter its directory and read its file, and only the engine may
+      // write. Each is given the group itself, not left to inherit it: a
+      // directory made before its parent became the group's keeps the
+      // engine's own group, and then nobody but the engine can enter it
+      // (2026-10-17, admin-redesign: every agent's token read failed EACCES).
+      await mkdir(agents, { recursive: true });
       await chmod(directory(scope.runId), 0o711).catch(() => undefined);
       await setGroup(group, agents);
       await chmod(agents, 0o2711);
-      await chmod(dir, 0o710);
+      await mkdir(dir, { recursive: true });
+      await setGroup(group, dir);
+      await chmod(dir, 0o2710);
       // Whole or absent, never half-written under a reader: the renewal lands
       // beside the old token and takes its place in one step.
       const path = workerTokenFile(scope.runId, agentId, directory);
