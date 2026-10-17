@@ -26,6 +26,7 @@ import {
 } from "@nightshift/core";
 import type { ExecutionEnvironment } from "./environment.js";
 import { commitsSince, effectiveHead } from "./git/index.js";
+import { landedJobCommits } from "./strand.js";
 
 export type StampEnvironment = Pick<ExecutionEnvironment, "stores" | "git">;
 
@@ -84,13 +85,7 @@ const subtreeOf = (
 };
 
 const landedCommits = (nodes: readonly ExecutionNode[]): Set<string> =>
-  new Set(
-    nodes.flatMap((node) =>
-      node.kind === "job" && node.status === "integrated" && node.commitSha !== null
-        ? [node.commitSha]
-        : [],
-    ),
-  );
+  new Set(landedJobCommits(nodes));
 
 const write = async (
   environment: StampEnvironment,

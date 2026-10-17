@@ -205,7 +205,8 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
     expect(ORCHESTRATOR_WRITABLE_NODE_STATUSES).toEqual({
       new_child: ["validated"],
       descendant: ["cancelled", "queued"],
-      self: ["succeeded", "failed"],
+      // `implemented`: a strand completing itself at its branch's head (P18, D-P18-04).
+      self: ["succeeded", "implemented", "failed"],
       outside: [],
     });
     for (const relation of ["self", "descendant", "new_child", "outside"] as const) {
@@ -220,14 +221,11 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
   });
 
   it("can never start, verify, seal, integrate, or mint: those are the engine's", () => {
-    for (const status of [
-      "running",
-      "implemented",
-      "verifying",
-      "verified",
-      "sealed",
-      "integrated",
-    ]) {
+    // Its own node it may report implemented, at its strand's head (P18); never a child's.
+    for (const relation of ["descendant", "new_child"] as const) {
+      expect(authorize(orchestrator, "node.put", at(relation, "implemented")).allowed).toBe(false);
+    }
+    for (const status of ["running", "verifying", "verified", "sealed", "integrated"]) {
       for (const relation of ["self", "descendant", "new_child"] as const) {
         expect(authorize(orchestrator, "node.put", at(relation, status)).allowed).toBe(false);
       }

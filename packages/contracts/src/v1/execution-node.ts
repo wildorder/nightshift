@@ -40,6 +40,12 @@ export const ExecutionNodeStatusSchema = z.enum([
   "sealed",
   "integrated",
   /**
+   * P18 (D-P18-03): a strand job whose commit has merged onto its strand's
+   * branch. Not verified on its own: it is verified, examined and integrated as
+   * part of its strand, whose node lands once. Terminal for the job.
+   */
+  "merged",
+  /**
    * A finished **program or sub-program** node (P5, D-P5-06). Never a job node:
    * a job that worked is `integrated`, and only through `verified` (A-05). `core`
    * guards the edge by node kind.

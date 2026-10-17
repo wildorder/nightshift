@@ -33,7 +33,11 @@ export const keysNamedBy = (event: Event, runId: string): (readonly unknown[])[]
   if (event.type.startsWith("decision.")) keys.push(["decisions", runId]);
   if (event.type === "checkpoint.created") keys.push(["checkpoints", runId]);
   if (event.type === "artifact.recorded") keys.push(["artifacts", runId]);
-  if (event.type === "integration.conflict" || event.type === "node.integrated")
+  if (
+    event.type === "integration.conflict" ||
+    event.type === "node.integrated" ||
+    event.type === "node.merged"
+  )
     keys.push(["nodes", runId]);
   return keys;
 };

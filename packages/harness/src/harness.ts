@@ -172,6 +172,33 @@ export type AgentTask =
         readonly exitCode: number | null;
         readonly output: string;
       }[];
+    }
+  /** P18 (D-P18-01): review a strand's job plan before anything is built. */
+  | {
+      readonly kind: "review_plan";
+      /** The plan as its orchestrator recorded it. */
+      readonly plan: string;
+      readonly round: number;
+      readonly of: number;
+    }
+  /**
+   * P18 (D-P18-05): a strand's orchestrator, its own session resumed, because
+   * its strand's landing failed: what failed, to fix with jobs of its own. A
+   * round of `of`; after the last the strand fails, for the root to decide.
+   */
+  | {
+      readonly kind: "strand_fix";
+      readonly round: number;
+      readonly of: number;
+      readonly failedChecks: readonly {
+        readonly stepId: string;
+        readonly command: string;
+        readonly exitCode: number | null;
+        readonly output: string;
+      }[];
+      readonly findings: readonly ExaminationFinding[];
+      /** A conflict with the program head, said as the queue said it. */
+      readonly conflict?: string;
     };
 
 /**
@@ -256,6 +283,11 @@ export interface HarnessStartInput {
   readonly resume?: { readonly sessionId: string };
   /** The last attempt's unfinished work, when there was some. See {@link CarriedOverWork}. */
   readonly carriedOver?: CarriedOverWork;
+  /**
+   * P18 (D-P18-03): the job is one of a strand's, and its work merges onto the
+   * strand's branch, verified as part of the strand rather than on its own.
+   */
+  readonly landsOnStrand?: boolean;
   /**
    * The same four operations that server exposes, as functions, for a harness
    * that cannot be handed a process to spawn (rule 6). Built by the execution

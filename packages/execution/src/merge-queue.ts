@@ -42,6 +42,7 @@ import { examineInQueue, recordRulingLanded } from "./examine.js";
 import { effectiveHead, replayCommit } from "./git/index.js";
 import { integrateNode } from "./integrate.js";
 import type { IntegrateCandidate, IntegrationCandidate } from "./runner.js";
+import { mergeHeadIntoStrand } from "./strand.js";
 import { verifyNode } from "./verify.js";
 
 export interface MergeQueue {
@@ -293,12 +294,27 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
       return undefined;
     }
 
-    const replayed = await replayCommit(runner, {
-      worktree: candidate.worktree,
-      commit: from,
-      onto: head,
-      atMs: clock.now(),
-    });
+    // A strand is many commits, one per job: the program head is merged into
+    // its branch rather than the strand replayed onto it, so each job's commit
+    // stays in the history (P18, D-P18-04).
+    const replayed =
+      node.kind === "sub-program"
+        ? await mergeHeadIntoStrand(environment, {
+            repo: candidate.session.repoPath,
+            worktree: candidate.worktree,
+            strandNodeId: candidate.nodeId,
+            head,
+          }).then((merged) =>
+            merged.merged
+              ? { ok: true as const, commitSha: merged.head }
+              : { ok: false as const, conflicts: merged.conflicts, detail: merged.detail },
+          )
+        : await replayCommit(runner, {
+            worktree: candidate.worktree,
+            commit: from,
+            onto: head,
+            atMs: clock.now(),
+          });
     if (!replayed.ok) {
       const paths = replayed.conflicts.length > 0 ? replayed.conflicts.join(", ") : replayed.detail;
       outbox.emit({

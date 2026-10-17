@@ -120,6 +120,9 @@ export const routeOutcomeForNodeStatus = (status: string): RouteOutcome => {
     case "integrated":
       return "verified";
     case "succeeded":
+    // A strand job's work landed on its strand (P18): the route did its job;
+    // whether the strand then verifies is the strand's route's outcome.
+    case "merged":
       return "succeeded";
     case "verification_failed":
       return "verification_failed";

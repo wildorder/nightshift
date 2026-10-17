@@ -30,9 +30,18 @@ import {
   RunIdSchema,
 } from "@nightshift/contracts";
 import type { WorkerIdentity } from "@nightshift/execution";
-import { createEventOutbox, shutdown, type WorkerEnvironment } from "@nightshift/execution";
+import {
+  createEventOutbox,
+  PLAN_REVIEW_FILE_ENV,
+  shutdown,
+  type WorkerEnvironment,
+} from "@nightshift/execution";
 import { createRuntime, type Runtime } from "./compose.js";
-import { registerArbiterTools, registerExaminerTools } from "./examiner.js";
+import {
+  registerArbiterTools,
+  registerExaminerTools,
+  registerPlanReviewTools,
+} from "./examiner.js";
 import { pinnedRunOf } from "./headless.js";
 import { jobWaitCap, registerOrchestratorTools } from "./orchestrator.js";
 import type { Env, Role } from "./role.js";
@@ -157,7 +166,10 @@ const buildHelper = (
     outbox,
   };
   const deps = { identity, environment, ids: runtime.ids, env: input.env };
-  if (role === "examiner") registerExaminerTools(server, deps);
+  // An examiner reviewing a strand's job plan rather than work (P18, D-P18-01).
+  if (role === "examiner" && (input.env[PLAN_REVIEW_FILE_ENV] ?? "") !== "") {
+    registerPlanReviewTools(server, deps);
+  } else if (role === "examiner") registerExaminerTools(server, deps);
   else registerArbiterTools(server, deps);
 
   let stopped = false;

@@ -1052,16 +1052,19 @@ export const verificationEvidence = async (
 // Agents that are not the job's own
 // ---------------------------------------------------------------------------
 
-interface HelperAgent {
+export interface HelperAgent {
   readonly agent: Agent;
   readonly decision: RoutingDecision;
   readonly token: string | undefined;
 }
 
+/** The part of an examination's input a helper agent needs: where, and for which job. */
+export type HelperInput = Pick<ExamineInput, "session" | "node" | "job">;
+
 /** An agent on the job's node for an examiner, an answerer or an arbiter: record, route, token. */
-const createHelper = async (
+export const createHelper = async (
   environment: ExecutionEnvironment,
-  input: ExamineInput,
+  input: HelperInput,
   role: "examiner" | "answerer" | "arbiter",
   route: RouteChoice,
 ): Promise<HelperAgent> => {
@@ -1124,9 +1127,9 @@ const createHelper = async (
 };
 
 /** One run of a helper's harness process. */
-const runHelper = async (
+export const runHelper = async (
   environment: ExecutionEnvironment,
-  input: ExamineInput,
+  input: HelperInput,
   helper: HelperAgent,
   launch: {
     readonly worktree: string;
@@ -1203,7 +1206,7 @@ const sumUsage = (exits: readonly HarnessExit[]): RoutingDecision["usage"] => {
 /** A helper agent's ending, with the session it kept, once. */
 const endAgent = async (
   environment: ExecutionEnvironment,
-  input: ExamineInput,
+  input: HelperInput,
   helper: HelperAgent,
   last: HarnessExit | undefined,
   succeeded: boolean,
@@ -1227,9 +1230,9 @@ const endAgent = async (
 };
 
 /** A helper's ending, its usage and its route's outcome, once, however it went. */
-const endHelper = async (
+export const endHelper = async (
   environment: ExecutionEnvironment,
-  input: ExamineInput,
+  input: HelperInput,
   helper: HelperAgent,
   exits: readonly HarnessExit[],
   succeeded: boolean,

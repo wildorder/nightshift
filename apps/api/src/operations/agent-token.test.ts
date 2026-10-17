@@ -146,17 +146,12 @@ describe("POST …/agents/{agentId}/token", () => {
       status: "created",
     });
     const workerOnSub = makeAgent(w.f, sub.executionNodeId, { role: "worker", status: "created" });
-    // P8: an examiner or an arbiter on a sub-program would judge work nobody
-    // wrote there, and an answerer reaches no Nightshift tool at all.
-    const examinerOnSub = makeAgent(w.f, sub.executionNodeId, {
-      role: "examiner",
-      status: "created",
-    });
+    // An answerer reaches no Nightshift tool at all.
     const answerer = makeAgent(w.f, w.node.executionNodeId, {
       role: "answerer",
       status: "created",
     });
-    for (const agent of [onJob, workerOnSub, examinerOnSub, answerer]) {
+    for (const agent of [onJob, workerOnSub, answerer]) {
       await put(`agents/${agent.agentId}`, agent);
       const refused = await w.call("POST", `${w.run}/agents/${agent.agentId}/token`);
       expect(refused.status, agent.role).toBe(422);
@@ -164,10 +159,18 @@ describe("POST …/agents/{agentId}/token", () => {
     }
   });
 
-  it("mints an examiner's and an arbiter's token on a job node, each with its own role (P8)", async () => {
+  it("mints an examiner's and an arbiter's token on a job or a strand, each with its own role (P8, P18)", async () => {
     const w = await setup();
-    for (const role of ["examiner", "arbiter"] as const) {
-      const agent = makeAgent(w.f, w.node.executionNodeId, { role, status: "created" });
+    // P18 (D-P18-01, D-P18-06): a strand's plan is reviewed, and its landing examined, on its node.
+    const sub = makeNode(w.f, w.root.executionNodeId, { kind: "sub-program" });
+    expect((await w.call("PUT", `${w.run}/nodes/${sub.executionNodeId}`, sub)).status).toBe(201);
+    for (const [role, nodeId] of [
+      ["examiner", w.node.executionNodeId],
+      ["arbiter", w.node.executionNodeId],
+      ["examiner", sub.executionNodeId],
+      ["arbiter", sub.executionNodeId],
+    ] as const) {
+      const agent = makeAgent(w.f, nodeId, { role, status: "created" });
       expect((await w.call("PUT", `${w.run}/agents/${agent.agentId}`, agent)).status).toBe(201);
       const response = await w.call("POST", `${w.run}/agents/${agent.agentId}/token`);
       expect(response.status, role).toBe(201);

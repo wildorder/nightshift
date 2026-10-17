@@ -326,7 +326,8 @@ describe("nightshift run {id}, unattended (SC-P7-06)", () => {
         .filter(
           (node) =>
             strandIds.map(nodeOfStrand).includes(node.parentNodeId ?? "") &&
-            node.status === "integrated",
+            // A strand's jobs merge onto it, and land with it (P18, D-P18-04).
+            node.status === "merged",
         )
         .map((node) => node.commitSha ?? "")
         .sort();
@@ -357,10 +358,13 @@ describe("nightshift run {id}, unattended (SC-P7-06)", () => {
     const said = lines.join("\n");
     for (const strandId of ["S-01", "S-02", "S-03"]) {
       expect(said).toContain(`${strandId} — started`);
-      expect(said).toContain(`${strandId} — succeeded`);
+      // A strand lands once, whole (P18, D-P18-04).
+      expect(said).toMatch(new RegExp(`${strandId} — landed [0-9a-f]{8}`));
     }
     // A job inside a strand is named under it, and its landing is on the record.
-    expect(said).toMatch(/S-02 › Add the b1 module and its test\. — landed [0-9a-f]{8}/);
+    expect(said).toMatch(
+      /S-02 › Add the b1 module and its test\. — merged [0-9a-f]{8} onto its strand/,
+    );
     expect(said).toContain("S-02 — decided: Two modules — DEPARTURE:");
     expect(said).toMatch(/S-0\d › .* — working: \d+ tool calls? \(/);
     // Each call answers "since the last one".

@@ -140,10 +140,11 @@ describe("the Stage 5 tree", () => {
     });
 
     const statuses = await run.waitAll([a, b, c]);
+    // A strand lands once, whole (P18, D-P18-04): C is integrated, its jobs merged onto it.
     expect(statuses).toEqual({
       [String(a.jobId)]: "integrated",
       [String(b.jobId)]: "integrated",
-      [String(c.jobId)]: "succeeded",
+      [String(c.jobId)]: "integrated",
     });
 
     const tree = await run.nodes();
@@ -155,7 +156,7 @@ describe("the Stage 5 tree", () => {
     // token, by its agent, and they are one level deeper.
     expect(cNode.kind).toBe("sub-program");
     expect(kids).toHaveLength(2);
-    expect(kids.every((kid) => kid.status === "integrated" && kid.depth === 2)).toBe(true);
+    expect(kids.every((kid) => kid.status === "merged" && kid.depth === 2)).toBe(true);
     const [cAgent] = await run.ctx.stores.agents.listByNode(run.scope, cNode.executionNodeId);
     expect(cAgent?.role).toBe("orchestrator");
     const delegations = events.filter(
@@ -197,17 +198,23 @@ describe("the Stage 5 tree", () => {
     for (const name of ["alpha", "beta", "c1", "c2"]) expect(files).toContain(`src/${name}.js`);
     expect(files).not.toContain("orchestrator-was-here");
 
-    // SC-P6-15: every commit that landed was verified as itself.
-    const commits = (
-      await git(nodeGitRunner, ["rev-list", `${run.ctx.fixture.baseCommit}..${PROGRAM_BRANCH}`], {
-        cwd: run.ctx.fixture.repo,
-      })
-    )
-      .trim()
-      .split("\n");
-    expect(commits).toHaveLength(4);
+    // SC-P6-15, as P18 has it: every commit the program branch moved to was
+    // verified as itself. A root job lands one commit; a strand lands once, at
+    // its branch's head, with each of its jobs' commits (and the merges that
+    // joined them) beneath it (D-P18-04).
+    // Each landing is a checkpoint at the commit the branch moved to: A, B and
+    // the strand, after the run's first.
+    const landed = (await run.ctx.stores.checkpoints.listByRun(run.scope)).items
+      .slice(1)
+      .map((checkpoint) => checkpoint.commitSha);
+    expect(landed).toHaveLength(3);
+    expect(landed.at(-1)).toBe(
+      await git(nodeGitRunner, ["rev-parse", PROGRAM_BRANCH], { cwd: run.ctx.fixture.repo }).then(
+        (sha) => sha.trim(),
+      ),
+    );
     const passed = new Set<string>();
-    for (const node of tree.filter((candidate) => candidate.kind === "job")) {
+    for (const node of tree.filter((candidate) => candidate.kind !== "program")) {
       for (const v of await run.ctx.stores.verifications.listByNode(
         run.scope,
         node.executionNodeId,
@@ -215,7 +222,13 @@ describe("the Stage 5 tree", () => {
         if (v.outcome === "passed") passed.add(v.commitSha);
       }
     }
-    for (const commit of commits) expect(passed.has(commit), commit).toBe(true);
+    for (const commit of landed) expect(passed.has(commit), commit).toBe(true);
+    // The strand's jobs verified nothing of their own (D-P18-03).
+    for (const kid of kids) {
+      expect(await run.ctx.stores.verifications.listByNode(run.scope, kid.executionNodeId)).toEqual(
+        [],
+      );
+    }
 
     // The run ends, and its program node with it.
     const finished = await run.driver.call("run.finish", { outcome: "succeeded" });
@@ -229,7 +242,8 @@ describe("the Stage 5 tree", () => {
       run.scope,
       cNode.executionNodeId,
     );
-    expect(cRoute[0]?.outcome).toBe("succeeded");
+    // Its work was verified when the strand landed (P18): the route did its job.
+    expect(cRoute[0]?.outcome).toBe("verified");
   });
 
   it("leaves every node and agent durable when the server is stopped mid-tree (SC-P6-16)", async () => {

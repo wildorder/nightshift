@@ -39,6 +39,8 @@ export const EventTypeSchema = z.enum([
   "node.cancelled",
   "node.interrupted",
   "node.integrated",
+  /** P18 (D-P18-03): a strand job's commit merged onto its strand's branch. */
+  "node.merged",
   /** Added in P6 (D-P6-03). A sub-program's orchestrator ended it, its work done. */
   "node.succeeded",
   /**

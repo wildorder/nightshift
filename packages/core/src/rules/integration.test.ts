@@ -97,10 +97,14 @@ describe("integration order is deterministic (D-P6-05)", () => {
     );
   });
 
-  it("never waits for unfinished work, and never takes a node that is not a job", () => {
+  it("never waits for unfinished work, and takes a job or a whole strand, never the program node", () => {
     const { nodes } = world(["running", "implemented"]);
     expect(nextToIntegrate(nodes)?.executionNodeId).toBe(nodes[1]?.executionNodeId);
-    expect(nextToIntegrate(world(["implemented"], "sub-program").nodes)).toBeUndefined();
+    // A strand lands once, whole (P18, D-P18-04).
+    const strand = world(["implemented"], "sub-program").nodes;
+    expect(nextToIntegrate(strand)?.executionNodeId).toBe(strand[0]?.executionNodeId);
+    const { root } = world([]);
+    expect(nextToIntegrate([{ ...root, status: "implemented" }])).toBeUndefined();
     expect(nextToIntegrate([])).toBeUndefined();
   });
 });

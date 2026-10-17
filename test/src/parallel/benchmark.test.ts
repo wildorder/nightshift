@@ -99,9 +99,10 @@ describe("forced serial against parallel (SC-P6-12)", () => {
     expect(serial.statuses).toEqual([
       "job@1:integrated",
       "job@1:integrated",
-      "job@2:integrated",
-      "job@2:integrated",
-      "sub-program@1:succeeded",
+      // A strand's jobs merge onto it, and it lands once, whole (P18).
+      "job@2:merged",
+      "job@2:merged",
+      "sub-program@1:integrated",
     ]);
     expect(parallel.statuses).toEqual(serial.statuses);
     expect(parallel.files).toEqual(serial.files);
