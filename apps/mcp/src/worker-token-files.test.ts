@@ -47,7 +47,13 @@ describe("a worker's token file", () => {
     const path = await tokens.place(scope, agent, "first");
     expect(path).toBe(workerTokenFile("run_1", "agent_1", directory));
     expect(await readFile(path, "utf8")).toBe("first\n");
-    expect(grouped).toEqual([`nightshift ${join(directory("run_1"), "agents")}`]);
+    // Both directories the worker walks through are given the group outright:
+    // the worker's own is made after its parent became the group's, and is
+    // never left to inherit the engine's own (2026-10-17).
+    expect(grouped.slice(0, 2)).toEqual([
+      `nightshift ${join(directory("run_1"), "agents")}`,
+      `nightshift ${join(directory("run_1"), "agents", agent)}`,
+    ]);
 
     // The renewal: the same process writes the same file again, and nothing is
     // left beside it.
@@ -66,7 +72,8 @@ describe("a worker's token file", () => {
       const { files: tokens, directory } = await files();
       const path = await tokens.place(scope, agent, "first");
       expect(await mode(path)).toBe(0o640);
-      expect(await mode(join(directory("run_1"), "agents", agent))).toBe(0o710);
+      // Set-group-id, so the token file made in it takes the group.
+      expect(await mode(join(directory("run_1"), "agents", agent))).toBe(0o2710);
       expect(await mode(join(directory("run_1"), "agents"))).toBe(0o2711);
       expect(await mode(directory("run_1"))).toBe(0o711);
       // A renewal keeps the file's mode.
