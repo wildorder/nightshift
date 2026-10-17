@@ -243,7 +243,7 @@ const plainDisplay = (environment: CliEnvironment): Display => {
 
 /** How the wait ended, before it is said. */
 type Ending =
-  | { readonly kind: "go"; readonly verdict: "agrees" | "red" | "skipped" }
+  | { readonly kind: "go"; readonly verdict: "agrees" | "red" | "skipped" | "started" }
   | { readonly kind: "fault" }
   | { readonly kind: "failed" }
   | { readonly kind: "stopped" };
@@ -263,6 +263,13 @@ export const endingOf = (dispatch: Dispatch): Ending | undefined => {
   ) {
     return { kind: "go", verdict };
   }
+  // The root is orchestrating on this machine: it is ready, audit or none. The
+  // runner has not audited before the root since 2026-10-11, so waiting for a
+  // verdict alone waited the whole run and then said it stopped "before the
+  // machine was ready" (admin-redesign, 2026-10-17).
+  if (progress?.stage === "orchestrating" && progress.generation === dispatch.generation) {
+    return { kind: "go", verdict: "started" };
+  }
   return undefined;
 };
 
@@ -274,7 +281,7 @@ export interface WatchTarget {
 
 const reattach = (program: string): string => `\`nightshift remote status ${program} --watch\``;
 
-const goLines = (program: string, verdict: "agrees" | "red" | "skipped"): string[] => [
+const goLines = (program: string, verdict: "agrees" | "red" | "skipped" | "started"): string[] => [
   ...OK_GO_BANNER,
   "",
   "the machine is ready: you can close your laptop now. " +
