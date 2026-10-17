@@ -253,13 +253,17 @@ export const integrateNode = async (
   }
 
   // --- What its decisions produced (P9, D-P9-01) ----------------------------------
-  await stampJobDecisions(
-    environment,
-    input.session.scope,
-    { executionNodeId: input.nodeId },
-    input.commitSha,
-    checkpointId,
-  );
+  // A job's: the commit it landed. A strand's are stamped when it ends, with
+  // its jobs' commits, as any sub-program's are (P18, D-P18-04).
+  if (node?.kind !== "sub-program") {
+    await stampJobDecisions(
+      environment,
+      input.session.scope,
+      { executionNodeId: input.nodeId },
+      input.commitSha,
+      checkpointId,
+    );
+  }
 
   // --- The worktree has done its job --------------------------------------------
   // Only on the happy path. Every failure keeps it, because a worktree is the

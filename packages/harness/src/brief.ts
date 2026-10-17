@@ -59,6 +59,8 @@ export interface WorkerBriefInput {
   readonly carriedOver?: CarriedOverWork;
   /** Every upheld ruling in the program so far (P15). */
   readonly rulings?: readonly ProgramRuling[];
+  /** P18: one of a strand's jobs, merged onto its strand's branch, verified with the strand. */
+  readonly landsOnStrand?: boolean;
 }
 
 /**
@@ -166,6 +168,8 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
       return renderAnswerBrief(input.task, input.program);
     case "continue":
       return renderContinueBrief(input, input.task);
+    case "strand_fix":
+      return renderStrandFixBrief(input.task);
     default:
       break;
   }
@@ -272,12 +276,26 @@ export const renderWorkerBrief = (input: WorkerBriefInput): string => {
             bullets((program.setup ?? []).map((step) => `${step.id}: ${step.command}`)),
             "",
           ]),
-      "  After you report completion, Nightshift runs these commands on a clean",
-      "  checkout of your work and the result is what counts:",
-      bullets(program.verification.map((step) => `${step.id}: ${step.command}`)),
-      "",
-      "  Run them yourself before reporting. Reporting completion on work that fails",
-      "  them wastes a full verification cycle and the node ends verification_failed.",
+      ...(input.landsOnStrand === true
+        ? [
+            "  This job is one of a strand's. When you report completion, your work merges",
+            "  onto the strand's branch, and once all the strand's jobs have merged Nightshift",
+            "  runs these commands on a clean checkout of the whole strand:",
+            bullets(program.verification.map((step) => `${step.id}: ${step.command}`)),
+            "",
+            "  Nothing checks your job on its own, so check it yourself: run the tests and",
+            "  checks your change touches, in this worktree, before reporting. A failure you",
+            "  leave is found later, at the strand's landing, and costs the whole strand a",
+            "  round to fix.",
+          ]
+        : [
+            "  After you report completion, Nightshift runs these commands on a clean",
+            "  checkout of your work and the result is what counts:",
+            bullets(program.verification.map((step) => `${step.id}: ${step.command}`)),
+            "",
+            "  Run them yourself before reporting. Reporting completion on work that fails",
+            "  them wastes a full verification cycle and the node ends verification_failed.",
+          ]),
     ].join("\n"),
   );
 
@@ -335,6 +353,8 @@ export const nightshiftToolNames = (
   return kind === "sub-program"
     ? [
         "subprogram.get",
+        "strand.plan",
+        "strand.review.wait",
         "delegate",
         "job.wait",
         "job.get",
@@ -413,8 +433,8 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
             `    nightshift decision.record { context: "${STRAND_DEPARTURE_PREFIX} <what the plan said, and what you are doing instead>", ... }`,
             "",
             "  The report a human reads in the morning lists every departure first. How the strand",
-            "  divides into jobs is yours alone: the plan names none, and nobody will check them",
-            "  against one.",
+            "  divides into jobs is yours to author: the plan names none. You author it as a job",
+            "  plan, and an independent examiner reviews it before anything is built.",
           ].join("\n"),
         ]),
     strand === undefined
@@ -437,28 +457,42 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
     [
       "YOU DO NOT WRITE THE CODE",
       "",
-      "  You plan, delegate, and judge. Every change to the repository is made by a job",
-      "  you delegate: a separate worker, in its own isolated worktree, whose work",
-      "  Nightshift verifies and integrates. There is no other way for anything to reach",
-      "  the program, and nothing you edit yourself is ever collected.",
+      "  You author, delegate, and judge. Every change to the repository is made by a job",
+      "  you delegate: a separate worker, in its own worktree. Nothing you edit yourself is",
+      "  ever collected.",
       "",
-      "  Your working directory is a checkout to READ:",
+      "  Your working directory is your STRAND'S BRANCH, checked out:",
       `    ${worktree}`,
-      "  Read it to understand the code before you divide the work. Call",
-      "  subprogram.refresh to see what your jobs have integrated since.",
+      "  Read it to understand the code before you divide the work. As each job finishes,",
+      "  its commit is merged onto this branch, so it always holds everything your jobs",
+      "  did. Never change files in it.",
     ].join("\n"),
     [
-      "HOW TO DELEGATE WELL",
+      "HOW THIS STRAND IS BUILT",
       "",
-      "  - One bounded outcome per job, with acceptance criteria somebody could check.",
-      "  - Delegate independent jobs together, then wait for them together: they run at",
-      "    the same time, as many as the program's concurrency limit allows, and the rest",
-      "    queue.",
-      "  - Jobs that change the same lines will conflict. Give overlapping work to one",
-      "    job, or run it one after the other.",
-      "  - Every job is verified by these commands, on top of everything integrated",
-      "    before it. Two jobs that each pass alone and break each other cannot both land:",
+      "  1. Author the job plan: strand.plan { jobs, notes }. Each job: an id (J1, J2, …),",
+      "     an objective, acceptance criteria somebody could check, the paths it expects to",
+      "     touch, and the jobs it dependsOn. An independent examiner reviews it; wait for",
+      "     the review with strand.review.wait (call it again if it says it is still going).",
+      "  2. Revise it if the review is right (strand.plan again, reviewed once more), or say",
+      "     with decision.record why you keep it. Then build.",
+      "  3. Delegate EVERY job of the plan, at once, each with dependsOn naming the jobIds",
+      "     delegate gave its dependencies. Nightshift starts each as soon as its",
+      "     dependencies have merged onto your branch, as many at once as concurrency allows.",
+      "  4. A job has no gate, examination or queue of its own. Its worker runs the tests",
+      "     its change touches, hands it in, and its commit merges onto your branch: the",
+      "     job is then `merged`. Wait for them with job.wait.",
+      "  5. When every job has merged, subprogram.complete. Nightshift then lands the",
+      "     strand ONCE: it brings the program's latest work into your branch, runs these",
+      "     gates and examines the whole strand against its acceptance, together:",
       bullets(program.verification.map((step) => `${step.id}: ${step.command}`)),
+      "  6. If the landing fails, this same session is resumed with exactly what failed.",
+      "     Fix it with jobs of your own, wait for them to merge, and complete again.",
+      "",
+      "  As parallel as the work honestly allows: a job depends on another only when it",
+      "  cannot be built until that exists. Jobs that run at the same time must not change",
+      "  the same files, or they conflict on your branch; the review checks this. Each job",
+      "  costs a worker's start, so do not split work finer than it is worth.",
     ].join("\n"),
     [
       "SAY WHAT EACH JOB IS — it decides the model, and who examines it",
@@ -480,12 +514,12 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "  such jobs, and say so. Never lower risk to skip an examiner.",
     ].join("\n"),
     [
-      "WHEN A JOB DOES NOT INTEGRATE",
+      "WHEN A JOB DOES NOT MERGE",
       "",
       "  job.get tells you why, in outcomeReason.",
-      "    integration_conflict  its changes conflict with work integrated since it",
-      "                          started. Nothing was resolved for you. job.retry runs it",
-      "                          again from the current code, which is usually right.",
+      "    integration_conflict  its changes conflict with work merged onto your branch",
+      "                          since it started. Nothing was resolved for you. job.retry",
+      "                          runs it again from your branch's head, usually right.",
       "    verification_failed   it broke the program's checks, alone or together with",
       "                          what landed before it. Retry it as it was, or delegate a",
       "                          better-specified job instead.",
@@ -524,8 +558,9 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "HOW TO FINISH — you must call exactly one of these",
       "",
       "  nightshift subprogram.complete { summary }",
-      "    When your objective is met. Refused while anything you delegated is still in",
-      "    flight: wait for it, or cancel it, first.",
+      "    When every job has merged and your objective is met. Refused while anything you",
+      "    delegated is still in flight. Your strand then lands, and you are resumed only if",
+      "    the landing fails.",
       "",
       "  nightshift subprogram.fail { reason }",
       "    When it cannot be met. Whatever is still running under you is cancelled. A",
@@ -533,7 +568,9 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "",
       "  While you work:",
       "    nightshift subprogram.get            — your objective, and what you have delegated.",
-      "    nightshift delegate { objective, acceptance, risk, ambiguity, testability, jobKind }",
+      "    nightshift strand.plan { jobs, notes } — your job plan, first, reviewed before building.",
+      "    nightshift strand.review.wait        — the review of your latest plan.",
+      "    nightshift delegate { objective, acceptance, dependsOn, risk, ambiguity, testability, jobKind }",
       "    nightshift job.wait { jobIds }       — returns when the first of them settles.",
       "    nightshift job.get / job.cancel / job.retry { jobId }",
       "    nightshift finding.dispute { jobId, reason } — when an examiner is wrong.",
@@ -633,7 +670,9 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       "     not sequence them.",
       '     A strand that is one small bounded change may be delegated with kind: "job".',
       "  2. Wait:  nightshift job.wait { jobIds }  returns when the first of them settles. Call",
-      "     it again for the rest.",
+      "     it again for the rest. A strand builds its jobs onto a branch of its own and lands",
+      "     ONCE, whole: it ends `integrated`. A strand whose landing failed is fixed by its own",
+      "     orchestrator first (job.wait says `continuing`): wait for it, do not retry it.",
       "  3. When a strand does not succeed, read why with job.get. Retry it with job.retry when",
       "     the reason is one a second attempt from the current code can fix (a conflict, a",
       "     flaky check, a worker that gave up early). Do not retry more than twice, and do not",
@@ -736,6 +775,41 @@ const renderCarriedOver = (work: CarriedOverWork): string =>
           "  still right by hand; resolve the conflicting parts against the current code.",
         ]),
   ].join("\n");
+
+/**
+ * A strand's orchestrator, resumed because its strand's landing failed (P18,
+ * D-P18-05). The same session: it knows its plan, its jobs and the code.
+ */
+const renderStrandFixBrief = (task: Extract<AgentTask, { kind: "strand_fix" }>): string =>
+  `${[
+    `Your strand did not land (fix round ${task.round} of ${task.of}). Nightshift brought the`,
+    "program's latest work into your strand's branch, ran the gates and examined the strand",
+    "against its acceptance, and this is what stopped it.",
+    "",
+    ...(task.conflict === undefined
+      ? []
+      : ["THE PROGRAM HEAD CONFLICTS WITH YOUR STRAND", `  ${task.conflict}`, ""]),
+    ...(task.failedChecks.length === 0
+      ? []
+      : [
+          "GATES THAT FAILED",
+          ...task.failedChecks.map((step) =>
+            [
+              `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}`,
+              indent(step.output.slice(-3_000), 6),
+            ].join("\n"),
+          ),
+          "",
+        ]),
+    ...(task.findings.length === 0
+      ? []
+      : ["WHAT THE EXAMINER FOUND", ...task.findings.map(describeFinding), ""]),
+    "Fix it the way you built the strand: delegate jobs for the fixes (as parallel as they can",
+    "be), wait for them to merge onto your branch, then call subprogram.complete again. Your",
+    "checkout is your strand's branch, with everything your jobs did; read it to see where the",
+    "failure is. Record a decision for anything you chose to do differently. Do not end your",
+    "turn until you have called subprogram.complete or subprogram.fail.",
+  ].join("\n")}\n`;
 
 /** A session resumed because it ended its turn without reporting. */
 const renderContinueBrief = (
@@ -1081,7 +1155,16 @@ export const renderArbiterBrief = (
 export const promptFor = (
   input: Pick<
     HarnessStartInput,
-    "job" | "node" | "program" | "worktree" | "task" | "mcp" | "agent" | "carriedOver" | "rulings"
+    | "job"
+    | "node"
+    | "program"
+    | "worktree"
+    | "task"
+    | "mcp"
+    | "agent"
+    | "carriedOver"
+    | "rulings"
+    | "landsOnStrand"
   >,
   withAddendum: (brief: string, mcpServerName: string, tools: readonly string[]) => string,
 ): string => {
@@ -1093,6 +1176,7 @@ export const promptFor = (
     ...(input.task === undefined ? {} : { task: input.task }),
     ...(input.carriedOver === undefined ? {} : { carriedOver: input.carriedOver }),
     ...(input.rulings === undefined ? {} : { rulings: input.rulings }),
+    ...(input.landsOnStrand === true ? { landsOnStrand: true } : {}),
   });
   return input.mcp === undefined
     ? brief

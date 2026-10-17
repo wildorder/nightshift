@@ -36,6 +36,7 @@ import {
   strandsOf,
 } from "@nightshift/core";
 import { type GitRunner, tryGit } from "./git/index.js";
+import { landedJobCommits } from "./strand.js";
 
 export interface CarryOverEnvironment {
   readonly stores: ProjectStores;
@@ -85,19 +86,16 @@ const allOnBase = async (
   return true;
 };
 
-/** What one strand landed in `run`: the commits of the integrated nodes under its latest attempt. */
+/** What one strand landed in `run`: the commits of the jobs under its latest attempt that reached the branch. */
 const landedBy = (
   nodes: readonly ExecutionNode[],
   strandNode: ExecutionNode,
 ): readonly CommitSha[] => {
   const tree = buildTree(nodes);
-  return [strandNode.executionNodeId, ...descendantsOf(tree, strandNode.executionNodeId)]
+  const subtree = [strandNode.executionNodeId, ...descendantsOf(tree, strandNode.executionNodeId)]
     .map((id) => tree.nodes.get(id))
-    .filter(
-      (node): node is ExecutionNode =>
-        node !== undefined && node.status === "integrated" && node.commitSha !== null,
-    )
-    .map((node) => node.commitSha as CommitSha);
+    .filter((node): node is ExecutionNode => node !== undefined);
+  return landedJobCommits(subtree);
 };
 
 /** One earlier run's finished strands, as they would carry: the run's own, or what it carried itself. */

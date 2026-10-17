@@ -21,6 +21,7 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  type CommitSha,
   type ExecutionNode,
   type ExecutionNodeId,
   type JobContractId,
@@ -34,6 +35,7 @@ import {
   type IdGenerator,
   isDoneForNow,
   isSettled,
+  markImplemented,
   nowIso,
   RETRYABLE_STATUSES,
   transition,
@@ -43,8 +45,15 @@ import {
   fixOf,
   git,
   latestExamination,
+  MAX_PLAN_REVIEWS,
+  PlannedJobSchema,
+  planProblems,
+  planStateOf,
   recordWorkerDecision,
+  renderPlan,
   reportProgress,
+  STRAND_PLAN_CONTEXT,
+  strandContinuing,
   type WorkerEnvironment,
   type WorkerIdentity,
 } from "@nightshift/execution";
@@ -137,10 +146,18 @@ export const registerSubOrchestratorTools = (
     );
     const agent = (await stores.agents.listByNode(scope, node.executionNodeId)).at(-1);
     // Not settled while Nightshift is still taking it further itself (examine.ts).
-    const continuing = continuedByNightshift(
-      node.status,
-      await stores.examinations.listByNode(scope, node.executionNodeId),
-    );
+    const continuing =
+      continuedByNightshift(
+        node.status,
+        await stores.examinations.listByNode(scope, node.executionNodeId),
+      ) ??
+      // A strand whose landing failed, being fixed by its own orchestrator (P18, D-P18-05).
+      strandContinuing(
+        node,
+        (await stores.routingDecisions.listByNode(scope, node.executionNodeId)).filter(
+          (decision) => decision.purpose === undefined,
+        ).length,
+      );
     return {
       jobContractId: jobId,
       nodeId: node.executionNodeId,
@@ -208,12 +225,24 @@ export const registerSubOrchestratorTools = (
     {
       title: "Delegate one bounded piece of work",
       description:
-        "Record a Job Contract and its node under your sub-program. Nightshift's engine starts it " +
-        "when a slot is free, verifies it and integrates it. Returns at once; wait with job.wait.",
+        "Record one job of your reviewed plan under your strand. Nightshift starts it as soon as " +
+        "every job it dependsOn has merged onto your strand's branch and a slot is free, so " +
+        "delegate every job of the plan at once, each with its dependsOn. When its worker hands " +
+        "it in, its commit merges onto your branch: it is then `merged`. Returns at once; wait " +
+        "with job.wait.",
       inputSchema: {
-        kind: z.enum(["job", "sub-program"]).optional(),
+        kind: z
+          .enum(["job", "sub-program"])
+          .optional()
+          .describe("Always a job: a strand's work is jobs (P18)."),
         objective: z.string().min(1),
         acceptance: z.array(z.string().min(1)).min(1),
+        dependsOn: z
+          .array(z.string().min(1))
+          .optional()
+          .describe(
+            "The jobIds, as delegate returned them, that must merge before this one starts. Only real dependencies: everything else runs at once.",
+          ),
         // P8 (D-P8-01): what the job says about itself, so routing can place it.
         // Unset is the conservative choice, not the cheap one.
         ...CLASSIFICATION_INPUTS,
@@ -232,6 +261,33 @@ export const registerSubOrchestratorTools = (
             "only the program node delegates a repair of a gate (D-P15-04): a repair sits outside " +
               "every strand, and the root opens it. Report the broken or flaky gate with " +
               "subprogram.progress, or in subprogram.fail, and the root repairs it.",
+          );
+        }
+        if (input.kind === "sub-program") {
+          throw new ToolRefusal(
+            "validation_failed",
+            "a strand's work is jobs, not sub-programs (P18): delegate each job of your plan, with its dependsOn.",
+          );
+        }
+        // Nothing is built before the plan is reviewed (D-P18-01).
+        const state = await planStateOf(environment, scope, identity.executionNodeId);
+        if (state.reviews.length === 0) {
+          throw new ToolRefusal(
+            "plan_not_reviewed",
+            state.plans.length === 0
+              ? "author your job plan with strand.plan first: it is reviewed before anything is built."
+              : "your plan is being reviewed: end your turn, and this session is resumed with the review.",
+          );
+        }
+        // Each dependency is a job of this strand, delegated already.
+        const known = new Set(
+          (await descendants()).map((child) => child.jobContractId).filter((id) => id !== null),
+        );
+        const unknown = (input.dependsOn ?? []).filter((id) => !known.has(id as JobContractId));
+        if (unknown.length > 0) {
+          throw new ToolRefusal(
+            "validation_failed",
+            `dependsOn names ${unknown.join(", ")}, which are not jobs of this strand: delegate a job before the jobs that depend on it.`,
           );
         }
         // The API checks depth and everything else this role cannot see. There is
@@ -253,7 +309,7 @@ export const registerSubOrchestratorTools = (
           jobContractId: ids.next("job"),
           objective: input.objective,
           acceptance: input.acceptance,
-          dependencies: [],
+          dependencies: input.dependsOn ?? [],
           ...classificationFor(input, parentJob?.risk),
           createdAt: at,
         });
@@ -468,6 +524,124 @@ export const registerSubOrchestratorTools = (
   );
 
   server.registerTool(
+    "strand.plan",
+    {
+      title: "Author your strand's job plan",
+      description:
+        "Your first act, before any job: the jobs that build your strand, each with its objective, " +
+        "acceptance, the paths it expects to touch and the jobs it dependsOn. As parallel as the work " +
+        "honestly allows: a job depends on another only when it cannot be built until that exists, " +
+        "and jobs that run at once should not touch the same paths. Recorded as a decision, and " +
+        "reviewed by an independent examiner while you wait in strand.review.wait.",
+      inputSchema: {
+        jobs: z.array(PlannedJobSchema).min(1),
+        notes: z
+          .string()
+          .min(1)
+          .describe("Why this split: what runs in parallel, what must wait, and what you weighed."),
+      },
+    },
+    async ({ jobs, notes }) =>
+      guarded(async () => {
+        const problems = planProblems(jobs);
+        if (problems.length > 0) {
+          throw new ToolRefusal(
+            "validation_failed",
+            `the plan cannot be built as written: ${problems.join("; ")}.`,
+            {
+              problems,
+            },
+          );
+        }
+        const state = await planStateOf(environment, scope, identity.executionNodeId);
+        const round = state.plans.length + 1;
+        const independent = jobs.filter((job) => job.dependsOn.length === 0).length;
+        const decision = await recordWorkerDecision(environment, identity, ids, {
+          context: `${STRAND_PLAN_CONTEXT} round ${round} — ${jobs.length} job${jobs.length === 1 ? "" : "s"}, ${independent} starting at once`,
+          alternatives: [
+            { summary: "the plan as authored" },
+            {
+              summary: "one job for the whole strand",
+              rejectedBecause: "it builds nothing in parallel and is reviewed as one",
+            },
+          ],
+          choice: renderPlan(jobs),
+          rationale: notes,
+          reversibility: "reversible",
+        }).catch((error: unknown) => {
+          if (error instanceof NoCheckpointError) throw new ToolRefusal("not_found", error.message);
+          throw error;
+        });
+        const reviewed = state.reviews.length < MAX_PLAN_REVIEWS;
+        return ok(
+          reviewed
+            ? `Recorded your plan as decision ${decision.decisionId}. An independent examiner is ` +
+                "reviewing it now: wait for the review with strand.review.wait."
+            : `Recorded your plan as decision ${decision.decisionId}. Its reviews are spent: build it now — ` +
+                "delegate every job, each with its dependsOn.",
+          { decisionId: decision.decisionId, round, reviewed },
+        );
+      }),
+  );
+
+  server.registerTool(
+    "strand.review.wait",
+    {
+      title: "Wait for your job plan's review",
+      description:
+        "Blocks until the independent review of your latest plan is recorded, or the cap elapses " +
+        "(then call it again). Answers the verdict and each finding. Revise with strand.plan (it is " +
+        "reviewed once more), or keep the plan and say why with decision.record; then build.",
+      inputSchema: { timeoutSeconds: z.number().int().min(1).optional() },
+    },
+    async ({ timeoutSeconds }) =>
+      guarded(async () => {
+        const cap = Math.min(timeoutSeconds ?? deps.waitCapSeconds, deps.waitCapSeconds);
+        const read = () => planStateOf(environment, scope, identity.executionNodeId);
+        const deadline = clock.now() + cap * 1000;
+        let state = await read();
+        if (state.plans.length === 0) {
+          throw new ToolRefusal("not_found", "you have no plan yet: author it with strand.plan.");
+        }
+        while (
+          state.reviews.length < state.plans.length &&
+          state.reviews.length < MAX_PLAN_REVIEWS
+        ) {
+          if (clock.now() >= deadline) {
+            return ok(
+              `Still reviewing after ${cap}s — this wait is capped below the harness's own tool ` +
+                "timeout, so call strand.review.wait again.",
+              { timedOut: true },
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
+          state = await read();
+        }
+        const review = state.reviews.at(-1);
+        if (review === undefined) {
+          return ok("No review is recorded; build the plan.", { timedOut: false, verdict: null });
+        }
+        const verdict = review.context.endsWith("revise")
+          ? "revise"
+          : review.context.endsWith("sound")
+            ? "sound"
+            : null;
+        const last = state.reviews.length >= MAX_PLAN_REVIEWS;
+        return ok(
+          `${review.context}\n\n${review.choice}\n\n` +
+            (verdict === "revise" && !last
+              ? "Revise the plan with strand.plan (it is reviewed once more), or keep it and say why " +
+                "with decision.record; then build."
+              : "Build it now: delegate every job of the plan, each with its dependsOn." +
+                (verdict === "revise"
+                  ? " Take what you agree with from the review into the jobs, and record why you leave the rest."
+                  : "")),
+          { timedOut: false, verdict, decisionId: review.decisionId, final: last },
+        );
+      }),
+  );
+
+  server.registerTool(
     "decision.record",
     {
       title: "Record a decision",
@@ -517,19 +691,17 @@ export const registerSubOrchestratorTools = (
     {
       title: "Bring your checkout up to date",
       description:
-        "Moves your read-only checkout to the run's latest checkpoint, so you can read what your " +
-        "jobs integrated. Anything you changed in it is discarded: it is never collected.",
+        "Says where your strand's branch stands. Your checkout **is** your strand's branch: every " +
+        "job's commit is merged onto it as the job finishes, so it already holds everything your " +
+        "jobs did. Never change files in it.",
       inputSchema: {},
     },
     async () =>
       guarded(async () => {
-        const latest = (await stores.checkpoints.listByRun(scope)).items.at(-1);
-        if (latest === undefined)
-          throw new ToolRefusal("not_found", "this run has no checkpoint yet");
-        await git(environment.git, ["checkout", "--detach", "--force", latest.commitSha], {
-          cwd: identity.worktree,
-        });
-        return ok(`Your checkout is at ${latest.commitSha}.`, { commitSha: latest.commitSha });
+        const head = (
+          await git(environment.git, ["rev-parse", "HEAD"], { cwd: identity.worktree })
+        ).trim();
+        return ok(`Your strand's branch, checked out here, is at ${head}.`, { commitSha: head });
       }),
   );
 
@@ -581,10 +753,32 @@ export const registerSubOrchestratorTools = (
           );
         }
         reportProgress(environment, identity, summary.slice(0, 2_000), 100);
-        await end("succeeded", undefined);
-        return ok("Recorded. Your sub-program has succeeded; you can stop now.", {
-          status: "succeeded",
+        // The strand lands once, whole (P18, D-P18-04): its node is implemented
+        // at its branch's head, and the run's merge queue verifies, examines and
+        // integrates it when this session ends.
+        const node = await own();
+        if (node.status !== "running") {
+          throw new ToolRefusal("validation_failed", `this sub-program is already ${node.status}`);
+        }
+        const head = (
+          await git(environment.git, ["rev-parse", "HEAD"], { cwd: identity.worktree })
+        ).trim() as CommitSha;
+        await stores.executionNodes.put(markImplemented(node, head, nowIso(clock)));
+        outbox.emit({
+          type: "node.implemented",
+          source: "mcp",
+          payload: { commitSha: head, summary: summary.slice(0, 2_000) },
+          executionNodeId: node.executionNodeId,
+          agentId: identity.agentId,
         });
+        await outbox.flush(5_000);
+        return ok(
+          `Recorded at ${head.slice(0, 12)}. Stop now: when this session ends, Nightshift lands your ` +
+            "strand — it brings in the program's latest work, runs the gates and examines the strand " +
+            "against its acceptance, together. If anything fails, this session is resumed with exactly " +
+            "what failed, to fix with jobs of its own.",
+          { status: "implemented", commitSha: head },
+        );
       }),
   );
 

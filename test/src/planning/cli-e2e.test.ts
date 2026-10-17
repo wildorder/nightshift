@@ -248,7 +248,8 @@ describe("a planned program, from a plan on disk to a landed program, through th
     expect(await cli("preflight", PROGRAM)).toBe(0);
     const resumed = await cli("resume", PROGRAM);
     expect(resumed, `${op.out.join("\n")}\n${op.err.join("\n")}`).toBe(0);
-    expect(op.out[0]).toContain("6 landed on the program branch");
+    // Each strand lands once, whole, with both its jobs (P18, D-P18-04).
+    expect(op.out[0]).toContain("3 landed on the program branch");
 
     const landed = git("log", "--format=%s", `${before}..${PROGRAM_BRANCH}`);
     for (const name of ["a1", "a2", "b1", "b2", "c1", "c2"]) expect(landed).toContain(name);

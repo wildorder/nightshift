@@ -45,7 +45,8 @@ export const isDoneForNow = (status: ExecutionNodeStatus): boolean =>
 export const nextToIntegrate = (nodes: readonly ExecutionNode[]): ExecutionNode | undefined => {
   let next: ExecutionNode | undefined;
   for (const node of nodes) {
-    if (node.kind !== "job" || node.status !== "implemented") continue;
+    // A job, or a strand landing whole (P18, D-P18-04); never the program node.
+    if (node.kind === "program" || node.status !== "implemented") continue;
     if (next === undefined || node.executionNodeId < next.executionNodeId) next = node;
   }
   return next;

@@ -11,6 +11,8 @@
  * finding) is the execution layer's, fixed before the agent started, and read
  * from the environment. The model supplies only its judgement.
  */
+
+import { writeFile } from "node:fs/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   type Decision,
@@ -24,6 +26,8 @@ import { type IdGenerator, nowIso } from "@nightshift/core";
 import {
   EXAMINATION_CONTEXT_ENV,
   type ExaminationContext,
+  PLAN_REVIEW_FILE_ENV,
+  PlanReviewSchema,
   RULING_CHOICES,
   RULING_CONTEXT_ENV,
   type RulingContext,
@@ -225,6 +229,57 @@ export const registerArbiterTools = (server: McpServer, deps: HelperDeps): void 
         await environment.outbox.flush(5_000);
         return ok(`Recorded: ${ruling}. You are done; end your turn.`, {
           decisionId: decision.decisionId,
+        });
+      }),
+  );
+};
+
+/**
+ * An examiner reviewing a strand's job plan (P18, D-P18-01): one verdict, once.
+ * It is handed back through the file the engine named, which records it as a
+ * decision on the strand: an examiner writes nothing to the control plane but
+ * its own examination, and a plan's review is not one.
+ */
+export const registerPlanReviewTools = (server: McpServer, deps: HelperDeps): void => {
+  const file = deps.env[PLAN_REVIEW_FILE_ENV] ?? "";
+  let submitted = false;
+  server.registerTool(
+    "plan.review.submit",
+    {
+      title: "Submit your review of the strand's job plan",
+      description:
+        "Your verdict, once. `sound`: build it as planned. `revise`: it should change before " +
+        "anything is built; say what, in findings. A finding is `material` when building the plan " +
+        "as it stands would miss the strand's acceptance, conflict, or waste real time; `minor` otherwise.",
+      inputSchema: {
+        verdict: z.enum(["sound", "revise"]),
+        summary: z
+          .string()
+          .min(1)
+          .describe("Two or three sentences: is this plan the right way to build the strand?"),
+        findings: z
+          .array(
+            z.object({
+              severity: FindingSeveritySchema,
+              summary: z.string().min(1),
+              jobs: z
+                .array(z.string())
+                .optional()
+                .describe("The plan's job ids the finding is about."),
+            }),
+          )
+          .default([]),
+      },
+    },
+    async (input) =>
+      guarded(async () => {
+        if (submitted)
+          throw new ToolRefusal("validation_failed", "your review is already recorded");
+        const review = PlanReviewSchema.parse(input);
+        await writeFile(file, JSON.stringify(review));
+        submitted = true;
+        return ok("Recorded. Your review goes to the strand's orchestrator; you can stop now.", {
+          verdict: review.verdict,
         });
       }),
   );

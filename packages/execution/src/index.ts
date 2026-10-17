@@ -224,6 +224,24 @@ export {
   type StartRunInput,
   startRun,
 } from "./start-run.js";
+export {
+  MAX_STRAND_FIX_ROUNDS,
+  strandBranch,
+  strandContinuing,
+} from "./strand.js";
+export {
+  MAX_PLAN_REVIEWS,
+  PLAN_REVIEW_FILE_ENV,
+  type PlannedJob,
+  PlannedJobSchema,
+  type PlanReview,
+  PlanReviewSchema,
+  planProblems,
+  planStateOf,
+  renderPlan,
+  STRAND_PLAN_CONTEXT,
+  STRAND_PLAN_REVIEW_CONTEXT,
+} from "./strand-plan.js";
 export { type VerifyInput, type VerifyResult, verifyNode } from "./verify.js";
 export {
   type CompleteJobResult,

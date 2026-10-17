@@ -49,6 +49,8 @@ export type RefusalCode =
   | "job_running"
   /** `run.finish succeeded` while the end gates fail on the program head (A-57). */
   | "end_gates_failed"
+  /** A strand delegating before its job plan is reviewed (P18, D-P18-01). */
+  | "plan_not_reviewed"
   | "not_found"
   | "control_plane_error"
   | "internal_error";

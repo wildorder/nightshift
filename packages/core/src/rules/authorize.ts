@@ -683,7 +683,10 @@ export const ORCHESTRATOR_WRITABLE_NODE_STATUSES: Readonly<
   // retryable status, and **not a start** — the engine starts a queued node, when
   // its parent has a slot, and nothing else does.
   descendant: ["cancelled", "queued"],
-  self: ["succeeded", "failed"],
+  // A strand's own node: `implemented` at its strand branch's head when its
+  // orchestrator completes it (P18, D-P18-04); `succeeded` for a sub-program
+  // that lands nothing; `failed`.
+  self: ["succeeded", "implemented", "failed"],
   outside: [],
 };
 

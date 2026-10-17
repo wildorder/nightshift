@@ -29,6 +29,7 @@
  * can wait for it.
  */
 
+import { existsSync } from "node:fs";
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
@@ -79,7 +80,6 @@ import {
 import { examine, skipReview } from "./examine.js";
 import { gateDefinitions, withGateDefinitions } from "./gate-repair.js";
 import {
-  addDetachedWorktree,
   addWorktree,
   applyUnfinished,
   baseRef,
@@ -102,6 +102,7 @@ import { programRulings } from "./rulings.js";
 import { discardScratch, ensureScratch } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
 import { stampSettledDecisions } from "./stamp.js";
+import { mergeInto, strandBase, strandHead, strandOf } from "./strand.js";
 import { verifyNode } from "./verify.js";
 import { createWorkerTools } from "./worker.js";
 import { startTokenRenewal, type TokenRenewal } from "./worker-tokens.js";
@@ -208,6 +209,12 @@ export interface StartJobInput
   readonly reroute?: Reroute;
   /** P8 (D-P8-13): a fix, carrying what the examiner found into the worker's brief. */
   readonly task?: AgentTask;
+  /**
+   * P18 (D-P18-05): continue this session rather than start one, with `task`
+   * as what it is told: a strand's orchestrator, resumed with its landing's
+   * failures to fix.
+   */
+  readonly resume?: { readonly sessionId: string };
 }
 
 export interface StartedJob {
@@ -341,6 +348,8 @@ export const startJob = async (
   // first means a refusal leaves nothing behind to clean up.
   const started = transition(queued, "start", nowIso(clock));
   await stores.executionNodes.put(started);
+  /** The strand this job builds in (P18), once `launch` has read it. */
+  let landsOnStrand = false;
 
   try {
     return await launch();
@@ -363,19 +372,56 @@ export const startJob = async (
     // --- 5. The worktree, cut from the program branch head ------------------------
     // The provisional head once anything has been deferred (D-P7-10), so a
     // dependent builds on the work it depends on rather than on a branch that
-    // does not have it yet.
-    const { head: base } = await effectiveHead(
-      environment.git,
-      session.repoPath,
-      session.program.repository.programBranch,
-      session.scope.runId,
-    );
+    // does not have it yet. A strand's job is cut from its strand's branch
+    // instead, and lands back on it (P18, D-P18-03).
     const worktree = environment.paths.worktree(session.scope.runId, nodeId);
     const branch = jobBranch(session.scope.runId, nodeId);
+    const strand = await strandOf(environment, session, queued);
+    landsOnStrand = strand !== undefined;
+    const strandTip =
+      strand === undefined
+        ? undefined
+        : await strandHead(
+            environment.git,
+            session.repoPath,
+            session.scope.runId,
+            strand.executionNodeId,
+          );
+    if (strand !== undefined && strandTip === undefined) {
+      throw new Error(`strand ${strand.executionNodeId} has no branch to build on`);
+    }
+    // A strand's own checkout outlives each of its orchestrator's attempts: its
+    // branch holds every job that merged, and a fix round continues there
+    // (D-P18-05). Its base is the program head it last took in.
+    const strandCheckout =
+      orchestrates &&
+      existsSync(worktree) &&
+      (await strandHead(environment.git, session.repoPath, session.scope.runId, nodeId)) !==
+        undefined;
+    const base: CommitSha =
+      strandTip ??
+      (strandCheckout
+        ? ((await strandBase(environment.git, session.repoPath, nodeId)) ??
+          (
+            await effectiveHead(
+              environment.git,
+              session.repoPath,
+              session.program.repository.programBranch,
+              session.scope.runId,
+            )
+          ).head)
+        : (
+            await effectiveHead(
+              environment.git,
+              session.repoPath,
+              session.program.repository.programBranch,
+              session.scope.runId,
+            )
+          ).head);
     await mkdir(dirname(worktree), { recursive: true });
     await pruneWorktrees(environment.git, session.repoPath);
     let unfinished: Kept | undefined;
-    if (earlier.length > 0) {
+    if (earlier.length > 0 && !strandCheckout) {
       // What the last attempt left and never handed in is kept first: a worker
       // that died mid-job did real work, and its worktree is about to go.
       if (!orchestrates) unfinished = await keepUnfinished(worktree, earlier.at(-1)?.attempt ?? 1);
@@ -387,14 +433,16 @@ export const startJob = async (
       await discardScratch(environment.paths, worktree, environment.reclaim);
       await pruneWorktrees(environment.git, session.repoPath);
     }
-    if (orchestrates) {
-      await addDetachedWorktree(environment.git, { repo: session.repoPath, path: worktree, base });
-    } else {
+    // A strand's orchestrator gets its strand's branch checked out, which its
+    // jobs merge onto as they finish (P18, D-P18-03); it reads it, and writes
+    // nothing there.
+    if (!strandCheckout) {
       await addWorktree(environment.git, { repo: session.repoPath, path: worktree, branch, base });
+      // The base, recorded in the repository rather than carried through three
+      // processes. `completeJob` reads it back to parent the snapshot; a
+      // strand's queue turn reads it as the program head it took in.
+      await updateRef(environment.git, session.repoPath, baseRef(nodeId), base);
     }
-    // The base, recorded in the repository rather than carried through three
-    // processes. `completeJob` reads it back to parent the snapshot.
-    await updateRef(environment.git, session.repoPath, baseRef(nodeId), base);
     const carryInto = async (): Promise<CarriedOverWork | undefined> => {
       if (unfinished === undefined) return undefined;
       const { applied, conflicts } = await applyUnfinished(
@@ -427,7 +475,14 @@ export const startJob = async (
     // than avoided by writing late. The node took `running` with its slot, above.
     let currentIdentity = first;
     let carried = carriedOver;
-    let current = await startAttempt(first, worktree, undefined, carried);
+    let current = await startAttempt(
+      first,
+      worktree,
+      input.resume === undefined || input.task === undefined
+        ? undefined
+        : { sessionId: input.resume.sessionId, task: input.task },
+      carried,
+    );
 
     outbox.emit({
       type: "node.started",
@@ -503,6 +558,14 @@ export const startJob = async (
       relaunch,
       resumeSession,
       ...(input.integrate === undefined ? {} : { integrate: input.integrate }),
+      ...(strand === undefined
+        ? {}
+        : {
+            strand: {
+              nodeId: strand.executionNodeId,
+              worktree: environment.paths.worktree(session.scope.runId, strand.executionNodeId),
+            },
+          }),
     });
 
     const stop = async (mode: "cancelled" | "interrupted"): Promise<void> => {
@@ -699,11 +762,15 @@ export const startJob = async (
     const agentId = agent.agentId;
     // A resumed session is the same agent, already started: its record is not
     // moved again, and its earlier segment's transcript is already kept.
-    const startedAgent =
-      resumed === undefined
-        ? transitionAgent(agent, "start", { at: nowIso(clock) })
-        : ((await stores.agents.get(session.scope, agentId)) ?? agent);
-    if (resumed === undefined) await stores.agents.put(startedAgent);
+    // A new attempt that continues an earlier session (D-P18-05) is a new agent
+    // all the same: its record starts here.
+    const stored =
+      resumed === undefined ? undefined : await stores.agents.get(session.scope, agentId);
+    const fresh = resumed === undefined || stored === undefined || stored.status === "created";
+    const startedAgent = fresh
+      ? transitionAgent(stored ?? agent, "start", { at: nowIso(clock) })
+      : stored;
+    if (fresh) await stores.agents.put(startedAgent);
 
     const sink = createHookSink({ outbox, executionNodeId: nodeId, agentId });
     const transcript = environment.paths.transcript(session.scope.runId, agentId);
@@ -775,6 +842,7 @@ export const startJob = async (
         sink,
         transcriptPath: transcript,
         ...launchExtras(input.task, resumed, carriedOver),
+        ...(landsOnStrand ? { landsOnStrand: true } : {}),
         ...runAsOf(environment, startedAgent),
       });
     } catch (error) {
@@ -876,6 +944,28 @@ const finishSubProgram = async (
     await uploadTranscript(environment, input);
 
     const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
+    // Completed: the strand lands once, as a job does (P18, D-P18-04). The
+    // queue takes its branch at the head the orchestrator completed it on,
+    // against the program head it last took in.
+    if (
+      node !== undefined &&
+      node.status === "implemented" &&
+      node.commitSha !== null &&
+      input.integrate !== undefined
+    ) {
+      const base =
+        (await strandBase(environment.git, input.session.repoPath, input.nodeId)) ?? input.base;
+      await input.integrate({
+        session: input.session,
+        job: input.job,
+        nodeId: input.nodeId,
+        agentId: input.current().agentId,
+        worktree: input.worktree,
+        branch: input.branch,
+        base,
+      });
+      return;
+    }
     if (node !== undefined && node.status === "running") {
       const stopped =
         exit.kind === "cancelled" ? "cancel" : exit.kind === "interrupted" ? "interrupt" : "fail";
@@ -903,23 +993,109 @@ const finishSubProgram = async (
   } catch (error) {
     await failHard(environment, input, error);
   } finally {
-    await releaseWorktree(
-      environment,
-      input.session.repoPath,
-      input.worktree,
-      input.branch,
-      input.nodeId,
-    ).catch((error: unknown) => {
-      console.error(
-        `node ${input.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
-    await discardScratch(environment.paths, input.worktree, environment.reclaim);
+    // The strand's checkout and branch hold every job that merged: kept for the
+    // next round while the strand may still be fixed (D-P18-05), and for a
+    // human after a failure, as a job's worktree is. A landing releases them
+    // itself; a cancelled strand has nothing left to keep.
+    const ended = await stores.executionNodes
+      .get(input.session.scope, input.nodeId)
+      .catch(() => undefined);
+    if (ended?.status === "cancelled" || ended?.status === "succeeded") {
+      await releaseWorktree(
+        environment,
+        input.session.repoPath,
+        input.worktree,
+        input.branch,
+        input.nodeId,
+      ).catch((error: unknown) => {
+        console.error(
+          `node ${input.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+      await discardScratch(environment.paths, input.worktree, environment.reclaim);
+    }
     await recordRouteResult(environment, input, usage);
     // What the strand's decisions produced, now that its work has all landed
     // or stopped (P9, D-P9-01).
     await stampSettledDecisions(environment, input.session, input.nodeId);
   }
+};
+
+/**
+ * A strand's job, landed on its strand (P18, D-P18-03): its commit merged onto
+ * the strand's branch, and the job `merged`. No gate, examination or queue turn
+ * of its own; the strand is verified and examined once, whole. A conflict with
+ * what merged onto the strand since the job was cut fails it, for its
+ * orchestrator to retry from the strand's new head.
+ */
+const landOnStrand = async (
+  environment: ExecutionEnvironment,
+  input: FinishInput,
+  strand: { readonly nodeId: ExecutionNodeId; readonly worktree: string },
+  node: ExecutionNode,
+): Promise<void> => {
+  const { stores, clock, outbox } = environment;
+  const agentId = input.current().agentId;
+  if (node.commitSha === null) {
+    throw new Error(`node ${input.nodeId} is implemented but carries no commit`);
+  }
+  const subject = input.job.objective.split("\n")[0]?.trim().slice(0, 120) ?? "";
+  const merged = await mergeInto(environment.git, {
+    worktree: strand.worktree,
+    commit: node.commitSha,
+    message: `Merge job ${input.job.jobContractId}: ${subject}`,
+    atMs: clock.now(),
+  });
+  if (!merged.merged) {
+    const where = merged.conflicts.length > 0 ? merged.conflicts.join(", ") : merged.detail;
+    const reason =
+      `integration_conflict: this job's changes conflict with work merged onto its strand since it started, in ${where}. ` +
+      `Nothing was merged. Its worktree is kept at ${input.worktree}; retry it to run it again from the strand's head.`;
+    outbox.emit({
+      type: "integration.conflict",
+      source: "control-plane",
+      payload: {
+        commitSha: node.commitSha,
+        strand: strand.nodeId,
+        conflicts: merged.conflicts.slice(0, 50),
+      },
+      executionNodeId: input.nodeId,
+      agentId,
+    });
+    await stores.executionNodes.put({
+      ...transition(node, "fail", nowIso(clock)),
+      outcomeReason: reason,
+    });
+    outbox.emit({
+      type: "node.failed",
+      source: "control-plane",
+      payload: { reason },
+      executionNodeId: input.nodeId,
+      agentId,
+    });
+    return;
+  }
+  await stores.executionNodes.put(transition(node, "merge", nowIso(clock)));
+  outbox.emit({
+    type: "node.merged",
+    source: "control-plane",
+    payload: { commitSha: node.commitSha, strand: strand.nodeId, strandHead: merged.head },
+    executionNodeId: input.nodeId,
+    agentId,
+  });
+  // On its strand's branch now: the job's own worktree has done its work.
+  await releaseWorktree(
+    environment,
+    input.session.repoPath,
+    input.worktree,
+    input.branch,
+    input.nodeId,
+  ).catch((error: unknown) => {
+    console.error(
+      `node ${input.nodeId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+  await discardScratch(environment.paths, input.worktree, environment.reclaim);
 };
 
 /**
@@ -974,6 +1150,8 @@ interface FinishInput {
   /** Resumes the current attempt's session with a reminder to report. */
   resumeSession(sessionId: string, reminder: number, of: number): Promise<Attempt | undefined>;
   readonly integrate?: IntegrateCandidate;
+  /** P18 (D-P18-03): the strand this job lands on, instead of the merge queue. */
+  readonly strand?: { readonly nodeId: ExecutionNodeId; readonly worktree: string };
 }
 
 /**
@@ -1244,6 +1422,13 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
         executionNodeId: input.nodeId,
         agentId: input.current().agentId,
       });
+      return;
+    }
+
+    // A strand's job lands on its strand, with no gate, examination or queue
+    // turn of its own: its strand is verified and examined once, whole (P18).
+    if (input.strand !== undefined) {
+      await landOnStrand(environment, input, input.strand, node);
       return;
     }
 

@@ -32,6 +32,8 @@ export type TransitionEvent =
   | "examination_failed"
   | "seal"
   | "integrate"
+  /** P18 (D-P18-03): a strand job's commit merged onto its strand's branch. */
+  | "merge"
   | "fail"
   | "cancel"
   | "interrupt"
@@ -51,6 +53,7 @@ export const TRANSITION_EVENTS: readonly TransitionEvent[] = [
   "examination_failed",
   "seal",
   "integrate",
+  "merge",
   "fail",
   "cancel",
   "interrupt",
@@ -70,6 +73,7 @@ export const EXECUTION_NODE_STATUSES: readonly ExecutionNodeStatus[] = [
   "examination_failed",
   "sealed",
   "integrated",
+  "merged",
   "succeeded",
   "failed",
   "cancelled",
@@ -79,6 +83,7 @@ export const EXECUTION_NODE_STATUSES: readonly ExecutionNodeStatus[] = [
 /** Nothing leaves these. A run that reaches one of them is settled. */
 export const TERMINAL_STATUSES: readonly ExecutionNodeStatus[] = [
   "integrated",
+  "merged",
   "succeeded",
   "cancelled",
 ];
@@ -126,7 +131,14 @@ export const TRANSITIONS: TransitionTable = {
     interrupt: "interrupted",
     cancel: "cancelled",
   },
-  implemented: { begin_verification: "verifying", fail: "failed", cancel: "cancelled" },
+  // A strand job's commit merges onto its strand (P18, D-P18-03); the strand
+  // node itself goes on through verification, as any job does.
+  implemented: {
+    begin_verification: "verifying",
+    merge: "merged",
+    fail: "failed",
+    cancel: "cancelled",
+  },
   verifying: {
     verification_passed: "verified",
     verification_failed: "verification_failed",
@@ -151,6 +163,7 @@ export const TRANSITIONS: TransitionTable = {
   examination_failed: { retry: "queued", fail: "failed", cancel: "cancelled" },
   sealed: { integrate: "integrated", cancel: "cancelled" },
   integrated: {},
+  merged: {},
   // No event leads here and none leaves: `finishRun` is the only way in.
   succeeded: {},
   failed: { retry: "queued", cancel: "cancelled" },

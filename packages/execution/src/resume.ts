@@ -64,11 +64,13 @@ import {
   pruneWorktrees,
   replayCommit,
   revParse,
+  tryGit,
   tryRevParse,
 } from "./git/index.js";
 import { checkoutBlocked, integrateNode } from "./integrate.js";
 import { repairProvisionalLine } from "./provisional-line.js";
 import { attemptsOf, startJob } from "./runner.js";
+import { mergeHeadIntoStrand } from "./strand.js";
 import { verifyNode } from "./verify.js";
 
 export interface ResumeResult {
@@ -157,14 +159,19 @@ export const deferredLine = async (
   for (const node of await readNodes(environment, session)) {
     if (node.status === "deferred" && node.commitSha !== null) byCommit.set(node.commitSha, node);
   }
-  return commits.map((commit) => {
+  // A deferred job carries one commit of the line; a deferred strand carries its
+  // branch's head, with its jobs' commits and merges beneath it (P18, D-P18-04).
+  // So a commit no node carries is part of the strand above it, and only one
+  // at the top of the line, which nothing carries, is nobody's.
+  const last = commits.at(-1);
+  if (last !== undefined && !byCommit.has(last)) {
+    throw new Error(
+      `commit ${last} is on the provisional line of run ${session.scope.runId}, and no deferred node carries it`,
+    );
+  }
+  return commits.flatMap((commit) => {
     const node = byCommit.get(commit);
-    if (node === undefined) {
-      throw new Error(
-        `commit ${commit} is on the provisional line of run ${session.scope.runId}, and no deferred node carries it`,
-      );
-    }
-    return node;
+    return node === undefined ? [] : [node];
   });
 };
 
@@ -186,6 +193,34 @@ const replayedOntoHead = async (
   const commit = node.commitSha;
   if (commit === null) return { node };
   const head = await revParse(runner, session.repoPath, session.program.repository.programBranch);
+  // A strand already holding the head lands as it is; one that does not takes
+  // the head in by a merge, as its queue turn would have (P18, D-P18-04).
+  if (node.kind === "sub-program") {
+    const holds = await tryGit(runner, ["merge-base", "--is-ancestor", head, commit], {
+      cwd: session.repoPath,
+    });
+    if (holds.exitCode === 0) return { node };
+    const merged = await mergeHeadIntoStrand(environment, {
+      repo: session.repoPath,
+      worktree,
+      strandNodeId: node.executionNodeId,
+      head,
+    });
+    if (!merged.merged) {
+      const reason =
+        `integration_conflict: this strand no longer merges with the program head after an ` +
+        `earlier deferred node did not land as it was, in ${merged.conflicts.join(", ") || merged.detail}. ` +
+        "It is kept under its strand branch; plan a correction for it.";
+      await stores.executionNodes.put({
+        ...transition(node, "cancel", nowIso(clock)),
+        outcomeReason: reason,
+      });
+      return { kind: "failed", reason };
+    }
+    const rebased: ExecutionNode = { ...node, commitSha: merged.head, updatedAt: nowIso(clock) };
+    await stores.executionNodes.put(rebased);
+    return { node: rebased };
+  }
   const parent = await tryRevParse(runner, session.repoPath, `${commit}^`);
   if (parent === head) return { node };
 

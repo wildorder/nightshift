@@ -71,6 +71,7 @@ import {
   type RoutePins,
   StrandBlockedError,
   StrandDelegationError,
+  strandContinuing,
   tryRevParse,
   verifyRunHead,
 } from "@nightshift/execution";
@@ -172,10 +173,18 @@ const jobReport = async (
   );
   const running = attached.engine.running(jobContractId as never);
   const waiting = attached.engine.waiting(jobContractId as never);
-  const continuing = continuedByNightshift(
-    node.status,
-    await stores.examinations.listByNode(scope, node.executionNodeId),
-  );
+  const continuing =
+    continuedByNightshift(
+      node.status,
+      await stores.examinations.listByNode(scope, node.executionNodeId),
+    ) ??
+    // A strand whose landing failed, being fixed by its own orchestrator (P18, D-P18-05).
+    strandContinuing(
+      node,
+      (await stores.routingDecisions.listByNode(scope, node.executionNodeId)).filter(
+        (decision) => decision.purpose === undefined,
+      ).length,
+    );
 
   return {
     jobContractId,

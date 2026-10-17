@@ -145,14 +145,21 @@ const assertChain = (input: MintExecutionTokenInput): void => {
     );
   }
   // D-P4-06 keeps the **root** orchestrator on the human's session. The only
-  // orchestrator that holds a token is a sub-program's (D-P6-04), and a worker,
-  // an examiner and an arbiter are only ever on a job (P8): the role and the
-  // node's kind must agree, or a token could carry delegation authority onto a
-  // node that has none.
-  const expectedKind = agent.role === "orchestrator" ? "sub-program" : "job";
-  if (node.kind !== expectedKind) {
+  // orchestrator that holds a token is a sub-program's (D-P6-04), and a worker
+  // is only ever on a job: the role and the node's kind must agree, or a token
+  // could carry delegation authority onto a node that has none. An examiner and
+  // an arbiter judge a job, or since P18 a whole strand (its job plan before it
+  // is built, its landing after, D-P18-01, D-P18-06); neither carries any
+  // authority to delegate.
+  const expectedKinds: readonly ExecutionNode["kind"][] =
+    agent.role === "orchestrator"
+      ? ["sub-program"]
+      : agent.role === "worker"
+        ? ["job"]
+        : ["job", "sub-program"];
+  if (!expectedKinds.includes(node.kind)) {
     throw new ExecutionTokenChainError(
-      `agent ${agent.agentId} is a ${agent.role} on a ${node.kind} node; a ${agent.role}'s token is minted only on a ${expectedKind} node`,
+      `agent ${agent.agentId} is a ${agent.role} on a ${node.kind} node; a ${agent.role}'s token is minted only on a ${expectedKinds.join(" or ")} node`,
     );
   }
 };

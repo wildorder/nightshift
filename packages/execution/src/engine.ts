@@ -76,6 +76,8 @@ import {
 } from "./recover-candidate.js";
 import { createRouteAvailability } from "./route-availability.js";
 import { attemptsOf, delegateJob, type StartedJob, startJob } from "./runner.js";
+import { MAX_STRAND_FIX_ROUNDS, strandContinuing, strandFailures } from "./strand.js";
+import { planStateOf, reviewPending, reviewStrandPlan } from "./strand-plan.js";
 
 export interface EngineOptions {
   readonly environment: ExecutionEnvironment;
@@ -161,6 +163,8 @@ export interface Submission {
   readonly pins?: RoutePins | undefined;
   /** P8 (D-P8-13): a fix of blocking findings, carried into the worker's brief. */
   readonly task?: AgentTask | undefined;
+  /** P18 (D-P18-05): continue this session with `task`, rather than start one. */
+  readonly resume?: { readonly sessionId: string } | undefined;
   /** `job` unless said otherwise (D-P6-03). */
   readonly kind?: "job" | "sub-program";
 }
@@ -184,6 +188,8 @@ export type WaitingReason =
     }
   /** A strand held until the strands it depends on have succeeded (P7, D-P7-04). */
   | { readonly kind: "strands"; readonly waitingFor: readonly string[] }
+  /** A strand's job held until the jobs it depends on have merged (P18, D-P18-02). */
+  | { readonly kind: "jobs"; readonly waitingFor: readonly string[] }
   | { readonly kind: "wall_clock_spent"; readonly maxWallClockSeconds: number }
   /** P8 (D-P8-08): the run has spent its dollars or its tokens. Nothing new starts. */
   | {
@@ -589,6 +595,16 @@ export const createEngine = (options: EngineOptions): Engine => {
       };
       return false;
     }
+    // A strand's job starts when every job it depends on has merged onto the
+    // strand (P18, D-P18-02): independent ones start at once.
+    const waitingFor = entry.submission.job.dependencies.filter((dependency) => {
+      const depended = [...tree.nodes.values()].find((node) => node.jobContractId === dependency);
+      return depended?.status !== "merged" && depended?.status !== "integrated";
+    });
+    if (waitingFor.length > 0) {
+      entry.waiting = { kind: "jobs", waitingFor };
+      return false;
+    }
     const slot = maySlotStart(tree, id, limits);
     if (slot.free) return true;
     entry.waiting = {
@@ -615,6 +631,7 @@ export const createEngine = (options: EngineOptions): Engine => {
         integrate,
         reroute: rerouteFor(entry.submission),
         ...(entry.submission.task === undefined ? {} : { task: entry.submission.task }),
+        ...(entry.submission.resume === undefined ? {} : { resume: entry.submission.resume }),
       });
       remove(entry);
       active.set(started.nodeId, started);
@@ -642,6 +659,9 @@ export const createEngine = (options: EngineOptions): Engine => {
           // ruling out (D-P8-13, as amended 2026-09-25). Only once the engine has
           // let go of this one, or the retry would find it still running.
           if (!orchestrates) void continueRuling(started.nodeId).catch(() => {});
+          // A strand whose landing failed goes back to the agent that knows it
+          // (P18, D-P18-05).
+          if (orchestrates) void continueStrand(started.nodeId).catch(() => {});
           void pump();
         });
       departures.set(started.nodeId, departure);
@@ -712,7 +732,11 @@ export const createEngine = (options: EngineOptions): Engine => {
     return { submission, nodeId: node.executionNodeId };
   };
 
-  const retryJob = async (jobContractId: JobContractId): Promise<boolean> => {
+  const retryJob = async (
+    jobContractId: JobContractId,
+    /** P18 (D-P18-05): continue the last session with this task, on the same route. */
+    continuing?: { readonly task: AgentTask; readonly resume: { readonly sessionId: string } },
+  ): Promise<boolean> => {
     if (closed) return false;
     const nodeId =
       nodeOfJob.get(jobContractId) ??
@@ -755,12 +779,18 @@ export const createEngine = (options: EngineOptions): Engine => {
     // Where the retry goes (D-P8-07): one rung up after a failure of the model,
     // the same route after one that was not. The router decides; the
     // orchestrator only decided to retry.
-    const route = rerouteForRetry(submission, node, nodeId);
-    const { task: _previousTask, ...rest0 } = submission;
+    // A continued session stays on the route it ran on: it is the same session.
+    const route =
+      continuing === undefined ? rerouteForRetry(submission, node, nodeId) : submission.route;
+    const { task: _previousTask, resume: _previousResume, ...rest0 } = submission;
     const retried: Submission = {
       ...rest0,
       route: await route,
-      ...(fix.task === undefined ? {} : { task: fix.task }),
+      ...(continuing !== undefined
+        ? { task: continuing.task, resume: continuing.resume }
+        : fix.task === undefined
+          ? {}
+          : { task: fix.task }),
     };
     submissions.set(jobContractId, retried);
 
@@ -794,6 +824,31 @@ export const createEngine = (options: EngineOptions): Engine => {
     if (!RETRYABLE_STATUSES.includes(node.status)) return;
     if (!rulingDue(await examinationsOf(nodeId))) return;
     await retryJob(node.jobContractId);
+  };
+
+  /**
+   * A strand whose landing failed, continued by its own orchestrator's session
+   * with what failed (P18, D-P18-05): red gates, blocking findings, or a
+   * conflict with the program head. At most {@link MAX_STRAND_FIX_ROUNDS}
+   * rounds; then it stays failed, for the root to decide.
+   */
+  const continueStrand = async (nodeId: ExecutionNodeId): Promise<void> => {
+    if (closed) return;
+    const node = await stores.executionNodes.get(session.scope, nodeId);
+    if (node === undefined || node.kind !== "sub-program" || node.jobContractId === null) return;
+    const attempts = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId));
+    const round = attempts.length;
+    if (strandContinuing(node, round) === undefined) return;
+    const orchestrator = [...(await stores.agents.listByNode(session.scope, nodeId))]
+      .filter((agent) => agent.role === "orchestrator" && agent.sessionId !== undefined)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .at(-1);
+    if (orchestrator?.sessionId === undefined) return;
+    const failures = await strandFailures(environment, session, node);
+    await retryJob(node.jobContractId, {
+      task: { kind: "strand_fix", round, of: MAX_STRAND_FIX_ROUNDS, ...failures },
+      resume: { sessionId: orchestrator.sessionId },
+    });
   };
 
   // --- Discovery: what a sub-program's orchestrator asked for (D-P6-01) ----------------
@@ -906,9 +961,42 @@ export const createEngine = (options: EngineOptions): Engine => {
     if (found) await pump();
   };
 
+  /**
+   * A strand's job plan, recorded and not yet reviewed (P18, D-P18-01): an
+   * independent examiner reviews it while its orchestrator waits in
+   * `strand.review.wait`. One review in flight per strand.
+   */
+  const reviewPlanOf = async (node: ExecutionNode): Promise<void> => {
+    const id = node.executionNodeId;
+    if (reviewing.has(id) || node.jobContractId === null) return;
+    reviewing.add(id);
+    try {
+      const state = await planStateOf(environment, session.scope, id);
+      const plan = state.plans.at(-1);
+      if (!reviewPending(state) || plan === undefined) return;
+      const job = await stores.jobContracts.get(session.scope, node.jobContractId);
+      const route = attemptsOf(await stores.routingDecisions.listByNode(session.scope, id)).at(-1);
+      if (job === undefined || route === undefined) return;
+      await reviewStrandPlan(environment, {
+        session,
+        node,
+        job,
+        worktree: environment.paths.worktree(session.scope.runId, id),
+        plan,
+        round: state.reviews.length + 1,
+        builder: route.chosen,
+      });
+    } finally {
+      reviewing.delete(id);
+    }
+  };
+
   /** What one stored node asks of the engine, if anything. True when it was adopted. */
   const consider = async (node: ExecutionNode): Promise<boolean> => {
     const id = node.executionNodeId;
+    if (node.kind === "sub-program" && node.status === "running" && orchestrators.has(id)) {
+      void reviewPlanOf(node).catch(() => {});
+    }
     // P8 (D-P8-13): a sub-program's orchestrator disputes by writing the finding
     // `disputed`; the arbiter is the engine's to start.
     if (node.status === "failed" && node.kind === "job" && !arbitrating.has(id)) {
@@ -1036,6 +1124,8 @@ export const createEngine = (options: EngineOptions): Engine => {
   // own edges (`retry`, `start`, `report_implemented` with the examined commit)
   // and handed to the merge queue as it is: no worker runs again.
   const arbitrating = new Set<ExecutionNodeId>();
+  /** Strands whose job plan an examiner is reviewing now (P18, D-P18-01). */
+  const reviewing = new Set<ExecutionNodeId>();
 
   /** What a dispute needs, or why there can be none. */
   const disputable = async (

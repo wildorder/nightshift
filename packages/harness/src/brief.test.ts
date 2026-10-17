@@ -191,7 +191,7 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
       worktree: "/tmp/w",
     });
     expect(brief).toContain(
-      "delegate { objective, acceptance, risk, ambiguity, testability, jobKind }",
+      "delegate { objective, acceptance, dependsOn, risk, ambiguity, testability, jobKind }",
     );
     expect(brief).toContain("low when your objective and acceptance say exactly what to change");
     for (const ending of [

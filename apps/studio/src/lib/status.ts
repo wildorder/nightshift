@@ -15,6 +15,8 @@ const TONE_OF: Readonly<Record<string, Tone>> = {
   succeeded: "success",
   verified: "success",
   integrated: "success",
+  // P18: a strand's job, landed on its strand; the strand is verified whole.
+  merged: "success",
   sealed: "success",
   passed: "success",
   completed: "success",

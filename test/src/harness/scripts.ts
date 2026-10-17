@@ -90,7 +90,18 @@ export const taggedScript = (
 
 /** What a sub-orchestrator script drives: the sub-orchestrator role's tools. */
 export interface OrchestratorSurface {
-  delegate(objective: string): Promise<string>;
+  /**
+   * `strand.plan` then `strand.review.wait` (P18, D-P18-01): the job plan, and
+   * the review it waits for before anything is built.
+   */
+  plan(
+    jobs: readonly {
+      readonly id: string;
+      readonly objective: string;
+      readonly dependsOn?: readonly string[];
+    }[],
+  ): Promise<void>;
+  delegate(objective: string, dependsOn?: readonly string[]): Promise<string>;
   /** Waits until every one of `jobIds` has settled; answers each one's final status. */
   waitAll(jobIds: readonly string[]): Promise<Readonly<Record<string, string>>>;
   progress(message: string): Promise<void>;
@@ -462,23 +473,30 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
           : "wait=2 group=c"
         : passed.join(" ");
     const [first, second] = prefix === undefined ? ["c1", "c2"] : [`${prefix}1`, `${prefix}2`];
+    const objectives = [
+      `[add-module ${first} ${how}] Add the ${first} module and its test.`,
+      `[add-module ${second} ${how}] Add the ${second} module and its test.`,
+    ];
+    // P18 (D-P18-01): the plan first, reviewed, then both jobs at once.
+    await orchestrator.plan(
+      objectives.map((objective, index) => ({ id: `J${index + 1}`, objective })),
+    );
     const jobs = [
-      await orchestrator.delegate(
-        `[add-module ${first} ${how}] Add the ${first} module and its test.`,
-      ),
-      await orchestrator.delegate(
-        `[add-module ${second} ${how}] Add the ${second} module and its test.`,
-      ),
+      await orchestrator.delegate(objectives[0] as string),
+      await orchestrator.delegate(objectives[1] as string),
     ];
     const statuses = await orchestrator.waitAll(jobs);
-    // `deferred` (P7, D-P7-10) is done for now: on the provisional line, waiting on a human.
+    // `merged` (P18): on the strand's branch. `deferred` (P7, D-P7-10) is done
+    // for now: on the provisional line, waiting on a human.
     if (
-      Object.values(statuses).every((status) => status === "integrated" || status === "deferred")
+      Object.values(statuses).every(
+        (status) => status === "merged" || status === "integrated" || status === "deferred",
+      )
     ) {
-      await orchestrator.complete("Both modules are integrated.");
+      await orchestrator.complete("Both modules are merged onto the strand.");
       return 0;
     }
-    await orchestrator.fail(`not every job integrated: ${JSON.stringify(statuses)}`);
+    await orchestrator.fail(`not every job merged: ${JSON.stringify(statuses)}`);
     return 0;
   },
 
@@ -503,7 +521,12 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
     const unfinished = strandIds.filter((strandId) => {
       if (carried.has(strandId)) return false;
       const jobId = jobs.get(strandId);
-      return jobId === undefined || statuses[jobId] !== "succeeded";
+      // A strand lands once, whole (P18): `integrated`; `succeeded` for one that
+      // landed nothing; `deferred` when its checks wait on a human (D-P7-10).
+      return (
+        jobId === undefined ||
+        !["succeeded", "integrated", "deferred"].includes(statuses[jobId] ?? "")
+      );
     });
     if (unfinished.length > 0) {
       return (await root.finish("failed", `parked: ${unfinished.join(", ")}`)) ? 0 : 1;

@@ -128,6 +128,8 @@ const RENDER: Readonly<Record<string, Render>> = {
   "integration.conflict": (p) =>
     `conflicts with work that landed meanwhile: ${listOf(p.conflicts)}`,
   "node.integrated": (p) => `landed ${String(p.commitSha ?? "").slice(0, 8)}`,
+  // P18: a strand's job, on its strand's branch; the strand lands whole.
+  "node.merged": (p) => `merged ${String(p.commitSha ?? "").slice(0, 8)} onto its strand`,
   "node.deferred": (p) => `on the provisional line, waiting on ${listOf(p.waitingOn)}`,
   "node.failed": (p) => `failed: ${short(p.reason)}`,
   "node.cancelled": (p) => `cancelled: ${short(p.reason)}`,

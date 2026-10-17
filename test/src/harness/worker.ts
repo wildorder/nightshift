@@ -108,10 +108,30 @@ const surfaceOver = (worker: Worker): WorkerSurface => ({
 
 /** The sub-orchestrator role's tools, over stdio: each one a real tool call. */
 const orchestratorOver = (worker: Worker): OrchestratorSurface => ({
-  delegate: async (objective) => {
+  plan: async (jobs) => {
+    const planned = await worker.call("strand.plan", {
+      jobs: jobs.map((job) => ({
+        id: job.id,
+        objective: job.objective,
+        acceptance: ["node --test passes"],
+        touches: [],
+        dependsOn: [...(job.dependsOn ?? [])],
+      })),
+      notes: "Independent modules, built at once.",
+    });
+    if (planned.ok !== true) throw new Error(`strand.plan was refused: ${JSON.stringify(planned)}`);
+    for (;;) {
+      const review = await worker.call("strand.review.wait", { timeoutSeconds: 10 });
+      if (review.ok !== true)
+        throw new Error(`strand.review.wait was refused: ${JSON.stringify(review)}`);
+      if (review.timedOut !== true) return;
+    }
+  },
+  delegate: async (objective, dependsOn) => {
     const result = await worker.call("delegate", {
       objective,
       acceptance: ["node --test passes"],
+      ...(dependsOn === undefined ? {} : { dependsOn: [...dependsOn] }),
     });
     if (result.ok !== true) throw new Error(`delegate was refused: ${JSON.stringify(result)}`);
     return String(result.jobId);
