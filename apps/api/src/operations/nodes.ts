@@ -165,7 +165,13 @@ const assertMutableChangesOnly = (existing: ExecutionNode, node: ExecutionNode):
 
   const workChanged =
     existing.commitSha !== node.commitSha || existing.jobContractId !== node.jobContractId;
-  if (workChanged && isPostVerification(existing.status)) {
+  // A retry starts the work over: it lets go of the commit, and the attempt
+  // that was verified keeps its verification, on that commit, as its record.
+  // Refused from `examination_failed` before 2026-10-18, so a job or strand
+  // stopped by its examination in the merge queue could never be retried.
+  const lettingGo =
+    retrying && node.commitSha === null && existing.jobContractId === node.jobContractId;
+  if (workChanged && !lettingGo && isPostVerification(existing.status)) {
     throw new VerificationEvidenceError(
       `node ${existing.executionNodeId} is ${existing.status}; changing its commit or job would detach it from its verification`,
     );

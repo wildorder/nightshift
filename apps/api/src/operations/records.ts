@@ -379,14 +379,17 @@ const assertExaminerIndependent = async (
     examination.implementerAgentId,
     "implementer",
   );
+  // A job's builder is its worker; a strand's is its orchestrator (P18).
+  const examined = await stores.executionNodes.get(scope, examination.executionNodeId);
+  const builderRole = examined?.kind === "sub-program" ? "orchestrator" : "worker";
   if (
     implementer.executionNodeId !== examination.executionNodeId ||
-    implementer.role !== "worker"
+    implementer.role !== builderRole
   ) {
     throw new HttpError(
       409,
       "conflict",
-      "the implementer named is not a worker on the examined node",
+      `the implementer named is not the ${builderRole} on the examined node`,
     );
   }
   const route = examination.examinerRoute;

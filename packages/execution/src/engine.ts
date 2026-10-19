@@ -261,7 +261,8 @@ export interface Engine {
    * `subprogram.complete`, was recorded `succeeded`, and was still composing its
    * closing message when its parent tried to finish the run. The record says the
    * work is over; this makes the process agree, without ever stopping one whose
-   * node is still in flight.
+   * node is still in flight. Then waits for what the engine decided to do
+   * next with each (a strand's fix round, a ruling's retry): queued, or none.
    */
   releaseSettled(graceMs: number): Promise<void>;
   snapshot(): EngineSnapshot;
@@ -678,10 +679,17 @@ export const createEngine = (options: EngineOptions): Engine => {
           // An arbiter upheld a finding against it: the next attempt carries the
           // ruling out (D-P8-13, as amended 2026-09-25). Only once the engine has
           // let go of this one, or the retry would find it still running.
-          if (!orchestrates) void continueRuling(started.nodeId).catch(() => {});
+          if (!orchestrates) continueWith(started.nodeId, continueRuling(started.nodeId));
           // A strand whose landing failed goes back to the agent that knows it
           // (P18, D-P18-05).
-          if (orchestrates) void continueStrand(started.nodeId).catch(() => {});
+          if (orchestrates) {
+            continueWith(
+              started.nodeId,
+              continueStrand(started.nodeId).catch((error: unknown) =>
+                said(started.nodeId, `could not continue the strand: ${messageOf(error)}`),
+              ),
+            );
+          }
           void pump();
         });
       departures.set(started.nodeId, departure);
@@ -847,6 +855,31 @@ export const createEngine = (options: EngineOptions): Engine => {
   };
 
   /**
+   * The engine's own next attempts, from the moment it lets go of the last one
+   * until the next is queued or it decides there is none: work in hand, so the
+   * engine is not idle in between (a strand mid-fix is not a finished strand).
+   */
+  const continuing = new Map<ExecutionNodeId, Promise<void>>();
+  const continueWith = (nodeId: ExecutionNodeId, next: Promise<unknown>): void => {
+    const decided = next
+      .catch(() => {})
+      .then(() => {
+        continuing.delete(nodeId);
+      });
+    continuing.set(nodeId, decided);
+  };
+
+  /** A line on a node's record, for a human reading why the engine did what it did. */
+  const said = (nodeId: ExecutionNodeId, message: string): void => {
+    outbox.emit({
+      type: "node.progress",
+      source: "control-plane",
+      payload: { message },
+      executionNodeId: nodeId,
+    });
+  };
+
+  /**
    * A strand whose landing failed, continued by its own orchestrator's session
    * with what failed (P18, D-P18-05): red gates, blocking findings, or a
    * conflict with the program head. At most {@link MAX_STRAND_FIX_ROUNDS}
@@ -863,7 +896,10 @@ export const createEngine = (options: EngineOptions): Engine => {
       .filter((agent) => agent.role === "orchestrator" && agent.sessionId !== undefined)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .at(-1);
-    if (orchestrator?.sessionId === undefined) return;
+    if (orchestrator?.sessionId === undefined) {
+      said(nodeId, "could not continue the strand: its orchestrator kept no session to resume");
+      return;
+    }
     const failures = await strandFailures(environment, session, node);
     await retryJob(node.jobContractId, {
       task: { kind: "strand_fix", round, of: MAX_STRAND_FIX_ROUNDS, ...failures },
@@ -1472,6 +1508,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       recovery === undefined &&
       pending.length === 0 &&
       arbitrating.size === 0 &&
+      continuing.size === 0 &&
       recoveringCandidates.size === 0 &&
       queue.activity().integrating === undefined &&
       queue.activity().waiting.length === 0,
@@ -1497,6 +1534,8 @@ export const createEngine = (options: EngineOptions): Engine => {
           }
         }),
       );
+      // What the engine does next with each, decided: queued again, or not.
+      await Promise.all(continuing.values());
     },
 
     snapshot: () => ({

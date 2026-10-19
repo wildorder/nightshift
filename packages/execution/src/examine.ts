@@ -831,7 +831,12 @@ const implementerOf = async (
   input: ExamineInput,
 ): Promise<Agent | undefined> =>
   [...(await environment.stores.agents.listByNode(input.session.scope, input.node.executionNodeId))]
-    .filter((agent) => agent.role === "worker")
+    // A job's builder is its worker. A strand's is its orchestrator (P18): it
+    // authored the job plan and briefed every job, and it is the agent on the
+    // strand's node the examination is held independent of.
+    .filter(
+      (agent) => agent.role === (input.node.kind === "sub-program" ? "orchestrator" : "worker"),
+    )
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .at(-1);
 
