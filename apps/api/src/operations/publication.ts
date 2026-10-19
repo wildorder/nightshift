@@ -4,8 +4,14 @@
  * on the dispatch, one per head, and `enforce` has held the engine to its
  * generation.
  */
-import { PublicationIntentBodySchema } from "@nightshift/contracts";
-import { nowIso, rearmPublication, recordIntent } from "@nightshift/core";
+import { PublicationIntentBodySchema, StrandPublicationBodySchema } from "@nightshift/contracts";
+import {
+  isOwnStrandBranch,
+  nowIso,
+  rearmPublication,
+  recordIntent,
+  recordStrandPublication,
+} from "@nightshift/core";
 import { HttpError, parseBody } from "../http.js";
 import { runScopeFrom } from "../params.js";
 import type { Handler } from "../router.js";
@@ -33,6 +39,40 @@ export const requestPublication: Handler = async ({ deps, request, params }) => 
   }
   const intent = next.publication.intents.find((candidate) => candidate.head === body.head);
   return { status: created ? 201 : 200, body: intent };
+};
+
+/**
+ * `POST …/publication/strands` — a strand's branch moved on the machine (A-60):
+ * the newest head is recorded for its branch and the publisher pushes it. Only
+ * the run's own `nightshift/<run>/…` branches, and only from a live machine.
+ */
+export const publishStrand: Handler = async ({ deps, request, params }) => {
+  const scope = runScopeFrom(params);
+  const body = parseBody(StrandPublicationBodySchema, request.body);
+  if (!isOwnStrandBranch(scope.runId, body.branch)) {
+    throw new HttpError(
+      400,
+      "validation_failed",
+      `a run publishes only its own strands' branches, nightshift/${scope.runId}/<node>; not ${body.branch}`,
+    );
+  }
+  const dispatch = await requireDispatch(deps, scope);
+  if (dispatch.status !== "running" && dispatch.status !== "ready") {
+    throw new HttpError(
+      409,
+      "dispatch_not_live",
+      `the dispatch is ${dispatch.status}; only a live machine publishes`,
+    );
+  }
+  const { dispatch: next, created } = recordStrandPublication(dispatch, body, nowIso(deps.clock));
+  if (created) {
+    await deps.stores.dispatches.put(next);
+    await deps.dispatcher?.publish?.(scope).catch((error: unknown) => {
+      console.error(`publication ${scope.runId}: the publisher could not be invoked`, error);
+    });
+  }
+  const strand = next.publication.strands?.find((candidate) => candidate.branch === body.branch);
+  return { status: created ? 201 : 200, body: strand };
 };
 
 /**

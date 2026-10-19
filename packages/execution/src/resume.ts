@@ -203,6 +203,7 @@ const replayedOntoHead = async (
     const merged = await mergeHeadIntoStrand(environment, {
       repo: session.repoPath,
       worktree,
+      runId: session.scope.runId,
       strandNodeId: node.executionNodeId,
       head,
     });

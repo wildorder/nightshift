@@ -79,6 +79,7 @@ export const routes = {
   dispatchHeartbeat: (scope: RunScope) => `${routes.dispatch(scope)}/heartbeat`,
   publication: (scope: RunScope) => `${routes.inRun(scope)}/publication`,
   publicationRetry: (scope: RunScope) => `${routes.inRun(scope)}/publication/retry`,
+  publicationStrands: (scope: RunScope) => `${routes.inRun(scope)}/publication/strands`,
   computeUtilization: (scope: RunScope) => `${routes.inRun(scope)}/compute`,
 
   nodes: (scope: RunScope) => `${routes.inRun(scope)}/nodes`,

@@ -39,6 +39,7 @@ import type {
   ExaminationEvidence,
   HarnessStartInput,
   ProgramRuling,
+  StrandContinuation,
 } from "./harness.js";
 
 /**
@@ -61,6 +62,8 @@ export interface WorkerBriefInput {
   readonly rulings?: readonly ProgramRuling[];
   /** P18: one of a strand's jobs, merged onto its strand's branch, verified with the strand. */
   readonly landsOnStrand?: boolean;
+  /** A-60: a strand an earlier run left unlanded, continued here. */
+  readonly strandContinued?: StrandContinuation;
 }
 
 /**
@@ -411,6 +414,40 @@ const ROOT_ORCHESTRATOR_TOOLS: readonly string[] = [
  * the code.** It decides how the work divides, delegates each piece, reads what
  * came back, and says when the whole is done.
  */
+/** A-60: what an earlier run already built of this strand, and where it is. */
+const renderStrandContinued = (continued: StrandContinuation | undefined): string | undefined => {
+  if (continued === undefined) return undefined;
+  const work =
+    continued.work.length === 0 ? ["  (no job subjects recorded)"] : bullets(continued.work);
+  if (continued.conflict !== undefined) {
+    return [
+      `RUN ${continued.fromRunId} ALREADY BUILT PART OF THIS STRAND`,
+      "",
+      `  Its work is on the branch ${continued.branch} (at ${continued.head.slice(0, 12)}), and`,
+      "  it would not merge with the program head as it is now:",
+      `    ${continued.conflict}`,
+      "  So your branch starts from the program head. What that run finished:",
+      work,
+      "",
+      "  Reuse it: brief your jobs to take what still fits from that branch",
+      `  (git show ${continued.head.slice(0, 12)}:<path>, git diff <base>..${continued.head.slice(0, 12)})`,
+      "  rather than writing it again.",
+    ].join("\n");
+  }
+  return [
+    `RUN ${continued.fromRunId} ALREADY BUILT PART OF THIS STRAND, AND IT IS ON YOUR BRANCH`,
+    "",
+    "  That run did not land this strand, and its work was kept. Your branch starts from",
+    `  where it stopped (${continued.head.slice(0, 12)}), with the program's latest work merged in.`,
+    "  What it finished:",
+    work,
+    "",
+    "  Read the branch, judge what is already done against the acceptance criteria, and",
+    "  author a job plan for only what is left. If nothing is left, plan no jobs and",
+    "  complete the strand: its gates and examination judge the branch as it stands.",
+  ].join("\n");
+};
+
 export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
   const { job, program, worktree } = input;
   const strand = (program.strands ?? []).find((candidate) => candidate.id === job.strandId);
@@ -423,6 +460,7 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       `  ${job.objective}`,
     ].join("\n"),
     ["ACCEPTANCE CRITERIA", numbered(job.acceptance)].join("\n"),
+    renderStrandContinued(input.strandContinued),
     renderProgramRulings(input.rulings, "orchestrator"),
     ...(job.strandId === undefined
       ? []
@@ -1218,6 +1256,7 @@ export const promptFor = (
     | "carriedOver"
     | "rulings"
     | "landsOnStrand"
+    | "strandContinued"
   >,
   withAddendum: (brief: string, mcpServerName: string, tools: readonly string[]) => string,
 ): string => {
@@ -1230,6 +1269,7 @@ export const promptFor = (
     ...(input.carriedOver === undefined ? {} : { carriedOver: input.carriedOver }),
     ...(input.rulings === undefined ? {} : { rulings: input.rulings }),
     ...(input.landsOnStrand === true ? { landsOnStrand: true } : {}),
+    ...(input.strandContinued === undefined ? {} : { strandContinued: input.strandContinued }),
   });
   return input.mcp === undefined
     ? brief

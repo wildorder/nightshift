@@ -10,15 +10,22 @@
  * for to the head it has now. One intent per landing, in landing order, each
  * one's predecessor the previous one's head, so the publisher's lease is exact.
  *
- * Nothing but the program branch is ever named (D-P10-01): the provisional
- * line, which lands nothing on the branch, raises no intent, because this hook
- * is called from `integrateNode` and from nowhere else. A local run has no
- * hook at all: the composition root installs it only on a machine.
+ * The program branch moves only by those landings: the provisional line,
+ * which lands nothing on it, raises no intent, because that hook is called
+ * from `integrateNode` and from nowhere else. A strand's branch is published
+ * too, every time it moves (A-60, amending D-P10-01): `createStrandPublication`,
+ * the newest head of each branch, from a pack of everything since the base,
+ * so a run that dies leaves its finished work at GitHub. A local run has no
+ * hook at all: the composition root installs them only on a machine.
  */
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { CommitSha, PublicationIntentBody } from "@nightshift/contracts";
+import type {
+  CommitSha,
+  PublicationIntentBody,
+  StrandPublicationBody,
+} from "@nightshift/contracts";
 
 /** What `integrateNode` reports after a landing moved the program branch. */
 export interface Landing {
@@ -28,6 +35,16 @@ export interface Landing {
 }
 
 export type PublishLanding = (landing: Landing) => Promise<void>;
+
+/** A strand's branch moved (A-60): a job merged onto it, or the program head merged in. */
+export interface StrandMove {
+  readonly branch: string;
+  readonly head: CommitSha;
+  readonly repoPath: string;
+}
+
+/** Never rejects: a strand that cannot be published now is published at its next move. */
+export type PublishStrand = (move: StrandMove) => Promise<void>;
 
 export interface PublicationQueueOptions {
   /** The branch's head at GitHub when the run was dispatched: the first intent's predecessor. */
@@ -110,5 +127,63 @@ export const createPublicationQueue = (options: PublicationQueueOptions): Publis
       }
     });
     return chain;
+  };
+};
+
+export interface StrandPublicationOptions {
+  /** What GitHub surely has: the dispatch's base. Every pack carries everything since. */
+  readonly baseSha: CommitSha;
+  readonly packDir: string;
+  readonly upload: (pack: Uint8Array, head: CommitSha) => Promise<{ readonly key: string }>;
+  /** `POST …/runs/{runId}/publication/strands`. */
+  readonly request: (body: StrandPublicationBody) => Promise<void>;
+  readonly log: (line: string) => void;
+}
+
+/**
+ * The hook a strand's moves call (A-60). One branch at a time and the newest
+ * head wins: a move made while an older one is still being packed waits, and
+ * only the latest of those waiting goes. Each pack stands alone, so a lost
+ * request costs nothing but the time until the strand moves again.
+ */
+export const createStrandPublication = (options: StrandPublicationOptions): PublishStrand => {
+  const sent = new Map<string, CommitSha>();
+  const newest = new Map<string, StrandMove>();
+  const sending = new Map<string, Promise<void>>();
+
+  const send = async (branch: string): Promise<void> => {
+    for (;;) {
+      const move = newest.get(branch);
+      if (move === undefined) {
+        // Gone in the same turn as the last look, so a move from now starts afresh.
+        sending.delete(branch);
+        return;
+      }
+      newest.delete(branch);
+      if (sent.get(branch) === move.head) continue;
+      try {
+        const pack = await packCommits(move.repoPath, options.packDir, move.head, options.baseSha);
+        const { key } = await options.upload(pack, move.head);
+        await options.request({ branch, head: move.head, bundleKey: key });
+        sent.set(branch, move.head);
+        options.log(
+          `strand published: ${branch} at ${move.head.slice(0, 12)} (${pack.length} bytes)`,
+        );
+      } catch (error) {
+        options.log(
+          `strand ${branch} at ${move.head.slice(0, 12)} could not be published: ${error instanceof Error ? error.message : String(error)}; its next move will carry it`,
+        );
+      }
+    }
+  };
+
+  return (move) => {
+    newest.set(move.branch, move);
+    const running = sending.get(move.branch);
+    if (running !== undefined) return running;
+    // Recorded before it begins, so its own end can clear it.
+    const started = Promise.resolve().then(() => send(move.branch));
+    sending.set(move.branch, started);
+    return started;
   };
 };

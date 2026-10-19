@@ -42,6 +42,7 @@ export {
   millis,
   type ProgramRuling,
   routeUnavailableReason,
+  type StrandContinuation,
 } from "./harness.js";
 export {
   HOOK_EVENT_TYPES,

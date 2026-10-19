@@ -534,6 +534,7 @@ describe("the report's publication (2026-10-14)", () => {
               intent("3", "held", "waiting behind 222222222222"),
             ] as never,
           },
+          unlanded: [],
         },
       }),
     );
@@ -553,11 +554,36 @@ describe("the report's publication (2026-10-14)", () => {
         publication: {
           branch: "program/edge",
           state: { kind: "published", head: sha("3") as never, unpublished: [] },
+          unlanded: [],
         },
       }),
     );
     expect(text).toContain("GitHub has every landing: `program/edge` is at `333333333333`.");
     expect(text).not.toContain("NOT ON GITHUB");
+    expect(text).not.toContain("did not land");
+  });
+
+  it("says where the work of a strand that did not land is kept, and that the next run continues it (A-60)", () => {
+    const text = renderReport(
+      report({
+        publication: {
+          branch: "program/edge",
+          state: { kind: "published", head: sha("3") as never, unpublished: [] },
+          unlanded: [
+            {
+              branch: "nightshift/run_1/node_s01",
+              head: sha("4") as never,
+              bundleKey: "k",
+              status: "published",
+              requestedAt: "2026-10-18T00:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    expect(text).toContain("## Work that did not land is kept at GitHub");
+    expect(text).toContain("The next run of this plan continues each of these strands");
+    expect(text).toContain("| `nightshift/run_1/node_s01` | `444444444444` | at GitHub |");
   });
 
   it("says nothing about GitHub for a local run", () => {

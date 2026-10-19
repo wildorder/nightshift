@@ -128,10 +128,11 @@ export const mergeInto = (
  * The strand's head after it, or the conflict.
  */
 export const mergeHeadIntoStrand = async (
-  environment: Pick<ExecutionEnvironment, "git" | "clock">,
+  environment: Pick<ExecutionEnvironment, "git" | "clock" | "publishStrand">,
   input: {
     readonly repo: string;
     readonly worktree: string;
+    readonly runId: string;
     readonly strandNodeId: ExecutionNodeId;
     readonly head: CommitSha;
   },
@@ -144,8 +145,23 @@ export const mergeHeadIntoStrand = async (
   });
   if (result.merged) {
     await updateRef(environment.git, input.repo, baseRef(input.strandNodeId), input.head);
+    await strandMoved(environment, input.repo, input.runId, input.strandNodeId, result.head);
   }
   return result;
+};
+
+/**
+ * A strand's branch moved: on a machine, it goes to GitHub at its new head
+ * (A-60), so the work on it outlives the machine. Never throws.
+ */
+export const strandMoved = async (
+  environment: Pick<ExecutionEnvironment, "publishStrand">,
+  repoPath: string,
+  runId: string,
+  strandNodeId: ExecutionNodeId,
+  head: CommitSha,
+): Promise<void> => {
+  await environment.publishStrand?.({ branch: strandBranch(runId, strandNodeId), head, repoPath });
 };
 
 /** How many times a strand's landing failure goes back to its orchestrator (D-P18-05). */

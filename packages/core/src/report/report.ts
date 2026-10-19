@@ -35,6 +35,7 @@ import {
   type Run,
   type SetupStep,
   SetupStepSchema,
+  type StrandPublication,
   type Verification,
   type VerificationStep,
   VerificationStepSchema,
@@ -174,6 +175,11 @@ export interface RunReport {
 export interface PublicationReport {
   readonly branch: string;
   readonly state: PublicationState;
+  /**
+   * A-60: each strand branch at GitHub whose work did not land on the program
+   * branch: kept there, and continued by the next run of the plan.
+   */
+  readonly unlanded: readonly StrandPublication[];
 }
 
 /** One repair job (D-P15-03, D-P15-04): what it repaired, under which decision, and how it ended. */
@@ -742,8 +748,33 @@ const gatherPublication = async (
 ): Promise<{ readonly publication?: PublicationReport }> => {
   const dispatch = await stores.dispatches.get(scope).catch(() => undefined);
   if (dispatch === undefined) return {};
-  return { publication: { branch, state: publicationStateOf(dispatch.publication) } };
+  const landed = new Set([
+    ...dispatch.publication.intents.map((intent) => intent.head),
+    ...(dispatch.publication.head === undefined ? [] : [dispatch.publication.head]),
+  ]);
+  const unlanded = (dispatch.publication.strands ?? []).filter(
+    (strand) => !landed.has(strand.head),
+  );
+  return { publication: { branch, state: publicationStateOf(dispatch.publication), unlanded } };
 };
+
+/** A-60: where the work of strands that did not land is kept. */
+const renderUnlanded = (unlanded: readonly StrandPublication[]): string[] =>
+  unlanded.length === 0
+    ? []
+    : [
+        "## Work that did not land is kept at GitHub",
+        "",
+        "The next run of this plan continues each of these strands from its branch rather than building it again.",
+        "",
+        "| Branch | Head | State |",
+        "|---|---|---|",
+        ...unlanded.map(
+          (strand) =>
+            `| \`${strand.branch}\` | \`${strand.head.slice(0, 12)}\` | ${strand.status === "published" ? "at GitHub" : cell(`${strand.status}${strand.detail === undefined ? "" : `: ${strand.detail}`}`)} |`,
+        ),
+        "",
+      ];
 
 /**
  * Whether GitHub has the run's work, said before anything else: a run whose
@@ -751,6 +782,10 @@ const gatherPublication = async (
  */
 const renderPublication = (publication: PublicationReport | undefined): string[] => {
   if (publication === undefined) return [];
+  return [...renderLandings(publication), ...renderUnlanded(publication.unlanded)];
+};
+
+const renderLandings = (publication: PublicationReport): string[] => {
   const { branch, state } = publication;
   if (state.kind === "none") return [];
   if (state.kind === "published") {

@@ -37,7 +37,7 @@ import type {
 import type { Harness, McpLaunch, RunAs } from "@nightshift/harness";
 import type { GitRunner } from "./git/index.js";
 import type { EventOutbox } from "./outbox.js";
-import type { PublishLanding } from "./publish.js";
+import type { PublishLanding, PublishStrand } from "./publish.js";
 import type { RouteAvailability } from "./route-availability.js";
 import type { WorkerTokenFiles } from "./worker-tokens.js";
 
@@ -158,6 +158,12 @@ export interface ExecutionEnvironment {
    */
   readonly publish?: PublishLanding;
   /**
+   * A-60: called every time a strand's branch moves, so a machine's engine
+   * can have it published as it goes and finished work outlives the machine.
+   * Installed with `publish`, on a machine only.
+   */
+  readonly publishStrand?: PublishStrand;
+  /**
    * P10 (D-P10-25): the operating-system user an agent's process runs as, on
    * a machine. The composition supplies it; absent, every process is the
    * engine's own, as on a laptop. The root orchestrator never asks.
@@ -242,6 +248,7 @@ export type LandingEnvironment = Pick<
   | "git"
   | "outbox"
   | "publish"
+  | "publishStrand"
   | "verificationTimeoutMs"
   | "prerequisites"
   | "site"

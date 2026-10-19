@@ -283,6 +283,8 @@ export const rootEnvironment = (input: RootEnvironmentInput): Record<string, str
   // The chain's tip, not the dispatched base: a resumed machine's next landing
   // builds on what the run already asked to publish (2026-10-14).
   env.NIGHTSHIFT_PUBLISH_BASE = publicationTip(context.dispatch);
+  // What GitHub surely holds, which every strand's pack is made against (A-60).
+  env.NIGHTSHIFT_PUBLISH_STRAND_BASE = context.dispatch.input.baseSha;
   if (input.projectUser !== undefined && input.projectUser !== "") {
     env.NIGHTSHIFT_PROJECT_USER = input.projectUser;
     env.NIGHTSHIFT_PROJECT_CREDENTIAL_DIR = projectCredentialRoot(context.scope.runId);

@@ -132,6 +132,8 @@ export type Operation =
   | "dispatch.heartbeat"
   // Publication of the program branch (D-P10-22).
   | "publication.request"
+  // A strand's branch, as it moves (A-60).
+  | "publication.strand"
   | "publication.list"
   | "publication.retry"
   // What the machine was asked to do, and what the project should run on (D-P10-14).
@@ -292,6 +294,7 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
   "publication.request": "forbidden",
+  "publication.strand": "forbidden",
   "publication.list": "forbidden",
   "publication.retry": "forbidden",
   "computeUtilization.get": "forbidden",
@@ -407,6 +410,7 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
   "publication.request": "forbidden",
+  "publication.strand": "forbidden",
   "publication.list": "forbidden",
   "publication.retry": "forbidden",
   "computeUtilization.get": "forbidden",
@@ -551,6 +555,7 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "own_run",
   "publication.request": "own_run",
+  "publication.strand": "own_run",
   "publication.list": "own_program",
   // A retry is a human's, after fixing what blocked publication.
   "publication.retry": "forbidden",

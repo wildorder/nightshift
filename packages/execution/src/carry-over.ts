@@ -35,8 +35,10 @@ import {
   strandOutcomes,
   strandsOf,
 } from "@nightshift/core";
-import { type GitRunner, tryGit } from "./git/index.js";
-import { landedJobCommits } from "./strand.js";
+import type { StrandContinuation } from "@nightshift/harness";
+import type { ExecutionEnvironment } from "./environment.js";
+import { type GitRunner, git, tryGit, tryRevParse } from "./git/index.js";
+import { landedJobCommits, mergeHeadIntoStrand, strandBranch } from "./strand.js";
 
 export interface CarryOverEnvironment {
   readonly stores: ProjectStores;
@@ -166,4 +168,144 @@ export const carriedStrandsFor = async (
     const found = carried.get(strand.id);
     return found === undefined ? [] : [found];
   });
+};
+
+/** Where an earlier run's strand branch can be read: this clone's, or the remote's (A-60). */
+const headOfBranch = async (
+  runner: GitRunner,
+  repoPath: string,
+  branch: string,
+): Promise<CommitSha | undefined> => {
+  const local = async () =>
+    (await tryRevParse(runner, repoPath, `refs/heads/${branch}`)) ??
+    (await tryRevParse(runner, repoPath, `refs/remotes/origin/${branch}`));
+  const found = await local();
+  if (found !== undefined) return found;
+  // Published by a machine and never fetched here: ask the remote for it.
+  await tryGit(
+    runner,
+    ["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+    {
+      cwd: repoPath,
+    },
+  );
+  return local();
+};
+
+/**
+ * The strand `strandId` as the latest earlier run of the same plan left it,
+ * when that run built some of it and did not land it (A-60): its branch and
+ * head, wherever this clone can read them. `undefined` when no earlier run
+ * did, when the strand landed (carry-over keeps it), or when its branch holds
+ * nothing the program head does not.
+ */
+export const unfinishedStrand = async (
+  environment: CarryOverEnvironment,
+  input: {
+    readonly program: ProgramContract;
+    readonly repoPath: string;
+    readonly runId: string;
+    readonly strandId: string;
+    /** The program head this run's strand starts from. */
+    readonly base: CommitSha;
+  },
+): Promise<
+  { readonly fromRunId: string; readonly branch: string; readonly head: CommitSha } | undefined
+> => {
+  const { program, stores } = { program: input.program, stores: environment.stores };
+  if (!isPlanned(program) || program.planHash === undefined) return undefined;
+  const runs = [
+    ...(await everyPage((page) =>
+      stores.runs.listByProgram(
+        { projectId: program.projectId, programId: program.programId },
+        page,
+      ),
+    )),
+  ]
+    .filter((run) => run.runId !== input.runId)
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  for (const run of runs) {
+    const scope = { projectId: run.projectId, programId: run.programId, runId: run.runId };
+    const root = await stores.executionNodes.get(scope, run.rootNodeId);
+    if (root?.plan?.planHash !== program.planHash) continue;
+    const nodes = await everyPage((page) => stores.executionNodes.listByRun(scope, page));
+    const jobs = await everyPage((page) => stores.jobContracts.listByRun(scope, page));
+    const strandOfJob = new Map(
+      jobs.flatMap((job) =>
+        job.strandId === undefined ? [] : [[job.jobContractId, job.strandId]],
+      ),
+    );
+    const latest = nodes
+      .filter(
+        (node) =>
+          node.kind === "sub-program" &&
+          node.jobContractId !== null &&
+          strandOfJob.get(node.jobContractId) === input.strandId,
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .at(-1);
+    if (latest === undefined) continue;
+    const outcomes = strandOutcomes(strandAttempts(nodes, strandOfJob), run.carriedStrands ?? []);
+    // Landed: on the program branch already, and carried over as succeeded.
+    if (outcomes[input.strandId] === "succeeded") return undefined;
+    const branch = strandBranch(run.runId, latest.executionNodeId);
+    const head = await headOfBranch(environment.git, input.repoPath, branch);
+    if (head === undefined) continue;
+    if (await isOnBase(environment.git, input.repoPath, head, input.base)) return undefined;
+    return { fromRunId: run.runId, branch, head };
+  }
+  return undefined;
+};
+
+/** Each job on a strand's branch since `base`, newest first, by its subject. */
+const workOn = async (
+  runner: GitRunner,
+  repoPath: string,
+  base: CommitSha,
+  head: CommitSha,
+): Promise<readonly string[]> =>
+  (
+    await tryGit(runner, ["log", "--first-parent", "--format=%s", `${base}..${head}`], {
+      cwd: repoPath,
+    })
+  ).stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("Merge the program head"));
+
+/**
+ * A strand's first start in this run, continued from what an earlier run left
+ * of it (A-60): its checkout, just cut at the program head, is moved to the
+ * earlier strand's head and the program head merged in, so every job that
+ * finished there stays done. When the two do not merge, the checkout stays at
+ * the program head and the orchestrator is told where the earlier work is.
+ * `undefined` when there is nothing to continue.
+ */
+export const continueUnfinishedStrand = async (
+  environment: Pick<ExecutionEnvironment, "stores" | "git" | "clock" | "publishStrand">,
+  input: {
+    readonly program: ProgramContract;
+    readonly repoPath: string;
+    readonly runId: string;
+    readonly strandId: string;
+    readonly strandNodeId: ExecutionNode["executionNodeId"];
+    readonly worktree: string;
+    readonly base: CommitSha;
+  },
+): Promise<StrandContinuation | undefined> => {
+  const earlier = await unfinishedStrand(environment, input);
+  if (earlier === undefined) return undefined;
+  const work = await workOn(environment.git, input.repoPath, input.base, earlier.head);
+  await git(environment.git, ["reset", "--quiet", "--hard", earlier.head], { cwd: input.worktree });
+  const merged = await mergeHeadIntoStrand(environment, {
+    repo: input.repoPath,
+    worktree: input.worktree,
+    runId: input.runId,
+    strandNodeId: input.strandNodeId,
+    head: input.base,
+  });
+  if (merged.merged) return { ...earlier, work };
+  await git(environment.git, ["reset", "--quiet", "--hard", input.base], { cwd: input.worktree });
+  const where = merged.conflicts.length > 0 ? merged.conflicts.join(", ") : merged.detail;
+  return { ...earlier, work, conflict: `it conflicts with the program head in ${where}` };
 };

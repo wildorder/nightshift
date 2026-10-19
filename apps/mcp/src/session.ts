@@ -101,6 +101,20 @@ export interface OrchestratorSession {
   current?: AttachedRun | undefined;
 }
 
+/** On a machine, the run's publication hooks (D-P10-22, A-60); on a laptop, none. */
+const publicationOf = (
+  runtime: Runtime,
+  run: Run,
+): Pick<ExecutionEnvironment, "publish" | "publishStrand"> => {
+  if (runtime.publication === undefined) return {};
+  const { landing, strand } = runtime.publication({
+    projectId: run.projectId,
+    programId: run.programId,
+    runId: run.runId,
+  });
+  return { publish: landing, publishStrand: strand };
+};
+
 /** The execution environment a run is worked in: the runtime's, with the run's own examiners. */
 export const buildEnvironment = (
   runtime: Runtime,
@@ -130,16 +144,9 @@ export const buildEnvironment = (
   ...(runtime.projectEnv === undefined ? {} : { projectEnv: runtime.projectEnv }),
   // P10 (T4): on a machine, a worker's token is a file the engine keeps fresh.
   ...(runtime.workerTokens === undefined ? {} : { workerTokens: runtime.workerTokens }),
-  // P10 (D-P10-22): on a machine, every landing raises a publication intent.
-  ...(runtime.publication === undefined
-    ? {}
-    : {
-        publish: runtime.publication({
-          projectId: run.projectId,
-          programId: run.programId,
-          runId: run.runId,
-        }),
-      }),
+  // P10 (D-P10-22): on a machine, every landing raises a publication intent,
+  // and every move of a strand's branch publishes it (A-60).
+  ...publicationOf(runtime, run),
 });
 
 interface ProgramRef {

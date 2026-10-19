@@ -205,6 +205,44 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     expect(brief).toContain("Do NOT");
     expect(brief).toContain("delegate the same work again as a new job");
   });
+
+  it("tells a strand's orchestrator what an earlier run already built of it, and where (A-60)", () => {
+    const continued = {
+      fromRunId: "run_earlier",
+      branch: "nightshift/run_earlier/node_s01",
+      head: "c".repeat(40),
+      work: ["Merge job job_2: the s2 module", "the s1 module"],
+    };
+    const inPlace = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      strandContinued: continued,
+    });
+    expect(inPlace).toContain(
+      "RUN run_earlier ALREADY BUILT PART OF THIS STRAND, AND IT IS ON YOUR BRANCH",
+    );
+    expect(inPlace).toContain("the s1 module");
+    expect(inPlace).toContain("author a job plan for only what is left");
+    const conflicted = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      strandContinued: { ...continued, conflict: "it conflicts with the program head in a.txt" },
+    });
+    expect(conflicted).toContain("nightshift/run_earlier/node_s01");
+    expect(conflicted).toContain("it conflicts with the program head in a.txt");
+    expect(conflicted).toContain("rather than writing it again");
+    const plain = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+    });
+    expect(plain).not.toContain("ALREADY BUILT PART OF THIS STRAND");
+  });
 });
 
 describe("headless sessions", () => {

@@ -936,6 +936,39 @@ describe("publication intents (D-P10-22)", () => {
     expect((listed.body as { intents: unknown[] }).intents).toHaveLength(1);
   });
 
+  it("records a strand's newest head for its own branch only, and hands it to the publisher (A-60)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await w.stores.dispatches.put({ ...dispatch, status: "running" });
+    const own = `nightshift/${w.f.scope.runId}/node_s01`;
+    const before = publishRequests.length;
+    for (const branch of ["main", "program/fixture", `nightshift/run_other/node_s01`]) {
+      const refused = await call(
+        w,
+        "POST",
+        `${w.paths.run}/publication/strands`,
+        { branch, head: SHA_B, bundleKey: "bundles/s.pack" },
+        engine(w, dispatch),
+      );
+      expect(refused.status, branch).toBe(400);
+    }
+    expect(publishRequests).toHaveLength(before);
+    const created = await call(
+      w,
+      "POST",
+      `${w.paths.run}/publication/strands`,
+      { branch: own, head: SHA_B, bundleKey: "bundles/s.pack" },
+      engine(w, dispatch),
+    );
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ branch: own, head: SHA_B, status: "pending" });
+    expect(publishRequests.slice(before)).toEqual([w.f.scope.runId]);
+    const listed = await call(w, "GET", `${w.paths.run}/publication`);
+    expect((listed.body as { strands: unknown[] }).strands).toHaveLength(1);
+    // The program branch's chain is untouched by it.
+    expect((listed.body as { intents: unknown[] }).intents).toHaveLength(0);
+  });
+
   it("retries a settled run's blocked landings for a human, and never for the engine (2026-10-14)", async () => {
     const w = await setup();
     const dispatch = await provisioned(w, await dispatched(w));

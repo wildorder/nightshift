@@ -44,12 +44,14 @@ import type {
   GitRunner,
   PrerequisiteBook,
   PublishLanding,
+  PublishStrand,
   WorkerEnvironment,
   WorkerLaunchIdentity,
 } from "@nightshift/execution";
 import {
   createEventOutbox,
   createPublicationQueue,
+  createStrandPublication,
   gateDefinitions,
   gateDefinitionsAt,
   nodeGitRunner,
@@ -154,6 +156,11 @@ export const PUBLISH_BASE_ENV = "NIGHTSHIFT_PUBLISH_BASE";
 /** Where the packs are written before upload; the run's directory on the volume. */
 export const PUBLISH_PACK_DIR_ENV = "NIGHTSHIFT_PUBLISH_PACK_DIR";
 /**
+ * A-60: the dispatch's base, which GitHub surely holds: every strand branch's
+ * pack carries everything since it. Set by the runner beside the publish base.
+ */
+export const PUBLISH_STRAND_BASE_ENV = "NIGHTSHIFT_PUBLISH_STRAND_BASE";
+/**
  * P10 (D-P10-30): the user project code runs as on a machine; set by the runner
  * on the orchestrator-role server it launches. Present, every step and every
  * job's agent runs as it; absent, as this process.
@@ -194,7 +201,7 @@ export interface Runtime {
    * P10 (D-P10-22): the publication hook for a run, when this process is a
    * machine's engine. The session installs it on the run's environment.
    */
-  readonly publication?: (scope: RunScope) => PublishLanding;
+  readonly publication?: (scope: RunScope) => Publication;
   /** P10 (D-P10-25): who an agent runs as on a machine; absent on a laptop. */
   readonly runAs?: ExecutionEnvironment["runAs"];
   /** P10 (D-P10-25): takes a granted path back for the engine; with `runAs`. */
@@ -518,37 +525,60 @@ export const createWorkerEnvironment =
     };
   };
 
+/** A machine's engine's two publication hooks: the program branch's landings, and its strands' moves (A-60). */
+export interface Publication {
+  readonly landing: PublishLanding;
+  readonly strand: PublishStrand;
+}
+
 /**
- * The publication hook for a machine's engine (D-P10-22): a pack per landing,
- * uploaded as a `bundle` artifact through the plane's signed upload, then the
- * intent. Built only when the runner set the base; a local run has none.
+ * The publication hooks for a machine's engine (D-P10-22, A-60): a pack per
+ * landing or strand move, uploaded as a `bundle` artifact through the plane's
+ * signed upload, then the request. Built only when the runner set the base; a
+ * local run has none.
  */
 const createPublication = (
   env: Env,
   transport: Transport,
   bodies: ArtifactBodyStore,
   ids: ReturnType<typeof createUlidIdGenerator>,
-): ((scope: RunScope) => PublishLanding) | undefined => {
+): ((scope: RunScope) => Publication) | undefined => {
   const base = env[PUBLISH_BASE_ENV];
   if (base === undefined || base === "") return undefined;
+  const strandBase = env[PUBLISH_STRAND_BASE_ENV];
   const packDir = env[PUBLISH_PACK_DIR_ENV];
-  return (scope) =>
-    createPublicationQueue({
-      baseSha: CommitShaSchema.parse(base),
-      packDir:
-        packDir === undefined || packDir === "" ? `/tmp/nightshift-packs/${scope.runId}` : packDir,
-      upload: async (pack, head) => {
-        // The pack is a body under the run's prefix; the intent's `bundleKey`
-        // is its only reference, and the publisher is its only reader.
-        const stored = await bodies.put(scope, ids.next("art"), pack, "application/x-git-pack");
-        void head;
-        return { key: stored.key };
-      },
-      request: async (body) => {
-        await send(transport, { method: "POST", path: routes.publication(scope), body });
-      },
-      log: (line) => process.stderr.write(`[nightshift-mcp] ${line}\n`),
+  const log = (line: string) => process.stderr.write(`[nightshift-mcp] ${line}\n`);
+  return (scope) => {
+    const packs =
+      packDir === undefined || packDir === "" ? `/tmp/nightshift-packs/${scope.runId}` : packDir;
+    // The pack is a body under the run's prefix; the request's `bundleKey` is
+    // its only reference, and the publisher is its only reader.
+    const upload = async (pack: Uint8Array) => ({
+      key: (await bodies.put(scope, ids.next("art"), pack, "application/x-git-pack")).key,
     });
+    return {
+      landing: createPublicationQueue({
+        baseSha: CommitShaSchema.parse(base),
+        packDir: packs,
+        upload,
+        request: async (body) => {
+          await send(transport, { method: "POST", path: routes.publication(scope), body });
+        },
+        log,
+      }),
+      strand: createStrandPublication({
+        baseSha: CommitShaSchema.parse(
+          strandBase === undefined || strandBase === "" ? base : strandBase,
+        ),
+        packDir: packs,
+        upload,
+        request: async (body) => {
+          await send(transport, { method: "POST", path: routes.publicationStrands(scope), body });
+        },
+        log,
+      }),
+    };
+  };
 };
 
 /** Read only committed setup fixes using the same inheritance as verification. */

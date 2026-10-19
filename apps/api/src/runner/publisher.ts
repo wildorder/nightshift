@@ -28,14 +28,17 @@ import {
   type Clock,
   chainOrder,
   type GitHubAppClient,
+  hasPendingIntent,
   holdBehind,
   installationGranting,
   type NightshiftStores,
   nextPendingIntent,
   nowIso,
+  pendingStrandPublications,
   type RunScope,
   repositoryNameOf,
   resolveIntent,
+  resolveStrandPublication,
 } from "@nightshift/core";
 import {
   advertiseReceivePack,
@@ -115,6 +118,9 @@ export interface PublisherDeps {
 export const PUBLISH_ATTEMPTS = 3;
 
 export type PublishStep =
+  | "strand_published"
+  | "strand_retrying"
+  | "strand_error"
   | "locked"
   | "nothing_pending"
   | "published"
@@ -127,7 +133,7 @@ export type PublishStep =
   | "error"
   | "not_configured";
 
-const attemptOf = (intent: PublicationIntent): number => {
+const attemptOf = (intent: Pick<PublicationIntent, "detail">): number => {
   const match = /^attempt (\d+)/.exec(intent.detail ?? "");
   return match?.[1] === undefined ? 0 : Number.parseInt(match[1], 10);
 };
@@ -337,6 +343,74 @@ const blockChain = (
 };
 
 /**
+ * Pushes each strand branch's newest head (A-60). The run owns its
+ * `nightshift/<run>/…` refs, so the lease is whatever GitHub holds for the ref
+ * now: it guards against a push racing this one, not against someone else's
+ * work, and a strand cut afresh replaces the old ref. Each pack carries
+ * everything since the dispatch's base, so nothing but the pack is needed. A
+ * strand push never waits on the program branch's chain, nor blocks it; one
+ * that keeps failing is `error`, and the strand's next head is tried afresh.
+ */
+export const publishStrands = async (
+  deps: PublisherDeps,
+  scope: RunScope,
+): Promise<readonly PublishStep[]> => {
+  const log = deps.log ?? (() => undefined);
+  const remote = deps.remote ?? smartHttpRemote;
+  const first = await deps.stores.dispatches.get(scope);
+  if (first === undefined || pendingStrandPublications(first).length === 0) return [];
+  const target = await targetOf(deps, scope);
+  if (target === undefined) return ["not_configured"];
+  const { program, repository, installation } = target;
+  const { token } = await deps.github.writeToken(installation.installationId, repository);
+  const authorization = installationAuthorization(token);
+  const repositoryUrl = (deps.remoteUrlOf ?? cloneUrlOf)(program.repository.url);
+  const advertised = await remote.advertise(repositoryUrl, authorization);
+  const steps: PublishStep[] = [];
+  for (const strand of pendingStrandPublications(first)) {
+    const ref = `refs/heads/${strand.branch}`;
+    const current = advertised.get(ref) ?? ZERO_OID;
+    const at = nowIso(deps.clock);
+    let outcome: Parameters<typeof resolveStrandPublication>[3];
+    if (current === strand.head) {
+      outcome = { status: "published", detail: "already at GitHub" };
+    } else {
+      const pushed = await remote.push({
+        repositoryUrl,
+        authorization,
+        ref,
+        expectedOld: current,
+        newOid: strand.head,
+        pack: await deps.bundles.get(strand.bundleKey),
+      });
+      const attempt = attemptOf(strand) + 1;
+      const reason =
+        pushed.kind === "ok" ? "" : pushed.kind === "rejected" ? pushed.reason : pushed.detail;
+      outcome =
+        pushed.kind === "ok"
+          ? { status: "published" }
+          : attempt >= PUBLISH_ATTEMPTS
+            ? { status: "error", detail: `attempt ${attempt} failed: ${reason}; giving up` }
+            : { status: "pending", detail: `attempt ${attempt} failed: ${reason}` };
+    }
+    log(`${scope.runId}: ${strand.branch} → ${strand.head.slice(0, 12)}: ${outcome.status}`);
+    steps.push(
+      outcome.status === "published"
+        ? "strand_published"
+        : outcome.status === "pending"
+          ? "strand_retrying"
+          : "strand_error",
+    );
+    // Read again: the machine may have asked for a newer head meanwhile.
+    const latest = (await deps.stores.dispatches.get(scope)) ?? first;
+    await deps.stores.dispatches.put(
+      resolveStrandPublication(latest, strand.branch, strand.head, outcome, at),
+    );
+  }
+  return steps;
+};
+
+/**
  * Every pending intent of the run, in order, under the run's lock, until none
  * is left or one blocks; then once more after releasing, for an intent that
  * arrived while the lock was held and whose own invocation found it taken.
@@ -365,12 +439,14 @@ export const publishAll = async (
           break;
         }
       }
+      // Strand branches go whatever the program branch's chain did (A-60).
+      for (const step of await publishStrands(deps, scope)) count(step);
     } finally {
       await lock.release(scope);
     }
     if (blocked) break;
     const dispatch = await deps.stores.dispatches.get(scope);
-    if (dispatch === undefined || nextPendingIntent(dispatch) === undefined) break;
+    if (dispatch === undefined || !hasPendingIntent(dispatch)) break;
   }
   return counts;
 };

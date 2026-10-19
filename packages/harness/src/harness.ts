@@ -207,6 +207,24 @@ export type AgentTask =
  * gave up) leaves changes nobody collected; the next attempt starts from them
  * rather than from nothing.
  */
+/**
+ * A-60: a strand an earlier run of the same plan built part or all of and
+ * never landed. Its branch is where this strand's branch starts, with the
+ * program head merged in, so the orchestrator plans only what is left. When
+ * the two would not merge, the strand starts from the program head and the
+ * earlier branch is named for its jobs to draw on.
+ */
+export interface StrandContinuation {
+  readonly fromRunId: string;
+  /** The earlier strand's branch, at GitHub on a machine run. */
+  readonly branch: string;
+  readonly head: string;
+  /** What is on it, newest first: each job merged there, by its subject. */
+  readonly work: readonly string[];
+  /** Why it could not be continued in place, when it could not. */
+  readonly conflict?: string;
+}
+
 export interface CarriedOverWork {
   /** The attempt that left it. */
   readonly fromAttempt: number;
@@ -283,6 +301,8 @@ export interface HarnessStartInput {
   readonly resume?: { readonly sessionId: string };
   /** The last attempt's unfinished work, when there was some. See {@link CarriedOverWork}. */
   readonly carriedOver?: CarriedOverWork;
+  /** A strand an earlier run left unlanded, continued here (A-60). See {@link StrandContinuation}. */
+  readonly strandContinued?: StrandContinuation;
   /**
    * P18 (D-P18-03): the job is one of a strand's, and its work merges onto the
    * strand's branch, verified as part of the strand rather than on its own.

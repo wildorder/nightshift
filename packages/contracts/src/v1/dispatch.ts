@@ -272,6 +272,33 @@ export const PublicationIntentBodySchema = PublicationIntentSchema.pick({
 export type PublicationIntentBody = z.infer<typeof PublicationIntentBodySchema>;
 
 /**
+ * A strand's branch at GitHub (A-60): the newest head the engine asked for,
+ * one per branch, replaced by every later request. Only this run's own
+ * `nightshift/<run>/…` branches; never the program branch, which moves only by
+ * the chain of verified landings above. `error` is a push that kept failing;
+ * the next head the strand reaches is tried afresh.
+ */
+export const StrandPublicationSchema = z.strictObject({
+  branch: z.string().min(1),
+  head: CommitShaSchema,
+  /** A self-contained pack of everything since the dispatch's base. */
+  bundleKey: z.string().min(1),
+  status: z.enum(["pending", "published", "error"]),
+  requestedAt: IsoTimestampSchema,
+  resolvedAt: IsoTimestampSchema.optional(),
+  detail: z.string().min(1).optional(),
+});
+export type StrandPublication = z.infer<typeof StrandPublicationSchema>;
+
+/** `POST …/runs/{runId}/publication/strands`. */
+export const StrandPublicationBodySchema = StrandPublicationSchema.pick({
+  branch: true,
+  head: true,
+  bundleKey: true,
+});
+export type StrandPublicationBody = z.infer<typeof StrandPublicationBodySchema>;
+
+/**
  * Published intents are dropped past this many, the newest kept, so the record
  * stays small. An unpublished intent is never dropped: its bundle is the only
  * way its commits reach GitHub without the machine.
@@ -286,6 +313,8 @@ export const DispatchPublicationSchema = z.strictObject({
   blocked: z.string().min(1).optional(),
   /** Pending intents, and the most recent resolved ones. */
   intents: z.array(PublicationIntentSchema),
+  /** Each strand branch's newest head (A-60). Absent before any was asked for. */
+  strands: z.array(StrandPublicationSchema).optional(),
 });
 export type DispatchPublication = z.infer<typeof DispatchPublicationSchema>;
 
