@@ -25,6 +25,7 @@ import type {
   PublicationIntent,
   RunnerFailure,
   RunnerProgress,
+  StrandPublication,
 } from "@nightshift/contracts";
 import { computeTierRank, MAX_RESOLVED_INTENTS } from "@nightshift/contracts";
 import { IllegalTransitionError } from "../errors.js";
@@ -423,9 +424,83 @@ export const recordIntent = (
   };
 };
 
-/** Whether a dispatch holds an intent the publisher has not resolved. */
+/** Whether a dispatch holds an intent, or a strand's head, the publisher has not resolved. */
 export const hasPendingIntent = (dispatch: Dispatch): boolean =>
-  dispatch.publication.intents.some((intent) => intent.status === "pending");
+  dispatch.publication.intents.some((intent) => intent.status === "pending") ||
+  pendingStrandPublications(dispatch).length > 0;
+
+/**
+ * A branch a run may publish besides the program branch (A-60): one of its own
+ * strands', `nightshift/<run>/<node>`, and nothing else, so a machine can never
+ * name the program branch, `main`, or another run's work this way.
+ */
+export const isOwnStrandBranch = (runId: string, branch: string): boolean => {
+  const prefix = `nightshift/${runId}/`;
+  return branch.startsWith(prefix) && /^[A-Za-z0-9_-]+$/.test(branch.slice(prefix.length));
+};
+
+/**
+ * Records a strand branch's newest head (A-60): it replaces whatever was asked
+ * for that branch before, pending or not, because each pack is self-contained
+ * and only the newest head matters. The same head again is the same request.
+ */
+export const recordStrandPublication = (
+  dispatch: Dispatch,
+  request: Pick<StrandPublication, "branch" | "head" | "bundleKey">,
+  at: string,
+): { readonly dispatch: Dispatch; readonly created: boolean } => {
+  const strands = dispatch.publication.strands ?? [];
+  const existing = strands.find((strand) => strand.branch === request.branch);
+  if (existing?.head === request.head) return { dispatch, created: false };
+  const pending: StrandPublication = { ...request, status: "pending", requestedAt: at };
+  return {
+    created: true,
+    dispatch: {
+      ...dispatch,
+      publication: {
+        ...dispatch.publication,
+        strands: [...strands.filter((strand) => strand.branch !== request.branch), pending],
+      },
+      updatedAt: at,
+    },
+  };
+};
+
+/** The strand heads the publisher has yet to push, oldest request first. */
+export const pendingStrandPublications = (dispatch: Dispatch): readonly StrandPublication[] =>
+  (dispatch.publication.strands ?? [])
+    .filter((strand) => strand.status === "pending")
+    .sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+
+/**
+ * The publisher's word on one strand head. A request for a newer head that
+ * arrived meanwhile is left as it is: this answer was for an older one.
+ */
+export const resolveStrandPublication = (
+  dispatch: Dispatch,
+  branch: string,
+  head: CommitSha,
+  outcome:
+    | { readonly status: "published" | "error"; readonly detail?: string }
+    | { readonly status: "pending"; readonly detail: string },
+  at: string,
+): Dispatch => ({
+  ...dispatch,
+  publication: {
+    ...dispatch.publication,
+    strands: (dispatch.publication.strands ?? []).map((strand) =>
+      strand.branch === branch && strand.head === head
+        ? {
+            ...strand,
+            status: outcome.status,
+            ...(outcome.status === "pending" ? {} : { resolvedAt: at }),
+            ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
+          }
+        : strand,
+    ),
+  },
+  updatedAt: at,
+});
 
 /**
  * Resolves a publication intent (D-P10-22): the publisher's word on one head.

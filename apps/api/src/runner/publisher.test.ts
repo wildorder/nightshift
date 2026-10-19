@@ -24,6 +24,7 @@ import {
   nowIso,
   rearmPublication,
   recordIntent,
+  recordStrandPublication,
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -34,6 +35,7 @@ import {
   type GitRemote,
   publishAll,
   publishNext,
+  publishStrands,
   smartHttpRemote,
 } from "./publisher.js";
 
@@ -349,5 +351,93 @@ describe("one publisher per run at a time", () => {
       published: 1,
       nothing_pending: 1,
     });
+  });
+});
+
+describe("a strand's branch at GitHub (A-60)", () => {
+  const strandHead = (branch: string) => git(bare(), "rev-parse", `refs/heads/${branch}`);
+  const strand = async (w: World, branch: string, head: string, pack: Uint8Array) => {
+    const key = `proj/${w.f.scope.runId}/strand-${head}.pack`;
+    w.bundles.set(key, pack);
+    const { dispatch } = recordStrandPublication(
+      await w.dispatch(),
+      { branch, head: head as never, bundleKey: key },
+      nowIso(w.deps.clock),
+    );
+    await w.stores.dispatches.put(dispatch);
+  };
+
+  it("is pushed at each newest head, a fresh cut replaces it, and a blocked program branch holds none of it", async () => {
+    const w = await world();
+    const branch = `nightshift/${w.f.scope.runId}/node_s01`;
+    const side = await mkdtemp(join(tmpdir(), "ns-strand-"));
+    git(side, "clone", "-q", bare(), ".");
+    git(side, "checkout", "-q", "-b", "strand", base);
+    const j1 = commit(side, "s1.txt", "one\n", "job 1");
+    await strand(w, branch, j1, await packOf(side, j1, base));
+    expect(await publishAll(w.deps, w.f.scope)).toEqual({
+      strand_published: 1,
+      nothing_pending: 1,
+    });
+    expect(strandHead(branch)).toBe(j1);
+
+    // The program branch's chain blocks; the strand's next head goes all the same.
+    const blocked = recordIntent(
+      await w.dispatch(),
+      {
+        head: "f".repeat(40) as never,
+        expectedPredecessor: "e".repeat(40) as never,
+        bundleKey: "none",
+      },
+      NOW,
+    ).dispatch;
+    await w.stores.dispatches.put(blocked);
+    const j2 = commit(side, "s2.txt", "two\n", "job 2");
+    await strand(w, branch, j2, await packOf(side, j2, base));
+    const counts = await publishAll(w.deps, w.f.scope);
+    expect(counts.conflict).toBe(1);
+    expect(counts.strand_published).toBe(1);
+    expect(strandHead(branch)).toBe(j2);
+
+    // A strand cut afresh from the base replaces its old ref: the run owns it.
+    git(side, "checkout", "-q", "-b", "again", base);
+    const fresh = commit(side, "s3.txt", "three\n", "job 1 again");
+    await strand(w, branch, fresh, await packOf(side, fresh, base));
+    await publishAll(w.deps, w.f.scope);
+    expect(strandHead(branch)).toBe(fresh);
+    const strands = (await w.dispatch()).publication.strands ?? [];
+    expect(strands).toHaveLength(1);
+    expect(strands[0]).toMatchObject({ branch, head: fresh, status: "published" });
+    await rm(side, { recursive: true, force: true });
+  });
+
+  it("keeps the newest head when a newer one is asked for while an older one is being pushed", async () => {
+    let w: World | undefined;
+    const branch = "nightshift/run_x/node_s02";
+    const w0 = await world({
+      advertise: async () => new Map(),
+      push: async () => {
+        // The machine asks for a newer head meanwhile.
+        const { dispatch } = recordStrandPublication(
+          await (w as World).dispatch(),
+          { branch, head: "b".repeat(40) as never, bundleKey: "k2" },
+          NOW,
+        );
+        await (w as World).stores.dispatches.put(dispatch);
+        return { kind: "ok" };
+      },
+    });
+    w = w0;
+    w.bundles.set("k1", new Uint8Array());
+    w.bundles.set("k2", new Uint8Array());
+    const { dispatch } = recordStrandPublication(
+      await w.dispatch(),
+      { branch, head: "a".repeat(40) as never, bundleKey: "k1" },
+      NOW,
+    );
+    await w.stores.dispatches.put(dispatch);
+    expect(await publishStrands(w.deps, w.f.scope)).toEqual(["strand_published"]);
+    const after = (await w.dispatch()).publication.strands ?? [];
+    expect(after).toEqual([expect.objectContaining({ head: "b".repeat(40), status: "pending" })]);
   });
 });

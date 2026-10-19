@@ -302,6 +302,7 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
         ? await mergeHeadIntoStrand(environment, {
             repo: candidate.session.repoPath,
             worktree: candidate.worktree,
+            runId: candidate.session.scope.runId,
             strandNodeId: candidate.nodeId,
             head,
           }).then((merged) =>

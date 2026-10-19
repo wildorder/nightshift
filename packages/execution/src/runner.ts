@@ -69,8 +69,10 @@ import {
   type McpLaunch,
   millis,
   refusingWorkerTools,
+  type StrandContinuation,
 } from "@nightshift/harness";
 import type { StepInvocation } from "@nightshift/verification";
+import { continueUnfinishedStrand } from "./carry-over.js";
 import {
   DEFAULT_CANCEL_GRACE_MS,
   type ExecutionEnvironment,
@@ -102,7 +104,7 @@ import { programRulings } from "./rulings.js";
 import { discardScratch, ensureScratch } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
 import { stampSettledDecisions } from "./stamp.js";
-import { mergeInto, strandBase, strandHead, strandOf } from "./strand.js";
+import { mergeInto, strandBase, strandHead, strandMoved, strandOf } from "./strand.js";
 import { verifyNode } from "./verify.js";
 import { createWorkerTools } from "./worker.js";
 import { startTokenRenewal, type TokenRenewal } from "./worker-tokens.js";
@@ -350,6 +352,8 @@ export const startJob = async (
   await stores.executionNodes.put(started);
   /** The strand this job builds in (P18), once `launch` has read it. */
   let landsOnStrand = false;
+  /** A-60: what an earlier run left of this strand, continued here, once `launch` has found it. */
+  let strandContinued: StrandContinuation | undefined;
 
   try {
     return await launch();
@@ -442,6 +446,37 @@ export const startJob = async (
       // processes. `completeJob` reads it back to parent the snapshot; a
       // strand's queue turn reads it as the program head it took in.
       await updateRef(environment.git, session.repoPath, baseRef(nodeId), base);
+    }
+    // A strand an earlier run of this plan built and never landed is continued
+    // from its branch on its first start here, not built again (A-60).
+    if (
+      orchestrates &&
+      !strandCheckout &&
+      earlier.length === 0 &&
+      input.job.strandId !== undefined
+    ) {
+      strandContinued = await continueUnfinishedStrand(environment, {
+        program: session.program,
+        repoPath: session.repoPath,
+        runId: session.scope.runId,
+        strandId: input.job.strandId,
+        strandNodeId: nodeId,
+        worktree,
+        base,
+      });
+      if (strandContinued !== undefined) {
+        outbox.emit({
+          type: "node.progress",
+          source: "control-plane",
+          payload: {
+            message:
+              strandContinued.conflict === undefined
+                ? `continues run ${strandContinued.fromRunId}'s strand from ${strandContinued.head.slice(0, 12)} (${strandContinued.work.length} commits of work kept)`
+                : `could not continue run ${strandContinued.fromRunId}'s strand in place (${strandContinued.conflict}); starts from the program head, told where that work is`,
+          },
+          executionNodeId: nodeId,
+        });
+      }
     }
     const carryInto = async (): Promise<CarriedOverWork | undefined> => {
       if (unfinished === undefined) return undefined;
@@ -843,6 +878,7 @@ export const startJob = async (
         transcriptPath: transcript,
         ...launchExtras(input.task, resumed, carriedOver),
         ...(landsOnStrand ? { landsOnStrand: true } : {}),
+        ...(strandContinued === undefined || resumed !== undefined ? {} : { strandContinued }),
         ...runAsOf(environment, startedAgent),
       });
     } catch (error) {
@@ -1076,6 +1112,13 @@ const landOnStrand = async (
     return;
   }
   await stores.executionNodes.put(transition(node, "merge", nowIso(clock)));
+  await strandMoved(
+    environment,
+    input.session.repoPath,
+    input.session.scope.runId,
+    strand.nodeId,
+    merged.head,
+  );
   outbox.emit({
     type: "node.merged",
     source: "control-plane",

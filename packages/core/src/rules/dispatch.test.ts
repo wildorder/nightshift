@@ -2,6 +2,7 @@
  * The dispatch's lifecycle, lease and fence (P10, D-P10-18, D-P10-19).
  */
 import type {
+  CommitSha,
   Dispatch,
   DispatchProgress,
   DispatchStatus,
@@ -26,6 +27,7 @@ import {
   holdBehind,
   isCurrentGeneration,
   isDispatchTerminal,
+  isOwnStrandBranch,
   LEASE_SECONDS,
   leaseExpiryFrom,
   leaseLost,
@@ -34,11 +36,14 @@ import {
   nextDispatchStatus,
   nextGeneration,
   nextPendingIntent,
+  pendingStrandPublications,
   publicationStateOf,
   publicationTip,
   rearmPublication,
   recordIntent,
+  recordStrandPublication,
   resolveIntent,
+  resolveStrandPublication,
   runHoursOf,
   runnerStopped,
   transitionDispatch,
@@ -546,5 +551,52 @@ describe("foldProgress folds a heartbeat's reported progress into the dispatch (
       stageStartedAt: AT,
       updatedAt: LATER,
     });
+  });
+});
+
+describe("a strand's branch at GitHub (A-60)", () => {
+  const f = createFixtures();
+  const at = "2026-10-18T00:00:00.000Z";
+  const sha = (c: string) => c.repeat(40) as CommitSha;
+
+  it("may name only the run's own strand branches", () => {
+    expect(isOwnStrandBranch("run_1", "nightshift/run_1/node_s01")).toBe(true);
+    expect(isOwnStrandBranch("run_1", "nightshift/run_2/node_s01")).toBe(false);
+    expect(isOwnStrandBranch("run_1", "main")).toBe(false);
+    expect(isOwnStrandBranch("run_1", "program/edge")).toBe(false);
+    expect(isOwnStrandBranch("run_1", "nightshift/run_1/")).toBe(false);
+    expect(isOwnStrandBranch("run_1", "nightshift/run_1/a/../../main")).toBe(false);
+  });
+
+  it("keeps one entry per branch, the newest head replacing any older one, and counts it pending", () => {
+    const dispatch = makeDispatch(f, { status: "running" });
+    const branch = "nightshift/run_1/node_s01";
+    const once = recordStrandPublication(dispatch, { branch, head: sha("1"), bundleKey: "k1" }, at);
+    expect(once.created).toBe(true);
+    expect(hasPendingIntent(once.dispatch)).toBe(true);
+    expect(
+      recordStrandPublication(once.dispatch, { branch, head: sha("1"), bundleKey: "k1" }, at)
+        .created,
+    ).toBe(false);
+    const twice = recordStrandPublication(
+      once.dispatch,
+      { branch, head: sha("2"), bundleKey: "k2" },
+      at,
+    );
+    expect(twice.dispatch.publication.strands).toEqual([
+      expect.objectContaining({ branch, head: sha("2"), status: "pending" }),
+    ]);
+    // An answer for the older head leaves the newer request as it is.
+    const stale = resolveStrandPublication(
+      twice.dispatch,
+      branch,
+      sha("1"),
+      { status: "published" },
+      at,
+    );
+    expect(pendingStrandPublications(stale)).toHaveLength(1);
+    const done = resolveStrandPublication(stale, branch, sha("2"), { status: "published" }, at);
+    expect(pendingStrandPublications(done)).toEqual([]);
+    expect(hasPendingIntent(done)).toBe(false);
   });
 });

@@ -39,6 +39,7 @@ import {
   planStateOf,
   recordWorkerDecision,
   STRAND_PLAN_CONTEXT,
+  type StrandMove,
 } from "@nightshift/execution";
 import type { AgentTask, HarnessExit, HarnessStartInput } from "@nightshift/harness";
 import {
@@ -94,6 +95,8 @@ interface Built {
   readonly delegated: Map<string, JobContractId>;
   readonly strandNodeId: ExecutionNodeId;
   readonly final: ExecutionNode;
+  /** Every move of a strand's branch the engine asked to publish (A-60). */
+  readonly moves: StrandMove[];
   readonly close: () => Promise<unknown>;
 }
 
@@ -109,6 +112,7 @@ const buildStrand = async (options: {
 }): Promise<Built> => {
   let world: World | undefined;
   const starts: HarnessStartInput[] = [];
+  const moves: StrandMove[] = [];
   const delegated = new Map<string, JobContractId>();
   let examinations = 0;
   let fixes = 0;
@@ -335,8 +339,13 @@ const buildStrand = async (options: {
       },
     }),
   };
-  const environment: ExecutionEnvironment =
-    options.examined === undefined ? w.environment : { ...w.environment, examination: services };
+  const environment: ExecutionEnvironment = {
+    ...w.environment,
+    ...(options.examined === undefined ? {} : { examination: services }),
+    publishStrand: async (move) => {
+      moves.push(move);
+    },
+  };
   const engine = createEngine({
     environment,
     session: w.session,
@@ -371,6 +380,7 @@ const buildStrand = async (options: {
   return {
     world: w,
     starts,
+    moves,
     delegated,
     strandNodeId,
     final,
@@ -430,6 +440,13 @@ describe("a strand built as P18 builds it", () => {
       expect(fix.failedChecks.map((check) => check.stepId)).toContain("test");
       expect(fix.failedChecks[0]?.output).toContain("j2 left this wrong");
     }
+
+    // A-60: every move of the strand's branch went to be published, each job's
+    // merge among them, and the last at the head that landed.
+    const strandRef = `nightshift/${w.scope.runId}/${built.strandNodeId}`;
+    expect(built.moves.every((move) => move.branch === strandRef)).toBe(true);
+    expect(built.moves.length).toBeGreaterThanOrEqual(3);
+    expect(built.moves.at(-1)?.head).toBe(built.final.commitSha);
 
     // The program branch has the strand's work, and not the test the fix removed.
     const files = await programFiles(w);
