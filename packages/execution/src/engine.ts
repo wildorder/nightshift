@@ -681,7 +681,11 @@ export const createEngine = (options: EngineOptions): Engine => {
           if (!orchestrates) void continueRuling(started.nodeId).catch(() => {});
           // A strand whose landing failed goes back to the agent that knows it
           // (P18, D-P18-05).
-          if (orchestrates) void continueStrand(started.nodeId).catch(() => {});
+          if (orchestrates) {
+            void continueStrand(started.nodeId).catch((error: unknown) =>
+              said(started.nodeId, `could not continue the strand: ${messageOf(error)}`),
+            );
+          }
           void pump();
         });
       departures.set(started.nodeId, departure);
@@ -846,6 +850,16 @@ export const createEngine = (options: EngineOptions): Engine => {
     await retryJob(node.jobContractId);
   };
 
+  /** A line on a node's record, for a human reading why the engine did what it did. */
+  const said = (nodeId: ExecutionNodeId, message: string): void => {
+    outbox.emit({
+      type: "node.progress",
+      source: "control-plane",
+      payload: { message },
+      executionNodeId: nodeId,
+    });
+  };
+
   /**
    * A strand whose landing failed, continued by its own orchestrator's session
    * with what failed (P18, D-P18-05): red gates, blocking findings, or a
@@ -863,7 +877,10 @@ export const createEngine = (options: EngineOptions): Engine => {
       .filter((agent) => agent.role === "orchestrator" && agent.sessionId !== undefined)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .at(-1);
-    if (orchestrator?.sessionId === undefined) return;
+    if (orchestrator?.sessionId === undefined) {
+      said(nodeId, "could not continue the strand: its orchestrator kept no session to resume");
+      return;
+    }
     const failures = await strandFailures(environment, session, node);
     await retryJob(node.jobContractId, {
       task: { kind: "strand_fix", round, of: MAX_STRAND_FIX_ROUNDS, ...failures },
