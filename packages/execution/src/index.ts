@@ -113,6 +113,8 @@ export {
   sha256Bytes,
 } from "./gate-fingerprint.js";
 export {
+  type ContractGates,
+  contractGatesAt,
   endSteps,
   type GateDefinitions,
   type GateSession,

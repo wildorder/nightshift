@@ -370,6 +370,8 @@ export const nightshiftToolNames = (
         "job.retry",
         "finding.dispute",
         "decision.record",
+        "step.timeout",
+        "step.skip",
         "subprogram.progress",
         "subprogram.refresh",
         "subprogram.complete",
@@ -403,6 +405,8 @@ const ROOT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "finding.dispute",
   "decision.record",
   "checkpoint.create",
+  "step.timeout",
+  "step.skip",
   "run.finish",
 ];
 

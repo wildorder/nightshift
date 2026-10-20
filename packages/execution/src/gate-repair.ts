@@ -227,6 +227,55 @@ const authoredContractAt = async (
   return undefined;
 };
 
+/** What a checkout's contract files say about the run's gates and its wall clock. */
+export interface ContractGates {
+  readonly verification: readonly VerificationStep[];
+  readonly maxWallClockSeconds?: number | undefined;
+}
+
+/**
+ * The run's verification steps and `costPolicy.maxWallClockSeconds` as the
+ * contract files at `commit` of `repo` state them, merged over
+ * `nightshift.config.json` as `nightshift run` merges them: the single contract
+ * file (`contractFile`) when it names `programId`, else the program's
+ * `docs/programs/{id}/contract.json`. Undefined when no contract can be read.
+ * For a reader that may not ask the control plane for the contract (a strand).
+ */
+export const contractGatesAt = async (
+  runner: GitRunner,
+  repo: string,
+  commit: string,
+  programId: string,
+  contractFile?: string,
+): Promise<ContractGates | undefined> => {
+  const config = await configAt(runner, repo, commit).catch(() => undefined);
+  let authored: unknown;
+  if (contractFile !== undefined) {
+    const text = await show(runner, repo, commit, contractFile);
+    if (text !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if ((parsed as { programId?: unknown } | null)?.programId === programId) authored = parsed;
+      } catch {
+        // Not a contract: look for the planned program's.
+      }
+    }
+  }
+  authored ??= await authoredContractAt(runner, repo, commit, programId).catch(() => undefined);
+  if (authored === undefined) return undefined;
+  const merged = mergeProgramFiles(authored, config) as {
+    readonly verification?: unknown;
+    readonly costPolicy?: { readonly maxWallClockSeconds?: unknown };
+  };
+  const verification = VerificationStepSchema.array().min(1).safeParse(merged.verification);
+  if (!verification.success) return undefined;
+  const wallClock = merged.costPolicy?.maxWallClockSeconds;
+  return {
+    verification: verification.data,
+    ...(typeof wallClock === "number" ? { maxWallClockSeconds: wallClock } : {}),
+  };
+};
+
 /** Key order is not meaning: two step lists are the same when they say the same. */
 const canonical = (value: unknown): string =>
   JSON.stringify(value, (_key, inner: unknown) =>

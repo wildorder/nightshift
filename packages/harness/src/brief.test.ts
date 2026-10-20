@@ -149,6 +149,19 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     expect(brief).not.toContain("plain delegate tool is refused");
   });
 
+  it("gives step.timeout and step.skip to the root and the sub-program, and not to a job (P19 S-02)", () => {
+    const names = ["step.timeout", "step.skip"];
+    for (const name of names) {
+      expect(nightshiftToolNames("program", planned)).toContain(name);
+      expect(nightshiftToolNames("sub-program")).toContain(name);
+      expect(nightshiftToolNames("job")).not.toContain(name);
+    }
+    const root = nightshiftToolNames("program", planned);
+    expect(root.indexOf("step.skip")).toBeLessThan(root.indexOf("run.finish"));
+    const strand = nightshiftToolNames("sub-program");
+    expect(strand.indexOf("step.skip")).toBeLessThan(strand.indexOf("subprogram.progress"));
+  });
+
   it("leaves a program node of an unplanned contract exactly as it was", () => {
     const plain = makeProgramContract(f);
     const brief = renderWorkerBrief({

@@ -68,7 +68,12 @@ import {
   type EndGatesResult,
   endProgramNode,
   FixLimitError,
+  gateDefinitions,
   type RoutePins,
+  recordStepSkip,
+  recordStepTimeout,
+  runDecisions,
+  runVerifications,
   StrandBlockedError,
   StrandDelegationError,
   strandContinuing,
@@ -91,6 +96,13 @@ import {
   programDirectoryOf,
   startNewRun,
 } from "./session.js";
+import {
+  asStepRefusal,
+  STEP_SKIP_TOOL,
+  STEP_TIMEOUT_TOOL,
+  skipAnswer,
+  timeoutAnswer,
+} from "./step-tools.js";
 
 /**
  * How long `job.wait` will block before answering `timedOut: true`.
@@ -1220,6 +1232,65 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           checkpointBefore,
         });
       }),
+  );
+
+  // --- A run's adjustments to a step's time (P19 S-02) ---------------------------
+
+  /**
+   * The root's check is complete: its token sees every node, so the run's
+   * decisions and verifications are read whole, and the decision goes through
+   * the root's own `recordDecision`.
+   */
+  const stepAdjustment = async (attached: AttachedRun) => {
+    const { stores } = state.runtime;
+    const scope = attached.session.scope;
+    const [gates, decisions, verifications] = await Promise.all([
+      gateDefinitions(attached.environment, attached.session),
+      runDecisions(stores, scope),
+      runVerifications(stores, scope),
+    ]);
+    return {
+      steps: gates.verification,
+      decisions,
+      verifications,
+      maxWallClockSeconds: attached.session.program.costPolicy.maxWallClockSeconds,
+      record: (input: Parameters<typeof recordDecision>[2]) =>
+        recordDecision(state, attached, input, state.runtime.ids.next("dec")),
+    };
+  };
+  const NEXT =
+    "The next verification applies it: call run.finish again and the end gates run once more.";
+
+  server.registerTool("step.timeout", STEP_TIMEOUT_TOOL, async (input) =>
+    guarded(async () => {
+      const attached = requireAttached(state);
+      const { record, ...read } = await stepAdjustment(attached);
+      const decision = await recordStepTimeout(record, { ...read, ...input }).catch(
+        (error: unknown) => {
+          throw asStepRefusal(error);
+        },
+      );
+      return ok(timeoutAnswer(decision.decisionId, input, NEXT), {
+        decisionId: decision.decisionId,
+        stepId: input.stepId,
+      });
+    }),
+  );
+
+  server.registerTool("step.skip", STEP_SKIP_TOOL, async (input) =>
+    guarded(async () => {
+      const attached = requireAttached(state);
+      const { record, ...read } = await stepAdjustment(attached);
+      const decision = await recordStepSkip(record, { ...read, ...input }).catch(
+        (error: unknown) => {
+          throw asStepRefusal(error);
+        },
+      );
+      return ok(skipAnswer(decision.decisionId, input.stepId, NEXT), {
+        decisionId: decision.decisionId,
+        stepId: input.stepId,
+      });
+    }),
   );
 
   server.registerTool(

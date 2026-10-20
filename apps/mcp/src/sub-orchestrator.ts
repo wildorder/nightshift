@@ -30,6 +30,7 @@ import {
   ReversibilitySchema,
   type RiskLevel,
   type Testability,
+  type Verification,
 } from "@nightshift/contracts";
 import {
   type IdGenerator,
@@ -42,6 +43,7 @@ import {
 } from "@nightshift/core";
 import {
   continuedByNightshift,
+  contractGatesAt,
   fixOf,
   git,
   latestExamination,
@@ -49,9 +51,12 @@ import {
   PlannedJobSchema,
   planProblems,
   planStateOf,
+  recordStepSkip,
+  recordStepTimeout,
   recordWorkerDecision,
   renderPlan,
   reportProgress,
+  runDecisions,
   STRAND_PLAN_CONTEXT,
   strandContinuing,
   type WorkerEnvironment,
@@ -61,6 +66,14 @@ import { NoCheckpointError } from "@nightshift/harness";
 import { z } from "zod";
 import { CLASSIFICATION_INPUTS } from "./classification.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
+import { DEFAULT_CONTRACT_FILE } from "./session.js";
+import {
+  asStepRefusal,
+  STEP_SKIP_TOOL,
+  STEP_TIMEOUT_TOOL,
+  skipAnswer,
+  timeoutAnswer,
+} from "./step-tools.js";
 
 export interface SubOrchestratorDeps {
   readonly identity: WorkerIdentity;
@@ -68,6 +81,8 @@ export interface SubOrchestratorDeps {
   readonly ids: IdGenerator;
   /** The cap on one `job.wait`, in seconds. Below a harness's own tool timeout. */
   readonly waitCapSeconds: number;
+  /** The server's environment: `NIGHTSHIFT_CONTRACT_FILE` names the single contract file. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
 const WAIT_POLL_MS = 500;
@@ -667,6 +682,126 @@ export const registerSubOrchestratorTools = (
         );
         return ok(`Recorded decision ${decision.decisionId}.`, { decisionId: decision.decisionId });
       }),
+  );
+
+  // --- A run's adjustments to a step's time (P19 S-02) ---------------------------
+
+  /**
+   * A strand's token may not read the program contract or another node's
+   * verifications, so it reads what it may: the verification steps and
+   * `costPolicy.maxWallClockSeconds` from the contract in its own checkout at
+   * HEAD, and the fullest verification history it can see: its own subtree's
+   * verifications plus every verification a `verification.completed` event of
+   * the run names (the engine emits one for each record it writes), each read
+   * with `verifications.get`. This is the best the strand can see; the engine
+   * applies a skip only if the run's complete history agrees at the next
+   * verification.
+   */
+  const contractGates = async () => {
+    const gates = await contractGatesAt(
+      environment.git,
+      identity.worktree,
+      "HEAD",
+      scope.programId,
+      deps.env?.NIGHTSHIFT_CONTRACT_FILE ?? DEFAULT_CONTRACT_FILE,
+    ).catch(() => undefined);
+    if (gates === undefined) {
+      throw new ToolRefusal(
+        "not_found",
+        "the run's contract could not be read from this checkout at HEAD (neither the contract " +
+          "file nor docs/programs/*/contract.json names this program), so its steps are unknown",
+      );
+    }
+    return gates;
+  };
+
+  const readEvery = async <T>(
+    list: (page: { cursor?: string }) => Promise<{ items: readonly T[]; cursor?: string }>,
+  ): Promise<T[]> => {
+    const items: T[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await list(cursor === undefined ? {} : { cursor });
+      items.push(...page.items);
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return items;
+  };
+
+  const visibleVerifications = async (): Promise<Verification[]> => {
+    const found = new Map<string, Verification>();
+    const nodes = [await own(), ...(await descendants())];
+    for (const node of nodes) {
+      for (const verification of await stores.verifications.listByNode(
+        scope,
+        node.executionNodeId,
+      )) {
+        found.set(verification.verificationId, verification);
+      }
+    }
+    const events = await readEvery((page) => stores.events.listByRun(scope, page));
+    for (const event of events) {
+      if (event.type !== "verification.completed") continue;
+      const id = (event.payload as { verificationId?: unknown } | undefined)?.verificationId;
+      if (typeof id !== "string" || found.has(id)) continue;
+      const verification = await stores.verifications.get(
+        scope,
+        id as Verification["verificationId"],
+      );
+      if (verification !== undefined) found.set(id, verification);
+    }
+    return [...found.values()];
+  };
+
+  const record = (input: Parameters<typeof recordWorkerDecision>[3]) =>
+    recordWorkerDecision(environment, identity, ids, input).catch((error: unknown) => {
+      if (error instanceof NoCheckpointError) throw new ToolRefusal("not_found", error.message);
+      throw error;
+    });
+  const NEXT =
+    "The next verification applies it. This check is the best this strand can see: the engine " +
+    "applies a skip only if the run's complete history agrees, and a skip it does not apply is " +
+    "announced on this strand's node.";
+
+  server.registerTool("step.timeout", STEP_TIMEOUT_TOOL, async (input) =>
+    guarded(async () => {
+      const gates = await contractGates();
+      const decisions = await runDecisions(stores, scope);
+      const decision = await recordStepTimeout(record, {
+        steps: gates.verification,
+        decisions,
+        maxWallClockSeconds: gates.maxWallClockSeconds,
+        ...input,
+      }).catch((error: unknown) => {
+        throw asStepRefusal(error);
+      });
+      return ok(timeoutAnswer(decision.decisionId, input, NEXT), {
+        decisionId: decision.decisionId,
+        stepId: input.stepId,
+      });
+    }),
+  );
+
+  server.registerTool("step.skip", STEP_SKIP_TOOL, async (input) =>
+    guarded(async () => {
+      const gates = await contractGates();
+      const [decisions, verifications] = await Promise.all([
+        runDecisions(stores, scope),
+        visibleVerifications(),
+      ]);
+      const decision = await recordStepSkip(record, {
+        steps: gates.verification,
+        decisions,
+        verifications,
+        ...input,
+      }).catch((error: unknown) => {
+        throw asStepRefusal(error);
+      });
+      return ok(skipAnswer(decision.decisionId, input.stepId, NEXT), {
+        decisionId: decision.decisionId,
+        stepId: input.stepId,
+      });
+    }),
   );
 
   server.registerTool(

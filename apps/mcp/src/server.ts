@@ -279,6 +279,7 @@ const buildSubOrchestrator = (
     environment,
     ids: runtime.ids,
     waitCapSeconds: jobWaitCap(input.env),
+    env: input.env,
   });
 
   let stopped = false;

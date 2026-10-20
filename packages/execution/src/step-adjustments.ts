@@ -37,7 +37,10 @@ type StepShape = {
   readonly timeoutSeconds?: number | undefined;
   readonly cleanupSeconds?: number | undefined;
 };
-type Record_ = (input: WorkerDecisionInput) => Promise<Decision>;
+/** A role's decision path: the strand's `recordWorkerDecision`, or the root's own. */
+type Record_<R extends { readonly decisionId: DecisionId } = Decision> = (
+  input: WorkerDecisionInput,
+) => Promise<R>;
 
 const stepNamed = <T extends StepShape>(steps: readonly T[], stepId: string, reason: string): T => {
   const step = steps.find((candidate) => candidate.id === stepId);
@@ -61,10 +64,10 @@ export interface RecordStepTimeoutInput {
   readonly maxWallClockSeconds?: number | undefined;
 }
 
-export const recordStepTimeout = async (
-  record: Record_,
+export const recordStepTimeout = async <R extends { readonly decisionId: DecisionId }>(
+  record: Record_<R>,
   input: RecordStepTimeoutInput,
-): Promise<Decision> => {
+): Promise<R> => {
   const { stepId, timeoutSeconds, cleanupSeconds, reason } = input;
   const step = stepNamed(input.steps, stepId, reason);
   const raise = { timeoutSeconds, cleanupSeconds };
@@ -93,10 +96,10 @@ export interface RecordStepSkipInput {
   readonly reason: string;
 }
 
-export const recordStepSkip = async (
-  record: Record_,
+export const recordStepSkip = async <R extends { readonly decisionId: DecisionId }>(
+  record: Record_<R>,
   input: RecordStepSkipInput,
-): Promise<Decision> => {
+): Promise<R> => {
   const { stepId, reason } = input;
   stepNamed(input.steps, stepId, reason);
   const eligibility = skipEligibility(stepId, input.verifications);
