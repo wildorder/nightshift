@@ -20,6 +20,8 @@ export const ArtifactKindSchema = z.enum([
   "examination-report",
   "diff",
   "report",
+  /** P20: a chunk or index of measurement observations (body: MeasurementLedgerChunk / MeasurementLedgerIndex). */
+  "measurement-ledger",
   "other",
 ]);
 export type ArtifactKind = z.infer<typeof ArtifactKindSchema>;

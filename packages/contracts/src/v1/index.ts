@@ -16,6 +16,7 @@ export * from "./execution-node.js";
 export * from "./gate-health.js";
 export * from "./identity-registry.js";
 export * from "./job-contract.js";
+export * from "./measurement.js";
 export * from "./membership.js";
 export * from "./model-catalog.js";
 export * from "./org-config.js";

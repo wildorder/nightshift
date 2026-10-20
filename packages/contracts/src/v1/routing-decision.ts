@@ -72,6 +72,12 @@ export const RouteUsageSchema = z.strictObject({
   /** P8: tokens read from or written to the provider's prompt cache, where reported. */
   cacheReadTokens: z.int().min(0).optional(),
   cacheWriteTokens: z.int().min(0).optional(),
+  /**
+   * P20: how `inputTokens` relates to the cache counters. True: it already
+   * contains cache read/write tokens; false: it excludes them. Absent means
+   * unknown, which is what every record written so far means.
+   */
+  inputIncludesCache: z.boolean().optional(),
   costSource: CostSourceSchema.optional(),
   estimatedCostUsd: z.number().min(0).optional(),
   actualCostUsd: z.number().min(0).optional(),
