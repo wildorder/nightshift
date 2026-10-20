@@ -6,15 +6,16 @@
  * counted once however the resume goes.
  */
 import { existsSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   type ExecutionNodeId,
   JobContractSchema,
   type MeasurementSummary,
   type RouteChoice,
 } from "@nightshift/contracts";
-import { isSettled, nowIso } from "@nightshift/core";
-import { completeJob, createEngine, createEventOutbox } from "@nightshift/execution";
+import { isSettled, markImplemented, nowIso } from "@nightshift/core";
+import { completeJob, createEngine, createEventOutbox, git } from "@nightshift/execution";
 import type { Harness, HarnessExit, HarnessStartInput } from "@nightshift/harness";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakeHarness, type ScriptContext } from "./fake-harness.js";
@@ -177,6 +178,127 @@ describe("a resumed session", () => {
     expect(summary?.totals.inputTokens).toBe(150);
     const [decision] = await r.decisions();
     expect(decision?.usage.inputTokens).toBe(150);
+    await r.engine.close("test over");
+  });
+});
+
+/**
+ * A strand whose first landing is red, so the engine resumes its orchestrator's
+ * session in a new agent (the strand-fix round). The first orchestrator reports
+ * `first` input tokens for the session, the second `150`.
+ */
+const strandFix = async (first: number | undefined) => {
+  const world = await createWorld({
+    harness: createFakeHarness({
+      script: async (context) => {
+        const fixing = context.input.resume !== undefined;
+        const cumulative = fixing ? 150 : first;
+        if (cumulative !== undefined) {
+          context.input.measurements?.observe(
+            observation("snapshot", {
+              counters: { inputTokens: cumulative },
+              counterScope: "session",
+              sessionId: "strand-session",
+            }),
+          );
+        }
+        const at = (name: string) => join(context.worktree, name);
+        const commit = (message: string) =>
+          git(world.git, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", message], {
+            cwd: context.worktree,
+          });
+        await mkdir(at("test"), { recursive: true });
+        if (fixing) {
+          await git(world.git, ["rm", "-q", "test/red.test.js"], { cwd: context.worktree });
+        } else {
+          await writeFile(
+            at("test/red.test.js"),
+            'import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("red", () => { assert.equal(1, 2); });\n',
+          );
+          await git(world.git, ["add", "test/red.test.js"], { cwd: context.worktree });
+        }
+        await commit(fixing ? "fix" : "red");
+        const head = (
+          await git(world.git, ["rev-parse", "HEAD"], { cwd: context.worktree })
+        ).trim();
+        const node = await world.stores.executionNodes.get(
+          world.scope,
+          context.identity.executionNodeId,
+        );
+        await world.stores.executionNodes.put(
+          markImplemented(node as never, head as never, nowIso(world.environment.clock)),
+        );
+        return { kind: "completed", sessionId: "strand-session", usageScope: "session" };
+      },
+    }),
+  });
+  rigWorld = world;
+  const engine = createEngine({
+    environment: world.environment,
+    session: world.session,
+    mcp,
+    route: () => ROUTE,
+    discoveryIntervalMs: 50,
+  });
+  const submitted = await engine.submit({
+    job: JobContractSchema.parse({
+      schemaVersion: 1,
+      ...world.scope,
+      jobContractId: world.ids.next("job"),
+      objective: "A strand.",
+      acceptance: ["node --test passes"],
+      dependencies: [],
+      risk: "low",
+      ambiguity: "low",
+      kind: "orchestrate",
+      createdAt: nowIso(world.environment.clock),
+    }),
+    depth: 1,
+    parentNodeId: world.session.rootNodeId,
+    route: ROUTE,
+    kind: "sub-program",
+  });
+  const nodeId = submitted.nodeId as ExecutionNodeId;
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    const node = await world.stores.executionNodes.get(world.scope, nodeId);
+    if (node !== undefined && isSettled(node.status) && engine.idle()) break;
+    if (Date.now() > deadline) throw new Error(`still ${node?.status}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const summaries = await world.stores.measurements.listByNode(world.scope, nodeId);
+  const agents = [...(await world.stores.agents.listByNode(world.scope, nodeId))].sort((a, b) =>
+    a.createdAt.localeCompare(b.createdAt),
+  );
+  const byAgent = agents.map((agent) => summaries.find((s) => s.agentId === agent.agentId));
+  return { engine, agents, byAgent };
+};
+
+describe("a new agent that resumes an earlier agent's session", () => {
+  it("measures the session from where the earlier agent left it", async () => {
+    const r = await strandFix(100);
+    expect(r.agents).toHaveLength(2);
+    const [one, two] = r.byAgent;
+    expect(one?.totals.inputTokens).toBe(100);
+    const segment = two?.segments[0];
+    expect(segment?.resumedSession).toBe(true);
+    expect(segment?.sessionId).toBe("strand-session");
+    expect(segment?.baseline).toMatchObject({ inputTokens: 100 });
+    expect(segment?.counters).toMatchObject({ inputTokens: 50 });
+    expect((one?.totals.inputTokens ?? 0) + (two?.totals.inputTokens ?? 0)).toBe(150);
+    await r.engine.close("test over");
+  });
+
+  it("records an unknown baseline, and claims no session total, when the earlier agent left none", async () => {
+    const r = await strandFix(undefined);
+    expect(r.agents).toHaveLength(2);
+    const two = r.byAgent[1];
+    const segment = two?.segments[0];
+    expect(segment?.resumedSession).toBe(true);
+    expect(segment?.sessionId).toBe("strand-session");
+    expect(segment?.baseline).toBeUndefined();
+    expect(JSON.stringify(two?.gaps)).toContain("baseline_unknown");
+    expect(two?.totals.inputTokens).toBeUndefined();
     await r.engine.close("test over");
   });
 });

@@ -40,6 +40,7 @@ import type {
   ExecutionNodeId,
   JobContract,
   JobContractId,
+  MeasurementCounters,
   RouteChoice,
   RouteOutcome,
   RouteTarget,
@@ -47,6 +48,7 @@ import type {
   Verification,
 } from "@nightshift/contracts";
 import {
+  baselineFor,
   labelCost,
   markVerificationFailed,
   nowIso,
@@ -98,7 +100,11 @@ import {
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
-import { createMeasurementRecorder, type MeasurementRecorder } from "./measurement/recorder.js";
+import {
+  createMeasurementRecorder,
+  type MeasurementRecorder,
+  publishedSummaryFor,
+} from "./measurement/recorder.js";
 import { releaseWorktree } from "./release-worktree.js";
 import { unavailableUntil } from "./route-availability.js";
 import { programRulings } from "./rulings.js";
@@ -802,6 +808,26 @@ export const startJob = async (
     };
   }
 
+  /**
+   * What an earlier agent of this node had consumed of `sessionId`, from its
+   * published summary; undefined when none is found, which the recorder records
+   * as an unknown baseline.
+   */
+  async function earlierSessionBaseline(
+    sessionId: string,
+    exceptAgentId: string,
+  ): Promise<MeasurementCounters | undefined> {
+    const earlier = (await stores.agents.listByNode(session.scope, nodeId))
+      .filter(
+        (candidate) => candidate.sessionId === sessionId && candidate.agentId !== exceptAgentId,
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .at(-1);
+    if (earlier === undefined) return undefined;
+    const summary = await publishedSummaryFor(stores, session.scope, nodeId, earlier.agentId);
+    return summary === undefined ? undefined : baselineFor(summary, sessionId);
+  }
+
   /** The agent started and its process launched, on the worktree already prepared. */
   async function startAttempt(
     identity: AttemptIdentity,
@@ -876,11 +902,17 @@ export const startJob = async (
     let handle: HarnessHandle;
     try {
       // Each launch is a measurement segment; a resume continues the same session.
+      // Whether a session continues is the resume's doing, not the agent record's:
+      // a new agent resuming an earlier agent's session still continues it, and its
+      // cumulative counters are measured from where that agent left them.
+      const baseline =
+        resumed !== undefined && fresh
+          ? await earlierSessionBaseline(resumed.sessionId, agentId)
+          : undefined;
       const launch = await identity.recorder.startSegment({
-        // Only the same agent's own resume continues its session; a new attempt that
-        // carries an earlier session on is a fresh agent, segment 0.
-        resumedSession: !fresh,
+        resumedSession: resumed !== undefined,
         ...(resumed === undefined ? {} : { sessionId: resumed.sessionId }),
+        ...(baseline === undefined ? {} : { baseline }),
       });
       handle = await environment.harness.start({
         launch,
