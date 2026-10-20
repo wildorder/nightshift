@@ -28,9 +28,11 @@ export {
   type AgentTask,
   agentStatusForExit,
   type CarriedOverWork,
+  coverageOfExit,
   type Duration,
   describeExit,
   type ExaminationEvidence,
+  type ExitMeasures,
   type Harness,
   type HarnessCapabilities,
   type HarnessExit,
@@ -43,6 +45,8 @@ export {
   type ProgramRuling,
   routeUnavailableReason,
   type StrandContinuation,
+  usageOfExit,
+  usageScopeOfExit,
 } from "./harness.js";
 export {
   HOOK_EVENT_TYPES,
@@ -53,6 +57,12 @@ export {
   nullHookSink,
   recordingHookSink,
 } from "./hooks.js";
+export {
+  type HarnessObservation,
+  type MeasurementSink,
+  nullMeasurementSink,
+  recordingMeasurementSink,
+} from "./measurement.js";
 export * from "./node-cli.js";
 export * from "./run-as.js";
 export {

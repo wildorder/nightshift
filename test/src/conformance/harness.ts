@@ -31,11 +31,12 @@ import {
   type HookEvent,
   isHookEventType,
   millis,
+  recordingMeasurementSink,
 } from "@nightshift/harness";
 import { afterEach, describe, expect, it } from "vitest";
 
-/** Everything a start input needs except the sink, which the suite supplies. */
-export type ConformanceStartInput = Omit<HarnessStartInput, "sink">;
+/** Everything a start input needs except the sinks, which the suite supplies. */
+export type ConformanceStartInput = Omit<HarnessStartInput, "sink" | "measurements">;
 
 export interface HarnessConformanceFixture {
   /**
@@ -88,13 +89,15 @@ export const describeHarnessConformance = (
     /** Starts a worker with a sink the suite can read back. */
     const start = async (which: "completing" | "longRunning") => {
       const events: HookEvent[] = [];
+      const measurements = recordingMeasurementSink();
       const base = await fixture[which]();
       const input: HarnessStartInput = {
         ...base,
         sink: { emit: (event) => void events.push(event) },
+        measurements,
       };
       const handle = await harness.start(input);
-      return { handle, events, input };
+      return { handle, events, input, measurements };
     };
 
     it("returns a handle carrying the identity it was given, not one it minted", async () => {
@@ -175,6 +178,61 @@ export const describeHarnessConformance = (
       await harness.cancel(handle, cancelGrace);
       await withTimeout(handle.exit, millis(cancelGrace.ms + 10_000), "exit after cancel");
       await expect(harness.cancel(handle, cancelGrace)).resolves.toBeUndefined();
+    });
+  });
+
+  // Runs only for an adapter that says it emits request-level observations.
+  const observations = harness.capabilities.observations === true ? describe : describe.skip;
+  observations(`${name} — measurement observations`, () => {
+    afterEach(async () => {
+      await fixture.cleanup?.();
+    });
+
+    const startWith = async (which: "completing" | "longRunning") => {
+      const measurements = recordingMeasurementSink();
+      const base = await fixture[which]();
+      const handle = await harness.start({
+        ...base,
+        sink: { emit: () => {} },
+        measurements,
+      });
+      return { handle, measurements };
+    };
+
+    it("emits observations with distinct ids, source harness, and a scope on totals", async () => {
+      const { handle, measurements } = await startWith("completing");
+      await withTimeout(handle.exit, completionTimeout, "exit");
+      const ids = measurements.observations.map((o) => o.observationId);
+      expect(new Set(ids).size).toBe(ids.length);
+      for (const observation of measurements.observations) {
+        expect(observation.source).toBe("harness");
+        if (observation.kind === "cumulative_snapshot" || observation.kind === "terminal_summary") {
+          expect(
+            observation.counterScope,
+            `${observation.observationId} names no scope`,
+          ).toBeDefined();
+        }
+      }
+    });
+
+    it("states coverage on a completing worker's exit", async () => {
+      const { handle } = await startWith("completing");
+      const exit = await withTimeout(handle.exit, completionTimeout, "exit");
+      expect(exit.coverage).toBeDefined();
+    });
+
+    it("states coverage on a cancelled worker's exit, with usage if requests were seen", async () => {
+      const { handle, measurements } = await startWith("longRunning");
+      await harness.cancel(handle, cancelGrace);
+      const exit = await withTimeout(
+        handle.exit,
+        millis(cancelGrace.ms + 10_000),
+        "exit after cancel",
+      );
+      expect(exit.coverage).toBeDefined();
+      if (measurements.observations.some((o) => o.kind === "request")) {
+        expect(exit.usage).toBeDefined();
+      }
     });
   });
 };
