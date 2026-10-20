@@ -1,0 +1,393 @@
+{
+  "schemaVersion": 1,
+  "programId": "prog_01M5DJ0E71480YAHVNBH1EEEFB",
+  "status": "planning",
+  "objective": "Measure the resources, delays, rework and review contribution behind delivered engineering work, including unsuccessful attempts, with a simple human verdict of whether each run worked. Preserve trustworthy model/token/context evidence and clearly labeled estimates. The authority is docs/programs/p20-measurements/plan.md.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p20-measurements"
+  },
+  "createdAt": "2026-10-20T18:00:00Z",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "The Nightshift owner comparing the resource use of agent runs",
+      "problem": "A displayed $0 may mean missing usage, and subscription use does not map directly to money spent. Some execution roles and unsuccessful endings are absent from totals.",
+      "outcome": "Understand observed token use and model attribution, with honest coverage, independently of optional dollar estimates.",
+      "words": [
+        "seems like dollar amount should be derived and tokens/context/model are what we store"
+      ]
+    },
+    {
+      "id": "US-02",
+      "who": "The same owner evaluating expensive contexts and model choices",
+      "problem": "Run-level token totals cannot identify which requests crossed context-dependent pricing thresholds, and harnesses expose different usage fields.",
+      "outcome": "Inspect the request-level context and cache evidence that is actually obtainable, with capacity, cumulative usage and missing detail distinguished.",
+      "words": [
+        "some models price differnetly based on the context size that comes with the request.. is that captured in the token count? or separate"
+      ]
+    },
+    {
+      "id": "US-03",
+      "who": "The same owner deciding whether execution approaches are better, cheaper and faster",
+      "problem": "Run-level totals hide completion bottlenecks, repair work and the expense of repeated runs; examiner findings and successful gates alone do not establish delivered quality.",
+      "outcome": "Understand where completion time and resources go, first-attempt success and rework, and the observed contribution of examination across the work needed to finish an outcome."
+    },
+    {
+      "id": "US-04",
+      "who": "The owner receiving and maintaining Nightshift\u2019s output",
+      "problem": "Engine success alone does not say whether the run actually worked for the owner, and people will not fill out retrospective measurement forms.",
+      "outcome": "Give a run a thumbs up or down and see that verdict alongside automatically collected measurements, without entering time logs or defect reports.",
+      "words": ["they are simply going to give the run a thumbs up/down. did work, or not."]
+    },
+    {
+      "id": "US-05",
+      "who": "The owner opening Studio to understand how work is going",
+      "problem": "Detailed measurements alone require hunting through reports and records to understand delivery, time, resources and quality.",
+      "outcome": "See a polished high-level metrics overview at a glance, then inspect the evidence behind any number.",
+      "words": [
+        "can you include a studio update to make sure we beautifully display an overview of the high level metrics?"
+      ]
+    }
+  ],
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "One normalized usage model preserves observed model, harness version, input including cache, cache read/write, output and reasoning subsets, request context and context capacity as distinct quantities, with provenance and explicit missing/partial coverage. Unknown is never a measured zero.",
+      "serves": ["US-01", "US-02"]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "Every Nightshift-launched role, including the root orchestrator, records usage through a shared accounting path; retries, resumes, fallback, failures, cancellation and interruption retain observed usage exactly once. Replayed delivery is idempotent; unrecoverable gaps are explicit.",
+      "serves": ["US-01"]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "Both supported harnesses capture request-level usage metadata where their pinned versions expose it, reconcile it with session totals without adding overlapping counters, and expose tested coverage for native children and transport variants. Unsupported detail remains explicitly unavailable.",
+      "serves": ["US-02"]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "Reports and Studio show comparable usage totals and coverage by role, model and attempt. Optional monetary values are labeled estimates with their pricing basis; absent usage or pricing cannot produce an apparently known $0. Context-dependent prices are evaluated per request, never against run-total input.",
+      "serves": ["US-01", "US-02"]
+    },
+    {
+      "id": "SC-05",
+      "outcome": "Reports distinguish run elapsed time, agent execution time, attempt settlement time and verification work duration; verification totals include both flaky and failed reruns. Dataset exports distinguish attempt-linked evidence from eventual node outcome and include root execution accounting.",
+      "serves": ["US-03"]
+    },
+    {
+      "id": "SC-06",
+      "outcome": "Offline fixtures and lifecycle tests prove normalization, deduplication, persistence replay, failure coverage and compatibility with historical records; an opt-in real-harness probe records sanitized evidence of the supported capture capabilities without making npm test require provider credentials.",
+      "serves": ["US-01", "US-02", "US-03"]
+    },
+    {
+      "id": "SC-07",
+      "outcome": "Completion reports expose provisioning/startup, checkout/setup, dependency wait, capacity wait, agent execution, examination, integration queue, conflict repair and verification intervals with their blockers and coverage. Concurrent work is not double-counted as elapsed time; the observed dependency/queue chain explains completion bottlenecks where evidence supports it.",
+      "serves": ["US-03"]
+    },
+    {
+      "id": "SC-08",
+      "outcome": "Reports show first-attempt verified-and-integrated success with explicit numerators and denominators, retry/rework counts and attributable time, tokens and estimates by cause. Verification repair, examination repair, integration conflict and infrastructure retry are distinguished; unknown cause is explicit.",
+      "serves": ["US-03"]
+    },
+    {
+      "id": "SC-09",
+      "outcome": "A completion history links contributing runs and delivered commits within one project, including failed runs, carried work and correction programs. It reports calendar time to a positive run verdict, union of active run intervals, model estimates and machine/volume estimates separately and combined where known, counting each source once. Rating delay is not human work time; missing feedback is explicit.",
+      "serves": ["US-01", "US-03", "US-04"]
+    },
+    {
+      "id": "SC-10",
+      "outcome": "Examiner reporting shows examinations, finding dispositions, upheld/overturned rulings, unresolved and risk-accepted findings, linked repair effort and review/answer/arbitration overhead by model and role. Reports distinguish these observed process measures from examiner accuracy and do not infer escaped defects or individual finding validity from a run verdict.",
+      "serves": ["US-03", "US-04"]
+    },
+    {
+      "id": "SC-11",
+      "outcome": "Studio lets an authorized user give a finished run one-click thumbs up (worked) or thumbs down (did not work), change or clear that verdict, without any required text, timing, criteria selection or defect details. CLI provides the equivalent operation. The API records actor, time, run and available result commit automatically, retains revision history and denies execution principals authority to submit human ratings. Unrated remains distinct from either verdict; feedback never changes verification or run outcome.",
+      "serves": ["US-04"]
+    },
+    {
+      "id": "SC-12",
+      "outcome": "Run/completion reports and machine-readable exports expose the same versioned metric definitions, denominators, evidence links, coverage and as-of time. Offline end-to-end fixtures prove a parallel run with retries, examination, conflict, a thumbs-down verdict, a correction run, thumbs up and a changed/cleared verdict without experimental comparison scenarios.",
+      "serves": ["US-01", "US-03", "US-04"]
+    },
+    {
+      "id": "SC-13",
+      "outcome": "Studio presents a polished, responsive metrics overview for a run and its linked completion history, with a clear scope and as-of time, prominent delivery/time/resources/quality summaries, explanatory bottleneck and resource visuals, and evidence drill-down. Unknown, partial, estimated and unrecorded values remain visibly distinct. Desktop/mobile and light/dark layouts are visually reviewed with realistic complete, running, failed and sparse-data fixtures.",
+      "serves": ["US-05", "US-01", "US-03", "US-04"]
+    }
+  ],
+  "constraints": [
+    "Harness telemetry is metadata only: no prompts, tool arguments/results, response bodies, secrets or arbitrary telemetry attributes. Human feedback is a binary run verdict with automatically captured attribution. Provider parsing stays in harness adapters; core remains offline and provider-neutral.",
+    "Large request evidence belongs in scoped artifact storage, not unbounded DynamoDB records. Existing tenancy and execution authority apply to every write and read.",
+    "Telemetry is observation, never verification or execution authority. Nightshift retains commit ownership, deterministic verification and integration.",
+    "No private vendor billing API, credential interception, external telemetry service, or first-party agent harness is introduced.",
+    "An external interactive orchestrator not launched by Nightshift cannot be claimed as measured; the report makes that coverage boundary explicit.",
+    "No ratified contract is changed to fit implementation. Approval of these design decisions does not authorize execution.",
+    "Human acceptance is separate from deterministic verification and never authorizes unverified integration. Feedback does not mutate historical run outcomes or ratified contracts.",
+    "Metric definitions include population, denominator, time basis and missing-data treatment. Association with rework  is not proof of causation; no composite quality score is invented.",
+    "Completion histories never cross project boundaries. All constituent records retain projectId/programId/runId attribution; shared work and overlapping runs are deduplicated by identity, not by equal totals."
+  ],
+  "outOfScope": [
+    "Same-input benchmark scenarios and experiment runners, deferred until execution-architecture alternatives exist; learned routing.",
+    "Changing strand orchestration or delegation architecture.",
+    "Subscription billing allocation, invoice imports and automatic live price fetching.",
+    "Reconstructing unobserved historical request data.",
+    "Deployment, publishing images and running a production program.",
+    "Changing examiner behavior or building browser/product acceptance automation; this program records and measures acceptance evidence.",
+    "Passive surveillance of human activity, inferred human work time, automatic defect diagnosis and causal claims that one execution strategy is better.",
+    "Manual intervention-time logs, retrospective defect entry and per-finding human validity assessments. Binary run feedback does not measure these facts."
+  ],
+  "scope": {
+    "includes": [
+      "packages/**",
+      "apps/**",
+      "test/**",
+      "docs/**",
+      "scripts/**",
+      "package.json",
+      "package-lock.json"
+    ],
+    "excludes": [],
+    "forbiddenActions": [
+      "deploy stacks or publish runner images",
+      "push to main",
+      "read legacy history or the nightshift-archive repository",
+      "change production organization policy or provider billing settings"
+    ]
+  },
+  "strands": [
+    {
+      "id": "S-01",
+      "name": "Reliable measurement records and lifecycle accounting",
+      "scope": {
+        "summary": "Reliable measurement records and lifecycle accounting",
+        "includes": [
+          "packages/contracts/**",
+          "packages/core/**",
+          "packages/harness/**",
+          "packages/execution/**",
+          "packages/persistence/**",
+          "apps/api/**",
+          "apps/mcp/**",
+          "test/**"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "An additive, versioned measurement contract distinguishes launch, request, cumulative snapshot and derived summary identities and scopes, without pretending a native subagent has its own Nightshift execution identity.",
+        "One accounting implementation covers root and strand orchestrators, implementers, examiners, answerers and arbiters; actual observed model is distinct from the chosen route model.",
+        "Persist metadata incrementally with idempotent replay and explicit coverage boundaries; all exit variants retain observed usage. A crash after durable receipt and before delivery recovers the observation without duplication; loss before receipt is reported as incomplete.",
+        "Resume returning no handle or throwing cannot add the same segment twice. Session cumulative counters across resume and per-request counters are reconciled rather than summed.",
+        "Old records remain readable with legacy/unknown coverage; existing adapters remain usable while the new capture adapters are developed. Historical context and completeness are never fabricated.",
+        "The shared receipt/summary seam supports bounded engine lifecycle observations as well as harness usage, with source timestamps, receive timestamps, stable operation IDs and parent/blocker references; older events need not be guessed into precise intervals."
+      ],
+      "successCriteria": ["SC-01", "SC-02", "SC-06"],
+      "dependsOn": [],
+      "prerequisites": []
+    },
+    {
+      "id": "S-02",
+      "name": "Claude measurement capture",
+      "scope": {
+        "summary": "Claude measurement capture",
+        "includes": ["packages/harness-claude/**"],
+        "excludes": []
+      },
+      "acceptance": [
+        "Claude capture normalizes input/cache semantics and records metadata from the pinned harness, with request/model/session identifiers where exposed and explicit unknowns elsewhere.",
+        "Repeated assistant message IDs do not duplicate usage, placeholder streaming output counts are not final request usage, and result/session summaries are not added to their constituent requests.",
+        "Capture is explicitly configured by Nightshift, carries no prompt/tool/output content, and finishes or marks incomplete on every process ending. Native-child inclusion and context compaction are tested with sanitized fixtures.",
+        "An opt-in probe produces sanitized evidence of the pinned version capability; unsupported fields and any version change required for capture are documented rather than silently assumed from current vendor docs."
+      ],
+      "successCriteria": ["SC-01", "SC-03", "SC-06"],
+      "dependsOn": ["S-01"],
+      "prerequisites": []
+    },
+    {
+      "id": "S-03",
+      "name": "Codex measurement capture",
+      "scope": {
+        "summary": "Codex measurement capture",
+        "includes": ["packages/harness-codex/**"],
+        "excludes": []
+      },
+      "acceptance": [
+        "Codex capture retains input, cached input, cache write, output and reasoning where emitted; cached input and reasoning subsets never double-count totals.",
+        "Request observations distinguish last-request usage from cumulative token snapshots and context-window capacity. Repeated token snapshots, resume and transport reconnects do not inflate totals.",
+        "Capture explicitly configures the pinned harness despite ignore-user-config, carries no prompt/tool/output content and retains observed usage on cancellation and interruption.",
+        "An opt-in probe and sanitized fixtures establish actual SSE/WebSocket and native-child coverage. If the supported telemetry surface lacks a field, a versioned adapter-owned transcript reader may supply it with explicit provenance; unknown remains unknown."
+      ],
+      "successCriteria": ["SC-01", "SC-03", "SC-06"],
+      "dependsOn": ["S-01"],
+      "prerequisites": []
+    },
+    {
+      "id": "S-04",
+      "name": "Studio metrics overview, reports, valuation and exports",
+      "scope": {
+        "summary": "Studio metrics overview, reports, valuation and exports",
+        "includes": [
+          "packages/core/**",
+          "packages/execution/**",
+          "packages/contracts/**",
+          "apps/cli/**",
+          "apps/studio/**",
+          "test/**",
+          "docs/**"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "CLI/report/Studio aggregates expose known usage and coverage without rendering missing tokens or unknown money as zero, and allow retrieving request evidence from scoped artifacts.",
+        "Derived monetary estimates preserve price source/version, model, cache categories and applicable request-context tier. Provider-reported estimates are labeled separately from actual billed spend; subscription spend is not inferred.",
+        "Token-budget accounting uses the same normalized totals as reports. The maxUsd estimate-budget behavior and incomplete-coverage behavior implement the ratified D-02 without silently disabling configured limits.",
+        "Verification work duration includes original plus rerun durations for both flaky success and failed reruns; parallel work duration is not called elapsed time.",
+        "Dataset records separate attempt-attributed evidence from eventual node outcome, include root accounting, and explicitly mark historical missing links. Agent time excludes subsequent verification/integration; settlement time remains separately available.",
+        "Cross-package regression scenarios cover every role, failed/cancelled runs, retries and replay, mixed-model requests, context-tier boundaries and legacy records. Documentation explains semantics and the opt-in live probe; all configured repository gates pass.",
+        "CLI/report/Studio and versioned exports present completion bottlenecks, first-attempt success, rework by cause, examiner dispositions and overhead, human run verdicts and their coverage using the shared pure reducers.",
+        "One completion view combines model API-equivalent and infrastructure estimates with separate components, price provenance, coverage and as-of time; incomplete totals are lower bounds, never actual subscription bills. It links each contributor across failed, carried and correction runs.",
+        "Expose metric definitions and denominators alongside evidence drill-down; allow filtering by role/model/time and show sample sizes. Ordinary reporting describes observed work without adding an experiment runner or asserting causal model superiority.",
+        "A cross-package scenario proves the complete SC-12 history with exact expected totals, deduplication, authorization and acceptance/verification separation, and includes CLI and Studio entry/read paths.",
+        "Studio provides a discoverable metrics overview from the existing run page and linked completion history, with scope, contributing-run count, acceptance state and as-of time visible; changing scope cannot silently mix per-run and cross-run totals.",
+        "The overview leads with a restrained set of prominent summaries for delivery/first-attempt success, elapsed completion time, token use and labeled resource estimates, and rework/review evidence and the human verdict. Secondary detail is progressively disclosed rather than filling the first screen with raw counters.",
+        "Use readable timeline/bottleneck and resource-breakdown visuals with direct labels, accessible textual equivalents and links to source evidence. Overlapping work is not drawn as additive elapsed phases; token and dollar series do not share a misleading scale. No decorative quality score or unjustified improvement arrows.",
+        "Every summary exposes its definition, denominator or coverage and evidence without requiring a request-artifact download for initial rendering. Sparse, historical, running, failed, loading, stale and error states have intentional designs; missing values are never zero or a green success signal.",
+        "The interface follows Studio theme variables, semantic components and existing navigation/live-query conventions, with coherent typography, spacing and chart colors, keyboard navigation, non-color-only status cues and responsive desktop/mobile light/dark layouts.",
+        "Before completion, inspect rendered desktop/mobile light/dark screenshots for realistic complete and sparse/running fixtures; retain visual review evidence and fix clipping, density, contrast and misleading chart states. UI behavior tests cover scope switching, evidence navigation, accessible chart summaries and partial-data labels.",
+        "Studio prominently shows Worked / Did not work / Not rated with one-click thumbs controls, without a feedback form. Aggregates show positive and negative verdict counts, rated/eligible-run coverage and explicit denominators; edits replace the effective verdict rather than adding votes, and unrated runs are never counted as failures or successes."
+      ],
+      "successCriteria": [
+        "SC-04",
+        "SC-05",
+        "SC-06",
+        "SC-07",
+        "SC-08",
+        "SC-09",
+        "SC-10",
+        "SC-11",
+        "SC-12",
+        "SC-13"
+      ],
+      "dependsOn": ["S-02", "S-03", "S-06"],
+      "prerequisites": []
+    },
+    {
+      "id": "S-05",
+      "name": "Completion bottlenecks, rework and examination effectiveness",
+      "scope": {
+        "summary": "Engine lifecycle instrumentation and pure operational/effectiveness reducers using existing execution, examination and dispatch evidence",
+        "includes": [
+          "packages/contracts/**",
+          "packages/core/**",
+          "packages/execution/**",
+          "apps/mcp/**",
+          "apps/api/**",
+          "test/**"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "Emit bounded lifecycle boundaries and blocker links at the engine operations that own startup, setup, dependency/capacity waits, examination, queueing, integration and conflict repair, using stable operation identities and restart-safe closure semantics.",
+        "Derive per-node and run timelines, concurrency, wait reasons and an observed completion-critical chain; reconcile interval unions with run elapsed time and expose unattributed or ambiguous time rather than inventing a bottleneck.",
+        "Define a work-item population separately from route attempts and helper calls. Report first-attempt verified-and-integrated success, failure/cancellation/unfinished counts, and retry/rework resources by explicit cause with numerator/denominator and partial coverage.",
+        "Link findings to repair attempts and ruling evidence, deduplicating a finding across carried examinations where identity/evidence permits. Aggregate review, answer and arbitration overhead separately from repairs; show unresolved and unknown linkage.",
+        "Expose infrastructure cost components and lifetime/price provenance from dispatch and compute records; do not assign one machine\u2019s full cost to each concurrent job. Preserve actual recorded dispositions without claiming they establish examiner accuracy.",
+        "Offline tests cover parallel critical paths, overlapping waits, restarts, unsuccessful and skipped/deferred checks, shared repair causes, carried findings and missing historical timestamps."
+      ],
+      "successCriteria": ["SC-07", "SC-08", "SC-10", "SC-12"],
+      "dependsOn": ["S-01"],
+      "prerequisites": []
+    },
+    {
+      "id": "S-06",
+      "name": "Human feedback and completion histories",
+      "scope": {
+        "summary": "Scoped persisted feedback and explicit cross-run completion membership, authorization, storage and user entry surfaces",
+        "includes": [
+          "packages/contracts/**",
+          "packages/core/**",
+          "packages/persistence/**",
+          "apps/api/**",
+          "apps/cli/**",
+          "apps/studio/**",
+          "test/**"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "Implement a run-scoped worked/did-not-work verdict with actor, timestamp, available result commit and revision history captured automatically. One effective verdict per run is updated using explicit concurrency control; authorized users can change or clear it. No time log, reason, evidence form or defect entry is required.",
+        "User-only writes are enforced by core authorization and the API, with equivalent memory/local/AWS/HTTP stores. Idempotent writes and corrections preserve history; execution principals cannot assert a human verdict.",
+        "Implement explicit project-bounded completion histories with an anchor run and validated member run references, positive-verdict checkpoints and revision history. Suggest existing carry-over/correction links for confirmation; membership is never guessed solely from program identity.",
+        "Studio places one-click thumbs up/down on the finished-run overview with accessible Worked / Did not work labels, clear selected/unrated state, change/clear behavior and visible save failures. CLI supplies equivalent rate/clear operations and completion-membership management.",
+        "Completion aggregation counts each run/launch/dispatch once; shared carried work is not recharged, unrelated attempts remain outside membership, and all linked source records are authorized. Cross-project links are refused.",
+        "Calendar lead time to a positive verdict, completion of its run and union of active run intervals are distinct. Rating delay is visible where relevant and is never human work duration. Changing or clearing a verdict recomputes the current view while preserving the prior checkpoint history.",
+        "Offline authorization, store-conformance and UI/CLI tests cover duplicates, concurrent writes, changed/cleared votes, unrated and failed runs, cross-program correction within a project and rejected cross-project membership.",
+        "Reports count each run once, show rated/eligible coverage and define positive share among rated runs. A thumbs down is not assigned to a particular defect, examiner or failure cause without independent existing evidence."
+      ],
+      "successCriteria": ["SC-09", "SC-11", "SC-12"],
+      "dependsOn": ["S-05"],
+      "prerequisites": []
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "Does this program include request-level context and cache capture, or only correct existing aggregate measurements?",
+      "options": ["Include request-level capture", "Correct aggregates and defer request capture"],
+      "leaning": "Include request-level capture",
+      "rationale": "Aggregate fixes are necessary either way; request-level evidence is what makes context-dependent valuation and context-growth analysis possible. The owner approved request-level capture.",
+      "touches": ["S-01", "S-02", "S-03", "S-04"],
+      "answer": "Include request-level capture"
+    },
+    {
+      "id": "D-02",
+      "question": "Should dollars remain optional API-equivalent estimates, and should existing maxUsd limits continue to constrain estimated API-equivalent usage?",
+      "options": [
+        "Keep labeled estimates and estimated maxUsd budgets",
+        "Usage only; explicitly redesign existing dollar-budget behavior before execution"
+      ],
+      "leaning": "Keep labeled estimates and estimated maxUsd budgets",
+      "rationale": "Tokens are primary; estimates can compare resource use without claiming subscription expenditure. Existing cost limits must not silently disappear. Unknown coverage remains visible and cannot be certified as within budget.",
+      "touches": ["S-01", "S-04", "S-05", "S-06"],
+      "answer": "Keep labeled estimates and estimated maxUsd budgets"
+    },
+    {
+      "id": "D-03",
+      "question": "May Nightshift persist a versioned metadata-only request ledger with compact summaries and operate a launch-scoped local telemetry receiver when an adapter needs one?",
+      "options": [
+        "Artifact-backed metadata ledger and isolated local receiver where needed",
+        "Aggregate records only; no request ledger or receiver"
+      ],
+      "leaning": "Artifact-backed metadata ledger and isolated local receiver where needed",
+      "rationale": "This adds a persisted evidence boundary and local transport surface. A separate helper preserves the MCP process\u2019s stdio-only boundary; provider decoding stays in the adapter. Request evidence goes to artifact storage and compact summaries support reports.",
+      "touches": ["S-01", "S-02", "S-03", "S-04"],
+      "answer": "Artifact-backed metadata ledger and isolated local receiver where needed"
+    },
+    {
+      "id": "D-04",
+      "question": "How should users tell Nightshift whether a run worked?",
+      "options": [
+        "One-click thumbs up/down per run; no retrospective measurement forms",
+        "Detailed manual effort, acceptance and defect records"
+      ],
+      "leaning": "One-click thumbs up/down per run; no retrospective measurement forms",
+      "rationale": "The owner said people will not retroactively enter measurements: they will simply say whether the run worked. Collect resource and process facts automatically and retain an attributed binary verdict; do not invent unmeasured human time or defect counts.",
+      "touches": ["S-06", "S-04"],
+      "answer": "One-click thumbs up/down per run; no retrospective measurement forms"
+    },
+    {
+      "id": "D-05",
+      "question": "How should contributing runs be grouped into one delivered outcome?",
+      "options": [
+        "Explicit project-bounded completion histories with suggested carry-over/correction links",
+        "Automatically group all runs of a program"
+      ],
+      "leaning": "Explicit project-bounded completion histories with suggested carry-over/correction links",
+      "rationale": "A program can have unrelated runs and a correction can be a different program. Explicit membership prevents misleading totals while retaining source scopes; it introduces a persisted grouping and user workflow.",
+      "touches": ["S-06", "S-04"],
+      "answer": "Explicit project-bounded completion histories with suggested carry-over/correction links"
+    }
+  ]
+}
