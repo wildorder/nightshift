@@ -1,0 +1,310 @@
+{
+  "schemaVersion": 1,
+  "programId": "prog_01M5B96AYMTA3PHD7BAN1TK54S",
+  "status": "planning",
+  "objective": "Let every setup and verification step take the time it really needs and clean up after itself when it overruns: a step declares its own timeout and cleanup time in the contract, `nightshift gates` says when a measured step is close to its cap, a step that times out is sent SIGTERM and given its cleanup time before it is killed, and a run's orchestrators may raise a step's timeout mid-run or, when waiting longer has not worked, skip that one timed-out step, each as a recorded decision, so the run finishes the rest of the build instead of failing. The authority is docs/programs/p19-step-timeouts/plan.md.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p19-step-timeouts"
+  },
+  "createdAt": "2026-10-19T17:00:00Z",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "A developer whose program has a gate that legitimately runs longer than ten minutes: an end gate that deploys and proves an infrastructure change, a long end-to-end suite",
+      "problem": "Nightshift kills every step at ten minutes, whatever it is, and nothing in a contract can change that. keki-backend's aws-postgres trial, which deploys a throwaway stage with RDS and removes it, needs 30 to 60 minutes, so it could never pass and the run ended failed.",
+      "outcome": "The plan says how long each step may take, `nightshift gates` warns before the run when a measured step is close to its cap, and when the night shows the plan was wrong, the run's own agents raise the timeout and say why.",
+      "words": [
+        "basically we timeout all tests at 10 min no matter what. keki had a long running test it wanted the agents to be able to set their own timeout time",
+        "big plans go to shit once you start building. the agents MUST have the independence to fix what is blocking them from delivering results."
+      ]
+    },
+    {
+      "id": "US-02",
+      "who": "The same developer, when a step overruns its time anyway",
+      "problem": "The overrunning step's whole process tree is SIGKILLed at once, so its own `trap … EXIT` never runs. keki's trial left an RDS instance and two NAT instances running and billing, and SST's state lock held by a dead process, for the root to find and remove by hand.",
+      "outcome": "A step that times out is asked to stop with SIGTERM and given the cleanup time it declared before it is killed, so its own teardown releases what it created. It is still recorded as a timeout."
+    },
+    {
+      "id": "US-03",
+      "who": "The same developer, the morning after a gate could not finish in time",
+      "problem": "One gate that cannot finish fails the whole run, and every other strand's finished work is reported as a failed run.",
+      "outcome": "When waiting longer has not worked, an agent skips that one timed-out step for the rest of the run and records why, the build carries on, and the run finishes. The report leads with what was not verified and the decision that skipped it.",
+      "words": [
+        "the agents should have the ability to skip the test, record what happened, and move on with the rest of the build. once again this should not FAIL a run, it should finish with decisions recorded... in this case a decision to skip a long running test"
+      ]
+    }
+  ],
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "A setup or verification step in a contract may say how long it may run (`timeoutSeconds`) and how long it gets to clean up after a timeout (`cleanupSeconds`). A step that says nothing gets ten minutes and thirty seconds. `nightshift plan check` refuses a timeout over two hours, a cleanup over one hour, or a step whose timeout and cleanup together exceed the contract's `costPolicy.maxWallClockSeconds`.",
+      "serves": [
+        "US-01",
+        "US-02"
+      ]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "Everywhere a step runs, its own timeout is the one applied: a landing's verification, the end gates, setup in every checkout, an examination's checkout, a flake rerun, the gate audit, `nightshift gates` and the machine's own gates.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "`nightshift gates` reports each step's timeout beside its measured duration, and recommends a `timeoutSeconds`, with the contract edit, for any step that ran longer than 80% of its timeout or was killed by it.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "When a step's timeout fires, its process group is sent SIGTERM, has its cleanup time to exit, and only then is killed. A script's `trap … EXIT` runs and finishes within that time. The step is still recorded as timed out with exit 124, whatever it exits with afterwards.",
+      "serves": [
+        "US-02"
+      ]
+    },
+    {
+      "id": "SC-05",
+      "outcome": "During a run, the root orchestrator or a strand's orchestrator can raise a step's timeout or cleanup time, up to the same maximums, by recording a decision that says why. Every later run of that step in that run uses the new value, and the program's contract and plan hash do not change.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-06",
+      "outcome": "During a run, the root orchestrator or a strand's orchestrator can skip a step whose most recent run in that run timed out, by recording a decision that says why. Skipping a step that ran and failed, or passed, is refused. The step's verification records it as skipped with the decision, the other steps still decide the outcome, and the run can end succeeded.",
+      "serves": [
+        "US-03"
+      ]
+    },
+    {
+      "id": "SC-07",
+      "outcome": "The run's report and `run.finish`'s answer lead with every skipped step and every raised timeout: which step, on which commits, and the decision with its reason.",
+      "serves": [
+        "US-03"
+      ]
+    }
+  ],
+  "constraints": [
+    "A step the timeout killed is recorded with exit 124 and timedOut, whatever it exits with afterwards: a timeout is never a pass.",
+    "A step that exits 75 with NIGHTSHIFT_DEFER inside its time is deferred as today; the same step killed by its timeout is a timeout.",
+    "A run's adjustments to a step live in the run's own records, never in the program's contract, so the plan hash and carry-over are unchanged by them.",
+    "Only a step whose most recent run in the run timed out may be skipped; a step that ran and failed is fixed, never skipped.",
+    "Windows keeps working: its kill path still ends the step's whole process tree."
+  ],
+  "outOfScope": [
+    "Raising the ten-minute default for steps that declare nothing.",
+    "A separate cleanup command per step.",
+    "Graceful termination when a run is cancelled or a machine stops, as distinct from a step's timeout.",
+    "Studio screens beyond the events the run already shows.",
+    "Deploying, building images, and the live trial."
+  ],
+  "scope": {
+    "includes": [
+      "apps/**",
+      "packages/**",
+      "skills/**",
+      "test/**",
+      "docs/**",
+      "AGENTS.md"
+    ],
+    "excludes": [
+      ".github/**",
+      "docs/programs/p19-step-timeouts/contract.json",
+      "docs/programs/p19-step-timeouts/plan.md",
+      "docs/programs/p19-step-timeouts/conversation.md"
+    ],
+    "forbiddenActions": [
+      "deploy any stack or stage (cdk deploy, npm run deploy, npm run image:build)",
+      "write to the dev or any hosted control plane outside the run's own records",
+      "push to main",
+      "read legacy history or the nightshift-archive repository (AGENTS.md greenfield boundary)"
+    ]
+  },
+  "strands": [
+    {
+      "id": "S-01",
+      "name": "A step takes its own time and cleans up after itself",
+      "scope": {
+        "summary": "The step schema's time fields and their limits, plan check, the verification runner's timeout and kill, every caller that runs a step, the gates diagnostic, and the planning guidance",
+        "includes": [
+          "packages/contracts/src/v1/program-contract*.ts",
+          "packages/verification/**",
+          "packages/core/src/rules/plan*.ts",
+          "packages/core/src/forecast/**",
+          "packages/execution/src/setup*.ts",
+          "packages/execution/src/examine*.ts",
+          "packages/execution/src/flaky*.ts",
+          "packages/execution/src/gate-audit*.ts",
+          "packages/execution/src/end-gates*.ts",
+          "packages/execution/src/environment*.ts",
+          "packages/execution/src/verify*.ts",
+          "apps/cli/src/commands/gates*.ts",
+          "apps/mcp/src/runner/gates*.ts",
+          "skills/plan-program/**",
+          "test/src/verification/**"
+        ],
+        "excludes": [
+          "packages/contracts/src/v1/verification*.ts",
+          "packages/core/src/report/**",
+          "apps/mcp/src/orchestrator*.ts",
+          "apps/mcp/src/sub-orchestrator*.ts",
+          "packages/harness/**"
+        ]
+      },
+      "acceptance": [
+        "Setup and verification steps accept `timeoutSeconds` and `cleanupSeconds`; absent, they are ten minutes and thirty seconds; `plan check` refuses a timeout over 7200, a cleanup over 3600, or a timeout plus cleanup over `costPolicy.maxWallClockSeconds`, naming the step",
+        "Every path that runs a step applies that step's own timeout and cleanup, and no caller supplies one run-wide value any more",
+        "A timed-out step's process group gets SIGTERM, then its cleanup time, then SIGKILL; a test shell whose `trap … EXIT` writes a file proves the trap ran; the step is recorded with exit 124 and timedOut",
+        "On Windows the step's tree is asked to end, given its cleanup time, then ended by force, and the existing Windows tests pass",
+        "`nightshift gates` shows each step's timeout beside its measured duration and recommends a `timeoutSeconds`, with the contract edit, for a step over 80% of it or killed by it",
+        "The plan-program skill and gate-standard.md tell the planner to set `timeoutSeconds` from `nightshift gates`' measurements for any step that runs long"
+      ],
+      "successCriteria": [
+        "SC-01",
+        "SC-02",
+        "SC-03",
+        "SC-04"
+      ],
+      "dependsOn": [],
+      "prerequisites": []
+    },
+    {
+      "id": "S-02",
+      "name": "The run raises a step's time, or skips it, and moves on",
+      "scope": {
+        "summary": "The run's own adjustments to a step: the decisions that record them, the orchestrators' tools, the engine applying them, a skipped step in a verification, the briefs, and the report",
+        "includes": [
+          "packages/contracts/src/v1/verification*.ts",
+          "packages/execution/src/step-adjustments*.ts",
+          "packages/execution/src/verify*.ts",
+          "packages/execution/src/end-gates*.ts",
+          "packages/execution/src/strand*.ts",
+          "packages/execution/src/index.ts",
+          "apps/mcp/src/orchestrator*.ts",
+          "apps/mcp/src/sub-orchestrator*.ts",
+          "packages/harness/src/brief*.ts",
+          "packages/core/src/report/**",
+          "test/src/execution/**"
+        ],
+        "excludes": [
+          "packages/verification/**",
+          "packages/core/src/rules/plan*.ts",
+          "skills/plan-program/**"
+        ]
+      },
+      "acceptance": [
+        "The root orchestrator and a strand's orchestrator have one tool to raise a step's `timeoutSeconds` or `cleanupSeconds` for the rest of the run and one to skip a step; each records a decision whose reason is required, and each is refused past the maximums",
+        "Skipping is refused for a step whose most recent run in the run did not time out, with the refusal naming that run's result",
+        "Every later verification in the run applies the raised values or the skip, and a skipped step appears in the Verification record as skipped with its decision, never as passed, while the other steps decide the outcome",
+        "A strand whose landing timed out is resumed with the timed-out step, its timeout and the two tools named, and a scenario proves a strand raises a timeout, then skips the step, and lands, and the run ends succeeded",
+        "The report and `run.finish`'s answer lead with every skipped step and every raised timeout, with each decision's reason",
+        "The program's contract and plan hash are the same before and after any adjustment, and carry-over of finished strands is unaffected"
+      ],
+      "successCriteria": [
+        "SC-05",
+        "SC-06",
+        "SC-07"
+      ],
+      "dependsOn": [
+        "S-01"
+      ],
+      "prerequisites": []
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "Who sets a step's timeout, and when?",
+      "options": [
+        "The planner, in the plan, and nobody during the run",
+        "The planner in the plan, and the run's orchestrators may change it mid-run"
+      ],
+      "leaning": "The planner, in the plan, and nobody during the run",
+      "answer": "The planner in the plan, and the run's orchestrators may change it mid-run",
+      "rationale": "A plan is a start, not a cage: once the build starts it finds what the plan got wrong, and the agents must be free to fix what blocks them from delivering, recording why.",
+      "touches": [
+        "S-01",
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-02",
+      "question": "What do the fields look like?",
+      "options": [
+        "timeoutSeconds and cleanupSeconds",
+        "timeoutMinutes",
+        "a duration string such as \"90m\""
+      ],
+      "leaning": "timeoutSeconds and cleanupSeconds",
+      "answer": "timeoutSeconds and cleanupSeconds",
+      "rationale": "Integers, as the contract's costPolicy.maxWallClockSeconds already is; no new parsing convention in a strict schema.",
+      "touches": [
+        "S-01",
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-03",
+      "question": "When a step times out, how long does it get to clean up before it is killed?",
+      "options": [
+        "Its own cleanupSeconds, defaulting to 30, between SIGTERM and SIGKILL",
+        "A fraction of its timeout",
+        "One fixed grace for every step"
+      ],
+      "leaning": "Its own cleanupSeconds, defaulting to 30, between SIGTERM and SIGKILL",
+      "answer": "Its own cleanupSeconds, defaulting to 30, between SIGTERM and SIGKILL",
+      "rationale": "Cleanup time is its own quantity: a cloud stack's teardown takes minutes however long the gate ran, and a quick gate's cleanup takes none.",
+      "touches": [
+        "S-01"
+      ]
+    },
+    {
+      "id": "D-04",
+      "question": "Is there a ceiling on what a step may declare, whoever sets it?",
+      "options": [
+        "A fixed maximum: 7200 seconds of timeout and 3600 of cleanup, and within the run's wall clock when one is set",
+        "Only the run's wall clock",
+        "No ceiling"
+      ],
+      "leaning": "Only the run's wall clock",
+      "answer": "A fixed maximum: 7200 seconds of timeout and 3600 of cleanup, and within the run's wall clock when one is set",
+      "rationale": "Two hours covers a deploy-and-prove gate with room to spare and stops one stuck gate eating the night; past that, skipping is the way on.",
+      "touches": [
+        "S-01",
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-05",
+      "question": "When waiting longer has not worked, what happens to the run?",
+      "options": [
+        "The run fails",
+        "An orchestrator skips that step for the rest of the run with a recorded decision, the build carries on, and the run can end succeeded"
+      ],
+      "leaning": "An orchestrator skips that step for the rest of the run with a recorded decision, the build carries on, and the run can end succeeded",
+      "answer": "An orchestrator skips that step for the rest of the run with a recorded decision, the build carries on, and the run can end succeeded",
+      "rationale": "A gate that cannot finish in time must not fail the rest of the build; the run finishes with the decision to skip it recorded, for review in the morning.",
+      "touches": [
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-06",
+      "question": "Which steps may an orchestrator skip?",
+      "options": [
+        "Only a step whose most recent run in the run timed out",
+        "Any step, with a decision"
+      ],
+      "leaning": "Only a step whose most recent run in the run timed out",
+      "answer": "Only a step whose most recent run in the run timed out",
+      "rationale": "A step that ran and failed must be fixed, not skipped, or a red test could be skipped to make a run green.",
+      "touches": [
+        "S-02"
+      ]
+    }
+  ]
+}
