@@ -59,6 +59,7 @@ const report = (patch: Partial<RunReport> = {}): RunReport => ({
     flakes: [],
     verificationTime: { steps: [], landings: 0, verifications: 0, totalMs: 0, recommendations: [] },
   },
+  stepAdjustments: { skipped: [], raised: [] },
   ...patch,
 });
 
@@ -588,5 +589,93 @@ describe("the report's publication (2026-10-14)", () => {
 
   it("says nothing about GitHub for a local run", () => {
     expect(renderReport(report())).not.toContain("GitHub has");
+  });
+});
+
+describe("the report's Not verified section (P19)", () => {
+  const heading = "## Not verified — read this first";
+
+  it("leads the report when a step was skipped, naming step, decision, commits and reason", () => {
+    const text = renderReport(
+      report({
+        stepAdjustments: {
+          skipped: [
+            {
+              stepId: "e2e",
+              decisionId: "dec_skip",
+              reason: "it hangs on the runner",
+              commits: ["abcdef1234567890", "1234567890abcdef"],
+            },
+          ],
+          raised: [],
+        },
+      }),
+    );
+    expect(text).toContain(heading);
+    expect(text).toContain(
+      "- **e2e was not run**: skipped by decision dec_skip on abcdef123456, 1234567890ab, because it hangs on the runner",
+    );
+    expect(text.indexOf(heading)).toBeGreaterThan(text.indexOf("strands succeeded"));
+    expect(text.indexOf(heading)).toBeLessThan(text.indexOf("## Strands"));
+  });
+
+  it("says 'no landing yet' when no commit recorded the skip", () => {
+    const text = renderReport(
+      report({
+        stepAdjustments: {
+          skipped: [{ stepId: "e2e", decisionId: "dec_skip", reason: "slow", commits: [] }],
+          raised: [],
+        },
+      }),
+    );
+    expect(text).toContain("on no landing yet, because slow");
+  });
+
+  it("lists a raise with its old and new values", () => {
+    const text = renderReport(
+      report({
+        stepAdjustments: {
+          skipped: [],
+          raised: [
+            {
+              stepId: "build",
+              decisionId: "dec_raise",
+              field: "timeoutSeconds",
+              from: 600,
+              to: 1800,
+              reason: "the cold cache needs it",
+            },
+          ],
+        },
+      }),
+    );
+    expect(text).toContain(
+      "- **build's timeoutSeconds raised** from 600 to 1800 seconds by decision dec_raise, because the cold cache needs it",
+    );
+  });
+
+  it("lists a skip the engine did not honour", () => {
+    const text = renderReport(
+      report({
+        stepAdjustments: {
+          skipped: [
+            {
+              stepId: "e2e",
+              decisionId: "dec_skip",
+              reason: "it hangs",
+              commits: [],
+              notHonoured: "the step ran and failed",
+            },
+          ],
+          raised: [],
+        },
+      }),
+    );
+    expect(text).toContain("- **e2e skip not applied**: decision dec_skip, because it hangs");
+    expect(text).not.toContain("e2e was not run");
+  });
+
+  it("is absent when there is nothing", () => {
+    expect(renderReport(report())).not.toContain("Not verified");
   });
 });

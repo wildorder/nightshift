@@ -54,6 +54,7 @@ import {
   strandOutcomes,
   strandsOf,
 } from "../rules/plan.js";
+import { type StepAdjustments, stepAdjustmentsOf } from "../rules/step-adjustments.js";
 import {
   type CorrectionReport,
   type DecisionReport,
@@ -164,6 +165,8 @@ export interface RunReport {
   readonly unreviewed?: readonly UnreviewedReport[];
   /** P15: the gates' audit, the red base, every repair and every flake (D-P15-09). */
   readonly gateHealth: GateHealthReport;
+  /** P19: the steps the run skipped or whose time it raised, which lead the report (D-05). */
+  readonly stepAdjustments: StepAdjustments;
   /**
    * A remote run's landings as GitHub has them (2026-10-14): the machine lands
    * on its own clone, and only the publisher moves GitHub's copy. Absent for a
@@ -609,6 +612,8 @@ const gatherGateHealth = async (
   stores: ProjectStores,
   scope: RunScope,
   records: Records,
+  nodes: readonly ExecutionNode[],
+  verifications: readonly Verification[],
 ): Promise<GateHealthReport> => {
   const events = await readAll<Event>((page) => stores.events.listByRun(scope, page));
   let red: GateHealthReport["red"];
@@ -625,9 +630,6 @@ const gatherGateHealth = async (
     }
   }
 
-  const nodes = [...records.tree.nodes.values()].sort((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
-  );
   const byId = new Map(
     records.decisions.map((decision) => [decision.decisionId as string, decision]),
   );
@@ -652,13 +654,7 @@ const gatherGateHealth = async (
       ];
     });
 
-  // Every node's: the jobs' queue and candidate checks, and the program node's
-  // end gates (A-57).
-  const verifications: Verification[] = [];
-  for (const node of nodes) {
-    verifications.push(...(await stores.verifications.listByNode(scope, node.executionNodeId)));
-  }
-  const flakes = verifications
+  const flakes = [...verifications]
     .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
     .flatMap((verification) =>
       verification.commands.flatMap((command): FlakeReport[] =>
@@ -697,6 +693,19 @@ const gatherGateHealth = async (
   };
 };
 
+/** Every node's verifications: the jobs' queue and candidate checks, and the program node's end gates (A-57). */
+const gatherVerifications = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  nodes: readonly ExecutionNode[],
+): Promise<Verification[]> => {
+  const verifications: Verification[] = [];
+  for (const node of nodes) {
+    verifications.push(...(await stores.verifications.listByNode(scope, node.executionNodeId)));
+  }
+  return verifications;
+};
+
 export const gatherReport = async (stores: ProjectStores, scope: RunScope): Promise<RunReport> => {
   const program = await stores.programContracts.get(scope.projectId, scope.programId);
   const run = await stores.runs.get(scope, scope.runId);
@@ -708,6 +717,10 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   const strands = strandsOf(program).map((strand) => strandReportOf(records, strand, blocked));
   const rulings = rulingsOf(records);
   const unreviewed = await unreviewedOf(stores, scope, records);
+  const nodes = [...records.tree.nodes.values()].sort((a, b) =>
+    a.createdAt.localeCompare(b.createdAt),
+  );
+  const verifications = await gatherVerifications(stores, scope, nodes);
 
   return {
     program,
@@ -736,7 +749,8 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
     usage: usageOf([...records.routesOf.values()].flat()),
     rulings,
     unreviewed,
-    gateHealth: await gatherGateHealth(stores, scope, records),
+    gateHealth: await gatherGateHealth(stores, scope, records, nodes, verifications),
+    stepAdjustments: stepAdjustmentsOf(program.verification, records.decisions, verifications),
     ...(await gatherPublication(stores, scope, program.repository.programBranch)),
   };
 };
@@ -1266,6 +1280,29 @@ const renderStories = (report: RunReport): string[] => {
   ];
 };
 
+/** What was not verified, first (P19, D-05): a skipped step, a skip not applied, a raised time. */
+const renderNotVerified = ({ skipped, raised }: StepAdjustments): string[] => {
+  if (skipped.length === 0 && raised.length === 0) return [];
+  return [
+    "## Not verified — read this first",
+    "",
+    ...skipped.map((skip) =>
+      skip.notHonoured === undefined
+        ? `- **${skip.stepId} was not run**: skipped by decision ${skip.decisionId} on ${
+            skip.commits.length === 0
+              ? "no landing yet"
+              : skip.commits.map((commit) => commit.slice(0, 12)).join(", ")
+          }, because ${skip.reason}`
+        : `- **${skip.stepId} skip not applied**: decision ${skip.decisionId}, because ${skip.reason}`,
+    ),
+    ...raised.map(
+      (raise) =>
+        `- **${raise.stepId}'s ${raise.field} raised** from ${raise.from} to ${raise.to} seconds by decision ${raise.decisionId}, because ${raise.reason}`,
+    ),
+    "",
+  ];
+};
+
 /** The report as markdown. Pure: the same records always give the same document. */
 export const renderReport = (report: RunReport): string => {
   const { program, run, strands } = report;
@@ -1280,6 +1317,7 @@ export const renderReport = (report: RunReport): string => {
     "",
     `${succeeded} of ${strands.length} strands succeeded; ${provisional} deferred; ${strands.filter(isParked).length} parked. Wall clock ${duration(run)}.`,
     "",
+    ...renderNotVerified(report.stepAdjustments),
     ...renderPublication(report.publication),
     ...renderCorrections(report.corrections),
     ...renderRulings(report.rulings),
