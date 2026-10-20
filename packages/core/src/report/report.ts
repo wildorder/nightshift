@@ -1298,15 +1298,17 @@ const renderNotVerified = ({ skipped, raised }: StepAdjustments): string[] => {
   return [
     "## Not verified — read this first",
     "",
-    ...skipped.map((skip) =>
-      skip.notHonoured === undefined
-        ? `- **${skip.stepId} was not run**: skipped by decision ${skip.decisionId} on ${
-            skip.commits.length === 0
-              ? "no landing yet"
-              : skip.commits.map((commit) => commit.slice(0, 12)).join(", ")
-          }, because ${skip.reason}`
-        : `- **${skip.stepId} skip not applied**: decision ${skip.decisionId}, because ${skip.reason}`,
-    ),
+    ...skipped.map((skip) => {
+      if (skip.commits.length > 0) {
+        return `- **${skip.stepId} was not run**: skipped by decision ${skip.decisionId} on ${skip.commits
+          .map((commit) => commit.slice(0, 12))
+          .join(", ")}, because ${skip.reason}${skip.inForce ? "" : " (no longer in force)"}`;
+      }
+      if (skip.notApplied !== undefined) {
+        return `- **${skip.stepId} skip not applied**: decision ${skip.decisionId}; ${skip.notApplied}`;
+      }
+      return `- **${skip.stepId} is skipped**: by decision ${skip.decisionId}, no verification has run since, because ${skip.reason}`;
+    }),
     ...raised.map(
       (raise) =>
         `- **${raise.stepId}'s ${raise.field} raised** from ${raise.from} to ${raise.to} seconds by decision ${raise.decisionId}, because ${raise.reason}`,

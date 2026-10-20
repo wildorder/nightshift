@@ -395,7 +395,7 @@ describe("run.finish's answer leads with what was not verified (P19 S-02)", () =
     expect(text.startsWith("Step trial was skipped by decision")).toBe(true);
     expect(text).toContain(skipped.decisionId as string);
     expect(text).toContain("still too slow");
-    expect(text).toContain("the engine honoured it");
+    expect(text).toContain("applied)");
     expect(text).toContain("from 600 to 1800");
     expect(result.notVerified).toEqual({
       skipped: [
@@ -404,7 +404,8 @@ describe("run.finish's answer leads with what was not verified (P19 S-02)", () =
           decisionId: skipped.decisionId,
           reason: "still too slow",
           commits: [landing.commitSha],
-          honoured: true,
+          applied: true,
+          inForce: true,
         },
       ],
       raised: [

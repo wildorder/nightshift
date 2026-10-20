@@ -495,7 +495,9 @@ const notVerifiedOf = async (
     decisionId: string;
     reason: string;
     commits: readonly string[];
-    honoured: boolean;
+    applied: boolean;
+    inForce: boolean;
+    notApplied?: string;
   }[];
   readonly raised: StepAdjustments["raised"];
 }> => {
@@ -508,10 +510,7 @@ const notVerifiedOf = async (
   ]);
   const adjustments = stepAdjustmentsOf(gates.verification, decisions, verifications);
   return {
-    skipped: adjustments.skipped.map(({ notHonoured, ...skip }) => ({
-      ...skip,
-      honoured: notHonoured === undefined,
-    })),
+    skipped: adjustments.skipped,
     raised: adjustments.raised,
   };
 };
@@ -522,7 +521,13 @@ const describeNotVerified = (notVerified: Awaited<ReturnType<typeof notVerifiedO
       (skip) =>
         `Step ${skip.stepId} was skipped by decision ${skip.decisionId}: ${skip.reason} ` +
         `(commits ${skip.commits.length === 0 ? "none yet" : skip.commits.map((c) => c.slice(0, 8)).join(", ")}; ` +
-        `${skip.honoured ? "the engine honoured it" : "the engine did not honour it"}).`,
+        `${
+          skip.commits.length > 0
+            ? `applied${skip.inForce ? "" : ", no longer in force"}`
+            : skip.notApplied !== undefined
+              ? `not applied: ${skip.notApplied}`
+              : "no verification has run since"
+        }).`,
     ),
     ...notVerified.raised.map(
       (raise) =>

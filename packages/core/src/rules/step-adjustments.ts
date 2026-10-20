@@ -60,6 +60,8 @@ export interface StepCommandLike {
 export interface StepVerificationLike {
   readonly verificationId: string;
   readonly commitSha: string;
+  /** When it began; the end stands in where a reader has only that. */
+  readonly startedAt?: string | undefined;
   readonly endedAt: string;
   readonly commands: readonly StepCommandLike[];
 }
@@ -377,8 +379,14 @@ export interface StepAdjustments {
     readonly stepId: string;
     readonly decisionId: string;
     readonly reason: string;
+    /** The commits of the verifications that recorded this decision's skip, in verification order. */
     readonly commits: readonly string[];
-    readonly notHonoured?: string;
+    /** Some verification recorded this decision's skip. */
+    readonly applied: boolean;
+    /** This decision is the step's latest adjustment and the skip holds now. */
+    readonly inForce: boolean;
+    /** No record of this skip, though a later verification ran the step: why the skip did not apply. */
+    readonly notApplied?: string;
   }[];
   readonly raised: readonly {
     readonly stepId: string;
@@ -390,6 +398,35 @@ export interface StepAdjustments {
   }[];
 }
 
+/**
+ * Why a decision's skip never applied: the step ran in a verification that
+ * started after the decision, so the engine had its chance. Undefined when no
+ * verification has run the step since.
+ */
+const notAppliedReason = (
+  stepId: string,
+  decisionAt: string,
+  verifications: readonly StepVerificationLike[],
+): string | undefined => {
+  const ordered = verifications
+    .map((verification, position) => ({ verification, position }))
+    .sort(
+      (a, b) =>
+        a.verification.endedAt.localeCompare(b.verification.endedAt) || a.position - b.position,
+    )
+    .map(({ verification }) => verification);
+  const index = ordered.findIndex(
+    (verification) =>
+      (verification.startedAt ?? verification.endedAt) >= decisionAt &&
+      verification.commands.some((command) => command.stepId === stepId && ran(command)),
+  );
+  if (index < 0) return undefined;
+  const verdict = skipHonoured(stepId, ordered.slice(0, index));
+  return verdict.honoured
+    ? `${stepId} ran again after the decision and the skip was not recorded`
+    : verdict.reason;
+};
+
 /** Every adjustment of the run, in decision order, for the report and `run.finish`. */
 export const stepAdjustmentsOf = (
   contractSteps: readonly StepTimeShape[],
@@ -397,32 +434,45 @@ export const stepAdjustmentsOf = (
   verifications: readonly StepVerificationLike[],
 ): StepAdjustments => {
   const raised: Array<StepAdjustments["raised"][number]> = [];
-  const skipped: Array<StepAdjustments["skipped"][number]> = [];
-  replay(
+  const skips: StepAdjustment[] = [];
+  const states = replay(
     contractSteps,
     decisions,
     (stepId, decisionId, field, from, to, reason) =>
       raised.push({ stepId, decisionId, field, from, to, reason }),
     (adjustment) => {
-      if (adjustment.kind !== "skip") return;
-      const commits: string[] = [];
-      for (const verification of verifications) {
-        const recorded = verification.commands.some(
-          (command) => command.stepId === adjustment.stepId && command.skipped !== undefined,
-        );
-        if (recorded && !commits.includes(verification.commitSha)) {
-          commits.push(verification.commitSha);
-        }
-      }
-      const verdict = skipHonoured(adjustment.stepId, verifications);
-      skipped.push({
-        stepId: adjustment.stepId,
-        decisionId: adjustment.decision.decisionId,
-        reason: adjustment.decision.rationale,
-        commits,
-        ...(verdict.honoured ? {} : { notHonoured: verdict.reason }),
-      });
+      if (adjustment.kind === "skip") skips.push(adjustment);
     },
   );
+  const skipped = skips.map((adjustment): StepAdjustments["skipped"][number] => {
+    const { stepId, decision } = adjustment;
+    const commits: string[] = [];
+    for (const verification of verifications) {
+      const recorded = verification.commands.some(
+        (command) =>
+          command.stepId === stepId && command.skipped?.decisionId === decision.decisionId,
+      );
+      if (recorded && !commits.includes(verification.commitSha))
+        commits.push(verification.commitSha);
+    }
+    const applied = commits.length > 0;
+    const latest = states.get(stepId)?.latest;
+    const inForce =
+      latest?.kind === "skip" &&
+      latest.decision.decisionId === decision.decisionId &&
+      skipHonoured(stepId, verifications).honoured;
+    const notApplied = applied
+      ? undefined
+      : notAppliedReason(stepId, decision.createdAt, verifications);
+    return {
+      stepId,
+      decisionId: decision.decisionId,
+      reason: decision.rationale,
+      commits,
+      applied,
+      inForce,
+      ...(notApplied === undefined ? {} : { notApplied }),
+    };
+  });
   return { skipped, raised };
 };

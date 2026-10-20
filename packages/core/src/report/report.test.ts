@@ -605,6 +605,8 @@ describe("the report's Not verified section (P19)", () => {
               decisionId: "dec_skip",
               reason: "it hangs on the runner",
               commits: ["abcdef1234567890", "1234567890abcdef"],
+              applied: true,
+              inForce: true,
             },
           ],
           raised: [],
@@ -619,60 +621,43 @@ describe("the report's Not verified section (P19)", () => {
     expect(text.indexOf(heading)).toBeLessThan(text.indexOf("## Strands"));
   });
 
-  it("says 'no landing yet' when no commit recorded the skip", () => {
-    const text = renderReport(
-      report({
-        stepAdjustments: {
-          skipped: [{ stepId: "e2e", decisionId: "dec_skip", reason: "slow", commits: [] }],
-          raised: [],
-        },
-      }),
-    );
-    expect(text).toContain("on no landing yet, because slow");
+  const skipOf = (extra: object) => ({
+    stepId: "e2e",
+    decisionId: "dec_skip",
+    reason: "it hangs",
+    commits: [],
+    applied: false,
+    inForce: true,
+    ...extra,
   });
+  const rendered = (skip: object) =>
+    renderReport(report({ stepAdjustments: { skipped: [skipOf(skip) as never], raised: [] } }));
 
-  it("lists a raise with its old and new values", () => {
-    const text = renderReport(
-      report({
-        stepAdjustments: {
-          skipped: [],
-          raised: [
-            {
-              stepId: "build",
-              decisionId: "dec_raise",
-              field: "timeoutSeconds",
-              from: 600,
-              to: 1800,
-              reason: "the cold cache needs it",
-            },
-          ],
-        },
-      }),
-    );
+  it("lists a skip with its commits, even when it is no longer in force", () => {
+    const text = rendered({ commits: ["bbbbbbbbbbbbbbbb"], applied: true, inForce: false });
     expect(text).toContain(
-      "- **build's timeoutSeconds raised** from 600 to 1800 seconds by decision dec_raise, because the cold cache needs it",
+      "- **e2e was not run**: skipped by decision dec_skip on bbbbbbbbbbbb, because it hangs (no longer in force)",
     );
+    expect(text).not.toContain("skip not applied");
   });
 
-  it("lists a skip the engine did not honour", () => {
-    const text = renderReport(
-      report({
-        stepAdjustments: {
-          skipped: [
-            {
-              stepId: "e2e",
-              decisionId: "dec_skip",
-              reason: "it hangs",
-              commits: [],
-              notHonoured: "the step ran and failed",
-            },
-          ],
-          raised: [],
-        },
-      }),
+  it("lists a skip in force without the suffix", () => {
+    const text = rendered({ commits: ["bbbbbbbbbbbbbbbb"], applied: true });
+    expect(text).toContain("on bbbbbbbbbbbb, because it hangs\n");
+  });
+
+  it("lists a skip that was not applied", () => {
+    const text = rendered({ notApplied: "e2e ran and failed with exit 1; fix it" });
+    expect(text).toContain(
+      "- **e2e skip not applied**: decision dec_skip; e2e ran and failed with exit 1; fix it",
     );
-    expect(text).toContain("- **e2e skip not applied**: decision dec_skip, because it hangs");
     expect(text).not.toContain("e2e was not run");
+  });
+
+  it("lists a skip no verification has met yet", () => {
+    expect(rendered({})).toContain(
+      "- **e2e is skipped**: by decision dec_skip, no verification has run since, because it hangs",
+    );
   });
 
   it("is absent when there is nothing", () => {

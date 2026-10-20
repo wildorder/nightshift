@@ -9,6 +9,7 @@ import {
   formatStepTimeoutContext,
   lastRunOf,
   raiseRefusal,
+  STEP_TIMEOUT_CONTEXT,
   type StepCommandLike,
   type StepVerificationLike,
   skipEligibility,
@@ -320,18 +321,98 @@ describe("stepAdjustmentsOf", () => {
       },
     ]);
     expect(result.skipped).toEqual([
-      { stepId: "trial", decisionId: s.decisionId, reason: "too slow", commits: ["c2", "c3"] },
+      {
+        stepId: "trial",
+        decisionId: s.decisionId,
+        reason: "too slow",
+        commits: ["c2", "c3"],
+        applied: true,
+        inForce: true,
+      },
     ]);
   });
 
-  it("says when a skip was not honoured", () => {
-    const s = skip("trial", "t");
+  const skippedBy = (decisionId: string): StepCommandLike => ({
+    stepId: "trial",
+    skipped: { decisionId },
+  });
+
+  it("keeps a skip's commits after a later raise un-skips the step", () => {
+    const t = decision(STEP_TIMEOUT_CONTEXT + " trial", "2026-01-01T00:00:01Z", "x");
+    const timeout = decision(
+      formatStepTimeoutContext("trial", { timeoutSeconds: 2000 }),
+      "2026-01-01T00:00:05Z",
+      "wait",
+    );
+    const s = skip("trial", "2026-01-01T00:00:02Z");
+    const result = stepAdjustmentsOf(
+      steps,
+      [t, s, timeout],
+      [
+        verification("2026-01-01T00:00:01Z", [ran("trial", 124)], "a"),
+        verification("2026-01-01T00:00:03Z", [skippedBy(s.decisionId)], "b"),
+        verification("2026-01-01T00:00:07Z", [ran("trial", 0)], "c"),
+      ],
+    );
+    expect(result.skipped).toEqual([
+      {
+        stepId: "trial",
+        decisionId: s.decisionId,
+        reason: "too slow",
+        commits: ["b"],
+        applied: true,
+        inForce: false,
+      },
+    ]);
+  });
+
+  it("attributes each commit to the decision whose id the record carries", () => {
+    const s1 = skip("trial", "2026-01-01T00:00:02Z");
+    const s2 = skip("trial", "2026-01-01T00:00:06Z");
+    const result = stepAdjustmentsOf(
+      steps,
+      [s1, s2],
+      [
+        verification("2026-01-01T00:00:01Z", [ran("trial", 124)], "a"),
+        verification("2026-01-01T00:00:03Z", [skippedBy(s1.decisionId)], "b"),
+        verification("2026-01-01T00:00:08Z", [skippedBy(s2.decisionId)], "c"),
+      ],
+    );
+    expect(result.skipped.map((k) => [k.decisionId, k.commits, k.inForce])).toEqual([
+      [s1.decisionId, ["b"], false],
+      [s2.decisionId, ["c"], true],
+    ]);
+  });
+
+  it("says why a skip never recorded did not apply when the step ran after it", () => {
+    const s = skip("trial", "2026-01-01T00:00:02Z");
     const result = stepAdjustmentsOf(
       steps,
       [s],
-      [verification("2026-01-01T00:00:01Z", [ran("trial", 1)])],
+      [
+        verification("2026-01-01T00:00:01Z", [ran("trial", 1)]),
+        verification("2026-01-01T00:00:03Z", [ran("trial", 1)]),
+      ],
     );
-    expect(result.skipped[0]?.notHonoured).toContain("ran and failed with exit 1");
+    expect(result.skipped[0]).toMatchObject({ applied: false, commits: [], inForce: false });
+    expect(result.skipped[0]?.notApplied).toContain("ran and failed with exit 1");
+  });
+
+  it("gives a never-recorded skip neither commits nor a reason when nothing ran since", () => {
+    const s = skip("trial", "2026-01-01T00:00:02Z");
+    const result = stepAdjustmentsOf(
+      steps,
+      [s],
+      [verification("2026-01-01T00:00:01Z", [ran("trial", 124)])],
+    );
+    expect(result.skipped[0]).toEqual({
+      stepId: "trial",
+      decisionId: s.decisionId,
+      reason: "too slow",
+      commits: [],
+      applied: false,
+      inForce: true,
+    });
   });
 });
 
