@@ -19,13 +19,15 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { CommitSha, Verification } from "@nightshift/contracts";
+import { stepAdjustmentOf } from "@nightshift/core";
 import { setupAsStep } from "@nightshift/verification";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import { verificationEvidence } from "./examine.js";
 import { endSteps, gateDefinitions } from "./gate-repair.js";
 import { addDetachedWorktree, pruneWorktrees, revParse, tryGit } from "./git/index.js";
 import { discardScratch } from "./scratch.js";
-import { runVerification } from "./verify.js";
+import { resolveSteps, runDecisions } from "./step-adjustments.js";
+import { runVerification, skippedStepsPayload } from "./verify.js";
 
 /** One end gate that ran and failed, with the tail of what it printed. */
 export interface FailedEndGate {
@@ -84,7 +86,7 @@ const resultOf = async (
   }
   const failed = new Set(
     verification.commands
-      .filter((command) => command.deferred === undefined && command.exitCode !== 0)
+      .filter((command) => command.exitCode !== undefined && command.exitCode !== 0)
       .map((command) => command.stepId),
   );
   const evidence = await verificationEvidence(environment, verification);
@@ -118,12 +120,14 @@ const runEndGates = async (
     path: checkout,
     base: head,
   });
+  const resolved = await resolveSteps(environment.stores, session.scope, steps);
   outbox.emit({
     type: "verification.requested",
     source: "control-plane",
     payload: {
       commitSha: head,
       phase: "run",
+      ...(resolved.skipped.size === 0 ? {} : { skippedSteps: [...resolved.skipped.keys()] }),
       steps: [...gates.setup.map((step) => setupAsStep(step).id), ...steps.map((step) => step.id)],
     },
     executionNodeId: nodeId,
@@ -143,7 +147,7 @@ const runEndGates = async (
       label: "end gates",
     });
     const failing = verification.commands.filter(
-      (command) => command.deferred === undefined && command.exitCode !== 0,
+      (command) => command.exitCode !== undefined && command.exitCode !== 0,
     );
     outbox.emit({
       type: "verification.completed",
@@ -155,6 +159,7 @@ const runEndGates = async (
         phase: "run",
         ...(failing.length === 0 ? {} : { failingSteps: failing.map((command) => command.stepId) }),
         ...(waitingOn.length === 0 ? {} : { waitingOn }),
+        ...skippedStepsPayload(verification),
         ...flakyPayload,
       },
       executionNodeId: nodeId,
@@ -188,6 +193,15 @@ export const verifyRunHead = async (
   )
     .filter((verification) => verification.phase === "run" && verification.commitSha === head)
     .at(-1);
-  const verification = recorded ?? (await runEndGates(environment, session, head));
+  // A skip or a raise decided after the record began changes what the gates
+  // would do, so the record no longer stands for the head (P19 S-02).
+  const adjusted =
+    recorded !== undefined &&
+    (await runDecisions(environment.stores, session.scope)).some(
+      (decision) =>
+        stepAdjustmentOf(decision) !== undefined && decision.createdAt > recorded.startedAt,
+    );
+  const verification =
+    recorded !== undefined && !adjusted ? recorded : await runEndGates(environment, session, head);
   return resultOf(environment, verification);
 };

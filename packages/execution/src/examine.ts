@@ -112,7 +112,8 @@ import { programRulings, rulingsCarriedBy } from "./rulings.js";
 import { recordArtifact, runAsOf, stepsAs } from "./runner.js";
 import { discardScratch, ensureScratch, freshScratch, projectStepEnv } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
-import { announceSteps } from "./verify.js";
+import { resolveSteps } from "./step-adjustments.js";
+import { announceSteps, skippedStepsPayload } from "./verify.js";
 
 /** The environment variable an examiner's server reads its examination's frame from. */
 export const EXAMINATION_CONTEXT_ENV = "NIGHTSHIFT_EXAMINATION";
@@ -906,7 +907,8 @@ const candidateVerification = async (
   const gates = await gateDefinitions(environment, input.session);
   // The job's gates, as the queue's verification has them; the run's end gates
   // are the run's to pass, once its work has landed (A-57).
-  const steps: readonly VerificationStep[] = landingSteps(gates);
+  const resolved = await resolveSteps(environment.stores, input.session.scope, landingSteps(gates));
+  const steps: readonly VerificationStep[] = resolved.runnable;
   if (steps.some((step) => (step.requires ?? []).length > 0)) {
     // Met where this engine runs: on a machine, by that machine's own check,
     // made now when it has none (prerequisites-here.ts).
@@ -988,12 +990,33 @@ const candidateVerification = async (
     ...(environment.reclaim === undefined ? {} : { reclaim: environment.reclaim }),
     projectEnv,
   });
-  const commands = await withFlakes(
+  const checkCommands = await withFlakes(
     environment,
     { scope: input.session.scope, nodeId: input.node.executionNodeId },
     toVerificationCommands(results, logs as never),
     reruns,
   );
+  // The contract's order, a skipped step recorded as skipped (P19 S-02).
+  const recorded = new Map(checkCommands.map((command) => [command.stepId, command]));
+  const setupIds = new Set(ran.setup.map((result) => result.stepId));
+  const commands = [
+    ...checkCommands.filter((command) => setupIds.has(command.stepId)),
+    ...resolved.steps.flatMap((step) => {
+      const skippedBy = resolved.skipped.get(step.id);
+      if (skippedBy !== undefined) {
+        return [
+          {
+            stepId: step.id,
+            command: step.command,
+            durationMs: 0,
+            skipped: { decisionId: skippedBy },
+          },
+        ];
+      }
+      const found = recorded.get(step.id);
+      return found === undefined ? [] : [found];
+    }),
+  ];
   const workerId = worker?.agentId;
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
@@ -1011,6 +1034,23 @@ const candidateVerification = async (
   }) as Verification;
   await environment.stores.verifications.put(verification);
   announceFlakes(environment, verification, workerId);
+  const failingSteps = verification.commands
+    .filter((command) => command.exitCode !== undefined && command.exitCode !== 0)
+    .map((command) => command.stepId);
+  environment.outbox.emit({
+    type: "verification.completed",
+    source: "control-plane",
+    payload: {
+      verificationId: verification.verificationId,
+      outcome: verification.outcome,
+      commitSha: input.commitSha,
+      phase: "candidate",
+      ...(failingSteps.length === 0 ? {} : { failingSteps }),
+      ...skippedStepsPayload(verification),
+    },
+    executionNodeId: input.node.executionNodeId,
+    ...(workerId === undefined ? {} : { agentId: workerId }),
+  });
   return verification;
 };
 
