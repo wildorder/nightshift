@@ -46,6 +46,7 @@ import {
   type EventOutbox,
   type ExecutionEnvironment,
   type RunSession,
+  recoverMeasurementJournals,
   repairProvisionalLine,
   revParse,
   startRun,
@@ -470,6 +471,46 @@ const readPlanSections = async (
   return splitPlanSections(text);
 };
 
+/**
+ * Finishes what a crash interrupted in the run's measurement journals (P20),
+ * and says so on the root node. A run never stops for a measurement failure:
+ * a failed recovery is reported as progress and the attach goes on.
+ */
+const recoverMeasurements = async (
+  environment: ExecutionEnvironment,
+  outbox: EventOutbox,
+  scope: RunScope,
+  executionNodeId: ExecutionNode["executionNodeId"],
+  agentId: AgentId,
+): Promise<void> => {
+  const progress = (message: string): void => {
+    outbox.emit({
+      type: "node.progress",
+      source: "control-plane",
+      payload: { message },
+      executionNodeId,
+      agentId,
+    });
+  };
+  try {
+    const result = await recoverMeasurementJournals(environment, scope);
+    const observations = result.recovered.reduce((sum, entry) => sum + entry.observations, 0);
+    const parts = [
+      result.recovered.length > 0
+        ? `recovered ${observations} observations from ${result.recovered.length} journals`
+        : undefined,
+      result.completed.length > 0 ? `completed ${result.completed.length} publications` : undefined,
+      result.lost.length > 0 ? `${result.lost.length} journals lost` : undefined,
+      result.live.length > 0 ? `${result.live.length} live` : undefined,
+    ].filter((part): part is string => part !== undefined);
+    if (parts.length > 0) progress(`measurements: ${parts.join(", ")}`);
+  } catch (error) {
+    progress(
+      `measurements: recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+};
+
 export const attachRun = async (
   state: OrchestratorSession,
   input: AttachInput,
@@ -531,6 +572,7 @@ export const attachRun = async (
   // Before the engine uses the provisional line: drop what an earlier engine's
   // stop left at its tip without a deferred node (provisional-line.ts).
   await repairProvisionalLine(environment, session);
+  await recoverMeasurements(environment, outbox, scope, rootNode.executionNodeId, agentId);
   const attached: AttachedRun = {
     session,
     environment,
