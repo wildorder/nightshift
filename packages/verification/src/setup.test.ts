@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   formatRuntimes,
   INSTALL_MARKER,
@@ -88,6 +88,16 @@ describe("setup", () => {
 });
 
 describe("the install, once per lineage of checkouts (D-P10-24)", () => {
+  // The lineage tests are about lockfiles alone; the runtimes block below covers NIGHTSHIFT_RUNTIMES.
+  let savedRuntimes: string | undefined;
+  beforeEach(() => {
+    savedRuntimes = process.env[RUNTIMES_ENV];
+    delete process.env[RUNTIMES_ENV];
+  });
+  afterEach(() => {
+    if (savedRuntimes === undefined) delete process.env[RUNTIMES_ENV];
+    else process.env[RUNTIMES_ENV] = savedRuntimes;
+  });
   const LOCK = '{"lockfileVersion":3,"packages":{}}';
   /** `npm ci` here would fail: there is no package.json. Its only way to exit 0 is to be skipped. */
   const install = { id: "install", command: "npm ci --prefer-offline" };
