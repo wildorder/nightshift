@@ -43,7 +43,6 @@ import type {
   RouteChoice,
   RouteOutcome,
   RouteTarget,
-  RouteUsage,
   RoutingDecision,
   Verification,
 } from "@nightshift/contracts";
@@ -52,6 +51,7 @@ import {
   markVerificationFailed,
   nowIso,
   routeOutcomeForNodeStatus,
+  routeUsageFromCounters,
   transition,
   transitionAgent,
 } from "@nightshift/core";
@@ -98,6 +98,7 @@ import {
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
+import { createMeasurementRecorder, type MeasurementRecorder } from "./measurement/recorder.js";
 import { releaseWorktree } from "./release-worktree.js";
 import { unavailableUntil } from "./route-availability.js";
 import { programRulings } from "./rulings.js";
@@ -158,6 +159,10 @@ interface AttemptIdentity {
   readonly executionTokenFile?: string;
   readonly renewal?: TokenRenewal;
   readonly routingDecision: RoutingDecision;
+  /** P20: one recorder per agent, spanning its launches and resumes. */
+  readonly recorder: MeasurementRecorder;
+  /** When the attempt first launched; a resume does not reset it. */
+  startedAtMs?: number;
 }
 
 /** An earlier attempt's unfinished work, kept: the commit, and what the next worker is told of it. */
@@ -192,6 +197,7 @@ interface Attempt {
   readonly sink: RecordingHookSink;
   /** As recorded before the work began: `usage` empty, `outcome` pending (A-13). */
   readonly routingDecision: RoutingDecision;
+  readonly recorder: MeasurementRecorder;
   readonly startedAtMs: number;
 }
 
@@ -763,6 +769,7 @@ export const startJob = async (
       ...(route.policyVersion === undefined ? {} : { policyVersion: route.policyVersion }),
       createdAt: nowIso(clock),
     };
+    const price = session.run.policy?.routingPolicy.prices[route.target.model];
     await stores.routingDecisions.put(routingDecision);
     outbox.emit({
       type: "routing.decided",
@@ -777,8 +784,17 @@ export const startJob = async (
       },
       executionNodeId: nodeId,
     });
+    const recorder = createMeasurementRecorder(environment, {
+      scope: session.scope,
+      executionNodeId: nodeId,
+      agent,
+      route: route.target,
+      routingDecisionId: routingDecision.routingDecisionId,
+      ...(price === undefined ? {} : { price }),
+    });
     return {
       agent,
+      recorder,
       executionToken,
       ...(executionTokenFile === undefined ? {} : { executionTokenFile }),
       ...(renewal === undefined ? {} : { renewal }),
@@ -859,7 +875,16 @@ export const startJob = async (
     }
     let handle: HarnessHandle;
     try {
+      // Each launch is a measurement segment; a resume continues the same session.
+      const launch = await identity.recorder.startSegment({
+        // Only the same agent's own resume continues its session; a new attempt that
+        // carries an earlier session on is a fresh agent, segment 0.
+        resumedSession: !fresh,
+        ...(resumed === undefined ? {} : { sessionId: resumed.sessionId }),
+      });
       handle = await environment.harness.start({
+        launch,
+        measurements: identity.recorder.sink,
         agent: startedAgent,
         node: started,
         job: input.job,
@@ -899,7 +924,15 @@ export const startJob = async (
       identity.renewal?.stop();
       void environment.workerTokens?.remove(session.scope, agentId);
     });
-    return { agentId, handle, sink, routingDecision, startedAtMs: clock.now() };
+    identity.startedAtMs ??= clock.now();
+    return {
+      agentId,
+      handle,
+      sink,
+      routingDecision,
+      recorder: identity.recorder,
+      startedAtMs: identity.startedAtMs,
+    };
   }
 
   /**
@@ -959,11 +992,8 @@ const finishSubProgram = async (
   input: FinishInput,
 ): Promise<void> => {
   const { stores, clock, outbox } = environment;
-  let usage: RouteUsage | undefined;
   try {
-    const reported = await untilReported(environment, input, await input.current().handle.exit);
-    const settledExit = reported.exit;
-    usage = reported.usage;
+    const settledExit = await untilReported(environment, input, await input.current().handle.exit);
     const { exit, reason: described } = observed(input, settledExit);
     // An orchestrator stopped by a limit is not relaunched in place: what it
     // delegated is on the record, and a retry on the next route takes over.
@@ -1050,7 +1080,8 @@ const finishSubProgram = async (
       });
       await discardScratch(environment.paths, input.worktree, environment.reclaim);
     }
-    await recordRouteResult(environment, input, usage);
+    await closeRecorder(input.current());
+    await recordRouteResult(environment, input);
     // What the strand's decisions produced, now that its work has all landed
     // or stopped (P9, D-P9-01).
     await stampSettledDecisions(environment, input.session, input.nodeId);
@@ -1310,7 +1341,9 @@ const throughFallbacks = async (
     const refused = input.current();
     await recordAgentEnd(environment, input, exit, `route_unavailable: ${exit.unavailable}`);
     await uploadTranscript(environment, input);
-    await recordRouteResult(environment, input, exit.usage, "unavailable");
+    recordExit(refused, exit);
+    await closeRecorder(refused);
+    await recordRouteResult(environment, input, "unavailable");
     const until = unavailableUntil(exit, environment.clock);
     const next = await input
       .relaunch(refused.routingDecision.chosen, {
@@ -1335,28 +1368,6 @@ const throughFallbacks = async (
  */
 export const MAX_UNREPORTED_RESUMES = 2;
 
-/** Two usages as one: counts summed, the cost's source kept when either says. */
-const addUsage = (a: RouteUsage | undefined, b: RouteUsage | undefined): RouteUsage | undefined => {
-  if (a === undefined) return b;
-  if (b === undefined) return a;
-  const sum = (x: number | undefined, y: number | undefined): number | undefined =>
-    x === undefined && y === undefined ? undefined : (x ?? 0) + (y ?? 0);
-  const merged: Record<string, unknown> = {
-    inputTokens: sum(a.inputTokens, b.inputTokens),
-    outputTokens: sum(a.outputTokens, b.outputTokens),
-    cacheReadTokens: sum(a.cacheReadTokens, b.cacheReadTokens),
-    cacheWriteTokens: sum(a.cacheWriteTokens, b.cacheWriteTokens),
-    estimatedCostUsd: sum(a.estimatedCostUsd, b.estimatedCostUsd),
-    actualCostUsd: sum(a.actualCostUsd, b.actualCostUsd),
-    latencyMs: sum(a.latencyMs, b.latencyMs),
-    wallClockMs: sum(a.wallClockMs, b.wallClockMs),
-    costSource: b.costSource ?? a.costSource,
-  };
-  return Object.fromEntries(
-    Object.entries(merged).filter(([, value]) => value !== undefined),
-  ) as RouteUsage;
-};
-
 /**
  * A session that ended its turn cleanly without reporting, resumed with a
  * reminder until it reports or the reminders run out.
@@ -1372,15 +1383,19 @@ const untilReported = async (
   environment: ExecutionEnvironment,
   input: FinishInput,
   first: HarnessExit,
-): Promise<{ readonly exit: HarnessExit; readonly usage: RouteUsage | undefined }> => {
+): Promise<HarnessExit> => {
   let exit = first;
-  let usage: RouteUsage | undefined;
+  // The attempt this exit belongs to: a resume is the same agent, so the same recorder.
+  const attempt = input.current();
+  let recorded = false;
   for (let reminder = 1; reminder <= MAX_UNREPORTED_RESUMES; reminder += 1) {
     if (exit.kind !== "completed" || exit.sessionId === undefined) break;
     if (input.stopMode() !== undefined) break;
     const node = await environment.stores.executionNodes.get(input.session.scope, input.nodeId);
     if (node?.status !== "running") break;
-    usage = addUsage(usage, exit.usage);
+    // This segment ends here, recorded once, before any attempt to resume it.
+    recordExit(attempt, exit);
+    recorded = true;
     // This segment's transcript, kept before the resumed session writes the next.
     await uploadTranscript(environment, input);
     environment.outbox.emit({
@@ -1397,12 +1412,30 @@ const untilReported = async (
       .catch(() => undefined);
     if (next === undefined) break;
     exit = await next.handle.exit;
+    recorded = false;
   }
-  return { exit, usage: addUsage(usage, usageOf(exit)) };
+  // The last segment, as the lifecycle will see it (a shutdown's cancel is `interrupted`).
+  if (!recorded) recordExit(attempt, observed(input, exit).exit);
+  return exit;
 };
 
-const usageOf = (exit: HarnessExit): RouteUsage | undefined =>
-  exit.kind === "completed" || exit.kind === "failed" ? exit.usage : undefined;
+/** An exit onto its attempt's recorder. A measurement failure never changes an outcome. */
+const recordExit = (attempt: Attempt, exit: HarnessExit): void => {
+  try {
+    attempt.recorder.recordExit(exit);
+  } catch {
+    // The recorder does not throw; this is for the day it does.
+  }
+};
+
+/** Drains, publishes and marks the attempt's journals closed. Never rejects. */
+const closeRecorder = async (attempt: Attempt): Promise<void> => {
+  try {
+    await attempt.recorder.close();
+  } catch {
+    // Measurement is observation: the node ends as it ended.
+  }
+};
 
 /**
  * Everything after the worker is running: wait for it, record how it ended, and
@@ -1415,17 +1448,14 @@ const usageOf = (exit: HarnessExit): RouteUsage | undefined =>
  */
 const finishJob = async (environment: ExecutionEnvironment, input: FinishInput): Promise<void> => {
   const { stores, clock, outbox } = environment;
-  let usage: RouteUsage | undefined;
   let recorded = false;
   try {
     const fallen = await throughFallbacks(environment, input);
     recorded = fallen.recorded;
     // A last attempt already on the record had no route to start on: nothing to resume.
-    const reported = recorded
-      ? { exit: fallen.exit, usage: usageOf(fallen.exit) }
+    const settledExit = recorded
+      ? fallen.exit
       : await untilReported(environment, input, fallen.exit);
-    const settledExit = reported.exit;
-    usage = reported.usage;
     const { exit, reason: described } = observed(input, settledExit);
     // A route that could not start, and nowhere left to go (D-P8-06): the reason
     // says so, and a retry of it will not climb (`failureClimbs`).
@@ -1510,7 +1540,10 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
     // and a promise rejected into the void.
     await failHard(environment, input, error);
   } finally {
-    if (!recorded) await recordRouteResult(environment, input, usage);
+    if (!recorded) {
+      await closeRecorder(input.current());
+      await recordRouteResult(environment, input);
+    }
   }
 };
 
@@ -1526,7 +1559,6 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
 const recordRouteResult = async (
   environment: ExecutionEnvironment,
   input: FinishInput,
-  reported: RouteUsage | undefined,
   /** P8: `unavailable` for an attempt whose route could not start (D-P8-06). */
   ending?: RouteOutcome,
 ): Promise<void> => {
@@ -1537,14 +1569,18 @@ const recordRouteResult = async (
     if (outcome === "pending") return;
     // Dollars as the harness reported them, else estimated from the run's price
     // table, and labelled either way (D-P8-08).
+    // The aggregate comes from the recorder's summary, so the two agree.
     const prices = input.session.run.policy?.routingPolicy.prices ?? {};
+    const summary = attempt.recorder.summary();
     await environment.stores.routingDecisions.put({
       ...attempt.routingDecision,
       usage: labelCost(
-        {
+        routeUsageFromCounters(summary.totals, {
+          ...(summary.valuation.reportedUsd === undefined
+            ? {}
+            : { reportedUsd: summary.valuation.reportedUsd }),
           wallClockMs: Math.max(0, Math.round(environment.clock.now() - attempt.startedAtMs)),
-          ...reported,
-        },
+        }),
         prices[attempt.routingDecision.chosen.model],
       ),
       outcome,
