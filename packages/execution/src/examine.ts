@@ -92,12 +92,7 @@ import {
   toVerificationCommands,
   verificationFacts,
 } from "@nightshift/verification";
-import {
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
-  type ExaminationServices,
-  type ExecutionEnvironment,
-  type RunSession,
-} from "./environment.js";
+import type { ExaminationServices, ExecutionEnvironment, RunSession } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import { gateDefinitions, landingSteps, withGateDefinitions } from "./gate-repair.js";
 import {
@@ -935,7 +930,6 @@ const candidateVerification = async (
     await runAs.grant(checkout);
     await runAs.grant(scratch);
   }
-  const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   // Told to every step (D-P17-06): the record's id, minted first, the commit,
   // and the job's base it was cut from.
   const verificationId = environment.ids.next("ver");
@@ -949,7 +943,6 @@ const candidateVerification = async (
     steps,
     cwd: checkout,
     reference: input.session.repoPath,
-    timeoutMs,
     env: projectStepEnv(projectEnv, scratch),
     onStep: announceSteps(environment, {
       nodeId: input.node.executionNodeId,
@@ -990,7 +983,6 @@ const candidateVerification = async (
     first: ran.checks,
     cwd: checkout,
     paths: environment.paths,
-    timeoutMs,
     keepScratch: true,
     ...(as.as === undefined ? {} : { as: as.as }),
     ...(environment.reclaim === undefined ? {} : { reclaim: environment.reclaim }),

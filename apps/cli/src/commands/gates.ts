@@ -35,7 +35,6 @@ import {
 import {
   type AuditedGate,
   auditGates,
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
   deferralOf,
   type GateAudit,
   outputTail,
@@ -115,7 +114,6 @@ export const auditProgramGates = async (
     base,
     program: contract,
     unmet,
-    timeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
     // The scratch goes where a run's would: short, under the state directory.
     paths: createLocalPaths(environment.paths),
     onStep: (result) => {

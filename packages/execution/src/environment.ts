@@ -110,11 +110,6 @@ export interface ExecutionEnvironment {
    * business.
    */
   readonly workerEnvironment: (launch: WorkerLaunchIdentity) => WorkerEnvironment;
-  /**
-   * How long a verification step may run before its process tree is killed.
-   * Per step, not per run.
-   */
-  readonly verificationTimeoutMs?: number;
   /** How long `cancel` waits for a cooperative stop before killing. */
   readonly cancelGraceMs?: number;
   /**
@@ -249,7 +244,6 @@ export type LandingEnvironment = Pick<
   | "outbox"
   | "publish"
   | "publishStrand"
-  | "verificationTimeoutMs"
   | "prerequisites"
   | "site"
   | "runAs"
@@ -317,5 +311,4 @@ export interface WorkerIdentity {
 
 export const runIdOf = (scope: RunScope): RunId => scope.runId;
 
-export const DEFAULT_VERIFICATION_TIMEOUT_MS = 10 * 60 * 1000;
 export const DEFAULT_CANCEL_GRACE_MS = 10_000;

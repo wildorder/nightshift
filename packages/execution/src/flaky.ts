@@ -52,7 +52,6 @@ export interface RerunInput {
   readonly cwd: string;
   /** Where the rerun's scratch goes (`LocalPaths.scratch`). */
   readonly paths: ScratchPaths;
-  readonly timeoutMs: number;
   /** Whoever ran the first run, so the rerun is the same identity (D-P10-25). */
   readonly as?: RunVerificationInput["as"];
   /** The engine's, so the rerun's scratch can go whatever the rerun left in it (scratch.ts). */
@@ -68,14 +67,13 @@ export interface RerunInput {
 
 /** Reruns each failed check once, with a scratch of its own. Empty when nothing failed. */
 export const rerunFailures = async (input: RerunInput): Promise<readonly CheckRerun[]> => {
-  const { steps, first, cwd, paths, timeoutMs, as, reclaim, keepScratch, projectEnv } = input;
+  const { steps, first, cwd, paths, as, reclaim, keepScratch, projectEnv } = input;
   if (first.every((result) => result.exitCode === 0)) return [];
   const scratch = await freshScratch(paths, cwd, reclaim);
   const ran = rerunFailedChecks({
     steps,
     first,
     cwd,
-    timeoutMs,
     env: projectStepEnv(projectEnv, scratch),
     ...(as === undefined ? {} : { as }),
   });

@@ -15,11 +15,7 @@
  */
 import type { ExecutionNodeId } from "@nightshift/contracts";
 import { runSetupSteps, type StepResult, setupFailed } from "@nightshift/verification";
-import {
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
-  type ExecutionEnvironment,
-  type RunSession,
-} from "./environment.js";
+import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import { gateDefinitions } from "./gate-repair.js";
 import { recordArtifact } from "./runner.js";
 import { freshScratch, projectStepEnv } from "./scratch.js";
@@ -50,7 +46,6 @@ export const prepareCheckout = async (
     // The program checkout's installed tree seeds this one when the lockfiles
     // match (D-P10-24); the install runs only when they do not.
     reference: input.session.repoPath,
-    timeoutMs: environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS,
     // The project environment, on a machine (D-10), under the scratch.
     env: projectStepEnv(environment.projectEnv, scratch),
   });

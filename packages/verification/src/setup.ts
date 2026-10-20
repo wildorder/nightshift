@@ -25,6 +25,8 @@ import { type RunVerificationInput, runVerificationSteps, type StepResult } from
 export const setupAsStep = (step: SetupStep): VerificationStep => ({
   id: `${SETUP_STEP_ID_PREFIX}${step.id}`,
   command: step.command,
+  ...(step.timeoutSeconds === undefined ? {} : { timeoutSeconds: step.timeoutSeconds }),
+  ...(step.cleanupSeconds === undefined ? {} : { cleanupSeconds: step.cleanupSeconds }),
 });
 
 export type RunSetupInput = Omit<RunVerificationInput, "steps"> & {

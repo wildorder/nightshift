@@ -44,7 +44,6 @@ describe("setup", () => {
         { id: "three", command: exitWith(0) },
       ],
       cwd: await scratch(),
-      timeoutMs: 30_000,
     });
     expect(results.map((result) => [result.stepId, result.exitCode])).toEqual([
       ["setup:one", 0],
@@ -57,7 +56,6 @@ describe("setup", () => {
       setup: [{ id: "install", command: exitWith(1) }],
       steps: [{ id: "test", command: exitWith(0) }],
       cwd: await scratch(),
-      timeoutMs: 30_000,
     });
     expect(ran.setupFailed).toBe(true);
     expect(ran.checks).toEqual([]);
@@ -73,7 +71,6 @@ describe("setup", () => {
         },
       ],
       cwd: await scratch(),
-      timeoutMs: 30_000,
     });
     expect(ran.setupFailed).toBe(false);
     expect(ran.checks.map((result) => [result.stepId, result.exitCode])).toEqual([["ready", 0]]);
@@ -84,7 +81,6 @@ describe("setup", () => {
       setup: [],
       steps: [{ id: "test", command: exitWith(0) }],
       cwd: await scratch(),
-      timeoutMs: 30_000,
     });
     expect(ran.setup).toEqual([]);
     expect(ran.checks.map((result) => result.exitCode)).toEqual([0]);
@@ -124,7 +120,6 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
         { id: "ready", command: nodeCommand("require('fs').writeFileSync('ready','ok')") },
       ],
       cwd: fresh,
-      timeoutMs: 30_000,
       reference,
     });
     expect(results.map((r) => [r.stepId, r.exitCode])).toEqual([
@@ -158,7 +153,6 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
     const results = await runSetupSteps({
       setup: [install],
       cwd: fresh,
-      timeoutMs: 30_000,
       reference,
     });
     expect(results.map((r) => r.exitCode)).toEqual([0]);
@@ -183,7 +177,6 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
     const results = await runSetupSteps({
       setup: [harmlessInstall],
       cwd: changed,
-      timeoutMs: 60_000,
       reference,
     });
     expect(results.map((r) => r.exitCode)).toEqual([0]);
@@ -191,7 +184,7 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
     expect(await readInstallMarker(changed)).toEqual(await lockfileHashes(changed));
 
     // Now the tree fits its lockfiles: the next setup skips without a reference.
-    const again = await runSetupSteps({ setup: [install], cwd: changed, timeoutMs: 30_000 });
+    const again = await runSetupSteps({ setup: [install], cwd: changed });
     expect(again.map((r) => r.exitCode)).toEqual([0]);
     expect(text(again[0])).toContain("[setup skipped]");
 
@@ -203,7 +196,6 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
     const afterEdit = await runSetupSteps({
       setup: [harmlessInstall],
       cwd: changed,
-      timeoutMs: 60_000,
     });
     expect(text(afterEdit[0])).not.toContain("[setup skipped]");
   });
@@ -214,12 +206,11 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
     const results = await runSetupSteps({
       setup: [harmlessInstall],
       cwd: unmarked,
-      timeoutMs: 60_000,
     });
     expect(text(results[0])).not.toContain("[setup skipped]");
 
     const alone = await checkout(LOCK, false);
-    const ran = await runSetupSteps({ setup: [harmlessInstall], cwd: alone, timeoutMs: 60_000 });
+    const ran = await runSetupSteps({ setup: [harmlessInstall], cwd: alone });
     expect(text(ran[0])).not.toContain("[setup skipped]");
   });
 
@@ -234,7 +225,6 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
       setup: [harmlessInstall],
       cwd: fresh,
       reference,
-      timeoutMs: 60_000,
     });
     expect(text(results[0])).not.toContain("seeded from");
     expect(
@@ -255,7 +245,6 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
       setup: [harmlessInstall],
       cwd: fresh,
       reference,
-      timeoutMs: 60_000,
     });
     expect(text(results[0])).not.toContain("seeded from");
   });
@@ -263,7 +252,7 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
   it("gives a seeded tree a marker of its own, leaving the reference's untouched", async () => {
     const reference = await checkout(LOCK, true);
     const fresh = await checkout(LOCK, false);
-    await runSetupSteps({ setup: [install], cwd: fresh, reference, timeoutMs: 60_000 });
+    await runSetupSteps({ setup: [install], cwd: fresh, reference });
     const mine = await stat(join(fresh, INSTALL_MARKER));
     const theirs = await stat(join(reference, INSTALL_MARKER));
     expect(mine.ino).not.toBe(theirs.ino);
@@ -275,7 +264,6 @@ describe("the install, once per lineage of checkouts (D-P10-24)", () => {
     const results = await runSetupSteps({
       setup: [harmlessInstall],
       cwd: fresh,
-      timeoutMs: 60_000,
       reference: treeless,
     });
     expect(text(results[0])).not.toContain("[setup skipped]");
@@ -314,7 +302,6 @@ describe("the runtimes an installed tree was made for (P16 S-01)", () => {
     const results = await runSetupSteps({
       setup: [harmlessInstall],
       cwd: dir,
-      timeoutMs: 60_000,
       env: { [RUNTIMES_ENV]: "node@24.1.0" },
     });
     expect(new TextDecoder().decode(results[0]?.output)).not.toContain("[setup skipped]");
@@ -330,7 +317,6 @@ describe("the runtimes an installed tree was made for (P16 S-01)", () => {
     const results = await runSetupSteps({
       setup: [{ id: "install", command: "npm ci --prefer-offline" }],
       cwd: dir,
-      timeoutMs: 30_000,
       env: { [RUNTIMES_ENV]: "node@24.1.0" },
     });
     expect(new TextDecoder().decode(results[0]?.output)).toContain("[setup skipped]");

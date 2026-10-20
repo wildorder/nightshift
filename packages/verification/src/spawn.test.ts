@@ -69,56 +69,67 @@ describe("shellInvocation", () => {
   });
 });
 
+const SIGNALS = ["SIGTERM", "SIGKILL"] as const;
+
 describe("killProcessTree", () => {
-  it("signals the whole process group on POSIX, not just the child", () => {
+  it.each(SIGNALS)("sends %s to the whole process group on POSIX, not just the child", (signal) => {
     const signalled: [number, NodeJS.Signals][] = [];
     const { calls, spawn } = recordingSpawn();
     const { killed, child } = killRecorder();
 
     killProcessTree({
       pid: 4242,
+      signal,
       platform: "linux",
       child,
       cwd: "/repo",
       env: ENV,
       spawn,
-      kill: (pid, signal) => {
-        signalled.push([pid, signal]);
+      kill: (pid, sent) => {
+        signalled.push([pid, sent]);
       },
     });
 
-    // The negative pid is the point: the shell's children die with it.
-    expect(signalled).toEqual([[-4242, "SIGKILL"]]);
+    // The negative pid is the point: the shell's children get it with it.
+    expect(signalled).toEqual([[-4242, signal]]);
     expect(calls).toEqual([]);
     expect(killed).toEqual([]);
   });
 
-  it("falls back to the direct child when the group signal fails", () => {
-    const { spawn } = recordingSpawn();
-    const { killed, child } = killRecorder();
+  it.each(SIGNALS)(
+    "falls back to the direct child with %s when the group signal fails",
+    (signal) => {
+      const { spawn } = recordingSpawn();
+      const { killed, child } = killRecorder();
 
-    killProcessTree({
-      pid: 4242,
-      platform: "darwin",
-      child,
-      cwd: "/repo",
-      env: ENV,
-      spawn,
-      kill: () => {
-        throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
-      },
-    });
+      killProcessTree({
+        pid: 4242,
+        signal,
+        platform: "darwin",
+        child,
+        cwd: "/repo",
+        env: ENV,
+        spawn,
+        kill: () => {
+          throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+        },
+      });
 
-    expect(killed).toEqual(["SIGKILL"]);
-  });
+      expect(killed).toEqual([signal]);
+    },
+  );
 
-  it("walks the tree with taskkill on Windows", () => {
+  it.each([
+    ["SIGTERM", ["/pid", "900", "/T"]],
+    ["SIGKILL", ["/pid", "900", "/T", "/F"]],
+  ] as const)("walks the tree with taskkill on Windows for %s", (signal, args) => {
     const signalled: number[] = [];
     const { calls, spawn } = recordingSpawn();
     const { killed, child } = killRecorder();
 
     killProcessTree({
       pid: 900,
+      signal,
       platform: "win32",
       child,
       cwd: "C:\\repo",
@@ -131,38 +142,71 @@ describe("killProcessTree", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.file).toBe("taskkill");
-    expect(calls[0]?.args).toEqual(["/pid", "900", "/T", "/F"]);
+    // The soft request has no /F; the force does.
+    expect(calls[0]?.args).toEqual(args);
     expect(calls[0]?.options.windowsHide).toBe(true);
     // Windows has no process groups to signal, and no shell to re-enter.
     expect(signalled).toEqual([]);
     expect(killed).toEqual([]);
   });
 
-  it("falls back to the direct child when taskkill cannot be spawned", () => {
-    const { killed, child } = killRecorder();
+  it.each(SIGNALS)(
+    "falls back to the direct child with %s when taskkill cannot be spawned",
+    (signal) => {
+      const { killed, child } = killRecorder();
 
-    killProcessTree({
-      pid: 900,
-      platform: "win32",
-      child,
-      cwd: "C:\\repo",
-      env: ENV,
-      spawn: () => {
-        throw new Error("EMFILE");
-      },
-      kill: () => {},
-    });
+      killProcessTree({
+        pid: 900,
+        signal,
+        platform: "win32",
+        child,
+        cwd: "C:\\repo",
+        env: ENV,
+        spawn: () => {
+          throw new Error("EMFILE");
+        },
+        kill: () => {},
+      });
 
-    expect(killed).toEqual(["SIGKILL"]);
-  });
+      expect(killed).toEqual([signal]);
+    },
+  );
 
-  it("kills the direct child when there is no pid to walk from", () => {
+  it.each(SIGNALS)(
+    "falls back to the direct child with %s when taskkill reports an error",
+    (signal) => {
+      const { killed, child } = killRecorder();
+      let onError: ((error: Error) => void) | undefined;
+
+      killProcessTree({
+        pid: 900,
+        signal,
+        platform: "win32",
+        child,
+        cwd: "C:\\repo",
+        env: ENV,
+        spawn: () => ({
+          ...stubChild(),
+          on: ((event: string, listener: (error: Error) => void) => {
+            if (event === "error") onError = listener;
+          }) as SpawnedChild["on"],
+        }),
+        kill: () => {},
+      });
+      onError?.(new Error("ENOENT"));
+
+      expect(killed).toEqual([signal]);
+    },
+  );
+
+  it.each(SIGNALS)("kills the direct child with %s when there is no pid to walk from", (signal) => {
     const { calls, spawn } = recordingSpawn();
     const { killed, child } = killRecorder();
 
     for (const pid of [undefined, 0, -1]) {
       killProcessTree({
         pid,
+        signal,
         platform: "linux",
         child,
         cwd: "/repo",
@@ -173,7 +217,7 @@ describe("killProcessTree", () => {
     }
 
     // A pid of 0 or -1 would signal this process or every process we own.
-    expect(killed).toEqual(["SIGKILL", "SIGKILL", "SIGKILL"]);
+    expect(killed).toEqual([signal, signal, signal]);
     expect(calls).toEqual([]);
   });
 });
