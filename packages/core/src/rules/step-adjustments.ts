@@ -54,6 +54,8 @@ export interface StepCommandLike {
   readonly exitCode?: number | undefined;
   readonly deferred?: { readonly prerequisiteId: string } | undefined;
   readonly skipped?: { readonly decisionId: string } | undefined;
+  /** The step's automatic rerun when it failed again; the command's own fields are the first run. */
+  readonly rerun?: { readonly exitCode: number } | undefined;
 }
 
 /** The part of a verification this module reads. */
@@ -162,6 +164,15 @@ const recordsOf = (stepId: string, verifications: readonly StepVerificationLike[
 const ran = (command: StepCommandLike): boolean =>
   command.exitCode !== undefined && command.deferred === undefined && command.skipped === undefined;
 
+/** The exit code of the command's latest execution: its rerun's when it has one. */
+const latestExitOf = (command: StepCommandLike): number =>
+  (command.rerun?.exitCode ?? command.exitCode) as number;
+
+/** Timed out on its latest record: the first run and any rerun both exited 124. */
+const timedOut = (command: StepCommandLike): boolean =>
+  command.exitCode === STEP_TIMED_OUT_EXIT_CODE &&
+  (command.rerun === undefined || command.rerun.exitCode === STEP_TIMED_OUT_EXIT_CODE);
+
 /** The most recent result for the step that actually ran; deferred and skipped records are looked past. */
 export const lastRunOf = (
   stepId: string,
@@ -172,7 +183,7 @@ export const lastRunOf = (
     .at(-1);
   return found === undefined
     ? undefined
-    : { verification: found.verification, exitCode: found.command.exitCode as number };
+    : { verification: found.verification, exitCode: latestExitOf(found.command) };
 };
 
 /** Why a step may not be skipped, said from the record that stands in the way. */
@@ -188,6 +199,15 @@ const ineligibleReason = (stepId: string, command: StepCommandLike | undefined):
   }
   if (command.exitCode === 0)
     return `${stepId} passed on its most recent run; it cannot be skipped`;
+  if (command.rerun !== undefined) {
+    if (command.exitCode === STEP_TIMED_OUT_EXIT_CODE) {
+      return `${stepId} timed out and then ran and failed with exit ${command.rerun.exitCode} on its rerun; fix it, it cannot be skipped`;
+    }
+    if (command.rerun.exitCode === STEP_TIMED_OUT_EXIT_CODE) {
+      return `${stepId} ran and failed with exit ${command.exitCode} before timing out on its rerun; fix it, it cannot be skipped`;
+    }
+    return `${stepId} ran and failed with exit ${command.rerun.exitCode} on its rerun; fix it, it cannot be skipped`;
+  }
   return `${stepId} ran and failed with exit ${command.exitCode}; fix it, it cannot be skipped`;
 };
 
@@ -201,11 +221,7 @@ export const skipEligibility = (
   verifications: readonly StepVerificationLike[],
 ): SkipEligibility => {
   const latest = recordsOf(stepId, verifications).at(-1);
-  if (
-    latest !== undefined &&
-    ran(latest.command) &&
-    latest.command.exitCode === STEP_TIMED_OUT_EXIT_CODE
-  ) {
+  if (latest !== undefined && ran(latest.command) && timedOut(latest.command)) {
     return {
       eligible: true,
       timedOut: {
@@ -228,7 +244,7 @@ export const skipHonoured = (
 ): SkipHonoured => {
   const records = recordsOf(stepId, verifications);
   const lastRan = records.filter((record) => ran(record.command)).at(-1);
-  if (lastRan !== undefined && lastRan.command.exitCode === STEP_TIMED_OUT_EXIT_CODE) {
+  if (lastRan !== undefined && timedOut(lastRan.command)) {
     return { honoured: true };
   }
   return {

@@ -189,6 +189,35 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
       brief.indexOf("nightshift step.timeout {"),
     );
     expect(brief).toContain("Never skip a step that failed: fix it.");
+    const reran = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      task: {
+        kind: "strand_fix",
+        round: 1,
+        of: 3,
+        failedChecks: [
+          {
+            stepId: "trial",
+            command: "npm run trial",
+            exitCode: 124,
+            rerunExitCode: 1,
+            output: "",
+          },
+          { stepId: "unit", command: "npm test", exitCode: 1, rerunExitCode: 124, output: "" },
+        ],
+        findings: [],
+      },
+    });
+    expect(reran).toContain(
+      "trial: `npm run trial` timed out, then failed with exit 1 on its rerun: fix it, it cannot be skipped",
+    );
+    expect(reran).toContain(
+      "unit: `npm test` failed with exit 1, then timed out on its rerun: fix it, it cannot be skipped",
+    );
+    expect(reran).not.toContain("nightshift step.skip");
   });
 
   it("briefs a resumed strand with the step that timed out, its time and both tools in order (P19 S-02)", () => {

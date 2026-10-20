@@ -101,6 +101,8 @@ export interface ExaminationEvidence {
     "stepId" | "command" | "exitCode"
   > & {
     readonly logTail?: string;
+    /** The exit code of the step's automatic rerun, when it failed again. */
+    readonly rerunExitCode?: number;
   })[];
   readonly risk: RiskLevel;
   /** Whether a material finding will stop this work landing (D-P8-13). */
@@ -195,6 +197,8 @@ export type AgentTask =
         readonly command: string;
         readonly exitCode: number | null;
         readonly output: string;
+        /** The exit code of the step's automatic rerun, when it failed again (D-P15-06). */
+        readonly rerunExitCode?: number;
         /** The step's timeout killed it (exit 124), with the time it had (P19 S-02). */
         readonly timedOut?: boolean;
         readonly timeoutSeconds?: number;

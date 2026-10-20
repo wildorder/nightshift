@@ -208,6 +208,7 @@ export const strandFailures = async (
     readonly command: string;
     readonly exitCode: number | null;
     readonly output: string;
+    readonly rerunExitCode?: number;
     readonly timedOut?: boolean;
     readonly timeoutSeconds?: number;
     readonly cleanupSeconds?: number;
@@ -227,7 +228,11 @@ export const strandFailures = async (
       : (await verificationEvidence(environment, verification)).filter(
           (step) => step.exitCode !== undefined && step.exitCode !== 0,
         );
-  const timedOutAny = failing.some((step) => step.exitCode === STEP_TIMED_OUT_EXIT_CODE);
+  const timedOutAny = failing.some(
+    (step) =>
+      step.exitCode === STEP_TIMED_OUT_EXIT_CODE &&
+      (step.rerunExitCode === undefined || step.rerunExitCode === STEP_TIMED_OUT_EXIT_CODE),
+  );
   const [gates, decisions] = timedOutAny
     ? await Promise.all([
         gateDefinitions(environment, session),
@@ -240,8 +245,14 @@ export const strandFailures = async (
       command: step.command,
       exitCode: step.exitCode ?? null,
       output: step.logTail ?? "",
+      ...(step.rerunExitCode === undefined ? {} : { rerunExitCode: step.rerunExitCode }),
     };
-    if (step.exitCode !== STEP_TIMED_OUT_EXIT_CODE) return base;
+    if (
+      step.exitCode !== STEP_TIMED_OUT_EXIT_CODE ||
+      (step.rerunExitCode !== undefined && step.rerunExitCode !== STEP_TIMED_OUT_EXIT_CODE)
+    ) {
+      return base;
+    }
     const declared = gates?.verification.find((candidate) => candidate.id === step.stepId);
     return {
       ...base,

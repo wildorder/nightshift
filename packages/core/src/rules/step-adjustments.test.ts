@@ -124,6 +124,38 @@ describe("lastRunOf and skipEligibility", () => {
     expect(skipHonoured("a", vs)).toEqual({ honoured: true });
   });
 
+  describe("a rerun after the first run (D-06)", () => {
+    const rerunOf = (exitCode: number, rerun: number): StepCommandLike => ({
+      stepId: "a",
+      exitCode,
+      rerun: { exitCode: rerun },
+    });
+    const at = "2026-01-01T00:00:01Z";
+    const timedThenFailed =
+      "a timed out and then ran and failed with exit 1 on its rerun; fix it, it cannot be skipped";
+    const failedThenTimed =
+      "a ran and failed with exit 1 before timing out on its rerun; fix it, it cannot be skipped";
+
+    it("refuses a 124 first run whose rerun exited 1, in both checks", () => {
+      const vs = [verification(at, [rerunOf(124, 1)])];
+      expect(skipEligibility("a", vs)).toEqual({ eligible: false, reason: timedThenFailed });
+      expect(skipHonoured("a", vs)).toEqual({ honoured: false, reason: timedThenFailed });
+      expect(lastRunOf("a", vs)?.exitCode).toBe(1);
+    });
+
+    it("refuses a first run of exit 1 whose rerun timed out, in both checks", () => {
+      const vs = [verification(at, [rerunOf(1, 124)])];
+      expect(skipEligibility("a", vs)).toEqual({ eligible: false, reason: failedThenTimed });
+      expect(skipHonoured("a", vs)).toEqual({ honoured: false, reason: failedThenTimed });
+    });
+
+    it("keeps 124 then 124 eligible and honoured", () => {
+      const vs = [verification(at, [rerunOf(124, 124)])];
+      expect(skipEligibility("a", vs).eligible).toBe(true);
+      expect(skipHonoured("a", vs)).toEqual({ honoured: true });
+    });
+  });
+
   it("does not honour a skip of a step that never ran", () => {
     expect(skipHonoured("a", [])).toMatchObject({ honoured: false });
   });

@@ -258,11 +258,21 @@ const timedOutStepsOf = async (
   deps: OrchestratorDeps,
   attached: AttachedRun,
   verification:
-    | { readonly commands: readonly { stepId: string; exitCode?: number | undefined }[] }
+    | {
+        readonly commands: readonly {
+          stepId: string;
+          exitCode?: number | undefined;
+          rerun?: { readonly exitCode: number } | undefined;
+        }[];
+      }
     | undefined,
 ): Promise<{ stepId: string; timeoutSeconds?: number }[]> => {
   const ids = (verification?.commands ?? [])
-    .filter((command) => command.exitCode === STEP_TIMED_OUT_EXIT_CODE)
+    .filter(
+      (command) =>
+        command.exitCode === STEP_TIMED_OUT_EXIT_CODE &&
+        (command.rerun === undefined || command.rerun.exitCode === STEP_TIMED_OUT_EXIT_CODE),
+    )
     .map((command) => command.stepId);
   if (ids.length === 0) return [];
   const [gates, decisions] = await Promise.all([

@@ -77,6 +77,18 @@ const counter = async (failures: number) => {
   };
 };
 
+/**
+ * A command that, on its Nth run (counted in a file outside any checkout),
+ * sleeps past a 1 s timeout when `plan[N]` is "hang" and exits 1 otherwise.
+ */
+const scripted = async (plan: readonly ("hang" | "fail")[]) => {
+  const dir = await mkdtemp(join(tmpdir(), "ns-rerun-"));
+  counters.push(dir);
+  const file = join(dir, "runs").replace(/\\/g, "/");
+  const modes = JSON.stringify(plan);
+  return `"${process.execPath}" -e "const fs=require('fs');const f='${file}';const n=fs.existsSync(f)?Number(fs.readFileSync(f,'utf8')):0;fs.writeFileSync(f,String(n+1));const m=${modes.replace(/"/g, "'")}[n];if(m==='hang')setTimeout(()=>{},60000);else process.exit(1)"`;
+};
+
 const programWith = (command: string, at?: "end"): Partial<ProgramContract> => ({
   verification: [
     { id: "test", command: "node --test" },
@@ -393,6 +405,47 @@ describe("who may skip a step", () => {
       skipped: { decisionId: decision.decisionId },
     });
   });
+});
+
+describe("a step whose automatic rerun failed differently (D-06)", () => {
+  it.each([
+    ["times out, then exits 1 on its rerun", ["hang", "fail"] as const, 124, 1],
+    ["exits 1, then times out on its rerun", ["fail", "hang"] as const, 1, 124],
+  ])(
+    "a step that %s is recorded so, and a skip decision for it is not applied",
+    async (_name, plan, first, second) => {
+      const command = await scripted(plan);
+      const world = await worldWith({
+        verification: [
+          { id: "test", command: "node --test" },
+          { id: "trial", command, timeoutSeconds: 1, cleanupSeconds: 1 },
+        ],
+      });
+      const firstNode = await runDirect(world);
+      const [recorded] = await verificationsOf(world, firstNode);
+      const trial = commandOf(recorded, "trial");
+      expect(trial).toMatchObject({ exitCode: first, rerun: { exitCode: second } });
+      expect(trial?.skipped).toBeUndefined();
+
+      const decision = await decide(world, skipContext, await nodeOfKind(world, "sub-program"));
+      const nodeId = await runDirect(world);
+      const [verification] = await verificationsOf(world, nodeId);
+      const next = commandOf(verification, "trial");
+      expect(next?.skipped).toBeUndefined();
+      expect(next?.exitCode).toBeDefined();
+      const progress = (await nodeEvents(world, nodeId, "verification.progress")).map(
+        (event) => (event.payload as { message?: string }).message ?? "",
+      );
+      const line = progress.find((message) => message.startsWith("skip of trial"));
+      expect(line).toContain(`skip of trial by decision ${decision.decisionId} not applied: `);
+      expect(line).toContain(
+        first === 124
+          ? "timed out and then ran and failed with exit 1 on its rerun; fix it, it cannot be skipped"
+          : "ran and failed with exit 1 before timing out on its rerun; fix it, it cannot be skipped",
+      );
+    },
+    60_000,
+  );
 });
 
 describe("the candidate verification", () => {

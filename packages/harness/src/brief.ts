@@ -928,7 +928,13 @@ const renderStrandFixBrief = (task: Extract<AgentTask, { kind: "strand_fix" }>):
             [
               step.timedOut === true
                 ? `  ${step.stepId}: \`${step.command}\` timed out after ${describeStepTime(step)}`
-                : `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}`,
+                : step.rerunExitCode === undefined
+                  ? `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}`
+                  : step.exitCode === 124
+                    ? `  ${step.stepId}: \`${step.command}\` timed out, then failed with exit ${step.rerunExitCode} on its rerun: fix it, it cannot be skipped`
+                    : step.rerunExitCode === 124
+                      ? `  ${step.stepId}: \`${step.command}\` failed with exit ${step.exitCode ?? "(no exit code)"}, then timed out on its rerun: fix it, it cannot be skipped`
+                      : `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}, then ${step.rerunExitCode} on its rerun`,
               indent(step.output.slice(-3_000), 6),
             ].join("\n"),
           ),

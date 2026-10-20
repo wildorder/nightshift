@@ -69,7 +69,7 @@ interface World {
   /** A verification on `node`, with an event naming it when `announce` is true. */
   readonly verify: (
     node: ExecutionNode,
-    results: Record<string, number>,
+    results: Record<string, number | { exitCode: number; rerunExitCode: number }>,
     minute: number,
     announce?: boolean,
   ) => Promise<Verification>;
@@ -97,11 +97,14 @@ const common = async (kind: "root" | "strand") => {
   if (strandNode !== undefined) await stores.executionNodes.put(strandNode);
   const ownNode = strandNode ?? root;
   const verify: World["verify"] = async (node, results, minute, announce = true) => {
-    const commands = Object.entries(results).map(([stepId, exitCode]) => ({
+    const commands = Object.entries(results).map(([stepId, result]) => ({
       stepId,
       command: stepId,
-      exitCode,
+      exitCode: typeof result === "number" ? result : result.exitCode,
       durationMs: 1,
+      ...(typeof result === "number"
+        ? {}
+        : { rerun: { exitCode: result.rerunExitCode, durationMs: 1 } }),
     }));
     const verification = makeVerification(f, node, {
       commands,
@@ -253,6 +256,36 @@ describe.each([
       "ran and failed with exit 1; fix it, it cannot be skipped",
     );
     expect(await decisionsOf(world)).toEqual([]);
+  });
+
+  it.each([
+    [
+      124,
+      1,
+      "trial timed out and then ran and failed with exit 1 on its rerun; fix it, it cannot be skipped",
+    ],
+    [
+      1,
+      124,
+      "trial ran and failed with exit 1 before timing out on its rerun; fix it, it cannot be skipped",
+    ],
+  ])(
+    "refuses to skip a step whose first run exited %i and rerun exited %i",
+    async (exitCode, rerunExitCode, said) => {
+      const world = await build();
+      await world.verify(world.ownNode, { trial: { exitCode, rerunExitCode } }, 1);
+      const result = await world.call("step.skip", { stepId: "trial", reason: "red" });
+      expect(result.ok).toBe(false);
+      expect(String(result.message)).toContain(said);
+      expect(await decisionsOf(world)).toEqual([]);
+    },
+  );
+
+  it("still records a skip of a step that timed out and timed out again on its rerun", async () => {
+    const world = await build();
+    await world.verify(world.ownNode, { trial: { exitCode: 124, rerunExitCode: 124 } }, 1);
+    const result = await world.call("step.skip", { stepId: "trial", reason: "hangs" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
   });
 
   it("refuses to skip a step that passed", async () => {

@@ -1079,6 +1079,7 @@ export const verificationEvidence = async (
       command: command.command,
       ...(command.exitCode === undefined ? {} : { exitCode: command.exitCode }),
       ...(logTail === undefined ? {} : { logTail }),
+      ...(command.rerun === undefined ? {} : { rerunExitCode: command.rerun.exitCode }),
     });
   }
   return steps;

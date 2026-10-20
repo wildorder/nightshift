@@ -67,6 +67,18 @@ export const VerificationCommandResultSchema = z
      * quietMs, no deferred and no flaky.
      */
     skipped: z.strictObject({ decisionId: DecisionIdSchema }).optional(),
+    /**
+     * The step's automatic rerun on the same checkout when it failed again
+     * (D-P15-06). The command's own fields stay the first run, so every other
+     * reader is unchanged; `flaky` is the opposite case, a rerun that passed.
+     */
+    rerun: z
+      .strictObject({
+        exitCode: z.int(),
+        durationMs: z.int().min(0),
+        logArtifactId: ArtifactIdSchema.optional(),
+      })
+      .optional(),
   })
   .refine(
     (value) => {
@@ -89,6 +101,22 @@ export const VerificationCommandResultSchema = z
     {
       message: "flaky is only set on a step whose rerun passed after a first run that failed",
       path: ["flaky"],
+    },
+  )
+  /** A failed rerun belongs to a step that ran and failed, and itself failed. */
+  .refine(
+    (value) =>
+      value.rerun === undefined ||
+      (value.exitCode !== undefined &&
+        value.exitCode !== 0 &&
+        value.flaky === undefined &&
+        value.deferred === undefined &&
+        value.skipped === undefined &&
+        value.rerun.exitCode !== 0),
+    {
+      message:
+        "rerun is only set on a step that ran and failed, never with flaky, deferred or skipped, and the rerun itself failed",
+      path: ["rerun"],
     },
   );
 export type VerificationCommandResult = z.infer<typeof VerificationCommandResultSchema>;
