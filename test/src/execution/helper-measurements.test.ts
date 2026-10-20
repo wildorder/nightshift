@@ -20,7 +20,6 @@ import {
   completeJob,
   createEngine,
   createEventOutbox,
-  createMeasurementRecorder,
   EXAMINATION_CONTEXT_ENV,
   type ExaminationContext,
   type ExaminationServices,
@@ -141,19 +140,11 @@ const play =
         );
         await outbox.flush();
         if (scenario.builderSessionInput !== undefined) {
-          // The builder's stored summary, as its own recorder would have left it.
-          const recorder = createMeasurementRecorder(w.environment, {
-            scope: context.identity.scope,
-            executionNodeId: input.node.executionNodeId,
-            agent: input.agent,
-            route: input.model,
-            routingDecisionId: null,
+          // The session snapshot, delivered through the seam the runner's recorder owns.
+          input.measurements?.observe({
+            ...sessionSnapshot("builder-session", { inputTokens: scenario.builderSessionInput }),
+            sessionId: "builder-session",
           });
-          await recorder.startSegment({ sessionId: "builder-session", resumedSession: false });
-          recorder.sink.observe(
-            sessionSnapshot("builder-session", { inputTokens: scenario.builderSessionInput }),
-          );
-          await recorder.close();
         }
         return { kind: "completed", sessionId: "builder-session" };
       }

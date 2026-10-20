@@ -319,6 +319,45 @@ describe("the receipt boundary", () => {
   });
 });
 
+describe("publishedSummaryFor", () => {
+  it("returns the newest summary for the agent whatever order the store lists them in", async () => {
+    const world = await build();
+    const recorder = world.recorder();
+    await recorder.startSegment({ resumedSession: false });
+    const current = await world.stored();
+    const older = {
+      ...current,
+      measurementSummaryId:
+        `${current.measurementSummaryId}-older` as typeof current.measurementSummaryId,
+      updatedAt: new Date(Date.parse(current.updatedAt) - 60_000).toISOString(),
+    };
+    const newer = {
+      ...current,
+      measurementSummaryId:
+        `${current.measurementSummaryId}-newer` as typeof current.measurementSummaryId,
+      updatedAt: new Date(Date.parse(current.updatedAt) + 60_000).toISOString(),
+    };
+    for (const order of [
+      [older, current, newer],
+      [newer, current, older],
+    ]) {
+      const listed = new Map(order.map((summary) => [summary.measurementSummaryId, summary]));
+      const stores = {
+        measurements: {
+          listByNode: async () => [...listed.values()],
+        },
+      } as unknown as Parameters<typeof publishedSummaryFor>[0];
+      const found = await publishedSummaryFor(
+        stores,
+        world.f.scope,
+        world.f.rootNodeId,
+        world.agent.agentId,
+      );
+      expect(found?.measurementSummaryId).toBe(newer.measurementSummaryId);
+    }
+  });
+});
+
 describe("segments and seams", () => {
   it("publishes an open segment at receivedSequence 0 before any observation", async () => {
     const world = await build();

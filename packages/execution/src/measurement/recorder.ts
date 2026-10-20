@@ -107,16 +107,32 @@ export const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 export const DEFAULT_DRAIN_DEADLINE_MS = 5000;
 const RECENT_OBSERVATION_IDS = 10_000;
 
-/** The summary an agent has on the control plane, if any. */
+const hasSessionCumulative = (summary: MeasurementSummary): boolean =>
+  summary.segments.some((segment) => segment.sessionCumulative !== undefined);
+
+/** The newest summary an agent has on the control plane, if any. */
 export const publishedSummaryFor = async (
   stores: ExecutionEnvironment["stores"],
   scope: RunScope,
   nodeId: ExecutionNodeId,
   agentId: string,
-): Promise<MeasurementSummary | undefined> =>
-  (await stores.measurements.listByNode(scope, nodeId)).find(
-    (summary) => summary.agentId === agentId,
-  );
+): Promise<MeasurementSummary | undefined> => {
+  // One agent has one summary; a reader still must not depend on list order.
+  let newest: MeasurementSummary | undefined;
+  for (const summary of await stores.measurements.listByNode(scope, nodeId)) {
+    if (summary.agentId !== agentId) continue;
+    if (
+      newest === undefined ||
+      summary.updatedAt > newest.updatedAt ||
+      (summary.updatedAt === newest.updatedAt &&
+        !hasSessionCumulative(newest) &&
+        hasSessionCumulative(summary))
+    ) {
+      newest = summary;
+    }
+  }
+  return newest;
+};
 
 /** The dollars a harness reported for observations: a terminal's figure supersedes the requests'. */
 export interface ReportedCost {

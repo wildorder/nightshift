@@ -1008,6 +1008,7 @@ const finishSubProgram = async (
     }
     await recordAgentEnd(environment, input, exit, reason);
     await uploadTranscript(environment, input);
+    await publishRecorder(input.current());
 
     const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
     // Completed: the strand lands once, as a job does (P18, D-P18-04). The
@@ -1428,6 +1429,15 @@ const recordExit = (attempt: Attempt, exit: HarnessExit): void => {
   }
 };
 
+/** Publishes the attempt's summary as it stands. Never rejects. */
+const publishRecorder = async (attempt: Attempt): Promise<void> => {
+  try {
+    await attempt.recorder.publish();
+  } catch {
+    // Measurement is observation: the node ends as it ended.
+  }
+};
+
 /** Drains, publishes and marks the attempt's journals closed. Never rejects. */
 const closeRecorder = async (attempt: Attempt): Promise<void> => {
   try {
@@ -1467,6 +1477,8 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
       await recordAgentEnd(environment, input, exit, reason);
       await uploadTranscript(environment, input);
     }
+    // The summary is stored before anything examines or lands the work.
+    await publishRecorder(input.current());
 
     const node = await stores.executionNodes.get(input.session.scope, input.nodeId);
     if (node === undefined) return;
