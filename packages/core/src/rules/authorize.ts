@@ -114,6 +114,11 @@ export type Operation =
   // Routing.
   | "routingDecision.put"
   | "routingDecision.listByNode"
+  // Measurement summaries (P20).
+  | "measurement.put"
+  | "measurement.get"
+  | "measurement.listByNode"
+  | "measurement.listByRun"
   // Artifacts.
   | "artifact.list"
   | "artifact.put"
@@ -266,6 +271,10 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   // Why a job runs where it runs is Nightshift's record, not the worker's.
   "routingDecision.put": "forbidden",
   "routingDecision.listByNode": "own_node",
+  "measurement.put": "forbidden",
+  "measurement.get": "own_node",
+  "measurement.listByNode": "own_node",
+  "measurement.listByRun": "own_run",
 
   // Artifacts are readable within the run. A worker writes none: its oversized
   // event payloads are dropped with a reason rather than spilled to S3, so
@@ -393,6 +402,10 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
 
   "routingDecision.put": "forbidden",
   "routingDecision.listByNode": "own_subtree",
+  "measurement.put": "forbidden",
+  "measurement.get": "own_subtree",
+  "measurement.listByNode": "own_subtree",
+  "measurement.listByRun": "own_run",
 
   "artifact.list": "own_run",
   "artifact.put": "forbidden",
@@ -534,6 +547,10 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
 
   "routingDecision.put": "own_run",
   "routingDecision.listByNode": "own_program",
+  "measurement.put": "own_run",
+  "measurement.get": "own_program",
+  "measurement.listByNode": "own_program",
+  "measurement.listByRun": "own_program",
 
   "artifact.list": "own_program",
   "artifact.put": "own_run",
@@ -617,6 +634,9 @@ export const READ_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
   "examination.get",
   "examination.listByNode",
   "routingDecision.listByNode",
+  "measurement.get",
+  "measurement.listByNode",
+  "measurement.listByRun",
   "artifact.list",
   "artifact.get",
   "orgConfig.get",

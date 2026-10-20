@@ -38,6 +38,8 @@ import type {
   GateHealth,
   JobContract,
   JobContractId,
+  MeasurementSummary,
+  MeasurementSummaryId,
   Membership,
   OrgComputeUsage,
   OrgConfig,
@@ -207,6 +209,25 @@ export interface RoutingDecisionStore {
   ): Promise<readonly RoutingDecision[]>;
 }
 
+/**
+ * The compact measurement record (P20), updated in place as observations arrive.
+ * `put` replaces; a put whose `updatedAt` is strictly older than the stored
+ * record's is ignored, so a replayed stale write cannot roll a summary back.
+ * An equal `updatedAt` replaces.
+ */
+export interface MeasurementSummaryStore {
+  put(summary: MeasurementSummary): Promise<void>;
+  get(
+    scope: RunScope,
+    measurementSummaryId: MeasurementSummaryId,
+  ): Promise<MeasurementSummary | undefined>;
+  listByNode(
+    scope: RunScope,
+    executionNodeId: ExecutionNodeId,
+  ): Promise<readonly MeasurementSummary[]>;
+  listByRun(scope: RunScope, page?: PageRequest): Promise<Page<MeasurementSummary>>;
+}
+
 export interface ArtifactStore {
   /**
    * Records a reference to stored output. Implementations must reject anything
@@ -362,6 +383,7 @@ export interface ProjectStores {
   readonly verifications: VerificationStore;
   readonly examinations: ExaminationStore;
   readonly routingDecisions: RoutingDecisionStore;
+  readonly measurements: MeasurementSummaryStore;
   readonly artifacts: ArtifactStore;
   readonly orgConfigs: OrgConfigStore;
   // P10: the remote runner's records.

@@ -64,6 +64,7 @@ interface RouteParams {
   readonly verificationId: string;
   readonly examinationId: string;
   readonly routingDecisionId: string;
+  readonly measurementSummaryId: string;
   readonly artifactId: string;
   readonly [name: string]: string;
 }
@@ -113,6 +114,7 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       verificationId: f.ids.next("ver"),
       examinationId: f.ids.next("exam"),
       routingDecisionId: f.ids.next("route"),
+      measurementSummaryId: f.ids.next("meas"),
       artifactId: f.ids.next("art"),
       // Program-scoped planning routes (P7): named by a digest and an `HP-nn`, not by an id.
       // P8: an org's own configuration routes are named by the org.
@@ -274,6 +276,13 @@ describe("SC-P4-04 — an execution token does exactly what §4.4 grants, on its
     if (access === "forbidden") {
       expect(answer.status).toBe(403);
       expect(answer.code).toBe("execution_forbidden_operation");
+      return;
+    }
+    if (access === "own_node" && route.method === "GET" && !route.path.includes("{nodeId}")) {
+      // A route by record id (P20 `measurement.get`) names no node, so an
+      // own-node reach cannot be shown there and fails closed.
+      expect(answer.status).toBe(403);
+      expect(answer.code).toBe("execution_out_of_scope");
       return;
     }
     expect(answer.status, `${route.method} ${path} answered ${answer.code}`).not.toBe(403);

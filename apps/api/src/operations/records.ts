@@ -10,6 +10,7 @@ import {
   DecisionSchema,
   type Examination,
   ExaminationSchema,
+  MeasurementSummarySchema,
   type Principal,
   RoutingDecisionSchema,
   VerificationSchema,
@@ -205,6 +206,61 @@ export const putRoutingDecision: Handler = async ({ deps, request, params }) => 
   if (problems.length > 0) throw new HttpError(409, "conflict", problems.join("; "));
   await deps.stores.routingDecisions.put(decision);
   return { status: 200, body: decision };
+};
+
+/**
+ * A measurement summary is updated in place as observations arrive, so a put is
+ * a replace (P20). A write whose `updatedAt` is older than the stored record's
+ * is a replayed stale write: it is answered with the stored record and changes
+ * nothing.
+ */
+export const putMeasurement: Handler = async ({ deps, request, params }) => {
+  const summary = parseBody(MeasurementSummarySchema, request.body);
+  const scope = runScopeFrom(params);
+  assertChainMatches(scope, summary);
+  assertIdentifierMatches(
+    "measurementSummaryId",
+    pathId("meas", params, "measurementSummaryId"),
+    summary.measurementSummaryId,
+  );
+  await requireRun(deps.stores, scope);
+
+  const existing = await deps.stores.measurements.get(scope, summary.measurementSummaryId);
+  if (existing !== undefined && summary.updatedAt < existing.updatedAt) {
+    return { status: 200, body: existing };
+  }
+  await deps.stores.measurements.put(summary);
+  return { status: existing === undefined ? 201 : 200, body: summary };
+};
+
+export const getMeasurement: Handler = async ({ deps, params }) => {
+  const scope = runScopeFrom(params);
+  const measurementSummaryId = pathId("meas", params, "measurementSummaryId");
+  const summary = await deps.stores.measurements.get(scope, measurementSummaryId);
+  if (summary === undefined) {
+    throw new HttpError(
+      404,
+      "not_found",
+      `measurement summary ${measurementSummaryId} does not exist in this run`,
+    );
+  }
+  return { status: 200, body: summary };
+};
+
+export const listMeasurementsByNode: Handler = async ({ deps, params }) => {
+  const scope = runScopeFrom(params);
+  const nodeId = pathId("node", params, "nodeId");
+  await requireRun(deps.stores, scope);
+  const items = await deps.stores.measurements.listByNode(scope, nodeId);
+  return { status: 200, body: pageBody({ items }) };
+};
+
+export const listMeasurements: Handler = async ({ deps, request, params }) => {
+  const scope = runScopeFrom(params);
+  const page = parsePageQuery(request.query);
+  await requireRun(deps.stores, scope);
+  const result = await withCursor(() => deps.stores.measurements.listByRun(scope, page));
+  return { status: 200, body: pageBody(result) };
 };
 
 export const putArtifact: Handler = async ({ deps, request, params }) => {

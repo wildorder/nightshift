@@ -72,17 +72,21 @@ import {
   getCheckpoint,
   getDecision,
   getExamination,
+  getMeasurement,
   getVerification,
   listArtifacts,
   listCheckpoints,
   listDecisions,
   listExaminationsByNode,
+  listMeasurements,
+  listMeasurementsByNode,
   listRoutingDecisionsByNode,
   listVerificationsByNode,
   putArtifact,
   putCheckpoint,
   putDecision,
   putExamination,
+  putMeasurement,
   putRoutingDecision,
   putVerification,
 } from "./operations/records.js";
@@ -413,6 +417,32 @@ export const ROUTES: readonly Route[] = [
     path: `${NODE}/routing-decisions`,
     operation: "routingDecision.listByNode",
     handler: listRoutingDecisionsByNode,
+  },
+
+  // Measurement summaries (P20).
+  {
+    method: "GET",
+    path: `${RUN}/measurements`,
+    operation: "measurement.listByRun",
+    handler: listMeasurements,
+  },
+  {
+    method: "PUT",
+    path: `${RUN}/measurements/{measurementSummaryId}`,
+    operation: "measurement.put",
+    handler: putMeasurement,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/measurements/{measurementSummaryId}`,
+    operation: "measurement.get",
+    handler: getMeasurement,
+  },
+  {
+    method: "GET",
+    path: `${NODE}/measurements`,
+    operation: "measurement.listByNode",
+    handler: listMeasurementsByNode,
   },
 
   // Artifacts. The upload route signs; the client uploads; the record follows (A-08).

@@ -18,6 +18,7 @@ import {
   ExecutionNodeSchema,
   GateHealthSchema,
   JobContractSchema,
+  MeasurementSummarySchema,
   MembershipSchema,
   OrgComputeUsageSchema,
   OrgConfigSchema,
@@ -510,6 +511,36 @@ export const createAwsStores = ({
       },
       listByNode: (scope, nodeId) =>
         listAll(RoutingDecisionSchema, inIndex(keys.nodeIndexPartition(scope, nodeId, "ROUTE"))),
+    },
+
+    measurements: {
+      // A summary is updated in place; the condition refuses a write whose
+      // `updatedAt` is older than the stored one, and that refusal is a no-op.
+      put: async (summary) => {
+        const parsed = MeasurementSummarySchema.parse(summary);
+        const scope = runScopeOf(parsed);
+        try {
+          await table.put({
+            TableName: tableName,
+            Item: toItem(
+              "MeasurementSummary",
+              keys.runRecord(scope, "MEAS", parsed.measurementSummaryId),
+              parsed,
+              keys.nodeIndex(scope, parsed.executionNodeId, "MEAS", parsed.measurementSummaryId),
+            ),
+            ConditionExpression: "attribute_not_exists(#pk) OR #updatedAt <= :updatedAt",
+            ExpressionAttributeNames: { "#pk": "PK", "#updatedAt": "updatedAt" },
+            ExpressionAttributeValues: { ":updatedAt": parsed.updatedAt },
+          });
+        } catch (error) {
+          if (!isConditionalCheckFailure(error)) throw error;
+        }
+      },
+      get: (scope, id) => getRecord(MeasurementSummarySchema, keys.runRecord(scope, "MEAS", id)),
+      listByNode: (scope, nodeId) =>
+        listAll(MeasurementSummarySchema, inIndex(keys.nodeIndexPartition(scope, nodeId, "MEAS"))),
+      listByRun: (scope, page) =>
+        listPage(MeasurementSummarySchema, inTable(keys.runRecordPartition(scope, "MEAS")), page),
     },
 
     artifacts: {
