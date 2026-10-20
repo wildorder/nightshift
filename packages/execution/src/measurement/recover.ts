@@ -53,7 +53,13 @@ export const LIVE_WINDOW_MS = 2 * 60_000;
 
 export interface RecoveryResult {
   recovered: { agentId: string; launchId: string; observations: number }[];
-  completed: { agentId: string; launchId: string; chunk: number; artifactId: string }[];
+  completed: {
+    agentId: string;
+    launchId: string;
+    chunk: number;
+    artifactId: string;
+    note?: string;
+  }[];
   lost: { agentId: string; launchId: string }[];
   live: { agentId: string; launchId: string }[];
   /** Journals whose last line was cut short; their complete lines were recovered. */
@@ -143,7 +149,13 @@ export const recoverMeasurementJournals = async (
   scope: RunScope,
   options: RecoveryOptions = {},
 ): Promise<RecoveryResult> => {
-  const result: RecoveryResult = { recovered: [], completed: [], lost: [], live: [], torn: [] };
+  const result: RecoveryResult = {
+    recovered: [],
+    completed: [],
+    lost: [],
+    live: [],
+    torn: [],
+  };
   const dir = environment.paths.measurementsDir(scope.runId);
   let files: string[];
   try {
@@ -211,7 +223,11 @@ export const recoverMeasurementJournals = async (
     }
     const found = summary.segments.find((s) => s.launchId === launchId);
     if (found === undefined) continue;
-    const ref: LaunchRef = { agentId: summary.agentId, launchId, segment: found.segment };
+    const ref: LaunchRef = {
+      agentId: summary.agentId,
+      launchId,
+      segment: found.segment,
+    };
 
     const all = observationLines(lines);
     const cost: ReportedCost = {};
@@ -301,6 +317,41 @@ export const recoverMeasurementJournals = async (
         fromSequence: line.fromSequence,
         toSequence: line.toSequence,
       };
+      const cursor = host
+        .summary()
+        .segments.find((s) => s.launchId === launchId)?.publishedSequence;
+      if (cursor !== undefined && cursor >= line.toSequence) {
+        // The stored summary already records this range: only the markers are missing.
+        const indexing = lines.find(
+          (l) =>
+            l.kind === "indexing" &&
+            l.indexArtifactId === host.summary().ledger.indexArtifactId &&
+            !lines.some((o) => o.kind === "indexed" && o.indexArtifactId === l.indexArtifactId),
+        );
+        try {
+          if (indexing !== undefined && indexing.kind === "indexing") {
+            await appendJournalLine(path, {
+              kind: "indexed",
+              indexArtifactId: indexing.indexArtifactId,
+            });
+          }
+          await appendJournalLine(path, {
+            kind: "published",
+            chunk: line.chunk,
+            artifactId: line.artifactId,
+          });
+          result.completed.push({
+            agentId,
+            launchId,
+            chunk: line.chunk,
+            artifactId: line.artifactId,
+            note: "already recorded in the stored summary; marker written",
+          });
+        } catch {
+          ok = false;
+        }
+        continue;
+      }
       if (await completeIntent(host, intent)) {
         result.completed.push({
           agentId,
@@ -349,9 +400,10 @@ export const recoverMeasurementJournals = async (
       finalSegment !== undefined &&
       finalSegment.publishedSequence >= finalSegment.receivedSequence
     ) {
-      await appendJournalLine(path, { kind: "closed", at: nowIso(environment.clock) }).catch(
-        () => {},
-      );
+      await appendJournalLine(path, {
+        kind: "closed",
+        at: nowIso(environment.clock),
+      }).catch(() => {});
       await rm(path, { force: true });
     } else {
       present.add(`${agentId}__${launchId}`);
@@ -374,7 +426,11 @@ export const recoverMeasurementJournals = async (
         ...state,
         segments: state.segments.map((s) =>
           s === segment
-            ? { ...s, open: false, coverage: s.receivedSequence > 0 ? "partial" : "unknown" }
+            ? {
+                ...s,
+                open: false,
+                coverage: s.receivedSequence > 0 ? "partial" : "unknown",
+              }
             : s,
         ),
       };
@@ -388,7 +444,10 @@ export const recoverMeasurementJournals = async (
         },
         at,
       );
-      result.lost.push({ agentId: summary.agentId, launchId: segment.launchId });
+      result.lost.push({
+        agentId: summary.agentId,
+        launchId: segment.launchId,
+      });
     }
     const price = options.price?.(state.route);
     const valued = {

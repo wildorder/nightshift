@@ -144,7 +144,11 @@ const build = async (options: { stepMs?: number } = {}) => {
       scope: f.scope,
       executionNodeId: nodeId,
       agent,
-      route: { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" },
+      route: {
+        harness: "claude",
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+      },
       routingDecisionId: null,
       journalFs,
       ...extra,
@@ -293,7 +297,11 @@ describe("the receipt boundary", () => {
         scope: world.f.scope,
         executionNodeId: world.f.rootNodeId,
         agent: world.agent,
-        route: { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" },
+        route: {
+          harness: "claude",
+          provider: "anthropic",
+          model: "claude-sonnet-5",
+        },
         routingDecisionId: null,
       },
     );
@@ -371,13 +379,19 @@ describe("segments and seams", () => {
       receivedSequence: 0,
     });
     const journal = await readJournal(world.journalPath(ref.launchId));
-    expect(journal.lines[0]).toMatchObject({ kind: "opened", agentId: world.agent.agentId });
+    expect(journal.lines[0]).toMatchObject({
+      kind: "opened",
+      agentId: world.agent.agentId,
+    });
   });
 
   it("takes the baseline from the previous segment's raw session snapshot, and stamps the new launch", async () => {
     const world = await build();
     const recorder = world.recorder();
-    const first = await recorder.startSegment({ sessionId: "s1", resumedSession: false });
+    const first = await recorder.startSegment({
+      sessionId: "s1",
+      resumedSession: false,
+    });
     recorder.sink.observe({
       ...request("snap1"),
       kind: "cumulative_snapshot",
@@ -386,10 +400,15 @@ describe("segments and seams", () => {
       counters: { inputTokens: 100 },
     } as HarnessObservation);
     await recorder.close();
-    const second = await recorder.startSegment({ sessionId: "s1", resumedSession: true });
+    const second = await recorder.startSegment({
+      sessionId: "s1",
+      resumedSession: true,
+    });
     expect(second.launchId).not.toBe(first.launchId);
     expect(second.segment).toBe(1);
-    expect(recorder.summary().segments[1]?.baseline).toEqual({ inputTokens: 100 });
+    expect(recorder.summary().segments[1]?.baseline).toEqual({
+      inputTokens: 100,
+    });
     recorder.sink.observe({
       ...request("snap2"),
       kind: "cumulative_snapshot",
@@ -413,18 +432,36 @@ describe("segments and seams", () => {
 
   it("retains usage for each exit variant and keeps request totals when a cancel reports none", async () => {
     const exits: HarnessExit[] = [
-      { kind: "completed", usage: { inputTokens: 40, outputTokens: 8 }, observedModel: "claude-x" },
-      { kind: "failed", exitCode: 1, usage: { inputTokens: 40, outputTokens: 8 } },
+      {
+        kind: "completed",
+        usage: { inputTokens: 40, outputTokens: 8 },
+        observedModel: "claude-x",
+      },
+      {
+        kind: "failed",
+        exitCode: 1,
+        usage: { inputTokens: 40, outputTokens: 8 },
+      },
       { kind: "cancelled", usage: { inputTokens: 40, outputTokens: 8 } },
-      { kind: "interrupted", signal: "SIGKILL", usage: { inputTokens: 40, outputTokens: 8 } },
+      {
+        kind: "interrupted",
+        signal: "SIGKILL",
+        usage: { inputTokens: 40, outputTokens: 8 },
+      },
     ];
     for (const exit of exits) {
       const world = await build();
       const recorder = world.recorder();
       await recorder.startSegment({ resumedSession: false });
       const { summary } = await recorder.close(exit);
-      expect(summary.totals).toMatchObject({ inputTokens: 40, outputTokens: 8 });
-      expect(summary.segments[0]).toMatchObject({ open: false, exitKind: exit.kind });
+      expect(summary.totals).toMatchObject({
+        inputTokens: 40,
+        outputTokens: 8,
+      });
+      expect(summary.segments[0]).toMatchObject({
+        open: false,
+        exitKind: exit.kind,
+      });
     }
     const world = await build();
     const recorder = world.recorder();
@@ -595,7 +632,11 @@ describe("the publication protocol under a crash", () => {
     expect(after.map((a) => a.artifactId)).toEqual(before.map((a) => a.artifactId));
     const stored = await world.stored();
     expect(stored.ledger.artifactIds).toEqual([before[0]?.artifactId]);
-    expect(stored.ledger).toMatchObject({ chunks: 1, observationCount: 3, publishedCount: 3 });
+    expect(stored.ledger).toMatchObject({
+      chunks: 1,
+      observationCount: 3,
+      publishedCount: 3,
+    });
     expect(stored.segments[0]?.launchId).toBe(ref.launchId);
   });
 
@@ -619,7 +660,10 @@ describe("the publication protocol under a crash", () => {
     expect(after.ledger).toEqual(stored.ledger);
     expect(after.totals).toEqual(stored.totals);
     expect(after.valuation).toEqual(stored.valuation);
-    expect(after.segments[0]).toMatchObject({ receivedSequence: 3, publishedSequence: 3 });
+    expect(after.segments[0]).toMatchObject({
+      receivedSequence: 3,
+      publishedSequence: 3,
+    });
   });
 
   it("(4) a persistent summary put failure during close keeps the journal; recovery publishes once", async () => {
@@ -750,6 +794,50 @@ describe("the publication protocol under a crash", () => {
     }
   });
 
+  it("(5d) a crash after the rollover's summary put, before the markers: recovery adds nothing and writes the markers", async () => {
+    const world = await build();
+    const seed = world.recorder({ pid: DEAD_PID });
+    await seed.startSegment({ resumedSession: false });
+    const empty = seed.summary();
+    const fake = Array.from({ length: 511 }, () => world.f.ids.next("art"));
+    const recorder = world.recorder({
+      pid: DEAD_PID,
+      existing: { ...empty, ledger: { ...empty.ledger, artifactIds: fake } },
+      limits: { publishEvery: { observations: 1, ms: 3_600_000 } },
+    });
+    const ref = await recorder.startSegment({ resumedSession: true });
+    recorder.sink.observe(request("a"));
+    await recorder.publish();
+    world.faults.refuseMarkers = true;
+    recorder.sink.observe(request("b"));
+    await recorder.publish();
+    const stored = await world.stored();
+    expect(stored.ledger.indexArtifactId).toBeDefined();
+    expect(stored.ledger.artifactIds).toEqual([]);
+    const chunks = stored.ledger.chunks;
+    const artifacts = await world.artifacts();
+    const path = world.journalPath(ref.launchId);
+    expect((await readJournal(path)).lines.filter((l) => l.kind === "published")).toHaveLength(1);
+
+    world.faults.refuseMarkers = false;
+    const result = await recoverMeasurementJournals(world.later, world.f.scope);
+    expect(result.completed.length).toBeGreaterThan(0);
+    const after = await world.stored();
+    expect(after.ledger.chunks).toBe(chunks);
+    expect(after.ledger.artifactIds).toEqual([]);
+    expect(after.ledger.indexArtifactId).toBe(stored.ledger.indexArtifactId);
+    expect(await world.artifacts()).toEqual(artifacts);
+    const second = await recoverMeasurementJournals(world.later, world.f.scope);
+    expect(second).toEqual({
+      recovered: [],
+      completed: [],
+      lost: [],
+      live: [],
+      torn: [],
+    });
+    expect(await world.stored()).toEqual(after);
+  });
+
   it("(6) running recovery again is deep-equal and writes no artifact", async () => {
     const world = await build();
     const recorder = crashed(world);
@@ -763,7 +851,13 @@ describe("the publication protocol under a crash", () => {
     const first = await world.stored();
     const artifacts = await world.artifacts();
     const second = await recoverMeasurementJournals(world.later, world.f.scope);
-    expect(second).toEqual({ recovered: [], completed: [], lost: [], live: [], torn: [] });
+    expect(second).toEqual({
+      recovered: [],
+      completed: [],
+      lost: [],
+      live: [],
+      torn: [],
+    });
     expect(await world.stored()).toEqual(first);
     expect(await world.artifacts()).toEqual(artifacts);
   });
@@ -808,7 +902,10 @@ describe("liveness and loss", () => {
     expect(result.lost).toEqual([{ agentId: world.agent.agentId, launchId: ref.launchId }]);
     const stored = await world.stored();
     expect(stored.gaps.some((gap) => gap.reason === "journal_lost")).toBe(true);
-    expect(stored.segments[0]).toMatchObject({ open: false, coverage: "unknown" });
+    expect(stored.segments[0]).toMatchObject({
+      open: false,
+      coverage: "unknown",
+    });
     expect(stored.coverage).not.toBe("complete");
   });
 

@@ -58,7 +58,12 @@ export const emptySummary = (input: EmptySummaryInput): MeasurementSummary => ({
   totals: {},
   coverage: "unknown",
   gaps: [],
-  ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+  ledger: {
+    chunks: 0,
+    artifactIds: [],
+    observationCount: 0,
+    publishedCount: 0,
+  },
   valuation: { source: "unknown" },
   createdAt: input.at,
   updatedAt: input.at,
@@ -285,7 +290,10 @@ const foldInto = (
       ...replaceSegment(summary, index, next),
       observedModels,
       gaps: coalesceGaps([...subtractGaps(summary.gaps, before.gaps), ...after.gaps]),
-      ledger: { ...summary.ledger, observationCount: summary.ledger.observationCount + 1 },
+      ledger: {
+        ...summary.ledger,
+        observationCount: summary.ledger.observationCount + 1,
+      },
     },
     at,
   );
@@ -309,7 +317,10 @@ export const closeSegment = (
   const index = indexOfSegment(summary, launch);
   const segment = summary.segments[index];
   if (segment === undefined || !segment.open) return summary;
-  return { ...replaceSegment(summary, index, { ...segment, open: false }), updatedAt: at };
+  return {
+    ...replaceSegment(summary, index, { ...segment, open: false }),
+    updatedAt: at,
+  };
 };
 
 /** Records a known hole in the evidence. */
@@ -319,12 +330,16 @@ export const markGap = (
   at: string,
 ): MeasurementSummary =>
   rollup(
-    { ...summary, gaps: coalesceGaps([...summary.gaps, { ...gap, count: gap.count ?? 1 }]) },
+    {
+      ...summary,
+      gaps: coalesceGaps([...summary.gaps, { ...gap, count: gap.count ?? 1 }]),
+    },
     at,
   );
 
 /**
- * Records a published ledger chunk. Idempotent on the artifact id. The id is
+ * Records a published ledger chunk. Idempotent on the artifact id and on the
+ * segment's published cursor. The id is
  * always appended; when that takes the list past {@link MAX_LEDGER_ARTIFACT_IDS}
  * the result says `overflow`, and the recorder writes an index artifact holding
  * the listed ids and calls {@link rollLedgerIndex}.
@@ -345,6 +360,9 @@ export const markPublished = (
   const index = indexOfSegment(summary, published.segment);
   const segment = summary.segments[index];
   if (segment === undefined) return { summary, overflow: false };
+  // The segment's cursor is the durable record that this range was delivered, even
+  // after a rollover emptied the direct list.
+  if (segment.publishedSequence >= published.toSequence) return { summary, overflow: false };
   const artifactIds = [...summary.ledger.artifactIds, published.artifactId];
   const next = replaceSegment(summary, index, {
     ...segment,

@@ -58,7 +58,12 @@ const snapshot = (
   counterScope: "launch" | "session",
   extra: Record<string, unknown> = {},
 ): MeasurementObservation =>
-  ({ ...base("cumulative_snapshot"), counters, counterScope, ...extra }) as MeasurementObservation;
+  ({
+    ...base("cumulative_snapshot"),
+    counters,
+    counterScope,
+    ...extra,
+  }) as MeasurementObservation;
 const terminal = (
   counters: MeasurementCounters,
   extra: Record<string, unknown> = {},
@@ -100,7 +105,9 @@ describe("reconcileSegment", () => {
   });
 
   it("excludes session sources and says so when a resume has no baseline", () => {
-    const r = reconcileSegment([snapshot(out(150), "session")], { resumedSession: true });
+    const r = reconcileSegment([snapshot(out(150), "session")], {
+      resumedSession: true,
+    });
     expect(r.counters).toEqual({});
     expect(r.coverage).toBe("unknown");
     expect(r.gaps.map((g) => g.reason)).toContain("baseline_unknown");
@@ -122,7 +129,9 @@ describe("reconcileSegment", () => {
     expect(gap?.detail).toContain("requests 100 vs terminal 40");
   });
 
-  const childRequest = request(out(30), { childRef: { kind: "agent", id: "c1" } });
+  const childRequest = request(out(30), {
+    childRef: { kind: "agent", id: "c1" },
+  });
   it("excludes children under an includes_children aggregate and reports them", () => {
     const r = reconcileSegment(
       [childRequest, terminal(out(100), { inclusion: "includes_children" })],
@@ -182,8 +191,16 @@ describe("reconcileSegment", () => {
     expect(agree.counters.inputIncludesCache).toBe(true);
     const differ = reconcileSegment(
       [
-        request({ inputTokens: 1000, outputTokens: 5, inputIncludesCache: true }),
-        terminal({ inputTokens: 300, outputTokens: 5, inputIncludesCache: false }),
+        request({
+          inputTokens: 1000,
+          outputTokens: 5,
+          inputIncludesCache: true,
+        }),
+        terminal({
+          inputTokens: 300,
+          outputTokens: 5,
+          inputIncludesCache: false,
+        }),
       ],
       fresh(),
     );
@@ -211,7 +228,12 @@ describe("fold", () => {
     });
   };
   const started = (opts: { resumedSession?: boolean; baseline?: MeasurementCounters } = {}) =>
-    startSegment(summary0(), launch, { sessionId: "s1", resumedSession: false, at: T(0), ...opts });
+    startSegment(summary0(), launch, {
+      sessionId: "s1",
+      resumedSession: false,
+      at: T(0),
+      ...opts,
+    });
 
   it("is idempotent per sequence", () => {
     const o = request(out(10), { model: "m1" });
@@ -297,7 +319,10 @@ describe("fold", () => {
     });
     s = foldObservation(
       s,
-      { ...snapshot(out(150), "session", { occurredAt: T(4) }), launch: second },
+      {
+        ...snapshot(out(150), "session", { occurredAt: T(4) }),
+        launch: second,
+      },
       1,
       T(4),
     );
@@ -321,13 +346,14 @@ describe("fold", () => {
   });
 
   it("reports ledger overflow at 512 ids and rolls them into an index", () => {
-    let s = foldObservation(started(), request(out(1)), 1, T(1));
+    let s = started();
+    for (let i = 0; i < 513; i++) s = foldObservation(s, request(out(i + 1)), i + 1, T(1));
     let overflow = false;
     for (let i = 0; i < 513; i++) {
       const artifactId = parseId("art", `art_${String(i).padStart(26, "0")}`);
       const r = markPublished(
         s,
-        { segment: launch, artifactId, toSequence: 1, observations: 1 },
+        { segment: launch, artifactId, toSequence: i + 1, observations: 1 },
         T(2),
       );
       s = r.summary;
@@ -335,8 +361,8 @@ describe("fold", () => {
       if (i < 512) expect(overflow).toBe(false);
     }
     expect(overflow).toBe(true);
-    expect(s.ledger.publishedCount).toBe(1);
-    expect(s.segments[0]?.publishedSequence).toBe(1);
+    expect(s.ledger.publishedCount).toBe(513);
+    expect(s.segments[0]?.publishedSequence).toBe(513);
     const again = markPublished(
       s,
       {
@@ -348,10 +374,67 @@ describe("fold", () => {
       T(3),
     );
     expect(again.summary).toBe(s);
+    const index0 = parseId("art", `art_${"Z".repeat(26)}`);
+    const emptied = rollLedgerIndex(s, index0, T(3));
+    const replay = markPublished(
+      emptied,
+      {
+        segment: launch,
+        artifactId: parseId("art", `art_${"0".repeat(26)}`),
+        toSequence: 513,
+        observations: 1,
+      },
+      T(3),
+    );
+    expect(replay).toEqual({ summary: emptied, overflow: false });
+    expect(replay.summary.ledger.artifactIds).toEqual([]);
     const index = parseId("art", `art_${"Z".repeat(26)}`);
     const rolled = rollLedgerIndex(s, index, T(4));
     expect(rolled.ledger.artifactIds).toEqual([]);
     expect(rolled.ledger.indexArtifactId).toBe(index);
+  });
+
+  it("markPublished is a no-op once the segment cursor covers the range, and records a new one", () => {
+    let s = started();
+    for (let i = 1; i <= 3; i++) s = foldObservation(s, request(out(i)), i, T(1));
+    const first = markPublished(
+      s,
+      {
+        segment: launch,
+        artifactId: parseId("art", `art_${"1".repeat(26)}`),
+        toSequence: 2,
+        observations: 2,
+      },
+      T(2),
+    );
+    expect(first.summary.ledger.chunks).toBe(1);
+    const covered = markPublished(
+      {
+        ...first.summary,
+        ledger: { ...first.summary.ledger, artifactIds: [] },
+      },
+      {
+        segment: launch,
+        artifactId: parseId("art", `art_${"2".repeat(26)}`),
+        toSequence: 2,
+        observations: 2,
+      },
+      T(3),
+    );
+    expect(covered.summary.ledger.chunks).toBe(1);
+    expect(covered.summary.ledger.artifactIds).toEqual([]);
+    const fresh = markPublished(
+      first.summary,
+      {
+        segment: launch,
+        artifactId: parseId("art", `art_${"3".repeat(26)}`),
+        toSequence: 3,
+        observations: 1,
+      },
+      T(4),
+    );
+    expect(fresh.summary.ledger.chunks).toBe(2);
+    expect(fresh.summary.segments[0]?.publishedSequence).toBe(3);
   });
 });
 
@@ -397,7 +480,10 @@ describe("legacySummaryOf", () => {
     } as unknown as RoutingDecision;
     const s = legacySummaryOf(agent, decision, T(1));
     expect(s.coverage).toBe("legacy");
-    expect(s.valuation).toMatchObject({ source: "reported", reportedUsd: 0.25 });
+    expect(s.valuation).toMatchObject({
+      source: "reported",
+      reportedUsd: 0.25,
+    });
     expect(s.totals).toEqual({ inputTokens: 10, outputTokens: 5 });
     expect(s.gaps[0]?.reason).toBe("adapter_unsupported");
     expect(s.segments).toHaveLength(1);
@@ -425,7 +511,12 @@ describe("normalize and value", () => {
 
   it("produces exclusive input", () => {
     const usage = routeUsageFromCounters(
-      { inputTokens: 1000, cacheReadTokens: 600, cacheWriteTokens: 100, inputIncludesCache: true },
+      {
+        inputTokens: 1000,
+        cacheReadTokens: 600,
+        cacheWriteTokens: 100,
+        inputIncludesCache: true,
+      },
       { reportedUsd: 1 },
     );
     expect(usage).toEqual({
@@ -435,7 +526,9 @@ describe("normalize and value", () => {
       inputIncludesCache: false,
       actualCostUsd: 1,
     });
-    expect(routeUsageFromCounters({ outputTokens: 3 })).toEqual({ outputTokens: 3 });
+    expect(routeUsageFromCounters({ outputTokens: 3 })).toEqual({
+      outputTokens: 3,
+    });
   });
 
   it("values inclusive and exclusive input to the same dollars", () => {
