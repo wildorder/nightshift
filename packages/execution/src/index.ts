@@ -225,6 +225,15 @@ export {
   startRun,
 } from "./start-run.js";
 export {
+  type RecordStepSkipInput,
+  type RecordStepTimeoutInput,
+  recordStepSkip,
+  recordStepTimeout,
+  runDecisions,
+  runVerifications,
+  StepAdjustmentRefusedError,
+} from "./step-adjustments.js";
+export {
   MAX_STRAND_FIX_ROUNDS,
   strandBranch,
   strandContinuing,
