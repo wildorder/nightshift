@@ -6,6 +6,8 @@ import {
   createLocalPaths,
   credentialsPath,
   idTail,
+  measurementJournalPath,
+  measurementsDirPath,
   profilePath,
   runStateDir,
   scratchPath,
@@ -157,6 +159,23 @@ describe("the files and directories underneath", () => {
 
 describe("the LocalPaths port", () => {
   const at = { env: { NIGHTSHIFT_STATE_DIR: "/state" }, platform: "linux" as const, home: HOME };
+
+  it("names a run's measurement journals so both ids parse back from the file name", () => {
+    expect(measurementsDirPath("run_abc", at)).toBe(
+      join("/state", "runs", "run_abc", "measurements"),
+    );
+    const file = measurementJournalPath("run_abc", "agent_x", "launch_1", at);
+    expect(file).toBe(
+      join("/state", "runs", "run_abc", "measurements", "agent_x__launch_1.ndjson"),
+    );
+    const [agentId, launchId] = (file.split(/[\\/]/).at(-1) ?? "")
+      .replace(/\.ndjson$/, "")
+      .split("__");
+    expect([agentId, launchId]).toEqual(["agent_x", "launch_1"]);
+    const paths = createLocalPaths(at);
+    expect(paths.measurementsDir("run_abc")).toBe(measurementsDirPath("run_abc", at));
+    expect(paths.measurementJournal("run_abc", "agent_x", "launch_1")).toBe(file);
+  });
 
   it("answers the same paths the module's own functions do", () => {
     const paths = createLocalPaths(at);

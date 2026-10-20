@@ -325,6 +325,9 @@ export const localPathsIn = (stateDir: string): LocalPaths => ({
   spool: (runId) => join(stateDir, "runs", runId, "spool.ndjson"),
   transcript: (runId, agentId) =>
     join(stateDir, "runs", runId, "agents", agentId, "transcript.jsonl"),
+  measurementsDir: (runId) => join(stateDir, "runs", runId, "measurements"),
+  measurementJournal: (runId, agentId, launchId) =>
+    join(stateDir, "runs", runId, "measurements", `${agentId}__${launchId}.ndjson`),
   scratch: (checkout) =>
     join(stateDir, "t", createHash("sha256").update(checkout).digest("hex").slice(0, 12)),
 });
