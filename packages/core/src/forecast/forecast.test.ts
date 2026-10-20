@@ -18,7 +18,7 @@ const plan = () =>
       { id: "unit", command: "npm test" },
       { id: "db-test", command: "bash scripts/db.sh test" },
       { id: "e2e", command: "npm run test:e2e" },
-      { id: "nightly", command: "npm run nightly", at: "end" },
+      { id: "nightly", command: "npm run nightly", at: "end", timeoutSeconds: 3600 },
     ],
     measured: new Map([
       ["setup:install", measured(3_000, 0, { seeded: true })],
@@ -312,5 +312,100 @@ describe("the catalogue", () => {
     const all = recommend(plan(), resolved);
     expect(all.find((r) => r.stepId === "nightly")).toBeUndefined();
     expect(all.at(-1)?.title).toBe("an examined job verifies twice");
+  });
+});
+
+describe("the timeout recommendation", () => {
+  const planOf = (
+    verification: Parameters<typeof forecast>[0]["verification"],
+    steps: Record<string, MeasuredStep>,
+  ) =>
+    forecast({
+      setup: [],
+      verification,
+      measured: new Map(Object.entries(steps)),
+      landings: { count: 10, source: "default" },
+    });
+  const timeoutFacts = (p: ReturnType<typeof planOf>) =>
+    recommend(p, new Map()).filter((r) => r.title.includes("timeout"));
+
+  it("recommends 1.5× the measured time for a step at 85% of its timeout", () => {
+    const p = planOf([{ id: "trial", command: "x", timeoutSeconds: 3000 }], {
+      trial: measured(2_550_000),
+    });
+    const [found, ...rest] = timeoutFacts(p);
+    expect(rest).toEqual([]);
+    expect(found?.title).toBe("trial runs close to its timeout");
+    expect(found?.rule).toBe(7);
+    expect(found?.savingMs).toBeUndefined();
+    expect(found?.evidence[0]).toBe("measured 42m 30s against a timeout of 50m 00s");
+    expect(found?.edit).toEqual({
+      stepId: "trial",
+      set: { timeoutSeconds: 3825 },
+    });
+  });
+
+  it("says nothing of a step at half its timeout", () => {
+    const p = planOf([{ id: "trial", command: "x", timeoutSeconds: 3000 }], {
+      trial: measured(1_500_000),
+    });
+    expect(timeoutFacts(p)).toEqual([]);
+  });
+
+  it("recommends 1.5× the cap for a step the timeout killed, saying at least", () => {
+    const p = planOf([{ id: "trial", command: "x", timeoutSeconds: 3600 }], {
+      trial: measured(3_600_000, 0, { exitCode: 124, timedOut: true }),
+    });
+    const [found] = timeoutFacts(p);
+    expect(found?.title).toBe("trial was killed by its timeout");
+    expect(found?.evidence[0]).toContain("at least 1h 00m: the timeout killed it");
+    expect(found?.edit).toEqual({
+      stepId: "trial",
+      set: { timeoutSeconds: 5400 },
+    });
+  });
+
+  it("gives the fix without an edit to a killed step already at the maximum", () => {
+    const p = planOf([{ id: "trial", command: "x", timeoutSeconds: 7200 }], {
+      trial: measured(7_200_000, 0, { exitCode: 124, timedOut: true }),
+    });
+    const [found] = timeoutFacts(p);
+    expect(found?.fix).toContain("skipping the step");
+    expect(found?.edit).toBeUndefined();
+  });
+
+  it("caps the recommended seconds at the maximum", () => {
+    const p = planOf([{ id: "trial", command: "x", timeoutSeconds: 6000 }], {
+      trial: measured(5_400_000),
+    });
+    expect(timeoutFacts(p)[0]?.edit?.set).toEqual({ timeoutSeconds: 7200 });
+  });
+
+  it("carries each step's timeout in the plan", () => {
+    const p = forecast({
+      setup: [{ id: "install", command: "npm ci", timeoutSeconds: 120 }],
+      verification: [
+        { id: "plain", command: "x" },
+        { id: "slow", command: "y", timeoutSeconds: 900 },
+      ],
+      measured: new Map(),
+      landings: { count: 10, source: "default" },
+    });
+    expect(p.steps.map((s) => [s.id, s.timeoutMs])).toEqual([
+      ["setup:install", 120_000],
+      ["plain", 600_000],
+      ["slow", 900_000],
+    ]);
+  });
+
+  it("keeps two steps' recommendations apart", () => {
+    const p = planOf(
+      [
+        { id: "a", command: "x" },
+        { id: "b", command: "y" },
+      ],
+      { a: measured(540_000), b: measured(560_000) },
+    );
+    expect(timeoutFacts(p).map((r) => r.stepId)).toEqual(["a", "b"]);
   });
 });
