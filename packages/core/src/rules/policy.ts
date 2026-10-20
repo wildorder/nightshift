@@ -185,19 +185,37 @@ export const NO_CLIMB_REASON_PREFIXES: readonly string[] = [
  * estimate.
  */
 export const estimateCost = (
-  usage: Pick<RouteUsage, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens">,
+  usage: Pick<
+    RouteUsage,
+    "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "inputIncludesCache"
+  >,
   price: ModelPrice | undefined,
 ): number | undefined => {
   if (price === undefined) return undefined;
+  // Inclusive input already contains the cache tokens: price only the remainder
+  // at the input rate, so cached input is not charged twice.
+  const input =
+    usage.inputIncludesCache === true && usage.inputTokens !== undefined
+      ? Math.max(
+          0,
+          usage.inputTokens - (usage.cacheReadTokens ?? 0) - (usage.cacheWriteTokens ?? 0),
+        )
+      : usage.inputTokens;
   const perToken = (perMillion: number | undefined, tokens: number | undefined): number =>
     ((perMillion ?? 0) * (tokens ?? 0)) / 1_000_000;
   return (
-    perToken(price.inputPerMTok, usage.inputTokens) +
+    perToken(price.inputPerMTok, input) +
     perToken(price.outputPerMTok, usage.outputTokens) +
     perToken(price.cacheReadPerMTok ?? price.inputPerMTok, usage.cacheReadTokens) +
     perToken(price.cacheWritePerMTok ?? price.inputPerMTok, usage.cacheWriteTokens)
   );
 };
+
+const hasCounters = (usage: RouteUsage): boolean =>
+  usage.inputTokens !== undefined ||
+  usage.outputTokens !== undefined ||
+  usage.cacheReadTokens !== undefined ||
+  usage.cacheWriteTokens !== undefined;
 
 /**
  * Usage with its dollars labelled (D-P8-08): what the harness reported, else an
@@ -205,6 +223,8 @@ export const estimateCost = (
  */
 export const labelCost = (usage: RouteUsage, price: ModelPrice | undefined): RouteUsage => {
   if (usage.actualCostUsd !== undefined) return { ...usage, costSource: "reported" };
+  // Missing counters are not a known zero: nothing was measured, so nothing is estimated.
+  if (!hasCounters(usage)) return { ...usage, costSource: "unknown" };
   const estimate = estimateCost(usage, price);
   return estimate === undefined
     ? { ...usage, costSource: "unknown" }
@@ -217,6 +237,8 @@ export interface Spend {
   readonly tokens: number;
   /** True when any dollar figure in `usd` is an estimate. */
   readonly estimated: boolean;
+  /** Usages with neither a dollar figure nor any token counter: unmeasured, not free. */
+  readonly unknown: number;
 }
 
 export const spendOf = (usages: readonly RouteUsage[]): Spend =>
@@ -227,8 +249,15 @@ export const spendOf = (usages: readonly RouteUsage[]): Spend =>
       estimated:
         total.estimated ||
         (usage.actualCostUsd === undefined && usage.estimatedCostUsd !== undefined),
+      unknown:
+        total.unknown +
+        (usage.actualCostUsd === undefined &&
+        usage.estimatedCostUsd === undefined &&
+        !hasCounters(usage)
+          ? 1
+          : 0),
     }),
-    { usd: 0, tokens: 0, estimated: false },
+    { usd: 0, tokens: 0, estimated: false, unknown: 0 },
   );
 
 /** Which budget, if any, `spend` has used up (D-P8-08). */
