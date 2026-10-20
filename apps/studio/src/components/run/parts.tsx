@@ -165,7 +165,9 @@ export const Verifications = ({
                   <td className="p-0.5">
                     {command.deferred !== undefined
                       ? `deferred: ${command.deferred.prerequisiteId}`
-                      : `exit ${command.exitCode}`}
+                      : command.skipped !== undefined
+                        ? `skipped: ${command.skipped.decisionId}`
+                        : `exit ${command.exitCode}`}
                   </td>
                   <td className="p-0.5">{durationMs(command.durationMs)}</td>
                   <td className="p-0.5">

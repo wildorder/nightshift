@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   recordStepSkip,
   recordStepTimeout,
+  resolveSteps,
   StepAdjustmentRefusedError,
 } from "./step-adjustments.js";
 
@@ -120,4 +121,63 @@ describe("recordStepSkip", () => {
 
 it("STEP_TIMED_OUT_EXIT_CODE equals the verification runner's TIMEOUT_EXIT_CODE", () => {
   expect(STEP_TIMED_OUT_EXIT_CODE).toBe(TIMEOUT_EXIT_CODE);
+});
+
+describe("resolveSteps", () => {
+  const page =
+    <T>(items: T[]) =>
+    async () => ({ items, cursor: undefined });
+  const storesOf = (decisions: unknown[], verifications: unknown[]) =>
+    ({
+      decisions: { listByRun: page(decisions) },
+      executionNodes: { listByRun: page([{ executionNodeId: "node_1" }]) },
+      verifications: { listByNode: async () => verifications },
+    }) as never;
+  const scope = {} as never;
+  const decision = (decisionId: string, context: string, createdAt: string) => ({
+    decisionId,
+    context,
+    createdAt,
+    rationale: "because",
+  });
+
+  it("hands the runner the raised timeout and cleanup time", async () => {
+    const resolved = await resolveSteps(
+      storesOf(
+        [decision("dec_1", "STEP TIMEOUT: trial timeoutSeconds=900 cleanupSeconds=60", "1")],
+        [],
+      ),
+      scope,
+      [
+        { id: "unit", command: "u" },
+        { id: "trial", command: "t" },
+      ] as never,
+    );
+    expect(resolved.runnable.map((step) => step.id)).toEqual(["unit", "trial"]);
+    expect(resolved.runnable[1]).toMatchObject({ timeoutSeconds: 900, cleanupSeconds: 60 });
+    expect(resolved.runnable[0]).not.toHaveProperty("timeoutSeconds");
+  });
+
+  it("excludes an honoured skip and keeps a refused one running", async () => {
+    const stores = (exitCode: number) =>
+      storesOf(
+        [decision("dec_1", "STEP SKIPPED: trial", "1")],
+        [
+          {
+            verificationId: "ver_1",
+            commitSha: "abc",
+            endedAt: "2",
+            commands: [{ stepId: "trial", exitCode }],
+          },
+        ],
+      );
+    const steps = [{ id: "trial", command: "t" }] as never;
+    const honoured = await resolveSteps(stores(STEP_TIMED_OUT_EXIT_CODE), scope, steps);
+    expect(honoured.runnable).toEqual([]);
+    expect(honoured.skipped.get("trial")).toBe("dec_1");
+    const refused = await resolveSteps(stores(1), scope, steps);
+    expect(refused.runnable.map((step) => step.id)).toEqual(["trial"]);
+    expect(refused.runnable[0]).not.toHaveProperty("skipNotHonoured");
+    expect(refused.notApplied[0]).toMatchObject({ stepId: "trial", decisionId: "dec_1" });
+  });
 });

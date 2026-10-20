@@ -4,9 +4,16 @@
  * decision written through the caller's own decision path: a strand's
  * `recordWorkerDecision`, or the root's. Nothing is written to the contract.
  */
-import type { Decision, ExecutionNodeId, Verification } from "@nightshift/contracts";
+import type {
+  Decision,
+  DecisionId,
+  ExecutionNodeId,
+  Verification,
+  VerificationStep,
+} from "@nightshift/contracts";
 import {
   type AdjustmentDecision,
+  effectiveSteps,
   formatStepSkippedContext,
   formatStepTimeoutContext,
   type Page,
@@ -140,4 +147,51 @@ export const runVerifications = async (
     ),
   );
   return lists.flat();
+};
+
+/** The steps of one verification once the run's adjustments are applied. */
+export interface ResolvedSteps {
+  /** The contract's order, raised timeouts applied; skipped steps are marked, not removed. */
+  readonly steps: readonly VerificationStep[];
+  /** The steps that run: not skipped. Plain contract steps, as the runner takes them. */
+  readonly runnable: readonly VerificationStep[];
+  /** step id -> decision id, for the steps whose skip is honoured. */
+  readonly skipped: ReadonlyMap<string, DecisionId>;
+  /** A skip that is not honoured: the step runs, and this says why. */
+  readonly notApplied: readonly { stepId: string; decisionId: string; reason: string }[];
+}
+
+/**
+ * Resolves `steps` through `effectiveSteps` from the run's decisions and its
+ * complete verification history as of now: the engine's token sees every node,
+ * so this is authoritative whatever a strand's reader could see.
+ */
+export const resolveSteps = async (
+  stores: Pick<ProjectStores, "decisions" | "executionNodes" | "verifications">,
+  scope: RunScope,
+  steps: readonly VerificationStep[],
+): Promise<ResolvedSteps> => {
+  const [decisions, verifications] = await Promise.all([
+    runDecisions(stores, scope),
+    runVerifications(stores, scope),
+  ]);
+  const effective = effectiveSteps(steps, decisions, verifications);
+  const skipped = new Map<string, DecisionId>();
+  const notApplied: { stepId: string; decisionId: string; reason: string }[] = [];
+  const runnable: VerificationStep[] = [];
+  const plain: VerificationStep[] = [];
+  for (const step of effective) {
+    const { skipped: skip, skipNotHonoured, ...rest } = step;
+    const clean = rest as VerificationStep;
+    plain.push(clean);
+    if (skip !== undefined) {
+      skipped.set(step.id, skip.decisionId as DecisionId);
+      continue;
+    }
+    if (skipNotHonoured !== undefined) {
+      notApplied.push({ stepId: step.id, ...skipNotHonoured });
+    }
+    runnable.push(clean);
+  }
+  return { steps: plain, runnable, skipped, notApplied };
 };
