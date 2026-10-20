@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { CommitSha, StrandPublicationBody } from "@nightshift/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { git, nodeGitRunner, revParse } from "./git/index.js";
-import { createStrandPublication } from "./publish.js";
+import { createPublicationQueue, createStrandPublication } from "./publish.js";
 
 const AT = Date.parse("2026-10-18T12:00:00.000Z");
 const made: string[] = [];
@@ -97,5 +97,38 @@ describe("a strand's branch, published as it moves (A-60)", () => {
     const two = await commit();
     await publish({ branch, head: two, repoPath: repo });
     expect(requests).toEqual([two]);
+  });
+});
+
+describe("a landing's publication (D-P10-22)", () => {
+  it("builds on where the record says the chain stands, so an engine that restarts carries it on", async () => {
+    const { repo, commit } = await repository();
+    const base = await commit();
+    // The control plane's record: the head the run last asked for, the tip.
+    let tip: CommitSha = base;
+    const requests: { head: string; expectedPredecessor: string }[] = [];
+    const engine = () =>
+      createPublicationQueue({
+        predecessor: async () => tip,
+        packDir: join(repo, ".git", "packs"),
+        upload: async (_pack, head) => ({ key: head }),
+        request: async (body) => {
+          requests.push({ head: body.head, expectedPredecessor: body.expectedPredecessor });
+          tip = body.head;
+        },
+        log: () => undefined,
+      });
+    const first = await commit();
+    await engine()({ head: first, programBranch: "program/x", repoPath: repo });
+    // The root is relaunched: a new engine, with nothing in memory.
+    const second = await commit();
+    await engine()({ head: second, programBranch: "program/x", repoPath: repo });
+    expect(requests).toEqual([
+      { head: first, expectedPredecessor: base },
+      { head: second, expectedPredecessor: first },
+    ]);
+    // A landing the record already holds raises nothing.
+    await engine()({ head: second, programBranch: "program/x", repoPath: repo });
+    expect(requests).toHaveLength(2);
   });
 });

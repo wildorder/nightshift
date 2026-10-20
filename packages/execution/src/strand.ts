@@ -12,16 +12,16 @@
  * Merges onto one strand are made one at a time, in this process: two of its
  * jobs finishing together must not race over the strand's checkout.
  */
-import {
-  blockingFindings,
-  type CommitSha,
-  type ExaminationFinding,
-  type ExecutionNode,
-  type ExecutionNodeId,
+import type {
+  CommitSha,
+  ExaminationFinding,
+  ExaminationRuling,
+  ExecutionNode,
+  ExecutionNodeId,
 } from "@nightshift/contracts";
 import { currentStepTime, STEP_TIMED_OUT_EXIT_CODE } from "@nightshift/core";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
-import { latestExamination, verificationEvidence } from "./examine.js";
+import { findingsToAnswer, verificationEvidence } from "./examine.js";
 import { gateDefinitions } from "./gate-repair.js";
 import {
   baseRef,
@@ -214,6 +214,7 @@ export const strandFailures = async (
     readonly cleanupSeconds?: number;
   }[];
   readonly findings: readonly ExaminationFinding[];
+  readonly rulings?: readonly ExaminationRuling[];
   readonly conflict?: string;
 }> => {
   const verification = [
@@ -262,16 +263,21 @@ export const strandFailures = async (
         : currentStepTime(declared, decisions, limitsOf(session.program))),
     };
   });
-  const examination =
+  // What the examination left to answer: its blocking findings, or an
+  // arbiter's upheld rulings, which are final (one rule with a job's fix).
+  const answer =
     node.status === "examination_failed"
-      ? await latestExamination(environment, session.scope, node.executionNodeId)
+      ? findingsToAnswer(
+          await environment.stores.examinations.listByNode(session.scope, node.executionNodeId),
+        )
       : undefined;
   const conflict = (node.outcomeReason ?? "").startsWith("integration_conflict")
     ? node.outcomeReason
     : undefined;
   return {
     failedChecks,
-    findings: examination === undefined ? [] : blockingFindings(examination),
+    findings: answer?.findings ?? [],
+    ...(answer?.rulings === undefined ? {} : { rulings: answer.rulings }),
     ...(conflict === undefined ? {} : { conflict }),
   };
 };

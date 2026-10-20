@@ -47,8 +47,14 @@ export interface StrandMove {
 export type PublishStrand = (move: StrandMove) => Promise<void>;
 
 export interface PublicationQueueOptions {
-  /** The branch's head at GitHub when the run was dispatched: the first intent's predecessor. */
-  readonly baseSha: CommitSha;
+  /**
+   * Where the chain stands, read from the control plane's record at each
+   * landing: the head the run last asked for, or GitHub's branch as the run
+   * found it. Never held by this process, so an engine that restarts (a root
+   * orchestrator relaunched mid-run) carries the chain on from where it is,
+   * not from where it was when the machine booted (admin-redesign, 2026-10-19).
+   */
+  readonly predecessor: () => Promise<CommitSha>;
   /** Where packs are written before upload; under the run's directory. */
   readonly packDir: string;
   /** Uploads the pack; answers its key in the artifact bucket (`bundleKey`). */
@@ -94,16 +100,17 @@ export const packCommits = async (
  * The hook `integrateNode` calls. Intents go out strictly in landing order,
  * one at a time, each after the previous one's request was accepted, because
  * the publisher resolves them in order and a later intent's predecessor is an
- * earlier one's head. A failure to raise an intent is logged and leaves the
- * predecessor where it was, so the next landing's intent covers both ranges.
+ * earlier one's head, as the record says it. A failure to raise an intent is
+ * logged and leaves the record where it was, so the next landing's intent
+ * covers both ranges.
  */
 export const createPublicationQueue = (options: PublicationQueueOptions): PublishLanding => {
-  let predecessor: CommitSha = options.baseSha;
   let chain: Promise<void> = Promise.resolve();
   return (landing) => {
     chain = chain.then(async () => {
-      if (landing.head === predecessor) return;
       try {
+        const predecessor = await options.predecessor();
+        if (landing.head === predecessor) return;
         const pack = await packCommits(
           landing.repoPath,
           options.packDir,
@@ -119,7 +126,6 @@ export const createPublicationQueue = (options: PublicationQueueOptions): Publis
         options.log(
           `publication requested: ${landing.programBranch} ${predecessor.slice(0, 12)} → ${landing.head.slice(0, 12)} (${pack.length} bytes)`,
         );
-        predecessor = landing.head;
       } catch (error) {
         options.log(
           `publication of ${landing.head.slice(0, 12)} could not be requested: ${error instanceof Error ? error.message : String(error)}; the next landing will carry it`,

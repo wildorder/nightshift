@@ -1746,6 +1746,35 @@ export const recordRulingLanded = async (
 };
 
 /**
+ * What the next attempt after the node's examinations must answer (D-P8-13,
+ * as amended 2026-09-25): an arbiter's upheld rulings, with the findings they
+ * uphold, which are final; otherwise the latest examination's open blocking
+ * findings; otherwise nothing. An upheld finding is no longer open, so it is
+ * never among the blocking ones: the rulings are where it is. One rule for a
+ * job's fix and a strand's fix round alike.
+ */
+export const findingsToAnswer = (
+  examinations: readonly Examination[],
+):
+  | {
+      readonly findings: readonly ExaminationFinding[];
+      readonly rulings?: readonly ExaminationRuling[];
+    }
+  | undefined => {
+  const last = latestOf(examinations);
+  if (last === undefined) return undefined;
+  const rulings = rulingsInForce(examinations);
+  if (rulings !== undefined) {
+    const ruled = new Set(rulings.map((ruling) => ruling.findingId));
+    const findings = examinations
+      .flatMap((examination) => examination.findings)
+      .filter((finding) => ruled.has(finding.id) && finding.resolution === "upheld");
+    return { findings, rulings };
+  }
+  return examinationBlocks(last) ? { findings: blockingFindings(last) } : undefined;
+};
+
+/**
  * What a retry after the node's examinations is (D-P8-13, as amended
  * 2026-09-25): an attempt carrying out an arbiter's upheld ruling; a fix with
  * the findings; a refusal; or neither.
@@ -1753,32 +1782,26 @@ export const recordRulingLanded = async (
 export const fixOf = (
   examinations: readonly Examination[],
 ): { readonly task?: AgentTask; readonly refused?: string } => {
-  const last = latestOf(examinations);
-  if (last === undefined) return {};
-  const rulings = rulingsInForce(examinations);
-  if (rulings !== undefined) {
+  const answer = findingsToAnswer(examinations);
+  if (answer === undefined) return {};
+  if (answer.rulings !== undefined) {
     const attempts = rulingAttemptsOf(examinations);
     if (attempts >= MAX_RULING_ATTEMPTS) {
       return {
         refused:
           `${attempts} attempts have not carried out the arbiter's ruling on ` +
-          `${rulings.map((ruling) => ruling.findingId).join(", ")}; the builder could not make ` +
+          `${answer.rulings.map((ruling) => ruling.findingId).join(", ")}; the builder could not make ` +
           "the change it was ruled to make. Delegate it differently, or a human may reverse the ruling.",
       };
     }
-    const ruled = new Set(rulings.map((ruling) => ruling.findingId));
-    const findings = examinations
-      .flatMap((examination) => examination.findings)
-      .filter((finding) => ruled.has(finding.id) && finding.resolution === "upheld");
-    return { task: { kind: "fix", findings, rulings } };
+    return { task: { kind: "fix", findings: answer.findings, rulings: answer.rulings } };
   }
-  if (!examinationBlocks(last)) return {};
-  if (last.fixAttempt >= MAX_FIX_ATTEMPTS) {
+  if ((latestOf(examinations)?.fixAttempt ?? 0) >= MAX_FIX_ATTEMPTS) {
     return {
       refused: `this job has had ${MAX_FIX_ATTEMPTS} fixes of its blocking findings; a third is not tried. Dispute a finding to send it to an arbiter.`,
     };
   }
-  return { task: { kind: "fix", findings: blockingFindings(last) } };
+  return { task: { kind: "fix", findings: answer.findings } };
 };
 
 /**
