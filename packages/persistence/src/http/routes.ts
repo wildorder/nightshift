@@ -15,6 +15,7 @@ import type {
   ExaminationId,
   ExecutionNodeId,
   JobContractId,
+  MeasurementSummaryId,
   OrgId,
   ProgramId,
   ProjectId,
@@ -117,6 +118,12 @@ export const routes = {
     `${routes.inRun(scope)}/routing-decisions/${routingDecisionId}`,
   nodeRoutingDecisions: (scope: RunScope, nodeId: ExecutionNodeId) =>
     `${routes.node(scope, nodeId)}/routing-decisions`,
+
+  measurements: (scope: RunScope) => `${routes.inRun(scope)}/measurements`,
+  measurement: (scope: RunScope, measurementSummaryId: MeasurementSummaryId) =>
+    `${routes.measurements(scope)}/${measurementSummaryId}`,
+  nodeMeasurements: (scope: RunScope, nodeId: ExecutionNodeId) =>
+    `${routes.node(scope, nodeId)}/measurements`,
 
   artifacts: (scope: RunScope) => `${routes.inRun(scope)}/artifacts`,
   artifact: (scope: RunScope, artifactId: ArtifactId) => `${routes.artifacts(scope)}/${artifactId}`,

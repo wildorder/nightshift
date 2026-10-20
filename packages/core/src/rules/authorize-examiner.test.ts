@@ -119,3 +119,26 @@ describe("the arbiter's table (D-P8-13)", () => {
     }
   });
 });
+
+describe("measurement summaries (P20)", () => {
+  it("are a worker's cells for the examiner and the arbiter: read within the node, never written", () => {
+    for (const table of [EXAMINER_ACCESS, ARBITER_ACCESS]) {
+      expect(table["measurement.put"]).toBe("forbidden");
+      expect(table["measurement.get"]).toBe("own_node");
+      expect(table["measurement.listByNode"]).toBe("own_node");
+      expect(table["measurement.listByRun"]).toBe("own_run");
+    }
+    for (const role of ["examiner", "arbiter"] as const) {
+      expect(authorize(principal(role), "measurement.put", target(OWN_NODE))).toMatchObject({
+        allowed: false,
+        reason: "execution_forbidden_operation",
+      });
+      expect(authorize(principal(role), "measurement.listByNode", target(OWN_NODE))).toEqual({
+        allowed: true,
+      });
+      expect(
+        authorize(principal(role), "measurement.listByNode", target(OTHER_NODE)),
+      ).toMatchObject({ allowed: false });
+    }
+  });
+});

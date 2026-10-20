@@ -46,6 +46,9 @@ import {
   type JobContract,
   type JobContractId,
   JobContractSchema,
+  type MeasurementSummary,
+  type MeasurementSummaryId,
+  MeasurementSummarySchema,
   type Membership,
   MembershipSchema,
   type OrgComputeUsage,
@@ -92,6 +95,7 @@ import {
   type GateHealthStore,
   type InstallationClaimStore,
   type JobContractStore,
+  type MeasurementSummaryStore,
   type MembershipStore,
   type NightshiftStores,
   type OrgConfigStore,
@@ -184,6 +188,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const verifications = table<Verification>("verifications");
   const examinations = table<Examination>("examinations");
   const routingDecisions = table<RoutingDecision>("routingDecisions");
+  const measurements = table<MeasurementSummary>("measurements");
   const artifacts = table<Artifact>("artifacts");
   const users = table<User>("users");
   const memberships = table<Membership>("memberships");
@@ -215,6 +220,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     verifications,
     examinations,
     routingDecisions,
+    measurements,
     artifacts,
     users,
     memberships,
@@ -456,6 +462,25 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
         .filter((record) => record.executionNodeId === executionNodeId),
   };
 
+  const measurementStore: MeasurementSummaryStore = {
+    put: async (summary) => {
+      const parsed = MeasurementSummarySchema.parse(summary);
+      const key = `${runPrefix(parsed)}${parsed.measurementSummaryId}`;
+      // Replaces in place; a replayed stale write must not roll the summary back.
+      const stored = measurements.get(key);
+      if (stored !== undefined && parsed.updatedAt < stored.updatedAt) return;
+      measurements.set(key, parsed);
+    },
+    get: async (scope: RunScope, measurementSummaryId: MeasurementSummaryId) =>
+      measurements.get(`${runPrefix(scope)}${measurementSummaryId}`),
+    listByNode: async (scope: RunScope, executionNodeId: ExecutionNodeId) =>
+      measurements
+        .scan(runPrefix(scope))
+        .filter((record) => record.executionNodeId === executionNodeId),
+    listByRun: async (scope: RunScope, page?: PageRequest) =>
+      paginate(measurements.scan(runPrefix(scope)), page),
+  };
+
   const artifactStore: ArtifactStore = {
     put: async (artifact) => {
       // The schema is strict and has no content field, so a record carrying
@@ -600,6 +625,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     verifications: verificationStore,
     examinations: examinationStore,
     routingDecisions: routingDecisionStore,
+    measurements: measurementStore,
     artifacts: artifactStore,
     users: userStore,
     memberships: membershipStore,

@@ -46,6 +46,7 @@ export const RUN_RECORD_TYPES = {
   verification: "VER",
   examination: "EXAM",
   routingDecision: "ROUTE",
+  measurement: "MEAS",
   artifact: "ART",
 } as const;
 

@@ -159,6 +159,10 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "examination.listByNode": "own_node",
   "routingDecision.put": "forbidden",
   "routingDecision.listByNode": "own_node",
+  "measurement.put": "forbidden",
+  "measurement.get": "own_node",
+  "measurement.listByNode": "own_node",
+  "measurement.listByRun": "own_run",
   "artifact.list": "own_run",
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
@@ -313,6 +317,7 @@ describe("an execution principal", () => {
       "verification.put",
       "checkpoint.put",
       "routingDecision.put",
+      "measurement.put",
       "run.put",
       "job.put",
     ] as const) {

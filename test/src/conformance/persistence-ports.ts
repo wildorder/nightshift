@@ -22,6 +22,7 @@ import {
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
   type Event,
+  type MeasurementSummary,
   type OrgConfig,
   type ProgramId,
   type ProjectId,
@@ -896,6 +897,153 @@ export const describePortConformance = <S extends ProjectStores>(
         await stores.artifacts.put(artifactFor(a));
         await stores.artifacts.put(artifactFor(b));
         expect((await stores.artifacts.listByRun(a.scope)).items).toHaveLength(1);
+      });
+    });
+
+    describe("measurement summaries (P20 S-01)", () => {
+      const T0 = "2026-01-01T00:00:00.000Z";
+      const T1 = "2026-01-01T00:00:01.000Z";
+      const T2 = "2026-01-01T00:00:02.000Z";
+
+      /** Every optional field absent: the shape of the oldest record that can exist. */
+      const summaryFor = (
+        f: Fixtures,
+        overrides: Partial<MeasurementSummary> = {},
+      ): MeasurementSummary => ({
+        schemaVersion: 1,
+        measurementVersion: 1,
+        ...f.scope,
+        measurementSummaryId: f.ids.next("meas"),
+        executionNodeId: f.rootNodeId,
+        agentId: f.ids.next("agent"),
+        role: "worker",
+        routingDecisionId: null,
+        route: { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" },
+        observedModels: [],
+        segments: [],
+        totals: {},
+        coverage: "unknown",
+        gaps: [],
+        ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+        valuation: { source: "unknown" },
+        createdAt: T0,
+        updatedAt: T0,
+        ...overrides,
+      });
+
+      it("round trips a summary", async () => {
+        const summary = summaryFor(a, {
+          observedModels: ["claude-sonnet-5"],
+          totals: { inputTokens: 100, outputTokens: 20, inputIncludesCache: false },
+          childCounters: { inputTokens: 5 },
+          coverage: "partial",
+          gaps: [{ reason: "receipt_lost", count: 2 }],
+          ledger: { chunks: 1, artifactIds: [], observationCount: 3, publishedCount: 2 },
+          valuation: { source: "reported", usd: 0.5, reportedUsd: 0.5, basis: "provider" },
+          updatedAt: T1,
+        });
+        await stores.measurements.put(summary);
+        expect(await stores.measurements.get(a.scope, summary.measurementSummaryId)).toEqual(
+          summary,
+        );
+      });
+
+      it("returns undefined for a summary that does not exist", async () => {
+        expect(await stores.measurements.get(a.scope, a.ids.next("meas"))).toBeUndefined();
+      });
+
+      it("replaces in place, keeping one record per id and returning the newer", async () => {
+        const first = summaryFor(a);
+        const second = {
+          ...first,
+          totals: { inputTokens: 10 },
+          ledger: { ...first.ledger, observationCount: 1, publishedCount: 1 },
+          updatedAt: T1,
+        };
+        await stores.measurements.put(first);
+        await stores.measurements.put(second);
+        expect(await stores.measurements.get(a.scope, first.measurementSummaryId)).toEqual(second);
+        expect((await stores.measurements.listByRun(a.scope)).items).toEqual([second]);
+      });
+
+      it("ignores a put whose updatedAt is older than the stored record's", async () => {
+        const newer = { ...summaryFor(a), totals: { inputTokens: 50 }, updatedAt: T2 };
+        const older = { ...newer, totals: { inputTokens: 1 }, updatedAt: T1 };
+        await stores.measurements.put(newer);
+        await stores.measurements.put(older);
+        expect(await stores.measurements.get(a.scope, newer.measurementSummaryId)).toEqual(newer);
+      });
+
+      it("replaces when updatedAt is equal", async () => {
+        const first = summaryFor(a, { updatedAt: T1 });
+        const same = { ...first, totals: { inputTokens: 7 } };
+        await stores.measurements.put(first);
+        await stores.measurements.put(same);
+        expect(await stores.measurements.get(a.scope, first.measurementSummaryId)).toEqual(same);
+      });
+
+      it("lists only the requested node's summaries", async () => {
+        const other = makeNode(a, a.rootNodeId);
+        const mine = summaryFor(a);
+        const theirs = summaryFor(a, { executionNodeId: other.executionNodeId });
+        await stores.measurements.put(mine);
+        await stores.measurements.put(theirs);
+        expect(await stores.measurements.listByNode(a.scope, a.rootNodeId)).toEqual([mine]);
+        expect(await stores.measurements.listByNode(a.scope, other.executionNodeId)).toEqual([
+          theirs,
+        ]);
+      });
+
+      it("lists a run's summaries ordered by id, and paginates", async () => {
+        const created = [1, 2, 3, 4, 5].map(() => summaryFor(a));
+        for (const summary of [...created].reverse()) await stores.measurements.put(summary);
+        const expected = created
+          .map((summary) => summary.measurementSummaryId)
+          .sort((x, y) => (x < y ? -1 : 1));
+
+        const ids: string[] = [];
+        let cursor: string | undefined;
+        let guard = 0;
+        do {
+          const page = await stores.measurements.listByRun(
+            a.scope,
+            cursor === undefined ? { limit: 2 } : { limit: 2, cursor },
+          );
+          expect(page.items.length).toBeLessThanOrEqual(2);
+          ids.push(...page.items.map((item) => item.measurementSummaryId));
+          cursor = page.cursor;
+          guard += 1;
+          expect(guard).toBeLessThan(10);
+        } while (cursor !== undefined);
+        expect(ids).toEqual(expected);
+      });
+
+      it("isolates summaries by project", async () => {
+        const summary = summaryFor(a);
+        await stores.measurements.put(summary);
+        await stores.measurements.put(summaryFor(b));
+        expect(
+          await stores.measurements.get(b.scope, summary.measurementSummaryId),
+        ).toBeUndefined();
+        expect(await stores.measurements.listByNode(b.scope, a.rootNodeId)).toEqual([]);
+        expect((await stores.measurements.listByRun(a.scope)).items).toEqual([summary]);
+      });
+
+      it("refuses a summary that claims more published than observed", async () => {
+        const bad = summaryFor(a, {
+          ledger: { chunks: 0, artifactIds: [], observationCount: 1, publishedCount: 2 },
+        });
+        await expect(stores.measurements.put(bad)).rejects.toThrow();
+        expect(await stores.measurements.get(a.scope, bad.measurementSummaryId)).toBeUndefined();
+      });
+
+      it("reads back a record with every optional field absent", async () => {
+        const minimal = summaryFor(a);
+        expect(minimal.childCounters).toBeUndefined();
+        await stores.measurements.put(minimal);
+        expect(await stores.measurements.get(a.scope, minimal.measurementSummaryId)).toEqual(
+          minimal,
+        );
       });
     });
 

@@ -84,6 +84,10 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "examination.listByNode": "own_subtree",
   "routingDecision.put": "forbidden",
   "routingDecision.listByNode": "own_subtree",
+  "measurement.put": "forbidden",
+  "measurement.get": "own_subtree",
+  "measurement.listByNode": "own_subtree",
+  "measurement.listByRun": "own_run",
   "artifact.list": "own_run",
   "artifact.put": "forbidden",
   "artifact.get": "own_run",
@@ -241,6 +245,7 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
       "verification.put",
       "checkpoint.put",
       "routingDecision.put",
+      "measurement.put",
       "artifact.put",
       "artifact.createDownloadUrl",
       "run.put",
@@ -249,6 +254,13 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
         false,
       );
     }
+  });
+
+  it("reads measurement summaries within its subtree and writes none (P20)", () => {
+    expect(
+      authorize(orchestrator, "measurement.listByNode", at("descendant", "succeeded")).allowed,
+    ).toBe(true);
+    expect(authorize(orchestrator, "measurement.put", at("self", "succeeded")).allowed).toBe(false);
   });
 
   it("leaves a worker's token exactly as P4 made it: no subtree reach, whatever the target claims", () => {

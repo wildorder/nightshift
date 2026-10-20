@@ -42,6 +42,7 @@ import {
   GateHealthSchema,
   type JobContractId,
   JobContractSchema,
+  MeasurementSummarySchema,
   OrgConfigSchema,
   type OrgId,
   ProgramContractSchema,
@@ -69,6 +70,7 @@ import type {
   GateHealthStore,
   InstallationClaimStore,
   JobContractStore,
+  MeasurementSummaryStore,
   OrgConfigStore,
   Page,
   PageRequest,
@@ -435,6 +437,39 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
       ),
   };
 
+  const measurements: MeasurementSummaryStore = {
+    put: async (summary) => {
+      await send(transport, {
+        method: "PUT",
+        path: routes.measurement(summary, summary.measurementSummaryId),
+        body: summary,
+      });
+    },
+    get: (scope, measurementSummaryId) =>
+      getOrUndefined(
+        transport,
+        MeasurementSummarySchema,
+        routes.measurement(scope, measurementSummaryId),
+      ),
+    listByNode: async (scope, executionNodeId) =>
+      readList(
+        MeasurementSummarySchema,
+        await send(transport, {
+          method: "GET",
+          path: routes.nodeMeasurements(scope, executionNodeId),
+        }),
+      ),
+    listByRun: async (scope, page) =>
+      readPage(
+        MeasurementSummarySchema,
+        await send(transport, {
+          method: "GET",
+          path: routes.measurements(scope),
+          query: pageQuery(page),
+        }),
+      ),
+  };
+
   const artifacts: ArtifactStore = {
     put: async (artifact) => {
       await send(transport, {
@@ -563,6 +598,7 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     verifications,
     examinations,
     routingDecisions,
+    measurements,
     artifacts,
   };
 };

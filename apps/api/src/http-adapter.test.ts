@@ -39,6 +39,7 @@ import type {
   ExecutionRole,
   GateHealth,
   JobContract,
+  MeasurementSummary,
   OrgId,
   Principal,
   Project,
@@ -117,6 +118,7 @@ const PORT_METHODS = {
   verifications: ["put", "get", "listByNode"],
   examinations: ["put", "get", "listByNode"],
   routingDecisions: ["put", "listByNode"],
+  measurements: ["put", "get", "listByNode", "listByRun"],
   artifacts: ["put", "get", "listByRun"],
   orgConfigs: ["get", "put"],
   // P10: the control plane owns these records; the adapter reads them and names
@@ -550,6 +552,46 @@ describe("decisions, checkpoints, verifications, examinations and routing", () =
     expect(await world.http.routingDecisions.listByNode(routing, root.executionNodeId)).toEqual([
       routing,
     ]);
+  });
+});
+
+describe("measurement summaries (P20)", () => {
+  it("puts, gets and lists a summary, and ignores a stale replacement", async () => {
+    const { root } = await seed();
+    const summary: MeasurementSummary = {
+      schemaVersion: 1,
+      measurementVersion: 1,
+      ...world.f.scope,
+      measurementSummaryId: world.f.ids.next("meas"),
+      executionNodeId: root.executionNodeId,
+      agentId: world.f.ids.next("agent"),
+      role: "worker",
+      routingDecisionId: null,
+      route: { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" },
+      observedModels: [],
+      segments: [],
+      totals: { inputTokens: 3 },
+      coverage: "unknown",
+      gaps: [],
+      ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+      valuation: { source: "unknown" },
+      createdAt: NOW,
+      updatedAt: "2099-01-01T00:00:00.000Z",
+    };
+    await world.http.measurements.put(summary);
+    expect(await world.http.measurements.get(summary, summary.measurementSummaryId)).toEqual(
+      summary,
+    );
+    expect(await world.http.measurements.listByNode(summary, root.executionNodeId)).toEqual([
+      summary,
+    ]);
+    expect((await world.http.measurements.listByRun(summary)).items).toEqual([summary]);
+
+    await world.http.measurements.put({ ...summary, totals: {}, updatedAt: NOW });
+    expect(await world.http.measurements.get(summary, summary.measurementSummaryId)).toEqual(
+      summary,
+    );
+    expect(await world.http.measurements.get(summary, world.f.ids.next("meas"))).toBeUndefined();
   });
 });
 
