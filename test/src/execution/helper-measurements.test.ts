@@ -69,6 +69,8 @@ const sessionSnapshot = (observationId: string, counters: MeasurementCounters) =
 interface Scenario {
   /** Counters the builder's stored summary holds for its session; absent means no summary. */
   readonly builderSessionInput?: number;
+  /** Reported dollars in the builder's stored session counters. */
+  readonly builderSessionUsd?: number;
   /** Whether the builder's session can be resumed by the answerer. */
   readonly resumableBuilder?: boolean;
   /** What each examiner round reports. */
@@ -83,7 +85,12 @@ interface Scenario {
     };
   };
   /** What the answerer reports through the sink and its exit. */
-  readonly answerer?: { readonly sessionInput?: number; readonly fail?: boolean };
+  readonly answerer?: {
+    readonly sessionInput?: number;
+    readonly fail?: boolean;
+    /** A session-scoped exit reporting this many cumulative dollars. */
+    readonly sessionExitUsd?: number;
+  };
   /** The examiner's launch cannot be attempted. */
   readonly examinerCannotLaunch?: boolean;
   readonly ask?: readonly string[];
@@ -116,11 +123,14 @@ const play =
         }
         const task = input.task;
         const questions = task?.kind === "answer" ? task.questions : [];
+        const exitUsd = scenario.answerer?.sessionExitUsd;
         return {
+          ...(exitUsd === undefined ? {} : { usageScope: "session" as const }),
+          ...(exitUsd === undefined ? {} : { usage: { actualCostUsd: exitUsd } }),
           kind: "completed",
           result: JSON.stringify(questions.map((question) => ({ question, answer: "deliberate" }))),
           sessionId: "answerer-session",
-          usage: { inputTokens: 1 },
+          ...(exitUsd === undefined ? { usage: { inputTokens: 1 } } : {}),
         };
       }
       default: {
@@ -142,7 +152,12 @@ const play =
         if (scenario.builderSessionInput !== undefined) {
           // The session snapshot, delivered through the seam the runner's recorder owns.
           input.measurements?.observe({
-            ...sessionSnapshot("builder-session", { inputTokens: scenario.builderSessionInput }),
+            ...sessionSnapshot("builder-session", {
+              inputTokens: scenario.builderSessionInput,
+              ...(scenario.builderSessionUsd === undefined
+                ? {}
+                : { reportedUsd: scenario.builderSessionUsd }),
+            }),
             sessionId: "builder-session",
           });
         }
@@ -368,6 +383,21 @@ describe("an answerer resumed from the builder's session", () => {
       baseline: { inputTokens: 100 },
     });
     expect(answerer?.totals.inputTokens).toBe(30);
+  });
+
+  it("claims only the dollars above the builder's stored baseline", async () => {
+    const { summaryOf } = await rig({
+      ask: ["Why?"],
+      builderSessionInput: 100,
+      builderSessionUsd: 1,
+      answerer: { sessionExitUsd: 1.3 },
+      examiner: { round1: { input: 1, output: 1 }, round2: { input: 1, output: 1 } },
+    });
+    const [answerer] = summaryOf("answerer");
+    expect(answerer?.segments[0]?.baseline).toMatchObject({ reportedUsd: 1 });
+    expect(answerer?.totals.reportedUsd).toBeCloseTo(0.3, 10);
+    expect(answerer?.valuation.usd).toBeCloseTo(0.3, 10);
+    expect(answerer?.gaps).toEqual([]);
   });
 
   it("records baseline_unknown, and claims no session-scoped total, when the builder has no summary", async () => {

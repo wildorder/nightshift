@@ -46,7 +46,6 @@ import {
   segmentKey,
   writePublishedMarkers,
 } from "./publication.js";
-import { addReportedCost, type ReportedCost, reportedOf } from "./recorder.js";
 
 /** How recently a heartbeat proves the owner is still writing: twice the publish interval. */
 export const LIVE_WINDOW_MS = 2 * 60_000;
@@ -230,16 +229,6 @@ export const recoverMeasurementJournals = async (
     };
 
     const all = observationLines(lines);
-    const cost: ReportedCost = {};
-    const oldCost: ReportedCost = {};
-    for (const entry of all) {
-      addReportedCost(cost, entry.observation);
-      if (entry.sequence <= found.receivedSequence) addReportedCost(oldCost, entry.observation);
-    }
-    const baseUsd = summary.valuation.reportedUsd;
-    const allUsd = reportedOf(cost);
-    const reportedUsd =
-      allUsd === undefined ? baseUsd : (baseUsd ?? 0) + allUsd - (reportedOf(oldCost) ?? 0);
     const loadedTotals = JSON.stringify(summary.totals);
 
     let state = summary;
@@ -266,11 +255,9 @@ export const recoverMeasurementJournals = async (
         const at = nowIso(environment.clock);
         const price = options.price?.(state.route);
         const valuation =
-          reportedUsd === undefined &&
-          price === undefined &&
-          JSON.stringify(state.totals) === loadedTotals
+          price === undefined && JSON.stringify(state.totals) === loadedTotals
             ? state.valuation
-            : valueCounters(state.totals, price, reportedUsd);
+            : valueCounters(state.totals, price);
         const valued = { ...state, valuation, updatedAt: at };
         await retried(() => environment.stores.measurements.put(valued));
         if (version === captured) state = valued;
@@ -452,7 +439,7 @@ export const recoverMeasurementJournals = async (
     const price = options.price?.(state.route);
     const valued = {
       ...state,
-      valuation: valueCounters(state.totals, price, state.valuation.reportedUsd),
+      valuation: valueCounters(state.totals, price),
     };
     try {
       await retried(() => environment.stores.measurements.put(valued));

@@ -1,11 +1,12 @@
 import type { MeasurementCounters, RouteUsage } from "@nightshift/contracts";
 
-/** A route's usage as counters: the four counts 1:1, the convention only if it was stated. */
+/** A route's usage as counters: the four counts and the reported dollars 1:1, the convention only if it was stated. */
 export const countersFromRouteUsage = (usage: RouteUsage): MeasurementCounters => ({
   ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
   ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
   ...(usage.cacheReadTokens === undefined ? {} : { cacheReadTokens: usage.cacheReadTokens }),
   ...(usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
+  ...(usage.actualCostUsd === undefined ? {} : { reportedUsd: usage.actualCostUsd }),
   ...(usage.inputIncludesCache === undefined
     ? {}
     : { inputIncludesCache: usage.inputIncludesCache }),
@@ -41,7 +42,9 @@ export const routeUsageFromCounters = (
       : counters.inputIncludesCache === undefined
         ? {}
         : { inputIncludesCache: counters.inputIncludesCache }),
-    ...(extra.reportedUsd === undefined ? {} : { actualCostUsd: extra.reportedUsd }),
+    ...(counters.reportedUsd === undefined && extra.reportedUsd === undefined
+      ? {}
+      : { actualCostUsd: counters.reportedUsd ?? extra.reportedUsd }),
     ...(extra.latencyMs === undefined ? {} : { latencyMs: extra.latencyMs }),
     ...(extra.wallClockMs === undefined ? {} : { wallClockMs: extra.wallClockMs }),
   };

@@ -5,7 +5,7 @@ const perToken = (perMillion: number | undefined, tokens: number | undefined): n
   ((perMillion ?? 0) * (tokens ?? 0)) / 1_000_000;
 
 /**
- * Dollars for counters. Reported dollars win. Otherwise a price and at least one
+ * Dollars for counters. Reported dollars (`counters.reportedUsd`) win. Otherwise a price and at least one
  * of the four billed counters give an estimate, with inclusive input priced net
  * of the cache tokens so cached input is charged once; exclusive or unstated
  * input is priced as `estimateCost` prices it. Anything else is unknown.
@@ -13,8 +13,8 @@ const perToken = (perMillion: number | undefined, tokens: number | undefined): n
 export const valueCounters = (
   counters: MeasurementCounters,
   price: ModelPrice | undefined,
-  reportedUsd?: number,
 ): MeasurementSummary["valuation"] => {
+  const reportedUsd = counters.reportedUsd;
   if (reportedUsd !== undefined) {
     return { source: "reported", usd: reportedUsd, reportedUsd, basis: "reported by the harness" };
   }

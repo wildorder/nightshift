@@ -16,7 +16,7 @@ import type {
   RoutingDecisionId,
   Segment,
 } from "@nightshift/contracts";
-import { compareSourceKeys, hasCounters, sumCounters } from "./counters.js";
+import { compareSourceKeys, hasAnyCounters, sumCounters } from "./counters.js";
 import { coalesceGaps, subtractGaps } from "./gaps.js";
 import { applyObservation, emptySegmentState, reconcileSources } from "./reconcile.js";
 
@@ -412,7 +412,7 @@ export const baselineFor = (
   for (const segment of summary.segments) {
     const candidate = segment.sessionCumulative;
     if (segment.sessionId !== sessionId || candidate === undefined) continue;
-    if (!hasCounters(candidate.counters)) continue;
+    if (!hasAnyCounters(candidate.counters)) continue;
     if (latest === undefined || compareSourceKeys(candidate, latest) >= 0) latest = candidate;
   }
   return latest?.counters;

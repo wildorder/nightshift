@@ -17,6 +17,7 @@ import {
   emptySummary,
   foldExit,
   foldObservation,
+  hasCounters,
   legacySummaryOf,
   markGap,
   markPublished,
@@ -332,6 +333,70 @@ describe("fold", () => {
     expect(s.totals).toEqual(out(150));
   });
 
+  it("reconciles reportedUsd by max, baseline and baselineFor like tokens", () => {
+    // Max across sources: requests' dollars sum, a larger terminal wins.
+    const r = reconcileSegment(
+      [
+        request({ outputTokens: 1 }, { reportedCostUsd: 0.25 }),
+        request({ outputTokens: 1 }, { reportedCostUsd: 0.25 }),
+        terminal({ outputTokens: 2 }, { reportedCostUsd: 0.75 }),
+      ],
+      fresh(),
+    );
+    expect(r.counters.reportedUsd).toBe(0.75);
+    expect(r.gaps.some((g) => g.reason === "discrepancy")).toBe(true);
+
+    // Session scope: second segment is measured above the baseline, floor 0.
+    let s = started();
+    s = foldExit(
+      s,
+      launch,
+      terminal({ inputTokens: 100, reportedUsd: 1 }, { counterScope: "session" }),
+      1,
+      T(1),
+    );
+    s = closeSegment(s, launch, T(2));
+    const baseline = baselineFor(s, "s1");
+    expect(baseline).toEqual({ inputTokens: 100, reportedUsd: 1 });
+    const second = { ...launch, launchId: "l2", segment: 1 };
+    s = startSegment(s, second, { sessionId: "s1", resumedSession: true, baseline, at: T(3) });
+    s = foldExit(
+      s,
+      second,
+      terminal(
+        { inputTokens: 150 },
+        { counterScope: "session", launch: second, reportedCostUsd: 1.5 },
+      ),
+      1,
+      T(4),
+    );
+    expect(s.segments[1]?.counters).toEqual({ inputTokens: 50, reportedUsd: 0.5 });
+    expect(s.totals).toEqual({ inputTokens: 150, reportedUsd: 1.5 });
+    expect(baselineFor(s, "s1")?.reportedUsd).toBe(1.5);
+    expect(s.gaps).toEqual([]);
+  });
+
+  it("does not let dollars alone make coverage partial or an estimate possible", () => {
+    const r = reconcileSegment([request({ reportedUsd: 1 })], fresh());
+    expect(r.counters.reportedUsd).toBe(1);
+    expect(r.coverage).toBe("unknown");
+    const price: ModelPrice = { inputPerMTok: 3, outputPerMTok: 15 };
+    expect(valueCounters({ reportedUsd: 1 }, price).source).toBe("reported");
+    expect(valueCounters({}, price).source).toBe("unknown");
+    expect(hasCounters({ reportedUsd: 1 })).toBe(false);
+  });
+
+  it("maps dollars between route usage and counters", () => {
+    expect(countersFromRouteUsage({ inputTokens: 1, actualCostUsd: 0.5 })).toEqual({
+      inputTokens: 1,
+      reportedUsd: 0.5,
+    });
+    expect(routeUsageFromCounters({ reportedUsd: 0.5 }, { reportedUsd: 9 }).actualCostUsd).toBe(
+      0.5,
+    );
+    expect(routeUsageFromCounters({}, { reportedUsd: 9 }).actualCostUsd).toBe(9);
+  });
+
   it("compacts the oldest closed segments past 64", () => {
     let s = summary0();
     for (let i = 0; i < 70; i++) {
@@ -484,7 +549,7 @@ describe("legacySummaryOf", () => {
       source: "reported",
       reportedUsd: 0.25,
     });
-    expect(s.totals).toEqual({ inputTokens: 10, outputTokens: 5 });
+    expect(s.totals).toEqual({ inputTokens: 10, outputTokens: 5, reportedUsd: 0.25 });
     expect(s.gaps[0]?.reason).toBe("adapter_unsupported");
     expect(s.segments).toHaveLength(1);
     expect(legacySummaryOf(agent, undefined, T(1)).routingDecisionId).toBeNull();
@@ -557,7 +622,7 @@ describe("normalize and value", () => {
   });
 
   it("prefers reported dollars and is unknown without counters or price", () => {
-    expect(valueCounters({}, price, 2)).toMatchObject({
+    expect(valueCounters({ reportedUsd: 2 }, price)).toMatchObject({
       source: "reported",
       usd: 2,
       reportedUsd: 2,

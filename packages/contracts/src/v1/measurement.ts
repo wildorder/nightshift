@@ -46,6 +46,11 @@ export const MeasurementCountersSchema = z.strictObject({
    * asserted.
    */
   inputIncludesCache: z.boolean().optional(),
+  /**
+   * Provider-reported dollars for the same population as the token counters:
+   * scoped, baselined and reconciled with them, never summed across a session.
+   */
+  reportedUsd: z.number().min(0).optional(),
 });
 export type MeasurementCounters = z.infer<typeof MeasurementCountersSchema>;
 

@@ -20,6 +20,7 @@ import {
   COUNTER_KEYS,
   cleanCounters,
   compareSourceKeys,
+  hasAnyCounters,
   hasCounters,
   mergeInputConvention,
   sourceKeyOf,
@@ -65,6 +66,24 @@ const combineInclusion = (a: Inclusion | undefined, b: Inclusion): Inclusion => 
   return "self";
 };
 
+/**
+ * An observation's counters with the emitter's `reportedCostUsd` copied in as
+ * `reportedUsd` when the counters carry none, so dollars travel with the tokens.
+ */
+const countersOf = (
+  observation: Exclude<MeasurementObservation, { kind: "lifecycle" }>,
+): MeasurementCounters => {
+  const counters = cleanCounters(observation.counters);
+  if (
+    counters.reportedUsd === undefined &&
+    (observation.kind === "request" || observation.kind === "terminal_summary") &&
+    observation.reportedCostUsd !== undefined
+  ) {
+    counters.reportedUsd = observation.reportedCostUsd;
+  }
+  return counters;
+};
+
 /** One observation applied to a segment's running sources. Lifecycle observations change nothing. */
 export const applyObservation = (
   state: SegmentState,
@@ -74,7 +93,7 @@ export const applyObservation = (
   const { sources, observed } = state;
 
   if (observation.kind === "request") {
-    const counters = cleanCounters(observation.counters);
+    const counters = countersOf(observation);
     const next: Sources =
       observation.childRef === undefined
         ? { ...sources, requests: addCounters(sources.requests, counters) }
@@ -89,7 +108,7 @@ export const applyObservation = (
   // A child's own cumulative figures say nothing about this execution's segment.
   if (observation.childRef !== undefined) return state;
 
-  const counters = cleanCounters(observation.counters);
+  const counters = countersOf(observation);
   const key = sourceKeyOf(observation);
   const isTerminal = observation.kind === "terminal_summary";
   let nextSources: Sources = {
@@ -99,7 +118,7 @@ export const applyObservation = (
   let sessionCumulative = state.sessionCumulative;
 
   // An aggregate with no counters never supersedes one that has some.
-  if (hasCounters(counters)) {
+  if (hasAnyCounters(counters)) {
     if (observation.counterScope === "launch") {
       if (isTerminal) {
         if (
@@ -147,6 +166,8 @@ const subtractBaseline = (
     const value = counters[key];
     if (value !== undefined) out[key] = Math.max(0, value - (baseline[key] ?? 0));
   }
+  if (counters.reportedUsd !== undefined)
+    out.reportedUsd = Math.max(0, counters.reportedUsd - (baseline.reportedUsd ?? 0));
   if (counters.inputIncludesCache !== undefined)
     out.inputIncludesCache = counters.inputIncludesCache;
   return out;
@@ -179,7 +200,7 @@ export const reconcileSources = (
   // (d) Inclusion of children.
   const inclusion = sources.aggregateInclusion;
   const childRequests = sources.childRequests;
-  const childrenExist = hasCounters(childRequests);
+  const childrenExist = hasAnyCounters(childRequests);
   const requests = sources.requests;
   let addChildren = false;
   let childCounters: MeasurementCounters | undefined;
@@ -201,11 +222,11 @@ export const reconcileSources = (
   }
 
   const named: NamedSource[] = [];
-  if (hasCounters(requests)) named.push({ name: "requests", counters: requests });
-  if (hasCounters(sources.latestLaunchSnapshot) && sources.latestLaunchSnapshot !== undefined) {
+  if (hasAnyCounters(requests)) named.push({ name: "requests", counters: requests });
+  if (hasAnyCounters(sources.latestLaunchSnapshot) && sources.latestLaunchSnapshot !== undefined) {
     named.push({ name: "snapshot", counters: sources.latestLaunchSnapshot });
   }
-  const launchTerminal = hasCounters(sources.terminal) ? sources.terminal : undefined;
+  const launchTerminal = hasAnyCounters(sources.terminal) ? sources.terminal : undefined;
   if (launchTerminal !== undefined) named.push({ name: "terminal", counters: launchTerminal });
 
   // (b) The session-scoped source is this segment's share only above the baseline.
@@ -265,6 +286,18 @@ export const reconcileSources = (
     const low = present.find((source) => source.counters[key] === min);
     differences.push(`${key}: ${high?.name} ${max} vs ${low?.name} ${min} (by ${max - min})`);
   }
+  const reported = named.filter((source) => source.counters.reportedUsd !== undefined);
+  if (reported.length > 0) {
+    const values = reported.map((source) => source.counters.reportedUsd ?? 0);
+    const max = Math.max(...values);
+    counters.reportedUsd = max;
+    const min = Math.min(...values);
+    if (reported.length >= 2 && min !== max) {
+      const high = reported.find((source) => source.counters.reportedUsd === max);
+      const low = reported.find((source) => source.counters.reportedUsd === min);
+      differences.push(`reportedUsd: ${high?.name} ${max} vs ${low?.name} ${min}`);
+    }
+  }
   if (differences.length > 0) {
     gaps.push({
       reason: "discrepancy",
@@ -281,12 +314,15 @@ export const reconcileSources = (
     addChildren && childCounters !== undefined ? addCounters(counters, childCounters) : counters;
 
   // (f) Coverage.
+  // Dollars alone are not token evidence: they neither make coverage partial nor a terminal present.
   const terminalPresent =
-    launchTerminal !== undefined ||
-    (sessionIncluded && sessionCumulative?.kind === "terminal_summary");
+    hasCounters(launchTerminal) ||
+    (sessionIncluded &&
+      sessionCumulative?.kind === "terminal_summary" &&
+      hasCounters(sessionCumulative.counters));
   const coverage: Exclude<MeasurementCoverage, "legacy"> = terminalPresent
     ? (sources.terminalCoverage ?? "partial")
-    : named.length > 0
+    : named.some((source) => hasCounters(source.counters))
       ? "partial"
       : "unknown";
 

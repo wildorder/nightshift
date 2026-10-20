@@ -134,34 +134,14 @@ export const publishedSummaryFor = async (
   return newest;
 };
 
-/** The dollars a harness reported for observations: a terminal's figure supersedes the requests'. */
-export interface ReportedCost {
-  requests?: number;
-  terminal?: number;
-}
-
-export const addReportedCost = (cost: ReportedCost, observation: MeasurementObservation): void => {
-  if (observation.kind === "request" && observation.reportedCostUsd !== undefined) {
-    cost.requests = (cost.requests ?? 0) + observation.reportedCostUsd;
-  } else if (observation.kind === "terminal_summary" && observation.reportedCostUsd !== undefined) {
-    cost.terminal = Math.max(cost.terminal ?? 0, observation.reportedCostUsd);
-  }
-};
-
-export const reportedOf = (cost: ReportedCost): number | undefined =>
-  cost.requests === undefined && cost.terminal === undefined
-    ? undefined
-    : Math.max(cost.requests ?? 0, cost.terminal ?? 0);
-
-/** The summary with its valuation recomputed. `carried` is dollars reported before these costs. */
+/** The summary with its valuation recomputed from its totals. */
 export const valuedSummary = (
   summary: MeasurementSummary,
   price: ModelPrice | undefined,
-  reportedUsd: number | undefined,
   at: string,
 ): MeasurementSummary => ({
   ...summary,
-  valuation: valueCounters(summary.totals, price, reportedUsd),
+  valuation: valueCounters(summary.totals, price),
   updatedAt: at,
 });
 
@@ -169,7 +149,6 @@ interface SegmentRuntime {
   readonly ref: LaunchRef;
   journal: Promise<Journal | undefined>;
   nextSequence: number;
-  readonly cost: ReportedCost;
 }
 
 interface QueueItem {
@@ -209,8 +188,6 @@ export const createMeasurementRecorder = (
       routingDecisionId: input.routingDecisionId,
       at: now(),
     });
-  // Dollars reported by earlier recorders for this summary; this one adds to them.
-  const carriedUsd = input.existing?.valuation.reportedUsd;
   let version = 0;
   let storedVersion = 0;
 
@@ -234,15 +211,6 @@ export const createMeasurementRecorder = (
       current = next;
       version += 1;
     }
-  };
-
-  const reportedUsd = (): number | undefined => {
-    let total: number | undefined = carriedUsd;
-    for (const runtime of runtimes.values()) {
-      const reported = reportedOf(runtime.cost);
-      if (reported !== undefined) total = (total ?? 0) + reported;
-    }
-    return total;
   };
 
   const lose = (detail: string, count = 1) => {
@@ -273,7 +241,7 @@ export const createMeasurementRecorder = (
       settleLosses();
       const at = now();
       const captured = version;
-      const valued = valuedSummary(current, input.price, reportedUsd(), at);
+      const valued = valuedSummary(current, input.price, at);
       await environment.stores.measurements.put(valued);
       // Only what was captured is stored: later changes keep the summary dirty.
       if (version === captured) {
@@ -362,7 +330,6 @@ export const createMeasurementRecorder = (
   const fold = (item: QueueItem) => {
     const at = now();
     const { observation, sequence, runtime } = item;
-    addReportedCost(runtime.cost, observation);
     update((summary) =>
       observation.kind === "terminal_summary"
         ? foldExit(summary, runtime.ref, observation, sequence, at)
@@ -497,7 +464,6 @@ export const createMeasurementRecorder = (
       ref,
       journal: Promise.resolve(undefined),
       nextSequence: 0,
-      cost: {},
     };
     runtime.journal = openJournal(
       environment.paths.measurementJournal(scope.runId, agent.agentId, launchId),

@@ -180,6 +180,29 @@ describe("a resumed session", () => {
     expect(decision?.usage.inputTokens).toBe(150);
     await r.engine.close("test over");
   });
+
+  it("reconciles a session's reported dollars across the resume, into the routing decision", async () => {
+    const r = await rig(async (context) => {
+      const resumed = context.input.resume !== undefined;
+      context.input.measurements?.observe(
+        observation("snapshot", {
+          counters: { inputTokens: resumed ? 150 : 100, reportedUsd: resumed ? 1.5 : 1 },
+          counterScope: "session",
+          sessionId: "s1",
+        }),
+      );
+      if (!resumed) return { kind: "completed", sessionId: "s1", usageScope: "session" };
+      await finishWith(context);
+      return { kind: "completed", sessionId: "s1", usageScope: "session" };
+    });
+    expect(await r.settled()).toBe("integrated");
+    const [summary] = await r.summaries();
+    expect(summary?.valuation).toMatchObject({ usd: 1.5, reportedUsd: 1.5 });
+    expect(summary?.gaps).toEqual([]);
+    const [decision] = await r.decisions();
+    expect(decision?.usage.actualCostUsd).toBe(1.5);
+    await r.engine.close("test over");
+  });
 });
 
 /**

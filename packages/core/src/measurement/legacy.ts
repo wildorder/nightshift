@@ -17,7 +17,6 @@ export const legacySummaryOf = (
   at: string,
 ): MeasurementSummary => {
   const counters = decision === undefined ? {} : countersFromRouteUsage(decision.usage);
-  const reportedUsd = decision?.usage.actualCostUsd;
   const ulid = agent.agentId.slice(agent.agentId.indexOf("_") + 1);
   return {
     measurementVersion: 1,
@@ -62,8 +61,10 @@ export const legacySummaryOf = (
     ],
     ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
     valuation: {
-      source: reportedUsd === undefined ? "unknown" : "reported",
-      ...(reportedUsd === undefined ? {} : { usd: reportedUsd, reportedUsd }),
+      source: counters.reportedUsd === undefined ? "unknown" : "reported",
+      ...(counters.reportedUsd === undefined
+        ? {}
+        : { usd: counters.reportedUsd, reportedUsd: counters.reportedUsd }),
     },
     createdAt: at,
     updatedAt: at,

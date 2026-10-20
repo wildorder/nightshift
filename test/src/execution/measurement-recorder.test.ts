@@ -472,6 +472,81 @@ describe("segments and seams", () => {
     expect(summary.totals).toMatchObject({ inputTokens: 14, outputTokens: 6 });
   });
 
+  describe("reported dollars", () => {
+    const exit = (
+      inputTokens: number,
+      actualCostUsd: number,
+      usageScope?: "session",
+    ): HarnessExit => ({
+      kind: "completed",
+      sessionId: "s",
+      ...(usageScope === undefined ? {} : { usageScope }),
+      usage: { inputTokens, actualCostUsd },
+    });
+
+    it("takes a resumed session's cumulative dollars above the baseline, not their sum", async () => {
+      const world = await build();
+      const recorder = world.recorder();
+      await recorder.startSegment({ sessionId: "s", resumedSession: false });
+      await recorder.close(exit(100, 1, "session"));
+      await recorder.startSegment({ sessionId: "s", resumedSession: true });
+      const { summary } = await recorder.close(exit(150, 1.5, "session"));
+      expect(summary.totals.inputTokens).toBe(150);
+      expect(summary.totals.reportedUsd).toBe(1.5);
+      expect(summary.valuation).toMatchObject({ source: "reported", usd: 1.5, reportedUsd: 1.5 });
+      expect(summary.gaps).toEqual([]);
+    });
+
+    it("sums launch-scoped dollars across launches", async () => {
+      const world = await build();
+      const recorder = world.recorder();
+      await recorder.startSegment({ sessionId: "s", resumedSession: false });
+      await recorder.close(exit(100, 1));
+      await recorder.startSegment({ sessionId: "s", resumedSession: true });
+      const { summary } = await recorder.close(exit(150, 1.5));
+      expect(summary.valuation).toMatchObject({ usd: 2.5, reportedUsd: 2.5 });
+      expect(summary.totals.inputTokens).toBe(250);
+    });
+
+    it("claims no session dollars for a resumed segment with no baseline", async () => {
+      const world = await build();
+      const recorder = world.recorder();
+      await recorder.startSegment({ sessionId: "s", resumedSession: true });
+      const { summary } = await recorder.close(exit(150, 1.5, "session"));
+      expect(summary.gaps.map((g) => g.reason)).toContain("baseline_unknown");
+      expect(summary.totals.reportedUsd).toBeUndefined();
+      expect(summary.valuation.usd).toBeUndefined();
+    });
+
+    it("recovers the same cumulative dollars from the journals", async () => {
+      const world = await build();
+      const recorder = crashed(world);
+      await recorder.startSegment({ sessionId: "s", resumedSession: false });
+      recorder.sink.observe({
+        ...request("snap1"),
+        kind: "cumulative_snapshot",
+        counterScope: "session",
+        sessionId: "s",
+        counters: { inputTokens: 100, reportedUsd: 1 },
+      } as HarnessObservation);
+      await recorder.publish();
+      await recorder.startSegment({ sessionId: "s", resumedSession: true });
+      recorder.sink.observe({
+        ...request("snap2"),
+        kind: "cumulative_snapshot",
+        counterScope: "session",
+        sessionId: "s",
+        counters: { inputTokens: 150, reportedUsd: 1.5 },
+      } as HarnessObservation);
+      await recorder.drain();
+      await recoverMeasurementJournals(world.later, world.f.scope);
+      const stored = await world.stored();
+      expect(stored.totals).toMatchObject({ inputTokens: 150, reportedUsd: 1.5 });
+      expect(stored.valuation).toMatchObject({ usd: 1.5, reportedUsd: 1.5 });
+      expect(stored.gaps.filter((g) => g.reason === "baseline_unknown")).toEqual([]);
+    });
+  });
+
   it("lands observedModel in observedModels, distinct from the route's model", async () => {
     const world = await build();
     const recorder = world.recorder();

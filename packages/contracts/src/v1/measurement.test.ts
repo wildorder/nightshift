@@ -3,6 +3,7 @@ import { ArtifactKindSchema } from "./artifact.js";
 import {
   CoverageGapSchema,
   MAX_OBSERVATION_BYTES,
+  MeasurementCountersSchema,
   MeasurementLedgerChunkSchema,
   MeasurementLedgerIndexSchema,
   MeasurementObservationSchema,
@@ -212,5 +213,15 @@ describe("additive edits", () => {
     expect(RouteUsageSchema.safeParse({ inputTokens: 1, inputIncludesCache: true }).success).toBe(
       true,
     );
+  });
+});
+
+describe("MeasurementCountersSchema reportedUsd", () => {
+  it("accepts counters with and without reported dollars, never negative", () => {
+    expect(MeasurementCountersSchema.safeParse({ inputTokens: 1 }).success).toBe(true);
+    expect(MeasurementCountersSchema.safeParse({ inputTokens: 1, reportedUsd: 1.5 }).success).toBe(
+      true,
+    );
+    expect(MeasurementCountersSchema.safeParse({ reportedUsd: -1 }).success).toBe(false);
   });
 });

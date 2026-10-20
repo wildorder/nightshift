@@ -10,9 +10,13 @@ export const COUNTER_KEYS = [
 ] as const;
 export type CounterKey = (typeof COUNTER_KEYS)[number];
 
-/** True when at least one counter was reported. An empty set of counters is "nothing", not zeros. */
+/** True when at least one TOKEN counter was reported. Dollars alone are not token evidence. An empty set of counters is "nothing", not zeros. */
 export const hasCounters = (counters: MeasurementCounters | undefined): boolean =>
   counters !== undefined && COUNTER_KEYS.some((key) => counters[key] !== undefined);
+
+/** True when any counter, tokens or reported dollars, was reported. */
+export const hasAnyCounters = (counters: MeasurementCounters | undefined): boolean =>
+  hasCounters(counters) || counters?.reportedUsd !== undefined;
 
 /**
  * The combined convention of the counters that carry anything: true if all say
@@ -35,6 +39,7 @@ export const cleanCounters = (counters: MeasurementCounters): MeasurementCounter
     const value = counters[key];
     if (value !== undefined) out[key] = value;
   }
+  if (counters.reportedUsd !== undefined) out.reportedUsd = counters.reportedUsd;
   if (counters.inputIncludesCache !== undefined)
     out.inputIncludesCache = counters.inputIncludesCache;
   return out;
@@ -49,6 +54,8 @@ export const addCounters = (
   for (const key of COUNTER_KEYS) {
     if (a[key] !== undefined || b[key] !== undefined) out[key] = (a[key] ?? 0) + (b[key] ?? 0);
   }
+  if (a.reportedUsd !== undefined || b.reportedUsd !== undefined)
+    out.reportedUsd = (a.reportedUsd ?? 0) + (b.reportedUsd ?? 0);
   const convention = mergeInputConvention([a, b]);
   if (convention !== undefined) out.inputIncludesCache = convention;
   return out;
