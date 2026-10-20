@@ -125,29 +125,43 @@ describe("reconcileSegment", () => {
   const childRequest = request(out(30), { childRef: { kind: "agent", id: "c1" } });
   it("excludes children under an includes_children aggregate and reports them", () => {
     const r = reconcileSegment(
-      [request(out(70)), childRequest, terminal(out(70), { inclusion: "includes_children" })],
+      [childRequest, terminal(out(100), { inclusion: "includes_children" })],
       fresh(),
     );
-    expect(r.counters.outputTokens).toBe(70);
+    expect(r.counters.outputTokens).toBe(100);
     expect(r.childCounters).toEqual(out(30));
     expect(r.gaps).toEqual([]);
   });
-  it("adds children under a self aggregate", () => {
-    const r = reconcileSegment([request(out(70)), childRequest, terminal(out(100))], fresh());
-    expect(r.counters.outputTokens).toBe(100);
-    expect(r.childCounters).toBeUndefined();
+  it("adds disjoint children to a self-only terminal and reports them", () => {
+    const r = reconcileSegment([terminal(out(100), { inclusion: "self" }), childRequest], fresh());
+    expect(r.counters.outputTokens).toBe(130);
+    expect(r.childCounters).toEqual(out(30));
+  });
+  it("adds children to the parent's reconciled maximum without a discrepancy", () => {
+    const r = reconcileSegment(
+      [request(out(100)), terminal(out(100), { inclusion: "self" }), childRequest],
+      fresh(),
+    );
+    expect(r.counters.outputTokens).toBe(130);
+    expect(r.childCounters).toEqual(out(30));
+    expect(r.gaps).toEqual([]);
     const r2 = reconcileSegment(
       [request(out(70)), childRequest, terminal({ outputTokens: 5 })],
       fresh(),
     );
     expect(r2.counters.outputTokens).toBe(100);
   });
+  it("adds children when there is no aggregate source", () => {
+    const r = reconcileSegment([request(out(70)), childRequest], fresh());
+    expect(r.counters.outputTokens).toBe(100);
+    expect(r.childCounters).toEqual(out(30));
+  });
   it("excludes children and records a gap under an unknown aggregate", () => {
     const r = reconcileSegment(
-      [request(out(70)), childRequest, terminal(out(70), { inclusion: "unknown" })],
+      [childRequest, terminal(out(100), { inclusion: "unknown" })],
       fresh(),
     );
-    expect(r.counters.outputTokens).toBe(70);
+    expect(r.counters.outputTokens).toBe(100);
     expect(r.childCounters).toBeUndefined();
     expect(r.gaps.map((g) => g.reason)).toContain("native_child_unscoped");
   });
@@ -207,6 +221,23 @@ describe("fold", () => {
     expect(twice).toEqual(once);
     expect(once.observedModels).toEqual(["m1"]);
     expect(once.ledger.observationCount).toBe(1);
+  });
+
+  it("agrees with reconcileSegment on a self-inclusion child-bearing set", () => {
+    const obs = [
+      request(out(60)),
+      request(out(30), { childRef: { kind: "agent", id: "c" } }),
+      terminal(out(100), { inclusion: "self" }),
+    ];
+    let s = started();
+    obs.forEach((o, i) => {
+      s = foldObservation(s, o, i + 1, T(i));
+    });
+    const r = reconcileSegment(obs, fresh());
+    expect(r.counters.outputTokens).toBe(130);
+    expect(s.segments[0]?.counters).toEqual(r.counters);
+    expect(s.totals).toEqual(r.counters);
+    expect(s.gaps).toEqual(r.gaps);
   });
 
   it("agrees with reconcileSegment", () => {

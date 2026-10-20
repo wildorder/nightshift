@@ -180,7 +180,8 @@ export const reconcileSources = (
   const inclusion = sources.aggregateInclusion;
   const childRequests = sources.childRequests;
   const childrenExist = hasCounters(childRequests);
-  let requests = sources.requests;
+  const requests = sources.requests;
+  let addChildren = false;
   let childCounters: MeasurementCounters | undefined;
   if (childrenExist && childRequests !== undefined) {
     if (inclusion === "includes_children") {
@@ -193,7 +194,9 @@ export const reconcileSources = (
         count: 1,
       });
     } else {
-      requests = addCounters(requests, childRequests);
+      // Under `self` (or with no aggregate at all) children are disjoint from the parent's evidence.
+      addChildren = true;
+      childCounters = childRequests;
     }
   }
 
@@ -272,6 +275,11 @@ export const reconcileSources = (
   const convention = mergeInputConvention(named.map((source) => source.counters));
   if (convention !== undefined) counters.inputIncludesCache = convention;
 
+  // The parent's evidence is reconciled first; disjoint child usage is added after, so it never
+  // takes part in the discrepancy comparison above.
+  const total =
+    addChildren && childCounters !== undefined ? addCounters(counters, childCounters) : counters;
+
   // (f) Coverage.
   const terminalPresent =
     launchTerminal !== undefined ||
@@ -283,7 +291,7 @@ export const reconcileSources = (
       : "unknown";
 
   return {
-    counters,
+    counters: total,
     coverage,
     gaps: coalesceGaps(gaps),
     ...(childCounters === undefined ? {} : { childCounters }),
