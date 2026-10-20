@@ -185,6 +185,13 @@ export const MeasurementObservationSchema = z
   });
 export type MeasurementObservation = z.infer<typeof MeasurementObservationSchema>;
 
+/** What orders two aggregate sources: source time, then receipt time, then identifier. */
+const SourceKeySchema = z.strictObject({
+  occurredAt: IsoTimestampSchema.optional(),
+  receivedAt: IsoTimestampSchema,
+  observationId: z.string(),
+});
+
 const reconciledCoverage = z.enum(["complete", "partial", "unknown"]);
 
 /** One launch's share of the agent's usage, with the sources it was reconciled from. */
@@ -211,6 +218,13 @@ export const SegmentSchema = z.strictObject({
     latestLaunchSnapshot: MeasurementCountersSchema.optional(),
     terminal: MeasurementCountersSchema.optional(),
     terminalCoverage: reconciledCoverage.optional(),
+    /** Own-request totals of native children (observations with a `childRef`), kept apart. */
+    childRequests: MeasurementCountersSchema.optional(),
+    /** The combined `inclusion` of every aggregate (snapshot or terminal) seen; unknown dominates. */
+    aggregateInclusion: z.enum(["self", "includes_children", "unknown"]).optional(),
+    /** Ordering keys of the sources above, so a late-arriving older one does not supersede. */
+    latestLaunchSnapshotKey: SourceKeySchema.optional(),
+    latestTerminalKey: SourceKeySchema.optional(),
   }),
   /**
    * The latest RAW session-scoped source seen in this segment, before baseline

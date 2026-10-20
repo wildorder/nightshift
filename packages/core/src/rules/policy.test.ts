@@ -222,12 +222,42 @@ describe("cost (D-P8-08)", () => {
     });
   });
 
+  it("does not label missing counters as a known zero", () => {
+    expect(labelCost({}, price)).toEqual({ costSource: "unknown" });
+    expect(labelCost({ inputTokens: 0, outputTokens: 0 }, price)).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedCostUsd: 0,
+      costSource: "estimated",
+    });
+  });
+
+  it("does not charge cached input twice when input is inclusive", () => {
+    const cached = { ...price, cacheReadPerMTok: 0.3, cacheWritePerMTok: 3.75 };
+    const usage = { inputTokens: 1_000_000, cacheReadTokens: 600_000, cacheWriteTokens: 100_000 };
+    const exclusive = estimateCost({ ...usage, inputTokens: 300_000 }, cached);
+    expect(estimateCost({ ...usage, inputIncludesCache: true }, cached)).toBeCloseTo(
+      exclusive ?? NaN,
+    );
+    expect(estimateCost({ ...usage, inputIncludesCache: false }, cached)).toBeGreaterThan(
+      exclusive ?? 0,
+    );
+  });
+
+  it("counts usages with neither dollars nor counters as unknown", () => {
+    expect(
+      spendOf([{}, { costSource: "unknown" }, { inputTokens: 1 }, { actualCostUsd: 1 }]),
+    ).toMatchObject({
+      unknown: 2,
+    });
+  });
+
   it("sums a run's spend, says when any of it is an estimate, and names the budget it spent", () => {
     const spend = spendOf([
       { actualCostUsd: 1, inputTokens: 100, outputTokens: 50 },
       { estimatedCostUsd: 2, inputTokens: 10 },
     ]);
-    expect(spend).toEqual({ usd: 3, tokens: 160, estimated: true });
+    expect(spend).toEqual({ usd: 3, tokens: 160, estimated: true, unknown: 0 });
     expect(budgetSpent(spend, { maxUsd: 3 })).toEqual({ budget: "maxUsd", limit: 3, spent: 3 });
     expect(budgetSpent(spend, { maxTokens: 200 })).toBeUndefined();
     expect(budgetSpent(spend, {})).toBeUndefined();
