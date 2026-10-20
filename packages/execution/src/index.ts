@@ -227,6 +227,7 @@ export {
   startRun,
 } from "./start-run.js";
 export {
+  limitsOf,
   type RecordStepSkipInput,
   type RecordStepTimeoutInput,
   recordStepSkip,

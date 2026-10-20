@@ -14,6 +14,7 @@ import type {
 } from "@nightshift/contracts";
 import {
   type AdjustmentDecision,
+  type AdjustmentLimits,
   adjustmentDecisionsOf,
   effectiveSteps,
   formatStepSkippedContext,
@@ -186,7 +187,32 @@ export interface ResolvedSteps {
   readonly skipped: ReadonlyMap<string, DecisionId>;
   /** A skip that is not honoured: the step runs, and this says why. */
   readonly notApplied: readonly { stepId: string; decisionId: string; reason: string }[];
+  /** A raise the run's wall clock stopped from applying. */
+  readonly raisesNotApplied: readonly {
+    stepId: string;
+    decisionId: string;
+    field: string;
+    to: number;
+    reason: string;
+  }[];
 }
+
+/** The limits a program puts on a raise: its wall clock. */
+export const limitsOf = (program: {
+  readonly costPolicy: { readonly maxWallClockSeconds?: number | undefined };
+}): AdjustmentLimits => ({ maxWallClockSeconds: program.costPolicy.maxWallClockSeconds });
+
+/** The progress line for each adjustment the engine did not apply. */
+export const notAppliedMessages = (resolved: ResolvedSteps): string[] => [
+  ...resolved.notApplied.map(
+    ({ stepId, decisionId, reason }) =>
+      `skip of ${stepId} by decision ${decisionId} not applied: ${reason}`,
+  ),
+  ...resolved.raisesNotApplied.map(
+    ({ stepId, field, to, decisionId, reason }) =>
+      `raise of ${stepId} ${field} to ${to} by decision ${decisionId} not applied: ${reason}`,
+  ),
+];
 
 /**
  * Resolves `steps` through `effectiveSteps` from the run's decisions and its
@@ -197,20 +223,23 @@ export const resolveSteps = async (
   stores: Pick<ProjectStores, "decisions" | "executionNodes" | "verifications">,
   scope: RunScope,
   steps: readonly VerificationStep[],
+  limits: AdjustmentLimits = {},
 ): Promise<ResolvedSteps> => {
   const [decisions, verifications] = await Promise.all([
     runAdjustmentDecisions(stores, scope),
     runVerifications(stores, scope),
   ]);
-  const effective = effectiveSteps(steps, decisions, verifications);
+  const effective = effectiveSteps(steps, decisions, verifications, limits);
   const skipped = new Map<string, DecisionId>();
   const notApplied: { stepId: string; decisionId: string; reason: string }[] = [];
   const runnable: VerificationStep[] = [];
   const plain: VerificationStep[] = [];
+  const raisesNotApplied: ResolvedSteps["raisesNotApplied"][number][] = [];
   for (const step of effective) {
-    const { skipped: skip, skipNotHonoured, ...rest } = step;
+    const { skipped: skip, skipNotHonoured, raisesNotApplied: notRaised, ...rest } = step;
     const clean = rest as VerificationStep;
     plain.push(clean);
+    for (const raise of notRaised ?? []) raisesNotApplied.push({ stepId: step.id, ...raise });
     if (skip !== undefined) {
       skipped.set(step.id, skip.decisionId as DecisionId);
       continue;
@@ -220,5 +249,5 @@ export const resolveSteps = async (
     }
     runnable.push(clean);
   }
-  return { steps: plain, runnable, skipped, notApplied };
+  return { steps: plain, runnable, skipped, notApplied, raisesNotApplied };
 };

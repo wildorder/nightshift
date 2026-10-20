@@ -81,7 +81,7 @@ import { pristineCheckout, provisionalRef, tryRevParse, updateRef } from "./git/
 import { unmetWhereThisRuns } from "./prerequisites-here.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 import { discardScratch, freshScratch, projectStepEnv } from "./scratch.js";
-import { resolveSteps } from "./step-adjustments.js";
+import { limitsOf, notAppliedMessages, resolveSteps } from "./step-adjustments.js";
 
 export interface VerifyInput {
   readonly session: RunSession;
@@ -285,13 +285,18 @@ export const runVerification = async (
   // A step that needs a human prerequisite nobody has met **cannot run**, and is
   // deferred; every other step runs (D-P7-10). When resuming, the preflight has
   // already passed, and every step runs.
-  const resolved = await resolveSteps(stores, session.scope, input.steps);
+  const resolved = await resolveSteps(
+    stores,
+    session.scope,
+    input.steps,
+    limitsOf(session.program),
+  );
   const steps = resolved.steps;
-  for (const { stepId, decisionId, reason } of resolved.notApplied) {
+  for (const message of notAppliedMessages(resolved)) {
     environment.outbox.emit({
       type: "verification.progress",
       source: "control-plane",
-      payload: { message: `skip of ${stepId} by decision ${decisionId} not applied: ${reason}` },
+      payload: { message },
       executionNodeId: input.nodeId,
     });
   }
@@ -460,7 +465,12 @@ export const verifyNode = async (
           nowIso(clock),
         );
   await stores.executionNodes.put(verifying);
-  const resolved = await resolveSteps(stores, input.session.scope, steps);
+  const resolved = await resolveSteps(
+    stores,
+    input.session.scope,
+    steps,
+    limitsOf(input.session.program),
+  );
   outbox.emit({
     type: "verification.requested",
     source: "control-plane",

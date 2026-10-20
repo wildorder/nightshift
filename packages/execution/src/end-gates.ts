@@ -26,7 +26,7 @@ import { verificationEvidence } from "./examine.js";
 import { endSteps, gateDefinitions } from "./gate-repair.js";
 import { addDetachedWorktree, pruneWorktrees, revParse, tryGit } from "./git/index.js";
 import { discardScratch } from "./scratch.js";
-import { resolveSteps, runAdjustmentDecisions } from "./step-adjustments.js";
+import { limitsOf, resolveSteps, runAdjustmentDecisions } from "./step-adjustments.js";
 import { runVerification, skippedStepsPayload } from "./verify.js";
 
 /** One end gate that ran and failed, with the tail of what it printed. */
@@ -120,7 +120,12 @@ const runEndGates = async (
     path: checkout,
     base: head,
   });
-  const resolved = await resolveSteps(environment.stores, session.scope, steps);
+  const resolved = await resolveSteps(
+    environment.stores,
+    session.scope,
+    steps,
+    limitsOf(session.program),
+  );
   outbox.emit({
     type: "verification.requested",
     source: "control-plane",

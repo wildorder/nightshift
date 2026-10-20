@@ -33,7 +33,7 @@ import {
   tryRevParse,
   updateRef,
 } from "./git/index.js";
-import { runAdjustmentDecisions } from "./step-adjustments.js";
+import { limitsOf, runAdjustmentDecisions } from "./step-adjustments.js";
 
 /** The branch a strand builds on: its node's job branch, as any node's worktree has. */
 export const strandBranch = (runId: string, strandNodeId: string): string =>
@@ -246,7 +246,9 @@ export const strandFailures = async (
     return {
       ...base,
       timedOut: true,
-      ...(declared === undefined ? {} : currentStepTime(declared, decisions)),
+      ...(declared === undefined
+        ? {}
+        : currentStepTime(declared, decisions, limitsOf(session.program))),
     };
   });
   const examination =

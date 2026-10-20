@@ -73,6 +73,7 @@ import {
   endProgramNode,
   FixLimitError,
   gateDefinitions,
+  limitsOf,
   type RoutePins,
   recordStepSkip,
   recordStepTimeout,
@@ -272,7 +273,11 @@ const timedOutStepsOf = async (
     const step = gates.verification.find((candidate) => candidate.id === stepId);
     return step === undefined
       ? { stepId }
-      : { stepId, timeoutSeconds: currentStepTime(step, decisions).timeoutSeconds };
+      : {
+          stepId,
+          timeoutSeconds: currentStepTime(step, decisions, limitsOf(attached.session.program))
+            .timeoutSeconds,
+        };
   });
 };
 
@@ -508,7 +513,12 @@ const notVerifiedOf = async (
     runAdjustmentDecisions(stores, scope),
     runVerifications(stores, scope),
   ]);
-  const adjustments = stepAdjustmentsOf(gates.verification, decisions, verifications);
+  const adjustments = stepAdjustmentsOf(
+    gates.verification,
+    decisions,
+    verifications,
+    limitsOf(attached.session.program),
+  );
   return {
     skipped: adjustments.skipped,
     raised: adjustments.raised,
@@ -529,9 +539,10 @@ const describeNotVerified = (notVerified: Awaited<ReturnType<typeof notVerifiedO
               : "no verification has run since"
         }).`,
     ),
-    ...notVerified.raised.map(
-      (raise) =>
-        `Step ${raise.stepId} ${raise.field} was raised from ${raise.from} to ${raise.to} by decision ${raise.decisionId}: ${raise.reason}.`,
+    ...notVerified.raised.map((raise) =>
+      raise.notApplied !== undefined
+        ? `Step ${raise.stepId} ${raise.field} raise to ${raise.to} by decision ${raise.decisionId} was not applied: ${raise.notApplied}.`
+        : `Step ${raise.stepId} ${raise.field} was raised from ${raise.from} to ${raise.to} by decision ${raise.decisionId}: ${raise.reason}.`,
     ),
   ];
   return lines.length === 0 ? "Nothing was skipped and no timeout was raised." : lines.join(" ");

@@ -112,7 +112,7 @@ import { programRulings, rulingsCarriedBy } from "./rulings.js";
 import { recordArtifact, runAsOf, stepsAs } from "./runner.js";
 import { discardScratch, ensureScratch, freshScratch, projectStepEnv } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
-import { resolveSteps } from "./step-adjustments.js";
+import { limitsOf, resolveSteps } from "./step-adjustments.js";
 import { announceSteps, skippedStepsPayload } from "./verify.js";
 
 /** The environment variable an examiner's server reads its examination's frame from. */
@@ -907,7 +907,12 @@ const candidateVerification = async (
   const gates = await gateDefinitions(environment, input.session);
   // The job's gates, as the queue's verification has them; the run's end gates
   // are the run's to pass, once its work has landed (A-57).
-  const resolved = await resolveSteps(environment.stores, input.session.scope, landingSteps(gates));
+  const resolved = await resolveSteps(
+    environment.stores,
+    input.session.scope,
+    landingSteps(gates),
+    limitsOf(input.session.program),
+  );
   const steps: readonly VerificationStep[] = resolved.runnable;
   if (steps.some((step) => (step.requires ?? []).length > 0)) {
     // Met where this engine runs: on a machine, by that machine's own check,
