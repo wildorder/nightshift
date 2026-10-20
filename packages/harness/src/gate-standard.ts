@@ -127,7 +127,8 @@ step's measured duration, how long it was quiet before its first output, and
 what a landing costs. Smells: one landing gate dominating the total, work
 repeated across gates (a build each gate redoes), a whole-repository run where
 the tool can be told what to cover, a gate quiet for a minute or more before
-it says anything (a service starting on every verification).
+it says anything (a service starting on every verification). A step measured over 80% of its
+\`timeoutSeconds\` (absent, 600), or killed by it, is one a slower night will fail.
 
 **Typical fix.** Make the gate cheaper without making it check less: move
 shared work into setup, stop gates repeating each other's build, use the
@@ -136,7 +137,11 @@ broker) is the project's to keep alive across verifications, with each
 verification given state of its own: a database created from a template named
 by a hash of the migrations, named for the verification by
 \`NIGHTSHIFT_VERIFICATION_ID\`, dropped afterwards. State keyed by content, never
-by the last run. Or lower \`maxConcurrency\`. Never drop a check from
+by the last run. A step measured over 80% of its timeout, or killed by it, gets
+\`timeoutSeconds\` from the measurement (about 1.5 times it, at most 7200); a step
+that creates something outside the checkout gets \`cleanupSeconds\` for its
+teardown (at most 3600). The fix is the contract edit \`nightshift gates\`
+prints. Or lower \`maxConcurrency\`. Never drop a check from
 verification or run it for some strands only to save time: every landing is
 verified against every landing gate, and that is what keeps unverified work
 from integrating.
