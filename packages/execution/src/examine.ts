@@ -54,6 +54,8 @@ import type {
   ExecutionNode,
   ExecutionNodeId,
   JobContract,
+  MeasurementCounters,
+  MeasurementSummary,
   RouteChoice,
   RouteTarget,
   RoutingDecision,
@@ -70,11 +72,13 @@ import {
   VerificationSchema,
 } from "@nightshift/contracts";
 import {
+  baselineFor,
   examinationBlocks,
   examinationRequirementFor,
   labelCost,
   nowIso,
   policyOfRun,
+  routeUsageFromCounters,
   transition,
   transitionAgent,
 } from "@nightshift/core";
@@ -106,6 +110,11 @@ import {
   updateRef,
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
+import {
+  createMeasurementRecorder,
+  type MeasurementRecorder,
+  publishedSummaryFor,
+} from "./measurement/recorder.js";
 import { unmetWhereThisRuns } from "./prerequisites-here.js";
 import { unavailableUntil } from "./route-availability.js";
 import { programRulings, rulingsCarriedBy } from "./rulings.js";
@@ -1093,6 +1102,8 @@ export interface HelperAgent {
   readonly agent: Agent;
   readonly decision: RoutingDecision;
   readonly token: string | undefined;
+  /** This agent's measurement recorder, spanning every launch of it. */
+  readonly recorder: MeasurementRecorder;
 }
 
 /** The part of an examination's input a helper agent needs: where, and for which job. */
@@ -1160,8 +1171,36 @@ export const createHelper = async (
   });
   const started = transitionAgent(agent, "start", { at: nowIso(clock) });
   await stores.agents.put(started);
-  return { agent: started, decision, token };
+  const price = input.session.run?.policy?.routingPolicy.prices[route.target.model];
+  const recorder = createMeasurementRecorder(environment, {
+    scope,
+    executionNodeId: nodeId,
+    agent: started,
+    route: route.target,
+    routingDecisionId: decision.routingDecisionId,
+    ...(price === undefined ? {} : { price }),
+  });
+  return { agent: started, decision, token, recorder };
 };
+
+/**
+ * What the helper's own session had consumed before it is resumed. Its first
+ * launch learned the session id only from its exit, so its segment carries none:
+ * the segments that started without one are the session being resumed.
+ */
+const ownSessionBaseline = (
+  summary: MeasurementSummary,
+  sessionId: string,
+): MeasurementCounters | undefined =>
+  baselineFor(
+    {
+      ...summary,
+      segments: summary.segments.map((segment) =>
+        segment.sessionId === undefined ? { ...segment, sessionId } : segment,
+      ),
+    },
+    sessionId,
+  );
 
 /** One run of a helper's harness process. */
 export const runHelper = async (
@@ -1173,8 +1212,11 @@ export const runHelper = async (
     readonly task: AgentTask;
     readonly mcp?: McpLaunch | undefined;
     readonly resume?: string | undefined;
+    /** The session's counters before this launch, when it is another agent's session. */
+    readonly baseline?: MeasurementCounters | undefined;
   },
 ): Promise<HarnessExit> => {
+  const { recorder } = helper;
   const transcript = environment.paths.transcript(input.session.scope.runId, helper.agent.agentId);
   await mkdir(dirname(transcript), { recursive: true });
   // The helper's checkout is its own from here on (D-P10-25).
@@ -1184,7 +1226,13 @@ export const runHelper = async (
     await runAs.grant(launch.worktree);
     await runAs.grant(tmpDir);
   }
+  let exit: HarnessExit;
   try {
+    const ref = await recorder.startSegment({
+      ...(launch.resume === undefined ? {} : { sessionId: launch.resume }),
+      resumedSession: launch.resume !== undefined,
+      ...(launch.baseline === undefined ? {} : { baseline: launch.baseline }),
+    });
     const handle = await environment.harness.start({
       agent: helper.agent,
       node: input.node,
@@ -1214,30 +1262,18 @@ export const runHelper = async (
       ...runAsOf(environment, helper.agent),
       task: launch.task,
       ...(launch.resume === undefined ? {} : { resume: { sessionId: launch.resume } }),
+      launch: ref,
+      measurements: recorder.sink,
     });
-    return await handle.exit;
+    exit = await handle.exit;
   } catch {
     // The adapter could not even attempt a launch: the helper did not run.
-    return { kind: "failed", exitCode: 127 };
+    exit = { kind: "failed", exitCode: 127 };
   }
-};
-
-/** What every run of a helper cost, added up: an examiner can run twice (D-P8-15). */
-const sumUsage = (exits: readonly HarnessExit[]): RoutingDecision["usage"] => {
-  const add = (a: number | undefined, b: number | undefined) =>
-    a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
-  return exits.reduce<RoutingDecision["usage"]>((total, exit) => {
-    if (exit.kind !== "completed" && exit.kind !== "failed") return total;
-    const reported = exit.usage ?? {};
-    const sum = {
-      inputTokens: add(total.inputTokens, reported.inputTokens),
-      outputTokens: add(total.outputTokens, reported.outputTokens),
-      cacheReadTokens: add(total.cacheReadTokens, reported.cacheReadTokens),
-      cacheWriteTokens: add(total.cacheWriteTokens, reported.cacheWriteTokens),
-      actualCostUsd: add(total.actualCostUsd, reported.actualCostUsd),
-    };
-    return Object.fromEntries(Object.entries(sum).filter(([, value]) => value !== undefined));
-  }, {});
+  recorder.recordExit(exit);
+  // A resume's baseline is read from what this launch left in the summary.
+  await recorder.drain();
+  return exit;
 };
 
 /** A helper agent's ending, with the session it kept, once. */
@@ -1275,11 +1311,20 @@ export const endHelper = async (
   succeeded: boolean,
 ): Promise<void> => {
   await endAgent(environment, input, helper, exits.at(-1), succeeded);
-  const prices = input.session.run?.policy?.routingPolicy.prices ?? {};
+  const price = input.session.run?.policy?.routingPolicy.prices[helper.decision.chosen.model];
+  const { summary } = await helper.recorder.close();
   await environment.stores.routingDecisions
     .put({
       ...helper.decision,
-      usage: labelCost(sumUsage(exits), prices[helper.decision.chosen.model]),
+      usage: labelCost(
+        routeUsageFromCounters(
+          summary.totals,
+          summary.valuation.reportedUsd === undefined
+            ? {}
+            : { reportedUsd: summary.valuation.reportedUsd },
+        ),
+        price,
+      ),
       outcome: succeeded ? "succeeded" : "failed",
     })
     .catch(() => {});
@@ -1376,6 +1421,7 @@ const runExaminer = async (
         task: { kind: "examine", evidence: run.evidence, round: 2, answers },
         mcp: launchFor(2, answers),
         resume: session,
+        baseline: ownSessionBaseline(helper.recorder.summary(), session),
       });
       exits.push(second);
       examination = await environment.stores.examinations.get(
@@ -1458,10 +1504,20 @@ const answer = async (
 
   if (builder.sessionId !== undefined) {
     const helper = await createHelper(environment, input, "answerer", route);
+    // Another agent's session: its tokens so far are the builder's, not this answerer's.
+    const builderSummary = await publishedSummaryFor(
+      environment.stores,
+      input.session.scope,
+      input.node.executionNodeId,
+      builder.agentId,
+    ).catch(() => undefined);
+    const baseline =
+      builderSummary === undefined ? undefined : baselineFor(builderSummary, builder.sessionId);
     const exit = await runHelper(environment, input, helper, {
       worktree: run.checkout,
       task: { kind: "answer", questions },
       resume: builder.sessionId,
+      baseline,
     });
     const answers = parseAnswers(
       exit.kind === "completed" ? exit.result : undefined,
