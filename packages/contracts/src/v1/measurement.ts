@@ -332,18 +332,22 @@ export const MeasurementLedgerChunkSchema = z.strictObject({
 });
 export type MeasurementLedgerChunk = z.infer<typeof MeasurementLedgerChunkSchema>;
 
-/** Artifact body (kind `measurement-ledger`): lists chunk artifacts, chained to earlier indexes. */
+/**
+ * Artifact body (kind `measurement-ledger`): lists chunk artifacts, chained to earlier indexes.
+ * An entry whose range is unknown (a reference recovered without its journal) still
+ * preserves the reference: only `artifactId` is required.
+ */
 export const MeasurementLedgerIndexSchema = z.strictObject({
   schemaVersion: SchemaVersionSchema,
   previousIndexArtifactId: ArtifactIdSchema.optional(),
   chunks: z
     .array(
       z.strictObject({
-        chunk: z.int().min(0),
+        chunk: z.int().min(0).optional(),
         artifactId: ArtifactIdSchema,
-        segment: LaunchRefSchema,
-        fromSequence: z.int().min(1),
-        toSequence: z.int().min(1),
+        segment: LaunchRefSchema.optional(),
+        fromSequence: z.int().min(1).optional(),
+        toSequence: z.int().min(1).optional(),
       }),
     )
     .max(4096),

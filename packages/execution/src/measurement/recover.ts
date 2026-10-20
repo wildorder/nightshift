@@ -42,6 +42,7 @@ import {
   type PublicationHost,
   publishSegment,
   retried,
+  seedChunkLog,
   segmentKey,
   writePublishedMarkers,
 } from "./publication.js";
@@ -281,6 +282,8 @@ export const recoverMeasurementJournals = async (
       );
       folded += 1;
     }
+
+    seedChunkLog(host, lines);
 
     // 2. Finish every publication whose intent has no marker, with the same artifact id.
     const markers = new Set(
