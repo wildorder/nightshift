@@ -66,3 +66,23 @@ export const timeoutAnswer = (
 
 export const skipAnswer = (decisionId: string, stepId: string, next: string): string =>
   `Recorded decision ${decisionId}: step ${stepId} is skipped for the rest of the run. ${next}`;
+
+/**
+ * What an orchestrator does about a step that timed out (P19 S-02), said the
+ * same wherever it is told: raise first, skip only when raising has not worked,
+ * and fix a step that failed.
+ */
+export const TIMED_OUT_TOOLS =
+  "Raise its time with step.timeout { stepId, timeoutSeconds, cleanupSeconds?, reason } when " +
+  "the work is real and slow (at most 7200 seconds, within the run's wall clock; the next " +
+  "landing gives the step the new time), or, only when raising has not worked, skip it with " +
+  "step.skip { stepId, reason }. Never skip a step that failed: fix it.";
+
+/** A timed-out step, as a sentence: its id and, where known, the time it had. */
+export const describeTimedOut = (step: {
+  readonly stepId: string;
+  readonly timeoutSeconds?: number | undefined;
+}): string =>
+  step.timeoutSeconds === undefined
+    ? `${step.stepId} timed out`
+    : `${step.stepId} timed out after ${step.timeoutSeconds} seconds`;

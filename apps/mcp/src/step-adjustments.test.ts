@@ -25,7 +25,7 @@ import {
 import { nodeGitRunner } from "@nightshift/execution";
 import { createInMemoryStores } from "@nightshift/persistence/memory";
 import { afterAll, describe, expect, it } from "vitest";
-import { registerOrchestratorTools } from "./orchestrator.js";
+import { endGatesFailedMessage, registerOrchestratorTools } from "./orchestrator.js";
 import type { AttachedRun, OrchestratorSession } from "./session.js";
 import { registerSubOrchestratorTools } from "./sub-orchestrator.js";
 
@@ -138,7 +138,8 @@ const rootWorld = async (): Promise<World> => {
       repoPath: "/nowhere",
     },
     environment: { stores },
-    outbox: { emit: () => undefined },
+    engine: { idle: () => true },
+    outbox: { emit: () => undefined, flush: async () => undefined },
   } as unknown as AttachedRun;
   const state = {
     current: attached,
@@ -356,5 +357,97 @@ describe("a strand's skip, from the history it can read", () => {
     ).structuredContent;
     expect(result?.ok).toBe(false);
     expect(String(result?.message)).toContain("contract could not be read");
+  });
+});
+
+describe("run.finish's answer leads with what was not verified (P19 S-02)", () => {
+  it("names a skipped step and a raised timeout, in its text and in notVerified", async () => {
+    const world = await rootWorld();
+    await world.verify(world.ownNode, { trial: 124 }, 1);
+    const raised = await world.call("step.timeout", {
+      stepId: "trial",
+      timeoutSeconds: 1800,
+      reason: "the trial is real work",
+    });
+    await world.verify(world.ownNode, { trial: 124 }, 2);
+    const skipped = await world.call("step.skip", { stepId: "trial", reason: "still too slow" });
+    expect(skipped.ok, JSON.stringify(skipped)).toBe(true);
+    const landing = makeVerification(world.f, world.ownNode, {
+      commands: [
+        { stepId: "unit", command: "unit", exitCode: 0, durationMs: 1 },
+        {
+          stepId: "trial",
+          command: "trial",
+          skipped: { decisionId: skipped.decisionId as string },
+          durationMs: 0,
+        },
+      ],
+      outcome: "passed",
+      startedAt: T(3),
+      endedAt: T(3),
+    });
+    await world.stores.verifications.put(landing);
+
+    const result = await world.call("run.finish", { outcome: "failed", reason: "testing" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    const text = String(result.text);
+    expect(text.startsWith("Step trial was skipped by decision")).toBe(true);
+    expect(text).toContain(skipped.decisionId as string);
+    expect(text).toContain("still too slow");
+    expect(text).toContain("the engine honoured it");
+    expect(text).toContain("from 600 to 1800");
+    expect(result.notVerified).toEqual({
+      skipped: [
+        {
+          stepId: "trial",
+          decisionId: skipped.decisionId,
+          reason: "still too slow",
+          commits: [landing.commitSha],
+          honoured: true,
+        },
+      ],
+      raised: [
+        {
+          stepId: "trial",
+          decisionId: raised.decisionId,
+          field: "timeoutSeconds",
+          from: 600,
+          to: 1800,
+          reason: "the trial is real work",
+        },
+      ],
+    });
+  });
+
+  it("says nothing was skipped when nothing was", async () => {
+    const world = await rootWorld();
+    const result = await world.call("run.finish", { outcome: "failed", reason: "testing" });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(String(result.text)).toContain("Nothing was skipped and no timeout was raised.");
+    expect(result.notVerified).toEqual({ skipped: [], raised: [] });
+  });
+});
+
+describe("the end_gates_failed refusal's text", () => {
+  it("names both tools and the timeout for a gate that timed out, and fixes a failed one", () => {
+    const text = endGatesFailedMessage(
+      "abcdef0123456789",
+      [
+        { stepId: "trial", exitCode: 124 },
+        { stepId: "unit", exitCode: 1 },
+      ],
+      [{ stepId: "trial", timeoutSeconds: 1800 }],
+    );
+    expect(text).toContain("trial timed out after 1800 seconds");
+    expect(text).toContain("unit exited 1");
+    expect(text.indexOf("step.timeout")).toBeGreaterThan(-1);
+    expect(text.indexOf("step.skip")).toBeGreaterThan(text.indexOf("step.timeout"));
+    expect(text).toContain("Never skip a step that failed: fix it.");
+    expect(text).toContain("then call run.finish again".replace("then", "Then"));
+  });
+
+  it("does not mention the tools when nothing timed out", () => {
+    const text = endGatesFailedMessage("abcdef0123456789", [{ stepId: "unit", exitCode: 1 }], []);
+    expect(text).not.toContain("step.skip");
   });
 });

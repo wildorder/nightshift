@@ -50,6 +50,7 @@ import {
   buildTree,
   checkAuthority,
   conservativeDefaults,
+  currentStepTime,
   type DelegationRejection,
   gatherReport,
   highestSequence,
@@ -58,8 +59,11 @@ import {
   type ProjectStores,
   pendingCount,
   renderReport,
+  STEP_TIMED_OUT_EXIT_CODE,
+  type StepAdjustments,
   type StrandBrief,
   StrandBriefError,
+  stepAdjustmentsOf,
   strandBrief,
   strandsOf,
 } from "@nightshift/core";
@@ -98,9 +102,11 @@ import {
 } from "./session.js";
 import {
   asStepRefusal,
+  describeTimedOut,
   STEP_SKIP_TOOL,
   STEP_TIMEOUT_TOOL,
   skipAnswer,
+  TIMED_OUT_TOOLS,
   timeoutAnswer,
 } from "./step-tools.js";
 
@@ -198,6 +204,8 @@ const jobReport = async (
       ).length,
     );
 
+  const timedOutSteps = await timedOutStepsOf(deps, attached, verification);
+
   return {
     jobContractId,
     nodeId: node.executionNodeId,
@@ -238,8 +246,33 @@ const jobReport = async (
               logArtifactId: command.logArtifactId ?? null,
             })),
           },
+    timedOutSteps,
     checkpointId: checkpoint?.checkpointId ?? null,
   };
+};
+
+/** The steps of a verification that exited 124, each with its current timeout where known. */
+const timedOutStepsOf = async (
+  deps: OrchestratorDeps,
+  attached: AttachedRun,
+  verification:
+    | { readonly commands: readonly { stepId: string; exitCode?: number | undefined }[] }
+    | undefined,
+): Promise<{ stepId: string; timeoutSeconds?: number }[]> => {
+  const ids = (verification?.commands ?? [])
+    .filter((command) => command.exitCode === STEP_TIMED_OUT_EXIT_CODE)
+    .map((command) => command.stepId);
+  if (ids.length === 0) return [];
+  const [gates, decisions] = await Promise.all([
+    gateDefinitions(attached.environment, attached.session),
+    runDecisions(deps.state.runtime.stores, attached.session.scope),
+  ]);
+  return ids.map((stepId) => {
+    const step = gates.verification.find((candidate) => candidate.id === stepId);
+    return step === undefined
+      ? { stepId }
+      : { stepId, timeoutSeconds: currentStepTime(step, decisions).timeoutSeconds };
+  });
 };
 
 /** The sentence a model reads first. */
@@ -259,6 +292,13 @@ const describeJob = (report: Readonly<Record<string, unknown>>): string => {
  */
 const nextStepFor = (report: Readonly<Record<string, unknown>>): string => {
   const reason = typeof report.outcomeReason === "string" ? report.outcomeReason : "";
+  const timedOut = (report.timedOutSteps ?? []) as readonly {
+    stepId: string;
+    timeoutSeconds?: number;
+  }[];
+  if (timedOut.length > 0) {
+    return ` Its landing gates timed out: ${timedOut.map(describeTimedOut).join(", ")}. ${TIMED_OUT_TOOLS}`;
+  }
   if (reason.startsWith("examination_failed:")) {
     return (
       " An independent examiner stopped it. Fix it with job.retry (the findings go into the " +
@@ -444,6 +484,79 @@ const awaitEndGates = async (
   }
 };
 
+/** What the run did not verify (P19 S-02): its skipped steps and raised timeouts, from its records. */
+const notVerifiedOf = async (
+  state: OrchestratorSession,
+  attached: AttachedRun,
+): Promise<{
+  readonly skipped: readonly {
+    stepId: string;
+    decisionId: string;
+    reason: string;
+    commits: readonly string[];
+    honoured: boolean;
+  }[];
+  readonly raised: StepAdjustments["raised"];
+}> => {
+  const { stores } = state.runtime;
+  const scope = attached.session.scope;
+  const [gates, decisions, verifications] = await Promise.all([
+    gateDefinitions(attached.environment, attached.session),
+    runDecisions(stores, scope),
+    runVerifications(stores, scope),
+  ]);
+  const adjustments = stepAdjustmentsOf(gates.verification, decisions, verifications);
+  return {
+    skipped: adjustments.skipped.map(({ notHonoured, ...skip }) => ({
+      ...skip,
+      honoured: notHonoured === undefined,
+    })),
+    raised: adjustments.raised,
+  };
+};
+
+const describeNotVerified = (notVerified: Awaited<ReturnType<typeof notVerifiedOf>>): string => {
+  const lines = [
+    ...notVerified.skipped.map(
+      (skip) =>
+        `Step ${skip.stepId} was skipped by decision ${skip.decisionId}: ${skip.reason} ` +
+        `(commits ${skip.commits.length === 0 ? "none yet" : skip.commits.map((c) => c.slice(0, 8)).join(", ")}; ` +
+        `${skip.honoured ? "the engine honoured it" : "the engine did not honour it"}).`,
+    ),
+    ...notVerified.raised.map(
+      (raise) =>
+        `Step ${raise.stepId} ${raise.field} was raised from ${raise.from} to ${raise.to} by decision ${raise.decisionId}: ${raise.reason}.`,
+    ),
+  ];
+  return lines.length === 0 ? "Nothing was skipped and no timeout was raised." : lines.join(" ");
+};
+
+/** The refusal's text: each failing step, whether it timed out, and what to do about each kind. */
+export const endGatesFailedMessage = (
+  commitSha: string,
+  failing: readonly { readonly stepId: string; readonly exitCode?: number | undefined }[],
+  timedOut: readonly { stepId: string; timeoutSeconds?: number }[],
+): string => {
+  const timedOutIds = new Set(timedOut.map((step) => step.stepId));
+  const says = failing
+    .map((step) =>
+      timedOutIds.has(step.stepId)
+        ? describeTimedOut(timedOut.find((t) => t.stepId === step.stepId) as { stepId: string })
+        : `${step.stepId} exited ${step.exitCode ?? "without a code"}`,
+    )
+    .join(", ");
+  const failed = failing.some((step) => !timedOutIds.has(step.stepId));
+  return (
+    `Not finished: the end gates failed on ${commitSha.slice(0, 8)}: ${says}. ` +
+    (failed
+      ? "Read each failing step's log tail below, delegate a job that fixes the work so the " +
+        "gate passes (its acceptance: the gate's command exits 0). "
+      : "") +
+    (timedOut.length > 0 ? `${TIMED_OUT_TOOLS} ` : "") +
+    "Then call run.finish again: the end gates run once more on the new head."
+  );
+};
+
 /**
  * `succeeded` means the end gates passed on the head the run leaves behind
  * (A-57). Failed, they are the orchestrator's to fix: the refusal carries each
@@ -471,17 +584,19 @@ const endGatesEnding = async (
     return { kind: "running", head: head ?? branch };
   }
   if (result.status === "failed") {
+    const timedOut = await timedOutStepsOf(
+      { state: { runtime: { stores: attached.environment.stores } } } as OrchestratorDeps,
+      attached,
+      { commands: result.failing },
+    );
     throw new ToolRefusal(
       "end_gates_failed",
-      `Not finished: the end gates failed on ${result.commitSha.slice(0, 8)}: ${result.failing
-        .map((step) => `${step.stepId} exited ${step.exitCode ?? "without a code"}`)
-        .join(", ")}. Read each failing step's log tail below, delegate a job that fixes the ` +
-        "work so the gate passes (its acceptance: the gate's command exits 0), wait for it to " +
-        "land, then call run.finish again: the end gates run once more on the new head.",
+      endGatesFailedMessage(result.commitSha, result.failing, timedOut),
       {
         commitSha: result.commitSha,
         verificationId: result.verification.verificationId,
         failing: result.failing,
+        timedOutSteps: timedOut,
       },
     );
   }
@@ -761,7 +876,10 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         'the contract\'s end gates (the verification steps declared `at: "end"`) on the program ' +
         "head: a long suite answers `outcome: verifying`, so call again; a failure is refused " +
         "with each failing step's log tail, for a job that fixes it, after which `succeeded` runs " +
-        "them again on the new head. `deferred` is for a " +
+        "them again on the new head. An end gate that timed out is raised with step.timeout or, " +
+        "when raising has not worked, skipped with step.skip; a failed one is fixed, never " +
+        "skipped. The answer leads with every skipped step and every raised timeout " +
+        "(`notVerified`). `deferred` is for a " +
         "planned run whose remaining work waits on a human prerequisite: the run is recorded as " +
         "interrupted, its provisional work is kept, and `nightshift resume` takes it from there. " +
         "On a machine, the run first waits for GitHub to have every landing; a run whose work " +
@@ -785,19 +903,21 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
             { runId: attached.session.scope.runId, outcome: "verifying", head: gated.head },
           );
         }
+        const notVerified = await notVerifiedOf(state, attached);
         const { ending, why } = await publicationEnding(state, attached, gated.outcome, gated.why);
         await endRun(state, attached, ending, why);
         // A planned run's report, beside its plan, as `nightshift run` writes it
         // for a run nobody watched: written from the control plane alone.
         const reportPath = await writeReport(state, attached);
         return ok(
-          `Run ${attached.session.scope.runId} is ${ending}.` +
+          `${describeNotVerified(notVerified)} Run ${attached.session.scope.runId} is ${ending}.` +
             (ending === outcome ? "" : ` ${why}`) +
             (reportPath === undefined ? "" : ` The report is at ${reportPath}.`),
           {
             ...(reportPath === undefined ? {} : { reportPath }),
             runId: attached.session.scope.runId,
             outcome: ending,
+            notVerified,
           },
         );
       }),

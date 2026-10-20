@@ -751,6 +751,9 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
     ].join("\n"),
     renderForbiddenActions(program),
     REPAIRING_GATES,
+    renderTimedOutGate(
+      "At run.finish, a failed end gate that exited 124 timed out; so does a root-level job's landing whose verification has a step that exited 124 (job.get says so).",
+    ),
     ...(decisions.length === 0
       ? []
       : [
@@ -872,6 +875,39 @@ const renderPlanReviewBrief = (
   ).join("\n\n")}\n`;
 
 /**
+ * What an orchestrator may do about a gate that timed out (P19 S-02): the two
+ * tools, raising first, with the rule that a failed step is fixed, never skipped.
+ * `where` says whose landing or gate it is, so the section reads for its reader.
+ */
+const renderTimedOutGate = (where: string): string =>
+  [
+    "A GATE THAT TIMED OUT",
+    "",
+    `  A step that timed out was killed by its time, not failed by its work. ${where}`,
+    "  You have two tools, in this order:",
+    "",
+    "  nightshift step.timeout { stepId, timeoutSeconds, cleanupSeconds?, reason }",
+    "    Raises the step's time for the rest of the run, when the work is real and slow. The",
+    "    maximum is 7200 seconds, and the time with its cleanup must fit the run's wall clock.",
+    "    The next landing gives the step the new time.",
+    "",
+    "  nightshift step.skip { stepId, reason }",
+    "    Skips the step for the rest of the run, only when raising has not worked and only for",
+    "    a step whose most recent run timed out. The report lists it as not verified, with",
+    "    your reason.",
+    "",
+    "  Never skip a step that failed: fix it.",
+  ].join("\n");
+
+const describeStepTime = (step: {
+  readonly timeoutSeconds?: number | undefined;
+  readonly cleanupSeconds?: number | undefined;
+}): string =>
+  step.timeoutSeconds === undefined
+    ? "its timeout"
+    : `${step.timeoutSeconds} seconds${step.cleanupSeconds === undefined ? "" : ` (and ${step.cleanupSeconds} seconds of cleanup)`}`;
+
+/**
  * A strand's orchestrator, resumed because its strand's landing failed (P18,
  * D-P18-05). The same session: it knows its plan, its jobs and the code.
  */
@@ -890,12 +926,22 @@ const renderStrandFixBrief = (task: Extract<AgentTask, { kind: "strand_fix" }>):
           "GATES THAT FAILED",
           ...task.failedChecks.map((step) =>
             [
-              `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}`,
+              step.timedOut === true
+                ? `  ${step.stepId}: \`${step.command}\` timed out after ${describeStepTime(step)}`
+                : `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}`,
               indent(step.output.slice(-3_000), 6),
             ].join("\n"),
           ),
           "",
         ]),
+    ...(task.failedChecks.some((step) => step.timedOut === true)
+      ? [
+          renderTimedOutGate(
+            "Name it with its stepId above; its work may be fine and only need more time.",
+          ),
+          "",
+        ]
+      : []),
     ...(task.findings.length === 0
       ? []
       : ["WHAT THE EXAMINER FOUND", ...task.findings.map(describeFinding), ""]),

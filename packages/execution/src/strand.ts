@@ -19,8 +19,10 @@ import {
   type ExecutionNode,
   type ExecutionNodeId,
 } from "@nightshift/contracts";
+import { currentStepTime, STEP_TIMED_OUT_EXIT_CODE } from "@nightshift/core";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import { latestExamination, verificationEvidence } from "./examine.js";
+import { gateDefinitions } from "./gate-repair.js";
 import {
   baseRef,
   type GitRunner,
@@ -31,6 +33,7 @@ import {
   tryRevParse,
   updateRef,
 } from "./git/index.js";
+import { runDecisions } from "./step-adjustments.js";
 
 /** The branch a strand builds on: its node's job branch, as any node's worktree has. */
 export const strandBranch = (runId: string, strandNodeId: string): string =>
@@ -197,7 +200,7 @@ export const strandContinuing = (
  */
 export const strandFailures = async (
   environment: ExecutionEnvironment,
-  session: Pick<RunSession, "scope">,
+  session: Pick<RunSession, "scope" | "program">,
   node: ExecutionNode,
 ): Promise<{
   readonly failedChecks: readonly {
@@ -205,6 +208,9 @@ export const strandFailures = async (
     readonly command: string;
     readonly exitCode: number | null;
     readonly output: string;
+    readonly timedOut?: boolean;
+    readonly timeoutSeconds?: number;
+    readonly cleanupSeconds?: number;
   }[];
   readonly findings: readonly ExaminationFinding[];
   readonly conflict?: string;
@@ -215,17 +221,34 @@ export const strandFailures = async (
     .filter((record) => record.phase !== "candidate" && record.phase !== "run")
     .sort((a, b) => a.endedAt.localeCompare(b.endedAt))
     .at(-1);
-  const failedChecks =
+  const failing =
     verification === undefined || verification.outcome !== "failed"
       ? []
-      : (await verificationEvidence(environment, verification))
-          .filter((step) => step.exitCode !== undefined && step.exitCode !== 0)
-          .map((step) => ({
-            stepId: step.stepId,
-            command: step.command,
-            exitCode: step.exitCode ?? null,
-            output: step.logTail ?? "",
-          }));
+      : (await verificationEvidence(environment, verification)).filter(
+          (step) => step.exitCode !== undefined && step.exitCode !== 0,
+        );
+  const timedOutAny = failing.some((step) => step.exitCode === STEP_TIMED_OUT_EXIT_CODE);
+  const [gates, decisions] = timedOutAny
+    ? await Promise.all([
+        gateDefinitions(environment, session),
+        runDecisions(environment.stores, session.scope),
+      ])
+    : [undefined, []];
+  const failedChecks = failing.map((step) => {
+    const base = {
+      stepId: step.stepId,
+      command: step.command,
+      exitCode: step.exitCode ?? null,
+      output: step.logTail ?? "",
+    };
+    if (step.exitCode !== STEP_TIMED_OUT_EXIT_CODE) return base;
+    const declared = gates?.verification.find((candidate) => candidate.id === step.stepId);
+    return {
+      ...base,
+      timedOut: true,
+      ...(declared === undefined ? {} : currentStepTime(declared, decisions)),
+    };
+  });
   const examination =
     node.status === "examination_failed"
       ? await latestExamination(environment, session.scope, node.executionNodeId)

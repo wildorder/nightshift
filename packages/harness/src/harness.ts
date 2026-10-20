@@ -195,6 +195,10 @@ export type AgentTask =
         readonly command: string;
         readonly exitCode: number | null;
         readonly output: string;
+        /** The step's timeout killed it (exit 124), with the time it had (P19 S-02). */
+        readonly timedOut?: boolean;
+        readonly timeoutSeconds?: number;
+        readonly cleanupSeconds?: number;
       }[];
       readonly findings: readonly ExaminationFinding[];
       /** A conflict with the program head, said as the queue said it. */

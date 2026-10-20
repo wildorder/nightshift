@@ -175,6 +175,76 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     expect(nightshiftToolNames("program")).toEqual(nightshiftToolNames("job"));
   });
 
+  it("gives the root of a planned run the section on a gate that timed out (P19 S-02)", () => {
+    const brief = renderWorkerBrief({
+      job: makeJobContract(f, { objective: "# The plan" }),
+      node: root,
+      program: planned,
+      worktree: "/tmp/read-only",
+    });
+    expect(brief).toContain("A GATE THAT TIMED OUT");
+    expect(brief).toContain("run.finish");
+    expect(brief.indexOf("nightshift step.timeout {")).toBeGreaterThan(-1);
+    expect(brief.indexOf("nightshift step.skip {")).toBeGreaterThan(
+      brief.indexOf("nightshift step.timeout {"),
+    );
+    expect(brief).toContain("Never skip a step that failed: fix it.");
+  });
+
+  it("briefs a resumed strand with the step that timed out, its time and both tools in order (P19 S-02)", () => {
+    const brief = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      task: {
+        kind: "strand_fix",
+        round: 1,
+        of: 3,
+        failedChecks: [
+          {
+            stepId: "trial",
+            command: "npm run trial",
+            exitCode: 124,
+            output: "slow",
+            timedOut: true,
+            timeoutSeconds: 600,
+            cleanupSeconds: 30,
+          },
+          { stepId: "unit", command: "npm test", exitCode: 1, output: "red" },
+        ],
+        findings: [],
+      },
+    });
+    expect(brief).toContain(
+      "trial: `npm run trial` timed out after 600 seconds (and 30 seconds of cleanup)",
+    );
+    expect(brief).toContain("unit: `npm test` exited 1");
+    expect(brief).toContain("A GATE THAT TIMED OUT");
+    const raise = brief.indexOf(
+      "nightshift step.timeout { stepId, timeoutSeconds, cleanupSeconds?, reason }",
+    );
+    const skip = brief.indexOf("nightshift step.skip { stepId, reason }");
+    expect(raise).toBeGreaterThan(-1);
+    expect(skip).toBeGreaterThan(raise);
+    expect(brief).toContain("7200 seconds");
+    expect(brief).toContain("Never skip a step that failed: fix it.");
+    const plainFailure = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      task: {
+        kind: "strand_fix",
+        round: 1,
+        of: 3,
+        failedChecks: [{ stepId: "unit", command: "npm test", exitCode: 1, output: "red" }],
+        findings: [],
+      },
+    });
+    expect(plainFailure).not.toContain("A GATE THAT TIMED OUT");
+  });
+
   it("tells a strand's orchestrator how to record a departure, and nobody else", () => {
     const node = makeNode(f, f.rootNodeId, { kind: "sub-program" });
     const asStrand = renderWorkerBrief({
