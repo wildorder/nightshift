@@ -13,12 +13,14 @@
  * - **Every step runs.** A failing step does not stop the ones after it,
  *   because the `Verification` record carries the whole `commands` array and a
  *   reader wants to know whether the lint failed as well as the tests.
- * - **Nothing hangs.** A step that outlives its timeout has its process tree
- *   killed and is recorded with a non-zero exit code and `timedOut: true`.
+ * - **Nothing hangs.** A step that outlives its own timeout has its process
+ *   tree sent SIGTERM and is given its own cleanup time to finish; when that
+ *   runs out the tree is sent SIGKILL. Either way it is recorded with exit code
+ *   124 and `timedOut: true`.
  */
 
 import { constants } from "node:os";
-import type { VerificationStep } from "@nightshift/contracts";
+import { stepTime, type VerificationStep } from "@nightshift/contracts";
 import type { Clock } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
 import { sanitizeEnvironment } from "./environment.js";
@@ -39,7 +41,10 @@ export interface StepResult {
   readonly quietMs: number;
   /** The captured combined stdout and stderr, as bytes. */
   readonly output: Uint8Array;
-  /** True when the per-step timeout killed the process tree. */
+  /**
+   * True when the step outlived its timeout: its process tree was sent SIGTERM,
+   * and SIGKILL if it was still running when its cleanup time ran out.
+   */
   readonly timedOut: boolean;
 }
 
@@ -70,7 +75,6 @@ export interface RunVerificationInput {
    * itself in a tree it handed to a worker. Absent, the step runs as is.
    */
   readonly as?: (invocation: StepInvocation) => StepInvocation;
-  readonly timeoutMs: number;
   /** Injectable process spawning, so a test needs no real child. */
   readonly spawn?: SpawnLike;
   readonly sink?: StepSink;
@@ -136,7 +140,6 @@ interface StepRunInput {
   readonly step: VerificationStep;
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
-  readonly timeoutMs: number;
   readonly spawn: SpawnLike;
   readonly sink: StepSink | undefined;
   readonly clock: Clock;
@@ -147,12 +150,14 @@ interface StepRunInput {
 const runStep = (input: StepRunInput): Promise<StepResult> =>
   new Promise<StepResult>((resolve) => {
     const { step } = input;
+    const { timeoutMs, cleanupMs } = stepTime(step);
     const startedAt = input.clock.now();
     const captured: Uint8Array[] = [];
     let firstOutputAt: number | undefined;
     let timedOut = false;
     let settled = false;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
 
     const record = (stream: "stdout" | "stderr", bytes: Uint8Array): void => {
@@ -178,6 +183,7 @@ const runStep = (input: StepRunInput): Promise<StepResult> =>
       if (settled) return;
       settled = true;
       if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+      if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
       if (graceTimer !== undefined) clearTimeout(graceTimer);
       resolve({
         stepId: step.id,
@@ -227,24 +233,37 @@ const runStep = (input: StepRunInput): Promise<StepResult> =>
 
     child.on("close", (code, signal) => finish(exitCodeFor(code, signal)));
 
-    timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      note(`nightshift: step ${step.id} exceeded ${input.timeoutMs}ms and was killed\n`);
-      // Armed before the kill, not after: a child that dies synchronously would
-      // otherwise leave this timer behind, holding the event loop open.
-      graceTimer = setTimeout(() => finish(TIMEOUT_EXIT_CODE), KILL_GRACE_MS);
+    const killTree = (signal: "SIGTERM" | "SIGKILL"): void =>
       killProcessTree({
         pid: child.pid,
+        signal,
         platform: input.platform,
         child,
         cwd: input.cwd,
         env: input.env,
         spawn: input.spawn,
-        kill: (pid, signal) => {
-          process.kill(pid, signal);
+        kill: (pid, sig) => {
+          process.kill(pid, sig);
         },
       });
-    }, input.timeoutMs);
+
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      note(
+        `nightshift: step ${step.id} exceeded its timeout of ${timeoutMs / 1000} seconds; it was sent SIGTERM and has ${cleanupMs / 1000} seconds to clean up before SIGKILL\n`,
+      );
+      // Each timer is armed before the kill it precedes, not after: a child
+      // that dies synchronously would otherwise leave the timer behind,
+      // holding the event loop open.
+      cleanupTimer = setTimeout(() => {
+        note(
+          `nightshift: step ${step.id} cleanup time of ${cleanupMs / 1000} seconds ran out; the process tree was killed\n`,
+        );
+        graceTimer = setTimeout(() => finish(TIMEOUT_EXIT_CODE), KILL_GRACE_MS);
+        killTree("SIGKILL");
+      }, cleanupMs);
+      killTree("SIGTERM");
+    }, timeoutMs);
   });
 
 /**
@@ -268,7 +287,6 @@ export const runVerificationSteps = async (
       step,
       cwd: input.cwd,
       env,
-      timeoutMs: input.timeoutMs,
       spawn,
       sink: input.sink,
       clock,

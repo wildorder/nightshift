@@ -6,14 +6,20 @@
  * operator's secrets.
  */
 
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSteppingClock } from "@nightshift/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StepChunk } from "./run.js";
 import { runVerificationSteps, SPAWN_FAILURE_EXIT_CODE, TIMEOUT_EXIT_CODE } from "./run.js";
 import type { ChildOutputStream, SpawnedChild, SpawnLike, SpawnLikeOptions } from "./spawn.js";
 
-const step = (id: string, command: string) => ({ id, command });
+const step = (
+  id: string,
+  command: string,
+  time: { timeoutSeconds?: number; cleanupSeconds?: number } = {},
+) => ({ id, command, ...time });
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
 /** Any directory that exists; nothing here writes into it. */
@@ -53,8 +59,12 @@ class FakeChild implements SpawnedChild {
   readonly stdout = new FakeStream();
   readonly stderr = new FakeStream();
   readonly signals: (NodeJS.Signals | number | undefined)[] = [];
-  /** False models a process that ignores the kill — the grace path. */
-  dieOnKill = true;
+  /**
+   * Which signal ends the child: SIGTERM (the default, a step that cleans up
+   * and exits), only SIGKILL (a step that ignores SIGTERM), or never (the
+   * grace path).
+   */
+  dies: "on-sigterm" | "on-sigkill" | "never" = "on-sigterm";
   private readonly closeListeners: CloseListener[] = [];
   private readonly errorListeners: ErrorListener[] = [];
 
@@ -69,7 +79,9 @@ class FakeChild implements SpawnedChild {
 
   kill(signal?: NodeJS.Signals | number): boolean {
     this.signals.push(signal);
-    if (this.dieOnKill) this.close(null, "SIGKILL");
+    if (this.dies === "never") return true;
+    if (this.dies === "on-sigkill" && signal !== "SIGKILL") return true;
+    this.close(null, typeof signal === "string" ? signal : "SIGKILL");
     return true;
   }
 
@@ -117,7 +129,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     await runVerificationSteps({
       steps: [step("lint", "npm run lint")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn,
     });
 
@@ -139,7 +150,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     await runVerificationSteps({
       steps: [step("lint", "npm run lint"), step("test", "npm run bad")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn,
       onStep: (event) => events.push(event),
     });
@@ -156,7 +166,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     await runVerificationSteps({
       steps: [step("test", "npm test")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn,
       as: (invocation) => ({
         file: "sudo",
@@ -180,7 +189,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
         steps: [step("test", "npm test")],
         cwd: CWD,
         env: { NIGHTSHIFT_STEP_EXTRA: "added-on-purpose" },
-        timeoutMs: 1_000,
         spawn,
       });
 
@@ -205,7 +213,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     const results = await runVerificationSteps({
       steps: [step("one", "true")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn,
       clock: createSteppingClock(1_000, 5),
     });
@@ -233,7 +240,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     const results = await runVerificationSteps({
       steps: [step("a", "first"), step("b", "middle"), step("c", "last")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn,
     });
 
@@ -254,7 +260,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     const results = await runVerificationSteps({
       steps: [step("one", "true")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn,
     });
 
@@ -268,7 +273,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     const results = await runVerificationSteps({
       steps: [step("one", "true")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn,
     });
 
@@ -280,7 +284,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     const results = await runVerificationSteps({
       steps: [step("one", "true"), step("two", "true")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn: () => {
         throw new Error("ENOENT: no such directory");
       },
@@ -304,7 +307,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     const results = await runVerificationSteps({
       steps: [step("s", "true")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn,
       sink: (chunk) => chunks.push(chunk),
     });
@@ -325,7 +327,6 @@ describe("runVerificationSteps, with an injected spawn", () => {
     const results = await runVerificationSteps({
       steps: [step("s", "true")],
       cwd: CWD,
-      timeoutMs: 1_000,
       spawn,
       sink: () => {
         throw new Error("the log tail died");
@@ -337,51 +338,119 @@ describe("runVerificationSteps, with an injected spawn", () => {
     expect(results[0]?.exitCode).toBe(0);
   });
 
-  it("kills a step that outlives its timeout", async () => {
-    const { calls, spawn } = fakeSpawn(() => {});
+  it("sends SIGTERM to a step that outlives its timeout and runs the next one", async () => {
+    vi.useFakeTimers();
+    try {
+      const { calls, spawn } = fakeSpawn((child, call) => {
+        if (call.args.join(" ").includes("sleep")) return;
+        child.close(0);
+      });
 
-    const results = await runVerificationSteps({
-      steps: [step("slow", "sleep 600"), step("after", "true")],
-      cwd: CWD,
-      timeoutMs: 20,
-      spawn,
-    });
+      const pending = runVerificationSteps({
+        steps: [step("slow", "sleep 600", { timeoutSeconds: 1 }), step("after", "true")],
+        cwd: CWD,
+        spawn,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const results = await pending;
 
-    expect(results[0]?.timedOut).toBe(true);
-    expect(results[0]?.exitCode).toBe(TIMEOUT_EXIT_CODE);
-    expect(calls[0]?.child.signals).toEqual(["SIGKILL"]);
-    // The step after a timeout still runs.
-    expect(results[1]?.timedOut).toBe(true);
-    expect(results).toHaveLength(2);
+      expect(results[0]?.timedOut).toBe(true);
+      expect(results[0]?.exitCode).toBe(TIMEOUT_EXIT_CODE);
+      expect(calls[0]?.child.signals).toEqual(["SIGTERM"]);
+      expect(results[1]?.timedOut).toBe(false);
+      expect(results[1]?.exitCode).toBe(0);
+      expect(results).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  describe("a process that will not die", () => {
+  describe("a step that overruns its time", () => {
     afterEach(() => {
       vi.useRealTimers();
     });
 
-    it("is recorded anyway, rather than stalling the run", async () => {
+    const overrun = (
+      dies: FakeChild["dies"],
+      time: { timeoutSeconds: number; cleanupSeconds: number },
+    ) => {
       vi.useFakeTimers();
       const { calls, spawn } = fakeSpawn((child) => {
-        child.dieOnKill = false;
+        child.dies = dies;
       });
-
       const pending = runVerificationSteps({
-        steps: [step("zombie", "sleep 600")],
+        steps: [step("slow", "sleep 600", time)],
         cwd: CWD,
-        timeoutMs: 100,
         spawn,
       });
-      // Past the step timeout, then past the grace the kill is given.
-      await vi.advanceTimersByTimeAsync(100);
+      return { calls, pending };
+    };
+
+    it("dies on SIGTERM: gets only SIGTERM, and the cleanup timer is cleared", async () => {
+      const { calls, pending } = overrun("on-sigterm", { timeoutSeconds: 1, cleanupSeconds: 5 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const results = await pending;
+      // Past the cleanup time and the grace: nothing more is sent.
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(calls[0]?.child.signals).toEqual(["SIGTERM"]);
+      expect(results[0]).toMatchObject({ timedOut: true, exitCode: TIMEOUT_EXIT_CODE });
+      const log = decode(results[0]?.output ?? new Uint8Array());
+      expect(log).toContain("exceeded its timeout of 1 seconds");
+      expect(log).toContain("sent SIGTERM");
+      expect(log).toContain("5 seconds to clean up");
+      expect(log).not.toContain("ran out");
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("ignores SIGTERM: gets SIGKILL only after its cleanup time", async () => {
+      const { calls, pending } = overrun("on-sigkill", { timeoutSeconds: 1, cleanupSeconds: 5 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls[0]?.child.signals).toEqual(["SIGTERM"]);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(calls[0]?.child.signals).toEqual(["SIGTERM"]);
+      await vi.advanceTimersByTimeAsync(1);
+      const results = await pending;
+
+      expect(calls[0]?.child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(results[0]).toMatchObject({ timedOut: true, exitCode: TIMEOUT_EXIT_CODE });
+      const log = decode(results[0]?.output ?? new Uint8Array());
+      expect(log).toContain("exceeded its timeout");
+      expect(log).toContain("cleanup time of 5 seconds ran out");
+      expect(log).toContain("killed");
+    });
+
+    it("never dies: is finished by the grace timer after the cleanup time", async () => {
+      const { calls, pending } = overrun("never", { timeoutSeconds: 1, cleanupSeconds: 2 });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(calls[0]?.child.signals).toEqual(["SIGTERM", "SIGKILL"]);
       await vi.advanceTimersByTimeAsync(5_000);
       const results = await pending;
 
-      expect(calls[0]?.child.signals).toEqual(["SIGKILL"]);
-      expect(results[0]?.timedOut).toBe(true);
-      expect(results[0]?.exitCode).toBe(TIMEOUT_EXIT_CODE);
-      expect(decode(results[0]?.output ?? new Uint8Array())).toContain("exceeded 100ms");
+      expect(results[0]).toMatchObject({ timedOut: true, exitCode: TIMEOUT_EXIT_CODE });
+      expect(decode(results[0]?.output ?? new Uint8Array())).toContain("ran out");
     });
+  });
+
+  it("sends no signal to a step that finishes inside its time, and keeps its exit code", async () => {
+    vi.useFakeTimers();
+    try {
+      const { calls, spawn } = fakeSpawn((child) => child.close(3));
+      const pending = runVerificationSteps({
+        steps: [step("quick", "exit 3", { timeoutSeconds: 1, cleanupSeconds: 1 })],
+        cwd: CWD,
+        spawn,
+      });
+      const results = await pending;
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(calls[0]?.child.signals).toEqual([]);
+      expect(results[0]).toMatchObject({ timedOut: false, exitCode: 3 });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -393,7 +462,6 @@ describe("runVerificationSteps, with real processes", () => {
         step("two", nodeCommand("process.stdout.write('second')")),
       ],
       cwd: CWD,
-      timeoutMs: 15_000,
     });
 
     expect(results.map((result) => result.exitCode)).toEqual([0, 0]);
@@ -410,7 +478,6 @@ describe("runVerificationSteps, with real processes", () => {
         step("build", nodeCommand("process.stdout.write('build ok')")),
       ],
       cwd: CWD,
-      timeoutMs: 15_000,
     });
 
     expect(results.map((result) => result.exitCode)).toEqual([0, 3, 0]);
@@ -425,7 +492,6 @@ describe("runVerificationSteps, with real processes", () => {
     const results = await runVerificationSteps({
       steps: [step("noisy", nodeCommand(`process.stdout.write('x'.repeat(${size}))`))],
       cwd: CWD,
-      timeoutMs: 15_000,
     });
 
     // Bytes, not a string, and every one of them: this is what gets uploaded
@@ -448,7 +514,6 @@ describe("runVerificationSteps, with real processes", () => {
           ),
         ],
         cwd: CWD,
-        timeoutMs: 15_000,
       });
 
       // `undefined:true` — the secret is gone and PATH survived, so the
@@ -463,11 +528,10 @@ describe("runVerificationSteps, with real processes", () => {
     const started = Date.now();
     const results = await runVerificationSteps({
       steps: [
-        step("hang", nodeCommand("setInterval(function () {}, 50)")),
+        step("hang", nodeCommand("setInterval(function () {}, 50)"), { timeoutSeconds: 1 }),
         step("after", nodeCommand("process.stdout.write('still ran')")),
       ],
       cwd: CWD,
-      timeoutMs: 500,
     });
 
     expect(results[0]?.timedOut).toBe(true);
@@ -490,9 +554,12 @@ describe("runVerificationSteps, with real processes", () => {
     // pipe open. If only the direct child were killed, `close` would never
     // fire and this test would fail by timing out rather than by assertion.
     const results = await runVerificationSteps({
-      steps: [step("tree", `${nodeCommand("setInterval(function () {}, 50)")} | cat`)],
+      steps: [
+        step("tree", `${nodeCommand("setInterval(function () {}, 50)")} | cat`, {
+          timeoutSeconds: 1,
+        }),
+      ],
       cwd: CWD,
-      timeoutMs: 500,
     });
 
     expect(results[0]?.timedOut).toBe(true);
@@ -501,6 +568,67 @@ describe("runVerificationSteps, with real processes", () => {
     // the step would have been recorded by the two-second grace timer instead,
     // so anything under that proves `close` arrived because the tree went away.
     expect(results[0]?.durationMs).toBeLessThan(1_500);
+  });
+
+  it("lets a step clean up on SIGTERM before it ends (POSIX)", async (ctx) => {
+    if (process.platform === "win32") {
+      ctx.skip("POSIX-only: asserts sh traps and SIGTERM");
+      return;
+    }
+    const dir = await mkdtemp(join(tmpdir(), "nightshift-cleanup-"));
+    try {
+      const marker = join(dir, "cleaned");
+      // On dash (this machine's /bin/sh), an EXIT-only trap does NOT fire on an
+      // untrapped SIGTERM; trapping TERM as well is what makes the EXIT trap
+      // run, and it is what a step's author must do too.
+      const command = `trap 'echo cleaned > "${marker}"' EXIT; trap 'exit 143' TERM; sleep 30 & wait`;
+      const results = await runVerificationSteps({
+        steps: [step("tidy", command, { timeoutSeconds: 1, cleanupSeconds: 2 })],
+        cwd: CWD,
+      });
+
+      expect(await readFile(marker, "utf8")).toBe("cleaned\n");
+      expect(results[0]?.timedOut).toBe(true);
+      expect(results[0]?.exitCode).toBe(TIMEOUT_EXIT_CODE);
+      // It ended on the SIGTERM, well before the cleanup time ran out.
+      expect(results[0]?.durationMs).toBeLessThan(2_900);
+      expect(decode(results[0]?.output ?? new Uint8Array())).not.toContain("ran out");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("kills a step that ignores SIGTERM once its cleanup time runs out (POSIX)", async (ctx) => {
+    if (process.platform === "win32") {
+      ctx.skip("POSIX-only: asserts sh traps and SIGTERM");
+      return;
+    }
+    const results = await runVerificationSteps({
+      steps: [step("stubborn", "trap '' TERM; sleep 30", { timeoutSeconds: 1, cleanupSeconds: 1 })],
+      cwd: CWD,
+    });
+
+    expect(results[0]?.timedOut).toBe(true);
+    expect(results[0]?.exitCode).toBe(TIMEOUT_EXIT_CODE);
+    expect(results[0]?.durationMs).toBeGreaterThanOrEqual(2_000);
+    expect(results[0]?.durationMs).toBeLessThan(6_000);
+    expect(decode(results[0]?.output ?? new Uint8Array())).toContain(
+      "cleanup time of 1 seconds ran out",
+    );
+  });
+
+  it("leaves a step that finishes inside its time untouched (POSIX)", async (ctx) => {
+    if (process.platform === "win32") {
+      ctx.skip("POSIX-only: asserts sh traps and SIGTERM");
+      return;
+    }
+    const results = await runVerificationSteps({
+      steps: [step("quick", "trap 'echo got-term' TERM; echo fine; exit 7", { timeoutSeconds: 5 })],
+      cwd: CWD,
+    });
+
+    expect(results[0]).toMatchObject({ timedOut: false, exitCode: 7 });
+    expect(decode(results[0]?.output ?? new Uint8Array())).toBe("fine\n");
   });
 
   it("runs a command containing quotes through sh -c (POSIX)", async (ctx) => {
@@ -512,7 +640,6 @@ describe("runVerificationSteps, with real processes", () => {
     const results = await runVerificationSteps({
       steps: [step("quoted", `printf %s 'say "hi"'`)],
       cwd: CWD,
-      timeoutMs: 15_000,
     });
 
     expect(results[0]?.exitCode).toBe(0);
@@ -528,7 +655,6 @@ describe("runVerificationSteps, with real processes", () => {
     const results = await runVerificationSteps({
       steps: [step("quoted", 'echo say "hi"')],
       cwd: CWD,
-      timeoutMs: 15_000,
     });
 
     expect(results[0]?.exitCode).toBe(0);
@@ -557,7 +683,6 @@ describe("a step's quiet start (D-P17-05)", () => {
         { id: "quiet", command: "echo quiet" },
       ],
       cwd: ".",
-      timeoutMs: 60_000,
       spawn,
       clock,
     });

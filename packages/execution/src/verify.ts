@@ -74,12 +74,7 @@ import {
   toVerificationCommands,
   verificationFacts,
 } from "@nightshift/verification";
-import {
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
-  type ExecutionEnvironment,
-  type LandingEnvironment,
-  type RunSession,
-} from "./environment.js";
+import type { ExecutionEnvironment, LandingEnvironment, RunSession } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import { type GateDefinitions, gateDefinitions, landingSteps } from "./gate-repair.js";
 import { pristineCheckout, provisionalRef, tryRevParse, updateRef } from "./git/index.js";
@@ -306,13 +301,11 @@ export const runVerification = async (
   // environment (P16, D-10), given here rather than inherited.
   const as = stepsAs(environment, { agentId: input.agentId, role: "worker" });
   const scratch = await freshScratch(environment.paths, input.checkout, environment.reclaim);
-  const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const checkout = await runCheckoutSteps({
     setup: gates.setup,
     steps: runnable,
     cwd: input.checkout,
     reference: session.repoPath,
-    timeoutMs,
     env: projectStepEnv(projectEnv, scratch),
     onStep: announce,
     ...as,
@@ -352,7 +345,6 @@ export const runVerification = async (
     first: results,
     cwd: input.checkout,
     paths: environment.paths,
-    timeoutMs,
     projectEnv,
     ...(environment.reclaim === undefined ? {} : { reclaim: environment.reclaim }),
     ...as,

@@ -90,7 +90,6 @@ export interface GateAuditInput {
   readonly unmet: ReadonlySet<string>;
   /** A directory to make the audit's checkout in. A temporary one when absent. */
   readonly workDir?: string;
-  readonly timeoutMs: number;
   /** Where the audit's scratch goes (`LocalPaths.scratch`): short, so sockets fit in it. */
   readonly paths: ScratchPaths;
   /** Added to every step's environment, as verification's are on this machine. */
@@ -142,7 +141,6 @@ const runOnce = async (
     headSha: input.base,
   });
   const how = {
-    timeoutMs: input.timeoutMs,
     env: projectStepEnv({ ...(input.env ?? {}), ...facts }, scratch),
     ...(input.as === undefined ? {} : { as: input.as }),
   };

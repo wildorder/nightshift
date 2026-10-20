@@ -341,7 +341,6 @@ export interface World extends BaseWorld {
 
 export interface WorldOptions extends BaseWorldOptions {
   readonly harness: Harness;
-  readonly verificationTimeoutMs?: number;
   /** The gates a red base failed: the run starts with `gate.red` (P15, D-P15-03). */
   readonly red?: readonly string[];
   /**
@@ -473,7 +472,6 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
     git: nodeGitRunner,
     outbox,
     workerEnvironment: workerEnvironmentIn(base),
-    verificationTimeoutMs: options.verificationTimeoutMs ?? 60_000,
     cancelGraceMs: 2_000,
     ...(options.projectEnv === undefined ? {} : { projectEnv: options.projectEnv }),
   };

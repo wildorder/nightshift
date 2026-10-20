@@ -87,6 +87,8 @@ export const shellInvocation = (platform: NodeJS.Platform, command: string): She
 
 export interface KillProcessTreeInput {
   readonly pid: number | undefined;
+  /** SIGTERM asks the tree to stop; SIGKILL ends it. */
+  readonly signal: "SIGTERM" | "SIGKILL";
   readonly platform: NodeJS.Platform;
   /** The direct child, killed as the fallback when the tree kill cannot run. */
   readonly child: Pick<SpawnedChild, "kill">;
@@ -108,8 +110,10 @@ export interface KillProcessTreeInput {
  * POSIX: the child was spawned detached, so it leads its own process group
  * whose id equals its pid, and a negative pid signals the entire group.
  *
- * Windows: there are no process groups to signal, so `taskkill /T /F` walks the
- * child tree by pid and terminates it.
+ * Windows: there are no process groups to signal, so `taskkill /T` walks the
+ * child tree by pid. SIGTERM is the soft request (no `/F`), which is best
+ * effort: console programs often ignore it. SIGKILL adds `/F`, and the force is
+ * not best effort.
  *
  * Every failure path falls back to killing the direct child, because a tree
  * kill that cannot run must not become a hang.
@@ -118,12 +122,13 @@ export const killProcessTree = (input: KillProcessTreeInput): void => {
   const { pid } = input;
   if (pid === undefined || !Number.isInteger(pid) || pid <= 0) {
     // No pid means the child never reached the OS; there is no tree to walk.
-    input.child.kill("SIGKILL");
+    input.child.kill(input.signal);
     return;
   }
   try {
     if (input.platform === "win32") {
-      const killer = input.spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+      const args = ["/pid", String(pid), "/T", ...(input.signal === "SIGKILL" ? ["/F"] : [])];
+      const killer = input.spawn("taskkill", args, {
         cwd: input.cwd,
         env: input.env,
         detached: false,
@@ -134,15 +139,15 @@ export const killProcessTree = (input: KillProcessTreeInput): void => {
       // taskkill's own output is of no interest, but an unheard `error` event
       // on a child process is an unhandled exception, and draining the pipes
       // keeps a full buffer from leaving a zombie behind.
-      killer.on("error", () => input.child.kill());
+      killer.on("error", () => input.child.kill(input.signal));
       killer.stdout?.on("data", () => {});
       killer.stderr?.on("data", () => {});
       return;
     }
-    input.kill(-pid, "SIGKILL");
+    input.kill(-pid, input.signal);
   } catch {
     // ESRCH (already gone) and EPERM both land here. Either way, try the child
     // directly and let the caller's grace timer decide when to give up.
-    input.child.kill("SIGKILL");
+    input.child.kill(input.signal);
   }
 };

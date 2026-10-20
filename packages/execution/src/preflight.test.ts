@@ -120,7 +120,7 @@ describe("runPreflight (D-P7-05)", () => {
       contract: contractWith([prerequisite("HP-01", `node -e "setInterval(() => {}, 1000)"`)]),
       cwd,
       record,
-      timeoutMs: 500,
+      timeoutSeconds: 1,
     });
     expect(result.checks[0]?.timedOut).toBe(true);
     expect(result.pending.map((p) => p.id)).toEqual(["HP-01"]);

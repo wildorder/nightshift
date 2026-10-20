@@ -51,7 +51,6 @@ export {
 } from "./engine.js";
 export {
   DEFAULT_CANCEL_GRACE_MS,
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExaminationServices,
   type ExecutionEnvironment,
   type LandingEnvironment,
@@ -136,7 +135,7 @@ export {
 } from "./outbox.js";
 export { lastChars, readableOutput, readableTail } from "./output-tail.js";
 export {
-  PREFLIGHT_TIMEOUT_MS,
+  PREFLIGHT_TIMEOUT_SECONDS,
   type PreflightCheck,
   type PreflightInput,
   type PreflightResult,

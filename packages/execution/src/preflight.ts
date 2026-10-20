@@ -35,7 +35,7 @@ import {
 } from "@nightshift/verification";
 
 /** Long enough for a cloud CLI to answer on a bad connection; short enough that a prompt waiting on stdin ends. */
-export const PREFLIGHT_TIMEOUT_MS = 60_000;
+export const PREFLIGHT_TIMEOUT_SECONDS = 60;
 
 export interface PreflightCheck {
   readonly prerequisite: Prerequisite;
@@ -81,7 +81,7 @@ export interface PreflightInput {
   readonly env?: RunVerificationInput["env"];
   /** Who each command runs as: a worker user, on a machine (D-P10-25). */
   readonly as?: RunVerificationInput["as"];
-  readonly timeoutMs?: number;
+  readonly timeoutSeconds?: number;
   readonly spawn?: SpawnLike;
   readonly clock?: Clock;
 }
@@ -102,11 +102,11 @@ export const runPreflight = async (input: PreflightInput): Promise<PreflightResu
     steps: toRun.map((prerequisite) => ({
       id: prerequisite.id,
       command: prerequisite.verifyCommand,
+      timeoutSeconds: input.timeoutSeconds ?? PREFLIGHT_TIMEOUT_SECONDS,
     })),
     cwd: input.cwd,
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.as === undefined ? {} : { as: input.as }),
-    timeoutMs: input.timeoutMs ?? PREFLIGHT_TIMEOUT_MS,
     ...(input.spawn === undefined ? {} : { spawn: input.spawn }),
     ...(input.clock === undefined ? {} : { clock: input.clock }),
   });

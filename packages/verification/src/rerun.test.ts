@@ -51,7 +51,6 @@ describe("rerunFailedChecks", () => {
       steps: [{ id: "ok", command: nodeCommand("process.exit(9)") }],
       first: [result("ok", 0)],
       cwd: await scratch(),
-      timeoutMs: 30_000,
     });
     expect(reruns).toEqual([]);
   });
@@ -67,7 +66,6 @@ describe("rerunFailedChecks", () => {
       // `flaky` already ran once here and wrote its counter.
       first: [result("flaky", 3), result("broken", 2), result("ok", 0)],
       cwd,
-      timeoutMs: 30_000,
     });
     // The counter is missing, so this rerun is its "first" run: it fails.
     expect(reruns.map((r) => [r.rerun.stepId, r.first.exitCode, r.rerun.exitCode])).toEqual([
@@ -78,7 +76,6 @@ describe("rerunFailedChecks", () => {
       steps: [{ id: "flaky", command: flaky }],
       first: [result("flaky", 3)],
       cwd,
-      timeoutMs: 30_000,
     });
     expect(again.map((r) => r.rerun.exitCode)).toEqual([0]);
   });
