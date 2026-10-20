@@ -318,6 +318,34 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     expect(brief).toContain("delegate the same work again as a new job");
   });
 
+  it("tells a strand's fix round that an arbiter's ruling stands, and what it says", () => {
+    const brief = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      task: {
+        kind: "strand_fix",
+        round: 3,
+        of: 3,
+        failedChecks: [],
+        findings: [],
+        rulings: [
+          {
+            findingId: "F-01",
+            decisionId: "dec_ruling" as never,
+            summary: "a red gate can be skipped after a failed rerun",
+            rationale: "the skip check must see the rerun",
+          },
+        ],
+      },
+    });
+    expect(brief).toContain("AN ARBITER HAS RULED");
+    expect(brief).toContain("not to be disputed again");
+    expect(brief).toContain("F-01: a red gate can be skipped after a failed rerun");
+    expect(brief).toContain("the ruling: the skip check must see the rerun");
+  });
+
   it("tells a strand's orchestrator what an earlier run already built of it, and where (A-60)", () => {
     const continued = {
       fromRunId: "run_earlier",

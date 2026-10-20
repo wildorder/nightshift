@@ -24,6 +24,7 @@ import { userInfo } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   CommitShaSchema,
+  DispatchSchema,
   HeartbeatResponseSchema,
   type ProgramContract,
   ProgramIdSchema,
@@ -38,7 +39,7 @@ import type {
   ProjectStores,
   RunScope,
 } from "@nightshift/core";
-import { createUlidIdGenerator, systemClock } from "@nightshift/core";
+import { createUlidIdGenerator, publicationTip, systemClock } from "@nightshift/core";
 import type {
   ExecutionEnvironment,
   GitRunner,
@@ -147,19 +148,16 @@ export const API_TOKEN_ENV = "NIGHTSHIFT_API_TOKEN";
  */
 export const API_TOKEN_FILE_ENV = "NIGHTSHIFT_API_TOKEN_FILE";
 /**
- * P10 (D-P10-22): set by the runner on the orchestrator-role server it launches
- * and nowhere else. Its value is the program branch's head at GitHub when the
- * run was dispatched: the first publication intent's predecessor. Present, the
- * engine raises an intent after every landing; absent, it publishes nothing.
+ * P10 (D-P10-22, A-60): set by the runner on the orchestrator-role server it
+ * launches and nowhere else. Its value is the dispatch's base: the program
+ * branch's head at GitHub when the run was dispatched, which GitHub surely
+ * holds, and which every strand branch's pack is made against. Present, the
+ * engine publishes every landing and every strand move; absent, nothing. A
+ * landing's predecessor is not this: it is read from the record each time.
  */
 export const PUBLISH_BASE_ENV = "NIGHTSHIFT_PUBLISH_BASE";
 /** Where the packs are written before upload; the run's directory on the volume. */
 export const PUBLISH_PACK_DIR_ENV = "NIGHTSHIFT_PUBLISH_PACK_DIR";
-/**
- * A-60: the dispatch's base, which GitHub surely holds: every strand branch's
- * pack carries everything since it. Set by the runner beside the publish base.
- */
-export const PUBLISH_STRAND_BASE_ENV = "NIGHTSHIFT_PUBLISH_STRAND_BASE";
 /**
  * P10 (D-P10-30): the user project code runs as on a machine; set by the runner
  * on the orchestrator-role server it launches. Present, every step and every
@@ -545,7 +543,6 @@ const createPublication = (
 ): ((scope: RunScope) => Publication) | undefined => {
   const base = env[PUBLISH_BASE_ENV];
   if (base === undefined || base === "") return undefined;
-  const strandBase = env[PUBLISH_STRAND_BASE_ENV];
   const packDir = env[PUBLISH_PACK_DIR_ENV];
   const log = (line: string) => process.stderr.write(`[nightshift-mcp] ${line}\n`);
   return (scope) => {
@@ -558,7 +555,13 @@ const createPublication = (
     });
     return {
       landing: createPublicationQueue({
-        baseSha: CommitShaSchema.parse(base),
+        // Where the chain stands now, from the record: never this process's memory.
+        predecessor: async () =>
+          publicationTip(
+            DispatchSchema.parse(
+              await send(transport, { method: "GET", path: routes.dispatch(scope) }),
+            ),
+          ),
         packDir: packs,
         upload,
         request: async (body) => {
@@ -567,9 +570,7 @@ const createPublication = (
         log,
       }),
       strand: createStrandPublication({
-        baseSha: CommitShaSchema.parse(
-          strandBase === undefined || strandBase === "" ? base : strandBase,
-        ),
+        baseSha: CommitShaSchema.parse(base),
         packDir: packs,
         upload,
         request: async (body) => {

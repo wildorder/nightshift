@@ -948,9 +948,28 @@ const renderStrandFixBrief = (task: Extract<AgentTask, { kind: "strand_fix" }>):
           "",
         ]
       : []),
-    ...(task.findings.length === 0
-      ? []
-      : ["WHAT THE EXAMINER FOUND", ...task.findings.map(describeFinding), ""]),
+    ...(task.rulings === undefined
+      ? task.findings.length === 0
+        ? []
+        : ["WHAT THE EXAMINER FOUND", ...task.findings.map(describeFinding), ""]
+      : [
+          "AN ARBITER HAS RULED — carry this out",
+          "",
+          "  Your strand's examination raised the finding below, it was disputed or survived its",
+          "  fixes, and an independent arbiter ruled that it stands. The ruling is final: not open",
+          "  to argument, and not to be disputed again. Make what it says true of your branch; the",
+          "  next examination checks only that.",
+          "",
+          ...task.rulings.map(describeRuling),
+          ...(task.findings.length === 0
+            ? []
+            : [
+                "",
+                "  The finding, as the examiner raised it:",
+                ...task.findings.map(describeFinding),
+              ]),
+          "",
+        ]),
     "Fix it the way you built the strand: delegate jobs for the fixes (as parallel as they can",
     "be), wait for them to merge onto your branch, then call subprogram.complete again. Your",
     "checkout is your strand's branch, with everything your jobs did; read it to see where the",
