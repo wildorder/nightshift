@@ -33,33 +33,100 @@ export const SuccessCriterionSchema = z.strictObject({
 });
 export type SuccessCriterion = z.infer<typeof SuccessCriterionSchema>;
 
+/** How long a step may run when it does not say: ten minutes. */
+export const DEFAULT_STEP_TIMEOUT_SECONDS = 600;
+/** How long a timed-out step has, after SIGTERM, to clean up before SIGKILL, when it does not say. */
+export const DEFAULT_STEP_CLEANUP_SECONDS = 30;
+/** The most a step may declare for `timeoutSeconds` (D-02): two hours. Past that, skip the step (D-04). */
+export const MAX_STEP_TIMEOUT_SECONDS = 7200;
+/** The most a step may declare for `cleanupSeconds` (D-02): one hour. */
+export const MAX_STEP_CLEANUP_SECONDS = 3600;
+
+/**
+ * The time a step declares for itself (P19), shared by verification and setup
+ * steps. Both are positive whole seconds, absent meaning the defaults above.
+ * `timeoutSeconds` is how long the step may run; `cleanupSeconds` is how long,
+ * after SIGTERM on timeout, its trap has to remove what it made before SIGKILL.
+ * The run's orchestrators may raise either mid-run (D-01); that adjustment
+ * lives in the run's records, never here.
+ */
+const stepTimeFields = {
+  timeoutSeconds: z.int().positive().optional(),
+  cleanupSeconds: z.int().positive().optional(),
+};
+
+const OVER_MAXIMUM_WORDS = {
+  timeoutSeconds: "7200 seconds (two hours); past that, skip the step (D-04)",
+  cleanupSeconds: "3600 seconds (one hour)",
+} as const;
+
+/** Enforces the maximums on the step object, so the issue names the step, the field and the maximum. */
+const refineStepTime = (
+  step: { id: string; timeoutSeconds?: number | undefined; cleanupSeconds?: number | undefined },
+  ctx: z.RefinementCtx,
+): void => {
+  const limits = [
+    ["timeoutSeconds", step.timeoutSeconds, MAX_STEP_TIMEOUT_SECONDS],
+    ["cleanupSeconds", step.cleanupSeconds, MAX_STEP_CLEANUP_SECONDS],
+  ] as const;
+  for (const [field, value, max] of limits) {
+    if (value !== undefined && value > max) {
+      ctx.addIssue({
+        code: "custom",
+        path: [field],
+        message: `step "${step.id}": ${field} ${value} is over the maximum of ${OVER_MAXIMUM_WORDS[field]}`,
+      });
+    }
+  }
+};
+
+/** A step's time in milliseconds, defaults filled in. */
+export interface StepTime {
+  readonly timeoutMs: number;
+  readonly cleanupMs: number;
+}
+
 /**
  * One deterministic verification command. Steps are identified so a
  * `Verification` result can attach an exit code and a log artifact to the exact
  * step that produced it.
  */
-export const VerificationStepSchema = z.strictObject({
-  id: z.string().min(1),
-  command: z.string().min(1),
-  description: z.string().optional(),
-  /**
-   * The human prerequisites this step cannot run without (P7, D-P7-10): a
-   * deploy check that needs a credential, say. While one of them is unmet the
-   * step is **deferred**, not failed, every other step still runs, and the work
-   * carries on a provisional line that never reaches the program branch until
-   * the step has run and passed.
-   */
-  requires: z.array(PrerequisiteIdSchema).optional(),
-  /**
-   * When the step runs (A-57). `landing`, the default: on every job's
-   * verification, in the merge queue, on the program head it is about to join.
-   * `end`: once, when the run's work has all landed, on the program head, and
-   * again after each fix that lands; never per job. For a gate that proves the
-   * whole and costs too much to pay on every landing: an end-to-end suite
-   * against a built, migrated system. The gate audit before a run runs both.
-   */
-  at: z.enum(["landing", "end"]).optional(),
-});
+export const VerificationStepSchema = z
+  .strictObject({
+    id: z.string().min(1),
+    command: z.string().min(1),
+    description: z.string().optional(),
+    /**
+     * The human prerequisites this step cannot run without (P7, D-P7-10): a
+     * deploy check that needs a credential, say. While one of them is unmet the
+     * step is **deferred**, not failed, every other step still runs, and the work
+     * carries on a provisional line that never reaches the program branch until
+     * the step has run and passed.
+     */
+    requires: z.array(PrerequisiteIdSchema).optional(),
+    /**
+     * When the step runs (A-57). `landing`, the default: on every job's
+     * verification, in the merge queue, on the program head it is about to join.
+     * `end`: once, when the run's work has all landed, on the program head, and
+     * again after each fix that lands; never per job. For a gate that proves the
+     * whole and costs too much to pay on every landing: an end-to-end suite
+     * against a built, migrated system. The gate audit before a run runs both.
+     */
+    at: z.enum(["landing", "end"]).optional(),
+    /**
+     * How long the step may run, in seconds; absent is 600. At most 7200. On
+     * timeout the step is sent SIGTERM and given `cleanupSeconds` before SIGKILL.
+     * The run's orchestrators may raise it mid-run (D-01, strand S-02).
+     */
+    timeoutSeconds: stepTimeFields.timeoutSeconds,
+    /**
+     * How long, after SIGTERM on timeout, the step's trap has to remove what it
+     * made before SIGKILL, in seconds; absent is 30. At most 3600. The run's
+     * orchestrators may raise it mid-run (D-01, strand S-02).
+     */
+    cleanupSeconds: stepTimeFields.cleanupSeconds,
+  })
+  .superRefine(refineStepTime);
 export type VerificationStep = z.infer<typeof VerificationStepSchema>;
 
 /** Where a step runs; absent reads as `landing`. */
@@ -88,12 +155,26 @@ export const stepRunsAt = (step: Pick<VerificationStep, "at">): "landing" | "end
  * setup step that fails fails the verification without the checks running: a
  * test suite run without its dependencies proves nothing.
  */
-export const SetupStepSchema = z.strictObject({
-  id: z.string().min(1),
-  command: z.string().min(1),
-  description: z.string().optional(),
-});
+export const SetupStepSchema = z
+  .strictObject({
+    id: z.string().min(1),
+    command: z.string().min(1),
+    description: z.string().optional(),
+    /** How long the step may run, in seconds; absent is 600, at most 7200. See `stepTimeFields`. */
+    timeoutSeconds: stepTimeFields.timeoutSeconds,
+    /** Seconds between SIGTERM on timeout and SIGKILL; absent is 30, at most 3600. */
+    cleanupSeconds: stepTimeFields.cleanupSeconds,
+  })
+  .superRefine(refineStepTime);
 export type SetupStep = z.infer<typeof SetupStepSchema>;
+
+/** The time a step gets, in milliseconds, with the defaults filled in; use it wherever a step runs. */
+export const stepTime = (
+  step: Pick<VerificationStep | SetupStep, "timeoutSeconds" | "cleanupSeconds">,
+): StepTime => ({
+  timeoutMs: (step.timeoutSeconds ?? DEFAULT_STEP_TIMEOUT_SECONDS) * 1000,
+  cleanupMs: (step.cleanupSeconds ?? DEFAULT_STEP_CLEANUP_SECONDS) * 1000,
+});
 
 /** The prefix a setup step's id carries in a `Verification`, so it cannot collide with a check's. */
 export const SETUP_STEP_ID_PREFIX = "setup:";
