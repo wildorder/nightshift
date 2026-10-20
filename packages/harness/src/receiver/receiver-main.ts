@@ -1,6 +1,7 @@
 /**
  * Child entry of the local telemetry receiver. Configured by environment only
- * (see `config.ts`); prints one `{ "port": n }` line when listening on loopback.
+ * (see `config.ts`); journals only the reduced metadata envelope (never raw
+ * request bytes) and refuses to start without an attribute allowlist; prints one `{ "port": n }` line when listening on loopback.
  * See `receiver.ts` for why this is a separate process.
  */
 import { timingSafeEqual } from "node:crypto";
@@ -10,10 +11,12 @@ import {
   DEFAULT_ALLOWED_PATHS,
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_MAX_JOURNAL_BYTES,
+  DEFAULT_MAX_RECORDS_PER_ENVELOPE,
   RECEIVER_ENV,
   RECEIVER_HOST,
 } from "./config.js";
 import { durableAppend } from "./durable-append.js";
+import { parseBody, type ReceiverSignal, reduceOtlp } from "./reduce.js";
 
 const env = process.env;
 const capability = env[RECEIVER_ENV.capability];
@@ -25,6 +28,16 @@ if (
   journalPath === ""
 ) {
   process.stderr.write("receiver: capability and journal path are required\n");
+  process.exit(2);
+}
+const allowedAttributes: ReadonlySet<string> = new Set(
+  (env[RECEIVER_ENV.allowedAttributes] ?? "")
+    .split(/[\n,]/)
+    .map((k) => k.trim())
+    .filter((k) => k !== ""),
+);
+if (allowedAttributes.size === 0) {
+  process.stderr.write("receiver: a non-empty attribute allowlist is required\n");
   process.exit(2);
 }
 // The secret must not outlive its use as a comparison value in this process's environment.
@@ -49,6 +62,11 @@ const allowedPaths: readonly string[] = (() => {
 })();
 const maxBodyBytes = intFromEnv(RECEIVER_ENV.maxBodyBytes, DEFAULT_MAX_BODY_BYTES);
 const maxJournalBytes = intFromEnv(RECEIVER_ENV.maxJournalBytes, DEFAULT_MAX_JOURNAL_BYTES);
+
+const maxRecords = Math.max(
+  1,
+  intFromEnv(RECEIVER_ENV.maxRecords, DEFAULT_MAX_RECORDS_PER_ENVELOPE),
+);
 
 const fd = openSync(journalPath, "a");
 let journalBytes = fstatSync(fd).size;
@@ -117,20 +135,12 @@ const enqueue = (build: (receivedAt: string) => object, capped: boolean): Promis
   return result;
 };
 
-const JSON_LIKE = /(?:^|[/+])json(?:$|[;\s])/i;
-const encode = (
-  body: Buffer,
-  contentType: string,
-): { encoding: "utf8" | "base64"; body: string } => {
-  if (JSON_LIKE.test(contentType)) {
-    try {
-      return { encoding: "utf8", body: new TextDecoder("utf-8", { fatal: true }).decode(body) };
-    } catch {
-      // not valid UTF-8
-    }
-  }
-  return { encoding: "base64", body: body.toString("base64") };
+const SIGNALS: Record<string, ReceiverSignal> = {
+  "/v1/logs": "logs",
+  "/v1/metrics": "metrics",
+  "/v1/traces": "traces",
 };
+const JSON_TYPES = new Set(["application/json", "application/x-ndjson"]);
 
 const reply = (res: ServerResponse, status: number, extra: Record<string, string> = {}): void => {
   res.writeHead(status, { "content-length": "0", ...extra });
@@ -153,6 +163,12 @@ const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (req.method !== "POST") {
     req.resume();
     return reply(res, 405, { allow: "POST" });
+  }
+  const contentType = req.headers["content-type"] ?? "";
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (!JSON_TYPES.has(mediaType)) {
+    req.resume();
+    return reply(res, 415);
   }
   const declared = Number(req.headers["content-length"]);
   if (Number.isFinite(declared) && declared > maxBodyBytes) {
@@ -179,13 +195,35 @@ const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> 
   });
   if (tooLarge) return reply(res, 413, { connection: "close" });
   if (!req.complete) return;
-  const contentType = req.headers["content-type"] ?? "";
-  const encoded = encode(Buffer.concat(chunks), contentType);
+  const signal = SIGNALS[path];
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  } catch {
+    return reply(res, 400);
+  }
+  if (signal === undefined) return reply(res, 404);
+  const requests = parseBody(text, mediaType === "application/x-ndjson");
+  if (requests === undefined) return reply(res, 400);
+  const all = requests.flatMap((r) => reduceOtlp(signal, r, allowedAttributes));
+  const records = all.slice(0, maxRecords);
+  const droppedRecordCount = all.length - records.length;
   const result = await enqueue(
-    (receivedAt) => ({ receivedAt, path, contentType, ...encoded }),
+    (receivedAt) => ({
+      receivedAt,
+      path,
+      contentType: contentType.slice(0, 256),
+      signal,
+      records,
+      droppedRecordCount,
+    }),
     true,
   );
-  if (result === "ok") return reply(res, 200);
+  if (result === "ok") {
+    if (droppedRecordCount > 0)
+      await enqueue((receivedAt) => ({ gap: "records_truncated", receivedAt }), false);
+    return reply(res, 200);
+  }
   reply(res, result === "full" ? 507 : 500);
 };
 

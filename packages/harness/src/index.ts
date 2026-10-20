@@ -68,9 +68,11 @@ export { type DurableFs, durableAppend } from "./receiver/durable-append.js";
 export {
   type ReceiverEnvelope,
   type ReceiverGap,
+  type ReceiverRecord,
   readReceiverJournal,
   receiverEnvelopeSchema,
   receiverGapSchema,
+  receiverRecordSchema,
 } from "./receiver/journal.js";
 export {
   type LocalReceiver,

@@ -5,13 +5,16 @@
  * that wants it needs an endpoint. The receiver is a SEPARATE child process
  * because the stdio MCP server that hosts the engine opens no socket (D-03:
  * "an isolated local receiver where an adapter needs one"). It binds only to
- * 127.0.0.1, lives for one launch, and journals received bytes durably.
+ * 127.0.0.1, lives for one launch, and journals a reduced metadata envelope durably.
  *
  * The capability is a per-launch secret, distinct from any Nightshift execution
  * credential; it is passed to the child through its environment, never argv.
  *
- * Nothing here decodes a provider's payload: the receiver journals bytes and
- * the adapter reads the journal (`readReceiverJournal`) and decodes.
+ * Harness telemetry is metadata only: the receiver accepts OTLP/JSON only and
+ * reduces each record to timing/identity fields plus attributes on a REQUIRED
+ * allowlist before anything is written. Log bodies, span events/links,
+ * exemplars and other attributes are never retained. The adapter reads the
+ * reduced records with `readReceiverJournal`.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -22,12 +25,17 @@ import {
   DEFAULT_ALLOWED_PATHS,
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_MAX_JOURNAL_BYTES,
+  DEFAULT_MAX_RECORDS_PER_ENVELOPE,
   RECEIVER_ENV,
 } from "./config.js";
 
 export interface LocalReceiverOptions {
   readonly journalPath: string;
+  /** Exact attribute keys that may be journaled (at least one; no commas or newlines). */
+  readonly allowedAttributes: readonly string[];
   readonly allowedPaths?: readonly string[];
+  /** Upper bound on records per journal envelope; the rest are counted as dropped. */
+  readonly maxRecordsPerEnvelope?: number;
   readonly maxBodyBytes?: number;
   readonly maxJournalBytes?: number;
   readonly readyTimeoutMs?: number;
@@ -78,6 +86,8 @@ const waitForExit = (child: ChildProcess, ms: number): Promise<boolean> =>
   });
 
 export const startLocalReceiver = async (options: LocalReceiverOptions): Promise<LocalReceiver> => {
+  if (options.allowedAttributes.some((k) => /[,\n]/.test(k)))
+    throw new Error("receiver allowed attributes must not contain commas or newlines");
   const capability = randomBytes(32).toString("hex");
   const entry = childEntry();
   const child = spawn(options.node ?? process.execPath, [...entry.execArgv, entry.file], {
@@ -87,6 +97,10 @@ export const startLocalReceiver = async (options: LocalReceiverOptions): Promise
       [RECEIVER_ENV.capability]: capability,
       [RECEIVER_ENV.journalPath]: options.journalPath,
       [RECEIVER_ENV.allowedPaths]: JSON.stringify(options.allowedPaths ?? DEFAULT_ALLOWED_PATHS),
+      [RECEIVER_ENV.allowedAttributes]: options.allowedAttributes.join("\n"),
+      [RECEIVER_ENV.maxRecords]: String(
+        options.maxRecordsPerEnvelope ?? DEFAULT_MAX_RECORDS_PER_ENVELOPE,
+      ),
       [RECEIVER_ENV.maxBodyBytes]: String(options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES),
       [RECEIVER_ENV.maxJournalBytes]: String(options.maxJournalBytes ?? DEFAULT_MAX_JOURNAL_BYTES),
     },
