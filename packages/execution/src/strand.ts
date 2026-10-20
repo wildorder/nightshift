@@ -33,7 +33,7 @@ import {
   tryRevParse,
   updateRef,
 } from "./git/index.js";
-import { runDecisions } from "./step-adjustments.js";
+import { runAdjustmentDecisions } from "./step-adjustments.js";
 
 /** The branch a strand builds on: its node's job branch, as any node's worktree has. */
 export const strandBranch = (runId: string, strandNodeId: string): string =>
@@ -231,7 +231,7 @@ export const strandFailures = async (
   const [gates, decisions] = timedOutAny
     ? await Promise.all([
         gateDefinitions(environment, session),
-        runDecisions(environment.stores, session.scope),
+        runAdjustmentDecisions(environment.stores, session.scope),
       ])
     : [undefined, []];
   const failedChecks = failing.map((step) => {

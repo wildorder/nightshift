@@ -22,6 +22,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   type CommitSha,
+  type Decision,
   type ExecutionNode,
   type ExecutionNodeId,
   type JobContractId,
@@ -33,6 +34,7 @@ import {
   type Verification,
 } from "@nightshift/contracts";
 import {
+  adjustmentDecisionsOf,
   type IdGenerator,
   isDoneForNow,
   isSettled,
@@ -69,6 +71,7 @@ import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 import { DEFAULT_CONTRACT_FILE } from "./session.js";
 import {
   asStepRefusal,
+  refuseAdjustmentContext,
   STEP_SKIP_TOOL,
   STEP_TIMEOUT_TOOL,
   skipAnswer,
@@ -673,6 +676,7 @@ export const registerSubOrchestratorTools = (
     },
     async (input) =>
       guarded(async () => {
+        refuseAdjustmentContext(input.context, "orchestrator");
         const decision = await recordWorkerDecision(environment, identity, ids, input).catch(
           (error: unknown) => {
             if (error instanceof NoCheckpointError)
@@ -728,6 +732,19 @@ export const registerSubOrchestratorTools = (
     return items;
   };
 
+  /**
+   * The run's decisions an adjustment may come from, as far as this strand can
+   * place them: its own node, its descendants' sub-program nodes, or a human.
+   * A job node's decision, or one on a node it cannot read, is never one.
+   */
+  const adjustmentDecisions = async (): Promise<Decision[]> => {
+    const nodes = [await own(), ...(await descendants())];
+    const kinds = new Map(
+      nodes.map((node) => [node.executionNodeId as string, node.kind] as const),
+    );
+    return adjustmentDecisionsOf(await runDecisions(stores, scope), (id) => kinds.get(id));
+  };
+
   const visibleVerifications = async (): Promise<Verification[]> => {
     const found = new Map<string, Verification>();
     const nodes = [await own(), ...(await descendants())];
@@ -766,7 +783,7 @@ export const registerSubOrchestratorTools = (
   server.registerTool("step.timeout", STEP_TIMEOUT_TOOL, async (input) =>
     guarded(async () => {
       const gates = await contractGates();
-      const decisions = await runDecisions(stores, scope);
+      const decisions = await adjustmentDecisions();
       const decision = await recordStepTimeout(record, {
         steps: gates.verification,
         decisions,
@@ -786,7 +803,7 @@ export const registerSubOrchestratorTools = (
     guarded(async () => {
       const gates = await contractGates();
       const [decisions, verifications] = await Promise.all([
-        runDecisions(stores, scope),
+        adjustmentDecisions(),
         visibleVerifications(),
       ]);
       const decision = await recordStepSkip(record, {

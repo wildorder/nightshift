@@ -25,6 +25,7 @@ import {
   type Event,
   type Examination,
   type ExecutionNode,
+  type ExecutionNodeId,
   type GateHealth,
   type GateHealthVerdict,
   type JobContract,
@@ -54,7 +55,11 @@ import {
   strandOutcomes,
   strandsOf,
 } from "../rules/plan.js";
-import { type StepAdjustments, stepAdjustmentsOf } from "../rules/step-adjustments.js";
+import {
+  adjustmentDecisionsOf,
+  type StepAdjustments,
+  stepAdjustmentsOf,
+} from "../rules/step-adjustments.js";
 import {
   type CorrectionReport,
   type DecisionReport,
@@ -750,7 +755,14 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
     rulings,
     unreviewed,
     gateHealth: await gatherGateHealth(stores, scope, records, nodes, verifications),
-    stepAdjustments: stepAdjustmentsOf(program.verification, records.decisions, verifications),
+    stepAdjustments: stepAdjustmentsOf(
+      program.verification,
+      adjustmentDecisionsOf(
+        records.decisions,
+        (nodeId) => records.tree.nodes.get(nodeId as ExecutionNodeId)?.kind,
+      ),
+      verifications,
+    ),
     ...(await gatherPublication(stores, scope, program.repository.programBranch)),
   };
 };

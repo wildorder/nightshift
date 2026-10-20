@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   type AdjustmentDecision,
+  type AdjustmentNodeKind,
+  adjustmentDecisionsOf,
   currentStepTime,
   effectiveSteps,
   formatStepSkippedContext,
@@ -330,5 +332,33 @@ describe("stepAdjustmentsOf", () => {
       [verification("2026-01-01T00:00:01Z", [ran("trial", 1)])],
     );
     expect(result.skipped[0]?.notHonoured).toContain("ran and failed with exit 1");
+  });
+});
+
+describe("adjustmentDecisionsOf", () => {
+  const authored = (executionNodeId: string, authority = "agent") => ({
+    ...skip("trial", "2026-01-01T00:00:00Z"),
+    executionNodeId,
+    authority,
+  });
+  const kinds: Record<string, AdjustmentNodeKind> = {
+    root: "program",
+    strand: "sub-program",
+    worker: "job",
+  };
+  const kindOf = (nodeId: string) => kinds[nodeId];
+
+  it("drops a decision recorded on a job node, or on an unknown node", () => {
+    expect(adjustmentDecisionsOf([authored("worker"), authored("nowhere")], kindOf)).toEqual([]);
+  });
+
+  it("keeps one on a sub-program node and one on the program node", () => {
+    const decisions = [authored("strand"), authored("root")];
+    expect(adjustmentDecisionsOf(decisions, kindOf)).toEqual(decisions);
+  });
+
+  it("keeps a human's, even on a job node", () => {
+    const human = authored("worker", "human");
+    expect(adjustmentDecisionsOf([human, authored("worker")], kindOf)).toEqual([human]);
   });
 });

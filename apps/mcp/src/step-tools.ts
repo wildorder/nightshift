@@ -42,6 +42,25 @@ export const STEP_SKIP_TOOL = {
   },
 } as const;
 
+const ADJUSTMENT_PREFIXES = ["STEP SKIPPED:", "STEP TIMEOUT:"];
+
+/**
+ * `decision.record` is free text, and a gate's adjustment is read from a
+ * decision's context prefix, so the plain tool refuses that prefix: a worker may
+ * not adjust a gate, and an orchestrator adjusts through step.skip or
+ * step.timeout, which check the adjustment first.
+ */
+export const refuseAdjustmentContext = (context: string, role: "worker" | "orchestrator"): void => {
+  const trimmed = context.trim();
+  if (!ADJUSTMENT_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) return;
+  throw new ToolRefusal(
+    "validation_failed",
+    role === "worker"
+      ? "a worker may not adjust a gate: a context starting with STEP SKIPPED: or STEP TIMEOUT: is reserved for the program's orchestrators, and a job's agent does not loosen a gate"
+      : "a context starting with STEP SKIPPED: or STEP TIMEOUT: is reserved for step adjustments: use step.skip or step.timeout so the adjustment is checked",
+  );
+};
+
 /** An adjustment the rules refuse is a refusal the orchestrator can act on. */
 export const asStepRefusal = (error: unknown): unknown =>
   error instanceof StepAdjustmentRefusedError

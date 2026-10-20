@@ -7,12 +7,14 @@
 import type {
   Decision,
   DecisionId,
+  ExecutionNode,
   ExecutionNodeId,
   Verification,
   VerificationStep,
 } from "@nightshift/contracts";
 import {
   type AdjustmentDecision,
+  adjustmentDecisionsOf,
   effectiveSteps,
   formatStepSkippedContext,
   formatStepTimeoutContext,
@@ -138,12 +140,34 @@ export const runDecisions = async (
     a.createdAt.localeCompare(b.createdAt),
   );
 
+const runNodes = async (
+  stores: Pick<ProjectStores, "executionNodes">,
+  scope: RunScope,
+): Promise<readonly ExecutionNode[]> =>
+  everyPage((page) => stores.executionNodes.listByRun(scope, page));
+
+/**
+ * The run's decisions an adjustment may come from: a human's, the root's or a
+ * strand's orchestrator's, never a job's (see `adjustmentDecisionsOf`).
+ */
+export const runAdjustmentDecisions = async (
+  stores: Pick<ProjectStores, "decisions" | "executionNodes">,
+  scope: RunScope,
+): Promise<readonly Decision[]> => {
+  const [decisions, nodes] = await Promise.all([
+    runDecisions(stores, scope),
+    runNodes(stores, scope),
+  ]);
+  const kinds = new Map(nodes.map((node) => [node.executionNodeId as string, node.kind] as const));
+  return adjustmentDecisionsOf(decisions, (nodeId) => kinds.get(nodeId));
+};
+
 /** Every verification of every node of the run. */
 export const runVerifications = async (
   stores: Pick<ProjectStores, "executionNodes" | "verifications">,
   scope: RunScope,
 ): Promise<readonly Verification[]> => {
-  const nodes = await everyPage((page) => stores.executionNodes.listByRun(scope, page));
+  const nodes = await runNodes(stores, scope);
   const lists = await Promise.all(
     nodes.map((node) =>
       stores.verifications.listByNode(scope, node.executionNodeId as ExecutionNodeId),
@@ -175,7 +199,7 @@ export const resolveSteps = async (
   steps: readonly VerificationStep[],
 ): Promise<ResolvedSteps> => {
   const [decisions, verifications] = await Promise.all([
-    runDecisions(stores, scope),
+    runAdjustmentDecisions(stores, scope),
     runVerifications(stores, scope),
   ]);
   const effective = effectiveSteps(steps, decisions, verifications);

@@ -76,7 +76,7 @@ import {
   type RoutePins,
   recordStepSkip,
   recordStepTimeout,
-  runDecisions,
+  runAdjustmentDecisions,
   runVerifications,
   StrandBlockedError,
   StrandDelegationError,
@@ -103,6 +103,7 @@ import {
 import {
   asStepRefusal,
   describeTimedOut,
+  refuseAdjustmentContext,
   STEP_SKIP_TOOL,
   STEP_TIMEOUT_TOOL,
   skipAnswer,
@@ -265,7 +266,7 @@ const timedOutStepsOf = async (
   if (ids.length === 0) return [];
   const [gates, decisions] = await Promise.all([
     gateDefinitions(attached.environment, attached.session),
-    runDecisions(deps.state.runtime.stores, attached.session.scope),
+    runAdjustmentDecisions(deps.state.runtime.stores, attached.session.scope),
   ]);
   return ids.map((stepId) => {
     const step = gates.verification.find((candidate) => candidate.id === stepId);
@@ -502,7 +503,7 @@ const notVerifiedOf = async (
   const scope = attached.session.scope;
   const [gates, decisions, verifications] = await Promise.all([
     gateDefinitions(attached.environment, attached.session),
-    runDecisions(stores, scope),
+    runAdjustmentDecisions(stores, scope),
     runVerifications(stores, scope),
   ]);
   const adjustments = stepAdjustmentsOf(gates.verification, decisions, verifications);
@@ -1340,6 +1341,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     },
     async (input) =>
       guarded(async () => {
+        refuseAdjustmentContext(input.context, "orchestrator");
         const attached = requireAttached(state);
         const { decisionId, checkpointBefore } = await recordDecision(
           state,
@@ -1366,7 +1368,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     const scope = attached.session.scope;
     const [gates, decisions, verifications] = await Promise.all([
       gateDefinitions(attached.environment, attached.session),
-      runDecisions(stores, scope),
+      runAdjustmentDecisions(stores, scope),
       runVerifications(stores, scope),
     ]);
     return {

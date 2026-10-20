@@ -28,6 +28,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { endGatesFailedMessage, registerOrchestratorTools } from "./orchestrator.js";
 import type { AttachedRun, OrchestratorSession } from "./session.js";
 import { registerSubOrchestratorTools } from "./sub-orchestrator.js";
+import { registerWorkerTools } from "./worker.js";
 
 type Handler = (input: Record<string, unknown>) => Promise<{
   readonly structuredContent?: Record<string, unknown>;
@@ -449,5 +450,48 @@ describe("the end_gates_failed refusal's text", () => {
   it("does not mention the tools when nothing timed out", () => {
     const text = endGatesFailedMessage("abcdef0123456789", [{ stepId: "unit", exitCode: 1 }], []);
     expect(text).not.toContain("step.skip");
+  });
+});
+
+describe("the plain decision.record tool and a gate's adjustment", () => {
+  const workerCall = () => {
+    const tools = toolsOf((server) =>
+      registerWorkerTools(server, {
+        identity: {},
+        environment: {},
+        ids: {},
+      } as never),
+    );
+    return async (
+      name: string,
+      input: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> => {
+      const result = await (tools.get(name) as Handler)(input);
+      return { ...result.structuredContent, text: result.content?.[0]?.text };
+    };
+  };
+
+  const cases = [
+    ["a worker's server", async () => workerCall(), "a worker may not adjust a gate"],
+    ["a strand's server", async () => (await strandWorld()).call, "use step.skip or step.timeout"],
+    ["the root's server", async () => (await rootWorld()).call, "use step.skip or step.timeout"],
+  ] as const;
+
+  describe.each(cases)("in %s", (_name, callFor, said) => {
+    it.each(["STEP SKIPPED: trial", "  STEP TIMEOUT: trial timeoutSeconds=1800"])(
+      "refuses the context %j",
+      async (context) => {
+        const call = await callFor();
+        const result = await call("decision.record", {
+          context,
+          alternatives: [{ summary: "x" }],
+          choice: "c",
+          rationale: "r",
+          reversibility: "reversible",
+        });
+        expect(result.ok).toBe(false);
+        expect(String(result.message)).toContain(said);
+      },
+    );
   });
 });

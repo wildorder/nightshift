@@ -130,7 +130,7 @@ describe("resolveSteps", () => {
   const storesOf = (decisions: unknown[], verifications: unknown[]) =>
     ({
       decisions: { listByRun: page(decisions) },
-      executionNodes: { listByRun: page([{ executionNodeId: "node_1" }]) },
+      executionNodes: { listByRun: page([{ executionNodeId: "node_1", kind: "program" }]) },
       verifications: { listByNode: async () => verifications },
     }) as never;
   const scope = {} as never;
@@ -139,6 +139,8 @@ describe("resolveSteps", () => {
     context,
     createdAt,
     rationale: "because",
+    authority: "agent",
+    executionNodeId: "node_1",
   });
 
   it("hands the runner the raised timeout and cleanup time", async () => {

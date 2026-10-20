@@ -231,6 +231,7 @@ export {
   type RecordStepTimeoutInput,
   recordStepSkip,
   recordStepTimeout,
+  runAdjustmentDecisions,
   runDecisions,
   runVerifications,
   StepAdjustmentRefusedError,

@@ -22,6 +22,7 @@ import {
 import { NoCheckpointError } from "@nightshift/harness";
 import { z } from "zod";
 import { guarded, ok, ToolRefusal } from "./results.js";
+import { refuseAdjustmentContext } from "./step-tools.js";
 
 export interface WorkerDeps {
   readonly identity: WorkerIdentity;
@@ -148,6 +149,7 @@ export const registerWorkerTools = (server: McpServer, deps: WorkerDeps): void =
     },
     async (input) =>
       guarded(async () => {
+        refuseAdjustmentContext(input.context, "worker");
         const { decisionId } = await tools.recordDecision(input).catch((error: unknown) => {
           if (error instanceof NoCheckpointError) throw new ToolRefusal("not_found", error.message);
           throw error;

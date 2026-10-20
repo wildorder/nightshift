@@ -64,6 +64,33 @@ export interface StepVerificationLike {
   readonly commands: readonly StepCommandLike[];
 }
 
+/** The part of a decision the authority rule reads. */
+export interface AuthoredDecision extends AdjustmentDecision {
+  readonly authority: string;
+  readonly executionNodeId: string;
+}
+
+export type AdjustmentNodeKind = "program" | "sub-program" | "job";
+
+/**
+ * The decisions an adjustment may come from (P19 S-02: a gate is the program's,
+ * and a job's agent does not loosen it). A decision's context is free text any
+ * worker can write through `decision.record`, so the prefix alone proves
+ * nothing: only a human, the root orchestrator (a `program` node) or a strand's
+ * orchestrator (a `sub-program` node) may adjust. A decision recorded on a job
+ * node, or on a node the reader cannot place, is never an adjustment, whatever
+ * its context says.
+ */
+export const adjustmentDecisionsOf = <D extends AuthoredDecision>(
+  decisions: readonly D[],
+  nodeKindOf: (nodeId: string) => AdjustmentNodeKind | undefined,
+): D[] =>
+  decisions.filter((decision) => {
+    if (decision.authority === "human") return true;
+    const kind = nodeKindOf(decision.executionNodeId);
+    return kind === "program" || kind === "sub-program";
+  });
+
 export interface TimeRaise {
   readonly timeoutSeconds?: number | undefined;
   readonly cleanupSeconds?: number | undefined;

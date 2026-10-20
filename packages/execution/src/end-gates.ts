@@ -26,7 +26,7 @@ import { verificationEvidence } from "./examine.js";
 import { endSteps, gateDefinitions } from "./gate-repair.js";
 import { addDetachedWorktree, pruneWorktrees, revParse, tryGit } from "./git/index.js";
 import { discardScratch } from "./scratch.js";
-import { resolveSteps, runDecisions } from "./step-adjustments.js";
+import { resolveSteps, runAdjustmentDecisions } from "./step-adjustments.js";
 import { runVerification, skippedStepsPayload } from "./verify.js";
 
 /** One end gate that ran and failed, with the tail of what it printed. */
@@ -197,7 +197,7 @@ export const verifyRunHead = async (
   // would do, so the record no longer stands for the head (P19 S-02).
   const adjusted =
     recorded !== undefined &&
-    (await runDecisions(environment.stores, session.scope)).some(
+    (await runAdjustmentDecisions(environment.stores, session.scope)).some(
       (decision) =>
         stepAdjustmentOf(decision) !== undefined && decision.createdAt > recorded.startedAt,
     );

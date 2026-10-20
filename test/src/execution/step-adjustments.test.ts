@@ -261,12 +261,32 @@ const seedRun = async (world: World, exitCode: number): Promise<void> => {
   );
 };
 
-const decide = async (world: World, context: string): Promise<Decision> => {
+/** A node of `kind` under the root, for a decision to be recorded on. */
+const nodeOfKind = async (world: World, kind: "job" | "sub-program"): Promise<ExecutionNodeId> => {
+  const root = await world.stores.executionNodes.get(world.scope, world.session.rootNodeId);
+  if (root === undefined) throw new Error("no root node");
+  const executionNodeId = world.ids.next("node") as ExecutionNodeId;
+  await world.stores.executionNodes.put({
+    ...root,
+    executionNodeId,
+    kind,
+    parentNodeId: root.executionNodeId,
+    depth: 1,
+    status: "failed",
+  });
+  return executionNodeId;
+};
+
+const decide = async (
+  world: World,
+  context: string,
+  nodeId: ExecutionNodeId = world.session.rootNodeId,
+): Promise<Decision> => {
   const decision: Decision = {
     schemaVersion: 1,
     ...world.scope,
     decisionId: world.ids.next("dec"),
-    executionNodeId: world.session.rootNodeId,
+    executionNodeId: nodeId,
     agentId: world.session.orchestratorAgentId,
     context,
     alternatives: [{ summary: "wait" }],
@@ -333,6 +353,46 @@ describe("a skip decision at verification", () => {
       expect(line).toContain(said);
     },
   );
+});
+
+describe("who may skip a step", () => {
+  const progressOf = async (world: World, nodeId: ExecutionNodeId) =>
+    (await nodeEvents(world, nodeId, "verification.progress")).map(
+      (event) => (event.payload as { message?: string }).message ?? "",
+    );
+
+  it("a worker's STEP SKIPPED decision does not skip the step: it runs, and no skip is claimed", async () => {
+    const trial = await counter(Number.MAX_SAFE_INTEGER);
+    const world = await worldWith(programWith(trial.command));
+    await seedRun(world, 124);
+    await decide(world, skipContext, await nodeOfKind(world, "job"));
+    const nodeId = await runDirect(world);
+
+    expect(await trial.runs()).toBeGreaterThan(0);
+    const [verification] = await verificationsOf(world, nodeId);
+    const command = commandOf(verification, "trial");
+    expect(command?.skipped).toBeUndefined();
+    expect(command?.exitCode).toBe(1);
+    expect((await progressOf(world, nodeId)).some((line) => line.startsWith("skip of trial"))).toBe(
+      false,
+    );
+    const [requested] = await nodeEvents(world, nodeId, "verification.requested");
+    expect(requested?.payload).not.toMatchObject({ skippedSteps: ["trial"] });
+  });
+
+  it("the same decision on the strand's sub-program node is honoured", async () => {
+    const trial = await counter(Number.MAX_SAFE_INTEGER);
+    const world = await worldWith(programWith(trial.command));
+    await seedRun(world, 124);
+    const decision = await decide(world, skipContext, await nodeOfKind(world, "sub-program"));
+    const nodeId = await runDirect(world);
+
+    expect(await trial.runs()).toBe(0);
+    const [verification] = await verificationsOf(world, nodeId);
+    expect(commandOf(verification, "trial")).toMatchObject({
+      skipped: { decisionId: decision.decisionId },
+    });
+  });
 });
 
 describe("the candidate verification", () => {
