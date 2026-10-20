@@ -40,52 +40,37 @@
     {
       "id": "SC-01",
       "outcome": "A setup or verification step in a contract may say how long it may run (`timeoutSeconds`) and how long it gets to clean up after a timeout (`cleanupSeconds`). A step that says nothing gets ten minutes and thirty seconds. `nightshift plan check` refuses a timeout over two hours, a cleanup over one hour, or a step whose timeout and cleanup together exceed the contract's `costPolicy.maxWallClockSeconds`.",
-      "serves": [
-        "US-01",
-        "US-02"
-      ]
+      "serves": ["US-01", "US-02"]
     },
     {
       "id": "SC-02",
       "outcome": "Everywhere a step runs, its own timeout is the one applied: a landing's verification, the end gates, setup in every checkout, an examination's checkout, a flake rerun, the gate audit, `nightshift gates` and the machine's own gates.",
-      "serves": [
-        "US-01"
-      ]
+      "serves": ["US-01"]
     },
     {
       "id": "SC-03",
       "outcome": "`nightshift gates` reports each step's timeout beside its measured duration, and recommends a `timeoutSeconds`, with the contract edit, for any step that ran longer than 80% of its timeout or was killed by it.",
-      "serves": [
-        "US-01"
-      ]
+      "serves": ["US-01"]
     },
     {
       "id": "SC-04",
       "outcome": "When a step's timeout fires, its process group is sent SIGTERM, has its cleanup time to exit, and only then is killed. A script's `trap … EXIT` runs and finishes within that time. The step is still recorded as timed out with exit 124, whatever it exits with afterwards.",
-      "serves": [
-        "US-02"
-      ]
+      "serves": ["US-02"]
     },
     {
       "id": "SC-05",
       "outcome": "During a run, the root orchestrator or a strand's orchestrator can raise a step's timeout or cleanup time, up to the same maximums, by recording a decision that says why. Every later run of that step in that run uses the new value, and the program's contract and plan hash do not change.",
-      "serves": [
-        "US-01"
-      ]
+      "serves": ["US-01"]
     },
     {
       "id": "SC-06",
       "outcome": "During a run, the root orchestrator or a strand's orchestrator can skip a step whose most recent run in that run timed out, by recording a decision that says why. Skipping a step that ran and failed, or passed, is refused. The step's verification records it as skipped with the decision, the other steps still decide the outcome, and the run can end succeeded.",
-      "serves": [
-        "US-03"
-      ]
+      "serves": ["US-03"]
     },
     {
       "id": "SC-07",
       "outcome": "The run's report and `run.finish`'s answer lead with every skipped step and every raised timeout: which step, on which commits, and the decision with its reason.",
-      "serves": [
-        "US-03"
-      ]
+      "serves": ["US-03"]
     }
   ],
   "constraints": [
@@ -103,14 +88,7 @@
     "Deploying, building images, and the live trial."
   ],
   "scope": {
-    "includes": [
-      "apps/**",
-      "packages/**",
-      "skills/**",
-      "test/**",
-      "docs/**",
-      "AGENTS.md"
-    ],
+    "includes": ["apps/**", "packages/**", "skills/**", "test/**", "docs/**", "AGENTS.md"],
     "excludes": [
       ".github/**",
       "docs/programs/p19-step-timeouts/contract.json",
@@ -163,12 +141,7 @@
         "`nightshift gates` shows each step's timeout beside its measured duration and recommends a `timeoutSeconds`, with the contract edit, for a step over 80% of it or killed by it",
         "The plan-program skill and gate-standard.md tell the planner to set `timeoutSeconds` from `nightshift gates`' measurements for any step that runs long"
       ],
-      "successCriteria": [
-        "SC-01",
-        "SC-02",
-        "SC-03",
-        "SC-04"
-      ],
+      "successCriteria": ["SC-01", "SC-02", "SC-03", "SC-04"],
       "dependsOn": [],
       "prerequisites": []
     },
@@ -204,14 +177,8 @@
         "The report and `run.finish`'s answer lead with every skipped step and every raised timeout, with each decision's reason",
         "The program's contract and plan hash are the same before and after any adjustment, and carry-over of finished strands is unaffected"
       ],
-      "successCriteria": [
-        "SC-05",
-        "SC-06",
-        "SC-07"
-      ],
-      "dependsOn": [
-        "S-01"
-      ],
+      "successCriteria": ["SC-05", "SC-06", "SC-07"],
+      "dependsOn": ["S-01"],
       "prerequisites": []
     }
   ],
@@ -226,10 +193,7 @@
       "leaning": "The planner, in the plan, and nobody during the run",
       "answer": "The planner in the plan, and the run's orchestrators may change it mid-run",
       "rationale": "A plan is a start, not a cage: once the build starts it finds what the plan got wrong, and the agents must be free to fix what blocks them from delivering, recording why.",
-      "touches": [
-        "S-01",
-        "S-02"
-      ]
+      "touches": ["S-01", "S-02"]
     },
     {
       "id": "D-02",
@@ -242,10 +206,7 @@
       "leaning": "timeoutSeconds and cleanupSeconds",
       "answer": "timeoutSeconds and cleanupSeconds",
       "rationale": "Integers, as the contract's costPolicy.maxWallClockSeconds already is; no new parsing convention in a strict schema.",
-      "touches": [
-        "S-01",
-        "S-02"
-      ]
+      "touches": ["S-01", "S-02"]
     },
     {
       "id": "D-03",
@@ -258,9 +219,7 @@
       "leaning": "Its own cleanupSeconds, defaulting to 30, between SIGTERM and SIGKILL",
       "answer": "Its own cleanupSeconds, defaulting to 30, between SIGTERM and SIGKILL",
       "rationale": "Cleanup time is its own quantity: a cloud stack's teardown takes minutes however long the gate ran, and a quick gate's cleanup takes none.",
-      "touches": [
-        "S-01"
-      ]
+      "touches": ["S-01"]
     },
     {
       "id": "D-04",
@@ -273,10 +232,7 @@
       "leaning": "Only the run's wall clock",
       "answer": "A fixed maximum: 7200 seconds of timeout and 3600 of cleanup, and within the run's wall clock when one is set",
       "rationale": "Two hours covers a deploy-and-prove gate with room to spare and stops one stuck gate eating the night; past that, skipping is the way on.",
-      "touches": [
-        "S-01",
-        "S-02"
-      ]
+      "touches": ["S-01", "S-02"]
     },
     {
       "id": "D-05",
@@ -288,9 +244,7 @@
       "leaning": "An orchestrator skips that step for the rest of the run with a recorded decision, the build carries on, and the run can end succeeded",
       "answer": "An orchestrator skips that step for the rest of the run with a recorded decision, the build carries on, and the run can end succeeded",
       "rationale": "A gate that cannot finish in time must not fail the rest of the build; the run finishes with the decision to skip it recorded, for review in the morning.",
-      "touches": [
-        "S-02"
-      ]
+      "touches": ["S-02"]
     },
     {
       "id": "D-06",
@@ -302,9 +256,7 @@
       "leaning": "Only a step whose most recent run in the run timed out",
       "answer": "Only a step whose most recent run in the run timed out",
       "rationale": "A step that ran and failed must be fixed, not skipped, or a red test could be skipped to make a run green.",
-      "touches": [
-        "S-02"
-      ]
+      "touches": ["S-02"]
     }
   ]
 }
