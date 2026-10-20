@@ -180,6 +180,16 @@ describe("ledger artifact bodies", () => {
         ],
       }).success,
     ).toBe(true);
+    // A bare id preserves the reference when its range is unknown.
+    expect(
+      MeasurementLedgerIndexSchema.safeParse({
+        schemaVersion: 1,
+        chunks: [{ artifactId: `art_${U}` }],
+      }).success,
+    ).toBe(true);
+    expect(
+      MeasurementLedgerIndexSchema.safeParse({ schemaVersion: 1, chunks: [{ chunk: 0 }] }).success,
+    ).toBe(false);
   });
 });
 

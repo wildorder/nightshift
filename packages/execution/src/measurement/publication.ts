@@ -47,6 +47,8 @@ export interface ChunkIntent {
   readonly toSequence: number;
   /** The summary in memory records the chunk; the `published` line is owed once it is stored. */
   marked?: boolean;
+  /** The index artifact this chunk's rollover wrote; its `indexed` line is owed with `published`. */
+  rolledIndex?: ArtifactId;
 }
 
 export type IndexEntry = MeasurementLedgerIndex["chunks"][number];
@@ -71,6 +73,43 @@ export interface PublicationHost {
   /** Appends to the segment's journal. Throws when there is none or it fails. */
   append(segment: LaunchRef, line: JournalLine): Promise<void>;
 }
+
+/** Chunk metadata the journal's `publishing` lines give, by artifact id. */
+export const seedChunkLog = (host: PublicationHost, lines: readonly JournalLine[]): void => {
+  for (const line of lines) {
+    if (line.kind !== "publishing") continue;
+    host.chunkLog.set(line.artifactId, {
+      chunk: line.chunk,
+      artifactId: line.artifactId,
+      segment: line.segment,
+      fromSequence: line.fromSequence,
+      toSequence: line.toSequence,
+    });
+  }
+};
+
+/**
+ * The index artifact id for rolling exactly `listed`: the one an earlier
+ * attempt journaled and did not finish, else a new one, journaled first.
+ */
+const indexIdFor = async (
+  host: PublicationHost,
+  segment: LaunchRef,
+  listed: ReadonlySet<ArtifactId>,
+): Promise<ArtifactId> => {
+  const lines = await host.lines(segment);
+  const done = new Set<string>();
+  for (const line of lines) if (line.kind === "indexed") done.add(line.indexArtifactId);
+  for (const line of [...lines].reverse()) {
+    if (line.kind !== "indexing" || done.has(line.indexArtifactId)) continue;
+    if (line.artifactIds.length === listed.size && line.artifactIds.every((id) => listed.has(id))) {
+      return line.indexArtifactId;
+    }
+  }
+  const indexArtifactId = host.environment.ids.next("art");
+  await host.append(segment, { kind: "indexing", indexArtifactId, artifactIds: [...listed] });
+  return indexArtifactId;
+};
 
 export const segmentKey = (segment: Pick<LaunchRef, "launchId" | "segment">): string =>
   `${segment.launchId}#${segment.segment}`;
@@ -150,7 +189,7 @@ const completeChunk = async (
   intent: ChunkIntent,
   observations: readonly { sequence: number; observation: MeasurementObservation }[],
 ): Promise<boolean> => {
-  const { clock, ids } = host.environment;
+  const { clock } = host.environment;
   const body: MeasurementLedgerChunk = {
     schemaVersion: 1,
     chunk: intent.chunk,
@@ -180,9 +219,9 @@ const completeChunk = async (
       );
     const probe = record(host.summary());
     let rolled: ArtifactId | undefined;
+    let rolledSet: ReadonlySet<ArtifactId> = new Set();
     if (probe.overflow) {
-      // The id list is over the schema's bound: roll it into an index artifact first.
-      rolled = ids.next("art");
+      // The id list is over the schema's bound: roll EVERY listed id into an index artifact first.
       const listed = new Set(probe.summary.ledger.artifactIds);
       const entry: IndexEntry = {
         chunk: intent.chunk,
@@ -195,14 +234,24 @@ const completeChunk = async (
       const index: MeasurementLedgerIndex = {
         schemaVersion: 1,
         ...(previous === undefined ? {} : { previousIndexArtifactId: previous }),
-        chunks: [...host.chunkLog.values(), entry].filter((c) => listed.has(c.artifactId)),
+        chunks: [...listed].map(
+          (id) => (id === intent.artifactId ? entry : host.chunkLog.get(id)) ?? { artifactId: id },
+        ),
       };
+      rolledSet = listed;
+      const indexed = new Set(index.chunks.map((c) => c.artifactId));
+      if (indexed.size !== listed.size || [...listed].some((id) => !indexed.has(id))) {
+        markFailure(host, "ledger index", new Error("index does not list every rolled id"));
+        return false;
+      }
       try {
+        rolled = intent.rolledIndex ?? (await indexIdFor(host, intent.segment, listed));
         await uploadArtifact(host, rolled, index);
       } catch (error) {
         markFailure(host, "ledger index upload", error);
         return false;
       }
+      intent.rolledIndex = rolled;
       host.chunkLog.clear();
     } else {
       host.chunkLog.set(intent.artifactId, {
@@ -214,10 +263,18 @@ const completeChunk = async (
       });
     }
     // Re-applied to the live summary: observations may have been folded meanwhile.
-    host.update((summary) => {
-      const applied = record(summary).summary;
-      return rolled === undefined ? applied : rollLedgerIndex(applied, rolled, at);
-    });
+    try {
+      host.update((summary) => {
+        const applied = record(summary).summary;
+        if (rolled !== undefined && applied.ledger.artifactIds.some((id) => !rolledSet.has(id))) {
+          throw new Error("refusing to clear artifact ids the index does not list");
+        }
+        return rolled === undefined ? applied : rollLedgerIndex(applied, rolled, at);
+      });
+    } catch (error) {
+      markFailure(host, "ledger index", error);
+      return false;
+    }
     intent.marked = true;
   }
   if (host.dirty()) {
@@ -237,6 +294,11 @@ export const writePublishedMarkers = async (host: PublicationHost): Promise<void
   for (const [key, intent] of host.intents) {
     if (intent.marked !== true) continue;
     host.intents.delete(key);
+    if (intent.rolledIndex !== undefined) {
+      await host
+        .append(intent.segment, { kind: "indexed", indexArtifactId: intent.rolledIndex })
+        .catch(() => {});
+    }
     await host
       .append(intent.segment, {
         kind: "published",

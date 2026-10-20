@@ -97,6 +97,14 @@ export const JournalLineSchema = z.discriminatedUnion("kind", [
     chunk: z.int().min(0),
     artifactId: ArtifactIdSchema,
   }),
+  /** Intent, written before a ledger index upload: the id is stable across retries. */
+  z.strictObject({
+    kind: z.literal("indexing"),
+    indexArtifactId: ArtifactIdSchema,
+    artifactIds: z.array(ArtifactIdSchema).min(1).max(4096),
+  }),
+  /** Written after the summary put that points at the index succeeded. */
+  z.strictObject({ kind: z.literal("indexed"), indexArtifactId: ArtifactIdSchema }),
   z.strictObject({ kind: z.literal("closed"), at: IsoTimestampSchema }),
 ]);
 export type JournalLine = z.infer<typeof JournalLineSchema>;

@@ -669,6 +669,87 @@ describe("the publication protocol under a crash", () => {
     expect((await world.stored()).ledger.indexArtifactId).toBe(summary.ledger.indexArtifactId);
   }, 120_000);
 
+  it("(5b) a recorder rebuilt from a full summary indexes every rolled id, not only the ones it saw", async () => {
+    const world = await build();
+    const first = world.recorder({ pid: DEAD_PID });
+    await first.startSegment({ resumedSession: false });
+    first.sink.observe(request("a"));
+    const base = await first.publish();
+    const fake = Array.from({ length: 512 }, () => world.f.ids.next("art"));
+    const existing: MeasurementSummary = {
+      ...base,
+      ledger: { ...base.ledger, artifactIds: fake },
+    };
+    const second = world.recorder({
+      pid: DEAD_PID,
+      existing,
+      limits: { publishEvery: { observations: 1, ms: 3_600_000 } },
+    });
+    await second.startSegment({ resumedSession: true });
+    second.sink.observe(request("b"));
+    const summary = await second.publish();
+    const indexId = summary.ledger.indexArtifactId;
+    expect(indexId).toBeDefined();
+    const index = MeasurementLedgerIndexSchema.parse(
+      JSON.parse(world.blobs.get(indexId ?? "") ?? "null"),
+    );
+    expect(index.chunks).toHaveLength(513);
+    const listed = new Set(index.chunks.map((c) => c.artifactId));
+    for (const id of fake) expect(listed.has(id)).toBe(true);
+    expect(index.chunks.filter((c) => c.segment === undefined)).toHaveLength(512);
+    expect(summary.ledger.artifactIds.filter((id) => listed.has(id))).toEqual([]);
+  });
+
+  it("(5c) recovery seeds ranges from journaled publishing lines; a crash around the index upload yields one index", async () => {
+    const world = await build();
+    const seed = world.recorder({ pid: DEAD_PID });
+    await seed.startSegment({ resumedSession: false });
+    const empty = seed.summary();
+    const fake = Array.from({ length: 510 }, () => world.f.ids.next("art"));
+    const recorder = world.recorder({
+      pid: DEAD_PID,
+      existing: { ...empty, ledger: { ...empty.ledger, artifactIds: fake } },
+      limits: { publishEvery: { observations: 1, ms: 3_600_000 } },
+    });
+    const ref = await recorder.startSegment({ resumedSession: true });
+    recorder.sink.observe(request("a"));
+    await recorder.publish();
+    recorder.sink.observe(request("b"));
+    const base = await recorder.publish();
+    const real = base.ledger.artifactIds.slice(-2);
+    expect(base.ledger.artifactIds).toHaveLength(512);
+    // The next chunk's index is uploaded, then the summary put fails: the crash window.
+    recorder.sink.observe(request("c"));
+    world.faults.summaryDown = true;
+    await recorder.publish();
+    world.faults.summaryDown = false;
+    const before = (await world.artifacts()).length;
+    const crashedLines = (await readJournal(world.journalPath(ref.launchId))).lines;
+    const intended = crashedLines.filter((l) => l.kind === "indexing");
+    expect(intended).toHaveLength(1);
+    expect(crashedLines.some((l) => l.kind === "indexed")).toBe(false);
+
+    await recoverMeasurementJournals(world.later, world.f.scope);
+    await recoverMeasurementJournals(world.later, world.f.scope);
+    const stored = await world.stored();
+    const indexId = stored.ledger.indexArtifactId;
+    expect(indexId).toBeDefined();
+    expect(stored.ledger.artifactIds).toEqual([]);
+    expect(intended[0]).toMatchObject({ indexArtifactId: indexId });
+    // Only the index body was new relative to the crashed state's chunk (already uploaded).
+    expect((await world.artifacts()).length).toBeLessThanOrEqual(before + 1);
+    const indexes = (await world.artifacts()).filter(
+      (a) => JSON.parse(world.blobs.get(a.artifactId) ?? "null")?.chunks?.length === 513,
+    );
+    expect(indexes.map((a) => a.artifactId)).toEqual([indexId]);
+    const index = MeasurementLedgerIndexSchema.parse(
+      JSON.parse(world.blobs.get(indexId ?? "") ?? ""),
+    );
+    for (const id of real) {
+      expect(index.chunks.find((c) => c.artifactId === id)?.fromSequence).toBeDefined();
+    }
+  });
+
   it("(6) running recovery again is deep-equal and writes no artifact", async () => {
     const world = await build();
     const recorder = crashed(world);
