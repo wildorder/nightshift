@@ -1,10 +1,14 @@
+import type { PlannedStep, Recommendation, VerificationPlan } from "@nightshift/core";
 import type { AuditedGate, GateAudit, GitRunner } from "@nightshift/execution";
 import { describe, expect, it } from "vitest";
 import type { CliEnvironment, Exec } from "../environment.js";
 import {
   auditProgramRuntimes,
   describeAudit,
+  describePlan,
+  describeRecommendations,
   describeRuntimeFindings,
+  measuredFromAudit,
   stepVerdict,
 } from "./gates.js";
 
@@ -220,5 +224,88 @@ describe("rule 8, declares its runtimes (P16 S-02, SC-08)", () => {
       "0".repeat(40),
     );
     expect(findings).toEqual([]);
+  });
+});
+
+describe("the verification plan's timeouts", () => {
+  const stepOf = (id: string, measured: PlannedStep["measured"]): PlannedStep => ({
+    id,
+    command: "x",
+    kind: "landing",
+    timeoutMs: 5_400_000,
+    measured,
+  });
+  const planOf = (steps: readonly PlannedStep[]): VerificationPlan =>
+    ({
+      steps,
+      landingMs: 0,
+      examinedJobMs: 0,
+      endGatesMs: 0,
+      projectedMs: 0,
+      landings: { count: 10, source: "default" },
+      unmeasured: [],
+    }) as unknown as VerificationPlan;
+  const planSaid = (steps: readonly PlannedStep[]): string => {
+    const lines: string[] = [];
+    describePlan((line) => lines.push(line), planOf(steps), BASE, "test");
+    return lines.join("\n");
+  };
+  const at = (durationMs: number, extra: object = {}) => ({
+    durationMs,
+    quietMs: 0,
+    exitCode: 0,
+    ...extra,
+  });
+
+  it("shows each step's timeout beside its time, measured or not", () => {
+    const out = planSaid([stepOf("trial", at(2_460_000)), stepOf("other", undefined)]);
+    expect(out).toMatch(/trial\s+41m 00s\s+of 1h 30m/);
+    expect(out).toMatch(/other\s+not run\s+of 1h 30m/);
+    expect(out).not.toContain("timeout");
+  });
+
+  it("notes a step killed by its timeout, and one at 90% of it", () => {
+    const out = planSaid([
+      stepOf("killed", at(5_400_000, { timedOut: true, exitCode: 124 })),
+      stepOf("close", at(4_860_000)),
+    ]);
+    expect(out).toMatch(/killed\s.*killed by its timeout/);
+    expect(out).toMatch(/close\s.*close to its timeout/);
+    expect(out.match(/close to its timeout/g)).toHaveLength(1);
+  });
+
+  it("carries timedOut from an audit result that timed out", () => {
+    const gate = (id: string, timedOut: boolean): AuditedGate =>
+      ({
+        id,
+        kind: "verification",
+        verdict: timedOut ? "failed" : "passed",
+        result: resultOf(id, timedOut ? 124 : 0, "", timedOut),
+      }) as unknown as AuditedGate;
+    const measured = measuredFromAudit(auditOf([gate("slow", true), gate("fast", false)]));
+    expect(measured.get("slow")?.timedOut).toBe(true);
+    expect(measured.get("fast")).not.toHaveProperty("timedOut");
+  });
+});
+
+describe("describeRecommendations edits", () => {
+  it("prints a numeric value unquoted and a string one quoted", () => {
+    const lines: string[] = [];
+    const recommendation = (set: Record<string, string | number>): Recommendation => ({
+      title: "t",
+      stepId: "s",
+      evidence: [],
+      formula: "f",
+      fix: "x",
+      edit: { stepId: "s", set },
+    });
+    describeRecommendations(
+      (line) => lines.push(line),
+      [recommendation({ timeoutSeconds: 3690 }), recommendation({ at: "end" })],
+      "nightshift.config.json",
+    );
+    const out = lines.join("\n");
+    expect(out).toContain('set "timeoutSeconds": 3690');
+    expect(out).toContain('set "at": "end"');
   });
 });
