@@ -690,6 +690,68 @@ describe("job contracts (A-03)", () => {
   });
 });
 
+describe("decision authority for an execution token (P19 S-02)", () => {
+  const asExecution = async (role: "worker" | "orchestrator") => {
+    const w = await setup();
+    await seedRun(w, w.a);
+    const agent = makeAgent(w.a, w.a.rootNodeId, { role, status: "started" });
+    await w.stores.agents.put(agent);
+    const principal: RequestPrincipal = {
+      kind: "execution",
+      ...w.a.scope,
+      nodeId: w.a.rootNodeId,
+      agentId: agent.agentId,
+      role,
+    };
+    const put = (overrides: Record<string, unknown>, as: RequestPrincipal = principal) => {
+      const decision = makeDecision(w.a, w.a.rootNodeId, overrides);
+      return call(w, "PUT", `${paths(w.a).run}/decisions/${decision.decisionId}`, decision, {}, as);
+    };
+    return { w, put };
+  };
+
+  it("refuses a worker's human-authority STEP SKIPPED decision (the examiner's PUT)", async () => {
+    const { put } = await asExecution("worker");
+    const response = await put({ authority: "human", context: "STEP SKIPPED: trial" });
+    expect(response.status).toBe(403);
+    expect(errorCode(response)).toBe("execution_forbidden_operation");
+  });
+
+  it("refuses a worker's agent-authority gate adjustment", async () => {
+    const { put } = await asExecution("worker");
+    for (const context of ["STEP SKIPPED: trial", "  STEP TIMEOUT: trial raised to 900s"]) {
+      const response = await put({ context });
+      expect(response.status, context).toBe(403);
+      expect(errorCode(response)).toBe("execution_forbidden_operation");
+    }
+  });
+
+  it("still accepts a worker's ordinary agent decision on its own node", async () => {
+    const { put } = await asExecution("worker");
+    expect((await put({})).status).toBe(201);
+  });
+
+  it("accepts an orchestrator's gate adjustment on its own node", async () => {
+    const { put } = await asExecution("orchestrator");
+    expect((await put({ context: "STEP TIMEOUT: trial raised to 900s" })).status).toBe(201);
+  });
+
+  it("accepts a user's human-authority decision", async () => {
+    const { w, put } = await asExecution("worker");
+    const response = await put({ authority: "human", context: "STEP SKIPPED: trial" }, w.principal);
+    expect(response.status).toBe(201);
+  });
+
+  it("refuses an execution's human-authority decision with an ordinary context", async () => {
+    for (const role of ["worker", "orchestrator"] as const) {
+      const { put } = await asExecution(role);
+      const response = await put({ authority: "human" });
+      expect(response.status, role).toBe(403);
+      expect(errorCode(response)).toBe("execution_forbidden_operation");
+    }
+  });
+});
+
 describe("agents (A-04)", () => {
   /** A run with its root node, and an agent bound to that node. */
   const withAgent = async (w: World): Promise<{ readonly agent: Agent; readonly run: string }> => {
