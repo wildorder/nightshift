@@ -1,9 +1,9 @@
 /**
  * `@nightshift/harness` — the harness adapter contract, version 1.
  *
- * Contains no provider code and imports no Node builtin: adapters spawn
- * processes, the contract does not. Its only dependencies are
- * `@nightshift/contracts` and `@nightshift/core`.
+ * Contains no provider code: adapters spawn processes, the contract does not.
+ * Its only dependencies are `@nightshift/contracts`, `@nightshift/core`, `zod`
+ * and Node builtins (launcher helpers and the loopback receiver).
  *
  * Start at `harness.ts` for the interface an adapter implements, `tools.ts` for
  * the four worker operations, `hooks.ts` for the channel that carries ground
@@ -64,6 +64,19 @@ export {
   recordingMeasurementSink,
 } from "./measurement.js";
 export * from "./node-cli.js";
+export { type DurableFs, durableAppend } from "./receiver/durable-append.js";
+export {
+  type ReceiverEnvelope,
+  type ReceiverGap,
+  readReceiverJournal,
+  receiverEnvelopeSchema,
+  receiverGapSchema,
+} from "./receiver/journal.js";
+export {
+  type LocalReceiver,
+  type LocalReceiverOptions,
+  startLocalReceiver,
+} from "./receiver/receiver.js";
 export * from "./run-as.js";
 export {
   NoCheckpointError,

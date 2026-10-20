@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@nightshift/contracts": "*",
-    "@nightshift/core": "*"
+    "@nightshift/core": "*",
+    "zod": "4.6.4"
   },
   "license": "Apache-2.0"
 }
