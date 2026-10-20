@@ -438,8 +438,46 @@ describe("adjustmentDecisionsOf", () => {
     expect(adjustmentDecisionsOf(decisions, kindOf)).toEqual(decisions);
   });
 
-  it("keeps a human's, even on a job node", () => {
-    const human = authored("worker", "human");
-    expect(adjustmentDecisionsOf([human, authored("worker")], kindOf)).toEqual([human]);
+  it("drops a human's decision on a job node, and keeps one on the root node", () => {
+    const onJob = authored("worker", "human");
+    const onRoot = authored("root", "human");
+    expect(adjustmentDecisionsOf([onJob, onRoot, authored("worker")], kindOf)).toEqual([onRoot]);
+  });
+});
+
+describe("a raise against the run's wall clock", () => {
+  const steps: { id: string; timeoutSeconds?: number; cleanupSeconds?: number }[] = [
+    { id: "trial" },
+  ];
+  const sequence = [
+    raise("trial", "2026-01-01T00:00:01Z", { cleanupSeconds: 1000 }),
+    raise("trial", "2026-01-01T00:00:02Z", { timeoutSeconds: 3000 }),
+  ];
+
+  it("applies the first raise of the examiner's sequence and not the second", () => {
+    const [step] = effectiveSteps(steps, sequence, [], { maxWallClockSeconds: 3600 });
+    expect(step).toMatchObject({ cleanupSeconds: 1000 });
+    expect(step?.timeoutSeconds).toBeUndefined();
+    expect(step?.raisesNotApplied).toEqual([
+      expect.objectContaining({
+        decisionId: sequence[1]?.decisionId,
+        field: "timeoutSeconds",
+        to: 3000,
+        reason: expect.stringContaining("4000 seconds together"),
+      }),
+    ]);
+    expect(currentStepTime(steps[0] as never, sequence, { maxWallClockSeconds: 3600 })).toEqual({
+      timeoutSeconds: 600,
+      cleanupSeconds: 1000,
+    });
+    const adjustments = stepAdjustmentsOf(steps, sequence, [], { maxWallClockSeconds: 3600 });
+    expect(adjustments.raised[0]?.notApplied).toBeUndefined();
+    expect(adjustments.raised[1]?.notApplied).toContain("4000 seconds together");
+  });
+
+  it("applies both when the run has no wall clock", () => {
+    const [step] = effectiveSteps(steps, sequence, []);
+    expect(step).toMatchObject({ cleanupSeconds: 1000, timeoutSeconds: 3000 });
+    expect(step?.raisesNotApplied).toBeUndefined();
   });
 });

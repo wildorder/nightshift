@@ -14,7 +14,9 @@ import type { ExecutionNode, Verification } from "@nightshift/contracts";
 import {
   createFixtures,
   type Fixtures,
+  formatStepTimeoutContext,
   makeCheckpoint,
+  makeDecision,
   makeEvent,
   makeNode,
   makeProgramContract,
@@ -290,6 +292,48 @@ describe.each([
     expect(decisions[0]?.context).toContain("1800");
     expect(String(result.text)).toContain("next verification applies it");
     expect(decisions[0]?.executionNodeId).toBe(world.ownNodeId);
+  });
+});
+
+describe("a strand's raise, against every raise of the run (P19 F-02)", () => {
+  const rootRaise = async (
+    world: World,
+    values: { timeoutSeconds?: number; cleanupSeconds?: number },
+    minute: number,
+  ) =>
+    world.stores.decisions.put(
+      makeDecision(world.f, world.f.rootNodeId, {
+        context: formatStepTimeoutContext("trial", values),
+        createdAt: T(minute),
+      }),
+    );
+
+  it("refuses a timeout that, with the root's cleanup raise, exceeds the wall clock", async () => {
+    const world = await strandWorld();
+    await rootRaise(world, { cleanupSeconds: 1000 }, 1);
+    const result = await world.call("step.timeout", {
+      stepId: "trial",
+      timeoutSeconds: 3000,
+      reason: "slow",
+    });
+    expect(result.ok).toBe(false);
+    expect(String(result.message)).toContain("timeoutSeconds 3000");
+    expect(String(result.message)).toContain("cleanupSeconds 1000");
+    expect(String(result.message)).toContain("4000 seconds together");
+    expect(await decisionsOf(world)).toHaveLength(1);
+  });
+
+  it("refuses a timeout not above one the root raised", async () => {
+    const world = await strandWorld();
+    await rootRaise(world, { timeoutSeconds: 1800 }, 1);
+    const result = await world.call("step.timeout", {
+      stepId: "trial",
+      timeoutSeconds: 1200,
+      reason: "slow",
+    });
+    expect(result.ok).toBe(false);
+    expect(String(result.message)).toContain("not above its current 1800");
+    expect(await decisionsOf(world)).toHaveLength(1);
   });
 });
 

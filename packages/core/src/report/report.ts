@@ -762,6 +762,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
         (nodeId) => records.tree.nodes.get(nodeId as ExecutionNodeId)?.kind,
       ),
       verifications,
+      { maxWallClockSeconds: program.costPolicy?.maxWallClockSeconds },
     ),
     ...(await gatherPublication(stores, scope, program.repository.programBranch)),
   };
@@ -1309,9 +1310,10 @@ const renderNotVerified = ({ skipped, raised }: StepAdjustments): string[] => {
       }
       return `- **${skip.stepId} is skipped**: by decision ${skip.decisionId}, no verification has run since, because ${skip.reason}`;
     }),
-    ...raised.map(
-      (raise) =>
-        `- **${raise.stepId}'s ${raise.field} raised** from ${raise.from} to ${raise.to} seconds by decision ${raise.decisionId}, because ${raise.reason}`,
+    ...raised.map((raise) =>
+      raise.notApplied !== undefined
+        ? `- **${raise.stepId}'s ${raise.field} raise not applied**: decision ${raise.decisionId}; ${raise.notApplied}`
+        : `- **${raise.stepId}'s ${raise.field} raised** from ${raise.from} to ${raise.to} seconds by decision ${raise.decisionId}, because ${raise.reason}`,
     ),
     "",
   ];

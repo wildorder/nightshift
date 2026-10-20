@@ -78,17 +78,18 @@ export type AdjustmentNodeKind = "program" | "sub-program" | "job";
  * The decisions an adjustment may come from (P19 S-02: a gate is the program's,
  * and a job's agent does not loosen it). A decision's context is free text any
  * worker can write through `decision.record`, so the prefix alone proves
- * nothing: only a human, the root orchestrator (a `program` node) or a strand's
- * orchestrator (a `sub-program` node) may adjust. A decision recorded on a job
- * node, or on a node the reader cannot place, is never an adjustment, whatever
- * its context says.
+ * nothing: an adjustment is a decision on the root orchestrator's node (a
+ * `program` node) or a strand's orchestrator's (a `sub-program` node), whatever
+ * its authority; a human records an override on the run's root node. A decision
+ * recorded on a job node, or on a node the reader cannot place, is never an
+ * adjustment, whatever its context or authority says. The API's write boundary
+ * keeps an execution token from writing `authority: "human"`.
  */
 export const adjustmentDecisionsOf = <D extends AuthoredDecision>(
   decisions: readonly D[],
   nodeKindOf: (nodeId: string) => AdjustmentNodeKind | undefined,
 ): D[] =>
   decisions.filter((decision) => {
-    if (decision.authority === "human") return true;
     const kind = nodeKindOf(decision.executionNodeId);
     return kind === "program" || kind === "sub-program";
   });
@@ -250,10 +251,24 @@ const inOrder = <D extends AdjustmentDecision>(decisions: readonly D[]): D[] =>
     )
     .map(({ decision }) => decision);
 
+/** What bounds a raise: the run's wall clock, when its program sets one. */
+export interface AdjustmentLimits {
+  readonly maxWallClockSeconds?: number | undefined;
+}
+
+/** A raise the wall clock stopped from applying. */
+export interface RaiseNotApplied {
+  readonly decisionId: string;
+  readonly field: StepTimeField;
+  readonly to: number;
+  readonly reason: string;
+}
+
 interface StepState {
   timeoutSeconds?: number;
   cleanupSeconds?: number;
   latest?: StepAdjustment;
+  notApplied?: RaiseNotApplied[];
 }
 
 const declaredOf = (step: StepTimeShape): StepState => ({
@@ -272,8 +287,10 @@ const replay = (
     from: number,
     to: number,
     reason: string,
+    notApplied?: string,
   ) => void,
   onAdjustment?: (adjustment: StepAdjustment) => void,
+  limits: AdjustmentLimits = {},
 ): Map<string, StepState> => {
   const states = new Map<string, StepState>();
   for (const step of steps) states.set(step.id, declaredOf(step));
@@ -290,6 +307,32 @@ const replay = (
       if (asked === undefined) continue;
       const to = Math.min(asked, MAXIMUMS[field]);
       const from = state[field] ?? DEFAULTS[field];
+      const wallClock = limits.maxWallClockSeconds;
+      if (wallClock !== undefined) {
+        const timeout =
+          field === "timeoutSeconds" ? to : (state.timeoutSeconds ?? DEFAULTS.timeoutSeconds);
+        const cleanup =
+          field === "cleanupSeconds" ? to : (state.cleanupSeconds ?? DEFAULTS.cleanupSeconds);
+        if (timeout + cleanup > wallClock) {
+          state.notApplied = state.notApplied ?? [];
+          state.notApplied.push({
+            decisionId: decision.decisionId,
+            field,
+            to,
+            reason: `${field} ${to} with ${field === "timeoutSeconds" ? `cleanupSeconds ${cleanup}` : `timeoutSeconds ${timeout}`} is ${timeout + cleanup} seconds together, over the run's costPolicy.maxWallClockSeconds of ${wallClock}`,
+          });
+          onRaise?.(
+            adjustment.stepId,
+            decision.decisionId,
+            field,
+            from,
+            to,
+            decision.rationale,
+            state.notApplied.at(-1)?.reason,
+          );
+          continue;
+        }
+      }
       onRaise?.(adjustment.stepId, decision.decisionId, field, from, to, decision.rationale);
       state[field] = to;
     }
@@ -301,23 +344,27 @@ const replay = (
 export type EffectiveStep<T extends StepTimeShape = StepTimeShape> = T & {
   readonly skipped?: { readonly decisionId: string };
   readonly skipNotHonoured?: { readonly decisionId: string; readonly reason: string };
+  readonly raisesNotApplied?: readonly RaiseNotApplied[];
 };
 
 export const effectiveSteps = <T extends StepTimeShape>(
   contractSteps: readonly T[],
   decisions: readonly AdjustmentDecision[],
   verifications: readonly StepVerificationLike[],
+  limits: AdjustmentLimits = {},
 ): EffectiveStep<T>[] => {
-  const states = replay(contractSteps, decisions);
+  const states = replay(contractSteps, decisions, undefined, undefined, limits);
   return contractSteps.map((step): EffectiveStep<T> => {
     const state = states.get(step.id) ?? {};
     const { timeoutSeconds, cleanupSeconds, latest } = state;
     const base = { ...step } as EffectiveStep<T> & {
       timeoutSeconds?: number | undefined;
       cleanupSeconds?: number | undefined;
+      raisesNotApplied?: readonly RaiseNotApplied[];
     };
     if (timeoutSeconds !== undefined) base.timeoutSeconds = timeoutSeconds;
     if (cleanupSeconds !== undefined) base.cleanupSeconds = cleanupSeconds;
+    if (state.notApplied !== undefined) base.raisesNotApplied = state.notApplied;
     if (latest?.kind !== "skip") return base;
     const verdict = skipHonoured(step.id, verifications);
     const decisionId = latest.decision.decisionId;
@@ -331,8 +378,9 @@ export const effectiveSteps = <T extends StepTimeShape>(
 export const currentStepTime = (
   step: StepTimeShape,
   decisions: readonly AdjustmentDecision[],
+  limits: AdjustmentLimits = {},
 ): { timeoutSeconds: number; cleanupSeconds: number } => {
-  const state = replay([step], decisions).get(step.id) ?? {};
+  const state = replay([step], decisions, undefined, undefined, limits).get(step.id) ?? {};
   return {
     timeoutSeconds: state.timeoutSeconds ?? DEFAULT_STEP_TIMEOUT_SECONDS,
     cleanupSeconds: state.cleanupSeconds ?? DEFAULT_STEP_CLEANUP_SECONDS,
@@ -344,11 +392,11 @@ export const raiseRefusal = (
   step: StepTimeShape,
   decisions: readonly AdjustmentDecision[],
   raise: TimeRaise,
-  limits: { readonly maxWallClockSeconds?: number | undefined } = {},
+  limits: AdjustmentLimits = {},
 ): string | undefined => {
   const asked = FIELDS.filter((field) => raise[field] !== undefined);
   if (asked.length === 0) return "give timeoutSeconds, cleanupSeconds, or both";
-  const current = currentStepTime(step, decisions);
+  const current = currentStepTime(step, decisions, limits);
   for (const field of asked) {
     const value = raise[field] as number;
     if (!Number.isInteger(value) || value <= 0) {
@@ -395,6 +443,8 @@ export interface StepAdjustments {
     readonly from: number;
     readonly to: number;
     readonly reason: string;
+    /** The engine would not apply this raise: why. */
+    readonly notApplied?: string;
   }[];
 }
 
@@ -432,17 +482,27 @@ export const stepAdjustmentsOf = (
   contractSteps: readonly StepTimeShape[],
   decisions: readonly AdjustmentDecision[],
   verifications: readonly StepVerificationLike[],
+  limits: AdjustmentLimits = {},
 ): StepAdjustments => {
   const raised: Array<StepAdjustments["raised"][number]> = [];
   const skips: StepAdjustment[] = [];
   const states = replay(
     contractSteps,
     decisions,
-    (stepId, decisionId, field, from, to, reason) =>
-      raised.push({ stepId, decisionId, field, from, to, reason }),
+    (stepId, decisionId, field, from, to, reason, notApplied) =>
+      raised.push({
+        stepId,
+        decisionId,
+        field,
+        from,
+        to,
+        reason,
+        ...(notApplied === undefined ? {} : { notApplied }),
+      }),
     (adjustment) => {
       if (adjustment.kind === "skip") skips.push(adjustment);
     },
+    limits,
   );
   const skipped = skips.map((adjustment): StepAdjustments["skipped"][number] => {
     const { stepId, decision } = adjustment;

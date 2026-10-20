@@ -34,13 +34,13 @@ import {
   type Verification,
 } from "@nightshift/contracts";
 import {
-  adjustmentDecisionsOf,
   type IdGenerator,
   isDoneForNow,
   isSettled,
   markImplemented,
   nowIso,
   RETRYABLE_STATUSES,
+  stepAdjustmentOf,
   transition,
 } from "@nightshift/core";
 import {
@@ -733,17 +733,19 @@ export const registerSubOrchestratorTools = (
   };
 
   /**
-   * The run's decisions an adjustment may come from, as far as this strand can
-   * place them: its own node, its descendants' sub-program nodes, or a human.
-   * A job node's decision, or one on a node it cannot read, is never one.
+   * Every decision of the run that reads as a step adjustment, whatever node it
+   * is on: a strand can read all of the run's decisions (decision.list is
+   * own_run) but place only its own subtree's nodes, so a node filter here
+   * would hide the root's and sibling strands' raises and validate a raise
+   * against an incomplete current value. The API's write boundary is what makes
+   * this safe: only a user or an orchestrator token can write an adjustment
+   * context, so a job's agent cannot forge one. The engine still applies only
+   * those from a program or sub-program node.
    */
-  const adjustmentDecisions = async (): Promise<Decision[]> => {
-    const nodes = [await own(), ...(await descendants())];
-    const kinds = new Map(
-      nodes.map((node) => [node.executionNodeId as string, node.kind] as const),
+  const adjustmentDecisions = async (): Promise<Decision[]> =>
+    (await runDecisions(stores, scope)).filter(
+      (decision) => stepAdjustmentOf(decision) !== undefined,
     );
-    return adjustmentDecisionsOf(await runDecisions(stores, scope), (id) => kinds.get(id));
-  };
 
   const visibleVerifications = async (): Promise<Verification[]> => {
     const found = new Map<string, Verification>();
