@@ -107,7 +107,7 @@ const verificationText: Render = (p) => {
   }
   return p.outcome === "deferred"
     ? "verification deferred for a human prerequisite"
-    : "verification passed";
+    : `verification passed${listOf(p.skippedSteps) === "" ? "" : ` (skipped: ${listOf(p.skippedSteps)})`}`;
 };
 
 const decisionText: Render = (p, context) => {

@@ -27,6 +27,8 @@ import {
   overrideDecision,
   type RunScope,
   recordDecision,
+  STEP_SKIPPED_CONTEXT,
+  STEP_TIMEOUT_CONTEXT,
 } from "@nightshift/core";
 import { HttpError, parseBody, sameRecord } from "../http.js";
 import {
@@ -80,6 +82,42 @@ const validateDecision = async (
   }
 };
 
+/**
+ * P19 S-02: a gate is the program's, and a job's agent does not loosen it.
+ *
+ * 1. A human override is recorded by a human. No execution token, whatever its
+ *    role, may write a decision with `authority: "human"`; otherwise a worker
+ *    could mint the authority the engine honours.
+ * 2. A gate adjustment (a step's timeout raised, or a timed-out step skipped)
+ *    is the run's orchestrators' to make, so only a user or an orchestrating
+ *    token may write one. The `engine` is the run's own orchestrator on a remote
+ *    machine (D-P10-20), so it counts; a worker, examiner or arbiter does not.
+ */
+const GATE_ADJUSTMENT_ROLES: readonly string[] = ["orchestrator", "engine"];
+
+const assertExecutionMayWriteDecision = (
+  principal: Extract<Principal, { kind: "execution" }>,
+  decision: Decision,
+): void => {
+  if (decision.authority === "human") {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "a human override is recorded by a human, not by an execution's token",
+    );
+  }
+  const context = decision.context.trim();
+  const adjustsGate =
+    context.startsWith(STEP_SKIPPED_CONTEXT) || context.startsWith(STEP_TIMEOUT_CONTEXT);
+  if (adjustsGate && !GATE_ADJUSTMENT_ROLES.includes(principal.role)) {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "a job's agent may not adjust a gate; only an orchestrator or a human may",
+    );
+  }
+};
+
 export const putDecision: Handler = async ({ deps, request, params, principal }) => {
   const decision = parseBody(DecisionSchema, request.body);
   const scope = runScopeFrom(params);
@@ -102,6 +140,7 @@ export const putDecision: Handler = async ({ deps, request, params, principal })
     await deps.stores.decisions.put(decision);
     return { status: 200, body: decision };
   }
+  if (principal.kind === "execution") assertExecutionMayWriteDecision(principal, decision);
   if (principal.kind === "execution" && principal.role === "arbiter") {
     await assertArbiterMayRule(deps.stores, scope, principal, decision);
   }

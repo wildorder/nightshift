@@ -14,7 +14,6 @@ import { auditGates } from "./gate-audit.js";
 import { git, nodeGitRunner, revParse } from "./git/index.js";
 
 const AT = Date.parse("2026-10-06T12:00:00.000Z");
-const TIMEOUT_MS = 60_000;
 
 const made: string[] = [];
 afterEach(async () => {
@@ -71,7 +70,6 @@ const audit = async (
     unmet: new Set(options.unmet ?? []),
     workDir: await temporary("nightshift-audit-work-"),
     paths: { scratch: (checkout: string) => `${checkout}-scratch` },
-    timeoutMs: TIMEOUT_MS,
     ...(options.env === undefined ? {} : { env: options.env }),
     ...(options.reclaim === undefined ? {} : { reclaim: options.reclaim }),
     onStep: (step) => progress.push(step),

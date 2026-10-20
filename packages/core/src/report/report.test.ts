@@ -59,6 +59,7 @@ const report = (patch: Partial<RunReport> = {}): RunReport => ({
     flakes: [],
     verificationTime: { steps: [], landings: 0, verifications: 0, totalMs: 0, recommendations: [] },
   },
+  stepAdjustments: { skipped: [], raised: [] },
   ...patch,
 });
 
@@ -588,5 +589,78 @@ describe("the report's publication (2026-10-14)", () => {
 
   it("says nothing about GitHub for a local run", () => {
     expect(renderReport(report())).not.toContain("GitHub has");
+  });
+});
+
+describe("the report's Not verified section (P19)", () => {
+  const heading = "## Not verified — read this first";
+
+  it("leads the report when a step was skipped, naming step, decision, commits and reason", () => {
+    const text = renderReport(
+      report({
+        stepAdjustments: {
+          skipped: [
+            {
+              stepId: "e2e",
+              decisionId: "dec_skip",
+              reason: "it hangs on the runner",
+              commits: ["abcdef1234567890", "1234567890abcdef"],
+              applied: true,
+              inForce: true,
+            },
+          ],
+          raised: [],
+        },
+      }),
+    );
+    expect(text).toContain(heading);
+    expect(text).toContain(
+      "- **e2e was not run**: skipped by decision dec_skip on abcdef123456, 1234567890ab, because it hangs on the runner",
+    );
+    expect(text.indexOf(heading)).toBeGreaterThan(text.indexOf("strands succeeded"));
+    expect(text.indexOf(heading)).toBeLessThan(text.indexOf("## Strands"));
+  });
+
+  const skipOf = (extra: object) => ({
+    stepId: "e2e",
+    decisionId: "dec_skip",
+    reason: "it hangs",
+    commits: [],
+    applied: false,
+    inForce: true,
+    ...extra,
+  });
+  const rendered = (skip: object) =>
+    renderReport(report({ stepAdjustments: { skipped: [skipOf(skip) as never], raised: [] } }));
+
+  it("lists a skip with its commits, even when it is no longer in force", () => {
+    const text = rendered({ commits: ["bbbbbbbbbbbbbbbb"], applied: true, inForce: false });
+    expect(text).toContain(
+      "- **e2e was not run**: skipped by decision dec_skip on bbbbbbbbbbbb, because it hangs (no longer in force)",
+    );
+    expect(text).not.toContain("skip not applied");
+  });
+
+  it("lists a skip in force without the suffix", () => {
+    const text = rendered({ commits: ["bbbbbbbbbbbbbbbb"], applied: true });
+    expect(text).toContain("on bbbbbbbbbbbb, because it hangs\n");
+  });
+
+  it("lists a skip that was not applied", () => {
+    const text = rendered({ notApplied: "e2e ran and failed with exit 1; fix it" });
+    expect(text).toContain(
+      "- **e2e skip not applied**: decision dec_skip; e2e ran and failed with exit 1; fix it",
+    );
+    expect(text).not.toContain("e2e was not run");
+  });
+
+  it("lists a skip no verification has met yet", () => {
+    expect(rendered({})).toContain(
+      "- **e2e is skipped**: by decision dec_skip, no verification has run since, because it hangs",
+    );
+  });
+
+  it("is absent when there is nothing", () => {
+    expect(renderReport(report())).not.toContain("Not verified");
   });
 });

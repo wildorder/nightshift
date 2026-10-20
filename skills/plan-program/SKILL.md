@@ -132,6 +132,24 @@ edit; one that changes the project (keep a service alive, move an install to
 setup) is theirs to take to the code, now or later. The command never edits and
 never fails the plan on a recommendation.
 
+Each setup and verification step may declare `timeoutSeconds`, how long it may
+run (absent, 600; at most 7200), and `cleanupSeconds`, how long its `trap` gets
+between SIGTERM and SIGKILL when it overruns (absent, 30; at most 3600). `plan
+check` also refuses a step whose timeout plus cleanup exceeds
+`costPolicy.maxWallClockSeconds` when one is set (D-04). For any step that runs
+long, set `timeoutSeconds` from the duration `nightshift gates` measured, about
+1.5 times it and never over 7200. For any step that creates something outside
+the checkout (a cloud stack, a container, a lock), set `cleanupSeconds` so its
+`trap` has time to remove it. `nightshift gates` shows each step's timeout
+beside its measured duration, and for a step measured over 80% of its timeout
+or killed by it, it recommends the `timeoutSeconds` with the exact contract
+edit; make that edit.
+
+The plan's value is a start, not a cage. The run's orchestrators may raise
+either value mid-run or, when waiting longer has not worked, skip a step that
+timed out, each as a recorded decision (D-01); the contract is not edited, so
+the plan hash does not change.
+
 `gate-standard.md` offers troubleshooting guidance, not certification criteria.
 No audit record, fingerprint, gate finding decision or
 special gate-health strand is required for `READY` or ratification.

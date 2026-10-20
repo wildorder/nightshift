@@ -29,13 +29,13 @@ import {
   resolveCommand,
   runtimeFindings,
   runtimesToMeasure,
+  TIMEOUT_HEADROOM,
   type VerificationPlan,
   withLaptopCheck,
 } from "@nightshift/core";
 import {
   type AuditedGate,
   auditGates,
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
   deferralOf,
   type GateAudit,
   outputTail,
@@ -115,7 +115,6 @@ export const auditProgramGates = async (
     base,
     program: contract,
     unmet,
-    timeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
     // The scratch goes where a run's would: short, under the state directory.
     paths: createLocalPaths(environment.paths),
     onStep: (result) => {
@@ -330,6 +329,7 @@ export const measuredFromAudit = (audit: GateAudit): Map<string, MeasuredStep> =
       quietMs: gate.result.quietMs,
       exitCode: gate.result.exitCode,
       ...(seeded ? { seeded } : {}),
+      ...(gate.result.timedOut ? { timedOut: true } : {}),
     });
   }
   return measured;
@@ -410,12 +410,15 @@ export const describePlan = (
         ? "not run".padStart(8)
         : humanDuration(measured.durationMs).padStart(8);
     const notes: string[] = [];
+    if (measured?.timedOut === true) notes.push("killed by its timeout");
+    else if (measured !== undefined && measured.durationMs >= TIMEOUT_HEADROOM * step.timeoutMs)
+      notes.push("close to its timeout");
     if (measured?.seeded === true) notes.push("seeded from the program checkout");
     if (measured !== undefined && measured.quietMs >= 60_000)
       notes.push(`quiet for ${humanDuration(measured.quietMs)} before its first line`);
     if (step.kind === "end") notes.push("runs once when the run finishes (A-57)");
     say(
-      `  ${kind}  ${step.id.padEnd(width)}  ${time}${notes.length === 0 ? "" : `   ${notes.join("; ")}`}`,
+      `  ${kind}  ${step.id.padEnd(width)}  ${time}  of ${humanDuration(step.timeoutMs)}${notes.length === 0 ? "" : `   ${notes.join("; ")}`}`,
     );
   }
   say("");
@@ -466,7 +469,7 @@ export const describeRecommendations = (
     say(`     fix: ${recommendation.fix}`);
     if (recommendation.edit !== undefined) {
       const set = Object.entries(recommendation.edit.set)
-        .map(([key, value]) => `"${key}": "${value}"`)
+        .map(([key, value]) => `"${key}": ${typeof value === "number" ? value : `"${value}"`}`)
         .join(", ");
       say(`     edit ${contractPath}: on the step "${recommendation.edit.stepId}", set ${set}`);
     }

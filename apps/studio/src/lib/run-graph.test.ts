@@ -105,6 +105,7 @@ const world = () => {
     corrections: [],
     usage: [],
     rulings: [],
+    stepAdjustments: { skipped: [], raised: [] },
     gateHealth: {
       audit: undefined,
       red: undefined,

@@ -51,7 +51,6 @@ export {
 } from "./engine.js";
 export {
   DEFAULT_CANCEL_GRACE_MS,
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
   type ExaminationServices,
   type ExecutionEnvironment,
   type LandingEnvironment,
@@ -114,6 +113,8 @@ export {
   sha256Bytes,
 } from "./gate-fingerprint.js";
 export {
+  type ContractGates,
+  contractGatesAt,
   endSteps,
   type GateDefinitions,
   type GateSession,
@@ -136,7 +137,8 @@ export {
 } from "./outbox.js";
 export { lastChars, readableOutput, readableTail } from "./output-tail.js";
 export {
-  PREFLIGHT_TIMEOUT_MS,
+  PREFLIGHT_CLEANUP_SECONDS,
+  PREFLIGHT_TIMEOUT_SECONDS,
   type PreflightCheck,
   type PreflightInput,
   type PreflightResult,
@@ -224,6 +226,17 @@ export {
   type StartRunInput,
   startRun,
 } from "./start-run.js";
+export {
+  limitsOf,
+  type RecordStepSkipInput,
+  type RecordStepTimeoutInput,
+  recordStepSkip,
+  recordStepTimeout,
+  runAdjustmentDecisions,
+  runDecisions,
+  runVerifications,
+  StepAdjustmentRefusedError,
+} from "./step-adjustments.js";
 export {
   MAX_STRAND_FIX_ROUNDS,
   strandBranch,

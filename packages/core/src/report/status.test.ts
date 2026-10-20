@@ -39,6 +39,7 @@ const report = (over: Partial<RunReport> = {}): RunReport => ({
   corrections: [],
   usage: [],
   rulings: [],
+  stepAdjustments: { skipped: [], raised: [] },
   gateHealth: {
     audit: undefined,
     red: undefined,

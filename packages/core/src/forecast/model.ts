@@ -9,6 +9,7 @@ import {
   SETUP_STEP_ID_PREFIX,
   type SetupStep,
   stepRunsAt,
+  stepTime,
   type VerificationStep,
 } from "@nightshift/contracts";
 
@@ -20,6 +21,8 @@ export interface MeasuredStep {
   readonly exitCode: number;
   /** Setup the audit skipped because the reference's installed tree seeded it. */
   readonly seeded?: boolean;
+  /** The step's timeout killed it: its time is the cap, not how long it needs. */
+  readonly timedOut?: boolean;
 }
 
 /** Where the landings multiplier came from, said with the number (D-P17-01). */
@@ -34,13 +37,18 @@ export interface ForecastInput {
   readonly verification: readonly VerificationStep[];
   /** By step id, setup steps under their `setup:` id. A step the audit did not run is absent. */
   readonly measured: ReadonlyMap<string, MeasuredStep>;
-  readonly landings: { readonly count: number; readonly source: LandingsSource };
+  readonly landings: {
+    readonly count: number;
+    readonly source: LandingsSource;
+  };
 }
 
 export interface PlannedStep {
   readonly id: string;
   readonly command: string;
   readonly kind: "setup" | "landing" | "end";
+  /** The step's timeout, from the contract (the default when it declares none). */
+  readonly timeoutMs: number;
   readonly measured: MeasuredStep | undefined;
 }
 
@@ -67,13 +75,20 @@ export const forecast = (input: ForecastInput): VerificationPlan => {
   const steps: PlannedStep[] = [
     ...input.setup.map((step): PlannedStep => {
       const id = `${SETUP_STEP_ID_PREFIX}${step.id}`;
-      return { id, command: step.command, kind: "setup", measured: input.measured.get(id) };
+      return {
+        id,
+        command: step.command,
+        kind: "setup",
+        timeoutMs: stepTime(step).timeoutMs,
+        measured: input.measured.get(id),
+      };
     }),
     ...input.verification.map(
       (step): PlannedStep => ({
         id: step.id,
         command: step.command,
         kind: stepRunsAt(step),
+        timeoutMs: stepTime(step).timeoutMs,
         measured: input.measured.get(step.id),
       }),
     ),

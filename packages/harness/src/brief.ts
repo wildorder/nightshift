@@ -370,6 +370,8 @@ export const nightshiftToolNames = (
         "job.retry",
         "finding.dispute",
         "decision.record",
+        "step.timeout",
+        "step.skip",
         "subprogram.progress",
         "subprogram.refresh",
         "subprogram.complete",
@@ -403,6 +405,8 @@ const ROOT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "finding.dispute",
   "decision.record",
   "checkpoint.create",
+  "step.timeout",
+  "step.skip",
   "run.finish",
 ];
 
@@ -747,6 +751,9 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
     ].join("\n"),
     renderForbiddenActions(program),
     REPAIRING_GATES,
+    renderTimedOutGate(
+      "At run.finish, a failed end gate that exited 124 timed out; so does a root-level job's landing whose verification has a step that exited 124 (job.get says so).",
+    ),
     ...(decisions.length === 0
       ? []
       : [
@@ -868,6 +875,39 @@ const renderPlanReviewBrief = (
   ).join("\n\n")}\n`;
 
 /**
+ * What an orchestrator may do about a gate that timed out (P19 S-02): the two
+ * tools, raising first, with the rule that a failed step is fixed, never skipped.
+ * `where` says whose landing or gate it is, so the section reads for its reader.
+ */
+const renderTimedOutGate = (where: string): string =>
+  [
+    "A GATE THAT TIMED OUT",
+    "",
+    `  A step that timed out was killed by its time, not failed by its work. ${where}`,
+    "  You have two tools, in this order:",
+    "",
+    "  nightshift step.timeout { stepId, timeoutSeconds, cleanupSeconds?, reason }",
+    "    Raises the step's time for the rest of the run, when the work is real and slow. The",
+    "    maximum is 7200 seconds, and the time with its cleanup must fit the run's wall clock.",
+    "    The next landing gives the step the new time.",
+    "",
+    "  nightshift step.skip { stepId, reason }",
+    "    Skips the step for the rest of the run, only when raising has not worked and only for",
+    "    a step whose most recent run timed out. The report lists it as not verified, with",
+    "    your reason.",
+    "",
+    "  Never skip a step that failed: fix it.",
+  ].join("\n");
+
+const describeStepTime = (step: {
+  readonly timeoutSeconds?: number | undefined;
+  readonly cleanupSeconds?: number | undefined;
+}): string =>
+  step.timeoutSeconds === undefined
+    ? "its timeout"
+    : `${step.timeoutSeconds} seconds${step.cleanupSeconds === undefined ? "" : ` (and ${step.cleanupSeconds} seconds of cleanup)`}`;
+
+/**
  * A strand's orchestrator, resumed because its strand's landing failed (P18,
  * D-P18-05). The same session: it knows its plan, its jobs and the code.
  */
@@ -886,15 +926,50 @@ const renderStrandFixBrief = (task: Extract<AgentTask, { kind: "strand_fix" }>):
           "GATES THAT FAILED",
           ...task.failedChecks.map((step) =>
             [
-              `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}`,
+              step.timedOut === true
+                ? `  ${step.stepId}: \`${step.command}\` timed out after ${describeStepTime(step)}`
+                : step.rerunExitCode === undefined
+                  ? `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}`
+                  : step.exitCode === 124
+                    ? `  ${step.stepId}: \`${step.command}\` timed out, then failed with exit ${step.rerunExitCode} on its rerun: fix it, it cannot be skipped`
+                    : step.rerunExitCode === 124
+                      ? `  ${step.stepId}: \`${step.command}\` failed with exit ${step.exitCode ?? "(no exit code)"}, then timed out on its rerun: fix it, it cannot be skipped`
+                      : `  ${step.stepId}: \`${step.command}\` exited ${step.exitCode ?? "(no exit code)"}, then ${step.rerunExitCode} on its rerun`,
               indent(step.output.slice(-3_000), 6),
             ].join("\n"),
           ),
           "",
         ]),
-    ...(task.findings.length === 0
-      ? []
-      : ["WHAT THE EXAMINER FOUND", ...task.findings.map(describeFinding), ""]),
+    ...(task.failedChecks.some((step) => step.timedOut === true)
+      ? [
+          renderTimedOutGate(
+            "Name it with its stepId above; its work may be fine and only need more time.",
+          ),
+          "",
+        ]
+      : []),
+    ...(task.rulings === undefined
+      ? task.findings.length === 0
+        ? []
+        : ["WHAT THE EXAMINER FOUND", ...task.findings.map(describeFinding), ""]
+      : [
+          "AN ARBITER HAS RULED — carry this out",
+          "",
+          "  Your strand's examination raised the finding below, it was disputed or survived its",
+          "  fixes, and an independent arbiter ruled that it stands. The ruling is final: not open",
+          "  to argument, and not to be disputed again. Make what it says true of your branch; the",
+          "  next examination checks only that.",
+          "",
+          ...task.rulings.map(describeRuling),
+          ...(task.findings.length === 0
+            ? []
+            : [
+                "",
+                "  The finding, as the examiner raised it:",
+                ...task.findings.map(describeFinding),
+              ]),
+          "",
+        ]),
     "Fix it the way you built the strand: delegate jobs for the fixes (as parallel as they can",
     "be), wait for them to merge onto your branch, then call subprogram.complete again. Your",
     "checkout is your strand's branch, with everything your jobs did; read it to see where the",

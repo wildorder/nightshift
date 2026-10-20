@@ -12,15 +12,17 @@
  * Merges onto one strand are made one at a time, in this process: two of its
  * jobs finishing together must not race over the strand's checkout.
  */
-import {
-  blockingFindings,
-  type CommitSha,
-  type ExaminationFinding,
-  type ExecutionNode,
-  type ExecutionNodeId,
+import type {
+  CommitSha,
+  ExaminationFinding,
+  ExaminationRuling,
+  ExecutionNode,
+  ExecutionNodeId,
 } from "@nightshift/contracts";
+import { currentStepTime, STEP_TIMED_OUT_EXIT_CODE } from "@nightshift/core";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
-import { latestExamination, verificationEvidence } from "./examine.js";
+import { findingsToAnswer, verificationEvidence } from "./examine.js";
+import { gateDefinitions } from "./gate-repair.js";
 import {
   baseRef,
   type GitRunner,
@@ -31,6 +33,7 @@ import {
   tryRevParse,
   updateRef,
 } from "./git/index.js";
+import { limitsOf, runAdjustmentDecisions } from "./step-adjustments.js";
 
 /** The branch a strand builds on: its node's job branch, as any node's worktree has. */
 export const strandBranch = (runId: string, strandNodeId: string): string =>
@@ -197,7 +200,7 @@ export const strandContinuing = (
  */
 export const strandFailures = async (
   environment: ExecutionEnvironment,
-  session: Pick<RunSession, "scope">,
+  session: Pick<RunSession, "scope" | "program">,
   node: ExecutionNode,
 ): Promise<{
   readonly failedChecks: readonly {
@@ -205,8 +208,13 @@ export const strandFailures = async (
     readonly command: string;
     readonly exitCode: number | null;
     readonly output: string;
+    readonly rerunExitCode?: number;
+    readonly timedOut?: boolean;
+    readonly timeoutSeconds?: number;
+    readonly cleanupSeconds?: number;
   }[];
   readonly findings: readonly ExaminationFinding[];
+  readonly rulings?: readonly ExaminationRuling[];
   readonly conflict?: string;
 }> => {
   const verification = [
@@ -215,27 +223,61 @@ export const strandFailures = async (
     .filter((record) => record.phase !== "candidate" && record.phase !== "run")
     .sort((a, b) => a.endedAt.localeCompare(b.endedAt))
     .at(-1);
-  const failedChecks =
+  const failing =
     verification === undefined || verification.outcome !== "failed"
       ? []
-      : (await verificationEvidence(environment, verification))
-          .filter((step) => step.exitCode !== undefined && step.exitCode !== 0)
-          .map((step) => ({
-            stepId: step.stepId,
-            command: step.command,
-            exitCode: step.exitCode ?? null,
-            output: step.logTail ?? "",
-          }));
-  const examination =
+      : (await verificationEvidence(environment, verification)).filter(
+          (step) => step.exitCode !== undefined && step.exitCode !== 0,
+        );
+  const timedOutAny = failing.some(
+    (step) =>
+      step.exitCode === STEP_TIMED_OUT_EXIT_CODE &&
+      (step.rerunExitCode === undefined || step.rerunExitCode === STEP_TIMED_OUT_EXIT_CODE),
+  );
+  const [gates, decisions] = timedOutAny
+    ? await Promise.all([
+        gateDefinitions(environment, session),
+        runAdjustmentDecisions(environment.stores, session.scope),
+      ])
+    : [undefined, []];
+  const failedChecks = failing.map((step) => {
+    const base = {
+      stepId: step.stepId,
+      command: step.command,
+      exitCode: step.exitCode ?? null,
+      output: step.logTail ?? "",
+      ...(step.rerunExitCode === undefined ? {} : { rerunExitCode: step.rerunExitCode }),
+    };
+    if (
+      step.exitCode !== STEP_TIMED_OUT_EXIT_CODE ||
+      (step.rerunExitCode !== undefined && step.rerunExitCode !== STEP_TIMED_OUT_EXIT_CODE)
+    ) {
+      return base;
+    }
+    const declared = gates?.verification.find((candidate) => candidate.id === step.stepId);
+    return {
+      ...base,
+      timedOut: true,
+      ...(declared === undefined
+        ? {}
+        : currentStepTime(declared, decisions, limitsOf(session.program))),
+    };
+  });
+  // What the examination left to answer: its blocking findings, or an
+  // arbiter's upheld rulings, which are final (one rule with a job's fix).
+  const answer =
     node.status === "examination_failed"
-      ? await latestExamination(environment, session.scope, node.executionNodeId)
+      ? findingsToAnswer(
+          await environment.stores.examinations.listByNode(session.scope, node.executionNodeId),
+        )
       : undefined;
   const conflict = (node.outcomeReason ?? "").startsWith("integration_conflict")
     ? node.outcomeReason
     : undefined;
   return {
     failedChecks,
-    findings: examination === undefined ? [] : blockingFindings(examination),
+    findings: answer?.findings ?? [],
+    ...(answer?.rulings === undefined ? {} : { rulings: answer.rulings }),
     ...(conflict === undefined ? {} : { conflict }),
   };
 };

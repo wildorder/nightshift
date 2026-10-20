@@ -92,12 +92,7 @@ import {
   toVerificationCommands,
   verificationFacts,
 } from "@nightshift/verification";
-import {
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
-  type ExaminationServices,
-  type ExecutionEnvironment,
-  type RunSession,
-} from "./environment.js";
+import type { ExaminationServices, ExecutionEnvironment, RunSession } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import { gateDefinitions, landingSteps, withGateDefinitions } from "./gate-repair.js";
 import {
@@ -117,7 +112,8 @@ import { programRulings, rulingsCarriedBy } from "./rulings.js";
 import { recordArtifact, runAsOf, stepsAs } from "./runner.js";
 import { discardScratch, ensureScratch, freshScratch, projectStepEnv } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
-import { announceSteps } from "./verify.js";
+import { limitsOf, resolveSteps } from "./step-adjustments.js";
+import { announceSteps, skippedStepsPayload } from "./verify.js";
 
 /** The environment variable an examiner's server reads its examination's frame from. */
 export const EXAMINATION_CONTEXT_ENV = "NIGHTSHIFT_EXAMINATION";
@@ -911,7 +907,13 @@ const candidateVerification = async (
   const gates = await gateDefinitions(environment, input.session);
   // The job's gates, as the queue's verification has them; the run's end gates
   // are the run's to pass, once its work has landed (A-57).
-  const steps: readonly VerificationStep[] = landingSteps(gates);
+  const resolved = await resolveSteps(
+    environment.stores,
+    input.session.scope,
+    landingSteps(gates),
+    limitsOf(input.session.program),
+  );
+  const steps: readonly VerificationStep[] = resolved.runnable;
   if (steps.some((step) => (step.requires ?? []).length > 0)) {
     // Met where this engine runs: on a machine, by that machine's own check,
     // made now when it has none (prerequisites-here.ts).
@@ -935,7 +937,6 @@ const candidateVerification = async (
     await runAs.grant(checkout);
     await runAs.grant(scratch);
   }
-  const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   // Told to every step (D-P17-06): the record's id, minted first, the commit,
   // and the job's base it was cut from.
   const verificationId = environment.ids.next("ver");
@@ -949,7 +950,6 @@ const candidateVerification = async (
     steps,
     cwd: checkout,
     reference: input.session.repoPath,
-    timeoutMs,
     env: projectStepEnv(projectEnv, scratch),
     onStep: announceSteps(environment, {
       nodeId: input.node.executionNodeId,
@@ -990,18 +990,38 @@ const candidateVerification = async (
     first: ran.checks,
     cwd: checkout,
     paths: environment.paths,
-    timeoutMs,
     keepScratch: true,
     ...(as.as === undefined ? {} : { as: as.as }),
     ...(environment.reclaim === undefined ? {} : { reclaim: environment.reclaim }),
     projectEnv,
   });
-  const commands = await withFlakes(
+  const checkCommands = await withFlakes(
     environment,
     { scope: input.session.scope, nodeId: input.node.executionNodeId },
     toVerificationCommands(results, logs as never),
     reruns,
   );
+  // The contract's order, a skipped step recorded as skipped (P19 S-02).
+  const recorded = new Map(checkCommands.map((command) => [command.stepId, command]));
+  const setupIds = new Set(ran.setup.map((result) => result.stepId));
+  const commands = [
+    ...checkCommands.filter((command) => setupIds.has(command.stepId)),
+    ...resolved.steps.flatMap((step) => {
+      const skippedBy = resolved.skipped.get(step.id);
+      if (skippedBy !== undefined) {
+        return [
+          {
+            stepId: step.id,
+            command: step.command,
+            durationMs: 0,
+            skipped: { decisionId: skippedBy },
+          },
+        ];
+      }
+      const found = recorded.get(step.id);
+      return found === undefined ? [] : [found];
+    }),
+  ];
   const workerId = worker?.agentId;
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
@@ -1019,6 +1039,23 @@ const candidateVerification = async (
   }) as Verification;
   await environment.stores.verifications.put(verification);
   announceFlakes(environment, verification, workerId);
+  const failingSteps = verification.commands
+    .filter((command) => command.exitCode !== undefined && command.exitCode !== 0)
+    .map((command) => command.stepId);
+  environment.outbox.emit({
+    type: "verification.completed",
+    source: "control-plane",
+    payload: {
+      verificationId: verification.verificationId,
+      outcome: verification.outcome,
+      commitSha: input.commitSha,
+      phase: "candidate",
+      ...(failingSteps.length === 0 ? {} : { failingSteps }),
+      ...skippedStepsPayload(verification),
+    },
+    executionNodeId: input.node.executionNodeId,
+    ...(workerId === undefined ? {} : { agentId: workerId }),
+  });
   return verification;
 };
 
@@ -1042,6 +1079,7 @@ export const verificationEvidence = async (
       command: command.command,
       ...(command.exitCode === undefined ? {} : { exitCode: command.exitCode }),
       ...(logTail === undefined ? {} : { logTail }),
+      ...(command.rerun === undefined ? {} : { rerunExitCode: command.rerun.exitCode }),
     });
   }
   return steps;
@@ -1708,6 +1746,35 @@ export const recordRulingLanded = async (
 };
 
 /**
+ * What the next attempt after the node's examinations must answer (D-P8-13,
+ * as amended 2026-09-25): an arbiter's upheld rulings, with the findings they
+ * uphold, which are final; otherwise the latest examination's open blocking
+ * findings; otherwise nothing. An upheld finding is no longer open, so it is
+ * never among the blocking ones: the rulings are where it is. One rule for a
+ * job's fix and a strand's fix round alike.
+ */
+export const findingsToAnswer = (
+  examinations: readonly Examination[],
+):
+  | {
+      readonly findings: readonly ExaminationFinding[];
+      readonly rulings?: readonly ExaminationRuling[];
+    }
+  | undefined => {
+  const last = latestOf(examinations);
+  if (last === undefined) return undefined;
+  const rulings = rulingsInForce(examinations);
+  if (rulings !== undefined) {
+    const ruled = new Set(rulings.map((ruling) => ruling.findingId));
+    const findings = examinations
+      .flatMap((examination) => examination.findings)
+      .filter((finding) => ruled.has(finding.id) && finding.resolution === "upheld");
+    return { findings, rulings };
+  }
+  return examinationBlocks(last) ? { findings: blockingFindings(last) } : undefined;
+};
+
+/**
  * What a retry after the node's examinations is (D-P8-13, as amended
  * 2026-09-25): an attempt carrying out an arbiter's upheld ruling; a fix with
  * the findings; a refusal; or neither.
@@ -1715,32 +1782,26 @@ export const recordRulingLanded = async (
 export const fixOf = (
   examinations: readonly Examination[],
 ): { readonly task?: AgentTask; readonly refused?: string } => {
-  const last = latestOf(examinations);
-  if (last === undefined) return {};
-  const rulings = rulingsInForce(examinations);
-  if (rulings !== undefined) {
+  const answer = findingsToAnswer(examinations);
+  if (answer === undefined) return {};
+  if (answer.rulings !== undefined) {
     const attempts = rulingAttemptsOf(examinations);
     if (attempts >= MAX_RULING_ATTEMPTS) {
       return {
         refused:
           `${attempts} attempts have not carried out the arbiter's ruling on ` +
-          `${rulings.map((ruling) => ruling.findingId).join(", ")}; the builder could not make ` +
+          `${answer.rulings.map((ruling) => ruling.findingId).join(", ")}; the builder could not make ` +
           "the change it was ruled to make. Delegate it differently, or a human may reverse the ruling.",
       };
     }
-    const ruled = new Set(rulings.map((ruling) => ruling.findingId));
-    const findings = examinations
-      .flatMap((examination) => examination.findings)
-      .filter((finding) => ruled.has(finding.id) && finding.resolution === "upheld");
-    return { task: { kind: "fix", findings, rulings } };
+    return { task: { kind: "fix", findings: answer.findings, rulings: answer.rulings } };
   }
-  if (!examinationBlocks(last)) return {};
-  if (last.fixAttempt >= MAX_FIX_ATTEMPTS) {
+  if ((latestOf(examinations)?.fixAttempt ?? 0) >= MAX_FIX_ATTEMPTS) {
     return {
       refused: `this job has had ${MAX_FIX_ATTEMPTS} fixes of its blocking findings; a third is not tried. Dispute a finding to send it to an arbiter.`,
     };
   }
-  return { task: { kind: "fix", findings: blockingFindings(last) } };
+  return { task: { kind: "fix", findings: answer.findings } };
 };
 
 /**

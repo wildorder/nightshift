@@ -141,6 +141,55 @@ describe("checkPlan (SC-P7-03)", () => {
     expect(checkPlan(planned(), splitPlanSections(PLAN))).toEqual({ ready: true });
   });
 
+  describe("a step's time against the wall clock (P19)", () => {
+    const withTime = (wallClock: number | undefined, where: "verification" | "setup") => {
+      const base = planned();
+      const step = { id: "trial", command: "x", timeoutSeconds: 5400, cleanupSeconds: 2700 };
+      return planned({
+        costPolicy: { ...base.costPolicy, maxWallClockSeconds: wallClock },
+        ...(where === "setup" ? { setup: [step] } : { verification: [...base.verification, step] }),
+      });
+    };
+
+    it("refuses a step whose timeout plus cleanup outlast the wall clock", () => {
+      const result = checkPlan(withTime(7200, "verification"), splitPlanSections(PLAN));
+      expect(result).toEqual({
+        ready: false,
+        reasons: [
+          {
+            kind: "step_time_over_wall_clock",
+            stepId: "trial",
+            message:
+              "verification step trial declares timeoutSeconds 5400 and cleanupSeconds 2700, 8100 seconds together, over the run's costPolicy.maxWallClockSeconds of 7200: lower one, or raise the wall clock",
+          },
+        ],
+      });
+    });
+
+    it("names a setup step as one, and counts a default as the default", () => {
+      const contract = withTime(5500, "setup");
+      const [step] = contract.setup ?? [];
+      const result = checkPlan(
+        { ...contract, setup: [{ id: "install", command: "x", timeoutSeconds: 5490 }] },
+        splitPlanSections(PLAN),
+      );
+      expect(step?.id).toBe("trial");
+      expect(result.ready).toBe(false);
+      expect(!result.ready && result.reasons.map((r) => r.message)).toEqual([
+        "setup step install declares timeoutSeconds 5490 and cleanupSeconds 30 (the default), 5520 seconds together, over the run's costPolicy.maxWallClockSeconds of 5500: lower one, or raise the wall clock",
+      ]);
+    });
+
+    it("passes the same step with no wall clock, or a larger one", () => {
+      expect(checkPlan(withTime(undefined, "verification"), splitPlanSections(PLAN))).toEqual({
+        ready: true,
+      });
+      expect(checkPlan(withTime(8100, "verification"), splitPlanSections(PLAN))).toEqual({
+        ready: true,
+      });
+    });
+  });
+
   it("refuses a contract with no strands", () => {
     expect(kinds(planned({ strands: [], prerequisites: [], decisions: [] }))).toEqual([
       "no_strands",

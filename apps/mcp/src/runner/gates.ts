@@ -17,7 +17,6 @@ import {
 import {
   auditGates,
   compareWithReference,
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
   deferralOf,
   type ExecutionEnvironment,
   type GateAudit,
@@ -188,11 +187,10 @@ export const nodeOnMachine = async (
 ): Promise<string | undefined> => {
   try {
     const [result] = await runVerificationSteps({
-      steps: [{ id: "node", command: "node --version" }],
+      steps: [{ id: "node", command: "node --version", timeoutSeconds: 60 }],
       cwd: context.layout.checkout,
       env: environmentOf(context),
       ...asWorker(runtime, context),
-      timeoutMs: 60_000,
     });
     if (result === undefined || result.exitCode !== 0) return undefined;
     return parseRuntimeVersion("node", new TextDecoder().decode(result.output));
@@ -226,7 +224,6 @@ export const auditOnMachine = async (
     program: context.program,
     unmet,
     workDir: `${context.layout.run}/gate-audit`,
-    timeoutMs: DEFAULT_VERIFICATION_TIMEOUT_MS,
     paths: runtime.paths,
     // The project environment setup ran in (P16 S-01): the pinned runtimes and the stores.
     env: environmentOf(context),

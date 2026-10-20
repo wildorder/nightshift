@@ -11,6 +11,7 @@
  * The whole-system entry fires on tool signatures only, never on time alone:
  * a slow gate is not thereby a whole-system gate (the owner, 2026-10-16).
  */
+import { MAX_STEP_TIMEOUT_SECONDS } from "@nightshift/contracts";
 import type { PlannedStep, VerificationPlan } from "./model.js";
 import { END_GATE_RUNS, humanDuration as ms } from "./model.js";
 import type { ResolvedCommand, ResolvedLine } from "./resolve.js";
@@ -19,7 +20,7 @@ export interface ContractEdit {
   /** The step the edit is on. */
   readonly stepId: string;
   /** The field and value to set on it. */
-  readonly set: Readonly<Record<string, string>>;
+  readonly set: Readonly<Record<string, string | number>>;
 }
 
 export interface Recommendation {
@@ -72,6 +73,11 @@ export const commandWordsOf = (text: string): string[] =>
 /** A gate quiet for at least this long before its first output looks like a service starting (rule 7). */
 export const QUIET_START_THRESHOLD_MS = 60_000;
 
+/** A step measured at or over this share of its timeout is close to being killed by it. */
+export const TIMEOUT_HEADROOM = 0.8;
+/** The timeout recommended for a step is its measured time (or, when killed, its cap) times this. */
+export const TIMEOUT_RECOMMENDATION_FACTOR = 1.5;
+
 const runs = (line: ResolvedLine, pattern: RegExp): boolean =>
   commandWordsOf(line.text).some((words) => pattern.test(words));
 
@@ -103,6 +109,40 @@ export const recommend = (
     const lines = resolved.get(step.id)?.lines ?? [{ source: "contract", text: step.command }];
     const measured = measuredOf(step);
 
+    // Rule 7: a step close to its timeout, or killed by it, gets a longer one.
+    if (
+      measured !== undefined &&
+      (measured.timedOut === true || measured.durationMs >= TIMEOUT_HEADROOM * step.timeoutMs)
+    ) {
+      const timedOut = measured.timedOut === true;
+      // A killed step ran for its cap, whatever it was measured at.
+      const basisMs = timedOut ? step.timeoutMs : measured.durationMs;
+      const seconds = Math.min(
+        MAX_STEP_TIMEOUT_SECONDS,
+        Math.ceil((basisMs * TIMEOUT_RECOMMENDATION_FACTOR) / 1000),
+      );
+      const atMaximum = timedOut && step.timeoutMs >= MAX_STEP_TIMEOUT_SECONDS * 1000;
+      found.push({
+        rule: 7,
+        title: `${step.id} ${timedOut ? "was killed by its timeout" : "runs close to its timeout"}`,
+        stepId: step.id,
+        evidence: [
+          timedOut
+            ? `measured at least ${ms(basisMs)}: the timeout killed it`
+            : `measured ${ms(basisMs)} against a timeout of ${ms(step.timeoutMs)}`,
+        ],
+        formula: `${ms(basisMs)} × ${TIMEOUT_RECOMMENDATION_FACTOR} = ${ms(seconds * 1000)}, as whole seconds${
+          seconds === MAX_STEP_TIMEOUT_SECONDS
+            ? ` (the most a step may have: ${ms(seconds * 1000)})`
+            : ""
+        }`,
+        fix: atMaximum
+          ? "its timeout is already the most a step may have, so only skipping the step is left (S-02)"
+          : "set `timeoutSeconds` on the step so it is not killed; the run's orchestrators may raise it further mid-run (S-02)",
+        ...(atMaximum ? {} : { edit: { stepId: step.id, set: { timeoutSeconds: seconds } } }),
+      });
+    }
+
     // Rule 9: a whole-system gate on every landing.
     const wholeSystem = step.kind === "landing" ? matching(lines, WHOLE_SYSTEM) : undefined;
     if (wholeSystem !== undefined) {
@@ -124,7 +164,9 @@ export const recommend = (
             : `${ms(perRun)} × ${landings} landings − ${ms(perRun)} × ${END_GATE_RUNS} runs at the end`,
         ...(perRun === undefined
           ? {}
-          : { savingMs: Math.max(0, perRun * landings - perRun * END_GATE_RUNS) }),
+          : {
+              savingMs: Math.max(0, perRun * landings - perRun * END_GATE_RUNS),
+            }),
         fix: `declare it an end gate: it runs once when the run finishes, and again after each fix that lands (A-57)`,
         edit: { stepId: step.id, set: { at: "end" } },
       });

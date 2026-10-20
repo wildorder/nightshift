@@ -100,7 +100,7 @@ const RENDER: Readonly<Record<string, Render>> = {
     }
     return p.outcome === "deferred"
       ? "verification deferred for a human prerequisite"
-      : "verification passed";
+      : `verification passed${listOf(p.skippedSteps) === "" ? "" : ` (skipped: ${listOf(p.skippedSteps)})`}`;
   },
   "examination.requested": (p) => {
     const examiner = (p.examiner ?? {}) as { model?: unknown };

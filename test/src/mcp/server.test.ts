@@ -190,6 +190,9 @@ describe("the role split (D-P3-01)", () => {
       "run.attach",
       "run.finish",
       "run.start",
+      // P19 S-02: a run raises a timed-out step's time, or skips it.
+      "step.skip",
+      "step.timeout",
       // P7: a strand of the ratified plan, named and nothing else (D-P7-04).
       "strand.delegate",
     ]);

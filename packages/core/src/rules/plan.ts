@@ -16,6 +16,7 @@
  * overlap is an overlap**: a false alarm costs a `dependsOn` or a narrower
  * scope, either of which is a better plan, while a missed one costs a night.
  */
+
 import type {
   ExecutionNode,
   ExecutionNodeStatus,
@@ -26,6 +27,7 @@ import type {
   Strand,
   StrandScope,
 } from "@nightshift/contracts";
+import { DEFAULT_STEP_CLEANUP_SECONDS, DEFAULT_STEP_TIMEOUT_SECONDS } from "@nightshift/contracts";
 import { humanSaid, type KeptConversation } from "./conversation.js";
 import { buildTree, descendantsOf } from "./execution-tree.js";
 import { globContains, singleSegmentMatches, uncoveredGlobs } from "./globs.js";
@@ -520,6 +522,11 @@ export type PlanReason =
       readonly message: string;
     }
   | {
+      readonly kind: "step_time_over_wall_clock";
+      readonly stepId: string;
+      readonly message: string;
+    }
+  | {
       readonly kind: "unused_prerequisite";
       readonly prerequisiteId: string;
       readonly message: string;
@@ -678,6 +685,30 @@ const stepReasons = (contract: ProgramContract): PlanReason[] => {
         }),
       ),
   );
+};
+
+/** A step whose timeout and cleanup together outlast the run's wall clock (P19). */
+const stepTimeReasons = (contract: ProgramContract): PlanReason[] => {
+  const wallClock = contract.costPolicy.maxWallClockSeconds;
+  if (wallClock === undefined) return [];
+  const named = [
+    ...(contract.setup ?? []).map((step) => ({ step, label: `setup step ${step.id}` })),
+    ...contract.verification.map((step) => ({ step, label: `verification step ${step.id}` })),
+  ];
+  return named.flatMap(({ step, label }): PlanReason[] => {
+    const timeout = step.timeoutSeconds ?? DEFAULT_STEP_TIMEOUT_SECONDS;
+    const cleanup = step.cleanupSeconds ?? DEFAULT_STEP_CLEANUP_SECONDS;
+    if (timeout + cleanup <= wallClock) return [];
+    const say = (field: string, value: number, declared: number | undefined): string =>
+      `${field} ${value}${declared === undefined ? " (the default)" : ""}`;
+    return [
+      {
+        kind: "step_time_over_wall_clock",
+        stepId: step.id,
+        message: `${label} declares ${say("timeoutSeconds", timeout, step.timeoutSeconds)} and ${say("cleanupSeconds", cleanup, step.cleanupSeconds)}, ${timeout + cleanup} seconds together, over the run's costPolicy.maxWallClockSeconds of ${wallClock}: lower one, or raise the wall clock`,
+      },
+    ];
+  });
 };
 
 const prerequisiteReasons = (
@@ -866,6 +897,7 @@ export const checkPlan = (
           } as const,
         ]),
     ...stepReasons(contract),
+    ...stepTimeReasons(contract),
     ...prerequisitesOf(contract).flatMap((prerequisite) => prerequisiteReasons(prerequisite, used)),
     ...(contract.decisions ?? []).flatMap((decision) => decisionReasons(decision, strandIds)),
     ...independentOverlaps(strands).map(

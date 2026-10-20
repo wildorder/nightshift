@@ -74,18 +74,14 @@ import {
   toVerificationCommands,
   verificationFacts,
 } from "@nightshift/verification";
-import {
-  DEFAULT_VERIFICATION_TIMEOUT_MS,
-  type ExecutionEnvironment,
-  type LandingEnvironment,
-  type RunSession,
-} from "./environment.js";
+import type { ExecutionEnvironment, LandingEnvironment, RunSession } from "./environment.js";
 import { announceFlakes, rerunFailures, withFlakes } from "./flaky.js";
 import { type GateDefinitions, gateDefinitions, landingSteps } from "./gate-repair.js";
 import { pristineCheckout, provisionalRef, tryRevParse, updateRef } from "./git/index.js";
 import { unmetWhereThisRuns } from "./prerequisites-here.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 import { discardScratch, freshScratch, projectStepEnv } from "./scratch.js";
+import { limitsOf, notAppliedMessages, resolveSteps } from "./step-adjustments.js";
 
 export interface VerifyInput {
   readonly session: RunSession;
@@ -275,7 +271,7 @@ export const runVerification = async (
   input: RunVerificationInput,
 ): Promise<RunVerificationResult> => {
   const { stores, clock } = environment;
-  const { session, gates, steps } = input;
+  const { session, gates } = input;
   const startedAt = nowIso(clock);
   const announce = announceSteps(environment, { nodeId: input.nodeId, label: input.label });
   // The record's id is minted first, so every step can be told it (D-P17-06):
@@ -289,13 +285,28 @@ export const runVerification = async (
   // A step that needs a human prerequisite nobody has met **cannot run**, and is
   // deferred; every other step runs (D-P7-10). When resuming, the preflight has
   // already passed, and every step runs.
+  const resolved = await resolveSteps(
+    stores,
+    session.scope,
+    input.steps,
+    limitsOf(session.program),
+  );
+  const steps = resolved.steps;
+  for (const message of notAppliedMessages(resolved)) {
+    environment.outbox.emit({
+      type: "verification.progress",
+      source: "control-plane",
+      payload: { message },
+      executionNodeId: input.nodeId,
+    });
+  }
   const unmet =
     input.resuming === true
       ? new Set<string>()
-      : await unmetPrerequisites(environment, session, steps);
+      : await unmetPrerequisites(environment, session, resolved.runnable);
   const waitingOf = (step: VerificationStep): readonly string[] =>
     (step.requires ?? []).filter((id) => unmet.has(id));
-  const runnable = steps.filter((step) => waitingOf(step).length === 0);
+  const runnable = resolved.runnable.filter((step) => waitingOf(step).length === 0);
 
   // Setup first: the checkout holds only what is committed, so setup is what
   // makes it usable, from what this commit declares. When setup
@@ -306,13 +317,11 @@ export const runVerification = async (
   // environment (P16, D-10), given here rather than inherited.
   const as = stepsAs(environment, { agentId: input.agentId, role: "worker" });
   const scratch = await freshScratch(environment.paths, input.checkout, environment.reclaim);
-  const timeoutMs = environment.verificationTimeoutMs ?? DEFAULT_VERIFICATION_TIMEOUT_MS;
   const checkout = await runCheckoutSteps({
     setup: gates.setup,
     steps: runnable,
     cwd: input.checkout,
     reference: session.repoPath,
-    timeoutMs,
     env: projectStepEnv(projectEnv, scratch),
     onStep: announce,
     ...as,
@@ -352,7 +361,6 @@ export const runVerification = async (
     first: results,
     cwd: input.checkout,
     paths: environment.paths,
-    timeoutMs,
     projectEnv,
     ...(environment.reclaim === undefined ? {} : { reclaim: environment.reclaim }),
     ...as,
@@ -370,6 +378,15 @@ export const runVerification = async (
   const commands = [
     ...toVerificationCommands(checkout.setup, logArtifactIds),
     ...checked.map((step) => {
+      const skippedBy = resolved.skipped.get(step.id);
+      if (skippedBy !== undefined) {
+        return {
+          stepId: step.id,
+          command: step.command,
+          durationMs: 0,
+          skipped: { decisionId: skippedBy },
+        };
+      }
       const found = ran.get(step.id);
       const declared = discovered.get(step.id);
       if (found !== undefined && declared === undefined) return found;
@@ -383,7 +400,12 @@ export const runVerification = async (
       };
     }),
   ];
-  const waitingOn = [...new Set([...checked.flatMap(waitingOf), ...discovered.values()])];
+  const waitingOn = [
+    ...new Set([
+      ...checked.filter((step) => !resolved.skipped.has(step.id)).flatMap(waitingOf),
+      ...discovered.values(),
+    ]),
+  ];
 
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
@@ -405,6 +427,14 @@ export const runVerification = async (
   // A flake lands the work, and is still seen: the root repairs it off the path.
   const flakyPayload = announceFlakes(environment, verification, input.agentId);
   return { verification, waitingOn, flakyPayload };
+};
+
+/** The ids of the steps a record shows skipped, for the events (absent when none). */
+export const skippedStepsPayload = (verification: Verification): { skippedSteps?: string[] } => {
+  const skippedSteps = verification.commands
+    .filter((command) => command.skipped !== undefined)
+    .map((command) => command.stepId);
+  return skippedSteps.length === 0 ? {} : { skippedSteps };
 };
 
 export const verifyNode = async (
@@ -435,11 +465,18 @@ export const verifyNode = async (
           nowIso(clock),
         );
   await stores.executionNodes.put(verifying);
+  const resolved = await resolveSteps(
+    stores,
+    input.session.scope,
+    steps,
+    limitsOf(input.session.program),
+  );
   outbox.emit({
     type: "verification.requested",
     source: "control-plane",
     payload: {
       commitSha,
+      ...(resolved.skipped.size === 0 ? {} : { skippedSteps: [...resolved.skipped.keys()] }),
       steps: [...gates.setup.map((step) => setupAsStep(step).id), ...steps.map((step) => step.id)],
     },
     executionNodeId: input.node.executionNodeId,
@@ -498,6 +535,7 @@ export const verifyNode = async (
           .filter((command) => command.deferred !== undefined)
           .map((command) => command.stepId),
         waitingOn,
+        ...skippedStepsPayload(verification),
         ...flakyPayload,
       },
       executionNodeId: input.node.executionNodeId,
@@ -522,6 +560,7 @@ export const verifyNode = async (
           exitCode: command.exitCode,
           durationMs: command.durationMs,
         })),
+        ...skippedStepsPayload(verification),
         ...flakyPayload,
       },
       executionNodeId: input.node.executionNodeId,
@@ -531,7 +570,7 @@ export const verifyNode = async (
   }
 
   const failing = verification.commands.filter(
-    (command) => command.deferred === undefined && command.exitCode !== 0,
+    (command) => command.exitCode !== undefined && command.exitCode !== 0,
   );
   await stores.executionNodes.put({
     ...markVerificationFailed(verifying, verification, at),
@@ -547,6 +586,7 @@ export const verifyNode = async (
       outcome: "failed",
       commitSha,
       failingSteps: failing.map((command) => command.stepId),
+      ...skippedStepsPayload(verification),
       // Nothing is sealed and nothing integrates; the worktree is kept so a
       // human can look at what the commands saw.
       worktree: input.worktree,

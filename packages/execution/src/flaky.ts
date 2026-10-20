@@ -15,10 +15,13 @@
  *   The command now counts as passed, so the work goes on exactly as a pass
  *   does and nothing climbs the route. The flake is not hidden: a `gate.flaked`
  *   event names it, and the root opens a repair job off the blocking path.
- * - **The rerun fails.** It is a failure exactly as before, and the command is
- *   recorded as its **first** run: the same exit code, duration and log a
- *   verification without reruns would have recorded. The rerun's output is not
- *   kept; it adds a second copy of a failure, not new evidence.
+ * - **The rerun fails.** It is a failure exactly as before, and the command's
+ *   own fields stay its **first** run: the same exit code, duration and log a
+ *   verification without reruns would have recorded. The rerun is kept beside
+ *   it as `rerun` (exit code, duration, log uploaded as a verification-log
+ *   artifact), because it is the step's most recent execution: a step that
+ *   timed out and then failed on its rerun ran and failed, and may not be
+ *   skipped (P19, D-06).
  */
 import type {
   AgentId,
@@ -52,7 +55,6 @@ export interface RerunInput {
   readonly cwd: string;
   /** Where the rerun's scratch goes (`LocalPaths.scratch`). */
   readonly paths: ScratchPaths;
-  readonly timeoutMs: number;
   /** Whoever ran the first run, so the rerun is the same identity (D-P10-25). */
   readonly as?: RunVerificationInput["as"];
   /** The engine's, so the rerun's scratch can go whatever the rerun left in it (scratch.ts). */
@@ -68,14 +70,13 @@ export interface RerunInput {
 
 /** Reruns each failed check once, with a scratch of its own. Empty when nothing failed. */
 export const rerunFailures = async (input: RerunInput): Promise<readonly CheckRerun[]> => {
-  const { steps, first, cwd, paths, timeoutMs, as, reclaim, keepScratch, projectEnv } = input;
+  const { steps, first, cwd, paths, as, reclaim, keepScratch, projectEnv } = input;
   if (first.every((result) => result.exitCode === 0)) return [];
   const scratch = await freshScratch(paths, cwd, reclaim);
   const ran = rerunFailedChecks({
     steps,
     first,
     cwd,
-    timeoutMs,
     env: projectStepEnv(projectEnv, scratch),
     ...(as === undefined ? {} : { as }),
   });
@@ -85,7 +86,8 @@ export const rerunFailures = async (input: RerunInput): Promise<readonly CheckRe
 /**
  * `commands` with each check whose rerun passed recorded as a flake: the
  * rerun's evidence, its log uploaded beside the first run's, and the first run
- * under `flaky`. A check whose rerun failed keeps its first run, unchanged.
+ * under `flaky`. A check whose rerun failed keeps its first run as the
+ * command's own fields and carries the rerun as `rerun`.
  */
 export const withFlakes = async (
   environment: Pick<ExecutionEnvironment, "stores" | "bodies" | "clock" | "ids" | "outbox">,
@@ -93,14 +95,30 @@ export const withFlakes = async (
   commands: readonly VerificationCommandResult[],
   reruns: readonly CheckRerun[],
 ): Promise<VerificationCommandResult[]> => {
-  const passed = new Map(
-    reruns.filter((run) => run.rerun.exitCode === 0).map((run) => [run.rerun.stepId, run.rerun]),
-  );
+  const byStep = new Map(reruns.map((run) => [run.rerun.stepId, run.rerun]));
   const out: VerificationCommandResult[] = [];
   for (const command of commands) {
-    const rerun = passed.get(command.stepId);
+    const rerun = byStep.get(command.stepId);
     if (rerun === undefined || command.exitCode === undefined || command.exitCode === 0) {
       out.push(command);
+      continue;
+    }
+    if (rerun.exitCode !== 0) {
+      const failedLog = (await recordArtifact(environment, {
+        scope: at.scope,
+        nodeId: at.nodeId,
+        kind: "verification-log",
+        contentType: "text/plain; charset=utf-8",
+        bytes: rerun.output,
+      })) as VerificationCommandResult["logArtifactId"];
+      out.push({
+        ...command,
+        rerun: {
+          exitCode: rerun.exitCode,
+          durationMs: rerun.durationMs,
+          ...(failedLog === undefined ? {} : { logArtifactId: failedLog }),
+        },
+      });
       continue;
     }
     const logArtifactId = (await recordArtifact(environment, {

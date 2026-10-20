@@ -149,6 +149,19 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     expect(brief).not.toContain("plain delegate tool is refused");
   });
 
+  it("gives step.timeout and step.skip to the root and the sub-program, and not to a job (P19 S-02)", () => {
+    const names = ["step.timeout", "step.skip"];
+    for (const name of names) {
+      expect(nightshiftToolNames("program", planned)).toContain(name);
+      expect(nightshiftToolNames("sub-program")).toContain(name);
+      expect(nightshiftToolNames("job")).not.toContain(name);
+    }
+    const root = nightshiftToolNames("program", planned);
+    expect(root.indexOf("step.skip")).toBeLessThan(root.indexOf("run.finish"));
+    const strand = nightshiftToolNames("sub-program");
+    expect(strand.indexOf("step.skip")).toBeLessThan(strand.indexOf("subprogram.progress"));
+  });
+
   it("leaves a program node of an unplanned contract exactly as it was", () => {
     const plain = makeProgramContract(f);
     const brief = renderWorkerBrief({
@@ -160,6 +173,105 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     expect(brief).toContain("You are a Nightshift worker.");
     expect(nightshiftToolNames("program", plain)).toEqual(nightshiftToolNames("job"));
     expect(nightshiftToolNames("program")).toEqual(nightshiftToolNames("job"));
+  });
+
+  it("gives the root of a planned run the section on a gate that timed out (P19 S-02)", () => {
+    const brief = renderWorkerBrief({
+      job: makeJobContract(f, { objective: "# The plan" }),
+      node: root,
+      program: planned,
+      worktree: "/tmp/read-only",
+    });
+    expect(brief).toContain("A GATE THAT TIMED OUT");
+    expect(brief).toContain("run.finish");
+    expect(brief.indexOf("nightshift step.timeout {")).toBeGreaterThan(-1);
+    expect(brief.indexOf("nightshift step.skip {")).toBeGreaterThan(
+      brief.indexOf("nightshift step.timeout {"),
+    );
+    expect(brief).toContain("Never skip a step that failed: fix it.");
+    const reran = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      task: {
+        kind: "strand_fix",
+        round: 1,
+        of: 3,
+        failedChecks: [
+          {
+            stepId: "trial",
+            command: "npm run trial",
+            exitCode: 124,
+            rerunExitCode: 1,
+            output: "",
+          },
+          { stepId: "unit", command: "npm test", exitCode: 1, rerunExitCode: 124, output: "" },
+        ],
+        findings: [],
+      },
+    });
+    expect(reran).toContain(
+      "trial: `npm run trial` timed out, then failed with exit 1 on its rerun: fix it, it cannot be skipped",
+    );
+    expect(reran).toContain(
+      "unit: `npm test` failed with exit 1, then timed out on its rerun: fix it, it cannot be skipped",
+    );
+    expect(reran).not.toContain("nightshift step.skip");
+  });
+
+  it("briefs a resumed strand with the step that timed out, its time and both tools in order (P19 S-02)", () => {
+    const brief = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      task: {
+        kind: "strand_fix",
+        round: 1,
+        of: 3,
+        failedChecks: [
+          {
+            stepId: "trial",
+            command: "npm run trial",
+            exitCode: 124,
+            output: "slow",
+            timedOut: true,
+            timeoutSeconds: 600,
+            cleanupSeconds: 30,
+          },
+          { stepId: "unit", command: "npm test", exitCode: 1, output: "red" },
+        ],
+        findings: [],
+      },
+    });
+    expect(brief).toContain(
+      "trial: `npm run trial` timed out after 600 seconds (and 30 seconds of cleanup)",
+    );
+    expect(brief).toContain("unit: `npm test` exited 1");
+    expect(brief).toContain("A GATE THAT TIMED OUT");
+    const raise = brief.indexOf(
+      "nightshift step.timeout { stepId, timeoutSeconds, cleanupSeconds?, reason }",
+    );
+    const skip = brief.indexOf("nightshift step.skip { stepId, reason }");
+    expect(raise).toBeGreaterThan(-1);
+    expect(skip).toBeGreaterThan(raise);
+    expect(brief).toContain("7200 seconds");
+    expect(brief).toContain("Never skip a step that failed: fix it.");
+    const plainFailure = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      task: {
+        kind: "strand_fix",
+        round: 1,
+        of: 3,
+        failedChecks: [{ stepId: "unit", command: "npm test", exitCode: 1, output: "red" }],
+        findings: [],
+      },
+    });
+    expect(plainFailure).not.toContain("A GATE THAT TIMED OUT");
   });
 
   it("tells a strand's orchestrator how to record a departure, and nobody else", () => {
@@ -204,6 +316,34 @@ describe("the plan-following briefs (P7, D-P7-09)", () => {
     }
     expect(brief).toContain("Do NOT");
     expect(brief).toContain("delegate the same work again as a new job");
+  });
+
+  it("tells a strand's fix round that an arbiter's ruling stands, and what it says", () => {
+    const brief = renderWorkerBrief({
+      job: makeJobContract(f, { strandId: "S-01" }),
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program: planned,
+      worktree: "/tmp/w",
+      task: {
+        kind: "strand_fix",
+        round: 3,
+        of: 3,
+        failedChecks: [],
+        findings: [],
+        rulings: [
+          {
+            findingId: "F-01",
+            decisionId: "dec_ruling" as never,
+            summary: "a red gate can be skipped after a failed rerun",
+            rationale: "the skip check must see the rerun",
+          },
+        ],
+      },
+    });
+    expect(brief).toContain("AN ARBITER HAS RULED");
+    expect(brief).toContain("not to be disputed again");
+    expect(brief).toContain("F-01: a red gate can be skipped after a failed rerun");
+    expect(brief).toContain("the ruling: the skip check must see the rerun");
   });
 
   it("tells a strand's orchestrator what an earlier run already built of it, and where (A-60)", () => {

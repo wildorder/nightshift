@@ -19,6 +19,7 @@ export * from "./policy.js";
 export * from "./prerequisite-checks.js";
 export * from "./routing-transitions.js";
 export * from "./run-transitions.js";
+export * from "./step-adjustments.js";
 export * from "./strand-brief.js";
 export * from "./transitions.js";
 export * from "./verification.js";
