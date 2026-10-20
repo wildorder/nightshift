@@ -37,6 +37,9 @@ import {
 /** Long enough for a cloud CLI to answer on a bad connection; short enough that a prompt waiting on stdin ends. */
 export const PREFLIGHT_TIMEOUT_SECONDS = 60;
 
+/** A prerequisite's verifyCommand is a probe that creates nothing to clean up, so a hung one is ended five seconds after its soft request. */
+export const PREFLIGHT_CLEANUP_SECONDS = 5;
+
 export interface PreflightCheck {
   readonly prerequisite: Prerequisite;
   readonly exitCode: number;
@@ -103,6 +106,7 @@ export const runPreflight = async (input: PreflightInput): Promise<PreflightResu
       id: prerequisite.id,
       command: prerequisite.verifyCommand,
       timeoutSeconds: input.timeoutSeconds ?? PREFLIGHT_TIMEOUT_SECONDS,
+      cleanupSeconds: PREFLIGHT_CLEANUP_SECONDS,
     })),
     cwd: input.cwd,
     ...(input.env === undefined ? {} : { env: input.env }),

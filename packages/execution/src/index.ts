@@ -135,6 +135,7 @@ export {
 } from "./outbox.js";
 export { lastChars, readableOutput, readableTail } from "./output-tail.js";
 export {
+  PREFLIGHT_CLEANUP_SECONDS,
   PREFLIGHT_TIMEOUT_SECONDS,
   type PreflightCheck,
   type PreflightInput,

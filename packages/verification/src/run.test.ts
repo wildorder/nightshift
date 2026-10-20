@@ -528,7 +528,13 @@ describe("runVerificationSteps, with real processes", () => {
     const started = Date.now();
     const results = await runVerificationSteps({
       steps: [
-        step("hang", nodeCommand("setInterval(function () {}, 50)"), { timeoutSeconds: 1 }),
+        // On POSIX node dies on SIGTERM. On Windows the soft taskkill is ignored
+        // by a console node process, so the force after the cleanup time is what
+        // ends it; without a short cleanup that would take 31 s, past the bound.
+        step("hang", nodeCommand("setInterval(function () {}, 50)"), {
+          timeoutSeconds: 1,
+          cleanupSeconds: 1,
+        }),
         step("after", nodeCommand("process.stdout.write('still ran')")),
       ],
       cwd: CWD,
@@ -538,6 +544,14 @@ describe("runVerificationSteps, with real processes", () => {
     expect(results[0]?.exitCode).toBe(TIMEOUT_EXIT_CODE);
     expect(results[1]?.timedOut).toBe(false);
     expect(decode(results[1]?.output ?? new Uint8Array())).toBe("still ran");
+    const hangOutput = decode(results[0]?.output ?? new Uint8Array());
+    if (process.platform === "win32") {
+      // The real force-kill path ran: the soft request did not end the step.
+      expect(hangOutput).toContain("cleanup time of 1 seconds ran out");
+    } else {
+      // Node exited on SIGTERM, so the cleanup timer never fired.
+      expect(hangOutput).not.toContain("cleanup time of");
+    }
     // The point of the timeout is that it bounds the run.
     expect(Date.now() - started).toBeLessThan(15_000);
   });

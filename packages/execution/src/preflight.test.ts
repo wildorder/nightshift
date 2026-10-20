@@ -116,6 +116,9 @@ describe("runPreflight (D-P7-05)", () => {
   });
 
   it("ends a command that never returns, as a failure", async () => {
+    // On Windows a console node ignores the soft request and only the forced
+    // kill ends it; PREFLIGHT_CLEANUP_SECONDS (5 s) keeps this at about 6 s,
+    // inside vitest's 20 s limit, instead of 1 s + the 30 s default cleanup.
     const result = await runPreflight({
       contract: contractWith([prerequisite("HP-01", `node -e "setInterval(() => {}, 1000)"`)]),
       cwd,
