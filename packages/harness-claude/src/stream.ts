@@ -70,16 +70,30 @@
  * `terminal_reason: "aborted_streaming"`. Exit code zero alone therefore does
  * not mean the work completed; `adapter.ts` requires a *non-error* result.
  */
-import { MAX_INLINE_PAYLOAD_BYTES, type RouteUsage } from "@nightshift/contracts";
+import {
+  MAX_INLINE_PAYLOAD_BYTES,
+  type MeasurementCounters,
+  type RouteUsage,
+} from "@nightshift/contracts";
 import type { Clock } from "@nightshift/core";
 import { nowIso } from "@nightshift/core";
 import {
+  type HarnessObservation,
   type HookEvent,
   type HookEventType,
   type HookSink,
   isoFromEpochSeconds,
+  type MeasurementSink,
   routeUnavailableReason,
 } from "@nightshift/harness";
+import {
+  countersToRouteUsage,
+  mostFrequent,
+  requestCounters,
+  requestProvenance,
+  resultProvenance,
+  sumModelUsage,
+} from "./usage.js";
 
 /**
  * The ceiling this adapter holds its own payloads to.
@@ -260,6 +274,20 @@ export const combineTurns = (earlier: RouteUsage | undefined, turn: RouteUsage):
   } as RouteUsage;
 };
 
+/**
+ * The stream's statement about what the launch measured. The adapter combines
+ * it with receiver evidence; it is not the final word.
+ */
+export interface StreamMeasures {
+  /** Session counters when a `result` carried `modelUsage`, else the launch's `outcome.usage`. */
+  readonly usage?: RouteUsage;
+  readonly usageScope: "launch" | "session";
+  readonly inclusion: "self" | "includes_children";
+  /** The most frequent non-synthetic assistant model, else the init frame's. */
+  readonly observedModel?: string;
+  readonly resultCoverage: "complete" | "partial" | "unknown";
+}
+
 /** What the interpreter learned from the stream, for the exit mapping. */
 export interface StreamOutcome {
   /** True once a `result` frame has been seen, error or not. */
@@ -294,6 +322,8 @@ export interface StreamOutcome {
    * frame carries them too, and what it spent is still what it spent.
    */
   readonly usage?: RouteUsage;
+  /** What the stream says was measured; see {@link StreamMeasures}. `usage` is unchanged by it. */
+  readonly measures: StreamMeasures;
   /** True once `agent.started` has been emitted, so it is emitted exactly once. */
   readonly startEmitted: boolean;
   /** Lines that were not parseable JSON. A non-zero count belongs in the failure payload. */
@@ -319,6 +349,10 @@ export interface StreamInterpreterInput {
   readonly onActivity?: (activity: SessionActivity) => void;
   /** Merged into `agent.started` alone: the operating-system user the agent runs as (D-P10-25). */
   readonly started?: Readonly<Record<string, unknown>>;
+  /** Where measurement observations go. Absent: none are emitted. */
+  readonly measurements?: MeasurementSink;
+  /** Emit one `request` observation per assistant message id. Default false. */
+  readonly streamRequests?: boolean;
 }
 
 /**
@@ -386,6 +420,26 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let startEmitted = false;
   let unparseableLines = 0;
 
+  let harnessVersion: string | undefined;
+  let initModel: string | undefined;
+  let resultOrdinal = 0;
+  /** Assistant `message.id`s seen with a usage object, across the launch. */
+  const messageIds = new Set<string>();
+  const modelTally = new Map<string, number>();
+  const contextWindows = new Map<string, number>();
+  let sessionCounters: MeasurementCounters | undefined;
+  let latestResultComplete = false;
+  let latestResultPartial = false;
+
+  const observe = (observation: HarnessObservation): void => {
+    if (input.measurements === undefined) return;
+    try {
+      input.measurements.observe(observation);
+    } catch {
+      // `observe` is documented as never throwing; the parse goes on regardless.
+    }
+  };
+
   const emit = (type: HookEventType, payload: Readonly<Record<string, unknown>>): void => {
     const event: HookEvent = {
       type,
@@ -434,6 +488,8 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
       activityChanged();
     }
     sessionId = str(frame.session_id);
+    harnessVersion = str(frame.claude_code_version) ?? harnessVersion;
+    initModel = str(frame.model) ?? initModel;
     const tools = Array.isArray(frame.tools)
       ? frame.tools.filter((tool): tool is string => typeof tool === "string")
       : [];
@@ -529,7 +585,38 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     };
   };
 
+  const handleAssistantUsage = (frame: Frame): void => {
+    const message = isRecord(frame.message) ? frame.message : undefined;
+    if (message === undefined || !isRecord(message.usage)) return;
+    const id = str(message.id);
+    if (id === undefined || messageIds.has(id)) return;
+    messageIds.add(id);
+    const model = str(message.model);
+    if (model === "<synthetic>") return;
+    if (model !== undefined) modelTally.set(model, (modelTally.get(model) ?? 0) + 1);
+    if (input.streamRequests !== true) return;
+    const counters = requestCounters(message.usage);
+    if (counters === undefined) return;
+    const parent = str(frame.parent_tool_use_id);
+    const window = model === undefined ? undefined : contextWindows.get(model);
+    observe({
+      schemaVersion: 1,
+      kind: "request",
+      observationId: `claude:assistant:${id}`,
+      source: "harness",
+      provenance: requestProvenance(harnessVersion),
+      inclusion: "self",
+      counters,
+      requestId: id,
+      ...(model === undefined ? {} : { model }),
+      ...(sessionId === undefined ? {} : { sessionId }),
+      ...(parent === undefined ? {} : { childRef: { kind: "agent" as const, id: parent } }),
+      ...(window === undefined ? {} : { contextWindowTokens: window }),
+    });
+  };
+
   const handleAssistant = (frame: Frame): void => {
+    handleAssistantUsage(frame);
     if (frame.error === "rate_limit") {
       const text = contentBlocksOf(frame)
         .map((block) => (isRecord(block) ? str(block.text) : undefined))
@@ -580,6 +667,30 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         status: 429,
         message: limited.message,
         workBegan: toolCalls > 0,
+      });
+    }
+
+    resultOrdinal += 1;
+    const totals = sumModelUsage(frame.modelUsage, frame.total_cost_usd);
+    latestResultComplete = !resultErrored && totals !== undefined;
+    latestResultPartial = !latestResultComplete;
+    if (totals !== undefined) {
+      sessionCounters = totals.counters;
+      for (const [model, window] of totals.contextWindows) contextWindows.set(model, window);
+      const uuid = str(frame.uuid);
+      observe({
+        schemaVersion: 1,
+        kind: "cumulative_snapshot",
+        observationId:
+          uuid !== undefined
+            ? `claude:result:${uuid}`
+            : `claude:result:${sessionId ?? "launch"}:${resultOrdinal}`,
+        source: "harness",
+        provenance: resultProvenance(harnessVersion),
+        inclusion: "includes_children",
+        counterScope: "session",
+        counters: totals.counters,
+        ...(sessionId === undefined ? {} : { sessionId }),
       });
     }
 
@@ -662,6 +773,36 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     handleFrame(parsed);
   };
 
+  const measuresNow = (): StreamMeasures => {
+    const observedModel = mostFrequent(modelTally) ?? initModel;
+    const resultCoverage =
+      sawResult && latestResultComplete
+        ? "complete"
+        : sawResult && latestResultPartial
+          ? "partial"
+          : usage !== undefined
+            ? "partial"
+            : "unknown";
+    const base = {
+      ...optionalField("observedModel", observedModel),
+      resultCoverage,
+    } as Pick<StreamMeasures, "observedModel" | "resultCoverage">;
+    if (sessionCounters !== undefined) {
+      return {
+        ...base,
+        usage: countersToRouteUsage(sessionCounters, usage?.latencyMs),
+        usageScope: "session",
+        inclusion: "includes_children",
+      };
+    }
+    return {
+      ...base,
+      ...optionalField("usage", usage),
+      usageScope: "launch",
+      inclusion: "self",
+    };
+  };
+
   return {
     write: (chunk) => {
       pending += decoder.decode(chunk, { stream: true });
@@ -696,6 +837,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
               workBegan: toolCalls > 0,
             }),
         ...optionalField("resultText", resultText),
+        measures: measuresNow(),
         startEmitted,
         unparseableLines,
       };
