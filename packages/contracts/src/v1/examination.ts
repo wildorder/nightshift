@@ -90,6 +90,8 @@ export const FindingResolvedBySchema = z.strictObject({
   authority: DecisionAuthoritySchema,
   /** The arbiter's ruling, or the human's, when one moved it. */
   decisionId: DecisionIdSchema.optional(),
+  /** For resolution `fixed`: the later examination whose not raising the finding again closed it. */
+  examinationId: ExaminationIdSchema.optional(),
   /** A dispute's reason, a fix's attempt, a human's note. */
   reason: z.string().min(1).optional(),
   at: IsoTimestampSchema,
@@ -103,6 +105,10 @@ export const ExaminationFindingSchema = z.strictObject({
   evidence: z.array(FindingEvidenceSchema).min(1),
   resolution: FindingResolutionSchema,
   resolvedBy: FindingResolvedBySchema.optional(),
+  /** This finding is the same defect as an earlier examination's finding. */
+  repeats: z
+    .strictObject({ examinationId: ExaminationIdSchema, findingId: z.string().min(1) })
+    .optional(),
   /**
    * On an examination of an attempt that carried out an arbiter's ruling: the
    * ruled finding this one says is still not fixed. Only such a finding can

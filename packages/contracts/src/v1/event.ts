@@ -152,6 +152,14 @@ export const EventTypeSchema = z.enum([
   "checkpoint.created",
   "routing.decided",
   "artifact.recorded",
+  /**
+   * Added in P20. The payload is one complete `LifecycleObservation` (see
+   * `measurement.ts`), emitted by the engine for the lifecycle operations it
+   * owns: waits, startup, setup, work, queue residence, integration and
+   * examination. Payloads stay under the inline bound because an observation is
+   * itself bounded at 4096 bytes.
+   */
+  "lifecycle.observed",
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 

@@ -54,6 +54,8 @@ export const IMMUTABLE_ROUTING_FIELDS = [
   "classification",
   "policyVersion",
   "purpose",
+  "causes",
+  "concerning",
   "createdAt",
 ] as const satisfies readonly (keyof RoutingDecision)[];
 

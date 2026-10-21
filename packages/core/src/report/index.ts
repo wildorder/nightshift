@@ -30,6 +30,15 @@ export {
   type UsageRow,
 } from "./report.js";
 export {
+  type AttemptResources,
+  type ResourceCoverage,
+  type ResourceDollars,
+  type ResourceTokens,
+  type ResourceTotals,
+  resourcesOf,
+  sumResources,
+} from "./resources.js";
+export {
   type ProgramStatus,
   programStatus,
   type WaitingItem,

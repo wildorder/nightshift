@@ -175,8 +175,19 @@ export const LifecycleObservationSchema = z.strictObject({
   transition: z.enum(["start", "end", "note"]),
   reason: z.string().max(400).optional(),
   blockers: z.array(z.strictObject({ kind: z.string(), ref: z.string() })).max(32),
+  /**
+   * Causal references (a commit, verification, examination, finding, decision,
+   * routing decision, node, dispatch). Distinct from `blockers`, which say what
+   * a wait is waiting on.
+   */
+  refs: z
+    .array(z.strictObject({ kind: z.string(), ref: z.string() }))
+    .max(32)
+    .optional(),
   parentOperationId: z.string().optional(),
 });
+
+export type LifecycleObservation = z.infer<typeof LifecycleObservationSchema>;
 
 export const MeasurementObservationSchema = z
   .discriminatedUnion("kind", [

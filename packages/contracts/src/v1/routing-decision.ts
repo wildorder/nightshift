@@ -10,7 +10,13 @@
  * whenever a provider exposes them.
  */
 import { z } from "zod";
-import { ExecutionNodeIdSchema, RoutingDecisionIdSchema } from "../ids.js";
+import {
+  DecisionIdSchema,
+  ExaminationIdSchema,
+  ExecutionNodeIdSchema,
+  RoutingDecisionIdSchema,
+  VerificationIdSchema,
+} from "../ids.js";
 import { IsoTimestampSchema, runScoped } from "./common.js";
 import {
   ClassificationSchema,
@@ -120,6 +126,33 @@ export const RungPositionSchema = z.strictObject({
 });
 export type RungPosition = z.infer<typeof RungPositionSchema>;
 
+/**
+ * Why an attempt after the first exists (P20): one cause per reason, so a
+ * retry with mixed causes records each. Metadata and identifiers only.
+ */
+export const AttemptCauseSchema = z.strictObject({
+  kind: z.enum([
+    "examination_findings",
+    "ruling",
+    "integration_conflict",
+    "verification_failed",
+    "route_unavailable",
+    "unreported",
+    "worker_failed",
+    "interrupted",
+    "strand_landing",
+    "unknown",
+  ]),
+  examinationId: ExaminationIdSchema.optional(),
+  findingIds: z.array(z.string()).max(32).optional(),
+  decisionIds: z.array(DecisionIdSchema).max(32).optional(),
+  verificationId: VerificationIdSchema.optional(),
+  previousRoutingDecisionId: RoutingDecisionIdSchema.optional(),
+  paths: z.array(z.string()).max(50).optional(),
+  detail: z.string().max(400).optional(),
+});
+export type AttemptCause = z.infer<typeof AttemptCauseSchema>;
+
 export const RoutingDecisionSchema = z
   .strictObject({
     ...runScoped,
@@ -160,6 +193,26 @@ export const RoutingDecisionSchema = z
     purpose: z.enum(["examine", "answer", "arbitrate"]).optional(),
     classification: ClassificationSchema.optional(),
     policyVersion: z.int().min(0).optional(),
+    /**
+     * P20: why this attempt was made. Absent on the first attempt, which has
+     * nothing to follow, and on any decision recorded before P20.
+     */
+    causes: z.array(AttemptCauseSchema).max(8).optional(),
+    /**
+     * P20: what a helper route (examiner, answerer, arbiter, plan reviewer) was
+     * about: the examination or finding it examined, answered or ruled on, or
+     * the plan decision it reviewed.
+     */
+    concerning: z
+      .discriminatedUnion("kind", [
+        z.strictObject({
+          kind: z.literal("examination"),
+          examinationId: ExaminationIdSchema,
+          findingId: z.string().optional(),
+        }),
+        z.strictObject({ kind: z.literal("plan_review"), decisionId: DecisionIdSchema.optional() }),
+      ])
+      .optional(),
     createdAt: IsoTimestampSchema,
   })
   .refine(
@@ -167,6 +220,10 @@ export const RoutingDecisionSchema = z
       value.eligibleOptions.every((option) => option.eligible || option.reason !== undefined),
     { message: "an ineligible option must record why", path: ["eligibleOptions"] },
   )
+  .refine((value) => (value.attempt === 1 ? value.causes === undefined : true), {
+    message: "the first attempt has no causes",
+    path: ["causes"],
+  })
   .refine((value) => (value.attempt === 1 ? value.previousRouteId === null : true), {
     message: "the first attempt cannot have a previous route",
     path: ["previousRouteId"],
