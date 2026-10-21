@@ -79,6 +79,7 @@ export {
   type LocalReceiverOptions,
   startLocalReceiver,
 } from "./receiver/receiver.js";
+export type { AttributeSpec, AttributeType } from "./receiver/reduce.js";
 export * from "./run-as.js";
 export {
   NoCheckpointError,

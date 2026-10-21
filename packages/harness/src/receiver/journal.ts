@@ -33,6 +33,8 @@ export const receiverEnvelopeSchema = z.object({
   signal: z.enum(["logs", "metrics", "traces"]),
   records: z.array(receiverRecordSchema),
   droppedRecordCount: z.number().int().nonnegative(),
+  /** Records excluded on purpose by the receiver's record filter; absent in older journals. */
+  filteredRecordCount: z.number().int().nonnegative().optional(),
 });
 export type ReceiverEnvelope = z.infer<typeof receiverEnvelopeSchema>;
 
