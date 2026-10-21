@@ -3,7 +3,7 @@
 Placeholder ids throughout; nothing here came from a real account.
 
 - `otlp-logs-export.json` — the raw OTLP/JSON body as Claude Code 2.1.286 POSTs it to `/v1/logs`.
-- `journal-reduced.ndjson` — the loopback receiver's own journal line format (reduced envelopes): main, compaction and sub-agent `api_request`, a redelivered duplicate of the main request, an `api_error`, a `user_prompt`, and a torn last line (no newline).
+- `journal-reduced.ndjson` — the loopback receiver's own journal line format (reduced envelopes): main, compaction and sub-agent `api_request`, a redelivered duplicate of the main request, an `api_request` with no token counters (`req_nocount_0004`: kept with `counters: {}`, makes the capture partial), an `api_error`, a `user_prompt`, and a torn last line (no newline).
 
 ## Observed live on Claude Code 2.1.286 (2026-10-20/21, unauthenticated sandbox)
 

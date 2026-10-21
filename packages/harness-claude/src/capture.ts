@@ -6,7 +6,11 @@
  * adapter starts the loopback receiver (`@nightshift/harness`), points the
  * child's OTLP/HTTP logs exporter at it, and this module tails the receiver's
  * reduced-envelope journal and turns each `api_request` record into a
- * `request` observation for the measurement sink.
+ * `request` observation for the measurement sink. An identified `api_request`
+ * is always kept: one without any valid token counter becomes a request with
+ * `counters: {}` (unknown, never zero) and makes the capture partial
+ * (`request_counters_missing`). Only a record with no identity is skipped
+ * (`unidentified`, counted).
  *
  * Verified live against Claude Code 2.1.286 (2026-10-20/21, unauthenticated
  * sandbox): the transport (POST /v1/logs, application/json, Authorization
@@ -102,7 +106,7 @@ export const claudeTelemetryHeaderEnv = (capability: string): Record<string, str
 // ---------------------------------------------------------------------------
 // Decoding
 
-export type DecodeSkip = "not_api_request" | "unidentified" | "no_counters";
+export type DecodeSkip = "not_api_request" | "unidentified";
 
 export interface DecodeContext {
   readonly fallbackVersion?: string;
@@ -135,6 +139,17 @@ const isoFromText = (value: unknown): string | undefined => {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 };
 
+const hasTokenField = (o: HarnessObservation): boolean => {
+  if (!("counters" in o) || o.counters === undefined) return false;
+  const c = o.counters;
+  return (
+    c.inputTokens !== undefined ||
+    c.outputTokens !== undefined ||
+    c.cacheReadTokens !== undefined ||
+    c.cacheWriteTokens !== undefined
+  );
+};
+
 export const decodeClaudeTelemetryRecord = (
   record: ReceiverRecord,
   ctx: DecodeContext = {},
@@ -160,13 +175,6 @@ export const decodeClaudeTelemetryRecord = (
   const outputTokens = count(a.output_tokens);
   const cacheReadTokens = count(a.cache_read_tokens);
   const cacheWriteTokens = count(a.cache_creation_tokens);
-  if (
-    inputTokens === undefined &&
-    outputTokens === undefined &&
-    cacheReadTokens === undefined &&
-    cacheWriteTokens === undefined
-  )
-    return { skipped: "no_counters" };
 
   const micros = nonNegative(a.cost_usd_micros);
   const reportedCostUsd =
@@ -196,7 +204,7 @@ export const decodeClaudeTelemetryRecord = (
       ...(outputTokens !== undefined ? { outputTokens } : {}),
       ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
       ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
-      inputIncludesCache: false,
+      ...(inputTokens !== undefined ? { inputIncludesCache: false } : {}),
     },
     ...(requestId !== undefined ? { requestId } : {}),
     ...(sessionId !== undefined ? { sessionId } : {}),
@@ -220,6 +228,7 @@ export type CaptureIncompleteReason =
   | "records_truncated"
   | "torn_tail"
   | "unidentified_request_dropped"
+  | "request_counters_missing"
   | "records_dropped";
 
 type ValueType = "string" | "number" | "boolean";
@@ -250,6 +259,8 @@ export interface ClaudeCaptureDiagnostics {
     attributeTypes: Record<string, ValueType>;
     present: Record<PresenceKey, boolean>;
     querySourceClasses: { main: number; child: number; compact: number; other: number };
+    /** Distinct identified requests whose counters held no token field. */
+    withoutCounters: number;
   };
   droppedAttributeCount: number;
 }
@@ -260,6 +271,8 @@ export interface ClaudeCaptureResult {
   droppedRecords: number;
   droppedAttributes: number;
   unidentifiedRequests: number;
+  /** Distinct observation ids kept with `counters: {}` (no valid token field): unknown, so the capture is partial. */
+  requestsWithoutCounters: number;
   gap?: "receiver_lost" | "stopped_before_flush";
   complete: boolean;
   reasons: CaptureIncompleteReason[];
@@ -327,6 +340,7 @@ export const startClaudeCapture = async (input: ClaudeCaptureInput): Promise<Cla
   let droppedRecords = 0;
   let droppedAttributes = 0;
   let unidentified = 0;
+  const withoutCounters = new Set<string>();
   let closed = false;
   const gaps = new Set<"journal_full" | "records_truncated" | "torn_line">();
   let offset = 0;
@@ -393,6 +407,7 @@ export const startClaudeCapture = async (input: ClaudeCaptureInput): Promise<Cla
         const id = decoded.observation.observationId;
         if (seenIds.has(id)) continue;
         if (seenIds.size < MAX_SEEN_IDS) seenIds.add(id);
+        if (!hasTokenField(decoded.observation)) withoutCounters.add(id);
         try {
           input.sink.observe(decoded.observation);
         } catch {
@@ -487,6 +502,7 @@ export const startClaudeCapture = async (input: ClaudeCaptureInput): Promise<Cla
     if (gaps.has("torn_line") || tornTail) reasons.push("torn_tail");
     if (droppedRecords > 0) reasons.push("records_dropped");
     if (unidentified > 0) reasons.push("unidentified_request_dropped");
+    if (withoutCounters.size > 0) reasons.push("request_counters_missing");
     if (requests === 0) reasons.push("no_api_request");
     return {
       requests,
@@ -494,6 +510,7 @@ export const startClaudeCapture = async (input: ClaudeCaptureInput): Promise<Cla
       droppedRecords,
       droppedAttributes,
       unidentifiedRequests: unidentified,
+      requestsWithoutCounters: withoutCounters.size,
       ...(gap !== undefined ? { gap } : {}),
       complete: reasons.length === 0,
       reasons,
@@ -508,6 +525,7 @@ export const startClaudeCapture = async (input: ClaudeCaptureInput): Promise<Cla
           ),
           present: { ...present },
           querySourceClasses: { ...classes },
+          withoutCounters: withoutCounters.size,
         },
         droppedAttributeCount: droppedAttributes,
       },

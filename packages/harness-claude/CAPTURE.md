@@ -15,7 +15,7 @@ Two channels feed the measurement sink (`MeasurementSink`, metadata only):
 
 The receiver's capability (its shared secret) reaches the exporter through `otelHeadersHelper` in the `--settings` file, which prints a 0600 headers file. On win32 only, where `runAs` never applies, it is the `OTEL_EXPORTER_OTLP_HEADERS` environment header instead. The journal lives in engine-owned storage outside any directory granted to the agent's user, and the adapter removes it after `onCapture` has run.
 
-**Coverage rule.** A launch's capture is `complete` only with a non-error `result` frame **and** a complete receiver capture (no `receiver_lost`, `stopped_before_flush`, `journal_full`, `records_truncated`, `torn_tail`, `unidentified_request_dropped`, `records_dropped`, `no_api_request`). Anything else is `partial`, with the reasons on the ending payload.
+**Coverage rule.** A launch's capture is `complete` only with a non-error `result` frame **and** a complete receiver capture (no `receiver_lost`, `stopped_before_flush`, `journal_full`, `records_truncated`, `torn_tail`, `unidentified_request_dropped`, `request_counters_missing`, `records_dropped`, `no_api_request`). Anything else is `partial`, with the reasons on the ending payload. An `api_request` without any valid token counter is kept as a request observation with unknown counters (`counters: {}`) and makes the capture partial (`request_counters_missing`); only a record with no identity at all is dropped (`unidentified_request_dropped`).
 
 ## 2. Field-by-field matrix
 
