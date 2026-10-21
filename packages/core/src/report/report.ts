@@ -938,8 +938,14 @@ const feedbackSectionsOf = async (
   const resources = new Map<string, ResourceTotals>();
   const infrastructure = new Map<string, InfrastructureReport>();
   const self = `${scope.programId}/${scope.runId}`;
+  // A checkpoint is computed from its own snapshot, so a run since removed from
+  // the history is still gathered; each run is read once across histories.
   for (const member of new Set(
-    mine.flatMap((h) => h.members.map((m) => `${m.programId}/${m.runId}`)),
+    mine.flatMap((h) =>
+      [h.members, ...h.checkpoints.map((c) => c.members)].flatMap((ms) =>
+        ms.map((m) => `${m.programId}/${m.runId}`),
+      ),
+    ),
   )) {
     const [programId, runId] = member.split("/") as [ProgramId, RunId];
     const memberScope = { projectId: scope.projectId, programId, runId };
@@ -1819,7 +1825,7 @@ const renderCompletionResources = (f: CompletionReport["current"]): string[] => 
   const figure = (value: number | undefined): string =>
     attempts === 0 || value === undefined ? NOT_OBSERVED : String(value);
   const dollars = (value: number | undefined): string =>
-    attempts === 0 || value === 0 ? NOT_OBSERVED : usd(value);
+    attempts === 0 ? NOT_OBSERVED : usd(value);
   const machines = f.infrastructure;
   return [
     `tokens in ${figure(r?.tokens.input)}, out ${figure(r?.tokens.output)}`,

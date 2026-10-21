@@ -4,6 +4,7 @@
  * and a refused read leaves that member's figure absent.
  */
 import type {
+  CompletionHistory,
   CompletionMemberRef,
   IsoTimestamp,
   MeasurementSummary,
@@ -143,7 +144,11 @@ const world = () => {
 };
 
 /** Stores over the three runs; every method call is counted by `method:runId`. */
-const storesFor = (w: ReturnType<typeof world>, refuse: readonly string[] = []) => {
+const storesFor = (
+  w: ReturnType<typeof world>,
+  refuse: readonly string[] = [],
+  histories?: () => CompletionHistory[],
+) => {
   const calls = new Map<string, number>();
   const runs = [w.a, w.b, w.c];
   const byRun =
@@ -202,7 +207,8 @@ const storesFor = (w: ReturnType<typeof world>, refuse: readonly string[] = []) 
       listByProgram: () => page([]),
     },
     completionHistories: {
-      listByProject: () => page([w.history("First", w.a, w.b), w.history("Second", w.a, w.c)]),
+      listByProject: () =>
+        page(histories?.() ?? [w.history("First", w.a, w.b), w.history("Second", w.a, w.c)]),
     },
   } as unknown as ProjectStores;
   return { stores, calls };
@@ -250,5 +256,53 @@ describe("the Completion section's model and machine figures", () => {
     expect(first?.current.infrastructure).toEqual({ usd: 1.16, members: 1 });
     expect(second?.current.resources?.tokens).toMatchObject({ input: 400, output: 40 });
     expect(renderReport(gathered)).toContain("## Completion");
+  });
+
+  it("keeps a checkpoint's figures when a member of its snapshot is later removed", async () => {
+    const w = world();
+    const id = w.f.ids.next("comp");
+    const base = {
+      scope: w.f.scope,
+      completionHistoryId: id,
+      title: "H",
+      actor,
+    } as const;
+    const both = [w.a, w.b].map(
+      (r, i): CompletionMemberRef => ({
+        programId: r.scope.programId,
+        runId: r.scope.runId,
+        role: i === 0 ? "anchor" : "correction",
+      }),
+    );
+    const checkpointed = buildCompletionHistory({
+      ...base,
+      members: both,
+      at: at(1),
+      checkpoint: { name: "cp", programId: w.a.scope.programId, runId: w.a.scope.runId },
+    });
+    const trimmed = buildCompletionHistory({
+      ...base,
+      stored: checkpointed,
+      members: [both[0] as CompletionMemberRef],
+      at: at(2),
+    });
+    const before = (await gatherReport(storesFor(w, [], () => [checkpointed]).stores, w.f.scope))
+      .completions[0];
+    const after = (await gatherReport(storesFor(w, [], () => [trimmed]).stores, w.f.scope))
+      .completions[0];
+    expect(after?.checkpoints[0]).toEqual(before?.checkpoints[0]);
+    expect(after?.checkpoints[0]?.resources?.tokens).toMatchObject({ input: 300, output: 30 });
+    expect(after?.checkpoints[0]?.resources?.usd).toEqual({ estimated: 0.5, reported: 2 });
+    expect(before?.current.resources?.tokens).toMatchObject({ input: 300 });
+    expect(after?.current.resources?.tokens).toMatchObject({ input: 100, output: 10 });
+    expect(after?.current.resources?.usd).toEqual({ estimated: 0.5, reported: 0 });
+  });
+
+  it("prints a present zero dollar total as $0.00 rather than not observed", async () => {
+    const w = world();
+    w.a.route.usage = { inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0 };
+    const { stores } = storesFor(w, [], () => [w.history("Z", w.a)]);
+    const text = renderReport(await gatherReport(stores, w.f.scope));
+    expect(text).toContain("estimated $0.00, reported $0.00 (separate figures)");
   });
 });
