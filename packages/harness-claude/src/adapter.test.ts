@@ -940,6 +940,7 @@ const captureResult = (over: Partial<ClaudeCaptureResult> = {}): ClaudeCaptureRe
   droppedRecords: 0,
   droppedAttributes: 0,
   unidentifiedRequests: 0,
+  requestsWithoutCounters: 0,
   complete: true,
   reasons: [],
   diagnostics: {} as ClaudeCaptureResult["diagnostics"],

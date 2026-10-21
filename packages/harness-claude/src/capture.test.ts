@@ -158,13 +158,25 @@ describe("decodeClaudeTelemetryRecord", () => {
     expect("occurredAt" in none.observation).toBe(false);
   });
 
-  it("skips a record with no usable counters and rejects negative counters", () => {
+  it("keeps an identified record with no token counters, with unknown counters", () => {
+    const o = decodeOk(byRequest("req_nocount_0004"));
+    expect(o).toMatchObject({
+      kind: "request",
+      requestId: "req_nocount_0004",
+      model: "model-x",
+      reportedCostUsd: 0.004,
+      counters: {},
+    });
+    expect((o as { counters: object }).counters).toEqual({});
+    expect(parses(o).success).toBe(true);
+  });
+
+  it("still skips a record with no identity, and rejects negative counters", () => {
     const base = byRequest("req_main_0001");
     const a: Record<string, string | number | boolean> = { ...base.attributes };
-    for (const k of ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"])
-      delete a[k];
+    for (const k of ["request_id", "client_request_id", "session.id"]) delete a[k];
     expect(decodeClaudeTelemetryRecord({ ...base, attributes: a }, {})).toEqual({
-      skipped: "no_counters",
+      skipped: "unidentified",
     });
     const neg = decodeOk({
       ...base,
@@ -298,6 +310,7 @@ describe("startClaudeCapture", () => {
       apiErrors: 1,
       droppedRecords: 0,
       unidentifiedRequests: 0,
+      requestsWithoutCounters: 0,
       complete: true,
       reasons: [],
     });
@@ -352,24 +365,71 @@ describe("startClaudeCapture", () => {
 
   it("reports torn_tail for a journal ending in a torn line", async () => {
     const { capture, sink } = await begin("journal-reduced.ndjson");
-    await until(() => sink.observations.length === 3);
+    await until(() => sink.observations.length === 4);
     const result = await capture.stop();
     expect(sink.observations.map((o) => o.observationId).sort()).toEqual([
       "claude:api_request:req_compact_0002",
       "claude:api_request:req_main_0001",
+      "claude:api_request:req_nocount_0004",
       "claude:api_request:req_sub_0003",
     ]);
     expect(result.complete).toBe(false);
     expect(result.reasons).toContain("torn_tail");
-    expect(result.requests).toBe(3);
+    expect(result.reasons).toContain("request_counters_missing");
+    expect(result.requestsWithoutCounters).toBe(1);
+    expect(result.requests).toBe(4);
     expect(result.apiErrors).toBe(1);
     expect(result.diagnostics.apiRequest.querySourceClasses).toEqual({
-      main: 2,
+      main: 3,
       child: 1,
       compact: 1,
       other: 0,
     });
     for (const o of sink.observations) expect(parses(o).success).toBe(true);
+  });
+
+  it("keeps a counter-less api_request and reports the capture partial", async () => {
+    const { capture, sink } = await begin();
+    const body = (attrs: Record<string, string | number>) =>
+      JSON.stringify({
+        resourceLogs: [
+          {
+            resource: { attributes: [] },
+            scopeLogs: [
+              {
+                logRecords: [
+                  {
+                    timeUnixNano: "1792000000000000000",
+                    body: { stringValue: "claude_code.api_request" },
+                    attributes: Object.entries(attrs).map(([key, v]) => ({
+                      key,
+                      value: typeof v === "number" ? { doubleValue: v } : { stringValue: v },
+                    })),
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+    const common = { "event.name": "api_request", model: "model-x", query_source: "main" };
+    await post(
+      capture,
+      body({ ...common, request_id: "req_a", input_tokens: 10, output_tokens: 5, cost_usd: 0.01 }),
+    );
+    await post(capture, body({ ...common, request_id: "req_b", cost_usd: 0.02 }));
+    await until(() => sink.observations.length === 2);
+    const bare = sink.observations.find((o) => o.observationId === "claude:api_request:req_b");
+    expect(bare).toMatchObject({ counters: {}, reportedCostUsd: 0.02, model: "model-x" });
+    const result = await capture.stop();
+    expect(result).toMatchObject({
+      requests: 2,
+      requestsWithoutCounters: 1,
+      droppedRecords: 0,
+      complete: false,
+      reasons: ["request_counters_missing"],
+    });
+    expect(result.diagnostics.apiRequest.withoutCounters).toBe(1);
   });
 
   it("reports no_api_request when nothing usable arrived", async () => {

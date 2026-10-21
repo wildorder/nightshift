@@ -122,6 +122,7 @@ const report: ClaudeCaptureReport = {
     droppedRecords: 0,
     droppedAttributes: 3,
     unidentifiedRequests: 0,
+    requestsWithoutCounters: 0,
     complete: true,
     reasons: [],
     diagnostics: {
@@ -146,6 +147,7 @@ const report: ClaudeCaptureReport = {
           "event.sequence": true,
         },
         querySourceClasses: { main: 1, child: 1, compact: 0, other: 0 },
+        withoutCounters: 0,
       },
       droppedAttributeCount: 3,
     },
