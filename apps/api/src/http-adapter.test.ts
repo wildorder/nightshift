@@ -681,6 +681,56 @@ describe("run feedback and completion histories (P20, D-04, D-05)", () => {
     );
     expect(stale).toBeInstanceOf(StaleWriteError);
   });
+
+  it("decodes a checkpoint refused for unavailable measurement evidence into a thrown error", async () => {
+    const { run, actor } = await rated();
+    await world.http.feedback.put(
+      buildRunFeedback({ scope: run, verdict: "worked", actor, at: ENDED }),
+    );
+    const history = buildCompletionHistory({
+      scope: run,
+      completionHistoryId: world.f.ids.next("comp"),
+      title: "Outcome",
+      members: [{ programId: run.programId, runId: run.runId, role: "anchor" }],
+      actor,
+      at: ENDED,
+      checkpoint: { name: "ship", programId: run.programId, runId: run.runId },
+    });
+    world.backing.measurements.listByRun = () => Promise.reject(new Error("store down"));
+
+    // A single attempt shows the decoded refusal; the default policy retries a 5xx and then
+    // hands back the last answer.
+    const once = createHttpStores({
+      transport: createFetchTransport({
+        endpoint: world.plane.url,
+        tokens: staticTokenProvider("ignored-by-the-local-plane"),
+        retry: { attempts: 1, initialDelayMs: 0, factor: 1, maxDelayMs: 0 },
+      }),
+      actingOrg: world.orgId,
+    });
+    const refused = await rejectionOf(once.completionHistories.put(history));
+    expect(refused).toBeInstanceOf(ControlPlaneError);
+    expect((refused as ControlPlaneError).status).toBe(503);
+    expect((refused as ControlPlaneError).code).toBe("measurement_unavailable");
+    expect((refused as ControlPlaneError).message).toContain("store down");
+
+    const retried = await rejectionOf(
+      createHttpStores({
+        transport: createFetchTransport({
+          endpoint: world.plane.url,
+          tokens: staticTokenProvider("ignored-by-the-local-plane"),
+          retry: { attempts: 2, initialDelayMs: 0, factor: 1, maxDelayMs: 0 },
+        }),
+        actingOrg: world.orgId,
+      }).completionHistories.put(history),
+    );
+    expect(retried).toBeInstanceOf(ControlPlaneError);
+    expect((retried as ControlPlaneError).status).toBe(503);
+    expect((retried as ControlPlaneError).code).toBe("measurement_unavailable");
+    expect(
+      await world.backing.completionHistories.get(run, history.completionHistoryId),
+    ).toBeUndefined();
+  });
 });
 
 describe("artifacts and their bodies", () => {
