@@ -223,10 +223,10 @@ describe("the Completion section's model and machine figures", () => {
     expect(first?.title).toBe("First");
     expect(first?.current.resources?.tokens).toMatchObject({ input: 300, output: 30 });
     expect(first?.current.resources?.usd).toEqual({ estimated: 0.5, reported: 2 });
-    expect(first?.current.infrastructure).toEqual({ usd: 1.16, members: 1 });
+    expect(first?.current.infrastructure).toEqual({ usd: 1.16, members: 1, withoutMachine: 1 });
     expect(second?.current.resources?.tokens).toMatchObject({ input: 400, output: 40 });
     expect(second?.current.resources?.usd).toEqual({ estimated: 0.75, reported: 1 });
-    expect(second?.current.infrastructure).toEqual({ usd: 0, members: 0 });
+    expect(second?.current.infrastructure).toBeUndefined();
 
     // The current run is in both histories and is not read again; the others once.
     for (const r of [w.a, w.b, w.c]) {
@@ -241,7 +241,8 @@ describe("the Completion section's model and machine figures", () => {
     expect(text).toContain("infrastructure $1.16 over 1 member run(s)");
     expect(text).toContain("tokens in 400, out 40");
     expect(text).toContain("estimated $0.75, reported $1.00 (separate figures)");
-    expect(text).toContain("infrastructure not observed");
+    expect(text).toContain("machine dollars not observed");
+    expect(text).toContain("machines 1 of 2 members");
     expect(text).toContain("token coverage complete 1, partial 0, unknown 0, legacy 1, missing 0");
   });
 
@@ -253,7 +254,7 @@ describe("the Completion section's model and machine figures", () => {
     // Only A contributes to the first history; B's figure is absent, not zero.
     expect(first?.current.resources?.tokens).toMatchObject({ input: 100, output: 10 });
     expect(first?.current.resources?.usd).toEqual({ estimated: 0.5, reported: 0 });
-    expect(first?.current.infrastructure).toEqual({ usd: 1.16, members: 1 });
+    expect(first?.current.infrastructure).toEqual({ usd: 1.16, members: 1, withoutMachine: 1 });
     expect(second?.current.resources?.tokens).toMatchObject({ input: 400, output: 40 });
     expect(renderReport(gathered)).toContain("## Completion");
   });
@@ -352,6 +353,54 @@ describe("the Completion section's model and machine figures", () => {
     expect(figures.resources.has(keyB)).toBe(false);
     expect(figures.resources.has(keyA)).toBe(true);
     expect(figures.unavailable.has(keyA)).toBe(false);
+  });
+
+  const figuresWith = async (
+    w: ReturnType<typeof world>,
+    patch: (stores: Record<string, unknown>) => void,
+  ) => {
+    const { stores } = storesFor(w);
+    patch(stores as unknown as Record<string, unknown>);
+    const all = [w.a, w.b];
+    return gatherMemberFigures(
+      stores as unknown as ProjectStores,
+      w.f.scope.projectId,
+      all.map((r) => ({ programId: r.scope.programId, runId: r.scope.runId })),
+      new Map(all.map((r) => [`${r.scope.programId}/${r.scope.runId}`, r.run])),
+      at(2000),
+    );
+  };
+
+  it("reports a throwing dispatch read as unavailable and absent from infrastructure", async () => {
+    const w = world();
+    const figures = await figuresWith(w, (s) => {
+      s.dispatches = { get: () => Promise.reject(new Error("dispatch store down")) };
+    });
+    const keyB = `${w.b.scope.programId}/${w.b.scope.runId}`;
+    const keyA = `${w.a.scope.programId}/${w.a.scope.runId}`;
+    expect(figures.unavailable.get(keyB)).toContain("dispatch: dispatch store down");
+    expect(figures.unavailable.get(keyA)).toContain("dispatch");
+    expect(figures.infrastructure.size).toBe(0);
+  });
+
+  it("reports a throwing utilization read as unavailable and absent from infrastructure", async () => {
+    const w = world();
+    const figures = await figuresWith(w, (s) => {
+      s.computeUtilizations = { get: () => Promise.reject(new Error("utilization down")) };
+    });
+    const keyB = `${w.b.scope.programId}/${w.b.scope.runId}`;
+    expect(figures.unavailable.get(keyB)).toContain("utilization: utilization down");
+    expect(figures.infrastructure.has(keyB)).toBe(false);
+  });
+
+  it("does not mark a member unavailable when the dispatch read finds nothing", async () => {
+    const w = world();
+    const figures = await figuresWith(w, () => undefined);
+    const keyA = `${w.a.scope.programId}/${w.a.scope.runId}`;
+    const keyB = `${w.b.scope.programId}/${w.b.scope.runId}`;
+    expect(figures.unavailable.size).toBe(0);
+    expect(figures.infrastructure.has(keyA)).toBe(false);
+    expect(figures.infrastructure.has(keyB)).toBe(true);
   });
 
   it("keeps a member with no routing decisions or summaries as an empty present entry", async () => {

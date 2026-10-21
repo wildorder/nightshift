@@ -899,14 +899,24 @@ const memberFiguresOf = async (
       return undefined;
     },
   );
-  const dispatch = await (async () => stores.dispatches.get(scope))().catch(() => undefined);
+  // A failed read is a failure; a successful read that finds nothing is a plain absence.
+  let machineReadFailed = false;
+  const dispatch = await (async () => stores.dispatches.get(scope))().catch((e: unknown) => {
+    machineReadFailed = true;
+    failures.push(`dispatch: ${reasonOf(e)}`);
+    return undefined;
+  });
   const utilization = await (async () => stores.computeUtilizations.get(scope))().catch(
-    () => undefined,
+    (e: unknown) => {
+      machineReadFailed = true;
+      failures.push(`utilization: ${reasonOf(e)}`);
+      return undefined;
+    },
   );
   const { agents, routes, failure } = await nodeRecordsOf(stores, scope, nodes);
   if (failure !== undefined) failures.push(failure);
   const infrastructure =
-    agents === undefined
+    agents === undefined || machineReadFailed
       ? undefined
       : infrastructureOf({
           run,
@@ -939,7 +949,7 @@ export const gatherMemberFigures = async (
 ): Promise<{
   resources: Map<string, ResourceTotals>;
   infrastructure: Map<string, InfrastructureReport>;
-  /** Members whose nodes, routes, measurements or agents read failed, with the reason. */
+  /** Members whose nodes, routes, measurements, agents, dispatch or utilization read failed, with the reason. */
   unavailable: Map<string, string>;
 }> => {
   const resources = new Map<string, ResourceTotals>();
@@ -1895,7 +1905,12 @@ const renderCompletionResources = (f: CompletionReport["current"]): string[] => 
     r === undefined || attempts === 0
       ? "dollars not observed"
       : `estimated ${dollars(r.usd.estimated)}, reported ${dollars(r.usd.reported)} (separate figures)`,
-    `infrastructure ${machines === undefined || machines.members === 0 ? NOT_OBSERVED : `${usd(machines.usd)} over ${machines.members} member run(s)`}`,
+    machines === undefined || machines.members === 0
+      ? "machine dollars not observed"
+      : `infrastructure ${usd(machines.usd)} over ${machines.members} member run(s)`,
+    ...(machines === undefined || machines.withoutMachine === 0
+      ? []
+      : [`machines ${machines.members} of ${machines.members + machines.withoutMachine} members`]),
     ...(c === undefined || attempts === 0
       ? []
       : [

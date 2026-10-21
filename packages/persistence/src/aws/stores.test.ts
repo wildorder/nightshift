@@ -269,7 +269,7 @@ describe("DynamoDB adapter specifics", () => {
         },
         usd: { estimated: 1234.5678, reported: 1234.5678 },
         coverage: { complete: 40, partial: 5, unknown: 3, legacy: 1, missing: 1 },
-        infrastructure: { usd: 12.345678, members: MAX_COMPLETION_MEMBERS },
+        infrastructure: { usd: 12.345678, members: MAX_COMPLETION_MEMBERS, withoutMachine: 0 },
         recordedAt: "2026-01-01T00:00:00.000Z",
       };
       const checkpoints = Array.from({ length: MAX_COMPLETION_CHECKPOINTS }, (_, i) => ({

@@ -318,7 +318,36 @@ describe("completionOf", () => {
       expect(after.checkpoints[0]).toEqual(before.checkpoints[0]);
       expect(after.checkpoints[0]?.resources?.tokens.input).toBe(150);
       expect(after.checkpoints[0]?.resources?.usd).toEqual({ estimated: 0, reported: 1.5 });
-      expect(after.checkpoints[0]?.infrastructure).toEqual({ usd: 2, members: 1 });
+      expect(after.checkpoints[0]?.infrastructure).toEqual({
+        usd: 2,
+        members: 1,
+        withoutMachine: 1,
+      });
+    });
+
+    it("leaves the infrastructure figure absent when no member has a machine report", () => {
+      const proposed = buildCompletionHistory({
+        scope: f.scope,
+        completionHistoryId: f.ids.next("comp"),
+        title: "T",
+        members: both,
+        actor: ann,
+        at: at(hour),
+        checkpoint: { name: "cp", programId: anchor1.programId, runId: anchor1.runId },
+      });
+      const history = reconcileCompletionWrite({
+        proposed,
+        actor: ann,
+        at: at(hour),
+        memberRuns: open1,
+        feedbackOf: fb,
+        resources,
+        infrastructure: new Map(),
+      }).history;
+      const report = completionOf({ history, runs: open1, feedback: fb, asOf: at(hour) });
+      expect(history.checkpoints[0]?.measured.infrastructure).toBeUndefined();
+      expect(report.checkpoints[0]?.infrastructure).toBeUndefined();
+      expect(report.current.infrastructure).toBeUndefined();
     });
 
     it("counts a run started after the boundary for nothing", () => {

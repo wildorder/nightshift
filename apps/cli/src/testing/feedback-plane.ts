@@ -74,7 +74,7 @@ export const FAKE_MEASURED: CompletionMeasurement = {
   activeSeconds: 7_200,
   tokens: { input: 1000, output: 500, inputConventionUnknown: 0 },
   usd: { estimated: 1.5, reported: 2.25 },
-  infrastructure: { usd: 0.5, members: 2 },
+  infrastructure: { usd: 0.5, members: 2, withoutMachine: 0 },
   recordedAt: "2026-09-15T12:00:00.000Z" as IsoTimestamp,
 };
 

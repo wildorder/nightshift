@@ -80,7 +80,15 @@ export const CompletionMeasurementSchema = z
         missing: nonNegativeInt,
       })
       .optional(),
-    infrastructure: z.strictObject({ usd: nonNegative, members: nonNegativeInt }).optional(),
+    /** Absent, not zero, when no readable member has a machine report. */
+    infrastructure: z
+      .strictObject({
+        usd: nonNegative,
+        members: nonNegativeInt,
+        /** Readable members with no machine report: local runs, or none observed. */
+        withoutMachine: nonNegativeInt,
+      })
+      .optional(),
     /** When the server measured it. */
     recordedAt: IsoTimestampSchema,
   })
@@ -90,6 +98,16 @@ export const CompletionMeasurementSchema = z
         code: "custom",
         path: ["unmeasuredMembers"],
         message: "measuredMembers and unmeasuredMembers must add up to readableMembers",
+      });
+    }
+    if (
+      value.infrastructure !== undefined &&
+      value.infrastructure.members + value.infrastructure.withoutMachine !== value.readableMembers
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["infrastructure", "withoutMachine"],
+        message: "infrastructure members and withoutMachine must add up to readableMembers",
       });
     }
     if (

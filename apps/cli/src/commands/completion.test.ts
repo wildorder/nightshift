@@ -105,7 +105,13 @@ describe("nightshift completion", () => {
 
   it("show says dollars and tokens were not observed, with measured counts, never a zero", async () => {
     const world = await seeded();
-    const { usd: _usd, tokens: _tokens, coverage: _coverage, ...bare } = FAKE_MEASURED;
+    const {
+      usd: _usd,
+      tokens: _tokens,
+      coverage: _coverage,
+      infrastructure: _infrastructure,
+      ...bare
+    } = FAKE_MEASURED;
     const history = world.histories[0] as CompletionHistory;
     world.histories[0] = {
       ...history,
@@ -131,10 +137,42 @@ describe("nightshift completion", () => {
     expect(line).toContain("measured 1 of 3 members");
     expect(line).toContain("dollars not observed");
     expect(line).toContain("tokens not observed");
+    expect(line).toContain("machine dollars not observed");
     expect(line).not.toMatch(/\$0\.0+\b/);
     const now = world.created.out.find((l) => l.startsWith("now:")) as string;
     expect(now).not.toMatch(/\$0\.00/);
     expect(now).toContain("dollars not observed");
+  });
+
+  it("show prints machines N of M members when some members have no machine report", async () => {
+    const world = await seeded();
+    const history = world.histories[0] as CompletionHistory;
+    world.histories[0] = {
+      ...history,
+      checkpoints: [
+        {
+          name: "mixed",
+          programId: world.f.scope.programId,
+          runId: world.f.scope.runId,
+          feedbackVersion: 1,
+          verdictRecordedAt: FAKE_MEASURED.recordedAt,
+          members: history.members,
+          membershipVersion: history.version,
+          recordedAt: FAKE_MEASURED.recordedAt,
+          recordedBy: { kind: "user", userId: TEST_SUBJECT, orgId: DEFAULT_ORG },
+          measured: {
+            ...FAKE_MEASURED,
+            readableMembers: 3,
+            measuredMembers: 3,
+            infrastructure: { usd: 0.5, members: 2, withoutMachine: 1 },
+          },
+        } as CompletionHistory["checkpoints"][number],
+      ],
+    };
+    expect(await completion(world, "show", "--history", world.historyId)).toBe(0);
+    const line = world.created.out.find((l) => l.startsWith("checkpoint `mixed`")) as string;
+    expect(line).toContain("infrastructure $0.5000 over 2 members");
+    expect(line).toContain("machines 2 of 3 members");
   });
 
   it("checkpoint prints a measurement_unavailable refusal with a retry hint and exits 1", async () => {
@@ -186,6 +224,7 @@ describe("nightshift completion", () => {
     expect(line).toContain("measured to 2026-09-15T12:00:00.000Z");
     expect(line).toContain("estimated $1.5000, reported $2.2500");
     expect(line).toContain("infrastructure $0.5000 over 2 members");
+    expect(line).not.toContain("machines ");
     expect(line).toContain("2 readable members");
     expect(before.some((l) => l.startsWith(`member ${extraKey} contributing`))).toBe(true);
 

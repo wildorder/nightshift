@@ -322,11 +322,15 @@ const checkpointLine = (checkpoint: CompletionCheckpoint): string => {
   const counts = measuredText(m.measuredMembers, m.unmeasuredMembers);
   const machines =
     m.infrastructure === undefined
-      ? "none"
-      : `${dollars(m.infrastructure.usd)} over ${m.infrastructure.members} members`;
+      ? "machine dollars not observed"
+      : `infrastructure ${dollars(m.infrastructure.usd)} over ${m.infrastructure.members} members`;
+  const machineCounts =
+    m.infrastructure === undefined || m.infrastructure.withoutMachine === 0
+      ? ""
+      : `, machines ${m.infrastructure.members} of ${m.readableMembers} members`;
   return (
     `checkpoint \`${checkpoint.name}\` (${checkpoint.recordedAt}): lead time ${seconds(m.leadTimeSeconds)}, run completion ${seconds(m.runCompletionSeconds)}, active union ${seconds(m.activeSeconds)}` +
-    `, measured to ${m.measuredTo}, ${tokensText(m.tokens)}, ${usdText(m.usd)}, infrastructure ${machines}, ${m.readableMembers} readable members${counts === "" ? "" : `, ${counts}`}`
+    `, measured to ${m.measuredTo}, ${tokensText(m.tokens)}, ${usdText(m.usd)}, ${machines}${machineCounts}, ${m.readableMembers} readable members${counts === "" ? "" : `, ${counts}`}`
   );
 };
 

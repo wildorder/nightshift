@@ -62,8 +62,16 @@ export interface CompletionFigures {
   readonly unmeasuredMembers: number;
   /** The current view only: members whose measurement read failed, `${programId}/${runId}`. */
   readonly unavailable?: readonly string[];
-  /** Machine dollars of the members' infrastructure reports, summed. */
-  readonly infrastructure?: { readonly usd: number; readonly members: number };
+  /**
+   * Machine dollars of the members' infrastructure reports, summed. Absent, not
+   * zero, when no member has a report; `withoutMachine` counts the readable
+   * members with none (local runs, or none observed).
+   */
+  readonly infrastructure?: {
+    readonly usd: number;
+    readonly members: number;
+    readonly withoutMachine: number;
+  };
   readonly membershipVersion: number;
 }
 
@@ -259,12 +267,13 @@ export const measureCompletion = (
     ...(resources === undefined
       ? {}
       : { tokens: resources.tokens, usd: resources.usd, coverage: resources.coverage }),
-    ...(machines === undefined
+    ...(machines === undefined || machines.length === 0
       ? {}
       : {
           infrastructure: {
             usd: machines.reduce((sum, r) => sum + r.components.total.usd, 0),
             members: machines.length,
+            withoutMachine: readable.length - machines.length,
           },
         }),
   };
@@ -285,7 +294,6 @@ const figuresOf = (
   const earliest = starts.length === 0 ? undefined : Math.min(...starts);
   const asOf = ms(input.asOf);
   const acceptedRun = accepted === undefined ? undefined : input.runs.get(keyOf(accepted.ref));
-  const keys = [...new Set(members.map(keyOf))];
   const resources = input.resources;
   const infrastructure = input.infrastructure;
   const readableKeys = [...new Set(readable.map((m) => keyOf(m.ref)))];
@@ -294,7 +302,7 @@ const figuresOf = (
   const machines =
     infrastructure === undefined
       ? []
-      : keys.flatMap((k) => {
+      : readableKeys.flatMap((k) => {
           const found = infrastructure.get(k);
           return found === undefined ? [] : [found];
         });
@@ -316,12 +324,13 @@ const figuresOf = (
     measuredMembers: totals.length,
     unmeasuredMembers: readableKeys.length - totals.length,
     ...(unavailable.length === 0 ? {} : { unavailable }),
-    ...(infrastructure === undefined
+    ...(machines.length === 0
       ? {}
       : {
           infrastructure: {
             usd: machines.reduce((sum, r) => sum + r.components.total.usd, 0),
             members: machines.length,
+            withoutMachine: readableKeys.length - machines.length,
           },
         }),
     membershipVersion: version,

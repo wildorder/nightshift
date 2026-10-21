@@ -18,6 +18,7 @@ import {
   createFixtures,
   makeAgent,
   makeCompletionHistory,
+  makeDispatch,
   makeMembership,
   makeNode,
   makeProgramContract,
@@ -595,7 +596,7 @@ describe("measuring a checkpoint (D-05)", () => {
       usd: { estimated: 0.5, reported: 2 },
       recordedAt: NOW,
     });
-    expect(checkpoint?.measured.infrastructure).toBeDefined();
+    expect(checkpoint?.measured.infrastructure).toBeUndefined();
     const before = JSON.stringify(response.body);
 
     // The open run ends, and another member joins.
@@ -660,7 +661,7 @@ describe("measuring a checkpoint (D-05)", () => {
           activeSeconds: 1,
           tokens: { input: 999999, inputConventionUnknown: 0 },
           usd: { estimated: 123, reported: 456 },
-          infrastructure: { usd: 789, members: 9 },
+          infrastructure: { usd: 789, members: 9, withoutMachine: 0 },
           recordedAt: "2020-01-01T00:00:00.000Z",
         },
       })),
@@ -676,7 +677,7 @@ describe("measuring a checkpoint (D-05)", () => {
       usd: { estimated: 0.5, reported: 2 },
       recordedAt: NOW,
     });
-    expect(body.checkpoints[0]?.measured.infrastructure?.usd).not.toBe(789);
+    expect(body.checkpoints[0]?.measured.infrastructure).toBeUndefined();
     expect(body.revisions).toHaveLength(2);
     expect(body.revisions[1]).toMatchObject({
       actor: w.actor,
@@ -821,6 +822,62 @@ describe("measuring a checkpoint (D-05)", () => {
       });
     },
   );
+
+  describe("when the dispatch cannot be read for a member", () => {
+    const failing = { on: false };
+    const guarded = () =>
+      setup((s) => ({
+        ...s,
+        dispatches: {
+          ...s.dispatches,
+          get: ((...args: Parameters<typeof s.dispatches.get>) =>
+            failing.on
+              ? Promise.reject(new Error("dispatch store down"))
+              : s.dispatches.get(...args)) as typeof s.dispatches.get,
+        },
+      }));
+
+    it("answers 503 measurement_unavailable, stores nothing, and a retry succeeds", async () => {
+      failing.on = false;
+      const w = await guarded();
+      await seedMeasured(w);
+      const stored = await created(w);
+      failing.on = true;
+      const refused = await w.call("PUT", w.path(), withSibling(w, stored));
+      expect(refused.status, JSON.stringify(refused.body)).toBe(503);
+      expect(errorCode(refused)).toBe("measurement_unavailable");
+      expect(JSON.stringify(refused.body)).toContain("dispatch");
+      expect(await w.stores.completionHistories.get(w.f.scope, stored.completionHistoryId)).toEqual(
+        stored,
+      );
+
+      failing.on = false;
+      const retried = await w.call("PUT", w.path(), withSibling(w, stored));
+      expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    });
+  });
+
+  it("stores a local-run member's checkpoint with withoutMachine and no machine dollars", async () => {
+    const w = await setup();
+    await seedMeasured(w);
+    // The anchor has a dispatch; the open sibling is a local run with none.
+    await w.stores.dispatches.put(makeDispatch(w.f, { ...w.f.scope }));
+    const stored = await created(w);
+    const response = await w.call("PUT", w.path(), withSibling(w, stored));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [checkpoint] = (response.body as CompletionHistory).checkpoints;
+    expect(checkpoint?.measured.infrastructure).toMatchObject({ members: 1, withoutMachine: 1 });
+  });
+
+  it("stores no machine figure for a checkpoint whose members are all local runs", async () => {
+    const w = await setup();
+    await seedMeasured(w);
+    const stored = await created(w);
+    const response = await w.call("PUT", w.path(), withSibling(w, stored));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [checkpoint] = (response.body as CompletionHistory).checkpoints;
+    expect(checkpoint?.measured.infrastructure).toBeUndefined();
+  });
 
   it("stores a checkpoint with an unmeasured member and fabricates no dollars", async () => {
     const w = await setup();
