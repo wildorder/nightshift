@@ -19,6 +19,7 @@ import {
   DecisionIdSchema,
   ExaminationIdSchema,
   ExecutionNodeIdSchema,
+  RoutingDecisionIdSchema,
   VerificationIdSchema,
 } from "../ids.js";
 import {
@@ -175,6 +176,12 @@ export const ExaminationSchema = z
      */
     patchId: z.string().regex(/^[0-9a-f]{40}$/),
     implementerAgentId: AgentIdSchema,
+    /**
+     * P20: the routing decision of the work attempt this examination judged,
+     * so a dataset can tell one attempt's judgement from the node's final one.
+     * Absent on every record written before it.
+     */
+    implementerRoutingDecisionId: RoutingDecisionIdSchema.optional(),
     examinerAgentId: AgentIdSchema,
     /** The examiner's harness, provider and model, for the independence checks (SC-P8-10). */
     examinerRoute: RouteTargetSchema,

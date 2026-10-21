@@ -13,6 +13,7 @@ import {
   DecisionIdSchema,
   ExecutionNodeIdSchema,
   JobContractIdSchema,
+  RoutingDecisionIdSchema,
   VerificationIdSchema,
 } from "../ids.js";
 import { CommitShaSchema, IsoTimestampSchema, runScoped } from "./common.js";
@@ -155,6 +156,11 @@ export const VerificationSchema = z
     jobContractId: JobContractIdSchema.nullable(),
     /** The agent whose work is under verification, not a verifying agent. */
     agentId: AgentIdSchema,
+    /**
+     * P20: the routing decision of the work attempt whose commit this verified.
+     * Absent when not known, and on every record written before it.
+     */
+    routingDecisionId: RoutingDecisionIdSchema.optional(),
     commitSha: CommitShaSchema,
     /**
      * P8 (D-P8-09): `candidate` is the check an examined job's snapshot gets on

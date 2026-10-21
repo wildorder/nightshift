@@ -139,6 +139,8 @@ export interface ExaminationContext {
   readonly commitSha: CommitSha;
   readonly patchId: string;
   readonly implementerAgentId: AgentId;
+  /** The routing decision of the attempt examined, when known (P20). */
+  readonly implementerRoutingDecisionId?: RoutingDecision["routingDecisionId"];
   readonly examinerRoute: RoutingDecision["chosen"];
   readonly requiredByRisk: JobContract["risk"];
   readonly blocking: boolean;
@@ -588,6 +590,7 @@ const examineOnSomeRoute = async (
       commitSha: input.commitSha,
       patchId: gathered.patchId,
       implementerAgentId: builder.agent.agentId,
+      implementerRoutingDecisionId: builder.routingDecisionId,
       examinerRoute: route.target,
       requiredByRisk: input.job.risk,
       blocking: requirement.blockOnMaterialFindings,
@@ -689,7 +692,14 @@ export const examine = async (
 const builderOf = async (
   environment: ExecutionEnvironment,
   input: ExamineInput,
-): Promise<{ readonly agent: Agent; readonly route: RoutingDecision["chosen"] } | undefined> => {
+): Promise<
+  | {
+      readonly agent: Agent;
+      readonly route: RoutingDecision["chosen"];
+      readonly routingDecisionId: RoutingDecision["routingDecisionId"];
+    }
+  | undefined
+> => {
   const decisions = await environment.stores.routingDecisions.listByNode(
     input.session.scope,
     input.node.executionNodeId,
@@ -699,7 +709,9 @@ const builderOf = async (
     .sort((a, b) => a.attempt - b.attempt)
     .at(-1);
   const agent = await implementerOf(environment, input);
-  return last === undefined || agent === undefined ? undefined : { agent, route: last.chosen };
+  return last === undefined || agent === undefined
+    ? undefined
+    : { agent, route: last.chosen, routingDecisionId: last.routingDecisionId };
 };
 
 /**
@@ -1118,6 +1130,8 @@ const candidateVerification = async (
     }),
   ];
   const workerId = worker?.agentId;
+  const attemptDecisionId = (await builderOf(environment, input).catch(() => undefined))
+    ?.routingDecisionId;
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
     ...input.session.scope,
@@ -1125,6 +1139,7 @@ const candidateVerification = async (
     executionNodeId: input.node.executionNodeId,
     jobContractId: input.job.jobContractId,
     agentId: workerId,
+    ...(attemptDecisionId === undefined ? {} : { routingDecisionId: attemptDecisionId }),
     commitSha: input.commitSha,
     phase: "candidate",
     commands,
@@ -1191,7 +1206,7 @@ export interface HelperAgent {
   /** This agent's measurement recorder, spanning every launch of it. */
   readonly recorder: MeasurementRecorder;
   /** Whether the recorder has a segment open to take a lifecycle observation, and which launch it is. */
-  readonly segment: { open: boolean; launch?: LaunchRef };
+  readonly segment: { open: boolean; launch?: LaunchRef; agentMs?: number };
 }
 
 /** What a helper's lifecycle observation says; the rest is stamped from the helper and the clock. */
@@ -1402,6 +1417,7 @@ export const runHelper = async (
     await runAs.grant(tmpDir);
   }
   let exit: HarnessExit;
+  let launchedAtMs: number | undefined;
   try {
     const ref = await recorder.startSegment({
       ...(launch.resume === undefined ? {} : { sessionId: launch.resume }),
@@ -1413,6 +1429,7 @@ export const runHelper = async (
     for (const observation of launch.opening ?? []) {
       if (observation !== undefined) recorder.lifecycle(observation);
     }
+    launchedAtMs = environment.clock.now();
     const handle = await environment.harness.start({
       agent: helper.agent,
       node: input.node,
@@ -1449,6 +1466,11 @@ export const runHelper = async (
   } catch {
     // The adapter could not even attempt a launch: the helper did not run.
     exit = { kind: "failed", exitCode: 127 };
+  }
+  // Agent time: this launch's own interval, summed over a helper's launches (P20).
+  if (launchedAtMs !== undefined) {
+    helper.segment.agentMs =
+      (helper.segment.agentMs ?? 0) + Math.max(0, environment.clock.now() - launchedAtMs);
   }
   recorder.recordExit(exit);
   // A resume's baseline is read from what this launch left in the summary.
@@ -1498,12 +1520,14 @@ export const endHelper = async (
     .put({
       ...helper.decision,
       usage: labelCost(
-        routeUsageFromCounters(
-          summary.totals,
-          summary.valuation.reportedUsd === undefined
+        routeUsageFromCounters(summary.totals, {
+          ...(summary.valuation.reportedUsd === undefined
             ? {}
-            : { reportedUsd: summary.valuation.reportedUsd },
-        ),
+            : { reportedUsd: summary.valuation.reportedUsd }),
+          ...(helper.segment.agentMs === undefined
+            ? {}
+            : { agentMs: Math.round(helper.segment.agentMs) }),
+        }),
         price,
       ),
       outcome: succeeded ? "succeeded" : "failed",
