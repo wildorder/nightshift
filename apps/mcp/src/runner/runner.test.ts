@@ -9,7 +9,15 @@ import {
   MAX_PROGRESS_GATES,
   type RunnerProgress,
 } from "@nightshift/contracts";
-import { createFixtures, makeDispatch, makeProgramContract, planHash } from "@nightshift/core";
+import {
+  createFixtures,
+  makeDispatch,
+  makeJobContract,
+  makeNode,
+  makeProgramContract,
+  makeRootNode,
+  planHash,
+} from "@nightshift/core";
 import { describe, expect, it } from "vitest";
 import {
   BootstrapError,
@@ -550,6 +558,22 @@ describe("the heartbeat's progress (P16 S-03)", () => {
     ]);
   });
 
+  it("carries a verdict with stopped over a stage-only progress given after it (2026-10-21)", async () => {
+    const { heartbeat, bodies } = asleep();
+    heartbeat.progress({ stage: "audit", gates: [], verdict: "fault" });
+    // The record's word on the work, read on a clock, came after the audit's own.
+    heartbeat.progress({ stage: "orchestrating", detail: "0 of 2 strands landed" });
+    heartbeat.report("stopped", { code: "environment_fault", message: "unit" });
+    heartbeat.end();
+    await heartbeat.run();
+    expect(bodies).toEqual([
+      expect.objectContaining({
+        report: "stopped",
+        progress: { stage: "audit", gates: [], verdict: "fault" },
+      }),
+    ]);
+  });
+
   it("carries an unsent progress with the farewell's stopped", async () => {
     const { heartbeat, bodies } = asleep();
     heartbeat.end();
@@ -972,6 +996,11 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     dispatch: ReturnType<typeof makeDispatch>,
     planText: string,
     status: (beat: number) => { status: string; stop: boolean },
+    /** The run's record as the engine would leave it, for the runner to read where the work stands. */
+    records: {
+      nodes: ReturnType<typeof makeNode>[];
+      jobs: ReturnType<typeof makeJobContract>[];
+    } = { nodes: [], jobs: [] },
   ) => {
     const heartbeats: unknown[] = [];
     const tokensSeen: string[] = [];
@@ -1004,6 +1033,8 @@ describe("the runner end to end over fakes (T2, T3)", () => {
             credentials: { github: "ghs_read" },
           });
         },
+        nodes: async () => [...records.nodes],
+        jobs: async () => [...records.jobs],
       };
     };
     return { planeFor, heartbeats, tokensSeen, beats: () => beats };
@@ -1096,6 +1127,57 @@ describe("the runner end to end over fakes (T2, T3)", () => {
           command.includes("mount") || command.includes("clone") || command.startsWith("mkdir"),
       ),
     ).toBe(false);
+  });
+
+  it("says where the work stands while the root runs, from the record (2026-10-21)", async () => {
+    const machine = gitMachine();
+    const records = { nodes: [makeRootNode(f)], jobs: [] as ReturnType<typeof makeJobContract>[] };
+    const plane = fakePlane(
+      program,
+      dispatch,
+      planText,
+      () => ({ status: "running", stop: false }),
+      records,
+    );
+    const code = await runRunner({
+      machine,
+      plane: plane.planeFor,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      log: () => undefined,
+      progressIntervalMs: 1000,
+      work: async () => {
+        // The engine delegates a strand and lands another while the root runs.
+        const landed = makeJobContract(f, { strandId: "S-01" });
+        const building = makeJobContract(f, { strandId: "S-02" });
+        records.jobs.push(landed, building);
+        records.nodes.push(
+          makeNode(f, f.rootNodeId, {
+            kind: "sub-program",
+            jobContractId: landed.jobContractId,
+            status: "integrated",
+          }),
+          makeNode(f, f.rootNodeId, {
+            kind: "sub-program",
+            jobContractId: building.jobContractId,
+            status: "running",
+          }),
+        );
+        // Long enough for the watcher to read the record and the heartbeat to carry it.
+        for (let i = 0; i < 4; i += 1) await machine.sleep(1000);
+      },
+    });
+    expect(code).toBe(0);
+    const details = plane.heartbeats.flatMap((body) => {
+      const progress = (body as { progress?: { stage: string; detail?: string } }).progress;
+      return progress?.stage === "orchestrating" && progress.detail !== undefined
+        ? [progress.detail]
+        : [];
+    });
+    // The heartbeat carries only the newest progress of a stage, so the
+    // record's word may stand in for the stage's first.
+    expect(details).toContain("1 of 2 strands landed; S-02 building");
   });
 
   it("reports successful asynchronous setup metadata through the existing heartbeat", async () => {

@@ -83,6 +83,14 @@ const isNews = (before: RunnerProgress | undefined, after: RunnerProgress): bool
   before.stage !== after.stage ||
   (after.verdict !== undefined && after.verdict !== before.verdict);
 
+/** What a `stopped` beat carries of the progress still unsent: a verdict first, else the newest. */
+const lastWordOf = (unsent: readonly RunnerProgress[]): RunnerProgress | undefined => {
+  for (let i = unsent.length - 1; i >= 0; i -= 1) {
+    if (unsent[i]?.verdict !== undefined) return unsent[i];
+  }
+  return unsent.at(-1);
+};
+
 export class HeartbeatLostError extends Error {
   override readonly name = "HeartbeatLostError";
 }
@@ -146,9 +154,11 @@ export const createHeartbeat = (options: HeartbeatOptions): Heartbeat => {
     let described: typeof setup;
     const offering = offered;
     offered = undefined;
-    // `stopped` ends the dispatch, so it carries the newest progress (an
-    // audit's `fault`) and nothing is left to follow it.
-    const progress = next?.report === "stopped" ? unsent.splice(0).at(-1) : unsent.shift();
+    // `stopped` ends the dispatch, so it carries one progress and nothing is
+    // left to follow it: the newest with a verdict (an audit's `fault`), which
+    // is what must not be lost, else the newest (2026-10-21: the record's word
+    // on the work, read on a clock, may be given after the audit's own).
+    const progress = next?.report === "stopped" ? lastWordOf(unsent.splice(0)) : unsent.shift();
     // A stage still waiting behind this one follows as soon as this beat returns.
     if (unsent.length > 0) woken = true;
     let response: HeartbeatResponse;

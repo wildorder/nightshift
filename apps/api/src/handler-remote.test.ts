@@ -222,6 +222,8 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       attempts: [{ generation: 1, reason: "dispatch" }],
     });
     expect(dispatch.spend.estimatedUsd).toBeGreaterThan(0);
+    // The wall clock the estimate was priced at is recorded with it (2026-10-21).
+    expect(dispatch.spend.ceilingSeconds).toBe(DEFAULT_COMPUTE_CEILINGS.maxRunHours * 3600);
     expect(dispatch.engineAgentId).toMatch(/^agent_/);
     expect((await call(w, "GET", `${w.paths.run}/dispatch`)).body).toEqual(dispatch);
   });
@@ -635,6 +637,26 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
     expect(response.body).toMatchObject({ status: "stopping", stop: true });
     expect((response.body as { token?: string }).token).toBeUndefined();
     expect((await w.stores.dispatches.get(w.f.scope))?.failure?.code).toBe("run_cap");
+  });
+
+  it("stops the machine at the wall clock the dispatch recorded, not one recomputed (2026-10-21)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await w.stores.dispatches.put({
+      ...dispatch,
+      spend: { ...dispatch.spend, ceilingSeconds: 3600 },
+    });
+    const response = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "ready", meteredSeconds: 3700 }),
+      engine(w, dispatch),
+    );
+    expect(response.body).toMatchObject({ status: "stopping", stop: true });
+    const stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored?.failure?.code).toBe("wall_clock");
+    expect(stored?.failure?.message).toBe("metered 62 minutes crossed the 1-hour wall clock");
   });
 
   it("has nothing to heartbeat before a machine exists", async () => {

@@ -12,6 +12,7 @@ export * from "./execution-tree.js";
 export * from "./gate-fingerprint.js";
 export * from "./globs.js";
 export * from "./integration.js";
+export * from "./orchestration-progress.js";
 export * from "./ownership.js";
 export * from "./pins.js";
 export * from "./plan.js";

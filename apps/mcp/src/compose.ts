@@ -35,6 +35,8 @@ import type {
   ArtifactBodyStore,
   ExecutionTokenMinter,
   LocalPaths,
+  Page,
+  PageRequest,
   ProgramScope,
   ProjectStores,
   RunScope,
@@ -121,7 +123,23 @@ export const createRunnerPlane: PlaneFactory = (endpoint, tokens) => {
       send(transport, { method: "POST", path: routes.dispatchHeartbeat(scope), body }).then(
         (response) => HeartbeatResponseSchema.parse(response),
       ),
+    nodes: (scope) => everyPage((page) => stores.executionNodes.listByRun(scope, page)),
+    jobs: (scope) => everyPage((page) => stores.jobContracts.listByRun(scope, page)),
   };
+};
+
+/** Every item of a paged listing, page after page. */
+const everyPage = async <T>(
+  list: (page: PageRequest | undefined) => Promise<Page<T>>,
+): Promise<readonly T[]> => {
+  const items: T[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await list(cursor === undefined ? undefined : { cursor });
+    items.push(...page.items);
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  return items;
 };
 
 /**

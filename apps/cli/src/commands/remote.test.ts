@@ -433,3 +433,43 @@ describe("remote status (P16 SC-07)", () => {
     expect(await environmentFaultOfRun({ stores: failing }, f.scope)).toBeUndefined();
   });
 });
+
+describe("remote status says how far through its wall clock a run is (2026-10-21)", () => {
+  const spend = (ceilingSeconds?: number) => ({
+    estimatedUsd: 10.91,
+    meteredUsd: 10.03,
+    meteredSeconds: 1324 * 60,
+    ...(ceilingSeconds === undefined ? {} : { ceilingSeconds }),
+  });
+
+  it("shows the hours spent, the wall clock and the hours left from the recorded ceiling", () => {
+    const lines = describeDispatch(
+      makeDispatch(createFixtures(), { status: "running", spend: spend(24 * 3600) }),
+    );
+    expect(lines[2]).toBe(
+      "  metered 1324 min, $10.03 of an estimated $10.91 (22.1 h of the 24.0 h wall clock; 1.9 h left)",
+    );
+  });
+
+  it("says minutes under an hour, and none left once the clock is spent", () => {
+    const f = createFixtures();
+    const early = describeDispatch(
+      makeDispatch(f, { status: "running", spend: { ...spend(8 * 3600), meteredSeconds: 1500 } }),
+    );
+    expect(early[2]).toContain("(25 min of the 8.0 h wall clock; 7.6 h left)");
+    const spent = describeDispatch(
+      makeDispatch(f, {
+        status: "stopping",
+        spend: { ...spend(8 * 3600), meteredSeconds: 8 * 3600 + 30 },
+      }),
+    );
+    expect(spent[2]).toContain("(8.0 h of the 8.0 h wall clock; none left)");
+  });
+
+  it("takes the ceiling worked out for a dispatch from before it was recorded, and says nothing without one", () => {
+    const f = createFixtures();
+    const dispatch = makeDispatch(f, { status: "running", spend: spend() });
+    expect(describeDispatch(dispatch)[2]).toBe("  metered 1324 min, $10.03 of an estimated $10.91");
+    expect(describeDispatch(dispatch, undefined, 24 * 3600)[2]).toContain("1.9 h left");
+  });
+});
