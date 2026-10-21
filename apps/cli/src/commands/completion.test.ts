@@ -110,6 +110,7 @@ describe("nightshift completion", () => {
       tokens: _tokens,
       coverage: _coverage,
       infrastructure: _infrastructure,
+      combined: _combined,
       ...bare
     } = FAKE_MEASURED;
     const history = world.histories[0] as CompletionHistory;
@@ -138,6 +139,7 @@ describe("nightshift completion", () => {
     expect(line).toContain("dollars not observed");
     expect(line).toContain("tokens not observed");
     expect(line).toContain("machine dollars not observed");
+    expect(line).toContain("combined estimate not observed");
     expect(line).not.toMatch(/\$0\.0+\b/);
     const now = world.created.out.find((l) => l.startsWith("now:")) as string;
     expect(now).not.toMatch(/\$0\.00/);
@@ -173,6 +175,75 @@ describe("nightshift completion", () => {
     const line = world.created.out.find((l) => l.startsWith("checkpoint `mixed`")) as string;
     expect(line).toContain("infrastructure $0.5000 over 2 members");
     expect(line).toContain("machines 2 of 3 members");
+  });
+
+  it("show prints the combined estimate with its coverage, as a complete figure when nothing is missing", async () => {
+    const world = await seeded();
+    expect(
+      await completion(
+        world,
+        "checkpoint",
+        "--history",
+        world.historyId,
+        "--name",
+        "first",
+        "--member",
+        world.anchor,
+      ),
+    ).toBe(0);
+    world.created.out.length = 0;
+    expect(await completion(world, "show", "--history", world.historyId)).toBe(0);
+    const line = world.created.out.find((l) => l.startsWith("checkpoint `first`")) as string;
+    expect(line).toContain(
+      "combined API-equivalent estimate $2.0000 (model $1.5000 + machine $0.5000; 2 members measured; an estimate, not a bill; reported dollars are not added)",
+    );
+    expect(line).not.toContain("lower bound");
+  });
+
+  it("show says lower bound, with the coverage behind it, when members or machines are missing", async () => {
+    const world = await seeded();
+    const history = world.histories[0] as CompletionHistory;
+    world.histories[0] = {
+      ...history,
+      checkpoints: [
+        {
+          name: "partial",
+          programId: world.f.scope.programId,
+          runId: world.f.scope.runId,
+          feedbackVersion: 1,
+          verdictRecordedAt: FAKE_MEASURED.recordedAt,
+          members: history.members,
+          membershipVersion: history.version,
+          recordedAt: FAKE_MEASURED.recordedAt,
+          recordedBy: { kind: "user", userId: TEST_SUBJECT, orgId: DEFAULT_ORG },
+          measured: {
+            ...FAKE_MEASURED,
+            readableMembers: 3,
+            measuredMembers: 2,
+            unmeasuredMembers: 1,
+            infrastructure: { usd: 0.5, members: 2, withoutMachine: 1 },
+            combined: {
+              usd: 2,
+              model: 1.5,
+              infrastructure: 0.5,
+              coverage: {
+                measuredMembers: 2,
+                unmeasuredMembers: 1,
+                estimateIncomplete: 1,
+                membersWithoutMachine: 1,
+              },
+              lowerBound: true,
+              priceBases: [],
+            },
+          },
+        } as unknown as CompletionHistory["checkpoints"][number],
+      ],
+    };
+    expect(await completion(world, "show", "--history", world.historyId)).toBe(0);
+    const line = world.created.out.find((l) => l.startsWith("checkpoint `partial`")) as string;
+    expect(line).toContain(
+      "combined API-equivalent estimate lower bound $2.0000 (model $1.5000 + machine $0.5000; 2 members measured; 1 members unmeasured, 1 attempts with incomplete valuation, 1 members without a machine report; an estimate, not a bill",
+    );
   });
 
   it("checkpoint prints a measurement_unavailable refusal with a retry hint and exits 1", async () => {

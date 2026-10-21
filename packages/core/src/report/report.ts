@@ -65,11 +65,13 @@ import {
   strandOutcomes,
   strandsOf,
 } from "../rules/plan.js";
+import { budgetEvaluation, spendOfRun } from "../rules/policy.js";
 import {
   adjustmentDecisionsOf,
   type StepAdjustments,
   stepAdjustmentsOf,
 } from "../rules/step-adjustments.js";
+import { type AttemptRow, attemptRowsOf } from "./attempts.js";
 import { type CompletionReport, completionOf } from "./completion.js";
 import {
   type CorrectionReport,
@@ -94,7 +96,7 @@ import {
   occupancyOf,
 } from "./infrastructure.js";
 import { type OperationsReport, operationsOf } from "./operations.js";
-import { type ResourceTotals, resourcesOf, sumResources } from "./resources.js";
+import { type PriceBasis, type ResourceTotals, resourcesOf, sumResources } from "./resources.js";
 import { type OverheadRow, type ReviewReport, reviewOf } from "./review.js";
 import { storyStatuses } from "./stories.js";
 import { type VerificationTimeReport, verificationTimeOf } from "./verification-time.js";
@@ -173,6 +175,24 @@ export interface UsageRow {
    * of 0 with routes unpriced is unknown, not free.
    */
   readonly unpriced: number;
+  /** Routes with any token counter observed. Absent: the row predates this figure. */
+  readonly tokensObserved?: number;
+  /** Routes whose dollars are the harness's own report. */
+  readonly reportedAttempts?: number;
+  /** Routes whose dollars are an API-equivalent estimate from a price list. */
+  readonly estimatedAttempts?: number;
+  /** Routes whose estimate leaves some usage unvalued. */
+  readonly estimateIncomplete?: number;
+  /** The price lists the estimates came from, per model. */
+  readonly priceBases?: readonly PriceBasis[];
+}
+
+/** The run's spend against its budgets, with what the evaluation could not see. */
+export interface BudgetReport {
+  readonly usd: number;
+  readonly tokens: number;
+  readonly estimated: boolean;
+  readonly evaluation: ReturnType<typeof budgetEvaluation>;
 }
 
 export interface RunReport {
@@ -191,6 +211,10 @@ export interface RunReport {
   /** P9: what this program corrects, when it is a correction (D-P9-06). */
   readonly corrections: readonly CorrectionReport[];
   readonly usage: readonly UsageRow[];
+  /** One row per attempt, with its resources: what the export filters. Absent before this was kept. */
+  readonly attempts?: readonly AttemptRow[];
+  /** Spend against the budgets; absent for a report gathered before this was kept. */
+  readonly budget?: BudgetReport;
   /** P8: the arbiter's rulings, which lead the report (D-P8-13). */
   readonly rulings: readonly RulingReport[];
   /** Work that went on unreviewed because no examiner could review it, for a human (2026-10-13). */
@@ -403,12 +427,15 @@ const strandReportOf = (
   };
 };
 
-const usageOf = (routes: readonly RoutingDecision[]): UsageRow[] => {
+const usageOf = (
+  routes: readonly RoutingDecision[],
+  measurements: readonly MeasurementSummary[] = [],
+): UsageRow[] => {
   const rows = new Map<string, UsageRow>();
   for (const route of routes) {
     const purpose = route.purpose ?? "work";
     const key = `${route.chosen.harness} / ${route.chosen.model} / ${purpose}`;
-    const so = rows.get(key) ?? {
+    const so: UsageRow = rows.get(key) ?? {
       harness: route.chosen.harness,
       model: route.chosen.model,
       purpose,
@@ -418,21 +445,49 @@ const usageOf = (routes: readonly RoutingDecision[]): UsageRow[] => {
       costUsd: 0,
       estimated: false,
       unpriced: 0,
+      tokensObserved: 0,
+      reportedAttempts: 0,
+      estimatedAttempts: 0,
+      estimateIncomplete: 0,
+      priceBases: [],
     };
+    // A summary's valuation is the better evidence; a route's own usage is the legacy fallback.
+    const resources = resourcesOf(route, measurements);
+    const { tokens, usd } = resources;
+    const observed =
+      tokens.input !== undefined ||
+      tokens.output !== undefined ||
+      tokens.cacheRead !== undefined ||
+      tokens.cacheWrite !== undefined;
+    const useEstimate = usd.reported === undefined && usd.estimated !== undefined;
+    const bases = [...(so.priceBases ?? [])];
+    for (const basis of resources.priceBases ?? []) {
+      if (
+        !bases.some(
+          (seen) =>
+            seen.model === basis.model &&
+            seen.source === basis.source &&
+            seen.version === basis.version &&
+            seen.incomplete === basis.incomplete,
+        )
+      ) {
+        bases.push(basis);
+      }
+    }
     rows.set(key, {
       ...so,
       attempts: so.attempts + 1,
-      inputTokens: so.inputTokens + (route.usage.inputTokens ?? 0),
-      outputTokens: so.outputTokens + (route.usage.outputTokens ?? 0),
-      costUsd: so.costUsd + (route.usage.actualCostUsd ?? route.usage.estimatedCostUsd ?? 0),
-      estimated:
-        so.estimated ||
-        (route.usage.actualCostUsd === undefined && route.usage.estimatedCostUsd !== undefined),
-      unpriced:
-        so.unpriced +
-        (route.usage.actualCostUsd === undefined && route.usage.estimatedCostUsd === undefined
-          ? 1
-          : 0),
+      inputTokens: so.inputTokens + (tokens.input ?? 0),
+      outputTokens: so.outputTokens + (tokens.output ?? 0),
+      costUsd: so.costUsd + (usd.reported ?? usd.estimated ?? 0),
+      estimated: so.estimated || useEstimate,
+      unpriced: so.unpriced + (usd.reported === undefined && usd.estimated === undefined ? 1 : 0),
+      tokensObserved: (so.tokensObserved ?? 0) + (observed ? 1 : 0),
+      reportedAttempts: (so.reportedAttempts ?? 0) + (usd.reported === undefined ? 0 : 1),
+      estimatedAttempts: (so.estimatedAttempts ?? 0) + (useEstimate ? 1 : 0),
+      estimateIncomplete:
+        (so.estimateIncomplete ?? 0) + (resources.estimateIncomplete === true ? 1 : 0),
+      priceBases: bases,
     });
   }
   return [...rows.values()];
@@ -770,6 +825,20 @@ const gatherVerifications = async (
   return verifications;
 };
 
+const budgetOf = (
+  program: ProgramContract,
+  routes: readonly RoutingDecision[],
+  measurements: readonly MeasurementSummary[],
+): BudgetReport => {
+  const spend = spendOfRun({ routes, measurements });
+  return {
+    usd: spend.usd,
+    tokens: spend.tokens,
+    estimated: spend.estimated,
+    evaluation: budgetEvaluation(spend, program.costPolicy),
+  };
+};
+
 export const gatherReport = async (stores: ProjectStores, scope: RunScope): Promise<RunReport> => {
   const program = await stores.programContracts.get(scope.projectId, scope.programId);
   const run = await stores.runs.get(scope, scope.runId);
@@ -816,7 +885,15 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
       records.jobOf,
     ),
     corrections: await gatherCorrections(stores, program),
-    usage: usageOf([...records.routesOf.values()].flat()),
+    usage: usageOf([...records.routesOf.values()].flat(), records.measurements),
+    attempts: attemptRowsOf({
+      routes: [...records.routesOf.values()].flat(),
+      measurements: records.measurements,
+      agents: records.agents,
+      nodes,
+      strandOfNode: (nodeId) => strands.find((strand) => strand.nodeIds.includes(nodeId))?.id,
+    }),
+    budget: budgetOf(program, [...records.routesOf.values()].flat(), records.measurements),
     rulings,
     unreviewed,
     gateHealth: await gatherGateHealth(stores, scope, records, nodes, verifications),
@@ -1439,14 +1516,16 @@ const renderVerificationTime = (time: VerificationTimeReport): string[] => {
         ? "."
         : `; the forecast assumed ${forecast.landings} landings at ${humanDuration(forecast.landingMs)} each, ≈ ${humanDuration(forecast.projectedMs)}, measured on ${forecast.machine}.`),
     "",
-    "| Step | Runs | Total | Per run | Quiet start | Queue / candidate / end | Forecast per run |",
-    "|------|------|-------|---------|-------------|-------------------------|------------------|",
+    `Retained rerun time: ${humanDuration(time.steps.reduce((sum, step) => sum + step.rerunMs, 0))} across ${time.steps.reduce((sum, step) => sum + step.rerunRuns, 0)} flaky first run(s) and failed rerun(s), included in the totals.`,
+    "",
+    "| Step | Runs | Total | Reruns | Per run | Quiet start | Queue / candidate / end | Forecast per run |",
+    "|------|------|-------|--------|---------|-------------|-------------------------|------------------|",
     ...time.steps.map((step) => {
       const per = step.runs === 0 ? "—" : humanDuration(step.totalMs / step.runs);
       const quiet = step.runs === 0 ? "—" : humanDuration(step.quietMs / step.runs);
       const phases = `${step.byPhase.queue.runs} / ${step.byPhase.candidate.runs} / ${step.byPhase.run.runs}`;
       const forecastPer = step.forecastMs === undefined ? "—" : humanDuration(step.forecastMs);
-      return `| \`${step.id}\` | ${step.runs} | ${humanDuration(step.totalMs)} | ${per} | ${quiet} | ${phases} | ${forecastPer} |`;
+      return `| \`${step.id}\` | ${step.runs} | ${humanDuration(step.totalMs)} | ${step.rerunRuns === 0 ? "none" : `${step.rerunRuns} (${humanDuration(step.rerunMs)})`} | ${per} | ${quiet} | ${phases} | ${forecastPer} |`;
     }),
     "",
     ...(time.recommendations.length === 0
@@ -1585,7 +1664,37 @@ const costCell = (row: UsageRow): string => {
   return row.unpriced === 0 ? known : `${known} + ${row.unpriced} unknown`;
 };
 
-/** The run's totals against its budgets (D-P8-08). */
+const tokenCell = (row: UsageRow, value: number): string =>
+  row.tokensObserved === 0 ? "not observed" : String(value);
+
+/** What kind of dollars a row holds, where they came from and how much of the row they cover. */
+const basisCell = (row: UsageRow): string => {
+  const reported = row.reportedAttempts ?? 0;
+  const estimated = row.estimatedAttempts ?? 0;
+  const label =
+    reported > 0 && estimated > 0
+      ? "provider-reported and API-equivalent estimate"
+      : reported > 0
+        ? "provider-reported"
+        : estimated > 0
+          ? "API-equivalent estimate"
+          : "unknown";
+  const bases = (row.priceBases ?? [])
+    .filter((basis) => basis.source !== undefined || basis.version !== undefined)
+    .map(
+      (basis) =>
+        `${basis.source ?? "price list"}${basis.version === undefined ? "" : ` ${basis.version}`}`,
+    );
+  const incomplete = row.estimateIncomplete ?? 0;
+  return [
+    label,
+    ...(estimated > 0 && bases.length > 0 ? [`price list ${[...new Set(bases)].join(", ")}`] : []),
+    `${row.attempts - row.unpriced} of ${row.attempts} attempts valued`,
+    ...(incomplete > 0 ? [`${incomplete} estimate(s) leave usage unvalued`] : []),
+  ].join("; ");
+};
+
+/** The run's totals against its budgets (D-P8-08). An incomplete evaluation never claims a precise cap. */
 const renderBudget = (report: RunReport): string[] => {
   const { maxUsd, maxTokens } = report.program.costPolicy;
   if (maxUsd === undefined && maxTokens === undefined) return [];
@@ -1593,6 +1702,30 @@ const renderBudget = (report: RunReport): string[] => {
   const tokens = report.usage.reduce((total, row) => total + row.inputTokens + row.outputTokens, 0);
   const estimated = report.usage.some((row) => row.estimated);
   const unpriced = report.usage.reduce((total, row) => total + row.unpriced, 0);
+  const evaluation = report.budget?.evaluation;
+  if (evaluation !== undefined && !evaluation.complete) {
+    const why = `${evaluation.unpriced} attempt${evaluation.unpriced === 1 ? "" : "s"} unpriced, ${evaluation.unmeasured} unmeasured`;
+    const known = report.budget ?? { usd, tokens };
+    const limits = [
+      ...(maxUsd === undefined
+        ? []
+        : [
+            `the maxUsd limit could not be evaluated completely: ${why}${
+              evaluation.estimateIncomplete > 0
+                ? `, ${evaluation.estimateIncomplete} estimate(s) leave usage unvalued`
+                : ""
+            } ($${known.usd.toFixed(2)} known so far, a lower bound)`,
+          ]),
+      ...(maxTokens === undefined
+        ? []
+        : evaluation.unmeasured > 0
+          ? [
+              `the maxTokens limit could not be evaluated completely: ${why} (${known.tokens} tokens known so far, a lower bound)`,
+            ]
+          : []),
+    ];
+    if (limits.length > 0) return ["", `Budget: ${limits.join("; ")}.`];
+  }
   const caveats = [
     ...(estimated ? ["partly estimated"] : []),
     ...(unpriced > 0 ? [`${unpriced} route(s) unpriced and not counted`] : []),
@@ -1664,7 +1797,7 @@ const renderNotVerified = ({ skipped, raised }: StepAdjustments): string[] => {
 const NOT_OBSERVED = "not observed";
 
 const secs = (ms: number | undefined): string =>
-  ms === undefined ? NOT_OBSERVED : humanDuration(Math.round(ms / 1000));
+  ms === undefined ? NOT_OBSERVED : humanDuration(ms);
 const num = (value: number | undefined): string =>
   value === undefined ? NOT_OBSERVED : String(value);
 const pct = (value: number | undefined): string =>
@@ -1684,9 +1817,26 @@ const resourcesLine = (totals: ResourceTotals): string => {
     .filter(([, count]) => count > 0)
     .map(([kind, count]) => `${kind} ${count}`)
     .join(", ");
+  const attempts = Object.values(coverage).reduce((sum, n) => sum + n, 0);
+  const valued = attempts - totals.unpriced;
+  const { estimated, reported } = totals.usd;
+  // Zero is not "none": a figure with nothing valued, or the other kind alone, is not observed.
+  const estimate = valued === 0 || (estimated === 0 && reported > 0) ? undefined : estimated;
+  const report = valued === 0 || (reported === 0 && estimated > 0) ? undefined : reported;
+  const bases = (totals.priceBases ?? [])
+    .filter((basis) => basis.source !== undefined || basis.version !== undefined)
+    .map(
+      (basis) =>
+        `${basis.source ?? "price list"}${basis.version === undefined ? "" : ` ${basis.version}`}`,
+    );
+  const incomplete = totals.estimateIncomplete ?? 0;
   return `input ${num(tokens.input)}, output ${num(tokens.output)} tokens (${totals.tokenCoverage} coverage${
     cover === "" ? "" : `: ${cover}`
-  }); estimated ${usd(totals.usd.estimated)}, reported ${usd(totals.usd.reported)}${
+  }); estimated ${usd(estimate)}${
+    estimate === undefined
+      ? ""
+      : ` (API-equivalent estimate${bases.length === 0 ? "" : `; price list ${[...new Set(bases)].join(", ")}`}; ${valued} of ${attempts} attempts valued${incomplete > 0 ? `; ${incomplete} incomplete` : ""})`
+  }, reported ${usd(report)}${report === undefined ? "" : " (provider-reported)"}${
     totals.unpriced > 0 ? `; ${totals.unpriced} unpriced` : ""
   }`;
 };
@@ -1697,7 +1847,13 @@ const renderOperations = (ops: OperationsReport): string[] => {
   return [
     "## Where the time went",
     "",
-    `Elapsed ${secs(ops.elapsedMs)} (as of ${ops.asOf}). Peak concurrency ${ops.concurrency.peak}.`,
+    `Elapsed ${secs(ops.elapsedMs)} (as of ${ops.asOf}); elapsed is the run's window and phase figures below are interval unions. Peak concurrency ${ops.concurrency.peak}.`,
+    "",
+    ...(ops.concurrency.summedWorkMs === undefined
+      ? []
+      : [
+          `- **summed work (overlapping; not elapsed):** ${secs(ops.concurrency.summedWorkMs)}, each closed work interval counted in full`,
+        ]),
     "",
     `- **By phase (union, counted once):** work ${secs(unions.work)}, wait ${secs(unions.wait)}, queue ${secs(unions.queue)}, integration ${secs(unions.integration)}, examination ${secs(unions.examination)}, setup ${secs(unions.setup)}, startup ${secs(unions.startup)}, verification ${secs(unions.verification)}`,
     `- **Wait by blocker kind:** ${
@@ -1881,6 +2037,36 @@ const renderCompletionFigures = (f: CompletionReport["current"]): string[] => [
   ...renderCompletionResources(f),
 ];
 
+/** The combined estimate: a lower bound where anything is missing, and never a bill. */
+const renderCombined = (f: CompletionReport["current"]): string[] => {
+  const c = f.combined;
+  if (c === undefined) return ["combined estimate not observed"];
+  const parts = [
+    c.model === undefined ? "model estimate not observed" : `model ${usd(c.model)}`,
+    c.infrastructure === undefined
+      ? "machine estimate not observed"
+      : `machine ${usd(c.infrastructure)}`,
+  ];
+  const gaps = [
+    ...(c.coverage.unmeasuredMembers > 0
+      ? [`${c.coverage.unmeasuredMembers} member(s) unmeasured`]
+      : []),
+    ...(c.coverage.estimateIncomplete > 0
+      ? [`${c.coverage.estimateIncomplete} attempt(s) with incomplete valuation`]
+      : []),
+    ...(c.coverage.membersWithoutMachine > 0
+      ? [`${c.coverage.membersWithoutMachine} member(s) without a machine report`]
+      : []),
+  ];
+  return [
+    `combined API-equivalent estimate ${c.lowerBound ? "at least " : ""}${usd(c.usd)} (${parts.join(" + ")}; ${
+      c.lowerBound
+        ? `lower bound: ${gaps.length === 0 ? "a component is missing" : gaps.join(", ")}`
+        : "complete"
+    }; an estimate, not a bill; reported dollars are shown apart and not added)`,
+  ];
+};
+
 const renderCompletionResources = (f: CompletionReport["current"]): string[] => {
   const r = f.resources;
   const c = r?.coverage;
@@ -1905,6 +2091,7 @@ const renderCompletionResources = (f: CompletionReport["current"]): string[] => 
     r === undefined || attempts === 0
       ? "dollars not observed"
       : `estimated ${dollars(r.usd.estimated)}, reported ${dollars(r.usd.reported)} (separate figures)`,
+    ...renderCombined(f),
     machines === undefined || machines.members === 0
       ? "machine dollars not observed"
       : `infrastructure ${usd(machines.usd)} over ${machines.members} member run(s)`,
@@ -1916,6 +2103,31 @@ const renderCompletionResources = (f: CompletionReport["current"]): string[] => 
       : [
           `token coverage complete ${c.complete}, partial ${c.partial}, unknown ${c.unknown}, legacy ${c.legacy}, missing ${c.missing}`,
         ]),
+  ];
+};
+
+/** Near the top: which completion histories this run is in, and the reminder that the run's own outcome is not completion. */
+const renderCompletionHistories = (report: RunReport): string[] => {
+  const { completions, run } = report;
+  if (completions.length === 0) {
+    return [
+      "## Completion histories",
+      "",
+      "none recorded: nightshift completion create ... groups the runs that delivered one outcome. This run's own outcome is not completion.",
+      "",
+    ];
+  }
+  return [
+    "## Completion histories",
+    "",
+    "This run's own outcome is not completion: a completion history groups the runs that delivered one outcome.",
+    "",
+    ...completions.map((c) => {
+      const mine = c.members.find((m) => m.programId === run.programId && m.runId === run.runId);
+      const contributing = c.members.filter((m) => m.role === "contributing").length;
+      return `- **${c.title}** (\`${c.completionHistoryId}\`): this run is ${mine?.role ?? "a member"}; ${contributing} contributing run(s); verdict coverage ${c.coverage.rated} of ${c.coverage.eligible} rated, ${c.coverage.positive} worked, ${c.coverage.negative} did not.`;
+    }),
+    "",
   ];
 };
 
@@ -1964,6 +2176,7 @@ export const renderReport = (report: RunReport): string => {
     `${succeeded} of ${strands.length} strands succeeded; ${provisional} deferred; ${strands.filter(isParked).length} parked. Wall clock ${duration(run)}.`,
     "",
     ...renderNotVerified(report.stepAdjustments),
+    ...renderCompletionHistories(report),
     ...renderPublication(report.publication),
     ...renderCorrections(report.corrections),
     ...renderRulings(report.rulings),
@@ -1999,11 +2212,11 @@ export const renderReport = (report: RunReport): string => {
     "A cost marked * is estimated from the price table, not reported by the harness. A cost",
     "that is unknown had neither: give the org's price table a price for that model to estimate it.",
     "",
-    "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost (USD) |",
-    "|---|---|---|---|---|---|---|",
+    "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost (USD) | Basis |",
+    "|---|---|---|---|---|---|---|---|",
     ...report.usage.map(
       (row) =>
-        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${row.inputTokens} | ${row.outputTokens} | ${costCell(row)} |`,
+        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${tokenCell(row, row.inputTokens)} | ${tokenCell(row, row.outputTokens)} | ${costCell(row)} | ${basisCell(row)} |`,
     ),
     ...renderBudget(report),
     "",

@@ -29,6 +29,10 @@ export interface StepTimeReport {
   /** Times the step ran and had an exit code; a deferred step did not run. */
   readonly runs: number;
   readonly totalMs: number;
+  /** Runs that were a rerun or a flaky first run, kept beside the rest: each is time spent. */
+  readonly rerunRuns: number;
+  /** Time of those runs, already inside `totalMs`. */
+  readonly rerunMs: number;
   /** Quiet before the first output, summed over the runs that measured it. */
   readonly quietMs: number;
   readonly byPhase: Readonly<Record<VerificationPhase, PhaseTime>>;
@@ -89,6 +93,8 @@ const timeOf = (command: Verification["commands"][number]) => {
   return {
     runs: extraMs === undefined ? 1 : 2,
     durationMs: command.durationMs + (extraMs ?? 0),
+    extraMs: extraMs ?? 0,
+    extraRuns: extraMs === undefined ? 0 : 1,
   };
 };
 
@@ -96,6 +102,8 @@ const totalOf = <
   T extends {
     runs: number;
     totalMs: number;
+    rerunRuns: number;
+    rerunMs: number;
     quietMs: number;
     phases: ReturnType<typeof emptyPhases>;
   },
@@ -105,7 +113,14 @@ const totalOf = <
 ): T => {
   let total = totals.get(stepId);
   if (total === undefined) {
-    total = { runs: 0, totalMs: 0, quietMs: 0, phases: emptyPhases() } as T;
+    total = {
+      runs: 0,
+      totalMs: 0,
+      rerunRuns: 0,
+      rerunMs: 0,
+      quietMs: 0,
+      phases: emptyPhases(),
+    } as T;
     totals.set(stepId, total);
   }
   return total;
@@ -124,16 +139,32 @@ export const verificationTimeOf = (
   ];
   const totals = new Map<
     string,
-    { runs: number; totalMs: number; quietMs: number; phases: ReturnType<typeof emptyPhases> }
+    {
+      runs: number;
+      totalMs: number;
+      rerunRuns: number;
+      rerunMs: number;
+      quietMs: number;
+      phases: ReturnType<typeof emptyPhases>;
+    }
   >();
   for (const id of order)
-    totals.set(id, { runs: 0, totalMs: 0, quietMs: 0, phases: emptyPhases() });
+    totals.set(id, {
+      runs: 0,
+      totalMs: 0,
+      rerunRuns: 0,
+      rerunMs: 0,
+      quietMs: 0,
+      phases: emptyPhases(),
+    });
   for (const verification of verifications) {
     const phase: VerificationPhase = verification.phase ?? "queue";
     for (const command of verification.commands) {
       if (command.exitCode === undefined) continue;
       const total = totalOf(totals, command.stepId);
-      const { runs, durationMs } = timeOf(command);
+      const { runs, durationMs, extraMs, extraRuns } = timeOf(command);
+      total.rerunRuns += extraRuns;
+      total.rerunMs += extraMs;
       total.runs += runs;
       total.totalMs += durationMs;
       total.quietMs += command.quietMs ?? 0;
@@ -149,6 +180,8 @@ export const verificationTimeOf = (
       kind: kindOf(program, id),
       runs: total.runs,
       totalMs: total.totalMs,
+      rerunRuns: total.rerunRuns,
+      rerunMs: total.rerunMs,
       quietMs: total.quietMs,
       byPhase: total.phases,
       ...(forecastMs === undefined ? {} : { forecastMs }),

@@ -309,6 +309,8 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
           kind: "landing",
           runs: 12,
           totalMs: 12 * 41_000,
+          rerunRuns: 0,
+          rerunMs: 0,
           quietMs: 0,
           byPhase: {
             queue: { runs: 10, totalMs: 10 * 41_000 },
@@ -322,6 +324,8 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
           kind: "landing",
           runs: 12,
           totalMs: 12 * 700_000,
+          rerunRuns: 0,
+          rerunMs: 0,
           quietMs: 12 * 30_000,
           byPhase: {
             queue: { runs: 10, totalMs: 10 * 700_000 },
@@ -373,8 +377,8 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
     expect(text).toContain(
       "2h 28m across 12 verifications and 10 landings; the forecast assumed 12 landings at 12m 19s each, ≈ 2h 27m, measured on darwin arm64.",
     );
-    expect(text).toContain("| `e2e` | 12 | 2h 20m | 11m 40s | 30.0s | 10 / 2 / 0 | — |");
-    expect(text).toContain("| `build` | 12 | 8m 12s | 41.0s | 0.0s | 10 / 2 / 0 | 39.0s |");
+    expect(text).toContain("| `e2e` | 12 | 2h 20m | none | 11m 40s | 30.0s | 10 / 2 / 0 | — |");
+    expect(text).toContain("| `build` | 12 | 8m 12s | none | 41.0s | 0.0s | 10 / 2 / 0 | 39.0s |");
     expect(text).toContain(
       "- **e2e at the end** (rule 9): saves ≈ 1h 33m — 11m 40s × 10 landings − 11m 40s × 2 runs at the end.",
     );
@@ -970,15 +974,15 @@ describe("the report's Human verdict and Completion sections (D-04, D-05)", () =
     expect(text).toContain(
       "1 of 1 ended run(s) rated; 0 worked, 1 did not; positive share among rated 0%",
     );
-    expect(text).toContain("## Completion");
+    expect(text).toContain("\n## Completion\n");
     expect(text).toContain("### Ship the thing (membership v1)");
     expect(text).toContain("anchor, failed, did_not_work");
     expect(text).toContain("lead time none (no worked verdict)");
     expect(text.indexOf("## Human verdict")).toBeGreaterThan(text.indexOf("## Delivery"));
-    expect(text.indexOf("## Completion")).toBeGreaterThan(text.indexOf("## Human verdict"));
+    expect(text.indexOf("\n## Completion\n")).toBeGreaterThan(text.indexOf("## Human verdict"));
     const verdictSection = text.slice(
       text.indexOf("## Human verdict"),
-      text.indexOf("## Completion"),
+      text.indexOf("\n## Completion\n"),
     );
     expect(verdictSection).not.toMatch(/finding|examiner|cause:/i);
   });
@@ -999,7 +1003,269 @@ describe("the report's Human verdict and Completion sections (D-04, D-05)", () =
       expect(gathered.feedbackCoverage.rated).toBe(0);
       const text = renderReport(gathered);
       expect(text).toContain("- Verdict: **not rated**");
-      expect(text).not.toContain("## Completion");
+      expect(text).not.toContain("\n## Completion\n");
     }
+  });
+});
+
+describe("the report's usage, budget, time and completion wording (P20 J6)", () => {
+  const usageRow = {
+    harness: "claude",
+    model: "m1",
+    purpose: "work",
+    attempts: 3,
+    inputTokens: 300,
+    outputTokens: 30,
+    costUsd: 1.5,
+    estimated: true,
+    unpriced: 1,
+    tokensObserved: 3,
+    reportedAttempts: 0,
+    estimatedAttempts: 2,
+    estimateIncomplete: 1,
+    priceBases: [{ source: "anthropic-list", version: "2026-10", model: "m1", incomplete: true }],
+  };
+
+  it("shows provenance, the estimate label and estimate coverage on an estimated row", () => {
+    const text = renderReport(report({ usage: [usageRow] }));
+    expect(text).toContain(
+      "API-equivalent estimate; price list anthropic-list 2026-10; 2 of 3 attempts valued",
+    );
+    expect(text).toContain("1 estimate(s) leave usage unvalued");
+    expect(text).toContain("| 1.50* + 1 unknown |");
+  });
+
+  it("labels reported and unknown rows, and shows not observed, never 0, for missing tokens and dollars", () => {
+    const text = renderReport(
+      report({
+        usage: [
+          {
+            ...usageRow,
+            purpose: "examine",
+            unpriced: 0,
+            estimatedAttempts: 0,
+            reportedAttempts: 3,
+            estimated: false,
+            priceBases: [],
+          },
+          {
+            ...usageRow,
+            purpose: "answer",
+            attempts: 2,
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: 0,
+            unpriced: 2,
+            tokensObserved: 0,
+            reportedAttempts: 0,
+            estimatedAttempts: 0,
+            estimateIncomplete: 0,
+            priceBases: [],
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("provider-reported; 3 of 3 attempts valued");
+    const unknown = text.split("\n").find((line) => line.includes("| answer |")) ?? "";
+    expect(unknown).toContain(
+      "| not observed | not observed | unknown | unknown; 0 of 2 attempts valued |",
+    );
+    expect(unknown).not.toMatch(/\| 0 \|/);
+  });
+
+  it("says the limit could not be evaluated, with no cap and no 'within budget', when incomplete", () => {
+    const base = report({ usage: [usageRow] });
+    const text = renderReport({
+      ...base,
+      program: { ...base.program, costPolicy: { ...base.program.costPolicy, maxUsd: 5 } },
+      budget: {
+        usd: 1.5,
+        tokens: 330,
+        estimated: true,
+        evaluation: {
+          configured: true,
+          complete: false,
+          unpriced: 2,
+          unmeasured: 1,
+          estimateIncomplete: 0,
+        },
+      },
+    });
+    expect(text).toContain(
+      "the maxUsd limit could not be evaluated completely: 2 attempts unpriced, 1 unmeasured",
+    );
+    expect(text).not.toMatch(/within budget/i);
+    expect(text).not.toContain("of $5");
+  });
+
+  it("keeps the precise cap when the evaluation is complete", () => {
+    const base = report({ usage: [{ ...usageRow, unpriced: 0, estimateIncomplete: 0 }] });
+    const text = renderReport({
+      ...base,
+      program: { ...base.program, costPolicy: { ...base.program.costPolicy, maxUsd: 5 } },
+      budget: {
+        usd: 1.5,
+        tokens: 330,
+        estimated: true,
+        evaluation: {
+          configured: true,
+          complete: true,
+          unpriced: 0,
+          unmeasured: 0,
+          estimateIncomplete: 0,
+        },
+      },
+    });
+    expect(text).toContain("of $5");
+    expect(text).not.toContain("could not be evaluated");
+  });
+
+  it("shows the rerun time verification now retains", () => {
+    const phases = {
+      queue: { runs: 0, totalMs: 0 },
+      candidate: { runs: 0, totalMs: 0 },
+      run: { runs: 2, totalMs: 90_000 },
+    };
+    const text = renderReport(
+      report({
+        gateHealth: {
+          audit: undefined,
+          red: undefined,
+          repairs: [],
+          flakes: [],
+          verificationTime: {
+            steps: [
+              {
+                id: "unit",
+                kind: "landing",
+                runs: 2,
+                totalMs: 90_000,
+                rerunRuns: 1,
+                rerunMs: 30_000,
+                quietMs: 0,
+                byPhase: phases,
+              },
+            ],
+            landings: 1,
+            verifications: 1,
+            totalMs: 90_000,
+            recommendations: [],
+          },
+        },
+      }),
+    );
+    expect(text).toContain("| Reruns |");
+    expect(text).toContain("| `unit` | 2 | 1m 30s | 1 (30.0s) |");
+    expect(text).toContain(
+      "Retained rerun time: 30.0s across 1 flaky first run(s) and failed rerun(s)",
+    );
+  });
+
+  it("labels summed work as overlapping, not elapsed", () => {
+    const base = report();
+    const text = renderReport({
+      ...base,
+      operations: {
+        ...base.operations,
+        concurrency: { ...base.operations.concurrency, summedWorkMs: 120_000 },
+      },
+    });
+    expect(text).toContain("summed work (overlapping; not elapsed):** 2m 00s");
+    expect(text).toContain("phase figures below are interval unions");
+  });
+
+  it("lists the run's completion histories near the top, or says none is recorded", () => {
+    const none = renderReport(report());
+    expect(none).toContain("## Completion histories");
+    expect(none).toContain("none recorded: nightshift completion create ...");
+    expect(none.indexOf("## Completion histories")).toBeLessThan(none.indexOf("## Strands"));
+    const withOne = renderReport(
+      report({
+        completions: [
+          {
+            completionHistoryId: "comp_1",
+            title: "Ship billing",
+            version: 2,
+            members: [
+              {
+                programId: run.programId,
+                runId: run.runId,
+                role: "anchor",
+                verdict: "worked",
+                carriedStrands: 0,
+              },
+              {
+                programId: "prog_b",
+                runId: "run_b",
+                role: "contributing",
+                verdict: "not_rated",
+                carriedStrands: 0,
+              },
+            ],
+            coverage: {
+              eligible: 2,
+              rated: 1,
+              positive: 1,
+              negative: 0,
+              positiveShare: 1,
+              unrated: 1,
+            },
+            current: {
+              activeSeconds: 10,
+              measuredMembers: 0,
+              unmeasuredMembers: 2,
+              membershipVersion: 2,
+            },
+            checkpoints: [],
+            laterFixes: [],
+          },
+        ],
+      }),
+    );
+    expect(withOne).toContain("**Ship billing**");
+    expect(withOne).toContain(
+      "this run is anchor; 1 contributing run(s); verdict coverage 1 of 2 rated",
+    );
+    expect(withOne).toContain("This run's own outcome is not completion");
+  });
+
+  it("renders the combined estimate as a lower bound, never a bill", () => {
+    const text = renderReport(
+      report({
+        completions: [
+          {
+            completionHistoryId: "comp_1",
+            title: "T",
+            version: 1,
+            members: [],
+            coverage: { eligible: 1, rated: 0, positive: 0, negative: 0, unrated: 1 },
+            current: {
+              activeSeconds: 10,
+              measuredMembers: 1,
+              unmeasuredMembers: 1,
+              membershipVersion: 1,
+              combined: {
+                usd: 2.5,
+                model: 2,
+                infrastructure: 0.5,
+                coverage: {
+                  measuredMembers: 1,
+                  unmeasuredMembers: 1,
+                  estimateIncomplete: 0,
+                  membersWithoutMachine: 1,
+                },
+                lowerBound: true,
+                priceBases: [],
+              },
+            },
+            checkpoints: [],
+            laterFixes: [],
+          },
+        ],
+      }),
+    );
+    expect(text).toContain(
+      "combined API-equivalent estimate at least $2.50 (model $2.00 + machine $0.50; lower bound: 1 member(s) unmeasured, 1 member(s) without a machine report; an estimate, not a bill",
+    );
   });
 });

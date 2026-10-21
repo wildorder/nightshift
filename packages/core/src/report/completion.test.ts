@@ -432,3 +432,169 @@ describe("completionOf", () => {
     });
   });
 });
+
+describe("the combined estimate", () => {
+  const a = makeRun(f, { status: "succeeded", startedAt: at(0), endedAt: at(100) });
+  const b = makeRun(f, {
+    programId: f.ids.next("prog"),
+    runId: f.ids.next("run"),
+    status: "succeeded",
+    startedAt: at(150),
+    endedAt: at(200),
+  });
+  const both = [refOf(a, "anchor"), refOf(b, "contributing")];
+  const mruns = new Map([a, b].map((r) => [keyOf(r), r]));
+  const worked = new Map([[keyOf(a), vote(a, "worked", at(120))]]);
+  const priced = (estimated: number, reported = 0, incomplete = false): ResourceTotals => ({
+    tokens: { input: 10, inputConventionUnknown: 0 },
+    usd: { estimated, reported },
+    unpriced: 0,
+    coverage: { complete: 1, partial: 0, unknown: 0, legacy: 0, missing: 0 },
+    tokenCoverage: "complete",
+    priceBases: [{ source: "list", version: "v1", model: "m", incomplete }],
+    estimateIncomplete: incomplete ? 1 : 0,
+  });
+  const machine = (usd: number) =>
+    ({
+      components: { total: { usd } },
+    }) as unknown as import("./infrastructure.js").InfrastructureReport;
+  const measure = (
+    resources?: Map<string, ResourceTotals>,
+    infrastructure?: Map<string, import("./infrastructure.js").InfrastructureReport>,
+  ) =>
+    measureCompletion({
+      members: both,
+      runs: mruns,
+      feedback: worked,
+      ...(resources === undefined ? {} : { resources }),
+      ...(infrastructure === undefined ? {} : { infrastructure }),
+      accepted: { ref: refOf(a, "anchor"), verdictAt: at(120) },
+      boundary: at(300),
+    });
+
+  it("adds the model estimate and the machine estimate when both are complete", () => {
+    const m = measure(
+      new Map([
+        [keyOf(a), priced(1.5, 9)],
+        [keyOf(b), priced(0.5)],
+      ]),
+      new Map([
+        [keyOf(a), machine(0.25)],
+        [keyOf(b), machine(0.25)],
+      ]),
+    );
+    expect(m.combined?.usd).toBe(2.5);
+    expect(m.combined?.model).toBe(2);
+    expect(m.combined?.infrastructure).toBe(0.5);
+    expect(m.combined?.lowerBound).toBe(false);
+    expect(m.combined?.coverage).toEqual({
+      measuredMembers: 2,
+      unmeasuredMembers: 0,
+      estimateIncomplete: 0,
+      membersWithoutMachine: 0,
+    });
+    expect(m.combined?.priceBases).toEqual([
+      { source: "list", version: "v1", model: "m", incomplete: false },
+    ]);
+    // Reported dollars stay beside it and are not added.
+    expect(m.usd).toEqual({ estimated: 2, reported: 9 });
+  });
+
+  it("is a lower bound when a member is unmeasured, lacks a machine, or a valuation is incomplete", () => {
+    const machines = new Map([
+      [keyOf(a), machine(1)],
+      [keyOf(b), machine(1)],
+    ]);
+    const unmeasured = measure(new Map([[keyOf(a), priced(1)]]), machines);
+    expect(unmeasured.combined?.lowerBound).toBe(true);
+    expect(unmeasured.combined?.coverage.unmeasuredMembers).toBe(1);
+    const noMachine = measure(
+      new Map([
+        [keyOf(a), priced(1)],
+        [keyOf(b), priced(1)],
+      ]),
+      new Map([[keyOf(a), machine(1)]]),
+    );
+    expect(noMachine.combined?.lowerBound).toBe(true);
+    expect(noMachine.combined?.coverage.membersWithoutMachine).toBe(1);
+    const incomplete = measure(
+      new Map([
+        [keyOf(a), priced(1, 0, true)],
+        [keyOf(b), priced(1)],
+      ]),
+      machines,
+    );
+    expect(incomplete.combined?.lowerBound).toBe(true);
+    expect(incomplete.combined?.coverage.estimateIncomplete).toBe(1);
+  });
+
+  it("is a lower bound in the current view when a member's measurement is unavailable", () => {
+    const report = completionOf({
+      history: history(both),
+      runs: mruns,
+      feedback: worked,
+      resources: new Map([[keyOf(a), priced(1)]]),
+      infrastructure: new Map([
+        [keyOf(a), machine(1)],
+        [keyOf(b), machine(1)],
+      ]),
+      unavailable: new Map([[keyOf(b), "boom"]]),
+      asOf: at(300),
+    });
+    expect(report.current.combined?.usd).toBe(3);
+    expect(report.current.combined?.lowerBound).toBe(true);
+  });
+
+  it("covers a single component alone, and is absent, not zero, with neither", () => {
+    const modelOnly = measure(new Map([[keyOf(a), priced(2)]]));
+    expect(modelOnly.combined?.usd).toBe(2);
+    expect(modelOnly.combined?.infrastructure).toBeUndefined();
+    expect(modelOnly.combined?.lowerBound).toBe(true);
+    const machineOnly = measure(undefined, new Map([[keyOf(a), machine(3)]]));
+    expect(machineOnly.combined?.usd).toBe(3);
+    expect(machineOnly.combined?.model).toBeUndefined();
+    const neither = measure();
+    expect(neither.combined).toBeUndefined();
+    expect("combined" in neither).toBe(false);
+    // Reported dollars alone are not a model estimate.
+    expect(measure(new Map([[keyOf(a), totals(10, 4)]])).combined).toBeUndefined();
+  });
+
+  it("is carried by a checkpoint and survives later changes", () => {
+    const lateVote = new Map([[keyOf(a), vote(a, "worked", at(220))]]);
+    const proposed = buildCompletionHistory({
+      scope: a,
+      completionHistoryId: f.ids.next("comp"),
+      title: "T",
+      members: both,
+      actor: ann,
+      at: at(220),
+      checkpoint: { name: "cp", programId: a.programId, runId: a.runId },
+    });
+    const stored = reconcileCompletionWrite({
+      proposed,
+      actor: ann,
+      at: at(220),
+      memberRuns: mruns,
+      feedbackOf: lateVote,
+      resources: new Map([
+        [keyOf(a), priced(1)],
+        [keyOf(b), priced(1)],
+      ]),
+      infrastructure: new Map([
+        [keyOf(a), machine(1)],
+        [keyOf(b), machine(1)],
+      ]),
+    }).history;
+    expect(stored.checkpoints[0]?.measured.combined?.usd).toBe(4);
+    const later = completionOf({
+      history: stored,
+      runs: mruns,
+      feedback: lateVote,
+      resources: new Map([[keyOf(a), priced(100)]]),
+      asOf: at(900),
+    });
+    expect(later.checkpoints[0]?.combined?.usd).toBe(4);
+    expect(later.checkpoints[0]?.combined?.lowerBound).toBe(false);
+  });
+});

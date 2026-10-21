@@ -1,14 +1,21 @@
 /**
- * `nightshift report <program> [--run <id>]` (P9, D-P9-06).
+ * `nightshift report <program> [--run <id>] [--json [--role --model --since --until]]` (P9, D-P9-06).
  *
  * Writes a run's `report.md` again from the control plane alone, so a report
  * read before a decision was reversed shows the reversal, and the correction
- * that followed, after it. The latest run by default.
+ * that followed, after it. The latest run by default. `--json` also writes the
+ * versioned export (`report.json`) beside it, its attempts narrowed by the
+ * filters.
  */
 
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { gatherReport, renderReport } from "@nightshift/core";
+import {
+  exportReport,
+  gatherReport,
+  type ReportExportFilters,
+  renderReport,
+} from "@nightshift/core";
 import type { CliEnvironment } from "../environment.js";
 import { readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession } from "../session.js";
@@ -19,7 +26,12 @@ export interface ReportOptions {
   readonly id: string;
   readonly run?: string;
   readonly repo?: string;
+  /** Also write the versioned JSON export. */
+  readonly json?: boolean;
+  readonly filters?: ReportExportFilters;
 }
+
+export const REPORT_JSON_FILE = "report.json";
 
 export const writeRunReport = async (
   environment: CliEnvironment,
@@ -34,5 +46,13 @@ export const writeRunReport = async (
   const path = join(repoPath, files.directory, REPORT_FILE);
   await writeFile(path, renderReport(report));
   environment.out(`report for run ${run.runId}: ${path}`);
+  if (options.json === true) {
+    const jsonPath = join(repoPath, files.directory, REPORT_JSON_FILE);
+    await writeFile(
+      jsonPath,
+      `${JSON.stringify(exportReport(report, options.filters), null, 2)}\n`,
+    );
+    environment.out(`export for run ${run.runId}: ${jsonPath}`);
+  }
   return 0;
 };

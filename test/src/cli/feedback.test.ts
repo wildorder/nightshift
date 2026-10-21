@@ -414,6 +414,10 @@ describe("nightshift completion (D-05)", () => {
     expect(checkpointLine).toContain(
       `checkpoint \`first\` (${checkpointAt}): lead time ${spelled(leadSeconds)}`,
     );
+    // No member has model or machine evidence here, so the combined estimate is absent, never $0.
+    expect(shown[5]).toContain("combined estimate not observed");
+    expect(checkpointLine).toContain("combined estimate not observed");
+    expect(checkpointLine).not.toMatch(/combined API-equivalent estimate/);
     // Each checkpoint is followed by its snapshot members, one line each.
     expect(shown.slice(7)).toEqual([
       `  snapshot member ${at(run1)} anchor failed did_not_work`,

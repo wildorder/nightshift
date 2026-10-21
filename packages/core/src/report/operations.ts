@@ -169,6 +169,8 @@ export interface OperationsReport {
   readonly concurrency: {
     readonly series: readonly ConcurrencyPoint[];
     readonly peak: number;
+    /** Closed work intervals summed as they are: overlapping work counts twice, so it is not elapsed time. */
+    readonly summedWorkMs: number;
     /** Closed work time over elapsed; open work is not counted, so a lower bound. */
     readonly averageOverElapsed?: number;
   };
@@ -804,6 +806,7 @@ export const operationsOf = (input: OperationsInput): OperationsReport => {
     concurrency: {
       series,
       peak,
+      summedWorkMs: workClosedMs,
       ...(averageOverElapsed !== undefined ? { averageOverElapsed } : {}),
     },
     unions,

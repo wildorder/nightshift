@@ -39,6 +39,36 @@ const nonNegativeInt = z.int().min(0);
 const nonNegative = z.number().min(0);
 
 /**
+ * The model API-equivalent estimate plus the machine estimate, in dollars. A
+ * lower bound whenever any member or valuation is missing; never a bill.
+ * Reported dollars are kept beside it and are never added to it.
+ */
+export const CompletionCombinedSchema = z.strictObject({
+  usd: nonNegative,
+  /** Absent when no member has a model estimate. */
+  model: nonNegative.optional(),
+  /** Absent when no member has a machine report. */
+  infrastructure: nonNegative.optional(),
+  coverage: z.strictObject({
+    measuredMembers: nonNegativeInt,
+    unmeasuredMembers: nonNegativeInt,
+    /** Attempts whose model estimate leaves some usage unvalued. */
+    estimateIncomplete: nonNegativeInt,
+    membersWithoutMachine: nonNegativeInt,
+  }),
+  lowerBound: z.boolean(),
+  priceBases: z.array(
+    z.strictObject({
+      source: z.string().optional(),
+      version: z.string().optional(),
+      model: z.string(),
+      incomplete: z.boolean(),
+    }),
+  ),
+});
+export type CompletionCombined = z.infer<typeof CompletionCombinedSchema>;
+
+/**
  * The figures a checkpoint froze, computed by the server when it was recorded.
  * Time figures are bounded at the verdict: intervals are clipped to
  * `measuredTo`, runs still open end there, and runs started after it
@@ -89,6 +119,8 @@ export const CompletionMeasurementSchema = z
         withoutMachine: nonNegativeInt,
       })
       .optional(),
+    /** Absent, not zero, when neither a model estimate nor a machine report exists. */
+    combined: CompletionCombinedSchema.optional(),
     /** When the server measured it. */
     recordedAt: IsoTimestampSchema,
   })
@@ -109,6 +141,40 @@ export const CompletionMeasurementSchema = z
         path: ["infrastructure", "withoutMachine"],
         message: "infrastructure members and withoutMachine must add up to readableMembers",
       });
+    }
+    const combined = value.combined;
+    if (combined !== undefined) {
+      if (combined.model === undefined && combined.infrastructure === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["combined"],
+          message:
+            "combined is absent, not zero, when neither a model nor a machine estimate exists",
+        });
+      }
+      if (combined.model !== undefined && value.measuredMembers === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["combined", "model"],
+          message: "a model estimate needs a measured member",
+        });
+      }
+      if (combined.infrastructure !== undefined && value.infrastructure === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["combined", "infrastructure"],
+          message: "a machine estimate needs an infrastructure report",
+        });
+      }
+      if (
+        Math.abs(combined.usd - ((combined.model ?? 0) + (combined.infrastructure ?? 0))) > 1e-9
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["combined", "usd"],
+          message: "combined usd must equal the model estimate plus the machine estimate",
+        });
+      }
     }
     if (
       value.measuredMembers === 0 &&

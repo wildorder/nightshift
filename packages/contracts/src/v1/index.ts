@@ -28,6 +28,7 @@ export * from "./principal.js";
 export * from "./program-contract.js";
 export * from "./project.js";
 export * from "./registry.js";
+export * from "./report-export.js";
 export * from "./routing-decision.js";
 export * from "./routing-policy.js";
 export * from "./run.js";
