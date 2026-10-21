@@ -8,6 +8,7 @@
  * `suggest` only prints what recorded facts point at and changes nothing.
  */
 import type {
+  CompletionCheckpoint,
   CompletionHistory,
   CompletionMemberRef,
   ProgramContract,
@@ -261,14 +262,20 @@ const write = async (
   return 0;
 };
 
-/** The runs and verdicts of the members, read through the stores. */
+/**
+ * The runs and verdicts of the current members and of every checkpoint's
+ * snapshot members, read through the project-scoped stores. A run that is no
+ * longer a member is read for display only; it feeds no current figure.
+ */
 const readMembers = async (
   session: FreshSession,
   history: CompletionHistory,
 ): Promise<{ runs: Map<string, Run>; feedback: Map<string, RunFeedback> }> => {
   const runs = new Map<string, Run>();
   const feedback = new Map<string, RunFeedback>();
-  for (const member of history.members) {
+  const refs = [...history.members, ...history.checkpoints.flatMap((c) => c.members)];
+  for (const member of refs) {
+    if (runs.has(keyOf(member))) continue;
     const scope = { projectId: history.projectId, programId: member.programId };
     const run = await session.stores.runs.get(scope, member.runId);
     if (run === undefined) continue;
@@ -279,6 +286,31 @@ const readMembers = async (
   return { runs, feedback };
 };
 
+const count = (value: number | undefined): string => (value === undefined ? "none" : `${value}`);
+
+const dollars = (value: number): string => `$${value.toFixed(4)}`;
+
+/** One stored checkpoint, from its `measured` block alone; nothing is recomputed. */
+const checkpointLine = (checkpoint: CompletionCheckpoint): string => {
+  const m = checkpoint.measured;
+  const tokens =
+    m.tokens === undefined
+      ? "none"
+      : `input ${count(m.tokens.input)}, output ${count(m.tokens.output)}, cache read ${count(m.tokens.cacheRead)}, cache write ${count(m.tokens.cacheWrite)}, reasoning ${count(m.tokens.reasoning)}`;
+  const usd =
+    m.usd === undefined
+      ? "estimated none, reported none"
+      : `estimated ${dollars(m.usd.estimated)}, reported ${dollars(m.usd.reported)}`;
+  const machines =
+    m.infrastructure === undefined
+      ? "none"
+      : `${dollars(m.infrastructure.usd)} over ${m.infrastructure.members} members`;
+  return (
+    `checkpoint \`${checkpoint.name}\` (${checkpoint.recordedAt}): lead time ${seconds(m.leadTimeSeconds)}, run completion ${seconds(m.runCompletionSeconds)}, active union ${seconds(m.activeSeconds)}` +
+    `, measured to ${m.measuredTo}, tokens ${tokens}, ${usd}, infrastructure ${machines}, ${m.readableMembers} readable members`
+  );
+};
+
 const show = async (
   environment: CliEnvironment,
   session: FreshSession,
@@ -286,7 +318,13 @@ const show = async (
   asOf: string,
 ): Promise<number> => {
   const { runs, feedback } = await readMembers(session, history);
-  const report = completionOf({ history, runs, feedback, asOf });
+  const current = new Set(history.members.map(keyOf));
+  const report = completionOf({
+    history,
+    runs: new Map([...runs].filter(([key]) => current.has(key))),
+    feedback: new Map([...feedback].filter(([key]) => current.has(key))),
+    asOf,
+  });
   environment.out(
     `completion history ${report.completionHistoryId} "${report.title}" (version ${report.version})`,
   );
@@ -300,12 +338,16 @@ const show = async (
     `rated ${coverage.rated} of ${coverage.eligible} finished runs, positive share ${percent(coverage.positiveShare)}`,
   );
   figures(environment, "now", report.current);
-  for (const checkpoint of report.checkpoints) {
-    figures(
-      environment,
-      `checkpoint \`${checkpoint.name}\` (${checkpoint.recordedAt})`,
-      checkpoint,
-    );
+  for (const checkpoint of history.checkpoints) {
+    environment.out(checkpointLine(checkpoint));
+    for (const member of checkpoint.members) {
+      const run = runs.get(keyOf(member));
+      const verdict =
+        run === undefined ? "unreadable" : (feedback.get(keyOf(member))?.verdict ?? "not_rated");
+      environment.out(
+        `  snapshot member ${keyOf(member)} ${member.role} ${run?.status ?? "unreadable"} ${verdict}`,
+      );
+    }
   }
   return 0;
 };

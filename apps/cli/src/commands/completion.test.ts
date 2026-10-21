@@ -101,6 +101,80 @@ describe("nightshift completion", () => {
     expect(world.puts).toEqual([]);
   });
 
+  it("show prints a stored checkpoint unchanged after a contributing member is removed", async () => {
+    const world = await createWorld();
+    worlds.push(world);
+    world.runs.push(finishedRun(world.f));
+    world.feedback.set(
+      `${world.f.scope.programId}/${world.f.scope.runId}`,
+      makeRunFeedback(world.f),
+    );
+    const extra = otherRun(world);
+    const extraKey = `${extra.programId}/${extra.runId}`;
+    const anchor = `${world.f.scope.programId}/${world.f.scope.runId}`;
+    expect(await completion(world, "create", "--title", "Billing export")).toBe(0);
+    const id = world.histories[0]?.completionHistoryId as string;
+    expect(await completion(world, "add", "--history", id, "--member", extraKey)).toBe(0);
+    expect(
+      await completion(world, "checkpoint", "--history", id, "--name", "first", "--member", anchor),
+    ).toBe(0);
+
+    world.created.out.length = 0;
+    expect(await completion(world, "show", "--history", id)).toBe(0);
+    const before = [...world.created.out];
+    const line = before.find((l) => l.startsWith("checkpoint `first`"));
+    expect(line).toContain("active union 2h 0m");
+    expect(line).toContain("run completion 3h 0m");
+    expect(line).toContain("measured to 2026-09-15T12:00:00.000Z");
+    expect(line).toContain("estimated $1.5000, reported $2.2500");
+    expect(line).toContain("infrastructure $0.5000 over 2 members");
+    expect(line).toContain("2 readable members");
+    expect(before.some((l) => l.startsWith(`member ${extraKey} contributing`))).toBe(true);
+
+    expect(await completion(world, "remove", "--history", id, "--member", extraKey)).toBe(0);
+    world.created.out.length = 0;
+    expect(await completion(world, "show", "--history", id)).toBe(0);
+    const after = [...world.created.out];
+
+    expect(after.find((l) => l.startsWith("checkpoint `first`"))).toBe(line);
+    expect(after).toContain(`  snapshot member ${extraKey} contributing succeeded not_rated`);
+    expect(after.some((l) => l.startsWith(`member ${extraKey} `))).toBe(false);
+    expect(after.find((l) => l.startsWith("now:"))).not.toBe(
+      before.find((l) => l.startsWith("now:")),
+    );
+  });
+
+  it("lists a snapshot-only run as unreadable when the stores no longer have it", async () => {
+    const world = await seeded();
+    const extra = otherRun(world);
+    const key = `${extra.programId}/${extra.runId}`;
+    expect(await completion(world, "add", "--history", world.historyId, "--member", key)).toBe(0);
+    expect(
+      await completion(
+        world,
+        "checkpoint",
+        "--history",
+        world.historyId,
+        "--name",
+        "first",
+        "--member",
+        world.anchor,
+      ),
+    ).toBe(0);
+    expect(await completion(world, "remove", "--history", world.historyId, "--member", key)).toBe(
+      0,
+    );
+    world.runs.splice(
+      world.runs.findIndex((r) => r.runId === extra.runId),
+      1,
+    );
+    world.created.out.length = 0;
+    expect(await completion(world, "show", "--history", world.historyId)).toBe(0);
+    expect(world.created.out).toContain(
+      `  snapshot member ${key} contributing unreadable unreadable`,
+    );
+  });
+
   it("suggest prints each suggestion with its reason and performs no PUT", async () => {
     const world = await seeded();
     const correction = otherRun(world);

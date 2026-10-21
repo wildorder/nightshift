@@ -414,7 +414,13 @@ describe("nightshift completion (D-05)", () => {
     expect(checkpointLine).toContain(
       `checkpoint \`first\` (${checkpointAt}): lead time ${spelled(leadSeconds)}`,
     );
-    expect(shown).toHaveLength(7);
+    // Each checkpoint is followed by its snapshot members, one line each.
+    expect(shown.slice(7)).toEqual([
+      `  snapshot member ${at(run1)} anchor failed did_not_work`,
+      `  snapshot member ${at(run3)} correction succeeded worked`,
+      `  snapshot member ${at(run2)} contributing succeeded not_rated`,
+    ]);
+    expect(shown).toHaveLength(10);
 
     // Clearing the accepted run's vote leaves the checkpoint's figures where they were.
     expect(await cli("rate", "beta", "clear")).toBe(0);
@@ -425,6 +431,135 @@ describe("nightshift completion (D-05)", () => {
     expect(later[6]).toBe(checkpointLine);
     const finalHistory = (await stores.completionHistories.listByProject(projectId)).items[0];
     expect(finalHistory?.checkpoints).toEqual(afterRefusal?.checkpoints);
+  });
+
+  it("keeps every stored checkpoint unchanged, and its removed runs listed, after members are removed", async () => {
+    const { stores, run1, run2 } = await seed();
+    const projectId = run1.projectId;
+    const at = (run: Run) => `${run.programId}/${run.runId}`;
+
+    // A contributing run that started before the anchor did.
+    const f = createFixtures();
+    const earlyScope = { ...run1, runId: f.ids.next("run") };
+    const early = makeRun(f, {
+      projectId,
+      programId: run1.programId,
+      runId: earlyScope.runId,
+      status: "succeeded",
+      startedAt: "2026-09-15T10:00:00.000Z",
+      endedAt: "2026-09-15T10:20:00.000Z",
+    });
+    await stores.runs.put(early);
+    await stores.executionNodes.put(
+      makeRootNode(f, {
+        projectId,
+        programId: run1.programId,
+        runId: early.runId,
+        executionNodeId: early.rootNodeId,
+      }),
+    );
+
+    expect(
+      await cli("completion", "create", "alpha", "--title", "Orders", "--run", run1.runId),
+      op.err.join("\n"),
+    ).toBe(0);
+    const id = (
+      (await stores.completionHistories.listByProject(projectId)).items[0] as CompletionHistory
+    ).completionHistoryId;
+    expect(
+      await cli("completion", "add", "alpha", "--history", id, "--member", at(early)),
+      op.err.join("\n"),
+    ).toBe(0);
+    expect(await cli("rate", "alpha", "up", "--run", run1.runId), op.err.join("\n")).toBe(0);
+    expect(
+      await cli(
+        "completion",
+        "checkpoint",
+        "alpha",
+        "--history",
+        id,
+        "--name",
+        "first",
+        "--member",
+        at(run1),
+      ),
+      op.err.join("\n"),
+    ).toBe(0);
+
+    const show = async (): Promise<string[]> => {
+      expect(await cli("completion", "show", "alpha", "--history", id), op.err.join("\n")).toBe(0);
+      return [...op.out];
+    };
+    const checkpointLines = (lines: readonly string[]): string[] => {
+      const start = lines.findIndex((l) => l.startsWith("checkpoint `"));
+      return start < 0 ? [] : lines.slice(start);
+    };
+    const nowLine = (lines: readonly string[]): string =>
+      lines.find((l) => l.startsWith("now:")) as string;
+
+    const before = await show();
+    const firstLines = checkpointLines(before);
+    expect(firstLines[0]).toContain("checkpoint `first`");
+    expect(firstLines).toContain(`  snapshot member ${at(early)} contributing succeeded not_rated`);
+    const verdict = await stores.feedback.get({
+      projectId,
+      programId: run1.programId,
+      runId: run1.runId,
+    });
+    const fromEarly =
+      (Date.parse(verdict?.recordedAt as string) - Date.parse(early.startedAt)) / 1000;
+    const fromAnchor = (Date.parse(verdict?.recordedAt as string) - Date.parse(RUN1_START)) / 1000;
+    expect(nowLine(before)).toContain(`lead time ${spelled(fromEarly)}`);
+    expect(firstLines[0]).toContain(`lead time ${spelled(fromEarly)}`);
+
+    expect(
+      await cli("completion", "remove", "alpha", "--history", id, "--member", at(early)),
+      op.err.join("\n"),
+    ).toBe(0);
+    const after = await show();
+
+    // The checkpoint is byte-identical and still lists the removed run; the live view moved.
+    expect(checkpointLines(after)).toEqual(firstLines);
+    expect(after.some((l) => l.startsWith(`member ${at(early)} `))).toBe(false);
+    expect(nowLine(after)).not.toBe(nowLine(before));
+    expect(nowLine(after)).toContain(`lead time ${spelled(fromAnchor)}`);
+
+    // A second checkpoint on a contributing run that is then removed itself keeps its run completion.
+    expect(
+      await cli("completion", "add", "alpha", "--history", id, "--member", at(run2)),
+      op.err.join("\n"),
+    ).toBe(0);
+    expect(await cli("rate", "alpha", "up", "--run", run2.runId), op.err.join("\n")).toBe(0);
+    expect(
+      await cli(
+        "completion",
+        "checkpoint",
+        "alpha",
+        "--history",
+        id,
+        "--name",
+        "second",
+        "--member",
+        at(run2),
+      ),
+      op.err.join("\n"),
+    ).toBe(0);
+    const second = checkpointLines(await show());
+    const secondLine = second.find((l) => l.startsWith("checkpoint `second`")) as string;
+    // run2 ended 50 minutes after the anchor's start of 11:00.
+    expect(secondLine).toContain("run completion 50m 0s");
+    expect(second.slice(0, firstLines.length)).toEqual(firstLines);
+
+    expect(
+      await cli("completion", "remove", "alpha", "--history", id, "--member", at(run2)),
+      op.err.join("\n"),
+    ).toBe(0);
+    const removed = checkpointLines(await show());
+    expect(removed).toEqual(second);
+    expect(removed.find((l) => l.startsWith("checkpoint `second`"))).toContain(
+      "run completion 50m 0s",
+    );
+    expect(removed).toContain(`  snapshot member ${at(run2)} contributing succeeded worked`);
   });
 });
 

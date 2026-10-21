@@ -9,7 +9,14 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CompletionHistory, ProgramContract, Run, RunFeedback } from "@nightshift/contracts";
+import type {
+  CompletionHistory,
+  CompletionMeasurement,
+  IsoTimestamp,
+  ProgramContract,
+  Run,
+  RunFeedback,
+} from "@nightshift/contracts";
 import { createFixtures, type Fixtures, makeProgramContract, makeRun } from "@nightshift/core";
 import type { FetchLike } from "@nightshift/persistence/http";
 import {
@@ -50,6 +57,41 @@ export const json = (status: number, body: unknown): FakeResponse => ({
 
 export const errorBody = (status: number, code: string, message: string): FakeResponse =>
   json(status, { error: { code, message } });
+
+/**
+ * The measured block the fake gives every checkpoint it newly stores. The real
+ * control plane computes it from the members' records; the fake fabricates this
+ * fixed one so a test can see it survive later membership changes unchanged.
+ */
+export const FAKE_MEASURED: CompletionMeasurement = {
+  measuredTo: "2026-09-15T12:00:00.000Z" as IsoTimestamp,
+  readableMembers: 2,
+  earliestStart: "2026-09-15T08:00:00.000Z" as IsoTimestamp,
+  leadTimeSeconds: 14_400,
+  runCompletionSeconds: 10_800,
+  activeSeconds: 7_200,
+  tokens: { input: 1000, output: 500, inputConventionUnknown: 0 },
+  usd: { estimated: 1.5, reported: 2.25 },
+  infrastructure: { usd: 0.5, members: 2 },
+  recordedAt: "2026-09-15T12:00:00.000Z" as IsoTimestamp,
+};
+
+/**
+ * A stateful put: stores the proposal, keeping each stored checkpoint as it was
+ * and giving a newly added one the fixed {@link FAKE_MEASURED} block.
+ */
+const storeHistory = (histories: CompletionHistory[], proposed: CompletionHistory): void => {
+  const index = histories.findIndex((h) => h.completionHistoryId === proposed.completionHistoryId);
+  const kept = new Map((histories[index]?.checkpoints ?? []).map((c) => [c.name, c]));
+  const stored: CompletionHistory = {
+    ...proposed,
+    checkpoints: proposed.checkpoints.map(
+      (c) => kept.get(c.name) ?? { ...c, measured: FAKE_MEASURED },
+    ),
+  };
+  if (index < 0) histories.push(stored);
+  else histories[index] = stored;
+};
 
 export const createWorld = async (): Promise<World> => {
   const f = createFixtures();
@@ -130,7 +172,11 @@ export const createWorld = async (): Promise<World> => {
       }
       if (init.method === "PUT" && (path.endsWith("/feedback") || oneHistory.test(path))) {
         puts.push({ path, body: JSON.parse(init.body ?? "{}") as Record<string, unknown> });
-        return reply(world.answerPut(request));
+        const answer = world.answerPut(request);
+        if (oneHistory.test(path) && answer.status >= 200 && answer.status < 300) {
+          storeHistory(histories, JSON.parse(init.body ?? "{}") as CompletionHistory);
+        }
+        return reply(answer);
       }
     }
     return plane.fetch(url, init);
