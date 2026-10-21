@@ -82,7 +82,7 @@ describe("the recorded completing job", () => {
     expect(endings).toEqual([]);
   });
 
-  it("knows the turn completed, and sums what it cost", () => {
+  it("knows the turn completed, and what it cost", () => {
     expect(outcome.turnCompleted).toBe(true);
     expect(outcome.failure).toBeUndefined();
     expect(outcome.usage?.inputTokens).toBeGreaterThan(0);
@@ -170,12 +170,59 @@ describe("what the recording does not show", () => {
     ).toBe("stream disconnected");
   });
 
-  it("sums usage over turns", () => {
-    const turn = { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } };
-    expect(interpret(frames(turn, turn)).outcome.usage).toEqual({
-      inputTokens: 20,
-      outputTokens: 4,
+  it("keeps the latest usage: the figure is thread-cumulative, not per turn", () => {
+    const { outcome } = interpret(
+      frames(
+        { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } },
+        { type: "turn.completed", usage: { input_tokens: 30, output_tokens: 5 } },
+      ),
+    );
+    expect(outcome.usage).toEqual({ inputTokens: 30, outputTokens: 5, inputIncludesCache: true });
+    expect(outcome.turnsCompleted).toBe(2);
+  });
+
+  it("retains every counter, and never adds cached input to input", () => {
+    const { outcome } = interpret(
+      frames({
+        type: "turn.completed",
+        usage: {
+          input_tokens: 272469,
+          cached_input_tokens: 256000,
+          cache_write_input_tokens: 0,
+          output_tokens: 2449,
+          reasoning_output_tokens: 36,
+        },
+      }),
+    );
+    expect(outcome.usage).toEqual({
+      inputTokens: 272469,
+      cacheReadTokens: 256000,
+      cacheWriteTokens: 0,
+      outputTokens: 2449,
+      inputIncludesCache: true,
     });
+    expect(outcome.reasoningOutputTokens).toBe(36);
+  });
+
+  it("leaves absent counters absent", () => {
+    const { outcome } = interpret(
+      frames({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } }),
+    );
+    expect(outcome.usage).toEqual({ inputTokens: 1, outputTokens: 2, inputIncludesCache: true });
+    expect(outcome.reasoningOutputTokens).toBeUndefined();
+  });
+
+  it("reads the recorded fixture's thread total exactly", () => {
+    const { outcome } = interpret(RECORDING);
+    expect(outcome.usage).toEqual({
+      inputTokens: 272469,
+      cacheReadTokens: 256000,
+      cacheWriteTokens: 0,
+      outputTokens: 2449,
+      inputIncludesCache: true,
+    });
+    expect(outcome.reasoningOutputTokens).toBe(36);
+    expect(outcome.turnsCompleted).toBe(1);
   });
 
   it("skips what it does not understand, counts what it cannot parse, and never throws", () => {

@@ -36,7 +36,10 @@
  * as a finished one, as it would have for Claude. `turn.completed` is Codex's
  * own statement that the turn ended cleanly, and it is the condition.
  *
- * `usage` rides on `completed` and `failed` whenever a turn reported any.
+ * `usage` rides on every variant (`cancelled` and `interrupted` included) that
+ * saw a `turn.completed`, as `usageScope: "session"`: Codex's figure is the
+ * thread-cumulative total. `coverage` is `complete` for a clean turn, `partial`
+ * for usage without one, and `unknown` when none was seen.
  *
  * ## WINDOWS
  *
@@ -50,6 +53,7 @@ import type { Clock } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
 import type {
   Duration,
+  ExitMeasures,
   Harness,
   HarnessExit,
   HarnessHandle,
@@ -394,15 +398,26 @@ const exitFor = (
   signal: string | null,
   outcome: StreamOutcome,
 ): HarnessExit => {
-  if (cancelRequested) return { kind: "cancelled" };
-  if (signal !== null) return { kind: "interrupted", signal };
+  const clean = outcome.turnCompleted && outcome.failure === undefined;
+  const measured = (complete: boolean): ExitMeasures =>
+    outcome.usage === undefined
+      ? { coverage: "unknown" }
+      : {
+          usage: outcome.usage,
+          usageScope: "session",
+          coverage: complete ? "complete" : "partial",
+        };
+  // A stopped run's figure is whatever the last finished turn had reported.
+  if (cancelRequested) return { kind: "cancelled", ...measured(false) };
+  if (signal !== null) return { kind: "interrupted", signal, ...measured(false) };
+  const measures = measured(clean);
   // P8: the thread a question can resume (D-P8-15), and whether the route could
   // not start at all (D-P8-06).
   const said = {
-    ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+    ...measures,
     ...(outcome.threadId === undefined ? {} : { sessionId: outcome.threadId }),
   };
-  if (code === 0 && outcome.turnCompleted && outcome.failure === undefined) {
+  if (code === 0 && clean) {
     return {
       kind: "completed",
       ...said,

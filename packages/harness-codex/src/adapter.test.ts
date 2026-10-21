@@ -274,7 +274,14 @@ describe("the exit mapping, as measured on 0.154.0", () => {
     });
     expect(exit).toEqual({
       kind: "completed",
-      usage: { inputTokens: 14028, outputTokens: 5, cacheReadTokens: 11520 },
+      usage: {
+        inputTokens: 14028,
+        outputTokens: 5,
+        cacheReadTokens: 11520,
+        inputIncludesCache: true,
+      },
+      usageScope: "session",
+      coverage: "complete",
       sessionId: "01a0b9e2-a874-71d2-8293-67ec5bcf67fb",
       result: "READY",
     });
@@ -289,6 +296,7 @@ describe("the exit mapping, as measured on 0.154.0", () => {
     expect(exit).toEqual({
       kind: "failed",
       exitCode: 0,
+      coverage: "unknown",
       sessionId: "01a0b9e4-33f5-73d3-b75f-278e14dec33d",
     });
     expect(endings(events)[0]).toMatchObject({
@@ -311,6 +319,7 @@ describe("the exit mapping, as measured on 0.154.0", () => {
     expect(exit).toEqual({
       kind: "failed",
       exitCode: 0,
+      coverage: "unknown",
       sessionId: "t",
       unavailable: "the provider answered 429 before any work began: usage limit reached",
     });
@@ -322,13 +331,41 @@ describe("the exit mapping, as measured on 0.154.0", () => {
       child.emitStderr("error: unexpected argument '--nope' found");
       child.close(2);
     });
-    expect(exit).toEqual({ kind: "failed", exitCode: 2 });
+    expect(exit).toEqual({ kind: "failed", exitCode: 2, coverage: "unknown" });
     expect(endings(events)[0]?.payload.summary).toContain("--nope");
   });
 
   it("maps a killing signal to interrupted", async () => {
     const { exit } = await run((child) => child.close(null, "SIGKILL"));
-    expect(exit).toEqual({ kind: "interrupted", signal: "SIGKILL" });
+    expect(exit).toEqual({ kind: "interrupted", signal: "SIGKILL", coverage: "unknown" });
+  });
+
+  it("carries usage on a run cancelled after a completed turn, as partial", async () => {
+    vi.useFakeTimers();
+    const world = fakes();
+    const harness = createCodexHarness({
+      spawn: world.spawn,
+      fs: world.fs,
+      env: PARENT_ENV,
+      platform: "darwin",
+      kill: () => {},
+    });
+    const handle = await harness.start(startInput([]));
+    world.children[0]?.emitStdout(
+      lines({
+        type: "turn.completed",
+        usage: { input_tokens: 7, output_tokens: 3 },
+      }),
+    );
+    const cancelling = harness.cancel(handle, millis(10_000));
+    world.children[0]?.close(null, "SIGINT");
+    await cancelling;
+    expect(await handle.exit).toEqual({
+      kind: "cancelled",
+      usage: { inputTokens: 7, outputTokens: 3, inputIncludesCache: true },
+      usageScope: "session",
+      coverage: "partial",
+    });
   });
 
   it("maps a child that never ran to failed 127, never a rejection", async () => {
@@ -411,7 +448,7 @@ describe("cancel (D-P5-02)", () => {
     world.children[0]?.close(null, "SIGKILL");
     await cancelling;
     // A cancel in flight wins over how the process happened to die.
-    expect(await handle.exit).toEqual({ kind: "cancelled" });
+    expect(await handle.exit).toEqual({ kind: "cancelled", coverage: "unknown" });
     expect(endings(events).map((event) => event.type)).toEqual(["agent.cancelled"]);
     expect(await harness.status(handle)).toBe("cancelled");
   });
@@ -432,7 +469,7 @@ describe("cancel (D-P5-02)", () => {
     world.children[0]?.close(1);
     await cancelling;
     await vi.advanceTimersByTimeAsync(20_000);
-    expect(await handle.exit).toEqual({ kind: "cancelled" });
+    expect(await handle.exit).toEqual({ kind: "cancelled", coverage: "unknown" });
     expect(kills).toEqual(["SIGINT"]);
     // A second cancel, and a cancel of a settled handle, are no-ops.
     await harness.cancel(handle, millis(1));
