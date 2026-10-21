@@ -23,8 +23,17 @@
  */
 
 import { readFileSync } from "node:fs";
-import { MAX_INLINE_PAYLOAD_BYTES, MeasurementObservationSchema } from "@nightshift/contracts";
-import { createSteppingClock } from "@nightshift/core";
+import {
+  MAX_INLINE_PAYLOAD_BYTES,
+  type MeasurementObservation,
+  MeasurementObservationSchema,
+} from "@nightshift/contracts";
+import {
+  countersFromRouteUsage,
+  createSteppingClock,
+  reconcileSegment,
+  reconcileSegments,
+} from "@nightshift/core";
 import type { HarnessObservation, HookEvent } from "@nightshift/harness";
 import { recordingHookSink, recordingMeasurementSink } from "@nightshift/harness";
 import { describe, expect, it } from "vitest";
@@ -990,23 +999,90 @@ describe("outcome.measures", () => {
     expect(observations.map((o) => o.kind)).toEqual(["request"]);
   });
 
-  it("falls back to launch scope and the existing usage when modelUsage is absent", () => {
-    const text = frameLine({
+  const noModelUsage = (input: number, cost: number | undefined, extra: object = {}): string =>
+    frameLine({ type: "system", subtype: "init", session_id: "s", model: "claude-sonnet-5" }) +
+    frameLine({
       type: "result",
       subtype: "success",
       is_error: false,
-      usage: { input_tokens: 3, output_tokens: 4 },
-      total_cost_usd: 0.1,
+      session_id: "s",
+      usage: { input_tokens: input },
+      ...(cost === undefined ? {} : { total_cost_usd: cost }),
+      ...extra,
     });
-    const { outcome, observations } = measure(text);
-    expect(observations).toEqual([]);
+
+  it("falls back to launch scope without dollars and keeps them as a session snapshot", () => {
+    const { outcome, observations } = measure(noModelUsage(50, 1.5));
     expect(outcome.measures).toMatchObject({
       usageScope: "launch",
       inclusion: "self",
       resultCoverage: "partial",
-      usage: { inputTokens: 3, outputTokens: 4, actualCostUsd: 0.1 },
+      usage: { inputTokens: 50 },
     });
-    expect(outcome.measures.usage).toEqual(outcome.usage);
+    expect(outcome.measures.usage).not.toHaveProperty("actualCostUsd");
+    expect(observations).toHaveLength(1);
+    const [snapshot] = observations;
+    expect(snapshot).toMatchObject({
+      kind: "cumulative_snapshot",
+      counterScope: "session",
+      inclusion: "includes_children",
+      sessionId: "s",
+    });
+    expect(snapshot?.kind === "cumulative_snapshot" && snapshot.counters).toEqual({
+      reportedUsd: 1.5,
+    });
+    expect(
+      MeasurementObservationSchema.safeParse(stamp(snapshot as HarnessObservation)).success,
+    ).toBe(true);
+  });
+
+  it("emits no cost snapshot for zero or absent cost without modelUsage", () => {
+    expect(measure(noModelUsage(5, 0)).observations).toEqual([]);
+    expect(measure(noModelUsage(5, undefined)).observations).toEqual([]);
+  });
+
+  it("emits only the existing snapshot when modelUsage is usable", () => {
+    const text = noModelUsage(5, 2, {
+      modelUsage: { "claude-sonnet-5": { inputTokens: 12 } },
+    });
+    const { observations } = measure(text);
+    expect(observations).toHaveLength(1);
+    expect(observations[0]?.observationId).toMatch(/^claude:result:/);
+  });
+
+  it("does not double-count session-cumulative dollars across a resume", () => {
+    const segment = (input: number, cost: number, resumed: boolean) => {
+      const { observations, outcome } = measure(noModelUsage(input, cost));
+      const m = outcome.measures;
+      const stamped = observations.map((o) => stamp(o) as MeasurementObservation);
+      stamped.push({
+        ...(stamp({
+          schemaVersion: 1,
+          kind: "terminal_summary",
+          observationId: `exit:${resumed ? 2 : 1}`,
+          source: "engine",
+          provenance: { adapter: "execution", note: "the harness exit" },
+          inclusion: m.inclusion,
+          counters: countersFromRouteUsage(m.usage ?? {}),
+          counterScope: m.usageScope,
+          exitKind: "completed",
+          coverage: "partial",
+        } as unknown as HarnessObservation) as object),
+      } as MeasurementObservation);
+      return stamped;
+    };
+    const first = reconcileSegment(segment(100, 1, false), { resumedSession: false });
+    const second = reconcileSegment(segment(50, 1.5, true), {
+      resumedSession: true,
+      ...(first.sessionCumulative === undefined
+        ? {}
+        : { baseline: first.sessionCumulative.counters }),
+    });
+    const total = reconcileSegments([first, second]);
+    expect(total.inputTokens).toBe(150);
+    expect(total.reportedUsd).toBe(1.5);
+    expect(first.gaps).toEqual([]);
+    expect(second.gaps).toEqual([]);
   });
 
   it("uses the init model when no assistant frame names one", () => {

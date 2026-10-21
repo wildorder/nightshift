@@ -279,7 +279,14 @@ export const combineTurns = (earlier: RouteUsage | undefined, turn: RouteUsage):
  * it with receiver evidence; it is not the final word.
  */
 export interface StreamMeasures {
-  /** Session counters when a `result` carried `modelUsage`, else the launch's `outcome.usage`. */
+  /**
+   * Session counters when a `result` carried `modelUsage`, else the launch's
+   * per-turn main-loop tokens and latency. The fallback never carries
+   * `actualCostUsd`: `total_cost_usd` is a session-cumulative figure, and a
+   * launch-scoped exit cannot carry one (the recorder sums launches). It goes
+   * to the measurement sink as a session-scoped snapshot instead; with no sink
+   * the dollars are simply not reported.
+   */
   readonly usage?: RouteUsage;
   /**
    * The session counters `usage` was derived from (the latest result's summed
@@ -697,6 +704,28 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         counters: totals.counters,
         ...(sessionId === undefined ? {} : { sessionId }),
       });
+    } else if (
+      typeof frame.total_cost_usd === "number" &&
+      Number.isFinite(frame.total_cost_usd) &&
+      frame.total_cost_usd > 0
+    ) {
+      // No usable modelUsage: keep the session-cumulative dollars with their
+      // true scope so the recorder baselines them across resumes.
+      const uuid = str(frame.uuid);
+      observe({
+        schemaVersion: 1,
+        kind: "cumulative_snapshot",
+        observationId:
+          uuid !== undefined
+            ? `claude:result-cost:${uuid}`
+            : `claude:result-cost:${sessionId ?? "launch"}:${resultOrdinal}`,
+        source: "harness",
+        provenance: resultProvenance(harnessVersion),
+        inclusion: "includes_children",
+        counterScope: "session",
+        counters: { reportedUsd: frame.total_cost_usd },
+        ...(sessionId === undefined ? {} : { sessionId }),
+      });
     }
 
     const reported = isRecord(frame.usage) ? frame.usage : {};
@@ -801,9 +830,12 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         inclusion: "includes_children",
       };
     }
+    // `actualCostUsd` is the whole tree's session-cumulative figure, which a
+    // launch-scoped exit must not carry (the recorder sums launches).
+    const { actualCostUsd: _sessionUsd, ...launchUsage } = usage ?? {};
     return {
       ...base,
-      ...optionalField("usage", usage),
+      ...optionalField("usage", Object.keys(launchUsage).length > 0 ? launchUsage : undefined),
       usageScope: "launch",
       inclusion: "self",
     };
