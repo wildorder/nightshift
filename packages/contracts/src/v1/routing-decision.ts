@@ -18,6 +18,7 @@ import {
   VerificationIdSchema,
 } from "../ids.js";
 import { IsoTimestampSchema, runScoped } from "./common.js";
+import { ExecutionNodeStatusSchema } from "./execution-node.js";
 import {
   ClassificationSchema,
   EffortSchema,
@@ -247,7 +248,8 @@ export type RoutingDecision = z.infer<typeof RoutingDecisionSchema>;
  * a join. JSON Lines, one per decision, every attempt of every job included.
  */
 export const RoutingDatasetLineSchema = z.strictObject({
-  schemaVersion: z.literal(2),
+  /** 3: lines carry `nodeOutcome`; a root line's `outcome` is the run's observed result. */
+  schemaVersion: z.literal(3),
   projectId: z.string().min(1),
   programId: z.string().min(1),
   runId: z.string().min(1),
@@ -272,7 +274,15 @@ export const RoutingDatasetLineSchema = z.strictObject({
   chosen: RouteTargetSchema,
   eligibleOptions: z.array(RouteOptionSchema),
   usage: RouteUsageSchema,
+  /** How this attempt's own route ended; for a root line, the run's observed result. */
   outcome: RouteOutcomeSchema,
+  /**
+   * The node's eventual status when the dataset was gathered: where the work
+   * ended up, not how this attempt went. A failed attempt of a node that later
+   * succeeded has `outcome: failed` and the node's final status here. Distinct
+   * from `outcome` and from `judgement`, which may be historical.
+   */
+  nodeOutcome: ExecutionNodeStatusSchema,
   /**
    * What judged this decision's work. `attempt`: chosen by the explicit links
    * (the verification names this decision; the examination names it as its

@@ -518,6 +518,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       measurements.push(...page.items);
       cursor = page.cursor;
     } while (cursor !== undefined);
+    // The root launch's summaries are among `measurements` (D-02): limits see its known usage.
     return spendOfRun({ routes, measurements });
   };
 

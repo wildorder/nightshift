@@ -9,9 +9,11 @@ import {
   type ExecutionNode,
   type JobContract,
   type MeasurementSummary,
+  type RouteOutcome,
   type RoutingDatasetLine,
   RoutingDatasetLineSchema,
   type RoutingDecision,
+  type Run,
   type Verification,
 } from "@nightshift/contracts";
 import { type ProjectStores, type RunScope, routeUsageFromCounters } from "@nightshift/core";
@@ -123,7 +125,7 @@ const newestSummary = (summaries: readonly MeasurementSummary[]): MeasurementSum
 
 /** The fields every line shares, whatever its decision. */
 const baseOf = (scope: RunScope, node: ExecutionNode, job: JobContract | undefined) => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   projectId: scope.projectId,
   programId: scope.programId,
   runId: scope.runId,
@@ -166,10 +168,26 @@ const lineOf = (
     eligibleOptions: decision.eligibleOptions,
     usage: decision.usage,
     outcome: decision.outcome,
+    nodeOutcome: node.status,
     judgement,
     ...timingOf(decision.usage, summary),
     createdAt: decision.createdAt,
   });
+
+/** The root launch's route outcome: the run's observed result, pending until it has one. */
+const rootOutcomeOf = (run: Pick<Run, "status"> | undefined): RouteOutcome => {
+  switch (run?.status) {
+    case "succeeded":
+      return "succeeded";
+    case "failed":
+      return "failed";
+    case "cancelled":
+    case "interrupted":
+      return "cancelled";
+    default:
+      return "pending";
+  }
+};
 
 /**
  * A root's line, from the summary of its launch (no routing decision exists).
@@ -179,6 +197,7 @@ const rootLineOf = (
   scope: RunScope,
   node: ExecutionNode,
   summary: MeasurementSummary,
+  run: Pick<Run, "status"> | undefined,
 ): RoutingDatasetLine => {
   const usage = routeUsageFromCounters(summary.totals, {
     ...(summary.valuation.reportedUsd === undefined
@@ -202,7 +221,8 @@ const rootLineOf = (
     chosen: summary.route,
     eligibleOptions: [],
     usage,
-    outcome: "pending",
+    outcome: rootOutcomeOf(run),
+    nodeOutcome: node.status,
     judgement: { verification: null, examination: null, link: "none", historical: false },
     ...timingOf(usage, summary),
     createdAt: summary.createdAt,
@@ -221,6 +241,7 @@ export const routingDataset = async (
   const summaries = await readAll<MeasurementSummary>((page) =>
     stores.measurements.listByRun(scope, page),
   );
+  const run = await stores.runs.get(scope, scope.runId);
   const jobOf = new Map(jobs.map((job) => [job.jobContractId as string, job]));
   const lines: RoutingDatasetLine[] = [];
   for (const node of nodes) {
@@ -232,7 +253,7 @@ export const routingDataset = async (
             summary.routingDecisionId === null && summary.executionNodeId === node.executionNodeId,
         ),
       );
-      if (rootSummary !== undefined) lines.push(rootLineOf(scope, node, rootSummary));
+      if (rootSummary !== undefined) lines.push(rootLineOf(scope, node, rootSummary, run));
       continue;
     }
     const decisions = await stores.routingDecisions.listByNode(scope, node.executionNodeId);

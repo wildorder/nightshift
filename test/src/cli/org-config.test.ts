@@ -148,7 +148,7 @@ describe("nightshift routes export (SC-P8-15)", () => {
       ladder: "claude",
       classification: { testability: "strong", kind: "implement" },
       jobContractId: job.jobContractId,
-      schemaVersion: 2,
+      schemaVersion: 3,
       judgement: { verification: null, examination: null, link: "none", historical: false },
       agentMs: null,
       settlementMs: null,

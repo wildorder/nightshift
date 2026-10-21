@@ -40,7 +40,12 @@ import {
   stricterExaminationPolicy,
 } from "@nightshift/contracts";
 import { countersFromRouteUsage } from "../measurement/normalize.js";
-import { type AttemptResources, resourcesOf, tokensOf } from "../report/resources.js";
+import {
+  type AttemptResources,
+  resourcesOf,
+  rootResourcesOf,
+  tokensOf,
+} from "../report/resources.js";
 
 /**
  * A job's classification, defaults filled (D-P8-01): risk as stated (a Job
@@ -321,12 +326,20 @@ export const spendOf = (usages: readonly RouteUsage[]): Spend =>
 
 /**
  * Spend from a run's routing decisions and measurement summaries: the same
- * per-route resources, and so the same totals, the report shows.
+ * per-route resources, and so the same totals, the report shows. The root
+ * launch's summary (no routing decision) is part of it (D-02): configured
+ * limits see its known usage. `rootNodeIds` names the root nodes; one without
+ * a summary is unmeasured, not free. Without it, only roots with summaries count.
  */
 export const spendOfRun = (input: {
   readonly routes: readonly RoutingDecision[];
   readonly measurements: readonly MeasurementSummary[];
-}): Spend => spendOfAttempts(input.routes.map((route) => resourcesOf(route, input.measurements)));
+  readonly rootNodeIds?: readonly string[];
+}): Spend =>
+  spendOfAttempts([
+    ...input.routes.map((route) => resourcesOf(route, input.measurements)),
+    ...rootResourcesOf(input.measurements, input.rootNodeIds),
+  ]);
 
 /**
  * What a budget evaluation leaves out, for reporting. `configured` is whether

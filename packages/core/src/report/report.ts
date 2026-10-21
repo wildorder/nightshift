@@ -97,7 +97,16 @@ import {
   occupancyOf,
 } from "./infrastructure.js";
 import { type OperationsReport, operationsOf } from "./operations.js";
-import { type PriceBasis, type ResourceTotals, resourcesOf, sumResources } from "./resources.js";
+import {
+  MISSING_RESOURCES,
+  type PriceBasis,
+  type ResourceTotals,
+  resourcesOf,
+  resourcesOfSummary,
+  rootResourcesOf,
+  rootSummariesOf,
+  sumResources,
+} from "./resources.js";
 import { type OverheadRow, type ReviewReport, reviewOf } from "./review.js";
 import { storyStatuses } from "./stories.js";
 import { type VerificationTimeReport, verificationTimeOf } from "./verification-time.js";
@@ -432,17 +441,47 @@ const strandReportOf = (
   };
 };
 
+/** The harness and model shown for a root launch that has no summary: nothing was observed. */
+const UNMEASURED_ROOT = { harness: "unknown", model: "unmeasured" } as const;
+
+/**
+ * Usage rows: one per harness / model / purpose over the routing decisions,
+ * plus a `root` row per root launch (D-02). A root with a measurement summary
+ * is valued by it; one without is a row of its own with nothing measured.
+ */
 const usageOf = (
   routes: readonly RoutingDecision[],
   measurements: readonly MeasurementSummary[] = [],
+  rootNodeIds: readonly string[] = [],
 ): UsageRow[] => {
   const rows = new Map<string, UsageRow>();
-  for (const route of routes) {
-    const purpose = route.purpose ?? "work";
-    const key = `${route.chosen.harness} / ${route.chosen.model} / ${purpose}`;
-    const so: UsageRow = rows.get(key) ?? {
+  const summaries = rootSummariesOf(measurements);
+  const launches = [
+    ...routes.map((route) => ({
       harness: route.chosen.harness,
       model: route.chosen.model,
+      purpose: route.purpose ?? "work",
+      // A summary's valuation is the better evidence; a route's own usage is the legacy fallback.
+      resources: resourcesOf(route, measurements),
+    })),
+    ...rootNodeIds.map((id) => {
+      const summary = summaries.get(id);
+      return summary === undefined
+        ? { ...UNMEASURED_ROOT, purpose: "root", resources: MISSING_RESOURCES }
+        : {
+            harness: summary.route.harness,
+            model: summary.route.model,
+            purpose: "root",
+            resources: resourcesOfSummary(summary),
+          };
+    }),
+  ];
+  for (const launch of launches) {
+    const { purpose, resources } = launch;
+    const key = `${launch.harness} / ${launch.model} / ${purpose}`;
+    const so: UsageRow = rows.get(key) ?? {
+      harness: launch.harness,
+      model: launch.model,
       purpose,
       attempts: 0,
       inputTokens: 0,
@@ -458,8 +497,6 @@ const usageOf = (
       estimateIncomplete: 0,
       priceBases: [],
     };
-    // A summary's valuation is the better evidence; a route's own usage is the legacy fallback.
-    const resources = resourcesOf(route, measurements);
     const { tokens, usd } = resources;
     const observed =
       tokens.input !== undefined ||
@@ -839,6 +876,7 @@ const budgetOf = (
   routes: readonly RoutingDecision[],
   measurements: readonly MeasurementSummary[],
 ): BudgetReport => {
+  // As the engine reads it: the root launch's summary counts, an absent one adds nothing.
   const spend = spendOfRun({ routes, measurements });
   return {
     usd: spend.usd,
@@ -894,7 +932,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
       records.jobOf,
     ),
     corrections: await gatherCorrections(stores, program),
-    usage: usageOf([...records.routesOf.values()].flat(), records.measurements),
+    usage: usageOf([...records.routesOf.values()].flat(), records.measurements, rootIdsOf(nodes)),
     attempts: attemptRowsOf({
       routes: [...records.routesOf.values()].flat(),
       measurements: records.measurements,
@@ -931,10 +969,19 @@ interface MemberFigures {
 const reasonOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+/** The run's root nodes: their launches have no routing decision (S-01). */
+const rootIdsOf = (nodes: readonly ExecutionNode[]): string[] =>
+  nodes.filter((node) => node.parentNodeId === null).map((node) => node.executionNodeId);
+
+/** Routes' resources and each root launch's summary (D-02); a root without one adds nothing. */
 const resourcesOfRoutes = (
   routes: readonly RoutingDecision[],
   measurements: readonly MeasurementSummary[],
-): ResourceTotals => sumResources(routes.map((route) => resourcesOf(route, measurements)));
+): ResourceTotals =>
+  sumResources([
+    ...routes.map((route) => resourcesOf(route, measurements)),
+    ...rootResourcesOf(measurements),
+  ]);
 
 /** Every agent and (non-root) routing decision of the nodes; absent when any read was refused. */
 const nodeRecordsOf = async (

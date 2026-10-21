@@ -1035,6 +1035,45 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
     expect(text).toContain("| 1.50* + 1 unknown |");
   });
 
+  it("shows the root launch as its own row, and an unmeasured root as unknown rather than zero", () => {
+    const measured = {
+      ...usageRow,
+      model: "root-model",
+      purpose: "root",
+      attempts: 1,
+      inputTokens: 50,
+      outputTokens: 5,
+      costUsd: 0.75,
+      estimated: false,
+      unpriced: 0,
+      tokensObserved: 1,
+      reportedAttempts: 1,
+      estimatedAttempts: 0,
+      estimateIncomplete: 0,
+      priceBases: [],
+    };
+    const text = renderReport(report({ usage: [measured] }));
+    expect(text).toContain("root-model");
+    expect(text).toContain("root");
+    expect(text).toContain("0.75");
+
+    const unmeasured = {
+      ...measured,
+      harness: "unknown",
+      model: "unmeasured",
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      unpriced: 1,
+      tokensObserved: 0,
+      reportedAttempts: 0,
+    };
+    const missing = renderReport(report({ usage: [unmeasured] }));
+    expect(missing).toContain("unmeasured");
+    expect(missing).not.toContain("| 0.00 |");
+    expect(missing).toMatch(/unmeasured.*unknown/);
+  });
+
   it("prints reported and estimated sub-totals apart on a row with one of each", () => {
     const text = renderReport(
       report({
