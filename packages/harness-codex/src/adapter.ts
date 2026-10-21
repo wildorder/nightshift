@@ -284,6 +284,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
           startReceiver,
           clock,
           env: state.env,
+          runAs: input.runAs,
           sink: input.measurements,
           resumeSessionId: input.resume?.sessionId,
         });
