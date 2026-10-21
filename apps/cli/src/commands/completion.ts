@@ -138,13 +138,36 @@ const usdText = (usd: CompletionResources["usd"] | undefined): string =>
     ? "dollars not observed"
     : `estimated ${dollars(usd.estimated)}, reported ${dollars(usd.reported)}`;
 
+/** The combined estimate; a lower bound wherever anything is missing, and never a bill. */
+const combinedText = (combined: CompletionFigures["combined"]): string => {
+  if (combined === undefined) return "combined estimate not observed";
+  const { coverage } = combined;
+  const gaps = [
+    ...(coverage.unmeasuredMembers > 0 ? [`${coverage.unmeasuredMembers} members unmeasured`] : []),
+    ...(coverage.estimateIncomplete > 0
+      ? [`${coverage.estimateIncomplete} attempts with incomplete valuation`]
+      : []),
+    ...(coverage.membersWithoutMachine > 0
+      ? [`${coverage.membersWithoutMachine} members without a machine report`]
+      : []),
+    ...(combined.model === undefined ? ["no model estimate"] : []),
+  ];
+  const parts = [
+    combined.model === undefined ? "model not observed" : `model ${dollars(combined.model)}`,
+    combined.infrastructure === undefined
+      ? "machine not observed"
+      : `machine ${dollars(combined.infrastructure)}`,
+  ];
+  return `combined API-equivalent estimate ${combined.lowerBound ? "lower bound " : ""}${dollars(combined.usd)} (${parts.join(" + ")}; ${coverage.measuredMembers} members measured${gaps.length === 0 ? "" : `; ${gaps.join(", ")}`}; an estimate, not a bill; reported dollars are not added)`;
+};
+
 const measuredText = (measured: number, unmeasured: number): string =>
   unmeasured > 0 ? `measured ${measured} of ${measured + unmeasured} members` : "";
 
 const figures = (environment: CliEnvironment, label: string, current: CompletionFigures): void => {
   const counts = measuredText(current.measuredMembers, current.unmeasuredMembers);
   environment.out(
-    `${label}: lead time ${seconds(current.leadTimeSeconds)}, run completion ${seconds(current.runCompletionSeconds)}, active union ${seconds(current.activeSeconds)}, ${tokensText(current.resources?.tokens)}, ${usdText(current.resources?.usd)}${counts === "" ? "" : `, ${counts}`}`,
+    `${label}: lead time ${seconds(current.leadTimeSeconds)}, run completion ${seconds(current.runCompletionSeconds)}, active union ${seconds(current.activeSeconds)}, ${tokensText(current.resources?.tokens)}, ${usdText(current.resources?.usd)}, ${combinedText(current.combined)}${counts === "" ? "" : `, ${counts}`}`,
   );
   if (current.unavailable !== undefined && current.unavailable.length > 0) {
     environment.out(`  measurement unavailable for ${current.unavailable.join(", ")}`);
@@ -330,7 +353,7 @@ const checkpointLine = (checkpoint: CompletionCheckpoint): string => {
       : `, machines ${m.infrastructure.members} of ${m.readableMembers} members`;
   return (
     `checkpoint \`${checkpoint.name}\` (${checkpoint.recordedAt}): lead time ${seconds(m.leadTimeSeconds)}, run completion ${seconds(m.runCompletionSeconds)}, active union ${seconds(m.activeSeconds)}` +
-    `, measured to ${m.measuredTo}, ${tokensText(m.tokens)}, ${usdText(m.usd)}, ${machines}${machineCounts}, ${m.readableMembers} readable members${counts === "" ? "" : `, ${counts}`}`
+    `, measured to ${m.measuredTo}, ${tokensText(m.tokens)}, ${usdText(m.usd)}, ${machines}${machineCounts}, ${combinedText(m.combined)}, ${m.readableMembers} readable members${counts === "" ? "" : `, ${counts}`}`
   );
 };
 

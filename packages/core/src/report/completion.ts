@@ -15,6 +15,7 @@
  */
 import type {
   CompletionCheckpoint,
+  CompletionCombined,
   CompletionHistory,
   CompletionMeasurement,
   CompletionMemberRef,
@@ -72,6 +73,11 @@ export interface CompletionFigures {
     readonly members: number;
     readonly withoutMachine: number;
   };
+  /**
+   * Model API-equivalent estimate plus machine estimate; a lower bound when
+   * anything is missing, never a bill. Absent, not zero, when neither exists.
+   */
+  readonly combined?: CompletionCombined;
   readonly membershipVersion: number;
 }
 
@@ -212,6 +218,50 @@ const sumResources = (items: readonly ResourceTotals[]): CompletionResources => 
   return { tokens, usd, coverage };
 };
 
+/**
+ * The combined estimate: model estimate plus machine estimate. Reported dollars
+ * never enter it. `readable` is the readable member count; `unavailable` the
+ * members whose measurement read failed.
+ */
+const combinedOf = (
+  measured: readonly ResourceTotals[],
+  machines: readonly InfrastructureReport[],
+  readable: number,
+  unavailable = 0,
+): CompletionCombined | undefined => {
+  const totals = measured.length === 0 ? undefined : sumTotals(measured);
+  const model =
+    totals !== undefined && (totals.usd.estimated > 0 || (totals.priceBases ?? []).length > 0)
+      ? totals.usd.estimated
+      : undefined;
+  const infrastructure =
+    machines.length === 0
+      ? undefined
+      : machines.reduce((sum, r) => sum + r.components.total.usd, 0);
+  if (model === undefined && infrastructure === undefined) return undefined;
+  const estimateIncomplete = totals?.estimateIncomplete ?? 0;
+  const membersWithoutMachine = readable - machines.length;
+  const unmeasuredMembers = readable - measured.length;
+  return {
+    usd: (model ?? 0) + (infrastructure ?? 0),
+    ...(model === undefined ? {} : { model }),
+    ...(infrastructure === undefined ? {} : { infrastructure }),
+    coverage: {
+      measuredMembers: measured.length,
+      unmeasuredMembers,
+      estimateIncomplete,
+      membersWithoutMachine,
+    },
+    lowerBound:
+      model === undefined ||
+      unmeasuredMembers > 0 ||
+      unavailable > 0 ||
+      estimateIncomplete > 0 ||
+      membersWithoutMachine > 0,
+    priceBases: [...(totals?.priceBases ?? [])],
+  };
+};
+
 export interface MeasureCompletionInput {
   readonly members: readonly CompletionMemberRef[];
   /** Keyed `${programId}/${runId}`. */
@@ -254,6 +304,7 @@ export const measureCompletion = (
   );
   const resources = measured.length === 0 ? undefined : sumResources(measured);
   const machines = input.infrastructure === undefined ? undefined : present(input.infrastructure);
+  const combined = combinedOf(measured, machines ?? [], readable.length);
   return {
     measuredTo: input.boundary,
     readableMembers: readable.length,
@@ -294,6 +345,7 @@ export const measureCompletion = (
             withoutMachine: readable.length - machines.length,
           },
         }),
+    ...(combined === undefined ? {} : { combined }),
   };
 };
 
@@ -324,6 +376,7 @@ const figuresOf = (
           const found = infrastructure.get(k);
           return found === undefined ? [] : [found];
         });
+  const combined = combinedOf(totals, machines, readableKeys.length, unavailable.length);
   return {
     ...(accepted === undefined || earliest === undefined
       ? {}
@@ -351,6 +404,7 @@ const figuresOf = (
             withoutMachine: readableKeys.length - machines.length,
           },
         }),
+    ...(combined === undefined ? {} : { combined }),
     membershipVersion: version,
   };
 };
@@ -379,6 +433,7 @@ const checkpointFiguresOf = (c: CompletionCheckpoint): CompletionFigures => {
           },
         }),
     ...(m.infrastructure === undefined ? {} : { infrastructure: m.infrastructure }),
+    ...(m.combined === undefined ? {} : { combined: m.combined }),
     membershipVersion: c.membershipVersion,
   };
 };

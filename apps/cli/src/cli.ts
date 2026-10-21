@@ -72,7 +72,7 @@ Usage:
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision reverse <program> <decisionId> --choice <new> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision brief <program> <decisionId> [--out <path>] [--run <id>] [--repo <path>]
-  nightshift report <program> [--run <id>] [--repo <path>]
+  nightshift report <program> [--run <id>] [--json [--role <r>] [--model <m>] [--since <iso>] [--until <iso>]] [--repo <path>]
   nightshift rate <program> up|down|clear [--run <id>] [--repo <path>]
   nightshift completion create <program> --title <t> [--run <id>] [--repo <path>]
   nightshift completion list <program> [--repo <path>]
@@ -582,11 +582,20 @@ const doDecision = async (
 };
 
 const doReport = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift report <program> [--run <id>] [--repo <path>]";
+  const usage =
+    "nightshift report <program> [--run <id>] [--json [--role <r>] [--model <m>] [--since <iso>] [--until <iso>]] [--repo <path>]";
   const { values, positionals } = parse(
     {
       args: [...args],
-      options: { run: { type: "string" }, repo: { type: "string" } },
+      options: {
+        run: { type: "string" },
+        repo: { type: "string" },
+        json: { type: "boolean" },
+        role: { type: "string" },
+        model: { type: "string" },
+        since: { type: "string" },
+        until: { type: "string" },
+      },
       allowPositionals: true,
       strict: true,
     },
@@ -596,10 +605,36 @@ const doReport = async (environment: CliEnvironment, args: readonly string[]): P
   if (id === undefined) throw new UsageError("`nightshift report` needs a program", usage);
   const run = optional(values, "run");
   const repo = optional(values, "repo");
+  const role = optional(values, "role");
+  const model = optional(values, "model");
+  const since = optional(values, "since");
+  const until = optional(values, "until");
+  for (const [flag, value] of [
+    ["--since", since],
+    ["--until", until],
+  ] as const) {
+    if (value !== undefined && Number.isNaN(Date.parse(value))) {
+      throw new UsageError(`${flag} takes an ISO timestamp, not \`${value}\``, usage);
+    }
+  }
+  const json = values.json === true;
+  const filters = {
+    ...(role === undefined ? {} : { role }),
+    ...(model === undefined ? {} : { model }),
+    ...(since === undefined ? {} : { from: since }),
+    ...(until === undefined ? {} : { to: until }),
+  };
+  if (!json && Object.keys(filters).length > 0) {
+    throw new UsageError(
+      "--role, --model, --since and --until narrow the export: add --json",
+      usage,
+    );
+  }
   return writeRunReport(environment, {
     id,
     ...(run === undefined ? {} : { run }),
     ...(repo === undefined ? {} : { repo }),
+    ...(json ? { json, filters } : {}),
   });
 };
 

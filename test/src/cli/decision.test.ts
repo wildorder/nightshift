@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "@nightshift/cli";
-import type { Decision, ProgramContract } from "@nightshift/contracts";
+import { type Decision, type ProgramContract, ReportExportSchema } from "@nightshift/contracts";
 import {
   createFixtures,
   makeCheckpoint,
@@ -285,5 +285,21 @@ describe("nightshift report (D-P9-06, D-P9-08)", () => {
     expect(report).toContain("Weighed: a table per region, rejected because more to migrate");
     expect(report).toContain("**Reversed by you**");
     expect(report).toContain("Not corrected yet");
+  });
+
+  it("--json writes the versioned export beside it, with the filters applied", async () => {
+    await seed();
+    expect(
+      await cli("report", "demo", "--repo", repo, "--json", "--role", "nobody"),
+      op.err.join("\n"),
+    ).toBe(0);
+    const exportPath = join(repo, "docs", "programs", "demo", "report.json");
+    expect(op.out.join("\n")).toContain(exportPath);
+    const exported = ReportExportSchema.parse(JSON.parse(await readFile(exportPath, "utf8")));
+    expect(exported.reportExportVersion).toBe(1);
+    expect(exported.filters).toEqual({ role: "nobody" });
+    expect(exported.attempts).toEqual([]);
+    expect(exported.sampleSize.matched).toBe(0);
+    expect(await cli("report", "demo", "--repo", repo, "--role", "nobody")).not.toBe(0);
   });
 });

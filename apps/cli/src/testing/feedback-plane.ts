@@ -43,6 +43,13 @@ export interface World {
   readonly feedback: Map<string, RunFeedback>;
   readonly histories: CompletionHistory[];
   readonly contracts: ProgramContract[];
+  /** The run's records a report reads; empty unless a test fills them. */
+  readonly records: {
+    readonly nodes: unknown[];
+    readonly routes: unknown[];
+    readonly measurements: unknown[];
+    readonly agents: unknown[];
+  };
   /** Every write the CLI made, in order, with its body parsed. */
   readonly puts: { readonly path: string; readonly body: Record<string, unknown> }[];
   /** What a write is answered with; default echoes it with 201. */
@@ -75,6 +82,19 @@ export const FAKE_MEASURED: CompletionMeasurement = {
   tokens: { input: 1000, output: 500, inputConventionUnknown: 0 },
   usd: { estimated: 1.5, reported: 2.25 },
   infrastructure: { usd: 0.5, members: 2, withoutMachine: 0 },
+  combined: {
+    usd: 2,
+    model: 1.5,
+    infrastructure: 0.5,
+    coverage: {
+      measuredMembers: 2,
+      unmeasuredMembers: 0,
+      estimateIncomplete: 0,
+      membersWithoutMachine: 0,
+    },
+    lowerBound: false,
+    priceBases: [],
+  },
   recordedAt: "2026-09-15T12:00:00.000Z" as IsoTimestamp,
 };
 
@@ -122,6 +142,7 @@ export const createWorld = async (): Promise<World> => {
     feedback,
     histories,
     contracts,
+    records: { nodes: [], routes: [], measurements: [], agents: [] },
     puts,
     answerPut: (request) => json(201, JSON.parse(request.body ?? "null")),
     cleanup: async () => {
@@ -133,6 +154,9 @@ export const createWorld = async (): Promise<World> => {
   const programRuns = /^\/projects\/[^/]+\/programs\/([^/]+)\/runs$/;
   const oneRun = /^\/projects\/[^/]+\/programs\/([^/]+)\/runs\/([^/]+)$/;
   const feedbackOf = /^\/projects\/[^/]+\/programs\/([^/]+)\/runs\/([^/]+)\/feedback$/;
+  const oneProgram = /^\/projects\/[^/]+\/programs\/([^/]+)$/;
+  const runList = /\/runs\/[^/]+\/(nodes|jobs|decisions|events|measurements)$/;
+  const nodeList = /\/nodes\/([^/]+)\/(agents|routing-decisions|examinations|verifications)$/;
   const programList = /^\/projects\/[^/]+\/programs$/;
   const projectHistories = /^\/projects\/[^/]+\/completion-histories$/;
   const oneHistory = /\/completion-histories\/(comp_[^/]+)$/;
@@ -165,6 +189,29 @@ export const createWorld = async (): Promise<World> => {
         m = programRuns.exec(path);
         if (m) return reply(page(runs.filter((r) => r.programId === m?.[1])));
         if (programList.test(path)) return reply(page(contracts));
+        m = oneProgram.exec(path);
+        if (m) {
+          const found = contracts.find((c) => c.programId === m?.[1]);
+          return reply(found ? json(200, found) : errorBody(404, "not_found", "no program"));
+        }
+        m = runList.exec(path);
+        if (m) {
+          const records = world.records;
+          const items =
+            m[1] === "nodes" ? records.nodes : m[1] === "measurements" ? records.measurements : [];
+          return reply(page(items));
+        }
+        m = nodeList.exec(path);
+        if (m) {
+          const records = world.records;
+          const wanted =
+            m[2] === "agents" ? records.agents : m[2] === "routing-decisions" ? records.routes : [];
+          return reply(
+            page(
+              wanted.filter((r) => (r as { executionNodeId?: string }).executionNodeId === m?.[1]),
+            ),
+          );
+        }
         if (projectHistories.test(path)) return reply(page(histories));
         m = oneHistory.exec(path);
         if (m) {
