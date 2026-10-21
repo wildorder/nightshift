@@ -27,7 +27,17 @@ const mount = async (name: ScenarioName) => {
 
 describe("the preview scenarios", () => {
   it("names every scenario the entry accepts", () => {
-    expect(SCENARIO_NAMES).toEqual(["complete", "sparse", "running", "failed", "error", "loading"]);
+    expect(SCENARIO_NAMES).toEqual([
+      "complete",
+      "sparse",
+      "running",
+      "failed",
+      "error",
+      "loading",
+      "partial-history",
+      "running-history",
+      "failed-history",
+    ]);
   });
 
   for (const name of SCENARIO_NAMES) {
@@ -86,6 +96,23 @@ describe("the preview scenarios", () => {
     expect(report.feedback?.verdict).toBe("not_rated");
     const summaries = (await stores.measurements.listByRun(seeded.scope)).items;
     expect(summaries.some((s) => s.segments.some((segment) => segment.open))).toBe(true);
+  });
+
+  it("the history scenarios add one completion history over their base run", async () => {
+    for (const [name, base] of [
+      ["partial-history", "sparse"],
+      ["running-history", "running"],
+      ["failed-history", "failed"],
+    ] as const) {
+      const { stores, seeded } = await mount(name);
+      const report = await gatherReport(stores, seeded.scope);
+      expect(report.completions).toHaveLength(1);
+      expect(report.completions[0]?.members).toHaveLength(2);
+      expect(report.completions[0]?.members.map((m) => m.role)).toEqual(["anchor", "contributing"]);
+      expect(report.run.status).toBe(
+        base === "sparse" ? "succeeded" : base === "running" ? "running" : "failed",
+      );
+    }
   });
 
   it("error rejects the report's reads and loading never answers them", async () => {

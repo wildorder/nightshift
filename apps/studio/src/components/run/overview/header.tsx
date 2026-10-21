@@ -17,7 +17,7 @@ import { AcceptanceState, RunVerdict } from "../verdict.js";
 import { memberCountsText, type OverviewScope, scopeParam } from "./scope.js";
 
 const selectClass =
-  "h-8 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 const Group = ({
   label,
@@ -63,7 +63,7 @@ export const OverviewHeader = ({
 
   return (
     <Card>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid grid-cols-[minmax(0,1fr)] gap-4">
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <p className="text-sm">
             <span
@@ -92,7 +92,7 @@ export const OverviewHeader = ({
               </>
             )}
           </p>
-          <div className="flex items-center gap-1.5 text-xs">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 text-xs">
             <span aria-hidden="true">Scope</span>
             <select
               aria-label="Scope"

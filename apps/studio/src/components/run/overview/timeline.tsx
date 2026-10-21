@@ -113,6 +113,9 @@ const rowsOfSegments = (
       .sort((a, b) => (a.from as number) - (b.from as number) || a.lane - b.lane),
   );
 
+/** How many characters of a row name fit the label gutter; the full name is its <title>. */
+const ROW_LABEL_CHARS = 26;
+
 export const Timeline = ({
   report,
   nodeLabels,
@@ -131,6 +134,8 @@ export const Timeline = ({
   const operations = report.operations;
   const model = timelineOf(operations);
   const elapsed = elapsedOf(report);
+  const rowLabel = (label: string): string =>
+    label.length > ROW_LABEL_CHARS ? `${label.slice(0, ROW_LABEL_CHARS - 1)}…` : label;
   const labelOf = (nodeId: string): string => nodeLabels.get(nodeId) ?? `node ${nodeId.slice(-8)}`;
 
   if (!hasObservedOperations(operations)) {
@@ -256,15 +261,18 @@ export const Timeline = ({
                   className="stroke-border"
                   strokeWidth={1}
                 />
-                <text
-                  x={x(tick)}
-                  y={14}
-                  textAnchor={tick === ticks[ticks.length - 1] ? "end" : "middle"}
-                  className="fill-muted-foreground"
-                  fontSize={12}
-                >
-                  {clockText(new Date(tick).toISOString())}
-                </text>
+                {/* The open run's "as of" label sits on the axis; a tick label under it would overprint it. */}
+                {elapsed.live && Math.abs(x(tick) - x(model.asOf)) < 60 ? null : (
+                  <text
+                    x={x(tick)}
+                    y={14}
+                    textAnchor={tick === ticks[ticks.length - 1] ? "end" : "middle"}
+                    className="fill-muted-foreground"
+                    fontSize={12}
+                  >
+                    {clockText(new Date(tick).toISOString())}
+                  </text>
+                )}
               </g>
             ))}
             {model.rows.map((row) => {
@@ -285,8 +293,9 @@ export const Timeline = ({
                     className="fill-foreground"
                     fontSize={13}
                   >
-                    {labelOf(row.nodeId).slice(0, 26)}
+                    {rowLabel(labelOf(row.nodeId))}
                   </text>
+                  <title>{labelOf(row.nodeId)}</title>
                 </g>
               );
             })}

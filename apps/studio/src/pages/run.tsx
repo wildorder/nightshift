@@ -339,7 +339,7 @@ export const RunPage = () => {
   };
 
   return (
-    <div className="grid gap-4">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
       <PageHeader
         title={
           <span className="flex flex-wrap items-center gap-2">
@@ -374,16 +374,18 @@ export const RunPage = () => {
       ) : null}
 
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="status">Status</TabsTrigger>
-          <TabsTrigger value="why">Why</TabsTrigger>
-          <TabsTrigger value="graph">Graph</TabsTrigger>
-          <TabsTrigger value="work">Work</TabsTrigger>
-          <TabsTrigger value="timeline">Timeline</TabsTrigger>
-          <TabsTrigger value="decisions">Decisions</TabsTrigger>
-          <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
-        </TabsList>
+        <div className="max-w-full overflow-x-auto">
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="status">Status</TabsTrigger>
+            <TabsTrigger value="why">Why</TabsTrigger>
+            <TabsTrigger value="graph">Graph</TabsTrigger>
+            <TabsTrigger value="work">Work</TabsTrigger>
+            <TabsTrigger value="timeline">Timeline</TabsTrigger>
+            <TabsTrigger value="decisions">Decisions</TabsTrigger>
+            <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="overview" className="mt-4">
           {report === undefined ? (

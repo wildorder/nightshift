@@ -1154,6 +1154,76 @@ const loading: Scenario = async (stores, ids, now) => {
   };
 };
 
-export const SCENARIOS = { complete, sparse, running, failed, error, loading } as const;
+// --- histories over the other worlds --------------------------------------
+
+/**
+ * A completion history whose anchor is the run `base` seeds, with one more
+ * member run: either a failed earlier run of the same program (`earlier`) or a
+ * run that has no records at all (`unrecorded`), so the membership is partial.
+ */
+const withHistory =
+  (base: Scenario, title: string, other: "earlier" | "unrecorded"): Scenario =>
+  async (stores, ids, now) => {
+    const seeded = await base(stores, ids, now);
+    const startedAt = startOf(now, SPAN_HOURS);
+    const f: Fixtures = { ...createFixtures(ids), scope: seeded.scope };
+    const memberRun = ids.next("run");
+    if (other === "earlier") {
+      const earlier: Fixtures = {
+        ...f,
+        scope: { ...f.scope, runId: memberRun },
+        rootNodeId: ids.next("node"),
+      };
+      const early = makeWorld(stores, earlier, startedAt);
+      await seedFailedRun(early, { from: -240, strandsFailed: 1 });
+      await putFeedback(stores, earlier, seeded.orgId, [
+        { verdict: "did_not_work", at: early.t(-195) },
+      ]);
+    }
+    const members = [
+      { programId: f.scope.programId, runId: f.scope.runId, role: "anchor" },
+      { programId: f.scope.programId, runId: memberRun, role: "contributing" },
+    ] as const;
+    const at = new Date(Date.parse(now()) - HOUR / 2).toISOString();
+    await stores.completionHistories.put(
+      makeCompletionHistory(f, {
+        title,
+        version: 1,
+        members: [...members],
+        revisions: [
+          {
+            version: 1,
+            actor: actor(seeded.orgId),
+            recordedAt: at,
+            added: [...members],
+            removed: [],
+          },
+        ],
+        createdAt: at,
+        updatedAt: at,
+      }),
+    );
+    return seeded;
+  };
+
+const partialHistory = withHistory(
+  sparse,
+  "Invoices persist (one run left no records)",
+  "unrecorded",
+);
+const runningHistory = withHistory(running, "Invoices persist, retry in progress", "earlier");
+const failedHistory = withHistory(failed, "Invoices persist after a failed attempt", "earlier");
+
+export const SCENARIOS = {
+  complete,
+  sparse,
+  running,
+  failed,
+  error,
+  loading,
+  "partial-history": partialHistory,
+  "running-history": runningHistory,
+  "failed-history": failedHistory,
+} as const;
 export type ScenarioName = keyof typeof SCENARIOS;
 export const SCENARIO_NAMES = Object.keys(SCENARIOS) as ScenarioName[];

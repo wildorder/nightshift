@@ -1,31 +1,39 @@
 #!/usr/bin/env node
 /**
- * Screenshots of the Studio's fixture preview (P20, S-04).
+ * Screenshots and layout checks of the Studio's fixture preview (P20, S-04).
  *
  * Starts the preview dev server (`apps/studio`, `npm run preview:fixtures`),
- * waits for it, and captures a full-page PNG of the run page for every
- * scenario x viewport (desktop 1440x900, mobile 390x844) x theme (light, dark)
- * into docs/programs/p20-measurements/studio-review/, so a design can be
- * reviewed against realistic data in a real browser.
+ * waits for it, and for every viewport (desktop 1440x900, mobile 390x844) x
+ * theme (light, dark) captures a full-page PNG of:
+ *   - the Overview tab of every scenario              <scenario>-overview-<viewport>-<theme>.png
+ *   - the history scope of every scenario with one    <scenario>-history-<viewport>-<theme>.png
+ *   - the evidence sheet open on the Consumed tile    complete-evidence-consumed-<viewport>-<theme>.png
+ * into docs/programs/p20-measurements/studio-review/, and writes widths.json
+ * beside them.
+ *
+ * A shot FAILS (exit 1) when the page scrolls sideways
+ * (document.documentElement.scrollWidth > the viewport width) or, best effort,
+ * when a text element is cut off by an overflow-clipping ancestor or truncated
+ * with an ellipsis and carries no full-text `title` (itself or an ancestor).
  *
  *   node scripts/studio-preview-shots.mjs
- *   node scripts/studio-preview-shots.mjs --scenario complete,sparse
- *   node scripts/studio-preview-shots.mjs --scenario complete --query "tab=overview&scope=x" --suffix overview
+ *   node scripts/studio-preview-shots.mjs --scenario complete,sparse --viewport mobile
+ *   node scripts/studio-preview-shots.mjs --scenario complete --query "tab=status" --suffix status
  *
  * Options:
  *   --scenario a,b     scenarios to capture (default: all of them)
- *   --query "k=v&..."  appended to the page URL (tab, scope, ...)
- *   --suffix name      added to the file name: <scenario>-<name>-<viewport>-<theme>.png
+ *   --query "k=v&..."  capture one custom shot per scenario with this query instead of the set above
+ *   --suffix name      with --query: the file name is <scenario>-<name>-<viewport>-<theme>.png
  *   --viewport a,b     desktop, mobile (default: both)
  *   --theme a,b        light, dark (default: both)
  *   --out dir          output directory (default: the studio-review folder)
  *
  * Chromium is installed with `npx playwright install chromium` when it is
- * missing. Exits non-zero when the server does not start, a page throws, or a
- * page that should render does not settle.
+ * missing. Exits non-zero when the server does not start, a page throws, a
+ * page that should render does not settle, or a layout check fails.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,7 +41,19 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 5174;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
-const SCENARIOS = ["complete", "sparse", "running", "failed", "error", "loading"];
+const SCENARIOS = [
+  "complete",
+  "sparse",
+  "running",
+  "failed",
+  "error",
+  "loading",
+  "partial-history",
+  "running-history",
+  "failed-history",
+];
+/** Scenarios whose run belongs to a completion history. */
+const WITH_HISTORY = ["complete", "partial-history", "running-history", "failed-history"];
 const VIEWPORTS = {
   desktop: { width: 1440, height: 900 },
   mobile: { width: 390, height: 844 },
@@ -154,45 +174,160 @@ const settle = async (page, scenario) => {
   await sleep(500);
 };
 
+/** Runs in the page: what is clipped, and what is truncated, on the current layout. */
+const inspectLayout = () => {
+  const clipped = [];
+  const truncated = [];
+  const describe = (el) =>
+    `${el.tagName.toLowerCase()}${el.dataset?.testid ? `[${el.dataset.testid}]` : ""} "${(el.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 60)}"`;
+  const clips = (el) => {
+    const style = getComputedStyle(el);
+    return style.overflowX === "hidden" || style.overflowX === "clip";
+  };
+  const hasTitle = (el) => {
+    for (let node = el; node !== null; node = node.parentElement)
+      if (node.getAttribute("title")) return true;
+    return false;
+  };
+  // SVG row labels are cut by hand with an ellipsis; the full text must be the group's <title>.
+  for (const text of document.body.querySelectorAll("svg text")) {
+    if (!(text.textContent ?? "").endsWith("…")) continue;
+    if (text.parentElement?.querySelector(":scope > title")) truncated.push(describe(text));
+    else clipped.push(`ellipsised SVG label without a <title>: ${describe(text)}`);
+  }
+  for (const el of document.body.querySelectorAll("*")) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) continue;
+    if (!Array.from(el.childNodes).some((n) => n.nodeType === 3 && n.textContent.trim() !== ""))
+      continue;
+    if (el.closest(".sr-only")) continue;
+    // Truncated by its own box (text-overflow: ellipsis or a clipped line).
+    if (clips(el) && el.scrollWidth > el.clientWidth + 1) {
+      if (hasTitle(el)) truncated.push(describe(el));
+      else clipped.push(`truncated without a title: ${describe(el)}`);
+      continue;
+    }
+    // Cut off by a clipping ancestor.
+    for (
+      let anc = el.parentElement;
+      anc !== null && anc !== document.body;
+      anc = anc.parentElement
+    ) {
+      if (!clips(anc)) continue;
+      const box = anc.getBoundingClientRect();
+      if (rect.right > box.right + 1 || rect.left < box.left - 1) {
+        if (hasTitle(el)) truncated.push(describe(el));
+        else clipped.push(`cut off by an overflow-hidden ancestor: ${describe(el)}`);
+        break;
+      }
+    }
+  }
+  return {
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+    clipped,
+    truncatedWithTitle: truncated.length,
+  };
+};
+
+/** The shots to take for one scenario: name part, query, and what to do on the page first. */
+const shotsFor = (scenario, options) => {
+  if (options.query !== undefined) {
+    const extra = options.query.replace(/^[?&]/, "");
+    return [{ label: options.suffix, query: extra }];
+  }
+  const shots = [{ label: "overview", query: "tab=overview" }];
+  if (WITH_HISTORY.includes(scenario))
+    shots.push({ label: "history", query: "tab=overview", history: true });
+  if (scenario === "complete")
+    shots.push({ label: "evidence-consumed", query: "tab=overview", evidence: "consumed" });
+  return shots;
+};
+
 const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   const scenarios = list(options.scenario, SCENARIOS, "scenario");
   const viewports = list(options.viewport, Object.keys(VIEWPORTS), "viewport");
   const themes = list(options.theme, THEMES, "theme");
   const out = resolve(ROOT, options.out ?? "docs/programs/p20-measurements/studio-review");
-  const extra = (options.query ?? "").replace(/^[?&]/, "");
   await mkdir(out, { recursive: true });
 
   const { chromium } = await import("playwright");
   const server = startServer();
   let browser;
   const failures = [];
+  const measured = [];
   try {
     await waitForServer(server);
+    // An unbuilt workspace package makes the entry fail to transform; say so now, not after a 45s wait.
+    const entry = await fetch(`${ORIGIN}/src/preview/main.tsx`);
+    if (!entry.ok)
+      throw new Error(
+        `the preview entry does not compile (${entry.status}); run \`npm run build\` first:\n${server.log()}`,
+      );
     browser = await launch(chromium);
     for (const scenario of scenarios) {
-      for (const viewport of viewports) {
-        for (const theme of themes) {
-          const name = `${[scenario, options.suffix, viewport, theme].filter(Boolean).join("-")}.png`;
-          const context = await browser.newContext({
-            viewport: VIEWPORTS[viewport],
-            colorScheme: theme,
-          });
-          const page = await context.newPage();
-          const thrown = [];
-          page.on("pageerror", (error) => thrown.push(String(error)));
-          try {
-            const query = `scenario=${scenario}&theme=${theme}${extra === "" ? "" : `&${extra}`}`;
-            await page.goto(`${ORIGIN}/preview.html?${query}`, { waitUntil: "load" });
-            await settle(page, scenario);
-            if (thrown.length > 0) throw new Error(`the page threw: ${thrown.join("; ")}`);
-            await page.screenshot({ path: join(out, name), fullPage: true });
-            console.log(`wrote ${join(out, name)}`);
-          } catch (error) {
-            failures.push(`${name}: ${error instanceof Error ? error.message : error}`);
-            console.error(`FAILED ${name}: ${error}`);
-          } finally {
-            await context.close();
+      for (const shot of shotsFor(scenario, options)) {
+        for (const viewport of viewports) {
+          for (const theme of themes) {
+            const name = `${[scenario, shot.label, viewport, theme].filter(Boolean).join("-")}.png`;
+            const context = await browser.newContext({
+              viewport: VIEWPORTS[viewport],
+              colorScheme: theme,
+            });
+            const page = await context.newPage();
+            const thrown = [];
+            page.on("pageerror", (error) => thrown.push(String(error)));
+            try {
+              const base = `scenario=${scenario}&theme=${theme}${shot.query ? `&${shot.query}` : ""}`;
+              await page.goto(`${ORIGIN}/preview.html?${base}`, { waitUntil: "load" });
+              await settle(page, scenario);
+              if (shot.history) {
+                const value = await page
+                  .getByLabel("Scope")
+                  .locator("option")
+                  .evaluateAll((os) =>
+                    os.map((o) => o.value).find((v) => v.startsWith("history:")),
+                  );
+                if (value === undefined) throw new Error("the scenario has no completion history");
+                await page.goto(
+                  `${ORIGIN}/preview.html?${base}&scope=${encodeURIComponent(value)}`,
+                  { waitUntil: "load" },
+                );
+                await settle(page, scenario);
+              }
+              if (shot.evidence) {
+                await page.locator(`[data-tile="${shot.evidence}"]`).click();
+                await page.getByRole("dialog").waitFor({ timeout: BOUNDED_MS * 2 });
+                await sleep(600);
+              }
+              if (thrown.length > 0) throw new Error(`the page threw: ${thrown.join("; ")}`);
+              const layout = await page.evaluate(inspectLayout);
+              const width = VIEWPORTS[viewport].width;
+              measured.push({
+                image: name,
+                viewport,
+                theme,
+                viewportWidth: width,
+                scrollWidth: layout.scrollWidth,
+                clientWidth: layout.clientWidth,
+                clipped: layout.clipped,
+                truncatedWithTitle: layout.truncatedWithTitle,
+              });
+              await page.screenshot({ path: join(out, name), fullPage: true });
+              console.log(`wrote ${join(out, name)} (scrollWidth ${layout.scrollWidth}/${width})`);
+              if (layout.scrollWidth > width)
+                throw new Error(
+                  `the page scrolls sideways: scrollWidth ${layout.scrollWidth} > ${width}`,
+                );
+              if (layout.clipped.length > 0)
+                throw new Error(`clipped text: ${layout.clipped.slice(0, 5).join(" | ")}`);
+            } catch (error) {
+              failures.push(`${name}: ${error instanceof Error ? error.message : error}`);
+              console.error(`FAILED ${name}: ${error}`);
+            } finally {
+              await context.close();
+            }
           }
         }
       }
@@ -200,6 +335,10 @@ const main = async () => {
   } finally {
     await browser?.close();
     server.stop();
+    if (measured.length > 0) {
+      measured.sort((x, y) => x.image.localeCompare(y.image));
+      await writeFile(join(out, "widths.json"), `${JSON.stringify(measured, null, 2)}\n`);
+    }
   }
   if (failures.length > 0) {
     console.error(`\n${failures.length} screenshot(s) failed:\n${failures.join("\n")}`);
