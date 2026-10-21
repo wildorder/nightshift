@@ -43,9 +43,9 @@ export interface ProgramStatus {
     /** Input plus output tokens of the run's routed attempts. */
     readonly tokens: number;
     /**
-     * What the figures leave out. From the report's usage rows, `unpriced`
-     * counts every route with no dollar figure (counters or not) and
-     * `unmeasured` and `estimateIncomplete` are not distinguished there.
+     * What the figures leave out. Taken from the report's budget when it has
+     * one; a report without it falls back to its usage rows, which cannot tell
+     * `unmeasured` or `estimateIncomplete` apart (both are 0 there).
      */
     readonly evaluation: SpendEvaluation & { readonly configured: boolean };
   };
@@ -65,6 +65,30 @@ const WAITING_ORDER: Readonly<Record<WaitingKind, number>> = {
   failed: 2,
   blocked: 3,
   provisional: 4,
+};
+
+/** The spend of a report with no budget: summed from its usage rows. */
+const spendOfUsageRows = (report: RunReport) => {
+  const usd = report.usage.reduce((sum, row) => sum + row.costUsd, 0);
+  const tokens = report.usage.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
+  const estimated = report.usage.some((row) => row.estimated);
+  const unpriced = report.usage.reduce((sum, row) => sum + row.unpriced, 0);
+  return {
+    usd,
+    tokens,
+    estimated,
+    unpriced,
+    evaluation: budgetEvaluation(
+      {
+        usd,
+        tokens,
+        estimated,
+        unknown: 0,
+        evaluation: { complete: unpriced === 0, unpriced, unmeasured: 0, estimateIncomplete: 0 },
+      },
+      report.program.costPolicy,
+    ),
+  };
 };
 
 /**
@@ -124,11 +148,25 @@ export const programStatus = (
   }
   waiting.sort((a, b) => WAITING_ORDER[a.kind] - WAITING_ORDER[b.kind]);
 
-  const usd = report.usage.reduce((sum, row) => sum + row.costUsd, 0);
-  const tokens = report.usage.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
-  const estimated = report.usage.some((row) => row.estimated);
-  const unpriced = report.usage.reduce((sum, row) => sum + row.unpriced, 0);
   const budgetUsd = report.program.costPolicy.maxUsd;
+  const spend = report.budget
+    ? {
+        usd: report.budget.usd,
+        tokens: report.budget.tokens,
+        estimated: report.budget.estimated,
+        unpriced: report.budget.evaluation.unpriced,
+        evaluation: budgetEvaluation(
+          {
+            usd: report.budget.usd,
+            tokens: report.budget.tokens,
+            estimated: report.budget.estimated,
+            unknown: 0,
+            evaluation: report.budget.evaluation,
+          },
+          report.program.costPolicy,
+        ),
+      }
+    : spendOfUsageRows(report);
   return {
     runStatus: report.run.status,
     strands: {
@@ -143,27 +181,6 @@ export const programStatus = (
       examined: jobs.filter((j) => j.examinations.length > 0).length,
     },
     waiting,
-    spend: {
-      usd,
-      estimated,
-      unpriced,
-      tokens,
-      evaluation: budgetEvaluation(
-        {
-          usd,
-          tokens,
-          estimated,
-          unknown: 0,
-          evaluation: {
-            complete: unpriced === 0,
-            unpriced,
-            unmeasured: 0,
-            estimateIncomplete: 0,
-          },
-        },
-        report.program.costPolicy,
-      ),
-      ...(budgetUsd === undefined ? {} : { budgetUsd }),
-    },
+    spend: { ...spend, ...(budgetUsd === undefined ? {} : { budgetUsd }) },
   };
 };

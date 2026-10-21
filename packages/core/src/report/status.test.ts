@@ -98,6 +98,52 @@ describe("programStatus (D-P13-09)", () => {
     ]);
   });
 
+  it("takes the spend from the report's budget when it has one", () => {
+    const status = programStatus(
+      report({
+        usage: [
+          {
+            harness: "claude",
+            model: "m",
+            purpose: "work",
+            attempts: 1,
+            inputTokens: 1,
+            outputTokens: 1,
+            costUsd: 1,
+            estimated: false,
+            unpriced: 0,
+          },
+        ],
+        budget: {
+          usd: 7.5,
+          tokens: 900,
+          estimated: true,
+          evaluation: {
+            configured: true,
+            complete: false,
+            unpriced: 1,
+            unmeasured: 2,
+            estimateIncomplete: 1,
+          },
+        },
+      }),
+    );
+    expect(status.spend).toEqual({
+      usd: 7.5,
+      tokens: 900,
+      estimated: true,
+      unpriced: 1,
+      budgetUsd: 25,
+      evaluation: {
+        configured: true,
+        complete: false,
+        unpriced: 1,
+        unmeasured: 2,
+        estimateIncomplete: 1,
+      },
+    });
+  });
+
   it("puts a human prerequisite first, then provisional and blocked strands, each with a reason", () => {
     const status = programStatus(
       report({
