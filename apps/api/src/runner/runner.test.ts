@@ -342,7 +342,13 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
       await enforceStop(w.cleanup(), (await w.stores.dispatches.get(w.f.scope)) as Dispatch),
     ).toBe("terminated");
     expect(w.compute.terminated).toEqual(["i-1"]);
-    expect((await w.stores.dispatches.get(w.f.scope))?.status).toBe("stopped");
+    const stopped = await w.stores.dispatches.get(w.f.scope);
+    expect(stopped?.status).toBe("stopped");
+    expect(stopped?.attempts.at(-1)).toMatchObject({
+      endedAt: new Date(NOW).toISOString(),
+      endReason: "stopped",
+    });
+    expect(stopped?.cleanup.terminatedAt).toBe(new Date(NOW).toISOString());
     const fresh = await world({
       status: "stopping",
       instanceId: "i-2",
@@ -382,7 +388,17 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
     expect(await cleanupStopped(w.cleanup(), await dispatch())).toBe("volume_deleted");
     expect(w.compute.deletedVolumes).toEqual(["vol-1"]);
     expect((await dispatch()).cleanup.volumeDeleted).toBe(true);
+    expect((await dispatch()).cleanup.volumeDeletedAt).toBe(new Date(NOW).toISOString());
     expect(await cleanupStopped(w.cleanup(), await dispatch())).toBe("done");
+  });
+
+  it("records terminatedAt when cleanup terminates a machine that is still there", async () => {
+    const w = await world({ status: "stopped", instanceId: "i-1", volumeId: "vol-1" });
+    w.compute.instances.set("i-1", { instanceId: "i-1", state: "running" });
+    const dispatch = () => w.stores.dispatches.get(w.f.scope) as Promise<Dispatch>;
+    expect(await cleanupStopped(w.cleanup(), await dispatch())).toBe("waiting");
+    expect(w.compute.terminated).toEqual(["i-1"]);
+    expect((await dispatch()).cleanup.terminatedAt).toBe(new Date(NOW).toISOString());
   });
 
   it("keeps three superseded snapshots and deletes the fourth", async () => {
@@ -480,6 +496,7 @@ describe("recovery of a lapsed lease (T6, D-P10-18, D-P10-05)", () => {
     expect(replacing).toMatchObject({ status: "provisioning", generation: 2, volumeId: "vol-run" });
     expect(replacing.instanceId).toBeUndefined();
     expect(replacing.attempts).toHaveLength(2);
+    expect(replacing.attempts[0]).toMatchObject({ endReason: "lease_lost" });
     expect(replacing.attempts[0]?.endedAt).toBeDefined();
     expect(replacing.attempts[1]).toMatchObject({ generation: 2, reason: "lease_lost" });
 
@@ -535,6 +552,10 @@ describe("recovery of a lapsed lease (T6, D-P10-18, D-P10-05)", () => {
     expect(await dispatch()).toMatchObject({
       status: "failed",
       failure: { code: "recovery_exhausted" },
+    });
+    expect((await dispatch()).attempts.at(-1)).toMatchObject({
+      endedAt: new Date(NOW).toISOString(),
+      endReason: "failed",
     });
   });
 

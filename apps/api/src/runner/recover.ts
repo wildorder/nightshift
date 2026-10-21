@@ -46,9 +46,15 @@ export const recoverLostLease = async (
     });
   }
   if (attemptsExhausted(dispatch)) {
+    const last = dispatch.attempts.length - 1;
     const failed = transitionDispatch(
       {
         ...dispatch,
+        attempts: dispatch.attempts.map((attempt, index) =>
+          index === last && attempt.endedAt === undefined
+            ? { ...attempt, endedAt: at, endReason: "failed" as const }
+            : attempt,
+        ),
         failure: {
           code: "recovery_exhausted",
           message: `the lease lapsed on attempt ${dispatch.attempts.length}; no attempts remain`,
@@ -60,6 +66,6 @@ export const recoverLostLease = async (
     await deps.stores.dispatches.put(failed);
     return "exhausted";
   }
-  await deps.stores.dispatches.put(beginReplacement(dispatch, "lease_lost", at));
+  await deps.stores.dispatches.put(beginReplacement(dispatch, "lease_lost", at, "lease_lost"));
   return "replacing";
 };

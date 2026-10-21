@@ -28,6 +28,7 @@ import {
   makeRun,
   makeWarmCache,
   nextUserId,
+  volumeUsdPerHour,
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it, vi } from "vitest";
@@ -223,6 +224,13 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     });
     expect(dispatch.spend.estimatedUsd).toBeGreaterThan(0);
     expect(dispatch.engineAgentId).toMatch(/^agent_/);
+    expect(dispatch.priceBasis).toEqual({
+      usdPerHour: COMPUTE_TIERS.better.usdPerHour,
+      volumeUsdPerHour: volumeUsdPerHour("better"),
+      source: "COMPUTE_TIERS (AWS on-demand price feed, D-P10-26)",
+      asOf: "2026-09-25",
+      region: "us-west-2",
+    });
     expect((await call(w, "GET", `${w.paths.run}/dispatch`)).body).toEqual(dispatch);
   });
 
@@ -680,6 +688,85 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
     expect(second.status).toBe(200);
     stored = await w.stores.dispatches.get(w.f.scope);
     expect(stored?.progress).toMatchObject({ stage: "setup", detail: "setup install" });
+  });
+
+  it("keeps a stage history in order, with no duplicate for a repeated stage (P20)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    for (const stage of ["up", "workspace", "workspace", "setup", "orchestrating", "setup"]) {
+      await call(
+        w,
+        "POST",
+        `${w.paths.run}/dispatch/heartbeat`,
+        heartbeatBody(1, { progress: { stage } }),
+        engine(w, dispatch),
+      );
+    }
+    const stored = await w.stores.dispatches.get(w.f.scope);
+    expect(stored?.stages?.map((entry) => entry.stage)).toEqual([
+      "up",
+      "workspace",
+      "setup",
+      "orchestrating",
+      "setup",
+    ]);
+    expect(stored?.stages?.every((entry) => entry.generation === 1)).toBe(true);
+  });
+
+  it("stamps readyAt and runningAt once, and ends the attempt on stopped or failed (P20)", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    const beat = (body: Record<string, unknown>) =>
+      call(
+        w,
+        "POST",
+        `${w.paths.run}/dispatch/heartbeat`,
+        heartbeatBody(1, body),
+        engine(w, dispatch),
+      );
+    const attempt = async () => (await w.stores.dispatches.get(w.f.scope))?.attempts[0];
+    await beat({ report: "ready" });
+    expect((await attempt())?.readyAt).toBe(NOW);
+    await beat({ report: "running" });
+    expect((await attempt())?.runningAt).toBe(NOW);
+    // Later reports never move them.
+    const stored = (await w.stores.dispatches.get(w.f.scope)) as Dispatch;
+    await w.stores.dispatches.put({
+      ...stored,
+      attempts: stored.attempts.map((a) => ({
+        ...a,
+        readyAt: "2026-10-01T00:00:01.000Z",
+        runningAt: "2026-10-01T00:00:02.000Z",
+      })),
+    });
+    await beat({ report: "ready" });
+    await beat({ report: "running" });
+    expect(await attempt()).toMatchObject({
+      readyAt: "2026-10-01T00:00:01.000Z",
+      runningAt: "2026-10-01T00:00:02.000Z",
+    });
+    expect((await attempt())?.endedAt).toBeUndefined();
+
+    await beat({ report: "stopped" });
+    expect(await attempt()).toMatchObject({ endedAt: NOW, endReason: "stopped" });
+
+    const failing = await setup();
+    const failed = await provisioned(failing, await dispatched(failing));
+    await failing.stores.dispatches.put({ ...failed, status: "running" });
+    await call(
+      failing,
+      "POST",
+      `${failing.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, {
+        report: "stopped",
+        failure: { code: "setup_failed", message: "install failed" },
+      }),
+      engine(failing, failed),
+    );
+    expect((await failing.stores.dispatches.get(failing.f.scope))?.attempts[0]).toMatchObject({
+      endedAt: NOW,
+      endReason: "failed",
+    });
   });
 
   it("keeps the stored progress on a beat that reports none", async () => {

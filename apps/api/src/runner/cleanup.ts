@@ -82,7 +82,18 @@ export const enforceStop = async (deps: CleanupDeps, dispatch: Dispatch): Promis
       return "waiting";
     }
   }
-  await deps.stores.dispatches.put(transitionDispatch(dispatch, "stopped", nowIso(deps.clock)));
+  const at = nowIso(deps.clock);
+  const last = dispatch.attempts.length - 1;
+  const stopped = transitionDispatch(dispatch, "stopped", at);
+  await deps.stores.dispatches.put({
+    ...stopped,
+    attempts: stopped.attempts.map((attempt, index) =>
+      index === last && attempt.endedAt === undefined
+        ? { ...attempt, endedAt: at, endReason: "stopped" as const }
+        : attempt,
+    ),
+    cleanup: { ...stopped.cleanup, terminatedAt: stopped.cleanup.terminatedAt ?? at },
+  });
   return "terminated";
 };
 
@@ -105,14 +116,23 @@ export const cleanupStopped = async (
   if (dispatch.instanceId !== undefined) {
     const described = await deps.compute.describe(dispatch.instanceId);
     if (described !== undefined && described.state !== "terminated") {
-      if (described.state !== "shutting-down") await deps.compute.terminate(dispatch.instanceId);
+      if (described.state !== "shutting-down") {
+        await deps.compute.terminate(dispatch.instanceId);
+        if (dispatch.cleanup.terminatedAt === undefined) {
+          await deps.stores.dispatches.put({
+            ...dispatch,
+            cleanup: { ...dispatch.cleanup, terminatedAt: at },
+            updatedAt: at,
+          });
+        }
+      }
       return "waiting";
     }
   }
   if (dispatch.volumeId === undefined) {
     await deps.stores.dispatches.put({
       ...dispatch,
-      cleanup: { ...dispatch.cleanup, volumeDeleted: true },
+      cleanup: { ...dispatch.cleanup, volumeDeleted: true, volumeDeletedAt: at },
       updatedAt: at,
     });
     return "done";
@@ -134,7 +154,7 @@ export const cleanupStopped = async (
       }
       await deps.stores.dispatches.put({
         ...dispatch,
-        cleanup: { ...dispatch.cleanup, volumeDeleted: true },
+        cleanup: { ...dispatch.cleanup, volumeDeleted: true, volumeDeletedAt: at },
         updatedAt: at,
       });
       return "volume_deleted";
@@ -234,7 +254,7 @@ export const cleanupStopped = async (
   }
   await deps.stores.dispatches.put({
     ...dispatch,
-    cleanup: { ...dispatch.cleanup, volumeDeleted: true },
+    cleanup: { ...dispatch.cleanup, volumeDeleted: true, volumeDeletedAt: at },
     updatedAt: at,
   });
   return "volume_deleted";
