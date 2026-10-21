@@ -17,3 +17,22 @@ Sanitized afterwards: every message, instruction, tool-call argument and
 output text is replaced by `<text omitted>`, the working directory and
 `world_state` lines are dropped, rate limits are dropped, and ordinals are
 renumbered from 0. No counts were altered.
+
+## Regenerating
+
+`NIGHTSHIFT_MEASUREMENT_FIXTURES=write npx vitest run packages/harness-codex/src/probe-offline.test.ts`
+re-runs the offline probe (the real `codex` against a loopback provider, a
+temporary `CODEX_HOME`) and rewrites `codex-rollout-measured.jsonl`,
+`codex-otlp-journal-launch1.jsonl`, `codex-otlp-journal-launch2.jsonl` and
+`codex-otlp-cancelled.jsonl` through `sanitizeRolloutLine` / `sanitizeJournalLine`,
+plus `docs/programs/p20-measurements/codex-capability-offline.json`. It asserts
+that every committed line type and attribute key is still present, and that a
+sentinel prompt appears in nothing written.
+
+A regenerated rollout keeps the original ordinals (a `world_state` line becomes a
+placeholder rather than being dropped) and fresh ids and timestamps, and the
+journal fixtures carry the conversation id Codex generated. The committed
+fixtures are referenced by id and ordinal in `rollout.test.ts`, `telemetry.test.ts`
+and `capture.test.ts`, so a regeneration is followed by updating those
+expectations. `codex-otlp-retry.jsonl` is hand-built (a scripted provider does
+not make Codex retry) and is never regenerated.
