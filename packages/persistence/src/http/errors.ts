@@ -23,6 +23,7 @@
  * If a caller ever needs a field, the API has to start sending it.
  */
 import {
+  CompletionMembershipError,
   ConcurrencyLimitExceededError,
   CycleError,
   DecisionAuthorityError,
@@ -89,6 +90,8 @@ const DOMAIN_ERRORS: Readonly<Record<DomainErrorCode, (message: string) => Domai
   reversibility_softened: () => new ReversibilitySoftenedError("", ""),
   outcome_required: () => new OutcomeReasonRequiredError("run", ""),
   stale_write: () => new StaleWriteError("", 0, 0),
+  completion_membership: () =>
+    new CompletionMembershipError({ programId: "", runId: "" }, "unknown_run"),
 };
 
 const isDomainErrorCode = (code: string): code is DomainErrorCode =>

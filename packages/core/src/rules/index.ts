@@ -1,5 +1,6 @@
 export * from "./agent-transitions.js";
 export * from "./authorize.js";
+export * from "./completion.js";
 export * from "./compute.js";
 export * from "./conversation.js";
 export * from "./corrections.js";
@@ -9,6 +10,7 @@ export * from "./dispatch.js";
 export * from "./event-stream.js";
 export * from "./examination.js";
 export * from "./execution-tree.js";
+export * from "./feedback.js";
 export * from "./gate-fingerprint.js";
 export * from "./globs.js";
 export * from "./integration.js";

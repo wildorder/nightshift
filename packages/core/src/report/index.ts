@@ -6,6 +6,8 @@
  * the Studio render one computation. Pure over `ProjectStores`, which is why
  * these live in `core` and not above the execution layer.
  */
+
+export * from "./completion.js";
 export {
   type CorrectionReport,
   type DecisionPlace,
@@ -17,6 +19,7 @@ export {
 } from "./decision-graph.js";
 export * from "./delivery.js";
 export { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
+export * from "./feedback.js";
 export * from "./infrastructure.js";
 export * from "./operations.js";
 export {

@@ -23,6 +23,8 @@ import {
 } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import type { ProjectStores } from "../ports/stores.js";
+import { buildCompletionHistory } from "../rules/completion.js";
+import { buildRunFeedback } from "../rules/feedback.js";
 import {
   createFixtures,
   makeAgent,
@@ -877,5 +879,127 @@ describe("the report's S-05 sections (P20)", () => {
     expect(text).toMatch(/after the runner stopped/);
     expect(text).toContain("termination requested");
     expect(text).not.toContain("Local machine expense is not reported");
+  });
+});
+
+describe("the report's Human verdict and Completion sections (D-04, D-05)", () => {
+  const at = (ms: number): IsoTimestamp =>
+    new Date(Date.UTC(2026, 9, 1) + ms).toISOString() as IsoTimestamp;
+  const page = <T>(items: readonly T[]) => Promise.resolve({ items });
+  const baseStores = (f: ReturnType<typeof createFixtures>, ended: Run) =>
+    ({
+      programContracts: {
+        get: () => Promise.resolve(makeProgramContract(f, { strands: [] })),
+        listByProject: () => page([]),
+      },
+      runs: {
+        get: (_scope: unknown, runId: string) =>
+          Promise.resolve(runId === ended.runId ? ended : undefined),
+        listByProgram: () => page([ended]),
+      },
+      executionNodes: { listByRun: () => page([makeRootNode(f)]) },
+      jobContracts: { listByRun: () => page([]) },
+      decisions: { listByRun: () => page([]), get: () => Promise.resolve(undefined) },
+      events: { listByRun: () => page([]) },
+      measurements: { listByRun: () => page([]) },
+      dispatches: { get: () => Promise.resolve(undefined) },
+      computeUtilizations: { get: () => Promise.resolve(undefined) },
+      agents: { listByNode: () => Promise.resolve([]) },
+      routingDecisions: { listByNode: () => Promise.resolve([]) },
+      examinations: { listByNode: () => Promise.resolve([]) },
+      verifications: { listByNode: () => Promise.resolve([]) },
+      gateHealth: { get: () => Promise.resolve(undefined) },
+    }) as Record<string, unknown>;
+
+  it("renders the verdict, coverage and completion from the stores", async () => {
+    const f = createFixtures();
+    const actor = { kind: "user", userId: "ann", orgId: "org_01HF7YAT00GGGGGGGGGGGGGGGG" } as never;
+    const ended = makeRun(f, {
+      status: "failed",
+      outcomeReason: "x",
+      startedAt: at(0),
+      endedAt: at(100_000),
+    });
+    const feedback = buildRunFeedback({
+      scope: f.scope,
+      verdict: "did_not_work",
+      actor,
+      at: at(160_000),
+    });
+    const history = buildCompletionHistory({
+      scope: f.scope,
+      completionHistoryId: f.ids.next("comp"),
+      title: "Ship the thing",
+      members: [{ programId: f.scope.programId, runId: f.scope.runId, role: "anchor" }],
+      actor,
+      at: at(1000),
+    });
+    const stores = {
+      ...baseStores(f, ended),
+      feedback: {
+        get: () => Promise.resolve(feedback),
+        listByProgram: () => page([feedback]),
+      },
+      completionHistories: { listByProject: () => page([history]) },
+    } as unknown as ProjectStores;
+    const gathered = await gatherReport(stores, f.scope);
+    expect(gathered.feedback).toEqual({
+      verdict: "did_not_work",
+      recordedAt: at(160_000),
+      by: "ann",
+      ratingDelaySeconds: 60,
+      revisions: 1,
+    });
+    expect(gathered.feedbackCoverage).toEqual({
+      eligible: 1,
+      rated: 1,
+      positive: 0,
+      negative: 1,
+      positiveShare: 0,
+      unrated: 0,
+    });
+    expect(gathered.completions).toHaveLength(1);
+    expect(gathered.completions[0]?.members).toHaveLength(1);
+    const text = renderReport(gathered);
+    expect(text).toContain("## Human verdict");
+    expect(text).toContain("- Verdict: **did not work**");
+    expect(text).toContain("- By: ann");
+    expect(text).toContain(
+      "- Rating delay: 1 min 0 s after the run ended (calendar time, not work time)",
+    );
+    expect(text).toContain(
+      "1 of 1 ended run(s) rated; 0 worked, 1 did not; positive share among rated 0%",
+    );
+    expect(text).toContain("## Completion");
+    expect(text).toContain("### Ship the thing (membership v1)");
+    expect(text).toContain("anchor, failed, did_not_work");
+    expect(text).toContain("lead time none (no worked verdict)");
+    expect(text.indexOf("## Human verdict")).toBeGreaterThan(text.indexOf("## Delivery"));
+    expect(text.indexOf("## Completion")).toBeGreaterThan(text.indexOf("## Human verdict"));
+    const verdictSection = text.slice(
+      text.indexOf("## Human verdict"),
+      text.indexOf("## Completion"),
+    );
+    expect(verdictSection).not.toMatch(/finding|examiner|cause:/i);
+  });
+
+  it("still renders when the feedback reads are refused or absent", async () => {
+    const f = createFixtures();
+    const ended = makeRun(f, { status: "succeeded", startedAt: at(0), endedAt: at(1000) });
+    const refuse = () => Promise.reject(new Error("forbidden"));
+    const refused = {
+      ...baseStores(f, ended),
+      feedback: { get: refuse, listByProgram: refuse },
+      completionHistories: { listByProject: refuse },
+    } as unknown as ProjectStores;
+    for (const stores of [refused, baseStores(f, ended) as unknown as ProjectStores]) {
+      const gathered = await gatherReport(stores, f.scope);
+      expect(gathered.feedback).toEqual({ verdict: "not_rated", revisions: 0 });
+      expect(gathered.completions).toEqual([]);
+      expect(gathered.feedbackCoverage.rated).toBe(0);
+      const text = renderReport(gathered);
+      expect(text).toContain("- Verdict: **not rated**");
+      expect(text).not.toContain("## Completion");
+    }
   });
 });

@@ -20,6 +20,7 @@
 import {
   type Agent,
   type CarriedStrand,
+  type CompletionHistory,
   type ComputeUtilization,
   type Decision,
   type Dispatch,
@@ -36,9 +37,12 @@ import {
   type MeasurementSummary,
   type Prerequisite,
   type ProgramContract,
+  type ProgramId,
   type RepairCause,
   type RoutingDecision,
   type Run,
+  type RunFeedback,
+  type RunId,
   type SetupStep,
   SetupStepSchema,
   type StrandPublication,
@@ -65,6 +69,7 @@ import {
   type StepAdjustments,
   stepAdjustmentsOf,
 } from "../rules/step-adjustments.js";
+import { type CompletionReport, completionOf } from "./completion.js";
 import {
   type CorrectionReport,
   type DecisionReport,
@@ -75,6 +80,12 @@ import {
 } from "./decision-graph.js";
 import { type DeliveryReport, deliveryOf, type FirstAttemptFigures } from "./delivery.js";
 import { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
+import {
+  type FeedbackCoverage,
+  feedbackCoverageOf,
+  type RunFeedbackReport,
+  runFeedbackOf,
+} from "./feedback.js";
 import {
   type InfrastructureReport,
   infrastructureOf,
@@ -201,6 +212,12 @@ export interface RunReport {
   readonly review: ReviewReport;
   /** P20 S-05: the machine's lifetime and expense; absent when no dispatch or no basis. */
   readonly infrastructure?: InfrastructureReport;
+  /** D-04: the human verdict on this run. */
+  readonly feedback: RunFeedbackReport;
+  /** D-04: how many of this program's ended runs carry a verdict. */
+  readonly feedbackCoverage: FeedbackCoverage;
+  /** D-05: the completion histories this run is a member of. */
+  readonly completions: readonly CompletionReport[];
   /** The moment the report was gathered, to which open intervals were observed. */
   readonly asOf: IsoTimestamp;
 }
@@ -768,6 +785,9 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   );
   const verifications = await gatherVerifications(stores, scope, nodes);
 
+  const p20 = p20Of(records, run, nodes, verifications);
+  const feedbackSections = await feedbackSectionsOf(stores, scope, run, p20.asOf);
+
   return {
     program,
     run,
@@ -806,7 +826,50 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
       { maxWallClockSeconds: program.costPolicy?.maxWallClockSeconds },
     ),
     ...publicationOf(records.dispatch, program.repository.programBranch),
-    ...p20Of(records, run, nodes, verifications),
+    ...p20,
+    ...feedbackSections,
+  };
+};
+
+/**
+ * D-04/D-05 reads. Each is tolerated: an execution principal that is refused,
+ * or a control plane older than these stores, still gets its report.
+ */
+const feedbackSectionsOf = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  run: Run,
+  asOf: IsoTimestamp,
+): Promise<Pick<RunReport, "feedback" | "feedbackCoverage" | "completions">> => {
+  const own = await (async () => stores.feedback.get(scope))().catch(() => undefined);
+  const programRuns = await readAll<Run>((page) => stores.runs.listByProgram(scope, page)).catch(
+    () => [run],
+  );
+  const programFeedback = await readAll<RunFeedback>((page) =>
+    stores.feedback.listByProgram(scope, page),
+  ).catch(() => (own === undefined ? [] : [own]));
+  const histories = await readAll<CompletionHistory>((page) =>
+    stores.completionHistories.listByProject(scope.projectId, page),
+  ).catch(() => []);
+  const mine = histories.filter((history) =>
+    history.members.some((m) => m.programId === scope.programId && m.runId === scope.runId),
+  );
+  const runs = new Map<string, Run>();
+  const feedback = new Map<string, RunFeedback>();
+  for (const member of new Set(
+    mine.flatMap((h) => h.members.map((m) => `${m.programId}/${m.runId}`)),
+  )) {
+    const [programId, runId] = member.split("/") as [ProgramId, RunId];
+    const memberScope = { projectId: scope.projectId, programId, runId };
+    const found = await (async () => stores.runs.get(memberScope, runId))().catch(() => undefined);
+    if (found !== undefined) runs.set(member, found);
+    const verdict = await (async () => stores.feedback.get(memberScope))().catch(() => undefined);
+    if (verdict !== undefined) feedback.set(member, verdict);
+  }
+  return {
+    feedback: runFeedbackOf(run, own),
+    feedbackCoverage: feedbackCoverageOf(programRuns, programFeedback),
+    completions: mine.map((history) => completionOf({ history, runs, feedback, asOf })),
   };
 };
 
@@ -1615,6 +1678,80 @@ const renderMachine = (infrastructure: InfrastructureReport | undefined): string
   ];
 };
 
+const seconds = (value: number | undefined): string => {
+  if (value === undefined) return "none";
+  const whole = Math.round(value);
+  const minutes = Math.floor(whole / 60);
+  return minutes === 0 ? `${whole} s` : `${minutes} min ${whole % 60} s`;
+};
+
+const percent = (value: number | undefined): string =>
+  value === undefined ? "n/a" : `${Math.round(value * 100)}%`;
+
+/** "Human verdict" (D-04): a person's one-click verdict; it names no finding, examiner or cause. */
+const renderHumanVerdict = (report: RunReport): string[] => {
+  const { feedback, feedbackCoverage: c } = report;
+  const verdict =
+    feedback.verdict === "worked"
+      ? "worked"
+      : feedback.verdict === "did_not_work"
+        ? "did not work"
+        : "not rated";
+  return [
+    "## Human verdict",
+    "",
+    "A person's one-click verdict on whether the run worked. It is not a verification and says nothing about why.",
+    "",
+    `- Verdict: **${verdict}**`,
+    ...(feedback.by === undefined ? [] : [`- By: ${feedback.by}`]),
+    ...(feedback.recordedAt === undefined ? [] : [`- When: ${feedback.recordedAt}`]),
+    ...(feedback.resultCommit === undefined ? [] : [`- Result commit: ${feedback.resultCommit}`]),
+    ...(feedback.ratingDelaySeconds === undefined
+      ? []
+      : [
+          `- Rating delay: ${seconds(feedback.ratingDelaySeconds)} after the run ended (calendar time, not work time)`,
+        ]),
+    `- This program: ${c.rated} of ${c.eligible} ended run(s) rated; ${c.positive} worked, ${c.negative} did not; positive share among rated ${percent(c.positiveShare)}; ${c.unrated} unrated.`,
+    "",
+  ];
+};
+
+const renderCompletionFigures = (f: CompletionReport["current"]): string[] => [
+  `lead time ${f.leadTimeSeconds === undefined ? "none (no worked verdict)" : seconds(f.leadTimeSeconds)}`,
+  `run completion ${seconds(f.runCompletionSeconds)}`,
+  `active union ${seconds(f.activeSeconds)}`,
+];
+
+/** "Completion" (D-05): lead time, run completion and active union are three figures, none of them work time. */
+const renderCompletions = (completions: readonly CompletionReport[]): string[] => {
+  if (completions.length === 0) return [];
+  return [
+    "## Completion",
+    "",
+    "Lead time, run completion and the active union are three different figures; none is human work time.",
+    "",
+    ...completions.flatMap((c) => [
+      `### ${c.title} (membership v${c.version})`,
+      "",
+      ...c.members.map(
+        (m) =>
+          `- ${m.programId}/${m.runId}: ${m.role}, ${m.unreadable === true ? "unreadable" : `${m.status}, ${m.verdict}`}`,
+      ),
+      "",
+      `Coverage: ${c.coverage.rated} of ${c.coverage.eligible} rated; ${c.coverage.positive} worked, ${c.coverage.negative} did not; positive share among rated ${percent(c.coverage.positiveShare)}.`,
+      `Now: ${renderCompletionFigures(c.current).join("; ")}.`,
+      ...c.checkpoints.map(
+        (k) =>
+          `Checkpoint ${k.name} (membership v${k.membershipVersion}): ${renderCompletionFigures(k).join("; ")}.`,
+      ),
+      ...(c.laterFixes.length === 0
+        ? []
+        : [`Later fixes: ${c.laterFixes.map((m) => `${m.programId}/${m.runId}`).join(", ")}.`]),
+      "",
+    ]),
+  ];
+};
+
 /** The report as markdown. Pure: the same records always give the same document. */
 export const renderReport = (report: RunReport): string => {
   const { program, run, strands } = report;
@@ -1675,6 +1812,8 @@ export const renderReport = (report: RunReport): string => {
     "",
     ...renderOperations(report.operations),
     ...renderDelivery(report.delivery),
+    ...renderHumanVerdict(report),
+    ...renderCompletions(report.completions),
     ...renderReview(report.review),
     ...renderMachine(report.infrastructure),
   ];

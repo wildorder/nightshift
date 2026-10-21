@@ -1,5 +1,6 @@
 import type { Run } from "@nightshift/contracts";
 import { deliveryOf } from "../report/delivery.js";
+import { feedbackCoverageOf, runFeedbackOf } from "../report/feedback.js";
 import { operationsOf } from "../report/operations.js";
 import type { RunReport } from "../report/report.js";
 import { reviewOf } from "../report/review.js";
@@ -10,7 +11,13 @@ import { reviewOf } from "../report/review.js";
  */
 export const emptyMeasuredReport = (
   run: Run,
-): Pick<RunReport, "operations" | "delivery" | "review" | "asOf"> => ({
+): Pick<
+  RunReport,
+  "operations" | "delivery" | "review" | "asOf" | "feedback" | "feedbackCoverage" | "completions"
+> => ({
+  feedback: runFeedbackOf(run),
+  feedbackCoverage: feedbackCoverageOf([run], []),
+  completions: [],
   operations: operationsOf({
     run,
     nodes: [],
