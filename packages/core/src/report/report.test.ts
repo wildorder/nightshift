@@ -772,6 +772,8 @@ describe("the report's S-05 sections (P20)", () => {
     span(a, "integration", 6000, 8000);
     span(b, "work", 2000, 10_000);
     span(b, "integration", 10_000, 12_000);
+    // An examiner runs after the implementation: busy, not idle.
+    span(b, "examination", 12_000, 15_000);
 
     const examination = ExaminationSchema.parse({
       ...(structuredClone(AGGREGATE_EXAMPLES.Examination) as Record<string, unknown>),
@@ -862,6 +864,7 @@ describe("the report's S-05 sections (P20)", () => {
     expect(review.coverage.examinations.total).toBe(1);
     expect(review.coverage.landedUnexamined).toBe(1);
     expect(infrastructure?.occupancy.peakConcurrentOccupants).toBe(2);
+    expect(infrastructure?.occupancy.busyMs).toBe(15_000);
 
     const text = renderReport(gathered);
     expect(text).toContain("## Where the time went");

@@ -79,6 +79,7 @@ import {
   type InfrastructureReport,
   infrastructureOf,
   infrastructureUnavailable,
+  occupancyOf,
 } from "./infrastructure.js";
 import { type OperationsReport, operationsOf } from "./operations.js";
 import type { ResourceTotals } from "./resources.js";
@@ -857,26 +858,13 @@ const p20Of = (
     observations: lifecycleObservationsOf(records.events),
     asOf,
   });
-  const occupied = operations.operations.flatMap((operation) =>
-    operation.phase === "work" &&
-    operation.state === "closed" &&
-    operation.startedAt !== undefined &&
-    operation.endedAt !== undefined
-      ? [
-          {
-            nodeId: operation.nodeId as ExecutionNodeId,
-            from: operation.startedAt,
-            to: operation.endedAt,
-          },
-        ]
-      : [],
-  );
+  const occupancy = occupancyOf({ operations, agents: records.agents, asOf });
   const infrastructure = infrastructureOf({
     run,
     ...(records.dispatch === undefined ? {} : { dispatch: records.dispatch }),
     ...(records.utilization === undefined ? {} : { utilization: records.utilization }),
     agents: records.agents,
-    occupied,
+    occupancy,
     asOf,
   });
   return {
@@ -1588,7 +1576,7 @@ const renderMachine = (infrastructure: InfrastructureReport | undefined): string
   return [
     "## Machine",
     "",
-    `- **Lifetime:** ${secs(lifetime.instanceLifetimeMs)} (coverage ${lifetime.coverage}; ${lifetime.openAttempts} open attempt(s); gaps between attempts ${secs(lifetime.gapsBetweenAttemptsMs)})`,
+    `- **Lifetime:** ${secs(lifetime.instanceLifetimeMs)} (coverage ${lifetime.coverage}; ${lifetime.observedEndings} observed ending(s), ${lifetime.logicalEndings} logical ending(s) only; ${lifetime.openAttempts} attempt(s) without an observed end; gaps between attempts ${secs(lifetime.gapsBetweenAttemptsMs)})`,
     `- **Instance:** ${usd(components.instance.usd)} for ${components.instance.seconds}s, ${components.instance.basis} (${components.instance.provenance}; ${components.instance.coverage})`,
     `- **Volume:** ${usd(components.volume.usd)} for ${components.volume.seconds}s${components.volume.open ? ", open" : ""} (${components.volume.provenance})`,
     `- **Total:** ${usd(components.total.usd)} (${components.total.basis})`,
@@ -1597,7 +1585,7 @@ const renderMachine = (infrastructure: InfrastructureReport | undefined): string
         ? ""
         : `. **Discrepancy:** computed ${usd(reconciliation.discrepancy.computedUsd)} vs metered ${usd(reconciliation.discrepancy.meteredUsd)}`
     }`,
-    `- **Occupancy:** busy ${secs(occupancy.busyMs)}, idle ${secs(occupancy.idleMs)}, provisioning ${secs(occupancy.provisioningMs)}, setup ${occupancy.setupSeconds === undefined ? NOT_OBSERVED : `${occupancy.setupSeconds}s`}; peak ${occupancy.peakConcurrentOccupants} concurrent occupant(s)`,
+    `- **Occupancy:** coverage ${occupancy.coverage}; busy ${secs(occupancy.busyMs)}${occupancy.idleMs === undefined ? " at least" : ""}, idle ${occupancy.idleMs === undefined ? `not claimed${occupancy.idleNote === undefined ? "" : ` (${occupancy.idleNote})`}` : secs(occupancy.idleMs)}, provisioning ${secs(occupancy.provisioningMs)}, setup ${occupancy.setupSeconds === undefined ? NOT_OBSERVED : `${occupancy.setupSeconds}s`}; peak ${occupancy.peakConcurrentOccupants} concurrent occupant(s)`,
     ...(apportionment.perNode === undefined
       ? [
           `- **Per-node shares:** none${apportionment.note === undefined ? "" : `. ${apportionment.note}`}`,
@@ -1610,6 +1598,9 @@ const renderMachine = (infrastructure: InfrastructureReport | undefined): string
           ...(apportionment.unapportionedUsd === undefined
             ? []
             : [`  - unapportioned ${usd(apportionment.unapportionedUsd)}`]),
+          ...(apportionment.unapportioned ?? []).map(
+            (a) => `  - attempt ${a.generation}: ${usd(a.usd)} unapportioned (${a.why})`,
+          ),
           ...(apportionment.note === undefined ? [] : [`  - ${apportionment.note}`]),
         ]),
     "",

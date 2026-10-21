@@ -11,24 +11,101 @@ import type {
   Agent,
   ComputeUtilization,
   Dispatch,
+  DispatchAttempt,
   ExecutionNodeId,
   IsoTimestamp,
   Run,
 } from "@nightshift/contracts";
 import { volumeUsdPerHour } from "../rules/compute.js";
+import type { OperationsReport } from "./operations.js";
 
 export interface InfrastructureInput {
   readonly run: Run;
   readonly dispatch?: Dispatch;
   readonly utilization?: ComputeUtilization;
   readonly agents: readonly Agent[];
-  readonly occupied?: readonly {
+  /** Absent: derived from the agents' own timestamps (legacy). */
+  readonly occupancy?: OccupancyInput;
+  readonly asOf: IsoTimestamp;
+}
+
+export type OccupancyCoverage = "observed" | "partial" | "legacy" | "unknown";
+
+export interface OccupancyInput {
+  readonly intervals: readonly {
     readonly nodeId: ExecutionNodeId;
     readonly from: IsoTimestamp;
     readonly to?: IsoTimestamp;
   }[];
-  readonly asOf: IsoTimestamp;
+  readonly coverage: OccupancyCoverage;
 }
+
+/** Phases that run on the machine. Wait, queue and provisioning do not. */
+const OCCUPYING_PHASES: ReadonlySet<string> = new Set([
+  "startup",
+  "setup",
+  "work",
+  "examination",
+  "answer",
+  "arbitration",
+  "plan_review",
+  "integration",
+]);
+
+/**
+ * The machine occupancy behind a run: every operation interval whose phase runs
+ * on the machine (open ones to `asOf`, incomplete ones to what was observed),
+ * plus the timestamps of started agents that have no observed interval at all.
+ */
+export const occupancyOf = (input: {
+  readonly operations: OperationsReport;
+  readonly agents: readonly Agent[];
+  readonly asOf: IsoTimestamp;
+}): OccupancyInput => {
+  const intervals: { nodeId: ExecutionNodeId; from: IsoTimestamp; to?: IsoTimestamp }[] = [];
+  const observedAgents = new Set<string>();
+  let unfinished = false;
+  let observed = 0;
+  for (const op of input.operations.operations) {
+    if (!OCCUPYING_PHASES.has(op.phase) || op.startedAt === undefined) continue;
+    const agentId = op.launch?.agentId ?? op.agentId;
+    let to: IsoTimestamp | undefined;
+    if (op.state === "closed") to = op.endedAt;
+    else if (op.state === "open") {
+      to = input.asOf;
+      unfinished = true;
+    } else if (op.state === "incomplete") {
+      to = op.observedUntil;
+      unfinished = true;
+    }
+    if (to === undefined) {
+      unfinished = true;
+      continue;
+    }
+    observed += 1;
+    if (agentId !== undefined) observedAgents.add(agentId);
+    intervals.push({ nodeId: op.nodeId as ExecutionNodeId, from: op.startedAt, to });
+  }
+  let fallbacks = 0;
+  for (const a of input.agents) {
+    if (a.startedAt === undefined || observedAgents.has(a.agentId)) continue;
+    fallbacks += 1;
+    intervals.push({
+      nodeId: a.executionNodeId,
+      from: a.startedAt,
+      to: a.endedAt ?? input.asOf,
+    });
+  }
+  const coverage: OccupancyCoverage =
+    intervals.length === 0
+      ? "unknown"
+      : observed === 0
+        ? "legacy"
+        : fallbacks > 0 || unfinished
+          ? "partial"
+          : "observed";
+  return { intervals, coverage };
+};
 
 export type LifetimeCoverage = "complete" | "partial" | "unknown";
 
@@ -42,9 +119,18 @@ export interface InfrastructureAttempt {
   readonly endReason?: string;
   readonly instanceId?: string;
   readonly meteredSeconds?: number;
-  /** Closed attempts only. */
+  /** The control plane's terminate request succeeded, or the instance was described as terminated. */
+  readonly terminatedAt?: IsoTimestamp;
+  /** A terminate request failed; the machine may still be running. */
+  readonly terminationFailed?: boolean;
+  /** True only when the machine's end was observed: `terminatedAt`, or the runner reported "stopped". */
+  readonly observedEnd: boolean;
+  /** Observed-closed attempts only. */
   readonly lifetimeMs?: number;
+  /** Attempts with a logical `endedAt` but no observed machine end: start to `endedAt`, not a machine lifetime. */
+  readonly logicalLifetimeMs?: number;
   readonly provisioningMs?: number;
+  /** No observed machine end: open, or a logical ending only. */
   readonly incomplete: boolean;
 }
 
@@ -54,7 +140,11 @@ export interface InfrastructureLifetime {
   readonly lastEndedAt?: IsoTimestamp;
   readonly instanceLifetimeMs?: number;
   readonly gapsBetweenAttemptsMs: number;
+  /** Attempts that are not observed-closed (open or logical end only). */
   readonly openAttempts: number;
+  /** Endings observed on the machine, versus endings only recorded by the engine. */
+  readonly observedEndings: number;
+  readonly logicalEndings: number;
   readonly coverage: LifetimeCoverage;
 }
 
@@ -72,7 +162,11 @@ export interface InfrastructureStages {
 
 export interface InstanceComponent {
   readonly seconds: number;
-  readonly basis: "metered seconds" | "closed attempt lifetimes" | "none observed";
+  readonly basis:
+    | "metered seconds"
+    | "closed attempt lifetimes"
+    | "metered seconds and closed attempt lifetimes"
+    | "none observed";
   readonly usdPerHour: number;
   readonly usd: number;
   readonly provenance: string;
@@ -100,8 +194,12 @@ export interface InfrastructureReconciliation {
 
 export interface InfrastructureOccupancy {
   readonly setupSeconds?: number;
+  readonly coverage: OccupancyCoverage;
+  /** Observed busy time, at least: occupancy inside observed-closed attempts. */
   readonly busyMs: number;
-  readonly idleMs: number;
+  /** Only for observed or legacy occupancy coverage; otherwise idle time is not claimed. */
+  readonly idleMs?: number;
+  readonly idleNote?: string;
   readonly provisioningMs: number;
   readonly peakConcurrentOccupants: number;
   readonly utilization?: {
@@ -113,14 +211,22 @@ export interface InfrastructureOccupancy {
   };
 }
 
+export interface UnapportionedAttempt {
+  readonly generation: number;
+  readonly usd: number;
+  readonly why: "open" | "logical end only";
+}
+
 export interface InfrastructureApportionment {
-  readonly method: "occupied-time share of the instance lifetime";
+  readonly method: "per-attempt occupied-time share of observed-closed attempt cost";
   readonly perNode?: readonly {
     readonly nodeId: ExecutionNodeId;
     readonly occupiedMs: number;
     readonly shareUsd: number;
   }[];
   readonly unapportionedUsd?: number;
+  /** Attempts that are not observed-closed: their cost is never apportioned. */
+  readonly unapportioned?: readonly UnapportionedAttempt[];
   readonly note?: string;
 }
 
@@ -168,23 +274,40 @@ const unionMs = (spans: readonly Span[]): number => {
   return total;
 };
 
+/** The attempt's machine end was observed: terminated, or the runner reported stopping. */
+const observedEndOf = (a: DispatchAttempt): IsoTimestamp | undefined =>
+  a.terminatedAt !== undefined
+    ? (a.endedAt ?? a.terminatedAt)
+    : a.endReason === "stopped"
+      ? a.endedAt
+      : undefined;
+
 const attemptsOf = (dispatch: Dispatch): InfrastructureAttempt[] =>
   [...dispatch.attempts]
     .sort((a, b) => ms(a.startedAt) - ms(b.startedAt))
-    .map((a) => ({
-      generation: a.generation,
-      reason: a.reason,
-      startedAt: a.startedAt,
-      ...(a.readyAt === undefined ? {} : { readyAt: a.readyAt }),
-      ...(a.runningAt === undefined ? {} : { runningAt: a.runningAt }),
-      ...(a.endedAt === undefined ? {} : { endedAt: a.endedAt }),
-      ...(a.endReason === undefined ? {} : { endReason: a.endReason }),
-      ...(a.instanceId === undefined ? {} : { instanceId: a.instanceId }),
-      ...(a.meteredSeconds === undefined ? {} : { meteredSeconds: a.meteredSeconds }),
-      ...(a.endedAt === undefined ? {} : { lifetimeMs: ms(a.endedAt) - ms(a.startedAt) }),
-      ...(a.readyAt === undefined ? {} : { provisioningMs: ms(a.readyAt) - ms(a.startedAt) }),
-      incomplete: a.endedAt === undefined,
-    }));
+    .map((a) => {
+      const observedEnd = observedEndOf(a);
+      return {
+        generation: a.generation,
+        reason: a.reason,
+        startedAt: a.startedAt,
+        ...(a.readyAt === undefined ? {} : { readyAt: a.readyAt }),
+        ...(a.runningAt === undefined ? {} : { runningAt: a.runningAt }),
+        ...(a.endedAt === undefined ? {} : { endedAt: a.endedAt }),
+        ...(a.endReason === undefined ? {} : { endReason: a.endReason }),
+        ...(a.instanceId === undefined ? {} : { instanceId: a.instanceId }),
+        ...(a.meteredSeconds === undefined ? {} : { meteredSeconds: a.meteredSeconds }),
+        ...(a.terminatedAt === undefined ? {} : { terminatedAt: a.terminatedAt }),
+        ...(a.terminationFailed === undefined ? {} : { terminationFailed: a.terminationFailed }),
+        observedEnd: observedEnd !== undefined,
+        ...(observedEnd === undefined ? {} : { lifetimeMs: ms(observedEnd) - ms(a.startedAt) }),
+        ...(observedEnd !== undefined || a.endedAt === undefined
+          ? {}
+          : { logicalLifetimeMs: ms(a.endedAt) - ms(a.startedAt) }),
+        ...(a.readyAt === undefined ? {} : { provisioningMs: ms(a.readyAt) - ms(a.startedAt) }),
+        incomplete: observedEnd === undefined,
+      };
+    });
 
 const lifetimeOf = (dispatch: Dispatch, attempts: readonly InfrastructureAttempt[]) => {
   const closed = attempts.filter((a) => a.lifetimeMs !== undefined);
@@ -211,6 +334,8 @@ const lifetimeOf = (dispatch: Dispatch, attempts: readonly InfrastructureAttempt
       : { instanceLifetimeMs: closed.reduce((sum, a) => sum + (a.lifetimeMs ?? 0), 0) }),
     gapsBetweenAttemptsMs: gaps,
     openAttempts: attempts.length - closed.length,
+    observedEndings: closed.length,
+    logicalEndings: attempts.filter((a) => !a.observedEnd && a.endedAt !== undefined).length,
     coverage,
   };
   return lifetime;
@@ -242,19 +367,29 @@ const stagesOf = (dispatch: Dispatch): InfrastructureStages[] => {
 const nodeSpans = (input: InfrastructureInput): Map<ExecutionNodeId, Span[]> => {
   const asOf = ms(input.asOf);
   const spans = new Map<ExecutionNodeId, Span[]>();
-  const add = (nodeId: ExecutionNodeId, from: string, to: string | undefined): void => {
-    const list = spans.get(nodeId) ?? [];
-    list.push({ from: ms(from), to: to === undefined ? asOf : ms(to) });
-    spans.set(nodeId, list);
-  };
-  if (input.occupied !== undefined) {
-    for (const o of input.occupied) add(o.nodeId, o.from, o.to);
-  } else {
-    for (const a of input.agents) {
-      if (a.startedAt !== undefined) add(a.executionNodeId, a.startedAt, a.endedAt);
-    }
+  for (const o of occupancyFor(input).intervals) {
+    const list = spans.get(o.nodeId) ?? [];
+    list.push({ from: ms(o.from), to: o.to === undefined ? asOf : ms(o.to) });
+    spans.set(o.nodeId, list);
   }
   return spans;
+};
+
+/** Without supplied occupancy the agents' own timestamps stand in. */
+const occupancyFor = (input: InfrastructureInput): OccupancyInput => {
+  if (input.occupancy !== undefined) return input.occupancy;
+  const intervals = input.agents.flatMap((a) =>
+    a.startedAt === undefined
+      ? []
+      : [
+          {
+            nodeId: a.executionNodeId,
+            from: a.startedAt,
+            ...(a.endedAt === undefined ? {} : { to: a.endedAt }),
+          },
+        ],
+  );
+  return { intervals, coverage: intervals.length === 0 ? "unknown" : "legacy" };
 };
 
 export const infrastructureOf = (input: InfrastructureInput): InfrastructureReport | undefined => {
@@ -265,18 +400,23 @@ export const infrastructureOf = (input: InfrastructureInput): InfrastructureRepo
   const stages = stagesOf(dispatch);
   const basis = dispatch.priceBasis;
 
-  const meteredAttempts = attempts.filter((a) => a.meteredSeconds !== undefined);
-  const closedSeconds = (lifetime.instanceLifetimeMs ?? 0) / 1000;
+  // Each attempt costs its metered seconds when present, else its observed lifetime.
+  // An attempt with a logical end only has no lifetime to price.
+  const attemptSeconds = (a: InfrastructureAttempt): number =>
+    a.meteredSeconds ?? (a.lifetimeMs === undefined ? 0 : a.lifetimeMs / 1000);
+  const fromMetered = attempts.filter((a) => a.meteredSeconds !== undefined).length;
+  const fromLifetime = attempts.filter(
+    (a) => a.meteredSeconds === undefined && a.lifetimeMs !== undefined,
+  ).length;
   const instanceBasis: InstanceComponent["basis"] =
-    meteredAttempts.length > 0
-      ? "metered seconds"
-      : lifetime.instanceLifetimeMs !== undefined
-        ? "closed attempt lifetimes"
-        : "none observed";
-  const instanceSeconds =
-    instanceBasis === "metered seconds"
-      ? meteredAttempts.reduce((sum, a) => sum + (a.meteredSeconds ?? 0), 0)
-      : closedSeconds;
+    fromMetered > 0 && fromLifetime > 0
+      ? "metered seconds and closed attempt lifetimes"
+      : fromMetered > 0
+        ? "metered seconds"
+        : fromLifetime > 0
+          ? "closed attempt lifetimes"
+          : "none observed";
+  const instanceSeconds = attempts.reduce((sum, a) => sum + attemptSeconds(a), 0);
   const instanceRate = basis?.usdPerHour ?? dispatch.usdPerHour;
   const instance: InstanceComponent = {
     seconds: instanceSeconds,
@@ -328,43 +468,74 @@ export const infrastructureOf = (input: InfrastructureInput): InfrastructureRepo
       : {}),
   };
 
-  // Occupancy: windows are the closed attempt lifetimes.
-  const windows: Span[] = attempts.flatMap((a) =>
-    a.endedAt === undefined ? [] : [{ from: ms(a.startedAt), to: ms(a.endedAt) }],
+  // Occupancy and cost windows are the observed-closed attempts only; an open
+  // attempt or a logical ending is never a window.
+  const closedAttempts = attempts.flatMap((a) =>
+    a.lifetimeMs === undefined
+      ? []
+      : [
+          {
+            attempt: a,
+            window: { from: ms(a.startedAt), to: ms(a.startedAt) + a.lifetimeMs } as Span,
+          },
+        ],
   );
-  const clipped = new Map<ExecutionNodeId, Span[]>();
-  for (const [nodeId, spans] of nodeSpans(input)) {
-    const list = spans.flatMap((s) => clip(s, windows));
-    if (list.length > 0) clipped.set(nodeId, list);
-  }
-  const allSpans = [...clipped.values()].flat();
-  const busyMs = unionMs(allSpans);
-
-  // Sweep: concurrent occupants split each moment equally.
-  const points = [...new Set(allSpans.flatMap((s) => [s.from, s.to]))].sort((a, b) => a - b);
+  const spansByNode = nodeSpans(input);
   const weighted = new Map<ExecutionNodeId, number>();
+  const shareUsd = new Map<ExecutionNodeId, number>();
   const occupiedMs = new Map<ExecutionNodeId, number>();
+  const busySpans: Span[] = [];
   let peak = 0;
-  for (let i = 1; i < points.length; i++) {
-    const from = points[i - 1] ?? 0;
-    const to = points[i] ?? 0;
-    const active = [...clipped.entries()]
-      .filter(([, spans]) => spans.some((s) => s.from <= from && s.to >= to))
-      .map(([nodeId]) => nodeId);
-    peak = Math.max(peak, active.length);
-    for (const nodeId of active) {
-      weighted.set(nodeId, (weighted.get(nodeId) ?? 0) + (to - from) / active.length);
-      occupiedMs.set(nodeId, (occupiedMs.get(nodeId) ?? 0) + (to - from));
+  for (const { attempt, window } of closedAttempts) {
+    const clipped = new Map<ExecutionNodeId, Span[]>();
+    for (const [nodeId, spans] of spansByNode) {
+      const list = spans.flatMap((s) => clip(s, [window]));
+      if (list.length > 0) clipped.set(nodeId, list);
+    }
+    const allSpans = [...clipped.values()].flat();
+    busySpans.push(...allSpans);
+    const windowMs = window.to - window.from;
+    const cost = usdOf(attemptSeconds(attempt), instanceRate);
+    // Sweep: concurrent occupants split each moment equally within this attempt.
+    const points = [...new Set(allSpans.flatMap((s) => [s.from, s.to]))].sort((a, b) => a - b);
+    for (let i = 1; i < points.length; i++) {
+      const from = points[i - 1] ?? 0;
+      const to = points[i] ?? 0;
+      const active = [...clipped.entries()]
+        .filter(([, spans]) => spans.some((s) => s.from <= from && s.to >= to))
+        .map(([nodeId]) => nodeId);
+      peak = Math.max(peak, active.length);
+      for (const nodeId of active) {
+        weighted.set(nodeId, (weighted.get(nodeId) ?? 0) + (to - from) / active.length);
+        occupiedMs.set(nodeId, (occupiedMs.get(nodeId) ?? 0) + (to - from));
+        if (windowMs > 0) {
+          shareUsd.set(
+            nodeId,
+            (shareUsd.get(nodeId) ?? 0) + (cost * (to - from)) / active.length / windowMs,
+          );
+        }
+      }
     }
   }
+  const busyMs = unionMs(busySpans);
 
   const closedMs = lifetime.instanceLifetimeMs;
-  const idleMs = closedMs === undefined ? 0 : Math.max(0, closedMs - busyMs);
+  const occupancyCoverage = occupancyFor(input).coverage;
+  const idleKnown =
+    (occupancyCoverage === "observed" || occupancyCoverage === "legacy") && closedMs !== undefined;
   const u = input.utilization;
   const occupancy: InfrastructureOccupancy = {
     ...(u?.setupSeconds === undefined ? {} : { setupSeconds: u.setupSeconds }),
+    coverage: occupancyCoverage,
     busyMs,
-    idleMs,
+    ...(idleKnown
+      ? { idleMs: Math.max(0, closedMs - busyMs) }
+      : {
+          idleNote:
+            closedMs === undefined
+              ? "No attempt has an observed machine end, so idle time is not claimed; busy time is observed busy time, at least."
+              : `Occupancy coverage is ${occupancyCoverage}, so idle time is not claimed; busy time is observed busy time, at least.`,
+        }),
     provisioningMs: attempts.reduce((sum, a) => sum + (a.provisioningMs ?? 0), 0),
     peakConcurrentOccupants: peak,
     ...(u === undefined
@@ -380,28 +551,35 @@ export const infrastructureOf = (input: InfrastructureInput): InfrastructureRepo
         }),
   };
 
-  let apportionment: InfrastructureApportionment;
-  if (closedMs === undefined || closedMs === 0) {
-    apportionment = {
-      method: "occupied-time share of the instance lifetime",
-      note: "No attempt has an observed end, so the instance lifetime is unknown and cost cannot be apportioned to nodes.",
-    };
-  } else {
-    const perNode = [...weighted.entries()].map(([nodeId, w]) => ({
-      nodeId,
-      occupiedMs: occupiedMs.get(nodeId) ?? 0,
-      shareUsd: roundUsd((instance.usd * w) / closedMs),
-    }));
-    const shared = perNode.reduce((sum, n) => sum + n.shareUsd, 0);
-    apportionment = {
-      method: "occupied-time share of the instance lifetime",
-      perNode,
-      unapportionedUsd: roundUsd(instance.usd - shared + volume.usd),
-      ...(lifetime.coverage === "partial"
-        ? { note: "Open attempts are excluded; shares cover closed attempts only." }
-        : {}),
-    };
-  }
+  const unapportioned: UnapportionedAttempt[] = attempts.flatMap((a) =>
+    a.observedEnd
+      ? []
+      : [
+          {
+            generation: a.generation,
+            usd: usdOf(attemptSeconds(a), instanceRate),
+            why: a.endedAt === undefined ? ("open" as const) : ("logical end only" as const),
+          },
+        ],
+  );
+  const perNode = [...weighted.keys()].map((nodeId) => ({
+    nodeId,
+    occupiedMs: occupiedMs.get(nodeId) ?? 0,
+    shareUsd: roundUsd(shareUsd.get(nodeId) ?? 0),
+  }));
+  const shared = perNode.reduce((sum, n) => sum + n.shareUsd, 0);
+  const apportionment: InfrastructureApportionment = {
+    method: "per-attempt occupied-time share of observed-closed attempt cost",
+    ...(closedAttempts.length === 0 ? {} : { perNode }),
+    unapportionedUsd: roundUsd(instance.usd + volume.usd - shared),
+    unapportioned,
+    note:
+      (closedAttempts.length === 0
+        ? "No attempt has an observed machine end, so cost cannot be apportioned to nodes. "
+        : "") +
+      "Each observed-closed attempt costs its metered seconds, else its observed lifetime, at the instance rate, split by occupied time within that attempt's own window (concurrent occupants share each moment equally). " +
+      "The cost of attempts without an observed machine end (open, or a logical end only) is never apportioned and is listed per attempt, together with unoccupied time within closed attempts and the whole volume, as unapportioned.",
+  };
 
   return {
     attempts,
