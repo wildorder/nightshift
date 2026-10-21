@@ -280,8 +280,12 @@ export const combineTurns = (earlier: RouteUsage | undefined, turn: RouteUsage):
  */
 export interface StreamMeasures {
   /**
-   * Session counters when a `result` carried `modelUsage`, else the launch's
-   * per-turn main-loop tokens and latency. The fallback never carries
+   * Session counters when the latest `result` carried usable `modelUsage`,
+   * else the launch's per-turn main-loop tokens and latency. A later turn
+   * without usable modelUsage makes any earlier whole-tree aggregate stale, so
+   * the launch falls back to what it can still vouch for (per-turn main-loop
+   * tokens, partial coverage) and the newer dollars travel in their session
+   * snapshot. The fallback never carries
    * `actualCostUsd`: `total_cost_usd` is a session-cumulative figure, and a
    * launch-scoped exit cannot carry one (the recorder sums launches). It goes
    * to the measurement sink as a session-scoped snapshot instead; with no sink
@@ -686,8 +690,13 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     const totals = sumModelUsage(frame.modelUsage, frame.total_cost_usd);
     latestResultComplete = !resultErrored && totals !== undefined;
     latestResultPartial = !latestResultComplete;
+    // A later turn without usable modelUsage makes the last whole-tree
+    // aggregate stale: drop it rather than present it as the current total.
+    // The earlier snapshot stays in the ledger as evidence; the exit falls
+    // back to per-turn main-loop tokens and the newer dollars travel in the
+    // cost-only session snapshot below.
+    sessionCounters = totals?.counters;
     if (totals !== undefined) {
-      sessionCounters = totals.counters;
       for (const [model, window] of totals.contextWindows) contextWindows.set(model, window);
       const uuid = str(frame.uuid);
       observe({

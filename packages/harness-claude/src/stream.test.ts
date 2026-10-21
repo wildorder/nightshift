@@ -1085,6 +1085,110 @@ describe("outcome.measures", () => {
     expect(second.gaps).toEqual([]);
   });
 
+  describe("multi-turn results mixing modelUsage and fallback", () => {
+    const resultFrame = (input: number, cost: number, uuid: string, modelUsage?: object) =>
+      frameLine({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        uuid,
+        session_id: "s",
+        usage: { input_tokens: input },
+        total_cost_usd: cost,
+        ...(modelUsage === undefined ? {} : { modelUsage }),
+      });
+    const init = frameLine({
+      type: "system",
+      subtype: "init",
+      session_id: "s",
+      model: "claude-sonnet-5",
+    });
+
+    it("does not re-emit an earlier aggregate when a later turn lacks modelUsage", () => {
+      const { observations, outcome } = measure(
+        init +
+          resultFrame(100, 1, "00000000-0000-4000-8000-000000000001", {
+            m: { inputTokens: 100 },
+          }) +
+          resultFrame(50, 1.5, "00000000-0000-4000-8000-000000000002"),
+      );
+      const m = outcome.measures;
+      expect(m).toMatchObject({
+        usageScope: "launch",
+        inclusion: "self",
+        resultCoverage: "partial",
+        observedModel: "claude-sonnet-5",
+        usage: { inputTokens: 150 },
+      });
+      expect(m.usage).not.toHaveProperty("actualCostUsd");
+      expect(m).not.toHaveProperty("counters");
+      expect(observations).toHaveLength(2);
+      expect(observations[0]).toMatchObject({
+        kind: "cumulative_snapshot",
+        counters: { inputTokens: 100, reportedUsd: 1 },
+      });
+      expect(observations[1]?.kind === "cumulative_snapshot" && observations[1].counters).toEqual({
+        reportedUsd: 1.5,
+      });
+
+      // The recorder receives these in order, each at a later instant.
+      const at = (n: number) => ({ receivedAt: `2026-09-15T12:00:0${n}.000Z` });
+      const stamped = observations.map(
+        (o, i) => ({ ...(stamp(o) as object), ...at(i) }) as MeasurementObservation,
+      );
+      stamped.push({
+        ...(stamp({
+          schemaVersion: 1,
+          kind: "terminal_summary",
+          observationId: "exit:1",
+          source: "engine",
+          provenance: { adapter: "execution", note: "the harness exit" },
+          inclusion: m.inclusion,
+          counters: countersFromRouteUsage(m.usage ?? {}),
+          counterScope: m.usageScope,
+          exitKind: "completed",
+          coverage: "partial",
+        } as unknown as HarnessObservation) as object),
+        ...at(observations.length),
+      } as MeasurementObservation);
+      const reconciled = reconcileSegment(stamped, { resumedSession: false });
+      expect(reconciled.counters.inputTokens).toBe(150);
+      expect(reconciled.counters.reportedUsd).toBe(1.5);
+    });
+
+    it("reports the later modelUsage when the fallback result comes first", () => {
+      const { outcome } = measure(
+        init +
+          resultFrame(50, 1, "00000000-0000-4000-8000-000000000001") +
+          resultFrame(100, 1.5, "00000000-0000-4000-8000-000000000002", {
+            m: { inputTokens: 120 },
+          }),
+      );
+      expect(outcome.measures).toMatchObject({
+        usageScope: "session",
+        inclusion: "includes_children",
+        resultCoverage: "complete",
+        counters: { inputTokens: 120, reportedUsd: 1.5 },
+      });
+    });
+
+    it("keeps the latest modelUsage across two usable results", () => {
+      const { outcome } = measure(
+        init +
+          resultFrame(100, 1, "00000000-0000-4000-8000-000000000001", {
+            m: { inputTokens: 100 },
+          }) +
+          resultFrame(50, 1.5, "00000000-0000-4000-8000-000000000002", {
+            m: { inputTokens: 150 },
+          }),
+      );
+      expect(outcome.measures).toMatchObject({
+        usageScope: "session",
+        counters: { inputTokens: 150, reportedUsd: 1.5 },
+      });
+    });
+  });
+
   it("uses the init model when no assistant frame names one", () => {
     const init = fixture("no-result.jsonl").split("\n")[0] ?? "";
     expect(measure(`${init}\n`).outcome.measures.observedModel).toBe("claude-sonnet-5");

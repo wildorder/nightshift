@@ -89,6 +89,7 @@ OTLP http/json log export to a 127.0.0.1 endpoint, `POST /v1/logs`, `content-typ
 - **Per-request context window** is not emitted by the provider. `contextWindowTokens` comes only from `modelUsage.contextWindow` and only on stream requests.
 - **SIGKILL before the exporter flushes** loses the unexported tail of requests: capture is `partial`, with `stopped_before_flush` (or `receiver_lost`) on the ending payload. The stream channel still carries what had been printed.
 - **Windows** uses the env header (`OTEL_EXPORTER_OTLP_HEADERS`) because `runAs` never applies there.
+- When a later turn's `result` lacks usable `modelUsage`, the launch's exit falls back to per-turn main-loop tokens with partial coverage and the newer estimated dollars travel in a session snapshot; the earlier whole-tree aggregate stays in the ledger as evidence but is not presented as current.
 - The flush interval (`exportIntervalMs`, default 1000 ms) bounds how stale the journal can be at a hard stop.
 
 ## 5. No pin change
