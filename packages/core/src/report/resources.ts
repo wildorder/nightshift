@@ -157,16 +157,59 @@ export const resourcesOf = (
 };
 
 /** The resources of a summary with no routing decision (the root launch): its totals and valuation alone. */
-export const resourcesOfSummary = (summary: MeasurementSummary): AttemptResources => ({
-  tokens: tokensOf(summary.totals),
-  usd: {
-    ...present("estimated", summary.valuation.usd),
-    ...present("reported", summary.valuation.reportedUsd),
-    source: summary.valuation.source,
-  },
-  coverage: summary.coverage,
-  priceBases: priceBasesOf(summary.valuation, valuationIncomplete(summary.valuation)),
-});
+export const resourcesOfSummary = (summary: MeasurementSummary): AttemptResources => {
+  const incomplete = valuationIncomplete(summary.valuation);
+  return {
+    tokens: tokensOf(summary.totals),
+    usd: {
+      ...present("estimated", summary.valuation.estimatedUsd),
+      ...present("reported", summary.valuation.reportedUsd),
+      source: summary.valuation.source,
+    },
+    coverage: summary.coverage,
+    priceBases: priceBasesOf(summary.valuation, incomplete),
+    estimateIncomplete: summary.valuation.estimatedUsd !== undefined && incomplete,
+  };
+};
+
+/** What an unmeasured launch contributes: nothing known, never a zero. */
+export const MISSING_RESOURCES: AttemptResources = {
+  tokens: { inputConvention: "unknown" },
+  usd: { source: "none" },
+  coverage: "missing",
+};
+
+/** The newest root-launch summary (no routing decision) of each node, by node id. */
+export const rootSummariesOf = (
+  measurements: readonly MeasurementSummary[],
+): Map<string, MeasurementSummary> => {
+  const newest = new Map<string, MeasurementSummary>();
+  for (const summary of measurements) {
+    if (summary.routingDecisionId !== null) continue;
+    const seen = newest.get(summary.executionNodeId);
+    if (seen === undefined || summary.updatedAt > seen.updatedAt) {
+      newest.set(summary.executionNodeId, summary);
+    }
+  }
+  return newest;
+};
+
+/**
+ * The resources of each root launch. With `rootNodeIds`, a root without a
+ * summary is unmeasured (missing coverage), not zero; without them, only the
+ * roots that have a summary.
+ */
+export const rootResourcesOf = (
+  measurements: readonly MeasurementSummary[],
+  rootNodeIds?: readonly string[],
+): AttemptResources[] => {
+  const summaries = rootSummariesOf(measurements);
+  if (rootNodeIds === undefined) return [...summaries.values()].map(resourcesOfSummary);
+  return rootNodeIds.map((id) => {
+    const summary = summaries.get(id);
+    return summary === undefined ? MISSING_RESOURCES : resourcesOfSummary(summary);
+  });
+};
 
 const add = (total: number | undefined, value: number | undefined): number | undefined =>
   value === undefined ? total : (total ?? 0) + value;

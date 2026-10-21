@@ -148,6 +148,7 @@ const storesFor = (
   w: ReturnType<typeof world>,
   refuse: readonly string[] = [],
   histories?: () => CompletionHistory[],
+  rootSummaries: readonly MeasurementSummary[] = [],
 ) => {
   const calls = new Map<string, number>();
   const runs = [w.a, w.b, w.c];
@@ -184,7 +185,10 @@ const storesFor = (
     decisions: { listByRun: () => page([]), get: () => Promise.resolve(undefined) },
     events: { listByRun: () => page([]) },
     measurements: {
-      listByRun: list("measurements", (r) => (r === w.b ? [w.summary] : [])),
+      listByRun: list("measurements", (r) => [
+        ...(r === w.b ? [w.summary] : []),
+        ...rootSummaries.filter((summary) => summary.runId === r.scope.runId),
+      ]),
     },
     dispatches: { get: byRun("dispatch", (r) => (r === w.b ? w.dispatch : undefined), undefined) },
     computeUtilizations: { get: () => Promise.resolve(undefined) },
@@ -248,6 +252,66 @@ describe("the Completion section's model and machine figures", () => {
     expect(text).toContain("machine dollars not observed");
     expect(text).toContain("machines 1 of 2 members");
     expect(text).toContain("token coverage complete 1, partial 0, unknown 0, legacy 1, missing 0");
+  });
+
+  // A root launch's summary has no routing decision (S-01). D-02: it is part of every aggregate.
+  const rootSummaryOf = (
+    w: ReturnType<typeof world>,
+    run: (typeof w)["a"],
+    patch: Partial<MeasurementSummary> = {},
+  ): MeasurementSummary =>
+    ({
+      ...w.summary,
+      ...run.scope,
+      measurementSummaryId: w.f.ids.next("meas"),
+      executionNodeId: run.nodes[0]?.executionNodeId,
+      role: "orchestrator",
+      routingDecisionId: null,
+      route: { harness: "claude", provider: "anthropic", model: "root-model" },
+      totals: { inputTokens: 50, outputTokens: 5, inputIncludesCache: true },
+      valuation: { source: "reported", usd: 0.75, reportedUsd: 0.75 },
+      ...patch,
+    }) as MeasurementSummary;
+
+  it("includes a member run's root launch in its figures", async () => {
+    const w = world();
+    const root = rootSummaryOf(w, w.b);
+    const { stores } = storesFor(w, [], undefined, [root]);
+    const [first] = (await gatherReport(stores, w.f.scope)).completions;
+    // A: 100/10 and $0.50 estimated. B: its worker summary 200/20 with the route's $2 reported,
+    // plus B's root launch 50/5 and $0.75 reported.
+    expect(first?.current.resources?.tokens).toMatchObject({ input: 350, output: 35 });
+    expect(first?.current.resources?.usd.reported).toBeCloseTo(2.75);
+    expect(first?.current.resources?.usd.estimated).toBeCloseTo(0.5);
+  });
+
+  it("shows the current run's root launch as a labelled usage row, or as unmeasured without a summary", async () => {
+    const w = world();
+    const withRoot = await gatherReport(
+      storesFor(w, [], undefined, [rootSummaryOf(w, w.a)]).stores,
+      w.f.scope,
+    );
+    const row = withRoot.usage.find((candidate) => candidate.purpose === "root");
+    expect(row).toMatchObject({
+      model: "root-model",
+      attempts: 1,
+      inputTokens: 50,
+      outputTokens: 5,
+      reportedUsd: 0.75,
+      unpriced: 0,
+    });
+    expect(withRoot.budget?.tokens).toBe(110 + 55);
+    const total = withRoot.usage.reduce(
+      (sum, usage) => sum + usage.inputTokens + usage.outputTokens,
+      0,
+    );
+    expect(total).toBe(withRoot.budget?.tokens);
+    expect(renderReport(withRoot)).toContain("root-model");
+
+    const without = await gatherReport(storesFor(w).stores, w.f.scope);
+    const missing = without.usage.find((candidate) => candidate.purpose === "root");
+    expect(missing).toMatchObject({ attempts: 1, unpriced: 1, inputTokens: 0, tokensObserved: 0 });
+    expect(without.budget?.tokens).toBe(110);
   });
 
   it("leaves a refused member's resources absent and still renders", async () => {

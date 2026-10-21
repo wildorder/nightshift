@@ -245,7 +245,12 @@ describe("each attempt exports its own judgement", () => {
     const lines = (await r.lines()).filter((line) => line.executionNodeId === job.nodeId);
     const byAttempt = new Map(lines.map((line) => [line.attempt, line]));
     expect(lines.map((line) => line.attempt).sort()).toEqual([1, 2]);
-    expect(byAttempt.get(1)?.schemaVersion).toBe(2);
+    expect(byAttempt.get(1)?.schemaVersion).toBe(3);
+    // The attempt's own route outcome and the node's eventual outcome are separate fields:
+    // the first attempt failed verification, yet the node ended integrated.
+    expect(byAttempt.get(1)?.outcome).toBe("verification_failed");
+    expect(byAttempt.get(1)?.nodeOutcome).toBe("integrated");
+    expect(byAttempt.get(2)?.nodeOutcome).toBe("integrated");
     expect(byAttempt.get(1)?.judgement).toEqual({
       verification: "failed",
       examination: null,
@@ -382,6 +387,22 @@ describe("the root line", () => {
       measurementSummaryId: summary.measurementSummaryId,
       measurementCoverage: "partial",
       judgement: { verification: null, examination: null, link: "none", historical: false },
+      outcome: "pending",
     });
+  });
+
+  it("takes its outcome from the run's observed result, not a fixed pending", async () => {
+    const r = await rig({});
+    await r.world.stores.measurements.put(summaryFor(r.world));
+    const run = await r.world.stores.runs.get(r.world.scope, r.world.scope.runId);
+    expect(run).toBeDefined();
+    await r.world.stores.runs.put({
+      ...(run as NonNullable<typeof run>),
+      status: "succeeded",
+      endedAt: nowIso(r.world.environment.clock),
+    });
+    const root = (await r.lines()).find((line) => line.purpose === "root");
+    expect(root).toMatchObject({ outcome: "succeeded", schemaVersion: 3 });
+    expect(root?.nodeOutcome).toBeDefined();
   });
 });

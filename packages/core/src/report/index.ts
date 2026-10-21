@@ -47,6 +47,8 @@ export {
   type ResourceTotals,
   resourcesOf,
   resourcesOfSummary,
+  rootResourcesOf,
+  rootSummariesOf,
   sumResources,
   tokensOf,
 } from "./resources.js";
