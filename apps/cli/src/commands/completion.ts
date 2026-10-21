@@ -11,6 +11,7 @@ import type {
   CompletionCheckpoint,
   CompletionHistory,
   CompletionMemberRef,
+  IsoTimestamp,
   ProgramContract,
   ProgramId,
   Run,
@@ -18,16 +19,17 @@ import type {
   RunId,
 } from "@nightshift/contracts";
 import { ProgramIdSchema, RunIdSchema } from "@nightshift/contracts";
-import type { CompletionFigures } from "@nightshift/core";
+import type { CompletionFigures, CompletionResources } from "@nightshift/core";
 import {
   buildCompletionHistory,
   CompletionMembershipError,
   completionOf,
+  gatherMemberFigures,
   nowIso,
   StaleWriteError,
   suggestCompletionMembers,
 } from "@nightshift/core";
-import { isTokenProfile } from "@nightshift/persistence/http";
+import { ControlPlaneError, isTokenProfile } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { readProgramFiles, resolveFrom } from "../program-files.js";
@@ -119,10 +121,34 @@ const findHistory = async (
   return found;
 };
 
+const count = (value: number | undefined): string => (value === undefined ? "none" : `${value}`);
+
+const dollars = (value: number): string => `$${value.toFixed(4)}`;
+
+/** Absent evidence is said to be unobserved; it is never printed as a zero figure. */
+const tokensText = (
+  tokens: Partial<Record<keyof CompletionResources["tokens"], number | undefined>> | undefined,
+): string =>
+  tokens === undefined
+    ? "tokens not observed"
+    : `tokens input ${count(tokens.input)}, output ${count(tokens.output)}, cache read ${count(tokens.cacheRead)}, cache write ${count(tokens.cacheWrite)}, reasoning ${count(tokens.reasoning)}`;
+
+const usdText = (usd: CompletionResources["usd"] | undefined): string =>
+  usd === undefined
+    ? "dollars not observed"
+    : `estimated ${dollars(usd.estimated)}, reported ${dollars(usd.reported)}`;
+
+const measuredText = (measured: number, unmeasured: number): string =>
+  unmeasured > 0 ? `measured ${measured} of ${measured + unmeasured} members` : "";
+
 const figures = (environment: CliEnvironment, label: string, current: CompletionFigures): void => {
+  const counts = measuredText(current.measuredMembers, current.unmeasuredMembers);
   environment.out(
-    `${label}: lead time ${seconds(current.leadTimeSeconds)}, run completion ${seconds(current.runCompletionSeconds)}, active union ${seconds(current.activeSeconds)}`,
+    `${label}: lead time ${seconds(current.leadTimeSeconds)}, run completion ${seconds(current.runCompletionSeconds)}, active union ${seconds(current.activeSeconds)}, ${tokensText(current.resources?.tokens)}, ${usdText(current.resources?.usd)}${counts === "" ? "" : `, ${counts}`}`,
   );
+  if (current.unavailable !== undefined && current.unavailable.length > 0) {
+    environment.out(`  measurement unavailable for ${current.unavailable.join(", ")}`);
+  }
 };
 
 export const completion = async (
@@ -256,6 +282,10 @@ const write = async (
       environment.err(error.message);
       return 1;
     }
+    if (error instanceof ControlPlaneError && error.code === "measurement_unavailable") {
+      environment.err(`${error.message}; retry when the measurement store answers`);
+      return 1;
+    }
     throw error;
   }
   environment.out(said());
@@ -286,28 +316,17 @@ const readMembers = async (
   return { runs, feedback };
 };
 
-const count = (value: number | undefined): string => (value === undefined ? "none" : `${value}`);
-
-const dollars = (value: number): string => `$${value.toFixed(4)}`;
-
 /** One stored checkpoint, from its `measured` block alone; nothing is recomputed. */
 const checkpointLine = (checkpoint: CompletionCheckpoint): string => {
   const m = checkpoint.measured;
-  const tokens =
-    m.tokens === undefined
-      ? "none"
-      : `input ${count(m.tokens.input)}, output ${count(m.tokens.output)}, cache read ${count(m.tokens.cacheRead)}, cache write ${count(m.tokens.cacheWrite)}, reasoning ${count(m.tokens.reasoning)}`;
-  const usd =
-    m.usd === undefined
-      ? "estimated none, reported none"
-      : `estimated ${dollars(m.usd.estimated)}, reported ${dollars(m.usd.reported)}`;
+  const counts = measuredText(m.measuredMembers, m.unmeasuredMembers);
   const machines =
     m.infrastructure === undefined
       ? "none"
       : `${dollars(m.infrastructure.usd)} over ${m.infrastructure.members} members`;
   return (
     `checkpoint \`${checkpoint.name}\` (${checkpoint.recordedAt}): lead time ${seconds(m.leadTimeSeconds)}, run completion ${seconds(m.runCompletionSeconds)}, active union ${seconds(m.activeSeconds)}` +
-    `, measured to ${m.measuredTo}, tokens ${tokens}, ${usd}, infrastructure ${machines}, ${m.readableMembers} readable members`
+    `, measured to ${m.measuredTo}, ${tokensText(m.tokens)}, ${usdText(m.usd)}, infrastructure ${machines}, ${m.readableMembers} readable members${counts === "" ? "" : `, ${counts}`}`
   );
 };
 
@@ -319,9 +338,20 @@ const show = async (
 ): Promise<number> => {
   const { runs, feedback } = await readMembers(session, history);
   const current = new Set(history.members.map(keyOf));
+  const currentRuns = new Map([...runs].filter(([key]) => current.has(key)));
+  const gathered = await gatherMemberFigures(
+    session.stores,
+    history.projectId,
+    history.members,
+    currentRuns,
+    asOf as IsoTimestamp,
+  );
   const report = completionOf({
     history,
-    runs: new Map([...runs].filter(([key]) => current.has(key))),
+    runs: currentRuns,
+    resources: gathered.resources,
+    infrastructure: gathered.infrastructure,
+    unavailable: gathered.unavailable,
     feedback: new Map([...feedback].filter(([key]) => current.has(key))),
     asOf,
   });

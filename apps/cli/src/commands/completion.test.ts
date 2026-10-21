@@ -2,6 +2,7 @@
  * `nightshift completion` (P20, D-05): the histories it puts, what it prints and
  * the exit codes, with the control plane's answers held fixed.
  */
+import type { CompletionHistory } from "@nightshift/contracts";
 import {
   createFixtures,
   makeCompletionHistory,
@@ -14,6 +15,7 @@ import {
   createWorld,
   DEFAULT_ORG,
   errorBody,
+  FAKE_MEASURED,
   finishedRun,
   PROGRAM_DIRECTORY,
   type World,
@@ -99,6 +101,62 @@ describe("nightshift completion", () => {
     expect(text).toContain("rated 1 of 1 finished runs, positive share 100%");
     expect(text).toMatch(/now: lead time .*run completion 1h 0m, active union 1h 0m/);
     expect(world.puts).toEqual([]);
+  });
+
+  it("show says dollars and tokens were not observed, with measured counts, never a zero", async () => {
+    const world = await seeded();
+    const { usd: _usd, tokens: _tokens, coverage: _coverage, ...bare } = FAKE_MEASURED;
+    const history = world.histories[0] as CompletionHistory;
+    world.histories[0] = {
+      ...history,
+      checkpoints: [
+        {
+          name: "bare",
+          programId: world.f.scope.programId,
+          runId: world.f.scope.runId,
+          feedbackVersion: 1,
+          verdictRecordedAt: FAKE_MEASURED.recordedAt,
+          members: history.members,
+          membershipVersion: history.version,
+          recordedAt: FAKE_MEASURED.recordedAt,
+          recordedBy: { kind: "user", userId: TEST_SUBJECT, orgId: DEFAULT_ORG },
+          measured: { ...bare, readableMembers: 3, measuredMembers: 1, unmeasuredMembers: 2 },
+        } as CompletionHistory["checkpoints"][number],
+      ],
+    };
+    const code = await completion(world, "show", "--history", world.historyId);
+    expect(world.created.err).toEqual([]);
+    expect(code).toBe(0);
+    const line = world.created.out.find((l) => l.startsWith("checkpoint `bare`")) as string;
+    expect(line).toContain("measured 1 of 3 members");
+    expect(line).toContain("dollars not observed");
+    expect(line).toContain("tokens not observed");
+    expect(line).not.toMatch(/\$0\.0+\b/);
+    const now = world.created.out.find((l) => l.startsWith("now:")) as string;
+    expect(now).not.toMatch(/\$0\.00/);
+    expect(now).toContain("dollars not observed");
+  });
+
+  it("checkpoint prints a measurement_unavailable refusal with a retry hint and exits 1", async () => {
+    const world = await seeded();
+    world.answerPut = () =>
+      errorBody(503, "measurement_unavailable", "the measurement store could not be read");
+    expect(
+      await completion(
+        world,
+        "checkpoint",
+        "--history",
+        world.historyId,
+        "--name",
+        "first",
+        "--member",
+        world.anchor,
+      ),
+    ).toBe(1);
+    // The transport retries a 5xx of the same request; the CLI itself proposes once.
+    expect(new Set(world.puts.map((put) => JSON.stringify(put)))).toHaveLength(1);
+    expect(world.created.err.join("\n")).toContain("the measurement store could not be read");
+    expect(world.created.err.join("\n")).toContain("retry when the measurement store answers");
   });
 
   it("show prints a stored checkpoint unchanged after a contributing member is removed", async () => {
@@ -330,7 +388,8 @@ describe("nightshift completion", () => {
       ),
     ).toBe(1);
 
-    expect(world.puts).toHaveLength(1);
+    // The transport retries a 5xx of the same request; the CLI itself proposes once.
+    expect(new Set(world.puts.map((put) => JSON.stringify(put)))).toHaveLength(1);
     expect(world.created.err).toEqual([
       "the completion history changed underneath you; run the command again",
     ]);
