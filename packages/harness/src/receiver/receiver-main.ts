@@ -16,7 +16,16 @@ import {
   RECEIVER_HOST,
 } from "./config.js";
 import { durableAppend } from "./durable-append.js";
-import { parseBody, type ReceiverSignal, reduceOtlp } from "./reduce.js";
+import {
+  type AttributeSpec,
+  attributeSpecProblem,
+  buildAllowed,
+  parseBody,
+  type ReceiverSignal,
+  type RecordFilterRule,
+  recordFilterProblem,
+  reduceOtlpFiltered,
+} from "./reduce.js";
 
 const env = process.env;
 const capability = env[RECEIVER_ENV.capability];
@@ -30,16 +39,39 @@ if (
   process.stderr.write("receiver: capability and journal path are required\n");
   process.exit(2);
 }
-const allowedAttributes: ReadonlySet<string> = new Set(
-  (env[RECEIVER_ENV.allowedAttributes] ?? "")
-    .split(/[\n,]/)
-    .map((k) => k.trim())
-    .filter((k) => k !== ""),
-);
+const fatal = (message: string): never => {
+  process.stderr.write(`receiver: ${message}\n`);
+  return process.exit(2);
+};
+const jsonEnv = (name: string): unknown => {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return [];
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return fatal(`${name} is not valid JSON`);
+  }
+};
+const bareAttributes = (env[RECEIVER_ENV.allowedAttributes] ?? "")
+  .split(/[\n,]/)
+  .map((k) => k.trim())
+  .filter((k) => k !== "");
+const specsRaw = jsonEnv(RECEIVER_ENV.attributeSpecs);
+if (!Array.isArray(specsRaw)) fatal("attribute specs must be a JSON array");
+const specs = specsRaw as unknown[];
+for (const spec of specs) {
+  const problem = attributeSpecProblem(spec);
+  if (problem !== undefined) fatal(problem);
+}
+const allowedAttributes = buildAllowed([...bareAttributes, ...(specs as AttributeSpec[])]);
 if (allowedAttributes.size === 0) {
   process.stderr.write("receiver: a non-empty attribute allowlist is required\n");
   process.exit(2);
 }
+const filterRaw = jsonEnv(RECEIVER_ENV.recordFilter);
+const filterProblem = recordFilterProblem(filterRaw);
+if (filterProblem !== undefined) fatal(filterProblem);
+const recordFilter = filterRaw as RecordFilterRule[];
 // The secret must not outlive its use as a comparison value in this process's environment.
 delete env[RECEIVER_ENV.capability];
 
@@ -205,7 +237,11 @@ const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (signal === undefined) return reply(res, 404);
   const requests = parseBody(text, mediaType === "application/x-ndjson");
   if (requests === undefined) return reply(res, 400);
-  const all = requests.flatMap((r) => reduceOtlp(signal, r, allowedAttributes));
+  const reduced = requests.map((r) =>
+    reduceOtlpFiltered(signal, r, allowedAttributes, recordFilter),
+  );
+  const all = reduced.flatMap((r) => r.records);
+  const filteredRecordCount = reduced.reduce((n, r) => n + r.filteredRecordCount, 0);
   const records = all.slice(0, maxRecords);
   const droppedRecordCount = all.length - records.length;
   const result = await enqueue(
@@ -216,6 +252,7 @@ const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> 
       signal,
       records,
       droppedRecordCount,
+      ...(filteredRecordCount > 0 ? { filteredRecordCount } : {}),
     }),
     true,
   );

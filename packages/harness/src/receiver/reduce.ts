@@ -32,6 +32,107 @@ export interface ReceiverRecord {
   readonly droppedAttributeCount: number;
 }
 
+export type AttributeType = "count" | "number" | "boolean" | "enum" | "id" | "timestamp";
+export interface AttributeSpec {
+  readonly key: string;
+  readonly type: AttributeType;
+  /** Required for `enum`: the only accepted strings. */
+  readonly values?: readonly string[];
+}
+
+/** Exact attribute key/value pairs; a record matches when all pairs match. */
+export type RecordFilterRule = Readonly<Record<string, Scalar>>;
+
+/** Allowed attributes: a bare key map entry (`undefined`) keeps any scalar; a spec constrains it. */
+export type AllowedAttributes =
+  | ReadonlySet<string>
+  | ReadonlyMap<string, AttributeSpec | undefined>;
+
+/** Build the allowed-attribute map from bare keys and specs (a spec wins over a bare key). */
+export const buildAllowed = (
+  entries: readonly (string | AttributeSpec)[],
+): ReadonlyMap<string, AttributeSpec | undefined> => {
+  const map = new Map<string, AttributeSpec | undefined>();
+  for (const e of entries) if (typeof e === "string" && !map.has(e)) map.set(e, undefined);
+  for (const e of entries) if (typeof e !== "string") map.set(e.key, e);
+  return map;
+};
+
+const ATTRIBUTE_TYPES: readonly string[] = [
+  "count",
+  "number",
+  "boolean",
+  "enum",
+  "id",
+  "timestamp",
+];
+
+/** `undefined` when `value` is a well-formed spec, otherwise a reason. */
+export const attributeSpecProblem = (value: unknown): string | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return "attribute spec must be an object";
+  const v = value as { key?: unknown; type?: unknown; values?: unknown };
+  if (typeof v.key !== "string" || v.key === "" || /[,\n]/.test(v.key))
+    return "attribute spec key must be a non-empty string without commas or newlines";
+  if (typeof v.type !== "string" || !ATTRIBUTE_TYPES.includes(v.type))
+    return `attribute spec ${v.key} has an unknown type`;
+  if (v.type === "enum") {
+    if (
+      !Array.isArray(v.values) ||
+      v.values.length === 0 ||
+      !v.values.every((x) => typeof x === "string")
+    )
+      return `enum attribute spec ${v.key} needs a non-empty string values list`;
+  } else if (v.values !== undefined) return `attribute spec ${v.key}: values only applies to enum`;
+  return undefined;
+};
+
+/** `undefined` when `value` is a well-formed list of flat scalar rules, otherwise a reason. */
+export const recordFilterProblem = (value: unknown): string | undefined => {
+  if (!Array.isArray(value)) return "record filter must be an array of rules";
+  for (const rule of value) {
+    if (typeof rule !== "object" || rule === null || Array.isArray(rule))
+      return "record filter rules must be flat objects";
+    for (const v of Object.values(rule))
+      if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean")
+        return "record filter rule values must be strings, numbers or booleans";
+  }
+  return undefined;
+};
+
+const ID_RE = /^[A-Za-z0-9._:/+-]{1,160}$/;
+const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** The value as stored when it satisfies `spec`, else `undefined`. */
+export const coerceAttribute = (spec: AttributeSpec, value: Scalar): Scalar | undefined => {
+  const numeric = (v: Scalar): number | undefined => {
+    if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+    if (typeof v === "string" && v.trim() !== "") {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    }
+    return undefined;
+  };
+  switch (spec.type) {
+    case "count": {
+      if (typeof value === "string" && !/^\d+$/.test(value)) return undefined;
+      const n = typeof value === "boolean" ? undefined : numeric(value);
+      return n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+    }
+    case "number":
+      return typeof value === "boolean" ? undefined : numeric(value);
+    case "boolean":
+      if (typeof value === "boolean") return value;
+      return value === "true" ? true : value === "false" ? false : undefined;
+    case "enum":
+      return typeof value === "string" && (spec.values ?? []).includes(value) ? value : undefined;
+    case "id":
+      return typeof value === "string" && ID_RE.test(value) ? value : undefined;
+    case "timestamp":
+      return typeof value === "string" && TIMESTAMP_RE.test(value) ? value : undefined;
+  }
+};
+
 export const MAX_STRING_CHARS = 256;
 
 type Obj = Record<string, unknown>;
@@ -64,7 +165,12 @@ interface Reduced {
   readonly eventName?: string;
 }
 
-const reduceAttributes = (attributes: unknown, allowed: ReadonlySet<string>): Reduced => {
+const specOf = (allowed: AllowedAttributes, key: string): AttributeSpec | undefined =>
+  allowed instanceof Set
+    ? undefined
+    : (allowed as ReadonlyMap<string, AttributeSpec | undefined>).get(key);
+
+const reduceAttributes = (attributes: unknown, allowed: AllowedAttributes): Reduced => {
   const kept: Record<string, Scalar> = {};
   let dropped = 0;
   let eventName: string | undefined;
@@ -75,12 +181,19 @@ const reduceAttributes = (attributes: unknown, allowed: ReadonlySet<string>): Re
       continue;
     }
     const value = scalarOf((attribute as Obj).value);
-    if (key === "event.name" && typeof value === "string") eventName = truncate(value);
-    if (!allowed.has(key) || value === undefined) {
+    const spec = specOf(allowed, key);
+    const stored = value !== undefined && spec !== undefined ? coerceAttribute(spec, value) : value;
+    if (
+      key === "event.name" &&
+      typeof value === "string" &&
+      (spec === undefined || stored !== undefined)
+    )
+      eventName = truncate(value);
+    if (!allowed.has(key) || stored === undefined) {
       dropped++;
       continue;
     }
-    kept[key] = value;
+    kept[key] = stored;
   }
   return eventName === undefined ? { kept, dropped } : { kept, dropped, eventName };
 };
@@ -93,7 +206,7 @@ const make = (
   fields: Obj,
   attributes: unknown,
   resource: Reduced,
-  allowed: ReadonlySet<string>,
+  allowed: AllowedAttributes,
 ): ReceiverRecord => {
   const own = reduceAttributes(attributes, allowed);
   return defined({
@@ -110,7 +223,7 @@ const eachScope = (
   resourceKey: string,
   scopeKey: string,
   itemKey: string,
-  allowed: ReadonlySet<string>,
+  allowed: AllowedAttributes,
   visit: (item: Obj, resource: Reduced) => void,
 ): void => {
   for (const rs of arr(root[resourceKey])) {
@@ -134,35 +247,78 @@ const metricPoints = (metric: Obj): Obj[] => {
   return out;
 };
 
-/** Reduce one parsed OTLP/JSON export request to metadata-only records. */
-export const reduceOtlp = (
+const sameScalar = (actual: Scalar, expected: Scalar): boolean =>
+  actual === expected ||
+  ((typeof actual === "number" || typeof expected === "number") &&
+    typeof actual !== "boolean" &&
+    typeof expected !== "boolean" &&
+    String(actual) === String(expected));
+
+/** Whether the record's own raw attributes satisfy any rule; no rules keeps everything. */
+const passesFilter = (
+  attributes: unknown,
+  rules: readonly RecordFilterRule[] | undefined,
+): boolean => {
+  if (rules === undefined || rules.length === 0) return true;
+  const raw = new Map<string, Scalar>();
+  for (const attribute of arr(attributes)) {
+    if (!isObj(attribute) || typeof attribute.key !== "string") continue;
+    const value = scalarOf(attribute.value);
+    if (value !== undefined) raw.set(attribute.key, value);
+  }
+  return rules.some((rule) =>
+    Object.entries(rule).every(([k, v]) => {
+      const actual = raw.get(k);
+      return actual !== undefined && sameScalar(actual, v);
+    }),
+  );
+};
+
+export interface FilteredReduction {
+  readonly records: ReceiverRecord[];
+  /** Records deliberately excluded by the filter; not lost evidence. */
+  readonly filteredRecordCount: number;
+}
+
+/**
+ * Reduce one parsed OTLP/JSON export request to metadata-only records,
+ * excluding (and counting) records no filter rule matches.
+ */
+export const reduceOtlpFiltered = (
   signal: ReceiverSignal,
   root: unknown,
-  allowed: ReadonlySet<string>,
-): ReceiverRecord[] => {
+  allowed: AllowedAttributes,
+  filter?: readonly RecordFilterRule[],
+): FilteredReduction => {
   const records: ReceiverRecord[] = [];
-  if (!isObj(root)) return records;
+  let filteredRecordCount = 0;
+  const emit = (rawAttributes: unknown, build: () => ReceiverRecord): void => {
+    if (passesFilter(rawAttributes, filter)) records.push(build());
+    else filteredRecordCount++;
+  };
+  if (!isObj(root)) return { records, filteredRecordCount };
   if (signal === "logs") {
-    eachScope(root, "resourceLogs", "scopeLogs", "logRecords", allowed, (log, resource) => {
-      const own = reduceAttributes(log.attributes, allowed);
-      const rec = make(
-        "log",
-        {
-          timeUnixNano: nano(log.timeUnixNano),
-          observedTimeUnixNano: nano(log.observedTimeUnixNano),
-          severityText: str(log.severityText),
-          eventName: str(log.eventName) ?? own.eventName,
-        },
-        log.attributes,
-        resource,
-        allowed,
-      );
-      records.push(rec);
-    });
+    eachScope(root, "resourceLogs", "scopeLogs", "logRecords", allowed, (log, resource) =>
+      emit(log.attributes, () => {
+        const own = reduceAttributes(log.attributes, allowed);
+        return make(
+          "log",
+          {
+            timeUnixNano: nano(log.timeUnixNano),
+            observedTimeUnixNano: nano(log.observedTimeUnixNano),
+            severityText: str(log.severityText),
+            eventName: str(log.eventName) ?? own.eventName,
+          },
+          log.attributes,
+          resource,
+          allowed,
+        );
+      }),
+    );
   } else if (signal === "metrics") {
     eachScope(root, "resourceMetrics", "scopeMetrics", "metrics", allowed, (metric, resource) => {
       for (const point of metricPoints(metric))
-        records.push(
+        emit(point.attributes, () =>
           make(
             "metric",
             {
@@ -180,8 +336,8 @@ export const reduceOtlp = (
         );
     });
   } else {
-    eachScope(root, "resourceSpans", "scopeSpans", "spans", allowed, (span, resource) => {
-      records.push(
+    eachScope(root, "resourceSpans", "scopeSpans", "spans", allowed, (span, resource) =>
+      emit(span.attributes, () =>
         make(
           "span",
           {
@@ -197,11 +353,18 @@ export const reduceOtlp = (
           resource,
           allowed,
         ),
-      );
-    });
+      ),
+    );
   }
-  return records;
+  return { records, filteredRecordCount };
 };
+
+/** Reduce one parsed OTLP/JSON export request to metadata-only records. */
+export const reduceOtlp = (
+  signal: ReceiverSignal,
+  root: unknown,
+  allowed: AllowedAttributes,
+): ReceiverRecord[] => reduceOtlpFiltered(signal, root, allowed).records;
 
 /** Parse a JSON or NDJSON body; `undefined` when it does not parse as JSON objects. */
 export const parseBody = (text: string, ndjson: boolean): unknown[] | undefined => {

@@ -28,11 +28,20 @@ import {
   DEFAULT_MAX_RECORDS_PER_ENVELOPE,
   RECEIVER_ENV,
 } from "./config.js";
+import { type AttributeSpec, attributeSpecProblem, recordFilterProblem } from "./reduce.js";
 
 export interface LocalReceiverOptions {
   readonly journalPath: string;
-  /** Exact attribute keys that may be journaled (at least one; no commas or newlines). */
-  readonly allowedAttributes: readonly string[];
+  /**
+   * Attributes that may be journaled (at least one). A bare string key keeps any
+   * scalar; an `AttributeSpec` journals only values conforming to its type.
+   */
+  readonly allowedAttributes: readonly (string | AttributeSpec)[];
+  /**
+   * Keep a record only if any rule matches all its exact attribute pairs (raw
+   * attributes; a number also matches its decimal string). Empty keeps all.
+   */
+  readonly recordFilter?: readonly Record<string, string | number | boolean>[];
   readonly allowedPaths?: readonly string[];
   /** Upper bound on records per journal envelope; the rest are counted as dropped. */
   readonly maxRecordsPerEnvelope?: number;
@@ -86,8 +95,18 @@ const waitForExit = (child: ChildProcess, ms: number): Promise<boolean> =>
   });
 
 export const startLocalReceiver = async (options: LocalReceiverOptions): Promise<LocalReceiver> => {
-  if (options.allowedAttributes.some((k) => /[,\n]/.test(k)))
+  const bare = options.allowedAttributes.filter((k): k is string => typeof k === "string");
+  const specs = options.allowedAttributes.filter((k): k is AttributeSpec => typeof k !== "string");
+  if (bare.some((k) => /[,\n]/.test(k)))
     throw new Error("receiver allowed attributes must not contain commas or newlines");
+  for (const spec of specs) {
+    const problem = attributeSpecProblem(spec);
+    if (problem !== undefined) throw new Error(`receiver ${problem}`);
+  }
+  if (options.recordFilter !== undefined) {
+    const problem = recordFilterProblem(options.recordFilter);
+    if (problem !== undefined) throw new Error(`receiver ${problem}`);
+  }
   const capability = randomBytes(32).toString("hex");
   const entry = childEntry();
   const child = spawn(options.node ?? process.execPath, [...entry.execArgv, entry.file], {
@@ -97,7 +116,9 @@ export const startLocalReceiver = async (options: LocalReceiverOptions): Promise
       [RECEIVER_ENV.capability]: capability,
       [RECEIVER_ENV.journalPath]: options.journalPath,
       [RECEIVER_ENV.allowedPaths]: JSON.stringify(options.allowedPaths ?? DEFAULT_ALLOWED_PATHS),
-      [RECEIVER_ENV.allowedAttributes]: options.allowedAttributes.join("\n"),
+      [RECEIVER_ENV.allowedAttributes]: bare.join("\n"),
+      [RECEIVER_ENV.attributeSpecs]: JSON.stringify(specs),
+      [RECEIVER_ENV.recordFilter]: JSON.stringify(options.recordFilter ?? []),
       [RECEIVER_ENV.maxRecords]: String(
         options.maxRecordsPerEnvelope ?? DEFAULT_MAX_RECORDS_PER_ENVELOPE,
       ),
