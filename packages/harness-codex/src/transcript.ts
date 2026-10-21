@@ -12,10 +12,10 @@
  * the conversation and are left out. (`event_msg` repeats some messages, so it
  * is not read at all.)
  */
-import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { ConversationMessage, ConversationSession } from "@nightshift/core";
 import type { TranscriptLocateInput, TranscriptSource } from "@nightshift/harness";
+import { findRolloutIn } from "./rollout.js";
 
 export const CODEX_TRANSCRIPT_HARNESS = "codex";
 
@@ -26,7 +26,10 @@ interface Line {
     readonly id?: string;
     readonly type?: string;
     readonly role?: string;
-    readonly content?: readonly { readonly type?: string; readonly text?: string }[];
+    readonly content?: readonly {
+      readonly type?: string;
+      readonly text?: string;
+    }[];
   };
 }
 
@@ -90,16 +93,10 @@ export const currentCodexTranscript = async (
 ): Promise<string | undefined> => {
   const threadId = input.env.CODEX_THREAD_ID;
   if (threadId === undefined || !/^[A-Za-z0-9-]+$/.test(threadId)) return undefined;
-  const root = join(input.env.CODEX_HOME ?? join(input.home, ".codex"), "sessions");
-  let files: string[];
-  try {
-    files = await readdir(root, { recursive: true });
-  } catch {
-    return undefined;
-  }
-  const found = files.filter((file) => file.endsWith(`-${threadId}.jsonl`)).sort();
-  const latest = found.at(-1);
-  return latest === undefined ? undefined : join(root, latest);
+  return findRolloutIn(
+    join(input.env.CODEX_HOME ?? join(input.home, ".codex"), "sessions"),
+    threadId,
+  );
 };
 
 export const codexTranscriptSource: TranscriptSource = {
