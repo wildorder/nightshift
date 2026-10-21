@@ -2,7 +2,11 @@
  * The runner's bootstrap, sampler, heartbeat and volume, over a fake machine
  * and a fake plane (P10, T2).
  */
+
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type HeartbeatResponse,
   HeartbeatResponseSchema,
@@ -32,7 +36,7 @@ import { createHeartbeat, PROGRESS_MIN_GAP_MS } from "./heartbeat.js";
 import type { CommandResult, Machine } from "./machine.js";
 import { runRunner } from "./main.js";
 import type { PlaneFactory } from "./plane.js";
-import { rootEnvironment, tokenFile } from "./root.js";
+import { placeProviderCredentials, rootEnvironment, tokenFile } from "./root.js";
 import { countOomKills, cpuBusyPct, parseCpuTimes, parseDiskPct, parseMeminfo } from "./sampler.js";
 import {
   restoreFromSidecar,
@@ -971,6 +975,7 @@ describe("the workspace (T3, D-P10-15)", () => {
         const joined = [file, ...args].join(" ");
         if (joined.includes("rev-parse --is-bare-repository")) return ok("true\n");
         if (joined.includes("rev-parse --git-dir")) return ok(".git\n");
+        if (joined.includes("branch --show-current")) return ok("program/fixture\n");
         if (joined.includes("status --porcelain")) return ok("");
         if (file === "env" && args.includes("bash")) return fail("npm ERR! missing lockfile");
         return undefined;
@@ -1567,7 +1572,7 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     expect(last.failure).toBeUndefined();
   });
 
-  it("leaves the dispatch recoverable after an unexpected root process failure", async () => {
+  it("leaves the dispatch recoverable after an unexpected root process failure, and says why", async () => {
     const machine = gitMachine();
     const plane = fakePlane(program, dispatch, planText, () => ({
       status: "running",
@@ -1588,6 +1593,153 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     expect(
       plane.heartbeats.some((body) => (body as { report?: string }).report === "stopped"),
     ).toBe(false);
+    // The cause reaches the plane as the stage's detail (2026-10-21).
+    expect(plane.heartbeats).toContainEqual(
+      expect.objectContaining({
+        progress: {
+          stage: "orchestrating",
+          detail: "the work failed (1 of 3 in a row): root process crashed",
+        },
+      }),
+    );
+  });
+
+  /**
+   * A machine systemd restarts the runner on: the first token is still to be
+   * had (a real restart reads the one it cached; the fake keeps the parameter),
+   * the checkout is there to resume, and the volume keeps what the last start wrote.
+   */
+  const restartableMachine = () =>
+    fakeMachine({
+      exec: (file, args) => {
+        const joined = [file, ...args].join(" ");
+        if (file === "aws" && args[1] === "get-parameter") return ok("eyJ.first.token\n");
+        if (file === "aws" && args[1] === "delete-parameter") return ok("");
+        // The volume is warm from the first start on: the checkout is resumed, as on a real restart.
+        if (joined.includes("rev-parse --is-bare-repository")) return ok("true\n");
+        if (joined.includes("rev-parse --git-dir")) return ok(".git\n");
+        if (joined.includes("branch --show-current")) return ok("program/fixture\n");
+        if (joined.includes("status --porcelain")) return ok("");
+        if (file === "env" && args.includes("bash")) return ok("installed\n");
+        return undefined;
+      },
+    });
+
+  it("ends the dispatch failed on the third failure of the work in a row on one machine (2026-10-21)", async () => {
+    const machine = restartableMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const start = () =>
+      runRunner({
+        machine,
+        plane: plane.planeFor,
+        workspace: "/workspace",
+        device: "/dev/xvdf",
+        engineUser: "engine",
+        log: () => undefined,
+        work: async () => {
+          throw new Error("EACCES: permission denied, open 'auth.json'");
+        },
+      });
+    // systemd's restarts: the count lives on the volume, not in the process.
+    expect(await start()).toBe(1);
+    expect(await start()).toBe(1);
+    expect(
+      plane.heartbeats.some((body) => (body as { report?: string }).report === "stopped"),
+    ).toBe(false);
+    expect(await start()).toBe(1);
+    expect(plane.heartbeats.at(-1)).toMatchObject({
+      report: "stopped",
+      failure: {
+        code: "setup_failed",
+        message:
+          "the work failed 3 times in a row on this machine: EACCES: permission denied, open 'auth.json'",
+      },
+    });
+  });
+
+  it("forgets a run of failed starts once the work ends some other way (2026-10-21)", async () => {
+    const machine = restartableMachine();
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "running",
+      stop: false,
+    }));
+    const start = (work: () => Promise<undefined>) =>
+      runRunner({
+        machine,
+        plane: plane.planeFor,
+        workspace: "/workspace",
+        device: "/dev/xvdf",
+        engineUser: "engine",
+        log: () => undefined,
+        work,
+      });
+    const crash = async (): Promise<undefined> => {
+      throw new Error("crashed");
+    };
+    expect(await start(crash)).toBe(1);
+    expect(await start(crash)).toBe(1);
+    expect(await start(async () => undefined)).toBe(0);
+    expect(await start(crash)).toBe(1);
+    expect(await start(crash)).toBe(1);
+    const stopped = plane.heartbeats.filter(
+      (body) => (body as { report?: string }).report === "stopped",
+    );
+    // One `stopped`: the work that ended on its own. No failure ended the dispatch.
+    expect(stopped).toHaveLength(1);
+    expect((stopped[0] as { failure?: unknown }).failure).toBeUndefined();
+  });
+});
+
+describe("placing provider credentials (D-P10-23, D-P10-30)", () => {
+  const codexLogin = JSON.stringify({ tokens: { access_token: "a", refresh_token: "r" } });
+
+  it("owns the project user's copies again before writing them, once, and grants them after (2026-10-21)", async () => {
+    const base = await mkdtemp(join(tmpdir(), "nightshift-credentials-"));
+    const calls: string[] = [];
+    const place = () =>
+      placeProviderCredentials(
+        f.scope.runId,
+        { openai: codexLogin, anthropic: "sk-ant-key" },
+        {
+          user: "project",
+          grant: async (user, path) => void calls.push(`grant ${user} ${path}`),
+          reclaim: async (path) => void calls.push(`reclaim ${path}`),
+        },
+        base,
+      );
+    const env = await place();
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-key");
+    expect(calls).toEqual([
+      `reclaim ${join(base, "project")}`,
+      `grant project ${join(base, "project")}`,
+    ]);
+    // A restart on the same machine: the copies are there, the project user's; reclaim comes first again.
+    calls.length = 0;
+    await place();
+    expect(calls).toEqual([
+      `reclaim ${join(base, "project")}`,
+      `grant project ${join(base, "project")}`,
+    ]);
+    await rm(base, { recursive: true, force: true });
+  });
+
+  it("reclaims nothing when no project user needs a copy", async () => {
+    const base = await mkdtemp(join(tmpdir(), "nightshift-credentials-"));
+    const calls: string[] = [];
+    await placeProviderCredentials(
+      f.scope.runId,
+      { openai: codexLogin },
+      {
+        grant: async () => void calls.push("grant"),
+        reclaim: async () => void calls.push("reclaim"),
+      },
+      base,
+    );
+    expect(calls).toEqual([]);
+    await rm(base, { recursive: true, force: true });
   });
 });
 

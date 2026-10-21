@@ -182,6 +182,12 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
         // not a project's later browser launch. Browser binaries remain project-owned.
         "apt-get -y install libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 libx11-6 libpango-1.0-0 libasound2t64 libnss3 libnspr4 libxkbcommon0 libgbm1 libdrm2 libexpat1 libglib2.0-0t64 libdbus-1-3 libatspi2.0-0t64 libcairo2 fonts-liberation xvfb",
         "systemctl disable --now docker.service docker.socket || true",
+        // An image is a version: nothing upgrades a running machine under a run.
+        // Ubuntu's daily unattended upgrade re-executed systemd on P20's first
+        // machine (2026-10-21 06:49 UTC), which stopped the runner, the root, a
+        // strand's orchestrator and its workers twenty-two hours in.
+        "systemctl mask --now apt-daily.timer apt-daily-upgrade.timer",
+        "systemctl disable --now unattended-upgrades.service || true",
       ]),
       shell("aws-cli", [
         "set -euo pipefail",

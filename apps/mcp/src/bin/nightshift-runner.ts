@@ -6,9 +6,11 @@
  * root until it finishes or the plane says stop.
  */
 import { readFile } from "node:fs/promises";
+import { userInfo } from "node:os";
 import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import { createRunnerPlane, createRuntime } from "../compose.js";
 import { describeHeadlessEnding, runHeadless } from "../headless.js";
+import { createReclaim } from "../run-as.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
 import {
@@ -63,6 +65,10 @@ runRunner({
         const owned = await context.machine.exec("sudo", ["chown", "-R", `${user}:${user}`, path]);
         if (owned.exitCode !== 0) throw new Error(`chown ${path} to ${user}: ${owned.stderr}`);
       },
+      // A restart on this machine owns the project user's copies again before
+      // writing them (2026-10-21): P20's first run restarted into EACCES here
+      // every five seconds for thirteen hours.
+      reclaim: createReclaim(userInfo().username),
     });
     say(
       Object.keys(providerKeys).length === 0
