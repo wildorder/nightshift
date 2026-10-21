@@ -395,7 +395,7 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
         instanceId: "i-0123456789abcdef0",
       },
     ],
-    spend: { estimatedUsd: 8.5, meteredUsd: 0.12, meteredSeconds: 1_300 },
+    spend: { estimatedUsd: 8.5, ceilingSeconds: 8 * 3600, meteredUsd: 0.12, meteredSeconds: 1_300 },
     publication: {
       head: COMMIT,
       lastIntentAt: AT_LATER,

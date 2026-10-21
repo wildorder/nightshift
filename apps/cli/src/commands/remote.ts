@@ -320,6 +320,25 @@ export const environmentFaultLines = (
   ];
 };
 
+/** Seconds as the status line says them: minutes under an hour, else hours to a tenth. */
+const clock = (seconds: number): string =>
+  seconds < 3600 ? `${Math.round(seconds / 60)} min` : `${(seconds / 3600).toFixed(1)} h`;
+
+/**
+ * How far the run is through its wall clock (2026-10-21), when it is known:
+ * the dispatch records the ceiling it was made under, and `remote status`
+ * works it out for a dispatch from before that was recorded. At hour 22 of 24
+ * the hours left are what the operator wants, not the dollars at the ceiling.
+ */
+const ceilingClause = (spend: Dispatch["spend"], ceilingSeconds: number | undefined): string => {
+  if (ceilingSeconds === undefined) return "";
+  const left = Math.max(0, ceilingSeconds - spend.meteredSeconds);
+  return (
+    ` (${clock(spend.meteredSeconds)} of the ${clock(ceilingSeconds)} wall clock; ` +
+    `${left === 0 ? "none" : clock(left)} left)`
+  );
+};
+
 /** The runner's latest progress (P16 S-03), in one line: stage, detail and verdict. */
 const progressLine = (progress: NonNullable<Dispatch["progress"]>): string =>
   `  progress: ${progress.stage} (${STAGE_WORDS[progress.stage]})` +
@@ -335,6 +354,7 @@ const progressLine = (progress: NonNullable<Dispatch["progress"]>): string =>
 export const describeDispatch = (
   dispatch: Dispatch,
   fault?: EnvironmentFaultPayload | undefined,
+  ceilingSeconds: number | undefined = dispatch.spend.ceilingSeconds,
 ): string[] => {
   const lines = [
     `run ${dispatch.runId}: ${dispatch.status}, generation ${dispatch.generation}, ` +
@@ -342,6 +362,7 @@ export const describeDispatch = (
     `  machine ${dispatch.instanceId ?? "none yet"}${dispatch.availabilityZone === undefined ? "" : ` in ${dispatch.availabilityZone}`}, ` +
       `volume ${dispatch.volumeId ?? "none yet"}, image ${dispatch.amiVersion}`,
     `  metered ${Math.round(dispatch.spend.meteredSeconds / 60)} min, $${dispatch.spend.meteredUsd.toFixed(2)} of an estimated $${dispatch.spend.estimatedUsd.toFixed(2)}` +
+      ceilingClause(dispatch.spend, ceilingSeconds) +
       (dispatch.leaseExpiresAt === undefined ? "" : `; lease to ${dispatch.leaseExpiresAt}`),
   ];
   for (const attempt of dispatch.attempts) {
@@ -403,8 +424,33 @@ export const remoteStatus = async (
     dispatch.failure?.code === "environment_fault"
       ? await environmentFaultOfRun(session, scope)
       : undefined;
-  for (const line of describeDispatch(dispatch, fault)) environment.out(line);
+  for (const line of describeDispatch(dispatch, fault, await ceilingOf(session, files, dispatch)))
+    environment.out(line);
   return 0;
+};
+
+/**
+ * The wall clock the run is held to: the one the dispatch recorded, else the
+ * one the plane would enforce, worked out as `dispatchRun` does (the contract's
+ * `maxWallClockSeconds` capped by the org's ceiling), for a dispatch from
+ * before it was recorded (2026-10-21). Unknown when the org's config cannot be read.
+ */
+export const ceilingOf = async (
+  session: Session,
+  files: Pick<ProgramFiles, "contract">,
+  dispatch: Dispatch,
+): Promise<number | undefined> => {
+  if (dispatch.spend.ceilingSeconds !== undefined) return dispatch.spend.ceilingSeconds;
+  try {
+    const orgId = await orgOf(session, dispatch.projectId);
+    const orgConfig = OrgConfigSchema.parse(
+      await send(session.transport, { method: "GET", path: routes.orgConfig(orgId as never) }),
+    );
+    const ceilings = orgConfig.compute ?? DEFAULT_COMPUTE_CEILINGS;
+    return Math.round(runHoursOf(files.contract.costPolicy.maxWallClockSeconds, ceilings) * 3600);
+  } catch {
+    return undefined;
+  }
 };
 
 /**

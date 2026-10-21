@@ -16,7 +16,7 @@
  * failure of its own (`environment_fault`, D-07).
  */
 import type { Dispatch, ProgramContract, RunnerFailure } from "@nightshift/contracts";
-import type { RunScope } from "@nightshift/core";
+import { orchestratingDetail, type RunScope } from "@nightshift/core";
 import { WORKER_GROUP } from "../run-as.js";
 import { bootstrapEngineToken, type RunnerIdentity, readIdentity } from "./bootstrap.js";
 import { createHeartbeat, type Heartbeat } from "./heartbeat.js";
@@ -42,6 +42,8 @@ export interface RunnerOptions {
   readonly sidecarIntervalMs?: number;
   /** The plane, from the composition root (AR-2) or a test's fake. */
   readonly plane: PlaneFactory;
+  /** How often, while the root runs, the run's record is read to say where the work stands; the default is a minute. */
+  readonly progressIntervalMs?: number;
   /**
    * What runs between `ready` and the stop: the headless root (T4). Absent, the
    * runner waits. Resolving with a failure ends the dispatch `failed` with it.
@@ -322,11 +324,19 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   if (options.work !== undefined) {
     heartbeat.progress({ stage: "orchestrating", detail: "the root orchestrator is starting" });
   }
+  // And then, for as long as the root runs, where the work stands by the
+  // record (2026-10-21): the engine writes the nodes, the runner reads them.
+  const watching =
+    options.work === undefined
+      ? undefined
+      : watchOrchestration(context, { intervalMs: options.progressIntervalMs ?? 60_000, log });
   const working = (
     options.work === undefined
       ? new Promise<RunnerWorkEnd | undefined>(() => undefined)
       : options.work(context)
   )
+    // The work's last word is the last word: nothing is read of the record once it has ended.
+    .finally(() => watching?.stop())
     .then((ended) => (ended ? ended.failure : ("worked" as const)))
     .catch((error: unknown) => {
       log(`the work failed: ${causeOf(error)}`);
@@ -334,6 +344,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     });
 
   const outcome = await Promise.race([beating, working]);
+  watching?.stop();
   if (outcome === "failed") {
     // A process crash is not a request to finish the dispatch. Keep its
     // durable run alive for systemd restart (or lease-based replacement).
@@ -366,4 +377,43 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   await settle();
   await heartbeat.farewell("stopped");
   return 0;
+};
+
+/**
+ * Says where the work stands while the root runs (2026-10-21): every
+ * `intervalMs`, the run's nodes and jobs are read from the plane and summed up
+ * as the `orchestrating` stage's detail, given to the heartbeat only when it
+ * changed. A read that fails is logged and tried again next time; the work is
+ * never the worse for it. `stop` ends the watch; a read under way finishes.
+ */
+export const watchOrchestration = (
+  context: Pick<RunnerContext, "scope" | "plane" | "heartbeat" | "machine">,
+  options: { readonly intervalMs: number; readonly log: (line: string) => void },
+): { readonly stop: () => void } => {
+  let stopped = false;
+  let said: string | undefined;
+  void (async () => {
+    while (!stopped) {
+      await context.machine.sleep(options.intervalMs);
+      if (stopped) return;
+      try {
+        const [nodes, jobs] = await Promise.all([
+          context.plane.nodes(context.scope),
+          context.plane.jobs(context.scope),
+        ]);
+        if (stopped) return;
+        const detail = orchestratingDetail(nodes, jobs);
+        if (detail === said) continue;
+        said = detail;
+        context.heartbeat.progress({ stage: "orchestrating", detail });
+      } catch (error) {
+        options.log(`could not read where the work stands: ${causeOf(error)}`);
+      }
+    }
+  })();
+  return {
+    stop: () => {
+      stopped = true;
+    },
+  };
 };

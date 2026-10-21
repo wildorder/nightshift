@@ -219,6 +219,15 @@ export type DispatchInput = z.infer<typeof DispatchInputSchema>;
 export const DispatchSpendSchema = z.strictObject({
   /** Hours at the run's ceiling times the tier's price, plus the volume, at dispatch. */
   estimatedUsd: z.number().min(0),
+  /**
+   * The wall clock the run was dispatched under, in seconds: the contract's
+   * `maxWallClockSeconds` capped by the org's `maxRunHours`, as `estimatedUsd`
+   * was priced (2026-10-21). The heartbeat stops the machine when `meteredSeconds`
+   * crosses it, so the status line can say how much is left. Absent on
+   * dispatches from before it was recorded, which are judged by the ceiling
+   * recomputed on each beat, as before.
+   */
+  ceilingSeconds: z.int().min(1).optional(),
   /** From the heartbeats so far. */
   meteredUsd: z.number().min(0),
   meteredSeconds: z.int().min(0),

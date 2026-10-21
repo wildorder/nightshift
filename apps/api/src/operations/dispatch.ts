@@ -193,7 +193,12 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
     engineAgentId: ids.next("agent"),
     input: body.input,
     attempts: [{ generation: 1, reason: "dispatch", startedAt: at }],
-    spend: { estimatedUsd, meteredUsd: 0, meteredSeconds: 0 },
+    spend: {
+      estimatedUsd,
+      ceilingSeconds: Math.round(runHours * 3600),
+      meteredUsd: 0,
+      meteredSeconds: 0,
+    },
     publication: { intents: [] },
     cleanup: { volumeDeleted: false, failures: [] },
     requestedAt: at,
@@ -420,9 +425,17 @@ export const heartbeat: Handler = async (context) => {
   let stop = !live;
   const ceilings =
     (await deps.stores.orgConfigs.get(project.orgId))?.compute ?? DEFAULT_COMPUTE_CEILINGS;
-  const program = await requireProgram(deps.stores, scope);
-  const hours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
-  if (live && (meteredSeconds > hours * 3600 || meteredUsd > ceilings.maxUsdPerRun)) {
+  // The wall clock is the one the dispatch recorded (2026-10-21), so the
+  // ceiling `remote status` shows is the one enforced; a dispatch from before
+  // it was recorded is judged by the ceiling recomputed here, as before.
+  const ceilingSeconds =
+    dispatch.spend.ceilingSeconds ??
+    runHoursOf(
+      (await requireProgram(deps.stores, scope)).costPolicy.maxWallClockSeconds,
+      ceilings,
+    ) * 3600;
+  const hours = ceilingSeconds / 3600;
+  if (live && (meteredSeconds > ceilingSeconds || meteredUsd > ceilings.maxUsdPerRun)) {
     const code = meteredUsd > ceilings.maxUsdPerRun ? "run_cap" : "wall_clock";
     dispatch = transitionDispatch(
       {
