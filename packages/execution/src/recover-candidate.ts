@@ -112,6 +112,10 @@ export const recoverCandidate = async (
     });
   }
   await environment.runAs?.(agent)?.grant(worktree);
+  const attempt =
+    attemptsOf(
+      await environment.stores.routingDecisions.listByNode(session.scope, node.executionNodeId),
+    ).at(-1)?.attempt ?? 1;
   return {
     session,
     job,
@@ -120,5 +124,8 @@ export const recoverCandidate = async (
     worktree,
     branch: jobBranch(session.scope.runId, node.executionNodeId),
     base,
+    attempt,
+    origin: "recovered",
+    commitSha: node.commitSha,
   };
 };

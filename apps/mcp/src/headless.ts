@@ -24,6 +24,7 @@ import {
   type ExecutionNode,
   type JobContract,
   JobContractSchema,
+  lifecycleOperationId,
   type ProgramContract,
   type RouteTarget,
   type Run,
@@ -47,6 +48,7 @@ import {
   createRouteAvailability,
   type EventOutbox,
   freshScratch,
+  observeLifecycle,
   pruneWorktrees,
   revParse,
   tryGit,
@@ -492,6 +494,9 @@ export const launchRoot = async (
     createdAt: nowIso(clock),
   };
   await stores.agents.put(agent);
+  const startupOperation = lifecycleOperationId("startup", rootNode.executionNodeId, "1");
+  const workOperation = lifecycleOperationId("work", rootNode.executionNodeId, "1");
+  const startupAt = nowIso(clock);
 
   const base = await revParse(runtime.git, input.repoPath, program.repository.programBranch);
   const worktree = runtime.paths.worktree(scope.runId, rootNode.executionNodeId);
@@ -525,7 +530,28 @@ export const launchRoot = async (
     agent,
     route: route.target,
   });
+  // Observation only (P20): the root's startup and work, told as any node's are.
+  const observe = (
+    rest: Omit<Parameters<typeof observeLifecycle>[1], "scope" | "nodeId" | "agentId" | "attempt">,
+  ) =>
+    observeLifecycle(
+      { outbox, clock, ids },
+      {
+        scope,
+        nodeId: rootNode.executionNodeId,
+        agentId: agent.agentId,
+        attempt: 1,
+        ...rest,
+      },
+    );
+  observe({
+    operationId: startupOperation,
+    phase: "startup",
+    transition: "start",
+    occurredAt: startupAt,
+  });
   let exit: HarnessExit;
+  let processStarted = false;
   try {
     const launch = await recorder.startSegment({ resumedSession: false });
     const handle = await runtime.harness.start({
@@ -547,8 +573,34 @@ export const launchRoot = async (
       launch,
       measurements: recorder.sink,
     });
+    processStarted = true;
+    observe({
+      operationId: startupOperation,
+      phase: "startup",
+      transition: "end",
+      reason: "process started",
+      launch,
+      recorder,
+    });
+    observe({ operationId: workOperation, phase: "work", transition: "start", launch, recorder });
     exit = await handle.exit;
+    observe({
+      operationId: workOperation,
+      phase: "work",
+      transition: "end",
+      reason: exit.kind,
+      launch,
+      recorder,
+    });
   } catch (error) {
+    if (!processStarted) {
+      observe({
+        operationId: startupOperation,
+        phase: "startup",
+        transition: "end",
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
     await recorder.close({ kind: "failed", exitCode: 127 }).catch(() => {});
     throw error;
   }

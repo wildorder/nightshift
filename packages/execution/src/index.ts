@@ -27,6 +27,7 @@ export {
   type CarryOverInput,
   carriedStrandsFor,
 } from "./carry-over.js";
+export { type CausesOfRetryInput, causesOfRetry, type StrandFailures } from "./causes.js";
 export { routingDataset } from "./dataset.js";
 export {
   type EndGatesResult,
@@ -128,6 +129,7 @@ export {
 export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";
 export { type IntegrateInput, type IntegrateResult, integrateNode } from "./integrate.js";
+export { blockerKey, type LifecycleInput, observeLifecycle } from "./lifecycle.js";
 export {
   appendJournalLine,
   durableAppend,
