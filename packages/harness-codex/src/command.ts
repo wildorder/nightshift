@@ -21,6 +21,16 @@
  *   <brief>
  * ```
  *
+ * ## Telemetry (P20 S-03)
+ *
+ * With `otel` set, `otelOverrides` points Codex's log exporter at the loopback
+ * receiver. `--ignore-user-config` does not discard `-c` overrides (measured on
+ * 0.155.1), so the override works under it. The capability travels in argv
+ * because 0.155.1 does not substitute environment variables in exporter headers
+ * (measured: the receiver received the literal `${VAR}`; decision
+ * dec_01M5DW1VKE4K3S83V469BKZQCC). Only the log exporter is ever configured:
+ * trace and metrics exporters emit about a megabyte per trivial turn.
+ *
  * ## A worker is never stopped, and never starved of a tool
  *
  * `--dangerously-bypass-approvals-and-sandbox` is Codex's equivalent of Claude
@@ -124,6 +134,25 @@ export const mcpOverrides = (mcp: McpLaunch): readonly string[] => {
   ];
 };
 
+/** The loopback receiver's endpoint and the capability that authorizes posting to it. */
+export interface CodexOtelTarget {
+  readonly endpoint: string;
+  readonly capability: string;
+}
+
+/**
+ * The `-c` overrides that send OTLP/JSON logs, and only logs, to the receiver.
+ * Prompts are never logged. Never sets a trace or metrics exporter.
+ */
+export const otelOverrides = (target: CodexOtelTarget): readonly string[] => [
+  "-c",
+  `otel.exporter={otlp-http={endpoint=${tomlString(`${target.endpoint}/v1/logs`)},protocol="json",headers={Authorization=${tomlString(`Bearer ${target.capability}`)}}}}`,
+  "-c",
+  "otel.log_user_prompt=false",
+  "-c",
+  `otel.environment=${tomlString("nightshift")}`,
+];
+
 export interface CodexCommandInput {
   readonly model: RouteTarget;
   readonly worktree: string;
@@ -133,6 +162,8 @@ export interface CodexCommandInput {
   readonly shellPath?: string | undefined;
   /** P8 (D-P8-15): the thread to continue, for an answering builder or an examiner's second round. */
   readonly resumeSessionId?: string;
+  /** P20 S-03: export this launch's Codex log telemetry to the loopback receiver. */
+  readonly otel?: CodexOtelTarget;
 }
 
 /**
@@ -154,6 +185,7 @@ export const buildCodexArgs = (input: CodexCommandInput): readonly string[] => [
     : ["-c", `shell_environment_policy.set=${tomlInlineTable({ PATH: input.shellPath })}`]),
   ...(input.mcp === undefined ? [] : mcpOverrides(input.mcp)),
   "--ignore-user-config",
+  ...(input.otel === undefined ? [] : otelOverrides(input.otel)),
   "--ignore-rules",
   "--skip-git-repo-check",
   "-m",
