@@ -107,6 +107,57 @@ describe("resourcesOf", () => {
     expect(missing.usd.source).toBe("none");
   });
 
+  it("prefers the summary's valuation and carries its price provenance", () => {
+    const decision = route({ estimatedCostUsd: 99, actualCostUsd: 98, costSource: "reported" });
+    const valued = summaryFor(decision, {
+      totals: { inputTokens: 10, inputIncludesCache: false },
+      valuation: {
+        source: "reported",
+        usd: 5,
+        reportedUsd: 5,
+        estimatedUsd: 2.5,
+        priceSource: "anthropic-list",
+        priceVersion: "2026-10-01",
+        components: [{ model: "m", tier: 0, category: "input", tokens: 10, usd: 2.5, perMTok: 3 }],
+        completeness: {
+          valuedRequests: 1,
+          unvaluedRequests: 1,
+          remainderTokens: 0,
+          remainderValued: true,
+          reasons: ["no price for x"],
+        },
+      },
+    });
+    const result = resourcesOf(decision, [valued]);
+    expect(result.usd).toEqual({ estimated: 2.5, reported: 5, source: "reported" });
+    expect(result.priceBases).toEqual([
+      { source: "anthropic-list", version: "2026-10-01", model: "m", incomplete: true },
+    ]);
+    expect(result.estimateIncomplete).toBe(true);
+
+    const total = sumResources([
+      result,
+      resourcesOf(decision, [valued]),
+      resourcesOf(route({ actualCostUsd: 1 }), []),
+    ]);
+    expect(total.usd).toEqual({ estimated: 5, reported: 11 });
+    expect(total.priceBases).toHaveLength(1);
+    expect(total.estimateIncomplete).toBe(2);
+  });
+
+  it("keeps route-usage dollars for a route without a summary or with an unvalued one", () => {
+    const decision = route({ actualCostUsd: 3, costSource: "reported" });
+    const none = resourcesOf(decision, []);
+    expect(none.usd).toEqual({ reported: 3, source: "reported" });
+    expect(none.coverage).toBe("legacy");
+    const legacy = resourcesOf(route({ inputTokens: 1, actualCostUsd: 3 }), []);
+    expect(legacy.coverage).toBe("legacy");
+    expect(legacy.usd.reported).toBe(3);
+    expect(legacy.priceBases).toBeUndefined();
+    const unknown = resourcesOf(decision, [summaryFor(decision, { totals: { outputTokens: 1 } })]);
+    expect(unknown.usd.reported).toBe(3);
+  });
+
   it("keeps estimated and reported dollars apart", () => {
     const result = resourcesOf(
       route({ estimatedCostUsd: 0.5, actualCostUsd: 0.75, costSource: "reported" }),

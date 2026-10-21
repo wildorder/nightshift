@@ -21,11 +21,13 @@ import {
   closeSegment,
   emptySummary,
   foldExit,
-  foldObservation,
+  foldObservationPriced,
   markGap,
   nowIso,
+  type PriceTable,
+  priceTableFor,
   startSegment,
-  valueCounters,
+  valuationOf,
 } from "@nightshift/core";
 import type { ExecutionEnvironment } from "../environment.js";
 import {
@@ -68,7 +70,12 @@ export interface RecoveryResult {
 export interface RecoveryOptions {
   /** The price of a route, to value a summary recovery changed. */
   readonly price?: (route: RouteTarget) => ModelPrice | undefined;
+  /** Prices by model, for requests that name a model other than the route's. */
+  readonly prices?: Readonly<Record<string, ModelPrice>>;
 }
+
+const pricesFor = (options: RecoveryOptions, route: RouteTarget): PriceTable =>
+  priceTableFor(options.prices, route, options.price?.(route));
 
 const processAlive = (pid: number): boolean => {
   if (pid === 0) return false;
@@ -229,7 +236,6 @@ export const recoverMeasurementJournals = async (
     };
 
     const all = observationLines(lines);
-    const loadedTotals = JSON.stringify(summary.totals);
 
     let state = summary;
     let version = 1;
@@ -253,11 +259,7 @@ export const recoverMeasurementJournals = async (
       putSummary: async () => {
         const captured = version;
         const at = nowIso(environment.clock);
-        const price = options.price?.(state.route);
-        const valuation =
-          price === undefined && JSON.stringify(state.totals) === loadedTotals
-            ? state.valuation
-            : valueCounters(state.totals, price);
+        const valuation = valuationOf(state, pricesFor(options, state.route));
         const valued = { ...state, valuation, updatedAt: at };
         await retried(() => environment.stores.measurements.put(valued));
         if (version === captured) state = valued;
@@ -281,7 +283,13 @@ export const recoverMeasurementJournals = async (
       host.update((current) =>
         observation.kind === "terminal_summary"
           ? foldExit(current, ref, observation, entry.sequence, at)
-          : foldObservation(current, observation, entry.sequence, at),
+          : foldObservationPriced(
+              current,
+              observation,
+              entry.sequence,
+              at,
+              pricesFor(options, current.route),
+            ),
       );
       folded += 1;
     }
@@ -436,10 +444,9 @@ export const recoverMeasurementJournals = async (
         launchId: segment.launchId,
       });
     }
-    const price = options.price?.(state.route);
     const valued = {
       ...state,
-      valuation: valueCounters(state.totals, price),
+      valuation: valuationOf(state, pricesFor(options, state.route)),
     };
     try {
       await retried(() => environment.stores.measurements.put(valued));

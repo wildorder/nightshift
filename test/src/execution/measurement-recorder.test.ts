@@ -1081,3 +1081,74 @@ describe("liveness and loss", () => {
     expect(stored.gaps.some((gap) => gap.reason === "stopped_before_flush")).toBe(true);
   });
 });
+
+describe("per-request valuation", () => {
+  const model = "claude-sonnet-5";
+  const price = {
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    source: "anthropic-list",
+    version: "2026-10-01",
+    tiers: [{ aboveInputTokens: 200_000, inputPerMTok: 6, outputPerMTok: 22.5 }],
+  };
+  const priced = (id: string, inputTokens: number, outputTokens: number): HarnessObservation =>
+    ({
+      ...request(id, { inputTokens, outputTokens, inputIncludesCache: false } as never),
+      model,
+    }) as HarnessObservation;
+  const feed = (recorder: MeasurementRecorder) => {
+    recorder.sink.observe(priced("a", 100_000, 1000));
+    recorder.sink.observe(priced("b", 300_000, 2000));
+  };
+
+  it("recorder and recovery produce identical components after replay", async () => {
+    const live = await build();
+    const liveRecorder = live.recorder({ price });
+    await liveRecorder.startSegment({ resumedSession: false });
+    feed(liveRecorder);
+    const { summary } = await liveRecorder.close();
+
+    const crashedWorld = await build();
+    const recorder = crashedWorld.recorder({
+      price,
+      pid: DEAD_PID,
+      limits: { publishEvery: { observations: 1000, ms: 3_600_000 } },
+    });
+    await recorder.startSegment({ resumedSession: false });
+    feed(recorder);
+    await recorder.drain();
+    await recoverMeasurementJournals(crashedWorld.later, crashedWorld.f.scope, {
+      price: () => price,
+    });
+    const recovered = await crashedWorld.stored();
+
+    expect(summary.valuation.components).toHaveLength(4);
+    expect(recovered.valuation.components).toEqual(summary.valuation.components);
+    expect(recovered.valuation.completeness).toEqual(summary.valuation.completeness);
+    expect(summary.valuation.estimatedUsd).toBeCloseTo(2.16, 9);
+    expect(recovered.valuation.estimatedUsd).toBeCloseTo(2.16, 9);
+    expect(summary.valuation.priceSource).toBe("anthropic-list");
+    expect(recovered.valuation.priceVersion).toBe("2026-10-01");
+  });
+
+  it("recovery continues a stored accumulation without recounting folded requests", async () => {
+    const world = await build();
+    const recorder = world.recorder({
+      price,
+      pid: DEAD_PID,
+      limits: { publishEvery: { observations: 1000, ms: 3_600_000 } },
+    });
+    await recorder.startSegment({ resumedSession: false });
+    recorder.sink.observe(priced("a", 100_000, 1000));
+    await recorder.publish();
+    recorder.sink.observe(priced("b", 300_000, 2000));
+    await recorder.drain();
+    await recoverMeasurementJournals(world.later, world.f.scope, { price: () => price });
+    const recovered = await world.stored();
+    expect(recovered.valuation.completeness).toMatchObject({
+      valuedRequests: 2,
+      unvaluedRequests: 0,
+    });
+    expect(recovered.valuation.estimatedUsd).toBeCloseTo(2.16, 9);
+  });
+});

@@ -30,11 +30,13 @@ import {
   countersFromRouteUsage,
   emptySummary,
   foldExit,
-  foldObservation,
+  foldObservationPriced,
   markGap,
   nowIso,
+  type PriceTable,
+  priceTableFor,
   startSegment as startCoreSegment,
-  valueCounters,
+  valuationOf,
 } from "@nightshift/core";
 import type { HarnessExit, HarnessObservation, MeasurementSink } from "@nightshift/harness";
 import {
@@ -79,6 +81,8 @@ export interface MeasurementRecorderInput {
   readonly route: RouteTarget;
   readonly routingDecisionId: RoutingDecisionId | null;
   readonly price?: ModelPrice;
+  /** Prices by model, for requests that name a model other than the route's. */
+  readonly prices?: Readonly<Record<string, ModelPrice>>;
   readonly limits?: MeasurementRecorderLimits;
   /** An agent's stored summary, to resume it (after a restart, or after recovery). */
   readonly existing?: MeasurementSummary;
@@ -140,14 +144,14 @@ export const publishedSummaryFor = async (
   return newest;
 };
 
-/** The summary with its valuation recomputed from its totals. */
+/** The summary with its valuation recomputed from its per-request accumulation and its totals. */
 export const valuedSummary = (
   summary: MeasurementSummary,
-  price: ModelPrice | undefined,
+  prices: PriceTable | undefined,
   at: string,
 ): MeasurementSummary => ({
   ...summary,
-  valuation: valueCounters(summary.totals, price),
+  valuation: valuationOf(summary, prices),
   updatedAt: at,
 });
 
@@ -182,6 +186,7 @@ export const createMeasurementRecorder = (
   const journalFs = input.journalFs ?? nodeJournalFs;
   const pid = input.pid ?? process.pid;
   const now = () => nowIso(environment.clock);
+  const prices = priceTableFor(input.prices, input.route, input.price);
 
   let current: MeasurementSummary =
     input.existing ??
@@ -247,7 +252,7 @@ export const createMeasurementRecorder = (
       settleLosses();
       const at = now();
       const captured = version;
-      const valued = valuedSummary(current, input.price, at);
+      const valued = valuedSummary(current, prices, at);
       await environment.stores.measurements.put(valued);
       // Only what was captured is stored: later changes keep the summary dirty.
       if (version === captured) {
@@ -339,7 +344,7 @@ export const createMeasurementRecorder = (
     update((summary) =>
       observation.kind === "terminal_summary"
         ? foldExit(summary, runtime.ref, observation, sequence, at)
-        : foldObservation(summary, observation, sequence, at),
+        : foldObservationPriced(summary, observation, sequence, at, prices),
     );
     sinceLastPublish += 1;
   };

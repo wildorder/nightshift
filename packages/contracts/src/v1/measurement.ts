@@ -143,6 +143,8 @@ export const RequestObservationSchema = z.strictObject({
 });
 
 /** A running total for the launch or the session so far. Supersedes earlier snapshots of its scope. */
+export type RequestObservation = z.infer<typeof RequestObservationSchema>;
+
 export const CumulativeSnapshotObservationSchema = z.strictObject({
   ...observationCommon,
   kind: z.literal("cumulative_snapshot"),
@@ -270,6 +272,57 @@ export const SegmentSchema = z.strictObject({
 });
 export type Segment = z.infer<typeof SegmentSchema>;
 
+export const ValuationComponentSchema = z.strictObject({
+  model: z.string().min(1),
+  /** 0 is the base tier. */
+  tier: z.int().min(0),
+  category: z.enum(["input", "output", "cacheRead", "cacheWrite"]),
+  tokens: z.number().min(0),
+  usd: z.number().min(0),
+  perMTok: z.number().min(0),
+});
+export type ValuationComponent = z.infer<typeof ValuationComponentSchema>;
+
+export const ValuationCompletenessSchema = z.strictObject({
+  valuedRequests: z.int().min(0),
+  unvaluedRequests: z.int().min(0),
+  /** Counters in the totals that no individually observed request covers. */
+  remainderTokens: z.number().min(0),
+  remainderValued: z.boolean(),
+  reasons: z.array(z.string().max(200)).max(8),
+});
+export type ValuationCompleteness = z.infer<typeof ValuationCompletenessSchema>;
+
+/** What the requests observed so far add up to; the valuation is derived from this and the totals. */
+export const ValuationRequestsSchema = z.strictObject({
+  /** Net (cache-exclusive) token sums over every individually observed request. */
+  counters: MeasurementCountersSchema,
+  components: z.array(ValuationComponentSchema).max(64),
+  valuedRequests: z.int().min(0),
+  unvaluedRequests: z.int().min(0),
+  reasons: z.array(z.string().max(200)).max(8),
+  priceSource: z.string().optional(),
+  priceVersion: z.string().optional(),
+});
+export type ValuationRequests = z.infer<typeof ValuationRequestsSchema>;
+
+export const MeasurementValuationSchema = z.strictObject({
+  source: CostSourceSchema,
+  /** The headline figure, chosen by `source`. */
+  usd: z.number().min(0).optional(),
+  reportedUsd: z.number().min(0).optional(),
+  /** Priced from tokens; kept apart from `reportedUsd` and never added to it. */
+  estimatedUsd: z.number().min(0).optional(),
+  basis: z.string().max(200).optional(),
+  priceSource: z.string().optional(),
+  priceVersion: z.string().optional(),
+  components: z.array(ValuationComponentSchema).max(64).optional(),
+  completeness: ValuationCompletenessSchema.optional(),
+  /** Per-request accumulation the recorder and recovery carry forward. */
+  requests: ValuationRequestsSchema.optional(),
+});
+export type MeasurementValuation = z.infer<typeof MeasurementValuationSchema>;
+
 /** The compact persisted record, updated in place as observations arrive. */
 export const MeasurementSummarySchema = z
   .strictObject({
@@ -301,12 +354,7 @@ export const MeasurementSummarySchema = z
       observationCount: z.int().min(0),
       publishedCount: z.int().min(0),
     }),
-    valuation: z.strictObject({
-      source: CostSourceSchema,
-      usd: z.number().min(0).optional(),
-      reportedUsd: z.number().min(0).optional(),
-      basis: z.string().max(200).optional(),
-    }),
+    valuation: MeasurementValuationSchema,
     createdAt: IsoTimestampSchema,
     updatedAt: IsoTimestampSchema,
   })
