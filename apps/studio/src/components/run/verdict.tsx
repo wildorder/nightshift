@@ -99,30 +99,33 @@ export const RunVerdict = ({ scope, run }: { readonly scope: RunScope; readonly 
 
   return (
     <div className="grid gap-2" data-testid="run-verdict">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Button
           type="button"
-          size="icon-sm"
+          size="lg"
+          className="[&_svg:not([class*='size-'])]:size-5"
           variant={current === "worked" ? "default" : "outline"}
-          aria-label="Worked"
           aria-pressed={current === "worked"}
           disabled={disabled}
           onClick={() => press("worked")}
         >
-          <ThumbsUp />
+          <ThumbsUp aria-hidden="true" />
+          Worked
         </Button>
         <Button
           type="button"
-          size="icon-sm"
+          size="lg"
+          className="[&_svg:not([class*='size-'])]:size-5"
           variant={current === "did_not_work" ? "default" : "outline"}
-          aria-label="Did not work"
           aria-pressed={current === "did_not_work"}
           disabled={disabled}
           onClick={() => press("did_not_work")}
         >
-          <ThumbsDown />
+          <ThumbsDown aria-hidden="true" />
+          Did not work
         </Button>
-        <AcceptanceState verdict={current} />
+        {/* A given verdict is the pressed button, labelled in words; only "Not rated" needs its own text. */}
+        {current === null ? <AcceptanceState verdict={null} /> : null}
       </div>
       <p className="text-xs text-muted-foreground">{attribution(record)}</p>
       {signedIn ? null : <p className="text-xs text-muted-foreground">Sign in to rate this run.</p>}

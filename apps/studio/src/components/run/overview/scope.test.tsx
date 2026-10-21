@@ -26,6 +26,8 @@ interface Options {
   readonly wipeUsage?: boolean;
   /** The run is still running, so the page polls. */
   readonly live?: boolean;
+  /** Every attempt's summary is complete and fully valued (the fixture has one that is not). */
+  readonly fullyValued?: boolean;
 }
 
 interface Facts {
@@ -61,6 +63,36 @@ const mount = async (options: Options = {}) => {
           )) {
             await stores.routingDecisions.put({ ...route, usage: {} });
           }
+        }
+      }
+      if (options.fullyValued) {
+        for (const summary of (await stores.measurements.listByRun(scope)).items) {
+          await stores.measurements.put({
+            ...summary,
+            coverage: "complete",
+            gaps: [],
+            segments: summary.segments.map((segment) => ({
+              ...segment,
+              coverage: "complete",
+              sources: { ...segment.sources, terminalCoverage: "complete" },
+            })),
+            valuation: {
+              ...summary.valuation,
+              ...(summary.valuation.completeness === undefined
+                ? {}
+                : {
+                    completeness: {
+                      ...summary.valuation.completeness,
+                      valuedRequests:
+                        summary.valuation.completeness.valuedRequests +
+                        summary.valuation.completeness.unvaluedRequests,
+                      unvaluedRequests: 0,
+                      remainderValued: true,
+                      reasons: [],
+                    },
+                  }),
+            },
+          } as typeof summary);
         }
       }
       if (options.live) {
@@ -138,6 +170,9 @@ describe("the scope control", () => {
     await waitFor(() => expect(runTiles()?.textContent).toContain("1 of 4"));
     expect(historyTiles()).toBeNull();
     expect(screen.queryByText("Lead time:")).toBeNull();
+    expect(screen.getByTestId("contributing-runs").textContent).toBe(
+      "contributing runs: 1 (this run)",
+    );
 
     await userEvent.selectOptions(select, `history:${facts.historyId}`);
     await waitFor(() =>
@@ -158,6 +193,10 @@ describe("the scope control", () => {
 
     // The verdict control stays, for this run only.
     expect(screen.getByRole("group", { name: "Human acceptance (this run only)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Worked" }).textContent).toContain("Worked");
+    expect(screen.getByRole("button", { name: "Did not work" }).textContent).toContain(
+      "Did not work",
+    );
 
     await userEvent.selectOptions(select, "run");
     await waitFor(() => expect(runTiles()).not.toBeNull());
@@ -213,15 +252,68 @@ describe("a completion history", () => {
     expect(rows[0]?.textContent).toContain("(this run)");
     const link = within(rows[2] as HTMLElement).getByRole("link");
     expect(link.getAttribute("href")).toBe(
-      `/projects/${seeded.scope.projectId}/programs/${facts.correction.programId}/runs/${facts.correction.runId}`,
+      `/projects/${seeded.scope.projectId}/programs/${facts.correction.programId}/runs/${facts.correction.runId}?scope=history:${facts.historyId}`,
     );
     expect(facts.correction.programId).not.toBe(seeded.scope.programId);
-    await userEvent.click(link);
+  });
+
+  it("keeps the history scope after following a member link", async () => {
+    const { facts, location } = await mount({ query: (id) => `scope=history:${id}` });
+    const table = await screen.findByRole("table", { name: "Member runs" });
+    const rows = within(table).getAllByRole("row").slice(1);
+    await userEvent.click(within(rows[2] as HTMLElement).getByRole("link"));
+    await waitFor(() => expect(decoded(location)).toContain(facts.correction.runId));
+    expect(decoded(location)).toContain(`scope=history:${facts.historyId}`);
     await waitFor(() =>
-      expect(document.body.textContent).toContain(facts.correction.runId.slice(-8)),
+      expect(screen.getByTestId("scope-label").textContent).toBe(`Completion history: ${TITLE}`),
     );
-    // The other run's page opens on its own scope, not the history's.
-    await waitFor(() => expect(screen.getByTestId("scope-label").textContent).toBe("This run"));
+  });
+
+  it("opens an evidence dialog from the consumed and rating tiles", async () => {
+    const { facts } = await mount({ query: (id) => `scope=history:${id}` });
+    const tiles = await screen.findByRole("group", {
+      name: "Headline summaries for this completion history",
+    });
+    const consumed = tiles.querySelector("[data-history-tile='consumed']") as HTMLElement;
+    await userEvent.click(consumed);
+    let sheet = await screen.findByRole("dialog");
+    expect(within(sheet).getByRole("region", { name: "Definition: Input tokens" })).toBeTruthy();
+    expect(sheet.textContent).toContain("Denominator and coverage:");
+    expect(sheet.textContent).toContain("measured 3 of 3 members");
+    expect(sheet.textContent).toContain("Price provenance");
+    expect(sheet.textContent).toContain("As of:");
+    expect(sheet.textContent).toContain("Membership version: 2");
+    const links = within(sheet)
+      .getAllByRole("link")
+      .map((l) => l.getAttribute("href"));
+    expect(links).toHaveLength(3);
+    expect(links.every((h) => h?.endsWith(`?scope=history:${facts.historyId}`))).toBe(true);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    const rating = tiles.querySelector("[data-history-tile='rating']") as HTMLElement;
+    rating.focus();
+    await userEvent.keyboard("{Enter}");
+    sheet = await screen.findByRole("dialog");
+    expect(sheet.textContent).toContain("Rated 3 of 3 eligible runs");
+    expect(sheet.textContent).toContain("Worked: 2 of 3 rated");
+    expect(within(sheet).getByRole("region", { name: "Definition: Rating coverage" })).toBeTruthy();
+    expect(within(sheet).getAllByRole("link")).toHaveLength(3);
+  });
+
+  it("gives the member timeline a text equivalent and refreshes it under the run-status key", async () => {
+    const { client, seeded } = await mount({ query: (id) => `scope=history:${id}` });
+    const timeline = await screen.findByTestId("history-timeline");
+    const lines = timeline.querySelectorAll("li");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]?.textContent).toMatch(/ to .*·/);
+    expect(screen.getByTestId("history-timeline-summary").textContent).toContain("3 of 3");
+    expect(
+      client
+        .getQueryCache()
+        .findAll({ queryKey: ["run-status", seeded.scope.runId] })
+        .some((q) => q.queryKey[2] === "history-member-runs"),
+    ).toBe(true);
   });
 
   it("shows measured n of m, estimates apart, the rating denominators and the checkpoint", async () => {
@@ -327,8 +419,19 @@ describe("the budget evaluation", () => {
     expect(consumed.textContent).not.toMatch(/within budget/i);
   });
 
-  it("states a complete evaluation against the limit, and no cue on the tile", async () => {
+  it("names the unvalued-usage gap on the complete fixture and never says 'Within budget'", async () => {
     await mount({ maxUsd: 500 });
+    const group = await screen.findByRole("group", { name: "Headline summaries for this run" });
+    const consumed = group.querySelector("[data-tile='consumed']") as HTMLElement;
+    await userEvent.click(consumed);
+    const sheet = await screen.findByRole("dialog");
+    await waitFor(() => expect(sheet.textContent).toContain("with unvalued usage"));
+    expect(sheet.textContent).not.toMatch(/within budget/i);
+    expect(consumed.textContent).not.toMatch(/within budget/i);
+  });
+
+  it("states a complete evaluation against the limit, and no cue on the tile", async () => {
+    await mount({ maxUsd: 500, fullyValued: true });
     const group = await screen.findByRole("group", { name: "Headline summaries for this run" });
     const consumed = group.querySelector("[data-tile='consumed']") as HTMLElement;
     await userEvent.click(consumed);

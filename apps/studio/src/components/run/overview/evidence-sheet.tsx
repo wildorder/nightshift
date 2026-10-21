@@ -7,6 +7,7 @@
  */
 import {
   type AttemptRow,
+  type CompletionReport,
   METRIC_DEFINITIONS,
   type RunReport,
   type RunScope,
@@ -37,8 +38,8 @@ import {
   verdictText,
 } from "../../../lib/overview.js";
 import { ArtifactLink } from "../parts.js";
-import { decisionHref, findingTexts, workHref } from "./links.js";
-import type { Selection } from "./selection.js";
+import { decisionHref, findingTexts, memberRunHref, workHref } from "./links.js";
+import { HISTORY_TILE_SELECTIONS, type HistoryTileId, type Selection } from "./selection.js";
 
 const rowsOf = (selection: Selection, rows: readonly AttemptRow[]): AttemptRow[] => {
   const scope = selection.scope;
@@ -368,6 +369,133 @@ export const EvidenceSheet = ({
                 </List>
               </section>
             )}
+          </div>
+        )}
+      </SheetContent>
+    </Sheet>
+  );
+};
+
+const seconds = (value: number | undefined): string =>
+  value === undefined ? NOT_OBSERVED : spanText(value * 1000);
+
+/** The evidence behind one history tile: definitions, this history's coverage, as-of, version and members. */
+export const HistoryEvidenceSheet = ({
+  tile,
+  history,
+  report,
+  scope,
+  onClose,
+}: {
+  readonly tile: HistoryTileId | undefined;
+  readonly history: CompletionReport;
+  readonly report: RunReport;
+  readonly scope: RunScope;
+  readonly onClose: () => void;
+}) => {
+  const selection = tile === undefined ? undefined : HISTORY_TILE_SELECTIONS[tile];
+  const figures = history.current;
+  const total = figures.measuredMembers + figures.unmeasuredMembers;
+  const coverage: string[] = [];
+  if (tile === "time") {
+    coverage.push(
+      `Lead time ${seconds(figures.leadTimeSeconds)}, run completion time ${seconds(figures.runCompletionSeconds)}, active time ${seconds(figures.activeSeconds)}.`,
+      `Measured ${figures.measuredMembers} of ${total} members.`,
+    );
+  } else if (tile === "consumed") {
+    const combined = figures.combined;
+    coverage.push(
+      `Tokens: measured ${figures.measuredMembers} of ${total} members; ${compactCount(figures.resources?.tokens.input)} input (incl. cache), ${compactCount(figures.resources?.tokens.output)} output.`,
+      `Model API-equivalent estimate: ${dollarsText(combined?.model)}. Machine estimate: ${dollarsText(figures.infrastructure?.usd ?? combined?.infrastructure)}. Combined: ${dollarsText(combined?.usd)}${combined?.lowerBound ? " (lower bound)" : ""}.`,
+      ...(combined === undefined
+        ? []
+        : [
+            `Model measured ${combined.coverage.measuredMembers} of ${combined.coverage.measuredMembers + combined.coverage.unmeasuredMembers} members; ${combined.coverage.estimateIncomplete} with unvalued usage; ${combined.coverage.membersWithoutMachine} without a machine.`,
+            ...(combined.priceBases.length === 0
+              ? ["Price provenance: not recorded."]
+              : combined.priceBases.map(
+                  (basis) =>
+                    `Price provenance, ${basis.model}: ${basis.source ?? "price source not recorded"}${basis.version === undefined ? "" : ` ${basis.version}`}${basis.incomplete ? " (some usage unvalued)" : ""}.`,
+                )),
+          ]),
+      ...(figures.unavailable === undefined
+        ? []
+        : [`Unavailable (measurement could not be read): ${figures.unavailable.join(", ")}.`]),
+    );
+  } else if (tile === "rating") {
+    const c = history.coverage;
+    coverage.push(
+      `Rated ${c.rated} of ${c.eligible} eligible runs.`,
+      `Worked: ${c.positive} of ${c.rated} rated. Did not work: ${c.negative} of ${c.rated} rated.`,
+      `Not rated: ${c.unrated} of ${c.eligible} eligible, counted as neither.`,
+    );
+  }
+
+  return (
+    <Sheet open={tile !== undefined} onOpenChange={(open) => (open ? undefined : onClose())}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+        <SheetHeader>
+          <SheetTitle>{selection?.title ?? "Evidence"}</SheetTitle>
+          <SheetDescription>
+            What this figure means, what it is measured over, and the member runs behind it.
+          </SheetDescription>
+        </SheetHeader>
+        {selection === undefined ? null : (
+          <div className="grid gap-5 px-4 pb-6 text-sm">
+            {selection.metrics.map((id) => {
+              const definition = METRIC_DEFINITIONS[id];
+              return (
+                <section
+                  key={id}
+                  className="grid gap-1"
+                  aria-label={`Definition: ${definition.label}`}
+                >
+                  <h3 className="font-medium">{definition.label}</h3>
+                  <p>{definition.definition}</p>
+                  <p className="text-muted-foreground">
+                    <span className="font-medium text-foreground">Denominator and coverage:</span>{" "}
+                    {definition.denominator}
+                  </p>
+                </section>
+              );
+            })}
+
+            <section className="grid gap-1" aria-label="In this history">
+              <h3 className="font-medium">In this history</h3>
+              {coverage.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+              <p>
+                <span className="font-medium">As of:</span> {when(report.asOf)}
+              </p>
+              <p>
+                <span className="font-medium">Membership version:</span> {figures.membershipVersion}
+              </p>
+              <p>
+                <span className="font-medium">Sample size:</span> {history.members.length} member
+                run{history.members.length === 1 ? "" : "s"}
+              </p>
+            </section>
+
+            <section className="grid gap-1" aria-label="Member runs">
+              <h3 className="font-medium">Member runs ({history.members.length})</h3>
+              <List>
+                {history.members.map((member) => (
+                  <li key={`${member.programId}/${member.runId}`}>
+                    <Link
+                      className="underline"
+                      to={memberRunHref(scope, member, history.completionHistoryId)}
+                    >
+                      run {member.runId.slice(-8)}
+                    </Link>{" "}
+                    · {member.role} · in {member.programId}
+                    {member.programId === scope.programId && member.runId === scope.runId
+                      ? " (this run)"
+                      : ""}
+                  </li>
+                ))}
+              </List>
+            </section>
           </div>
         )}
       </SheetContent>
