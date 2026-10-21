@@ -57,6 +57,10 @@ export const handler = async (event: DispatchEvent): Promise<ProvisionOutcome> =
       issuer: tokenConfig.tokenIssuer,
       imageVersion: runner.imageVersion,
       subnetIds: runner.subnetIds,
+      // A replacement lands in its volume's zone; without the map every
+      // replacement and resume through this Lambda failed "no subnet in <zone>"
+      // while the reconciler, which passed it, replaced lost machines fine (2026-10-21).
+      subnetZones: runner.subnetZones,
     },
     scope,
   );
