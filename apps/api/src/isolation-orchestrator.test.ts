@@ -82,6 +82,7 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       ...f.scope,
       jobContractId: f.ids.next("job"),
       decisionId: f.ids.next("dec"),
+      completionHistoryId: f.ids.next("comp"),
       checkpointId: f.ids.next("ckpt"),
       verificationId: f.ids.next("ver"),
       examinationId: f.ids.next("exam"),

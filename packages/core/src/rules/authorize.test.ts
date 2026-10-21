@@ -184,6 +184,13 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "warmCache.get": "forbidden",
   "gateHealth.get": "forbidden",
   "gateHealth.put": "forbidden",
+  "feedback.get": "forbidden",
+  "feedback.put": "forbidden",
+  "feedback.listByProgram": "forbidden",
+  "completion.get": "forbidden",
+  "completion.put": "forbidden",
+  "completion.listByRun": "forbidden",
+  "completion.listByProject": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
@@ -281,6 +288,43 @@ describe("an execution principal", () => {
    * or the engine, never by an agent. Walked over every agent role for the same
    * reason as the signed download.
    */
+  /**
+   * P20 (D-04, D-05): a human verdict and a completion history are a user's to
+   * write, and no execution needs to read them. Walked over every execution role,
+   * the engine included.
+   */
+  it("is refused run feedback and completion histories, whatever its role", () => {
+    const operations = [
+      "feedback.get",
+      "feedback.put",
+      "feedback.listByProgram",
+      "completion.get",
+      "completion.put",
+      "completion.listByRun",
+      "completion.listByProject",
+    ] as const;
+    for (const role of ["worker", "orchestrator", "examiner", "arbiter", "engine"] as const) {
+      for (const operation of operations) {
+        expect(ACCESS_BY_ROLE[role][operation], `${role} ${operation}`).toBe("forbidden");
+        expect(
+          authorize({ ...execution, role }, operation, {
+            orgId: ORG_A,
+            projectId: here.scope.projectId,
+          }),
+          `${role} ${operation}`,
+        ).toMatchObject({ allowed: false, reason: "execution_forbidden_operation" });
+      }
+    }
+    for (const operation of operations) {
+      expect(authorize(user, operation, { orgId: ORG_A, projectId: here.scope.projectId })).toEqual(
+        { allowed: true },
+      );
+      expect(
+        authorize(user, operation, { orgId: ORG_B, projectId: here.scope.projectId }),
+      ).toMatchObject({ allowed: false, reason: "wrong_org" });
+    }
+  });
+
   it("is refused the project's gate health, whatever its agent role", () => {
     for (const role of ["worker", "orchestrator", "examiner", "arbiter"] as const) {
       for (const operation of ["gateHealth.get", "gateHealth.put"] as const) {
