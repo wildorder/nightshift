@@ -1,0 +1,254 @@
+/**
+ * The Completion section's model and machine figures (D-05), gathered from
+ * in-memory stores: every member run is read once, charged once per history,
+ * and a refused read leaves that member's figure absent.
+ */
+import type {
+  CompletionMemberRef,
+  IsoTimestamp,
+  MeasurementSummary,
+  RoutingDecision,
+  Run,
+} from "@nightshift/contracts";
+import { describe, expect, it } from "vitest";
+import type { ProjectStores } from "../ports/stores.js";
+import { buildCompletionHistory } from "../rules/completion.js";
+import type { RunScope } from "../rules/ownership.js";
+import {
+  createFixtures,
+  makeDispatch,
+  makeNode,
+  makeProgramContract,
+  makeRootNode,
+  makeRun,
+} from "../testing/factories.js";
+import { gatherReport, renderReport } from "./report.js";
+
+const at = (s: number): IsoTimestamp =>
+  new Date(Date.UTC(2026, 0, 1) + s * 1000).toISOString() as IsoTimestamp;
+const page = <T>(items: readonly T[]) => Promise.resolve({ items });
+const actor = { kind: "user", userId: "ann", orgId: "org_01HF7YAT00GGGGGGGGGGGGGGGG" } as never;
+
+const world = () => {
+  const f = createFixtures();
+  const other = f.ids.next("prog");
+  const scopes = {
+    a: f.scope,
+    b: { ...f.scope, runId: f.ids.next("run") },
+    c: { projectId: f.scope.projectId, programId: other, runId: f.ids.next("run") },
+  };
+  const build = (key: keyof typeof scopes, start: number, patch: Partial<RoutingDecision>) => {
+    const scope = scopes[key];
+    const root = makeRootNode(f, {
+      ...scope,
+      executionNodeId: key === "a" ? f.rootNodeId : f.ids.next("node"),
+    });
+    const node = makeNode(f, root.executionNodeId, scope);
+    const run: Run = makeRun(f, {
+      ...scope,
+      rootNodeId: root.executionNodeId,
+      status: "succeeded",
+      startedAt: at(start),
+      endedAt: at(start + 100),
+    });
+    const route = {
+      schemaVersion: 1,
+      ...scope,
+      routingDecisionId: f.ids.next("route"),
+      executionNodeId: node.executionNodeId,
+      attempt: 1,
+      eligibleOptions: [
+        { target: { harness: "claude", provider: "anthropic", model: "m" }, eligible: true },
+      ],
+      chosen: { harness: "claude", provider: "anthropic", model: "m" },
+      ruleId: "r",
+      wasOverride: false,
+      outcome: "verified",
+      previousRouteId: null,
+      createdAt: at(start),
+      ...patch,
+    } as RoutingDecision;
+    return { scope, run, nodes: [root, node], route };
+  };
+  const a = build("a", 0, {
+    usage: { inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0.5 },
+  });
+  const b = build("b", 200, {
+    usage: { inputTokens: 1, outputTokens: 1, actualCostUsd: 2 },
+  });
+  const c = build("c", 400, {
+    usage: { inputTokens: 300, outputTokens: 30, estimatedCostUsd: 0.25, actualCostUsd: 1 },
+  });
+  const summary = {
+    measurementVersion: 1,
+    ...b.scope,
+    measurementSummaryId: f.ids.next("meas"),
+    executionNodeId: b.route.executionNodeId,
+    agentId: f.ids.next("agent"),
+    role: "worker",
+    routingDecisionId: b.route.routingDecisionId,
+    route: b.route.chosen,
+    observedModels: [],
+    segments: [],
+    totals: { inputTokens: 200, outputTokens: 20, inputIncludesCache: true },
+    coverage: "complete",
+    gaps: [],
+    ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+    valuation: { source: "unknown" },
+    createdAt: at(200),
+    updatedAt: at(300),
+  } as unknown as MeasurementSummary;
+  const dispatch = makeDispatch(f, {
+    ...b.scope,
+    requestedAt: at(200),
+    usdPerHour: 3.6,
+    priceBasis: {
+      usdPerHour: 3.6,
+      volumeUsdPerHour: 0.36,
+      source: "aws-price-list",
+      asOf: "2026-01-01",
+      region: "us-west-2",
+    },
+    attempts: [
+      {
+        generation: 1,
+        reason: "dispatch",
+        startedAt: at(200),
+        endedAt: at(1200),
+        endReason: "stopped",
+        terminatedAt: at(1200),
+        meteredSeconds: 1000,
+      },
+    ],
+    cleanup: { volumeDeleted: true, volumeDeletedAt: at(1800), failures: [] },
+  });
+  const members = (...runs: { scope: Pick<RunScope, "programId" | "runId"> }[]) =>
+    runs.map(
+      (r, i): CompletionMemberRef => ({
+        programId: r.scope.programId,
+        runId: r.scope.runId,
+        role: i === 0 ? "anchor" : "correction",
+      }),
+    );
+  const history = (title: string, ...runs: { scope: Pick<RunScope, "programId" | "runId"> }[]) =>
+    buildCompletionHistory({
+      scope: f.scope,
+      completionHistoryId: f.ids.next("comp"),
+      title,
+      members: members(...runs),
+      actor,
+      at: at(1),
+    });
+  return { f, a, b, c, summary, dispatch, history };
+};
+
+/** Stores over the three runs; every method call is counted by `method:runId`. */
+const storesFor = (w: ReturnType<typeof world>, refuse: readonly string[] = []) => {
+  const calls = new Map<string, number>();
+  const runs = [w.a, w.b, w.c];
+  const byRun =
+    <T>(
+      method: string,
+      pick: (r: (typeof runs)[number]) => T,
+      fallback: T,
+    ): ((scope: { runId: string }) => Promise<T>) =>
+    (scope) => {
+      calls.set(`${method}:${scope.runId}`, (calls.get(`${method}:${scope.runId}`) ?? 0) + 1);
+      if (refuse.includes(`${method}:${scope.runId}`)) return Promise.reject(new Error("refused"));
+      const found = runs.find((r) => r.scope.runId === scope.runId);
+      return Promise.resolve(found === undefined ? fallback : pick(found));
+    };
+  const list = <T>(method: string, pick: (r: (typeof runs)[number]) => T[]) => {
+    const read = byRun(method, pick, [] as T[]);
+    return (scope: { runId: string }) => read(scope).then((items) => ({ items }));
+  };
+  const stores = {
+    programContracts: {
+      get: () => Promise.resolve(makeProgramContract(w.f, { strands: [] })),
+      listByProject: () => page([]),
+    },
+    runs: {
+      get: (scope: { runId: string }, runId: string) =>
+        Promise.resolve(runs.find((r) => r.scope.runId === runId)?.run ?? undefined).then(
+          (found) => (scope ? found : undefined),
+        ),
+      listByProgram: () => page([w.a.run]),
+    },
+    executionNodes: { listByRun: list("nodes", (r) => r.nodes) },
+    jobContracts: { listByRun: () => page([]) },
+    decisions: { listByRun: () => page([]), get: () => Promise.resolve(undefined) },
+    events: { listByRun: () => page([]) },
+    measurements: {
+      listByRun: list("measurements", (r) => (r === w.b ? [w.summary] : [])),
+    },
+    dispatches: { get: byRun("dispatch", (r) => (r === w.b ? w.dispatch : undefined), undefined) },
+    computeUtilizations: { get: () => Promise.resolve(undefined) },
+    agents: { listByNode: () => Promise.resolve([]) },
+    routingDecisions: {
+      listByNode: (scope: { runId: string }, nodeId: string) => {
+        const found = runs.find((r) => r.scope.runId === scope.runId);
+        return byRun(
+          "routes",
+          () => (found?.route.executionNodeId === nodeId ? [found.route] : []),
+          [] as RoutingDecision[],
+        )(scope);
+      },
+    },
+    examinations: { listByNode: () => Promise.resolve([]) },
+    verifications: { listByNode: () => Promise.resolve([]) },
+    gateHealth: { get: () => Promise.resolve(undefined) },
+    feedback: {
+      get: () => Promise.resolve(undefined),
+      listByProgram: () => page([]),
+    },
+    completionHistories: {
+      listByProject: () => page([w.history("First", w.a, w.b), w.history("Second", w.a, w.c)]),
+    },
+  } as unknown as ProjectStores;
+  return { stores, calls };
+};
+
+describe("the Completion section's model and machine figures", () => {
+  it("sums tokens, keeps estimated and reported dollars apart, and charges each run once per history", async () => {
+    const w = world();
+    const { stores, calls } = storesFor(w);
+    const gathered = await gatherReport(stores, w.f.scope);
+    const [first, second] = gathered.completions;
+    expect(first?.title).toBe("First");
+    expect(first?.current.resources?.tokens).toMatchObject({ input: 300, output: 30 });
+    expect(first?.current.resources?.usd).toEqual({ estimated: 0.5, reported: 2 });
+    expect(first?.current.infrastructure).toEqual({ usd: 1.16, members: 1 });
+    expect(second?.current.resources?.tokens).toMatchObject({ input: 400, output: 40 });
+    expect(second?.current.resources?.usd).toEqual({ estimated: 0.75, reported: 1 });
+    expect(second?.current.infrastructure).toEqual({ usd: 0, members: 0 });
+
+    // The current run is in both histories and is not read again; the others once.
+    for (const r of [w.a, w.b, w.c]) {
+      expect(calls.get(`measurements:${r.scope.runId}`)).toBe(1);
+      expect(calls.get(`nodes:${r.scope.runId}`)).toBe(1);
+    }
+    expect(calls.get(`dispatch:${w.b.scope.runId}`)).toBe(1);
+
+    const text = renderReport(gathered);
+    expect(text).toContain("tokens in 300, out 30");
+    expect(text).toContain("estimated $0.50, reported $2.00 (separate figures)");
+    expect(text).toContain("infrastructure $1.16 over 1 member run(s)");
+    expect(text).toContain("tokens in 400, out 40");
+    expect(text).toContain("estimated $0.75, reported $1.00 (separate figures)");
+    expect(text).toContain("infrastructure not observed");
+    expect(text).toContain("token coverage complete 1, partial 0, unknown 0, legacy 1, missing 0");
+  });
+
+  it("leaves a refused member's resources absent and still renders", async () => {
+    const w = world();
+    const { stores } = storesFor(w, [`measurements:${w.b.scope.runId}`]);
+    const gathered = await gatherReport(stores, w.f.scope);
+    const [first, second] = gathered.completions;
+    // Only A contributes to the first history; B's figure is absent, not zero.
+    expect(first?.current.resources?.tokens).toMatchObject({ input: 100, output: 10 });
+    expect(first?.current.resources?.usd).toEqual({ estimated: 0.5, reported: 0 });
+    expect(first?.current.infrastructure).toEqual({ usd: 1.16, members: 1 });
+    expect(second?.current.resources?.tokens).toMatchObject({ input: 400, output: 40 });
+    expect(renderReport(gathered)).toContain("## Completion");
+  });
+});
