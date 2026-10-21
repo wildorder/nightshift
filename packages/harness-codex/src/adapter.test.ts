@@ -5,19 +5,32 @@
  * taken from real runs on 0.154.0. What is tested is the adapter's own logic —
  * what it launches, what it lets through, and how it names an ending.
  */
-import type { ExecutionNode, RouteTarget } from "@nightshift/contracts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExecutionNode, MeasurementObservation, RouteTarget } from "@nightshift/contracts";
+import { MeasurementObservationSchema } from "@nightshift/contracts";
 import {
+  createCountingIdGenerator,
   createFixtures,
   makeAgent,
   makeJobContract,
   makeProgramContract,
   makeRootNode,
+  reconcileSegment,
 } from "@nightshift/core";
-import type { HarnessStartInput, HookEvent, McpLaunch } from "@nightshift/harness";
-import { millis, refusingWorkerTools } from "@nightshift/harness";
+import type {
+  HarnessObservation,
+  HarnessStartInput,
+  HookEvent,
+  LocalReceiverOptions,
+  McpLaunch,
+} from "@nightshift/harness";
+import { millis, recordingMeasurementSink, refusingWorkerTools } from "@nightshift/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCodexHarness, SPAWN_FAILURE_EXIT_CODE } from "./adapter.js";
 import type { AdapterFileSystem, SpawnedChild, SpawnLike, SpawnOptions } from "./process.js";
+import { MAX_HOOK_PAYLOAD_BYTES } from "./stream.js";
 
 const encoder = new TextEncoder();
 const lines = (...frames: readonly unknown[]): string =>
@@ -98,7 +111,12 @@ interface SpawnCall {
 
 const GUARD_DIR = "/fake-tmp/nightshift-codex-1";
 
-const fakes = (overrides: { git?: string | undefined; failWrites?: boolean } = {}) => {
+/** Successive contents a rollout read returns (the last repeats); an Error rejects. */
+type RolloutServing = Readonly<Record<string, readonly (string | Error)[]>>;
+
+const fakes = (
+  overrides: { git?: string | undefined; failWrites?: boolean; rollouts?: RolloutServing } = {},
+) => {
   const calls: SpawnCall[] = [];
   const children: FakeChild[] = [];
   const spawn: SpawnLike = (file, args, options) => {
@@ -110,8 +128,28 @@ const fakes = (overrides: { git?: string | undefined; failWrites?: boolean } = {
   const executables = new Map<string, string>();
   const transcripts = new Map<string, string>();
   const removed: string[] = [];
+  const served = new Map<string, number>();
+  const rolloutPath = (id: string): string => `2026/10/20/rollout-2026-10-20T23-53-02-${id}.jsonl`;
   const fs: AdapterFileSystem = {
-    makeTempDir: (prefix) => `/fake-tmp/${prefix}1`,
+    // The receiver's directory is real: the fake receiver writes a journal into it.
+    makeTempDir: (prefix) =>
+      prefix.startsWith("nightshift-codex-otel-")
+        ? mkdtempSync(join(tmpdir(), prefix))
+        : `/fake-tmp/${prefix}1`,
+    readdir: async (path, options) => {
+      if (!options.recursive || !path.endsWith("/sessions")) throw new Error("ENOENT");
+      return Object.keys(overrides.rollouts ?? {}).map(rolloutPath);
+    },
+    readText: async (path) => {
+      const id = Object.keys(overrides.rollouts ?? {}).find((k) => path.endsWith(`-${k}.jsonl`));
+      const serving = id === undefined ? undefined : overrides.rollouts?.[id];
+      if (id === undefined || serving === undefined) throw new Error("ENOENT");
+      const index = Math.min(served.get(id) ?? 0, serving.length - 1);
+      served.set(id, index + 1);
+      const content = serving[index];
+      if (content === undefined || content instanceof Error) throw content ?? new Error("EIO");
+      return content;
+    },
     writeExecutable: (path, contents) => {
       if (overrides.failWrites === true) throw new Error("EACCES");
       executables.set(path, contents);
@@ -128,7 +166,10 @@ const fakes = (overrides: { git?: string | undefined; failWrites?: boolean } = {
         close: () => {},
       };
     },
-    removeDir: (path) => void removed.push(path),
+    removeDir: (path) => {
+      removed.push(path);
+      if (!path.startsWith("/fake-tmp/")) rmSync(path, { recursive: true, force: true });
+    },
   };
   return { spawn, fs, calls, children, executables, transcripts, removed };
 };
@@ -522,5 +563,462 @@ describe("launching through the image's Node (P16 S-01)", () => {
     expect(call?.args.slice(0, 3)).toEqual(["/usr/local/lib/codex/bin/codex.js", "exec", "--json"]);
     world.children[0]?.close(0);
     await handle.exit;
+  });
+});
+
+describe("measurement capture (P20 S-03)", () => {
+  const THREAD = "01a15bbb-94ca-7bb3-9199-122e66126ad3";
+  const CONV = "019e0000-0000-7000-8000-000000000001";
+  const CHILD = "01a15bbd-0000-7000-8000-00000000c1d1";
+  const fixture = (name: string): string =>
+    readFileSync(new URL(`./__fixtures__/${name}`, import.meta.url), "utf8");
+  const ROLLOUT = fixture("codex-rollout-measured.jsonl");
+  /** The rollout as it stood after `n` records (the first launch is 16). */
+  const rolloutTo = (n: number): string => `${ROLLOUT.split("\n").slice(0, n).join("\n")}\n`;
+  const FIRST_LAUNCH = rolloutTo(16);
+  const journalOf = (name: string, conversation = THREAD): string =>
+    fixture(name).replaceAll(CONV, conversation);
+  const streamOf = (usage: Record<string, number>): string =>
+    lines(
+      { type: "thread.started", thread_id: THREAD },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_0", type: "agent_message", text: "DONE" } },
+      { type: "turn.completed", usage },
+    );
+  const FIRST_STREAM = streamOf({
+    input_tokens: 3014,
+    cached_input_tokens: 1500,
+    output_tokens: 83,
+  });
+  const SECOND_STREAM = streamOf({
+    input_tokens: 4021,
+    cached_input_tokens: 2000,
+    output_tokens: 124,
+  });
+  const clock = { now: () => Date.parse("2026-10-20T23:54:00.000Z") };
+
+  const ids = createCountingIdGenerator();
+  const stamp = (observation: HarnessObservation): MeasurementObservation =>
+    MeasurementObservationSchema.parse({
+      ...observation,
+      schemaVersion: 1,
+      projectId: ids.next("proj"),
+      programId: ids.next("prog"),
+      runId: ids.next("run"),
+      executionNodeId: ids.next("node"),
+      agentId: ids.next("agent"),
+      launch: { agentId: ids.next("agent"), launchId: "l1", segment: 0 },
+      receivedAt: "2026-10-21T00:00:00.000Z",
+    });
+
+  const envelope = (records: Record<string, string | number | boolean>[]): string =>
+    `${JSON.stringify({
+      receivedAt: "2026-10-20T23:53:41.000Z",
+      path: "/v1/logs",
+      contentType: "application/json",
+      signal: "logs",
+      records: records.map((attributes) => ({
+        kind: "log",
+        attributes,
+        resourceAttributes: {},
+        droppedAttributeCount: 0,
+      })),
+      droppedRecordCount: 0,
+    })}\n`;
+  /** The journal with an extra conversation's records before its closing line. */
+  const withConversation = (
+    base: string,
+    conversation: string,
+    options: { retry?: boolean } = {},
+  ): string => {
+    const all = base.split("\n").filter((l) => l !== "");
+    const closing = all.pop() ?? "";
+    const common = { "conversation.id": conversation, model: "gpt-5.5" };
+    return `${all.join("\n")}\n${envelope([
+      { "event.name": "codex.conversation_starts", ...common },
+      { "event.name": "codex.api_request", attempt: 0, ...common },
+      ...(options.retry === true
+        ? [{ "event.name": "codex.api_request", attempt: 1, ...common }]
+        : []),
+      {
+        "event.name": "codex.sse_event",
+        "event.kind": "response.completed",
+        input_token_count: 300,
+        output_token_count: 5,
+        ...common,
+      },
+    ])}${closing}\n`;
+  };
+
+  const SPAWNING_PARENT = `${FIRST_LAUNCH}${[
+    {
+      timestamp: "2026-10-20T23:53:02.495Z",
+      ordinal: 16,
+      type: "response_item",
+      payload: { type: "function_call", name: "spawn_agent", call_id: "c1", arguments: "SECRET" },
+    },
+    {
+      timestamp: "2026-10-20T23:53:02.496Z",
+      ordinal: 17,
+      type: "event_msg",
+      payload: { type: "collab_agent_spawn_begin", new_thread_id: CHILD },
+    },
+  ]
+    .map((l) => `${JSON.stringify(l)}\n`)
+    .join("")}`;
+  const CHILD_ROLLOUT = lines(
+    {
+      timestamp: "2026-10-20T23:53:03.000Z",
+      ordinal: 0,
+      type: "session_meta",
+      payload: { id: CHILD, cli_version: "0.155.1" },
+    },
+    {
+      timestamp: "2026-10-20T23:53:03.100Z",
+      ordinal: 1,
+      type: "token_usage_record",
+      payload: {
+        thread_id: CHILD,
+        response_id: "child_resp_1",
+        turn_id: "ct",
+        usage: { input_tokens: 300, output_tokens: 5 },
+      },
+    },
+  );
+
+  interface Scenario {
+    journal?: string;
+    receiver?: "ok" | "throws";
+    stopGap?: "receiver_lost" | "stopped_before_flush";
+    rollouts?: RolloutServing;
+    resume?: boolean;
+    stream?: string;
+    end?: "complete" | "cancel" | "interrupt";
+    measurements?: boolean;
+  }
+
+  const scenario = async (o: Scenario = {}) => {
+    const world = fakes(o.rollouts === undefined ? {} : { rollouts: o.rollouts });
+    const events: HookEvent[] = [];
+    const sink = recordingMeasurementSink();
+    const receivers: LocalReceiverOptions[] = [];
+    const harness = createCodexHarness({
+      spawn: world.spawn,
+      fs: world.fs,
+      env: PARENT_ENV,
+      platform: "linux",
+      clock,
+      kill: () => {},
+      startReceiver: async (options) => {
+        receivers.push(options);
+        if (o.receiver === "throws") throw new Error("EADDRINUSE");
+        return {
+          endpoint: "http://127.0.0.1:4318",
+          capability: "cap-secret",
+          journalPath: options.journalPath,
+          pid: 77,
+          stop: async () => {
+            if (o.journal !== undefined) writeFileSync(options.journalPath, o.journal);
+            return o.stopGap === undefined ? {} : { gap: o.stopGap };
+          },
+        };
+      },
+    });
+    const input: HarnessStartInput = {
+      ...startInput(events),
+      ...(o.measurements === false ? {} : { measurements: sink }),
+      ...(o.resume === true ? { resume: { sessionId: THREAD } } : {}),
+    };
+    const handle = await harness.start(input);
+    const child = world.children[0];
+    child?.emitStdout(o.stream ?? FIRST_STREAM);
+    let cancelling: Promise<void> | undefined;
+    if (o.end === "cancel") cancelling = harness.cancel(handle, millis(10_000));
+    if (o.end === "cancel" || o.end === "interrupt") child?.close(null, "SIGINT");
+    else child?.close(0);
+    await cancelling;
+    const exit = await handle.exit;
+    const ending = endings(events)[0]?.payload as Record<string, unknown>;
+    return { ...world, events, exit, ending, sink, receivers, observations: sink.observations };
+  };
+
+  const requests = (obs: readonly HarnessObservation[]) => obs.filter((o) => o.kind === "request");
+  const snapshots = (obs: readonly HarnessObservation[]) =>
+    obs.filter((o) => o.kind === "cumulative_snapshot");
+  const gapsOf = (ending: Record<string, unknown>): string =>
+    ((ending.measurementGaps as string[] | undefined) ?? []).join(" | ");
+  const FIRST: RolloutServing = { [THREAD]: [FIRST_LAUNCH] };
+
+  it("emits two rollout requests matched by OTLP, one snapshot, and exits complete", async () => {
+    const r = await scenario({
+      journal: journalOf("codex-otlp-journal-launch1.jsonl"),
+      rollouts: FIRST,
+    });
+    const args = r.calls[0]?.args.join(" ") ?? "";
+    expect(args).toContain("http://127.0.0.1:4318/v1/logs");
+    expect(args).toContain("Bearer cap-secret");
+    expect(r.receivers[0]?.recordFilter).toBeDefined();
+    expect(
+      requests(r.observations).map((o) => [o.observationId, "requestId" in o && o.requestId]),
+    ).toEqual([
+      [`codex:rollout:${THREAD}:8`, "resp_1"],
+      [`codex:rollout:${THREAD}:13`, "resp_2"],
+    ]);
+    expect(snapshots(r.observations)).toHaveLength(1);
+    expect(r.exit).toMatchObject({
+      kind: "completed",
+      usageScope: "session",
+      coverage: "complete",
+      observedModel: "gpt-5.5",
+      usage: { inputTokens: 3014 },
+    });
+    expect(r.ending).toMatchObject({
+      requestCount: 2,
+      excludedBeforeBoundary: 0,
+      transports: ["sse"],
+    });
+    const stamped = r.observations.map(stamp);
+    expect(JSON.stringify(stamped)).not.toMatch(/omitted|SECRET|DONE/);
+    // The receiver's directory and journal are gone.
+    expect(r.removed.some((p) => p.includes("nightshift-codex-otel-"))).toBe(true);
+  });
+
+  it("emits the same observation ids when the same journal is read twice", async () => {
+    const o = {
+      journal: journalOf("codex-otlp-journal-launch1.jsonl"),
+      rollouts: FIRST,
+    };
+    const a = await scenario(o);
+    const b = await scenario(o);
+    expect(a.observations.map((x) => x.observationId)).toEqual(
+      b.observations.map((x) => x.observationId),
+    );
+  });
+
+  describe("resume", () => {
+    it("fixes the ordinal boundary before spawning and emits one request", async () => {
+      const r = await scenario({
+        journal: journalOf("codex-otlp-journal-launch2.jsonl"),
+        rollouts: { [THREAD]: [FIRST_LAUNCH, ROLLOUT] },
+        resume: true,
+        stream: SECOND_STREAM,
+      });
+      expect(requests(r.observations).map((o) => o.observationId)).toEqual([
+        `codex:rollout:${THREAD}:24`,
+      ]);
+      expect(snapshots(r.observations)[0]).toMatchObject({ counters: { inputTokens: 4021 } });
+      expect(r.ending).toMatchObject({ excludedBeforeBoundary: 2, requestCount: 1 });
+      expect(r.exit).toMatchObject({ usageScope: "session", coverage: "complete" });
+    });
+
+    it("reconciles both launches to 3014 and 1007 input tokens", async () => {
+      const first = await scenario({
+        journal: journalOf("codex-otlp-journal-launch1.jsonl"),
+        rollouts: FIRST,
+      });
+      const second = await scenario({
+        journal: journalOf("codex-otlp-journal-launch2.jsonl"),
+        rollouts: { [THREAD]: [FIRST_LAUNCH, ROLLOUT] },
+        resume: true,
+        stream: SECOND_STREAM,
+      });
+      const one = reconcileSegment(first.observations.map(stamp), { resumedSession: false });
+      expect(one.counters.inputTokens).toBe(3014);
+      const two = reconcileSegment(second.observations.map(stamp), {
+        resumedSession: true,
+        baseline: one.sessionCumulative?.counters,
+      });
+      expect(two.counters.inputTokens).toBe(1007);
+    });
+
+    it("falls back to a time boundary, selects the same request, and is partial", async () => {
+      const r = await scenario({
+        journal: journalOf("codex-otlp-journal-launch2.jsonl"),
+        rollouts: { [THREAD]: [new Error("EIO"), ROLLOUT] },
+        resume: true,
+        stream: SECOND_STREAM,
+      });
+      expect(requests(r.observations).map((o) => o.observationId)).toEqual([
+        `codex:rollout:${THREAD}:24`,
+      ]);
+      expect(r.exit.coverage).toBe("partial");
+      expect(gapsOf(r.ending)).toContain("launch boundary by time");
+    });
+  });
+
+  describe("without measurements, or without a receiver", () => {
+    it("adds no otel arguments, starts no receiver and emits nothing", async () => {
+      const r = await scenario({ measurements: false, rollouts: FIRST });
+      expect(r.calls[0]?.args.join(" ")).not.toContain("otel");
+      expect(r.receivers).toHaveLength(0);
+      expect(r.observations).toHaveLength(0);
+      expect(r.ending).not.toHaveProperty("measurementGaps");
+      expect(r.exit.coverage).toBe("complete");
+    });
+
+    it("launches when the receiver throws, emits the rollout and exits partial", async () => {
+      const r = await scenario({ receiver: "throws", rollouts: FIRST });
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0]?.args.join(" ")).not.toContain("otel");
+      expect(requests(r.observations)).toHaveLength(2);
+      expect(r.exit).toMatchObject({ kind: "completed", coverage: "partial" });
+      expect(gapsOf(r.ending)).toContain("receiver unavailable");
+      expect(gapsOf(r.ending)).toContain("telemetry absent");
+    });
+  });
+
+  describe("fallbacks", () => {
+    it("takes requests from OTLP by position when the rollout is missing", async () => {
+      const r = await scenario({ journal: journalOf("codex-otlp-journal-launch1.jsonl") });
+      expect(requests(r.observations).map((o) => o.observationId)).toEqual([
+        `codex:otel:${THREAD}:0`,
+        `codex:otel:${THREAD}:1`,
+      ]);
+      expect(r.exit.coverage).toBe("partial");
+      expect(gapsOf(r.ending)).toContain("telemetry only");
+    });
+
+    it("excludes a retried conversation's completions and names them", async () => {
+      const r = await scenario({ journal: journalOf("codex-otlp-retry.jsonl") });
+      expect(requests(r.observations)).toHaveLength(0);
+      expect(r.ending).toMatchObject({ excludedTelemetry: 1 });
+      expect(gapsOf(r.ending)).toContain("1 completions excluded");
+      expect(r.exit.coverage).toBe("partial");
+    });
+
+    it("is partial with usage and unknown without when both sources are missing", async () => {
+      const withUsage = await scenario({ receiver: "throws" });
+      expect(requests(withUsage.observations)).toHaveLength(0);
+      expect(withUsage.exit.coverage).toBe("partial");
+      const without = await scenario({
+        receiver: "throws",
+        stream: lines({ type: "thread.started", thread_id: THREAD }, { type: "turn.started" }),
+      });
+      expect(without.exit.coverage).toBe("unknown");
+    });
+
+    it("emits the rollout's request once and names a count disagreement", async () => {
+      const journal = journalOf("codex-otlp-journal-launch1.jsonl").replace(
+        '"input_token_count": "1007"',
+        '"input_token_count": "1008"',
+      );
+      const r = await scenario({ journal, rollouts: FIRST });
+      expect(requests(r.observations)).toHaveLength(2);
+      expect(gapsOf(r.ending)).toContain("discrepancy");
+      expect(r.exit.coverage).toBe("partial");
+    });
+
+    it("emits no extra request for an extra OTLP completion", async () => {
+      const r = await scenario({
+        journal: withConversation(journalOf("codex-otlp-journal-launch1.jsonl"), THREAD),
+        rollouts: FIRST,
+      });
+      expect(requests(r.observations)).toHaveLength(2);
+      expect(gapsOf(r.ending)).toContain("discrepancy");
+      expect(r.exit.coverage).toBe("partial");
+    });
+
+    it("is partial on an unverified transport even when the counts agree", async () => {
+      const journal = journalOf("codex-otlp-journal-launch1.jsonl").replaceAll(
+        "codex.sse_event",
+        "codex.websocket.event",
+      );
+      const r = await scenario({ journal, rollouts: FIRST });
+      expect(requests(r.observations)).toHaveLength(2);
+      expect(r.exit.coverage).toBe("partial");
+      expect(gapsOf(r.ending)).toContain("transport websocket unverified");
+    });
+  });
+
+  describe("native children", () => {
+    const parentJournal = journalOf("codex-otlp-journal-launch1.jsonl");
+
+    it("takes a child's requests from its rollout, with childRef, and is partial", async () => {
+      const r = await scenario({
+        journal: withConversation(parentJournal, CHILD),
+        rollouts: { [THREAD]: [SPAWNING_PARENT], [CHILD]: [CHILD_ROLLOUT] },
+      });
+      const child = requests(r.observations).filter((o) => "childRef" in o);
+      expect(child.map((o) => o.observationId)).toEqual([`codex:rollout:${CHILD}:1`]);
+      expect(child[0]).toMatchObject({ childRef: { kind: "session", id: CHILD } });
+      expect(requests(r.observations)).toHaveLength(3);
+      expect(r.exit.coverage).toBe("partial");
+      expect(gapsOf(r.ending)).toContain("native children spawned; capture unverified");
+      expect(r.ending).toMatchObject({ childConversations: 1 });
+    });
+
+    it("takes a child with no rollout from OTLP, with childRef, and is partial", async () => {
+      const r = await scenario({
+        journal: withConversation(parentJournal, CHILD),
+        rollouts: FIRST,
+      });
+      const child = requests(r.observations).filter((o) => "childRef" in o);
+      expect(child.map((o) => o.observationId)).toEqual([`codex:otel:${CHILD}:0`]);
+      expect(r.exit.coverage).toBe("partial");
+    });
+
+    it("adds no child request for a retried child, and the totals are the parent's alone", async () => {
+      const r = await scenario({
+        journal: withConversation(parentJournal, CHILD, { retry: true }),
+        rollouts: FIRST,
+      });
+      expect(requests(r.observations).filter((o) => "childRef" in o)).toHaveLength(0);
+      expect(r.exit.coverage).toBe("partial");
+      const total = reconcileSegment(r.observations.map(stamp), { resumedSession: false });
+      expect(total.counters.inputTokens).toBe(3014);
+    });
+  });
+
+  describe("cancellation and loss", () => {
+    const ONE_RESPONSE = rolloutTo(9);
+    const cancelled = journalOf("codex-otlp-cancelled.jsonl");
+    const oneStream = lines(
+      { type: "thread.started", thread_id: THREAD },
+      { type: "turn.started" },
+    );
+
+    it("emits the one request of a cancelled run and exits cancelled, partial", async () => {
+      const r = await scenario({
+        journal: cancelled,
+        rollouts: { [THREAD]: [ONE_RESPONSE] },
+        stream: oneStream,
+        end: "cancel",
+      });
+      expect(requests(r.observations)).toHaveLength(1);
+      expect(r.exit).toMatchObject({ kind: "cancelled", coverage: "partial" });
+      expect(JSON.stringify(r.ending).length).toBeLessThan(MAX_HOOK_PAYLOAD_BYTES);
+    });
+
+    it("behaves the same when interrupted", async () => {
+      const r = await scenario({
+        journal: cancelled,
+        rollouts: { [THREAD]: [ONE_RESPONSE] },
+        stream: oneStream,
+        end: "interrupt",
+      });
+      expect(requests(r.observations)).toHaveLength(1);
+      expect(r.exit).toMatchObject({ kind: "interrupted", coverage: "partial" });
+    });
+
+    it("lowers coverage and names a receiver stop gap", async () => {
+      const r = await scenario({
+        journal: journalOf("codex-otlp-journal-launch1.jsonl"),
+        rollouts: FIRST,
+        stopGap: "stopped_before_flush",
+      });
+      expect(r.exit.coverage).toBe("partial");
+      expect(gapsOf(r.ending)).toContain("stopped_before_flush");
+    });
+
+    it("lowers coverage and names a records_truncated loss", async () => {
+      const journal = journalOf("codex-otlp-journal-launch1.jsonl").replace(
+        '{"closed"',
+        '{"gap": "records_truncated"}\n{"closed"',
+      );
+      const r = await scenario({ journal, rollouts: FIRST });
+      expect(r.exit.coverage).toBe("partial");
+      expect(gapsOf(r.ending)).toContain("records_truncated");
+      expect(JSON.stringify(r.ending).length).toBeLessThan(MAX_HOOK_PAYLOAD_BYTES);
+    });
   });
 });

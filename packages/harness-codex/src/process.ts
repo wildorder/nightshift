@@ -28,6 +28,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 
@@ -121,6 +122,10 @@ export interface AdapterFileSystem {
   openTranscript(path: string): TranscriptSink;
   /** Removes a directory and everything under it. Never throws. */
   removeDir(path: string): void;
+  /** Directory listing, for finding a session rollout (P20 S-03). Rejects when absent. */
+  readdir(path: string, options: { readonly recursive: boolean }): Promise<string[]>;
+  /** A whole UTF-8 file, for reading a session rollout (P20 S-03). Rejects when absent. */
+  readText(path: string): Promise<string>;
 }
 
 export const nodeFileSystem: AdapterFileSystem = {
@@ -154,6 +159,8 @@ export const nodeFileSystem: AdapterFileSystem = {
       close: () => stream.end(),
     };
   },
+  readdir: (path, options) => readdir(path, options),
+  readText: (path) => readFile(path, "utf8"),
   removeDir: (path) => {
     try {
       rmSync(path, { recursive: true, force: true });

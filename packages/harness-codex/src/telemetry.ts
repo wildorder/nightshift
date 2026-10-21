@@ -383,3 +383,11 @@ export const telemetryObservations = (
   }
   return { observations, excluded };
 };
+
+/**
+ * Whether native Codex child threads are known to be visible to the capture
+ * (their rollouts and telemetry). False until a committed live capability
+ * matrix has observed a spawned child; only that evidence changes it. Receiver
+ * health is never proof of child visibility.
+ */
+export const CODEX_VERIFIED_NATIVE_CHILDREN = false;

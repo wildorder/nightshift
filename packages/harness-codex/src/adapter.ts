@@ -41,6 +41,28 @@
  * thread-cumulative total. `coverage` is `complete` for a clean turn, `partial`
  * for usage without one, and `unknown` when none was seen.
  *
+ * ## MEASUREMENT CAPTURE (P20 S-03)
+ *
+ * Only when `HarnessStartInput.measurements` is present; absent, the adapter
+ * does exactly what it did before (no receiver, no `otel` arguments, no
+ * rollout read, nothing emitted). Three sources, none trusted alone:
+ *
+ * - **The rollout** (`rollout.ts`, `<CODEX_HOME>/sessions/.../rollout-*-<thread>.jsonl`,
+ *   metadata only) is the source of requests: response ids, ordinals, the
+ *   thread total. A resume's launch boundary is the rollout's next ordinal,
+ *   read BEFORE spawning (time boundary, and a gap, if that read fails).
+ * - **OTLP log telemetry** (`telemetry.ts`, a loopback receiver journalling an
+ *   allowlisted, filtered, typed reduction) corroborates the rollout by
+ *   position and count, and stands in for it only where no rollout is readable
+ *   and no retry or unverified transport could have replayed a completion.
+ * - **The stream** (`stream.ts`) supplies the exit's thread-cumulative usage,
+ *   `usageScope: "session"`, unchanged.
+ *
+ * The reconciliation and the coverage rule are pure (`capture.ts`); the I/O
+ * around them is `capture-run.ts`. Nothing there throws out of `close` or waits
+ * beyond bounded timeouts: a failure is a named gap and `partial` coverage.
+ * `complete` needs every source to agree and no native child to go unseen.
+ *
  * ## WINDOWS
  *
  * As the Claude adapter: no signals, no process groups, `taskkill /T /F` and no
@@ -66,8 +88,10 @@ import {
   commandAs,
   hookTypeForExit,
   promptFor,
+  startLocalReceiver,
   withTmpDir,
 } from "@nightshift/harness";
+import { beginCapture, type CaptureRun, type StartReceiver } from "./capture-run.js";
 import {
   buildCodexArgs,
   buildGitGuard,
@@ -133,6 +157,8 @@ export interface CodexHarnessOptions {
   /** The **parent** environment, which the allowlist is filtered out of. */
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** The loopback telemetry receiver (P20 S-03); a test injects a fake. */
+  readonly startReceiver?: StartReceiver;
 }
 
 export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness => {
@@ -142,6 +168,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
   const platform = options.platform ?? process.platform;
   const parentEnv = options.env ?? process.env;
   const launcher = options.launcher;
+  const startReceiver = options.startReceiver ?? startLocalReceiver;
   const kill =
     options.kill ??
     ((pid, signal) => {
@@ -248,12 +275,30 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       }
     }
 
+    // P20 S-03: only when the execution layer asked for measurements.
+    let capture: CaptureRun | undefined;
+    if (input.measurements !== undefined) {
+      try {
+        capture = await beginCapture({
+          fs,
+          startReceiver,
+          clock,
+          env: state.env,
+          sink: input.measurements,
+          resumeSessionId: input.resume?.sessionId,
+        });
+      } catch {
+        // Measurement is evidence, not the run.
+      }
+    }
+
     const args = buildCodexArgs({
       model: input.model,
       worktree: input.worktree,
       ...(input.mcp === undefined ? {} : { mcp: input.mcp }),
       shellPath,
       ...(input.resume === undefined ? {} : { resumeSessionId: input.resume.sessionId }),
+      ...(capture?.otel === undefined ? {} : { otel: capture.otel }),
     });
 
     let child: SpawnedChild;
@@ -277,6 +322,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       });
     } catch (error) {
       transcript?.close();
+      await capture?.discard();
       return failToLaunch(`could not start ${CODEX_COMMAND}: ${messageOf(error)}`);
     }
     state.child = child;
@@ -309,6 +355,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
 
     child.on("error", (error) => {
       cleanUp();
+      void capture?.discard();
       settle(
         { kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE },
         { summary: `${CODEX_COMMAND} failed to run: ${error.message}` },
@@ -317,8 +364,32 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
 
     child.on("close", (code, signal) => {
       cleanUp();
+      if (state.settledExit !== undefined) return;
       const extra = stderrTail.trim().length === 0 ? {} : { summary: stderrTail.trim() };
-      settle(exitFor(state.cancelRequested, code, signal, interpreter.outcome), extra);
+      const exit = exitFor(state.cancelRequested, code, signal, interpreter.outcome);
+      if (capture === undefined) {
+        settle(exit, extra);
+        return;
+      }
+      // Every step of the capture is bounded and failure-tolerant; the exit
+      // settles after it, with the coverage it found.
+      void capture
+        .finish({ outcome: interpreter.outcome, exitKind: exit.kind })
+        .catch(() => undefined)
+        .then((measured) => {
+          settle(
+            measured === undefined
+              ? exit
+              : {
+                  ...exit,
+                  coverage: measured.coverage,
+                  ...(measured.observedModel === undefined
+                    ? {}
+                    : { observedModel: measured.observedModel }),
+                },
+            { ...extra, ...measured?.hook },
+          );
+        });
     });
 
     const handle: HarnessHandle = {
@@ -388,7 +459,13 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
     return settled === undefined ? "started" : agentStatusForExit(settled);
   };
 
-  return { id: CODEX_HARNESS_ID, capabilities: { usage: true }, start, cancel, status };
+  return {
+    id: CODEX_HARNESS_ID,
+    capabilities: { usage: true, observations: true },
+    start,
+    cancel,
+    status,
+  };
 };
 
 /** The exit mapping, as the table at the top of this file states it. */
