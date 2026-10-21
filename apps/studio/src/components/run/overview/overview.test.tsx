@@ -60,7 +60,7 @@ describe("the Overview tab", () => {
       ).toBe("true"),
     );
     expect(within(human).getByRole("button", { name: "Did not work" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Completion histories: 1" })).toBeTruthy();
+    expect(screen.getByText("Completion histories: 1")).toBeTruthy();
     expect(screen.getByTestId("as-of").textContent).toContain("2026-09-28 07:35:00Z");
     expect(screen.queryByTestId("stale")).toBeNull();
   });
@@ -344,7 +344,7 @@ describe("a live run", () => {
     expect(selectedSegment()).toEqual([segmentKey]);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(document.querySelector("[data-testid='attempt-sample']")?.textContent).toBe(sample);
-    expect((document.querySelector("select") as HTMLSelectElement).value).toBe(role);
+    expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe(role);
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByRole("alert")).toBeNull();

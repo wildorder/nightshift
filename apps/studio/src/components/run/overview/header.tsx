@@ -8,13 +8,16 @@ import type { Run } from "@nightshift/contracts";
 import { isRunTerminal, type RunReport, type RunScope } from "@nightshift/core";
 import { Clock, Radio } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Link } from "react-router";
 import { Card, CardContent } from "@/components/ui/card";
 import { when } from "../../../lib/format.js";
 import { isStale, spanText } from "../../../lib/overview.js";
 import { useStudio } from "../../../studio.js";
 import { StatusBadge } from "../../status-badge.js";
 import { AcceptanceState, RunVerdict } from "../verdict.js";
+import { memberCountsText, type OverviewScope, scopeParam } from "./scope.js";
+
+const selectClass =
+  "h-8 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 const Group = ({
   label,
@@ -33,12 +36,16 @@ export const OverviewHeader = ({
   run,
   report,
   scope,
+  overview,
+  onScope,
   live,
   pollMs,
 }: {
   readonly run: Run;
   readonly report: RunReport;
   readonly scope: RunScope;
+  readonly overview: OverviewScope;
+  readonly onScope: (param: string) => void;
   readonly live: boolean;
   readonly pollMs: number;
 }) => {
@@ -51,30 +58,72 @@ export const OverviewHeader = ({
   }, [live, pollMs]);
   const stale = live && isStale(report.asOf, now(), pollMs);
   const age = Math.max(0, Date.parse(now()) - Date.parse(report.asOf));
+  const only = overview.kind === "history" ? " (this run only)" : "";
   const verdict = report.feedback.verdict === "not_rated" ? null : report.feedback.verdict;
 
   return (
     <Card>
       <CardContent className="grid gap-4">
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <p className="text-sm">
             <span
               className="rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium"
               data-testid="scope-label"
             >
-              This run
+              {overview.kind === "history"
+                ? `Completion history: ${overview.history.title}`
+                : "This run"}
             </span>{" "}
-            <span className="font-mono">{scope.programId}</span> · run{" "}
-            <span className="font-mono">{scope.runId.slice(-8)}</span> · started{" "}
-            {when(run.startedAt)}
+            {overview.kind === "history" ? (
+              <>
+                <span data-testid="history-counts">{memberCountsText(overview.history)}</span> ·
+                membership version{" "}
+                <span data-testid="history-version">
+                  {overview.history.current.membershipVersion}
+                </span>{" "}
+                · viewed from run <span className="font-mono">{scope.runId.slice(-8)}</span>
+              </>
+            ) : (
+              <>
+                <span className="font-mono">{scope.programId}</span> · run{" "}
+                <span className="font-mono">{scope.runId.slice(-8)}</span> · started{" "}
+                {when(run.startedAt)}
+              </>
+            )}
           </p>
-          <Link className="text-sm underline" to="?tab=overview&scope=history">
-            Completion histories: {report.completions.length}
-          </Link>
+          <div className="flex items-center gap-1.5 text-xs">
+            <span aria-hidden="true">Scope</span>
+            <select
+              aria-label="Scope"
+              className={selectClass}
+              value={scopeParam(overview)}
+              onChange={(event) => onScope(event.target.value)}
+            >
+              <option value="run">This run</option>
+              {report.completions.map((c) => (
+                <option key={c.completionHistoryId} value={`history:${c.completionHistoryId}`}>
+                  Completion history: {c.title}
+                </option>
+              ))}
+            </select>
+            <span className="text-muted-foreground">
+              Completion histories: {report.completions.length}
+            </span>
+          </div>
         </div>
 
+        {overview.kind === "run" && overview.note !== undefined ? (
+          <p
+            role="status"
+            className="text-xs text-status-warning-foreground"
+            data-testid="scope-note"
+          >
+            {overview.note}
+          </p>
+        ) : null}
+
         <div className="grid gap-4 sm:grid-cols-2">
-          <Group label="Engine status">
+          <Group label={`Engine status${only}`}>
             <span>
               <StatusBadge status={run.status} />
             </span>
@@ -82,7 +131,7 @@ export const OverviewHeader = ({
               What Nightshift's own verification and integration concluded.
             </span>
           </Group>
-          <Group label="Human acceptance">
+          <Group label={`Human acceptance${only}`}>
             {isRunTerminal(run.status) ? (
               <RunVerdict scope={scope} run={run} />
             ) : (

@@ -398,6 +398,7 @@ export const RunPage = () => {
               report={report}
               scope={scope}
               nodeLabels={nodeLabels}
+              spend={runStatus.data?.status.spend}
               live={LIVE_STATUSES.has(r.status)}
               pollMs={pollMs ?? DEFAULT_POLL_MS}
             />
