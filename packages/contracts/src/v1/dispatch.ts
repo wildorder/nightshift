@@ -47,9 +47,14 @@ export const DispatchAttemptSchema = z.strictObject({
   /** Seconds this machine has been metered for, from its heartbeats. */
   meteredSeconds: z.int().min(0).optional(),
   /**
-   * P20: when the control plane's terminate request for this attempt's instance
-   * succeeded, or the instance was described as terminated. `endedAt` alone is
-   * a logical ending; this is the observed machine ending.
+   * P20: a terminate request for this attempt's instance was accepted.
+   * Termination is asynchronous; this is not its completion.
+   */
+  terminationRequestedAt: IsoTimestampSchema.optional(),
+  /**
+   * P20: the OBSERVED machine ending only: the control plane described the
+   * instance as terminated (or no longer found after a request). `endedAt` is
+   * the runner's ending and `terminationRequestedAt` a request; neither is this.
    */
   terminatedAt: IsoTimestampSchema.optional(),
   /** P20: a terminate request for this attempt's instance failed; the machine may still be running. */

@@ -50,6 +50,7 @@ describe("infrastructureOf", () => {
           runningAt: at(150),
           endedAt: at(1000),
           endReason: "stopped",
+          terminatedAt: at(1000),
           meteredSeconds: 1000,
         },
       ],
@@ -72,6 +73,7 @@ describe("infrastructureOf", () => {
       requestedAt: at(0),
       firstReadyAt: at(120),
       lastEndedAt: at(1000),
+      lastRunnerEndedAt: at(1000),
       instanceLifetimeMs: 1_000_000,
       gapsBetweenAttemptsMs: 0,
       openAttempts: 0,
@@ -88,10 +90,15 @@ describe("infrastructureOf", () => {
       },
     ]);
     const { instance, volume, total } = r?.components ?? {};
-    expect(instance).toMatchObject({ seconds: 1000, basis: "metered seconds", usd: 1 });
+    expect(instance).toMatchObject({
+      seconds: 1000,
+      runnerMeteredSeconds: 1000,
+      basis: "observed machine lifetimes (terminatedAt - startedAt)",
+      usd: 1,
+    });
     expect(volume).toMatchObject({ seconds: 1600, open: false, usd: 0.16, coverage: "complete" });
     expect(total?.usd).toBe(1.16);
-    expect(total?.basis).toContain("1000 s from metered seconds");
+    expect(total?.basis).toContain("1000 s from observed machine lifetimes");
     expect(total?.basis).toContain("1600 s from request to deletion");
     expect(r?.recorded).toEqual(dispatch.spend);
     expect(r?.reconciliation.computedUsd).toBe(1.1);
@@ -118,14 +125,15 @@ describe("infrastructureOf", () => {
       gapsBetweenAttemptsMs: 300_000,
       openAttempts: 1,
       coverage: "partial",
-      instanceLifetimeMs: 500_000,
-      lastEndedAt: at(500),
+      instanceLifetimeMs: 505_000,
+      lastEndedAt: at(505),
+      lastRunnerEndedAt: at(500),
     });
     expect(r?.attempts.map((a) => a.incomplete)).toEqual([false, true]);
     expect(r?.attempts[1]?.lifetimeMs).toBeUndefined();
     expect(r?.components.instance).toMatchObject({
-      seconds: 500,
-      basis: "closed attempt lifetimes",
+      seconds: 505,
+      basis: "observed machine lifetimes (terminatedAt - startedAt)",
       coverage: "partial",
     });
   });
@@ -140,6 +148,7 @@ describe("infrastructureOf", () => {
           startedAt: at(0),
           endedAt: at(1000),
           endReason: "stopped",
+          terminatedAt: at(1000),
           meteredSeconds: 1000,
         },
       ],
@@ -165,6 +174,7 @@ describe("infrastructureOf", () => {
           startedAt: at(0),
           endedAt: at(1000),
           endReason: "stopped",
+          terminatedAt: at(1000),
           meteredSeconds: 1000,
         },
       ],
@@ -183,6 +193,7 @@ describe("infrastructureOf", () => {
         startedAt: at(0),
         endedAt: at(100),
         endReason: "stopped",
+        terminatedAt: at(100),
       },
     ];
     const withBasis = world({ priceBasis: PRICE, attempts });
@@ -233,6 +244,7 @@ describe("infrastructureOf", () => {
           startedAt: at(0),
           endedAt: at(1000),
           endReason: "stopped",
+          terminatedAt: at(1000),
         },
       ],
     });
@@ -302,6 +314,7 @@ describe("per-attempt apportionment", () => {
           startedAt: at(0),
           endedAt: at(100),
           endReason: "stopped",
+          terminatedAt: at(100),
           meteredSeconds: 100,
         },
         { generation: 2, reason: "lease_lost", startedAt: at(200), meteredSeconds: 900 },
@@ -337,6 +350,7 @@ describe("per-attempt apportionment", () => {
           startedAt: at(0),
           endedAt: at(100),
           endReason: "stopped",
+          terminatedAt: at(100),
         },
         {
           generation: 2,
@@ -344,7 +358,7 @@ describe("per-attempt apportionment", () => {
           startedAt: at(100),
           endedAt: at(400),
           endReason: "stopped",
-          terminatedAt: at(402),
+          terminatedAt: at(400),
         },
         {
           generation: 3,
@@ -371,11 +385,11 @@ describe("per-attempt apportionment", () => {
     const r = infrastructureOf({ run, dispatch, agents: [], occupancy, asOf: at(600) });
     const nodes = r?.apportionment.perNode ?? [];
     // attempt 1: $0.10, all a. attempt 2 ($0.30 over 100-400 s): a alone 100-150, shared
-    // 150-200 (25 s each), b alone 200-250. b's 400-500 sits in a logical-end attempt: not counted.
+    // 150-200 (25 s each), b alone 200-250. b's 400-500 sits in an attempt with no observed machine end: not counted.
     expect(nodes.find((n) => n.nodeId === a.executionNodeId)?.shareUsd).toBe(0.175);
     expect(nodes.find((n) => n.nodeId === b.executionNodeId)?.shareUsd).toBe(0.075);
     expect(r?.apportionment.unapportioned).toEqual([
-      { generation: 3, usd: 0.1, why: "logical end only" },
+      { generation: 3, usd: 0.1, why: "machine end unobserved" },
     ]);
     const shares = nodes.reduce((sum, n) => sum + n.shareUsd, 0);
     const total = (r?.components.total.usd ?? 0) + 0;
@@ -384,7 +398,7 @@ describe("per-attempt apportionment", () => {
 });
 
 describe("observed machine endings", () => {
-  it("treats a logical end as incomplete, with no lifetime and partial coverage", () => {
+  it("treats a runner ending alone as incomplete, with no lifetime and partial coverage", () => {
     const { run, dispatch } = world({
       attempts: [
         {
@@ -393,6 +407,7 @@ describe("observed machine endings", () => {
           startedAt: at(0),
           endedAt: at(100),
           endReason: "stopped",
+          terminatedAt: at(100),
         },
         {
           generation: 2,
@@ -411,18 +426,18 @@ describe("observed machine endings", () => {
       incomplete: true,
       endedAt: at(300),
       endReason: "lease_lost",
-      logicalLifetimeMs: 200_000,
+      runnerLifetimeMs: 200_000,
       terminationFailed: true,
     });
     expect(r?.attempts[1]?.lifetimeMs).toBeUndefined();
     expect(r?.lifetime).toMatchObject({
       coverage: "partial",
       observedEndings: 1,
-      logicalEndings: 1,
+      runnerOnlyEndings: 1,
       instanceLifetimeMs: 100_000,
     });
     expect(r?.apportionment.unapportioned).toEqual([
-      { generation: 2, usd: 0, why: "logical end only" },
+      { generation: 2, usd: 0, why: "machine end unobserved" },
     ]);
   });
 
@@ -443,12 +458,123 @@ describe("observed machine endings", () => {
     expect(r?.attempts[0]).toMatchObject({
       observedEnd: true,
       incomplete: false,
-      lifetimeMs: 100_000,
+      lifetimeMs: 101_000,
+      afterRunnerMs: 1000,
     });
     expect(r?.lifetime.coverage).toBe("complete");
   });
 
-  it("has unknown coverage when only logical endings exist", () => {
+  const stoppedAt100 = {
+    generation: 1,
+    reason: "dispatch" as const,
+    startedAt: at(0),
+    endedAt: at(100),
+    endReason: "stopped" as const,
+    meteredSeconds: 100,
+  };
+
+  it("does not close a stopped runner whose termination failed", () => {
+    const { run, dispatch } = world({
+      priceBasis: PRICE,
+      attempts: [{ ...stoppedAt100, terminationFailed: true }],
+    });
+    const r = infrastructureOf({ run, dispatch, agents: [], asOf: at(2000) });
+    expect(r?.attempts[0]).toMatchObject({
+      observedEnd: false,
+      incomplete: true,
+      runnerLifetimeMs: 100_000,
+      terminationFailed: true,
+    });
+    expect(r?.attempts[0]?.lifetimeMs).toBeUndefined();
+    expect(r?.attempts[0]?.afterRunnerMs).toBeUndefined();
+    expect(r?.lifetime.coverage).toBe("unknown");
+    expect(r?.lifetime.instanceLifetimeMs).toBeUndefined();
+    expect(r?.lifetime.lastEndedAt).toBeUndefined();
+    expect(r?.lifetime.lastRunnerEndedAt).toBe(at(100));
+    expect(r?.components.instance).toMatchObject({
+      seconds: 100,
+      basis: "runner-metered seconds; machine end unobserved (lower bound)",
+    });
+    expect(r?.apportionment.unapportioned).toEqual([
+      { generation: 1, usd: 0.1, why: "machine end unobserved" },
+    ]);
+    expect(r?.apportionment.perNode).toBeUndefined();
+  });
+
+  it("closes the same attempt at terminatedAt and apportions over the machine window", () => {
+    const { f, run, dispatch } = world({
+      priceBasis: PRICE,
+      attempts: [{ ...stoppedAt100, terminationRequestedAt: at(110), terminatedAt: at(1000) }],
+    });
+    const node = makeNode(f, f.rootNodeId);
+    const occupancy = {
+      coverage: "observed" as const,
+      intervals: [{ nodeId: node.executionNodeId, from: at(0), to: at(100) }],
+    };
+    const r = infrastructureOf({ run, dispatch, agents: [], occupancy, asOf: at(2000) });
+    expect(r?.attempts[0]).toMatchObject({
+      observedEnd: true,
+      incomplete: false,
+      lifetimeMs: 1_000_000,
+      afterRunnerMs: 900_000,
+      terminationRequestedAt: at(110),
+    });
+    expect(r?.lifetime).toMatchObject({
+      coverage: "complete",
+      lastEndedAt: at(1000),
+      lastRunnerEndedAt: at(100),
+    });
+    expect(r?.components.instance).toMatchObject({
+      seconds: 1000,
+      runnerMeteredSeconds: 100,
+      usd: 1,
+    });
+    expect(r?.apportionment.perNode).toEqual([
+      { nodeId: node.executionNodeId, occupiedMs: 100_000, shareUsd: 0.1 },
+    ]);
+    expect(r?.apportionment.unapportioned).toEqual([]);
+    // 0.9 unoccupied instance time + 0.2 volume (2000 s to asOf at 0.36 USD/h)
+    expect(r?.apportionment.unapportionedUsd).toBe(1.1);
+    expect(r?.occupancy).toMatchObject({ busyMs: 100_000, idleMs: 900_000 });
+  });
+
+  it("does not close on a termination request alone", () => {
+    const { run, dispatch } = world({
+      attempts: [{ ...stoppedAt100, terminationRequestedAt: at(101) }],
+    });
+    const r = infrastructureOf({ run, dispatch, agents: [], asOf: at(2000) });
+    expect(r?.attempts[0]).toMatchObject({
+      incomplete: true,
+      observedEnd: false,
+      terminationRequestedAt: at(101),
+    });
+    expect(r?.lifetime.coverage).toBe("unknown");
+  });
+
+  it("counts a replaced attempt with terminatedAt as closed and one without as incomplete", () => {
+    const { run, dispatch } = world({
+      attempts: [
+        { ...stoppedAt100, endReason: "replaced" as const, terminatedAt: at(130) },
+        {
+          generation: 2,
+          reason: "lease_lost",
+          startedAt: at(200),
+          endedAt: at(300),
+          endReason: "replaced" as const,
+        },
+      ],
+    });
+    const r = infrastructureOf({ run, dispatch, agents: [], asOf: at(2000) });
+    expect(r?.attempts.map((a) => a.incomplete)).toEqual([false, true]);
+    expect(r?.lifetime).toMatchObject({
+      coverage: "partial",
+      observedEndings: 1,
+      runnerOnlyEndings: 1,
+      instanceLifetimeMs: 130_000,
+    });
+  });
+
+  it("has unknown coverage when only runner endings exist", () => {
     const { run, dispatch } = world({
       attempts: [
         {
@@ -540,6 +666,7 @@ describe("occupancyOf", () => {
           startedAt: at(0),
           endedAt: at(100),
           endReason: "stopped",
+          terminatedAt: at(100),
         },
       ],
     });

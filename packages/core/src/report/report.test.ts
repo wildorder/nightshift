@@ -812,6 +812,8 @@ describe("the report's S-05 sections (P20)", () => {
           readyAt: at(1000),
           endedAt: at(20_000),
           endReason: "stopped",
+          terminationRequestedAt: at(20_500),
+          terminatedAt: at(25_000),
         },
       ],
     });
@@ -870,6 +872,10 @@ describe("the report's S-05 sections (P20)", () => {
     expect(text).toContain("## Where the time went");
     expect(text).toContain("Peak concurrency 2");
     expect(text).toContain("## Machine");
+    expect(infrastructure?.attempts[0]).toMatchObject({ lifetimeMs: 25_000, afterRunnerMs: 5000 });
+    expect(text).toContain("1 observed ending(s), 0 runner-only ending(s)");
+    expect(text).toMatch(/after the runner stopped/);
+    expect(text).toContain("termination requested");
     expect(text).not.toContain("Local machine expense is not reported");
   });
 });

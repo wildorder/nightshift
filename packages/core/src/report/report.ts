@@ -1576,8 +1576,16 @@ const renderMachine = (infrastructure: InfrastructureReport | undefined): string
   return [
     "## Machine",
     "",
-    `- **Lifetime:** ${secs(lifetime.instanceLifetimeMs)} (coverage ${lifetime.coverage}; ${lifetime.observedEndings} observed ending(s), ${lifetime.logicalEndings} logical ending(s) only; ${lifetime.openAttempts} attempt(s) without an observed end; gaps between attempts ${secs(lifetime.gapsBetweenAttemptsMs)})`,
-    `- **Instance:** ${usd(components.instance.usd)} for ${components.instance.seconds}s, ${components.instance.basis} (${components.instance.provenance}; ${components.instance.coverage})`,
+    `- **Lifetime:** ${secs(lifetime.instanceLifetimeMs)} (coverage ${lifetime.coverage}; ${lifetime.observedEndings} observed ending(s), ${lifetime.runnerOnlyEndings} runner-only ending(s); last machine ending ${lifetime.lastEndedAt ?? NOT_OBSERVED}, last runner ending ${lifetime.lastRunnerEndedAt ?? NOT_OBSERVED}; ${lifetime.openAttempts} attempt(s) without an observed end; gaps between attempts ${secs(lifetime.gapsBetweenAttemptsMs)})`,
+    ...infrastructure.attempts.map(
+      (a) =>
+        `  - attempt ${a.generation} (${a.reason}): ${
+          a.lifetimeMs === undefined
+            ? `machine end unobserved${a.runnerLifetimeMs === undefined ? ", runner not ended" : `, runner ran ${secs(a.runnerLifetimeMs)} at least (lower bound)`}`
+            : `machine lived ${secs(a.lifetimeMs)} (observed terminatedAt ${a.terminatedAt})`
+        }${a.endedAt === undefined ? "" : `; runner ended ${a.endedAt}${a.endReason === undefined ? "" : ` (${a.endReason})`}`}${a.afterRunnerMs === undefined ? "" : `; ${secs(a.afterRunnerMs)} after the runner stopped`}${a.terminationRequestedAt === undefined ? "" : `; termination requested ${a.terminationRequestedAt}`}${a.terminationFailed === true ? "; termination request failed" : ""}`,
+    ),
+    `- **Instance:** ${usd(components.instance.usd)} for ${components.instance.seconds}s (runner-metered ${components.instance.runnerMeteredSeconds}s), ${components.instance.basis} (${components.instance.provenance}; ${components.instance.coverage})`,
     `- **Volume:** ${usd(components.volume.usd)} for ${components.volume.seconds}s${components.volume.open ? ", open" : ""} (${components.volume.provenance})`,
     `- **Total:** ${usd(components.total.usd)} (${components.total.basis})`,
     `- **Recorded spend:** ${JSON.stringify(recorded)}; computed ${usd(reconciliation.computedUsd)} against metered ${usd(reconciliation.meteredUsd)} over ${reconciliation.meteredSeconds}s (${reconciliation.covers})${

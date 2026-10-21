@@ -119,32 +119,40 @@ export interface InfrastructureAttempt {
   readonly endReason?: string;
   readonly instanceId?: string;
   readonly meteredSeconds?: number;
-  /** The control plane's terminate request succeeded, or the instance was described as terminated. */
+  /** A terminate request for the instance was accepted; termination is asynchronous, so this is not an ending. */
+  readonly terminationRequestedAt?: IsoTimestamp;
+  /** The observed machine ending: the control plane described the instance as terminated. */
   readonly terminatedAt?: IsoTimestamp;
   /** A terminate request failed; the machine may still be running. */
   readonly terminationFailed?: boolean;
-  /** True only when the machine's end was observed: `terminatedAt`, or the runner reported "stopped". */
+  /** True only when `terminatedAt` is present. */
   readonly observedEnd: boolean;
-  /** Observed-closed attempts only. */
+  /** `terminatedAt` minus `startedAt`; observed-closed attempts only. */
   readonly lifetimeMs?: number;
-  /** Attempts with a logical `endedAt` but no observed machine end: start to `endedAt`, not a machine lifetime. */
-  readonly logicalLifetimeMs?: number;
+  /** Start to the runner's `endedAt` when no machine ending was observed: a lower bound, not a machine lifetime. */
+  readonly runnerLifetimeMs?: number;
+  /** Machine time after the runner stopped (`terminatedAt` minus `endedAt`), when both are known. */
+  readonly afterRunnerMs?: number;
   readonly provisioningMs?: number;
-  /** No observed machine end: open, or a logical ending only. */
+  /** No observed machine end (`terminatedAt`): open, or the runner ending only. */
   readonly incomplete: boolean;
 }
 
 export interface InfrastructureLifetime {
   readonly requestedAt: IsoTimestamp;
   readonly firstReadyAt?: IsoTimestamp;
+  /** The last observed machine ending (`terminatedAt`). */
   readonly lastEndedAt?: IsoTimestamp;
+  /** The last runner ending (`endedAt`), which may precede the machine's. */
+  readonly lastRunnerEndedAt?: IsoTimestamp;
+  /** Sum of observed machine lifetimes: a lower bound unless coverage is complete. */
   readonly instanceLifetimeMs?: number;
   readonly gapsBetweenAttemptsMs: number;
-  /** Attempts that are not observed-closed (open or logical end only). */
+  /** Attempts without an observed machine ending (open or runner ending only). */
   readonly openAttempts: number;
-  /** Endings observed on the machine, versus endings only recorded by the engine. */
+  /** Machine endings observed, versus attempts whose runner ended with no machine ending observed. */
   readonly observedEndings: number;
-  readonly logicalEndings: number;
+  readonly runnerOnlyEndings: number;
   readonly coverage: LifetimeCoverage;
 }
 
@@ -163,10 +171,12 @@ export interface InfrastructureStages {
 export interface InstanceComponent {
   readonly seconds: number;
   readonly basis:
-    | "metered seconds"
-    | "closed attempt lifetimes"
-    | "metered seconds and closed attempt lifetimes"
+    | "observed machine lifetimes (terminatedAt - startedAt)"
+    | "observed machine lifetimes, plus runner-metered seconds for attempts with machine end unobserved (lower bound)"
+    | "runner-metered seconds; machine end unobserved (lower bound)"
     | "none observed";
+  /** Metered seconds across attempts: they stop with the runner, beside the observed machine lifetimes. */
+  readonly runnerMeteredSeconds: number;
   readonly usdPerHour: number;
   readonly usd: number;
   readonly provenance: string;
@@ -214,7 +224,7 @@ export interface InfrastructureOccupancy {
 export interface UnapportionedAttempt {
   readonly generation: number;
   readonly usd: number;
-  readonly why: "open" | "logical end only";
+  readonly why: "open" | "machine end unobserved";
 }
 
 export interface InfrastructureApportionment {
@@ -225,7 +235,7 @@ export interface InfrastructureApportionment {
     readonly shareUsd: number;
   }[];
   readonly unapportionedUsd?: number;
-  /** Attempts that are not observed-closed: their cost is never apportioned. */
+  /** Attempts without terminatedAt: their cost (runner-metered, a lower bound) is never apportioned. */
   readonly unapportioned?: readonly UnapportionedAttempt[];
   readonly note?: string;
 }
@@ -274,13 +284,12 @@ const unionMs = (spans: readonly Span[]): number => {
   return total;
 };
 
-/** The attempt's machine end was observed: terminated, or the runner reported stopping. */
-const observedEndOf = (a: DispatchAttempt): IsoTimestamp | undefined =>
-  a.terminatedAt !== undefined
-    ? (a.endedAt ?? a.terminatedAt)
-    : a.endReason === "stopped"
-      ? a.endedAt
-      : undefined;
+/**
+ * The attempt's machine end was observed: `terminatedAt` and nothing else. The
+ * runner's ending (`endedAt`, any `endReason`), a terminate request and a failed
+ * termination never close a machine.
+ */
+const observedEndOf = (a: DispatchAttempt): IsoTimestamp | undefined => a.terminatedAt;
 
 const attemptsOf = (dispatch: Dispatch): InfrastructureAttempt[] =>
   [...dispatch.attempts]
@@ -297,13 +306,19 @@ const attemptsOf = (dispatch: Dispatch): InfrastructureAttempt[] =>
         ...(a.endReason === undefined ? {} : { endReason: a.endReason }),
         ...(a.instanceId === undefined ? {} : { instanceId: a.instanceId }),
         ...(a.meteredSeconds === undefined ? {} : { meteredSeconds: a.meteredSeconds }),
+        ...(a.terminationRequestedAt === undefined
+          ? {}
+          : { terminationRequestedAt: a.terminationRequestedAt }),
         ...(a.terminatedAt === undefined ? {} : { terminatedAt: a.terminatedAt }),
         ...(a.terminationFailed === undefined ? {} : { terminationFailed: a.terminationFailed }),
         observedEnd: observedEnd !== undefined,
         ...(observedEnd === undefined ? {} : { lifetimeMs: ms(observedEnd) - ms(a.startedAt) }),
         ...(observedEnd !== undefined || a.endedAt === undefined
           ? {}
-          : { logicalLifetimeMs: ms(a.endedAt) - ms(a.startedAt) }),
+          : { runnerLifetimeMs: ms(a.endedAt) - ms(a.startedAt) }),
+        ...(observedEnd === undefined || a.endedAt === undefined
+          ? {}
+          : { afterRunnerMs: ms(observedEnd) - ms(a.endedAt) }),
         ...(a.readyAt === undefined ? {} : { provisioningMs: ms(a.readyAt) - ms(a.startedAt) }),
         incomplete: observedEnd === undefined,
       };
@@ -312,6 +327,7 @@ const attemptsOf = (dispatch: Dispatch): InfrastructureAttempt[] =>
 const lifetimeOf = (dispatch: Dispatch, attempts: readonly InfrastructureAttempt[]) => {
   const closed = attempts.filter((a) => a.lifetimeMs !== undefined);
   const ready = attempts.flatMap((a) => (a.readyAt === undefined ? [] : [a.readyAt]));
+  const terminated = attempts.flatMap((a) => (a.terminatedAt === undefined ? [] : [a.terminatedAt]));
   const ended = attempts.flatMap((a) => (a.endedAt === undefined ? [] : [a.endedAt]));
   let gaps = 0;
   for (let i = 1; i < attempts.length; i++) {
@@ -324,18 +340,20 @@ const lifetimeOf = (dispatch: Dispatch, attempts: readonly InfrastructureAttempt
     closed.length === 0 ? "unknown" : closed.length === attempts.length ? "complete" : "partial";
   const byTime = (a: string, b: string): number => ms(a) - ms(b);
   const firstReadyAt = [...ready].sort(byTime)[0];
-  const lastEndedAt = [...ended].sort(byTime).at(-1);
+  const lastEndedAt = [...terminated].sort(byTime).at(-1);
+  const lastRunnerEndedAt = [...ended].sort(byTime).at(-1);
   const lifetime: InfrastructureLifetime = {
     requestedAt: dispatch.requestedAt,
     ...(firstReadyAt === undefined ? {} : { firstReadyAt }),
     ...(lastEndedAt === undefined ? {} : { lastEndedAt }),
+    ...(lastRunnerEndedAt === undefined ? {} : { lastRunnerEndedAt }),
     ...(closed.length === 0
       ? {}
       : { instanceLifetimeMs: closed.reduce((sum, a) => sum + (a.lifetimeMs ?? 0), 0) }),
     gapsBetweenAttemptsMs: gaps,
     openAttempts: attempts.length - closed.length,
     observedEndings: closed.length,
-    logicalEndings: attempts.filter((a) => !a.observedEnd && a.endedAt !== undefined).length,
+    runnerOnlyEndings: attempts.filter((a) => !a.observedEnd && a.endedAt !== undefined).length,
     coverage,
   };
   return lifetime;
@@ -400,27 +418,29 @@ export const infrastructureOf = (input: InfrastructureInput): InfrastructureRepo
   const stages = stagesOf(dispatch);
   const basis = dispatch.priceBasis;
 
-  // Each attempt costs its metered seconds when present, else its observed lifetime.
-  // An attempt with a logical end only has no lifetime to price.
+  // An observed-closed attempt costs its machine lifetime (terminatedAt - startedAt);
+  // metered seconds stop with the runner and are reported beside it. An attempt
+  // without terminatedAt contributes its metered seconds as a lower bound.
   const attemptSeconds = (a: InfrastructureAttempt): number =>
-    a.meteredSeconds ?? (a.lifetimeMs === undefined ? 0 : a.lifetimeMs / 1000);
-  const fromMetered = attempts.filter((a) => a.meteredSeconds !== undefined).length;
-  const fromLifetime = attempts.filter(
-    (a) => a.meteredSeconds === undefined && a.lifetimeMs !== undefined,
+    a.lifetimeMs === undefined ? (a.meteredSeconds ?? 0) : a.lifetimeMs / 1000;
+  const observedCount = attempts.filter((a) => a.lifetimeMs !== undefined).length;
+  const runnerOnlyCount = attempts.filter(
+    (a) => a.lifetimeMs === undefined && a.meteredSeconds !== undefined,
   ).length;
   const instanceBasis: InstanceComponent["basis"] =
-    fromMetered > 0 && fromLifetime > 0
-      ? "metered seconds and closed attempt lifetimes"
-      : fromMetered > 0
-        ? "metered seconds"
-        : fromLifetime > 0
-          ? "closed attempt lifetimes"
+    observedCount > 0 && runnerOnlyCount > 0
+      ? "observed machine lifetimes, plus runner-metered seconds for attempts with machine end unobserved (lower bound)"
+      : observedCount > 0
+        ? "observed machine lifetimes (terminatedAt - startedAt)"
+        : runnerOnlyCount > 0
+          ? "runner-metered seconds; machine end unobserved (lower bound)"
           : "none observed";
   const instanceSeconds = attempts.reduce((sum, a) => sum + attemptSeconds(a), 0);
   const instanceRate = basis?.usdPerHour ?? dispatch.usdPerHour;
   const instance: InstanceComponent = {
     seconds: instanceSeconds,
     basis: instanceBasis,
+    runnerMeteredSeconds: attempts.reduce((sum, a) => sum + (a.meteredSeconds ?? 0), 0),
     usdPerHour: instanceRate,
     usd: usdOf(instanceSeconds, instanceRate),
     provenance:
@@ -468,8 +488,8 @@ export const infrastructureOf = (input: InfrastructureInput): InfrastructureRepo
       : {}),
   };
 
-  // Occupancy and cost windows are the observed-closed attempts only; an open
-  // attempt or a logical ending is never a window.
+  // Occupancy and cost windows are startedAt -> terminatedAt, observed-closed
+  // attempts only; an open attempt or a runner ending alone is never a window.
   const closedAttempts = attempts.flatMap((a) =>
     a.lifetimeMs === undefined
       ? []
@@ -522,7 +542,9 @@ export const infrastructureOf = (input: InfrastructureInput): InfrastructureRepo
   const closedMs = lifetime.instanceLifetimeMs;
   const occupancyCoverage = occupancyFor(input).coverage;
   const idleKnown =
-    (occupancyCoverage === "observed" || occupancyCoverage === "legacy") && closedMs !== undefined;
+    (occupancyCoverage === "observed" || occupancyCoverage === "legacy") &&
+    closedMs !== undefined &&
+    lifetime.coverage === "complete";
   const u = input.utilization;
   const occupancy: InfrastructureOccupancy = {
     ...(u?.setupSeconds === undefined ? {} : { setupSeconds: u.setupSeconds }),
@@ -533,8 +555,10 @@ export const infrastructureOf = (input: InfrastructureInput): InfrastructureRepo
       : {
           idleNote:
             closedMs === undefined
-              ? "No attempt has an observed machine end, so idle time is not claimed; busy time is observed busy time, at least."
-              : `Occupancy coverage is ${occupancyCoverage}, so idle time is not claimed; busy time is observed busy time, at least.`,
+              ? "No attempt has an observed machine end (terminatedAt), so idle time is not claimed; busy time is observed busy time, at least."
+              : lifetime.coverage !== "complete"
+                ? "Not every attempt's machine end (terminatedAt) is observed, so idle time is not claimed; busy time is observed busy time, at least."
+                : `Occupancy coverage is ${occupancyCoverage}, so idle time is not claimed; busy time is observed busy time, at least.`,
         }),
     provisioningMs: attempts.reduce((sum, a) => sum + (a.provisioningMs ?? 0), 0),
     peakConcurrentOccupants: peak,
@@ -558,7 +582,7 @@ export const infrastructureOf = (input: InfrastructureInput): InfrastructureRepo
           {
             generation: a.generation,
             usd: usdOf(attemptSeconds(a), instanceRate),
-            why: a.endedAt === undefined ? ("open" as const) : ("logical end only" as const),
+            why: a.endedAt === undefined ? ("open" as const) : ("machine end unobserved" as const),
           },
         ],
   );
@@ -575,10 +599,10 @@ export const infrastructureOf = (input: InfrastructureInput): InfrastructureRepo
     unapportioned,
     note:
       (closedAttempts.length === 0
-        ? "No attempt has an observed machine end, so cost cannot be apportioned to nodes. "
+        ? "No attempt has an observed machine end (terminatedAt), so cost cannot be apportioned to nodes. "
         : "") +
-      "Each observed-closed attempt costs its metered seconds, else its observed lifetime, at the instance rate, split by occupied time within that attempt's own window (concurrent occupants share each moment equally). " +
-      "The cost of attempts without an observed machine end (open, or a logical end only) is never apportioned and is listed per attempt, together with unoccupied time within closed attempts and the whole volume, as unapportioned.",
+      "Each observed-closed attempt costs its observed machine lifetime (terminatedAt - startedAt) at the instance rate, split by occupied time within that same window (concurrent occupants share each moment equally). " +
+      "The cost of attempts without an observed machine end (open, or machine end unobserved) is never apportioned and is listed per attempt, together with unoccupied time within closed attempts and the whole volume, as unapportioned.",
   };
 
   return {
