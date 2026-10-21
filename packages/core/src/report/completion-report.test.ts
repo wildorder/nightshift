@@ -241,17 +241,19 @@ describe("the Completion section's model and machine figures", () => {
 
     const text = renderReport(gathered);
     expect(text).toContain("tokens in 300, out 30");
+    // These runs' root launches have no measurement summary, so each is an unmeasured attempt (D-02):
+    // First (A, B) is 2 routes + 2 roots, Second (A, C) the same.
     expect(text).toContain(
-      "estimated: $0.50 for 1 of 2 attempts, reported: $2.00 for 1 of 2 attempts (separate figures)",
+      "estimated: $0.50 for 1 of 4 attempts, reported: $2.00 for 1 of 4 attempts (separate figures)",
     );
     expect(text).toContain("infrastructure $1.16 over 1 member run(s)");
     expect(text).toContain("tokens in 400, out 40");
     expect(text).toContain(
-      "estimated: $0.75 for 2 of 2 attempts, reported: $1.00 for 1 of 2 attempts (separate figures)",
+      "estimated: $0.75 for 2 of 4 attempts, reported: $1.00 for 1 of 4 attempts (separate figures)",
     );
     expect(text).toContain("machine dollars not observed");
     expect(text).toContain("machines 1 of 2 members");
-    expect(text).toContain("token coverage complete 1, partial 0, unknown 0, legacy 1, missing 0");
+    expect(text).toContain("token coverage complete 1, partial 0, unknown 0, legacy 1, missing 2");
   });
 
   // A root launch's summary has no routing decision (S-01). D-02: it is part of every aggregate.
@@ -484,7 +486,8 @@ describe("the Completion section's model and machine figures", () => {
       at(2000),
     );
     const entry = figures.resources.get(`${w.a.scope.programId}/${w.a.scope.runId}`);
-    expect(entry?.coverage).toEqual({ complete: 0, partial: 0, unknown: 0, legacy: 0, missing: 0 });
+    // Its only launch is the root, with no summary: unmeasured (D-02), not a measured zero.
+    expect(entry?.coverage).toEqual({ complete: 0, partial: 0, unknown: 0, legacy: 0, missing: 1 });
     expect(figures.unavailable.size).toBe(0);
   });
 
@@ -502,13 +505,14 @@ describe("the Completion section's model and machine figures", () => {
     expect(text).toContain(`measurement unavailable for ${w.b.scope.programId}/${w.b.scope.runId}`);
   });
 
+  // In the next two tests the run's root launch has no summary, so it is a second, unmeasured attempt (D-02).
   it("prints a present zero dollar total as $0.00 rather than not observed", async () => {
     const w = world();
     w.a.route.usage = { inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0 };
     const { stores } = storesFor(w, [], () => [w.history("Z", w.a)]);
     const text = renderReport(await gatherReport(stores, w.f.scope));
     expect(text).toContain(
-      "estimated: $0.00 for 1 of 1 attempts, reported: none (separate figures)",
+      "estimated: $0.00 for 1 of 2 attempts, reported: none (separate figures)",
     );
   });
 
@@ -518,16 +522,39 @@ describe("the Completion section's model and machine figures", () => {
     const { stores } = storesFor(w, [], () => [w.history("R", w.a)]);
     const text = renderReport(await gatherReport(stores, w.f.scope));
     expect(text).toContain(
-      "estimated: none, reported: $0.00 for 1 of 1 attempts (separate figures)",
+      "estimated: none, reported: $0.00 for 1 of 2 attempts (separate figures)",
     );
 
     w.a.route.usage = { inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0.5 };
     const positive = storesFor(w, [], () => [w.history("P", w.a)]);
     const positiveText = renderReport(await gatherReport(positive.stores, w.f.scope));
     expect(positiveText).toContain(
-      "estimated: $0.50 for 1 of 1 attempts, reported: none (separate figures)",
+      "estimated: $0.50 for 1 of 2 attempts, reported: none (separate figures)",
     );
     expect(positiveText).not.toContain("reported $0.00");
+  });
+
+  it("counts a member whose root launch has no summary as incomplete, and a fully measured member as complete", async () => {
+    const w = world();
+    // Member A's root has a reported summary; member B's root has none.
+    const { stores } = storesFor(w, [], () => [w.history("Roots", w.a, w.b)], [
+      rootSummaryOf(w, w.a),
+    ]);
+    const [roots] = (await gatherReport(stores, w.f.scope)).completions;
+    const current = roots?.current;
+    expect(current?.measuredMembers).toBe(2);
+    // A: route + root summary, both measured. B: its summary-backed route, and an unmeasured root.
+    expect(current?.resources?.coverage.missing).toBe(1);
+    expect(current?.combined?.lowerBound).toBe(true);
+
+    // With both roots summarized nothing is missing, and the combined estimate no longer
+    // reports an unmeasured launch (only the absent machine report keeps it a lower bound).
+    const full = storesFor(w, [], () => [w.history("Full", w.a, w.b)], [
+      rootSummaryOf(w, w.a),
+      rootSummaryOf(w, w.b),
+    ]);
+    const [fullRoots] = (await gatherReport(full.stores, w.f.scope)).completions;
+    expect(fullRoots?.current.resources?.coverage.missing).toBe(0);
   });
 
   it("prints the as-of time, membership version, each member's carried strands and own figures, and the price bases", async () => {

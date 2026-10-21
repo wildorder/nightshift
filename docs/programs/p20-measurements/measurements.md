@@ -71,8 +71,11 @@ bound when anything is missing) are separate again.
   `startNext`; a spent budget holds every queued node with a `budget_spent` wait and emits
   `run.budget_spent` once.
 - `spendOfRun` (`packages/core/src/rules/policy.ts`) includes the **root launch**: its
-  summary (no routing decision) counts through `rootResourcesOf`, and a root without a
-  summary is unmeasured, not free. One figure per attempt: reported preferred, never both.
+  summary (no routing decision) counts through `rootResourcesOf`. It takes the run's root
+  node ids (`rootNodeIds`; `readSpend` and the report's budget section both pass them), and
+  a root node without a summary counts as one `unmeasured` attempt, so the evaluation is
+  incomplete: unknown coverage stays visible and is never certified as within budget.
+  One figure per attempt: reported preferred, never both.
 - `budgetEvaluation` reports `complete` only when `unpriced`, `unmeasured` and
   `estimateIncomplete` are all 0. *Unpriced*: token counters but no dollar figure.
   *Unmeasured*: neither counters nor dollars. *Unvalued* (`estimateIncomplete`): a
@@ -168,7 +171,8 @@ Contract `packages/contracts/src/v1/completion.ts`; figures
   freeze a zero (program ruling F-01; verify the dispatch-read case in
   `packages/core/src/report/report.ts` before relying on it).
 - **Lower bounds**: `combined.lowerBound` is true when any member or valuation is
-  missing; `infrastructure` and `resources` are absent, not zero, without evidence;
+  missing, or a measured member's root launch has no summary (counted as `missing` in its
+  token coverage; a member with nothing but an unmeasured root is itself unmeasured); `infrastructure` and `resources` are absent, not zero, without evidence;
   `unmeasuredMembers`, `unavailable` and `withoutMachine` keep gaps visible.
 - **Figures**: `completion_lead_time` (earliest member start to the earliest `worked`
   verdict, includes the person's delay), `run_completion_time` (to the accepted run's end),

@@ -1343,7 +1343,8 @@ describe("the complete SC-12 history", () => {
       outputTokens: 900,
     });
     close(examine?.costUsd, 0.02);
-    for (const row of report.usage) {
+    // The engine's root launch has no measurement summary here: its row is unmeasured (D-02), with no price list.
+    for (const row of report.usage.filter((r) => r.purpose !== "root")) {
       expect(row.priceBases?.map((basis) => [basis.source, basis.version])).toEqual([
         [PRICE_SOURCE, PRICE_VERSION],
       ]);
@@ -1375,7 +1376,8 @@ describe("the complete SC-12 history", () => {
 
     // The two other runs are measured on their own.
     const failed = await reportOf(facts.failedRun);
-    expect(failed.usage).toHaveLength(1);
+    // Plus the run's root launch, which has no measurement summary: an unmeasured row (D-02).
+    expect(failed.usage).toHaveLength(2);
     expect(failed.usage[0]).toMatchObject({ attempts: 1, inputTokens: 3_000, outputTokens: 600 });
     close(failed.budget?.usd, FAILED.usd);
     expect(nonZero(failed.delivery.outcomes.counts)).toEqual({ failed: 1 });
@@ -1568,7 +1570,8 @@ describe("the complete SC-12 history", () => {
       partial: 0,
       unknown: 0,
       legacy: 0,
-      missing: 0,
+      // One unmeasured root launch per member run (D-02): the estimate is a lower bound.
+      missing: 3,
     });
 
     // The same run named twice, or a member carried in twice, is read once.
@@ -1668,8 +1671,8 @@ describe("the complete SC-12 history", () => {
 
     // The rendered report.
     for (const line of [
-      "| fake | claude-sonnet-5 | work | 7 | 67500 | 13500 | 0.40* | API-equivalent estimate; price list sc12-price-list 2026-10-01; 7 of 7 attempts valued |",
-      "| fake | gpt-6-astra | examine | 2 | 5500 | 900 | 0.02* | API-equivalent estimate; price list sc12-price-list 2026-10-01; 2 of 2 attempts valued |",
+      "| fake | claude-sonnet-5 | work | 7 | 67500 | 13500 | 0.40* | none | 7: $0.40 | API-equivalent estimate; price list sc12-price-list 2026-10-01; 7 of 7 attempts valued |",
+      "| fake | gpt-6-astra | examine | 2 | 5500 | 900 | 0.02* | none | 2: $0.02 | API-equivalent estimate; price list sc12-price-list 2026-10-01; 2 of 2 attempts valued |",
       "4 work item(s) and 0 repair job(s) in 0 strand(s); 7 attempt(s), 2 helper call(s).",
       "all jobs: 1/4 (25%), 0 unfinished",
       "**Rework:** 3 attempt(s), each counted once",
@@ -1686,7 +1689,9 @@ describe("the complete SC-12 history", () => {
       "Verdict: **did not work**",
       "1 of 2 ended run(s) rated; 0 worked, 1 did not; positive share among rated 0%; 1 unrated.",
       "Coverage: 2 of 3 rated; 1 worked, 1 did not; positive share among rated 50%.",
-      "Now: lead time 130 min 0 s; run completion 70 min 0 s; active union 50 min 0 s; tokens in 80000, out 15800; estimated $0.47, reported $0.00",
+      "Now: lead time 130 min 0 s; run completion 70 min 0 s; active union 50 min 0 s; tokens in 80000, out 15800; estimated: $0.47 for 11 of 14 attempts, reported: none (separate figures)",
+      // The three unmeasured root launches keep the combined estimate a lower bound (D-02).
+      "token coverage complete 11, partial 0, unknown 0, legacy 0, missing 3.",
       `${programB.programId}/${correctionRun.runId}: correction, succeeded, worked`,
       `${programA.programId}/${failedRun.runId}: contributing, failed, not_rated`,
       `${programA.programId}/${run1.runId}: anchor, succeeded, did_not_work`,
@@ -1707,10 +1712,13 @@ describe("the complete SC-12 history", () => {
     ).toEqual([
       [BUILDER_MODEL, "work", 7, 67_500, 13_500],
       [EXAMINER_MODEL, "examine", 2, 5_500, 900],
+      // The root launch has no measurement summary: its own unmeasured row (D-02).
+      ["unmeasured", "root", 1, undefined, undefined],
     ]);
     expect(exported.usage.map((row) => row.priceBases.map((b) => [b.source, b.version]))).toEqual([
       [[PRICE_SOURCE, PRICE_VERSION]],
       [[PRICE_SOURCE, PRICE_VERSION]],
+      [],
     ]);
     close(exported.usage[0]?.costUsd, 0.405);
     close(exported.budget?.usd, RUN1.usd);
@@ -1786,7 +1794,8 @@ describe("the complete SC-12 history", () => {
     const shown = await terminal.run("completion", "show", "alpha", "--history", historyId);
     expect(shown.code, shown.err.join("\n")).toBe(0);
     const lines = shown.out;
-    expect(lines.slice(0, 5)).toEqual([
+    // Member lines carry their own figures after the verdict; this checks the identities.
+    expect(lines.slice(0, 5).map((line) => line.replace(/, carried strands .*$/, ""))).toEqual([
       `completion history ${historyId} "Ordered modules" (version 4)`,
       `member ${memberOf(run1)} anchor succeeded did_not_work`,
       `member ${memberOf(failedRun)} contributing failed not_rated`,
@@ -1796,7 +1805,7 @@ describe("the complete SC-12 history", () => {
     const times = "lead time 2h 10m, run completion 1h 10m, active union 50m 0s, ";
     const spent =
       "tokens input 80000, output 15800, cache read none, cache write none, reasoning none, " +
-      "estimated $0.4670, reported $0.0000";
+      "estimated: $0.4670 for 11 of 14 attempts, reported: none";
     expect(lines[5]).toContain(`now: ${times}${spent}`);
     expect(lines[5]).toContain(
       "combined API-equivalent estimate lower bound $0.4670 (model $0.4670",

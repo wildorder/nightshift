@@ -16,7 +16,7 @@ import {
   type RouteChoice,
   type RouteTarget,
 } from "@nightshift/contracts";
-import { gatherReport, isSettled, nowIso, spendOfRun } from "@nightshift/core";
+import { gatherReport, isSettled, nowIso, renderReport, spendOfRun } from "@nightshift/core";
 import {
   completeJob,
   createEngine,
@@ -361,12 +361,16 @@ describe("a budget that cannot be evaluated completely (D-02)", () => {
     await settle("unpriced");
     await settle("priced");
     const held = await submit("held");
-    expect(await incomplete()).toHaveLength(1);
-    expect((await incomplete())[0]?.payload).toMatchObject({
+    // The engine's root node never has a measurement summary here, so the root launch is one
+    // unmeasured attempt (D-02) from the first read: announced as soon as it is known
+    // (unmeasured 1), and again when the unpriced count changes (unpriced 1, unmeasured 1).
+    expect(await incomplete()).toHaveLength(2);
+    expect((await incomplete())[0]?.payload).toMatchObject({ unpriced: 0, unmeasured: 1 });
+    expect((await incomplete())[1]?.payload).toMatchObject({
       budget: "maxUsd",
       limit: 5,
       unpriced: 1,
-      unmeasured: 0,
+      unmeasured: 1,
     });
     expect(await world.stores.executionNodes.get(world.scope, held.nodeId)).toMatchObject({
       status: "queued",
@@ -435,7 +439,7 @@ describe("the root launch counts against the budget (D-02)", () => {
       await world.stores.routingDecisions.listByNode(world.scope, first.nodeId)
     ).filter(() => true);
     const measurements = (await world.stores.measurements.listByRun(world.scope, {})).items;
-    const spend = spendOfRun({ routes, measurements });
+    const spend = spendOfRun({ routes, measurements, rootNodeIds: [world.session.rootNodeId] });
     const report = await gatherReport(world.stores, world.scope);
     expect(report.budget).toMatchObject({ tokens: spend.tokens, usd: spend.usd });
     expect(spend.tokens).toBe(1_100);
@@ -446,6 +450,78 @@ describe("the root launch counts against the budget (D-02)", () => {
       spend.tokens,
     );
     expect(report.usage.reduce((sum, row) => sum + row.costUsd, 0)).toBeCloseTo(spend.usd);
+    await engine.close("the test is over");
+  });
+});
+
+describe("a root launch without a measurement summary is unmeasured (D-02)", () => {
+  const rootSummary = (world: World): MeasurementSummary => ({
+    schemaVersion: 1,
+    measurementVersion: 1,
+    ...world.scope,
+    measurementSummaryId: world.ids.next("meas"),
+    executionNodeId: world.session.rootNodeId,
+    agentId: world.ids.next("agent"),
+    role: "orchestrator",
+    routingDecisionId: null,
+    route: target("root-model"),
+    observedModels: [],
+    segments: [],
+    totals: { inputTokens: 10, outputTokens: 5, inputIncludesCache: true },
+    coverage: "complete",
+    gaps: [],
+    ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+    valuation: { source: "reported", usd: 0.5, reportedUsd: 0.5 },
+    createdAt: nowIso(world.environment.clock),
+    updatedAt: nowIso(world.environment.clock),
+  });
+
+  it("evaluates complete with a root summary and all routes priced, and incomplete without the summary", async () => {
+    const { world, engine, submit } = await rig(
+      async (context, finish) => {
+        const name = context.input.job.objective;
+        await writeModule(context.worktree, name);
+        await finish(`${name}: done`);
+        return { kind: "completed", usage: { actualCostUsd: 1 } };
+      },
+      { costPolicy: { maxUsd: 5 } },
+    );
+    const job = await submit("priced");
+    expect(await until(world, job.nodeId, (status) => isSettled(status as never))).toBe(
+      "integrated",
+    );
+    await routesSettled(world, job.nodeId);
+    const read = async () => {
+      const routes = await world.stores.routingDecisions.listByNode(world.scope, job.nodeId);
+      const measurements = (await world.stores.measurements.listByRun(world.scope, {})).items;
+      const rootNodeIds = [world.session.rootNodeId];
+      return { routes, measurements, rootNodeIds };
+    };
+
+    // No root summary: the evaluation is incomplete, counts the root, and is never "within budget".
+    const without = await read();
+    const spentWithout = spendOfRun(without);
+    expect(spentWithout.evaluation).toMatchObject({ complete: false, unmeasured: 1, unpriced: 0 });
+    const reportWithout = await gatherReport(world.stores, world.scope);
+    expect(reportWithout.budget?.evaluation).toMatchObject({ complete: false, unmeasured: 1 });
+    expect(reportWithout.budget).toMatchObject({
+      usd: spentWithout.usd,
+      tokens: spentWithout.tokens,
+    });
+    const textWithout = renderReport(reportWithout);
+    expect(textWithout).toContain("could not be evaluated completely");
+    expect(textWithout).not.toMatch(/within budget/i);
+    expect(textWithout).not.toContain("of $5");
+
+    // With the root's summary and every route priced, the same run evaluates complete.
+    await world.stores.measurements.put(rootSummary(world));
+    const spentWith = spendOfRun(await read());
+    expect(spentWith.evaluation).toMatchObject({ complete: true, unmeasured: 0, unpriced: 0 });
+    const reportWith = await gatherReport(world.stores, world.scope);
+    expect(reportWith.budget?.evaluation).toMatchObject({ complete: true, unmeasured: 0 });
+    expect(reportWith.budget).toMatchObject({ usd: spentWith.usd, tokens: spentWith.tokens });
+    expect(spentWith.usd).toBeCloseTo(1.5);
+    expect(renderReport(reportWith)).not.toContain("could not be evaluated completely");
     await engine.close("the test is over");
   });
 });

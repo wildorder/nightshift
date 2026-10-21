@@ -2671,12 +2671,14 @@
               "estimated": 0.46699999999999997,
               "reported": 0
             },
+            "reportedAttempts": 0,
+            "estimatedAttempts": 11,
             "coverage": {
               "complete": 11,
               "partial": 0,
               "unknown": 0,
               "legacy": 0,
-              "missing": 0
+              "missing": 3
             },
             "combined": {
               "usd": 0.46699999999999997,

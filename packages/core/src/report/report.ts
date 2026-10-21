@@ -875,9 +875,10 @@ const budgetOf = (
   program: ProgramContract,
   routes: readonly RoutingDecision[],
   measurements: readonly MeasurementSummary[],
+  rootNodeIds: readonly string[],
 ): BudgetReport => {
-  // As the engine reads it: the root launch's summary counts, an absent one adds nothing.
-  const spend = spendOfRun({ routes, measurements });
+  // As the engine reads it: the root launch's summary counts, an absent one is unmeasured (D-02).
+  const spend = spendOfRun({ routes, measurements, rootNodeIds });
   return {
     usd: spend.usd,
     tokens: spend.tokens,
@@ -904,7 +905,11 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
 
   const p20 = p20Of(records, run, nodes, verifications);
   const feedbackSections = await feedbackSectionsOf(stores, scope, run, p20.asOf, {
-    resources: resourcesOfRoutes([...records.routesOf.values()].flat(), records.measurements),
+    resources: resourcesOfRoutes(
+      [...records.routesOf.values()].flat(),
+      records.measurements,
+      rootIdsOf(nodes),
+    ),
     ...(p20.infrastructure === undefined ? {} : { infrastructure: p20.infrastructure }),
   });
 
@@ -940,7 +945,12 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
       nodes,
       strandOfNode: (nodeId) => strands.find((strand) => strand.nodeIds.includes(nodeId))?.id,
     }),
-    budget: budgetOf(program, [...records.routesOf.values()].flat(), records.measurements),
+    budget: budgetOf(
+      program,
+      [...records.routesOf.values()].flat(),
+      records.measurements,
+      rootIdsOf(nodes),
+    ),
     rulings,
     unreviewed,
     gateHealth: await gatherGateHealth(stores, scope, records, nodes, verifications),
@@ -973,14 +983,15 @@ const reasonOf = (error: unknown): string =>
 const rootIdsOf = (nodes: readonly ExecutionNode[]): string[] =>
   nodes.filter((node) => node.parentNodeId === null).map((node) => node.executionNodeId);
 
-/** Routes' resources and each root launch's summary (D-02); a root without one adds nothing. */
+/** Routes' resources and each root launch's summary (D-02); a root without one is unmeasured. */
 const resourcesOfRoutes = (
   routes: readonly RoutingDecision[],
   measurements: readonly MeasurementSummary[],
+  rootNodeIds: readonly string[],
 ): ResourceTotals =>
   sumResources([
     ...routes.map((route) => resourcesOf(route, measurements)),
-    ...rootResourcesOf(measurements),
+    ...rootResourcesOf(measurements, rootNodeIds),
   ]);
 
 /** Every agent and (non-root) routing decision of the nodes; absent when any read was refused. */
@@ -1061,7 +1072,7 @@ const memberFiguresOf = async (
   return {
     ...(routes === undefined || measurements === undefined
       ? {}
-      : { resources: resourcesOfRoutes(routes, measurements) }),
+      : { resources: resourcesOfRoutes(routes, measurements, rootIdsOf(nodes ?? [])) }),
     ...(infrastructure === undefined ? {} : { infrastructure }),
     ...(failures.length === 0 ? {} : { unavailable: failures.join("; ") }),
   };

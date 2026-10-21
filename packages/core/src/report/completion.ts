@@ -211,9 +211,13 @@ const sumTotals = (items: readonly ResourceTotals[]): ResourceTotals => {
   };
 };
 
-/** A member's totals carry evidence when they cover at least one attempt. */
+/**
+ * A member's totals carry evidence when they cover at least one attempt that
+ * was observed. Launches with nothing measured (an unmeasured root, D-02) are
+ * not evidence: a member with only those is unmeasured, not measured at zero.
+ */
 const hasEvidence = (totals: ResourceTotals): boolean =>
-  Object.values(totals.coverage).some((n) => n > 0);
+  Object.entries(totals.coverage).some(([kind, n]) => kind !== "missing" && n > 0);
 
 /** The members of `keys` that contributed resource evidence, in order. */
 const measuredOf = (
@@ -263,6 +267,8 @@ const combinedOf = (
   const estimateIncomplete = totals?.estimateIncomplete ?? 0;
   const membersWithoutMachine = readable - machines.length;
   const unmeasuredMembers = readable - measured.length;
+  // A measured member whose root launch has no summary (D-02) leaves usage out: a lower bound.
+  const unmeasuredLaunches = measured.some((member) => member.coverage.missing > 0);
   return {
     usd: (model ?? 0) + (infrastructure ?? 0),
     ...(model === undefined ? {} : { model }),
@@ -277,6 +283,7 @@ const combinedOf = (
       model === undefined ||
       unmeasuredMembers > 0 ||
       unavailable > 0 ||
+      unmeasuredLaunches ||
       estimateIncomplete > 0 ||
       membersWithoutMachine > 0,
     priceBases: [...(totals?.priceBases ?? [])],

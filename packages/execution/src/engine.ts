@@ -503,7 +503,8 @@ export const createEngine = (options: EngineOptions): Engine => {
 
   const readSpend = async (): Promise<Spend> => {
     const routes: RoutingDecision[] = [];
-    for (const node of await readNodes()) {
+    const nodes = await readNodes();
+    for (const node of nodes) {
       routes.push(
         ...(await stores.routingDecisions.listByNode(session.scope, node.executionNodeId)),
       );
@@ -518,8 +519,12 @@ export const createEngine = (options: EngineOptions): Engine => {
       measurements.push(...page.items);
       cursor = page.cursor;
     } while (cursor !== undefined);
-    // The root launch's summaries are among `measurements` (D-02): limits see its known usage.
-    return spendOfRun({ routes, measurements });
+    // The root launch's summaries are among `measurements` (D-02): limits see its known usage,
+    // and a root node without one is unmeasured, which keeps the evaluation incomplete.
+    const rootNodeIds = nodes
+      .filter((node) => node.parentNodeId === null)
+      .map((node) => node.executionNodeId);
+    return spendOfRun({ routes, measurements, rootNodeIds });
   };
 
   /** Which budget is spent, which every queued node is then told, once on the record. */
