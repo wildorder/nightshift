@@ -482,7 +482,7 @@ export const makeCompletionHistory = (
     version: 1,
     members,
     checkpoints: [],
-    revisions: [{ version: 1, actor: FIXTURE_ACTOR, recordedAt: AT, members }],
+    revisions: [{ version: 1, actor: FIXTURE_ACTOR, recordedAt: AT, added: members, removed: [] }],
     createdAt: AT,
     updatedAt: AT,
     ...overrides,

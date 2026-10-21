@@ -730,7 +730,7 @@ export const describePortConformance = <S extends ProjectStores>(
         const theirs = makeCompletionHistory(a, {
           ...otherRun,
           members,
-          revisions: [{ ...mine.revisions[0], members }],
+          revisions: [{ ...mine.revisions[0], added: members }],
         });
         await stores.completionHistories.put(mine);
         await stores.completionHistories.put(theirs);

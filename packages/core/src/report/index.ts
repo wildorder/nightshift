@@ -26,6 +26,7 @@ export {
   DEPARTURE_PREFIX,
   type FlakeReport,
   type GateHealthReport,
+  gatherMemberFigures,
   gatherReport,
   type JobReport,
   type RepairReport,

@@ -114,6 +114,15 @@ const seed = async () => {
     membershipVersion: 1,
     recordedBy: ann,
     recordedAt: t("10:36") as never,
+    measured: {
+      measuredTo: verdict2.recordedAt,
+      readableMembers: 2,
+      earliestStart: t("10:00") as never,
+      leadTimeSeconds: 2100,
+      runCompletionSeconds: 1800,
+      activeSeconds: 1200,
+      recordedAt: t("10:36") as never,
+    },
   };
   const history = { ...built, checkpoints: [checkpoint] } as CompletionHistory;
   await stores.completionHistories.put(history);

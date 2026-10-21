@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { buildCompletionHistory, reconcileCompletionWrite } from "../rules/completion.js";
 import { buildRunFeedback } from "../rules/feedback.js";
 import { createFixtures, makeRun } from "../testing/factories.js";
-import { completionOf } from "./completion.js";
+import { completionOf, measureCompletion } from "./completion.js";
 import type { ResourceTotals } from "./resources.js";
 
 const f = createFixtures();
@@ -234,5 +234,108 @@ describe("completionOf", () => {
     ]);
     expect(report.laterFixes.map((m) => m.runId)).toEqual([later.runId]);
     expect(report.version).toBe(2);
+  });
+
+  describe("a frozen checkpoint measurement", () => {
+    // Time zero is 09:00. The anchor ran 09:00..10:00 and was rated worked at 10:00;
+    // a contributing run started at 09:00 and is still open.
+    const hour = 3600;
+    const anchor1 = makeRun(f, {
+      status: "succeeded",
+      startedAt: at(0),
+      endedAt: at(hour),
+    });
+    const open = makeRun(f, {
+      runId: f.ids.next("run"),
+      status: "running",
+      startedAt: at(0),
+    });
+    const rated = vote(anchor1, "worked", at(hour));
+    const fb = new Map([[keyOf(anchor1), rated]]);
+    const open1 = new Map([anchor1, open].map((r) => [keyOf(r), r]));
+    const both = [refOf(anchor1, "anchor"), refOf(open, "contributing")];
+    const resources = new Map([
+      [keyOf(anchor1), totals(100, 1)],
+      [keyOf(open), totals(50, 0.5)],
+    ]);
+    const infra = (usd: number) =>
+      ({
+        components: { total: { usd } },
+      }) as unknown as import("./infrastructure.js").InfrastructureReport;
+    const stored = (
+      extra: Parameters<typeof reconcileCompletionWrite>[0]["resources"] = resources,
+    ) => {
+      const proposed = buildCompletionHistory({
+        scope: f.scope,
+        completionHistoryId: f.ids.next("comp"),
+        title: "T",
+        members: both,
+        actor: ann,
+        at: at(hour),
+        checkpoint: { name: "cp", programId: anchor1.programId, runId: anchor1.runId },
+      });
+      return reconcileCompletionWrite({
+        proposed,
+        actor: ann,
+        at: at(hour),
+        memberRuns: open1,
+        feedbackOf: fb,
+        ...(extra === undefined ? {} : { resources: extra }),
+        infrastructure: new Map([[keyOf(anchor1), infra(2)]]),
+      }).history;
+    };
+
+    it("reports the same checkpoint at 10:00 and 12:00 while the current view grows", () => {
+      const history = stored();
+      const at10 = completionOf({ history, runs: open1, feedback: fb, asOf: at(hour) });
+      const at12 = completionOf({ history, runs: open1, feedback: fb, asOf: at(3 * hour) });
+      expect(at10.checkpoints[0]?.activeSeconds).toBe(3600);
+      expect(at12.checkpoints[0]).toEqual(at10.checkpoints[0]);
+      expect(at12.checkpoints[0]?.leadTimeSeconds).toBe(3600);
+      expect(at10.current.activeSeconds).toBe(3600);
+      expect(at12.current.activeSeconds).toBe(10800);
+    });
+
+    it("leaves tokens, dollars and infrastructure alone when members or measurements change", () => {
+      const history = stored();
+      const before = completionOf({ history, runs: open1, feedback: fb, asOf: at(hour) });
+      const grown = new Map([
+        [keyOf(anchor1), totals(1000, 10)],
+        [keyOf(open), totals(500, 5)],
+      ]);
+      const after = completionOf({
+        history: { ...history, members: [history.members[0] as CompletionMemberRef] },
+        runs: open1,
+        feedback: fb,
+        resources: grown,
+        infrastructure: new Map([[keyOf(anchor1), infra(99)]]),
+        asOf: at(3 * hour),
+      });
+      expect(after.checkpoints[0]).toEqual(before.checkpoints[0]);
+      expect(after.checkpoints[0]?.resources?.tokens.input).toBe(150);
+      expect(after.checkpoints[0]?.resources?.usd).toEqual({ estimated: 0, reported: 1.5 });
+      expect(after.checkpoints[0]?.infrastructure).toEqual({ usd: 2, members: 1 });
+    });
+
+    it("counts a run started after the boundary for nothing", () => {
+      const late = makeRun(f, {
+        runId: f.ids.next("run"),
+        status: "succeeded",
+        startedAt: at(2 * hour),
+        endedAt: at(3 * hour),
+      });
+      const measured = measureCompletion({
+        members: [...both, refOf(late, "contributing")],
+        runs: new Map(open1).set(keyOf(late), late),
+        feedback: fb,
+        resources: new Map(resources).set(keyOf(late), totals(7, 7)),
+        accepted: { ref: refOf(anchor1, "anchor"), verdictAt: at(hour) },
+        boundary: at(hour),
+      });
+      expect(measured.readableMembers).toBe(2);
+      expect(measured.activeSeconds).toBe(3600);
+      expect(measured.tokens?.input).toBe(150);
+      expect(measured.runCompletionSeconds).toBe(3600);
+    });
   });
 });

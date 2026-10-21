@@ -150,7 +150,8 @@ describe("writing a completion history (D-05)", () => {
           version: 1,
           actor: { kind: "user", userId: "someone-else", orgId: w.orgId },
           recordedAt: "2020-01-01T00:00:00.000Z",
-          members: w.first.members,
+          added: w.first.members,
+          removed: [],
         },
       ],
     };

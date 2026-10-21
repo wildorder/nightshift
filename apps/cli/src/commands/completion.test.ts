@@ -169,10 +169,11 @@ describe("nightshift completion", () => {
           version: 1,
           actor: { kind: "user", userId: "fixture-operator", orgId: DEFAULT_ORG },
           recordedAt: "2026-09-15T12:00:00.000Z",
-          members: [
+          added: [
             { programId: world.f.scope.programId, runId: world.f.scope.runId, role: "anchor" },
             { ...extra, role: "contributing" },
           ],
+          removed: [],
         },
       ],
     } as never);

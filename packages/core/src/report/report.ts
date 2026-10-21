@@ -38,6 +38,7 @@ import {
   type Prerequisite,
   type ProgramContract,
   type ProgramId,
+  type ProjectId,
   type RepairCause,
   type RoutingDecision,
   type Run,
@@ -910,6 +911,42 @@ const memberFiguresOf = async (
 };
 
 /**
+ * The model and machine figures of completion member runs, each run read once.
+ * Every read is tolerated: a figure whose records could not all be read is
+ * absent, not zero. Keys are `${programId}/${runId}`; a member whose run is not
+ * in `runs` is skipped.
+ */
+export const gatherMemberFigures = async (
+  stores: ProjectStores,
+  projectId: ProjectId,
+  members: readonly { readonly programId: ProgramId; readonly runId: RunId }[],
+  runs: ReadonlyMap<string, Run>,
+  asOf: IsoTimestamp,
+): Promise<{
+  resources: Map<string, ResourceTotals>;
+  infrastructure: Map<string, InfrastructureReport>;
+}> => {
+  const resources = new Map<string, ResourceTotals>();
+  const infrastructure = new Map<string, InfrastructureReport>();
+  const done = new Set<string>();
+  for (const member of members) {
+    const key = `${member.programId}/${member.runId}`;
+    const run = runs.get(key);
+    if (run === undefined || done.has(key)) continue;
+    done.add(key);
+    const figures = await memberFiguresOf(
+      stores,
+      { projectId, programId: member.programId, runId: member.runId },
+      run,
+      asOf,
+    );
+    if (figures.resources !== undefined) resources.set(key, figures.resources);
+    if (figures.infrastructure !== undefined) infrastructure.set(key, figures.infrastructure);
+  }
+  return { resources, infrastructure };
+};
+
+/**
  * D-04/D-05 reads. Each is tolerated: an execution principal that is refused,
  * or a control plane older than these stores, still gets its report.
  */
@@ -938,14 +975,10 @@ const feedbackSectionsOf = async (
   const resources = new Map<string, ResourceTotals>();
   const infrastructure = new Map<string, InfrastructureReport>();
   const self = `${scope.programId}/${scope.runId}`;
-  // A checkpoint is computed from its own snapshot, so a run since removed from
-  // the history is still gathered; each run is read once across histories.
+  // A checkpoint is reported from its stored measurement, so only current
+  // members are gathered; each run is read once across histories.
   for (const member of new Set(
-    mine.flatMap((h) =>
-      [h.members, ...h.checkpoints.map((c) => c.members)].flatMap((ms) =>
-        ms.map((m) => `${m.programId}/${m.runId}`),
-      ),
-    ),
+    mine.flatMap((h) => h.members.map((m) => `${m.programId}/${m.runId}`)),
   )) {
     const [programId, runId] = member.split("/") as [ProgramId, RunId];
     const memberScope = { projectId: scope.projectId, programId, runId };

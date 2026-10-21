@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { ArtifactSchema } from "./artifact.js";
 import { PathGlobSchema } from "./common.js";
-import { CompletionHistorySchema } from "./completion.js";
+import { CompletionHistorySchema, MAX_COMPLETION_HISTORY_BYTES } from "./completion.js";
 import { EventSchema, inlinePayloadBytes, MAX_INLINE_PAYLOAD_BYTES } from "./event.js";
 import { ExaminationSchema } from "./examination.js";
 import { AGGREGATE_EXAMPLES, EXAMPLE_IDS } from "./examples.js";
@@ -517,10 +517,6 @@ describe("CompletionHistory", () => {
     const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
     const members = record.members as Record<string, unknown>[];
     members.push({ ...members[0], role: "contributing" });
-    (record.revisions as Record<string, unknown>[])[0] = {
-      ...(record.revisions as Record<string, unknown>[])[0],
-      members,
-    };
     expect(CompletionHistorySchema.safeParse(record).success).toBe(false);
   });
 
@@ -528,10 +524,6 @@ describe("CompletionHistory", () => {
     const withMembers = (members: unknown[]) => {
       const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
       record.members = members;
-      (record.revisions as Record<string, unknown>[])[0] = {
-        ...(record.revisions as Record<string, unknown>[])[0],
-        members,
-      };
       return CompletionHistorySchema.safeParse(record).success;
     };
     const own = { programId: EXAMPLE_IDS.programId, runId: EXAMPLE_IDS.runId };
@@ -544,10 +536,6 @@ describe("CompletionHistory", () => {
     const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
     const members = [member("anchor", "1")];
     record.members = members;
-    (record.revisions as Record<string, unknown>[])[0] = {
-      ...(record.revisions as Record<string, unknown>[])[0],
-      members,
-    };
     expect(CompletionHistorySchema.safeParse(record).success).toBe(false);
   });
 
@@ -561,6 +549,18 @@ describe("CompletionHistory", () => {
   it("rejects a last revision that differs from the record", () => {
     const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
     record.version = 2;
+    expect(CompletionHistorySchema.safeParse(record).success).toBe(false);
+  });
+
+  it("rejects a history over the byte bound", () => {
+    const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
+    const revisions = record.revisions as Record<string, unknown>[];
+    const first = revisions[0] as Record<string, unknown>;
+    revisions[0] = {
+      ...first,
+      added: Array.from({ length: 3000 }, (_, i) => member("contributing", String(i % 10))),
+    };
+    expect(JSON.stringify(record).length).toBeGreaterThan(MAX_COMPLETION_HISTORY_BYTES);
     expect(CompletionHistorySchema.safeParse(record).success).toBe(false);
   });
 });

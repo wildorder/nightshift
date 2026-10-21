@@ -23,7 +23,7 @@ import {
   makeRootNode,
   makeRun,
 } from "../testing/factories.js";
-import { gatherReport, renderReport } from "./report.js";
+import { gatherMemberFigures, gatherReport, renderReport } from "./report.js";
 
 const at = (s: number): IsoTimestamp =>
   new Date(Date.UTC(2026, 0, 1) + s * 1000).toISOString() as IsoTimestamp;
@@ -274,12 +274,25 @@ describe("the Completion section's model and machine figures", () => {
         role: i === 0 ? "anchor" : "correction",
       }),
     );
-    const checkpointed = buildCompletionHistory({
+    const proposed = buildCompletionHistory({
       ...base,
       members: both,
       at: at(1),
       checkpoint: { name: "cp", programId: w.a.scope.programId, runId: w.a.scope.runId },
     });
+    // The server replaces the placeholder with the figures it measured.
+    const checkpointed: CompletionHistory = {
+      ...proposed,
+      checkpoints: proposed.checkpoints.map((c) => ({
+        ...c,
+        measured: {
+          ...c.measured,
+          tokens: { input: 300, output: 30, inputConventionUnknown: 0 },
+          usd: { estimated: 0.5, reported: 2 },
+          coverage: { complete: 2, partial: 0, unknown: 0, legacy: 0, missing: 0 },
+        },
+      })),
+    };
     const trimmed = buildCompletionHistory({
       ...base,
       stored: checkpointed,
@@ -296,6 +309,28 @@ describe("the Completion section's model and machine figures", () => {
     expect(before?.current.resources?.tokens).toMatchObject({ input: 300 });
     expect(after?.current.resources?.tokens).toMatchObject({ input: 100, output: 10 });
     expect(after?.current.resources?.usd).toEqual({ estimated: 0.5, reported: 0 });
+  });
+
+  it("gathers each member's figures once for the API and CLI", async () => {
+    const w = world();
+    const { stores, calls } = storesFor(w);
+    const runs = new Map([w.a, w.b].map((r) => [`${r.scope.programId}/${r.scope.runId}`, r.run]));
+    const refs = [w.a, w.b, w.a].map((r) => ({
+      programId: r.scope.programId,
+      runId: r.scope.runId,
+    }));
+    const figures = await gatherMemberFigures(
+      stores as unknown as ProjectStores,
+      w.f.scope.projectId,
+      refs,
+      runs,
+      at(2000),
+    );
+    expect(figures.resources.get(`${w.a.scope.programId}/${w.a.scope.runId}`)?.tokens.input).toBe(
+      100,
+    );
+    expect(figures.resources.size).toBe(2);
+    expect(calls.get(`measurements:${w.a.scope.runId}`)).toBe(1);
   });
 
   it("prints a present zero dollar total as $0.00 rather than not observed", async () => {

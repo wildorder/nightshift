@@ -7,11 +7,13 @@ import type {
   RunFeedback,
   UserPrincipal,
 } from "@nightshift/contracts";
+import { CompletionHistorySchema, MAX_COMPLETION_HISTORY_BYTES } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { CompletionMembershipError, StaleWriteError } from "../errors.js";
 import { createFixtures, makeProgramContract, makeRun } from "../testing/factories.js";
 import {
   buildCompletionHistory,
+  completionHistoryBytes,
   reconcileCompletionWrite,
   suggestCompletionMembers,
 } from "./completion.js";
@@ -86,7 +88,7 @@ describe("buildCompletionHistory", () => {
     const one = build();
     expect(one.version).toBe(1);
     expect(one.revisions).toEqual([
-      { version: 1, actor: ann, recordedAt: at(1), members: [anchorRef] },
+      { version: 1, actor: ann, recordedAt: at(1), added: [anchorRef], removed: [] },
     ]);
     const two = build({
       stored: one,
@@ -97,7 +99,7 @@ describe("buildCompletionHistory", () => {
     expect(two.version).toBe(2);
     expect(two.createdAt).toBe(at(1));
     expect(two.updatedAt).toBe(at(2));
-    expect(two.revisions.map((r) => r.members.length)).toEqual([1, 2]);
+    expect(two.revisions.map((r) => r.added.length)).toEqual([1, 1]);
   });
 
   it("carries placeholders for a new checkpoint", () => {
@@ -115,6 +117,7 @@ describe("buildCompletionHistory", () => {
         membershipVersion: 1,
         recordedBy: ann,
         recordedAt: at(1),
+        measured: { measuredTo: at(1), readableMembers: 1, activeSeconds: 0, recordedAt: at(1) },
       },
     ]);
   });
@@ -201,6 +204,11 @@ describe("reconcileCompletionWrite", () => {
         membershipVersion: 1,
         recordedBy: ann,
         recordedAt: at(50),
+        measured: expect.objectContaining({
+          measuredTo: at(40),
+          readableMembers: 2,
+          recordedAt: at(50),
+        }),
       },
     ]);
     const next = (over: Partial<CompletionHistory>): CompletionHistory => ({
@@ -343,5 +351,44 @@ describe("suggestCompletionMembers", () => {
         runs: [anchorRun, sibling],
       }),
     ).toEqual([]);
+  });
+});
+
+describe("bounded revisions", () => {
+  it("keeps a 50-member history written 150 times valid, trimming the oldest first", () => {
+    const refs = (): CompletionMemberRef[] => [
+      anchorRef,
+      ...Array.from(
+        { length: 49 },
+        (_, i): CompletionMemberRef => ({
+          programId: f.scope.programId,
+          runId: `run_${String(i).padStart(24, "0")}ZZ` as never,
+          role: "contributing",
+        }),
+      ),
+    ];
+    const members = refs();
+    members[0] = { programId: f.scope.programId, runId: f.scope.runId, role: "anchor" };
+    let history = build({ members, title: "title 0", at: at(1) });
+    for (let n = 1; n < 150; n++) {
+      history = build({
+        stored: history,
+        completionHistoryId: history.completionHistoryId,
+        members,
+        title: `title ${n}`,
+        at: at(n + 1),
+      });
+    }
+    expect(history.version).toBe(150);
+    expect(history.revisions.length).toBeLessThanOrEqual(100);
+    expect(completionHistoryBytes(history)).toBeLessThanOrEqual(MAX_COMPLETION_HISTORY_BYTES);
+    const parsed = CompletionHistorySchema.safeParse(history);
+    expect(parsed.success ? [] : parsed.error.issues).toEqual([]);
+    const versions = history.revisions.map((r) => r.version);
+    expect(versions[versions.length - 1]).toBe(150);
+    expect(versions).toEqual([...versions].sort((a, b) => a - b));
+    expect(versions[0]).toBe(150 - versions.length + 1);
+    expect(history.revisions.at(-1)?.title).toBe("title 149");
+    expect(history.revisions.at(-1)?.added).toEqual([]);
   });
 });

@@ -10,13 +10,15 @@
  * - active union: the length of the union of the members' run intervals, so
  *   overlapping runs count once and gaps between runs count not at all.
  *
- * Each member counts once. Checkpoint figures come from the checkpoint's own
- * snapshot and its stored verdict time, so no later change rewrites them.
+ * Each member counts once. A checkpoint is reported from its stored
+ * `measured` block alone, so no later change rewrites it.
  */
 import type {
   CompletionCheckpoint,
   CompletionHistory,
+  CompletionMeasurement,
   CompletionMemberRef,
+  IsoTimestamp,
   Run,
   RunFeedback,
   RunStatus,
@@ -36,6 +38,9 @@ export interface CompletionMemberReport {
   readonly unreadable?: true;
 }
 
+/** The model figures a completion shows; a checkpoint's measurement carries no more. */
+export type CompletionResources = Pick<ResourceTotals, "tokens" | "usd" | "coverage">;
+
 export interface CompletionRunRef {
   readonly programId: string;
   readonly runId: string;
@@ -49,7 +54,7 @@ export interface CompletionFigures {
   readonly runCompletionSeconds?: number;
   /** Seconds covered by at least one member's run interval; open runs run to `asOf`. */
   readonly activeSeconds: number;
-  readonly resources?: ResourceTotals;
+  readonly resources?: CompletionResources;
   /** Machine dollars of the members' infrastructure reports, summed. */
   readonly infrastructure?: { readonly usd: number; readonly members: number };
   readonly membershipVersion: number;
@@ -153,6 +158,91 @@ const sumTotals = (items: readonly ResourceTotals[]): ResourceTotals => {
 const verdictOf = (feedback: RunFeedback | undefined): CompletionMemberReport["verdict"] =>
   feedback?.verdict ?? "not_rated";
 
+const sumResources = (items: readonly ResourceTotals[]): CompletionResources => {
+  const { tokens, usd, coverage } = sumTotals(items);
+  return { tokens, usd, coverage };
+};
+
+export interface MeasureCompletionInput {
+  readonly members: readonly CompletionMemberRef[];
+  /** Keyed `${programId}/${runId}`. */
+  readonly runs: ReadonlyMap<string, Run>;
+  readonly feedback: ReadonlyMap<string, RunFeedback>;
+  readonly resources?: ReadonlyMap<string, ResourceTotals>;
+  readonly infrastructure?: ReadonlyMap<string, InfrastructureReport>;
+  readonly accepted: { readonly ref: CompletionRunRef; readonly verdictAt: string };
+  /** Intervals are clipped here; open runs end here; later-started runs count for nothing. */
+  readonly boundary: IsoTimestamp;
+}
+
+/**
+ * The figures of a membership bounded at `boundary`. Pure. Tokens and dollars
+ * are the totals of the records given, since measurement summaries carry no
+ * time slices; every time figure is clipped at the boundary.
+ */
+export const measureCompletion = (
+  input: MeasureCompletionInput,
+): Omit<CompletionMeasurement, "recordedAt"> => {
+  const boundary = ms(input.boundary);
+  const keys = [...new Set(input.members.map(keyOf))];
+  const readable = keys.flatMap((k) => {
+    const run = input.runs.get(k);
+    return run === undefined || ms(run.startedAt) > boundary ? [] : [{ key: k, run }];
+  });
+  const earliest =
+    readable.length === 0 ? undefined : Math.min(...readable.map((m) => ms(m.run.startedAt)));
+  const acceptedRun = input.runs.get(keyOf(input.accepted.ref));
+  const present = <T>(map: ReadonlyMap<string, T> | undefined): T[] =>
+    map === undefined
+      ? []
+      : readable.flatMap((m) => {
+          const found = map.get(m.key);
+          return found === undefined ? [] : [found];
+        });
+  const resources =
+    input.resources === undefined ? undefined : sumResources(present(input.resources));
+  const machines = input.infrastructure === undefined ? undefined : present(input.infrastructure);
+  return {
+    measuredTo: input.boundary,
+    readableMembers: readable.length,
+    ...(earliest === undefined
+      ? {}
+      : {
+          earliestStart: new Date(earliest).toISOString() as IsoTimestamp,
+          leadTimeSeconds: Math.max(
+            0,
+            (Math.min(ms(input.accepted.verdictAt), boundary) - earliest) / 1000,
+          ),
+        }),
+    ...(earliest === undefined || acceptedRun?.endedAt === undefined
+      ? {}
+      : {
+          runCompletionSeconds: Math.max(
+            0,
+            (Math.min(ms(acceptedRun.endedAt), boundary) - earliest) / 1000,
+          ),
+        }),
+    activeSeconds: unionSeconds(
+      readable.map((m) => ({
+        from: ms(m.run.startedAt),
+        to: Math.min(m.run.endedAt === undefined ? boundary : ms(m.run.endedAt), boundary),
+      })),
+    ),
+    ...(resources === undefined
+      ? {}
+      : { tokens: resources.tokens, usd: resources.usd, coverage: resources.coverage }),
+    ...(machines === undefined
+      ? {}
+      : {
+          infrastructure: {
+            usd: machines.reduce((sum, r) => sum + r.components.total.usd, 0),
+            members: machines.length,
+          },
+        }),
+  };
+};
+
+/** The live view: open runs run to `asOf`, and nothing is clipped. */
 const figuresOf = (
   input: CompletionInput,
   members: readonly CompletionMemberRef[],
@@ -198,7 +288,7 @@ const figuresOf = (
         to: m.run.endedAt === undefined ? asOf : ms(m.run.endedAt),
       })),
     ),
-    ...(resources === undefined ? {} : { resources: sumTotals(totals) }),
+    ...(resources === undefined ? {} : { resources: sumResources(totals) }),
     ...(infrastructure === undefined
       ? {}
       : {
@@ -208,6 +298,32 @@ const figuresOf = (
           },
         }),
     membershipVersion: version,
+  };
+};
+
+/** A stored checkpoint, from its measurement alone. */
+const checkpointFiguresOf = (c: CompletionCheckpoint): CompletionFigures => {
+  const m = c.measured;
+  return {
+    ...(m.leadTimeSeconds === undefined ? {} : { leadTimeSeconds: m.leadTimeSeconds }),
+    acceptedRun: { programId: c.programId, runId: c.runId },
+    ...(m.runCompletionSeconds === undefined
+      ? {}
+      : { runCompletionSeconds: m.runCompletionSeconds }),
+    activeSeconds: m.activeSeconds,
+    ...(m.tokens === undefined || m.usd === undefined || m.coverage === undefined
+      ? {}
+      : {
+          resources: {
+            tokens: Object.fromEntries(
+              Object.entries(m.tokens).filter(([, value]) => value !== undefined),
+            ) as CompletionResources["tokens"],
+            usd: m.usd,
+            coverage: m.coverage,
+          },
+        }),
+    ...(m.infrastructure === undefined ? {} : { infrastructure: m.infrastructure }),
+    membershipVersion: c.membershipVersion,
   };
 };
 
@@ -259,10 +375,7 @@ export const completionOf = (input: CompletionInput): CompletionReport => {
       name: c.name,
       recordedAt: c.recordedAt,
       verdictRecordedAt: c.verdictRecordedAt,
-      ...figuresOf(input, c.members, c.membershipVersion, {
-        ref: { programId: c.programId, runId: c.runId },
-        verdictAt: c.verdictRecordedAt,
-      }),
+      ...checkpointFiguresOf(c),
     }),
   );
   const first = [...history.checkpoints].sort((a, b) => ms(a.recordedAt) - ms(b.recordedAt))[0];
