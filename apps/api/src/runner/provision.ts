@@ -153,8 +153,16 @@ export const provisionDispatch = async (
   if (imageId === undefined) {
     return fail(`no available ${architecture} image for version ${deps.imageVersion}`);
   }
-  // A replacement must land in its volume's zone (T6); a first machine goes where the hash says.
-  const replacing = dispatch.volumeId !== undefined;
+  // A replacement must land in its volume's zone (T6); a first machine goes
+  // where the hash says. A resume after cleanup deleted the volume (D-P10-18)
+  // has no volume to land beside: it gets a new one from the run's retained
+  // snapshot, in any zone, like a first machine from the warm cache — not an
+  // attach of a volume that is gone (2026-10-21).
+  const retained =
+    dispatch.cleanup.volumeDeleted && dispatch.volumeId !== undefined
+      ? dispatch.cleanup.snapshotId
+      : undefined;
+  const replacing = dispatch.volumeId !== undefined && !dispatch.cleanup.volumeDeleted;
   const inZone =
     replacing && dispatch.availabilityZone !== undefined && deps.subnetZones !== undefined
       ? deps.subnetIds.find((id) => deps.subnetZones?.[id] === dispatch.availabilityZone)
@@ -190,8 +198,17 @@ export const provisionDispatch = async (
   await deps.tokens.put(parameter, token);
 
   const cache = await stores.warmCaches.get(scope.projectId, architecture);
-  let fromSnapshotId = dispatch.volumeId === undefined ? warmSnapshotOf(cache) : undefined;
-  if (fromSnapshotId !== undefined && cache !== undefined) {
+  if (retained !== undefined) {
+    // The run's own snapshot is what a resume promises to continue from; one
+    // that is gone is a refusal, not a cold start.
+    const described = await compute.describeSnapshot(retained).catch(() => undefined);
+    if (described === undefined || described.state === "error") {
+      await deps.tokens.delete(parameter).catch(() => undefined);
+      return fail(`the run's retained snapshot ${retained} is gone; nothing to resume from`);
+    }
+  }
+  let fromSnapshotId = replacing ? undefined : (retained ?? warmSnapshotOf(cache));
+  if (fromSnapshotId !== undefined && retained === undefined && cache !== undefined) {
     // The snapshot must still exist: one deleted behind the record's back (by
     // hand, 2026-10-06) failed every launch of the project until the record
     // was repaired. A missing one is a cold start, and the record goes.

@@ -66,7 +66,12 @@ export const setOrgConfig = async (
       `could not read ${file} as JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
   }
-  const edited = raw as { routingPolicy?: unknown; examinationPolicy?: unknown; version?: unknown };
+  const edited = raw as {
+    routingPolicy?: unknown;
+    examinationPolicy?: unknown;
+    compute?: unknown;
+    version?: unknown;
+  };
   if (typeof edited.version !== "number") {
     throw new UsageError(
       "the file needs the `version` it was read at: start from `nightshift org config get > file`, edit, then set",
@@ -79,6 +84,10 @@ export const setOrgConfig = async (
       body: {
         routingPolicy: edited.routingPolicy,
         examinationPolicy: edited.examinationPolicy,
+        // The compute ceilings are the writer's to set (D-P10-19); a file
+        // without them leaves the org on the shipped defaults. Dropped here
+        // until 2026-10-21, so no `set` could ever change a ceiling.
+        ...(edited.compute === undefined ? {} : { compute: edited.compute }),
         replacesVersion: edited.version,
       },
     }),

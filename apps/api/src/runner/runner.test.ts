@@ -538,6 +538,76 @@ describe("recovery of a lapsed lease (T6, D-P10-18, D-P10-05)", () => {
     });
   });
 
+  it("resumes a run whose volume was deleted from its retained snapshot, in any zone (2026-10-21)", async () => {
+    const w = await world({
+      status: "provisioning",
+      volumeId: "vol-gone",
+      availabilityZone: "us-west-2b",
+      generation: 2,
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T10:00:00.000Z",
+          endedAt: "2026-10-01T11:00:00.000Z",
+          instanceId: "i-old",
+        },
+        { generation: 2, reason: "resume", startedAt: "2026-10-01T12:00:00.000Z" },
+      ],
+      cleanup: {
+        volumeDeleted: true,
+        failures: [],
+        snapshotId: "snap-run",
+        snapshotTakenAt: "2026-10-01T11:05:00.000Z",
+      },
+    });
+    w.compute.snapshots.set("snap-run", "completed");
+    const outcome = await provisionDispatch(w.deps(), w.f.scope);
+    expect(outcome.kind, JSON.stringify(outcome)).toBe("provisioned");
+    // A new volume from the run's own snapshot; nothing attached; not held to the old zone.
+    const launch = w.compute.launches[0];
+    expect(launch?.volume?.fromSnapshotId).toBe("snap-run");
+    expect(w.compute.attached).toEqual([]);
+    expect(await w.stores.dispatches.get(w.f.scope)).toMatchObject({
+      status: "provisioning",
+      instanceId: "i-1",
+      generation: 2,
+      cleanup: { volumeDeleted: false, snapshotId: "snap-run" },
+    });
+  });
+
+  it("refuses to resume when the run's retained snapshot is gone (2026-10-21)", async () => {
+    const w = await world({
+      status: "provisioning",
+      volumeId: "vol-gone",
+      availabilityZone: "us-west-2b",
+      generation: 2,
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T10:00:00.000Z",
+          endedAt: "2026-10-01T11:00:00.000Z",
+        },
+        { generation: 2, reason: "resume", startedAt: "2026-10-01T12:00:00.000Z" },
+      ],
+      cleanup: {
+        volumeDeleted: true,
+        failures: [],
+        snapshotId: "snap-deleted-by-hand",
+        snapshotTakenAt: "2026-10-01T11:05:00.000Z",
+      },
+    });
+    const outcome = await provisionDispatch(w.deps(), w.f.scope);
+    expect(outcome.kind).toBe("failed");
+    expect((await w.stores.dispatches.get(w.f.scope))?.failure).toMatchObject({
+      code: "provisioning_failed",
+      message: expect.stringContaining("retained snapshot snap-deleted-by-hand is gone"),
+    });
+    expect(w.compute.launches).toHaveLength(0);
+    expect(w.tokens.parameters.size).toBe(0);
+  });
+
   it("gives up a replacement whose volume never attaches, and terminates the machine it made", async () => {
     const w = await world({
       status: "provisioning",
