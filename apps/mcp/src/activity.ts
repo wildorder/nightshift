@@ -153,6 +153,8 @@ const RENDER: Readonly<Record<string, Render>> = {
   "finding.ruled": (p) => `the arbiter ${String(p.ruling)} ${String(p.findingId)}`,
   "run.budget_spent": (p) =>
     `budget spent: ${String(p.budget)} ${String(p.spent)} of ${String(p.limit)}; nothing new starts`,
+  "run.budget_evaluation_incomplete": (p) =>
+    `budget ${String(p.budget)} cannot be fully evaluated: ${String(p.unpriced)} unpriced, ${String(p.unmeasured)} unmeasured, ${String(p.estimateIncomplete)} incomplete estimate(s); ${String(p.spent)} of ${String(p.limit)} is what is known`,
   // Baseline and flake evidence inform the agent; neither adds a workflow prerequisite.
   "gate.red": (p) =>
     `the base is red: ${listOf(p.failing)}; use the logs to address it within the authorized work; ` +

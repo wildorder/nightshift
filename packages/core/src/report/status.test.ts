@@ -79,7 +79,20 @@ describe("programStatus (D-P13-09)", () => {
     );
     expect(status.strands).toEqual({ total: 2, succeeded: 1 });
     expect(status.jobs).toMatchObject({ total: 3, landed: 2, failed: 1, retried: 1 });
-    expect(status.spend).toEqual({ usd: 14.2, estimated: true, unpriced: 1, budgetUsd: 25 });
+    expect(status.spend).toEqual({
+      usd: 14.2,
+      estimated: true,
+      unpriced: 1,
+      tokens: 2,
+      budgetUsd: 25,
+      evaluation: {
+        configured: true,
+        complete: false,
+        unpriced: 1,
+        unmeasured: 0,
+        estimateIncomplete: 0,
+      },
+    });
     expect(status.waiting).toEqual([
       { kind: "failed", subject: "S-02 The store", reason: "tests failed twice" },
     ]);

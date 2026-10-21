@@ -33,12 +33,14 @@ import {
   type JobContractId,
   lifecycleObservationsOf,
   lifecycleOperationId,
+  type MeasurementSummary,
   type RouteChoice,
   type RouteTarget,
-  type RouteUsage,
+  type RoutingDecision,
 } from "@nightshift/contracts";
 import {
   blockedBy,
+  budgetEvaluation,
   budgetSpent,
   buildTree,
   ConcurrencyLimitExceededError,
@@ -54,7 +56,7 @@ import {
   RETRYABLE_STATUSES,
   type Spend,
   type StrandOutcomes,
-  spendOf,
+  spendOfRun,
   strandAttempts,
   strandOutcomes,
   strandsOf,
@@ -496,25 +498,61 @@ export const createEngine = (options: EngineOptions): Engine => {
   let spend: Spend | undefined;
   let budgetAnnounced = false;
 
+  // The counts last announced as incomplete; a changed count is announced again.
+  let incompleteAnnounced: string | undefined;
+
   const readSpend = async (): Promise<Spend> => {
-    const usages: RouteUsage[] = [];
+    const routes: RoutingDecision[] = [];
     for (const node of await readNodes()) {
-      for (const decision of await stores.routingDecisions.listByNode(
-        session.scope,
-        node.executionNodeId,
-      )) {
-        usages.push(decision.usage);
-      }
+      routes.push(
+        ...(await stores.routingDecisions.listByNode(session.scope, node.executionNodeId)),
+      );
     }
-    return spendOf(usages);
+    const measurements: MeasurementSummary[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await stores.measurements.listByRun(
+        session.scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      measurements.push(...page.items);
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return spendOfRun({ routes, measurements });
   };
 
   /** Which budget is spent, which every queued node is then told, once on the record. */
   const budgetExhausted = async (): Promise<"maxUsd" | "maxTokens" | undefined> => {
     if (!budgeted) return undefined;
     spend ??= await readSpend();
-    const spent = budgetSpent(spend, costPolicy);
-    if (spent === undefined) return undefined;
+    const evaluation = budgetEvaluation(spend, costPolicy);
+    if (!evaluation.complete) {
+      // A limit that cannot be evaluated completely is enforced on what is known and said so.
+      const key = `${evaluation.unpriced}/${evaluation.unmeasured}/${evaluation.estimateIncomplete}`;
+      if (key !== incompleteAnnounced) {
+        incompleteAnnounced = key;
+        const [budget, limit, spentNow] =
+          costPolicy.maxUsd !== undefined
+            ? (["maxUsd", costPolicy.maxUsd, spend.usd] as const)
+            : (["maxTokens", costPolicy.maxTokens ?? 0, spend.tokens] as const);
+        outbox.emit({
+          type: "run.budget_evaluation_incomplete",
+          source: "control-plane",
+          payload: {
+            budget,
+            limit,
+            spent: spentNow,
+            unpriced: evaluation.unpriced,
+            unmeasured: evaluation.unmeasured,
+            estimateIncomplete: evaluation.estimateIncomplete,
+          },
+          executionNodeId: session.rootNodeId,
+        });
+      }
+    }
+    const exhausted = budgetSpent(spend, costPolicy);
+    if (exhausted === undefined) return undefined;
+    const spent = { budget: exhausted.budget, limit: exhausted.limit, spent: exhausted.spent };
     const reason: WaitingReason = { kind: "budget_spent", ...spent, estimated: spend.estimated };
     for (const entry of pending) entry.waiting = reason;
     if (!budgetAnnounced) {

@@ -6,6 +6,7 @@
  */
 import type { ExecutionNodeStatus, RunStatus } from "@nightshift/contracts";
 import { examinationBlocks } from "../rules/examination.js";
+import { budgetEvaluation, type SpendEvaluation } from "../rules/policy.js";
 import type { JobReport, RunReport } from "./report.js";
 
 export type WaitingKind = "prerequisite" | "provisional" | "blocked" | "finding" | "failed";
@@ -39,6 +40,14 @@ export interface ProgramStatus {
     /** Routes with no price at all: the spend is unknown, not zero. */
     readonly unpriced: number;
     readonly budgetUsd?: number;
+    /** Input plus output tokens of the run's routed attempts. */
+    readonly tokens: number;
+    /**
+     * What the figures leave out. From the report's usage rows, `unpriced`
+     * counts every route with no dollar figure (counters or not) and
+     * `unmeasured` and `estimateIncomplete` are not distinguished there.
+     */
+    readonly evaluation: SpendEvaluation & { readonly configured: boolean };
   };
 }
 
@@ -116,6 +125,9 @@ export const programStatus = (
   waiting.sort((a, b) => WAITING_ORDER[a.kind] - WAITING_ORDER[b.kind]);
 
   const usd = report.usage.reduce((sum, row) => sum + row.costUsd, 0);
+  const tokens = report.usage.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
+  const estimated = report.usage.some((row) => row.estimated);
+  const unpriced = report.usage.reduce((sum, row) => sum + row.unpriced, 0);
   const budgetUsd = report.program.costPolicy.maxUsd;
   return {
     runStatus: report.run.status,
@@ -133,8 +145,24 @@ export const programStatus = (
     waiting,
     spend: {
       usd,
-      estimated: report.usage.some((row) => row.estimated),
-      unpriced: report.usage.reduce((sum, row) => sum + row.unpriced, 0),
+      estimated,
+      unpriced,
+      tokens,
+      evaluation: budgetEvaluation(
+        {
+          usd,
+          tokens,
+          estimated,
+          unknown: 0,
+          evaluation: {
+            complete: unpriced === 0,
+            unpriced,
+            unmeasured: 0,
+            estimateIncomplete: 0,
+          },
+        },
+        report.program.costPolicy,
+      ),
       ...(budgetUsd === undefined ? {} : { budgetUsd }),
     },
   };

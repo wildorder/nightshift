@@ -328,3 +328,49 @@ describe("a spent budget starts nothing new (D-P8-08, SC-P8-07)", () => {
     await engine.close("the test is over");
   });
 });
+
+describe("a budget that cannot be evaluated completely (D-02)", () => {
+  it("says so once, and keeps enforcing the limit on what is known", async () => {
+    const { world, engine, submit } = await rig(
+      async (context, finish) => {
+        const name = context.input.job.objective;
+        await writeModule(context.worktree, name);
+        await finish(`${name}: done`);
+        return {
+          kind: "completed",
+          usage: name === "priced" ? { actualCostUsd: 6 } : { inputTokens: 90, outputTokens: 10 },
+        };
+      },
+      { costPolicy: { maxUsd: 5 } },
+    );
+    const settle = async (name: string) => {
+      const job = await submit(name);
+      expect(await until(world, job.nodeId, (status) => isSettled(status as never))).toBe(
+        "integrated",
+      );
+      await routesSettled(world, job.nodeId);
+      const deadline = Date.now() + 30_000;
+      while (!engine.idle() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    const incomplete = async () =>
+      (await eventsOf(world)).filter((event) => event.type === "run.budget_evaluation_incomplete");
+
+    await settle("unpriced");
+    await settle("priced");
+    const held = await submit("held");
+    expect(await incomplete()).toHaveLength(1);
+    expect((await incomplete())[0]?.payload).toMatchObject({
+      budget: "maxUsd",
+      limit: 5,
+      unpriced: 1,
+      unmeasured: 0,
+    });
+    expect(await world.stores.executionNodes.get(world.scope, held.nodeId)).toMatchObject({
+      status: "queued",
+    });
+    expect(engine.waiting(held.jobId)).toMatchObject({ kind: "budget_spent", budget: "maxUsd" });
+    await engine.close("the test is over");
+  });
+});

@@ -77,7 +77,7 @@ export interface ResourceTotals {
 const present = <K extends string>(key: K, value: number | undefined) =>
   value === undefined ? {} : ({ [key]: value } as { [P in K]: number });
 
-const tokensOf = (counters: MeasurementCounters): ResourceTokens => {
+export const tokensOf = (counters: MeasurementCounters): ResourceTokens => {
   const convention = counters.inputIncludesCache;
   const input =
     counters.inputTokens === undefined

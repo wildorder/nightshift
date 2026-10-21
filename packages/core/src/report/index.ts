@@ -47,6 +47,7 @@ export {
   resourcesOf,
   resourcesOfSummary,
   sumResources,
+  tokensOf,
 } from "./resources.js";
 export * from "./review.js";
 export {

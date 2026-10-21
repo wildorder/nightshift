@@ -118,6 +118,13 @@ export const EventTypeSchema = z.enum([
   "finding.ruled",
   /** Added in P8 (D-P8-08). A budget is spent; nothing new starts. Payload: which and how much. */
   "run.budget_spent",
+  /**
+   * Added in P20 (D-02). A budget is configured but its evaluation leaves usage
+   * out (unpriced, unmeasured or incompletely valued attempts), so the spend
+   * shown is a floor, not a precise cap. Payload: `budget`, `limit`, `spent`,
+   * `unpriced`, `unmeasured` and `estimateIncomplete`.
+   */
+  "run.budget_evaluation_incomplete",
   // Gate health — P15.
   /**
    * Added in P15 (D-P15-03). The run's one mechanical pass at the start found
