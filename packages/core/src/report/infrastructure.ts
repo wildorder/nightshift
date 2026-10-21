@@ -327,7 +327,9 @@ const attemptsOf = (dispatch: Dispatch): InfrastructureAttempt[] =>
 const lifetimeOf = (dispatch: Dispatch, attempts: readonly InfrastructureAttempt[]) => {
   const closed = attempts.filter((a) => a.lifetimeMs !== undefined);
   const ready = attempts.flatMap((a) => (a.readyAt === undefined ? [] : [a.readyAt]));
-  const terminated = attempts.flatMap((a) => (a.terminatedAt === undefined ? [] : [a.terminatedAt]));
+  const terminated = attempts.flatMap((a) =>
+    a.terminatedAt === undefined ? [] : [a.terminatedAt],
+  );
   const ended = attempts.flatMap((a) => (a.endedAt === undefined ? [] : [a.endedAt]));
   let gaps = 0;
   for (let i = 1; i < attempts.length; i++) {
