@@ -39,6 +39,7 @@ import {
   type ProjectId,
 } from "@nightshift/contracts";
 import {
+  type Clock,
   createFixtures,
   createSteppingClock,
   createUlidIdGenerator,
@@ -184,7 +185,7 @@ export interface BaseWorld {
   /** Mints a worker's execution token, as the orchestrator's session does (P4). */
   readonly tokens: ExecutionTokenMinter;
   readonly ids: IdGenerator;
-  readonly clock: ReturnType<typeof createSteppingClock>;
+  readonly clock: Clock;
   readonly subject: string;
   /** The authored contract, written to the repository and committed. */
   readonly program: ProgramContract;
@@ -194,6 +195,8 @@ export interface BaseWorld {
 
 export interface BaseWorldOptions {
   readonly program?: Partial<ProgramContract>;
+  /** A clock of the suite's own, for one that must pin an instant. Default: one second a reading. */
+  readonly clock?: Clock;
 }
 
 /**
@@ -220,7 +223,7 @@ export const createBaseWorld = async (options: BaseWorldOptions = {}): Promise<B
   const orgId = ids.next("org");
   await backing.memberships.put(makeMembership(subject as never, orgId));
 
-  const clock = createSteppingClock(START_MS, 1_000);
+  const clock = options.clock ?? createSteppingClock(START_MS, 1_000);
   const plane = await startLocalControlPlane({
     stores: backing,
     principal: { kind: "user", userId: subject as never, activeOrg: orgId },
@@ -363,9 +366,10 @@ export interface WorldOptions extends BaseWorldOptions {
 
 /** A base world with a started, attached run — what the execution tests drive. */
 export const createWorld = async (options: WorldOptions): Promise<World> => {
-  const base = await createBaseWorld(
-    options.program === undefined ? {} : { program: options.program },
-  );
+  const base = await createBaseWorld({
+    ...(options.program === undefined ? {} : { program: options.program }),
+    ...(options.clock === undefined ? {} : { clock: options.clock }),
+  });
   const { repo, stateDir, stores, bodies, ids, clock, program } = base;
 
   if (options.examinationPolicy !== undefined) {
