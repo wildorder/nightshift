@@ -1,0 +1,159 @@
+/**
+ * A stateful stand-in for the feedback and completion routes (P20), and a
+ * repository holding one program, for `rate` and `completion` tests.
+ *
+ * It answers reads from what the test seeded and lets a test decide what each
+ * write is answered with, so the stale, refused and not-found paths can be
+ * produced on demand. Everything else goes to the ordinary fake control plane.
+ */
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { CompletionHistory, ProgramContract, Run, RunFeedback } from "@nightshift/contracts";
+import { createFixtures, type Fixtures, makeProgramContract, makeRun } from "@nightshift/core";
+import type { FetchLike } from "@nightshift/persistence/http";
+import {
+  createFakeControlPlane,
+  createTestEnvironment,
+  DEFAULT_TEST_ORG,
+  type FakeResponse,
+  type RecordedRequest,
+  signIn,
+  TEST_API,
+  TEST_AUTH_DOMAIN,
+  TEST_SUBJECT,
+  type TestEnvironment,
+} from "./harness.js";
+
+export const DEFAULT_ORG = DEFAULT_TEST_ORG;
+export const PROGRAM_DIRECTORY = "p20-fixture";
+
+export interface World {
+  readonly f: Fixtures;
+  readonly created: TestEnvironment;
+  readonly contract: ProgramContract;
+  readonly runs: Run[];
+  readonly feedback: Map<string, RunFeedback>;
+  readonly histories: CompletionHistory[];
+  readonly contracts: ProgramContract[];
+  /** Every write the CLI made, in order, with its body parsed. */
+  readonly puts: { readonly path: string; readonly body: Record<string, unknown> }[];
+  /** What a write is answered with; default echoes it with 201. */
+  answerPut: (request: RecordedRequest) => FakeResponse;
+  cleanup: () => Promise<void>;
+}
+
+export const json = (status: number, body: unknown): FakeResponse => ({
+  status,
+  body: JSON.stringify(body),
+});
+
+export const errorBody = (status: number, code: string, message: string): FakeResponse =>
+  json(status, { error: { code, message } });
+
+export const createWorld = async (): Promise<World> => {
+  const f = createFixtures();
+  const repo = await mkdtemp(join(tmpdir(), "nightshift-p20-"));
+  const directory = join(repo, "docs", "programs", PROGRAM_DIRECTORY);
+  await mkdir(directory, { recursive: true });
+  const contract = makeProgramContract(f);
+  await writeFile(join(directory, "contract.json"), JSON.stringify(contract));
+  await writeFile(join(directory, "plan.md"), "# The plan\n");
+
+  const plane = createFakeControlPlane({
+    apiEndpoint: TEST_API,
+    authDomain: TEST_AUTH_DOMAIN,
+    claims: { sub: TEST_SUBJECT, "custom:active_org": DEFAULT_TEST_ORG },
+  });
+  const runs: Run[] = [];
+  const feedback = new Map<string, RunFeedback>();
+  const histories: CompletionHistory[] = [];
+  const contracts: ProgramContract[] = [contract];
+  const puts: World["puts"] = [];
+  const world: World = {
+    f,
+    created: undefined as unknown as TestEnvironment,
+    contract,
+    runs,
+    feedback,
+    histories,
+    contracts,
+    puts,
+    answerPut: (request) => json(201, JSON.parse(request.body ?? "null")),
+    cleanup: async () => {
+      await world.created.cleanup();
+      await rm(repo, { recursive: true, force: true });
+    },
+  };
+
+  const programRuns = /^\/projects\/[^/]+\/programs\/([^/]+)\/runs$/;
+  const oneRun = /^\/projects\/[^/]+\/programs\/([^/]+)\/runs\/([^/]+)$/;
+  const feedbackOf = /^\/projects\/[^/]+\/programs\/([^/]+)\/runs\/([^/]+)\/feedback$/;
+  const programList = /^\/projects\/[^/]+\/programs$/;
+  const projectHistories = /^\/projects\/[^/]+\/completion-histories$/;
+  const oneHistory = /\/completion-histories\/(comp_[^/]+)$/;
+
+  const fetch: FetchLike = async (url, init) => {
+    const path = new URL(url).pathname;
+    if (url.startsWith(TEST_API)) {
+      const request: RecordedRequest = {
+        url,
+        method: init.method,
+        headers: init.headers,
+        body: init.body,
+      };
+      const page = (items: readonly unknown[]): FakeResponse => json(200, { items });
+      const reply = (response: FakeResponse) => ({
+        status: response.status,
+        text: async () => response.body,
+      });
+      if (init.method === "GET") {
+        let m = feedbackOf.exec(path);
+        if (m) {
+          const found = feedback.get(`${m[1]}/${m[2]}`);
+          return reply(found ? json(200, found) : errorBody(404, "not_found", "no feedback"));
+        }
+        m = oneRun.exec(path);
+        if (m) {
+          const found = runs.find((r) => r.programId === m?.[1] && r.runId === m?.[2]);
+          return reply(found ? json(200, found) : errorBody(404, "not_found", "no run"));
+        }
+        m = programRuns.exec(path);
+        if (m) return reply(page(runs.filter((r) => r.programId === m?.[1])));
+        if (programList.test(path)) return reply(page(contracts));
+        if (projectHistories.test(path)) return reply(page(histories));
+        m = oneHistory.exec(path);
+        if (m) {
+          const found = histories.find((h) => h.completionHistoryId === m?.[1]);
+          return reply(found ? json(200, found) : errorBody(404, "not_found", "no history"));
+        }
+      }
+      if (init.method === "PUT" && (path.endsWith("/feedback") || oneHistory.test(path))) {
+        puts.push({ path, body: JSON.parse(init.body ?? "{}") as Record<string, unknown> });
+        return reply(world.answerPut(request));
+      }
+    }
+    return plane.fetch(url, init);
+  };
+
+  (world as { created: TestEnvironment }).created = await createTestEnvironment({
+    fetch,
+    cwd: repo,
+  });
+  await signIn(world.created.environment);
+  return world;
+};
+
+/** A finished run of the fixture program, or of another program. */
+export const finishedRun = (
+  f: Fixtures,
+  overrides: Record<string, unknown> = {},
+  runId = f.scope.runId,
+): Run =>
+  makeRun(f, {
+    runId,
+    status: "succeeded",
+    startedAt: "2026-09-15T10:00:00.000Z",
+    endedAt: "2026-09-15T11:00:00.000Z",
+    ...overrides,
+  } as never);

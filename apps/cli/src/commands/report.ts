@@ -8,12 +8,11 @@
 
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Run } from "@nightshift/contracts";
 import { gatherReport, renderReport } from "@nightshift/core";
 import type { CliEnvironment } from "../environment.js";
-import { UsageError } from "../failures.js";
 import { readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession } from "../session.js";
+import { findRun } from "./program-run.js";
 import { REPORT_FILE } from "./run-program.js";
 
 export interface ReportOptions {
@@ -30,24 +29,7 @@ export const writeRunReport = async (
   const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment);
   const program = { projectId: files.contract.projectId, programId: files.contract.programId };
-  const runs: Run[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await session.stores.runs.listByProgram(
-      program,
-      cursor === undefined ? {} : { cursor },
-    );
-    runs.push(...page.items);
-    cursor = page.cursor;
-  } while (cursor !== undefined);
-  const run = runs
-    .filter((candidate) => options.run === undefined || candidate.runId === options.run)
-    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
-  if (run === undefined) {
-    throw new UsageError(
-      `no run of \`${options.id}\`${options.run === undefined ? "" : ` named ${options.run}`}`,
-    );
-  }
+  const run = await findRun(session, program, options.id, options.run);
   const report = await gatherReport(session.stores, { ...program, runId: run.runId });
   const path = join(repoPath, files.directory, REPORT_FILE);
   await writeFile(path, renderReport(report));

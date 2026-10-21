@@ -16,6 +16,7 @@
 
 export { openBrowser, openerFor } from "./browser.js";
 export { runCli, USAGE, VERSION } from "./cli.js";
+export { type CompletionOptions, type CompletionVerb, completion } from "./commands/completion.js";
 export {
   type RecordedGatesOptions,
   type RecordGatesOptions,
@@ -56,6 +57,7 @@ export {
 } from "./commands/plan.js";
 export { type PreflightOptions, preflight } from "./commands/preflight.js";
 export { createProject, type ProjectCreateOptions } from "./commands/project-create.js";
+export { type RateAction, type RateOptions, rateRun } from "./commands/rate.js";
 export {
   assertRemoteReady,
   dispatchRun,
