@@ -117,6 +117,8 @@ const seed = async () => {
     measured: {
       measuredTo: verdict2.recordedAt,
       readableMembers: 2,
+      measuredMembers: 0,
+      unmeasuredMembers: 2,
       earliestStart: t("10:00") as never,
       leadTimeSeconds: 2100,
       runCompletionSeconds: 1800,

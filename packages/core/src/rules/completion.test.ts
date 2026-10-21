@@ -117,7 +117,14 @@ describe("buildCompletionHistory", () => {
         membershipVersion: 1,
         recordedBy: ann,
         recordedAt: at(1),
-        measured: { measuredTo: at(1), readableMembers: 1, activeSeconds: 0, recordedAt: at(1) },
+        measured: {
+          measuredTo: at(1),
+          readableMembers: 1,
+          measuredMembers: 0,
+          unmeasuredMembers: 1,
+          activeSeconds: 0,
+          recordedAt: at(1),
+        },
       },
     ]);
   });
@@ -226,6 +233,27 @@ describe("reconcileCompletionWrite", () => {
     expect(reason(() => reconcile(altered, { stored, feedbackOf }))).toBe("checkpoint_immutable");
     const removed = next({ checkpoints: [] });
     expect(reason(() => reconcile(removed, { stored, feedbackOf }))).toBe("checkpoint_immutable");
+  });
+
+  it("refuses a new checkpoint while a member is unavailable, but accepts a membership-only write", () => {
+    const fb = worked(fixRun);
+    const feedbackOf = new Map([[keyOf(fixRun), fb]]);
+    const cp = { name: "done", programId: fixRun.programId, runId: fixRun.runId };
+    const unavailable = new Set([keyOf(anchorRun)]);
+    const proposed = build({ members: [anchorRef, fixRef], checkpoint: cp });
+    expect(reason(() => reconcile(proposed, { feedbackOf, unavailable }))).toBe(
+      "measurement_unavailable",
+    );
+    const stored = reconcile(build({ members: [anchorRef] })).history;
+    const membership = build({
+      stored,
+      completionHistoryId: stored.completionHistoryId,
+      members: [anchorRef, fixRef],
+      at: at(60),
+    });
+    const result = reconcile(membership, { stored, unavailable });
+    expect(result.outcome).toBe("stored");
+    expect(result.history.checkpoints).toEqual([]);
   });
 
   it("returns unchanged when nothing differs, and stores a title change", () => {

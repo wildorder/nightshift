@@ -655,6 +655,8 @@ describe("measuring a checkpoint (D-05)", () => {
         measured: {
           measuredTo: "2020-01-01T00:00:00.000Z",
           readableMembers: 9,
+          measuredMembers: 9,
+          unmeasuredMembers: 0,
           activeSeconds: 1,
           tokens: { input: 999999, inputConventionUnknown: 0 },
           usd: { estimated: 123, reported: 456 },

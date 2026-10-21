@@ -136,6 +136,8 @@ export const buildCompletionHistory = (input: BuildCompletionHistoryInput): Comp
 const placeholderMeasurement = (at: IsoTimestamp, members: number): CompletionMeasurement => ({
   measuredTo: at,
   readableMembers: members,
+  measuredMembers: 0,
+  unmeasuredMembers: members,
   activeSeconds: 0,
   recordedAt: at,
 });
@@ -157,6 +159,11 @@ export interface ReconcileCompletionInput {
   /** Model figures per member run, keyed likewise; absent figures are absent, not zero. */
   readonly resources?: ReadonlyMap<string, ResourceTotals>;
   readonly infrastructure?: ReadonlyMap<string, InfrastructureReport>;
+  /**
+   * Members whose measurement read failed, keyed likewise. A new checkpoint is
+   * refused while any current member is in it, so an incomplete one is never frozen.
+   */
+  readonly unavailable?: ReadonlySet<string>;
 }
 
 const sameMembers = (
@@ -207,6 +214,7 @@ export const reconcileCompletionWrite = (
   input: ReconcileCompletionInput,
 ): CompletionWriteOutcome => {
   const { stored, proposed, actor, at, memberRuns, feedbackOf, resources, infrastructure } = input;
+  const { unavailable } = input;
   const scope: RunScope = {
     projectId: stored?.projectId ?? proposed.projectId,
     programId: stored?.programId ?? proposed.programId,
@@ -255,6 +263,9 @@ export const reconcileCompletionWrite = (
     if (feedback === undefined || feedback.verdict !== "worked") {
       throw new CompletionMembershipError(wanted, "checkpoint_not_positive");
     }
+    const missing = proposed.members.find((m) => unavailable?.has(keyOf(m)));
+    if (missing !== undefined)
+      throw new CompletionMembershipError(missing, "measurement_unavailable");
     snapshots.push({
       name: wanted.name,
       programId: wanted.programId,

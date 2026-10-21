@@ -54,7 +54,14 @@ export interface CompletionFigures {
   readonly runCompletionSeconds?: number;
   /** Seconds covered by at least one member's run interval; open runs run to `asOf`. */
   readonly activeSeconds: number;
+  /** Absent, not zero, when no member contributed resource evidence. */
   readonly resources?: CompletionResources;
+  /** Readable members whose resource evidence is in `resources`. */
+  readonly measuredMembers: number;
+  /** Readable members with no resource evidence: unavailable or genuinely unmeasured. */
+  readonly unmeasuredMembers: number;
+  /** The current view only: members whose measurement read failed, `${programId}/${runId}`. */
+  readonly unavailable?: readonly string[];
   /** Machine dollars of the members' infrastructure reports, summed. */
   readonly infrastructure?: { readonly usd: number; readonly members: number };
   readonly membershipVersion: number;
@@ -85,6 +92,8 @@ export interface CompletionInput {
   readonly feedback: ReadonlyMap<string, RunFeedback>;
   readonly resources?: ReadonlyMap<string, ResourceTotals>;
   readonly infrastructure?: ReadonlyMap<string, InfrastructureReport>;
+  /** Members whose measurement read failed, keyed `${programId}/${runId}` with the reason. */
+  readonly unavailable?: ReadonlyMap<string, string>;
   readonly asOf: string;
 }
 
@@ -155,6 +164,20 @@ const sumTotals = (items: readonly ResourceTotals[]): ResourceTotals => {
   };
 };
 
+/** A member's totals carry evidence when they cover at least one attempt. */
+const hasEvidence = (totals: ResourceTotals): boolean =>
+  Object.values(totals.coverage).some((n) => n > 0);
+
+/** The members of `keys` that contributed resource evidence, in order. */
+const measuredOf = (
+  keys: readonly string[],
+  resources: ReadonlyMap<string, ResourceTotals> | undefined,
+): ResourceTotals[] =>
+  keys.flatMap((k) => {
+    const found = resources?.get(k);
+    return found === undefined || !hasEvidence(found) ? [] : [found];
+  });
+
 const verdictOf = (feedback: RunFeedback | undefined): CompletionMemberReport["verdict"] =>
   feedback?.verdict ?? "not_rated";
 
@@ -199,12 +222,17 @@ export const measureCompletion = (
           const found = map.get(m.key);
           return found === undefined ? [] : [found];
         });
-  const resources =
-    input.resources === undefined ? undefined : sumResources(present(input.resources));
+  const measured = measuredOf(
+    readable.map((m) => m.key),
+    input.resources,
+  );
+  const resources = measured.length === 0 ? undefined : sumResources(measured);
   const machines = input.infrastructure === undefined ? undefined : present(input.infrastructure);
   return {
     measuredTo: input.boundary,
     readableMembers: readable.length,
+    measuredMembers: measured.length,
+    unmeasuredMembers: readable.length - measured.length,
     ...(earliest === undefined
       ? {}
       : {
@@ -260,13 +288,9 @@ const figuresOf = (
   const keys = [...new Set(members.map(keyOf))];
   const resources = input.resources;
   const infrastructure = input.infrastructure;
-  const totals =
-    resources === undefined
-      ? []
-      : keys.flatMap((k) => {
-          const found = resources.get(k);
-          return found === undefined ? [] : [found];
-        });
+  const readableKeys = [...new Set(readable.map((m) => keyOf(m.ref)))];
+  const totals = measuredOf(readableKeys, resources);
+  const unavailable = readableKeys.filter((k) => input.unavailable?.has(k)).sort();
   const machines =
     infrastructure === undefined
       ? []
@@ -288,7 +312,10 @@ const figuresOf = (
         to: m.run.endedAt === undefined ? asOf : ms(m.run.endedAt),
       })),
     ),
-    ...(resources === undefined ? {} : { resources: sumResources(totals) }),
+    ...(totals.length === 0 ? {} : { resources: sumResources(totals) }),
+    measuredMembers: totals.length,
+    unmeasuredMembers: readableKeys.length - totals.length,
+    ...(unavailable.length === 0 ? {} : { unavailable }),
     ...(infrastructure === undefined
       ? {}
       : {
@@ -311,6 +338,8 @@ const checkpointFiguresOf = (c: CompletionCheckpoint): CompletionFigures => {
       ? {}
       : { runCompletionSeconds: m.runCompletionSeconds }),
     activeSeconds: m.activeSeconds,
+    measuredMembers: m.measuredMembers,
+    unmeasuredMembers: m.unmeasuredMembers,
     ...(m.tokens === undefined || m.usd === undefined || m.coverage === undefined
       ? {}
       : {

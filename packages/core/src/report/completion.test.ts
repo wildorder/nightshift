@@ -119,6 +119,8 @@ describe("completionOf", () => {
       acceptedRun: { programId: fix.programId, runId: fix.runId },
       runCompletionSeconds: 200,
       activeSeconds: 150,
+      measuredMembers: 0,
+      unmeasuredMembers: 2,
       membershipVersion: 1,
     });
     expect(report.checkpoints).toEqual([]);
@@ -229,6 +231,8 @@ describe("completionOf", () => {
         acceptedRun: { programId: fix.programId, runId: fix.runId },
         runCompletionSeconds: 200,
         activeSeconds: 150,
+        measuredMembers: 0,
+        unmeasuredMembers: 2,
         membershipVersion: 1,
       },
     ]);
@@ -336,6 +340,66 @@ describe("completionOf", () => {
       expect(measured.activeSeconds).toBe(3600);
       expect(measured.tokens?.input).toBe(150);
       expect(measured.runCompletionSeconds).toBe(3600);
+    });
+
+    const emptyTotals = (): ResourceTotals => ({
+      tokens: { inputConventionUnknown: 0 },
+      usd: { estimated: 0, reported: 0 },
+      unpriced: 0,
+      coverage: { complete: 0, partial: 0, unknown: 0, legacy: 0, missing: 0 },
+      tokenCoverage: "complete",
+    });
+    const measure = (res: Map<string, ResourceTotals> | undefined) =>
+      measureCompletion({
+        members: both,
+        runs: open1,
+        feedback: fb,
+        ...(res === undefined ? {} : { resources: res }),
+        accepted: { ref: refOf(anchor1, "anchor"), verdictAt: at(hour) },
+        boundary: at(hour),
+      });
+
+    it("sums only members with evidence and counts the rest as unmeasured", () => {
+      const measured = measure(
+        new Map([
+          [keyOf(anchor1), totals(100, 1)],
+          [keyOf(open), emptyTotals()],
+        ]),
+      );
+      expect(measured.measuredMembers).toBe(1);
+      expect(measured.unmeasuredMembers).toBe(1);
+      expect(measured.usd).toEqual({ estimated: 0, reported: 1 });
+      expect(measured.tokens?.input).toBe(100);
+      const onlyEmpty = measure(new Map([[keyOf(anchor1), totals(100, 1)]]));
+      expect(onlyEmpty.measuredMembers).toBe(1);
+      expect(onlyEmpty.unmeasuredMembers).toBe(1);
+    });
+
+    it("leaves usd, tokens and coverage absent when no member has evidence", () => {
+      for (const res of [undefined, new Map<string, ResourceTotals>()]) {
+        const measured = measure(res);
+        expect(measured.measuredMembers).toBe(0);
+        expect(measured.unmeasuredMembers).toBe(2);
+        expect(measured.usd).toBeUndefined();
+        expect(measured.tokens).toBeUndefined();
+        expect(measured.coverage).toBeUndefined();
+      }
+    });
+
+    it("names the unavailable members in the current view only", () => {
+      const history = stored();
+      const report = completionOf({
+        history,
+        runs: open1,
+        feedback: fb,
+        resources: new Map([[keyOf(anchor1), totals(100, 1)]]),
+        unavailable: new Map([[keyOf(open), "boom"]]),
+        asOf: at(hour),
+      });
+      expect(report.current.measuredMembers).toBe(1);
+      expect(report.current.unmeasuredMembers).toBe(1);
+      expect(report.current.unavailable).toEqual([keyOf(open)]);
+      expect(report.checkpoints[0]?.unavailable).toBeUndefined();
     });
   });
 });

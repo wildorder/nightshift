@@ -196,6 +196,7 @@ export class StaleWriteError extends DomainError {
 }
 
 export type CompletionMembershipReason =
+  | "measurement_unavailable"
   | "unknown_run"
   | "anchor_mismatch"
   | "duplicate"

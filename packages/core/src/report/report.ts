@@ -838,7 +838,12 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
 interface MemberFigures {
   readonly resources?: ResourceTotals;
   readonly infrastructure?: InfrastructureReport;
+  /** Why a read the model figures need failed; the figures are then absent, not zero. */
+  readonly unavailable?: string;
 }
+
+const reasonOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 const resourcesOfRoutes = (
   routes: readonly RoutingDecision[],
@@ -850,20 +855,20 @@ const nodeRecordsOf = async (
   stores: ProjectStores,
   scope: RunScope,
   nodes: readonly ExecutionNode[] | undefined,
-): Promise<{ agents?: Agent[]; routes?: RoutingDecision[] }> => {
+): Promise<{ agents?: Agent[]; routes?: RoutingDecision[]; failure?: string }> => {
   if (nodes === undefined) return {};
   const agents: Agent[] = [];
   const routes: RoutingDecision[] = [];
   for (const node of nodes) {
     const nodeAgents = await (async () =>
-      stores.agents.listByNode(scope, node.executionNodeId))().catch(() => undefined);
-    if (nodeAgents === undefined) return {};
-    agents.push(...nodeAgents);
+      stores.agents.listByNode(scope, node.executionNodeId))().catch((e: unknown) => e);
+    if (!Array.isArray(nodeAgents)) return { failure: `agents: ${reasonOf(nodeAgents)}` };
+    agents.push(...(nodeAgents as Agent[]));
     if (node.parentNodeId === null) continue;
     const nodeRoutes = await (async () =>
-      stores.routingDecisions.listByNode(scope, node.executionNodeId))().catch(() => undefined);
-    if (nodeRoutes === undefined) return {};
-    routes.push(...nodeRoutes);
+      stores.routingDecisions.listByNode(scope, node.executionNodeId))().catch((e: unknown) => e);
+    if (!Array.isArray(nodeRoutes)) return { failure: `routes: ${reasonOf(nodeRoutes)}` };
+    routes.push(...(nodeRoutes as RoutingDecision[]));
   }
   return { agents, routes };
 };
@@ -879,19 +884,27 @@ const memberFiguresOf = async (
   run: Run,
   asOf: IsoTimestamp,
 ): Promise<MemberFigures> => {
+  const failures: string[] = [];
   const nodes = await (async () =>
     readAll<ExecutionNode>((page) => stores.executionNodes.listByRun(scope, page)))().catch(
-    () => undefined,
+    (e: unknown) => {
+      failures.push(`nodes: ${reasonOf(e)}`);
+      return undefined;
+    },
   );
   const measurements = await (async () =>
     readAll<MeasurementSummary>((page) => stores.measurements.listByRun(scope, page)))().catch(
-    () => undefined,
+    (e: unknown) => {
+      failures.push(`measurements: ${reasonOf(e)}`);
+      return undefined;
+    },
   );
   const dispatch = await (async () => stores.dispatches.get(scope))().catch(() => undefined);
   const utilization = await (async () => stores.computeUtilizations.get(scope))().catch(
     () => undefined,
   );
-  const { agents, routes } = await nodeRecordsOf(stores, scope, nodes);
+  const { agents, routes, failure } = await nodeRecordsOf(stores, scope, nodes);
+  if (failure !== undefined) failures.push(failure);
   const infrastructure =
     agents === undefined
       ? undefined
@@ -907,6 +920,7 @@ const memberFiguresOf = async (
       ? {}
       : { resources: resourcesOfRoutes(routes, measurements) }),
     ...(infrastructure === undefined ? {} : { infrastructure }),
+    ...(failures.length === 0 ? {} : { unavailable: failures.join("; ") }),
   };
 };
 
@@ -925,9 +939,12 @@ export const gatherMemberFigures = async (
 ): Promise<{
   resources: Map<string, ResourceTotals>;
   infrastructure: Map<string, InfrastructureReport>;
+  /** Members whose nodes, routes, measurements or agents read failed, with the reason. */
+  unavailable: Map<string, string>;
 }> => {
   const resources = new Map<string, ResourceTotals>();
   const infrastructure = new Map<string, InfrastructureReport>();
+  const unavailable = new Map<string, string>();
   const done = new Set<string>();
   for (const member of members) {
     const key = `${member.programId}/${member.runId}`;
@@ -942,8 +959,9 @@ export const gatherMemberFigures = async (
     );
     if (figures.resources !== undefined) resources.set(key, figures.resources);
     if (figures.infrastructure !== undefined) infrastructure.set(key, figures.infrastructure);
+    if (figures.unavailable !== undefined) unavailable.set(key, figures.unavailable);
   }
-  return { resources, infrastructure };
+  return { resources, infrastructure, unavailable };
 };
 
 /**
@@ -974,6 +992,7 @@ const feedbackSectionsOf = async (
   const feedback = new Map<string, RunFeedback>();
   const resources = new Map<string, ResourceTotals>();
   const infrastructure = new Map<string, InfrastructureReport>();
+  const unavailable = new Map<string, string>();
   const self = `${scope.programId}/${scope.runId}`;
   // A checkpoint is reported from its stored measurement, so only current
   // members are gathered; each run is read once across histories.
@@ -991,12 +1010,13 @@ const feedbackSectionsOf = async (
       member === self ? current : await memberFiguresOf(stores, memberScope, found, asOf);
     if (figures.resources !== undefined) resources.set(member, figures.resources);
     if (figures.infrastructure !== undefined) infrastructure.set(member, figures.infrastructure);
+    if (figures.unavailable !== undefined) unavailable.set(member, figures.unavailable);
   }
   return {
     feedback: runFeedbackOf(run, own),
     feedbackCoverage: feedbackCoverageOf(programRuns, programFeedback),
     completions: mine.map((history) =>
-      completionOf({ history, runs, feedback, resources, infrastructure, asOf }),
+      completionOf({ history, runs, feedback, resources, infrastructure, unavailable, asOf }),
     ),
   };
 };
@@ -1860,9 +1880,21 @@ const renderCompletionResources = (f: CompletionReport["current"]): string[] => 
   const dollars = (value: number | undefined): string =>
     attempts === 0 ? NOT_OBSERVED : usd(value);
   const machines = f.infrastructure;
+  const total = f.measuredMembers + f.unmeasuredMembers;
   return [
+    ...(f.unmeasuredMembers === 0
+      ? []
+      : [
+          `measured ${f.measuredMembers} of ${total} members${
+            f.unavailable === undefined || f.unavailable.length === 0
+              ? ""
+              : `; measurement unavailable for ${f.unavailable.join(", ")}`
+          }`,
+        ]),
     `tokens in ${figure(r?.tokens.input)}, out ${figure(r?.tokens.output)}`,
-    `estimated ${dollars(r?.usd.estimated)}, reported ${dollars(r?.usd.reported)} (separate figures)`,
+    r === undefined || attempts === 0
+      ? "dollars not observed"
+      : `estimated ${dollars(r.usd.estimated)}, reported ${dollars(r.usd.reported)} (separate figures)`,
     `infrastructure ${machines === undefined || machines.members === 0 ? NOT_OBSERVED : `${usd(machines.usd)} over ${machines.members} member run(s)`}`,
     ...(c === undefined || attempts === 0
       ? []

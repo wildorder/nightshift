@@ -253,6 +253,8 @@ describe("DynamoDB adapter specifics", () => {
       const measured = {
         measuredTo: "2026-01-01T00:00:00.000Z",
         readableMembers: MAX_COMPLETION_MEMBERS,
+        measuredMembers: MAX_COMPLETION_MEMBERS,
+        unmeasuredMembers: 0,
         earliestStart: "2026-01-01T00:00:00.000Z",
         leadTimeSeconds: 123456.789,
         runCompletionSeconds: 123456.789,

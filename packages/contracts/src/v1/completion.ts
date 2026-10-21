@@ -44,40 +44,64 @@ const nonNegative = z.number().min(0);
  * `measuredTo`, runs still open end there, and runs started after it
  * contribute nothing. Tokens and dollars are the totals observed when the
  * checkpoint was recorded, because measurement summaries carry no time slices.
- * Nothing later rewrites any of it.
+ * Nothing later rewrites any of it. `usd`, `tokens` and `coverage` are absent when
+ * no member contributed evidence, never zero.
  */
-export const CompletionMeasurementSchema = z.strictObject({
-  /** The boundary: the verdict's recordedAt. */
-  measuredTo: IsoTimestampSchema,
-  readableMembers: nonNegativeInt,
-  earliestStart: IsoTimestampSchema.optional(),
-  leadTimeSeconds: nonNegative.optional(),
-  runCompletionSeconds: nonNegative.optional(),
-  activeSeconds: nonNegative,
-  tokens: z
-    .strictObject({
-      input: nonNegativeInt.optional(),
-      output: nonNegativeInt.optional(),
-      cacheRead: nonNegativeInt.optional(),
-      cacheWrite: nonNegativeInt.optional(),
-      reasoning: nonNegativeInt.optional(),
-      inputConventionUnknown: nonNegativeInt,
-    })
-    .optional(),
-  usd: z.strictObject({ estimated: nonNegative, reported: nonNegative }).optional(),
-  coverage: z
-    .strictObject({
-      complete: nonNegativeInt,
-      partial: nonNegativeInt,
-      unknown: nonNegativeInt,
-      legacy: nonNegativeInt,
-      missing: nonNegativeInt,
-    })
-    .optional(),
-  infrastructure: z.strictObject({ usd: nonNegative, members: nonNegativeInt }).optional(),
-  /** When the server measured it. */
-  recordedAt: IsoTimestampSchema,
-});
+export const CompletionMeasurementSchema = z
+  .strictObject({
+    /** The boundary: the verdict's recordedAt. */
+    measuredTo: IsoTimestampSchema,
+    readableMembers: nonNegativeInt,
+    /** Readable members that contributed resource evidence to `tokens`, `usd` and `coverage`. */
+    measuredMembers: nonNegativeInt,
+    /** Readable members with no resource evidence, whether unavailable or genuinely unmeasured. */
+    unmeasuredMembers: nonNegativeInt,
+    earliestStart: IsoTimestampSchema.optional(),
+    leadTimeSeconds: nonNegative.optional(),
+    runCompletionSeconds: nonNegative.optional(),
+    activeSeconds: nonNegative,
+    tokens: z
+      .strictObject({
+        input: nonNegativeInt.optional(),
+        output: nonNegativeInt.optional(),
+        cacheRead: nonNegativeInt.optional(),
+        cacheWrite: nonNegativeInt.optional(),
+        reasoning: nonNegativeInt.optional(),
+        inputConventionUnknown: nonNegativeInt,
+      })
+      .optional(),
+    usd: z.strictObject({ estimated: nonNegative, reported: nonNegative }).optional(),
+    coverage: z
+      .strictObject({
+        complete: nonNegativeInt,
+        partial: nonNegativeInt,
+        unknown: nonNegativeInt,
+        legacy: nonNegativeInt,
+        missing: nonNegativeInt,
+      })
+      .optional(),
+    infrastructure: z.strictObject({ usd: nonNegative, members: nonNegativeInt }).optional(),
+    /** When the server measured it. */
+    recordedAt: IsoTimestampSchema,
+  })
+  .superRefine((value, ctx) => {
+    if (value.measuredMembers + value.unmeasuredMembers !== value.readableMembers) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["unmeasuredMembers"],
+        message: "measuredMembers and unmeasuredMembers must add up to readableMembers",
+      });
+    }
+    if (
+      value.measuredMembers === 0 &&
+      (value.usd !== undefined || value.tokens !== undefined || value.coverage !== undefined)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "usd, tokens and coverage are absent, not zero, when no member was measured",
+      });
+    }
+  });
 export type CompletionMeasurement = z.infer<typeof CompletionMeasurementSchema>;
 
 export const CompletionCheckpointSchema = z.strictObject({

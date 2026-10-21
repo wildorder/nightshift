@@ -333,6 +333,58 @@ describe("the Completion section's model and machine figures", () => {
     expect(calls.get(`measurements:${w.a.scope.runId}`)).toBe(1);
   });
 
+  it("reports a failed measurement read as unavailable and keeps a member without summaries present", async () => {
+    const w = world();
+    const { stores } = storesFor(w, ["measurements:" + w.b.scope.runId]);
+    const runs = new Map([w.a, w.b].map((r) => [`${r.scope.programId}/${r.scope.runId}`, r.run]));
+    const refs = [w.a, w.b].map((r) => ({ programId: r.scope.programId, runId: r.scope.runId }));
+    const figures = await gatherMemberFigures(
+      stores as unknown as ProjectStores,
+      w.f.scope.projectId,
+      refs,
+      runs,
+      at(2000),
+    );
+    const keyA = `${w.a.scope.programId}/${w.a.scope.runId}`;
+    const keyB = `${w.b.scope.programId}/${w.b.scope.runId}`;
+    expect([...figures.unavailable.keys()]).toEqual([keyB]);
+    expect(figures.unavailable.get(keyB)).toContain("refused");
+    expect(figures.resources.has(keyB)).toBe(false);
+    expect(figures.resources.has(keyA)).toBe(true);
+    expect(figures.unavailable.has(keyA)).toBe(false);
+  });
+
+  it("keeps a member with no routing decisions or summaries as an empty present entry", async () => {
+    const w = world();
+    w.a.route.executionNodeId = "node_none" as never;
+    const { stores } = storesFor(w);
+    const runs = new Map([[`${w.a.scope.programId}/${w.a.scope.runId}`, w.a.run]]);
+    const figures = await gatherMemberFigures(
+      stores as unknown as ProjectStores,
+      w.f.scope.projectId,
+      [{ programId: w.a.scope.programId, runId: w.a.scope.runId }],
+      runs,
+      at(2000),
+    );
+    const entry = figures.resources.get(`${w.a.scope.programId}/${w.a.scope.runId}`);
+    expect(entry?.coverage).toEqual({ complete: 0, partial: 0, unknown: 0, legacy: 0, missing: 0 });
+    expect(figures.unavailable.size).toBe(0);
+  });
+
+  it("renders missing dollar evidence as not observed with member counts, never $0.00", async () => {
+    const w = world();
+    w.a.route.executionNodeId = "node_none" as never;
+    const { stores } = storesFor(w, ["measurements:" + w.b.scope.runId], () => [
+      w.history("U", w.a, w.b),
+    ]);
+    const text = renderReport(await gatherReport(stores, w.f.scope));
+    expect(text).toContain("dollars not observed");
+    const section = text.slice(text.indexOf("## Completion")).split("\n## Review")[0] ?? "";
+    expect(section).not.toContain("estimated $0.00");
+    expect(text).toContain("measured 0 of 2 members");
+    expect(text).toContain(`measurement unavailable for ${w.b.scope.programId}/${w.b.scope.runId}`);
+  });
+
   it("prints a present zero dollar total as $0.00 rather than not observed", async () => {
     const w = world();
     w.a.route.usage = { inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0 };

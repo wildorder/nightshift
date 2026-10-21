@@ -533,6 +533,8 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
         measured: {
           measuredTo: AT,
           readableMembers: 1,
+          measuredMembers: 0,
+          unmeasuredMembers: 1,
           earliestStart: AT,
           leadTimeSeconds: 0,
           activeSeconds: 0,

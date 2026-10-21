@@ -66,6 +66,8 @@ export const errorBody = (status: number, code: string, message: string): FakeRe
 export const FAKE_MEASURED: CompletionMeasurement = {
   measuredTo: "2026-09-15T12:00:00.000Z" as IsoTimestamp,
   readableMembers: 2,
+  measuredMembers: 2,
+  unmeasuredMembers: 0,
   earliestStart: "2026-09-15T08:00:00.000Z" as IsoTimestamp,
   leadTimeSeconds: 14_400,
   runCompletionSeconds: 10_800,
