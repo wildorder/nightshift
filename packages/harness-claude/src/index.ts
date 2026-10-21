@@ -64,6 +64,25 @@ export {
   gitWriteDenials,
 } from "./permissions.js";
 export {
+  buildClaudeProbeEvidence,
+  CLAUDE_CAPTURE_KEEP_ENV,
+  CLAUDE_CAPTURE_PROBE_ENV,
+  CLAUDE_PROBE_DIMENSIONS,
+  type ClaudeCaptureProbeGate,
+  type ClaudeProbeDimension,
+  type ClaudeProbeEvidence,
+  type ClaudeProbeEvidenceInput,
+  type ClaudeProbeRun,
+  type ClaudeProbeRunOptions,
+  claudeCaptureProbeGate,
+  claudeProbeObjective,
+  claudeProbeUnverifiedReason,
+  PROBE_IDENTIFIER_KEYS,
+  PROBE_TEXT_KEYS,
+  runClaudeProbeDimension,
+  sanitizeClaudeProbeJournal,
+} from "./probe.js";
+export {
   type AdapterFileSystem,
   type ChildOutputStream,
   killProcessTree,
