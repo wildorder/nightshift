@@ -5,7 +5,7 @@
  * was; the run's status and the live indicator are on every tab.
  */
 import type { Artifact, Checkpoint, ExecutionNode, Run } from "@nightshift/contracts";
-import { type RunReport, type RunScope, storyStatuses } from "@nightshift/core";
+import { isRunTerminal, type RunReport, type RunScope, storyStatuses } from "@nightshift/core";
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Radio } from "lucide-react";
@@ -37,6 +37,7 @@ import {
   Usage,
   useRunScope,
 } from "../components/run/parts.js";
+import { RunVerdict } from "../components/run/verdict.js";
 import { StatusBadge } from "../components/status-badge.js";
 import { StoryCard, StoryLines } from "../components/stories.js";
 import { between, shortId, shortSha, when } from "../lib/format.js";
@@ -85,12 +86,19 @@ const StatusTab = ({
   report,
   status,
   scope,
+  run,
 }: {
+  readonly run: Run;
   readonly report: RunReport;
   readonly status: Parameters<typeof ProgramStatusSummary>[0]["status"];
   readonly scope: RunScope;
 }) => (
   <div className="grid gap-4">
+    {isRunTerminal(run.status) ? (
+      <Panel title="Did it work?">
+        <RunVerdict scope={scope} run={run} />
+      </Panel>
+    ) : null}
     <Panel title="Program status">
       <div className="grid gap-4">
         {(report.program.stories ?? []).length === 0 ? null : (
@@ -366,7 +374,7 @@ export const RunPage = () => {
           {report === undefined || runStatus.data === undefined ? (
             <p className="text-muted-foreground">Building the report…</p>
           ) : (
-            <StatusTab report={report} status={runStatus.data.status} scope={scope} />
+            <StatusTab run={r} report={report} status={runStatus.data.status} scope={scope} />
           )}
         </TabsContent>
 
