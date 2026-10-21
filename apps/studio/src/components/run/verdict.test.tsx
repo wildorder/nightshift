@@ -35,7 +35,7 @@ describe("the run verdict", () => {
     expect((await worked()).getAttribute("aria-pressed")).toBe("false");
     expect((await didNot()).getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByText("Not rated")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Did it work?" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Human acceptance" })).toBeTruthy();
   });
 
   it("saves, changes and clears the verdict, keeping every revision", async () => {
@@ -82,9 +82,9 @@ describe("the run verdict", () => {
 
   it("is not rendered for a running run", async () => {
     await mountStudio(seedRun("running"), { at: runPathOf });
-    await screen.findByRole("heading", { name: "Program status" });
+    await screen.findByRole("group", { name: "Human acceptance" });
     expect(screen.queryByRole("button", { name: "Worked" })).toBeNull();
-    expect(screen.queryByText("Did it work?")).toBeNull();
+    expect(screen.getByText("Not rated")).toBeTruthy();
   });
 
   it("saves from the keyboard", async () => {

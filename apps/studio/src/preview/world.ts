@@ -379,8 +379,9 @@ export const attemptOf = async (w: World, spec: AttemptSpec): Promise<Attempt> =
     coverage,
     gaps,
     ledger: {
-      chunks: 0,
-      artifactIds: [],
+      chunks: 1,
+      // A request-evidence artifact the fixture never stores: the overview only links it.
+      artifactIds: [`art_9${spec.agent.agentId.slice(-25)}`],
       observationCount: requests + 1,
       publishedCount: open ? requests : requests + 1,
     },

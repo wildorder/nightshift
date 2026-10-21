@@ -4,6 +4,7 @@
  */
 import { AGGREGATE_EXAMPLES, type GateHealth, GateHealthSchema } from "@nightshift/contracts";
 import {
+  type Fixtures,
   makeDecision,
   makeEvent,
   makeJobContract,
@@ -110,7 +111,7 @@ describe("the run page's gate health", () => {
           }),
         );
       },
-      { at: runPathOf },
+      { at: (f: Fixtures) => `${runPathOf(f)}?tab=status` },
     );
 
     const card = await gateCard();
@@ -143,7 +144,7 @@ describe("the run page's gate health", () => {
         await stores.runs.put(makeRun(f, { status: "succeeded" }));
         await stores.executionNodes.put(makeRootNode(f, { status: "succeeded" }));
       },
-      { at: runPathOf },
+      { at: (f: Fixtures) => `${runPathOf(f)}?tab=status` },
     );
     const card = await gateCard();
     expect(

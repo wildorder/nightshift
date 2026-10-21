@@ -41,7 +41,7 @@ const isEmpty = ({
  * Where the verification time went (P17, D-P17-07): each step's runs and total
  * by phase, the forecast's one run beside it, and what would save time.
  */
-const VerificationTime = ({ time }: { readonly time: VerificationTimeReport }) => {
+export const VerificationTime = ({ time }: { readonly time: VerificationTimeReport }) => {
   if (time.verifications === 0) return null;
   const forecast = time.forecast;
   return (

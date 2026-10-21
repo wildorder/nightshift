@@ -5,11 +5,11 @@
  * was; the run's status and the live indicator are on every tab.
  */
 import type { Artifact, Checkpoint, ExecutionNode, Run } from "@nightshift/contracts";
-import { isRunTerminal, type RunReport, type RunScope, storyStatuses } from "@nightshift/core";
+import { type RunReport, type RunScope, storyStatuses } from "@nightshift/core";
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Radio } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense } from "react";
 import { useSearchParams } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -28,6 +28,11 @@ import { ProgramStatusSummary } from "../components/program-status.js";
 import { GateHealthView } from "../components/run/gate-health.js";
 import { NodeDetail } from "../components/run/node-detail.js";
 import {
+  OverviewError,
+  OverviewSkeleton,
+  OverviewTab,
+} from "../components/run/overview/overview-tab.js";
+import {
   ArtifactLink,
   DecisionRow,
   firstLine,
@@ -37,11 +42,10 @@ import {
   Usage,
   useRunScope,
 } from "../components/run/parts.js";
-import { RunVerdict } from "../components/run/verdict.js";
 import { StatusBadge } from "../components/status-badge.js";
 import { StoryCard, StoryLines } from "../components/stories.js";
 import { between, shortId, shortSha, when } from "../lib/format.js";
-import { useLiveEvents } from "../lib/live.js";
+import { LIVE_STATUSES, useLiveEvents } from "../lib/live.js";
 import { narrate } from "../lib/narrate.js";
 import { readAll } from "../lib/read-all.js";
 import { useRunStatus } from "../lib/run-status.js";
@@ -55,6 +59,7 @@ const RunGraph = lazy(() =>
 );
 
 export const RUN_TABS = [
+  "overview",
   "status",
   "why",
   "graph",
@@ -86,19 +91,12 @@ const StatusTab = ({
   report,
   status,
   scope,
-  run,
 }: {
-  readonly run: Run;
   readonly report: RunReport;
   readonly status: Parameters<typeof ProgramStatusSummary>[0]["status"];
   readonly scope: RunScope;
 }) => (
   <div className="grid gap-4">
-    {isRunTerminal(run.status) ? (
-      <Panel title="Did it work?">
-        <RunVerdict scope={scope} run={run} />
-      </Panel>
-    ) : null}
     <Panel title="Program status">
       <div className="grid gap-4">
         {(report.program.stories ?? []).length === 0 ? null : (
@@ -273,8 +271,14 @@ export const RunPage = () => {
   const [params, setParams] = useSearchParams();
   const tab: RunTab = RUN_TABS.includes(params.get("tab") as RunTab)
     ? (params.get("tab") as RunTab)
-    : "status";
-  const [openNode, setOpenNode] = useState<string | undefined>(undefined);
+    : "overview";
+  const openNode = params.get("node") ?? undefined;
+  const setOpenNode = (next: string | undefined) => {
+    const copy = new URLSearchParams(params);
+    if (next === undefined) copy.delete("node");
+    else copy.set("node", next);
+    setParams(copy, { replace: true });
+  };
 
   const run = useQuery({
     queryKey: ["run", scope.runId],
@@ -317,6 +321,16 @@ export const RunPage = () => {
   );
   const jobOf = new Map((jobs.data ?? []).map((job) => [job.jobContractId as string, job]));
   const nodeOf = new Map((nodes.data ?? []).map((node) => [node.executionNodeId as string, node]));
+  const nodeLabels = new Map(
+    (nodes.data ?? []).map((node) => [
+      node.executionNodeId as string,
+      node.jobContractId === null
+        ? node.kind === "program"
+          ? "program root"
+          : `${node.kind} ${shortId(node.executionNodeId)}`
+        : (titles.get(node.jobContractId) ?? `job ${shortId(node.executionNodeId)}`),
+    ]),
+  );
   const opened = openNode === undefined ? undefined : nodeOf.get(openNode);
   const setTab = (next: string) => {
     const copy = new URLSearchParams(params);
@@ -355,12 +369,13 @@ export const RunPage = () => {
           </>
         }
       />
-      {runStatus.isError ? (
+      {runStatus.isError && report !== undefined ? (
         <p role="alert">Could not build the report: {String(runStatus.error)}</p>
       ) : null}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="status">Status</TabsTrigger>
           <TabsTrigger value="why">Why</TabsTrigger>
           <TabsTrigger value="graph">Graph</TabsTrigger>
@@ -370,11 +385,30 @@ export const RunPage = () => {
           <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
         </TabsList>
 
+        <TabsContent value="overview" className="mt-4">
+          {report === undefined ? (
+            runStatus.isError ? (
+              <OverviewError error={runStatus.error} onRetry={() => void runStatus.refetch()} />
+            ) : (
+              <OverviewSkeleton />
+            )
+          ) : (
+            <OverviewTab
+              run={r}
+              report={report}
+              scope={scope}
+              nodeLabels={nodeLabels}
+              live={LIVE_STATUSES.has(r.status)}
+              pollMs={pollMs ?? DEFAULT_POLL_MS}
+            />
+          )}
+        </TabsContent>
+
         <TabsContent value="status" className="mt-4">
           {report === undefined || runStatus.data === undefined ? (
             <p className="text-muted-foreground">Building the report…</p>
           ) : (
-            <StatusTab run={r} report={report} status={runStatus.data.status} scope={scope} />
+            <StatusTab report={report} status={runStatus.data.status} scope={scope} />
           )}
         </TabsContent>
 

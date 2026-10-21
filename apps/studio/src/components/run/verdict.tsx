@@ -12,7 +12,7 @@ import type {
 } from "@nightshift/contracts";
 import { buildRunFeedback, isRunTerminal, type RunScope, StaleWriteError } from "@nightshift/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ThumbsDown, ThumbsUp } from "lucide-react";
+import { CircleCheck, CircleHelp, CircleX, ThumbsDown, ThumbsUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { shortSha, when } from "../../lib/format.js";
 import { useStudio } from "../../studio.js";
@@ -25,6 +25,26 @@ const STATE_TEXT: Readonly<Record<Verdict, string>> = {
 const STATE_TONE: Readonly<Record<Verdict, string>> = {
   worked: "text-status-success-foreground",
   did_not_work: "text-status-danger-foreground",
+};
+
+const STATE_ICON: Readonly<Record<Verdict | "none", typeof CircleCheck>> = {
+  worked: CircleCheck,
+  did_not_work: CircleX,
+  none: CircleHelp,
+};
+
+/** The human acceptance state as text with an icon; never colour alone. */
+export const AcceptanceState = ({ verdict }: { readonly verdict: Verdict | null }) => {
+  const Icon = STATE_ICON[verdict ?? "none"];
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-sm font-medium ${verdict === null ? "text-muted-foreground" : STATE_TONE[verdict]}`}
+      data-testid="acceptance-state"
+    >
+      <Icon className="size-4" aria-hidden="true" />
+      {verdict === null ? "Not rated" : STATE_TEXT[verdict]}
+    </span>
+  );
 };
 
 const attribution = (feedback: RunFeedback | undefined): string => {
@@ -40,7 +60,10 @@ export const RunVerdict = ({ scope, run }: { readonly scope: RunScope; readonly 
   const { stores, identity, orgId, now } = useStudio();
   const client = useQueryClient();
   const key = ["feedback", scope.runId] as const;
-  const stored = useQuery({ queryKey: key, queryFn: () => stores.feedback.get(scope) });
+  const stored = useQuery({
+    queryKey: key,
+    queryFn: async () => (await stores.feedback.get(scope)) ?? null,
+  });
   const save = useMutation({
     mutationFn: async (verdict: Verdict | null): Promise<void> => {
       if (identity.subject === undefined || orgId === undefined) {
@@ -68,7 +91,8 @@ export const RunVerdict = ({ scope, run }: { readonly scope: RunScope; readonly 
 
   if (!isRunTerminal(run.status)) return null;
 
-  const current = stored.data?.verdict ?? null;
+  const record = stored.data ?? undefined;
+  const current = record?.verdict ?? null;
   const signedIn = identity.subject !== undefined && orgId !== undefined;
   const disabled = save.isPending || stored.isPending || !signedIn;
   const press = (verdict: Verdict) => save.mutate(current === verdict ? null : verdict);
@@ -98,13 +122,9 @@ export const RunVerdict = ({ scope, run }: { readonly scope: RunScope; readonly 
         >
           <ThumbsDown />
         </Button>
-        <span
-          className={`text-sm font-medium ${current === null ? "text-muted-foreground" : STATE_TONE[current]}`}
-        >
-          {current === null ? "Not rated" : STATE_TEXT[current]}
-        </span>
+        <AcceptanceState verdict={current} />
       </div>
-      <p className="text-xs text-muted-foreground">{attribution(stored.data)}</p>
+      <p className="text-xs text-muted-foreground">{attribution(record)}</p>
       {signedIn ? null : <p className="text-xs text-muted-foreground">Sign in to rate this run.</p>}
       {save.isError ? (
         <p role="alert" className="text-sm text-status-danger-foreground">

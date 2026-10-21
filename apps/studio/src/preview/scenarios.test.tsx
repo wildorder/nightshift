@@ -34,7 +34,7 @@ describe("the preview scenarios", () => {
     it(`mounts ${name} on the run page`, async () => {
       await mount(name);
       if (name === "loading") {
-        expect(await screen.findByText(/Building the report/)).toBeTruthy();
+        expect(await screen.findByTestId("overview-loading")).toBeTruthy();
       } else {
         expect(await screen.findByRole("heading", { name: /Run/ })).toBeTruthy();
       }
