@@ -494,7 +494,8 @@ const post = async (
         path: verb === "cancel" ? routes.dispatchCancel(scope) : routes.dispatchResume(scope),
       }),
     );
-    for (const line of describeDispatch(next)) environment.out(line);
+    for (const line of describeDispatch(next, undefined, await ceilingOf(session, files, next)))
+      environment.out(line);
     return 0;
   } catch (error) {
     if (error instanceof ControlPlaneError) {

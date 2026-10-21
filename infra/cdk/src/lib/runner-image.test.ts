@@ -89,6 +89,12 @@ describe("the runner image", () => {
         expect(commands.join("\n")).not.toMatch(/\bdnf\b|strict=0|--ignore-missing/);
         expect(commands).toContain("aws --version");
       });
+
+      it(`leaves nothing to upgrade a machine under a run on ${architecture} (2026-10-21)`, () => {
+        const commands = commandsOf(toolchainComponent(architecture));
+        expect(commands).toContain("systemctl mask --now apt-daily.timer apt-daily-upgrade.timer");
+        expect(commands).toContain("systemctl disable --now unattended-upgrades.service || true");
+      });
     }
 
     for (const architecture of IMAGE_ARCHITECTURES) {

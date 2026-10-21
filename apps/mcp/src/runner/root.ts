@@ -194,16 +194,29 @@ export const placeProviderCredentials = async (
     readonly user?: string;
     /** `chown -R user:group path` as root; the image's sudoers rule allows exactly this. */
     readonly grant: (user: string, path: string) => Promise<void>;
+    /**
+     * Takes a path the engine granted back into the engine's ownership, as
+     * root (2026-10-21). A runner restarted on the same machine — systemd
+     * after a crash — finds the project user's copies where it left them,
+     * owned by that user and closed to the engine, and must own them again
+     * before it can write the fresh ones: the engine owns what it removes.
+     * Absent, the copies are written as if the directory were new.
+     */
+    readonly reclaim?: (path: string) => Promise<void>;
   } = { grant: async () => undefined },
+  /** Where the run's credentials live; the run's tmpfs directory unless a test says otherwise. */
+  base: string = tokenDirectory(runId),
 ): Promise<Record<string, string>> => {
   const env: Record<string, string> = {};
+  const mine = join(base, "project");
+  let reclaimed = false;
   for (const [provider, secret] of Object.entries(credentials) as [Provider, string][]) {
     const placement = credentialPlacement(provider, secret);
     if (placement.kind === "env") {
       env[placement.name] = secret;
       continue;
     }
-    const directory = join(tokenDirectory(runId), placement.directory);
+    const directory = join(base, placement.directory);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const path = join(directory, placement.file);
     await writeFile(path, secret, { mode: 0o600 });
@@ -218,7 +231,10 @@ export const placeProviderCredentials = async (
     // 0700, and every Codex examiner on FoodFly's first runs died at start
     // with "Permission denied" (2026-10-05), hence the explicit modes.
     if (project.user !== undefined) {
-      const mine = projectCredentialRoot(runId);
+      if (!reclaimed) {
+        await project.reclaim?.(mine);
+        reclaimed = true;
+      }
       const own = join(mine, placement.env);
       await mkdir(own, { recursive: true, mode: 0o700 });
       await writeFile(join(own, placement.file), secret, { mode: 0o600 });

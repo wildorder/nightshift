@@ -339,20 +339,45 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     .finally(() => watching?.stop())
     .then((ended) => (ended ? ended.failure : ("worked" as const)))
     .catch((error: unknown) => {
-      log(`the work failed: ${causeOf(error)}`);
-      return "failed" as const;
+      const cause = causeOf(error);
+      log(`the work failed: ${cause}`);
+      return { failed: cause };
     });
 
   const outcome = await Promise.race([beating, working]);
   watching?.stop();
-  if (outcome === "failed") {
-    // A process crash is not a request to finish the dispatch. Keep its
-    // durable run alive for systemd restart (or lease-based replacement).
+  if (typeof outcome === "object" && "failed" in outcome) {
+    // A process crash is not a request to finish the dispatch: its durable run
+    // stays alive for systemd's restart (or a lease-based replacement). But a
+    // work that fails every time it starts is not a crash, it is a machine
+    // that cannot run this work (2026-10-21): the cause goes to the plane as
+    // the stage's detail, so `remote status` says it, and the third failure in
+    // a row ends the dispatch `failed` with it — rather than a restart every
+    // five seconds, each one heartbeating `running`, for as long as the wall
+    // clock allows. P20's first run spent thirteen hours that way.
+    const failures = await countWorkFailure(machine, layout, outcome.failed);
+    const detail = `the work failed (${failures} of ${MAX_WORK_FAILURES} in a row): ${outcome.failed}`;
+    heartbeat.progress({ stage: "orchestrating", detail: detail.slice(0, 500) });
     await settle();
+    if (failures >= MAX_WORK_FAILURES) {
+      heartbeat.end();
+      await beating;
+      await heartbeat.farewell("stopped", {
+        code: "setup_failed",
+        message:
+          `the work failed ${failures} times in a row on this machine: ${outcome.failed}`.slice(
+            0,
+            500,
+          ),
+      });
+      return 1;
+    }
     heartbeat.end();
     await beating;
     return 1;
   }
+  // The work ended some other way: a run of failed starts is over.
+  await clearWorkFailures(machine, layout);
   if (outcome !== "stop" && outcome !== "lost") {
     // The work ended; the sidecar gets its last copy, then the plane is told
     // and the last beat goes out, with the work's failure when it gave one.
@@ -416,4 +441,52 @@ export const watchOrchestration = (
       stopped = true;
     },
   };
+};
+
+/** How many times in a row the work may fail on one machine before the dispatch ends `failed`. */
+export const MAX_WORK_FAILURES = 3;
+
+/** Where the machine keeps the count: the run's directory on the volume, so it outlives the process and not the machine. */
+export const workFailuresFile = (layout: Pick<WorkspaceLayout, "run">): string =>
+  `${layout.run}/work-failures.json`;
+
+/** One more failure of the work on this machine; answers how many in a row. */
+const countWorkFailure = async (
+  machine: Pick<Machine, "readFile" | "writeFile">,
+  layout: Pick<WorkspaceLayout, "run">,
+  cause: string,
+): Promise<number> => {
+  let count = 0;
+  try {
+    const text = await machine.readFile(workFailuresFile(layout));
+    const parsed: unknown = text === undefined ? undefined : JSON.parse(text);
+    if (typeof parsed === "object" && parsed !== null && "count" in parsed) {
+      const value = (parsed as { count: unknown }).count;
+      if (typeof value === "number" && Number.isInteger(value) && value >= 0) count = value;
+    }
+  } catch {
+    // An unreadable count is no count.
+  }
+  count += 1;
+  try {
+    await machine.writeFile(
+      workFailuresFile(layout),
+      JSON.stringify({ count, cause: cause.slice(0, 500) }),
+    );
+  } catch {
+    // Not writable: the next start counts from what it can read.
+  }
+  return count;
+};
+
+const clearWorkFailures = async (
+  machine: Pick<Machine, "readFile" | "writeFile">,
+  layout: Pick<WorkspaceLayout, "run">,
+): Promise<void> => {
+  try {
+    if ((await machine.readFile(workFailuresFile(layout))) !== undefined)
+      await machine.writeFile(workFailuresFile(layout), JSON.stringify({ count: 0 }));
+  } catch {
+    // Nothing to clear, or nowhere to write it.
+  }
 };
