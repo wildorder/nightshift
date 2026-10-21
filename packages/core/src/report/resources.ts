@@ -104,6 +104,17 @@ export const resourcesOf = (
   };
 };
 
+/** The resources of a summary with no routing decision (the root launch): its totals and valuation alone. */
+export const resourcesOfSummary = (summary: MeasurementSummary): AttemptResources => ({
+  tokens: tokensOf(summary.totals),
+  usd: {
+    ...present("estimated", summary.valuation.usd),
+    ...present("reported", summary.valuation.reportedUsd),
+    source: summary.valuation.source,
+  },
+  coverage: summary.coverage,
+});
+
 const add = (total: number | undefined, value: number | undefined): number | undefined =>
   value === undefined ? total : (total ?? 0) + value;
 

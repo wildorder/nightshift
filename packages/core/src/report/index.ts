@@ -7,6 +7,7 @@
  * these live in `core` and not above the execution layer.
  */
 
+export * from "./attempts.js";
 export * from "./completion.js";
 export {
   type CorrectionReport,
@@ -17,6 +18,7 @@ export {
   renderCorrections,
   renderDecisionGraph,
 } from "./decision-graph.js";
+export * from "./definitions.js";
 export * from "./delivery.js";
 export { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
 export * from "./feedback.js";
@@ -43,6 +45,7 @@ export {
   type ResourceTokens,
   type ResourceTotals,
   resourcesOf,
+  resourcesOfSummary,
   sumResources,
 } from "./resources.js";
 export * from "./review.js";

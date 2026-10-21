@@ -83,6 +83,34 @@ const summarise = (record: VerificationForecast): ForecastSummary => {
   };
 };
 
+/** A flaky command's own figures are the passing rerun's and a failed rerun's sit beside the first run's: each extra run is time spent. */
+const timeOf = (command: Verification["commands"][number]) => {
+  const extraMs = command.flaky?.firstDurationMs ?? command.rerun?.durationMs;
+  return {
+    runs: extraMs === undefined ? 1 : 2,
+    durationMs: command.durationMs + (extraMs ?? 0),
+  };
+};
+
+const totalOf = <
+  T extends {
+    runs: number;
+    totalMs: number;
+    quietMs: number;
+    phases: ReturnType<typeof emptyPhases>;
+  },
+>(
+  totals: Map<string, T>,
+  stepId: string,
+): T => {
+  let total = totals.get(stepId);
+  if (total === undefined) {
+    total = { runs: 0, totalMs: 0, quietMs: 0, phases: emptyPhases() } as T;
+    totals.set(stepId, total);
+  }
+  return total;
+};
+
 export const verificationTimeOf = (
   program: ProgramContract,
   verifications: readonly Verification[],
@@ -104,16 +132,13 @@ export const verificationTimeOf = (
     const phase: VerificationPhase = verification.phase ?? "queue";
     for (const command of verification.commands) {
       if (command.exitCode === undefined) continue;
-      let total = totals.get(command.stepId);
-      if (total === undefined) {
-        total = { runs: 0, totalMs: 0, quietMs: 0, phases: emptyPhases() };
-        totals.set(command.stepId, total);
-      }
-      total.runs += 1;
-      total.totalMs += command.durationMs;
+      const total = totalOf(totals, command.stepId);
+      const { runs, durationMs } = timeOf(command);
+      total.runs += runs;
+      total.totalMs += durationMs;
       total.quietMs += command.quietMs ?? 0;
-      total.phases[phase].runs += 1;
-      total.phases[phase].totalMs += command.durationMs;
+      total.phases[phase].runs += runs;
+      total.phases[phase].totalMs += durationMs;
     }
   }
   const forecastOf = new Map((record?.steps ?? []).map((step) => [step.id, step]));
