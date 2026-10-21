@@ -3,17 +3,23 @@
  * tiles say, the charts and their text twins, the evidence sheet and the way it
  * leads to the Work tab and the decision pages, and what survives a live poll.
  */
+
+import type { AttemptRow, RunReport } from "@nightshift/core";
 import {
   createCountingIdGenerator,
   gatherReport,
   METRIC_DEFINITIONS,
   makeEvent,
 } from "@nightshift/core";
-import { screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { consumptionOf, groupAttempts, tokenTotalOf } from "../../../lib/overview.js";
 import { runPath, SCENARIOS, type ScenarioName, type Seeded } from "../../../preview/scenarios.js";
 import { mountStudio } from "../../../test-support.js";
+import { ResourceBars } from "./bars.js";
+import { Tiles } from "./tiles.js";
+import { Timeline } from "./timeline.js";
 
 const mount = async (name: ScenarioName, pollMs = 60_000) => {
   let seeded: Seeded | undefined;
@@ -348,5 +354,201 @@ describe("a live run", () => {
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+const rowWith = (
+  tokens: { input?: number; output?: number },
+  usd: { estimated: number | undefined; reported: number },
+  unpriced = 0,
+): AttemptRow =>
+  ({
+    nodeId: "n",
+    strandId: null,
+    purpose: "work",
+    role: "worker",
+    attempt: 1,
+    harness: "h",
+    model: "m",
+    observedModels: [],
+    routingDecisionId: null,
+    resources: {
+      tokens: { ...tokens, inputConventionUnknown: 0 },
+      usd,
+      unpriced,
+      coverage: { complete: 1, partial: 0, unknown: 0, legacy: 0, missing: 0 },
+      tokenCoverage: "complete",
+    },
+    coverage: "complete",
+    outcome: null,
+    ledgerArtifactIds: [],
+    root: false,
+  }) as unknown as AttemptRow;
+
+describe("partial figures", () => {
+  it("marks a token total partial when an attempt reported only one side", () => {
+    const half = consumptionOf([rowWith({ input: 100 }, { estimated: 1, reported: 0 })]);
+    expect(tokenTotalOf(half)).toEqual({ value: 100, partial: true });
+    const mixed = consumptionOf([
+      rowWith({ input: 100, output: 10 }, { estimated: 1, reported: 0 }),
+      rowWith({ output: 5 }, { estimated: 1, reported: 0 }),
+    ]);
+    expect(tokenTotalOf(mixed)).toEqual({ value: 115, partial: true });
+    const full = consumptionOf([
+      rowWith({ input: 100, output: 10 }, { estimated: 1, reported: 0 }),
+    ]);
+    expect(tokenTotalOf(full)).toEqual({ value: 110, partial: false });
+    expect(
+      tokenTotalOf(consumptionOf([rowWith({}, { estimated: 1, reported: 0 })])),
+    ).toBeUndefined();
+  });
+
+  it("says 'at least' on the Consumed tile and the bars' total line", async () => {
+    const { served, seeded } = await mount("complete");
+    const report = await gatherReport(served, seeded.scope);
+    const rows = [
+      rowWith({ input: 1200, output: 30 }, { estimated: 1, reported: 0 }),
+      rowWith({ input: 800 }, { estimated: 1, reported: 0 }),
+    ];
+    const view = render(
+      <>
+        <Tiles
+          report={report as RunReport}
+          rows={rows}
+          spend={undefined}
+          attemptsReady
+          selected={undefined}
+          onSelect={() => {}}
+        />
+        <ResourceBars
+          byRole={groupAttempts(rows, (row) => row.role, "role unknown")}
+          byModel={groupAttempts(rows, (row) => row.model, "model unknown")}
+          selected={undefined}
+          onSelect={() => {}}
+        />
+      </>,
+    );
+    const consumed = view.container.querySelector('[data-tile="consumed"]') as HTMLElement;
+    expect(consumed.textContent).toMatch(/Token total: at least 2\.0K tokens \(partial/);
+    for (const total of view.getAllByTestId("bar-total")) {
+      expect(total.textContent).toMatch(/^Total: at least 2,030 tokens \(partial/);
+    }
+    expect(view.getAllByRole("button", { name: /^worker: at least/ }).length).toBeGreaterThan(0);
+  });
+
+  it("counts an exact $0 estimate as valued and an absent one as unvalued", () => {
+    const free = consumptionOf([rowWith({ input: 1, output: 1 }, { estimated: 0, reported: 0 })]);
+    expect(free.estimateValued).toBe(1);
+    expect(free.estimatedUsd).toBe(0);
+    const absent = consumptionOf([
+      rowWith({ input: 1, output: 1 }, { estimated: undefined, reported: 0 }),
+      rowWith({ input: 1, output: 1 }, { estimated: 0, reported: 0 }, 1),
+    ]);
+    expect(absent.estimateValued).toBe(0);
+    expect(absent.estimatedUsd).toBeUndefined();
+    const both = consumptionOf([
+      rowWith({ input: 1, output: 1 }, { estimated: 0, reported: 0 }),
+      rowWith({ input: 1, output: 1 }, { estimated: undefined, reported: 0 }),
+      rowWith({ input: 1, output: 1 }, { estimated: 2, reported: 0 }),
+    ]);
+    expect(both.estimateValued).toBe(2);
+    expect(both.estimatedUsd).toBe(2);
+  });
+
+  it("prints a $0 estimate in the API-equivalent text", async () => {
+    const { served, seeded } = await mount("complete");
+    const report = await gatherReport(served, seeded.scope);
+    const view = render(
+      <Tiles
+        report={report as RunReport}
+        rows={[
+          rowWith({ input: 1, output: 1 }, { estimated: 0, reported: 0 }),
+          rowWith({ input: 1, output: 1 }, { estimated: undefined, reported: 0 }),
+        ]}
+        spend={undefined}
+        attemptsReady
+        selected={undefined}
+        onSelect={() => {}}
+      />,
+    );
+    const consumed = view.container.querySelector('[data-tile="consumed"]') as HTMLElement;
+    expect(consumed.textContent).toContain("$0.0000 · 1 of 2 attempts valued");
+  });
+});
+
+describe("keyboard and non-colour cues", () => {
+  it("roves the timeline with arrows, opens with Enter and Space, and names the phase", async () => {
+    const { served, seeded } = await mount("complete");
+    const report = await gatherReport(served, seeded.scope);
+    const onSelect = vi.fn();
+    const view = render(
+      <Timeline report={report} nodeLabels={new Map()} selected={undefined} onSelect={onSelect} />,
+    );
+    const segments = view
+      .getAllByRole("button")
+      .filter((b) => b.hasAttribute("data-phase")) as HTMLButtonElement[];
+    expect(segments.length).toBeGreaterThan(2);
+    expect(segments.filter((b) => b.tabIndex === 0)).toHaveLength(1);
+    for (const b of segments) {
+      expect(b.getAttribute("aria-label")).toContain(`: ${b.getAttribute("data-phase")}, `);
+    }
+    expect(new Set(segments.map((b) => b.getAttribute("data-cue"))).size).toBeGreaterThan(1);
+    expect(view.container.querySelectorAll("[data-cue]").length).toBeGreaterThan(segments.length);
+
+    const rowOf = (b: HTMLElement) => b.getAttribute("aria-label")?.split(": ")[0] as string;
+    const start = segments.find((b) => b.tabIndex === 0) as HTMLButtonElement;
+    start.focus();
+    expect(document.activeElement).toBe(start);
+    const sameRow = segments.filter((b) => rowOf(b) === rowOf(start));
+    const other = segments.find((b) => rowOf(b) !== rowOf(start)) as HTMLButtonElement;
+    if (sameRow.length > 1) {
+      await userEvent.keyboard("{ArrowRight}");
+      expect(document.activeElement).not.toBe(start);
+      expect(rowOf(document.activeElement as HTMLElement)).toBe(rowOf(start));
+      expect((document.activeElement as HTMLElement).tabIndex).toBe(0);
+      expect(start.tabIndex).toBe(-1);
+      await userEvent.keyboard("{ArrowLeft}");
+      expect(document.activeElement).toBe(start);
+    }
+    await userEvent.keyboard("{ArrowDown}");
+    expect(rowOf(document.activeElement as HTMLElement)).not.toBe(rowOf(start));
+    expect(other).toBeTruthy();
+    await userEvent.keyboard("{ArrowUp}");
+    expect(rowOf(document.activeElement as HTMLElement)).toBe(rowOf(start));
+    expect(segments.filter((b) => b.tabIndex === 0)).toHaveLength(1);
+    await userEvent.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    await userEvent.keyboard(" ");
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(onSelect.mock.calls[0]?.[0]).toEqual(onSelect.mock.calls[1]?.[0]);
+  });
+
+  it("opens the evidence sheet from a focused timeline segment with Enter", async () => {
+    await mount("complete");
+    const segment = (await screen.findAllByRole("button", { name: /: wait, .*waiting on job/ }))[0];
+    (segment as HTMLElement).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+  });
+
+  it("navigates bars with ArrowDown and ArrowUp and opens one with Enter", async () => {
+    await mount("complete");
+    const roles = await screen.findByRole("region", { name: "Tokens by role" });
+    await waitFor(() => expect(within(roles).getAllByRole("button").length).toBeGreaterThan(2));
+    const bars = within(roles)
+      .getAllByRole("button")
+      .filter((b) => b.closest("li")) as HTMLButtonElement[];
+    expect(bars.length).toBeGreaterThan(1);
+    expect(bars.filter((b) => b.tabIndex === 0)).toHaveLength(1);
+    (bars[0] as HTMLElement).focus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(bars[1]);
+    expect(bars[1]?.tabIndex).toBe(0);
+    expect(bars[0]?.tabIndex).toBe(-1);
+    await userEvent.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(bars[0]);
+    await userEvent.keyboard("{Enter}");
+    const sheet = await screen.findByRole("dialog");
+    expect(within(sheet).getByText(METRIC_DEFINITIONS.tokens_output.definition)).toBeTruthy();
   });
 });

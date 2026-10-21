@@ -6,7 +6,7 @@
  * is drawn to the report's as-of time and says so.
  */
 import type { RunReport } from "@nightshift/core";
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   clockText,
@@ -56,6 +56,63 @@ const GROUP_WORD: Readonly<Record<PhaseGroup, string>> = {
   other: "provisioning, startup, setup",
 };
 
+/** The non-colour cue per phase group: a pattern name, drawn over the fill and in the legend. */
+type Cue = "solid" | "diagonal" | "dots" | "cross" | "vertical" | "horizontal";
+const CUE: Readonly<Record<PhaseGroup, Cue>> = {
+  work: "solid",
+  wait: "diagonal",
+  queue: "dots",
+  integration: "cross",
+  examination: "vertical",
+  other: "horizontal",
+};
+
+/** SVG pattern tiles, stroked in a theme token so they read on every fill and theme. */
+const PatternDefs = ({ prefix }: { readonly prefix: string }) => (
+  <defs>
+    {PHASE_GROUPS.map((group) => {
+      const cue = CUE[group];
+      if (cue === "solid") return null;
+      return (
+        <pattern
+          key={group}
+          id={`${prefix}-${cue}`}
+          width={6}
+          height={6}
+          patternUnits="userSpaceOnUse"
+        >
+          {cue === "diagonal" ? (
+            <path
+              d="M-1 1 L1 -1 M0 6 L6 0 M5 7 L7 5"
+              className="stroke-foreground"
+              strokeWidth={1.2}
+            />
+          ) : cue === "dots" ? (
+            <circle cx={3} cy={3} r={1.2} className="fill-background" />
+          ) : cue === "cross" ? (
+            <path d="M0 0 L6 6 M6 0 L0 6" className="stroke-background" strokeWidth={1} />
+          ) : cue === "vertical" ? (
+            <path d="M3 0 V6" className="stroke-background" strokeWidth={1.4} />
+          ) : (
+            <path d="M0 3 H6" className="stroke-foreground" strokeWidth={1.2} />
+          )}
+        </pattern>
+      );
+    })}
+  </defs>
+);
+
+/** Segments in reading order per row, so arrows move by what is drawn. */
+const rowsOfSegments = (
+  intervals: readonly DrawnInterval[],
+  nodeIds: readonly string[],
+): DrawnInterval[][] =>
+  nodeIds.map((nodeId) =>
+    intervals
+      .filter((iv) => iv.nodeId === nodeId)
+      .sort((a, b) => (a.from as number) - (b.from as number) || a.lane - b.lane),
+  );
+
 export const Timeline = ({
   report,
   nodeLabels,
@@ -68,6 +125,9 @@ export const Timeline = ({
   readonly onSelect: (selection: Selection) => void;
 }) => {
   const [asText, setAsText] = useState(false);
+  const [active, setActive] = useState<string | undefined>(undefined);
+  const buttons = useRef(new Map<string, HTMLButtonElement>());
+  const patternPrefix = `phase-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const operations = report.operations;
   const model = timelineOf(operations);
   const elapsed = elapsedOf(report);
@@ -112,6 +172,37 @@ export const Timeline = ({
   const summary = `Timeline of ${model.rows.length} node${model.rows.length === 1 ? "" : "s"}: ${model.rows
     .map((row) => labelOf(row.nodeId))
     .join(", ")}. ${elapsed.live ? "Elapsed so far" : "Total elapsed"} ${spanText(elapsed.ms)}.`;
+  const grid = rowsOfSegments(
+    drawn,
+    model.rows.map((row) => row.nodeId),
+  );
+  const first = grid.find((row) => row.length > 0)?.[0];
+  const current = drawn.some((iv) => iv.id === active) ? active : first?.id;
+  const centre = (iv: DrawnInterval): number => {
+    const g = geometry(iv);
+    return g.left + g.width / 2;
+  };
+  const onArrow = (event: React.KeyboardEvent, iv: DrawnInterval) => {
+    const r = grid.findIndex((row) => row.some((other) => other.id === iv.id));
+    const row = grid[r] ?? [];
+    const at = row.findIndex((other) => other.id === iv.id);
+    let next: DrawnInterval | undefined;
+    if (event.key === "ArrowRight") next = row[at + 1];
+    else if (event.key === "ArrowLeft") next = row[at - 1];
+    else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      for (let i = r + step; i >= 0 && i < grid.length && next === undefined; i += step) {
+        const here = centre(iv);
+        next = [...(grid[i] ?? [])].sort(
+          (a, b) => Math.abs(centre(a) - here) - Math.abs(centre(b) - here),
+        )[0];
+      }
+    } else return;
+    event.preventDefault();
+    if (next === undefined) return;
+    setActive(next.id);
+    buttons.current.get(next.id)?.focus();
+  };
   const withBlockers = Object.entries(operations.unions.waitByBlockerKind);
 
   return (
@@ -120,10 +211,18 @@ export const Timeline = ({
         {PHASE_GROUPS.map((group) => (
           <span key={group} className="inline-flex items-center gap-1.5">
             <span
-              className={`inline-block size-3 rounded-sm ${SWATCH[group]}`}
+              className={`relative inline-block size-3 rounded-sm ${SWATCH[group]}`}
+              data-cue={CUE[group]}
               aria-hidden="true"
-            />
+            >
+              {CUE[group] === "solid" ? null : (
+                <svg viewBox="0 0 12 12" className="absolute inset-0 size-3" aria-hidden="true">
+                  <rect width={12} height={12} fill={`url(#${patternPrefix}-${CUE[group]})`} />
+                </svg>
+              )}
+            </span>
             {GROUP_WORD[group]}
+            <span className="text-muted-foreground">({CUE[group]})</span>
           </span>
         ))}
         <Button
@@ -146,6 +245,7 @@ export const Timeline = ({
             role="img"
             aria-label={summary}
           >
+            <PatternDefs prefix={patternPrefix} />
             {ticks.map((tick) => (
               <g key={tick}>
                 <line
@@ -206,6 +306,18 @@ export const Timeline = ({
                     strokeDasharray={iv.open ? "5 3" : undefined}
                     strokeWidth={waiting || iv.open ? 1.5 : 0}
                   />
+                  {CUE[iv.group] === "solid" ? null : (
+                    <rect
+                      x={g.left}
+                      y={g.top}
+                      width={g.width}
+                      height={g.height}
+                      rx={3}
+                      fill={`url(#${patternPrefix}-${CUE[iv.group]})`}
+                      data-cue={CUE[iv.group]}
+                      data-phase={iv.phase}
+                    />
+                  )}
                   {waiting && iv.blockers.length > 0 && g.width > 110 ? (
                     <text
                       x={g.left + 6}
@@ -250,6 +362,15 @@ export const Timeline = ({
               <button
                 key={iv.id}
                 type="button"
+                ref={(el) => {
+                  if (el === null) buttons.current.delete(iv.id);
+                  else buttons.current.set(iv.id, el);
+                }}
+                tabIndex={iv.id === current ? 0 : -1}
+                data-cue={CUE[iv.group]}
+                data-phase={iv.phase}
+                onFocus={() => setActive(iv.id)}
+                onKeyDown={(event) => onArrow(event, iv)}
                 aria-label={`${labelOf(iv.nodeId)}: ${intervalLabel(iv)}`}
                 aria-pressed={selected === key}
                 onClick={() =>

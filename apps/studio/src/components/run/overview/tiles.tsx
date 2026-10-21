@@ -18,6 +18,7 @@ import {
   percentText,
   spanText,
   tokensCoverageText,
+  tokenTotalOf,
   totalsTokens,
   valuedText,
 } from "../../../lib/overview.js";
@@ -177,6 +178,12 @@ export const Tiles = ({
               <span className="text-xs text-muted-foreground">output tokens</span>
             </span>
           </span>
+        )}
+        {consumed === undefined || tokenTotalOf(consumed)?.partial !== true ? null : (
+          <Line label="Token total:">
+            at least {compactCount(tokenTotalOf(consumed)?.value)} tokens (partial: an attempt
+            reported only input or only output)
+          </Line>
         )}
         {consumed === undefined ? null : (
           <Line label="Token coverage:">{tokensCoverageText(consumed)}</Line>

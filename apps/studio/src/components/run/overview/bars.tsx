@@ -6,7 +6,7 @@
  * says "not observed".
  */
 import type { RunReport } from "@nightshift/core";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   type BarGroup,
@@ -15,7 +15,7 @@ import {
   exactCount,
   NOT_OBSERVED,
   tokensCoverageText,
-  tokenTotal,
+  tokenTotalOf,
   totalsTokens,
 } from "../../../lib/overview.js";
 import type { Selection } from "./selection.js";
@@ -50,6 +50,25 @@ const BarChart = ({
   readonly color: number;
 }) => {
   const [asText, setAsText] = useState(false);
+  const [active, setActive] = useState(0);
+  const buttons = useRef<(HTMLButtonElement | null)[]>([]);
+  const here = Math.min(active, Math.max(0, bars.length - 1));
+  const onArrow = (event: React.KeyboardEvent, index: number) => {
+    const target =
+      event.key === "ArrowDown"
+        ? Math.min(bars.length - 1, index + 1)
+        : event.key === "ArrowUp"
+          ? Math.max(0, index - 1)
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? bars.length - 1
+              : undefined;
+    if (target === undefined) return;
+    event.preventDefault();
+    setActive(target);
+    buttons.current[target]?.focus();
+  };
   const max = Math.max(1, ...bars.map((bar) => bar.value ?? 0));
   return (
     <section className="grid gap-2" aria-label={title}>
@@ -70,10 +89,16 @@ const BarChart = ({
         <p className="text-xs text-muted-foreground">{NOT_OBSERVED}: nothing to draw.</p>
       ) : (
         <ul className="grid gap-1.5" aria-label={`${title}, bars in ${unit}`}>
-          {bars.map((bar) => (
+          {bars.map((bar, index) => (
             <li key={bar.key}>
               <button
                 type="button"
+                ref={(el) => {
+                  buttons.current[index] = el;
+                }}
+                tabIndex={index === here ? 0 : -1}
+                onFocus={() => setActive(index)}
+                onKeyDown={(event) => onArrow(event, index)}
                 aria-pressed={selected === bar.selection.key}
                 aria-label={`${bar.label}: ${bar.valueText}`}
                 onClick={() => onSelect(bar.selection)}
@@ -138,7 +163,9 @@ const tokenBars = (groups: readonly BarGroup[], kind: "role" | "model"): Bar[] =
     label: group.label,
     ...(group.tokens === undefined ? {} : { value: group.tokens }),
     valueText:
-      group.tokens === undefined ? `${NOT_OBSERVED}` : `${compactCount(group.tokens)} tokens`,
+      group.tokens === undefined
+        ? `${NOT_OBSERVED}`
+        : `${group.tokensPartial === true ? "at least " : ""}${compactCount(group.tokens)} tokens`,
     detail: `${compactCount(group.consumed.input)} in (incl. cache), ${compactCount(group.consumed.output)} out; ${tokensCoverageText(group.consumed)}`,
     selection: {
       key: `bar:${kind}:${group.key}`,
@@ -152,10 +179,10 @@ const tokenBars = (groups: readonly BarGroup[], kind: "role" | "model"): Bar[] =
 const totalLine = (groups: readonly BarGroup[], noun: string): string => {
   const all = groups.flatMap((group) => group.rows);
   const consumed = consumptionOf(all);
-  const total = tokenTotal(consumed);
+  const total = tokenTotalOf(consumed);
   return total === undefined
     ? `Total: ${NOT_OBSERVED} (no attempt reported token counters)`
-    : `Total: ${exactCount(total)} tokens (input incl. cache + output) across ${consumed.tokenAttempts} of ${consumed.attempts} attempts that reported tokens; the ${noun} add to this total`;
+    : `Total: ${total.partial ? "at least " : ""}${exactCount(total.value)} tokens${total.partial ? " (partial: an attempt reported only input or only output)" : ""} (input incl. cache + output) across ${consumed.tokenAttempts} of ${consumed.attempts} attempts that reported tokens; the ${noun} add to this total`;
 };
 
 export const ResourceBars = ({

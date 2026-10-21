@@ -65,6 +65,8 @@ export interface Consumption {
   readonly reasoning?: number;
   /** Attempts with an input or output counter observed. */
   readonly tokenAttempts: number;
+  /** Attempts that reported only one of input and output, so their total is a lower bound. */
+  readonly halfTokenAttempts: number;
   readonly estimatedUsd?: number;
   /** Attempts the API-equivalent estimate valued. */
   readonly estimateValued: number;
@@ -75,6 +77,24 @@ export interface Consumption {
   readonly coverage: ResourceTotals["coverage"];
 }
 
+/**
+ * Whether the attempt carries this kind of dollar figure. The row's totals hold
+ * a number either way, so a runtime-absent figure is unvalued, a positive one is
+ * valued, and an exact zero is valued unless the attempt was counted unpriced
+ * (neither kind present) or the zero is only the other kind's absence.
+ */
+const isValued = (row: AttemptRow, kind: "estimated" | "reported"): boolean => {
+  const { usd, unpriced } = row.resources;
+  const mine: number | undefined = usd[kind];
+  if (mine === undefined) return false;
+  if (mine > 0) return true;
+  if (unpriced > 0) return false;
+  const other: number | undefined = usd[kind === "estimated" ? "reported" : "estimated"];
+  return other === undefined || other === 0 || (kind === "estimated" && hasPriceBasis(row));
+};
+
+const hasPriceBasis = (row: AttemptRow): boolean => (row.resources.priceBases ?? []).length > 0;
+
 export const consumptionOf = (rows: readonly AttemptRow[]): Consumption => {
   let input: number | undefined;
   let output: number | undefined;
@@ -84,6 +104,7 @@ export const consumptionOf = (rows: readonly AttemptRow[]): Consumption => {
   let estimatedUsd: number | undefined;
   let reportedUsd: number | undefined;
   let tokenAttempts = 0;
+  let halfTokenAttempts = 0;
   let estimateValued = 0;
   let estimateIncomplete = 0;
   let reportedValued = 0;
@@ -95,12 +116,13 @@ export const consumptionOf = (rows: readonly AttemptRow[]): Consumption => {
     cacheWrite = add(cacheWrite, tokens.cacheWrite);
     reasoning = add(reasoning, tokens.reasoning);
     if (tokens.input !== undefined || tokens.output !== undefined) tokenAttempts += 1;
-    // One row is one attempt: a zero dollar total with the attempt unpriced is "no figure".
-    if (usd.estimated > 0) {
+    if ((tokens.input === undefined) !== (tokens.output === undefined)) halfTokenAttempts += 1;
+    // One row is one attempt: an exact zero is a known $0 (a free model); only an absent figure is unvalued.
+    if (isValued(row, "estimated")) {
       estimatedUsd = add(estimatedUsd, usd.estimated);
       estimateValued += 1;
     }
-    if (usd.reported > 0) {
+    if (isValued(row, "reported")) {
       reportedUsd = add(reportedUsd, usd.reported);
       reportedValued += 1;
     }
@@ -115,6 +137,7 @@ export const consumptionOf = (rows: readonly AttemptRow[]): Consumption => {
     ...(cacheWrite === undefined ? {} : { cacheWrite }),
     ...(reasoning === undefined ? {} : { reasoning }),
     tokenAttempts,
+    halfTokenAttempts,
     ...(estimatedUsd === undefined ? {} : { estimatedUsd }),
     estimateValued,
     estimateIncomplete,
@@ -138,6 +161,22 @@ export const tokenTotal = (consumed: Pick<Consumption, "input" | "output">): num
   consumed.input === undefined && consumed.output === undefined
     ? undefined
     : (consumed.input ?? 0) + (consumed.output ?? 0);
+
+/** A token total and whether it is only a lower bound because a side was not observed. */
+export interface TokenTotal {
+  readonly value: number;
+  readonly partial: boolean;
+}
+
+/** As `tokenTotal`, saying when only one of input and output was observed (by attempt or in all). */
+export const tokenTotalOf = (
+  consumed: Pick<Consumption, "input" | "output"> & { readonly halfTokenAttempts?: number },
+): TokenTotal | undefined => {
+  const value = tokenTotal(consumed);
+  if (value === undefined) return undefined;
+  const oneSided = (consumed.input === undefined) !== (consumed.output === undefined);
+  return { value, partial: oneSided || (consumed.halfTokenAttempts ?? 0) > 0 };
+};
 
 /** "n of m attempts valued" wording for a dollar estimate, with its understatement. */
 export const valuedText = (valued: number, attempts: number, incomplete = 0): string => {
@@ -166,6 +205,8 @@ export interface BarGroup {
   readonly consumed: Consumption;
   /** input + output; undefined when the group's attempts reported no counters. */
   readonly tokens?: number;
+  /** The tokens figure is a lower bound: an attempt reported only input or only output. */
+  readonly tokensPartial?: boolean;
 }
 
 export const groupAttempts = (
@@ -180,13 +221,15 @@ export const groupAttempts = (
   }
   const result = [...groups].map(([key, members]) => {
     const consumed = consumptionOf(members);
-    const tokens = tokenTotal(consumed);
+    const total = tokenTotalOf(consumed);
+    const tokens = total?.value;
     return {
       key,
       label: key === "" ? unknownLabel : key,
       rows: members,
       consumed,
       ...(tokens === undefined ? {} : { tokens }),
+      ...(total?.partial === true ? { tokensPartial: true } : {}),
     };
   });
   return result.sort(
