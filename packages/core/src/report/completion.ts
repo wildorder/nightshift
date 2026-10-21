@@ -25,7 +25,7 @@ import type {
 } from "@nightshift/contracts";
 import { type FeedbackCoverage, feedbackCoverageOf } from "./feedback.js";
 import type { InfrastructureReport } from "./infrastructure.js";
-import type { ResourceTotals } from "./resources.js";
+import type { PriceBasis, ResourceTotals } from "./resources.js";
 
 export interface CompletionMemberReport {
   readonly programId: string;
@@ -125,6 +125,8 @@ const add = (a: number | undefined, b: number | undefined): number | undefined =
 
 /** Sums resource totals; an absent counter adds nothing. */
 const sumTotals = (items: readonly ResourceTotals[]): ResourceTotals => {
+  let estimateIncomplete = 0;
+  const priceBases: PriceBasis[] = [];
   const tokens: { -readonly [K in keyof ResourceTotals["tokens"]]: number | undefined } = {
     input: undefined,
     output: undefined,
@@ -154,6 +156,20 @@ const sumTotals = (items: readonly ResourceTotals[]): ResourceTotals => {
     estimated += item.usd.estimated;
     reported += item.usd.reported;
     unpriced += item.unpriced;
+    estimateIncomplete += item.estimateIncomplete ?? 0;
+    for (const basis of item.priceBases ?? []) {
+      if (
+        !priceBases.some(
+          (seen) =>
+            seen.model === basis.model &&
+            seen.source === basis.source &&
+            seen.version === basis.version &&
+            seen.incomplete === basis.incomplete,
+        )
+      ) {
+        priceBases.push(basis);
+      }
+    }
     for (const key of Object.keys(coverage) as (keyof typeof coverage)[]) {
       coverage[key] += item.coverage[key];
     }
@@ -169,6 +185,8 @@ const sumTotals = (items: readonly ResourceTotals[]): ResourceTotals => {
     tokenCoverage: items.every((item) => item.tokenCoverage === "complete")
       ? "complete"
       : "partial",
+    priceBases,
+    estimateIncomplete,
   };
 };
 

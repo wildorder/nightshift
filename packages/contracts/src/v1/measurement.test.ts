@@ -11,6 +11,7 @@ import {
   observationBytes,
 } from "./measurement.js";
 import { RouteUsageSchema } from "./routing-decision.js";
+import { ModelPriceSchema } from "./routing-policy.js";
 
 const U = "01HF7YAT00GGGGGGGGGGGGGGGG";
 const T = "2026-10-20T10:00:00Z";
@@ -223,5 +224,74 @@ describe("MeasurementCountersSchema reportedUsd", () => {
       true,
     );
     expect(MeasurementCountersSchema.safeParse({ reportedUsd: -1 }).success).toBe(false);
+  });
+});
+
+describe("model price tiers and valuation provenance", () => {
+  const flat = { inputPerMTok: 3, outputPerMTok: 15 };
+  const tiers = [
+    { aboveInputTokens: 200_000, inputPerMTok: 6, outputPerMTok: 22.5 },
+    { aboveInputTokens: 500_000, inputPerMTok: 9, outputPerMTok: 30, cacheReadPerMTok: 1 },
+  ];
+
+  it("parses a flat price and a tiered, sourced one", () => {
+    expect(ModelPriceSchema.safeParse(flat).success).toBe(true);
+    expect(
+      ModelPriceSchema.safeParse({
+        ...flat,
+        source: "anthropic-list",
+        version: "2026-10-01",
+        tiers,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("requires tiers to ascend strictly and rejects unknown keys", () => {
+    expect(ModelPriceSchema.safeParse({ ...flat, tiers: [...tiers].reverse() }).success).toBe(
+      false,
+    );
+    expect(ModelPriceSchema.safeParse({ ...flat, tiers: [tiers[0], tiers[0]] }).success).toBe(
+      false,
+    );
+    expect(ModelPriceSchema.safeParse({ ...flat, extra: 1 }).success).toBe(false);
+    expect(
+      ModelPriceSchema.safeParse({ ...flat, tiers: [{ ...tiers[0], aboveInputTokens: -1 }] })
+        .success,
+    ).toBe(false);
+  });
+
+  it("parses a valuation with components and completeness, and refuses unknown keys", () => {
+    const valuation = {
+      source: "estimated",
+      usd: 2.16,
+      estimatedUsd: 2.16,
+      priceSource: "anthropic-list",
+      priceVersion: "2026-10-01",
+      components: [
+        { model: "m", tier: 1, category: "input", tokens: 300_000, usd: 1.8, perMTok: 6 },
+      ],
+      completeness: {
+        valuedRequests: 1,
+        unvaluedRequests: 0,
+        remainderTokens: 0,
+        remainderValued: true,
+        reasons: [],
+      },
+    };
+    expect(MeasurementSummarySchema.safeParse(summary({ valuation })).success).toBe(true);
+    expect(
+      MeasurementSummarySchema.safeParse(summary({ valuation: { ...valuation, extra: 1 } }))
+        .success,
+    ).toBe(false);
+    expect(
+      MeasurementSummarySchema.safeParse(
+        summary({
+          valuation: {
+            ...valuation,
+            components: [{ ...valuation.components[0], category: "reasoning" }],
+          },
+        }),
+      ).success,
+    ).toBe(false);
   });
 });

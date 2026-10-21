@@ -35,10 +35,22 @@ export interface ResourceDollars {
   readonly source: CostSource | "none";
 }
 
+/** The price list an estimate was valued from, per model. */
+export interface PriceBasis {
+  readonly source?: string;
+  readonly version?: string;
+  readonly model: string;
+  /** Some usage of the attempt could not be valued, so the estimate understates. */
+  readonly incomplete: boolean;
+}
+
 export interface AttemptResources {
   readonly tokens: ResourceTokens;
   readonly usd: ResourceDollars;
   readonly coverage: ResourceCoverage;
+  readonly priceBases?: readonly PriceBasis[];
+  /** The estimate leaves some usage unvalued. */
+  readonly estimateIncomplete?: boolean;
 }
 
 export interface ResourceTotals {
@@ -56,6 +68,10 @@ export interface ResourceTotals {
   readonly unpriced: number;
   readonly coverage: Record<ResourceCoverage, number>;
   readonly tokenCoverage: "complete" | "partial";
+  /** Distinct price lists the estimates came from. */
+  readonly priceBases?: readonly PriceBasis[];
+  /** Attempts whose estimate leaves some usage unvalued. */
+  readonly estimateIncomplete?: number;
 }
 
 const present = <K extends string>(key: K, value: number | undefined) =>
@@ -92,6 +108,33 @@ export const resourcesOf = (
   const counters = summary?.totals ?? fromRoute;
   const coverage: ResourceCoverage =
     summary !== undefined ? summary.coverage : hasAnyCounters(fromRoute) ? "legacy" : "missing";
+  const valuation = summary?.valuation;
+  if (
+    summary !== undefined &&
+    valuation !== undefined &&
+    (valuation.estimatedUsd !== undefined || valuation.reportedUsd !== undefined)
+  ) {
+    const incomplete =
+      valuation.completeness !== undefined &&
+      (valuation.completeness.unvaluedRequests > 0 || !valuation.completeness.remainderValued);
+    const models = [...new Set((valuation.components ?? []).map((component) => component.model))];
+    return {
+      tokens: tokensOf(counters),
+      usd: {
+        ...present("estimated", valuation.estimatedUsd),
+        ...present("reported", valuation.reportedUsd),
+        source: valuation.source === "unknown" ? "none" : valuation.source,
+      },
+      coverage,
+      priceBases: models.map((model) => ({
+        ...(valuation.priceSource === undefined ? {} : { source: valuation.priceSource }),
+        ...(valuation.priceVersion === undefined ? {} : { version: valuation.priceVersion }),
+        model,
+        incomplete,
+      })),
+      estimateIncomplete: valuation.estimatedUsd !== undefined && incomplete,
+    };
+  }
   const { estimatedCostUsd, actualCostUsd, costSource } = route.usage;
   return {
     tokens: tokensOf(counters),
@@ -125,7 +168,21 @@ export const sumResources = (items: readonly AttemptResources[]): ResourceTotals
   let estimated = 0;
   let reported = 0;
   let unpriced = 0;
+  let estimateIncomplete = 0;
+  const priceBases: PriceBasis[] = [];
   for (const item of items) {
+    if (item.estimateIncomplete === true) estimateIncomplete += 1;
+    for (const basis of item.priceBases ?? []) {
+      const same = priceBases.findIndex(
+        (seen) =>
+          seen.model === basis.model &&
+          seen.source === basis.source &&
+          seen.version === basis.version,
+      );
+      const seen = priceBases[same];
+      if (seen === undefined) priceBases.push(basis);
+      else if (basis.incomplete && !seen.incomplete) priceBases[same] = basis;
+    }
     coverage[item.coverage] += 1;
     input = add(input, item.tokens.input);
     output = add(output, item.tokens.output);
@@ -152,5 +209,7 @@ export const sumResources = (items: readonly AttemptResources[]): ResourceTotals
     unpriced,
     coverage,
     tokenCoverage: items.every((item) => item.coverage === "complete") ? "complete" : "partial",
+    priceBases,
+    estimateIncomplete,
   };
 };

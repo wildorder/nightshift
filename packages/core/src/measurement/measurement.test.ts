@@ -17,6 +17,7 @@ import {
   emptySummary,
   foldExit,
   foldObservation,
+  foldObservationPriced,
   hasCounters,
   legacySummaryOf,
   markGap,
@@ -26,6 +27,7 @@ import {
   rollLedgerIndex,
   routeUsageFromCounters,
   startSegment,
+  valuationOf,
   valueCounters,
 } from "./index.js";
 
@@ -665,5 +667,155 @@ describe("normalize and value", () => {
     });
     expect(valueCounters({}, price).source).toBe("unknown");
     expect(valueCounters({ inputTokens: 5 }, undefined).source).toBe("unknown");
+  });
+});
+
+describe("per-request valuation", () => {
+  const tiered: ModelPrice = {
+    inputPerMTok: 3,
+    outputPerMTok: 15,
+    source: "anthropic-list",
+    version: "2026-10-01",
+    tiers: [{ aboveInputTokens: 200_000, inputPerMTok: 6, outputPerMTok: 22.5 }],
+  };
+  const prices = { m1: tiered };
+  const begin = () => {
+    const g = createCountingIdGenerator();
+    return startSegment(
+      emptySummary({
+        measurementSummaryId: g.next("meas"),
+        scope: {
+          schemaVersion: 1,
+          projectId: g.next("proj"),
+          programId: g.next("prog"),
+          runId: g.next("run"),
+        },
+        executionNodeId: g.next("node"),
+        agent: { agentId, role: "worker" },
+        route: { harness: "claude", provider: "anthropic", model: "m1" },
+        routingDecisionId: null,
+        at: T(0),
+      }),
+      launch,
+      { sessionId: "s1", resumedSession: false, at: T(0) },
+    );
+  };
+  const excl = (inputTokens: number, outputTokens: number): MeasurementCounters => ({
+    inputTokens,
+    outputTokens,
+    inputIncludesCache: false,
+  });
+  const twoRequests = () => {
+    let s = begin();
+    s = foldObservationPriced(s, request(excl(100_000, 1000), { model: "m1" }), 1, T(1), prices);
+    return foldObservationPriced(s, request(excl(300_000, 2000), { model: "m1" }), 2, T(2), prices);
+  };
+
+  it("values each request at its own tier, unlike the single block of the totals", () => {
+    const s = twoRequests();
+    const v = valuationOf(s, prices);
+    // 100k in at 3 + 1k out at 15 = 0.315; 300k in at 6 + 2k out at 22.5 = 1.845.
+    expect(v.source).toBe("estimated");
+    expect(v.estimatedUsd).toBeCloseTo(2.16, 9);
+    expect(v.usd).toBeCloseTo(2.16, 9);
+    expect(v.priceSource).toBe("anthropic-list");
+    expect(v.priceVersion).toBe("2026-10-01");
+    expect(v.components?.map((c) => [c.tier, c.category, c.tokens])).toEqual([
+      [0, "input", 100_000],
+      [0, "output", 1000],
+      [1, "input", 300_000],
+      [1, "output", 2000],
+    ]);
+    expect(v.completeness).toEqual({
+      valuedRequests: 2,
+      unvaluedRequests: 0,
+      remainderTokens: 0,
+      remainderValued: true,
+      reasons: [],
+    });
+    // The block valuation of 400k in / 3k out at the base tier: 1.2 + 0.045.
+    const block = valueCounters(s.totals, tiered);
+    expect(block.usd).toBeCloseTo(1.245, 9);
+    expect(block.usd).not.toBeCloseTo(v.usd ?? NaN, 3);
+  });
+
+  it("selects the tier on input including cache for inclusive and exclusive counters", () => {
+    const tierOf = (counters: MeasurementCounters) =>
+      valuationOf(
+        foldObservationPriced(begin(), request(counters, { model: "m1" }), 1, T(1), prices),
+        prices,
+      ).components?.map((c) => c.tier);
+    // 250k including 100k cache is above 200k; 190k including 100k cache is not.
+    expect(
+      tierOf({ inputTokens: 250_000, cacheReadTokens: 100_000, inputIncludesCache: true }),
+    ).toEqual([1, 1]);
+    expect(
+      tierOf({ inputTokens: 190_000, cacheReadTokens: 100_000, inputIncludesCache: true }),
+    ).toEqual([0, 0]);
+    // Exclusive: 100k input + 150k cache is 250k.
+    expect(
+      tierOf({ inputTokens: 100_000, cacheReadTokens: 150_000, inputIncludesCache: false }),
+    ).toEqual([1, 1]);
+  });
+
+  it("counts an unpriced or model-less request as unvalued, never as zero", () => {
+    let s = begin();
+    s = foldObservationPriced(s, request(excl(10, 10), { model: "unpriced" }), 1, T(1), prices);
+    const none = valuationOf(s, prices);
+    expect(none.source).toBe("unknown");
+    expect(none.usd).toBeUndefined();
+    expect(none.estimatedUsd).toBeUndefined();
+    expect(none.completeness).toMatchObject({ valuedRequests: 0, unvaluedRequests: 1 });
+    expect(none.completeness?.reasons).toEqual(["no price for unpriced"]);
+
+    s = foldObservationPriced(s, request(excl(100_000, 1000), { model: "m1" }), 2, T(2), prices);
+    const partial = valuationOf(s, prices);
+    expect(partial.source).toBe("estimated");
+    expect(partial.estimatedUsd).toBeCloseTo(0.315, 9);
+    expect(partial.completeness).toMatchObject({ valuedRequests: 1, unvaluedRequests: 1 });
+  });
+
+  it("values a model-less request when exactly one model was observed, else leaves it unvalued", () => {
+    let s = begin();
+    s = foldObservationPriced(s, request(excl(10, 10)), 1, T(1), prices);
+    expect(valuationOf(s, prices).completeness).toMatchObject({
+      unvaluedRequests: 1,
+      reasons: ["request without a model"],
+    });
+  });
+
+  it("values totals beyond the request sums as a base-tier remainder", () => {
+    let s = twoRequests();
+    s = foldExit(s, launch, terminal(excl(400_000, 5000)), 3, T(3));
+    const v = valuationOf(s, prices);
+    expect(v.completeness).toMatchObject({ remainderTokens: 2000, remainderValued: true });
+    expect(v.components?.find((c) => c.tier === 0 && c.category === "output")).toMatchObject({
+      tokens: 3000,
+    });
+    expect(v.estimatedUsd).toBeCloseTo(2.16 + 0.03, 9);
+  });
+
+  it("leaves a remainder unvalued when the route model has no price", () => {
+    let s = begin();
+    s = foldExit(s, launch, terminal(excl(10, 20)), 1, T(1));
+    const v = valuationOf(s, {});
+    expect(v.source).toBe("unknown");
+    expect(v.completeness).toMatchObject({ remainderTokens: 30, remainderValued: false });
+  });
+
+  it("never adds reported dollars to the estimate", () => {
+    let s = twoRequests();
+    s = foldExit(s, launch, terminal({ ...excl(400_000, 3000), reportedUsd: 9 }), 3, T(3));
+    const v = valuationOf(s, prices);
+    expect(v.source).toBe("reported");
+    expect(v.usd).toBe(9);
+    expect(v.reportedUsd).toBe(9);
+    expect(v.estimatedUsd).toBeCloseTo(2.16, 9);
+  });
+
+  it("is idempotent per sequence", () => {
+    const s = twoRequests();
+    const again = foldObservationPriced(s, request(excl(1, 1), { model: "m1" }), 2, T(3), prices);
+    expect(again).toBe(s);
   });
 });

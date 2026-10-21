@@ -96,13 +96,51 @@ export const RolePreferencesSchema = z.strictObject({
 });
 export type RolePreferences = z.infer<typeof RolePreferencesSchema>;
 
-/** Dollars per million tokens, for an **estimate** when a harness reports no cost (D-P8-08). */
-export const ModelPriceSchema = z.strictObject({
+/** A price that applies to a request whose own normalized input exceeds `aboveInputTokens`. */
+export const ModelPriceTierSchema = z.strictObject({
+  /** Exclusive threshold on ONE request's normalized input, cache tokens included. */
+  aboveInputTokens: z.int().min(0),
   inputPerMTok: z.number().min(0),
   outputPerMTok: z.number().min(0),
   cacheReadPerMTok: z.number().min(0).optional(),
   cacheWritePerMTok: z.number().min(0).optional(),
 });
+export type ModelPriceTier = z.infer<typeof ModelPriceTierSchema>;
+
+/**
+ * Dollars per million tokens, for an **estimate** when a harness reports no cost (D-P8-08).
+ * The base fields are the base tier; `tiers` raise or lower the price for large requests.
+ */
+export const ModelPriceSchema = z
+  .strictObject({
+    inputPerMTok: z.number().min(0),
+    outputPerMTok: z.number().min(0),
+    cacheReadPerMTok: z.number().min(0).optional(),
+    cacheWritePerMTok: z.number().min(0).optional(),
+    /** Where the figures come from, for example `anthropic-list`. */
+    source: z.string().min(1).max(100).optional(),
+    /** The price list's version or ISO date. */
+    version: z.string().min(1).max(100).optional(),
+    tiers: z.array(ModelPriceTierSchema).max(8).optional(),
+  })
+  .superRefine((price, ctx) => {
+    const tiers = price.tiers ?? [];
+    for (let index = 1; index < tiers.length; index += 1) {
+      const previous = tiers[index - 1];
+      const tier = tiers[index];
+      if (
+        previous !== undefined &&
+        tier !== undefined &&
+        tier.aboveInputTokens <= previous.aboveInputTokens
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["tiers", index, "aboveInputTokens"],
+          message: "tiers must be sorted by strictly ascending aboveInputTokens",
+        });
+      }
+    }
+  });
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 
 const RolePolicySchema = z.strictObject({
@@ -114,7 +152,10 @@ const RolePolicySchema = z.strictObject({
 
 // --- The ladders this replaced, read once and never written -------------------------
 
-const LegacyRungSchema = z.object({ tier: TierSchema, routes: z.array(RouteSpecSchema).min(1) });
+const LegacyRungSchema = z.object({
+  tier: TierSchema,
+  routes: z.array(RouteSpecSchema).min(1),
+});
 const LegacyRuleSchema = z.object({
   id: z.string(),
   when: z.object({ kind: z.array(z.string()).optional() }).passthrough(),
