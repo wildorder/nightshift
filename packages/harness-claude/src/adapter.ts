@@ -768,6 +768,7 @@ const measuresFor = (
       ? {}
       : {
           usage: measures.usage,
+          ...optionalField("counters", measures.counters),
           usageScope: measures.usageScope,
           inclusion: measures.inclusion,
         }),

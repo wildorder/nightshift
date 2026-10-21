@@ -70,6 +70,8 @@ const RECORDED_MEASURES = {
   usageScope: "session",
   inclusion: "includes_children",
   observedModel: "claude-sonnet-5",
+  // The summed modelUsage, with the reasoning the RouteUsage cannot carry.
+  counters: expect.objectContaining({ reasoningTokens: 131, inputIncludesCache: false }),
 };
 
 /** Nothing seen: the coverage every usage-less exit carries. */
