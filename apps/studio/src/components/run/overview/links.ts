@@ -7,6 +7,14 @@ const runBase = (scope: RunScope): string =>
 export const workHref = (scope: RunScope, nodeId: string): string =>
   `${runBase(scope)}?tab=work&node=${encodeURIComponent(nodeId)}`;
 
+/** A member run's page, still under the completion history being read. */
+export const memberRunHref = (
+  scope: RunScope,
+  member: { readonly programId: string; readonly runId: string },
+  historyId: string,
+): string =>
+  `/projects/${scope.projectId}/programs/${member.programId}/runs/${member.runId}?scope=history:${encodeURIComponent(historyId)}`;
+
 export const decisionHref = (scope: RunScope, decisionId: string): string =>
   `${runBase(scope)}/decisions/${decisionId}`;
 

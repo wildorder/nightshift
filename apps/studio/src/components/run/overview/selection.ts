@@ -53,3 +53,30 @@ export const TILE_SELECTIONS: Readonly<Record<TileId, Selection>> = {
     scope: { kind: "tile", tile: "review" },
   },
 };
+
+export type HistoryTileId = "time" | "consumed" | "rating";
+
+/** The history's tiles open the same sheet, with the completion metrics' definitions. */
+export const HISTORY_TILE_SELECTIONS: Readonly<
+  Record<HistoryTileId, { readonly title: string; readonly metrics: readonly MetricId[] }>
+> = {
+  time: {
+    title: "Time to a working result",
+    metrics: ["completion_lead_time", "run_completion_time", "active_seconds"],
+  },
+  consumed: {
+    title: "Consumed across the members",
+    metrics: [
+      "tokens_input",
+      "tokens_output",
+      "api_equivalent_estimate",
+      "infrastructure_estimate",
+      "combined_estimate",
+      "coverage",
+    ],
+  },
+  rating: {
+    title: "Did it work",
+    metrics: ["rating_coverage", "human_verdict"],
+  },
+};

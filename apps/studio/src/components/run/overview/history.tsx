@@ -16,6 +16,7 @@ import type {
   RunScope,
 } from "@nightshift/core";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { when } from "../../../lib/format.js";
@@ -23,9 +24,9 @@ import { compactCount, dollarsText, NOT_OBSERVED, spanText } from "../../../lib/
 import { useStudio } from "../../../studio.js";
 import { StatusBadge } from "../../status-badge.js";
 import { AcceptanceState } from "../verdict.js";
-
-const runHref = (scope: RunScope, member: { programId: string; runId: string }): string =>
-  `/projects/${scope.projectId}/programs/${member.programId}/runs/${member.runId}`;
+import { HistoryEvidenceSheet } from "./evidence-sheet.js";
+import { memberRunHref } from "./links.js";
+import type { HistoryTileId } from "./selection.js";
 
 const keyOf = (member: { programId: string; runId: string }): string =>
   `${member.programId}/${member.runId}`;
@@ -69,19 +70,30 @@ const Big = ({ children }: { readonly children: React.ReactNode }) => (
 const HistoryTile = ({
   id,
   label,
+  selected,
+  onSelect,
   children,
 }: {
-  readonly id: string;
+  readonly id: HistoryTileId;
   readonly label: string;
+  readonly selected: boolean;
+  readonly onSelect: (id: HistoryTileId) => void;
   readonly children: React.ReactNode;
 }) => (
-  <div
+  <button
+    type="button"
     data-history-tile={id}
-    className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card p-4 text-card-foreground shadow-xs"
+    aria-haspopup="dialog"
+    aria-pressed={selected}
+    onClick={() => onSelect(id)}
+    className="flex min-w-0 flex-col items-stretch gap-2 rounded-lg border border-border bg-card p-4 text-left text-card-foreground shadow-xs outline-none hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring aria-pressed:border-ring"
   >
-    <h2 className="text-sm font-medium text-muted-foreground">{label}</h2>
+    <span className="text-sm font-medium text-muted-foreground">{label}</span>
+    <span className="sr-only">
+      Open the definition, coverage and member runs behind this figure.
+    </span>
     {children}
-  </div>
+  </button>
 );
 
 const verdictOf = (member: CompletionMemberReport) =>
@@ -204,18 +216,41 @@ const Times = ({ figures }: { readonly figures: CompletionFigures }) => (
   </>
 );
 
-export const HistoryTiles = ({ history }: { readonly history: CompletionReport }) => (
+export const HistoryTiles = ({
+  history,
+  selected,
+  onSelect,
+}: {
+  readonly history: CompletionReport;
+  readonly selected?: HistoryTileId | undefined;
+  readonly onSelect: (id: HistoryTileId) => void;
+}) => (
   <fieldset
     className="m-0 grid min-w-0 gap-3 border-0 p-0 sm:grid-cols-2 xl:grid-cols-3"
     aria-label="Headline summaries for this completion history"
   >
-    <HistoryTile id="time" label="Time to a working result">
+    <HistoryTile
+      id="time"
+      label="Time to a working result"
+      selected={selected === "time"}
+      onSelect={onSelect}
+    >
       <Times figures={history.current} />
     </HistoryTile>
-    <HistoryTile id="consumed" label="Consumed across the members">
+    <HistoryTile
+      id="consumed"
+      label="Consumed across the members"
+      selected={selected === "consumed"}
+      onSelect={onSelect}
+    >
       <Consumption figures={history.current} />
     </HistoryTile>
-    <HistoryTile id="rating" label="Did it work">
+    <HistoryTile
+      id="rating"
+      label="Did it work"
+      selected={selected === "rating"}
+      onSelect={onSelect}
+    >
       <Rating coverage={history.coverage} />
     </HistoryTile>
   </fieldset>
@@ -224,14 +259,16 @@ export const HistoryTiles = ({ history }: { readonly history: CompletionReport }
 const MemberRow = ({
   member,
   scope,
+  historyId,
 }: {
   readonly member: CompletionMemberReport;
   readonly scope: RunScope;
+  readonly historyId: string;
 }) => (
   <tr className="border-t border-border align-top">
     <td className="py-1.5 pr-3">{member.role}</td>
     <td className="py-1.5 pr-3">
-      <Link className="font-mono underline" to={runHref(scope, member)}>
+      <Link className="font-mono underline" to={memberRunHref(scope, member, historyId)}>
         run {member.runId.slice(-8)}
       </Link>{" "}
       <span className="text-xs text-muted-foreground">
@@ -257,10 +294,12 @@ const MembersTable = ({
   label,
   members,
   scope,
+  historyId,
 }: {
   readonly label: string;
   readonly members: readonly CompletionMemberReport[];
   readonly scope: RunScope;
+  readonly historyId: string;
 }) => (
   <div className="overflow-x-auto">
     <table aria-label={label} className="w-full min-w-[32rem] text-sm">
@@ -275,7 +314,7 @@ const MembersTable = ({
       </thead>
       <tbody>
         {members.map((member) => (
-          <MemberRow key={keyOf(member)} member={member} scope={scope} />
+          <MemberRow key={keyOf(member)} member={member} scope={scope} historyId={historyId} />
         ))}
       </tbody>
     </table>
@@ -302,7 +341,8 @@ const MemberTimeline = ({
   const { stores } = useStudio();
   const keys = history.members.map(keyOf).join(",");
   const runs = useQuery({
-    queryKey: ["history-member-runs", scope.projectId, keys],
+    // Under the run-status prefix so the live poll refreshes the intervals.
+    queryKey: ["run-status", scope.runId, "history-member-runs", scope.projectId, keys],
     queryFn: () =>
       Promise.all(
         history.members.map((m) =>
@@ -335,32 +375,40 @@ const MemberTimeline = ({
   const hi = Math.max(...drawn.map((s) => s.to as number));
   const extent = Math.max(1, hi - lo);
   return (
-    <ol className="grid gap-2" data-testid="history-timeline" aria-label="Member runs over time">
-      {spans.map((s) => (
-        <li key={keyOf(s.member)} className="grid gap-1 text-xs">
-          <span>
-            <span className="font-medium">{s.member.role}</span>{" "}
-            <span className="font-mono">run {s.member.runId.slice(-8)}</span>{" "}
-            <span className="text-muted-foreground">
-              {s.from === undefined || s.to === undefined
-                ? "not readable, no interval"
-                : `${when(new Date(s.from).toISOString())} to ${s.open ? "still open (drawn to as-of)" : when(new Date(s.to).toISOString())} · ${spanText(s.to - s.from)}`}
+    <>
+      <p className="sr-only" data-testid="history-timeline-summary">
+        {drawn.length} of {spans.length} member runs have an interval, from{" "}
+        {drawn.length === 0 ? NOT_OBSERVED : when(new Date(lo).toISOString())} to{" "}
+        {drawn.length === 0 ? NOT_OBSERVED : when(new Date(hi).toISOString())}. Each run's start,
+        end and span are listed below.
+      </p>
+      <ol className="grid gap-2" data-testid="history-timeline" aria-label="Member runs over time">
+        {spans.map((s) => (
+          <li key={keyOf(s.member)} className="grid gap-1 text-xs">
+            <span>
+              <span className="font-medium">{s.member.role}</span>{" "}
+              <span className="font-mono">run {s.member.runId.slice(-8)}</span>{" "}
+              <span className="text-muted-foreground">
+                {s.from === undefined || s.to === undefined
+                  ? "not readable, no interval"
+                  : `${when(new Date(s.from).toISOString())} to ${s.open ? "still open (drawn to as-of)" : when(new Date(s.to).toISOString())} · ${spanText(s.to - s.from)}`}
+              </span>
             </span>
-          </span>
-          <span className="relative block h-3 rounded-sm bg-muted" aria-hidden="true">
-            {s.from === undefined || s.to === undefined ? null : (
-              <span
-                className={`absolute inset-y-0 rounded-sm ${s.open ? "bg-chart-2/40 border border-chart-2" : "bg-chart-1"}`}
-                style={{
-                  left: `${((s.from - lo) / extent) * 100}%`,
-                  width: `max(2px, ${((s.to - s.from) / extent) * 100}%)`,
-                }}
-              />
-            )}
-          </span>
-        </li>
-      ))}
-    </ol>
+            <span className="relative block h-3 rounded-sm bg-muted" aria-hidden="true">
+              {s.from === undefined || s.to === undefined ? null : (
+                <span
+                  className={`absolute inset-y-0 rounded-sm ${s.open ? "bg-chart-2/40 border border-chart-2" : "bg-chart-1"}`}
+                  style={{
+                    left: `${((s.from - lo) / extent) * 100}%`,
+                    width: `max(2px, ${((s.to - s.from) / extent) * 100}%)`,
+                  }}
+                />
+              )}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </>
   );
 };
 
@@ -394,55 +442,75 @@ export const HistoryBody = ({
   readonly history: CompletionReport;
   readonly report: RunReport;
   readonly scope: RunScope;
-}) => (
-  <>
-    <HistoryTiles history={history} />
+}) => {
+  const [tile, setTile] = useState<HistoryTileId | undefined>(undefined);
+  return (
+    <>
+      <HistoryTiles history={history} selected={tile} onSelect={setTile} />
+      <HistoryEvidenceSheet
+        tile={tile}
+        history={history}
+        report={report}
+        scope={scope}
+        onClose={() => setTile(undefined)}
+      />
 
-    <Section title="Member runs">
-      <MembersTable label="Member runs" members={history.members} scope={scope} />
-    </Section>
+      <Section title="Member runs">
+        <MembersTable
+          label="Member runs"
+          members={history.members}
+          scope={scope}
+          historyId={history.completionHistoryId}
+        />
+      </Section>
 
-    <Section title="Where the time went, by run">
-      <MemberTimeline history={history} report={report} scope={scope} />
-    </Section>
+      <Section title="Where the time went, by run">
+        <MemberTimeline history={history} report={report} scope={scope} />
+      </Section>
 
-    <Section title="Checkpoints">
-      {history.checkpoints.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No checkpoint was recorded. The figures above are the current view and move as members
-          change.
-        </p>
-      ) : (
-        <ul className="grid gap-3" data-testid="history-checkpoints">
-          {history.checkpoints.map((checkpoint) => (
-            <li key={`${checkpoint.name}${checkpoint.recordedAt}`} className="grid gap-1 text-sm">
-              <span>
-                <span className="font-medium">{checkpoint.name}</span>{" "}
-                <span className="text-xs text-muted-foreground">
-                  recorded {when(checkpoint.recordedAt)} · membership version{" "}
-                  {checkpoint.membershipVersion} · frozen, later changes do not rewrite it
-                </span>
-              </span>
-              <FigureList figures={checkpoint} />
-            </li>
-          ))}
-        </ul>
-      )}
-    </Section>
-
-    <Section title="Later fixes">
-      {history.laterFixes.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No member was added after the first checkpoint.
-        </p>
-      ) : (
-        <>
-          <p className="mb-2 text-xs text-muted-foreground">
-            Members added after the first checkpoint was taken.
+      <Section title="Checkpoints">
+        {history.checkpoints.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No checkpoint was recorded. The figures above are the current view and move as members
+            change.
           </p>
-          <MembersTable label="Later fixes" members={history.laterFixes} scope={scope} />
-        </>
-      )}
-    </Section>
-  </>
-);
+        ) : (
+          <ul className="grid gap-3" data-testid="history-checkpoints">
+            {history.checkpoints.map((checkpoint) => (
+              <li key={`${checkpoint.name}${checkpoint.recordedAt}`} className="grid gap-1 text-sm">
+                <span>
+                  <span className="font-medium">{checkpoint.name}</span>{" "}
+                  <span className="text-xs text-muted-foreground">
+                    recorded {when(checkpoint.recordedAt)} · membership version{" "}
+                    {checkpoint.membershipVersion} · frozen, later changes do not rewrite it
+                  </span>
+                </span>
+                <FigureList figures={checkpoint} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+
+      <Section title="Later fixes">
+        {history.laterFixes.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No member was added after the first checkpoint.
+          </p>
+        ) : (
+          <>
+            <p className="mb-2 text-xs text-muted-foreground">
+              Members added after the first checkpoint was taken.
+            </p>
+            <MembersTable
+              label="Later fixes"
+              members={history.laterFixes}
+              scope={scope}
+              historyId={history.completionHistoryId}
+            />
+          </>
+        )}
+      </Section>
+    </>
+  );
+};

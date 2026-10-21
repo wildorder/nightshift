@@ -87,7 +87,8 @@ export const OverviewHeader = ({
               <>
                 <span className="font-mono">{scope.programId}</span> · run{" "}
                 <span className="font-mono">{scope.runId.slice(-8)}</span> · started{" "}
-                {when(run.startedAt)}
+                {when(run.startedAt)} ·{" "}
+                <span data-testid="contributing-runs">contributing runs: 1 (this run)</span>
               </>
             )}
           </p>
