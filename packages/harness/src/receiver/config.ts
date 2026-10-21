@@ -17,5 +17,9 @@ export const RECEIVER_ENV = {
   maxJournalBytes: "NIGHTSHIFT_RECEIVER_MAX_JOURNAL_BYTES",
   /** Newline or comma separated exact attribute keys; required. */
   allowedAttributes: "NIGHTSHIFT_RECEIVER_ALLOWED_ATTRIBUTES",
+  /** JSON array of `{ key, type, values? }` specs; merged with `allowedAttributes`. */
+  attributeSpecs: "NIGHTSHIFT_RECEIVER_ATTRIBUTE_SPECS",
+  /** JSON array of flat rule objects; absent or empty keeps every record. */
+  recordFilter: "NIGHTSHIFT_RECEIVER_RECORD_FILTER",
   maxRecords: "NIGHTSHIFT_RECEIVER_MAX_RECORDS",
 } as const;

@@ -472,6 +472,56 @@ describe("segments and seams", () => {
     expect(summary.totals).toMatchObject({ inputTokens: 14, outputTokens: 6 });
   });
 
+  it("carries the exit's inclusion onto its terminal_summary observation", async () => {
+    const usage = { inputTokens: 40, outputTokens: 8 };
+    const cases: Array<[HarnessExit, string]> = [
+      [{ kind: "completed", usage, inclusion: "includes_children" }, "includes_children"],
+      [{ kind: "completed", usage }, "self"],
+    ];
+    for (const [exit, expected] of cases) {
+      const world = await build();
+      const recorder = world.recorder();
+      await recorder.startSegment({ resumedSession: false });
+      const { summary } = await recorder.close(exit);
+      expect(summary.segments[0]?.sources.aggregateInclusion).toBe(expected);
+    }
+  });
+
+  it("records the exit's full counters, reasoning included, and falls back to usage without them", async () => {
+    const world = await build();
+    const recorder = world.recorder();
+    await recorder.startSegment({ resumedSession: false });
+    const { summary } = await recorder.close({
+      kind: "completed",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      usageScope: "session",
+      counters: { inputTokens: 10, outputTokens: 5, reasoningTokens: 3, inputIncludesCache: false },
+    });
+    expect(summary.totals).toMatchObject({ inputTokens: 10, outputTokens: 5, reasoningTokens: 3 });
+
+    const plain = await build();
+    const plainRecorder = plain.recorder();
+    await plainRecorder.startSegment({ resumedSession: false });
+    const { summary: plainSummary } = await plainRecorder.close({
+      kind: "completed",
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+    expect(plainSummary.totals).toMatchObject({ inputTokens: 10, outputTokens: 5 });
+    expect(plainSummary.totals.reasoningTokens).toBeUndefined();
+  });
+
+  it("takes reported dollars from the exit's counters before usage", async () => {
+    const world = await build();
+    const recorder = world.recorder();
+    await recorder.startSegment({ resumedSession: false });
+    const { summary } = await recorder.close({
+      kind: "completed",
+      usage: { inputTokens: 10, actualCostUsd: 9 },
+      counters: { inputTokens: 10, reportedUsd: 0.5 },
+    });
+    expect(summary.valuation?.usd).toBe(0.5);
+  });
+
   describe("reported dollars", () => {
     const exit = (
       inputTokens: number,

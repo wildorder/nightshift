@@ -10,6 +10,7 @@ import {
   codexBriefAddendum,
   FORBIDDEN_GIT_SUBCOMMANDS,
   mcpOverrides,
+  otelOverrides,
   tomlInlineTable,
   tomlString,
 } from "./command.js";
@@ -153,5 +154,40 @@ describe("resuming a thread (P8, D-P8-15)", () => {
     expect(args).not.toContain("-C");
     expect(args.slice(-2)).toEqual(["01a0d7e4-2e3c-7c23-9051-e526953d7a48", "-"]);
     expect(args.join(" ")).not.toContain("mcp_servers");
+  });
+});
+
+describe("the telemetry exporter override (P20 S-03)", () => {
+  const base = {
+    model: { harness: "codex", provider: "openai", model: "gpt-5.5" },
+    worktree: "/state/wt/1",
+    mcp: MCP,
+  } as const;
+  const otel = { endpoint: "http://127.0.0.1:4318", capability: "cap-123" };
+
+  it("points the log exporter at <endpoint>/v1/logs after --ignore-user-config", () => {
+    const args = buildCodexArgs({ ...base, otel });
+    expect(args).toContain(
+      'otel.exporter={otlp-http={endpoint="http://127.0.0.1:4318/v1/logs",protocol="json",headers={Authorization="Bearer cap-123"}}}',
+    );
+    expect(args).toContain("otel.log_user_prompt=false");
+    expect(args).toContain('otel.environment="nightshift"');
+    const joined = args.join(" ");
+    expect(joined).not.toContain("trace_exporter");
+    expect(joined).not.toContain("metrics_exporter");
+    const overrides = otelOverrides(otel);
+    expect(args.indexOf(overrides[1] as string)).toBeGreaterThan(
+      args.indexOf("--ignore-user-config"),
+    );
+    expect(args.indexOf(overrides[1] as string)).toBeLessThan(args.indexOf("-m"));
+  });
+
+  it("leaves the arguments untouched without otel", () => {
+    const args = buildCodexArgs(base);
+    expect(args.join(" ")).not.toContain("otel");
+    const withOtel = buildCodexArgs({ ...base, otel });
+    const at = withOtel.indexOf("--ignore-user-config") + 1;
+    const n = otelOverrides(otel).length;
+    expect([...withOtel.slice(0, at), ...withOtel.slice(at + n)]).toEqual(args);
   });
 });

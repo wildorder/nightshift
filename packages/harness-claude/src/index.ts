@@ -19,16 +19,20 @@
 
 export {
   CLAUDE_HARNESS_ID,
+  type ClaudeCaptureReport,
   type ClaudeHarnessOptions,
+  type ClaudeRequestCaptureOptions,
   createClaudeHarness,
   SPAWN_FAILURE_EXIT_CODE,
 } from "./adapter.js";
+export type { ClaudeCaptureResult } from "./capture.js";
 export {
   buildClaudeArgs,
   buildMcpConfig,
   buildSettings,
   CLAUDE_COMMAND,
   type ClaudeCommandInput,
+  type ClaudeSettingsInput,
   claudeBriefAddendum,
   claudePrompt,
   VERIFIED_CLAUDE_VERSION,
@@ -59,6 +63,25 @@ export {
   FORBIDDEN_GIT_SUBCOMMANDS,
   gitWriteDenials,
 } from "./permissions.js";
+export {
+  buildClaudeProbeEvidence,
+  CLAUDE_CAPTURE_KEEP_ENV,
+  CLAUDE_CAPTURE_PROBE_ENV,
+  CLAUDE_PROBE_DIMENSIONS,
+  type ClaudeCaptureProbeGate,
+  type ClaudeProbeDimension,
+  type ClaudeProbeEvidence,
+  type ClaudeProbeEvidenceInput,
+  type ClaudeProbeRun,
+  type ClaudeProbeRunOptions,
+  claudeCaptureProbeGate,
+  claudeProbeObjective,
+  claudeProbeUnverifiedReason,
+  PROBE_IDENTIFIER_KEYS,
+  PROBE_TEXT_KEYS,
+  runClaudeProbeDimension,
+  sanitizeClaudeProbeJournal,
+} from "./probe.js";
 export {
   type AdapterFileSystem,
   type ChildOutputStream,

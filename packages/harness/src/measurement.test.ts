@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { coverageOfExit, type HarnessExit, usageOfExit, usageScopeOfExit } from "./harness.js";
+import {
+  countersOfExit,
+  coverageOfExit,
+  type HarnessExit,
+  inclusionOfExit,
+  usageOfExit,
+  usageScopeOfExit,
+} from "./harness.js";
 import { type HarnessObservation, recordingMeasurementSink } from "./measurement.js";
 
 const usage = { inputTokens: 3, outputTokens: 4 };
@@ -17,6 +24,15 @@ describe("usageOfExit", () => {
   });
 });
 
+describe("countersOfExit", () => {
+  it("reads counters when present and is undefined otherwise", () => {
+    const counters = { inputTokens: 1, reasoningTokens: 2 };
+    expect(countersOfExit({ kind: "completed", usage, counters })).toEqual(counters);
+    expect(countersOfExit({ kind: "cancelled", counters })).toEqual(counters);
+    expect(countersOfExit({ kind: "completed", usage })).toBeUndefined();
+  });
+});
+
 describe("exit defaults", () => {
   it("coverage is unknown and scope is launch when absent", () => {
     expect(coverageOfExit({ kind: "completed" })).toBe("unknown");
@@ -31,6 +47,16 @@ describe("exit defaults", () => {
     };
     expect(coverageOfExit(exit)).toBe("partial");
     expect(usageScopeOfExit(exit)).toBe("session");
+  });
+});
+
+describe("inclusionOfExit", () => {
+  it("is self when absent and what the adapter said otherwise", () => {
+    expect(inclusionOfExit({ kind: "completed" })).toBe("self");
+    expect(inclusionOfExit({ kind: "completed", inclusion: "includes_children" })).toBe(
+      "includes_children",
+    );
+    expect(inclusionOfExit({ kind: "cancelled", inclusion: "unknown" })).toBe("unknown");
   });
 });
 

@@ -37,7 +37,13 @@ import {
   valueCounters,
 } from "@nightshift/core";
 import type { HarnessExit, HarnessObservation, MeasurementSink } from "@nightshift/harness";
-import { coverageOfExit, usageOfExit, usageScopeOfExit } from "@nightshift/harness";
+import {
+  countersOfExit,
+  coverageOfExit,
+  inclusionOfExit,
+  usageOfExit,
+  usageScopeOfExit,
+} from "@nightshift/harness";
 import type { ExecutionEnvironment } from "../environment.js";
 import {
   type Journal,
@@ -511,19 +517,21 @@ export const createMeasurementRecorder = (
 
   const exitObservation = (exit: HarnessExit) => {
     const usage = usageOfExit(exit);
+    const exitCounters = countersOfExit(exit);
+    const reportedUsd = exitCounters?.reportedUsd ?? usage?.actualCostUsd;
     const launchId = active?.ref.launchId ?? "none";
     return {
       observationId: `exit:${launchId}`,
       source: "engine",
       provenance: { adapter: "execution", note: "the harness exit" },
-      inclusion: "self",
+      inclusion: inclusionOfExit(exit),
       kind: "terminal_summary",
-      counters: usage === undefined ? {} : countersFromRouteUsage(usage),
+      counters: exitCounters ?? (usage === undefined ? {} : countersFromRouteUsage(usage)),
       counterScope: usageScopeOfExit(exit),
       exitKind: exit.kind,
       coverage: coverageOfExit(exit),
       ...(exit.observedModel === undefined ? {} : { model: exit.observedModel }),
-      ...(usage?.actualCostUsd === undefined ? {} : { reportedCostUsd: usage.actualCostUsd }),
+      ...(reportedUsd === undefined ? {} : { reportedCostUsd: reportedUsd }),
       ...(usage?.wallClockMs === undefined ? {} : { durationMs: usage.wallClockMs }),
     };
   };

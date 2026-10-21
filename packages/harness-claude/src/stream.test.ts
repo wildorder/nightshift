@@ -23,10 +23,19 @@
  */
 
 import { readFileSync } from "node:fs";
-import { MAX_INLINE_PAYLOAD_BYTES } from "@nightshift/contracts";
-import { createSteppingClock } from "@nightshift/core";
-import type { HookEvent } from "@nightshift/harness";
-import { recordingHookSink } from "@nightshift/harness";
+import {
+  MAX_INLINE_PAYLOAD_BYTES,
+  type MeasurementObservation,
+  MeasurementObservationSchema,
+} from "@nightshift/contracts";
+import {
+  countersFromRouteUsage,
+  createSteppingClock,
+  reconcileSegment,
+  reconcileSegments,
+} from "@nightshift/core";
+import type { HarnessObservation, HookEvent } from "@nightshift/harness";
+import { recordingHookSink, recordingMeasurementSink } from "@nightshift/harness";
 import { describe, expect, it } from "vitest";
 import {
   boundPayload,
@@ -734,5 +743,454 @@ describe("a session kept open for its background work (recorded on 2.1.286)", ()
   it("does not report a background shell command as a sub-agent", () => {
     const { events } = playWithActivity(BACKGROUND);
     expect(typesOf(events)).not.toContain("agent.subagent_created");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Measurement capture (P20)
+// ---------------------------------------------------------------------------
+
+const fixture = (name: string): string =>
+  readFileSync(new URL(`./__fixtures__/stream/${name}`, import.meta.url), "utf8");
+
+const measure = (text: string, streamRequests?: boolean) => {
+  const measurements = recordingMeasurementSink();
+  const sink = recordingHookSink();
+  const interpreter = createStreamInterpreter({
+    sink,
+    clock: createSteppingClock(Date.UTC(2026, 8, 15, 12, 0, 0), 1),
+    measurements,
+    ...(streamRequests === undefined ? {} : { streamRequests }),
+  });
+  interpreter.write(encoder.encode(text));
+  interpreter.end();
+  return { observations: measurements.observations, outcome: interpreter.outcome };
+};
+
+/** What the recorder stamps, so the contract schema can be applied. */
+const stamp = (observation: HarnessObservation): unknown => ({
+  ...observation,
+  projectId: "proj_00000000000000000000000001",
+  programId: "prog_00000000000000000000000001",
+  runId: "run_00000000000000000000000001",
+  executionNodeId: "node_00000000000000000000000001",
+  receivedAt: "2026-09-15T12:00:00.000Z",
+});
+
+const frameLine = (frame: unknown): string => `${JSON.stringify(frame)}\n`;
+
+describe("measurement observations from the stream", () => {
+  it("emits one request for four assistant frames sharing a message id, with no outputTokens", () => {
+    const frame = {
+      type: "assistant",
+      message: {
+        id: "msg_shared",
+        model: "claude-sonnet-5",
+        content: [],
+        usage: {
+          input_tokens: 5,
+          output_tokens: 1,
+          cache_read_input_tokens: 7,
+          cache_creation_input_tokens: 9,
+        },
+      },
+    };
+    const { observations } = measure(frameLine(frame).repeat(4), true);
+    expect(observations).toHaveLength(1);
+    const [request] = observations;
+    expect(request).toMatchObject({
+      kind: "request",
+      requestId: "msg_shared",
+      observationId: "claude:assistant:msg_shared",
+      inclusion: "self",
+      model: "claude-sonnet-5",
+      counters: {
+        inputTokens: 5,
+        cacheReadTokens: 7,
+        cacheWriteTokens: 9,
+        inputIncludesCache: false,
+      },
+    });
+    expect(request?.kind === "request" && "outputTokens" in request.counters).toBe(false);
+  });
+
+  it("emits a session-scoped includes_children snapshot equal to the modelUsage sum", () => {
+    const { observations, outcome } = measure(fixture("subagent.jsonl"));
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).toMatchObject({
+      kind: "cumulative_snapshot",
+      counterScope: "session",
+      inclusion: "includes_children",
+      sessionId: "sess-subagent",
+      observationId: "claude:result:00000000-0000-4000-8000-000000000001",
+      source: "harness",
+      provenance: { adapter: "claude", version: "2.1.286" },
+      counters: {
+        inputTokens: 72,
+        cacheReadTokens: 1300,
+        cacheWriteTokens: 1000,
+        outputTokens: 22,
+        inputIncludesCache: false,
+        reportedUsd: 0.03,
+      },
+    });
+    // Only one of the two models reports thinkingTokens, so the sum is unknown.
+    const first = observations[0];
+    expect(first?.kind === "cumulative_snapshot" && "reasoningTokens" in first.counters).toBe(
+      false,
+    );
+    // The turn's own `usage` (22 input) is not emitted as anything.
+    expect(JSON.stringify(observations)).not.toContain('"inputTokens":22,');
+    expect(outcome.usage?.inputTokens).toBe(22);
+  });
+
+  it("emits no outputTokens in the snapshot or exit usage when modelUsage lacks it", () => {
+    const text = frameLine({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      uuid: "00000000-0000-4000-8000-0000000000aa",
+      session_id: "sess-partial",
+      usage: { input_tokens: 3, output_tokens: 4 },
+      modelUsage: {
+        "claude-sonnet-5": {
+          inputTokens: 12,
+          cacheReadInputTokens: 2,
+          cacheCreationInputTokens: 1,
+        },
+      },
+    });
+    const { observations, outcome } = measure(text);
+    expect(observations).toHaveLength(1);
+    const [snapshot] = observations;
+    expect(snapshot?.kind === "cumulative_snapshot" && snapshot.counters).toEqual({
+      inputTokens: 12,
+      cacheReadTokens: 2,
+      cacheWriteTokens: 1,
+      inputIncludesCache: false,
+    });
+    expect(outcome.measures.usageScope).toBe("session");
+    expect(outcome.measures.usage).toMatchObject({ inputTokens: 12 });
+    expect(outcome.measures.usage).not.toHaveProperty("outputTokens");
+  });
+
+  it("emits a request with childRef for a sub-agent's assistant message", () => {
+    const { observations } = measure(fixture("subagent.jsonl"), true);
+    const requests = observations.filter((o) => o.kind === "request");
+    expect(requests.map((r) => r.observationId)).toEqual([
+      "claude:assistant:msg_sub_01",
+      "claude:assistant:msg_child_01",
+      "claude:assistant:msg_sub_02",
+    ]);
+    expect(requests[0]?.childRef).toBeUndefined();
+    expect(requests[1]?.childRef).toEqual({ kind: "agent", id: "toolu_a1" });
+    expect(requests[1]).toMatchObject({ model: "claude-haiku-4-5" });
+  });
+
+  it("sets contextWindowTokens only once a result has named the model's window", () => {
+    const text = `${fixture("compaction.jsonl")}${frameLine({
+      type: "assistant",
+      message: {
+        id: "msg_late",
+        model: "claude-sonnet-5",
+        content: [],
+        usage: { input_tokens: 1 },
+      },
+    })}`;
+    const requests = measure(text, true).observations.filter((o) => o.kind === "request");
+    expect(requests.map((r) => r.kind === "request" && r.contextWindowTokens)).toEqual([
+      undefined,
+      undefined,
+      200000,
+    ]);
+  });
+
+  it("emits nothing for a <synthetic> assistant frame or a zeroed result", () => {
+    const { observations, outcome } = measure(fixture("auth-failure.jsonl"), true);
+    expect(observations).toEqual([]);
+    expect(outcome.measures.resultCoverage).toBe("partial");
+    expect(outcome.measures.observedModel).toBe("claude-sonnet-5");
+  });
+
+  it("emits no requests when streamRequests is false, but still the snapshot", () => {
+    const { observations } = measure(fixture("compaction.jsonl"), false);
+    expect(observations.map((o) => o.kind)).toEqual(["cumulative_snapshot"]);
+  });
+
+  it("emits nothing without a sink", () => {
+    const interpreter = createStreamInterpreter({
+      sink: recordingHookSink(),
+      clock: createSteppingClock(0, 1),
+      streamRequests: true,
+    });
+    interpreter.write(encoder.encode(fixture("subagent.jsonl")));
+    interpreter.end();
+    expect(interpreter.outcome.measures.usageScope).toBe("session");
+  });
+
+  it("falls back to an ordinal observation id when a result has no uuid", () => {
+    const { observations } = measure(fixture("resumed.jsonl").replace(/, "uuid": "[^"]*"/, ""));
+    expect(observations[0]?.observationId).toBe("claude:result:sess-resumed:1");
+  });
+
+  it.each(["subagent", "compaction", "resumed", "interrupted", "no-result", "auth-failure"])(
+    "every observation from %s parses and carries no text",
+    (name) => {
+      const { observations } = measure(fixture(`${name}.jsonl`), true);
+      for (const observation of observations) {
+        expect(() => MeasurementObservationSchema.parse(stamp(observation))).not.toThrow();
+      }
+      const serialized = JSON.stringify(observations);
+      for (const text of ["placeholder", "/placeholder", "toolu_c1", "done"]) {
+        expect(serialized).not.toContain(`"${text}"`);
+      }
+      expect(serialized).not.toContain("a.txt");
+      expect(serialized).not.toContain('"input"');
+    },
+  );
+});
+
+describe("outcome.measures", () => {
+  it("reports session scope, includes_children and complete for a resumed launch", () => {
+    const { outcome, observations } = measure(fixture("resumed.jsonl"));
+    expect(outcome.measures).toMatchObject({
+      usageScope: "session",
+      inclusion: "includes_children",
+      resultCoverage: "complete",
+      observedModel: "claude-sonnet-5",
+      usage: {
+        inputTokens: 1015,
+        outputTokens: 806,
+        cacheReadTokens: 52000,
+        cacheWriteTokens: 9000,
+        inputIncludesCache: false,
+        actualCostUsd: 0.4,
+        latencyMs: 1000,
+      },
+    });
+    // The restored totals exceed the turn's own usage, which stays as it was.
+    expect(outcome.usage).toMatchObject({ inputTokens: 15, outputTokens: 6 });
+    expect(observations[0]).toMatchObject({
+      counters: { inputTokens: 1015, reasoningTokens: 100 },
+    });
+  });
+
+  it("covers a compaction run", () => {
+    const { outcome, observations } = measure(fixture("compaction.jsonl"), true);
+    expect(outcome.measures.resultCoverage).toBe("complete");
+    expect(observations.map((o) => o.kind)).toEqual(["request", "request", "cumulative_snapshot"]);
+  });
+
+  it("reports an aborted_streaming result as partial, still with its session usage", () => {
+    const { outcome } = measure(fixture("interrupted.jsonl"));
+    expect(outcome.terminalReason).toBe("aborted_streaming");
+    expect(outcome.measures.resultCoverage).toBe("partial");
+    expect(outcome.measures.usageScope).toBe("session");
+  });
+
+  it("reports a stream with no result and no usage as unknown, launch/self", () => {
+    const { outcome, observations } = measure(fixture("no-result.jsonl"), true);
+    expect(outcome.measures).toEqual({
+      usageScope: "launch",
+      inclusion: "self",
+      observedModel: "claude-sonnet-5",
+      resultCoverage: "unknown",
+    });
+    expect(observations.map((o) => o.kind)).toEqual(["request"]);
+  });
+
+  const noModelUsage = (input: number, cost: number | undefined, extra: object = {}): string =>
+    frameLine({ type: "system", subtype: "init", session_id: "s", model: "claude-sonnet-5" }) +
+    frameLine({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: "s",
+      usage: { input_tokens: input },
+      ...(cost === undefined ? {} : { total_cost_usd: cost }),
+      ...extra,
+    });
+
+  it("falls back to launch scope without dollars and keeps them as a session snapshot", () => {
+    const { outcome, observations } = measure(noModelUsage(50, 1.5));
+    expect(outcome.measures).toMatchObject({
+      usageScope: "launch",
+      inclusion: "self",
+      resultCoverage: "partial",
+      usage: { inputTokens: 50 },
+    });
+    expect(outcome.measures.usage).not.toHaveProperty("actualCostUsd");
+    expect(observations).toHaveLength(1);
+    const [snapshot] = observations;
+    expect(snapshot).toMatchObject({
+      kind: "cumulative_snapshot",
+      counterScope: "session",
+      inclusion: "includes_children",
+      sessionId: "s",
+    });
+    expect(snapshot?.kind === "cumulative_snapshot" && snapshot.counters).toEqual({
+      reportedUsd: 1.5,
+    });
+    expect(
+      MeasurementObservationSchema.safeParse(stamp(snapshot as HarnessObservation)).success,
+    ).toBe(true);
+  });
+
+  it("emits no cost snapshot for zero or absent cost without modelUsage", () => {
+    expect(measure(noModelUsage(5, 0)).observations).toEqual([]);
+    expect(measure(noModelUsage(5, undefined)).observations).toEqual([]);
+  });
+
+  it("emits only the existing snapshot when modelUsage is usable", () => {
+    const text = noModelUsage(5, 2, {
+      modelUsage: { "claude-sonnet-5": { inputTokens: 12 } },
+    });
+    const { observations } = measure(text);
+    expect(observations).toHaveLength(1);
+    expect(observations[0]?.observationId).toMatch(/^claude:result:/);
+  });
+
+  it("does not double-count session-cumulative dollars across a resume", () => {
+    const segment = (input: number, cost: number, resumed: boolean) => {
+      const { observations, outcome } = measure(noModelUsage(input, cost));
+      const m = outcome.measures;
+      const stamped = observations.map((o) => stamp(o) as MeasurementObservation);
+      stamped.push({
+        ...(stamp({
+          schemaVersion: 1,
+          kind: "terminal_summary",
+          observationId: `exit:${resumed ? 2 : 1}`,
+          source: "engine",
+          provenance: { adapter: "execution", note: "the harness exit" },
+          inclusion: m.inclusion,
+          counters: countersFromRouteUsage(m.usage ?? {}),
+          counterScope: m.usageScope,
+          exitKind: "completed",
+          coverage: "partial",
+        } as unknown as HarnessObservation) as object),
+      } as MeasurementObservation);
+      return stamped;
+    };
+    const first = reconcileSegment(segment(100, 1, false), { resumedSession: false });
+    const second = reconcileSegment(segment(50, 1.5, true), {
+      resumedSession: true,
+      ...(first.sessionCumulative === undefined
+        ? {}
+        : { baseline: first.sessionCumulative.counters }),
+    });
+    const total = reconcileSegments([first, second]);
+    expect(total.inputTokens).toBe(150);
+    expect(total.reportedUsd).toBe(1.5);
+    expect(first.gaps).toEqual([]);
+    expect(second.gaps).toEqual([]);
+  });
+
+  describe("multi-turn results mixing modelUsage and fallback", () => {
+    const resultFrame = (input: number, cost: number, uuid: string, modelUsage?: object) =>
+      frameLine({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        uuid,
+        session_id: "s",
+        usage: { input_tokens: input },
+        total_cost_usd: cost,
+        ...(modelUsage === undefined ? {} : { modelUsage }),
+      });
+    const init = frameLine({
+      type: "system",
+      subtype: "init",
+      session_id: "s",
+      model: "claude-sonnet-5",
+    });
+
+    it("does not re-emit an earlier aggregate when a later turn lacks modelUsage", () => {
+      const { observations, outcome } = measure(
+        init +
+          resultFrame(100, 1, "00000000-0000-4000-8000-000000000001", {
+            m: { inputTokens: 100 },
+          }) +
+          resultFrame(50, 1.5, "00000000-0000-4000-8000-000000000002"),
+      );
+      const m = outcome.measures;
+      expect(m).toMatchObject({
+        usageScope: "launch",
+        inclusion: "self",
+        resultCoverage: "partial",
+        observedModel: "claude-sonnet-5",
+        usage: { inputTokens: 150 },
+      });
+      expect(m.usage).not.toHaveProperty("actualCostUsd");
+      expect(m).not.toHaveProperty("counters");
+      expect(observations).toHaveLength(2);
+      expect(observations[0]).toMatchObject({
+        kind: "cumulative_snapshot",
+        counters: { inputTokens: 100, reportedUsd: 1 },
+      });
+      expect(observations[1]?.kind === "cumulative_snapshot" && observations[1].counters).toEqual({
+        reportedUsd: 1.5,
+      });
+
+      // The recorder receives these in order, each at a later instant.
+      const at = (n: number) => ({ receivedAt: `2026-09-15T12:00:0${n}.000Z` });
+      const stamped = observations.map(
+        (o, i) => ({ ...(stamp(o) as object), ...at(i) }) as MeasurementObservation,
+      );
+      stamped.push({
+        ...(stamp({
+          schemaVersion: 1,
+          kind: "terminal_summary",
+          observationId: "exit:1",
+          source: "engine",
+          provenance: { adapter: "execution", note: "the harness exit" },
+          inclusion: m.inclusion,
+          counters: countersFromRouteUsage(m.usage ?? {}),
+          counterScope: m.usageScope,
+          exitKind: "completed",
+          coverage: "partial",
+        } as unknown as HarnessObservation) as object),
+        ...at(observations.length),
+      } as MeasurementObservation);
+      const reconciled = reconcileSegment(stamped, { resumedSession: false });
+      expect(reconciled.counters.inputTokens).toBe(150);
+      expect(reconciled.counters.reportedUsd).toBe(1.5);
+    });
+
+    it("reports the later modelUsage when the fallback result comes first", () => {
+      const { outcome } = measure(
+        init +
+          resultFrame(50, 1, "00000000-0000-4000-8000-000000000001") +
+          resultFrame(100, 1.5, "00000000-0000-4000-8000-000000000002", {
+            m: { inputTokens: 120 },
+          }),
+      );
+      expect(outcome.measures).toMatchObject({
+        usageScope: "session",
+        inclusion: "includes_children",
+        resultCoverage: "complete",
+        counters: { inputTokens: 120, reportedUsd: 1.5 },
+      });
+    });
+
+    it("keeps the latest modelUsage across two usable results", () => {
+      const { outcome } = measure(
+        init +
+          resultFrame(100, 1, "00000000-0000-4000-8000-000000000001", {
+            m: { inputTokens: 100 },
+          }) +
+          resultFrame(50, 1.5, "00000000-0000-4000-8000-000000000002", {
+            m: { inputTokens: 150 },
+          }),
+      );
+      expect(outcome.measures).toMatchObject({
+        usageScope: "session",
+        counters: { inputTokens: 150, reportedUsd: 1.5 },
+      });
+    });
+  });
+
+  it("uses the init model when no assistant frame names one", () => {
+    const init = fixture("no-result.jsonl").split("\n")[0] ?? "";
+    expect(measure(`${init}\n`).outcome.measures.observedModel).toBe("claude-sonnet-5");
   });
 });

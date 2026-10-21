@@ -49,6 +49,14 @@
  *   real commands, and a toolchain that cannot find a temp
  *   directory writes into the worktree instead.
  *
+ * Telemetry variables are set by Nightshift, never inherited: the allowlist
+ * carries no `OTEL_*` and no `CLAUDE_CODE_ENABLE_TELEMETRY`, so an operator's own
+ * exporter settings (and any `OTEL_EXPORTER_OTLP_HEADERS` they hold) are stripped.
+ * When request capture is on, `adapter.ts` adds the header-free loopback exporter
+ * variables through `extra`; the capability itself is never in this environment
+ * (it travels as a file named by `otelHeadersHelper`, see `command.ts`), except
+ * on Windows where no other user runs the process.
+ *
  * `TERM` is deliberately absent, as in T4: with it the CLI emits ANSI colour
  * into a transcript nobody reads in a terminal.
  */

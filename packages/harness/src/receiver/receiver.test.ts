@@ -397,4 +397,156 @@ describe("readReceiverJournal", () => {
     for await (const e of readReceiverJournal(path)) out.push(e);
     expect(out).toEqual([env, { closed: true, receivedAt: "t" }, { gap: "torn_line" }]);
   });
+
+  describe("record filter and typed specs", () => {
+    const logBody = (records: Record<string, unknown>[]) =>
+      JSON.stringify({
+        resourceLogs: [
+          {
+            scopeLogs: [
+              {
+                logRecords: records.map((r) => ({
+                  attributes: Object.entries(r).map(([key, v]) => ({
+                    key,
+                    value: typeof v === "boolean" ? { boolValue: v } : { stringValue: String(v) },
+                  })),
+                })),
+              },
+            ],
+          },
+        ],
+      });
+    const rec = (kind: string) => ({
+      "event.name": "codex.sse_event",
+      "event.kind": kind,
+      model: "m",
+    });
+    const rule = { "event.name": "codex.sse_event", "event.kind": "response.completed" };
+
+    it("filters before journaling without creating a loss gap", async () => {
+      const r = await start({ recordFilter: [rule], maxRecordsPerEnvelope: 5 });
+      const first = [
+        ...Array.from({ length: 3 }, () => rec("response.completed")),
+        ...Array.from({ length: 50 }, () => rec("delta")),
+      ];
+      expect((await post(r, "/v1/logs", logBody(first))).status).toBe(200);
+      const second = Array.from({ length: 8 }, () => rec("response.completed"));
+      expect((await post(r, "/v1/logs", logBody(second))).status).toBe(200);
+      await r.stop();
+      const entries: unknown[] = [];
+      for await (const e of readReceiverJournal(r.journalPath)) entries.push(e);
+      const env = entries.filter((e) => typeof e === "object" && e !== null && "records" in e) as {
+        records: unknown[];
+        filteredRecordCount?: number;
+        droppedRecordCount: number;
+      }[];
+      expect(env[0]?.records).toHaveLength(3);
+      expect(env[0]?.filteredRecordCount).toBe(50);
+      expect(env[0]?.droppedRecordCount).toBe(0);
+      expect(env[1]?.records).toHaveLength(5);
+      expect(env[1]?.droppedRecordCount).toBe(3);
+      const gaps = entries.filter((e) => typeof e === "object" && e !== null && "gap" in e);
+      expect(gaps).toEqual([expect.objectContaining({ gap: "records_truncated" })]);
+      expect(entries.findIndex((e) => (e as { gap?: string }).gap === "records_truncated")).toBe(2);
+    });
+
+    it("journals no non-conforming values for typed attributes", async () => {
+      const r = await start({
+        allowedAttributes: [
+          { key: "input_token_count", type: "count" },
+          { key: "success", type: "boolean" },
+          { key: "model", type: "id" },
+          { key: "event.timestamp", type: "timestamp" },
+          { key: "event.name", type: "enum", values: ["codex.sse_event"] },
+        ],
+      });
+      const bad = {
+        input_token_count: "SENTINEL-CONTENT",
+        success: "SENTINEL-CONTENT",
+        model: "SENTINEL CONTENT",
+      };
+      const good = {
+        input_token_count: "1007",
+        success: "false",
+        model: "gpt-5.1",
+        "event.timestamp": "2026-01-02T03:04:05Z",
+        "event.name": "codex.sse_event",
+      };
+      expect((await post(r, "/v1/logs", logBody([bad, good]))).status).toBe(200);
+      await r.stop();
+      // A hyphenated sentinel is a syntactically valid `id`, so the id probe uses a space.
+      const raw = readFileSync(r.journalPath, "utf8");
+      expect(raw).not.toContain("SENTINEL-CONTENT");
+      expect(raw).not.toContain("SENTINEL CONTENT");
+      const records = lines(r)[0]?.records as {
+        attributes: Record<string, unknown>;
+        droppedAttributeCount: number;
+      }[];
+      expect(records[0]?.droppedAttributeCount).toBe(3);
+      expect(records[1]?.attributes).toEqual({
+        input_token_count: 1007,
+        success: false,
+        model: "gpt-5.1",
+        "event.timestamp": "2026-01-02T03:04:05Z",
+        "event.name": "codex.sse_event",
+      });
+    });
+
+    it("rejects malformed filters and specs before spawning", async () => {
+      await expect(start({ recordFilter: [{ a: { b: 1 } } as never] })).rejects.toThrow(
+        /record filter/,
+      );
+      await expect(start({ recordFilter: {} as never })).rejects.toThrow(/record filter/);
+      await expect(
+        start({ allowedAttributes: [{ key: "k", type: "bogus" } as never] }),
+      ).rejects.toThrow(/attribute spec/);
+      await expect(start({ allowedAttributes: [{ key: "k", type: "enum" }] })).rejects.toThrow(
+        /enum/,
+      );
+    });
+
+    it("exits 2 on malformed env values", async () => {
+      const { spawnSync } = await import("node:child_process");
+      const main = new URL("./receiver-main.ts", import.meta.url);
+      const hooks = `import { register } from "node:module"; register("data:text/javascript," + encodeURIComponent('export async function resolve(s,c,n){try{return await n(s,c)}catch(e){if(s.endsWith(".js"))return n(s.slice(0,-3)+".ts",c);throw e}}'));`;
+      const run = (extra: Record<string, string>) =>
+        spawnSync(
+          process.execPath,
+          ["--import", `data:text/javascript,${encodeURIComponent(hooks)}`, main.pathname],
+          {
+            env: {
+              ...process.env,
+              NIGHTSHIFT_RECEIVER_CAPABILITY: "x",
+              NIGHTSHIFT_RECEIVER_JOURNAL: join(dir, "m.ndjson"),
+              NIGHTSHIFT_RECEIVER_ALLOWED_ATTRIBUTES: "model",
+              ...extra,
+            },
+            encoding: "utf8",
+            timeout: 10_000,
+          },
+        );
+      for (const extra of [
+        { NIGHTSHIFT_RECEIVER_RECORD_FILTER: "not json" },
+        { NIGHTSHIFT_RECEIVER_RECORD_FILTER: '[{"a":{"b":1}}]' },
+        { NIGHTSHIFT_RECEIVER_RECORD_FILTER: '{"a":1}' },
+        { NIGHTSHIFT_RECEIVER_ATTRIBUTE_SPECS: '[{"key":"k","type":"nope"}]' },
+        { NIGHTSHIFT_RECEIVER_ATTRIBUTE_SPECS: "{}" },
+      ]) {
+        const out = run(extra);
+        expect(out.status).toBe(2);
+        expect(out.stderr).toMatch(/receiver:/);
+      }
+    });
+
+    it("still parses journals written before filteredRecordCount existed", async () => {
+      const path = join(dir, "old.ndjson");
+      writeFileSync(
+        path,
+        `${JSON.stringify({ receivedAt: "t", path: "/v1/logs", contentType: "application/json", signal: "logs", records: [], droppedRecordCount: 0 })}\n`,
+      );
+      const out = [];
+      for await (const e of readReceiverJournal(path)) out.push(e);
+      expect(out).toEqual([expect.objectContaining({ signal: "logs" })]);
+    });
+  });
 });

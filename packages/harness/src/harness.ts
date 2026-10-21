@@ -55,6 +55,7 @@ import type {
   ExaminationRuling,
   ExecutionNode,
   JobContract,
+  MeasurementCounters,
   ProgramContract,
   RiskLevel,
   RouteTarget,
@@ -374,10 +375,23 @@ export interface ExitMeasures {
    * whose provider reports session totals across a resume must say `session`.
    */
   readonly usageScope?: "launch" | "session";
+  /**
+   * The adapter's full measurement counters for the same population and scope
+   * as `usage`. When present the recorder records them instead of deriving
+   * counters from `usage`, so fields `RouteUsage` cannot carry (reasoningTokens,
+   * and the absent-means-unknown distinction) survive the exit.
+   */
+  readonly counters?: MeasurementCounters;
   /** The model the provider actually answered with, distinct from `input.model`. */
   readonly observedModel?: string;
   /** The adapter's own statement of how complete its usage is for this launch. */
   readonly coverage?: "complete" | "partial" | "unknown";
+  /**
+   * What the exit's `usage` population covers. Absent means `self`, which is
+   * what every adapter so far reports. An adapter whose exit aggregate includes
+   * native children (Claude's whole-tree modelUsage) says `includes_children`.
+   */
+  readonly inclusion?: "self" | "includes_children" | "unknown";
 }
 
 /** Why a worker process stopped. Exactly one of these settles `HarnessHandle.exit`. */
@@ -431,9 +445,16 @@ export type HarnessExit = HarnessExitBody & ExitMeasures;
 /** The usage an exit carries, whichever variant it is. */
 export const usageOfExit = (exit: HarnessExit): RouteUsage | undefined => exit.usage;
 
+/** The full counters an exit carries, when the adapter supplied them. */
+export const countersOfExit = (exit: HarnessExit): MeasurementCounters | undefined => exit.counters;
+
 /** The adapter's coverage statement; `unknown` when it made none. */
 export const coverageOfExit = (exit: HarnessExit): "complete" | "partial" | "unknown" =>
   exit.coverage ?? "unknown";
+
+/** Whether the exit's usage includes native children; `self` when the adapter did not say. */
+export const inclusionOfExit = (exit: HarnessExit): "self" | "includes_children" | "unknown" =>
+  exit.inclusion ?? "self";
 
 /** What the exit's usage covers; `launch` when the adapter did not say. */
 export const usageScopeOfExit = (exit: HarnessExit): "launch" | "session" =>

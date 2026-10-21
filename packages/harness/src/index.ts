@@ -28,6 +28,7 @@ export {
   type AgentTask,
   agentStatusForExit,
   type CarriedOverWork,
+  countersOfExit,
   coverageOfExit,
   type Duration,
   describeExit,
@@ -40,6 +41,7 @@ export {
   type HarnessHandle,
   type HarnessStartInput,
   hookTypeForExit,
+  inclusionOfExit,
   isoFromEpochSeconds,
   type McpLaunch,
   millis,
@@ -80,6 +82,7 @@ export {
   type LocalReceiverOptions,
   startLocalReceiver,
 } from "./receiver/receiver.js";
+export type { AttributeSpec, AttributeType } from "./receiver/reduce.js";
 export * from "./run-as.js";
 export {
   NoCheckpointError,

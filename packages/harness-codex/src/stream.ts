@@ -15,7 +15,7 @@
  * | `item.completed`, item `mcp_tool_call`         | `tool.completed`, `ok` = no error |
  * | `item.completed`, item `file_change`           | `tool.called` + `tool.completed { tool: "apply_patch" }` |
  * | `item.completed`, item `web_search`            | `tool.called` + `tool.completed { tool: "web_search" }` |
- * | `turn.completed { usage }`                     | none; `usage` and the clean ending are kept for the exit |
+ * | `turn.completed { usage }`                     | none; the clean ending is kept, and `usage` is the **thread-cumulative** total (latest wins) |
  * | `turn.failed { error }`, `error { message }`   | none; kept for the exit's failure payload |
  * | `agent_message`, `reasoning`, `todo_list`       | none: the model talking, not acting |
  *
@@ -84,8 +84,16 @@ export interface StreamOutcome {
   readonly availableAgainAt?: string;
   /** True when `unavailable` was set after the first work item began. */
   readonly workBegan?: boolean;
-  /** Token counts, summed over every completed turn. Absent until one reports. */
+  /**
+   * The thread-cumulative token counts of the latest `turn.completed` (never
+   * summed: a resumed thread reports its earlier launches too). Codex's input
+   * already includes cached input, so `inputIncludesCache` is always true.
+   */
   readonly usage?: RouteUsage;
+  /** The latest `reasoning_output_tokens`, which `RouteUsage` has no field for. */
+  readonly reasoningOutputTokens?: number;
+  /** How many `turn.completed` frames were seen. */
+  readonly turnsCompleted: number;
   readonly startEmitted: boolean;
   readonly unparseableLines: number;
 }
@@ -195,6 +203,8 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
   let failure: string | undefined;
   let threadId: string | undefined;
   let usage: RouteUsage | undefined;
+  let reasoningOutputTokens: number | undefined;
+  let turnsCompleted = 0;
   let unavailable: string | undefined;
   let availableAgainAt: string | undefined;
   let unavailableAfterWork = false;
@@ -293,18 +303,19 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
     }
   };
 
-  const addUsage = (reported: Frame): void => {
+  /** The latest figure replaces the last: `turn.completed.usage` is the thread's running total. */
+  const keepUsage = (reported: Frame): void => {
     const input_ = count(reported.input_tokens);
     const output = count(reported.output_tokens);
     if (input_ === undefined && output === undefined) return;
-    const cached = count(reported.cached_input_tokens);
     usage = {
-      ...optionalField("inputTokens", (usage?.inputTokens ?? 0) + (input_ ?? 0)),
-      ...optionalField("outputTokens", (usage?.outputTokens ?? 0) + (output ?? 0)),
-      ...(cached === undefined && usage?.cacheReadTokens === undefined
-        ? {}
-        : { cacheReadTokens: (usage?.cacheReadTokens ?? 0) + (cached ?? 0) }),
+      ...optionalField("inputTokens", input_),
+      ...optionalField("cacheReadTokens", count(reported.cached_input_tokens)),
+      ...optionalField("cacheWriteTokens", count(reported.cache_write_input_tokens)),
+      ...optionalField("outputTokens", output),
+      inputIncludesCache: true,
     };
+    reasoningOutputTokens = count(reported.reasoning_output_tokens);
   };
 
   /** One line as a frame, or `undefined` for a blank, malformed or non-object line. */
@@ -349,7 +360,8 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         return;
       case "turn.completed":
         turnCompleted = true;
-        if (isRecord(frame.usage)) addUsage(frame.usage);
+        turnsCompleted += 1;
+        if (isRecord(frame.usage)) keepUsage(frame.usage);
         return;
       case "turn.failed":
         failure = failureOf(frame);
@@ -384,6 +396,8 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
         ...optionalField("failure", failure),
         ...optionalField("threadId", threadId),
         ...optionalField("usage", usage),
+        ...optionalField("reasoningOutputTokens", reasoningOutputTokens),
+        turnsCompleted,
         ...optionalField("unavailable", unavailable),
         ...(unavailable === undefined
           ? {}
