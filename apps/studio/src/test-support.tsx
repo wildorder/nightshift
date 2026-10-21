@@ -8,6 +8,7 @@ import {
   createFixtures,
   type Fixtures,
   type IdGenerator,
+  type ProjectStores,
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { QueryClient } from "@tanstack/react-query";
@@ -33,6 +34,8 @@ export interface MountOptions {
   readonly documents?: Readonly<Record<string, string>>;
   readonly ids?: IdGenerator;
   readonly now?: () => string;
+  /** Serve the page from these instead of the seeded stores (reads that fail or hang). */
+  readonly serve?: (seeded: InMemoryStores) => ProjectStores;
 }
 
 export const mountStudio = async (
@@ -47,7 +50,7 @@ export const mountStudio = async (
   const signedOut: boolean[] = [];
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const studio: Studio = {
-    stores,
+    stores: opts.serve?.(stores) ?? stores,
     identity: { subject: "u1", email: "tim@example.test", activeOrgClaim: undefined },
     orgId,
     signOut: async () => void signedOut.push(true),
