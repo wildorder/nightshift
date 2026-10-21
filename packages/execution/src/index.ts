@@ -73,6 +73,7 @@ export {
 export {
   arbitrateAll,
   carriedExamination,
+  closeFixedFindings,
   continuedByNightshift,
   describeBlocking,
   EXAMINATION_CONTEXT_ENV,
@@ -281,6 +282,7 @@ export {
   planProblems,
   planStateOf,
   renderPlan,
+  reviewStrandPlan,
   STRAND_PLAN_CONTEXT,
   STRAND_PLAN_REVIEW_CONTEXT,
 } from "./strand-plan.js";

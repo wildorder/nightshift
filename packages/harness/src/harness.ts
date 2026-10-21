@@ -50,6 +50,7 @@ import type {
   AgentId,
   AgentStatus,
   ExaminationFinding,
+  ExaminationId,
   ExaminationQuestion,
   ExaminationRuling,
   ExecutionNode,
@@ -95,6 +96,9 @@ export interface McpLaunch {
  * changed, and what the checks said. Never the implementer's summary,
  * transcript or commit message.
  */
+/** A finding of an earlier examination, with the examination that raised it. */
+export type EarlierFinding = ExaminationFinding & { readonly examinationId: ExaminationId };
+
 export interface ExaminationEvidence {
   /** The diff under examination, from the base the work was cut from. Possibly truncated. */
   readonly diff: string;
@@ -115,8 +119,12 @@ export interface ExaminationEvidence {
   readonly blocking: boolean;
   /** 0 for the first attempt; 1 or 2 for a fix. */
   readonly fixAttempt: number;
-  /** A fix's examiner sees what the last examination found, so it can say whether it is fixed. */
-  readonly previousFindings?: readonly ExaminationFinding[];
+  /**
+   * A fix's examiner sees what the last examination found, so it can say
+   * whether it is fixed. Each carries the examination it came from, which a
+   * finding that is the same defect again names in `repeats`.
+   */
+  readonly previousFindings?: readonly EarlierFinding[];
   /**
    * The arbiter's rulings this attempt carried out (D-P8-13, as amended
    * 2026-09-25). Present, the examiner judges only whether each was.

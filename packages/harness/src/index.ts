@@ -31,6 +31,7 @@ export {
   coverageOfExit,
   type Duration,
   describeExit,
+  type EarlierFinding,
   type ExaminationEvidence,
   type ExitMeasures,
   type Harness,

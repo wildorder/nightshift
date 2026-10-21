@@ -1172,7 +1172,17 @@ export const renderExaminerBrief = (
     sections.push(
       [
         "WHAT THE LAST EXAMINATION FOUND — say whether each is fixed",
-        ...evidence.previousFindings.map(describeFinding),
+        ...evidence.previousFindings.map(
+          (finding) =>
+            `  [examination ${finding.examinationId}, finding ${finding.id}]\n${describeFinding(finding)}`,
+        ),
+        "",
+        "  When a finding you raise is the same defect as one of these, set `repeats` on it:",
+        "    repeats: { examinationId, findingId }",
+        "  naming the examination and finding id shown above. Set it only for the same defect;",
+        "  a different problem in the same place is a new finding. A finding you do not raise",
+        "  again is recorded as fixed, which means only that you did not raise it again; it is",
+        "  not a claim that you checked it was repaired.",
       ].join("\n"),
     );
   }
