@@ -93,7 +93,7 @@ import {
   occupancyOf,
 } from "./infrastructure.js";
 import { type OperationsReport, operationsOf } from "./operations.js";
-import type { ResourceTotals } from "./resources.js";
+import { type ResourceTotals, resourcesOf, sumResources } from "./resources.js";
 import { type OverheadRow, type ReviewReport, reviewOf } from "./review.js";
 import { storyStatuses } from "./stories.js";
 import { type VerificationTimeReport, verificationTimeOf } from "./verification-time.js";
@@ -786,7 +786,10 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   const verifications = await gatherVerifications(stores, scope, nodes);
 
   const p20 = p20Of(records, run, nodes, verifications);
-  const feedbackSections = await feedbackSectionsOf(stores, scope, run, p20.asOf);
+  const feedbackSections = await feedbackSectionsOf(stores, scope, run, p20.asOf, {
+    resources: resourcesOfRoutes([...records.routesOf.values()].flat(), records.measurements),
+    ...(p20.infrastructure === undefined ? {} : { infrastructure: p20.infrastructure }),
+  });
 
   return {
     program,
@@ -831,6 +834,81 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   };
 };
 
+interface MemberFigures {
+  readonly resources?: ResourceTotals;
+  readonly infrastructure?: InfrastructureReport;
+}
+
+const resourcesOfRoutes = (
+  routes: readonly RoutingDecision[],
+  measurements: readonly MeasurementSummary[],
+): ResourceTotals => sumResources(routes.map((route) => resourcesOf(route, measurements)));
+
+/** Every agent and (non-root) routing decision of the nodes; absent when any read was refused. */
+const nodeRecordsOf = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  nodes: readonly ExecutionNode[] | undefined,
+): Promise<{ agents?: Agent[]; routes?: RoutingDecision[] }> => {
+  if (nodes === undefined) return {};
+  const agents: Agent[] = [];
+  const routes: RoutingDecision[] = [];
+  for (const node of nodes) {
+    const nodeAgents = await (async () =>
+      stores.agents.listByNode(scope, node.executionNodeId))().catch(() => undefined);
+    if (nodeAgents === undefined) return {};
+    agents.push(...nodeAgents);
+    if (node.parentNodeId === null) continue;
+    const nodeRoutes = await (async () =>
+      stores.routingDecisions.listByNode(scope, node.executionNodeId))().catch(() => undefined);
+    if (nodeRoutes === undefined) return {};
+    routes.push(...nodeRoutes);
+  }
+  return { agents, routes };
+};
+
+/**
+ * One completion member run's model and machine figures. Every read is
+ * tolerated: a figure whose records could not all be read is absent, not zero.
+ * Without occupancy the machine figures carry `infrastructureOf`'s legacy coverage.
+ */
+const memberFiguresOf = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  run: Run,
+  asOf: IsoTimestamp,
+): Promise<MemberFigures> => {
+  const nodes = await (async () =>
+    readAll<ExecutionNode>((page) => stores.executionNodes.listByRun(scope, page)))().catch(
+    () => undefined,
+  );
+  const measurements = await (async () =>
+    readAll<MeasurementSummary>((page) => stores.measurements.listByRun(scope, page)))().catch(
+    () => undefined,
+  );
+  const dispatch = await (async () => stores.dispatches.get(scope))().catch(() => undefined);
+  const utilization = await (async () => stores.computeUtilizations.get(scope))().catch(
+    () => undefined,
+  );
+  const { agents, routes } = await nodeRecordsOf(stores, scope, nodes);
+  const infrastructure =
+    agents === undefined
+      ? undefined
+      : infrastructureOf({
+          run,
+          ...(dispatch === undefined ? {} : { dispatch }),
+          ...(utilization === undefined ? {} : { utilization }),
+          agents,
+          asOf,
+        });
+  return {
+    ...(routes === undefined || measurements === undefined
+      ? {}
+      : { resources: resourcesOfRoutes(routes, measurements) }),
+    ...(infrastructure === undefined ? {} : { infrastructure }),
+  };
+};
+
 /**
  * D-04/D-05 reads. Each is tolerated: an execution principal that is refused,
  * or a control plane older than these stores, still gets its report.
@@ -840,6 +918,7 @@ const feedbackSectionsOf = async (
   scope: RunScope,
   run: Run,
   asOf: IsoTimestamp,
+  current: MemberFigures,
 ): Promise<Pick<RunReport, "feedback" | "feedbackCoverage" | "completions">> => {
   const own = await (async () => stores.feedback.get(scope))().catch(() => undefined);
   const programRuns = await readAll<Run>((page) => stores.runs.listByProgram(scope, page)).catch(
@@ -856,6 +935,9 @@ const feedbackSectionsOf = async (
   );
   const runs = new Map<string, Run>();
   const feedback = new Map<string, RunFeedback>();
+  const resources = new Map<string, ResourceTotals>();
+  const infrastructure = new Map<string, InfrastructureReport>();
+  const self = `${scope.programId}/${scope.runId}`;
   for (const member of new Set(
     mine.flatMap((h) => h.members.map((m) => `${m.programId}/${m.runId}`)),
   )) {
@@ -865,11 +947,18 @@ const feedbackSectionsOf = async (
     if (found !== undefined) runs.set(member, found);
     const verdict = await (async () => stores.feedback.get(memberScope))().catch(() => undefined);
     if (verdict !== undefined) feedback.set(member, verdict);
+    if (found === undefined) continue;
+    const figures =
+      member === self ? current : await memberFiguresOf(stores, memberScope, found, asOf);
+    if (figures.resources !== undefined) resources.set(member, figures.resources);
+    if (figures.infrastructure !== undefined) infrastructure.set(member, figures.infrastructure);
   }
   return {
     feedback: runFeedbackOf(run, own),
     feedbackCoverage: feedbackCoverageOf(programRuns, programFeedback),
-    completions: mine.map((history) => completionOf({ history, runs, feedback, asOf })),
+    completions: mine.map((history) =>
+      completionOf({ history, runs, feedback, resources, infrastructure, asOf }),
+    ),
   };
 };
 
@@ -1720,7 +1809,29 @@ const renderCompletionFigures = (f: CompletionReport["current"]): string[] => [
   `lead time ${f.leadTimeSeconds === undefined ? "none (no worked verdict)" : seconds(f.leadTimeSeconds)}`,
   `run completion ${seconds(f.runCompletionSeconds)}`,
   `active union ${seconds(f.activeSeconds)}`,
+  ...renderCompletionResources(f),
 ];
+
+const renderCompletionResources = (f: CompletionReport["current"]): string[] => {
+  const r = f.resources;
+  const c = r?.coverage;
+  const attempts = c === undefined ? 0 : c.complete + c.partial + c.unknown + c.legacy + c.missing;
+  const figure = (value: number | undefined): string =>
+    attempts === 0 || value === undefined ? NOT_OBSERVED : String(value);
+  const dollars = (value: number | undefined): string =>
+    attempts === 0 || value === 0 ? NOT_OBSERVED : usd(value);
+  const machines = f.infrastructure;
+  return [
+    `tokens in ${figure(r?.tokens.input)}, out ${figure(r?.tokens.output)}`,
+    `estimated ${dollars(r?.usd.estimated)}, reported ${dollars(r?.usd.reported)} (separate figures)`,
+    `infrastructure ${machines === undefined || machines.members === 0 ? NOT_OBSERVED : `${usd(machines.usd)} over ${machines.members} member run(s)`}`,
+    ...(c === undefined || attempts === 0
+      ? []
+      : [
+          `token coverage complete ${c.complete}, partial ${c.partial}, unknown ${c.unknown}, legacy ${c.legacy}, missing ${c.missing}`,
+        ]),
+  ];
+};
 
 /** "Completion" (D-05): lead time, run completion and active union are three figures, none of them work time. */
 const renderCompletions = (completions: readonly CompletionReport[]): string[] => {
