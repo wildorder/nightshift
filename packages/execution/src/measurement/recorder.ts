@@ -37,7 +37,12 @@ import {
   valueCounters,
 } from "@nightshift/core";
 import type { HarnessExit, HarnessObservation, MeasurementSink } from "@nightshift/harness";
-import { coverageOfExit, usageOfExit, usageScopeOfExit } from "@nightshift/harness";
+import {
+  coverageOfExit,
+  inclusionOfExit,
+  usageOfExit,
+  usageScopeOfExit,
+} from "@nightshift/harness";
 import type { ExecutionEnvironment } from "../environment.js";
 import {
   type Journal,
@@ -516,7 +521,7 @@ export const createMeasurementRecorder = (
       observationId: `exit:${launchId}`,
       source: "engine",
       provenance: { adapter: "execution", note: "the harness exit" },
-      inclusion: "self",
+      inclusion: inclusionOfExit(exit),
       kind: "terminal_summary",
       counters: usage === undefined ? {} : countersFromRouteUsage(usage),
       counterScope: usageScopeOfExit(exit),

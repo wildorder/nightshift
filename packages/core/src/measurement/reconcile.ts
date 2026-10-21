@@ -7,6 +7,13 @@
  * empty terminal from a legacy adapter's cancel, a partial one) never erases
  * evidence that another source holds; where sources differ the difference is
  * recorded as a gap.
+ *
+ * (d) Inclusion of children. Under `self` (or with no aggregate) native-child
+ * requests are disjoint from the parent's evidence: they are added after the
+ * comparison. Under `includes_children` the aggregates cover parent plus
+ * children, so they are compared with `requests+children`, the same whole-tree
+ * population; the children are still reported apart as `childCounters`. Under
+ * `unknown` the children are excluded with a `native_child_unscoped` gap.
  */
 import type {
   CoverageGap,
@@ -203,10 +210,12 @@ export const reconcileSources = (
   const childrenExist = hasAnyCounters(childRequests);
   const requests = sources.requests;
   let addChildren = false;
+  let wholeTree = false;
   let childCounters: MeasurementCounters | undefined;
   if (childrenExist && childRequests !== undefined) {
     if (inclusion === "includes_children") {
       childCounters = childRequests;
+      wholeTree = true;
     } else if (inclusion === "unknown") {
       gaps.push({
         reason: "native_child_unscoped",
@@ -222,7 +231,15 @@ export const reconcileSources = (
   }
 
   const named: NamedSource[] = [];
-  if (hasAnyCounters(requests)) named.push({ name: "requests", counters: requests });
+  // Under `includes_children` the aggregates cover parent plus children, so compare them with the
+  // same whole-tree population of requests.
+  // With no parent requests there is no whole-tree population to compare, so the children stay
+  // reported apart only.
+  if (hasAnyCounters(requests)) {
+    if (wholeTree && childRequests !== undefined) {
+      named.push({ name: "requests+children", counters: addCounters(requests, childRequests) });
+    } else named.push({ name: "requests", counters: requests });
+  }
   if (hasAnyCounters(sources.latestLaunchSnapshot) && sources.latestLaunchSnapshot !== undefined) {
     named.push({ name: "snapshot", counters: sources.latestLaunchSnapshot });
   }

@@ -142,6 +142,42 @@ describe("reconcileSegment", () => {
     expect(r.childCounters).toEqual(out(30));
     expect(r.gaps).toEqual([]);
   });
+  describe("whole-tree comparison under includes_children", () => {
+    const inp = (n: number): MeasurementCounters => ({ inputTokens: n });
+    const child = request(inp(50), { childRef: { kind: "agent", id: "c1" } });
+    const session = (n: number, inclusion: string) =>
+      terminal(inp(n), { inclusion, counterScope: "session" });
+    it("records no gap when the aggregate equals parent plus children", () => {
+      const r = reconcileSegment(
+        [request(inp(100)), child, session(150, "includes_children")],
+        fresh(),
+      );
+      expect(r.counters.inputTokens).toBe(150);
+      expect(r.childCounters).toEqual(inp(50));
+      expect(r.gaps).toEqual([]);
+    });
+    it("records one discrepancy naming the larger source when the aggregate is larger", () => {
+      const r = reconcileSegment(
+        [request(inp(100)), child, session(160, "includes_children")],
+        fresh(),
+      );
+      expect(r.counters.inputTokens).toBe(160);
+      const gaps = r.gaps.filter((g) => g.reason === "discrepancy");
+      expect(gaps).toHaveLength(1);
+      expect(gaps[0]?.detail).toContain("session_terminal 160 vs requests+children 150");
+    });
+    it("adds children under self", () => {
+      const r = reconcileSegment([request(inp(100)), child, session(100, "self")], fresh());
+      expect(r.counters.inputTokens).toBe(150);
+      expect(r.gaps).toEqual([]);
+    });
+    it("excludes children with a gap under unknown", () => {
+      const r = reconcileSegment([request(inp(100)), child, session(100, "unknown")], fresh());
+      expect(r.counters.inputTokens).toBe(100);
+      expect(r.childCounters).toBeUndefined();
+      expect(r.gaps.map((g) => g.reason)).toContain("native_child_unscoped");
+    });
+  });
   it("adds disjoint children to a self-only terminal and reports them", () => {
     const r = reconcileSegment([terminal(out(100), { inclusion: "self" }), childRequest], fresh());
     expect(r.counters.outputTokens).toBe(130);

@@ -39,6 +39,7 @@ export {
   type HarnessHandle,
   type HarnessStartInput,
   hookTypeForExit,
+  inclusionOfExit,
   isoFromEpochSeconds,
   type McpLaunch,
   millis,
