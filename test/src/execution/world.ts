@@ -30,6 +30,7 @@ import {
   type Agent,
   type CommitSha,
   DEFAULT_ROUTING_POLICY,
+  type Event,
   type ExaminationPolicy,
   type OrgId,
   type ProgramContract,
@@ -502,8 +503,18 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
 /** Every event of the run, numbered, in order. */
 export const eventsOf = async (world: World) => {
   world.settle();
-  const page = await world.stores.events.listByRun(world.scope);
-  return page.items;
+  // Every page: a run's lifecycle observations alone can fill the first.
+  const events: Event[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await world.stores.events.listByRun(
+      world.scope,
+      cursor === undefined ? {} : { cursor },
+    );
+    events.push(...page.items);
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  return events;
 };
 
 /** The event types of the run, in order, for an assertion about the lifecycle. */

@@ -35,11 +35,13 @@ import { dirname } from "node:path";
 import type {
   Agent,
   AgentId,
+  AttemptCause,
   CommitSha,
   ExecutionNode,
   ExecutionNodeId,
   JobContract,
   JobContractId,
+  LaunchRef,
   MeasurementCounters,
   RouteChoice,
   RouteOutcome,
@@ -47,6 +49,7 @@ import type {
   RoutingDecision,
   Verification,
 } from "@nightshift/contracts";
+import { lifecycleOperationId } from "@nightshift/contracts";
 import {
   baselineFor,
   labelCost,
@@ -100,6 +103,7 @@ import {
 } from "./git/index.js";
 import { createHookSink, type RecordingHookSink } from "./hook-sink.js";
 import { integrateNode } from "./integrate.js";
+import { type LifecycleInput, observeLifecycle } from "./lifecycle.js";
 import {
   createMeasurementRecorder,
   type MeasurementRecorder,
@@ -144,6 +148,12 @@ export interface IntegrationCandidate {
   readonly branch: string;
   /** The commit the worktree was cut from. */
   readonly base: CommitSha;
+  /** The work attempt this candidate is the product of (P20): the lifecycle's operation identity. */
+  readonly attempt: number;
+  /** Where the candidate came from when it is not a worker's first hand-in (P20). */
+  readonly origin?: "recovered" | "readmitted";
+  /** The commit the candidate holds, when the hand-over knows it. */
+  readonly commitSha?: CommitSha;
 }
 
 /** Settles when the candidate is integrated, or durably is not. Never rejects. */
@@ -205,6 +215,8 @@ interface Attempt {
   readonly routingDecision: RoutingDecision;
   readonly recorder: MeasurementRecorder;
   readonly startedAtMs: number;
+  /** The launch this process is: a resume of the session is a launch of its own. */
+  readonly launch: LaunchRef;
 }
 
 /** What it takes to record a delegation: the first half of {@link runJob}. */
@@ -229,6 +241,10 @@ export interface StartJobInput
    * failures to fix.
    */
   readonly resume?: { readonly sessionId: string };
+  /** P20: why this attempt is made, when it follows another. Never recorded on the first. */
+  readonly causes?: readonly AttemptCause[];
+  /** Called once the slot is claimed: the moment the node leaves the queue. Must not throw. */
+  readonly claimed?: () => void;
 }
 
 export interface StartedJob {
@@ -362,6 +378,49 @@ export const startJob = async (
   // first means a refusal leaves nothing behind to clean up.
   const started = transition(queued, "start", nowIso(clock));
   await stores.executionNodes.put(started);
+  // The startup interval runs from the slot write (P20).
+  const startupAt = nowIso(clock);
+  try {
+    input.claimed?.();
+  } catch {
+    // Observation only.
+  }
+  /** Startup attempts begun and not yet ended, so each ends once. */
+  const startupOpen = new Set<number>();
+  /** The attempt a failure before its startup began is told as (P20). */
+  let startupAttempt = 1;
+  const observe = (rest: Omit<LifecycleInput, "scope" | "nodeId">) =>
+    observeLifecycle(environment, { scope: session.scope, nodeId, ...rest });
+  const beginStartup = (attempt: number, routingDecisionId: string | undefined, at: string) => {
+    startupOpen.add(attempt);
+    observe({
+      operationId: lifecycleOperationId("startup", nodeId, String(attempt)),
+      attempt,
+      phase: "startup",
+      transition: "start",
+      occurredAt: at,
+      ...(routingDecisionId === undefined
+        ? {}
+        : { refs: [{ kind: "routing_decision", ref: routingDecisionId }] }),
+    });
+  };
+  const endStartup = (
+    attempt: number,
+    reason: string,
+    extra: Pick<LifecycleInput, "agentId" | "launch" | "recorder"> = {},
+  ) => {
+    if (!startupOpen.delete(attempt)) return;
+    observe({
+      operationId: lifecycleOperationId("startup", nodeId, String(attempt)),
+      attempt,
+      phase: "startup",
+      transition: "end",
+      reason,
+      ...extra,
+    });
+  };
+  /** The attempts of this node whose startup began, so a failure before it began can still be told. */
+  const startupBegun = new Set<number>();
   /** The strand this job builds in (P18), once `launch` has read it. */
   let landsOnStrand = false;
   /** A-60: what an earlier run left of this strand, continued here, once `launch` has found it. */
@@ -370,6 +429,10 @@ export const startJob = async (
   try {
     return await launch();
   } catch (error) {
+    // The launch failed: whatever startup is open ends with why (P20).
+    const why = error instanceof Error ? error.message : String(error);
+    if (!startupBegun.has(startupAttempt)) beginStartup(startupAttempt, undefined, startupAt);
+    for (const attempt of [...startupOpen]) endStartup(attempt, why);
     await failStart(error);
     throw error;
   }
@@ -379,11 +442,15 @@ export const startJob = async (
   async function launch(): Promise<StartedJob> {
     // --- 3 … 4. The first attempt's identity, credential and route (A-04, A-13) ---
     const earlier = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId));
+    startupAttempt = earlier.length + 1;
     const first = await createAttempt(
       input.route,
       earlier.length + 1,
       earlier.at(-1)?.routingDecisionId ?? null,
+      input.causes,
     );
+    startupBegun.add(first.routingDecision.attempt);
+    beginStartup(first.routingDecision.attempt, first.routingDecision.routingDecisionId, startupAt);
 
     // --- 5. The worktree, cut from the program branch head ------------------------
     // The provisional head once anything has been deferred (D-P7-10), so a
@@ -504,11 +571,53 @@ export const startJob = async (
     // A new worktree holds only what is committed; the program's setup makes it
     // usable before the agent starts in it. After the carried work, which may
     // change what setup installs.
-    await prepareCheckout(environment, {
-      session,
+    const startupOperation = lifecycleOperationId(
+      "startup",
       nodeId,
-      checkout: worktree,
-      purpose: orchestrates ? "orchestrator" : "worker",
+      String(first.routingDecision.attempt),
+    );
+    const setupOperation = lifecycleOperationId(
+      "setup",
+      nodeId,
+      String(first.routingDecision.attempt),
+    );
+    const setupSteps = await gateDefinitions(environment, session).then(
+      (gates) => gates.setup.length,
+      () => undefined,
+    );
+    observe({
+      operationId: setupOperation,
+      attempt: first.routingDecision.attempt,
+      phase: "setup",
+      transition: "start",
+      parentOperationId: startupOperation,
+    });
+    let setupPassed: boolean;
+    try {
+      setupPassed = await prepareCheckout(environment, {
+        session,
+        nodeId,
+        checkout: worktree,
+        purpose: orchestrates ? "orchestrator" : "worker",
+      });
+    } catch (error) {
+      observe({
+        operationId: setupOperation,
+        attempt: first.routingDecision.attempt,
+        phase: "setup",
+        transition: "end",
+        reason: "failed",
+        parentOperationId: startupOperation,
+      });
+      throw error;
+    }
+    observe({
+      operationId: setupOperation,
+      attempt: first.routingDecision.attempt,
+      phase: "setup",
+      transition: "end",
+      reason: setupSteps === 0 ? "none" : setupPassed ? "passed" : "failed",
+      parentOperationId: startupOperation,
     });
 
     // --- 6. Running, before the process exists -----------------------------------
@@ -549,7 +658,7 @@ export const startJob = async (
      */
     const relaunch = async (
       failed: RouteTarget,
-      stopped: { readonly until?: string; readonly workBegan: boolean },
+      stopped: { readonly until?: string; readonly workBegan: boolean; readonly detail?: string },
     ): Promise<Attempt | undefined> => {
       if (input.reroute === undefined || stopMode !== undefined) return undefined;
       const next = input.reroute(failed, stopped.until);
@@ -557,21 +666,43 @@ export const startJob = async (
       const last = attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId)).at(
         -1,
       );
+      const fallbackAt = nowIso(clock);
       const identity = await createAttempt(
         next,
         (last?.attempt ?? 0) + 1,
         last?.routingDecisionId ?? null,
+        [
+          {
+            kind: "route_unavailable",
+            ...(last === undefined ? {} : { previousRoutingDecisionId: last.routingDecisionId }),
+            ...(stopped.detail === undefined ? {} : { detail: stopped.detail.slice(0, 400) }),
+          },
+        ],
       );
-      // A limit that stopped the route mid-job (D-P8-06, as amended 2026-10-12):
-      // what it did so far is kept, and the next route carries on from it.
-      if (stopped.workBegan && !orchestrates) {
-        unfinished = (await keepUnfinished(worktree, last?.attempt ?? 1)) ?? unfinished;
+      startupBegun.add(identity.routingDecision.attempt);
+      beginStartup(
+        identity.routingDecision.attempt,
+        identity.routingDecision.routingDecisionId,
+        fallbackAt,
+      );
+      try {
+        // A limit that stopped the route mid-job (D-P8-06, as amended 2026-10-12):
+        // what it did so far is kept, and the next route carries on from it.
+        if (stopped.workBegan && !orchestrates) {
+          unfinished = (await keepUnfinished(worktree, last?.attempt ?? 1)) ?? unfinished;
+        }
+        await cleanCheckout(environment.git, worktree, base);
+        // The clean took the carried work with it; the next route starts from it too.
+        carried = await carryInto();
+        currentIdentity = identity;
+        current = await startAttempt(identity, worktree, undefined, carried);
+      } catch (error) {
+        endStartup(
+          identity.routingDecision.attempt,
+          error instanceof Error ? error.message : String(error),
+        );
+        throw error;
       }
-      await cleanCheckout(environment.git, worktree, base);
-      // The clean took the carried work with it; the next route starts from it too.
-      carried = await carryInto();
-      currentIdentity = identity;
-      current = await startAttempt(identity, worktree, undefined, carried);
       return current;
     };
 
@@ -589,6 +720,20 @@ export const startJob = async (
       current = await startAttempt(currentIdentity, worktree, {
         sessionId,
         task: { kind: "continue", reminder, of },
+      });
+      observe({
+        operationId: lifecycleOperationId(
+          "work",
+          nodeId,
+          String(currentIdentity.routingDecision.attempt),
+        ),
+        attempt: currentIdentity.routingDecision.attempt,
+        phase: "work",
+        transition: "note",
+        reason: `resumed: reminder ${reminder} of ${of}`,
+        agentId: current.agentId,
+        launch: current.launch,
+        recorder: current.recorder,
       });
       return current;
     };
@@ -698,6 +843,7 @@ export const startJob = async (
     route: RouteChoice,
     attempt: number,
     previousRouteId: RoutingDecision["routingDecisionId"] | null,
+    causes?: readonly AttemptCause[],
   ): Promise<AttemptIdentity> {
     const agentId = ids.next("agent");
     const agent: Agent = {
@@ -773,6 +919,15 @@ export const startJob = async (
       ...(route.position === undefined ? {} : { position: route.position }),
       ...(route.classification === undefined ? {} : { classification: route.classification }),
       ...(route.policyVersion === undefined ? {} : { policyVersion: route.policyVersion }),
+      // Why this attempt follows another (P20). The first has nothing to follow.
+      ...(attempt === 1
+        ? {}
+        : {
+            causes:
+              causes === undefined || causes.length === 0
+                ? [{ kind: "unknown" as const }]
+                : causes.slice(0, 8),
+          }),
       createdAt: nowIso(clock),
     };
     const price = session.run.policy?.routingPolicy.prices[route.target.model];
@@ -900,6 +1055,7 @@ export const startJob = async (
       await runAs.grant(tmpDir);
     }
     let handle: HarnessHandle;
+    let launchRef: LaunchRef;
     try {
       // Each launch is a measurement segment; a resume continues the same session.
       // Whether a session continues is the resume's doing, not the agent record's:
@@ -914,6 +1070,7 @@ export const startJob = async (
         ...(resumed === undefined ? {} : { sessionId: resumed.sessionId }),
         ...(baseline === undefined ? {} : { baseline }),
       });
+      launchRef = launch;
       handle = await environment.harness.start({
         launch,
         measurements: identity.recorder.sink,
@@ -945,6 +1102,7 @@ export const startJob = async (
       const reason = `the harness could not start the worker: ${
         error instanceof Error ? error.message : String(error)
       }`;
+      if (resumed === undefined || fresh) endStartup(routingDecision.attempt, reason);
       await stores.agents.put(
         transitionAgent(startedAgent, "fail", { at: nowIso(clock), outcomeReason: reason }),
       );
@@ -957,6 +1115,24 @@ export const startJob = async (
       void environment.workerTokens?.remove(session.scope, agentId);
     });
     identity.startedAtMs ??= clock.now();
+    // A new process is the end of startup and the start of work; a resume of a
+    // live session is a note on work, told by whoever resumed it (P20).
+    if (resumed === undefined || fresh) {
+      endStartup(routingDecision.attempt, "process started", {
+        agentId,
+        launch: launchRef,
+        recorder: identity.recorder,
+      });
+      observe({
+        operationId: lifecycleOperationId("work", nodeId, String(routingDecision.attempt)),
+        attempt: routingDecision.attempt,
+        phase: "work",
+        transition: "start",
+        agentId,
+        launch: launchRef,
+        recorder: identity.recorder,
+      });
+    }
     return {
       agentId,
       handle,
@@ -964,6 +1140,7 @@ export const startJob = async (
       routingDecision,
       recorder: identity.recorder,
       startedAtMs: identity.startedAtMs,
+      launch: launchRef,
     };
   }
 
@@ -1027,6 +1204,7 @@ const finishSubProgram = async (
   try {
     const settledExit = await untilReported(environment, input, await input.current().handle.exit);
     const { exit, reason: described } = observed(input, settledExit);
+    endWork(environment, input, input.current(), exit.kind);
     // An orchestrator stopped by a limit is not relaunched in place: what it
     // delegated is on the record, and a retry on the next route takes over.
     // Its route is out until the limit resets, and the retry does not climb.
@@ -1062,6 +1240,8 @@ const finishSubProgram = async (
         worktree: input.worktree,
         branch: input.branch,
         base,
+        attempt: input.current().routingDecision.attempt,
+        commitSha: node.commitSha,
       });
       return;
     }
@@ -1140,6 +1320,18 @@ const landOnStrand = async (
     throw new Error(`node ${input.nodeId} is implemented but carries no commit`);
   }
   const subject = input.job.objective.split("\n")[0]?.trim().slice(0, 120) ?? "";
+  const attempt = input.current().routingDecision.attempt;
+  const integration = (step: "start" | "end", reason?: string) =>
+    observeNode(environment, input, {
+      operationId: lifecycleOperationId("integration", input.nodeId, String(attempt)),
+      attempt,
+      phase: "integration",
+      transition: step,
+      agentId,
+      refs: [{ kind: "commit", ref: node.commitSha as string }],
+      ...(reason === undefined ? {} : { reason }),
+    });
+  integration("start");
   const merged = await mergeInto(environment.git, {
     worktree: strand.worktree,
     commit: node.commitSha,
@@ -1173,6 +1365,7 @@ const landOnStrand = async (
       executionNodeId: input.nodeId,
       agentId,
     });
+    integration("end", "integration_conflict");
     return;
   }
   await stores.executionNodes.put(transition(node, "merge", nowIso(clock)));
@@ -1190,6 +1383,7 @@ const landOnStrand = async (
     executionNodeId: input.nodeId,
     agentId,
   });
+  integration("end", "merged");
   // On its strand's branch now: the job's own worktree has done its work.
   await releaseWorktree(
     environment,
@@ -1252,7 +1446,7 @@ interface FinishInput {
   /** Starts the job again on the next route when this one could not start, or says there is none. */
   relaunch(
     failed: RouteTarget,
-    stopped: { readonly until?: string; readonly workBegan: boolean },
+    stopped: { readonly until?: string; readonly workBegan: boolean; readonly detail?: string },
   ): Promise<Attempt | undefined>;
   /** Resumes the current attempt's session with a reminder to report. */
   resumeSession(sessionId: string, reminder: number, of: number): Promise<Attempt | undefined>;
@@ -1372,6 +1566,7 @@ const throughFallbacks = async (
     input.stopMode() === undefined
   ) {
     const refused = input.current();
+    endWork(environment, input, refused, exit.kind);
     await recordAgentEnd(environment, input, exit, `route_unavailable: ${exit.unavailable}`);
     await uploadTranscript(environment, input);
     recordExit(refused, exit);
@@ -1382,6 +1577,7 @@ const throughFallbacks = async (
       .relaunch(refused.routingDecision.chosen, {
         ...(until === undefined ? {} : { until }),
         workBegan: exit.workBegan === true,
+        detail: `route_unavailable: ${exit.unavailable}`,
       })
       .catch(() => undefined);
     if (next === undefined) {
@@ -1452,6 +1648,36 @@ const untilReported = async (
   return exit;
 };
 
+/** A lifecycle observation about the node a finish is settling. Never throws. */
+const observeNode = (
+  environment: ExecutionEnvironment,
+  input: Pick<FinishInput, "session" | "nodeId">,
+  rest: Omit<LifecycleInput, "scope" | "nodeId">,
+) => observeLifecycle(environment, { scope: input.session.scope, nodeId: input.nodeId, ...rest });
+
+/** The work interval of `attempt` ends with how its process exited, before its recorder closes. */
+const endWork = (
+  environment: ExecutionEnvironment,
+  input: Pick<FinishInput, "session" | "nodeId">,
+  attempt: Attempt,
+  kind: HarnessExit["kind"],
+): void => {
+  observeNode(environment, input, {
+    operationId: lifecycleOperationId(
+      "work",
+      input.nodeId,
+      String(attempt.routingDecision.attempt),
+    ),
+    attempt: attempt.routingDecision.attempt,
+    phase: "work",
+    transition: "end",
+    reason: kind,
+    agentId: attempt.agentId,
+    launch: attempt.launch,
+    recorder: attempt.recorder,
+  });
+};
+
 /** An exit onto its attempt's recorder. A measurement failure never changes an outcome. */
 const recordExit = (attempt: Attempt, exit: HarnessExit): void => {
   try {
@@ -1499,6 +1725,7 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
       ? fallen.exit
       : await untilReported(environment, input, fallen.exit);
     const { exit, reason: described } = observed(input, settledExit);
+    if (!recorded) endWork(environment, input, input.current(), exit.kind);
     // A route that could not start, and nowhere left to go (D-P8-06): the reason
     // says so, and a retry of it will not climb (`failureClimbs`).
     const reason =
@@ -1557,20 +1784,7 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
     // engine's merge queue (D-P6-05). Its promise settles when this node is
     // integrated or durably is not, so `completion` still means the whole
     // lifecycle, and the route's result below still sees the final status.
-    if (input.integrate !== undefined) {
-      await input.integrate({
-        session: input.session,
-        job: input.job,
-        nodeId: input.nodeId,
-        agentId: input.current().agentId,
-        worktree: input.worktree,
-        branch: input.branch,
-        base: input.base,
-      });
-      return;
-    }
-
-    await verifyAndIntegrate(environment, {
+    const candidate: IntegrationCandidate = {
       session: input.session,
       job: input.job,
       nodeId: input.nodeId,
@@ -1578,7 +1792,15 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
       worktree: input.worktree,
       branch: input.branch,
       base: input.base,
-    });
+      attempt: input.current().routingDecision.attempt,
+      ...(node.commitSha === null ? {} : { commitSha: node.commitSha }),
+    };
+    if (input.integrate !== undefined) {
+      await input.integrate(candidate);
+      return;
+    }
+
+    await verifyAndIntegrate(environment, candidate);
   } catch (error) {
     // Nothing above should throw, but a bug here must not leave a node running
     // and a promise rejected into the void.

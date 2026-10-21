@@ -96,9 +96,15 @@ const begin = async (limits: { maxDepth: number; maxConcurrency: number }) => {
     (await ctx.stores.executionNodes.listByRun(scope)).items;
   const events = async (): Promise<readonly Event[]> => {
     await ctx.settle();
-    return (await ctx.stores.events.listByRun(scope)).items
-      .filter(isSequenced)
-      .sort((a, b) => a.sequence - b.sequence);
+    // Every page: lifecycle observations alone can fill the first.
+    const all: Event[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await ctx.stores.events.listByRun(scope, cursor === undefined ? {} : { cursor });
+      all.push(...page.items);
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return all.filter(isSequenced).sort((a, b) => a.sequence - b.sequence);
   };
   return { ctx, driver, scope, started, delegate, waitAll, nodes, events };
 };
@@ -183,7 +189,12 @@ describe("the Stage 5 tree", () => {
     expect(started(String(c.nodeId))).toBeGreaterThan(firstDone);
 
     // SC-P6-07: every snapshot holds its own job's two files and nothing else.
-    for (const event of events.filter((candidate) => candidate.type === "node.implemented")) {
+    // A strand's own completion carries no snapshot of files: only the jobs' do.
+    for (const event of events.filter(
+      (candidate) =>
+        candidate.type === "node.implemented" &&
+        candidate.executionNodeId !== cNode.executionNodeId,
+    )) {
       const paths = (event.payload as { changedPaths: string[] }).changedPaths;
       expect(paths).toHaveLength(2);
       expect(
