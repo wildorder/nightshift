@@ -409,7 +409,8 @@ const rootRecorder = (
     readonly route: RouteTarget;
   },
 ) => {
-  const price = run.policy?.routingPolicy.prices[root.route.model];
+  const prices = run.policy?.routingPolicy.prices;
+  const price = prices?.[root.route.model];
   return createMeasurementRecorder(
     {
       stores: runtime.stores,
@@ -426,6 +427,7 @@ const rootRecorder = (
       route: root.route,
       routingDecisionId: null,
       ...(price === undefined ? {} : { price }),
+      ...(prices === undefined ? {} : { prices }),
     },
   );
 };

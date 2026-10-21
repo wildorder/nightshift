@@ -482,6 +482,7 @@ const recoverMeasurements = async (
   scope: RunScope,
   executionNodeId: ExecutionNode["executionNodeId"],
   agentId: AgentId,
+  prices: NonNullable<Run["policy"]>["routingPolicy"]["prices"] | undefined,
 ): Promise<void> => {
   const progress = (message: string): void => {
     outbox.emit({
@@ -493,7 +494,11 @@ const recoverMeasurements = async (
     });
   };
   try {
-    const result = await recoverMeasurementJournals(environment, scope);
+    const result = await recoverMeasurementJournals(
+      environment,
+      scope,
+      prices === undefined ? {} : { prices },
+    );
     const observations = result.recovered.reduce((sum, entry) => sum + entry.observations, 0);
     const parts = [
       result.recovered.length > 0
@@ -572,7 +577,14 @@ export const attachRun = async (
   // Before the engine uses the provisional line: drop what an earlier engine's
   // stop left at its tip without a deferred node (provisional-line.ts).
   await repairProvisionalLine(environment, session);
-  await recoverMeasurements(environment, outbox, scope, rootNode.executionNodeId, agentId);
+  await recoverMeasurements(
+    environment,
+    outbox,
+    scope,
+    rootNode.executionNodeId,
+    agentId,
+    started.policy?.routingPolicy.prices,
+  );
   const attached: AttachedRun = {
     session,
     environment,

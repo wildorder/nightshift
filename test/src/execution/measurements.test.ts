@@ -12,6 +12,7 @@ import {
   type ExecutionNodeId,
   JobContractSchema,
   type MeasurementSummary,
+  type ModelPrice,
   type RouteChoice,
 } from "@nightshift/contracts";
 import { isSettled, markImplemented, nowIso } from "@nightshift/core";
@@ -56,7 +57,14 @@ const observation = (kind: "request" | "snapshot", fields: Record<string, unknow
   } as never;
 };
 
-const rig = async (script: Script, options: { wrap?: Wrap; kind?: "job" | "sub-program" } = {}) => {
+const rig = async (
+  script: Script,
+  options: {
+    wrap?: Wrap;
+    kind?: "job" | "sub-program";
+    prices?: Readonly<Record<string, ModelPrice>>;
+  } = {},
+) => {
   const starts: HarnessStartInput[] = [];
   const fake = createFakeHarness({
     script: (context) => {
@@ -68,7 +76,21 @@ const rig = async (script: Script, options: { wrap?: Wrap; kind?: "job" | "sub-p
     harness: options.wrap === undefined ? fake : options.wrap(fake),
   });
   rigWorld = world;
-  const engine = createEngine({ environment: world.environment, session: world.session, mcp });
+  const policy = world.session.run?.policy;
+  const session =
+    options.prices === undefined || policy === undefined || world.session.run === undefined
+      ? world.session
+      : {
+          ...world.session,
+          run: {
+            ...world.session.run,
+            policy: {
+              ...policy,
+              routingPolicy: { ...policy.routingPolicy, prices: options.prices },
+            },
+          },
+        };
+  const engine = createEngine({ environment: world.environment, session, mcp });
   const job = JobContractSchema.parse({
     schemaVersion: 1,
     ...world.scope,
@@ -366,6 +388,45 @@ describe("one segment", () => {
     expect(decision?.usage.inputTokens).toBe(600);
     expect(decision?.outcome).toBe("cancelled");
     await r.engine.close("test over");
+  });
+});
+
+describe("a mixed-model launch", () => {
+  const PRICE: ModelPrice = { inputPerMTok: 3, outputPerMTok: 15 };
+  const launch = async (prices: Readonly<Record<string, ModelPrice>>) => {
+    const r = await rig(
+      async (context) => {
+        for (const model of ["claude-sonnet-5", "gpt-6-sol"]) {
+          context.input.measurements?.observe(
+            observation("request", {
+              model,
+              counters: { inputTokens: 1000, outputTokens: 100 },
+            }),
+          );
+        }
+        return { kind: "failed", exitCode: 1 };
+      },
+      { prices },
+    );
+    expect(await r.settled()).toBe("failed");
+    const [summary] = await r.summaries();
+    await r.engine.close("test over");
+    return summary;
+  };
+
+  it("values a request naming a model other than the route's when the table prices it", async () => {
+    const summary = await launch({ "claude-sonnet-5": PRICE, "gpt-6-sol": PRICE });
+    const models = summary?.valuation.components?.map((c) => c.model) ?? [];
+    expect(new Set(models)).toEqual(new Set(["claude-sonnet-5", "gpt-6-sol"]));
+    expect(summary?.valuation.completeness?.unvaluedRequests).toBe(0);
+  });
+
+  it("counts the request unvalued, never a zero estimate, when only the route's model is priced", async () => {
+    const summary = await launch({ "claude-sonnet-5": PRICE });
+    expect(summary?.valuation.completeness?.unvaluedRequests).toBe(1);
+    const models = summary?.valuation.components?.map((c) => c.model) ?? [];
+    expect(new Set(models)).toEqual(new Set(["claude-sonnet-5"]));
+    expect(summary?.valuation.components?.every((c) => c.usd > 0)).toBe(true);
   });
 });
 

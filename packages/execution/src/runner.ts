@@ -966,7 +966,8 @@ export const startJob = async (
           }),
       createdAt: nowIso(clock),
     };
-    const price = session.run.policy?.routingPolicy.prices[route.target.model];
+    const prices = session.run.policy?.routingPolicy.prices;
+    const price = prices?.[route.target.model];
     await stores.routingDecisions.put(routingDecision);
     outbox.emit({
       type: "routing.decided",
@@ -988,6 +989,7 @@ export const startJob = async (
       route: route.target,
       routingDecisionId: routingDecision.routingDecisionId,
       ...(price === undefined ? {} : { price }),
+      ...(prices === undefined ? {} : { prices }),
     });
     return {
       agent,

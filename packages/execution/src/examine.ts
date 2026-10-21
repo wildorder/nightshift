@@ -1359,7 +1359,8 @@ export const createHelper = async (
   });
   const started = transitionAgent(agent, "start", { at: nowIso(clock) });
   await stores.agents.put(started);
-  const price = input.session.run?.policy?.routingPolicy.prices[route.target.model];
+  const prices = input.session.run?.policy?.routingPolicy.prices;
+  const price = prices?.[route.target.model];
   const recorder = createMeasurementRecorder(environment, {
     scope,
     executionNodeId: nodeId,
@@ -1367,6 +1368,7 @@ export const createHelper = async (
     route: route.target,
     routingDecisionId: decision.routingDecisionId,
     ...(price === undefined ? {} : { price }),
+    ...(prices === undefined ? {} : { prices }),
   });
   return { agent: started, decision, token, recorder, segment: { open: false } };
 };

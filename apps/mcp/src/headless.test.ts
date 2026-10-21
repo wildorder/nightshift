@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_EXAMINATION_POLICY, DEFAULT_ROUTING_POLICY } from "@nightshift/contracts";
 import {
   createFixtures,
   createUlidIdGenerator,
@@ -223,7 +224,13 @@ describe("the root's measurements", () => {
     });
 
   /** A runtime over in-memory stores and a real repository, whose roots follow `exits`. */
-  const rig = (exits: readonly HarnessExit[]) => {
+  const rig = (
+    exits: readonly HarnessExit[],
+    options: {
+      prices?: Record<string, { inputPerMTok: number; outputPerMTok: number }>;
+      requestModels?: readonly string[];
+    } = {},
+  ) => {
     const f: Fixtures = createFixtures();
     const dir = mkdtempSync(join(tmpdir(), "headless-"));
     dirs.push(dir);
@@ -270,6 +277,18 @@ describe("the root's measurements", () => {
       start: async (input: HarnessStartInput) => {
         const index = launches.length;
         launches.push({ agentId: input.agent.agentId, model: input.model.model });
+        for (const model of options.requestModels ?? []) {
+          input.measurements?.observe({
+            schemaVersion: 1,
+            observationId: `obs-${launches.length}-${model}`,
+            source: "harness",
+            provenance: { adapter: "fake" },
+            inclusion: "self",
+            kind: "request",
+            model,
+            counters: { inputTokens: 1000, outputTokens: 100 },
+          } as never);
+        }
         // The first root brings the run to running, as its attached server would.
         const run = await stores.runs.get(f.scope, f.scope.runId);
         if (run !== undefined) await stores.runs.put({ ...run, status: "running" });
@@ -311,7 +330,19 @@ describe("the root's measurements", () => {
     } as unknown as Runtime;
     const seed = async () => {
       await stores.programContracts.put(program);
-      await stores.runs.put(makeRun(f, { status: "pending" }));
+      const base = makeRun(f, { status: "pending" });
+      await stores.runs.put(
+        options.prices === undefined
+          ? base
+          : ({
+              ...base,
+              policy: {
+                routingPolicy: { ...DEFAULT_ROUTING_POLICY, prices: options.prices },
+                examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+                orgConfigVersion: 1,
+              },
+            } as never),
+      );
       await stores.executionNodes.put(root);
     };
     return { f, stores, runtime, repo, seed, launches, root };
@@ -356,6 +387,21 @@ describe("the root's measurements", () => {
     expect(await r.stores.routingDecisions.listByNode(r.f.scope, r.root.executionNodeId)).toEqual(
       [],
     );
+  });
+
+  it("values a root's request naming a model other than its route's from the run's price table", async () => {
+    // Neither model is the route's, so only the run's table can value them.
+    const price = { inputPerMTok: 3, outputPerMTok: 15 };
+    const r = rig([{ kind: "completed" }], {
+      prices: { "m-other": price, "m-third": price },
+      requestModels: ["m-other", "m-third"],
+    });
+    await r.seed();
+    await launchRoot(r.runtime, {}, input(r.f, r.repo), [], undefined);
+    const [summary] = await r.stores.measurements.listByNode(r.f.scope, r.root.executionNodeId);
+    const models = new Set(summary?.valuation.components?.map((c) => c.model));
+    expect(models).toEqual(new Set(["m-other", "m-third"]));
+    expect(summary?.valuation.completeness?.unvaluedRequests).toBe(0);
   });
 
   it.each([
