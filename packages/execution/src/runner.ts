@@ -378,13 +378,14 @@ export const startJob = async (
   // first means a refusal leaves nothing behind to clean up.
   const started = transition(queued, "start", nowIso(clock));
   await stores.executionNodes.put(started);
-  // The startup interval runs from the slot write (P20).
-  const startupAt = nowIso(clock);
   try {
     input.claimed?.();
   } catch {
     // Observation only.
   }
+  // The startup interval runs from the slot write (P20), read after the wait it
+  // follows has ended so that the wait's end is never later than its start.
+  const startupAt = nowIso(clock);
   /** Startup attempts begun and not yet ended, so each ends once. */
   const startupOpen = new Set<number>();
   /** The attempt a failure before its startup began is told as (P20). */

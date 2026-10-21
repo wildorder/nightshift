@@ -607,7 +607,12 @@ const chainOf = (
     );
     if (best === undefined) {
       // Reaching the run's start ends the chain, unless a wait there is unexplained.
-      if (startOf(x) <= runStart && x.spans.length === 0) return finish(steps, ambiguous);
+      // Work is delegated some time after the run opens, so the start is also reached
+      // by a wait that was never told to have a blocker: nothing held it back.
+      const firstObserved = iv.phase === "wait";
+      if ((startOf(x) <= runStart || firstObserved) && x.spans.length === 0) {
+        return finish(steps, ambiguous);
+      }
       if (capacity) return finish(steps, ambiguous, "capacity wait: unattributed");
       const unfinished = all
         .filter(
