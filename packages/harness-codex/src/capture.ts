@@ -163,6 +163,36 @@ export const childThreadIds = (input: {
   return [...ids].slice(0, MAX_CHILDREN);
 };
 
+/**
+ * The boundary for a child conversation's rollout, derived from the parent's
+ * launch. A fresh thread (ordinal 0) cannot have older children, so they keep
+ * ordinal 0. Otherwise the child is bounded by TIME: the Codex-written
+ * timestamp of the parent's earliest record at or after the parent boundary
+ * (parent and child rollouts share one clock). Undefined when that record
+ * cannot be found, in which case the child's rollout must not be used.
+ */
+export const childBoundaryFor = (
+  parentRecords: readonly RolloutRecord[] | undefined,
+  parentBoundary: LaunchBoundary,
+): LaunchBoundary | undefined => {
+  if (parentBoundary.kind === "ordinal" && parentBoundary.fromOrdinal === 0) {
+    return { kind: "ordinal", fromOrdinal: 0 };
+  }
+  if (parentRecords === undefined) return undefined;
+  const notBefore =
+    parentBoundary.kind === "time" ? Date.parse(parentBoundary.notBefore) : Number.NaN;
+  let first: RolloutRecord | undefined;
+  for (const record of parentRecords) {
+    const inLaunch =
+      parentBoundary.kind === "ordinal"
+        ? record.ordinal >= parentBoundary.fromOrdinal
+        : Date.parse(record.timestamp) >= notBefore;
+    if (inLaunch && (first === undefined || record.ordinal < first.ordinal)) first = record;
+  }
+  if (first === undefined || Number.isNaN(Date.parse(first.timestamp))) return undefined;
+  return { kind: "time", notBefore: first.timestamp };
+};
+
 const COUNTER_PAIRS = [
   ["inputTokens", "inputTokens"],
   ["outputTokens", "outputTokens"],
@@ -270,11 +300,15 @@ export const reconcileCapture = (input: CaptureInput): CaptureResult => {
       lacking.add(id);
       continue;
     }
-    const child = rolloutObservations(records, {
-      threadId: id,
-      launchBoundary: { kind: "ordinal", fromOrdinal: 0 },
-      childOf: id,
-    });
+    const launchBoundary = childBoundaryFor(input.parent, input.boundary);
+    if (launchBoundary === undefined) {
+      // No way to bound the child's history: its rollout is not used.
+      lacking.add(id);
+      gaps.push(`child ${shortId(id)} rollout unbounded; telemetry decides`);
+      continue;
+    }
+    if (launchBoundary.kind === "time") gaps.push(`child ${shortId(id)} boundary by time`);
+    const child = rolloutObservations(records, { threadId: id, launchBoundary, childOf: id });
     take(id, child.observations.filter(isRequest), byConversation.get(id));
   }
 
