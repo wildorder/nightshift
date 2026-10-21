@@ -53,6 +53,7 @@ import type {
   ExecutionNodeId,
   JobContract,
   JobContractId,
+  RoutingDecisionId,
   Verification,
   VerificationStep,
 } from "@nightshift/contracts";
@@ -88,6 +89,8 @@ export interface VerifyInput {
   readonly node: ExecutionNode;
   readonly job: JobContract;
   readonly agentId: AgentId;
+  /** The routing decision of the attempt whose commit is verified, when known (P20). */
+  readonly routingDecisionId?: RoutingDecisionId | undefined;
   readonly worktree: string;
   /**
    * True when the commit under verification sits on the run's provisional line
@@ -230,6 +233,8 @@ export interface RunVerificationInput {
   readonly jobContractId: JobContractId | null;
   /** The agent whose work is under verification, and who the steps run as on a machine. */
   readonly agentId: AgentId;
+  /** The routing decision of the attempt whose commit is verified, when known (P20). */
+  readonly routingDecisionId?: RoutingDecisionId | undefined;
   /** A clean checkout of `commitSha`, ready for setup. */
   readonly checkout: string;
   readonly commitSha: CommitSha;
@@ -416,6 +421,9 @@ export const runVerification = async (
     // The agent whose work is under verification, not a verifying agent: nothing
     // verifies, in the sense of an agent. A command does.
     agentId: input.agentId,
+    ...(input.routingDecisionId === undefined
+      ? {}
+      : { routingDecisionId: input.routingDecisionId }),
     commitSha: input.commitSha,
     ...(input.phase === undefined ? {} : { phase: input.phase }),
     commands,
@@ -503,6 +511,7 @@ export const verifyNode = async (
     nodeId: input.node.executionNodeId,
     jobContractId: input.job.jobContractId,
     agentId: input.agentId,
+    routingDecisionId: input.routingDecisionId,
     checkout: input.worktree,
     commitSha,
     baseSha,

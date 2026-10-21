@@ -47,6 +47,7 @@ import type {
   RouteOutcome,
   RouteTarget,
   RoutingDecision,
+  RoutingDecisionId,
   Verification,
 } from "@nightshift/contracts";
 import { lifecycleOperationId } from "@nightshift/contracts";
@@ -150,6 +151,8 @@ export interface IntegrationCandidate {
   readonly base: CommitSha;
   /** The work attempt this candidate is the product of (P20): the lifecycle's operation identity. */
   readonly attempt: number;
+  /** That attempt's routing decision, so the verification it gets names the attempt it judged (P20). */
+  readonly routingDecisionId?: RoutingDecisionId;
   /** Where the candidate came from when it is not a worker's first hand-in (P20). */
   readonly origin?: "recovered" | "readmitted";
   /** The commit the candidate holds, when the hand-over knows it. */
@@ -167,6 +170,34 @@ export type IntegrateCandidate = (candidate: IntegrationCandidate) => Promise<vo
  */
 export type Reroute = (failed: RouteTarget, until?: string) => RouteChoice | undefined;
 
+/**
+ * An attempt's agent time (P20): the work intervals of its harness launches,
+ * each opened as its process starts and closed as it exits, summed across resumes.
+ */
+interface WorkClock {
+  /** Closed intervals so far. */
+  ms: number;
+  /** When the open interval began, while a launch is running. */
+  openedAtMs?: number;
+}
+
+/** The instant a lifecycle observation names, else `fallbackMs`. */
+const instantOf = (
+  observation: { readonly occurredAt?: string | undefined } | undefined,
+  fallbackMs: number,
+) => {
+  const at =
+    observation?.occurredAt === undefined ? Number.NaN : Date.parse(observation.occurredAt);
+  return Number.isNaN(at) ? fallbackMs : at;
+};
+
+/** Closes the open interval at `nowMs`; a second close is a no-op. */
+const closeWork = (work: WorkClock, nowMs: number): void => {
+  if (work.openedAtMs === undefined) return;
+  work.ms += Math.max(0, nowMs - work.openedAtMs);
+  delete work.openedAtMs;
+};
+
 /** One attempt's records, before its process exists. */
 interface AttemptIdentity {
   readonly agent: Agent;
@@ -179,6 +210,8 @@ interface AttemptIdentity {
   readonly recorder: MeasurementRecorder;
   /** When the attempt first launched; a resume does not reset it. */
   startedAtMs?: number;
+  /** Agent time across the attempt's launches. */
+  readonly work: WorkClock;
 }
 
 /** An earlier attempt's unfinished work, kept: the commit, and what the next worker is told of it. */
@@ -215,6 +248,8 @@ interface Attempt {
   readonly routingDecision: RoutingDecision;
   readonly recorder: MeasurementRecorder;
   readonly startedAtMs: number;
+  /** Agent time across this attempt's launches, shared by its resumes. */
+  readonly work: WorkClock;
   /** The launch this process is: a resume of the session is a launch of its own. */
   readonly launch: LaunchRef;
 }
@@ -961,6 +996,7 @@ export const startJob = async (
       ...(executionTokenFile === undefined ? {} : { executionTokenFile }),
       ...(renewal === undefined ? {} : { renewal }),
       routingDecision,
+      work: { ms: 0 },
     };
   }
 
@@ -1124,7 +1160,8 @@ export const startJob = async (
         launch: launchRef,
         recorder: identity.recorder,
       });
-      observe({
+      // The interval opens at the instant the lifecycle says work began.
+      const began = observe({
         operationId: lifecycleOperationId("work", nodeId, String(routingDecision.attempt)),
         attempt: routingDecision.attempt,
         phase: "work",
@@ -1133,6 +1170,10 @@ export const startJob = async (
         launch: launchRef,
         recorder: identity.recorder,
       });
+      identity.work.openedAtMs = instantOf(began, clock.now());
+    } else {
+      // A resumed segment is a work interval of its own, summed with the others.
+      identity.work.openedAtMs = clock.now();
     }
     return {
       agentId,
@@ -1141,6 +1182,7 @@ export const startJob = async (
       routingDecision,
       recorder: identity.recorder,
       startedAtMs: identity.startedAtMs,
+      work: identity.work,
       launch: launchRef,
     };
   }
@@ -1419,6 +1461,7 @@ export const verifyAndIntegrate = async (
     node,
     job: candidate.job,
     agentId: candidate.agentId,
+    routingDecisionId: candidate.routingDecisionId,
     worktree: candidate.worktree,
   });
   if (!verified.passed) return;
@@ -1624,7 +1667,7 @@ const untilReported = async (
     const node = await environment.stores.executionNodes.get(input.session.scope, input.nodeId);
     if (node?.status !== "running") break;
     // This segment ends here, recorded once, before any attempt to resume it.
-    recordExit(attempt, exit);
+    recordExit(attempt, exit, environment.clock.now());
     recorded = true;
     // This segment's transcript, kept before the resumed session writes the next.
     await uploadTranscript(environment, input);
@@ -1663,7 +1706,7 @@ const endWork = (
   attempt: Attempt,
   kind: HarnessExit["kind"],
 ): void => {
-  observeNode(environment, input, {
+  const ended = observeNode(environment, input, {
     operationId: lifecycleOperationId(
       "work",
       input.nodeId,
@@ -1677,10 +1720,13 @@ const endWork = (
     launch: attempt.launch,
     recorder: attempt.recorder,
   });
+  closeWork(attempt.work, instantOf(ended, environment.clock.now()));
 };
 
 /** An exit onto its attempt's recorder. A measurement failure never changes an outcome. */
-const recordExit = (attempt: Attempt, exit: HarnessExit): void => {
+const recordExit = (attempt: Attempt, exit: HarnessExit, endsWorkAtMs?: number): void => {
+  // A segment that is followed by a resume ends here; the last ends with the work interval.
+  if (endsWorkAtMs !== undefined) closeWork(attempt.work, endsWorkAtMs);
   try {
     attempt.recorder.recordExit(exit);
   } catch {
@@ -1794,6 +1840,7 @@ const finishJob = async (environment: ExecutionEnvironment, input: FinishInput):
       branch: input.branch,
       base: input.base,
       attempt: input.current().routingDecision.attempt,
+      routingDecisionId: input.current().routingDecision.routingDecisionId,
       ...(node.commitSha === null ? {} : { commitSha: node.commitSha }),
     };
     if (input.integrate !== undefined) {
@@ -1847,6 +1894,7 @@ const recordRouteResult = async (
             ? {}
             : { reportedUsd: summary.valuation.reportedUsd }),
           wallClockMs: Math.max(0, Math.round(environment.clock.now() - attempt.startedAtMs)),
+          agentMs: Math.round(attempt.work.ms),
         }),
         prices[attempt.routingDecision.chosen.model],
       ),

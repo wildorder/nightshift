@@ -88,7 +88,18 @@ export const RouteUsageSchema = z.strictObject({
   estimatedCostUsd: z.number().min(0).optional(),
   actualCostUsd: z.number().min(0).optional(),
   latencyMs: z.int().min(0).optional(),
+  /**
+   * Settlement time: from the attempt's first launch until its node settled,
+   * so it includes verification, examination, the merge queue and integration.
+   * Not agent time; see `agentMs`.
+   */
   wallClockMs: z.int().min(0).optional(),
+  /**
+   * P20: agent execution time: the summed work-phase intervals of this
+   * attempt's harness launches (resume segments summed). Excludes startup,
+   * setup, verification, examination, queue and integration.
+   */
+  agentMs: z.int().min(0).optional(),
 });
 export type RouteUsage = z.infer<typeof RouteUsageSchema>;
 
@@ -236,16 +247,17 @@ export type RoutingDecision = z.infer<typeof RoutingDecisionSchema>;
  * a join. JSON Lines, one per decision, every attempt of every job included.
  */
 export const RoutingDatasetLineSchema = z.strictObject({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   projectId: z.string().min(1),
   programId: z.string().min(1),
   runId: z.string().min(1),
   executionNodeId: z.string().min(1),
   jobContractId: z.string().min(1).nullable(),
   strandId: z.string().min(1).nullable(),
-  routingDecisionId: z.string().min(1),
+  /** Null only for a root line, which has no routing decision: the root launch's summary. */
+  routingDecisionId: z.string().min(1).nullable(),
   /** `work` for the job's own attempts; otherwise what the route was for. */
-  purpose: z.enum(["work", "examine", "answer", "arbitrate"]),
+  purpose: z.enum(["work", "examine", "answer", "arbitrate", "root"]),
   attempt: z.int().min(1),
   previousRouteId: z.string().min(1).nullable(),
   ruleId: z.string().min(1),
@@ -261,16 +273,34 @@ export const RoutingDatasetLineSchema = z.strictObject({
   eligibleOptions: z.array(RouteOptionSchema),
   usage: RouteUsageSchema,
   outcome: RouteOutcomeSchema,
-  /** The node's last verification, when it had one: what the work was judged by. */
-  verification: z.enum(["passed", "failed", "deferred"]).nullable(),
-  /** The node's last examination, when it had one: its outcome, and whether it blocked. */
-  examination: z
-    .strictObject({
-      outcome: z.enum(["passed", "findings_raised", "failed"]),
-      blocking: z.boolean(),
-      fixAttempt: z.int().min(0),
-    })
-    .nullable(),
+  /**
+   * What judged this decision's work. `attempt`: chosen by the explicit links
+   * (the verification names this decision; the examination names it as its
+   * implementer's decision, or for an examiner decision is the one it
+   * concerns). `node_final`: no linked record existed, so the node's final
+   * records are given and `historical` is true: never this attempt's own
+   * judgement. `none`: the node has no records at all.
+   */
+  judgement: z.strictObject({
+    verification: z.enum(["passed", "failed", "deferred"]).nullable(),
+    examination: z
+      .strictObject({
+        outcome: z.enum(["passed", "findings_raised", "failed"]),
+        blocking: z.boolean(),
+        fixAttempt: z.int().min(0),
+      })
+      .nullable(),
+    link: z.enum(["attempt", "node_final", "none"]),
+    historical: z.boolean(),
+  }),
+  /** Agent execution time (`usage.agentMs`), or null where it was not recorded. */
+  agentMs: z.int().min(0).nullable(),
+  /** Settlement time (`usage.wallClockMs`), or null where it was not recorded. */
+  settlementMs: z.int().min(0).nullable(),
+  /** The newest measurement summary of this decision (of the root launch, for a root line). */
+  measurementSummaryId: z.string().min(1).nullable(),
+  /** That summary's coverage, `missing` when none exists. */
+  measurementCoverage: z.enum(["complete", "partial", "unknown", "legacy", "missing"]),
   createdAt: IsoTimestampSchema,
 });
 export type RoutingDatasetLine = z.infer<typeof RoutingDatasetLineSchema>;

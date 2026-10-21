@@ -329,6 +329,7 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
       node,
       job: candidate.job,
       agentId: candidate.agentId,
+      routingDecisionId: candidate.routingDecisionId,
       worktree: candidate.worktree,
       onProvisionalLine: provisional,
     });

@@ -18,7 +18,12 @@ export const countersFromRouteUsage = (usage: RouteUsage): MeasurementCounters =
  */
 export const routeUsageFromCounters = (
   counters: MeasurementCounters,
-  extra: { reportedUsd?: number; latencyMs?: number; wallClockMs?: number } = {},
+  extra: {
+    reportedUsd?: number;
+    latencyMs?: number;
+    wallClockMs?: number;
+    agentMs?: number;
+  } = {},
 ): RouteUsage => {
   const inclusive = counters.inputIncludesCache === true;
   const input =
@@ -47,5 +52,6 @@ export const routeUsageFromCounters = (
       : { actualCostUsd: counters.reportedUsd ?? extra.reportedUsd }),
     ...(extra.latencyMs === undefined ? {} : { latencyMs: extra.latencyMs }),
     ...(extra.wallClockMs === undefined ? {} : { wallClockMs: extra.wallClockMs }),
+    ...(extra.agentMs === undefined ? {} : { agentMs: extra.agentMs }),
   };
 };

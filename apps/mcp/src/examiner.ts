@@ -169,6 +169,9 @@ export const registerExaminerTools = (server: McpServer, deps: HelperDeps): void
           commitSha: context.commitSha,
           patchId: context.patchId,
           implementerAgentId: context.implementerAgentId,
+          ...(context.implementerRoutingDecisionId === undefined
+            ? {}
+            : { implementerRoutingDecisionId: context.implementerRoutingDecisionId }),
           examinerAgentId: identity.agentId,
           examinerRoute: context.examinerRoute,
           requiredByRisk: context.requiredByRisk,

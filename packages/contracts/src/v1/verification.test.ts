@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { ExaminationSchema } from "./examination.js";
 import { AGGREGATE_EXAMPLES, EXAMPLE_IDS } from "./examples.js";
+import { RouteUsageSchema } from "./routing-decision.js";
 import {
   outcomeOfCommands,
   VerificationCommandResultSchema,
@@ -69,5 +71,43 @@ describe("a skipped step (P19, D-05/D-06)", () => {
     expect(VerificationSchema.safeParse(record).success).toBe(true);
     record.outcome = "failed";
     expect(VerificationSchema.safeParse(record).success).toBe(false);
+  });
+});
+
+describe("attempt attribution (P20)", () => {
+  const example = AGGREGATE_EXAMPLES.Verification as Record<string, unknown>;
+
+  it("parses with and without the routing decision it judged", () => {
+    expect(VerificationSchema.safeParse(example).success).toBe(true);
+    expect(
+      VerificationSchema.safeParse({
+        ...example,
+        routingDecisionId: EXAMPLE_IDS.routingDecisionId,
+      }).success,
+    ).toBe(true);
+    expect(VerificationSchema.safeParse({ ...example, routingDecisionId: "nope" }).success).toBe(
+      false,
+    );
+  });
+
+  it("lets an examination name the attempt it judged, optionally", () => {
+    const record = AGGREGATE_EXAMPLES.Examination as Record<string, unknown>;
+    expect(ExaminationSchema.safeParse(record).success).toBe(true);
+    expect(
+      ExaminationSchema.safeParse({
+        ...record,
+        implementerRoutingDecisionId: EXAMPLE_IDS.routingDecisionId,
+      }).success,
+    ).toBe(true);
+    expect(
+      ExaminationSchema.safeParse({ ...record, implementerRoutingDecisionId: "nope" }).success,
+    ).toBe(false);
+  });
+
+  it("carries agent time apart from settlement time in route usage", () => {
+    expect(RouteUsageSchema.safeParse({ wallClockMs: 900 }).success).toBe(true);
+    expect(RouteUsageSchema.safeParse({ wallClockMs: 900, agentMs: 400 }).success).toBe(true);
+    expect(RouteUsageSchema.safeParse({ agentMs: -1 }).success).toBe(false);
+    expect(RouteUsageSchema.safeParse({ agentMs: 1.5 }).success).toBe(false);
   });
 });
