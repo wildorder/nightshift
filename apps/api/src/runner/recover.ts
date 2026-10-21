@@ -22,6 +22,7 @@ import {
   nowIso,
   transitionDispatch,
 } from "@nightshift/core";
+import { withMachineEnding } from "./cleanup.js";
 
 export interface RecoverDeps {
   readonly stores: NightshiftStores;
@@ -34,16 +35,22 @@ export type RecoveryStep = "alive" | "replacing" | "exhausted";
 /** One look at a live dispatch: nothing when its lease holds, a replacement or a failure when it lapsed. */
 export const recoverLostLease = async (
   deps: RecoverDeps,
-  dispatch: Dispatch,
+  original: Dispatch,
 ): Promise<RecoveryStep> => {
+  let dispatch = original;
   const nowMs = deps.clock.now();
   if (!leaseLost(dispatch, nowMs)) return "alive";
   const at = nowIso(deps.clock);
   if (dispatch.instanceId !== undefined) {
     // Gone or going; either way nothing of this generation may keep running.
-    await deps.compute.terminate(dispatch.instanceId).catch((error: unknown) => {
+    try {
+      await deps.compute.terminate(dispatch.instanceId);
+      dispatch = withMachineEnding(dispatch, { terminatedAt: at });
+    } catch (error) {
       console.error(`recover ${dispatch.runId}: terminate ${dispatch.instanceId}:`, error);
-    });
+      // The machine may still be running: no observed ending.
+      dispatch = withMachineEnding(dispatch, { terminationFailed: true });
+    }
   }
   if (attemptsExhausted(dispatch)) {
     const last = dispatch.attempts.length - 1;

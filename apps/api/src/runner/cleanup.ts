@@ -63,6 +63,25 @@ const recordFailure = async (
 };
 
 /**
+ * What was learned of the current (last) attempt's machine: terminated
+ * (observed ending) or a terminate request that failed. An existing
+ * `terminatedAt` is never overwritten, and a failure never replaces it.
+ */
+export const withMachineEnding = (
+  dispatch: Dispatch,
+  ending: { readonly terminatedAt: string } | { readonly terminationFailed: true },
+): Dispatch => {
+  const last = dispatch.attempts.length - 1;
+  return {
+    ...dispatch,
+    attempts: dispatch.attempts.map((attempt, index) => {
+      if (index !== last || attempt.terminatedAt !== undefined) return attempt;
+      return { ...attempt, ...ending };
+    }),
+  };
+};
+
+/**
  * A `stopping` dispatch whose runner went quiet: two heartbeat intervals after
  * it was told to stop, the machine is terminated and the dispatch is `stopped`.
  */
@@ -76,7 +95,7 @@ export const enforceStop = async (deps: CleanupDeps, dispatch: Dispatch): Promis
     } catch (error) {
       await recordFailure(
         deps,
-        dispatch,
+        withMachineEnding(dispatch, { terminationFailed: true }),
         `terminate ${dispatch.instanceId}: ${error instanceof Error ? error.message : String(error)}`,
       );
       return "waiting";
@@ -84,7 +103,13 @@ export const enforceStop = async (deps: CleanupDeps, dispatch: Dispatch): Promis
   }
   const at = nowIso(deps.clock);
   const last = dispatch.attempts.length - 1;
-  const stopped = transitionDispatch(dispatch, "stopped", at);
+  const stopped = transitionDispatch(
+    dispatch.instanceId === undefined
+      ? dispatch
+      : withMachineEnding(dispatch, { terminatedAt: at }),
+    "stopped",
+    at,
+  );
   await deps.stores.dispatches.put({
     ...stopped,
     attempts: stopped.attempts.map((attempt, index) =>
@@ -105,8 +130,9 @@ export const enforceStop = async (deps: CleanupDeps, dispatch: Dispatch): Promis
  */
 export const cleanupStopped = async (
   deps: CleanupDeps,
-  dispatch: Dispatch,
+  original: Dispatch,
 ): Promise<CleanupStep> => {
+  let dispatch = original;
   if (dispatch.status !== "stopped" && dispatch.status !== "failed") return "waiting";
   if (dispatch.cleanup.volumeDeleted) return "done";
   const scope = scopeOf(dispatch);
@@ -117,16 +143,31 @@ export const cleanupStopped = async (
     const described = await deps.compute.describe(dispatch.instanceId);
     if (described !== undefined && described.state !== "terminated") {
       if (described.state !== "shutting-down") {
-        await deps.compute.terminate(dispatch.instanceId);
-        if (dispatch.cleanup.terminatedAt === undefined) {
+        try {
+          await deps.compute.terminate(dispatch.instanceId);
+        } catch (error) {
+          console.error(`cleanup ${dispatch.runId}: terminate ${dispatch.instanceId}:`, error);
           await deps.stores.dispatches.put({
-            ...dispatch,
-            cleanup: { ...dispatch.cleanup, terminatedAt: at },
+            ...withMachineEnding(dispatch, { terminationFailed: true }),
             updatedAt: at,
           });
+          return "waiting";
         }
+        await deps.stores.dispatches.put({
+          ...withMachineEnding(dispatch, { terminatedAt: at }),
+          cleanup: { ...dispatch.cleanup, terminatedAt: dispatch.cleanup.terminatedAt ?? at },
+          updatedAt: at,
+        });
       }
       return "waiting";
+    }
+    if (described?.state === "terminated") {
+      const last = dispatch.attempts[dispatch.attempts.length - 1];
+      if (last !== undefined && last.terminatedAt === undefined) {
+        // An observed state: the machine is already gone.
+        dispatch = { ...withMachineEnding(dispatch, { terminatedAt: at }), updatedAt: at };
+        await deps.stores.dispatches.put(dispatch);
+      }
     }
   }
   if (dispatch.volumeId === undefined) {
