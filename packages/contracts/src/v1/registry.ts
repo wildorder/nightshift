@@ -11,11 +11,13 @@ import type { z } from "zod";
 import { AgentSchema } from "./agent.js";
 import { ArtifactSchema } from "./artifact.js";
 import { CheckpointSchema } from "./checkpoint.js";
+import { CompletionHistorySchema } from "./completion.js";
 import { DecisionSchema } from "./decision.js";
 import { ComputeUtilizationSchema, DispatchSchema } from "./dispatch.js";
 import { EventSchema } from "./event.js";
 import { ExaminationSchema } from "./examination.js";
 import { ExecutionNodeSchema } from "./execution-node.js";
+import { RunFeedbackSchema } from "./feedback.js";
 import { GateHealthSchema } from "./gate-health.js";
 import { JobContractSchema } from "./job-contract.js";
 import { ProgramContractSchema } from "./program-contract.js";
@@ -49,6 +51,8 @@ export const AGGREGATE_NAMES = [
   "ComputeUtilization",
   "WarmCache",
   "GateHealth",
+  "RunFeedback",
+  "CompletionHistory",
 ] as const;
 
 export type AggregateName = (typeof AGGREGATE_NAMES)[number];
@@ -73,6 +77,8 @@ export const AGGREGATE_SCHEMAS: {
   ComputeUtilization: ComputeUtilizationSchema,
   WarmCache: WarmCacheSchema,
   GateHealth: GateHealthSchema,
+  RunFeedback: RunFeedbackSchema,
+  CompletionHistory: CompletionHistorySchema,
 };
 
 /**

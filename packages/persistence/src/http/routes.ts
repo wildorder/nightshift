@@ -10,6 +10,7 @@ import type {
   AgentId,
   ArtifactId,
   CheckpointId,
+  CompletionHistoryId,
   ComputeArchitecture,
   DecisionId,
   ExaminationId,
@@ -82,6 +83,16 @@ export const routes = {
   publicationRetry: (scope: RunScope) => `${routes.inRun(scope)}/publication/retry`,
   publicationStrands: (scope: RunScope) => `${routes.inRun(scope)}/publication/strands`,
   computeUtilization: (scope: RunScope) => `${routes.inRun(scope)}/compute`,
+
+  // Run feedback and completion histories (P20, D-04, D-05).
+  feedback: (scope: RunScope) => `${routes.inRun(scope)}/feedback`,
+  programFeedback: (scope: ProgramScope) =>
+    `${routes.program(scope.projectId, scope.programId)}/feedback`,
+  completionHistories: (scope: RunScope) => `${routes.inRun(scope)}/completion-histories`,
+  completionHistory: (scope: RunScope, completionHistoryId: CompletionHistoryId) =>
+    `${routes.completionHistories(scope)}/${completionHistoryId}`,
+  projectCompletionHistories: (projectId: ProjectId) =>
+    `/projects/${projectId}/completion-histories`,
 
   nodes: (scope: RunScope) => `${routes.inRun(scope)}/nodes`,
   node: (scope: RunScope, nodeId: ExecutionNodeId) => `${routes.nodes(scope)}/${nodeId}`,

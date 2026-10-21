@@ -151,6 +151,28 @@ export const keys = {
     SK: "GATE-HEALTH",
   }),
 
+  /** A run's feedback (P20, D-04): one row per run, beside the runs of its program. */
+  feedback: (scope: RunScope): TableKey => ({
+    PK: `PROJ#${scope.projectId}#PROG#${scope.programId}`,
+    SK: `FEEDBACK#${scope.runId}`,
+  }),
+
+  feedbackPartition: (scope: ProgramScope) => ({
+    PK: `PROJ#${scope.projectId}#PROG#${scope.programId}`,
+    prefix: "FEEDBACK#",
+  }),
+
+  /** A completion history (P20, D-05), under its project so it never crosses one. */
+  completionHistory: (projectId: ProjectId, id: string): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `COMPLETION#${id}`,
+  }),
+
+  completionPartition: (projectId: ProjectId) => ({
+    PK: `PROJ#${projectId}`,
+    prefix: "COMPLETION#",
+  }),
+
   programContract: (projectId: ProjectId, programId: ProgramId): TableKey => ({
     PK: `PROJ#${projectId}`,
     SK: `PROG#${programId}`,

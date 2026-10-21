@@ -14,6 +14,8 @@ import {
   type Checkpoint,
   CheckpointSchema,
   type CommitSha,
+  type CompletionHistory,
+  CompletionHistorySchema,
   type ComputeUtilization,
   ComputeUtilizationSchema,
   type Decision,
@@ -35,6 +37,8 @@ import {
   type Project,
   ProjectSchema,
   type Run,
+  type RunFeedback,
+  RunFeedbackSchema,
   RunSchema,
   type Verification,
   VerificationSchema,
@@ -444,5 +448,45 @@ export const makeGateHealth = (f: Fixtures, overrides: Overrides<GateHealth> = {
     auditedAt: AT,
     ...overrides,
   });
+
+const FIXTURE_ACTOR = {
+  kind: "user",
+  userId: "fixture-operator",
+  orgId: "org_01HF7YAT00GGGGGGGGGGGGGGGG",
+} as const;
+
+/** D-04: a first positive verdict on the fixture run. */
+export const makeRunFeedback = (f: Fixtures, overrides: Overrides<RunFeedback> = {}): RunFeedback =>
+  RunFeedbackSchema.parse({
+    ...f.scope,
+    schemaVersion: 1,
+    version: 1,
+    verdict: "worked",
+    actor: FIXTURE_ACTOR,
+    recordedAt: AT,
+    revisions: [{ version: 1, verdict: "worked", actor: FIXTURE_ACTOR, recordedAt: AT }],
+    ...overrides,
+  });
+
+/** D-05: a completion history anchored on the fixture run. */
+export const makeCompletionHistory = (
+  f: Fixtures,
+  overrides: Overrides<CompletionHistory> = {},
+): CompletionHistory => {
+  const members = [{ programId: f.scope.programId, runId: f.scope.runId, role: "anchor" }];
+  return CompletionHistorySchema.parse({
+    ...f.scope,
+    schemaVersion: 1,
+    completionHistoryId: f.ids.next("comp"),
+    title: "Fixture outcome",
+    version: 1,
+    members,
+    checkpoints: [],
+    revisions: [{ version: 1, actor: FIXTURE_ACTOR, recordedAt: AT, members }],
+    createdAt: AT,
+    updatedAt: AT,
+    ...overrides,
+  });
+};
 
 export const FIXTURE_TIMESTAMP = AT;

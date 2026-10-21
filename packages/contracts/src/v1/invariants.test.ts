@@ -9,10 +9,12 @@
 import { describe, expect, it } from "vitest";
 import { ArtifactSchema } from "./artifact.js";
 import { PathGlobSchema } from "./common.js";
+import { CompletionHistorySchema } from "./completion.js";
 import { EventSchema, inlinePayloadBytes, MAX_INLINE_PAYLOAD_BYTES } from "./event.js";
 import { ExaminationSchema } from "./examination.js";
 import { AGGREGATE_EXAMPLES, EXAMPLE_IDS } from "./examples.js";
 import { ExecutionNodeSchema } from "./execution-node.js";
+import { RunFeedbackSchema } from "./feedback.js";
 import { JobContractSchema } from "./job-contract.js";
 import { ProgramContractSchema, ProgramContractScopeSchema } from "./program-contract.js";
 import { RoutingDecisionSchema } from "./routing-decision.js";
@@ -463,5 +465,102 @@ describe("a program contract's step identifiers (P3, T4)", () => {
         }),
       ).success,
     ).toBe(true);
+  });
+});
+
+describe("RunFeedback", () => {
+  it("accepts the example", () => {
+    expect(RunFeedbackSchema.safeParse(AGGREGATE_EXAMPLES.RunFeedback).success).toBe(true);
+  });
+
+  it("rejects revisions that are not strictly ascending", () => {
+    const record = clone(AGGREGATE_EXAMPLES.RunFeedback);
+    const revisions = record.revisions as Record<string, unknown>[];
+    revisions[0] = { ...revisions[0], version: 2 };
+    expect(RunFeedbackSchema.safeParse(record).success).toBe(false);
+  });
+
+  it("rejects a last revision that differs from the record", () => {
+    const record = clone(AGGREGATE_EXAMPLES.RunFeedback);
+    record.verdict = "did_not_work";
+    expect(RunFeedbackSchema.safeParse(record).success).toBe(false);
+  });
+
+  it("accepts a cleared verdict mirrored by the last revision", () => {
+    const record = clone(AGGREGATE_EXAMPLES.RunFeedback);
+    const revisions = record.revisions as Record<string, unknown>[];
+    revisions[1] = { ...revisions[1], verdict: null };
+    record.verdict = null;
+    expect(RunFeedbackSchema.safeParse(record).success).toBe(true);
+  });
+
+  it("rejects unknown keys", () => {
+    const record = { ...clone(AGGREGATE_EXAMPLES.RunFeedback), note: "x" };
+    expect(RunFeedbackSchema.safeParse(record).success).toBe(false);
+  });
+});
+
+describe("CompletionHistory", () => {
+  const member = (role: string, n: string) => ({
+    programId: EXAMPLE_IDS.programId,
+    runId: `run_01HF7YAT0${n}GGGGGGGGGGGGGGGG`,
+    role,
+  });
+
+  it("accepts the example", () => {
+    expect(CompletionHistorySchema.safeParse(AGGREGATE_EXAMPLES.CompletionHistory).success).toBe(
+      true,
+    );
+  });
+
+  it("rejects duplicate members", () => {
+    const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
+    const members = record.members as Record<string, unknown>[];
+    members.push({ ...members[0], role: "contributing" });
+    (record.revisions as Record<string, unknown>[])[0] = {
+      ...(record.revisions as Record<string, unknown>[])[0],
+      members,
+    };
+    expect(CompletionHistorySchema.safeParse(record).success).toBe(false);
+  });
+
+  it("rejects two anchors and no anchor", () => {
+    const withMembers = (members: unknown[]) => {
+      const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
+      record.members = members;
+      (record.revisions as Record<string, unknown>[])[0] = {
+        ...(record.revisions as Record<string, unknown>[])[0],
+        members,
+      };
+      return CompletionHistorySchema.safeParse(record).success;
+    };
+    const own = { programId: EXAMPLE_IDS.programId, runId: EXAMPLE_IDS.runId };
+    expect(withMembers([{ ...own, role: "anchor" }, member("anchor", "1")])).toBe(false);
+    expect(withMembers([{ ...own, role: "contributing" }])).toBe(false);
+    expect(withMembers([{ ...own, role: "anchor" }, member("correction", "1")])).toBe(true);
+  });
+
+  it("rejects an anchor that is not the record's run", () => {
+    const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
+    const members = [member("anchor", "1")];
+    record.members = members;
+    (record.revisions as Record<string, unknown>[])[0] = {
+      ...(record.revisions as Record<string, unknown>[])[0],
+      members,
+    };
+    expect(CompletionHistorySchema.safeParse(record).success).toBe(false);
+  });
+
+  it("rejects duplicate checkpoint names", () => {
+    const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
+    const checkpoints = record.checkpoints as Record<string, unknown>[];
+    checkpoints.push({ ...checkpoints[0] });
+    expect(CompletionHistorySchema.safeParse(record).success).toBe(false);
+  });
+
+  it("rejects a last revision that differs from the record", () => {
+    const record = clone(AGGREGATE_EXAMPLES.CompletionHistory);
+    record.version = 2;
+    expect(CompletionHistorySchema.safeParse(record).success).toBe(false);
   });
 });

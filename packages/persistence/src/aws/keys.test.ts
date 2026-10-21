@@ -12,6 +12,8 @@ describe("key schema matches contract §4.1 and §4.2", () => {
     ["org pointer", keys.orgProject(org, p), `ORG#${org}`, `PROJ#${p}`],
     ["program contract", keys.programContract(p, g), `PROJ#${p}`, `PROG#${g}`],
     ["gate health", keys.gateHealth(p), `PROJ#${p}`, "GATE-HEALTH"],
+    ["run feedback", keys.feedback(f.scope), `PROJ#${p}#PROG#${g}`, `FEEDBACK#${r}`],
+    ["completion history", keys.completionHistory(p, "comp_X"), `PROJ#${p}`, "COMPLETION#comp_X"],
     ["run", keys.run(f.scope, r), `PROJ#${p}#PROG#${g}`, `RUN#${r}`],
     [
       "execution node",
@@ -46,6 +48,8 @@ describe("key schema matches contract §4.1 and §4.2", () => {
       keys.project(p),
       keys.programContract(p, g),
       keys.run(f.scope, r),
+      keys.feedback(f.scope),
+      keys.completionHistory(p, "comp_X"),
       keys.runRecord(f.scope, "DEC", "dec_X"),
       keys.event(f.scope, "evt_X"),
       keys.counter(f.scope),

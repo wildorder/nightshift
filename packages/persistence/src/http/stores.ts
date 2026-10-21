@@ -31,6 +31,7 @@ import {
   ArtifactSchema,
   type CheckpointId,
   CheckpointSchema,
+  CompletionHistorySchema,
   ComputeUtilizationSchema,
   type DecisionId,
   DecisionSchema,
@@ -50,6 +51,7 @@ import {
   type ProjectId,
   ProjectSchema,
   RoutingDecisionSchema,
+  RunFeedbackSchema,
   type RunId,
   RunSchema,
   type VerificationId,
@@ -61,6 +63,7 @@ import type {
   AppendResult,
   ArtifactStore,
   CheckpointStore,
+  CompletionHistoryStore,
   ComputeUtilizationStore,
   DecisionStore,
   DispatchStore,
@@ -79,6 +82,7 @@ import type {
   ProjectStore,
   ProjectStores,
   RoutingDecisionStore,
+  RunFeedbackStore,
   RunStore,
   VerificationStore,
   WarmCacheStore,
@@ -579,7 +583,57 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     get: (projectId) => getOrUndefined(transport, GateHealthSchema, routes.gateHealth(projectId)),
   };
 
+  // P20 (D-04): the server rewrites attribution and answers the stored record.
+  const feedback: RunFeedbackStore = {
+    put: async (record) => {
+      await send(transport, { method: "PUT", path: routes.feedback(record), body: record });
+    },
+    get: (scope) => getOrUndefined(transport, RunFeedbackSchema, routes.feedback(scope)),
+    listByProgram: async (scope, page) =>
+      readPage(
+        RunFeedbackSchema,
+        await send(transport, {
+          method: "GET",
+          path: routes.programFeedback(scope),
+          query: pageQuery(page),
+        }),
+      ),
+  };
+
+  // P20 (D-05).
+  const completionHistories: CompletionHistoryStore = {
+    put: async (history) => {
+      await send(transport, {
+        method: "PUT",
+        path: routes.completionHistory(history, history.completionHistoryId),
+        body: history,
+      });
+    },
+    get: (scope, completionHistoryId) =>
+      getOrUndefined(
+        transport,
+        CompletionHistorySchema,
+        routes.completionHistory(scope, completionHistoryId),
+      ),
+    listByRun: async (scope) =>
+      readList(
+        CompletionHistorySchema,
+        await send(transport, { method: "GET", path: routes.completionHistories(scope) }),
+      ),
+    listByProject: async (projectId, page) =>
+      readPage(
+        CompletionHistorySchema,
+        await send(transport, {
+          method: "GET",
+          path: routes.projectCompletionHistories(projectId),
+          query: pageQuery(page),
+        }),
+      ),
+  };
+
   return {
+    feedback,
+    completionHistories,
     orgConfigs,
     projects,
     dispatches,

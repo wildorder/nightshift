@@ -12,6 +12,7 @@ import {
 import {
   createFixtures,
   makeAgent,
+  makeCompletionHistory,
   makeComputeUtilization,
   makeEvent,
   makeGateHealth,
@@ -20,6 +21,7 @@ import {
   makeProgramContract,
   makeProject,
   makeRootNode,
+  makeRunFeedback,
   OwnershipViolationError,
   StaleWriteError,
 } from "@nightshift/core";
@@ -210,6 +212,37 @@ describe("DynamoDB adapter specifics", () => {
       await stores.gateHealth.put(makeGateHealth(f));
       expect((await stores.programContracts.listByProject(f.scope.projectId)).items).toEqual([]);
       expect((await stores.computeUtilizations.listByProject(f.scope.projectId)).items).toEqual([]);
+    });
+  });
+
+  describe("run feedback and completion histories (P20)", () => {
+    it("keeps feedback beside the program's runs and a history under the project", async () => {
+      await stores.feedback.put(makeRunFeedback(f));
+      const history = makeCompletionHistory(f);
+      await stores.completionHistories.put(history);
+      const p = f.scope.projectId;
+      expect(table.allItems().map((item) => [item.PK, item.SK])).toEqual(
+        expect.arrayContaining([
+          [`PROJ#${p}#PROG#${f.scope.programId}`, `FEEDBACK#${f.scope.runId}`],
+          [`PROJ#${p}`, `COMPLETION#${history.completionHistoryId}`],
+        ]),
+      );
+      expect((await stores.runs.listByProgram(f.scope)).items).toEqual([]);
+    });
+
+    it("refuses a stale or replayed version and changes nothing", async () => {
+      const first = makeRunFeedback(f);
+      await stores.feedback.put(first);
+      await expect(stores.feedback.put(first)).rejects.toBeInstanceOf(StaleWriteError);
+      expect(await stores.feedback.get(f.scope)).toEqual(first);
+      const history = makeCompletionHistory(f);
+      await stores.completionHistories.put(history);
+      await expect(
+        stores.completionHistories.put({ ...history, title: "other" }),
+      ).rejects.toBeInstanceOf(StaleWriteError);
+      expect(await stores.completionHistories.get(f.scope, history.completionHistoryId)).toEqual(
+        history,
+      );
     });
   });
 

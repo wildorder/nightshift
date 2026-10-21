@@ -18,6 +18,7 @@ describe("identifier prefixes", () => {
         "agent",
         "art",
         "ckpt",
+        "comp",
         "dec",
         "evt",
         "exam",

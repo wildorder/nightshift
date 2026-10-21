@@ -36,6 +36,7 @@ export const EXAMPLE_IDS = {
   artifactId: `art_${ULID_A}`,
   logArtifactId: `art_${ULID_B}`,
   eventId: `evt_${ULID_A}`,
+  completionHistoryId: `comp_${ULID_A}`,
 } as const;
 
 const AT = "2026-09-13T12:00:00.000Z";
@@ -478,6 +479,69 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     machinery: ["package.json", "vitest.config.ts", "scripts/check.mjs"],
     auditedBy: { kind: "user", userId: "operator-01", orgId: EXAMPLE_IDS.orgId },
     auditedAt: AT_LATER,
+  },
+
+  // D-04: a person's verdict on the run, after one correction.
+  RunFeedback: {
+    schemaVersion: 1,
+    projectId: EXAMPLE_IDS.projectId,
+    programId: EXAMPLE_IDS.programId,
+    runId: EXAMPLE_IDS.runId,
+    version: 2,
+    verdict: "worked",
+    actor: { kind: "user", userId: "operator-01", orgId: EXAMPLE_IDS.orgId },
+    recordedAt: AT_LATER,
+    resultCommit: COMMIT,
+    revisions: [
+      {
+        version: 1,
+        verdict: "did_not_work",
+        actor: { kind: "user", userId: "operator-01", orgId: EXAMPLE_IDS.orgId },
+        recordedAt: AT,
+      },
+      {
+        version: 2,
+        verdict: "worked",
+        actor: { kind: "user", userId: "operator-01", orgId: EXAMPLE_IDS.orgId },
+        recordedAt: AT_LATER,
+        resultCommit: COMMIT,
+      },
+    ],
+  },
+
+  // D-05: one outcome delivered by an anchor run, with a named checkpoint.
+  CompletionHistory: {
+    schemaVersion: 1,
+    projectId: EXAMPLE_IDS.projectId,
+    programId: EXAMPLE_IDS.programId,
+    runId: EXAMPLE_IDS.runId,
+    completionHistoryId: EXAMPLE_IDS.completionHistoryId,
+    title: "Delivered the export feature",
+    version: 1,
+    members: [{ programId: EXAMPLE_IDS.programId, runId: EXAMPLE_IDS.runId, role: "anchor" }],
+    checkpoints: [
+      {
+        name: "first-positive",
+        programId: EXAMPLE_IDS.programId,
+        runId: EXAMPLE_IDS.runId,
+        feedbackVersion: 1,
+        verdictRecordedAt: AT,
+        members: [{ programId: EXAMPLE_IDS.programId, runId: EXAMPLE_IDS.runId, role: "anchor" }],
+        membershipVersion: 1,
+        recordedBy: { kind: "user", userId: "operator-01", orgId: EXAMPLE_IDS.orgId },
+        recordedAt: AT_LATER,
+      },
+    ],
+    revisions: [
+      {
+        version: 1,
+        actor: { kind: "user", userId: "operator-01", orgId: EXAMPLE_IDS.orgId },
+        recordedAt: AT,
+        members: [{ programId: EXAMPLE_IDS.programId, runId: EXAMPLE_IDS.runId, role: "anchor" }],
+      },
+    ],
+    createdAt: AT,
+    updatedAt: AT,
   },
 };
 

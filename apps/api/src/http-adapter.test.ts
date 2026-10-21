@@ -129,13 +129,20 @@ const PORT_METHODS = {
   warmCaches: ["put", "get", "delete"],
   // P15: written whole by the operator or the engine, so it has a write route.
   gateHealth: ["put", "get"],
+  // P20: the adapter implements them; the routes and the runtime tests come with
+  // the operations (J3), until then listed in ROUTES_PENDING.
+  feedback: ["put", "get", "listByProgram"],
+  completionHistories: ["put", "get", "listByRun", "listByProject"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
-/** `store.method` for every entry above. */
+/** Stores whose routes land with J3 of S-06; remove this once they are driven here. */
+const ROUTES_PENDING: readonly string[] = ["feedback", "completionHistories"];
+
+/** `store.method` for every entry above that the handler already serves. */
 const everyPortMethod = (): readonly string[] =>
-  Object.entries(PORT_METHODS).flatMap(([store, methods]) =>
-    methods.map((method) => `${store}.${method}`),
-  );
+  Object.entries(PORT_METHODS)
+    .filter(([store]) => !ROUTES_PENDING.includes(store))
+    .flatMap(([store, methods]) => methods.map((method) => `${store}.${method}`));
 
 /** What this file has actually called, accumulated across every test. */
 const exercised = new Set<string>();
