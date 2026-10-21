@@ -8,8 +8,8 @@
  * the exit matrix be exhaustive rather than illustrative.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ExecutionNode, RouteTarget } from "@nightshift/contracts";
 import {
   createFixtures,
@@ -19,23 +19,61 @@ import {
   makeProgramContract,
   makeRootNode,
 } from "@nightshift/core";
-import type { HarnessExit, HarnessStartInput, HookEvent, McpLaunch } from "@nightshift/harness";
-import { millis, refusingWorkerTools } from "@nightshift/harness";
+import type {
+  HarnessExit,
+  HarnessStartInput,
+  HookEvent,
+  McpLaunch,
+  MeasurementSink,
+} from "@nightshift/harness";
+import { millis, recordingMeasurementSink, refusingWorkerTools } from "@nightshift/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createClaudeHarness, SPAWN_FAILURE_EXIT_CODE } from "./adapter.js";
+import {
+  type ClaudeCaptureReport,
+  type ClaudeHarnessOptions,
+  createClaudeHarness,
+  SPAWN_FAILURE_EXIT_CODE,
+} from "./adapter.js";
+import {
+  type ClaudeCapture,
+  type ClaudeCaptureResult,
+  claudeTelemetryEnv,
+  type startClaudeCapture,
+} from "./capture.js";
 import { HEADLESS_CLAUDE_ENV } from "./environment.js";
-import type { AdapterFileSystem, SpawnedChild, SpawnLike, SpawnOptions } from "./process.js";
+import {
+  type AdapterFileSystem,
+  nodeFileSystem,
+  type SpawnedChild,
+  type SpawnLike,
+  type SpawnOptions,
+} from "./process.js";
 import { IDLE_GRACE_MS } from "./session.js";
 
-/** What the recording's `result` frame says the run cost (contract v1, D-P5-01). */
+/**
+ * What the recording's `result` frame says the run cost. Since P20 S-02 the
+ * exit's usage is the SUM of the frame's `modelUsage` entries (the haiku helper
+ * 967/16 plus sonnet 14/1160/80062/28102), not the frame's own `usage` object.
+ */
 const RECORDED_USAGE = {
-  inputTokens: 10,
-  outputTokens: 900,
-  cacheReadTokens: 71406,
-  cacheWriteTokens: 18486,
+  inputTokens: 981,
+  inputIncludesCache: false,
+  outputTokens: 1176,
+  cacheReadTokens: 80062,
+  cacheWriteTokens: 28102,
   actualCostUsd: 0.1266714,
   latencyMs: 24172,
 };
+
+/** The measures that ride with it: a session-scoped, whole-tree aggregate. */
+const RECORDED_MEASURES = {
+  usageScope: "session",
+  inclusion: "includes_children",
+  observedModel: "claude-sonnet-5",
+};
+
+/** Nothing seen: the coverage every usage-less exit carries. */
+const UNSEEN = { coverage: "unknown" } as const;
 
 /** The recording's own session, which every exit now carries (P8, D-P8-15). */
 const RECORDED_SESSION = "9cb83dd4-77b4-4d5d-91f4-b44452cfeb3a";
@@ -438,6 +476,8 @@ describe("the transcript", () => {
     expect(await handle.exit).toEqual({
       kind: "completed",
       usage: RECORDED_USAGE,
+      ...RECORDED_MEASURES,
+      coverage: "partial",
       sessionId: RECORDED_SESSION,
       result: RECORDED_RESULT,
     });
@@ -483,6 +523,8 @@ describe("the exit mapping", () => {
     expect(exit).toEqual({
       kind: "completed",
       usage: RECORDED_USAGE,
+      ...RECORDED_MEASURES,
+      coverage: "partial",
       sessionId: RECORDED_SESSION,
       result: RECORDED_RESULT,
     });
@@ -493,7 +535,13 @@ describe("the exit mapping", () => {
       child.emitStdout(RECORDING.split("\n").slice(0, 6).join("\n"));
       child.close(0);
     });
-    expect(exit).toEqual({ kind: "failed", exitCode: 0, sessionId: RECORDED_SESSION });
+    expect(exit).toEqual({
+      kind: "failed",
+      exitCode: 0,
+      sessionId: RECORDED_SESSION,
+      observedModel: "claude-sonnet-5",
+      ...UNSEEN,
+    });
   });
 
   it("maps exit 0 with an error result to failed — the interrupted-run case", async () => {
@@ -509,7 +557,7 @@ describe("the exit mapping", () => {
       );
       child.close(0);
     });
-    expect(exit).toEqual({ kind: "failed", exitCode: 0 });
+    expect(exit).toEqual({ kind: "failed", exitCode: 0, ...UNSEEN });
     expect(endings(events)[0]?.payload.terminalReason).toBe("aborted_streaming");
   });
 
@@ -518,30 +566,30 @@ describe("the exit mapping", () => {
       child.emitStderr("Error: When using --print, --output-format=stream-json requires --verbose");
       child.close(1);
     });
-    expect(exit).toEqual({ kind: "failed", exitCode: 1 });
+    expect(exit).toEqual({ kind: "failed", exitCode: 1, ...UNSEEN });
     expect(endings(events)[0]?.payload.summary).toContain("requires --verbose");
   });
 
   it("maps a killing signal to interrupted, carrying the signal", async () => {
     const { exit } = await run((child) => child.close(null, "SIGKILL"));
-    expect(exit).toEqual({ kind: "interrupted", signal: "SIGKILL" });
+    expect(exit).toEqual({ kind: "interrupted", signal: "SIGKILL", ...UNSEEN });
   });
 
   it("maps a close with neither a code nor a signal to failed", async () => {
     const { exit } = await run((child) => child.close(null, null));
-    expect(exit).toEqual({ kind: "failed", exitCode: 1 });
+    expect(exit).toEqual({ kind: "failed", exitCode: 1, ...UNSEEN });
   });
 
   it("maps an externally killed process on Windows to failed, because there is no signal", async () => {
     // Documented in `adapter.ts`: Windows reports no signal, and `taskkill` sets
     // exit code 1. SC-P3-11 wants durable state, not the label.
     const { exit } = await run((child) => child.close(1, null), { platform: "win32" });
-    expect(exit).toEqual({ kind: "failed", exitCode: 1 });
+    expect(exit).toEqual({ kind: "failed", exitCode: 1, ...UNSEEN });
   });
 
   it("maps a child that never ran to failed rather than a rejection", async () => {
     const { exit, events } = await run((child) => child.emitError("spawn claude ENOENT"));
-    expect(exit).toEqual({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE });
+    expect(exit).toEqual({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE, ...UNSEEN });
     expect(endings(events)[0]?.payload.summary).toContain("ENOENT");
   });
 });
@@ -558,7 +606,7 @@ describe("exit settles exactly once", () => {
     children[0]?.emitError("late error");
     const first = await handle.exit;
     expect(await handle.exit).toEqual(first);
-    expect(first).toEqual({ kind: "failed", exitCode: 3 });
+    expect(first).toEqual({ kind: "failed", exitCode: 3, ...UNSEEN });
     expect(endings(events)).toHaveLength(1);
   });
 
@@ -573,7 +621,11 @@ describe("exit settles exactly once", () => {
       },
     };
     const handle = await harnessWith(spawn, broken).start(startInput({ events }));
-    expect(await handle.exit).toEqual({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE });
+    expect(await handle.exit).toEqual({
+      kind: "failed",
+      exitCode: SPAWN_FAILURE_EXIT_CODE,
+      ...UNSEEN,
+    });
     expect(calls).toHaveLength(0);
     expect(events.map((event) => event.type)).toEqual(["agent.started", "agent.failed"]);
     expect(endings(events)[0]?.payload.summary).toContain("ENOSPC");
@@ -586,7 +638,11 @@ describe("exit settles exactly once", () => {
     const { fs } = fakeFileSystem();
     const events: HookEvent[] = [];
     const handle = await harnessWith(throwing, fs).start(startInput({ events }));
-    expect(await handle.exit).toEqual({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE });
+    expect(await handle.exit).toEqual({
+      kind: "failed",
+      exitCode: SPAWN_FAILURE_EXIT_CODE,
+      ...UNSEEN,
+    });
     expect(events.map((event) => event.type)).toEqual(["agent.started", "agent.failed"]);
   });
 });
@@ -681,7 +737,7 @@ describe("cancel escalation", () => {
 
     child.close(null, "SIGKILL");
     await cancelling;
-    expect(await handle.exit).toEqual({ kind: "cancelled" });
+    expect(await handle.exit).toEqual({ kind: "cancelled", ...UNSEEN });
   });
 
   it("stops escalating once the process has gone", async () => {
@@ -705,7 +761,7 @@ describe("cancel escalation", () => {
       const cancelling = harness.cancel(handle, millis(10));
       child.close(code, signal);
       await cancelling;
-      expect(await handle.exit).toEqual({ kind: "cancelled" });
+      expect(await handle.exit).toEqual({ kind: "cancelled", ...UNSEEN });
       expect(endings(events).map((event) => event.type)).toEqual(["agent.cancelled"]);
       expect(await harness.status(handle)).toBe("cancelled");
     }
@@ -731,7 +787,7 @@ describe("cancel escalation", () => {
     await expect(harness.cancel(handle, millis(1_000))).resolves.toBeUndefined();
     expect(killed).toEqual([]);
     // The outcome it already had is kept.
-    expect(await handle.exit).toEqual({ kind: "failed", exitCode: 0 });
+    expect(await handle.exit).toEqual({ kind: "failed", exitCode: 0, ...UNSEEN });
   });
 
   it("treats a second cancel as waiting for the first, not a second escalation", async () => {
@@ -754,7 +810,7 @@ describe("cancel escalation", () => {
     expect(calls[1]?.args).toEqual(["/pid", "4242", "/T", "/F"]);
     children[0]?.close(1, null);
     await cancelling;
-    expect(await handle.exit).toEqual({ kind: "cancelled" });
+    expect(await handle.exit).toEqual({ kind: "cancelled", ...UNSEEN });
   });
 
   it("falls back to signalling the child when the group kill throws", async () => {
@@ -770,7 +826,7 @@ describe("cancel escalation", () => {
     expect(children[0]?.signals).toEqual(["SIGINT"]);
     children[0]?.close(null, "SIGINT");
     await cancelling;
-    expect(await handle.exit).toEqual({ kind: "cancelled" });
+    expect(await handle.exit).toEqual({ kind: "cancelled", ...UNSEEN });
   });
 });
 
@@ -868,3 +924,540 @@ describe("launching through the image's Node (P16 S-01)", () => {
     expect(args).not.toContain("claude");
   });
 });
+
+// ── request capture (P20 S-02) ──────────────────────────────────────────────
+
+const CAPABILITY = "cap-0123456789abcdef-secret";
+const ENDPOINT = "http://127.0.0.1:43181";
+const HEADERS_PATH = join(TEMP_DIR, "otel-headers.json");
+const CAPTURE_DIR = "/fake-tmp/nightshift-claude-capture-1";
+
+const captureResult = (over: Partial<ClaudeCaptureResult> = {}): ClaudeCaptureResult => ({
+  requests: 3,
+  apiErrors: 0,
+  droppedRecords: 0,
+  droppedAttributes: 0,
+  unidentifiedRequests: 0,
+  complete: true,
+  reasons: [],
+  diagnostics: {} as ClaudeCaptureResult["diagnostics"],
+  ...over,
+});
+
+/** A capture whose `stop` is under the test's control. */
+const fakeCapture = (
+  stop: () => Promise<ClaudeCaptureResult> = async () => captureResult(),
+  order: string[] = [],
+) => {
+  const stops: number[] = [];
+  const inputs: Parameters<typeof startClaudeCapture>[0][] = [];
+  const startCapture: typeof startClaudeCapture = async (input) => {
+    inputs.push(input);
+    const capture: ClaudeCapture = {
+      endpoint: ENDPOINT,
+      capability: CAPABILITY,
+      pid: 1,
+      env: claudeTelemetryEnv(ENDPOINT),
+      stop: async (grace) => {
+        stops.push(grace?.ms ?? -1);
+        order.push("stop");
+        return stop();
+      },
+    };
+    return capture;
+  };
+  return { startCapture, stops, inputs };
+};
+
+interface CaptureRun {
+  readonly exit: HarnessExit;
+  readonly events: HookEvent[];
+  readonly reports: ClaudeCaptureReport[];
+  readonly order: string[];
+  readonly sink: ReturnType<typeof recordingMeasurementSink>;
+  readonly calls: SpawnCall[];
+  readonly written: Map<string, string>;
+  readonly removed: string[];
+}
+
+const captureRun = async (
+  act: (child: FakeChild) => void,
+  config: {
+    readonly capture?: ReturnType<typeof fakeCapture>;
+    readonly options?: ClaudeHarnessOptions;
+    readonly measurements?: boolean;
+    readonly stop?: () => Promise<ClaudeCaptureResult>;
+    readonly platform?: NodeJS.Platform;
+    readonly input?: Partial<HarnessStartInput>;
+  } = {},
+): Promise<CaptureRun> => {
+  const order: string[] = [];
+  const { spawn, calls, children } = fakeSpawn();
+  const files = fakeFileSystem();
+  const fs: AdapterFileSystem = {
+    ...files.fs,
+    removeDir: (path) => {
+      order.push(`remove:${path}`);
+      files.fs.removeDir(path);
+    },
+  };
+  const events: HookEvent[] = [];
+  const reports: ClaudeCaptureReport[] = [];
+  const sink = recordingMeasurementSink();
+  const capture = config.capture ?? fakeCapture(config.stop, order);
+  const harness = createClaudeHarness({
+    spawn,
+    fs,
+    clock: createSteppingClock(Date.UTC(2026, 8, 15, 12, 0, 0), 1),
+    platform: config.platform ?? "linux",
+    env: { PATH: "/usr/bin", HOME: "/home/operator", OTEL_EXPORTER_OTLP_HEADERS: "operator=1" },
+    startCapture: capture.startCapture,
+    onCapture: (report) => {
+      order.push("onCapture");
+      reports.push(report);
+    },
+    ...config.options,
+  });
+  const input: HarnessStartInput = {
+    ...startInput({ events }),
+    ...(config.measurements === false ? {} : { measurements: sink as MeasurementSink }),
+    ...config.input,
+  };
+  const handle = await harness.start(input);
+  void handle.exit.then(() => order.push("settled"));
+  const child = children[0];
+  if (child !== undefined) act(child);
+  const exit = await handle.exit;
+  return {
+    exit,
+    events,
+    reports,
+    order,
+    sink,
+    calls,
+    written: files.written,
+    removed: files.removed,
+  };
+};
+
+describe("request capture: the launch", () => {
+  it("points the exporter at the loopback receiver and keeps the capability out of env and argv", async () => {
+    const { calls, written } = await captureRun((child) => child.close(0));
+    const env = calls[0]?.options.env ?? {};
+    expect(env).toMatchObject({
+      CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+      OTEL_LOGS_EXPORTER: "otlp",
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/json",
+      OTEL_EXPORTER_OTLP_ENDPOINT: ENDPOINT,
+    });
+    // The operator's own exporter headers are stripped, ours is not in the env.
+    expect(env.OTEL_EXPORTER_OTLP_HEADERS).toBeUndefined();
+    expect(JSON.stringify(env)).not.toContain(CAPABILITY);
+    expect(JSON.stringify(calls[0]?.args)).not.toContain(CAPABILITY);
+    expect(written.get(HEADERS_PATH)).toBe(
+      JSON.stringify({ Authorization: `Bearer ${CAPABILITY}` }),
+    );
+    const settings = JSON.parse(written.get(SETTINGS_PATH) ?? "{}");
+    expect(settings.otelHeadersHelper).toBe(`cat '${HEADERS_PATH}'`);
+    expect(settings).toMatchObject({ includeCoAuthoredBy: false, hooks: {} });
+    expect(written.get(SETTINGS_PATH)).not.toContain(CAPABILITY);
+  });
+
+  it("starts the receiver journal in a separate directory, never the config directory", async () => {
+    const capture = fakeCapture();
+    await captureRun((child) => child.close(0), { capture });
+    const journal = capture.inputs[0]?.journalPath ?? "";
+    expect(journal).toBe(join(CAPTURE_DIR, "telemetry.ndjson"));
+    expect(dirname(journal)).not.toBe(TEMP_DIR);
+  });
+
+  it("passes the exporter interval through", async () => {
+    const capture = fakeCapture();
+    await captureRun((child) => child.close(0), {
+      capture,
+      options: { requestCapture: { exportIntervalMs: 50 } },
+    });
+    expect(capture.inputs[0]?.exportIntervalMs).toBe(50);
+  });
+
+  it("under runAs, writes the headers file before the grant and puts no secret in the sudo argv", async () => {
+    const granted: string[] = [];
+    let headersAtGrant: string | undefined;
+    const files = fakeFileSystem();
+    const { spawn, calls, children } = fakeSpawn();
+    const capture = fakeCapture();
+    const harness = createClaudeHarness({
+      spawn,
+      fs: files.fs,
+      platform: "linux",
+      env: { PATH: "/usr/bin" },
+      startCapture: capture.startCapture,
+    });
+    const handle = await harness.start({
+      ...startInput(),
+      measurements: recordingMeasurementSink(),
+      runAs: {
+        user: "worker-2",
+        grant: async (path) => {
+          granted.push(path);
+          headersAtGrant = files.written.get(HEADERS_PATH);
+        },
+      },
+    });
+    expect(granted).toEqual([TEMP_DIR]);
+    expect(headersAtGrant).toContain(CAPABILITY);
+    const args = calls[0]?.args ?? [];
+    expect(calls[0]?.file).toBe("sudo");
+    expect(args.join("\n")).not.toContain(CAPABILITY);
+    expect(args.some((arg) => arg.startsWith("OTEL_EXPORTER_OTLP_HEADERS"))).toBe(false);
+    expect(args).toContain(`OTEL_EXPORTER_OTLP_ENDPOINT=${ENDPOINT}`);
+    children[0]?.close(0);
+    await handle.exit;
+  });
+
+  it("uses the header environment variable instead of the helper on win32", async () => {
+    const { calls, written } = await captureRun((child) => child.close(0), { platform: "win32" });
+    expect(calls[0]?.options.env.OTEL_EXPORTER_OTLP_HEADERS).toBe(
+      `Authorization=Bearer ${CAPABILITY}`,
+    );
+    expect(written.has(HEADERS_PATH)).toBe(false);
+    expect(JSON.parse(written.get(SETTINGS_PATH) ?? "{}").otelHeadersHelper).toBeUndefined();
+  });
+
+  it.each([
+    ["no sink", { measurements: false }],
+    ["capture disabled", { options: { requestCapture: { enabled: false } } }],
+  ])(
+    "sets no OTEL variable, writes no headers and starts no receiver with %s",
+    async (_, config) => {
+      const capture = fakeCapture();
+      const run = await captureRun((child) => child.close(0), { ...config, capture });
+      expect(capture.inputs).toHaveLength(0);
+      expect(run.written.has(HEADERS_PATH)).toBe(false);
+      expect(
+        Object.keys(run.calls[0]?.options.env ?? {}).filter(
+          (k) => k.startsWith("OTEL_") || k.includes("TELEMETRY"),
+        ),
+      ).toEqual([]);
+      expect(JSON.parse(run.written.get(SETTINGS_PATH) ?? "{}").otelHeadersHelper).toBeUndefined();
+    },
+  );
+
+  it("reports observations as a capability", () => {
+    expect(createClaudeHarness().capabilities).toEqual({ usage: true, observations: true });
+  });
+});
+
+describe("request capture: coverage of the exit", () => {
+  const completes = (child: FakeChild) => {
+    child.emitStdout(RECORDING);
+    child.close(0);
+  };
+
+  it("is complete only for a non-error result with a complete otlp capture", async () => {
+    const { exit } = await captureRun(completes);
+    expect(exit).toMatchObject({
+      kind: "completed",
+      usage: RECORDED_USAGE,
+      ...RECORDED_MEASURES,
+      coverage: "complete",
+    });
+  });
+
+  it("is partial in stream mode, with the stream's request observations", async () => {
+    const { exit, sink } = await captureRun(completes, {
+      options: { requestCapture: { enabled: false } },
+    });
+    expect(exit).toMatchObject({ kind: "completed", coverage: "partial" });
+    expect(sink.observations.some((o) => o.kind === "request")).toBe(true);
+  });
+
+  it("is partial when the capture could not start, and the launch still runs", async () => {
+    const startCapture: typeof startClaudeCapture = async () => {
+      throw new Error("receiver not ready");
+    };
+    const run = await captureRun(completes, { capture: { startCapture, stops: [], inputs: [] } });
+    expect(run.exit).toMatchObject({ kind: "completed", coverage: "partial" });
+    expect(run.reports[0]).toMatchObject({ mode: "stream", startError: "receiver not ready" });
+    expect(run.reports[0]?.journalPath).toBeUndefined();
+    const ending = run.events.find((e) => e.type === "agent.completed");
+    expect(ending?.payload.capture).toMatchObject({
+      mode: "stream",
+      complete: false,
+      startError: "receiver not ready",
+    });
+    expect(run.removed.some((path) => path.includes("nightshift-claude-capture-"))).toBe(true);
+  });
+
+  it.each([
+    [
+      "no_api_request",
+      captureResult({ requests: 0, complete: false, reasons: ["no_api_request"] }),
+    ],
+    [
+      "a receiver gap",
+      captureResult({ complete: false, gap: "receiver_lost", reasons: ["receiver_lost"] }),
+    ],
+  ])("is partial for a capture result with %s", async (_, result) => {
+    const { exit } = await captureRun(completes, { stop: async () => result });
+    expect(exit).toMatchObject({ kind: "completed", coverage: "partial" });
+  });
+
+  it("is partial for an errored result", async () => {
+    const { exit } = await captureRun((child) => {
+      child.emitStdout(
+        RECORDING.replace('"is_error": false', '"is_error": true').replace(
+          '"is_error":false',
+          '"is_error":true',
+        ),
+      );
+      child.close(0);
+    });
+    expect(exit.coverage).not.toBe("complete");
+    expect(exit.kind).toBe("failed");
+  });
+
+  it("is partial for a cancelled or interrupted run that saw usage, unknown when nothing was seen", async () => {
+    const killed = await captureRun(
+      (child) => {
+        child.emitStdout(RECORDING);
+        child.close(null, "SIGKILL");
+      },
+      { stop: async () => captureResult() },
+    );
+    expect(killed.exit).toMatchObject({ kind: "interrupted", coverage: "partial" });
+    const nothing = await captureRun((child) => child.close(null, "SIGKILL"), {
+      stop: async () =>
+        captureResult({ requests: 0, complete: false, reasons: ["no_api_request"] }),
+    });
+    expect(nothing.exit).toMatchObject({ kind: "interrupted", coverage: "unknown" });
+  });
+
+  it("is partial for a cancel, whatever the stream said", async () => {
+    const { spawn, children } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    const capture = fakeCapture();
+    const harness = createClaudeHarness({
+      spawn,
+      fs,
+      platform: "linux",
+      env: {},
+      startCapture: capture.startCapture,
+      kill: () => {},
+    });
+    const handle = await harness.start({
+      ...startInput(),
+      measurements: recordingMeasurementSink(),
+    });
+    children[0]?.emitStdout(RECORDING);
+    const cancelling = harness.cancel(handle, millis(10_000));
+    children[0]?.close(0);
+    await cancelling;
+    expect(await handle.exit).toMatchObject({ kind: "cancelled", coverage: "partial" });
+  });
+});
+
+describe("request capture: observations", () => {
+  it("in stream mode emits deduplicated request observations without output tokens, and a snapshot per result", async () => {
+    const { sink } = await captureRun(
+      (child) => {
+        child.emitStdout(RECORDING);
+        child.close(0);
+      },
+      { options: { requestCapture: { enabled: false } } },
+    );
+    const requests = sink.observations.filter((o) => o.kind === "request");
+    expect(requests.length).toBeGreaterThan(0);
+    expect(new Set(requests.map((o) => o.observationId)).size).toBe(requests.length);
+    for (const request of requests) {
+      expect(request.kind === "request" && "outputTokens" in request.counters).toBe(false);
+    }
+    expect(sink.observations.filter((o) => o.kind === "cumulative_snapshot")).toHaveLength(1);
+  });
+
+  it("in otlp mode emits no stream-derived request observations", async () => {
+    const { sink } = await captureRun((child) => {
+      child.emitStdout(RECORDING);
+      child.close(0);
+    });
+    expect(sink.observations.filter((o) => o.kind === "request")).toHaveLength(0);
+    expect(sink.observations.filter((o) => o.kind === "cumulative_snapshot")).toHaveLength(1);
+  });
+});
+
+describe("request capture: the finish sequence", () => {
+  it("stops the capture, calls onCapture with the journal, then removes both directories, then settles", async () => {
+    const { reports, order, events } = await captureRun((child) => child.close(0), {
+      stop: async () =>
+        captureResult({ requests: 7, apiErrors: 1, droppedRecords: 2, unidentifiedRequests: 1 }),
+    });
+    expect(order).toEqual([
+      "stop",
+      "onCapture",
+      `remove:${CAPTURE_DIR}`,
+      `remove:${TEMP_DIR}`,
+      "settled",
+    ]);
+    expect(reports[0]).toMatchObject({
+      agentId: "agent_from_launch".length > 0 ? reports[0]?.agentId : "",
+      mode: "otlp",
+      journalPath: join(CAPTURE_DIR, "telemetry.ndjson"),
+    });
+    expect(reports[0]?.result?.requests).toBe(7);
+    const payload = events.find(
+      (e) => e.type.startsWith("agent.") && e.type !== "agent.started",
+    )?.payload;
+    expect(payload?.capture).toEqual({
+      mode: "otlp",
+      requests: 7,
+      apiErrors: 1,
+      dropped: 3,
+      complete: true,
+      reasons: [],
+    });
+  });
+
+  it("swallows an onCapture that throws", async () => {
+    const { exit } = await captureRun((child) => child.close(0), {
+      options: {
+        onCapture: () => {
+          throw new Error("observer fault");
+        },
+      },
+    });
+    expect(exit.kind).toBe("failed");
+  });
+
+  it("settles once, after the stop, when a launch fails once the capture has started", async () => {
+    const throwing: SpawnLike = () => {
+      throw new Error("EACCES");
+    };
+    const order: string[] = [];
+    const files = fakeFileSystem();
+    const capture = fakeCapture(undefined, order);
+    const reports: ClaudeCaptureReport[] = [];
+    const harness = createClaudeHarness({
+      spawn: throwing,
+      fs: files.fs,
+      platform: "linux",
+      env: {},
+      startCapture: capture.startCapture,
+      onCapture: (report) => void reports.push(report),
+    });
+    const handle = await harness.start({
+      ...startInput(),
+      measurements: recordingMeasurementSink(),
+    });
+    expect(await handle.exit).toMatchObject({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE });
+    expect(capture.stops).toHaveLength(1);
+    expect(reports).toHaveLength(1);
+    expect(files.removed).toEqual([CAPTURE_DIR, TEMP_DIR]);
+  });
+
+  it("settles even when stop rejects", async () => {
+    const { exit, events, reports } = await captureRun((child) => child.close(0), {
+      stop: async () => {
+        throw new Error("receiver exploded");
+      },
+    });
+    expect(exit.kind).toBe("failed");
+    expect(reports[0]?.stopError).toBe("receiver exploded");
+    expect(reports[0]?.result).toBeUndefined();
+    expect(events.filter((e) => e.type === "agent.failed")).toHaveLength(1);
+  });
+
+  it("settles within the bound when stop never returns", async () => {
+    vi.useFakeTimers();
+    const { spawn, children } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    const order: string[] = [];
+    const capture = fakeCapture(() => new Promise<ClaudeCaptureResult>(() => {}), order);
+    const events: HookEvent[] = [];
+    const harness = createClaudeHarness({
+      spawn,
+      fs,
+      platform: "linux",
+      env: {},
+      startCapture: capture.startCapture,
+    });
+    const handle = await harness.start({
+      ...startInput({ events }),
+      measurements: recordingMeasurementSink(),
+    });
+    let settled = false;
+    void handle.exit.then(() => {
+      settled = true;
+    });
+    children[0]?.emitStdout(RECORDING);
+    children[0]?.close(0);
+    await vi.advanceTimersByTimeAsync(1_900);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(settled).toBe(true);
+    const exit = await handle.exit;
+    expect(exit).toMatchObject({ kind: "completed", coverage: "partial" });
+    expect(events.filter((e) => e.type === "agent.completed")).toHaveLength(1);
+    expect(capture.stops).toEqual([1500]);
+  });
+});
+
+describe.skipIf(process.getuid?.() === 0)(
+  "request capture: after the grant (real filesystem)",
+  () => {
+    it("still reads the journal when the config directory is no longer traversable", async () => {
+      const { spawn, children } = fakeSpawn();
+      const granted: string[] = [];
+      let report: { journalPath?: string; readable: boolean; mode?: string } = { readable: false };
+      const harness = createClaudeHarness({
+        spawn,
+        fs: nodeFileSystem,
+        platform: "linux",
+        env: { PATH: process.env.PATH ?? "" },
+        requestCapture: { exportIntervalMs: 50 },
+        onCapture: (r) => {
+          const journalPath = r.journalPath;
+          let readable = false;
+          try {
+            readable =
+              journalPath !== undefined &&
+              existsSync(journalPath) &&
+              readFileSync(journalPath) !== undefined;
+          } catch {
+            readable = false;
+          }
+          report = {
+            readable,
+            mode: r.mode,
+            ...(journalPath === undefined ? {} : { journalPath }),
+          };
+        },
+      });
+      const handle = await harness.start({
+        ...startInput(),
+        measurements: recordingMeasurementSink(),
+        runAs: {
+          user: "worker-2",
+          grant: async (path) => {
+            granted.push(path);
+            // Stands in for `chown -R project:nightshift`: the engine can no longer traverse it.
+            chmodSync(path, 0o000);
+          },
+        },
+      });
+      children[0]?.emitStdout(RECORDING);
+      children[0]?.close(0);
+      const exit = await handle.exit;
+      expect(exit.kind).toBe("completed");
+      expect(report.mode).toBe("otlp");
+      expect(report.readable).toBe(true);
+      expect(report.journalPath).toBeDefined();
+      expect(granted).toHaveLength(1);
+      expect(report.journalPath?.startsWith(granted[0] ?? "\0")).toBe(false);
+      // The engine's journal directory is gone. The unreadable config directory
+      // (which a real chown would equally leave to its grantee) is cleaned up here.
+      expect(existsSync(report.journalPath ?? "")).toBe(false);
+      chmodSync(granted[0] ?? "", 0o700);
+      rmSync(granted[0] ?? "", { recursive: true, force: true });
+    }, 30_000);
+  },
+);

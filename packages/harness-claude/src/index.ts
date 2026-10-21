@@ -19,16 +19,20 @@
 
 export {
   CLAUDE_HARNESS_ID,
+  type ClaudeCaptureReport,
   type ClaudeHarnessOptions,
+  type ClaudeRequestCaptureOptions,
   createClaudeHarness,
   SPAWN_FAILURE_EXIT_CODE,
 } from "./adapter.js";
+export type { ClaudeCaptureResult } from "./capture.js";
 export {
   buildClaudeArgs,
   buildMcpConfig,
   buildSettings,
   CLAUDE_COMMAND,
   type ClaudeCommandInput,
+  type ClaudeSettingsInput,
   claudeBriefAddendum,
   claudePrompt,
   VERIFIED_CLAUDE_VERSION,

@@ -163,6 +163,11 @@ export const buildMcpConfig = (mcp: McpLaunch): string =>
 /** A `--mcp-config` with no server: an agent that reaches no Nightshift tool (D-P8-15). */
 export const buildEmptyMcpConfig = (): string => `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`;
 
+export interface ClaudeSettingsInput {
+  /** The command printing the OTLP exporter's headers as JSON; see below. Absent: none. */
+  readonly otelHeadersHelper?: string;
+}
+
 /**
  * The `--settings` file's contents.
  *
@@ -181,9 +186,36 @@ export const buildEmptyMcpConfig = (): string => `${JSON.stringify({ mcpServers:
  * Keeping the file (rather than dropping the flag) also means that when a future
  * release moves an event out of the stream, the mechanism the contract asks for
  * — a configured hook whose log the adapter tails — is one object away.
+ *
+ * ## `otelHeadersHelper` — how request capture's capability travels (P20 S-02)
+ *
+ * When request capture is on, the OTLP exporter must authenticate to Nightshift's
+ * loopback receiver, and the credential must not be in the environment: on a
+ * machine the environment goes through `commandAs`, which turns every variable
+ * into a `sudo -u <user> -H env K=V …` argv entry, readable by anyone on the
+ * host. So the capability is a 0600 `otel-headers.json` in the launch's private
+ * config directory (the one `runAs.grant` hands to the agent's user), and this
+ * file names it with the `otelHeadersHelper` setting: a command Claude Code runs
+ * to obtain the exporter's headers as JSON (`cat '<path>'`).
+ *
+ * Verified live on 2.1.286 (2026-10-21): with `--settings <file>` carrying
+ * `otelHeadersHelper` and `--setting-sources ""`, the loopback receiver saw the
+ * helper's `Authorization` header on `POST /v1/logs`. `VERIFIED_CLAUDE_VERSION`
+ * is unchanged. Windows has no `runAs` and no helper here; the header travels as
+ * `OTEL_EXPORTER_OTLP_HEADERS` instead (`capture.ts`).
  */
-export const buildSettings = (): string =>
-  `${JSON.stringify({ includeCoAuthoredBy: false, hooks: {} }, null, 2)}\n`;
+export const buildSettings = (input: ClaudeSettingsInput = {}): string =>
+  `${JSON.stringify(
+    {
+      includeCoAuthoredBy: false,
+      hooks: {},
+      ...(input.otelHeadersHelper === undefined
+        ? {}
+        : { otelHeadersHelper: input.otelHeadersHelper }),
+    },
+    null,
+    2,
+  )}\n`;
 
 /**
  * What this adapter adds to T1's provider-neutral brief.
