@@ -2295,7 +2295,7 @@ const renderRequestEvidence = (attempts: readonly AttemptRow[] | undefined): str
   "## Request evidence",
   "",
   "Per-request ledgers are stored as artifacts. Fetch one through the authorized download route:",
-  "operation `artifact.createDownloadUrl`, `GET .../artifacts/{artifactId}/download-url`.",
+  "operation `artifact.createDownloadUrl`, `POST .../artifacts/{artifactId}/download-url`.",
   "",
   ...(attempts === undefined || attempts.length === 0
     ? ["No attempts recorded.", ""]

@@ -199,7 +199,7 @@ describe("exportReport", () => {
     const text = renderReport(report());
     const section = text.slice(text.indexOf("## Request evidence"));
     expect(section).toContain("artifact.createDownloadUrl");
-    expect(section).toContain("GET .../artifacts/{artifactId}/download-url");
+    expect(section).toContain("POST .../artifacts/{artifactId}/download-url");
     const rows = section
       .split("\n")
       .filter((l) => l.startsWith("| ") && !l.startsWith("| Attempt"));

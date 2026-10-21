@@ -171,6 +171,10 @@ export const Details = ({
             Showing {filtered.sampleSize.matched} of {filtered.sampleSize.total} attempts
           </span>
         </div>
+        <p className="mb-2 text-xs text-muted-foreground" data-testid="attempt-filter-note">
+          These filters narrow the attempts list and its sample size below; the headline summaries
+          always describe the whole scope.
+        </p>
         <table className="w-full text-xs" data-testid="attempt-table">
           <thead>
             <tr className="text-left text-muted-foreground">
