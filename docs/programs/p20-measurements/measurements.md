@@ -167,9 +167,16 @@ Contract `packages/contracts/src/v1/completion.ts`; figures
   totals).
 - **Frozen checkpoints**: named positive-verdict snapshots; a checkpoint reports from its
   stored `measured` block alone (`measureCompletion`), clipped at its boundary, so later
-  changes never rewrite it. A read failure of a member's figures must refuse capture rather
-  freeze a zero (program ruling F-01; verify the dispatch-read case in
-  `packages/core/src/report/report.ts` before relying on it).
+  changes never rewrite it. A read failure of a member's figures refuses capture rather than
+  freezing a zero (program ruling F-01). `memberFiguresOf`
+  (`packages/core/src/report/report.ts`) catches a failure of `stores.dispatches.get` or
+  `stores.computeUtilizations.get`, marks the member unavailable (`machineReadFailed`) so a
+  new checkpoint is refused with 503 `measurement_unavailable`, and leaves `infrastructure`
+  absent rather than zero. A read that succeeds but finds no dispatch does not mark the
+  member unavailable. Regression tests in
+  `packages/core/src/report/completion-report.test.ts`: "reports a throwing dispatch read
+  as unavailable and absent from infrastructure", its utilization twin, and "does not mark a
+  member unavailable when the dispatch read finds nothing".
 - **Lower bounds**: `combined.lowerBound` is true when any member or valuation is
   missing, or a measured member's root launch has no summary (counted as `missing` in its
   token coverage; a member with nothing but an unmeasured root is itself unmeasured); `infrastructure` and `resources` are absent, not zero, without evidence;
