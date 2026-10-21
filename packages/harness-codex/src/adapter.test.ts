@@ -25,6 +25,7 @@ import type {
   HookEvent,
   LocalReceiverOptions,
   McpLaunch,
+  RunAs,
 } from "@nightshift/harness";
 import { millis, recordingMeasurementSink, refusingWorkerTools } from "@nightshift/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -115,8 +116,16 @@ const GUARD_DIR = "/fake-tmp/nightshift-codex-1";
 type RolloutServing = Readonly<Record<string, readonly (string | Error)[]>>;
 
 const fakes = (
-  overrides: { git?: string | undefined; failWrites?: boolean; rollouts?: RolloutServing } = {},
+  overrides: {
+    git?: string | undefined;
+    failWrites?: boolean;
+    rollouts?: RolloutServing;
+    /** Only this Codex home holds the rollouts; others list empty. */
+    rolloutHome?: string;
+    readdirError?: Error;
+  } = {},
 ) => {
+  const listed: string[] = [];
   const calls: SpawnCall[] = [];
   const children: FakeChild[] = [];
   const spawn: SpawnLike = (file, args, options) => {
@@ -137,6 +146,11 @@ const fakes = (
         ? mkdtempSync(join(tmpdir(), prefix))
         : `/fake-tmp/${prefix}1`,
     readdir: async (path, options) => {
+      listed.push(path);
+      if (overrides.readdirError !== undefined) throw overrides.readdirError;
+      if (overrides.rolloutHome !== undefined && !path.startsWith(`${overrides.rolloutHome}/`)) {
+        throw new Error("ENOENT");
+      }
       if (!options.recursive || !path.endsWith("/sessions")) throw new Error("ENOENT");
       return Object.keys(overrides.rollouts ?? {}).map(rolloutPath);
     },
@@ -171,7 +185,7 @@ const fakes = (
       if (!path.startsWith("/fake-tmp/")) rmSync(path, { recursive: true, force: true });
     },
   };
-  return { spawn, fs, calls, children, executables, transcripts, removed };
+  return { spawn, fs, calls, children, executables, transcripts, removed, listed };
 };
 
 const MCP: McpLaunch = {
@@ -695,17 +709,25 @@ describe("measurement capture (P20 S-03)", () => {
     stream?: string;
     end?: "complete" | "cancel" | "interrupt";
     measurements?: boolean;
+    runAs?: RunAs;
+    env?: Record<string, string>;
+    rolloutHome?: string;
+    readdirError?: Error;
   }
 
   const scenario = async (o: Scenario = {}) => {
-    const world = fakes(o.rollouts === undefined ? {} : { rollouts: o.rollouts });
+    const world = fakes({
+      ...(o.rollouts === undefined ? {} : { rollouts: o.rollouts }),
+      ...(o.rolloutHome === undefined ? {} : { rolloutHome: o.rolloutHome }),
+      ...(o.readdirError === undefined ? {} : { readdirError: o.readdirError }),
+    });
     const events: HookEvent[] = [];
     const sink = recordingMeasurementSink();
     const receivers: LocalReceiverOptions[] = [];
     const harness = createCodexHarness({
       spawn: world.spawn,
       fs: world.fs,
-      env: PARENT_ENV,
+      env: o.env ?? PARENT_ENV,
       platform: "linux",
       clock,
       kill: () => {},
@@ -727,6 +749,7 @@ describe("measurement capture (P20 S-03)", () => {
     const input: HarnessStartInput = {
       ...startInput(events),
       ...(o.measurements === false ? {} : { measurements: sink }),
+      ...(o.runAs === undefined ? {} : { runAs: o.runAs }),
       ...(o.resume === true ? { resume: { sessionId: THREAD } } : {}),
     };
     const handle = await harness.start(input);
@@ -864,6 +887,76 @@ describe("measurement capture (P20 S-03)", () => {
       expect(r.exit).toMatchObject({ kind: "completed", coverage: "partial" });
       expect(gapsOf(r.ending)).toContain("receiver unavailable");
       expect(gapsOf(r.ending)).toContain("telemetry absent");
+    });
+  });
+
+  describe("under runAs (discovery follows the launched worker)", () => {
+    const runAs = (env?: Record<string, string>): RunAs => ({
+      user: "project",
+      ...(env === undefined ? {} : { env }),
+      grant: async () => {},
+      kill: () => {},
+    });
+    const NO_HOME_ENV = { PATH: "/usr/bin:/bin", OPENAI_API_KEY: "sk-operator" };
+    const underEngine = (path: string): boolean =>
+      path.startsWith("/Users/op") || !path.startsWith("/project/codex/");
+
+    it("searches only the project's CODEX_HOME, at the resume boundary and at close", async () => {
+      const journal = journalOf("codex-otlp-journal-launch1.jsonl");
+      const plain = await scenario({
+        journal,
+        rollouts: { [THREAD]: [FIRST_LAUNCH, ROLLOUT] },
+        resume: true,
+      });
+      const r = await scenario({
+        journal,
+        rollouts: { [THREAD]: [FIRST_LAUNCH, ROLLOUT] },
+        resume: true,
+        runAs: runAs({ CODEX_HOME: "/project/codex" }),
+        rolloutHome: "/project/codex",
+      });
+      expect(r.listed.length).toBeGreaterThan(0);
+      expect(r.listed.filter(underEngine)).toEqual([]);
+      expect(
+        r.listed.every(
+          (p) =>
+            p.startsWith("/project/codex/sessions") ||
+            p.startsWith("/project/codex/archived_sessions"),
+        ),
+      ).toBe(true);
+      expect(
+        requests(r.observations).map((o) => [o.observationId, "requestId" in o && o.requestId]),
+      ).toEqual(
+        requests(plain.observations).map((o) => [o.observationId, "requestId" in o && o.requestId]),
+      );
+      expect(requests(r.observations)).toHaveLength(1);
+    });
+
+    it("skips discovery when no Codex home resolves and lets telemetry decide", async () => {
+      const r = await scenario({
+        journal: journalOf("codex-otlp-journal-launch1.jsonl"),
+        rollouts: FIRST,
+        env: NO_HOME_ENV,
+        runAs: runAs(),
+      });
+      expect(r.listed).toEqual([]);
+      expect(gapsOf(r.ending)).toContain("rollout home unknown under runAs");
+      expect(requests(r.observations).length).toBeGreaterThan(0);
+      expect(r.observations.some((o) => o.observationId.startsWith("codex:rollout:"))).toBe(false);
+      expect(r.exit.coverage).toBe("partial");
+    });
+
+    it("names an unreadable rollout directory and never falls back", async () => {
+      const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+      const r = await scenario({
+        journal: journalOf("codex-otlp-journal-launch1.jsonl"),
+        rollouts: FIRST,
+        runAs: runAs({ CODEX_HOME: "/project/codex" }),
+        readdirError: denied,
+      });
+      expect(r.listed.filter((p) => !p.startsWith("/project/codex/"))).toEqual([]);
+      expect(gapsOf(r.ending)).toContain("rollout unreadable");
+      expect(r.exit).toMatchObject({ kind: "completed" });
     });
   });
 

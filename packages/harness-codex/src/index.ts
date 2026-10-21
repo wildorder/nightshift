@@ -29,6 +29,7 @@ export {
   type CaptureRun,
   type CaptureRunDeps,
   type CaptureSummary,
+  captureEnvironment,
   type StartReceiver,
 } from "./capture-run.js";
 export {
