@@ -35,6 +35,7 @@ import type {
   Agent,
   Artifact,
   Checkpoint,
+  CompletionHistory,
   Decision,
   ExecutionRole,
   GateHealth,
@@ -45,11 +46,15 @@ import type {
   Project,
   RoutingDecision,
   Run,
+  RunFeedback,
   UserId,
   Verification,
 } from "@nightshift/contracts";
 import { DEFAULT_EXAMINATION_POLICY, DEFAULT_ROUTING_POLICY } from "@nightshift/contracts";
 import {
+  buildCompletionHistory,
+  buildRunFeedback,
+  CompletionMembershipError,
   createFixedClock,
   createFixtures,
   type Fixtures,
@@ -129,20 +134,16 @@ const PORT_METHODS = {
   warmCaches: ["put", "get", "delete"],
   // P15: written whole by the operator or the engine, so it has a write route.
   gateHealth: ["put", "get"],
-  // P20: the adapter implements them; the routes and the runtime tests come with
-  // the operations (J3), until then listed in ROUTES_PENDING.
+  // P20 (D-04, D-05): a person's verdict, and the histories they assemble.
   feedback: ["put", "get", "listByProgram"],
   completionHistories: ["put", "get", "listByRun", "listByProject"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
-/** Stores whose routes land with J3 of S-06; remove this once they are driven here. */
-const ROUTES_PENDING: readonly string[] = ["feedback", "completionHistories"];
-
-/** `store.method` for every entry above that the handler already serves. */
+/** `store.method` for every entry above. */
 const everyPortMethod = (): readonly string[] =>
-  Object.entries(PORT_METHODS)
-    .filter(([store]) => !ROUTES_PENDING.includes(store))
-    .flatMap(([store, methods]) => methods.map((method) => `${store}.${method}`));
+  Object.entries(PORT_METHODS).flatMap(([store, methods]) =>
+    methods.map((method) => `${store}.${method}`),
+  );
 
 /** What this file has actually called, accumulated across every test. */
 const exercised = new Set<string>();
@@ -599,6 +600,86 @@ describe("measurement summaries (P20)", () => {
       summary,
     );
     expect(await world.http.measurements.get(summary, world.f.ids.next("meas"))).toBeUndefined();
+  });
+});
+
+describe("run feedback and completion histories (P20, D-04, D-05)", () => {
+  const ENDED = "2026-09-15T11:00:00.000Z";
+  const rated = async () => {
+    const seeded = await seed();
+    const run = { ...seeded.run, status: "succeeded", endedAt: ENDED } as Run;
+    await world.backing.runs.put(run);
+    const actor = { kind: "user", userId: world.subject, orgId: world.orgId } as const;
+    return { ...seeded, run, actor };
+  };
+
+  it("puts, gets and lists a verdict, and the server writes the attribution", async () => {
+    const { run, actor } = await rated();
+    const first = buildRunFeedback({ scope: run, verdict: "worked", actor, at: ENDED });
+    await world.http.feedback.put(first);
+    const stored = await world.http.feedback.get(run);
+    expect(stored).toMatchObject({ version: 1, verdict: "worked", recordedAt: NOW, actor });
+    expect((await world.http.feedback.listByProgram(run)).items).toEqual([stored]);
+    expect(await world.backing.feedback.get(run)).toEqual(stored);
+
+    // The same write again is a replay; one that skips a version is stale.
+    await world.http.feedback.put(first);
+    const skipped = { ...first, version: 3, revisions: [{ ...first.revisions[0], version: 3 }] };
+    const stale = await rejectionOf(world.http.feedback.put(skipped as RunFeedback));
+    expect(stale).toBeInstanceOf(StaleWriteError);
+    expect(
+      await world.http.feedback.get({ ...run, runId: world.f.ids.next("run") }),
+    ).toBeUndefined();
+  });
+
+  it("puts, gets and lists a history, and refuses a member outside the project", async () => {
+    const { run, actor } = await rated();
+    const history = buildCompletionHistory({
+      scope: run,
+      completionHistoryId: world.f.ids.next("comp"),
+      title: "Outcome",
+      members: [{ programId: run.programId, runId: run.runId, role: "anchor" }],
+      actor,
+      at: ENDED,
+    });
+    await world.http.completionHistories.put(history);
+    const id = history.completionHistoryId;
+    const stored = await world.http.completionHistories.get(run, id);
+    expect(stored).toMatchObject({ version: 1, completionHistoryId: id, updatedAt: NOW });
+    expect(await world.http.completionHistories.listByRun(run)).toEqual([stored]);
+    expect((await world.http.completionHistories.listByProject(run.projectId)).items).toEqual([
+      stored,
+    ]);
+    expect(await world.http.completionHistories.get(run, world.f.ids.next("comp"))).toBeUndefined();
+
+    const stranger = {
+      programId: run.programId,
+      runId: world.f.ids.next("run"),
+      role: "contributing",
+    } as const;
+    const refused = await rejectionOf(
+      world.http.completionHistories.put(
+        buildCompletionHistory({
+          stored: stored as CompletionHistory,
+          scope: run,
+          completionHistoryId: id,
+          title: "Outcome",
+          members: [...history.members, stranger],
+          actor,
+          at: NOW,
+        }),
+      ),
+    );
+    expect(refused).toBeInstanceOf(CompletionMembershipError);
+    const skipped = {
+      ...history,
+      version: 3,
+      revisions: [{ ...history.revisions[0], version: 3 }],
+    };
+    const stale = await rejectionOf(
+      world.http.completionHistories.put(skipped as CompletionHistory),
+    );
+    expect(stale).toBeInstanceOf(StaleWriteError);
   });
 });
 

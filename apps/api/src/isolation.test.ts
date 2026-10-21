@@ -60,6 +60,7 @@ interface RouteParams {
   readonly agentId: string;
   readonly jobContractId: string;
   readonly decisionId: string;
+  readonly completionHistoryId: string;
   readonly checkpointId: string;
   readonly verificationId: string;
   readonly examinationId: string;
@@ -110,6 +111,7 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       agentId: agent.agentId,
       jobContractId: f.ids.next("job"),
       decisionId: f.ids.next("dec"),
+      completionHistoryId: f.ids.next("comp"),
       checkpointId: f.ids.next("ckpt"),
       verificationId: f.ids.next("ver"),
       examinationId: f.ids.next("exam"),

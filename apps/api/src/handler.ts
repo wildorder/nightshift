@@ -24,6 +24,12 @@ import { toErrorResponse } from "./errors.js";
 import { type ApiDeps, type ApiRequest, type ApiResponse, errorBody } from "./http.js";
 import { getAgent, listAgentsByNode, mintAgentToken, putAgent } from "./operations/agents.js";
 import {
+  getCompletionHistory,
+  listCompletionHistoriesByProject,
+  listCompletionHistoriesByRun,
+  putCompletionHistory,
+} from "./operations/completion.js";
+import {
   getComputeRecommendation,
   getComputeUtilization,
   getWarmCache,
@@ -38,6 +44,7 @@ import {
 } from "./operations/dispatch.js";
 import { createArtifactDownloadUrl } from "./operations/downloads.js";
 import { appendEvent, getRunState, listEvents } from "./operations/events.js";
+import { getFeedback, listFeedbackByProgram, putFeedback } from "./operations/feedback.js";
 import { getGateHealth, putGateHealth } from "./operations/gate-health.js";
 import { deleteOrgGithub, getGithubApp, getOrgGithub, putOrgGithub } from "./operations/github.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
@@ -443,6 +450,40 @@ export const ROUTES: readonly Route[] = [
     path: `${NODE}/measurements`,
     operation: "measurement.listByNode",
     handler: listMeasurementsByNode,
+  },
+
+  // Run feedback and completion histories (P20, D-04, D-05): a person's to write.
+  { method: "GET", path: `${RUN}/feedback`, operation: "feedback.get", handler: getFeedback },
+  { method: "PUT", path: `${RUN}/feedback`, operation: "feedback.put", handler: putFeedback },
+  {
+    method: "GET",
+    path: `${PROGRAM}/feedback`,
+    operation: "feedback.listByProgram",
+    handler: listFeedbackByProgram,
+  },
+  {
+    method: "GET",
+    path: `${PROJECT}/completion-histories`,
+    operation: "completion.listByProject",
+    handler: listCompletionHistoriesByProject,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/completion-histories`,
+    operation: "completion.listByRun",
+    handler: listCompletionHistoriesByRun,
+  },
+  {
+    method: "GET",
+    path: `${RUN}/completion-histories/{completionHistoryId}`,
+    operation: "completion.get",
+    handler: getCompletionHistory,
+  },
+  {
+    method: "PUT",
+    path: `${RUN}/completion-histories/{completionHistoryId}`,
+    operation: "completion.put",
+    handler: putCompletionHistory,
   },
 
   // Artifacts. The upload route signs; the client uploads; the record follows (A-08).
