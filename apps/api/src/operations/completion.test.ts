@@ -749,4 +749,88 @@ describe("measuring a checkpoint (D-05)", () => {
     expect(checkpointed.status, JSON.stringify(checkpointed.body)).toBe(200);
     expect(reads.length).toBeGreaterThan(0);
   });
+
+  describe.each(["measurements", "executionNodes"] as const)(
+    "when %s cannot be read for a member",
+    (store) => {
+      const failing = { on: false, programId: "" };
+      const guarded = () =>
+        setup((s) => {
+          const original = s[store].listByRun;
+          return {
+            ...s,
+            [store]: {
+              ...s[store],
+              listByRun: ((scope: { programId: string }, ...rest: unknown[]) => {
+                return failing.on && scope.programId === failing.programId
+                  ? Promise.reject(new Error("store down"))
+                  : (original as (...a: unknown[]) => unknown)(scope, ...rest);
+              }) as unknown as typeof original,
+            },
+          };
+        });
+
+      it("answers 503 measurement_unavailable, stores nothing, and a retry succeeds", async () => {
+        failing.on = false;
+        const w = await guarded();
+        failing.programId = w.sibling.programId;
+        await seedMeasured(w);
+        const stored = await created(w);
+        failing.on = true;
+        const refused = await w.call("PUT", w.path(), withSibling(w, stored));
+        expect(refused.status, JSON.stringify(refused.body)).toBe(503);
+        expect(errorCode(refused)).toBe("measurement_unavailable");
+        expect(JSON.stringify(refused.body)).toContain(w.sibling.runId);
+        expect(JSON.stringify(refused.body)).toContain("store down");
+        const after = await w.stores.completionHistories.get(w.f.scope, stored.completionHistoryId);
+        expect(after).toEqual(stored);
+
+        failing.on = false;
+        const retried = await w.call("PUT", w.path(), withSibling(w, stored));
+        expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+        const [checkpoint] = (retried.body as CompletionHistory).checkpoints;
+        expect(checkpoint?.measured.tokens).toMatchObject({
+          input: 100,
+          output: 10,
+        });
+        expect(checkpoint?.measured.measuredMembers).toBeGreaterThanOrEqual(1);
+      });
+
+      it("still accepts a membership-only write", async () => {
+        failing.on = false;
+        const w = await guarded();
+        failing.programId = w.sibling.programId;
+        await seedMeasured(w);
+        const stored = await created(w);
+        failing.on = true;
+        const plain = await w.call(
+          "PUT",
+          w.path(),
+          w.revise(stored, {
+            members: [
+              ...stored.members,
+              {
+                programId: w.sibling.programId,
+                runId: w.sibling.runId,
+                role: "contributing",
+              },
+            ],
+          }),
+        );
+        expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+      });
+    },
+  );
+
+  it("stores a checkpoint with an unmeasured member and fabricates no dollars", async () => {
+    const w = await setup();
+    await w.rate(w.f.scope, "worked");
+    const stored = await created(w);
+    const response = await w.call("PUT", w.path(), withSibling(w, stored));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [checkpoint] = (response.body as CompletionHistory).checkpoints;
+    expect(checkpoint?.measured.measuredMembers).toBe(0);
+    expect(checkpoint?.measured.unmeasuredMembers).toBe(2);
+    expect(checkpoint?.measured.usd).toBeUndefined();
+  });
 });

@@ -98,20 +98,40 @@ export const putCompletionHistory: Handler = async ({ deps, request, params, pri
           memberRuns,
           verdictAt ?? nowIso(deps.clock),
         );
-  const decided = reconcileCompletionWrite({
-    ...(stored === undefined ? {} : { stored }),
-    proposed,
-    actor: { kind: "user", userId: actor.userId, orgId: actor.orgId },
-    at: nowIso(deps.clock),
-    memberRuns,
-    feedbackOf,
-    ...(figures === undefined
-      ? {}
-      : {
-          resources: figures.resources,
-          infrastructure: figures.infrastructure,
-        }),
-  });
+  let decided: ReturnType<typeof reconcileCompletionWrite>;
+  try {
+    decided = reconcileCompletionWrite({
+      ...(stored === undefined ? {} : { stored }),
+      proposed,
+      actor: { kind: "user", userId: actor.userId, orgId: actor.orgId },
+      at: nowIso(deps.clock),
+      memberRuns,
+      feedbackOf,
+      ...(figures === undefined
+        ? {}
+        : {
+            resources: figures.resources,
+            infrastructure: figures.infrastructure,
+            unavailable: new Set(figures.unavailable.keys()),
+          }),
+    });
+  } catch (error) {
+    if (
+      error instanceof CompletionMembershipError &&
+      error.reason === "measurement_unavailable" &&
+      figures !== undefined
+    ) {
+      const detail = [...figures.unavailable]
+        .map(([member, reason]) => `${member} (${reason})`)
+        .join("; ");
+      throw new HttpError(
+        503,
+        "measurement_unavailable",
+        `measurement evidence is unavailable for ${detail}; nothing was stored, retry once the stores answer`,
+      );
+    }
+    throw error;
+  }
   if (decided.outcome === "stored") {
     await deps.stores.completionHistories.put(decided.history);
     return { status: stored === undefined ? 201 : 200, body: decided.history };
