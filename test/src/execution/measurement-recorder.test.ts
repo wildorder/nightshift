@@ -487,6 +487,41 @@ describe("segments and seams", () => {
     }
   });
 
+  it("records the exit's full counters, reasoning included, and falls back to usage without them", async () => {
+    const world = await build();
+    const recorder = world.recorder();
+    await recorder.startSegment({ resumedSession: false });
+    const { summary } = await recorder.close({
+      kind: "completed",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      usageScope: "session",
+      counters: { inputTokens: 10, outputTokens: 5, reasoningTokens: 3, inputIncludesCache: false },
+    });
+    expect(summary.totals).toMatchObject({ inputTokens: 10, outputTokens: 5, reasoningTokens: 3 });
+
+    const plain = await build();
+    const plainRecorder = plain.recorder();
+    await plainRecorder.startSegment({ resumedSession: false });
+    const { summary: plainSummary } = await plainRecorder.close({
+      kind: "completed",
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
+    expect(plainSummary.totals).toMatchObject({ inputTokens: 10, outputTokens: 5 });
+    expect(plainSummary.totals.reasoningTokens).toBeUndefined();
+  });
+
+  it("takes reported dollars from the exit's counters before usage", async () => {
+    const world = await build();
+    const recorder = world.recorder();
+    await recorder.startSegment({ resumedSession: false });
+    const { summary } = await recorder.close({
+      kind: "completed",
+      usage: { inputTokens: 10, actualCostUsd: 9 },
+      counters: { inputTokens: 10, reportedUsd: 0.5 },
+    });
+    expect(summary.valuation?.usd).toBe(0.5);
+  });
+
   describe("reported dollars", () => {
     const exit = (
       inputTokens: number,

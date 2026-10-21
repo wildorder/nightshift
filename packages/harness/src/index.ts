@@ -28,6 +28,7 @@ export {
   type AgentTask,
   agentStatusForExit,
   type CarriedOverWork,
+  countersOfExit,
   coverageOfExit,
   type Duration,
   describeExit,

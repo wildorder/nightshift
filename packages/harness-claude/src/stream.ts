@@ -281,6 +281,11 @@ export const combineTurns = (earlier: RouteUsage | undefined, turn: RouteUsage):
 export interface StreamMeasures {
   /** Session counters when a `result` carried `modelUsage`, else the launch's `outcome.usage`. */
   readonly usage?: RouteUsage;
+  /**
+   * The session counters `usage` was derived from (the latest result's summed
+   * modelUsage). Absent in the launch fallback, where only RouteUsage exists.
+   */
+  readonly counters?: MeasurementCounters;
   readonly usageScope: "launch" | "session";
   readonly inclusion: "self" | "includes_children";
   /** The most frequent non-synthetic assistant model, else the init frame's. */
@@ -791,6 +796,7 @@ export const createStreamInterpreter = (input: StreamInterpreterInput): StreamIn
       return {
         ...base,
         usage: countersToRouteUsage(sessionCounters, usage?.latencyMs),
+        counters: sessionCounters,
         usageScope: "session",
         inclusion: "includes_children",
       };

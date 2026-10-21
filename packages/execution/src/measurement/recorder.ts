@@ -38,6 +38,7 @@ import {
 } from "@nightshift/core";
 import type { HarnessExit, HarnessObservation, MeasurementSink } from "@nightshift/harness";
 import {
+  countersOfExit,
   coverageOfExit,
   inclusionOfExit,
   usageOfExit,
@@ -516,6 +517,8 @@ export const createMeasurementRecorder = (
 
   const exitObservation = (exit: HarnessExit) => {
     const usage = usageOfExit(exit);
+    const exitCounters = countersOfExit(exit);
+    const reportedUsd = exitCounters?.reportedUsd ?? usage?.actualCostUsd;
     const launchId = active?.ref.launchId ?? "none";
     return {
       observationId: `exit:${launchId}`,
@@ -523,12 +526,12 @@ export const createMeasurementRecorder = (
       provenance: { adapter: "execution", note: "the harness exit" },
       inclusion: inclusionOfExit(exit),
       kind: "terminal_summary",
-      counters: usage === undefined ? {} : countersFromRouteUsage(usage),
+      counters: exitCounters ?? (usage === undefined ? {} : countersFromRouteUsage(usage)),
       counterScope: usageScopeOfExit(exit),
       exitKind: exit.kind,
       coverage: coverageOfExit(exit),
       ...(exit.observedModel === undefined ? {} : { model: exit.observedModel }),
-      ...(usage?.actualCostUsd === undefined ? {} : { reportedCostUsd: usage.actualCostUsd }),
+      ...(reportedUsd === undefined ? {} : { reportedCostUsd: reportedUsd }),
       ...(usage?.wallClockMs === undefined ? {} : { durationMs: usage.wallClockMs }),
     };
   };

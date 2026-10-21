@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  countersOfExit,
   coverageOfExit,
   type HarnessExit,
   inclusionOfExit,
@@ -20,6 +21,15 @@ describe("usageOfExit", () => {
     ];
     for (const exit of exits) expect(usageOfExit(exit)).toEqual(usage);
     expect(usageOfExit({ kind: "cancelled" })).toBeUndefined();
+  });
+});
+
+describe("countersOfExit", () => {
+  it("reads counters when present and is undefined otherwise", () => {
+    const counters = { inputTokens: 1, reasoningTokens: 2 };
+    expect(countersOfExit({ kind: "completed", usage, counters })).toEqual(counters);
+    expect(countersOfExit({ kind: "cancelled", counters })).toEqual(counters);
+    expect(countersOfExit({ kind: "completed", usage })).toBeUndefined();
   });
 });
 
