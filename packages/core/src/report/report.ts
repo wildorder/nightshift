@@ -20,7 +20,9 @@
 import {
   type Agent,
   type CarriedStrand,
+  type ComputeUtilization,
   type Decision,
+  type Dispatch,
   type EnvironmentFaultPayload,
   type Event,
   type Examination,
@@ -28,7 +30,10 @@ import {
   type ExecutionNodeId,
   type GateHealth,
   type GateHealthVerdict,
+  type IsoTimestamp,
   type JobContract,
+  lifecycleObservationsOf,
+  type MeasurementSummary,
   type Prerequisite,
   type ProgramContract,
   type RepairCause,
@@ -68,7 +73,16 @@ import {
   renderCorrections,
   renderDecisionGraph,
 } from "./decision-graph.js";
+import { type DeliveryReport, deliveryOf, type FirstAttemptFigures } from "./delivery.js";
 import { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
+import {
+  type InfrastructureReport,
+  infrastructureOf,
+  infrastructureUnavailable,
+} from "./infrastructure.js";
+import { type OperationsReport, operationsOf } from "./operations.js";
+import type { ResourceTotals } from "./resources.js";
+import { type OverheadRow, type ReviewReport, reviewOf } from "./review.js";
 import { storyStatuses } from "./stories.js";
 import { type VerificationTimeReport, verificationTimeOf } from "./verification-time.js";
 
@@ -178,6 +192,16 @@ export interface RunReport {
    * local run, which publishes nothing.
    */
   readonly publication?: PublicationReport;
+  /** P20 S-05: where the run's time went, from lifecycle observations. */
+  readonly operations: OperationsReport;
+  /** P20 S-05: work items, first-attempt success, outcomes and rework. */
+  readonly delivery: DeliveryReport;
+  /** P20 S-05: examination coverage, dispositions and review overhead. */
+  readonly review: ReviewReport;
+  /** P20 S-05: the machine's lifetime and expense; absent when no dispatch or no basis. */
+  readonly infrastructure?: InfrastructureReport;
+  /** The moment the report was gathered, to which open intervals were observed. */
+  readonly asOf: IsoTimestamp;
 }
 
 export interface PublicationReport {
@@ -288,6 +312,12 @@ interface Records {
   readonly outcomes: StrandOutcomes;
   /** What the run carried over from an earlier run of the same plan. */
   readonly carried: readonly CarriedStrand[];
+  /** P20 S-05: every agent of every node, every event and measurement summary, read once. */
+  readonly agents: readonly Agent[];
+  readonly events: readonly Event[];
+  readonly measurements: readonly MeasurementSummary[];
+  readonly dispatch: Dispatch | undefined;
+  readonly utilization: ComputeUtilization | undefined;
 }
 
 const jobReportOf = (records: Records, node: ExecutionNode): JobReport => ({
@@ -417,12 +447,8 @@ export interface UnreviewedReport {
 }
 
 /** The run's skipped reviews, the latest per node: what a human still has to review. */
-const unreviewedOf = async (
-  stores: ProjectStores,
-  scope: RunScope,
-  records: Records,
-): Promise<UnreviewedReport[]> => {
-  const events = await readAll<Event>((page) => stores.events.listByRun(scope, page));
+const unreviewedOf = (records: Records): UnreviewedReport[] => {
+  const { events } = records;
   const latest = new Map<string, Event>();
   for (const event of events) {
     if (event.type === "examination.skipped" && event.executionNodeId !== null) {
@@ -507,11 +533,20 @@ const readRecords = async (
   const jobs = await readAll<JobContract>((page) => stores.jobContracts.listByRun(scope, page));
   const decisions = await readAll<Decision>((page) => stores.decisions.listByRun(scope, page));
   const jobOf = new Map(jobs.map((job) => [job.jobContractId as string, job]));
+  const events = await readAll<Event>((page) => stores.events.listByRun(scope, page));
+  const measurements = await readAll<MeasurementSummary>((page) =>
+    stores.measurements.listByRun(scope, page),
+  );
+  const dispatch = await stores.dispatches.get(scope).catch(() => undefined);
+  const utilization = await stores.computeUtilizations.get(scope).catch(() => undefined);
+  const agents: Agent[] = [];
 
   const routesOf = new Map<string, readonly RoutingDecision[]>();
   const examinationsOf = new Map<string, readonly Examination[]>();
   const agentOf = new Map<string, Agent>();
   for (const node of nodes) {
+    const nodeAgents = await stores.agents.listByNode(scope, node.executionNodeId);
+    agents.push(...nodeAgents);
     if (node.parentNodeId === null) continue;
     routesOf.set(
       node.executionNodeId,
@@ -520,7 +555,7 @@ const readRecords = async (
     if (node.kind !== "job") continue;
     const examinations = await stores.examinations.listByNode(scope, node.executionNodeId);
     if (examinations.length > 0) {
-      for (const agent of await stores.agents.listByNode(scope, node.executionNodeId)) {
+      for (const agent of nodeAgents) {
         agentOf.set(agent.agentId, agent);
       }
       examinationsOf.set(
@@ -573,6 +608,11 @@ const readRecords = async (
     strandNodes,
     outcomes,
     carried,
+    agents,
+    events,
+    measurements,
+    dispatch,
+    utilization,
   };
 };
 
@@ -620,7 +660,7 @@ const gatherGateHealth = async (
   nodes: readonly ExecutionNode[],
   verifications: readonly Verification[],
 ): Promise<GateHealthReport> => {
-  const events = await readAll<Event>((page) => stores.events.listByRun(scope, page));
+  const { events } = records;
   let red: GateHealthReport["red"];
   const repaired = new Map<string, Readonly<Record<string, unknown>>>();
   for (const event of events) {
@@ -721,7 +761,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   const blocked = blockedBy(program, records.outcomes);
   const strands = strandsOf(program).map((strand) => strandReportOf(records, strand, blocked));
   const rulings = rulingsOf(records);
-  const unreviewed = await unreviewedOf(stores, scope, records);
+  const unreviewed = unreviewedOf(records);
   const nodes = [...records.tree.nodes.values()].sort((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   );
@@ -764,16 +804,109 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
       verifications,
       { maxWallClockSeconds: program.costPolicy?.maxWallClockSeconds },
     ),
-    ...(await gatherPublication(stores, scope, program.repository.programBranch)),
+    ...publicationOf(records.dispatch, program.repository.programBranch),
+    ...p20Of(records, run, nodes, verifications),
   };
 };
 
-const gatherPublication = async (
-  stores: ProjectStores,
-  scope: RunScope,
+/**
+ * The newest timestamp on any record read. `gatherReport` has no clock (core
+ * is offline and the stores carry none), so the report's `asOf` is taken from
+ * the newest record rather than from the wall clock.
+ */
+const newestOf = (
+  run: Run,
+  records: Records,
+  verifications: readonly Verification[],
+): IsoTimestamp => {
+  const stamps: string[] = [run.startedAt];
+  if (run.endedAt !== undefined) stamps.push(run.endedAt);
+  for (const node of records.tree.nodes.values()) stamps.push(node.createdAt);
+  for (const event of records.events) stamps.push(event.occurredAt, event.recordedAt);
+  for (const agent of records.agents) {
+    stamps.push(agent.createdAt);
+    if (agent.startedAt !== undefined) stamps.push(agent.startedAt);
+    if (agent.endedAt !== undefined) stamps.push(agent.endedAt);
+  }
+  for (const verification of verifications) {
+    stamps.push(verification.startedAt);
+    if (verification.endedAt !== undefined) stamps.push(verification.endedAt);
+  }
+  return stamps.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a)) as IsoTimestamp;
+};
+
+/** The S-05 reducers over what `readRecords` already read: no store is read twice. */
+const p20Of = (
+  records: Records,
+  run: Run,
+  nodes: readonly ExecutionNode[],
+  verifications: readonly Verification[],
+): Pick<RunReport, "operations" | "delivery" | "review" | "infrastructure" | "asOf"> => {
+  const asOf = newestOf(run, records, verifications);
+  const jobs = [...records.jobOf.values()];
+  const routes = [...records.routesOf.values()].flat();
+  const examinations = [...records.examinationsOf.values()].flat();
+  const operations = operationsOf({
+    run,
+    nodes,
+    jobs,
+    agents: records.agents,
+    routes,
+    verifications,
+    examinations,
+    observations: lifecycleObservationsOf(records.events),
+    asOf,
+  });
+  const occupied = operations.operations.flatMap((operation) =>
+    operation.phase === "work" &&
+    operation.state === "closed" &&
+    operation.startedAt !== undefined &&
+    operation.endedAt !== undefined
+      ? [
+          {
+            nodeId: operation.nodeId as ExecutionNodeId,
+            from: operation.startedAt,
+            to: operation.endedAt,
+          },
+        ]
+      : [],
+  );
+  const infrastructure = infrastructureOf({
+    run,
+    ...(records.dispatch === undefined ? {} : { dispatch: records.dispatch }),
+    ...(records.utilization === undefined ? {} : { utilization: records.utilization }),
+    agents: records.agents,
+    occupied,
+    asOf,
+  });
+  return {
+    operations,
+    delivery: deliveryOf({
+      nodes,
+      jobs,
+      routes,
+      verifications,
+      measurements: records.measurements,
+    }),
+    review: reviewOf({
+      nodes,
+      jobs,
+      routes,
+      examinations,
+      decisions: records.decisions,
+      agents: records.agents,
+      measurements: records.measurements,
+      events: records.events,
+    }),
+    ...(infrastructure === undefined ? {} : { infrastructure }),
+    asOf,
+  };
+};
+
+const publicationOf = (
+  dispatch: Dispatch | undefined,
   branch: string,
-): Promise<{ readonly publication?: PublicationReport }> => {
-  const dispatch = await stores.dispatches.get(scope).catch(() => undefined);
+): { readonly publication?: PublicationReport } => {
   if (dispatch === undefined) return {};
   const landed = new Set([
     ...dispatch.publication.intents.map((intent) => intent.head),
@@ -1319,6 +1452,170 @@ const renderNotVerified = ({ skipped, raised }: StepAdjustments): string[] => {
   ];
 };
 
+const NOT_OBSERVED = "not observed";
+
+const secs = (ms: number | undefined): string =>
+  ms === undefined ? NOT_OBSERVED : humanDuration(Math.round(ms / 1000));
+const num = (value: number | undefined): string =>
+  value === undefined ? NOT_OBSERVED : String(value);
+const pct = (value: number | undefined): string =>
+  value === undefined ? NOT_OBSERVED : `${(value * 100).toFixed(0)}%`;
+const usd = (value: number | undefined): string =>
+  value === undefined ? NOT_OBSERVED : `$${value.toFixed(2)}`;
+const recordOf = (record: Readonly<Record<string, number>>): string => {
+  const entries = Object.entries(record).filter(([, value]) => value > 0);
+  return entries.length === 0
+    ? "none"
+    : entries.map(([key, value]) => `${key} ${value}`).join(", ");
+};
+
+const resourcesLine = (totals: ResourceTotals): string => {
+  const { tokens, coverage } = totals;
+  const cover = Object.entries(coverage)
+    .filter(([, count]) => count > 0)
+    .map(([kind, count]) => `${kind} ${count}`)
+    .join(", ");
+  return `input ${num(tokens.input)}, output ${num(tokens.output)} tokens (${totals.tokenCoverage} coverage${
+    cover === "" ? "" : `: ${cover}`
+  }); estimated ${usd(totals.usd.estimated)}, reported ${usd(totals.usd.reported)}${
+    totals.unpriced > 0 ? `; ${totals.unpriced} unpriced` : ""
+  }`;
+};
+
+/** "Where the time went" (P20, S-05): observed intervals only; an open one is never closed. */
+const renderOperations = (ops: OperationsReport): string[] => {
+  const { unions, endings, chain } = ops;
+  return [
+    "## Where the time went",
+    "",
+    `Elapsed ${secs(ops.elapsedMs)} (as of ${ops.asOf}). Peak concurrency ${ops.concurrency.peak}.`,
+    "",
+    `- **By phase (union, counted once):** work ${secs(unions.work)}, wait ${secs(unions.wait)}, queue ${secs(unions.queue)}, integration ${secs(unions.integration)}, examination ${secs(unions.examination)}, setup ${secs(unions.setup)}, startup ${secs(unions.startup)}, verification ${secs(unions.verification)}`,
+    `- **Wait by blocker kind:** ${
+      Object.keys(unions.waitByBlockerKind).length === 0
+        ? "none"
+        : Object.entries(unions.waitByBlockerKind)
+            .map(([kind, ms]) => `${kind} ${secs(ms)}`)
+            .join(", ")
+    }`,
+    `- **Unattributed:** ${secs(ops.unattributedMs)}. **Ambiguous (open or incomplete, in no union):** ${secs(ops.ambiguousMs)}`,
+    `- **Endings:** integrated ${endings.integrated}, merged ${endings.merged}, integration conflict ${endings.integration_conflict}, verification failed ${endings.verification_failed}, failed ${endings.failed}, deferred ${endings.deferred}, examination stopped ${endings.examination_stopped}, examination skipped ${endings.examinationSkipped}, other ${endings.other}`,
+    "",
+    `Observed chain (not a claim about a faster schedule): covers ${secs(chain.coveredMs)} of ${secs(chain.elapsedMs)}, coverage ${pct(chain.coverage)}, ${
+      chain.incomplete
+        ? `incomplete${chain.stoppedBecause === undefined ? "" : ` (${chain.stoppedBecause})`}`
+        : "complete"
+    }; ${chain.ambiguous.length} ambiguous step(s).`,
+    "",
+    ...(chain.steps.length === 0
+      ? ["No chain was observed.", ""]
+      : [
+          ...chain.steps.map(
+            (step) =>
+              `1. ${step.nodeId} ${step.phase} ${step.from} to ${step.to} (${secs(Date.parse(step.to) - Date.parse(step.from))}, via ${step.link})`,
+          ),
+          "",
+        ]),
+    ...chain.ambiguous.map(
+      (tie) =>
+        `- Tie at ${tie.operationId}: ${tie.candidates.map((c) => `${c.nodeId} ${c.phase}`).join(" or ")}`,
+    ),
+    ...(chain.ambiguous.length === 0 ? [] : [""]),
+  ];
+};
+
+const attemptLine = (label: string, figures: FirstAttemptFigures): string =>
+  `${label}: ${figures.succeeded}/${figures.denominator} (${pct(figures.rate)}), ${figures.unfinished} unfinished`;
+
+/** "Delivery" (P20, S-05): settled work items only in a rate's denominator. */
+const renderDelivery = (delivery: DeliveryReport): string[] => {
+  const { firstAttempt, outcomes, rework } = delivery;
+  return [
+    "## Delivery",
+    "",
+    `${delivery.workItems} work item(s) and ${delivery.repairJobs} repair job(s) in ${delivery.strands} strand(s); ${delivery.attempts} attempt(s), ${delivery.helperCalls} helper call(s).`,
+    "",
+    `- **First-attempt success:** ${attemptLine("all jobs", firstAttempt)}; coverage ${firstAttempt.coverage}${
+      firstAttempt.reasons.length === 0 ? "" : ` (${firstAttempt.reasons.join("; ")})`
+    }`,
+    `- **Excluding repair jobs:** ${attemptLine("jobs", firstAttempt.excludingRepairs)}`,
+    `- **Outcomes:** ${recordOf(outcomes.counts)}; failed by ${recordOf(outcomes.failedBy)}`,
+    `- **Rework:** ${rework.attempts} attempt(s), each counted once`,
+    ...rework.byCause.map(
+      (row) =>
+        `  - ${row.kind}: ${row.attempts} attempt(s), ${row.sharedAttempts} shared with another cause; ${resourcesLine(row.resources)}`,
+    ),
+    `  - unknown cause: ${rework.unknownCause.attempts} attempt(s); ${resourcesLine(rework.unknownCause.resources)}`,
+    `- **First attempts:** ${resourcesLine(rework.resources.firstAttempts)}`,
+    `- **All rework:** ${resourcesLine(rework.resources.rework)}`,
+    "",
+  ];
+};
+
+/** "Review" (P20, S-05): coverage and overhead; a ruling is agreement, not truth. */
+const renderReview = (review: ReviewReport): string[] => {
+  const { coverage, dispositions, overhead, linkage } = review;
+  const row = (label: string, value: OverheadRow): string =>
+    `${label}: ${value.calls} call(s); ${resourcesLine(value.resources)}`;
+  return [
+    "## Review",
+    "",
+    `- **Coverage:** ${coverage.examinedNodes} node(s) examined, ${coverage.examinedByStrand} examined by strand, ${coverage.landedUnexamined} landed unexamined, ${coverage.skipped} skipped; ${coverage.examinations.total} examination(s) (${recordOf(coverage.examinations.byOutcome)})`,
+    `- **Dispositions:** ${dispositions.unique} unique finding(s); latest ${recordOf(dispositions.byLatest)}; rulings ${recordOf(dispositions.rulings)}. ${dispositions.note}`,
+    "- **Overhead by role (apart from repairs):**",
+    `  - ${row("examiner", overhead.examiner)}`,
+    `  - ${row("answerer", overhead.answerer)}`,
+    `  - ${row("arbiter", overhead.arbiter)}`,
+    `  - ${row("plan review", overhead.planReview)}`,
+    `- **Repairs caused by review:** ${review.repairs.attempts} attempt(s); ${resourcesLine(review.repairs.resources)}`,
+    `- **Linkage:** findings ${recordOf(linkage.findings)}; ${linkage.helpersUnlinked} helper call(s) unlinked; ${linkage.repairsWithoutFindings} repair(s) without findings`,
+    "",
+  ];
+};
+
+/** "Machine" (P20, S-05): one line when local expense has no configured basis. */
+const renderMachine = (infrastructure: InfrastructureReport | undefined): string[] => {
+  if (infrastructure === undefined) {
+    return [
+      "## Machine",
+      "",
+      infrastructureUnavailable("no dispatch is recorded for this run"),
+      "",
+    ];
+  }
+  const { lifetime, components, recorded, reconciliation, occupancy, apportionment } =
+    infrastructure;
+  return [
+    "## Machine",
+    "",
+    `- **Lifetime:** ${secs(lifetime.instanceLifetimeMs)} (coverage ${lifetime.coverage}; ${lifetime.openAttempts} open attempt(s); gaps between attempts ${secs(lifetime.gapsBetweenAttemptsMs)})`,
+    `- **Instance:** ${usd(components.instance.usd)} for ${components.instance.seconds}s, ${components.instance.basis} (${components.instance.provenance}; ${components.instance.coverage})`,
+    `- **Volume:** ${usd(components.volume.usd)} for ${components.volume.seconds}s${components.volume.open ? ", open" : ""} (${components.volume.provenance})`,
+    `- **Total:** ${usd(components.total.usd)} (${components.total.basis})`,
+    `- **Recorded spend:** ${JSON.stringify(recorded)}; computed ${usd(reconciliation.computedUsd)} against metered ${usd(reconciliation.meteredUsd)} over ${reconciliation.meteredSeconds}s (${reconciliation.covers})${
+      reconciliation.discrepancy === undefined
+        ? ""
+        : `. **Discrepancy:** computed ${usd(reconciliation.discrepancy.computedUsd)} vs metered ${usd(reconciliation.discrepancy.meteredUsd)}`
+    }`,
+    `- **Occupancy:** busy ${secs(occupancy.busyMs)}, idle ${secs(occupancy.idleMs)}, provisioning ${secs(occupancy.provisioningMs)}, setup ${occupancy.setupSeconds === undefined ? NOT_OBSERVED : `${occupancy.setupSeconds}s`}; peak ${occupancy.peakConcurrentOccupants} concurrent occupant(s)`,
+    ...(apportionment.perNode === undefined
+      ? [
+          `- **Per-node shares:** none${apportionment.note === undefined ? "" : `. ${apportionment.note}`}`,
+        ]
+      : [
+          `- **Per-node shares (${apportionment.method}):**`,
+          ...apportionment.perNode.map(
+            (node) => `  - ${node.nodeId}: ${secs(node.occupiedMs)}, ${usd(node.shareUsd)}`,
+          ),
+          ...(apportionment.unapportionedUsd === undefined
+            ? []
+            : [`  - unapportioned ${usd(apportionment.unapportionedUsd)}`]),
+          ...(apportionment.note === undefined ? [] : [`  - ${apportionment.note}`]),
+        ]),
+    "",
+  ];
+};
+
 /** The report as markdown. Pure: the same records always give the same document. */
 export const renderReport = (report: RunReport): string => {
   const { program, run, strands } = report;
@@ -1376,6 +1673,11 @@ export const renderReport = (report: RunReport): string => {
         `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${row.inputTokens} | ${row.outputTokens} | ${costCell(row)} |`,
     ),
     ...renderBudget(report),
+    "",
+    ...renderOperations(report.operations),
+    ...renderDelivery(report.delivery),
+    ...renderReview(report.review),
+    ...renderMachine(report.infrastructure),
   ];
   return `${lines.join("\n").trimEnd()}\n`;
 };

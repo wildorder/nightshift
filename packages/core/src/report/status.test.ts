@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFixtures, makeProgramContract, makeRun } from "../testing/factories.js";
+import { emptyMeasuredReport } from "../testing/report-defaults.js";
 import type { JobReport, RunReport, StrandReport } from "./report.js";
 import { programStatus } from "./status.js";
 
@@ -32,6 +33,7 @@ const strand = (over: Partial<StrandReport> = {}): StrandReport => ({
 const report = (over: Partial<RunReport> = {}): RunReport => ({
   program: makeProgramContract(f, { costPolicy: { maxUsd: 25 } }),
   run: makeRun(f, { status: "succeeded" }),
+  ...emptyMeasuredReport(makeRun(f, { status: "succeeded" })),
   strands: [],
   criteria: [],
   pendingPrerequisites: [],

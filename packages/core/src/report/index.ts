@@ -15,7 +15,10 @@ export {
   renderCorrections,
   renderDecisionGraph,
 } from "./decision-graph.js";
+export * from "./delivery.js";
 export { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
+export * from "./infrastructure.js";
+export * from "./operations.js";
 export {
   DEPARTURE_PREFIX,
   type FlakeReport,
@@ -38,6 +41,7 @@ export {
   resourcesOf,
   sumResources,
 } from "./resources.js";
+export * from "./review.js";
 export {
   type ProgramStatus,
   programStatus,

@@ -7,8 +7,13 @@ import {
   AGGREGATE_EXAMPLES,
   type Decision,
   DecisionSchema,
+  type Event,
   type Examination,
   ExaminationSchema,
+  type ExecutionNode,
+  type IsoTimestamp,
+  type LifecycleObservation,
+  type MeasurementSummary,
   type ProgramContract,
   ProgramContractSchema,
   type RoutingDecision,
@@ -17,8 +22,22 @@ import {
   RunSchema,
 } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
+import type { ProjectStores } from "../ports/stores.js";
+import {
+  createFixtures,
+  makeAgent,
+  makeDispatch,
+  makeEvent,
+  makeJobContract,
+  makeNode,
+  makeProgramContract,
+  makeRootNode,
+  makeRun,
+} from "../testing/factories.js";
+import { emptyMeasuredReport } from "../testing/report-defaults.js";
 import { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
-import { type RunReport, renderReport } from "./report.js";
+import { gatherReport, type RunReport, renderReport } from "./report.js";
+import { DISPOSITION_NOTE } from "./review.js";
 
 const program = ProgramContractSchema.parse(
   structuredClone(AGGREGATE_EXAMPLES.ProgramContract) as Record<string, unknown>,
@@ -60,6 +79,7 @@ const report = (patch: Partial<RunReport> = {}): RunReport => ({
     verificationTime: { steps: [], landings: 0, verifications: 0, totalMs: 0, recommendations: [] },
   },
   stepAdjustments: { skipped: [], raised: [] },
+  ...emptyMeasuredReport(run),
   ...patch,
 });
 
@@ -662,5 +682,191 @@ describe("the report's Not verified section (P19)", () => {
 
   it("is absent when there is nothing", () => {
     expect(renderReport(report())).not.toContain("Not verified");
+  });
+});
+
+describe("the report's S-05 sections (P20)", () => {
+  it("prints each section from the test builder, with the caveat, coverage tallies and 'not observed'", () => {
+    const empty = report();
+    const text = renderReport(
+      report({
+        delivery: {
+          ...empty.delivery,
+          firstAttempt: {
+            ...empty.delivery.firstAttempt,
+            succeeded: 1,
+            denominator: 2,
+            unfinished: 3,
+            coverage: "partial",
+            reasons: ["1 attempt(s) have no measurement"],
+          },
+        },
+      }),
+    );
+    for (const heading of ["## Where the time went", "## Delivery", "## Review", "## Machine"]) {
+      expect(text).toContain(heading);
+    }
+    expect(text.indexOf("## Usage")).toBeLessThan(text.indexOf("## Where the time went"));
+    expect(text).toContain("Elapsed not observed");
+    expect(text).toContain("all jobs: 1/2 (not observed), 3 unfinished; coverage partial");
+    expect(text).toContain("1 attempt(s) have no measurement");
+    expect(text).toContain("(complete coverage)");
+    expect(text).toContain(DISPOSITION_NOTE);
+    expect(text).toContain("Local machine expense is not reported");
+    expect(text).toContain("input not observed");
+  });
+
+  it("fills operations, delivery, review and infrastructure from a small run", async () => {
+    const f = createFixtures();
+    const at = (ms: number): IsoTimestamp =>
+      new Date(Date.parse("2026-01-01T00:00:00.000Z") + ms).toISOString() as IsoTimestamp;
+    const programRun = makeRun(f, { startedAt: at(0), endedAt: at(20_000), status: "succeeded" });
+    const root = makeRootNode(f);
+    const jobs = [makeJobContract(f), makeJobContract(f)];
+    const nodes: ExecutionNode[] = [
+      root,
+      ...jobs.map((job) =>
+        makeNode(f, f.rootNodeId, { jobContractId: job.jobContractId, status: "integrated" }),
+      ),
+    ];
+    const jobNodes = nodes.slice(1);
+    const events: Event[] = [];
+    let n = 0;
+    const span = (node: ExecutionNode, phase: string, from: number, to: number): void => {
+      for (const [transition, when] of [
+        ["start", from],
+        ["end", to],
+      ] as const) {
+        n += 1;
+        const observation = {
+          schemaVersion: 1,
+          ...f.scope,
+          observationId: `obs-${n}`,
+          executionNodeId: node.executionNodeId,
+          source: "engine",
+          provenance: { adapter: "engine" },
+          occurredAt: at(when),
+          receivedAt: at(when),
+          inclusion: "self",
+          kind: "lifecycle",
+          operationId: `${phase}:${node.executionNodeId}`,
+          phase,
+          transition,
+          blockers: [],
+          ...(transition === "end" && phase === "integration" ? { reason: "integrated" } : {}),
+        } as LifecycleObservation;
+        events.push(
+          makeEvent(f, {
+            type: "lifecycle.observed",
+            sequence: n,
+            executionNodeId: node.executionNodeId,
+            payload: observation as unknown as Record<string, unknown>,
+            occurredAt: at(when),
+            recordedAt: at(when),
+          }),
+        );
+      }
+    };
+    const [a, b] = jobNodes as [ExecutionNode, ExecutionNode];
+    span(a, "work", 0, 6000);
+    span(a, "integration", 6000, 8000);
+    span(b, "work", 2000, 10_000);
+    span(b, "integration", 10_000, 12_000);
+
+    const examination = ExaminationSchema.parse({
+      ...(structuredClone(AGGREGATE_EXAMPLES.Examination) as Record<string, unknown>),
+      ...f.scope,
+      executionNodeId: a.executionNodeId,
+      findings: [],
+      outcome: "passed",
+    }) as Examination;
+    const summary = {
+      measurementVersion: 1,
+      ...f.scope,
+      measurementSummaryId: "meas-1",
+      executionNodeId: a.executionNodeId,
+      agentId: "agent-1",
+      role: "worker",
+      routingDecisionId: null,
+      route: { harness: "claude", provider: "anthropic", model: "m" },
+      observedModels: [],
+      segments: [],
+      totals: { inputTokens: 100, outputTokens: 20 },
+      coverage: "complete",
+      gaps: [],
+      ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+      valuation: { source: "unknown" },
+      createdAt: at(0),
+      updatedAt: at(0),
+    } as unknown as MeasurementSummary;
+    const dispatch = makeDispatch(f, {
+      status: "stopped",
+      requestedAt: at(0),
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: at(0),
+          readyAt: at(1000),
+          endedAt: at(20_000),
+          endReason: "stopped",
+        },
+      ],
+    });
+    const agent = makeAgent(f, a.executionNodeId, { startedAt: at(0), endedAt: at(6000) });
+
+    const page = <T>(items: readonly T[]) => ({ items });
+    const calls: string[] = [];
+    const stub = (name: string, value: unknown) => (): Promise<unknown> => {
+      calls.push(name);
+      return Promise.resolve(value);
+    };
+    const stores = {
+      programContracts: {
+        get: stub("programContracts.get", makeProgramContract(f, { strands: [] })),
+        listByProject: stub("programContracts.listByProject", page([])),
+      },
+      runs: { get: stub("runs.get", programRun) },
+      executionNodes: { listByRun: stub("executionNodes.listByRun", page(nodes)) },
+      jobContracts: { listByRun: stub("jobContracts.listByRun", page(jobs)) },
+      decisions: { listByRun: stub("decisions.listByRun", page([])), get: stub("d", undefined) },
+      events: { listByRun: stub("events.listByRun", page(events)) },
+      measurements: { listByRun: stub("measurements.listByRun", page([summary])) },
+      dispatches: { get: stub("dispatches.get", dispatch) },
+      computeUtilizations: { get: stub("computeUtilizations.get", undefined) },
+      agents: { listByNode: stub("agents.listByNode", [agent]) },
+      routingDecisions: { listByNode: stub("routingDecisions.listByNode", []) },
+      examinations: {
+        listByNode: (_scope: unknown, nodeId: string) =>
+          Promise.resolve(nodeId === a.executionNodeId ? [examination] : []),
+      },
+      verifications: { listByNode: stub("verifications.listByNode", []) },
+      gateHealth: { get: stub("gateHealth.get", undefined) },
+    } as unknown as ProjectStores;
+
+    const gathered = await gatherReport(stores, f.scope);
+    expect(calls.filter((c) => c === "events.listByRun")).toHaveLength(1);
+    expect(calls.filter((c) => c === "dispatches.get")).toHaveLength(1);
+
+    const { operations, delivery, review, infrastructure } = gathered;
+    expect(gathered.asOf).toBe(at(20_000));
+    expect(operations.elapsedMs).toBe(20_000);
+    expect(operations.unions.work).toBe(10_000);
+    expect(operations.unions.integration).toBe(4000);
+    expect(operations.concurrency.peak).toBe(2);
+    expect(operations.endings.integrated).toBe(2);
+    expect(delivery.workItems).toBe(2);
+    expect(delivery.firstAttempt.denominator).toBe(2);
+    expect(delivery.outcomes.counts.landed).toBe(2);
+    expect(review.coverage.examinedNodes).toBe(1);
+    expect(review.coverage.examinations.total).toBe(1);
+    expect(review.coverage.landedUnexamined).toBe(1);
+    expect(infrastructure?.occupancy.peakConcurrentOccupants).toBe(2);
+
+    const text = renderReport(gathered);
+    expect(text).toContain("## Where the time went");
+    expect(text).toContain("Peak concurrency 2");
+    expect(text).toContain("## Machine");
+    expect(text).not.toContain("Local machine expense is not reported");
   });
 });
