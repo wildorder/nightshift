@@ -7,8 +7,9 @@
  * live poll refreshes the figures without losing the reader's place.
  */
 import type { Run } from "@nightshift/contracts";
-import type { RunReport, RunScope } from "@nightshift/core";
+import type { ProgramStatus, RunReport, RunScope } from "@nightshift/core";
 import { useState } from "react";
+import { useSearchParams } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,7 +19,9 @@ import { ResourceBars, ReworkBars } from "./bars.js";
 import { type AttemptFilterState, Details } from "./details.js";
 import { EvidenceSheet } from "./evidence-sheet.js";
 import { OverviewHeader } from "./header.js";
+import { HistoryBody } from "./history.js";
 import { ReviewEvidence } from "./review.js";
+import { type OverviewScope, resolveScope } from "./scope.js";
 import type { Selection } from "./selection.js";
 import { Tiles } from "./tiles.js";
 import { Timeline } from "./timeline.js";
@@ -69,20 +72,17 @@ export const OverviewError = ({
   </div>
 );
 
-export const OverviewTab = ({
-  run,
+/** The per-run overview: tiles, charts and evidence for this run alone. */
+const RunBody = ({
   report,
   scope,
   nodeLabels,
-  live,
-  pollMs,
+  spend,
 }: {
-  readonly run: Run;
   readonly report: RunReport;
   readonly scope: RunScope;
   readonly nodeLabels: ReadonlyMap<string, string>;
-  readonly live: boolean;
-  readonly pollMs: number;
+  readonly spend: ProgramStatus["spend"] | undefined;
 }) => {
   const attempts = useAttemptRows(scope);
   const [selection, setSelection] = useState<Selection | undefined>(undefined);
@@ -110,9 +110,7 @@ export const OverviewTab = ({
   }
 
   return (
-    <div className="grid gap-4" data-testid="overview">
-      <OverviewHeader run={run} report={report} scope={scope} live={live} pollMs={pollMs} />
-
+    <>
       {missing.length === 0 ? null : (
         <aside
           className="rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground"
@@ -139,6 +137,7 @@ export const OverviewTab = ({
       <Tiles
         report={report}
         rows={rows}
+        spend={spend}
         attemptsReady={!attempts.isPending}
         selected={selection?.key}
         onSelect={select}
@@ -196,8 +195,53 @@ export const OverviewTab = ({
         rows={rows ?? []}
         scope={scope}
         nodeLabels={nodeLabels}
+        spend={spend}
         onClose={() => setSelection(undefined)}
       />
+    </>
+  );
+};
+
+export const OverviewTab = ({
+  run,
+  report,
+  scope,
+  nodeLabels,
+  spend,
+  live,
+  pollMs,
+}: {
+  readonly run: Run;
+  readonly report: RunReport;
+  readonly scope: RunScope;
+  readonly nodeLabels: ReadonlyMap<string, string>;
+  readonly spend?: ProgramStatus["spend"] | undefined;
+  readonly live: boolean;
+  readonly pollMs: number;
+}) => {
+  const [params, setParams] = useSearchParams();
+  const overview: OverviewScope = resolveScope(params.get("scope"), report);
+  const onScope = (next: string) => {
+    const copy = new URLSearchParams(params);
+    copy.set("scope", next);
+    setParams(copy, { replace: true });
+  };
+  return (
+    <div className="grid gap-4" data-testid="overview">
+      <OverviewHeader
+        run={run}
+        report={report}
+        scope={scope}
+        overview={overview}
+        onScope={onScope}
+        live={live}
+        pollMs={pollMs}
+      />
+      {overview.kind === "history" ? (
+        <HistoryBody history={overview.history} report={report} scope={scope} />
+      ) : (
+        <RunBody report={report} scope={scope} nodeLabels={nodeLabels} spend={spend} />
+      )}
     </div>
   );
 };

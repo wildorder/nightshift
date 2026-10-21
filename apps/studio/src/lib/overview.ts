@@ -9,6 +9,7 @@ import {
   type MetricId,
   type OperationInterval,
   type OperationsReport,
+  type ProgramStatus,
   type ResourceTotals,
   type RunReport,
   sumResources,
@@ -366,3 +367,39 @@ export const verdictText = (verdict: RunReport["feedback"]["verdict"]): string =
 /** True when a live run's report is older than three poll intervals. */
 export const isStale = (asOf: string, now: string, pollMs: number): boolean =>
   Date.parse(now) - Date.parse(asOf) > 3 * pollMs;
+
+/** The run's spend against its budget, as the program status computed it (D-02). */
+export type BudgetSpend = ProgramStatus["spend"];
+
+/** "n unpriced, m unmeasured" and whatever else the evaluation could not see. */
+export const budgetGapText = (evaluation: BudgetSpend["evaluation"]): string => {
+  const parts = [`${evaluation.unpriced} unpriced`, `${evaluation.unmeasured} unmeasured`];
+  if (evaluation.estimateIncomplete > 0) {
+    parts.push(`${evaluation.estimateIncomplete} with unvalued usage`);
+  }
+  return parts.join(", ");
+};
+
+/**
+ * The budget evaluation in words: the configured limit, what has been spent so
+ * far and, when the figures leave something out, that the budget cannot be
+ * evaluated completely. "Within budget" is only ever said of a complete
+ * evaluation.
+ */
+export const budgetLines = (spend: BudgetSpend): string[] => {
+  const { evaluation } = spend;
+  if (!evaluation.configured) return ["Budget: no limit is configured for this program."];
+  const limit =
+    spend.budgetUsd === undefined
+      ? "a token limit is configured"
+      : `limit ${dollarsText(spend.budgetUsd)}`;
+  const lines = [
+    `Budget: ${limit}; spent so far ${dollarsText(spend.usd)}${spend.estimated ? " (partly estimated)" : ""}.`,
+  ];
+  if (!evaluation.complete) {
+    lines.push(`Cannot be evaluated completely: ${budgetGapText(evaluation)}.`);
+  } else if (spend.budgetUsd !== undefined) {
+    lines.push(spend.usd < spend.budgetUsd ? "Within budget." : "At or over the limit.");
+  }
+  return lines;
+};

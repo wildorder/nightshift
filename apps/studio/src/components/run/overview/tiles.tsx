@@ -7,6 +7,8 @@
  */
 import type { AttemptRow, RunReport } from "@nightshift/core";
 import {
+  type BudgetSpend,
+  budgetGapText,
   compactCount,
   consumptionOf,
   dollarsText,
@@ -76,12 +78,14 @@ const OUTCOME_WORDS: Readonly<Record<string, string>> = {
 export const Tiles = ({
   report,
   rows,
+  spend,
   attemptsReady,
   selected,
   onSelect,
 }: {
   readonly report: RunReport;
   readonly rows: readonly AttemptRow[] | undefined;
+  readonly spend: BudgetSpend | undefined;
   readonly attemptsReady: boolean;
   readonly selected: string | undefined;
   readonly onSelect: (selection: Selection) => void;
@@ -188,6 +192,11 @@ export const Tiles = ({
             ? `${NOT_OBSERVED} (no machine recorded for this run)`
             : `${dollarsText(machine.usd)} · from the machine's recorded lifetime`}
         </Line>
+        {spend === undefined || !spend.evaluation.configured || spend.evaluation.complete ? null : (
+          <Line label="Budget:">
+            cannot be evaluated completely: {budgetGapText(spend.evaluation)}
+          </Line>
+        )}
       </Tile>
 
       <Tile

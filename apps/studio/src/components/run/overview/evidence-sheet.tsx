@@ -21,6 +21,8 @@ import {
 } from "@/components/ui/sheet";
 import { when } from "../../../lib/format.js";
 import {
+  type BudgetSpend,
+  budgetLines,
   clockText,
   compactCount,
   consumptionOf,
@@ -73,6 +75,7 @@ export const EvidenceSheet = ({
   rows,
   scope,
   nodeLabels,
+  spend,
   onClose,
 }: {
   readonly selection: Selection | undefined;
@@ -80,6 +83,7 @@ export const EvidenceSheet = ({
   readonly rows: readonly AttemptRow[];
   readonly scope: RunScope;
   readonly nodeLabels: ReadonlyMap<string, string>;
+  readonly spend: BudgetSpend | undefined;
   readonly onClose: () => void;
 }) => {
   const labelOf = (nodeId: string): string => nodeLabels.get(nodeId) ?? nodeId.slice(-8);
@@ -160,6 +164,7 @@ export const EvidenceSheet = ({
             `API-equivalent estimate: ${dollarsText(all.estimatedUsd)} — ${valuedText(all.estimateValued, all.attempts, all.estimateIncomplete)}.`,
             `Provider-reported dollars, kept apart: ${dollarsText(all.reportedUsd)}${all.reportedUsd === undefined ? "" : ` for ${all.reportedValued} of ${all.attempts} attempts`}.`,
             `Machine estimate: ${report.infrastructure === undefined ? NOT_OBSERVED : dollarsText(report.infrastructure.components.total.usd)}${report.infrastructure === undefined ? "" : ` — ${report.infrastructure.components.total.basis}`}`,
+            ...(spend === undefined ? [] : budgetLines(spend)),
           ],
           sample: `${all.attempts} attempts`,
         };
