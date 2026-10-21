@@ -19,7 +19,10 @@ const entry = (i: number, o: number, cr = 0, cw = 0, extra: object = {}) => ({
 describe("sumModelUsage", () => {
   it("sums over models, takes reasoning from thinkingTokens and the cost as reportedUsd", () => {
     const totals = sumModelUsage(
-      { a: entry(1, 2, 3, 4, { thinkingTokens: 5, contextWindow: 1000 }), b: entry(10, 20) },
+      {
+        a: entry(1, 2, 3, 4, { thinkingTokens: 5, contextWindow: 1000 }),
+        b: entry(10, 20, 0, 0, { thinkingTokens: 0 }),
+      },
       1.5,
     );
     expect(totals?.counters).toEqual({
@@ -32,6 +35,57 @@ describe("sumModelUsage", () => {
       reportedUsd: 1.5,
     });
     expect([...(totals?.contextWindows ?? [])]).toEqual([["a", 1000]]);
+  });
+
+  it("emits only the counters a model reports", () => {
+    const totals = sumModelUsage({ m: { inputTokens: 12 } }, undefined);
+    expect(totals?.counters).toEqual({
+      inputTokens: 12,
+      inputIncludesCache: false,
+    });
+  });
+
+  it("leaves a counter absent when any model lacks it, summing the others", () => {
+    const { outputTokens: _omit, ...noOutput } = entry(5, 0, 2, 3);
+    const totals = sumModelUsage({ a: entry(1, 2, 3, 4), b: noOutput }, undefined);
+    expect(totals?.counters).toEqual({
+      inputTokens: 6,
+      cacheReadTokens: 5,
+      cacheWriteTokens: 7,
+      inputIncludesCache: false,
+    });
+  });
+
+  it.each([-1, "7", Number.NaN, null])("leaves a counter absent for invalid value %j", (bad) => {
+    const totals = sumModelUsage({ a: entry(1, 2), b: { ...entry(1, 2), outputTokens: bad } }, 0);
+    expect(totals?.counters).not.toHaveProperty("outputTokens");
+    expect(totals?.counters).toMatchObject({ inputTokens: 2 });
+  });
+
+  it("leaves reasoningTokens absent when only one of two models reports thinkingTokens", () => {
+    const totals = sumModelUsage(
+      { a: entry(1, 2, 0, 0, { thinkingTokens: 5 }), b: entry(1, 2) },
+      0,
+    );
+    expect(totals?.counters).not.toHaveProperty("reasoningTokens");
+  });
+
+  it("sums all five counters when both models report everything", () => {
+    const totals = sumModelUsage(
+      {
+        a: entry(1, 2, 3, 4, { thinkingTokens: 5 }),
+        b: entry(10, 20, 30, 40, { thinkingTokens: 50 }),
+      },
+      undefined,
+    );
+    expect(totals?.counters).toEqual({
+      inputTokens: 11,
+      outputTokens: 22,
+      cacheReadTokens: 33,
+      cacheWriteTokens: 44,
+      reasoningTokens: 55,
+      inputIncludesCache: false,
+    });
   });
 
   it("omits reasoning when no model reports thinkingTokens, and a bad cost", () => {
@@ -55,7 +109,11 @@ describe("requestCounters", () => {
       output_tokens: 99,
       cache_read_input_tokens: 3,
     });
-    expect(counters).toEqual({ inputTokens: 2, cacheReadTokens: 3, inputIncludesCache: false });
+    expect(counters).toEqual({
+      inputTokens: 2,
+      cacheReadTokens: 3,
+      inputIncludesCache: false,
+    });
   });
   it("is undefined without a usable counter", () => {
     expect(requestCounters({ output_tokens: 4 })).toBeUndefined();

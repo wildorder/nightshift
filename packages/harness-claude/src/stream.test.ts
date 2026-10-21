@@ -821,14 +821,48 @@ describe("measurement observations from the stream", () => {
         cacheReadTokens: 1300,
         cacheWriteTokens: 1000,
         outputTokens: 22,
-        reasoningTokens: 4,
         inputIncludesCache: false,
         reportedUsd: 0.03,
       },
     });
+    // Only one of the two models reports thinkingTokens, so the sum is unknown.
+    const first = observations[0];
+    expect(first?.kind === "cumulative_snapshot" && "reasoningTokens" in first.counters).toBe(
+      false,
+    );
     // The turn's own `usage` (22 input) is not emitted as anything.
     expect(JSON.stringify(observations)).not.toContain('"inputTokens":22,');
     expect(outcome.usage?.inputTokens).toBe(22);
+  });
+
+  it("emits no outputTokens in the snapshot or exit usage when modelUsage lacks it", () => {
+    const text = frameLine({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      uuid: "00000000-0000-4000-8000-0000000000aa",
+      session_id: "sess-partial",
+      usage: { input_tokens: 3, output_tokens: 4 },
+      modelUsage: {
+        "claude-sonnet-5": {
+          inputTokens: 12,
+          cacheReadInputTokens: 2,
+          cacheCreationInputTokens: 1,
+        },
+      },
+    });
+    const { observations, outcome } = measure(text);
+    expect(observations).toHaveLength(1);
+    const [snapshot] = observations;
+    expect(snapshot?.kind === "cumulative_snapshot" && snapshot.counters).toEqual({
+      inputTokens: 12,
+      cacheReadTokens: 2,
+      cacheWriteTokens: 1,
+      inputIncludesCache: false,
+    });
+    expect(outcome.measures.usageScope).toBe("session");
+    expect(outcome.measures.usage).toMatchObject({ inputTokens: 12 });
+    expect(outcome.measures.usage).not.toHaveProperty("outputTokens");
   });
 
   it("emits a request with childRef for a sub-agent's assistant message", () => {

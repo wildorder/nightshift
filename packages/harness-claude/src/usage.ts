@@ -56,49 +56,58 @@ export interface ModelUsageTotals {
 }
 
 /**
- * Sum `modelUsage` over its models. Returns undefined when it is absent, empty
- * or reports nothing but zeros (the shape of a crashed run's result), because
- * such a frame is not evidence of any usage.
+ * Sum `modelUsage` over its models. Each counter is emitted only when every
+ * counted model entry carries a valid value for it (a finite non-negative
+ * number). A missing or invalid field makes that counter unknown, so it is
+ * absent from the result: never a partial sum and never a fabricated zero.
+ * Returns undefined when `modelUsage` is absent, has no object entries, or every
+ * emitted counter is zero (the shape of a crashed run's result), because such a
+ * frame is not evidence of any usage. `inputIncludesCache: false` is stated
+ * only when inputTokens is present.
  */
 export const sumModelUsage = (
   modelUsage: unknown,
   totalCostUsd: unknown,
 ): ModelUsageTotals | undefined => {
   if (!isRecord(modelUsage)) return undefined;
-  const sum = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, thinking: 0 };
-  let thinkingSeen = false;
+  const keys = {
+    inputTokens: "inputTokens",
+    cacheReadTokens: "cacheReadInputTokens",
+    cacheWriteTokens: "cacheCreationInputTokens",
+    outputTokens: "outputTokens",
+    reasoningTokens: "thinkingTokens",
+  } as const;
+  const sums = new Map<keyof typeof keys, number | undefined>(
+    (Object.keys(keys) as (keyof typeof keys)[]).map((name) => [name, 0]),
+  );
   let models = 0;
   const contextWindows = new Map<string, number>();
   for (const [model, entry] of Object.entries(modelUsage)) {
     if (!isRecord(entry)) continue;
     models += 1;
-    sum.input += count(entry.inputTokens) ?? 0;
-    sum.cacheRead += count(entry.cacheReadInputTokens) ?? 0;
-    sum.cacheWrite += count(entry.cacheCreationInputTokens) ?? 0;
-    sum.output += count(entry.outputTokens) ?? 0;
-    const thinking = count(entry.thinkingTokens);
-    if (thinking !== undefined) {
-      thinkingSeen = true;
-      sum.thinking += thinking;
+    for (const [name, source] of Object.entries(keys) as [keyof typeof keys, string][]) {
+      const running = sums.get(name);
+      const value = count(entry[source]);
+      sums.set(name, running === undefined || value === undefined ? undefined : running + value);
     }
     const window = count(entry.contextWindow);
     if (window !== undefined && window > 0) contextWindows.set(model, window);
   }
   if (models === 0) return undefined;
-  if (sum.input + sum.cacheRead + sum.cacheWrite + sum.output + sum.thinking === 0) {
-    return undefined;
-  }
+  const emitted = [...sums.values()].filter((v): v is number => v !== undefined);
+  if (emitted.every((v) => v === 0)) return undefined;
   const cost =
     typeof totalCostUsd === "number" && Number.isFinite(totalCostUsd) && totalCostUsd >= 0
       ? totalCostUsd
       : undefined;
+  const inputTokens = sums.get("inputTokens");
   const counters: MeasurementCounters = {
-    inputTokens: sum.input,
-    cacheReadTokens: sum.cacheRead,
-    cacheWriteTokens: sum.cacheWrite,
-    outputTokens: sum.output,
-    ...(thinkingSeen ? { reasoningTokens: sum.thinking } : {}),
-    inputIncludesCache: false,
+    ...field("inputTokens", inputTokens),
+    ...field("cacheReadTokens", sums.get("cacheReadTokens")),
+    ...field("cacheWriteTokens", sums.get("cacheWriteTokens")),
+    ...field("outputTokens", sums.get("outputTokens")),
+    ...field("reasoningTokens", sums.get("reasoningTokens")),
+    ...(inputTokens === undefined ? {} : { inputIncludesCache: false }),
     ...(cost === undefined ? {} : { reportedUsd: cost }),
   };
   return { counters, contextWindows };
