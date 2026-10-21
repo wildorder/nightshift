@@ -4,7 +4,13 @@
  * snapshotted by the server from the verdicts it holds, and a stored checkpoint
  * never changes.
  */
-import type { CompletionHistory, ExecutionRole, RunId } from "@nightshift/contracts";
+import type {
+  CompletionHistory,
+  ExecutionRole,
+  MeasurementSummary,
+  RoutingDecision,
+  RunId,
+} from "@nightshift/contracts";
 import {
   buildCompletionHistory,
   buildRunFeedback,
@@ -13,6 +19,7 @@ import {
   makeAgent,
   makeCompletionHistory,
   makeMembership,
+  makeNode,
   makeProgramContract,
   makeProject,
   makeRootNode,
@@ -31,7 +38,11 @@ const EARLIER = "2026-10-01T09:00:00.000Z";
 const errorCode = (response: ApiResponse): string =>
   (response.body as { error: { code: string } }).error.code;
 
-const setup = async () => {
+const setup = async (
+  wrap: (
+    stores: ReturnType<typeof createInMemoryStores>,
+  ) => ReturnType<typeof createInMemoryStores> = (stores) => stores,
+) => {
   const stores = createInMemoryStores();
   const f = createFixtures();
   const orgId = f.ids.next("org");
@@ -44,7 +55,11 @@ const setup = async () => {
   const root = makeRootNode(f);
   await stores.executionNodes.put(root);
   await stores.runs.put(
-    makeRun(f, { status: "succeeded", endedAt: EARLIER, rootNodeId: root.executionNodeId }),
+    makeRun(f, {
+      status: "succeeded",
+      endedAt: EARLIER,
+      rootNodeId: root.executionNodeId,
+    }),
   );
 
   // A second program of the same project, with a finished run.
@@ -63,7 +78,10 @@ const setup = async () => {
   const foreignProgram = f.ids.next("prog");
   await stores.projects.put(makeProject(f, { projectId: foreignProject, orgId }));
   await stores.programContracts.put(
-    makeProgramContract(f, { projectId: foreignProject, programId: foreignProgram }),
+    makeProgramContract(f, {
+      projectId: foreignProject,
+      programId: foreignProgram,
+    }),
   );
   const foreign = makeRun(f, {
     projectId: foreignProject,
@@ -74,7 +92,10 @@ const setup = async () => {
   });
   await stores.runs.put(foreign);
 
-  const deps = { stores, clock: createFixedClock(Date.parse(NOW)) };
+  const deps = {
+    stores: wrap(stores),
+    clock: createFixedClock(Date.parse(NOW)),
+  };
   const as: RequestPrincipal = { kind: "user", userId: user };
   const call = (method: string, path: string, body?: unknown, principal: RequestPrincipal = as) =>
     handleRequest(deps, { method, path, query: {}, body, principal });
@@ -92,7 +113,11 @@ const setup = async () => {
     await stores.feedback.put(feedback);
     return feedback;
   };
-  const anchorRef = { programId: f.scope.programId, runId: f.scope.runId, role: "anchor" } as const;
+  const anchorRef = {
+    programId: f.scope.programId,
+    runId: f.scope.runId,
+    role: "anchor",
+  } as const;
   const first = makeCompletionHistory(f);
   const path = (id = first.completionHistoryId) => `${runPath}/completion-histories/${id}`;
   const revise = (
@@ -159,7 +184,10 @@ describe("writing a completion history (D-05)", () => {
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     const stored = response.body as CompletionHistory;
     expect(stored.revisions).toHaveLength(1);
-    expect(stored.revisions[0]).toMatchObject({ actor: w.actor, recordedAt: NOW });
+    expect(stored.revisions[0]).toMatchObject({
+      actor: w.actor,
+      recordedAt: NOW,
+    });
     expect(stored.createdAt).toBe(NOW);
     expect(await w.stores.completionHistories.get(w.f.scope, w.first.completionHistoryId)).toEqual(
       stored,
@@ -179,7 +207,11 @@ describe("writing a completion history (D-05)", () => {
     const stored = await created(w);
     const members = [
       ...stored.members,
-      { programId: w.sibling.programId, runId: w.sibling.runId, role: "correction" as const },
+      {
+        programId: w.sibling.programId,
+        runId: w.sibling.runId,
+        role: "correction" as const,
+      },
     ];
     const response = await w.call("PUT", w.path(), w.revise(stored, { members }));
     expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -193,7 +225,11 @@ describe("writing a completion history (D-05)", () => {
     const stored = await created(w);
     const members = [
       ...stored.members,
-      { programId: w.foreign.programId, runId: w.foreign.runId, role: "contributing" as const },
+      {
+        programId: w.foreign.programId,
+        runId: w.foreign.runId,
+        role: "contributing" as const,
+      },
     ];
     const response = await w.call("PUT", w.path(), w.revise(stored, { members }));
     expect(response.status).toBe(422);
@@ -208,7 +244,11 @@ describe("writing a completion history (D-05)", () => {
     const w = await setup();
     const members = [
       w.anchorRef,
-      { programId: w.foreign.programId, runId: w.foreign.runId, role: "contributing" as const },
+      {
+        programId: w.foreign.programId,
+        runId: w.foreign.runId,
+        role: "contributing" as const,
+      },
     ];
     const response = await w.call(
       "PUT",
@@ -231,7 +271,11 @@ describe("writing a completion history (D-05)", () => {
     const stored = await created(w);
     const feedback = await w.rate(w.f.scope, "worked");
     const proposal = w.revise(stored, {
-      checkpoint: { name: "ship", programId: w.f.scope.programId, runId: w.f.scope.runId },
+      checkpoint: {
+        name: "ship",
+        programId: w.f.scope.programId,
+        runId: w.f.scope.runId,
+      },
     });
     const forged = {
       ...proposal,
@@ -259,7 +303,11 @@ describe("writing a completion history (D-05)", () => {
     const w = await setup();
     const stored = await created(w);
     const wanted = {
-      checkpoint: { name: "ship", programId: w.f.scope.programId, runId: w.f.scope.runId },
+      checkpoint: {
+        name: "ship",
+        programId: w.f.scope.programId,
+        runId: w.f.scope.runId,
+      },
     };
     const unrated = await w.call("PUT", w.path(), w.revise(stored, wanted));
     expect(unrated.status).toBe(422);
@@ -281,7 +329,11 @@ describe("writing a completion history (D-05)", () => {
         "PUT",
         w.path(),
         w.revise(stored, {
-          checkpoint: { name: "ship", programId: w.f.scope.programId, runId: w.f.scope.runId },
+          checkpoint: {
+            name: "ship",
+            programId: w.f.scope.programId,
+            runId: w.f.scope.runId,
+          },
         }),
       )
     ).body as CompletionHistory;
@@ -317,10 +369,20 @@ describe("writing a completion history (D-05)", () => {
     const other = makeCompletionHistory(w.f);
     expect((await w.call("PUT", w.path(), other)).status).toBe(400);
     const elsewhere = buildCompletionHistory({
-      scope: { ...w.f.scope, programId: w.sibling.programId, runId: w.sibling.runId },
+      scope: {
+        ...w.f.scope,
+        programId: w.sibling.programId,
+        runId: w.sibling.runId,
+      },
       completionHistoryId: w.first.completionHistoryId,
       title: w.first.title,
-      members: [{ programId: w.sibling.programId, runId: w.sibling.runId, role: "anchor" }],
+      members: [
+        {
+          programId: w.sibling.programId,
+          runId: w.sibling.runId,
+          role: "anchor",
+        },
+      ],
       actor: w.actor,
       at: NOW,
     });
@@ -401,5 +463,288 @@ describe("who may touch completion histories", () => {
       expect(errorCode(response)).toBe("wrong_org");
     }
     expect(await w.stores.completionHistories.listByRun(w.f.scope)).toEqual([]);
+  });
+});
+
+describe("measuring a checkpoint (D-05)", () => {
+  const VERDICT = "2026-10-01T09:45:00.000Z";
+  const LATER = "2026-10-01T12:00:00.000Z";
+
+  /** The anchor finished before the verdict; the sibling is still open, with model figures. */
+  const seedMeasured = async (w: World) => {
+    const { f, stores } = w;
+    await stores.runs.put(
+      makeRun(f, {
+        status: "succeeded",
+        startedAt: "2026-10-01T08:00:00.000Z",
+        endedAt: "2026-10-01T09:40:00.000Z",
+        rootNodeId: w.root.executionNodeId,
+      }),
+    );
+    const scope = {
+      projectId: w.sibling.projectId,
+      programId: w.sibling.programId,
+      runId: w.sibling.runId,
+    };
+    const open = {
+      ...w.sibling,
+      status: "running" as const,
+      startedAt: "2026-10-01T09:30:00.000Z",
+    };
+    delete (open as { endedAt?: string }).endedAt;
+    await stores.runs.put(open);
+    const siblingRoot = makeRootNode(f, {
+      ...scope,
+      executionNodeId: w.sibling.rootNodeId,
+    });
+    await stores.executionNodes.put(siblingRoot);
+    const node = makeNode(f, siblingRoot.executionNodeId, scope);
+    await stores.executionNodes.put(node);
+    const route = {
+      schemaVersion: 1,
+      ...scope,
+      routingDecisionId: f.ids.next("route"),
+      executionNodeId: node.executionNodeId,
+      attempt: 1,
+      eligibleOptions: [
+        {
+          target: { harness: "claude", provider: "anthropic", model: "m" },
+          eligible: true,
+        },
+      ],
+      chosen: { harness: "claude", provider: "anthropic", model: "m" },
+      ruleId: "r",
+      wasOverride: false,
+      outcome: "verified",
+      previousRouteId: null,
+      createdAt: "2026-10-01T09:30:00.000Z",
+      usage: {
+        inputTokens: 100,
+        outputTokens: 10,
+        estimatedCostUsd: 0.5,
+        actualCostUsd: 2,
+      },
+    } as RoutingDecision;
+    await stores.routingDecisions.put(route);
+    await stores.measurements.put({
+      schemaVersion: 1,
+      measurementVersion: 1,
+      ...scope,
+      measurementSummaryId: f.ids.next("meas"),
+      executionNodeId: node.executionNodeId,
+      agentId: f.ids.next("agent"),
+      role: "worker",
+      routingDecisionId: route.routingDecisionId,
+      route: route.chosen,
+      observedModels: [],
+      segments: [],
+      totals: { inputTokens: 100, outputTokens: 10, inputIncludesCache: true },
+      coverage: "complete",
+      gaps: [],
+      ledger: {
+        chunks: 0,
+        artifactIds: [],
+        observationCount: 0,
+        publishedCount: 0,
+      },
+      valuation: { source: "unknown" },
+      createdAt: "2026-10-01T09:30:00.000Z",
+      updatedAt: "2026-10-01T09:40:00.000Z",
+    } as unknown as MeasurementSummary);
+    await stores.feedback.put(
+      buildRunFeedback({
+        scope: w.f.scope,
+        verdict: "worked",
+        actor: w.actor,
+        at: VERDICT,
+      }),
+    );
+    return { open, scope };
+  };
+
+  const withSibling = (w: World, stored: CompletionHistory, extra: object = {}) =>
+    w.revise(stored, {
+      members: [
+        ...stored.members,
+        {
+          programId: w.sibling.programId,
+          runId: w.sibling.runId,
+          role: "contributing" as const,
+        },
+      ],
+      checkpoint: {
+        name: "ship",
+        programId: w.f.scope.programId,
+        runId: w.f.scope.runId,
+      },
+      ...extra,
+    });
+
+  it("bounds an open contributor at the verdict and holds its figures; later reads are unchanged", async () => {
+    const w = await setup();
+    await seedMeasured(w);
+    const stored = await created(w);
+    const response = await w.call("PUT", w.path(), withSibling(w, stored));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [checkpoint] = (response.body as CompletionHistory).checkpoints;
+    expect(checkpoint?.measured).toMatchObject({
+      measuredTo: VERDICT,
+      readableMembers: 2,
+      activeSeconds: 6300,
+      tokens: { input: 100, output: 10 },
+      usd: { estimated: 0.5, reported: 2 },
+      recordedAt: NOW,
+    });
+    expect(checkpoint?.measured.infrastructure).toBeDefined();
+    const before = JSON.stringify(response.body);
+
+    // The open run ends, and another member joins.
+    await w.stores.runs.put({
+      ...w.sibling,
+      status: "succeeded",
+      endedAt: LATER,
+    });
+    const third = {
+      ...w.sibling,
+      runId: w.f.ids.next("run"),
+      status: "succeeded" as const,
+      endedAt: LATER,
+    };
+    await w.stores.runs.put(third);
+    const grown = response.body as CompletionHistory;
+    const more = await w.call(
+      "PUT",
+      w.path(),
+      w.revise(grown, {
+        members: [
+          ...grown.members,
+          {
+            programId: third.programId,
+            runId: third.runId,
+            role: "correction" as const,
+          },
+        ],
+      }),
+    );
+    expect(more.status, JSON.stringify(more.body)).toBe(200);
+    expect((more.body as CompletionHistory).checkpoints).toEqual(grown.checkpoints);
+
+    const read = await w.call("GET", w.path());
+    const [kept] = (read.body as CompletionHistory).checkpoints;
+    expect(JSON.stringify(kept)).toBe(JSON.stringify(JSON.parse(before).checkpoints[0]));
+  });
+
+  it("replaces a forged measured block and forged revisions", async () => {
+    const w = await setup();
+    await seedMeasured(w);
+    const stored = await created(w);
+    const proposal = withSibling(w, stored);
+    const forged = {
+      ...proposal,
+      revisions: [
+        {
+          version: 2,
+          actor: { kind: "user", userId: "someone-else", orgId: w.orgId },
+          recordedAt: "2020-01-01T00:00:00.000Z",
+          added: [],
+          removed: [],
+        },
+      ],
+      checkpoints: proposal.checkpoints.map((c) => ({
+        ...c,
+        measured: {
+          measuredTo: "2020-01-01T00:00:00.000Z",
+          readableMembers: 9,
+          activeSeconds: 1,
+          tokens: { input: 999999, inputConventionUnknown: 0 },
+          usd: { estimated: 123, reported: 456 },
+          infrastructure: { usd: 789, members: 9 },
+          recordedAt: "2020-01-01T00:00:00.000Z",
+        },
+      })),
+    };
+    const response = await w.call("PUT", w.path(), forged);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const body = response.body as CompletionHistory;
+    expect(body.checkpoints[0]?.measured).toMatchObject({
+      measuredTo: VERDICT,
+      readableMembers: 2,
+      activeSeconds: 6300,
+      tokens: { input: 100, output: 10 },
+      usd: { estimated: 0.5, reported: 2 },
+      recordedAt: NOW,
+    });
+    expect(body.checkpoints[0]?.measured.infrastructure?.usd).not.toBe(789);
+    expect(body.revisions).toHaveLength(2);
+    expect(body.revisions[1]).toMatchObject({
+      actor: w.actor,
+      recordedAt: NOW,
+      checkpoint: "ship",
+    });
+  });
+
+  it("performs no measurement reads for a write that adds no checkpoint", async () => {
+    const reads: string[] = [];
+    const count =
+      <A extends unknown[], R>(name: string, fn: (...args: A) => R) =>
+      (...args: A): R => {
+        reads.push(name);
+        return fn(...args);
+      };
+    const w = await setup((s) => ({
+      ...s,
+      executionNodes: {
+        ...s.executionNodes,
+        listByRun: count("nodes", s.executionNodes.listByRun),
+      },
+      measurements: {
+        ...s.measurements,
+        listByRun: count("measurements", s.measurements.listByRun),
+      },
+      dispatches: {
+        ...s.dispatches,
+        get: count("dispatches", s.dispatches.get),
+      },
+      computeUtilizations: {
+        ...s.computeUtilizations,
+        get: count("utilization", s.computeUtilizations.get),
+      },
+      agents: { ...s.agents, listByNode: count("agents", s.agents.listByNode) },
+      routingDecisions: {
+        ...s.routingDecisions,
+        listByNode: count("routes", s.routingDecisions.listByNode),
+      },
+    }));
+    await seedMeasured(w);
+    const stored = await created(w);
+    const plain = await w.call(
+      "PUT",
+      w.path(),
+      w.revise(stored, {
+        members: [
+          ...stored.members,
+          {
+            programId: w.sibling.programId,
+            runId: w.sibling.runId,
+            role: "contributing" as const,
+          },
+        ],
+      }),
+    );
+    expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+    expect(reads).toEqual([]);
+    const checkpointed = await w.call(
+      "PUT",
+      w.path(),
+      w.revise(plain.body as CompletionHistory, {
+        checkpoint: {
+          name: "ship",
+          programId: w.f.scope.programId,
+          runId: w.f.scope.runId,
+        },
+      }),
+    );
+    expect(checkpointed.status, JSON.stringify(checkpointed.body)).toBe(200);
+    expect(reads.length).toBeGreaterThan(0);
   });
 });

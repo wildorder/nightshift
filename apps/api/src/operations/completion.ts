@@ -7,7 +7,12 @@
  * the server holds.
  */
 import { CompletionHistorySchema, type Run, type RunFeedback } from "@nightshift/contracts";
-import { CompletionMembershipError, nowIso, reconcileCompletionWrite } from "@nightshift/core";
+import {
+  CompletionMembershipError,
+  gatherMemberFigures,
+  nowIso,
+  reconcileCompletionWrite,
+} from "@nightshift/core";
 import { HttpError, parseBody } from "../http.js";
 import {
   assertChainMatches,
@@ -68,11 +73,31 @@ export const putCompletionHistory: Handler = async ({ deps, request, params, pri
     const run = await deps.stores.runs.get(member, ref.runId);
     if (run === undefined) throw new CompletionMembershipError(ref, "unknown_run");
     memberRuns.set(key, run);
-    const feedback = await deps.stores.feedback.get({ ...member, runId: ref.runId });
+    const feedback = await deps.stores.feedback.get({
+      ...member,
+      runId: ref.runId,
+    });
     if (feedback !== undefined) feedbackOf.set(key, feedback);
   }
 
   const stored = await deps.stores.completionHistories.get(scope, id);
+  // Measurement reads happen only when this write adds a checkpoint; the figures
+  // are taken as of that checkpoint run's verdict. Nothing in the body is used.
+  const storedNames = new Set((stored?.checkpoints ?? []).map((c) => c.name));
+  const added = proposed.checkpoints.filter((c) => !storedNames.has(c.name));
+  const verdictAt = added
+    .map((c) => feedbackOf.get(`${c.programId}/${c.runId}`)?.recordedAt)
+    .find((recordedAt) => recordedAt !== undefined);
+  const figures =
+    added.length === 0
+      ? undefined
+      : await gatherMemberFigures(
+          deps.stores,
+          scope.projectId,
+          proposed.members,
+          memberRuns,
+          verdictAt ?? nowIso(deps.clock),
+        );
   const decided = reconcileCompletionWrite({
     ...(stored === undefined ? {} : { stored }),
     proposed,
@@ -80,6 +105,12 @@ export const putCompletionHistory: Handler = async ({ deps, request, params, pri
     at: nowIso(deps.clock),
     memberRuns,
     feedbackOf,
+    ...(figures === undefined
+      ? {}
+      : {
+          resources: figures.resources,
+          infrastructure: figures.infrastructure,
+        }),
   });
   if (decided.outcome === "stored") {
     await deps.stores.completionHistories.put(decided.history);
