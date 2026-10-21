@@ -654,6 +654,7 @@ const play = async (): Promise<Facts> => {
   /** Both of a round's workers wait here, so the story can see them running at once. */
   const gates = [barrier(), barrier()];
   const hold = barrier();
+  let atHold = false;
   const atGate = [new Set<string>(), new Set<string>()];
 
   /** What a worker does, by job and attempt. A `"fail"` is a worker that gives up. */
@@ -686,7 +687,10 @@ const play = async (): Promise<Facts> => {
         return undefined;
       case "second":
         // Both edit line 5 from the same head; this one is ready only after the other landed.
-        if (attempt === 1) await hold.opened;
+        if (attempt === 1) {
+          atHold = true;
+          await hold.opened;
+        }
         await editLine(worktree, 5, "second changed line 5");
         return undefined;
       case "doomed":
@@ -767,6 +771,9 @@ const play = async (): Promise<Facts> => {
   jobs.second = await one.submit("second module");
   expect(await one.until(jobs.first.nodeId, settled)).toBe("integrated");
   // The second job was cut from the head the first one has now moved, and works for 45 seconds.
+  // Wait until it is actually working: advancing the clock before its interval opens would leave
+  // the integration union at 0 under load.
+  await vi.waitFor(() => expect(atHold).toBe(true), { timeout: 60_000 });
   clock.advance(45_000);
   hold.open();
   expect(await one.until(jobs.second.nodeId, settled)).toBe("failed");

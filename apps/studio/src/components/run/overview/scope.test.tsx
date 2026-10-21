@@ -66,6 +66,25 @@ const mount = async (options: Options = {}) => {
         }
       }
       if (options.fullyValued) {
+        // A root launch with no measurement summary counts as one unmeasured attempt (D-02), so a
+        // complete evaluation needs the root to have a summary: give each unmeasured root a copy of
+        // an existing one (valued below with the rest).
+        const existing = (await stores.measurements.listByRun(scope)).items;
+        const template = existing[0];
+        const measuredRoots = new Set(
+          existing.filter((s) => s.routingDecisionId === null).map((s) => s.executionNodeId),
+        );
+        if (template !== undefined) {
+          for (const node of (await stores.executionNodes.listByRun(scope)).items) {
+            if (node.parentNodeId !== null || measuredRoots.has(node.executionNodeId)) continue;
+            await stores.measurements.put({
+              ...template,
+              measurementSummaryId: createCountingIdGenerator(9_000).next("meas"),
+              executionNodeId: node.executionNodeId,
+              routingDecisionId: null,
+            } as typeof template);
+          }
+        }
         for (const summary of (await stores.measurements.listByRun(scope)).items) {
           await stores.measurements.put({
             ...summary,
