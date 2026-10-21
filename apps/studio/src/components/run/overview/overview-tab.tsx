@@ -153,7 +153,7 @@ const RunBody = ({
       </Section>
 
       <Section title="What it consumed and what was reworked">
-        <div className="grid gap-6 lg:grid-cols-3">
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-3">
           {rows === undefined ? (
             <Skeleton className="h-40 w-full lg:col-span-2" />
           ) : (
@@ -227,7 +227,7 @@ export const OverviewTab = ({
     setParams(copy, { replace: true });
   };
   return (
-    <div className="grid gap-4" data-testid="overview">
+    <div className="grid grid-cols-[minmax(0,1fr)] gap-4" data-testid="overview">
       <OverviewHeader
         run={run}
         report={report}

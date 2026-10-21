@@ -119,7 +119,9 @@ const UserMenu = () => {
                 {initialsOf(who)}
               </span>
               <span className="grid flex-1 text-left leading-tight">
-                <span className="truncate font-medium">{who}</span>
+                <span className="truncate font-medium" title={who}>
+                  {who}
+                </span>
                 <span
                   className="truncate font-mono text-xs text-muted-foreground"
                   title="Acting organisation"
@@ -131,7 +133,9 @@ const UserMenu = () => {
             </SidebarMenuButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent side="right" align="end" className="min-w-56">
-            <DropdownMenuLabel className="truncate">{who}</DropdownMenuLabel>
+            <DropdownMenuLabel className="truncate" title={who}>
+              {who}
+            </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>Theme</DropdownMenuSubTrigger>

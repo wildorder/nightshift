@@ -105,7 +105,9 @@ const BarChart = ({
                 className="grid w-full gap-1 rounded-md p-1 text-left text-xs outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring aria-pressed:ring-2 aria-pressed:ring-foreground"
               >
                 <span className="flex items-baseline justify-between gap-2">
-                  <span className="min-w-0 truncate font-medium">{bar.label}</span>
+                  <span className="min-w-0 truncate font-medium" title={bar.label}>
+                    {bar.label}
+                  </span>
                   <span className="shrink-0 tabular-nums">{bar.valueText}</span>
                 </span>
                 <span className="block h-3 w-full rounded-sm bg-muted" aria-hidden="true">

@@ -22,6 +22,8 @@ import { useStudio } from "../studio.js";
 interface Crumb {
   readonly label: string;
   readonly to?: string;
+  /** The full text, when `label` is shortened. */
+  readonly title?: string;
 }
 
 const useCrumbs = (): readonly Crumb[] => {
@@ -52,7 +54,10 @@ const useCrumbs = (): readonly Crumb[] => {
   if (pathname.endsWith("/settings")) crumbs.push({ label: "Settings" });
   if (programId !== undefined) {
     const objective = program.data?.objective ?? shortId(programId);
-    crumbs.push({ label: objective.length > 48 ? `${objective.slice(0, 47)}…` : objective });
+    crumbs.push({
+      label: objective.length > 48 ? `${objective.slice(0, 47)}…` : objective,
+      title: objective,
+    });
   }
   if (runId !== undefined) {
     crumbs.push({
@@ -68,7 +73,7 @@ const useCrumbs = (): readonly Crumb[] => {
 export const AppHeader = () => {
   const crumbs = useCrumbs();
   return (
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
+    <header className="flex min-h-14 shrink-0 items-center gap-2 border-b px-4 py-2">
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-2 h-4" />
       <Breadcrumb>
@@ -80,10 +85,12 @@ export const AppHeader = () => {
                 {index > 0 ? <BreadcrumbSeparator /> : null}
                 <BreadcrumbItem>
                   {last || crumb.to === undefined ? (
-                    <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
+                    <BreadcrumbPage title={crumb.title}>{crumb.label}</BreadcrumbPage>
                   ) : (
                     <BreadcrumbLink asChild>
-                      <Link to={crumb.to}>{crumb.label}</Link>
+                      <Link to={crumb.to} title={crumb.title}>
+                        {crumb.label}
+                      </Link>
                     </BreadcrumbLink>
                   )}
                 </BreadcrumbItem>
