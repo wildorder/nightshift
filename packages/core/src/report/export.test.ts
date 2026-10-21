@@ -17,7 +17,7 @@ import { emptyMeasuredReport } from "../testing/report-defaults.js";
 import { attemptRowsOf } from "./attempts.js";
 import { METRIC_DEFINITIONS } from "./definitions.js";
 import { exportReport } from "./export.js";
-import type { RunReport } from "./report.js";
+import { type RunReport, renderReport } from "./report.js";
 
 const fixtures = createFixtures();
 const nodeId = fixtures.ids.next("node");
@@ -181,6 +181,75 @@ describe("exportReport", () => {
     }
     expect(ids.has("sample_size")).toBe(true);
     expect(ids.has("combined_estimate")).toBe(true);
+  });
+
+  it("renders a Definitions section whose entries are the metric ids the export lists", () => {
+    const rep = report();
+    const out = exportReport(rep);
+    const text = renderReport(rep);
+    const section = text.slice(text.indexOf("## Definitions"));
+    const rendered = [...section.matchAll(/\(`([a-z_]+)`\):/g)].map((m) => m[1]).sort();
+    expect(rendered).toEqual(out.definitions.map((d) => d.id).sort());
+    expect(new Set(Object.values(out.metricsBySection).flat())).toEqual(new Set(rendered));
+    expect(section).toContain(METRIC_DEFINITIONS.sample_size.label);
+    expect(section).toContain("Denominator:");
+  });
+
+  it("lists ledger artifact ids per attempt, none where there are none, and names the download route", () => {
+    const text = renderReport(report());
+    const section = text.slice(text.indexOf("## Request evidence"));
+    expect(section).toContain("artifact.createDownloadUrl");
+    expect(section).toContain("GET .../artifacts/{artifactId}/download-url");
+    const rows = section
+      .split("\n")
+      .filter((l) => l.startsWith("| ") && !l.startsWith("| Attempt"));
+    expect(rows.find((l) => l.includes("work #1"))).toContain("| 2 | art_1, art_2 |");
+    expect(rows.find((l) => l.includes("examine #1"))).toContain("| 0 | none |");
+  });
+
+  it("carries a tiered, cache-bearing attempt's valuation components, remainder flag and price basis", () => {
+    const tiered = {
+      ...(summaries[0] as MeasurementSummary),
+      valuation: {
+        source: "estimated",
+        usd: 0.9,
+        estimatedUsd: 0.9,
+        priceSource: "anthropic-list",
+        priceVersion: "2026-10",
+        components: [
+          { model: "m1", tier: 0, category: "input", tokens: 100, usd: 0.1, perMTok: 1000 },
+          { model: "m1", tier: 1, category: "input", tokens: 50, usd: 0.2, perMTok: 4000 },
+          { model: "m1", tier: 0, category: "cacheRead", tokens: 400, usd: 0.4, perMTok: 1000 },
+          { model: "m1", tier: 0, category: "output", tokens: 20, usd: 0.2, perMTok: 10000 },
+        ],
+        completeness: {
+          valuedRequests: 2,
+          unvaluedRequests: 0,
+          remainderTokens: 30,
+          remainderValued: true,
+          reasons: [],
+        },
+      },
+    } as unknown as MeasurementSummary;
+    const rep = {
+      ...report(),
+      attempts: attemptRowsOf({ routes: [work, exam], measurements: [tiered], agents, nodes }),
+    };
+    const out = exportReport(rep);
+    expect(ReportExportSchema.parse(out)).toEqual(out);
+    const valuation = out.attempts.find((a) => a.role === "implementer")?.valuation;
+    expect(valuation?.components).toEqual([
+      { model: "m1", tier: 0, category: "input", tokens: 100, usd: 0.1 },
+      { model: "m1", tier: 1, category: "input", tokens: 50, usd: 0.2 },
+      { model: "m1", tier: 0, category: "cacheRead", tokens: 400, usd: 0.4 },
+      { model: "m1", tier: 0, category: "output", tokens: 20, usd: 0.2 },
+    ]);
+    expect(valuation?.remainder).toEqual({ tokens: 30, valued: true });
+    expect(valuation?.priceBasis).toEqual([
+      { source: "anthropic-list", version: "2026-10", model: "m1", incomplete: false },
+    ]);
+    expect(out.attempts.find((a) => a.role === "examiner")?.valuation).toBeUndefined();
+    expect(out.reportExportVersion).toBe(1);
   });
 
   it("rejects an export that uses a metric it does not define", () => {

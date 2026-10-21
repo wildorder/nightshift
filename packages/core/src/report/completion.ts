@@ -35,12 +35,19 @@ export interface CompletionMemberReport {
   readonly status?: RunStatus;
   readonly verdict: "worked" | "did_not_work" | "not_rated";
   readonly carriedStrands: number;
+  /** The member's own input and output tokens; absent when it contributed no evidence. */
+  readonly tokens?: { readonly input?: number; readonly output?: number };
+  /** The member's own API-equivalent estimate; absent when no attempt carried one. */
+  readonly estimatedUsd?: number;
   /** The run is not in the records read: its figures are absent, not zero. */
   readonly unreadable?: true;
 }
 
 /** The model figures a completion shows; a checkpoint's measurement carries no more. */
-export type CompletionResources = Pick<ResourceTotals, "tokens" | "usd" | "coverage">;
+export type CompletionResources = Pick<
+  ResourceTotals,
+  "tokens" | "usd" | "coverage" | "reportedAttempts" | "estimatedAttempts"
+>;
 
 export interface CompletionRunRef {
   readonly programId: string;
@@ -95,6 +102,8 @@ export interface CompletionReport {
   readonly coverage: FeedbackCoverage;
   readonly current: CompletionFigures;
   readonly checkpoints: readonly CompletionCheckpointReport[];
+  /** The time the current figures were read. */
+  readonly asOf: string;
   /** Current members that were not in the first checkpoint's snapshot. */
   readonly laterFixes: readonly CompletionMemberReport[];
 }
@@ -151,7 +160,11 @@ const sumTotals = (items: readonly ResourceTotals[]): ResourceTotals => {
   let estimated = 0;
   let reported = 0;
   let unpriced = 0;
+  let reportedAttempts = 0;
+  let estimatedAttempts = 0;
   for (const item of items) {
+    reportedAttempts += item.reportedAttempts ?? 0;
+    estimatedAttempts += item.estimatedAttempts ?? 0;
     tokens.input = add(tokens.input, item.tokens.input);
     tokens.output = add(tokens.output, item.tokens.output);
     tokens.cacheRead = add(tokens.cacheRead, item.tokens.cacheRead);
@@ -193,6 +206,8 @@ const sumTotals = (items: readonly ResourceTotals[]): ResourceTotals => {
       : "partial",
     priceBases,
     estimateIncomplete,
+    reportedAttempts,
+    estimatedAttempts,
   };
 };
 
@@ -214,8 +229,14 @@ const verdictOf = (feedback: RunFeedback | undefined): CompletionMemberReport["v
   feedback?.verdict ?? "not_rated";
 
 const sumResources = (items: readonly ResourceTotals[]): CompletionResources => {
-  const { tokens, usd, coverage } = sumTotals(items);
-  return { tokens, usd, coverage };
+  const { tokens, usd, coverage, reportedAttempts, estimatedAttempts } = sumTotals(items);
+  return {
+    tokens,
+    usd,
+    coverage,
+    reportedAttempts: reportedAttempts ?? 0,
+    estimatedAttempts: estimatedAttempts ?? 0,
+  };
 };
 
 /**
@@ -335,7 +356,17 @@ export const measureCompletion = (
     ),
     ...(resources === undefined
       ? {}
-      : { tokens: resources.tokens, usd: resources.usd, coverage: resources.coverage }),
+      : {
+          tokens: resources.tokens,
+          usd: resources.usd,
+          ...(resources.reportedAttempts === undefined
+            ? {}
+            : { reportedAttempts: resources.reportedAttempts }),
+          ...(resources.estimatedAttempts === undefined
+            ? {}
+            : { estimatedAttempts: resources.estimatedAttempts }),
+          coverage: resources.coverage,
+        }),
     ...(machines === undefined || machines.length === 0
       ? {}
       : {
@@ -429,12 +460,35 @@ const checkpointFiguresOf = (c: CompletionCheckpoint): CompletionFigures => {
               Object.entries(m.tokens).filter(([, value]) => value !== undefined),
             ) as CompletionResources["tokens"],
             usd: m.usd,
+            ...(m.reportedAttempts === undefined ? {} : { reportedAttempts: m.reportedAttempts }),
+            ...(m.estimatedAttempts === undefined
+              ? {}
+              : { estimatedAttempts: m.estimatedAttempts }),
             coverage: m.coverage,
           },
         }),
     ...(m.infrastructure === undefined ? {} : { infrastructure: m.infrastructure }),
     ...(m.combined === undefined ? {} : { combined: m.combined }),
     membershipVersion: c.membershipVersion,
+  };
+};
+
+/** A member's own tokens and estimate, when it contributed evidence; absent is not zero. */
+const memberOwnFiguresOf = (
+  totals: ResourceTotals | undefined,
+): Pick<CompletionMemberReport, "tokens" | "estimatedUsd"> => {
+  if (totals === undefined || !hasEvidence(totals)) return {};
+  const { input, output } = totals.tokens;
+  return {
+    ...(input === undefined && output === undefined
+      ? {}
+      : {
+          tokens: {
+            ...(input === undefined ? {} : { input }),
+            ...(output === undefined ? {} : { output }),
+          },
+        }),
+    ...((totals.estimatedAttempts ?? 0) > 0 ? { estimatedUsd: totals.usd.estimated } : {}),
   };
 };
 
@@ -457,6 +511,7 @@ export const completionOf = (input: CompletionInput): CompletionReport => {
       ...(run === undefined ? {} : { status: run.status }),
       verdict: verdictOf(feedback),
       carriedStrands: run?.carriedStrands?.length ?? 0,
+      ...memberOwnFiguresOf(input.resources?.get(keyOf(m))),
       ...(run === undefined ? { unreadable: true as const } : {}),
     };
   });
@@ -499,6 +554,7 @@ export const completionOf = (input: CompletionInput): CompletionReport => {
     coverage: feedbackCoverageOf(readableRuns, readableFeedback),
     current: figuresOf(input, members, history.version, accepted),
     checkpoints,
+    asOf: input.asOf,
     laterFixes: first === undefined ? [] : memberReports.filter((m) => !firstKeys.has(keyOf(m))),
   };
 };

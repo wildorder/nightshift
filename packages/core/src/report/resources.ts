@@ -11,6 +11,7 @@ import type {
   MeasurementCounters,
   MeasurementCoverage,
   MeasurementSummary,
+  MeasurementValuation,
   RoutingDecision,
 } from "@nightshift/contracts";
 import { hasAnyCounters } from "../measurement/counters.js";
@@ -72,6 +73,10 @@ export interface ResourceTotals {
   readonly priceBases?: readonly PriceBasis[];
   /** Attempts whose estimate leaves some usage unvalued. */
   readonly estimateIncomplete?: number;
+  /** Attempts that carried a provider-reported dollar figure (an observed $0 counts). */
+  readonly reportedAttempts?: number;
+  /** Attempts that carried an API-equivalent estimate (an observed $0 counts). */
+  readonly estimatedAttempts?: number;
 }
 
 const present = <K extends string>(key: K, value: number | undefined) =>
@@ -95,6 +100,18 @@ export const tokensOf = (counters: MeasurementCounters): ResourceTokens => {
   };
 };
 
+const valuationIncomplete = (valuation: MeasurementValuation): boolean =>
+  valuation.completeness !== undefined &&
+  (valuation.completeness.unvaluedRequests > 0 || !valuation.completeness.remainderValued);
+
+const priceBasesOf = (valuation: MeasurementValuation, incomplete: boolean): PriceBasis[] =>
+  [...new Set((valuation.components ?? []).map((component) => component.model))].map((model) => ({
+    ...(valuation.priceSource === undefined ? {} : { source: valuation.priceSource }),
+    ...(valuation.priceVersion === undefined ? {} : { version: valuation.priceVersion }),
+    model,
+    incomplete,
+  }));
+
 /** The resources one routing decision's attempt used, preferring its measurement summary. */
 export const resourcesOf = (
   route: RoutingDecision,
@@ -114,10 +131,7 @@ export const resourcesOf = (
     valuation !== undefined &&
     (valuation.estimatedUsd !== undefined || valuation.reportedUsd !== undefined)
   ) {
-    const incomplete =
-      valuation.completeness !== undefined &&
-      (valuation.completeness.unvaluedRequests > 0 || !valuation.completeness.remainderValued);
-    const models = [...new Set((valuation.components ?? []).map((component) => component.model))];
+    const incomplete = valuationIncomplete(valuation);
     return {
       tokens: tokensOf(counters),
       usd: {
@@ -126,12 +140,7 @@ export const resourcesOf = (
         source: valuation.source === "unknown" ? "none" : valuation.source,
       },
       coverage,
-      priceBases: models.map((model) => ({
-        ...(valuation.priceSource === undefined ? {} : { source: valuation.priceSource }),
-        ...(valuation.priceVersion === undefined ? {} : { version: valuation.priceVersion }),
-        model,
-        incomplete,
-      })),
+      priceBases: priceBasesOf(valuation, incomplete),
       estimateIncomplete: valuation.estimatedUsd !== undefined && incomplete,
     };
   }
@@ -156,6 +165,7 @@ export const resourcesOfSummary = (summary: MeasurementSummary): AttemptResource
     source: summary.valuation.source,
   },
   coverage: summary.coverage,
+  priceBases: priceBasesOf(summary.valuation, valuationIncomplete(summary.valuation)),
 });
 
 const add = (total: number | undefined, value: number | undefined): number | undefined =>
@@ -180,8 +190,12 @@ export const sumResources = (items: readonly AttemptResources[]): ResourceTotals
   let reported = 0;
   let unpriced = 0;
   let estimateIncomplete = 0;
+  let reportedAttempts = 0;
+  let estimatedAttempts = 0;
   const priceBases: PriceBasis[] = [];
   for (const item of items) {
+    if (item.usd.reported !== undefined) reportedAttempts += 1;
+    if (item.usd.estimated !== undefined) estimatedAttempts += 1;
     if (item.estimateIncomplete === true) estimateIncomplete += 1;
     for (const basis of item.priceBases ?? []) {
       const same = priceBases.findIndex(
@@ -222,5 +236,7 @@ export const sumResources = (items: readonly AttemptResources[]): ResourceTotals
     tokenCoverage: items.every((item) => item.coverage === "complete") ? "complete" : "partial",
     priceBases,
     estimateIncomplete,
+    reportedAttempts,
+    estimatedAttempts,
   };
 };

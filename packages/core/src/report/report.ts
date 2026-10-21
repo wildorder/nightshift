@@ -83,6 +83,7 @@ import {
 } from "./decision-graph.js";
 import { type DeliveryReport, deliveryOf, type FirstAttemptFigures } from "./delivery.js";
 import { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
+import { definitionsOfSections, metricSectionsOf } from "./export.js";
 import {
   type FeedbackCoverage,
   feedbackCoverageOf,
@@ -181,6 +182,10 @@ export interface UsageRow {
   readonly reportedAttempts?: number;
   /** Routes whose dollars are an API-equivalent estimate from a price list. */
   readonly estimatedAttempts?: number;
+  /** Dollars of the routes counted in `reportedAttempts`; never added to `estimatedUsd`. */
+  readonly reportedUsd?: number;
+  /** Dollars of the routes counted in `estimatedAttempts`; never added to `reportedUsd`. */
+  readonly estimatedUsd?: number;
   /** Routes whose estimate leaves some usage unvalued. */
   readonly estimateIncomplete?: number;
   /** The price lists the estimates came from, per model. */
@@ -448,6 +453,8 @@ const usageOf = (
       tokensObserved: 0,
       reportedAttempts: 0,
       estimatedAttempts: 0,
+      reportedUsd: 0,
+      estimatedUsd: 0,
       estimateIncomplete: 0,
       priceBases: [],
     };
@@ -485,6 +492,8 @@ const usageOf = (
       tokensObserved: (so.tokensObserved ?? 0) + (observed ? 1 : 0),
       reportedAttempts: (so.reportedAttempts ?? 0) + (usd.reported === undefined ? 0 : 1),
       estimatedAttempts: (so.estimatedAttempts ?? 0) + (useEstimate ? 1 : 0),
+      reportedUsd: (so.reportedUsd ?? 0) + (usd.reported ?? 0),
+      estimatedUsd: (so.estimatedUsd ?? 0) + (useEstimate ? (usd.estimated ?? 0) : 0),
       estimateIncomplete:
         (so.estimateIncomplete ?? 0) + (resources.estimateIncomplete === true ? 1 : 0),
       priceBases: bases,
@@ -1667,6 +1676,14 @@ const costCell = (row: UsageRow): string => {
 const tokenCell = (row: UsageRow, value: number): string =>
   row.tokensObserved === 0 ? "not observed" : String(value);
 
+/** One kind of a row's dollars, with how many attempts carried it; absent says so. */
+const subtotalCell = (count: number | undefined, dollars: number | undefined): string =>
+  count === undefined
+    ? NOT_OBSERVED
+    : count === 0
+      ? "none"
+      : `${count}: $${(dollars ?? 0).toFixed(2)}`;
+
 /** What kind of dollars a row holds, where they came from and how much of the row they cover. */
 const basisCell = (row: UsageRow): string => {
   const reported = row.reportedAttempts ?? 0;
@@ -2073,8 +2090,16 @@ const renderCompletionResources = (f: CompletionReport["current"]): string[] => 
   const attempts = c === undefined ? 0 : c.complete + c.partial + c.unknown + c.legacy + c.missing;
   const figure = (value: number | undefined): string =>
     attempts === 0 || value === undefined ? NOT_OBSERVED : String(value);
-  const dollars = (value: number | undefined): string =>
-    attempts === 0 ? NOT_OBSERVED : usd(value);
+  /** `none` when no attempt carried the figure; a genuinely observed $0 stays $0.00. */
+  const dollars = (value: number | undefined, carried: number | undefined): string => {
+    if (carried === undefined) {
+      // A checkpoint recorded before the counts were kept cannot tell none from zero.
+      return value === undefined || value === 0
+        ? "not recorded"
+        : `${usd(value)} (attempt count not recorded)`;
+    }
+    return carried === 0 ? "none" : `${usd(value)} for ${carried} of ${attempts} attempts`;
+  };
   const machines = f.infrastructure;
   const total = f.measuredMembers + f.unmeasuredMembers;
   return [
@@ -2090,7 +2115,7 @@ const renderCompletionResources = (f: CompletionReport["current"]): string[] => 
     `tokens in ${figure(r?.tokens.input)}, out ${figure(r?.tokens.output)}`,
     r === undefined || attempts === 0
       ? "dollars not observed"
-      : `estimated ${dollars(r.usd.estimated)}, reported ${dollars(r.usd.reported)} (separate figures)`,
+      : `estimated: ${dollars(r.usd.estimated, r.estimatedAttempts)}, reported: ${dollars(r.usd.reported, r.reportedAttempts)} (separate figures)`,
     ...renderCombined(f),
     machines === undefined || machines.members === 0
       ? "machine dollars not observed"
@@ -2131,6 +2156,39 @@ const renderCompletionHistories = (report: RunReport): string[] => {
   ];
 };
 
+/** A member's own tokens and estimate; absent evidence is said so, never printed as zero. */
+const memberFiguresText = (m: CompletionReport["members"][number]): string => {
+  const tokens =
+    m.tokens === undefined
+      ? "tokens not observed"
+      : `tokens in ${m.tokens.input ?? NOT_OBSERVED}, out ${m.tokens.output ?? NOT_OBSERVED}`;
+  const estimate =
+    m.estimatedUsd === undefined ? "estimate not observed" : `estimate ${usd(m.estimatedUsd)}`;
+  return `${tokens}; ${estimate}`;
+};
+
+/** The price list behind each model estimate: model, source, version, and whether it left usage unvalued. */
+const renderPriceBases = (
+  bases:
+    | readonly {
+        source?: string | undefined;
+        version?: string | undefined;
+        model: string;
+        incomplete: boolean;
+      }[]
+    | undefined,
+): string[] =>
+  bases === undefined || bases.length === 0
+    ? ["Price basis: none recorded.", ""]
+    : [
+        "Price basis of the model estimate:",
+        ...bases.map(
+          (b) =>
+            `- ${b.model}: source ${b.source ?? NOT_OBSERVED}, version ${b.version ?? NOT_OBSERVED}, incomplete ${b.incomplete ? "yes" : "no"}`,
+        ),
+        "",
+      ];
+
 /** "Completion" (D-05): lead time, run completion and active union are three figures, none of them work time. */
 const renderCompletions = (completions: readonly CompletionReport[]): string[] => {
   if (completions.length === 0) return [];
@@ -2142,11 +2200,14 @@ const renderCompletions = (completions: readonly CompletionReport[]): string[] =
     ...completions.flatMap((c) => [
       `### ${c.title} (membership v${c.version})`,
       "",
+      `As of ${c.asOf}; membership version ${c.version}.`,
+      "",
       ...c.members.map(
         (m) =>
-          `- ${m.programId}/${m.runId}: ${m.role}, ${m.unreadable === true ? "unreadable" : `${m.status}, ${m.verdict}`}`,
+          `- ${m.programId}/${m.runId}: ${m.role}, ${m.unreadable === true ? "unreadable" : `${m.status}, ${m.verdict}`}; carried strands ${m.carriedStrands}; ${memberFiguresText(m)}`,
       ),
       "",
+      ...renderPriceBases(c.current.combined?.priceBases),
       `Coverage: ${c.coverage.rated} of ${c.coverage.eligible} rated; ${c.coverage.positive} worked, ${c.coverage.negative} did not; positive share among rated ${percent(c.coverage.positiveShare)}.`,
       `Now: ${renderCompletionFigures(c.current).join("; ")}.`,
       ...c.checkpoints.map(
@@ -2160,6 +2221,38 @@ const renderCompletions = (completions: readonly CompletionReport[]): string[] =
     ]),
   ];
 };
+
+/** Every metric the report used: what it measures and over what denominator, as the export embeds them. */
+const renderDefinitions = (report: RunReport): string[] => [
+  "## Definitions",
+  "",
+  ...definitionsOfSections(metricSectionsOf(report)).map(
+    (d) => `- **${d.label}** (\`${d.id}\`): ${d.definition} Denominator: ${d.denominator}`,
+  ),
+  "",
+];
+
+/** Request-ledger artifacts per attempt, and the route that serves them. */
+const renderRequestEvidence = (attempts: readonly AttemptRow[] | undefined): string[] => [
+  "## Request evidence",
+  "",
+  "Per-request ledgers are stored as artifacts. Fetch one through the authorized download route:",
+  "operation `artifact.createDownloadUrl`, `GET .../artifacts/{artifactId}/download-url`.",
+  "",
+  ...(attempts === undefined || attempts.length === 0
+    ? ["No attempts recorded.", ""]
+    : [
+        "| Attempt | Artifacts | Ids |",
+        "|---|---|---|",
+        ...attempts.map(
+          (a) =>
+            `| ${a.nodeId} ${a.purpose} #${a.attempt} | ${a.ledgerArtifactIds.length} | ${
+              a.ledgerArtifactIds.length === 0 ? "none" : a.ledgerArtifactIds.join(", ")
+            } |`,
+        ),
+        "",
+      ]),
+];
 
 /** The report as markdown. Pure: the same records always give the same document. */
 export const renderReport = (report: RunReport): string => {
@@ -2211,12 +2304,15 @@ export const renderReport = (report: RunReport): string => {
     "Token counts are what each harness reported and are not comparable across harnesses.",
     "A cost marked * is estimated from the price table, not reported by the harness. A cost",
     "that is unknown had neither: give the org's price table a price for that model to estimate it.",
+    "Each attempt counts one figure in the cost column (reported when it has one, else estimated). The",
+    "Reported and Estimated columns split that by kind; provider-reported dollars are never summed with",
+    "an API-equivalent estimate.",
     "",
-    "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost (USD) | Basis |",
-    "|---|---|---|---|---|---|---|---|",
+    "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost per attempt (USD) | Reported (n: USD) | Estimated (n: USD) | Basis |",
+    "|---|---|---|---|---|---|---|---|---|---|",
     ...report.usage.map(
       (row) =>
-        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${tokenCell(row, row.inputTokens)} | ${tokenCell(row, row.outputTokens)} | ${costCell(row)} | ${basisCell(row)} |`,
+        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${tokenCell(row, row.inputTokens)} | ${tokenCell(row, row.outputTokens)} | ${costCell(row)} | ${subtotalCell(row.reportedAttempts, row.reportedUsd)} | ${subtotalCell(row.estimatedAttempts, row.estimatedUsd)} | ${basisCell(row)} |`,
     ),
     ...renderBudget(report),
     "",
@@ -2226,6 +2322,8 @@ export const renderReport = (report: RunReport): string => {
     ...renderCompletions(report.completions),
     ...renderReview(report.review),
     ...renderMachine(report.infrastructure),
+    ...renderRequestEvidence(report.attempts),
+    ...renderDefinitions(report),
   ];
   return `${lines.join("\n").trimEnd()}\n`;
 };

@@ -237,10 +237,14 @@ describe("the Completion section's model and machine figures", () => {
 
     const text = renderReport(gathered);
     expect(text).toContain("tokens in 300, out 30");
-    expect(text).toContain("estimated $0.50, reported $2.00 (separate figures)");
+    expect(text).toContain(
+      "estimated: $0.50 for 1 of 2 attempts, reported: $2.00 for 1 of 2 attempts (separate figures)",
+    );
     expect(text).toContain("infrastructure $1.16 over 1 member run(s)");
     expect(text).toContain("tokens in 400, out 40");
-    expect(text).toContain("estimated $0.75, reported $1.00 (separate figures)");
+    expect(text).toContain(
+      "estimated: $0.75 for 2 of 2 attempts, reported: $1.00 for 1 of 2 attempts (separate figures)",
+    );
     expect(text).toContain("machine dollars not observed");
     expect(text).toContain("machines 1 of 2 members");
     expect(text).toContain("token coverage complete 1, partial 0, unknown 0, legacy 1, missing 0");
@@ -439,6 +443,67 @@ describe("the Completion section's model and machine figures", () => {
     w.a.route.usage = { inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0 };
     const { stores } = storesFor(w, [], () => [w.history("Z", w.a)]);
     const text = renderReport(await gatherReport(stores, w.f.scope));
-    expect(text).toContain("estimated $0.00, reported $0.00 (separate figures)");
+    expect(text).toContain(
+      "estimated: $0.00 for 1 of 1 attempts, reported: none (separate figures)",
+    );
+  });
+
+  it("prints reported: none and estimated: none when no attempt carried the figure, and a positive figure with its count", async () => {
+    const w = world();
+    w.a.route.usage = { inputTokens: 100, outputTokens: 10, actualCostUsd: 0 };
+    const { stores } = storesFor(w, [], () => [w.history("R", w.a)]);
+    const text = renderReport(await gatherReport(stores, w.f.scope));
+    expect(text).toContain(
+      "estimated: none, reported: $0.00 for 1 of 1 attempts (separate figures)",
+    );
+
+    w.a.route.usage = { inputTokens: 100, outputTokens: 10, estimatedCostUsd: 0.5 };
+    const positive = storesFor(w, [], () => [w.history("P", w.a)]);
+    const positiveText = renderReport(await gatherReport(positive.stores, w.f.scope));
+    expect(positiveText).toContain(
+      "estimated: $0.50 for 1 of 1 attempts, reported: none (separate figures)",
+    );
+    expect(positiveText).not.toContain("reported $0.00");
+  });
+
+  it("prints the as-of time, membership version, each member's carried strands and own figures, and the price bases", async () => {
+    const w = world();
+    const { stores } = storesFor(w, [], () => [w.history("S", w.a, w.b)]);
+    const gathered = await gatherReport(stores, w.f.scope);
+    const history = gathered.completions[0];
+    expect(history?.asOf).toBe(gathered.asOf);
+    const text = renderReport(gathered);
+    const section = text.slice(text.indexOf("### S ("));
+    expect(section).toContain(`As of ${gathered.asOf}; membership version ${history?.version}.`);
+    expect(section).toContain("carried strands 0; tokens in 100, out 10; estimate $0.50");
+    expect(section).toContain("tokens in 200, out 20; estimate not observed");
+    expect(section).toContain("Price basis: none recorded.");
+
+    const first = gathered.completions[0];
+    if (first === undefined) throw new Error("no completion");
+    const withBasis = renderReport({
+      ...gathered,
+      completions: [
+        {
+          ...first,
+          current: {
+            ...first.current,
+            combined: {
+              usd: 0.5,
+              model: 0.5,
+              coverage: {
+                measuredMembers: 1,
+                unmeasuredMembers: 0,
+                estimateIncomplete: 0,
+                membersWithoutMachine: 0,
+              },
+              lowerBound: false,
+              priceBases: [{ model: "m", source: "list", version: "v1", incomplete: true }],
+            },
+          },
+        },
+      ],
+    });
+    expect(withBasis).toContain("- m: source list, version v1, incomplete yes");
   });
 });

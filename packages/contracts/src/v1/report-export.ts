@@ -56,6 +56,31 @@ export const ReportExportAttemptSchema = z.strictObject({
   outcome: z.string().nullable(),
   /** Request-evidence artifacts, fetched through the existing artifact download route. */
   ledgerArtifactIds: z.array(z.string()),
+  /** How the estimate was valued; absent when the attempt has no priced components. */
+  valuation: z
+    .strictObject({
+      components: z.array(
+        z.strictObject({
+          model: z.string(),
+          /** 0 is the base tier. */
+          tier: nonNegativeInt,
+          category: z.enum(["input", "output", "cacheRead", "cacheWrite"]),
+          tokens: nonNegative,
+          usd: nonNegative,
+        }),
+      ),
+      /** Tokens no observed request covers, valued at the base tier when `valued`. */
+      remainder: z.strictObject({ tokens: nonNegative, valued: z.boolean() }),
+      priceBasis: z.array(
+        z.strictObject({
+          source: z.string().optional(),
+          version: z.string().optional(),
+          model: z.string(),
+          incomplete: z.boolean(),
+        }),
+      ),
+    })
+    .optional(),
   root: z.boolean(),
 });
 

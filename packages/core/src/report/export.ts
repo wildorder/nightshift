@@ -14,7 +14,7 @@ import type { RunReport, UsageRow } from "./report.js";
 
 export type ReportExportFilters = AttemptFilter;
 
-const METRICS_BY_SECTION: Readonly<Record<string, readonly MetricId[]>> = {
+export const METRICS_BY_SECTION: Readonly<Record<string, readonly MetricId[]>> = {
   attempts: [
     "agent_time",
     "settlement_time",
@@ -54,6 +54,22 @@ const METRICS_BY_SECTION: Readonly<Record<string, readonly MetricId[]>> = {
   ],
 };
 
+/** The sections the report's figures fall in, each with its metric ids; the budget section only when a budget was evaluated. */
+export const metricSectionsOf = (
+  report: Pick<RunReport, "budget">,
+): Record<string, readonly MetricId[]> =>
+  Object.fromEntries(
+    Object.entries(METRICS_BY_SECTION).filter(
+      ([name]) => name !== "budget" || report.budget !== undefined,
+    ),
+  );
+
+/** The definitions of every metric id the sections use, sorted by id. */
+export const definitionsOfSections = (
+  sections: Readonly<Record<string, readonly MetricId[]>>,
+): (typeof METRIC_DEFINITIONS)[MetricId][] =>
+  [...new Set<MetricId>(Object.values(sections).flat())].sort().map((id) => METRIC_DEFINITIONS[id]);
+
 const usageLabel = (row: UsageRow): ReportExport["usage"][number]["label"] => {
   const reported = (row.reportedAttempts ?? 0) > 0;
   const estimated = (row.estimatedAttempts ?? 0) > 0;
@@ -91,12 +107,7 @@ export const exportReport = (
   const { rows, sampleSize } = filterAttempts(report.attempts ?? [], filters);
   const budget = report.budget;
   const { maxUsd, maxTokens } = program.costPolicy;
-  const sections = Object.fromEntries(
-    Object.entries(METRICS_BY_SECTION).filter(
-      ([name]) => name !== "budget" || budget !== undefined,
-    ),
-  );
-  const used = new Set<MetricId>(Object.values(sections).flat());
+  const sections = metricSectionsOf(report);
   const draft = {
     reportExportVersion,
     asOf: report.asOf,
@@ -107,9 +118,10 @@ export const exportReport = (
     },
     filters: Object.fromEntries(Object.entries(filters).filter(([, value]) => value !== undefined)),
     sampleSize,
-    definitions: [...used]
-      .sort()
-      .map((id) => ({ ...METRIC_DEFINITIONS[id], evidence: [...METRIC_DEFINITIONS[id].evidence] })),
+    definitions: definitionsOfSections(sections).map((definition) => ({
+      ...definition,
+      evidence: [...definition.evidence],
+    })),
     metricsBySection: sections,
     attempts: rows,
     usage: report.usage.map(usageOfExport),

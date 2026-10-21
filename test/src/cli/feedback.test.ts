@@ -403,9 +403,9 @@ describe("nightshift completion (D-05)", () => {
     const shown = [...op.out];
     expect(shown[0]).toBe(`completion history ${id} "Orders" (version 4)`);
     expect(shown.slice(1, 4)).toEqual([
-      `member ${at(run1)} anchor failed did_not_work`,
-      `member ${at(run3)} correction succeeded worked`,
-      `member ${at(run2)} contributing succeeded not_rated`,
+      `member ${at(run1)} anchor failed did_not_work, carried strands 0, tokens not observed, estimate not observed`,
+      `member ${at(run3)} correction succeeded worked, carried strands 0, tokens not observed, estimate not observed`,
+      `member ${at(run2)} contributing succeeded not_rated, carried strands 0, tokens not observed, estimate not observed`,
     ]);
     expect(shown[4]).toBe("rated 2 of 3 finished runs, positive share 50%");
     const checkpointLine = shown[6] as string;

@@ -146,6 +146,74 @@ describe("nightshift completion", () => {
     expect(now).toContain("dollars not observed");
   });
 
+  it("show prints none, a present zero and a positive figure for reported and estimated dollars", async () => {
+    const world = await seeded();
+    const history = world.histories[0] as CompletionHistory;
+    const withMeasured = (name: string, measured: Partial<typeof FAKE_MEASURED>) => ({
+      name,
+      programId: world.f.scope.programId,
+      runId: world.f.scope.runId,
+      feedbackVersion: 1,
+      verdictRecordedAt: FAKE_MEASURED.recordedAt,
+      members: history.members,
+      membershipVersion: history.version,
+      recordedAt: FAKE_MEASURED.recordedAt,
+      recordedBy: { kind: "user", userId: TEST_SUBJECT, orgId: DEFAULT_ORG },
+      measured: { ...FAKE_MEASURED, ...measured },
+    });
+    world.histories[0] = {
+      ...history,
+      checkpoints: [
+        withMeasured("none", {
+          usd: { estimated: 0, reported: 0 },
+          reportedAttempts: 0,
+          estimatedAttempts: 2,
+        }),
+        withMeasured("zero", {
+          usd: { estimated: 0, reported: 0 },
+          reportedAttempts: 1,
+          estimatedAttempts: 1,
+        }),
+        withMeasured("positive", {
+          usd: { estimated: 1.5, reported: 2.25 },
+          reportedAttempts: 1,
+          estimatedAttempts: 2,
+        }),
+        withMeasured("legacy", { usd: { estimated: 0, reported: 0 } }),
+      ].map((c) => {
+        if (c.name === "legacy") {
+          const { reportedAttempts: _r, estimatedAttempts: _e, ...rest } = c.measured;
+          return { ...c, measured: rest };
+        }
+        return c;
+      }) as CompletionHistory["checkpoints"],
+    };
+    expect(await completion(world, "show", "--history", world.historyId)).toBe(0);
+    const lineOf = (name: string) =>
+      world.created.out.find((l) => l.startsWith(`checkpoint \`${name}\``)) as string;
+    expect(lineOf("none")).toContain("estimated: $0.0000 for 2 of 2 attempts, reported: none");
+    expect(lineOf("zero")).toContain(
+      "estimated: $0.0000 for 1 of 2 attempts, reported: $0.0000 for 1 of 2 attempts",
+    );
+    expect(lineOf("positive")).toContain(
+      "estimated: $1.5000 for 2 of 2 attempts, reported: $2.2500 for 1 of 2 attempts",
+    );
+    expect(lineOf("legacy")).toContain("estimated: not recorded, reported: not recorded");
+    expect(lineOf("legacy")).not.toContain("reported $0");
+  });
+
+  it("show prints the as-of time, membership version, carried strands and each member's own figures", async () => {
+    const world = await seeded();
+    expect(await completion(world, "show", "--history", world.historyId)).toBe(0);
+    const out = world.created.out;
+    const now = out.find((l) => l.startsWith("now:")) as string;
+    expect(now).toMatch(/, as of \S+, membership version \d+$/);
+    const member = out.find((l) => l.startsWith(`member ${world.anchor} `)) as string;
+    expect(member).toContain("carried strands 0");
+    expect(member).toMatch(/tokens (not observed|input)/);
+    expect(member).toMatch(/estimate (not observed|\$)/);
+  });
+
   it("show prints machines N of M members when some members have no machine report", async () => {
     const world = await seeded();
     const history = world.histories[0] as CompletionHistory;
@@ -293,7 +361,10 @@ describe("nightshift completion", () => {
     expect(line).toContain("active union 2h 0m");
     expect(line).toContain("run completion 3h 0m");
     expect(line).toContain("measured to 2026-09-15T12:00:00.000Z");
-    expect(line).toContain("estimated $1.5000, reported $2.2500");
+    expect(line).toContain(
+      "estimated: $1.5000 for 2 of 2 attempts, reported: $2.2500 for 2 of 2 attempts",
+    );
+    expect(line).toContain("price basis model-a (source table, version v7, incomplete no)");
     expect(line).toContain("infrastructure $0.5000 over 2 members");
     expect(line).not.toContain("machines ");
     expect(line).toContain("2 readable members");

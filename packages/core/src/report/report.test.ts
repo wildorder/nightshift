@@ -1035,6 +1035,30 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
     expect(text).toContain("| 1.50* + 1 unknown |");
   });
 
+  it("prints reported and estimated sub-totals apart on a row with one of each", () => {
+    const text = renderReport(
+      report({
+        usage: [
+          {
+            ...usageRow,
+            attempts: 2,
+            costUsd: 3,
+            unpriced: 0,
+            reportedAttempts: 1,
+            estimatedAttempts: 1,
+            reportedUsd: 2,
+            estimatedUsd: 1,
+            estimateIncomplete: 0,
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("Cost per attempt (USD)");
+    const row = text.split("\n").find((line) => line.startsWith("| claude | m1 | work |")) ?? "";
+    expect(row).toContain("| 3.00* | 1: $2.00 | 1: $1.00 |");
+    expect(text).toContain("never summed with");
+  });
+
   it("labels reported and unknown rows, and shows not observed, never 0, for missing tokens and dollars", () => {
     const text = renderReport(
       report({
@@ -1068,7 +1092,7 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
     expect(text).toContain("provider-reported; 3 of 3 attempts valued");
     const unknown = text.split("\n").find((line) => line.includes("| answer |")) ?? "";
     expect(unknown).toContain(
-      "| not observed | not observed | unknown | unknown; 0 of 2 attempts valued |",
+      "| not observed | not observed | unknown | none | none | unknown; 0 of 2 attempts valued |",
     );
     expect(unknown).not.toMatch(/\| 0 \|/);
   });
@@ -1183,6 +1207,7 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
       report({
         completions: [
           {
+            asOf: "2026-01-01T00:00:00.000Z",
             completionHistoryId: "comp_1",
             title: "Ship billing",
             version: 2,
@@ -1234,6 +1259,7 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
       report({
         completions: [
           {
+            asOf: "2026-01-01T00:00:00.000Z",
             completionHistoryId: "comp_1",
             title: "T",
             version: 1,

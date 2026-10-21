@@ -14,12 +14,31 @@ import type {
 } from "@nightshift/contracts";
 import {
   type AttemptResources,
+  type PriceBasis,
   type ResourceCoverage,
   type ResourceTotals,
   resourcesOf,
   resourcesOfSummary,
   sumResources,
 } from "./resources.js";
+
+/** How an attempt's estimate was valued: its components, the unrequested remainder and the price list. */
+export interface AttemptValuation {
+  readonly components: readonly {
+    readonly model: string;
+    /** 0 is the base tier. */
+    readonly tier: number;
+    readonly category: "input" | "output" | "cacheRead" | "cacheWrite";
+    readonly tokens: number;
+    readonly usd: number;
+  }[];
+  /**
+   * Tokens no individually observed request covers; they are valued at the base
+   * tier. `valued` says whether the estimate includes them.
+   */
+  readonly remainder: { readonly tokens: number; readonly valued: boolean };
+  readonly priceBasis: readonly PriceBasis[];
+}
 
 export interface AttemptRow {
   readonly nodeId: string;
@@ -44,6 +63,8 @@ export interface AttemptRow {
   readonly coverage: "complete" | "partial" | "unknown" | "legacy" | "missing";
   readonly outcome: string | null;
   readonly ledgerArtifactIds: string[];
+  /** Absent when the attempt has no priced components (no summary, or only a reported figure). */
+  readonly valuation?: AttemptValuation;
   readonly root: boolean;
 }
 
@@ -64,6 +85,31 @@ const spanMs = (startedAt: string | undefined, endedAt: string | undefined): num
   if (startedAt === undefined || endedAt === undefined) return undefined;
   const ms = Date.parse(endedAt) - Date.parse(startedAt);
   return Number.isFinite(ms) && ms >= 0 ? ms : undefined;
+};
+
+const valuationOf = (
+  summary: MeasurementSummary | undefined,
+  resources: AttemptResources,
+): AttemptValuation | undefined => {
+  const valuation = summary?.valuation;
+  if (valuation === undefined) return undefined;
+  const components = (valuation.components ?? []).map((c) => ({
+    model: c.model,
+    tier: c.tier,
+    category: c.category,
+    tokens: c.tokens,
+    usd: c.usd,
+  }));
+  const completeness = valuation.completeness;
+  if (components.length === 0 && completeness === undefined) return undefined;
+  return {
+    components,
+    remainder: {
+      tokens: completeness?.remainderTokens ?? 0,
+      valued: completeness?.remainderValued ?? true,
+    },
+    priceBasis: (resources.priceBases ?? []).map((basis) => ({ ...basis })),
+  };
 };
 
 const optional = <K extends string, V>(key: K, value: V | undefined) =>
@@ -104,6 +150,7 @@ export const attemptRowsOf = (input: AttemptInputs): AttemptRow[] => {
       resources: sumResources([resources]),
       coverage: resources.coverage satisfies ResourceCoverage,
       ledgerArtifactIds: summary === undefined ? [] : [...summary.ledger.artifactIds],
+      ...optional("valuation", valuationOf(summary, resources)),
     };
   };
 

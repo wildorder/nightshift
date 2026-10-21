@@ -133,10 +133,39 @@ const tokensText = (
     ? "tokens not observed"
     : `tokens input ${count(tokens.input)}, output ${count(tokens.output)}, cache read ${count(tokens.cacheRead)}, cache write ${count(tokens.cacheWrite)}, reasoning ${count(tokens.reasoning)}`;
 
-const usdText = (usd: CompletionResources["usd"] | undefined): string =>
+/** `none` when no attempt carried the figure; an observed $0 stays $0.0000. */
+const carriedText = (value: number, carried: number | undefined, attempts: number): string => {
+  // A checkpoint recorded before the counts were kept cannot tell none from zero.
+  if (carried === undefined) {
+    return value === 0 ? "not recorded" : `${dollars(value)} (attempt count not recorded)`;
+  }
+  return carried === 0 ? "none" : `${dollars(value)} for ${carried} of ${attempts} attempts`;
+};
+
+const usdText = (
+  usd: CompletionResources["usd"] | undefined,
+  carried: { readonly reported?: number | undefined; readonly estimated?: number | undefined },
+  attempts: number,
+): string =>
   usd === undefined
     ? "dollars not observed"
-    : `estimated ${dollars(usd.estimated)}, reported ${dollars(usd.reported)}`;
+    : `estimated: ${carriedText(usd.estimated, carried.estimated, attempts)}, reported: ${carriedText(usd.reported, carried.reported, attempts)}`;
+
+const attemptsOf = (coverage: CompletionResources["coverage"] | undefined): number =>
+  coverage === undefined
+    ? 0
+    : coverage.complete + coverage.partial + coverage.unknown + coverage.legacy + coverage.missing;
+
+/** The price list behind each model estimate. */
+const priceBasesText = (combined: CompletionFigures["combined"]): string =>
+  combined === undefined || combined.priceBases.length === 0
+    ? "price basis none recorded"
+    : `price basis ${combined.priceBases
+        .map(
+          (b) =>
+            `${b.model} (source ${b.source ?? "not observed"}, version ${b.version ?? "not observed"}, incomplete ${b.incomplete ? "yes" : "no"})`,
+        )
+        .join("; ")}`;
 
 /** The combined estimate; a lower bound wherever anything is missing, and never a bill. */
 const combinedText = (combined: CompletionFigures["combined"]): string => {
@@ -164,10 +193,15 @@ const combinedText = (combined: CompletionFigures["combined"]): string => {
 const measuredText = (measured: number, unmeasured: number): string =>
   unmeasured > 0 ? `measured ${measured} of ${measured + unmeasured} members` : "";
 
-const figures = (environment: CliEnvironment, label: string, current: CompletionFigures): void => {
+const figures = (
+  environment: CliEnvironment,
+  label: string,
+  current: CompletionFigures,
+  basis = "",
+): void => {
   const counts = measuredText(current.measuredMembers, current.unmeasuredMembers);
   environment.out(
-    `${label}: lead time ${seconds(current.leadTimeSeconds)}, run completion ${seconds(current.runCompletionSeconds)}, active union ${seconds(current.activeSeconds)}, ${tokensText(current.resources?.tokens)}, ${usdText(current.resources?.usd)}, ${combinedText(current.combined)}${counts === "" ? "" : `, ${counts}`}`,
+    `${label}: lead time ${seconds(current.leadTimeSeconds)}, run completion ${seconds(current.runCompletionSeconds)}, active union ${seconds(current.activeSeconds)}, ${tokensText(current.resources?.tokens)}, ${usdText(current.resources?.usd, { reported: current.resources?.reportedAttempts, estimated: current.resources?.estimatedAttempts }, attemptsOf(current.resources?.coverage))}, ${combinedText(current.combined)}, ${priceBasesText(current.combined)}${counts === "" ? "" : `, ${counts}`}${basis === "" ? "" : `, ${basis}`}`,
   );
   if (current.unavailable !== undefined && current.unavailable.length > 0) {
     environment.out(`  measurement unavailable for ${current.unavailable.join(", ")}`);
@@ -353,7 +387,7 @@ const checkpointLine = (checkpoint: CompletionCheckpoint): string => {
       : `, machines ${m.infrastructure.members} of ${m.readableMembers} members`;
   return (
     `checkpoint \`${checkpoint.name}\` (${checkpoint.recordedAt}): lead time ${seconds(m.leadTimeSeconds)}, run completion ${seconds(m.runCompletionSeconds)}, active union ${seconds(m.activeSeconds)}` +
-    `, measured to ${m.measuredTo}, ${tokensText(m.tokens)}, ${usdText(m.usd)}, ${machines}${machineCounts}, ${combinedText(m.combined)}, ${m.readableMembers} readable members${counts === "" ? "" : `, ${counts}`}`
+    `, measured to ${m.measuredTo}, ${tokensText(m.tokens)}, ${usdText(m.usd, { reported: m.reportedAttempts, estimated: m.estimatedAttempts }, attemptsOf(m.coverage))}, ${machines}${machineCounts}, ${combinedText(m.combined)}, ${priceBasesText(m.combined)}, ${m.readableMembers} readable members${counts === "" ? "" : `, ${counts}`}`
   );
 };
 
@@ -387,14 +421,23 @@ const show = async (
   );
   for (const member of report.members) {
     environment.out(
-      `member ${member.programId}/${member.runId} ${member.role} ${member.status ?? "unreadable"} ${member.verdict}`,
+      `member ${member.programId}/${member.runId} ${member.role} ${member.status ?? "unreadable"} ${member.verdict}, carried strands ${member.carriedStrands}, ${
+        member.tokens === undefined
+          ? "tokens not observed"
+          : `tokens input ${count(member.tokens.input)}, output ${count(member.tokens.output)}`
+      }, ${member.estimatedUsd === undefined ? "estimate not observed" : `estimate ${dollars(member.estimatedUsd)}`}`,
     );
   }
   const { coverage } = report;
   environment.out(
     `rated ${coverage.rated} of ${coverage.eligible} finished runs, positive share ${percent(coverage.positiveShare)}`,
   );
-  figures(environment, "now", report.current);
+  figures(
+    environment,
+    "now",
+    report.current,
+    `as of ${report.asOf}, membership version ${report.version}`,
+  );
   for (const checkpoint of history.checkpoints) {
     environment.out(checkpointLine(checkpoint));
     for (const member of checkpoint.members) {

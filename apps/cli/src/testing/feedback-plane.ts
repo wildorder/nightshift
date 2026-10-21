@@ -81,6 +81,9 @@ export const FAKE_MEASURED: CompletionMeasurement = {
   activeSeconds: 7_200,
   tokens: { input: 1000, output: 500, inputConventionUnknown: 0 },
   usd: { estimated: 1.5, reported: 2.25 },
+  reportedAttempts: 2,
+  estimatedAttempts: 2,
+  coverage: { complete: 2, partial: 0, unknown: 0, legacy: 0, missing: 0 },
   infrastructure: { usd: 0.5, members: 2, withoutMachine: 0 },
   combined: {
     usd: 2,
@@ -93,7 +96,7 @@ export const FAKE_MEASURED: CompletionMeasurement = {
       membersWithoutMachine: 0,
     },
     lowerBound: false,
-    priceBases: [],
+    priceBases: [{ model: "model-a", source: "table", version: "v7", incomplete: false }],
   },
   recordedAt: "2026-09-15T12:00:00.000Z" as IsoTimestamp,
 };

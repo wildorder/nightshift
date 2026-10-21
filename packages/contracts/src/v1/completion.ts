@@ -101,6 +101,10 @@ export const CompletionMeasurementSchema = z
       })
       .optional(),
     usd: z.strictObject({ estimated: nonNegative, reported: nonNegative }).optional(),
+    /** Attempts that carried a provider-reported figure. Absent on checkpoints recorded before it was kept. */
+    reportedAttempts: nonNegativeInt.optional(),
+    /** Attempts that carried an API-equivalent estimate. Absent on checkpoints recorded before it was kept. */
+    estimatedAttempts: nonNegativeInt.optional(),
     coverage: z
       .strictObject({
         complete: nonNegativeInt,
