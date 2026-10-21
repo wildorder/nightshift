@@ -472,6 +472,21 @@ describe("segments and seams", () => {
     expect(summary.totals).toMatchObject({ inputTokens: 14, outputTokens: 6 });
   });
 
+  it("carries the exit's inclusion onto its terminal_summary observation", async () => {
+    const usage = { inputTokens: 40, outputTokens: 8 };
+    const cases: Array<[HarnessExit, string]> = [
+      [{ kind: "completed", usage, inclusion: "includes_children" }, "includes_children"],
+      [{ kind: "completed", usage }, "self"],
+    ];
+    for (const [exit, expected] of cases) {
+      const world = await build();
+      const recorder = world.recorder();
+      await recorder.startSegment({ resumedSession: false });
+      const { summary } = await recorder.close(exit);
+      expect(summary.segments[0]?.sources.aggregateInclusion).toBe(expected);
+    }
+  });
+
   describe("reported dollars", () => {
     const exit = (
       inputTokens: number,

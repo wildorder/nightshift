@@ -370,6 +370,12 @@ export interface ExitMeasures {
   readonly observedModel?: string;
   /** The adapter's own statement of how complete its usage is for this launch. */
   readonly coverage?: "complete" | "partial" | "unknown";
+  /**
+   * What the exit's `usage` population covers. Absent means `self`, which is
+   * what every adapter so far reports. An adapter whose exit aggregate includes
+   * native children (Claude's whole-tree modelUsage) says `includes_children`.
+   */
+  readonly inclusion?: "self" | "includes_children" | "unknown";
 }
 
 /** Why a worker process stopped. Exactly one of these settles `HarnessHandle.exit`. */
@@ -426,6 +432,10 @@ export const usageOfExit = (exit: HarnessExit): RouteUsage | undefined => exit.u
 /** The adapter's coverage statement; `unknown` when it made none. */
 export const coverageOfExit = (exit: HarnessExit): "complete" | "partial" | "unknown" =>
   exit.coverage ?? "unknown";
+
+/** Whether the exit's usage includes native children; `self` when the adapter did not say. */
+export const inclusionOfExit = (exit: HarnessExit): "self" | "includes_children" | "unknown" =>
+  exit.inclusion ?? "self";
 
 /** What the exit's usage covers; `launch` when the adapter did not say. */
 export const usageScopeOfExit = (exit: HarnessExit): "launch" | "session" =>
