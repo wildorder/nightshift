@@ -122,7 +122,7 @@ export const EventTypeSchema = z.enum([
    * Added in P20 (D-02). A budget is configured but its evaluation leaves usage
    * out (unpriced, unmeasured or incompletely valued attempts), so the spend
    * shown is a floor, not a precise cap. Payload: `budget`, `limit`, `spent`,
-   * `unpriced`, `unmeasured` and `estimateIncomplete`.
+   * `unpriced`, `unmeasured`, `estimateIncomplete` and `tokensIncomplete`.
    */
   "run.budget_evaluation_incomplete",
   // Gate health — P15.

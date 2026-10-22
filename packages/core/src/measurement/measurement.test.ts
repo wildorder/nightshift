@@ -9,6 +9,7 @@ import {
 } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { createCountingIdGenerator } from "../ids.js";
+import { spendOfRun } from "../rules/policy.js";
 import {
   baselineFor,
   closeSegment,
@@ -397,7 +398,12 @@ describe("fold", () => {
     const baseline = baselineFor(s, "s1");
     expect(baseline).toEqual({ inputTokens: 100, reportedUsd: 1 });
     const second = { ...launch, launchId: "l2", segment: 1 };
-    s = startSegment(s, second, { sessionId: "s1", resumedSession: true, baseline, at: T(3) });
+    s = startSegment(s, second, {
+      sessionId: "s1",
+      resumedSession: true,
+      baseline,
+      at: T(3),
+    });
     s = foldExit(
       s,
       second,
@@ -408,7 +414,10 @@ describe("fold", () => {
       1,
       T(4),
     );
-    expect(s.segments[1]?.counters).toEqual({ inputTokens: 50, reportedUsd: 0.5 });
+    expect(s.segments[1]?.counters).toEqual({
+      inputTokens: 50,
+      reportedUsd: 0.5,
+    });
     expect(s.totals).toEqual({ inputTokens: 150, reportedUsd: 1.5 });
     expect(baselineFor(s, "s1")?.reportedUsd).toBe(1.5);
     expect(s.gaps).toEqual([]);
@@ -587,7 +596,11 @@ describe("legacySummaryOf", () => {
       source: "reported",
       reportedUsd: 0.25,
     });
-    expect(s.totals).toEqual({ inputTokens: 10, outputTokens: 5, reportedUsd: 0.25 });
+    expect(s.totals).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      reportedUsd: 0.25,
+    });
     expect(s.gaps[0]?.reason).toBe("adapter_unsupported");
     expect(s.segments).toHaveLength(1);
     expect(legacySummaryOf(agent, undefined, T(1)).routingDecisionId).toBeNull();
@@ -747,14 +760,29 @@ describe("per-request valuation", () => {
       ).components?.map((c) => c.tier);
     // 250k including 100k cache is above 200k; 190k including 100k cache is not.
     expect(
-      tierOf({ inputTokens: 250_000, cacheReadTokens: 100_000, inputIncludesCache: true }),
+      tierOf({
+        inputTokens: 250_000,
+        cacheReadTokens: 100_000,
+        outputTokens: 0,
+        inputIncludesCache: true,
+      }),
     ).toEqual([1, 1]);
     expect(
-      tierOf({ inputTokens: 190_000, cacheReadTokens: 100_000, inputIncludesCache: true }),
+      tierOf({
+        inputTokens: 190_000,
+        cacheReadTokens: 100_000,
+        outputTokens: 0,
+        inputIncludesCache: true,
+      }),
     ).toEqual([0, 0]);
     // Exclusive: 100k input + 150k cache is 250k.
     expect(
-      tierOf({ inputTokens: 100_000, cacheReadTokens: 150_000, inputIncludesCache: false }),
+      tierOf({
+        inputTokens: 100_000,
+        cacheReadTokens: 150_000,
+        outputTokens: 0,
+        inputIncludesCache: false,
+      }),
     ).toEqual([1, 1]);
   });
 
@@ -765,14 +793,20 @@ describe("per-request valuation", () => {
     expect(none.source).toBe("unknown");
     expect(none.usd).toBeUndefined();
     expect(none.estimatedUsd).toBeUndefined();
-    expect(none.completeness).toMatchObject({ valuedRequests: 0, unvaluedRequests: 1 });
+    expect(none.completeness).toMatchObject({
+      valuedRequests: 0,
+      unvaluedRequests: 1,
+    });
     expect(none.completeness?.reasons).toEqual(["no price for unpriced"]);
 
     s = foldObservationPriced(s, request(excl(100_000, 1000), { model: "m1" }), 2, T(2), prices);
     const partial = valuationOf(s, prices);
     expect(partial.source).toBe("estimated");
     expect(partial.estimatedUsd).toBeCloseTo(0.315, 9);
-    expect(partial.completeness).toMatchObject({ valuedRequests: 1, unvaluedRequests: 1 });
+    expect(partial.completeness).toMatchObject({
+      valuedRequests: 1,
+      unvaluedRequests: 1,
+    });
   });
 
   it("values a model-less request when exactly one model was observed, else leaves it unvalued", () => {
@@ -788,7 +822,10 @@ describe("per-request valuation", () => {
     let s = twoRequests();
     s = foldExit(s, launch, terminal(excl(400_000, 5000)), 3, T(3));
     const v = valuationOf(s, prices);
-    expect(v.completeness).toMatchObject({ remainderTokens: 2000, remainderValued: true });
+    expect(v.completeness).toMatchObject({
+      remainderTokens: 2000,
+      remainderValued: true,
+    });
     expect(v.components?.find((c) => c.tier === 0 && c.category === "output")).toMatchObject({
       tokens: 3000,
     });
@@ -800,7 +837,10 @@ describe("per-request valuation", () => {
     s = foldExit(s, launch, terminal(excl(10, 20)), 1, T(1));
     const v = valuationOf(s, {});
     expect(v.source).toBe("unknown");
-    expect(v.completeness).toMatchObject({ remainderTokens: 30, remainderValued: false });
+    expect(v.completeness).toMatchObject({
+      remainderTokens: 30,
+      remainderValued: false,
+    });
   });
 
   it("never adds reported dollars to the estimate", () => {
@@ -811,6 +851,105 @@ describe("per-request valuation", () => {
     expect(v.usd).toBe(9);
     expect(v.reportedUsd).toBe(9);
     expect(v.estimatedUsd).toBeCloseTo(2.16, 9);
+  });
+
+  it("never values a request missing a required counter, and never certifies the budget complete", () => {
+    const cheap: ModelPrice = {
+      inputPerMTok: 1,
+      outputPerMTok: 10,
+      source: "A",
+      version: "v1",
+    };
+    const cheapPrices = { m1: cheap };
+    const inputOnly: MeasurementCounters = {
+      inputTokens: 1000,
+      inputIncludesCache: true,
+    };
+    let s = foldObservationPriced(
+      begin(),
+      request(inputOnly, { model: "m1" }),
+      1,
+      T(1),
+      cheapPrices,
+    );
+    s = foldExit(s, launch, terminal(inputOnly), 2, T(2));
+    const v = valuationOf(s, cheapPrices);
+    expect(v.estimatedUsd).toBeUndefined();
+    expect(v.completeness).toMatchObject({
+      valuedRequests: 0,
+      unvaluedRequests: 1,
+      remainderValued: false,
+      missing: ["output"],
+    });
+    expect(v.completeness?.reasons).toContain("request without output counter");
+    expect(v.requests?.counters.inputTokens).toBe(1000);
+    const spend = spendOfRun({
+      routes: [],
+      measurements: [{ ...s, valuation: v }],
+    });
+    expect(spend.evaluation.complete).toBe(false);
+    expect(spend.evaluation.tokensIncomplete).toBe(1);
+  });
+
+  it("leaves an output-only or dollars-only request unvalued with its reason", () => {
+    const outputOnly = foldObservationPriced(
+      begin(),
+      request({ outputTokens: 50 }, { model: "m1" }),
+      1,
+      T(1),
+      prices,
+    );
+    const a = valuationOf(outputOnly, prices);
+    expect(a.estimatedUsd).toBeUndefined();
+    expect(a.completeness?.reasons).toContain("request without input counter");
+    expect(a.requests?.counters.outputTokens).toBe(50);
+
+    const dollarsOnly = foldObservationPriced(
+      begin(),
+      request({ reportedUsd: 0.5 }, { model: "m1" }),
+      1,
+      T(1),
+      prices,
+    );
+    const b = valuationOf(dollarsOnly, prices);
+    expect(b.completeness).toMatchObject({
+      valuedRequests: 0,
+      unvaluedRequests: 1,
+    });
+    expect(b.completeness?.reasons).toContain("request without token counters");
+    expect(b.estimatedUsd).toBeUndefined();
+  });
+
+  it("treats absent cache counters as none reported, without blocking valuation", () => {
+    const s = foldObservationPriced(
+      begin(),
+      request(excl(1000, 100), { model: "m1" }),
+      1,
+      T(1),
+      prices,
+    );
+    expect(valuationOf(s, prices).completeness).toMatchObject({
+      valuedRequests: 1,
+    });
+  });
+
+  it("keeps the price source and version of each model apart", () => {
+    const mixed = {
+      a: { inputPerMTok: 1, outputPerMTok: 2, source: "A", version: "v1" },
+      b: { inputPerMTok: 3, outputPerMTok: 4, source: "B", version: "v2" },
+    };
+    let s = begin();
+    s = foldObservationPriced(s, request(excl(10, 10), { model: "a" }), 1, T(1), mixed);
+    s = foldObservationPriced(s, request(excl(10, 10), { model: "b" }), 2, T(2), mixed);
+    const v = valuationOf(s, mixed);
+    expect(v.priceBases).toEqual([
+      { model: "a", source: "A", version: "v1" },
+      { model: "b", source: "B", version: "v2" },
+    ]);
+    // The legacy pair is set only when every basis agrees.
+    expect(v.priceSource).toBeUndefined();
+    expect(v.priceVersion).toBeUndefined();
+    expect(valuationOf(twoRequests(), prices).priceSource).toBe("anthropic-list");
   });
 
   it("is idempotent per sequence", () => {

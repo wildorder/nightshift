@@ -91,6 +91,7 @@ describe("programStatus (D-P13-09)", () => {
         unpriced: 1,
         unmeasured: 0,
         estimateIncomplete: 0,
+        tokensIncomplete: 0,
       },
     });
     expect(status.waiting).toEqual([
@@ -124,6 +125,7 @@ describe("programStatus (D-P13-09)", () => {
             unpriced: 1,
             unmeasured: 2,
             estimateIncomplete: 1,
+            tokensIncomplete: 0,
           },
         },
       }),
@@ -140,6 +142,7 @@ describe("programStatus (D-P13-09)", () => {
         unpriced: 1,
         unmeasured: 2,
         estimateIncomplete: 1,
+        tokensIncomplete: 0,
       },
     });
   });

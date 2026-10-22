@@ -1035,6 +1035,23 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
     expect(text).toContain("| 1.50* + 1 unknown |");
   });
 
+  it("names each model's own price list when a row mixes models", () => {
+    const text = renderReport(
+      report({
+        usage: [
+          {
+            ...usageRow,
+            priceBases: [
+              { source: "A", version: "v1", model: "a", incomplete: false },
+              { source: "B", version: "v2", model: "b", incomplete: false },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("price list A v1, B v2");
+  });
+
   it("shows the root launch as its own row, and an unmeasured root as unknown rather than zero", () => {
     const measured = {
       ...usageRow,
@@ -1151,6 +1168,7 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
           unpriced: 2,
           unmeasured: 1,
           estimateIncomplete: 0,
+          tokensIncomplete: 0,
         },
       },
     });
@@ -1176,6 +1194,7 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
           unpriced: 0,
           unmeasured: 0,
           estimateIncomplete: 0,
+          tokensIncomplete: 0,
         },
       },
     });

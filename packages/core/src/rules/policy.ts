@@ -249,6 +249,8 @@ export interface SpendEvaluation {
   readonly unmeasured: number;
   /** Summary valuations that leave some usage unvalued, so the estimate understates. */
   readonly estimateIncomplete: number;
+  /** Attempts whose tokens lack an input or output counter, whatever dollar figure they carry. */
+  readonly tokensIncomplete: number;
 }
 
 /**
@@ -270,11 +272,14 @@ const evaluationOf = (
   unpriced: number,
   unmeasured: number,
   estimateIncomplete: number,
+  tokensIncomplete: number,
 ): SpendEvaluation => ({
-  complete: unpriced === 0 && unmeasured === 0 && estimateIncomplete === 0,
+  complete:
+    unpriced === 0 && unmeasured === 0 && estimateIncomplete === 0 && tokensIncomplete === 0,
   unpriced,
   unmeasured,
   estimateIncomplete,
+  tokensIncomplete,
 });
 
 const spendOfAttempts = (items: readonly AttemptResources[]): Spend => {
@@ -284,6 +289,7 @@ const spendOfAttempts = (items: readonly AttemptResources[]): Spend => {
   let unpriced = 0;
   let unmeasured = 0;
   let estimateIncomplete = 0;
+  let tokensIncomplete = 0;
   for (const item of items) {
     const { reported, estimated: estimate } = item.usd;
     // One figure per attempt, reported preferred: never both.
@@ -291,12 +297,17 @@ const spendOfAttempts = (items: readonly AttemptResources[]): Spend => {
     if (reported === undefined && estimate !== undefined) estimated = true;
     tokens += (item.tokens.input ?? 0) + (item.tokens.output ?? 0);
     if (item.estimateIncomplete === true) estimateIncomplete += 1;
+    const counted =
+      item.tokens.input !== undefined ||
+      item.tokens.output !== undefined ||
+      item.tokens.cacheRead !== undefined ||
+      item.tokens.cacheWrite !== undefined;
+    // Token coverage is judged apart from dollars: a figure with no output counter is still partial.
+    // An attempt with dollars and no counters at all is priced, not partial: nothing was half-counted.
+    if (counted && (item.tokens.input === undefined || item.tokens.output === undefined)) {
+      tokensIncomplete += 1;
+    }
     if (reported === undefined && estimate === undefined) {
-      const counted =
-        item.tokens.input !== undefined ||
-        item.tokens.output !== undefined ||
-        item.tokens.cacheRead !== undefined ||
-        item.tokens.cacheWrite !== undefined;
       if (counted) unpriced += 1;
       else unmeasured += 1;
     }
@@ -306,7 +317,7 @@ const spendOfAttempts = (items: readonly AttemptResources[]): Spend => {
     tokens,
     estimated,
     unknown: unmeasured,
-    evaluation: evaluationOf(unpriced, unmeasured, estimateIncomplete),
+    evaluation: evaluationOf(unpriced, unmeasured, estimateIncomplete, tokensIncomplete),
   };
 };
 

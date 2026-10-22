@@ -495,9 +495,18 @@ describe("segments and seams", () => {
       kind: "completed",
       usage: { inputTokens: 10, outputTokens: 5 },
       usageScope: "session",
-      counters: { inputTokens: 10, outputTokens: 5, reasoningTokens: 3, inputIncludesCache: false },
+      counters: {
+        inputTokens: 10,
+        outputTokens: 5,
+        reasoningTokens: 3,
+        inputIncludesCache: false,
+      },
     });
-    expect(summary.totals).toMatchObject({ inputTokens: 10, outputTokens: 5, reasoningTokens: 3 });
+    expect(summary.totals).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 5,
+      reasoningTokens: 3,
+    });
 
     const plain = await build();
     const plainRecorder = plain.recorder();
@@ -506,7 +515,10 @@ describe("segments and seams", () => {
       kind: "completed",
       usage: { inputTokens: 10, outputTokens: 5 },
     });
-    expect(plainSummary.totals).toMatchObject({ inputTokens: 10, outputTokens: 5 });
+    expect(plainSummary.totals).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 5,
+    });
     expect(plainSummary.totals.reasoningTokens).toBeUndefined();
   });
 
@@ -543,7 +555,11 @@ describe("segments and seams", () => {
       const { summary } = await recorder.close(exit(150, 1.5, "session"));
       expect(summary.totals.inputTokens).toBe(150);
       expect(summary.totals.reportedUsd).toBe(1.5);
-      expect(summary.valuation).toMatchObject({ source: "reported", usd: 1.5, reportedUsd: 1.5 });
+      expect(summary.valuation).toMatchObject({
+        source: "reported",
+        usd: 1.5,
+        reportedUsd: 1.5,
+      });
       expect(summary.gaps).toEqual([]);
     });
 
@@ -591,7 +607,10 @@ describe("segments and seams", () => {
       await recorder.drain();
       await recoverMeasurementJournals(world.later, world.f.scope);
       const stored = await world.stored();
-      expect(stored.totals).toMatchObject({ inputTokens: 150, reportedUsd: 1.5 });
+      expect(stored.totals).toMatchObject({
+        inputTokens: 150,
+        reportedUsd: 1.5,
+      });
       expect(stored.valuation).toMatchObject({ usd: 1.5, reportedUsd: 1.5 });
       expect(stored.gaps.filter((g) => g.reason === "baseline_unknown")).toEqual([]);
     });
@@ -1093,7 +1112,11 @@ describe("per-request valuation", () => {
   };
   const priced = (id: string, inputTokens: number, outputTokens: number): HarnessObservation =>
     ({
-      ...request(id, { inputTokens, outputTokens, inputIncludesCache: false } as never),
+      ...request(id, {
+        inputTokens,
+        outputTokens,
+        inputIncludesCache: false,
+      } as never),
       model,
     }) as HarnessObservation;
   const feed = (recorder: MeasurementRecorder) => {
@@ -1143,12 +1166,78 @@ describe("per-request valuation", () => {
     await recorder.publish();
     recorder.sink.observe(priced("b", 300_000, 2000));
     await recorder.drain();
-    await recoverMeasurementJournals(world.later, world.f.scope, { price: () => price });
+    await recoverMeasurementJournals(world.later, world.f.scope, {
+      price: () => price,
+    });
     const recovered = await world.stored();
     expect(recovered.valuation.completeness).toMatchObject({
       valuedRequests: 2,
       unvaluedRequests: 0,
     });
     expect(recovered.valuation.estimatedUsd).toBeCloseTo(2.16, 9);
+  });
+
+  it("recovery leaves a replayed input-only request unvalued, with the reason", async () => {
+    const world = await build();
+    const recorder = world.recorder({
+      price,
+      pid: DEAD_PID,
+      limits: { publishEvery: { observations: 1000, ms: 3_600_000 } },
+    });
+    await recorder.startSegment({ resumedSession: false });
+    recorder.sink.observe({
+      ...request("only", {
+        inputTokens: 1000,
+        inputIncludesCache: true,
+      } as never),
+      model,
+    } as HarnessObservation);
+    await recorder.drain();
+    await recoverMeasurementJournals(world.later, world.f.scope, {
+      price: () => price,
+    });
+    const recovered = await world.stored();
+    expect(recovered.valuation.estimatedUsd).toBeUndefined();
+    expect(recovered.valuation.completeness).toMatchObject({
+      valuedRequests: 0,
+      unvaluedRequests: 1,
+      remainderValued: false,
+      missing: ["output"],
+    });
+    expect(recovered.valuation.completeness?.reasons).toContain("request without output counter");
+  });
+
+  it("recovery keeps each model's own price source and version", async () => {
+    const prices = {
+      a: { inputPerMTok: 1, outputPerMTok: 2, source: "A", version: "v1" },
+      b: { inputPerMTok: 3, outputPerMTok: 4, source: "B", version: "v2" },
+    };
+    const world = await build();
+    const recorder = world.recorder({
+      pid: DEAD_PID,
+      limits: { publishEvery: { observations: 1000, ms: 3_600_000 } },
+    });
+    await recorder.startSegment({ resumedSession: false });
+    for (const [id, name] of [
+      ["ma", "a"],
+      ["mb", "b"],
+    ] as const) {
+      recorder.sink.observe({
+        ...request(id, {
+          inputTokens: 10,
+          outputTokens: 10,
+          inputIncludesCache: false,
+        } as never),
+        model: name,
+      } as HarnessObservation);
+    }
+    await recorder.drain();
+    await recoverMeasurementJournals(world.later, world.f.scope, { prices });
+    const recovered = await world.stored();
+    expect(recovered.valuation.priceBases).toEqual([
+      { model: "a", source: "A", version: "v1" },
+      { model: "b", source: "B", version: "v2" },
+    ]);
+    expect(recovered.valuation.priceSource).toBeUndefined();
   });
 });

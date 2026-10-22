@@ -142,6 +142,7 @@ export const exportReport = (
               unpriced: budget.evaluation.unpriced,
               unmeasured: budget.evaluation.unmeasured,
               estimateIncomplete: budget.evaluation.estimateIncomplete,
+              tokensIncomplete: budget.evaluation.tokensIncomplete,
             },
           },
         }),

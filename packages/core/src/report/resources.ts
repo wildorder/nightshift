@@ -102,15 +102,23 @@ export const tokensOf = (counters: MeasurementCounters): ResourceTokens => {
 
 const valuationIncomplete = (valuation: MeasurementValuation): boolean =>
   valuation.completeness !== undefined &&
-  (valuation.completeness.unvaluedRequests > 0 || !valuation.completeness.remainderValued);
+  (valuation.completeness.unvaluedRequests > 0 ||
+    !valuation.completeness.remainderValued ||
+    (valuation.completeness.missing?.length ?? 0) > 0);
 
 const priceBasesOf = (valuation: MeasurementValuation, incomplete: boolean): PriceBasis[] =>
-  [...new Set((valuation.components ?? []).map((component) => component.model))].map((model) => ({
-    ...(valuation.priceSource === undefined ? {} : { source: valuation.priceSource }),
-    ...(valuation.priceVersion === undefined ? {} : { version: valuation.priceVersion }),
-    model,
-    incomplete,
-  }));
+  [...new Set((valuation.components ?? []).map((component) => component.model))].map((model) => {
+    // Per-model provenance when persisted; legacy summaries carry one pair for every model.
+    const basis = valuation.priceBases?.find((candidate) => candidate.model === model);
+    const source = basis === undefined ? valuation.priceSource : basis.source;
+    const version = basis === undefined ? valuation.priceVersion : basis.version;
+    return {
+      ...(source === undefined ? {} : { source }),
+      ...(version === undefined ? {} : { version }),
+      model,
+      incomplete,
+    };
+  });
 
 /** The resources one routing decision's attempt used, preferring its measurement summary. */
 export const resourcesOf = (

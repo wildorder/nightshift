@@ -125,6 +125,8 @@ export const ReportExportBudgetSchema = z.strictObject({
     unpriced: nonNegativeInt,
     unmeasured: nonNegativeInt,
     estimateIncomplete: nonNegativeInt,
+    /** Attempts whose tokens lack an input or output counter. */
+    tokensIncomplete: nonNegativeInt,
   }),
 });
 

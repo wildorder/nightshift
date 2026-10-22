@@ -117,7 +117,7 @@ const RENDER: Readonly<Record<string, Render>> = {
   "run.budget_spent": (p) =>
     `budget spent: ${String(p.budget)} ${String(p.spent)} of ${String(p.limit)}; nothing new starts`,
   "run.budget_evaluation_incomplete": (p) =>
-    `budget ${String(p.budget)} cannot be fully evaluated: ${String(p.unpriced)} unpriced, ${String(p.unmeasured)} unmeasured, ${String(p.estimateIncomplete)} incomplete estimate(s); ${String(p.spent)} of ${String(p.limit)} is what is known`,
+    `budget ${String(p.budget)} cannot be fully evaluated: ${String(p.unpriced)} unpriced, ${String(p.unmeasured)} unmeasured, ${String(p.estimateIncomplete)} incomplete estimate(s)${typeof p.tokensIncomplete === "number" && p.tokensIncomplete > 0 ? `, ${String(p.tokensIncomplete)} with incomplete token counters` : ""}; ${String(p.spent)} of ${String(p.limit)} is what is known`,
   "environment.fault": environmentFaultText,
   "decision.recorded": (p) => `decided: ${short(p.choice ?? p.decisionId)}`,
   "decision.overridden": (p) => `decision overridden: ${short(p.choice ?? p.decisionId)}`,

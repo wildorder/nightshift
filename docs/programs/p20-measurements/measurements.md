@@ -40,6 +40,19 @@ Metric ids: `tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_
    `packages/core/src/measurement/valuation.ts`). Provenance lives in
    `MeasurementValuation`: `priceSource`, `priceVersion`, and `components[]` of
    `{model, tier, category (input|output|cacheRead|cacheWrite), tokens, usd, perMTok}`.
+   `priceBases[]` (`{model, source?, version?}`, at most 16, one per distinct priced
+   model including the remainder's) is the **authoritative** price provenance: requests
+   for models priced from different lists keep their own source and version. The
+   summary-level `priceSource`/`priceVersion` remain for legacy readers and are set only
+   when every basis agrees; `priceBasesOf` (`resources.ts`) reads `priceBases` and falls
+   back to the summary-level pair for legacy summaries.
+   **Required counters:** a request is valued only with both `inputTokens` and
+   `outputTokens`. An absent required counter is unknown, never 0: the request is
+   unvalued with a reason ("request without input counter" / "request without output
+   counter") and its present counters still accumulate. Absent cache counters mean none
+   reported and do not block valuation. When the summary's totals lack input or output,
+   `completeness.missing` names the absent categories, `remainderValued` is false (the
+   remainder is unknown) and the valuation is incomplete.
    The tier is chosen by each request's own normalized input; tokens no observed request
    covers are a *remainder*, valued at the base tier, and `completeness`
    (`valuedRequests`, `unvaluedRequests`, `remainderTokens`, `remainderValued`, `reasons`)
@@ -76,16 +89,24 @@ bound when anything is missing) are separate again.
   a root node without a summary counts as one `unmeasured` attempt, so the evaluation is
   incomplete: unknown coverage stays visible and is never certified as within budget.
   One figure per attempt: reported preferred, never both.
-- `budgetEvaluation` reports `complete` only when `unpriced`, `unmeasured` and
-  `estimateIncomplete` are all 0. *Unpriced*: token counters but no dollar figure.
-  *Unmeasured*: neither counters nor dollars. *Unvalued* (`estimateIncomplete`): a
-  valuation leaving some usage unvalued.
+- `budgetEvaluation` reports `complete` only when `unpriced`, `unmeasured`,
+  `estimateIncomplete` and `tokensIncomplete` are all 0. *Unpriced*: token counters but
+  no dollar figure. *Unmeasured*: neither counters nor dollars. *Unvalued*
+  (`estimateIncomplete`): a valuation leaving some usage unvalued, including a missing
+  required counter (`completeness.missing`). *Tokens incomplete* (`tokensIncomplete`):
+  some token counters were reported but input or output is absent, whatever dollar figure
+  the attempt carries; token coverage is judged apart from dollar availability, so
+  reported dollars cannot certify an attempt whose tokens are half-counted. An attempt
+  with neither counters nor dollars is only `unmeasured`; dollars with no counters at all
+  are priced, not `tokensIncomplete`.
 - An incomplete evaluation is enforced on what is known, announced once per distinct count
   with `run.budget_evaluation_incomplete`, and **never certified as within budget**. The
-  report and Studio say "cannot be evaluated completely" with the three counts
+  report and Studio say "cannot be evaluated completely" with the counts (adding "k with
+  incomplete token counters" when non-zero)
   (`apps/studio/src/components/run/overview/tiles.tsx`, `apps/studio/src/lib/overview.ts`:
   "Within budget." only for a complete evaluation). The export carries it as
-  `budget.evaluation`.
+  `budget.evaluation`
+  (including `tokensIncomplete`).
 
 ## 4. Coverage
 

@@ -1080,6 +1080,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "claude-sonnet-5",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "claude-sonnet-5",
@@ -1135,7 +1142,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "claude-sonnet-5",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:00:00.000Z",
@@ -1216,6 +1230,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "claude-sonnet-5",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "claude-sonnet-5",
@@ -1271,7 +1292,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "claude-sonnet-5",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:01:30.000Z",
@@ -1352,6 +1380,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "claude-sonnet-5",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "claude-sonnet-5",
@@ -1407,7 +1442,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "claude-sonnet-5",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:00:00.000Z",
@@ -1488,6 +1530,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "gpt-6-astra",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "gpt-6-astra",
@@ -1543,7 +1592,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "gpt-6-astra",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:01:00.000Z",
@@ -1624,6 +1680,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "claude-sonnet-5",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "claude-sonnet-5",
@@ -1679,7 +1742,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "claude-sonnet-5",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:01:30.000Z",
@@ -1760,6 +1830,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "gpt-6-astra",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "gpt-6-astra",
@@ -1815,7 +1892,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "gpt-6-astra",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:03:30.000Z",
@@ -1896,6 +1980,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "claude-sonnet-5",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "claude-sonnet-5",
@@ -1951,7 +2042,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "claude-sonnet-5",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:04:00.000Z",
@@ -2032,6 +2130,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "claude-sonnet-5",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "claude-sonnet-5",
@@ -2087,7 +2192,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "claude-sonnet-5",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:04:00.000Z",
@@ -2168,6 +2280,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "claude-sonnet-5",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "claude-sonnet-5",
@@ -2223,7 +2342,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "claude-sonnet-5",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:05:00.000Z",
@@ -2304,6 +2430,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "claude-sonnet-5",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "claude-sonnet-5",
@@ -2359,7 +2492,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "claude-sonnet-5",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T12:20:00.000Z",
@@ -2440,6 +2580,13 @@
         "basis": "estimated per request from the price table, each request at its own price tier",
         "priceSource": "sc12-price-list",
         "priceVersion": "2026-10-01",
+        "priceBases": [
+          {
+            "model": "claude-sonnet-5",
+            "source": "sc12-price-list",
+            "version": "2026-10-01"
+          }
+        ],
         "components": [
           {
             "model": "claude-sonnet-5",
@@ -2495,7 +2642,14 @@
           "unvaluedRequests": 0,
           "reasons": [],
           "priceSource": "sc12-price-list",
-          "priceVersion": "2026-10-01"
+          "priceVersion": "2026-10-01",
+          "priceBases": [
+            {
+              "model": "claude-sonnet-5",
+              "source": "sc12-price-list",
+              "version": "2026-10-01"
+            }
+          ]
         }
       },
       "createdAt": "2026-09-15T13:00:00.000Z",

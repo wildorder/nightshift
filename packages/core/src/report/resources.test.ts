@@ -11,7 +11,10 @@ const route = (usage: RoutingDecision["usage"] = {}): RoutingDecision => ({
   executionNodeId: fixtures.rootNodeId,
   attempt: 1,
   eligibleOptions: [
-    { target: { harness: "claude", provider: "anthropic", model: "m" }, eligible: true },
+    {
+      target: { harness: "claude", provider: "anthropic", model: "m" },
+      eligible: true,
+    },
   ],
   chosen: { harness: "claude", provider: "anthropic", model: "m" },
   ruleId: "r",
@@ -40,7 +43,12 @@ const summaryFor = (
     totals: {},
     coverage: "complete",
     gaps: [],
-    ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+    ledger: {
+      chunks: 0,
+      artifactIds: [],
+      observationCount: 0,
+      publishedCount: 0,
+    },
     valuation: { source: "unknown" },
     createdAt: FIXTURE_TIMESTAMP,
     updatedAt: FIXTURE_TIMESTAMP,
@@ -55,11 +63,18 @@ describe("resourcesOf", () => {
       updatedAt: "2026-01-01T00:00:00Z",
     });
     const newer = summaryFor(decision, {
-      totals: { inputTokens: 50, outputTokens: 7, reasoningTokens: 2, inputIncludesCache: true },
+      totals: {
+        inputTokens: 50,
+        outputTokens: 7,
+        reasoningTokens: 2,
+        inputIncludesCache: true,
+      },
       updatedAt: "2026-02-01T00:00:00Z",
       coverage: "partial",
     });
-    const other = summaryFor(route(), { totals: { inputTokens: 999, inputIncludesCache: true } });
+    const other = summaryFor(route(), {
+      totals: { inputTokens: 999, inputIncludesCache: true },
+    });
     const result = resourcesOf(decision, [older, other, newer]);
     expect(result.tokens).toEqual({
       input: 50,
@@ -90,7 +105,9 @@ describe("resourcesOf", () => {
   it("reports an unknown convention and passes input raw", () => {
     const decision = route();
     const result = resourcesOf(decision, [
-      summaryFor(decision, { totals: { inputTokens: 10, cacheReadTokens: 100 } }),
+      summaryFor(decision, {
+        totals: { inputTokens: 10, cacheReadTokens: 100 },
+      }),
     ]);
     expect(result.tokens.input).toBe(10);
     expect(result.tokens.inputConvention).toBe("unknown");
@@ -108,7 +125,11 @@ describe("resourcesOf", () => {
   });
 
   it("prefers the summary's valuation and carries its price provenance", () => {
-    const decision = route({ estimatedCostUsd: 99, actualCostUsd: 98, costSource: "reported" });
+    const decision = route({
+      estimatedCostUsd: 99,
+      actualCostUsd: 98,
+      costSource: "reported",
+    });
     const valued = summaryFor(decision, {
       totals: { inputTokens: 10, inputIncludesCache: false },
       valuation: {
@@ -118,7 +139,16 @@ describe("resourcesOf", () => {
         estimatedUsd: 2.5,
         priceSource: "anthropic-list",
         priceVersion: "2026-10-01",
-        components: [{ model: "m", tier: 0, category: "input", tokens: 10, usd: 2.5, perMTok: 3 }],
+        components: [
+          {
+            model: "m",
+            tier: 0,
+            category: "input",
+            tokens: 10,
+            usd: 2.5,
+            perMTok: 3,
+          },
+        ],
         completeness: {
           valuedRequests: 1,
           unvaluedRequests: 1,
@@ -129,9 +159,18 @@ describe("resourcesOf", () => {
       },
     });
     const result = resourcesOf(decision, [valued]);
-    expect(result.usd).toEqual({ estimated: 2.5, reported: 5, source: "reported" });
+    expect(result.usd).toEqual({
+      estimated: 2.5,
+      reported: 5,
+      source: "reported",
+    });
     expect(result.priceBases).toEqual([
-      { source: "anthropic-list", version: "2026-10-01", model: "m", incomplete: true },
+      {
+        source: "anthropic-list",
+        version: "2026-10-01",
+        model: "m",
+        incomplete: true,
+      },
     ]);
     expect(result.estimateIncomplete).toBe(true);
 
@@ -143,6 +182,59 @@ describe("resourcesOf", () => {
     expect(total.usd).toEqual({ estimated: 5, reported: 11 });
     expect(total.priceBases).toHaveLength(1);
     expect(total.estimateIncomplete).toBe(2);
+  });
+
+  it("names each model's own price source and version, and treats missing counters as incomplete", () => {
+    const decision = route();
+    const mixed = summaryFor(decision, {
+      totals: { inputTokens: 20, outputTokens: 20, inputIncludesCache: false },
+      valuation: {
+        source: "estimated",
+        usd: 1,
+        estimatedUsd: 1,
+        priceBases: [
+          { model: "a", source: "A", version: "v1" },
+          { model: "b", source: "B", version: "v2" },
+        ],
+        components: [
+          {
+            model: "a",
+            tier: 0,
+            category: "input",
+            tokens: 10,
+            usd: 0.5,
+            perMTok: 1,
+          },
+          {
+            model: "b",
+            tier: 0,
+            category: "input",
+            tokens: 10,
+            usd: 0.5,
+            perMTok: 1,
+          },
+        ],
+      },
+    });
+    expect(resourcesOf(decision, [mixed]).priceBases).toEqual([
+      { source: "A", version: "v1", model: "a", incomplete: false },
+      { source: "B", version: "v2", model: "b", incomplete: false },
+    ]);
+    const missing = summaryFor(decision, {
+      totals: { inputTokens: 20, inputIncludesCache: false },
+      valuation: {
+        ...mixed.valuation,
+        completeness: {
+          valuedRequests: 1,
+          unvaluedRequests: 0,
+          remainderTokens: 0,
+          remainderValued: false,
+          reasons: ["totals without output counter"],
+          missing: ["output"],
+        },
+      },
+    });
+    expect(resourcesOf(decision, [missing]).estimateIncomplete).toBe(true);
   });
 
   it("keeps route-usage dollars for a route without a summary or with an unvalued one", () => {
@@ -160,10 +252,18 @@ describe("resourcesOf", () => {
 
   it("keeps estimated and reported dollars apart", () => {
     const result = resourcesOf(
-      route({ estimatedCostUsd: 0.5, actualCostUsd: 0.75, costSource: "reported" }),
+      route({
+        estimatedCostUsd: 0.5,
+        actualCostUsd: 0.75,
+        costSource: "reported",
+      }),
       [],
     );
-    expect(result.usd).toEqual({ estimated: 0.5, reported: 0.75, source: "reported" });
+    expect(result.usd).toEqual({
+      estimated: 0.5,
+      reported: 0.75,
+      source: "reported",
+    });
   });
 });
 
@@ -188,10 +288,20 @@ describe("sumResources", () => {
       }),
       item({ coverage: "missing" }),
     ]);
-    expect(total.tokens).toEqual({ input: 15, output: 2, inputConventionUnknown: 1 });
+    expect(total.tokens).toEqual({
+      input: 15,
+      output: 2,
+      inputConventionUnknown: 1,
+    });
     expect(total.usd).toEqual({ estimated: 2, reported: 1 });
     expect(total.unpriced).toBe(1);
-    expect(total.coverage).toEqual({ complete: 1, partial: 0, unknown: 0, legacy: 1, missing: 1 });
+    expect(total.coverage).toEqual({
+      complete: 1,
+      partial: 0,
+      unknown: 0,
+      legacy: 1,
+      missing: 1,
+    });
     expect(total.tokenCoverage).toBe("partial");
   });
 

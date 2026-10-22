@@ -420,6 +420,9 @@ export const budgetGapText = (evaluation: BudgetSpend["evaluation"]): string => 
   if (evaluation.estimateIncomplete > 0) {
     parts.push(`${evaluation.estimateIncomplete} with unvalued usage`);
   }
+  if (evaluation.tokensIncomplete > 0) {
+    parts.push(`${evaluation.tokensIncomplete} with incomplete token counters`);
+  }
   return parts.join(", ");
 };
 

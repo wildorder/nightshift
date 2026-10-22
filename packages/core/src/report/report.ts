@@ -1779,7 +1779,11 @@ const renderBudget = (report: RunReport): string[] => {
   const unpriced = report.usage.reduce((total, row) => total + row.unpriced, 0);
   const evaluation = report.budget?.evaluation;
   if (evaluation !== undefined && !evaluation.complete) {
-    const why = `${evaluation.unpriced} attempt${evaluation.unpriced === 1 ? "" : "s"} unpriced, ${evaluation.unmeasured} unmeasured`;
+    const why = `${evaluation.unpriced} attempt${evaluation.unpriced === 1 ? "" : "s"} unpriced, ${evaluation.unmeasured} unmeasured${
+      evaluation.tokensIncomplete > 0
+        ? `, ${evaluation.tokensIncomplete} with incomplete token counters`
+        : ""
+    }`;
     const known = report.budget ?? { usd, tokens };
     const limits = [
       ...(maxUsd === undefined
@@ -1793,7 +1797,7 @@ const renderBudget = (report: RunReport): string[] => {
           ]),
       ...(maxTokens === undefined
         ? []
-        : evaluation.unmeasured > 0
+        : evaluation.unmeasured > 0 || evaluation.tokensIncomplete > 0
           ? [
               `the maxTokens limit could not be evaluated completely: ${why} (${known.tokens} tokens known so far, a lower bound)`,
             ]

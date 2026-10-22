@@ -63,7 +63,12 @@ describe("classificationOf (D-P8-01)", () => {
 
   it("keeps what the job says", () => {
     expect(
-      classificationOf({ risk: "high", ambiguity: "medium", testability: "strong", kind: "fix" }),
+      classificationOf({
+        risk: "high",
+        ambiguity: "medium",
+        testability: "strong",
+        kind: "fix",
+      }),
     ).toEqual({
       risk: "high",
       ambiguity: "medium",
@@ -129,7 +134,10 @@ describe("effectivePolicy (D-P8-03)", () => {
   it("reads a narrowing written for ladders as the harnesses they were named for", () => {
     const routing = RoutingNarrowingSchema.parse({ ladders: ["claude"] });
     expect(routing).toEqual({ harnesses: ["claude"] });
-    const result = requireEffectivePolicy(org, { examinationPolicy: OFF, routing });
+    const result = requireEffectivePolicy(org, {
+      examinationPolicy: OFF,
+      routing,
+    });
     expect(result.routingPolicy.roles.examiner.map((route) => route.harness)).toEqual([
       "claude",
       "claude",
@@ -186,9 +194,12 @@ describe("failureClimbs (D-P8-07)", () => {
   it("climbs after a failure of the model's work", () => {
     expect(failureClimbs({ status: "verification_failed" })).toBe(true);
     expect(failureClimbs({ status: "examination_failed" })).toBe(true);
-    expect(failureClimbs({ status: "failed", outcomeReason: "the tests would not pass" })).toBe(
-      true,
-    );
+    expect(
+      failureClimbs({
+        status: "failed",
+        outcomeReason: "the tests would not pass",
+      }),
+    ).toBe(true);
   });
 
   it("keeps the route after a failure that is not the model's", () => {
@@ -239,7 +250,11 @@ describe("cost (D-P8-08)", () => {
 
   it("does not charge cached input twice when input is inclusive", () => {
     const cached = { ...price, cacheReadPerMTok: 0.3, cacheWritePerMTok: 3.75 };
-    const usage = { inputTokens: 1_000_000, cacheReadTokens: 600_000, cacheWriteTokens: 100_000 };
+    const usage = {
+      inputTokens: 1_000_000,
+      cacheReadTokens: 600_000,
+      cacheWriteTokens: 100_000,
+    };
     const exclusive = estimateCost({ ...usage, inputTokens: 300_000 }, cached);
     expect(estimateCost({ ...usage, inputIncludesCache: true }, cached)).toBeCloseTo(
       exclusive ?? NaN,
@@ -260,14 +275,20 @@ describe("cost (D-P8-08)", () => {
   it("sums a run's spend, says when any of it is an estimate, and names the budget it spent", () => {
     const spend = spendOf([
       { actualCostUsd: 1, inputTokens: 100, outputTokens: 50 },
-      { estimatedCostUsd: 2, inputTokens: 10 },
+      { estimatedCostUsd: 2, inputTokens: 10, outputTokens: 0 },
     ]);
     expect(spend).toEqual({
       usd: 3,
       tokens: 160,
       estimated: true,
       unknown: 0,
-      evaluation: { complete: true, unpriced: 0, unmeasured: 0, estimateIncomplete: 0 },
+      evaluation: {
+        complete: true,
+        unpriced: 0,
+        unmeasured: 0,
+        estimateIncomplete: 0,
+        tokensIncomplete: 0,
+      },
     });
     expect(budgetSpent(spend, { maxUsd: 3 })).toEqual({
       budget: "maxUsd",
@@ -307,15 +328,54 @@ describe("spend evaluation (D-02)", () => {
       unpriced: 1,
       unmeasured: 1,
       estimateIncomplete: 0,
+      tokensIncomplete: 0,
     });
-    expect(spendOf([{ actualCostUsd: 1, inputTokens: 1 }]).evaluation.complete).toBe(true);
+    expect(
+      spendOf([{ actualCostUsd: 1, inputTokens: 1, outputTokens: 1 }]).evaluation.complete,
+    ).toBe(true);
+  });
+
+  it("a reported dollar figure with a missing output counter is incomplete, not complete", () => {
+    const spend = spendOf([{ actualCostUsd: 1, inputTokens: 1000 }]);
+    expect(spend.usd).toBe(1);
+    expect(spend.evaluation).toEqual({
+      complete: false,
+      unpriced: 0,
+      unmeasured: 0,
+      estimateIncomplete: 0,
+      tokensIncomplete: 1,
+    });
+    // Output only is incomplete the same way.
+    expect(spendOf([{ actualCostUsd: 1, outputTokens: 5 }]).evaluation.tokensIncomplete).toBe(1);
+  });
+
+  it("an attempt with neither counters nor dollars stays unmeasured and is not double counted", () => {
+    expect(spendOf([{}]).evaluation).toEqual({
+      complete: false,
+      unpriced: 0,
+      unmeasured: 1,
+      estimateIncomplete: 0,
+      tokensIncomplete: 0,
+    });
+    // Dollars with no counters at all are priced, not half-counted.
+    expect(spendOf([{ actualCostUsd: 1 }]).evaluation.tokensIncomplete).toBe(0);
   });
 
   it("normalizes input like reports: exclusive input gains its cache tokens", () => {
     expect(
       spendOf([
-        { inputTokens: 100, cacheReadTokens: 50, inputIncludesCache: false, outputTokens: 10 },
-        { inputTokens: 100, cacheReadTokens: 50, inputIncludesCache: true, outputTokens: 10 },
+        {
+          inputTokens: 100,
+          cacheReadTokens: 50,
+          inputIncludesCache: false,
+          outputTokens: 10,
+        },
+        {
+          inputTokens: 100,
+          cacheReadTokens: 50,
+          inputIncludesCache: true,
+          outputTokens: 10,
+        },
       ]).tokens,
     ).toBe(160 + 110);
   });
@@ -341,7 +401,12 @@ describe("spend evaluation (D-02)", () => {
       },
       coverage: "complete",
       gaps: [],
-      ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+      ledger: {
+        chunks: 0,
+        artifactIds: [],
+        observationCount: 0,
+        publishedCount: 0,
+      },
       valuation: {
         source: "estimated",
         usd: 2,
@@ -362,6 +427,7 @@ describe("spend evaluation (D-02)", () => {
       unpriced: 0,
       unmeasured: 0,
       estimateIncomplete: 1,
+      tokensIncomplete: 0,
     });
   });
 
@@ -378,6 +444,7 @@ describe("spend evaluation (D-02)", () => {
       unpriced: 1,
       unmeasured: 0,
       estimateIncomplete: 0,
+      tokensIncomplete: 0,
     });
     expect(budgetEvaluation(spend, {}).configured).toBe(false);
   });

@@ -290,8 +290,24 @@ export const ValuationCompletenessSchema = z.strictObject({
   remainderTokens: z.number().min(0),
   remainderValued: z.boolean(),
   reasons: z.array(z.string().max(200)).max(8),
+  /**
+   * Required counters (input, output) the totals lack. Their remainder is unknown, not 0, so the
+   * valuation is incomplete.
+   */
+  missing: z
+    .array(z.enum(["input", "output"]))
+    .max(2)
+    .optional(),
 });
 export type ValuationCompleteness = z.infer<typeof ValuationCompletenessSchema>;
+
+/** The price list one model was valued from. */
+export const ValuationPriceBasisSchema = z.strictObject({
+  model: z.string().min(1),
+  source: z.string().optional(),
+  version: z.string().optional(),
+});
+export type ValuationPriceBasis = z.infer<typeof ValuationPriceBasisSchema>;
 
 /** What the requests observed so far add up to; the valuation is derived from this and the totals. */
 export const ValuationRequestsSchema = z.strictObject({
@@ -301,8 +317,11 @@ export const ValuationRequestsSchema = z.strictObject({
   valuedRequests: z.int().min(0),
   unvaluedRequests: z.int().min(0),
   reasons: z.array(z.string().max(200)).max(8),
+  /** Set only when every basis agrees; `priceBases` is authoritative. */
   priceSource: z.string().optional(),
   priceVersion: z.string().optional(),
+  /** One entry per distinct priced model. */
+  priceBases: z.array(ValuationPriceBasisSchema).max(16).optional(),
 });
 export type ValuationRequests = z.infer<typeof ValuationRequestsSchema>;
 
@@ -314,8 +333,11 @@ export const MeasurementValuationSchema = z.strictObject({
   /** Priced from tokens; kept apart from `reportedUsd` and never added to it. */
   estimatedUsd: z.number().min(0).optional(),
   basis: z.string().max(200).optional(),
+  /** Set only when every basis agrees (legacy readers); `priceBases` is authoritative. */
   priceSource: z.string().optional(),
   priceVersion: z.string().optional(),
+  /** One entry per distinct priced model, including the remainder's. */
+  priceBases: z.array(ValuationPriceBasisSchema).max(16).optional(),
   components: z.array(ValuationComponentSchema).max(64).optional(),
   completeness: ValuationCompletenessSchema.optional(),
   /** Per-request accumulation the recorder and recovery carry forward. */

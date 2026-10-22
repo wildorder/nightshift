@@ -534,7 +534,7 @@ export const createEngine = (options: EngineOptions): Engine => {
     const evaluation = budgetEvaluation(spend, costPolicy);
     if (!evaluation.complete) {
       // A limit that cannot be evaluated completely is enforced on what is known and said so.
-      const key = `${evaluation.unpriced}/${evaluation.unmeasured}/${evaluation.estimateIncomplete}`;
+      const key = `${evaluation.unpriced}/${evaluation.unmeasured}/${evaluation.estimateIncomplete}/${evaluation.tokensIncomplete}`;
       if (key !== incompleteAnnounced) {
         incompleteAnnounced = key;
         const [budget, limit, spentNow] =
@@ -551,6 +551,7 @@ export const createEngine = (options: EngineOptions): Engine => {
             unpriced: evaluation.unpriced,
             unmeasured: evaluation.unmeasured,
             estimateIncomplete: evaluation.estimateIncomplete,
+            tokensIncomplete: evaluation.tokensIncomplete,
           },
           executionNodeId: session.rootNodeId,
         });

@@ -7,6 +7,7 @@ import type {
   RequestObservation,
   ValuationCompleteness,
   ValuationComponent,
+  ValuationPriceBasis,
   ValuationRequests,
 } from "@nightshift/contracts";
 import { COUNTER_KEYS } from "./counters.js";
@@ -110,9 +111,10 @@ const ratesAt = (price: ModelPrice, normalizedInput: number): { tier: number; ra
 };
 
 interface NetTokens {
-  /** Cache-exclusive input. */
-  readonly input: number;
-  readonly output: number;
+  /** Cache-exclusive input; absent when the request reported none. */
+  readonly input: number | undefined;
+  /** Absent when the request reported none: never defaulted to 0. */
+  readonly output: number | undefined;
   readonly cacheRead: number;
   readonly cacheWrite: number;
   /** The request's input including cache tokens: what selects a tier. */
@@ -122,14 +124,14 @@ interface NetTokens {
 const netOf = (counters: MeasurementCounters): NetTokens => {
   const reads = counters.cacheReadTokens ?? 0;
   const writes = counters.cacheWriteTokens ?? 0;
-  const raw = counters.inputTokens ?? 0;
+  const raw = counters.inputTokens;
   const inclusive = counters.inputIncludesCache === true;
   return {
-    input: inclusive ? Math.max(0, raw - reads - writes) : raw,
-    output: counters.outputTokens ?? 0,
+    input: raw === undefined ? undefined : inclusive ? Math.max(0, raw - reads - writes) : raw,
+    output: counters.outputTokens,
     cacheRead: reads,
     cacheWrite: writes,
-    normalizedInput: inclusive ? raw : raw + reads + writes,
+    normalizedInput: inclusive ? (raw ?? 0) : (raw ?? 0) + reads + writes,
   };
 };
 
@@ -182,12 +184,55 @@ const emptyRequests = (): ValuationRequests => ({
 });
 
 const addNet = (counters: MeasurementCounters, net: NetTokens): MeasurementCounters => ({
-  inputTokens: (counters.inputTokens ?? 0) + net.input,
-  outputTokens: (counters.outputTokens ?? 0) + net.output,
+  inputTokens: (counters.inputTokens ?? 0) + (net.input ?? 0),
+  outputTokens: (counters.outputTokens ?? 0) + (net.output ?? 0),
   cacheReadTokens: (counters.cacheReadTokens ?? 0) + net.cacheRead,
   cacheWriteTokens: (counters.cacheWriteTokens ?? 0) + net.cacheWrite,
   inputIncludesCache: false,
 });
+
+/** The bases with this model's added (once), from the legacy summary-level pair when there are none. */
+const withBasis = (
+  bases: readonly ValuationPriceBasis[] | undefined,
+  legacy: { readonly source: string | undefined; readonly version: string | undefined },
+  legacyModels: readonly string[],
+  model: string,
+  price: ModelPrice,
+): ValuationPriceBasis[] => {
+  const out: ValuationPriceBasis[] =
+    bases !== undefined
+      ? [...bases]
+      : legacyModels.map((m) => ({
+          model: m,
+          ...(legacy.source === undefined ? {} : { source: legacy.source }),
+          ...(legacy.version === undefined ? {} : { version: legacy.version }),
+        }));
+  if (out.length < 16 && !out.some((basis) => basis.model === model)) {
+    out.push({
+      model,
+      ...(price.source === undefined ? {} : { source: price.source }),
+      ...(price.version === undefined ? {} : { version: price.version }),
+    });
+  }
+  return out;
+};
+
+/** The summary-level pair, set only when every basis agrees; `priceBases` is authoritative. */
+const agreedBasis = (
+  bases: readonly ValuationPriceBasis[],
+): { priceSource?: string; priceVersion?: string } => {
+  const first = bases[0];
+  if (
+    first === undefined ||
+    !bases.every((basis) => basis.source === first.source && basis.version === first.version)
+  ) {
+    return {};
+  }
+  return {
+    ...(first.source === undefined ? {} : { priceSource: first.source }),
+    ...(first.version === undefined ? {} : { priceVersion: first.version }),
+  };
+};
 
 const hasBilled = (counters: MeasurementCounters): boolean =>
   COUNTER_KEYS.filter((key) => key !== "reasoningTokens").some(
@@ -228,28 +273,39 @@ export const accumulateRequest = (
   if (price === undefined) return unvalued(`no price for ${model}`, observation.counters);
 
   const net = netOf(observation.counters);
+  // Input and output are what a request is valued from; an absent one is unknown, not 0.
+  if (net.input === undefined) {
+    return unvalued("request without input counter", observation.counters);
+  }
+  if (net.output === undefined) {
+    return unvalued("request without output counter", observation.counters);
+  }
   const { tier, rates } = ratesAt(price, net.normalizedInput);
   const components = [...acc.components];
   for (const category of CATEGORIES) {
-    if (!mergeComponent(components, model, tier, category, net[category], rates[category])) {
+    if (!mergeComponent(components, model, tier, category, net[category] ?? 0, rates[category])) {
       return unvalued("component limit reached", observation.counters);
     }
   }
+  const priceBases = withBasis(
+    acc.priceBases,
+    { source: acc.priceSource, version: acc.priceVersion },
+    [...new Set(acc.components.map((c) => c.model))],
+    model,
+    price,
+  );
+  const { priceSource: _source, priceVersion: _version, ...rest } = acc;
   return {
     ...summary,
     valuation: {
       ...summary.valuation,
       requests: {
-        ...acc,
+        ...rest,
         counters: addNet(acc.counters, net),
         components,
         valuedRequests: acc.valuedRequests + 1,
-        ...(acc.priceSource === undefined && price.source !== undefined
-          ? { priceSource: price.source }
-          : {}),
-        ...(acc.priceVersion === undefined && price.version !== undefined
-          ? { priceVersion: price.version }
-          : {}),
+        priceBases,
+        ...agreedBasis(priceBases),
       },
     },
   };
@@ -273,19 +329,25 @@ export const valuationOf = (
   const reportedUsd = totals.reportedUsd;
   const components = [...acc.components];
   let reasons = [...acc.reasons];
-  let priceSource = acc.priceSource;
-  let priceVersion = acc.priceVersion;
+  let priceBases = acc.priceBases;
 
   const tot = netOf(totals);
   const seen = netOf(acc.counters);
+  const missing: ("input" | "output")[] = [];
+  if (tot.input === undefined) missing.push("input");
+  if (tot.output === undefined) missing.push("output");
   const remainder = {
-    input: Math.max(0, tot.input - seen.input),
-    output: Math.max(0, tot.output - seen.output),
+    input: Math.max(0, (tot.input ?? 0) - (seen.input ?? 0)),
+    output: Math.max(0, (tot.output ?? 0) - (seen.output ?? 0)),
     cacheRead: Math.max(0, tot.cacheRead - seen.cacheRead),
     cacheWrite: Math.max(0, tot.cacheWrite - seen.cacheWrite),
   };
   const remainderTokens = CATEGORIES.reduce((sum, category) => sum + remainder[category], 0);
-  let remainderValued = true;
+  // An absent required counter leaves the remainder unknown, not 0.
+  let remainderValued = missing.length === 0;
+  for (const category of missing) {
+    reasons = addReason(reasons, `totals without ${category} counter`);
+  }
   if (remainderTokens > 0) {
     const model = summary.route.model;
     const price = priceOf(prices, model);
@@ -300,11 +362,20 @@ export const valuationOf = (
           reasons = addReason(reasons, "component limit reached");
         }
       }
-      priceSource ??= price.source;
-      priceVersion ??= price.version;
+      priceBases = withBasis(
+        priceBases,
+        { source: acc.priceSource, version: acc.priceVersion },
+        [...new Set(acc.components.map((c) => c.model))],
+        model,
+        price,
+      );
     }
   }
 
+  const { priceSource, priceVersion } =
+    priceBases === undefined
+      ? { priceSource: acc.priceSource, priceVersion: acc.priceVersion }
+      : agreedBasis(priceBases);
   const evidence = acc.valuedRequests + acc.unvaluedRequests > 0 || remainderTokens > 0;
   const estimatedUsd =
     components.length > 0 ? components.reduce((sum, c) => sum + c.usd, 0) : undefined;
@@ -316,11 +387,13 @@ export const valuationOf = (
         remainderTokens,
         remainderValued,
         reasons,
+        ...(missing.length === 0 ? {} : { missing }),
       }
     : undefined;
   const detail = {
     ...(priceSource === undefined ? {} : { priceSource }),
     ...(priceVersion === undefined ? {} : { priceVersion }),
+    ...(priceBases === undefined || priceBases.length === 0 ? {} : { priceBases }),
     ...(components.length === 0 ? {} : { components }),
     ...(completeness === undefined ? {} : { completeness }),
     ...(summary.valuation.requests === undefined ? {} : { requests: summary.valuation.requests }),
