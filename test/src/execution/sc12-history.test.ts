@@ -245,7 +245,13 @@ const requestObservation = (id: string, model: string, usage: Usage) =>
     inclusion: "self",
     kind: "request",
     model,
-    counters: { inputTokens: usage.input, outputTokens: usage.output, inputIncludesCache: false },
+    counters: {
+      inputTokens: usage.input,
+      outputTokens: usage.output,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      inputIncludesCache: false,
+    },
   }) as never;
 
 /** The launch's own total, which the recorder reconciles with the requests rather than adds to them. */
@@ -1870,7 +1876,7 @@ describe("the complete SC-12 history", () => {
     ]);
     const times = "lead time 2h 10m, run completion 1h 10m, active union 50m 0s, ";
     const spent =
-      "tokens input 80000, output 15800, cache read none, cache write none, reasoning none, " +
+      "tokens input 80000, output 15800, cache read 0, cache write 0, reasoning none, " +
       "estimated: $0.4670 for 11 of 14 attempts, reported: none";
     expect(lines[5]).toContain(`now: ${times}${spent}`);
     expect(lines[5]).toContain(

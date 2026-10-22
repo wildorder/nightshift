@@ -311,7 +311,13 @@ const spendOfAttempts = (items: readonly AttemptResources[]): Spend => {
       item.tokens.cacheWrite !== undefined;
     // Token coverage is judged apart from dollars: a figure with no output counter is still partial.
     // An attempt with dollars and no counters at all is priced, not partial: nothing was half-counted.
-    if (counted && (item.tokens.input === undefined || item.tokens.output === undefined)) {
+    // An exclusive input with an absent cache counter is a lower bound, so it is partial too.
+    if (
+      counted &&
+      (item.tokens.input === undefined ||
+        item.tokens.output === undefined ||
+        item.tokens.inputPartial === true)
+    ) {
       tokensIncomplete += 1;
     }
     if (!counted && (reported !== undefined || estimate !== undefined)) tokensUnknown += 1;

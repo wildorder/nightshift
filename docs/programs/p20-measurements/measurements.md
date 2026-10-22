@@ -50,13 +50,22 @@ Metric ids: `tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_
    `outputTokens`. An absent required counter is unknown, never 0: the request is
    unvalued with a reason ("request without input counter" / "request without output
    counter") and its present counters still accumulate. The required categories also
-   include each cache category the model's price (or the tier chosen for the request) prices:
+   include each cache category that is unknown when absent. For **exclusive** input
+   (`inputIncludesCache !== true`, including unstated) that is both cache categories,
+   whether or not the price configures cache rates: an omitted counter does not establish
+   zero cache usage, and the cache categories fall back to the input rate anyway. For
+   **inclusive** input it is each category the model's price (or the tier chosen) prices:
    `cacheRead` when it defines `cacheReadPerMTok`, `cacheWrite` when it defines
-   `cacheWritePerMTok`. An absent priced cache counter does not drop the request: its present
+   `cacheWritePerMTok`; with no cache rates the split does not change the value. The same
+   rule applies to the totals/remainder. An absent required cache counter does not drop the request: its present
    categories are valued, `requests.missing` and `completeness.missing` name the absent
    categories with a reason, and the valuation is incomplete and a **lower bound** (the tier,
    chosen from the counters present, may be understated). An explicit 0 is a report of none and
-   is complete, as is any request under a price without cache rates. When the summary's totals
+   is complete, as is inclusive input under a price without cache rates. Token totals follow the
+   same rule: `tokensOf` marks stated-exclusive input with an absent cache counter
+   `inputPartial` (the normalized input is a lower bound), the totals' `tokenCoverage` is
+   `partial`, and `spendOfRun` counts it in `tokensIncomplete`. Limits are still enforced on
+   what is known; the evaluation is reported incomplete (D-02). When the summary's totals
    lack a required counter, `completeness.missing` names it and `remainderValued` is false
    (the remainder is unknown, not 0).
    The tier is chosen by each request's own normalized input; tokens no observed request

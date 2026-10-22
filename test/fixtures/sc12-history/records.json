@@ -597,6 +597,8 @@
       "usage": {
         "inputTokens": 10000,
         "outputTokens": 2000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.06,
         "wallClockMs": 60000,
@@ -634,6 +636,8 @@
       "usage": {
         "inputTokens": 12000,
         "outputTokens": 2500,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.0735,
         "wallClockMs": 120000,
@@ -677,6 +681,8 @@
       "usage": {
         "inputTokens": 20000,
         "outputTokens": 4000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.12,
         "wallClockMs": 60000,
@@ -714,6 +720,8 @@
       "usage": {
         "inputTokens": 3000,
         "outputTokens": 500,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.011,
         "agentMs": 0
@@ -755,6 +763,8 @@
       "usage": {
         "inputTokens": 8000,
         "outputTokens": 1500,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.0465,
         "wallClockMs": 120000,
@@ -799,6 +809,8 @@
       "usage": {
         "inputTokens": 2500,
         "outputTokens": 400,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.009000000000000001,
         "agentMs": 0
@@ -840,6 +852,8 @@
       "usage": {
         "inputTokens": 5000,
         "outputTokens": 1000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.03,
         "wallClockMs": 45000,
@@ -877,6 +891,8 @@
       "usage": {
         "inputTokens": 6000,
         "outputTokens": 1200,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.036,
         "wallClockMs": 45000,
@@ -914,6 +930,8 @@
       "usage": {
         "inputTokens": 6500,
         "outputTokens": 1300,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.039,
         "wallClockMs": 0,
@@ -957,6 +975,8 @@
       "usage": {
         "inputTokens": 3000,
         "outputTokens": 600,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.018,
         "wallClockMs": 0,
@@ -994,6 +1014,8 @@
       "usage": {
         "inputTokens": 4000,
         "outputTokens": 800,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "costSource": "estimated",
         "estimatedCostUsd": 0.024,
         "wallClockMs": 0,
@@ -1031,12 +1053,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 10000,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 2000
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 10000,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 2000,
               "inputIncludesCache": false
             },
@@ -1063,6 +1089,8 @@
       ],
       "totals": {
         "inputTokens": 10000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 2000
       },
       "coverage": "complete",
@@ -1181,12 +1209,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 12000,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 2500
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 12000,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 2500,
               "inputIncludesCache": false
             },
@@ -1213,6 +1245,8 @@
       ],
       "totals": {
         "inputTokens": 12000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 2500
       },
       "coverage": "complete",
@@ -1331,12 +1365,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 20000,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 4000
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 20000,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 4000,
               "inputIncludesCache": false
             },
@@ -1363,6 +1401,8 @@
       ],
       "totals": {
         "inputTokens": 20000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 4000
       },
       "coverage": "complete",
@@ -1481,12 +1521,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 3000,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 500
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 3000,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 500,
               "inputIncludesCache": false
             },
@@ -1513,6 +1557,8 @@
       ],
       "totals": {
         "inputTokens": 3000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 500
       },
       "coverage": "complete",
@@ -1631,12 +1677,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 8000,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 1500
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 8000,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 1500,
               "inputIncludesCache": false
             },
@@ -1663,6 +1713,8 @@
       ],
       "totals": {
         "inputTokens": 8000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 1500
       },
       "coverage": "complete",
@@ -1781,12 +1833,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 2500,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 400
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 2500,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 400,
               "inputIncludesCache": false
             },
@@ -1813,6 +1869,8 @@
       ],
       "totals": {
         "inputTokens": 2500,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 400
       },
       "coverage": "complete",
@@ -1931,12 +1989,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 5000,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 1000
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 5000,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 1000,
               "inputIncludesCache": false
             },
@@ -1963,6 +2025,8 @@
       ],
       "totals": {
         "inputTokens": 5000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 1000
       },
       "coverage": "complete",
@@ -2081,12 +2145,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 6000,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 1200
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 6000,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 1200,
               "inputIncludesCache": false
             },
@@ -2113,6 +2181,8 @@
       ],
       "totals": {
         "inputTokens": 6000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 1200
       },
       "coverage": "complete",
@@ -2231,12 +2301,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 6500,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 1300
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 6500,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 1300,
               "inputIncludesCache": false
             },
@@ -2263,6 +2337,8 @@
       ],
       "totals": {
         "inputTokens": 6500,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 1300
       },
       "coverage": "complete",
@@ -2381,12 +2457,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 3000,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 600
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 3000,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 600,
               "inputIncludesCache": false
             },
@@ -2413,6 +2493,8 @@
       ],
       "totals": {
         "inputTokens": 3000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 600
       },
       "coverage": "complete",
@@ -2531,12 +2613,16 @@
           "exitKind": "completed",
           "counters": {
             "inputTokens": 4000,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "outputTokens": 800
           },
           "coverage": "complete",
           "sources": {
             "requests": {
               "inputTokens": 4000,
+              "cacheReadTokens": 0,
+              "cacheWriteTokens": 0,
               "outputTokens": 800,
               "inputIncludesCache": false
             },
@@ -2563,6 +2649,8 @@
       ],
       "totals": {
         "inputTokens": 4000,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
         "outputTokens": 800
       },
       "coverage": "complete",
@@ -2819,6 +2907,8 @@
             "tokens": {
               "input": 80000,
               "output": 15800,
+              "cacheRead": 0,
+              "cacheWrite": 0,
               "inputConventionUnknown": 11
             },
             "usd": {

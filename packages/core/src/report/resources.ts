@@ -28,6 +28,11 @@ export interface ResourceTokens {
   readonly reasoning?: number;
   /** `unknown`: the provider's convention was not stated, so `input` is the raw figure. */
   readonly inputConvention: "inclusive" | "unknown";
+  /**
+   * Stated-exclusive input with an absent cache counter (an unstated convention is `inputConvention: unknown`): the normalized `input` is a lower bound, since the
+   * missing cache tokens are unknown, not 0.
+   */
+  readonly inputPartial?: boolean;
 }
 
 export interface ResourceDollars {
@@ -97,6 +102,11 @@ export const tokensOf = (counters: MeasurementCounters): ResourceTokens => {
     ...present("cacheWrite", counters.cacheWriteTokens),
     ...present("reasoning", counters.reasoningTokens),
     inputConvention: convention === undefined ? "unknown" : "inclusive",
+    ...(input !== undefined &&
+    convention === false &&
+    (counters.cacheReadTokens === undefined || counters.cacheWriteTokens === undefined)
+      ? { inputPartial: true }
+      : {}),
   };
 };
 
@@ -284,7 +294,11 @@ export const sumResources = (items: readonly AttemptResources[]): ResourceTotals
     usd: { estimated, reported },
     unpriced,
     coverage,
-    tokenCoverage: items.every((item) => item.coverage === "complete") ? "complete" : "partial",
+    tokenCoverage: items.every(
+      (item) => item.coverage === "complete" && item.tokens.inputPartial !== true,
+    )
+      ? "complete"
+      : "partial",
     priceBases,
     estimateIncomplete,
     reportedAttempts,

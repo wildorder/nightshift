@@ -93,6 +93,7 @@ type Rates = Readonly<Record<Category, number>>;
 const ratesAt = (
   price: ModelPrice,
   normalizedInput: number,
+  exclusive: boolean,
 ): { tier: number; rates: Rates; priced: readonly Category[] } => {
   let chosen: ModelPrice | ModelPriceTier = price;
   let tier = 0;
@@ -103,10 +104,16 @@ const ratesAt = (
     }
   });
   const priced: Category[] = [];
-  if (chosen.cacheReadPerMTok !== undefined || price.cacheReadPerMTok !== undefined) {
+  // Exclusive input leaves cache usage unknown when its counter is absent, whether or not a
+  // cache rate is configured; inclusive input only needs a counter when a cache rate splits it.
+  if (exclusive || chosen.cacheReadPerMTok !== undefined || price.cacheReadPerMTok !== undefined) {
     priced.push("cacheRead");
   }
-  if (chosen.cacheWritePerMTok !== undefined || price.cacheWritePerMTok !== undefined) {
+  if (
+    exclusive ||
+    chosen.cacheWritePerMTok !== undefined ||
+    price.cacheWritePerMTok !== undefined
+  ) {
     priced.push("cacheWrite");
   }
   return {
@@ -212,7 +219,10 @@ const addNet = (counters: MeasurementCounters, net: NetTokens): MeasurementCount
 /** The bases with this model's added (once), from the legacy summary-level pair when there are none. */
 const withBasis = (
   bases: readonly ValuationPriceBasis[] | undefined,
-  legacy: { readonly source: string | undefined; readonly version: string | undefined },
+  legacy: {
+    readonly source: string | undefined;
+    readonly version: string | undefined;
+  },
   legacyModels: readonly string[],
   model: string,
   price: ModelPrice,
@@ -298,7 +308,11 @@ export const accumulateRequest = (
   if (net.output === undefined) {
     return unvalued("request without output counter", observation.counters);
   }
-  const { tier, rates, priced } = ratesAt(price, net.normalizedInput);
+  const { tier, rates, priced } = ratesAt(
+    price,
+    net.normalizedInput,
+    observation.counters.inputIncludesCache !== true,
+  );
   // A priced cache category the request did not report is unknown, not 0: the estimate is a lower
   // bound, and the tier (chosen from the counters present) may be understated.
   const absent = priced.filter((category) => net[category] === undefined);
@@ -366,7 +380,9 @@ export const valuationOf = (
   const required: readonly Category[] = [
     "input",
     "output",
-    ...(routePrice === undefined ? [] : ratesAt(routePrice, 0).priced),
+    ...(routePrice === undefined
+      ? []
+      : ratesAt(routePrice, 0, totals.inputIncludesCache !== true).priced),
   ];
   const absentFromTotals = required.filter((category) => tot[category] === undefined);
   const missing = CATEGORIES.filter(
@@ -394,7 +410,7 @@ export const valuationOf = (
       remainderValued = false;
       reasons = addReason(reasons, `no price for ${model}`);
     } else {
-      const { rates } = ratesAt(price, 0);
+      const { rates } = ratesAt(price, 0, totals.inputIncludesCache !== true);
       for (const category of CATEGORIES) {
         if (!mergeComponent(components, model, 0, category, remainder[category], rates[category])) {
           remainderValued = false;

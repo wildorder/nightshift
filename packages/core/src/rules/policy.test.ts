@@ -453,7 +453,8 @@ describe("spend evaluation (D-02)", () => {
       unpriced: 0,
       unmeasured: 0,
       estimateIncomplete: 1,
-      tokensIncomplete: 0,
+      // Exclusive input without cache counters: the normalized total is a lower bound.
+      tokensIncomplete: 1,
     });
   });
 

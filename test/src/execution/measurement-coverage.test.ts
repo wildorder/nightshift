@@ -96,7 +96,12 @@ const observation = (kind: "request" | "snapshot", fields: Record<string, unknow
   } as never;
 };
 
-const mcp = () => ({ name: "nightshift", command: process.execPath, args: ["--version"], env: {} });
+const mcp = () => ({
+  name: "nightshift",
+  command: process.execPath,
+  args: ["--version"],
+  env: {},
+});
 
 const helperStores = (world: World, input: HarnessStartInput) =>
   createHttpStores({
@@ -143,7 +148,11 @@ const jobOf = (world: World, risk: "low" | "high" | "medium" = "low") =>
 /** The report, its markdown and its export, read from the world's stores. */
 const reported = async (world: World) => {
   const report = await gatherReport(world.stores, world.scope);
-  return { report, markdown: renderReport(report), exported: exportReport(report) };
+  return {
+    report,
+    markdown: renderReport(report),
+    exported: exportReport(report),
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -197,7 +206,12 @@ describe("an arbiter launch that reports usage", () => {
                 resolution: "unresolved",
                 ...(earlier === undefined || earlierFinding === undefined
                   ? {}
-                  : { repeats: { examinationId: earlier.examinationId, findingId: "F-01" } }),
+                  : {
+                      repeats: {
+                        examinationId: earlier.examinationId,
+                        findingId: "F-01",
+                      },
+                    }),
               },
             ],
             createdAt: nowIso(w.environment.clock),
@@ -249,7 +263,12 @@ describe("an arbiter launch that reports usage", () => {
             `export const a = ${attempt};\n`,
           );
           await completeJob(
-            { stores: w.stores, clock: w.environment.clock, git: w.git, outbox },
+            {
+              stores: w.stores,
+              clock: w.environment.clock,
+              git: w.git,
+              outbox,
+            },
             context.identity,
             "arbitrated: done",
           );
@@ -326,7 +345,10 @@ describe("an arbiter launch that reports usage", () => {
     expect(arbiters).toHaveLength(1);
     const [summary] = arbiters;
     expect(summary?.route.model).toBe(ARBITER.model);
-    expect(summary?.totals).toMatchObject({ inputTokens: 4_000, outputTokens: 250 });
+    expect(summary?.totals).toMatchObject({
+      inputTokens: 4_000,
+      outputTokens: 250,
+    });
 
     const routes = await world.stores.routingDecisions.listByNode(world.scope, nodeId);
     const arbitration = routes.find((route) => route.purpose === "arbitrate");
@@ -335,7 +357,10 @@ describe("an arbiter launch that reports usage", () => {
     const { report, markdown, exported } = await reported(world);
     const overhead = report.review.overhead.arbiter;
     expect(overhead.calls).toBe(1);
-    expect(overhead.resources.tokens).toMatchObject({ input: 4_000, output: 250 });
+    expect(overhead.resources.tokens).toMatchObject({
+      input: 4_000,
+      output: 250,
+    });
     expect(markdown).toContain("  - arbiter: 1 call(s); input 4000, output 250 tokens");
 
     const row = exported.attempts.find((attempt) => attempt.purpose === "arbitrate");
@@ -411,7 +436,10 @@ describe("a run recorded before request-level capture", () => {
         attempt: 1,
         role: "implementer",
         eligibleOptions: [
-          { target: { harness: "claude", provider: "anthropic", model: "m1" }, eligible: true },
+          {
+            target: { harness: "claude", provider: "anthropic", model: "m1" },
+            eligible: true,
+          },
         ],
         chosen: { harness: "claude", provider: "anthropic", model: "m1" },
         ruleId: "r",
@@ -497,7 +525,10 @@ const launchRig = async (
             ...made.session.run,
             policy: {
               ...policy,
-              routingPolicy: { ...policy.routingPolicy, prices: options.prices },
+              routingPolicy: {
+                ...policy.routingPolicy,
+                prices: options.prices,
+              },
             },
           },
         };
@@ -542,7 +573,13 @@ describe("a context-tier boundary", () => {
           context.input.measurements?.observe(
             observation("request", {
               model: MODEL,
-              counters: { inputTokens, outputTokens, inputIncludesCache: false },
+              counters: {
+                inputTokens,
+                outputTokens,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                inputIncludesCache: false,
+              },
             }),
           );
         }
