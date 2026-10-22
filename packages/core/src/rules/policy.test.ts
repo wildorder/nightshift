@@ -282,6 +282,7 @@ describe("cost (D-P8-08)", () => {
       tokens: 160,
       estimated: true,
       unknown: 0,
+      tokensUnknown: 0,
       evaluation: {
         complete: true,
         unpriced: 0,
@@ -357,8 +358,33 @@ describe("spend evaluation (D-02)", () => {
       estimateIncomplete: 0,
       tokensIncomplete: 0,
     });
-    // Dollars with no counters at all are priced, not half-counted.
+    // Dollars with no counters at all are priced, not half-counted: at the Spend level the
+    // evaluation is the dollar view; only a configured token limit folds the unknown tokens in.
     expect(spendOf([{ actualCostUsd: 1 }]).evaluation.tokensIncomplete).toBe(0);
+  });
+
+  it("a dollars-only attempt completes a dollar limit but not a token limit", () => {
+    const spend = spendOf([{ actualCostUsd: 1 }]);
+    expect(spend.tokensUnknown).toBe(1);
+    expect(budgetEvaluation(spend, { maxUsd: 10 })).toMatchObject({
+      complete: true,
+      tokensIncomplete: 0,
+    });
+    expect(budgetEvaluation(spend, {})).toMatchObject({
+      complete: true,
+      tokensIncomplete: 0,
+    });
+    for (const policy of [{ maxTokens: 1000 }, { maxUsd: 10, maxTokens: 1000 }]) {
+      expect(budgetEvaluation(spend, policy)).toMatchObject({
+        complete: false,
+        tokensIncomplete: 1,
+      });
+    }
+    expect(budgetSpent(spend, { maxTokens: 0 })?.evaluation).toMatchObject({
+      complete: false,
+      tokensIncomplete: 1,
+    });
+    expect(budgetSpent(spend, { maxUsd: 1 })?.evaluation.complete).toBe(true);
   });
 
   it("normalizes input like reports: exclusive input gains its cache tokens", () => {
