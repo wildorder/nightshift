@@ -110,7 +110,12 @@ export const startLocalReceiver = async (options: LocalReceiverOptions): Promise
   const capability = randomBytes(32).toString("hex");
   const entry = childEntry();
   const child = spawn(options.node ?? process.execPath, [...entry.execArgv, entry.file], {
-    stdio: ["ignore", "pipe", "pipe"],
+    // stdin is the stop signal (2026-10-22): its end asks the child to flush and
+    // exit, which works on every platform. On Windows `kill("SIGTERM")` ends the
+    // process outright, before its handler can write the closing line, so every
+    // stop there was reported `stopped_before_flush`. A parent that dies closes
+    // the pipe too, so the receiver does not outlive it.
+    stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
       [RECEIVER_ENV.capability]: capability,
@@ -175,8 +180,13 @@ export const startLocalReceiver = async (options: LocalReceiverOptions): Promise
     stop: (grace = millis(2000)) => {
       stopping ??= (async () => {
         if (exited) return { gap: "receiver_lost" as const };
-        child.kill("SIGTERM");
+        child.stdin?.end();
         if (await waitForExit(child, grace.ms)) {
+          return child.exitCode === 0 ? {} : { gap: "stopped_before_flush" as const };
+        }
+        // Not stopped by its stdin in time: a signal, then a kill, as before.
+        child.kill("SIGTERM");
+        if (await waitForExit(child, 500)) {
           return child.exitCode === 0 ? {} : { gap: "stopped_before_flush" as const };
         }
         child.kill("SIGKILL");

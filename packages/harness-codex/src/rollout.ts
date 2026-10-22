@@ -15,7 +15,7 @@
  * resumes. Only the request and the thread total become observations.
  */
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join as hostJoin, type PlatformPath } from "node:path";
 import type { MeasurementCounters } from "@nightshift/contracts";
 import type { HarnessObservation } from "@nightshift/harness";
 
@@ -377,10 +377,17 @@ export const findRolloutIn = async (
     readonly around?: string;
     readonly fs?: RolloutFs;
     readonly scan?: boolean;
+    /**
+     * How the directories' paths are joined: the platform the rollouts are on,
+     * which is the host's unless a caller says otherwise. Codex run as a Linux
+     * project user writes Linux paths, whatever the host running the tests is.
+     */
+    readonly join?: PlatformPath["join"];
   } = {},
 ): Promise<string | undefined> => {
   if (!THREAD_ID.test(threadId)) return undefined;
   const fs = options.fs ?? nodeFs;
+  const join = options.join ?? hostJoin;
   for (const day of options.around === undefined ? [] : dayDirectories(options.around)) {
     const found = latestMatch(await listing(fs, join(root, day), false), threadId);
     if (found !== undefined) return join(root, day, found);
@@ -401,8 +408,11 @@ export const locateRollout = async (input: {
   readonly home: string;
   readonly around?: string;
   readonly fs?: RolloutFs;
+  /** As `findRolloutIn`'s: how the platform the rollouts are on joins paths. */
+  readonly join?: PlatformPath["join"];
 }): Promise<string | undefined> => {
   if (!THREAD_ID.test(input.threadId)) return undefined;
+  const join = input.join ?? hostJoin;
   const codexHome = input.env.CODEX_HOME ?? join(input.home, ".codex");
   const roots = [join(codexHome, "sessions"), join(codexHome, "archived_sessions")];
   const fs = input.fs ?? nodeFs;
@@ -413,12 +423,13 @@ export const locateRollout = async (input: {
         around: input.around,
         fs,
         scan: false,
+        join,
       });
       if (found !== undefined) return found;
     }
   }
   for (const root of roots) {
-    const found = await findRolloutIn(root, input.threadId, { fs });
+    const found = await findRolloutIn(root, input.threadId, { fs, join });
     if (found !== undefined) return found;
   }
   return undefined;

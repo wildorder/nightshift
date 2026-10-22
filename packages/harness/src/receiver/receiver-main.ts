@@ -287,6 +287,11 @@ const shutdown = async (): Promise<void> => {
 };
 process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
+// The parent's way to stop the receiver on every platform: the end of stdin
+// (2026-10-22). A parent that dies ends it too.
+process.stdin.on("end", () => void shutdown());
+process.stdin.on("error", () => void shutdown());
+process.stdin.resume();
 
 server.listen(0, RECEIVER_HOST, () => {
   const address = server.address();

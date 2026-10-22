@@ -452,9 +452,33 @@ export const createMeasurementRecorder = (
     return { undrained };
   };
 
+  /**
+   * Waits, no longer than the drain deadline, until every observation already
+   * received has been journaled and applied to `current`. An observation is
+   * applied after its journal write, so `current` can trail what was observed.
+   */
+  const applied = async (): Promise<void> => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      (async () => {
+        while (writing !== undefined || queue.length > 0) await pump();
+      })(),
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, drainDeadlineMs);
+      }),
+    ]);
+    clearTimeout(timeout);
+  };
+
   const startSegment = async (options: StartSegmentOptions): Promise<LaunchRef> => {
     const launchId =
       options.launchId ?? `launch_${randomLaunchSuffix(environment.ids.next("meas"))}`;
+    // A resumed session is measured from where its earlier segments left it, so
+    // their observations must be in `current` before the baseline is read: read
+    // while the last snapshot was still queued, the baseline came out unknown and
+    // the resume's whole share was excluded (2026-10-22: on a fast machine the
+    // queue had not caught up, and a 150-token session counted 100).
+    if (options.resumedSession && options.baseline === undefined) await applied();
     const segment = current.segments.reduce((max, s) => Math.max(max, s.segment), -1) + 1;
     const ref: LaunchRef = { agentId: agent.agentId, launchId, segment };
     const at = now();

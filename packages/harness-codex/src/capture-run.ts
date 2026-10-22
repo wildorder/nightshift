@@ -6,7 +6,7 @@
  * becomes a named gap and a lower coverage, never a failed launch or a late
  * exit.
  */
-import { join } from "node:path";
+import { join, type PlatformPath } from "node:path";
 import type { Clock } from "@nightshift/core";
 import { nowIso } from "@nightshift/core";
 import {
@@ -60,6 +60,12 @@ export interface CaptureRunDeps {
   readonly sink: MeasurementSink;
   /** The thread a resume continues. */
   readonly resumeSessionId: string | undefined;
+  /**
+   * How the platform Codex runs on joins paths, for finding its rollouts: the
+   * adapter's `platform`, not the host's (2026-10-22). On a Windows CI leg the
+   * adapter told it runs on Linux looked for `\project\codex\sessions`.
+   */
+  readonly join: PlatformPath["join"];
 }
 
 export interface CaptureSummary {
@@ -152,7 +158,7 @@ export const beginCapture = async (deps: CaptureRunDeps): Promise<CaptureRun> =>
     if (!homeKnown) throw new Error(homeGap);
     unreadable = false;
     const path = await bounded(
-      () => locateRollout({ threadId, env, home, around, fs: discoveryFs }),
+      () => locateRollout({ threadId, env, home, around, fs: discoveryFs, join: deps.join }),
       READ_TIMEOUT_MS,
     );
     if (path === undefined)

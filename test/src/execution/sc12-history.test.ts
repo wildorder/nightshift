@@ -2149,8 +2149,17 @@ describe("the complete SC-12 history", () => {
       await mkdir(join(FIXTURE_PATH, ".."), { recursive: true });
       await writeFile(FIXTURE_PATH, text, "utf8");
     } else if (committed !== text) {
+      // The first line that differs, so a mismatch on another machine says what.
+      const ours = text.split("\n");
+      const theirs = (committed ?? "").split("\n");
+      const at = ours.findIndex((line, index) => line !== theirs[index]);
+      const differs =
+        committed === undefined
+          ? ""
+          : `First difference at line ${at + 1}:\n  committed: ${theirs[at] ?? "(end)"}\n  produced:  ${ours[at] ?? "(end)"}\n`;
       throw new Error(
         `${FIXTURE_NAME} ${committed === undefined ? "is missing" : "no longer matches the records this story produces"}.\n` +
+          differs +
           `If the change is intended, regenerate it and commit the result:\n` +
           `  ${MEASUREMENT_FIXTURES_ENV}=write npx vitest run test/src/execution/sc12-history.test.ts`,
       );

@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RECEIVER_HOST } from "./config.js";
 import { readReceiverJournal } from "./journal.js";
@@ -50,13 +52,31 @@ const firstRecord = (r: LocalReceiver): Record<string, unknown> | undefined => {
   return Array.isArray(records) ? (records[0] as Record<string, unknown>) : undefined;
 };
 
+/**
+ * A process's command line as the operating system reports it to anyone who
+ * asks: `ps` on Linux and macOS, CIM on Windows. Not `/proc`, which only Linux has.
+ */
+const commandLineOf = (pid: number): string =>
+  process.platform === "win32"
+    ? execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+        ],
+        { encoding: "utf8" },
+      )
+    : execFileSync("ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8" });
+
 describe("local receiver", () => {
   it("binds loopback only and keeps the capability out of argv", async () => {
     expect(RECEIVER_HOST).toBe("127.0.0.1");
     const r = await start();
     expect(r.endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(r.capability).toMatch(/^[0-9a-f]{64}$/);
-    const cmdline = readFileSync(`/proc/${r.pid}/cmdline`, "utf8");
+    const cmdline = commandLineOf(r.pid);
+    expect(cmdline).toContain("receiver-main");
     expect(cmdline).not.toContain(r.capability);
   });
 
@@ -512,7 +532,7 @@ describe("readReceiverJournal", () => {
       const run = (extra: Record<string, string>) =>
         spawnSync(
           process.execPath,
-          ["--import", `data:text/javascript,${encodeURIComponent(hooks)}`, main.pathname],
+          ["--import", `data:text/javascript,${encodeURIComponent(hooks)}`, fileURLToPath(main)],
           {
             env: {
               ...process.env,

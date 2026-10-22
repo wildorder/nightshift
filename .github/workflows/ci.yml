@@ -10,8 +10,15 @@ on:
   pull_request:
     branches:
       - main
-  # By hand, from the Actions tab or `gh workflow run CI`.
+  # By hand, from the Actions tab or `gh workflow run CI`. `windows: true` adds
+  # the Windows leg to a branch's run, so a change can be proven there before it
+  # merges rather than after (2026-10-22: main's Windows leg went red on merge).
   workflow_dispatch:
+    inputs:
+      windows:
+        description: Also run the Windows leg
+        type: boolean
+        default: false
 
 # One run per ref. A new push supersedes an in-flight run rather than queueing.
 concurrency:
@@ -33,7 +40,7 @@ jobs:
       # well as every push to a PR. A pull request is verified on Linux.
       fail-fast: false
       matrix:
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        os: ${{ (github.event_name == 'push' || inputs.windows) && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
 
     steps:
       - name: Checkout

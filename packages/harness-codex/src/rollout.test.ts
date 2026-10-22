@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { posix } from "node:path";
 import {
   MAX_OBSERVATION_BYTES,
   type MeasurementObservation,
@@ -433,11 +434,13 @@ describe("locateRollout", () => {
       return entries;
     },
   });
+  // Linux paths, as on a runner machine, joined as Linux joins them on any host.
   const input = {
     threadId: THREAD,
     env: { CODEX_HOME: "/h" },
     home: "/u",
     around: "2026-10-20T23:55:00.000Z",
+    join: posix.join,
   };
 
   it("finds the file under the day directory", async () => {
@@ -459,9 +462,9 @@ describe("locateRollout", () => {
 
   it("uses ~/.codex by default, returns undefined when gone, refuses a bad id", async () => {
     const fs = listing({ "/u/.codex/sessions": [NAME] });
-    expect(await locateRollout({ threadId: THREAD, env: {}, home: "/u", fs })).toBe(
-      `/u/.codex/sessions/${NAME}`,
-    );
+    expect(
+      await locateRollout({ threadId: THREAD, env: {}, home: "/u", fs, join: posix.join }),
+    ).toBe(`/u/.codex/sessions/${NAME}`);
     expect(await locateRollout({ ...input, fs: listing({}) })).toBeUndefined();
     expect(await locateRollout({ ...input, threadId: "../x", fs })).toBeUndefined();
   });
