@@ -1207,6 +1207,38 @@ describe("per-request valuation", () => {
     expect(recovered.valuation.completeness?.reasons).toContain("request without output counter");
   });
 
+  it("recovery keeps a request without priced cache counters an incomplete lower bound", async () => {
+    const cachePrice = {
+      inputPerMTok: 1,
+      outputPerMTok: 10,
+      cacheReadPerMTok: 0.1,
+      cacheWritePerMTok: 2,
+    };
+    const world = await build();
+    const recorder = world.recorder({
+      price: cachePrice,
+      pid: DEAD_PID,
+      limits: { publishEvery: { observations: 1000, ms: 3_600_000 } },
+    });
+    await recorder.startSegment({ resumedSession: false });
+    recorder.sink.observe(priced("a", 1000, 100));
+    await recorder.drain();
+    await recoverMeasurementJournals(world.later, world.f.scope, {
+      price: () => cachePrice,
+    });
+    const recovered = await world.stored();
+    expect(recovered.valuation.estimatedUsd).toBeCloseTo(0.002, 9);
+    expect(recovered.valuation.requests?.missing).toEqual(["cacheRead", "cacheWrite"]);
+    expect(recovered.valuation.completeness).toMatchObject({
+      valuedRequests: 1,
+      unvaluedRequests: 0,
+      missing: ["cacheRead", "cacheWrite"],
+    });
+    expect(recovered.valuation.completeness?.reasons).toContain(
+      "cache counters absent: estimate is a lower bound",
+    );
+  });
+
   it("recovery keeps each model's own price source and version", async () => {
     const prices = {
       a: { inputPerMTok: 1, outputPerMTok: 2, source: "A", version: "v1" },

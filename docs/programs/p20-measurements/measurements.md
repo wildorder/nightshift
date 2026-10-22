@@ -49,10 +49,16 @@ Metric ids: `tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_
    **Required counters:** a request is valued only with both `inputTokens` and
    `outputTokens`. An absent required counter is unknown, never 0: the request is
    unvalued with a reason ("request without input counter" / "request without output
-   counter") and its present counters still accumulate. Absent cache counters mean none
-   reported and do not block valuation. When the summary's totals lack input or output,
-   `completeness.missing` names the absent categories, `remainderValued` is false (the
-   remainder is unknown) and the valuation is incomplete.
+   counter") and its present counters still accumulate. The required categories also
+   include each cache category the model's price (or the tier chosen for the request) prices:
+   `cacheRead` when it defines `cacheReadPerMTok`, `cacheWrite` when it defines
+   `cacheWritePerMTok`. An absent priced cache counter does not drop the request: its present
+   categories are valued, `requests.missing` and `completeness.missing` name the absent
+   categories with a reason, and the valuation is incomplete and a **lower bound** (the tier,
+   chosen from the counters present, may be understated). An explicit 0 is a report of none and
+   is complete, as is any request under a price without cache rates. When the summary's totals
+   lack a required counter, `completeness.missing` names it and `remainderValued` is false
+   (the remainder is unknown, not 0).
    The tier is chosen by each request's own normalized input; tokens no observed request
    covers are a *remainder*, valued at the base tier, and `completeness`
    (`valuedRequests`, `unvaluedRequests`, `remainderTokens`, `remainderValued`, `reasons`)

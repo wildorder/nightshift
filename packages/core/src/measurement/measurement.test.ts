@@ -920,16 +920,75 @@ describe("per-request valuation", () => {
     expect(b.estimatedUsd).toBeUndefined();
   });
 
-  it("treats absent cache counters as none reported, without blocking valuation", () => {
-    const s = foldObservationPriced(
-      begin(),
-      request(excl(1000, 100), { model: "m1" }),
-      1,
-      T(1),
-      prices,
-    );
-    expect(valuationOf(s, prices).completeness).toMatchObject({
-      valuedRequests: 1,
+  describe("absent cache counters", () => {
+    const cachePriced: ModelPrice = {
+      inputPerMTok: 1,
+      outputPerMTok: 10,
+      cacheReadPerMTok: 0.1,
+      cacheWritePerMTok: 2,
+    };
+    const cached = { m1: cachePriced };
+    const valued = (counters: MeasurementCounters, table: Record<string, ModelPrice>) =>
+      valuationOf(
+        foldObservationPriced(begin(), request(counters, { model: "m1" }), 1, T(1), table),
+        table,
+      );
+
+    it("makes a request without priced cache counters an incomplete lower bound", () => {
+      const v = valued(excl(1000, 100), cached);
+      expect(v.estimatedUsd).toBeCloseTo(0.002, 9);
+      expect(v.completeness).toMatchObject({
+        valuedRequests: 1,
+        unvaluedRequests: 0,
+        // The totals lack the counters too, so their remainder is unknown.
+        remainderValued: false,
+        missing: ["cacheRead", "cacheWrite"],
+      });
+      expect(v.completeness?.reasons).toContain("cache counters absent: estimate is a lower bound");
+      expect(v.requests?.missing).toEqual(["cacheRead", "cacheWrite"]);
+      const s = foldObservationPriced(
+        begin(),
+        request(excl(1000, 100), { model: "m1" }),
+        1,
+        T(1),
+        cached,
+      );
+      const spend = spendOfRun({ routes: [], measurements: [{ ...s, valuation: v }] });
+      expect(spend.evaluation.complete).toBe(false);
+      expect(spend.evaluation.estimateIncomplete).toBe(1);
+    });
+
+    it("leaves the same request complete when the price has no cache rates", () => {
+      const v = valued(excl(1000, 100), prices);
+      expect(v.completeness?.missing).toBeUndefined();
+      expect(v.completeness?.reasons).toEqual([]);
+    });
+
+    it("is incomplete for inclusive input with absent priced cache counters", () => {
+      const v = valued({ inputTokens: 1000, outputTokens: 100, inputIncludesCache: true }, cached);
+      expect(v.completeness?.missing).toEqual(["cacheRead", "cacheWrite"]);
+    });
+
+    it("names only the absent category", () => {
+      const v = valued({ ...excl(1000, 100), cacheReadTokens: 5 }, cached);
+      expect(v.completeness?.missing).toEqual(["cacheWrite"]);
+    });
+
+    it("treats explicit zero cache counters as reported", () => {
+      const v = valued({ ...excl(1000, 100), cacheReadTokens: 0, cacheWriteTokens: 0 }, cached);
+      expect(v.completeness?.missing).toBeUndefined();
+      expect(v.completeness?.reasons).toEqual([]);
+    });
+
+    it("selects the tier from present counters only", () => {
+      const tieredCache: ModelPrice = {
+        ...tiered,
+        cacheReadPerMTok: 0.3,
+        tiers: [{ aboveInputTokens: 200_000, inputPerMTok: 6, outputPerMTok: 22.5 }],
+      };
+      const v = valued(excl(150_000, 10), { m1: tieredCache });
+      expect(v.components?.every((c) => c.tier === 0)).toBe(true);
+      expect(v.completeness?.missing).toEqual(["cacheRead"]);
     });
   });
 

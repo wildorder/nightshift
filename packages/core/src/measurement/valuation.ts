@@ -90,7 +90,10 @@ type Category = ValuationComponent["category"];
 type Rates = Readonly<Record<Category, number>>;
 
 /** The tier a request of this normalized input is priced at, and that tier's per-MTok rates. */
-const ratesAt = (price: ModelPrice, normalizedInput: number): { tier: number; rates: Rates } => {
+const ratesAt = (
+  price: ModelPrice,
+  normalizedInput: number,
+): { tier: number; rates: Rates; priced: readonly Category[] } => {
   let chosen: ModelPrice | ModelPriceTier = price;
   let tier = 0;
   (price.tiers ?? []).forEach((candidate, index) => {
@@ -99,8 +102,16 @@ const ratesAt = (price: ModelPrice, normalizedInput: number): { tier: number; ra
       tier = index + 1;
     }
   });
+  const priced: Category[] = [];
+  if (chosen.cacheReadPerMTok !== undefined || price.cacheReadPerMTok !== undefined) {
+    priced.push("cacheRead");
+  }
+  if (chosen.cacheWritePerMTok !== undefined || price.cacheWritePerMTok !== undefined) {
+    priced.push("cacheWrite");
+  }
   return {
     tier,
+    priced,
     rates: {
       input: chosen.inputPerMTok,
       output: chosen.outputPerMTok,
@@ -115,29 +126,36 @@ interface NetTokens {
   readonly input: number | undefined;
   /** Absent when the request reported none: never defaulted to 0. */
   readonly output: number | undefined;
-  readonly cacheRead: number;
-  readonly cacheWrite: number;
-  /** The request's input including cache tokens: what selects a tier. */
+  /** Absent when not reported: kept apart from 0, which is an explicit report of none. */
+  readonly cacheRead: number | undefined;
+  readonly cacheWrite: number | undefined;
+  /** The request's input including the cache tokens that were reported: what selects a tier. */
   readonly normalizedInput: number;
 }
 
 const netOf = (counters: MeasurementCounters): NetTokens => {
-  const reads = counters.cacheReadTokens ?? 0;
-  const writes = counters.cacheWriteTokens ?? 0;
+  const reads = counters.cacheReadTokens;
+  const writes = counters.cacheWriteTokens;
   const raw = counters.inputTokens;
   const inclusive = counters.inputIncludesCache === true;
   return {
-    input: raw === undefined ? undefined : inclusive ? Math.max(0, raw - reads - writes) : raw,
+    input:
+      raw === undefined
+        ? undefined
+        : inclusive
+          ? Math.max(0, raw - (reads ?? 0) - (writes ?? 0))
+          : raw,
     output: counters.outputTokens,
     cacheRead: reads,
     cacheWrite: writes,
-    normalizedInput: inclusive ? (raw ?? 0) : (raw ?? 0) + reads + writes,
+    normalizedInput: inclusive ? (raw ?? 0) : (raw ?? 0) + (reads ?? 0) + (writes ?? 0),
   };
 };
 
 const CATEGORIES: readonly Category[] = ["input", "output", "cacheRead", "cacheWrite"];
 const MAX_COMPONENTS = 64;
 const MAX_REASONS = 8;
+const CACHE_ABSENT_REASON = "cache counters absent: estimate is a lower bound";
 
 const mergeComponent = (
   components: ValuationComponent[],
@@ -186,8 +204,8 @@ const emptyRequests = (): ValuationRequests => ({
 const addNet = (counters: MeasurementCounters, net: NetTokens): MeasurementCounters => ({
   inputTokens: (counters.inputTokens ?? 0) + (net.input ?? 0),
   outputTokens: (counters.outputTokens ?? 0) + (net.output ?? 0),
-  cacheReadTokens: (counters.cacheReadTokens ?? 0) + net.cacheRead,
-  cacheWriteTokens: (counters.cacheWriteTokens ?? 0) + net.cacheWrite,
+  cacheReadTokens: (counters.cacheReadTokens ?? 0) + (net.cacheRead ?? 0),
+  cacheWriteTokens: (counters.cacheWriteTokens ?? 0) + (net.cacheWrite ?? 0),
   inputIncludesCache: false,
 });
 
@@ -280,7 +298,10 @@ export const accumulateRequest = (
   if (net.output === undefined) {
     return unvalued("request without output counter", observation.counters);
   }
-  const { tier, rates } = ratesAt(price, net.normalizedInput);
+  const { tier, rates, priced } = ratesAt(price, net.normalizedInput);
+  // A priced cache category the request did not report is unknown, not 0: the estimate is a lower
+  // bound, and the tier (chosen from the counters present) may be understated.
+  const absent = priced.filter((category) => net[category] === undefined);
   const components = [...acc.components];
   for (const category of CATEGORIES) {
     if (!mergeComponent(components, model, tier, category, net[category] ?? 0, rates[category])) {
@@ -304,6 +325,14 @@ export const accumulateRequest = (
         counters: addNet(acc.counters, net),
         components,
         valuedRequests: acc.valuedRequests + 1,
+        ...(absent.length === 0
+          ? {}
+          : {
+              reasons: addReason(acc.reasons, CACHE_ABSENT_REASON),
+              missing: CATEGORIES.filter(
+                (category) => absent.includes(category) || acc.missing?.includes(category),
+              ),
+            }),
         priceBases,
         ...agreedBasis(priceBases),
       },
@@ -333,20 +362,30 @@ export const valuationOf = (
 
   const tot = netOf(totals);
   const seen = netOf(acc.counters);
-  const missing: ("input" | "output")[] = [];
-  if (tot.input === undefined) missing.push("input");
-  if (tot.output === undefined) missing.push("output");
+  const routePrice = priceOf(prices, summary.route.model);
+  const required: readonly Category[] = [
+    "input",
+    "output",
+    ...(routePrice === undefined ? [] : ratesAt(routePrice, 0).priced),
+  ];
+  const absentFromTotals = required.filter((category) => tot[category] === undefined);
+  const missing = CATEGORIES.filter(
+    (category) => absentFromTotals.includes(category) || acc.missing?.includes(category),
+  );
   const remainder = {
     input: Math.max(0, (tot.input ?? 0) - (seen.input ?? 0)),
     output: Math.max(0, (tot.output ?? 0) - (seen.output ?? 0)),
-    cacheRead: Math.max(0, tot.cacheRead - seen.cacheRead),
-    cacheWrite: Math.max(0, tot.cacheWrite - seen.cacheWrite),
+    cacheRead: Math.max(0, (tot.cacheRead ?? 0) - (seen.cacheRead ?? 0)),
+    cacheWrite: Math.max(0, (tot.cacheWrite ?? 0) - (seen.cacheWrite ?? 0)),
   };
   const remainderTokens = CATEGORIES.reduce((sum, category) => sum + remainder[category], 0);
   // An absent required counter leaves the remainder unknown, not 0.
-  let remainderValued = missing.length === 0;
-  for (const category of missing) {
+  let remainderValued = absentFromTotals.length === 0;
+  for (const category of absentFromTotals) {
     reasons = addReason(reasons, `totals without ${category} counter`);
+  }
+  if (acc.missing !== undefined && acc.missing.length > 0) {
+    reasons = addReason(reasons, CACHE_ABSENT_REASON);
   }
   if (remainderTokens > 0) {
     const model = summary.route.model;
@@ -379,7 +418,7 @@ export const valuationOf = (
   const evidence = acc.valuedRequests + acc.unvaluedRequests > 0 || remainderTokens > 0;
   const estimatedUsd =
     components.length > 0 ? components.reduce((sum, c) => sum + c.usd, 0) : undefined;
-  const incomplete = acc.unvaluedRequests > 0 || !remainderValued;
+  const incomplete = acc.unvaluedRequests > 0 || !remainderValued || missing.length > 0;
   const completeness: ValuationCompleteness | undefined = evidence
     ? {
         valuedRequests: acc.valuedRequests,

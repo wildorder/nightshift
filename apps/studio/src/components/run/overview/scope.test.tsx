@@ -17,6 +17,10 @@ import { runPath, SCENARIOS, type ScenarioName, type Seeded } from "../../../pre
 import { mountStudio } from "../../../test-support.js";
 import { HistoryTiles } from "./history.js";
 
+const omitMissing = <T extends { missing?: unknown }>(completeness: T): Omit<T, "missing"> => {
+  const { missing: _missing, ...rest } = completeness;
+  return rest;
+};
 const TITLE = "Invoices persist and webhooks deliver once";
 
 interface Options {
@@ -34,6 +38,8 @@ interface Options {
   readonly live?: boolean;
   /** Every attempt's summary is complete and fully valued (the fixture has one that is not). */
   readonly fullyValued?: boolean;
+  /** With fullyValued: the summaries' priced cache counters are absent, a lower-bound estimate. */
+  readonly absentPricedCache?: boolean;
 }
 
 interface Facts {
@@ -107,13 +113,20 @@ const mount = async (options: Options = {}) => {
                 ? {}
                 : {
                     completeness: {
-                      ...summary.valuation.completeness,
+                      ...omitMissing(summary.valuation.completeness),
+                      ...(options.absentPricedCache
+                        ? {
+                            missing: ["cacheRead", "cacheWrite"] as ("cacheRead" | "cacheWrite")[],
+                          }
+                        : {}),
                       valuedRequests:
                         summary.valuation.completeness.valuedRequests +
                         summary.valuation.completeness.unvaluedRequests,
                       unvaluedRequests: 0,
                       remainderValued: true,
-                      reasons: [],
+                      reasons: options.absentPricedCache
+                        ? ["cache counters absent: estimate is a lower bound"]
+                        : [],
                     },
                   }),
             },
@@ -131,7 +144,10 @@ const mount = async (options: Options = {}) => {
       facts.correction = correction as Facts["correction"];
       if (options.unmeasured) {
         const source = await stores.runs.get(
-          { projectId: scope.projectId, programId: correction?.programId as ProgramId },
+          {
+            projectId: scope.projectId,
+            programId: correction?.programId as ProgramId,
+          },
           correction?.runId as RunId,
         );
         if (source === undefined) throw new Error("no correction run");
@@ -147,7 +163,13 @@ const mount = async (options: Options = {}) => {
               version: history.version + 1,
               actor: (history.revisions[0] as (typeof history.revisions)[number]).actor,
               recordedAt: history.updatedAt,
-              added: [{ programId: source.programId, runId: extra, role: "contributing" }],
+              added: [
+                {
+                  programId: source.programId,
+                  runId: extra,
+                  role: "contributing",
+                },
+              ],
               removed: [],
             },
           ],
@@ -183,13 +205,17 @@ const mount = async (options: Options = {}) => {
 
 const runTiles = () => screen.queryByRole("group", { name: "Headline summaries for this run" });
 const historyTiles = () =>
-  screen.queryByRole("group", { name: "Headline summaries for this completion history" });
+  screen.queryByRole("group", {
+    name: "Headline summaries for this completion history",
+  });
 const decoded = (location: { current: string }) => decodeURIComponent(location.current);
 
 describe("the scope control", () => {
   it("switches between this run and a history, replacing figures and keeping the scope in the URL", async () => {
     const { location, facts } = await mount();
-    const select = (await screen.findByRole("combobox", { name: "Scope" })) as HTMLSelectElement;
+    const select = (await screen.findByRole("combobox", {
+      name: "Scope",
+    })) as HTMLSelectElement;
     expect(select.value).toBe("run");
     expect(screen.getByTestId("scope-label").textContent).toBe("This run");
     await waitFor(() => expect(runTiles()?.textContent).toContain("1 of 4"));
@@ -232,12 +258,18 @@ describe("the scope control", () => {
   });
 
   it("restores a history scope from the URL on mount and keeps it across a tab change", async () => {
-    const { location, facts } = await mount({ query: (id) => `tab=overview&scope=history:${id}` });
+    const { location, facts } = await mount({
+      query: (id) => `tab=overview&scope=history:${id}`,
+    });
     expect((await screen.findByTestId("scope-label")).textContent).toBe(
       `Completion history: ${TITLE}`,
     );
     expect(
-      ((await screen.findByRole("combobox", { name: "Scope" })) as HTMLSelectElement).value,
+      (
+        (await screen.findByRole("combobox", {
+          name: "Scope",
+        })) as HTMLSelectElement
+      ).value,
     ).toBe(`history:${facts.historyId}`);
     expect(runTiles()).toBeNull();
 
@@ -261,7 +293,9 @@ describe("the scope control", () => {
 
 describe("a completion history", () => {
   it("lists the members with role, status, verdict and a link to each run, across programs", async () => {
-    const { facts, seeded } = await mount({ query: (id) => `scope=history:${id}` });
+    const { facts, seeded } = await mount({
+      query: (id) => `scope=history:${id}`,
+    });
     const table = await screen.findByRole("table", { name: "Member runs" });
     const rows = within(table).getAllByRole("row").slice(1);
     expect(rows).toHaveLength(3);
@@ -283,7 +317,9 @@ describe("a completion history", () => {
   });
 
   it("keeps the history scope after following a member link", async () => {
-    const { facts, location } = await mount({ query: (id) => `scope=history:${id}` });
+    const { facts, location } = await mount({
+      query: (id) => `scope=history:${id}`,
+    });
     const table = await screen.findByRole("table", { name: "Member runs" });
     const rows = within(table).getAllByRole("row").slice(1);
     await userEvent.click(within(rows[2] as HTMLElement).getByRole("link"));
@@ -322,12 +358,18 @@ describe("a completion history", () => {
     sheet = await screen.findByRole("dialog");
     expect(sheet.textContent).toContain("Rated 3 of 3 eligible runs");
     expect(sheet.textContent).toContain("Worked: 2 of 3 rated");
-    expect(within(sheet).getByRole("region", { name: "Definition: Rating coverage" })).toBeTruthy();
+    expect(
+      within(sheet).getByRole("region", {
+        name: "Definition: Rating coverage",
+      }),
+    ).toBeTruthy();
     expect(within(sheet).getAllByRole("link")).toHaveLength(3);
   });
 
   it("gives the member timeline a text equivalent and refreshes it under the run-status key", async () => {
-    const { client, seeded } = await mount({ query: (id) => `scope=history:${id}` });
+    const { client, seeded } = await mount({
+      query: (id) => `scope=history:${id}`,
+    });
     const timeline = await screen.findByTestId("history-timeline");
     const lines = timeline.querySelectorAll("li");
     expect(lines).toHaveLength(3);
@@ -427,7 +469,9 @@ describe("a completion history", () => {
 describe("the budget evaluation", () => {
   it("says what cannot be evaluated when the figures are incomplete, and never 'within budget'", async () => {
     await mount({ name: "sparse", maxUsd: 50, wipeUsage: true });
-    const group = await screen.findByRole("group", { name: "Headline summaries for this run" });
+    const group = await screen.findByRole("group", {
+      name: "Headline summaries for this run",
+    });
     const consumed = group.querySelector("[data-tile='consumed']") as HTMLElement;
     await waitFor(() => expect(consumed.textContent).toContain("cannot be evaluated completely"));
     expect(consumed.textContent).toMatch(
@@ -446,7 +490,9 @@ describe("the budget evaluation", () => {
 
   it("names the unvalued-usage gap on the complete fixture and never says 'Within budget'", async () => {
     await mount({ maxUsd: 500 });
-    const group = await screen.findByRole("group", { name: "Headline summaries for this run" });
+    const group = await screen.findByRole("group", {
+      name: "Headline summaries for this run",
+    });
     const consumed = group.querySelector("[data-tile='consumed']") as HTMLElement;
     await userEvent.click(consumed);
     const sheet = await screen.findByRole("dialog");
@@ -457,7 +503,9 @@ describe("the budget evaluation", () => {
 
   it("states a complete evaluation against the limit, and no cue on the tile", async () => {
     await mount({ maxUsd: 500, fullyValued: true });
-    const group = await screen.findByRole("group", { name: "Headline summaries for this run" });
+    const group = await screen.findByRole("group", {
+      name: "Headline summaries for this run",
+    });
     const consumed = group.querySelector("[data-tile='consumed']") as HTMLElement;
     await userEvent.click(consumed);
     const sheet = await screen.findByRole("dialog");
@@ -467,12 +515,27 @@ describe("the budget evaluation", () => {
     expect(consumed.textContent).not.toContain("cannot be evaluated");
   });
 
+  it("cannot evaluate completely when priced cache counters are absent, and never says 'Within budget'", async () => {
+    await mount({ maxUsd: 500, fullyValued: true, absentPricedCache: true });
+    const group = await screen.findByRole("group", {
+      name: "Headline summaries for this run",
+    });
+    const consumed = group.querySelector("[data-tile='consumed']") as HTMLElement;
+    await waitFor(() => expect(consumed.textContent).toContain("cannot be evaluated completely"));
+    await userEvent.click(consumed);
+    const sheet = await screen.findByRole("dialog");
+    expect(sheet.textContent).toContain("Cannot be evaluated completely");
+    expect(sheet.textContent).not.toMatch(/within budget/i);
+  });
+
   it("says no limit is configured when the program has none", async () => {
     await mount();
     await userEvent.click(
-      (await screen.findByRole("group", { name: "Headline summaries for this run" })).querySelector(
-        "[data-tile='consumed']",
-      ) as HTMLElement,
+      (
+        await screen.findByRole("group", {
+          name: "Headline summaries for this run",
+        })
+      ).querySelector("[data-tile='consumed']") as HTMLElement,
     );
     expect((await screen.findByRole("dialog")).textContent).toContain("no limit is configured");
   });
@@ -567,7 +630,10 @@ describe("a completion history's delivery, rework, review and time evidence", ()
   });
 
   it("names the member with no records in a partial history and counts only members with evidence", async () => {
-    await mount({ name: "partial-history", query: (id) => `scope=history:${id}` });
+    await mount({
+      name: "partial-history",
+      query: (id) => `scope=history:${id}`,
+    });
     const delivered = await tileOf("delivered");
     await waitFor(() => expect(delivered.textContent).toContain("across 1 of 2 member runs"));
     await userEvent.click(delivered);
@@ -582,13 +648,23 @@ describe("a completion history's delivery, rework, review and time evidence", ()
   });
 
   it("reads not observed, never 0, when no member carries evidence", () => {
-    const coverage = { withEvidence: 0, readable: 2, unavailable: ["p/a", "p/b"] };
+    const coverage = {
+      withEvidence: 0,
+      readable: 2,
+      unavailable: ["p/a", "p/b"],
+    };
     const history = {
       completionHistoryId: "chist_x",
       title: "No evidence",
       version: 1,
       members: [
-        { programId: "p", runId: "a", role: "anchor", verdict: "not_rated", carriedStrands: 0 },
+        {
+          programId: "p",
+          runId: "a",
+          role: "anchor",
+          verdict: "not_rated",
+          carriedStrands: 0,
+        },
         {
           programId: "p",
           runId: "b",

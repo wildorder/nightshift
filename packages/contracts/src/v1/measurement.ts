@@ -283,6 +283,8 @@ export const ValuationComponentSchema = z.strictObject({
 });
 export type ValuationComponent = z.infer<typeof ValuationComponentSchema>;
 
+const ValuationCategorySchema = z.enum(["input", "output", "cacheRead", "cacheWrite"]);
+
 export const ValuationCompletenessSchema = z.strictObject({
   valuedRequests: z.int().min(0),
   unvaluedRequests: z.int().min(0),
@@ -291,13 +293,10 @@ export const ValuationCompletenessSchema = z.strictObject({
   remainderValued: z.boolean(),
   reasons: z.array(z.string().max(200)).max(8),
   /**
-   * Required counters (input, output) the totals lack. Their remainder is unknown, not 0, so the
-   * valuation is incomplete.
+   * Required counters the valuation lacks: input and output, and each cache category the price
+   * prices. Their remainder is unknown, not 0, so the valuation is incomplete and a lower bound.
    */
-  missing: z
-    .array(z.enum(["input", "output"]))
-    .max(2)
-    .optional(),
+  missing: z.array(ValuationCategorySchema).max(4).optional(),
 });
 export type ValuationCompleteness = z.infer<typeof ValuationCompletenessSchema>;
 
@@ -317,6 +316,12 @@ export const ValuationRequestsSchema = z.strictObject({
   valuedRequests: z.int().min(0),
   unvaluedRequests: z.int().min(0),
   reasons: z.array(z.string().max(200)).max(8),
+  /** Priced cache categories absent from a valued request: its estimate is a lower bound. */
+  missing: z
+    .array(ValuationCategorySchema)
+    .max(4)
+    .refine((categories) => new Set(categories).size === categories.length, "duplicate category")
+    .optional(),
   /** Set only when every basis agrees; `priceBases` is authoritative. */
   priceSource: z.string().optional(),
   priceVersion: z.string().optional(),
