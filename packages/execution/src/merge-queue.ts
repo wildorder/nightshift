@@ -36,11 +36,14 @@ import type {
   ExecutionNodeId,
   Verification,
 } from "@nightshift/contracts";
+import { lifecycleOperationId } from "@nightshift/contracts";
 import { nextToIntegrate, nowIso, transition } from "@nightshift/core";
 import type { ExecutionEnvironment } from "./environment.js";
 import { examineInQueue, recordRulingLanded } from "./examine.js";
 import { effectiveHead, replayCommit } from "./git/index.js";
 import { integrateNode } from "./integrate.js";
+import { type LifecycleInput, observeLifecycle } from "./lifecycle.js";
+import type { EventOutbox } from "./outbox.js";
 import type { IntegrateCandidate, IntegrationCandidate } from "./runner.js";
 import { mergeHeadIntoStrand } from "./strand.js";
 import { verifyNode } from "./verify.js";
@@ -66,7 +69,42 @@ export interface MergeQueue {
 interface Waiting {
   readonly candidate: IntegrationCandidate;
   readonly done: () => void;
+  /** The node integrating when this one last learned who is ahead of it (P20). */
+  predecessor: ExecutionNodeId | undefined;
 }
+
+/** What an integration says about itself while it runs, and how it ended (P20). */
+interface Trace {
+  readonly note: (
+    reason: string,
+    refs?: readonly { readonly kind: string; readonly ref: string }[],
+  ) => void;
+  /** The reconcile found a conflict with the head. */
+  conflicted: boolean;
+}
+
+/** The outbox, told apart only by remembering that a review was skipped (P20). */
+const watchingSkips = (outbox: EventOutbox): { outbox: EventOutbox; skipped: () => boolean } => {
+  let skipped = false;
+  return {
+    skipped: () => skipped,
+    outbox: {
+      emit: (input) => {
+        if (input.type === "examination.skipped") skipped = true;
+        return outbox.emit(input);
+      },
+      flush: (deadlineMs) => outbox.flush(deadlineMs),
+      spill: (path) => outbox.spill(path),
+      replay: (path) => outbox.replay(path),
+      get pending() {
+        return outbox.pending;
+      },
+      get delivered() {
+        return outbox.delivered;
+      },
+    },
+  };
+};
 
 /** Durable stages owned by the queue, including a landing whose acknowledgement was lost. */
 export const RECOVERABLE_CANDIDATE_STATUSES = new Set([
@@ -90,6 +128,25 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     tail = result.catch(() => undefined);
     return result;
   };
+
+  // --- Lifecycle observations (P20): the queue turn and the integration ------------------
+  const observe = (
+    candidate: IntegrationCandidate,
+    phase: "queue" | "integration",
+    rest: Pick<LifecycleInput, "transition" | "reason" | "blockers" | "refs">,
+  ): void => {
+    observeLifecycle(environment, {
+      scope: candidate.session.scope,
+      nodeId: candidate.nodeId,
+      agentId: candidate.agentId,
+      operationId: lifecycleOperationId(phase, candidate.nodeId, String(candidate.attempt)),
+      attempt: candidate.attempt,
+      phase,
+      ...rest,
+    });
+  };
+  const commitRefs = (candidate: IntegrationCandidate, commit = candidate.commitSha) =>
+    commit === undefined ? [] : [{ kind: "commit", ref: commit }];
 
   const run = (): Promise<void> => {
     running ??= (async () => {
@@ -134,6 +191,10 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
       .catch(() => undefined);
     if (node !== undefined && RECOVERABLE_CANDIDATE_STATUSES.has(node.status)) return node;
     waiting.delete(nodeId);
+    observe(entry.candidate, "queue", {
+      transition: "end",
+      reason: `let go: ${node?.status ?? "missing"}`,
+    });
     entry.done();
     return undefined;
   };
@@ -153,6 +214,17 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     if (entry === undefined) return;
     waiting.delete(next.executionNodeId);
     current = next.executionNodeId;
+    observe(entry.candidate, "queue", { transition: "end", reason: "integrating" });
+    // Whoever still waits has a new predecessor.
+    for (const other of waiting.values()) {
+      if (other.predecessor === next.executionNodeId) continue;
+      other.predecessor = next.executionNodeId;
+      observe(other.candidate, "queue", {
+        transition: "note",
+        reason: `waiting behind ${next.executionNodeId}`,
+        blockers: [{ kind: "queue_predecessor", ref: next.executionNodeId }],
+      });
+    }
     try {
       await serially(() => integrateOne(entry.candidate, next));
     } catch (error) {
@@ -169,6 +241,36 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     candidate: IntegrationCandidate,
     implemented: ExecutionNode,
   ): Promise<void> => {
+    observe(candidate, "integration", {
+      transition: "start",
+      refs: commitRefs(candidate, implemented.commitSha ?? candidate.commitSha),
+      ...(candidate.origin === undefined ? {} : { reason: candidate.origin }),
+    });
+    const trace: Trace = {
+      conflicted: false,
+      note: (reason, refs) =>
+        observe(candidate, "integration", {
+          transition: "note",
+          reason,
+          ...(refs === undefined ? {} : { refs }),
+        }),
+    };
+    let ended: string;
+    try {
+      ended = await integrateBody(candidate, implemented, trace);
+    } catch (error) {
+      observe(candidate, "integration", { transition: "end", reason: "failed" });
+      throw error;
+    }
+    observe(candidate, "integration", { transition: "end", reason: ended });
+  };
+
+  /** Lands the candidate, or says why not, as the reason its integration ends with. */
+  const integrateBody = async (
+    candidate: IntegrationCandidate,
+    implemented: ExecutionNode,
+    trace: Trace,
+  ): Promise<string> => {
     const repo = candidate.session.repoPath;
     const runId = candidate.session.scope.runId;
     // The provisional head once anything has been deferred (D-P7-10): later work
@@ -197,11 +299,13 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
         );
       }
       if (implemented.status === "sealed" || implemented.status === "integrated") {
-        await integrateNode(environment, { ...candidate, commitSha: implemented.commitSha });
-      } else {
-        await examineAndLand(candidate, candidate.base, implemented.commitSha, verification);
+        const landed = await integrateNode(environment, {
+          ...candidate,
+          commitSha: implemented.commitSha,
+        });
+        return landed.kind === "integrated" ? "integrated" : "failed";
       }
-      return;
+      return examineAndLand(candidate, candidate.base, implemented.commitSha, verification, trace);
     }
     if (implemented.status === "verifying" && head !== candidate.base) {
       // There is no evidence yet. Keep its commit, and use the table's retry
@@ -217,22 +321,30 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
       implemented = restarted;
     }
     const node =
-      head === candidate.base ? implemented : await reconcile(candidate, implemented, head);
-    if (node === undefined) return;
+      head === candidate.base ? implemented : await reconcile(candidate, implemented, head, trace);
+    if (node === undefined) return trace.conflicted ? "integration_conflict" : "failed";
 
     const verified = await verifyNode(environment, {
       session: candidate.session,
       node,
       job: candidate.job,
       agentId: candidate.agentId,
+      routingDecisionId: candidate.routingDecisionId,
       worktree: candidate.worktree,
       onProvisionalLine: provisional,
     });
+    trace.note(
+      `verification: ${verified.passed ? "passed" : verified.deferred !== undefined ? "deferred" : "failed"}`,
+      verified.verification === undefined
+        ? []
+        : [{ kind: "verification", ref: verified.verification.verificationId }],
+    );
     // A deferred node is on the provisional line already: verification put it
     // there before it said `deferred` (provisional-line.ts).
-    if (!verified.passed) return;
+    if (!verified.passed)
+      return verified.deferred !== undefined ? "deferred" : "verification_failed";
 
-    await examineAndLand(candidate, head, verified.commitSha, verified.verification);
+    return examineAndLand(candidate, head, verified.commitSha, verified.verification, trace);
   };
 
   /**
@@ -246,18 +358,56 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     head: CommitSha,
     commitSha: CommitSha,
     verification: Verification,
-  ): Promise<void> => {
+    trace: Trace,
+  ): Promise<string> => {
     const verifiedNode = await stores.executionNodes.get(candidate.session.scope, candidate.nodeId);
-    if (verifiedNode === undefined) return;
-    const gate = await examineInQueue(environment, {
-      session: candidate.session,
-      job: candidate.job,
-      node: verifiedNode,
-      commitSha,
-      base: head,
-      verification,
-    });
-    if (gate.kind === "stopped") return;
+    if (verifiedNode === undefined) return "failed";
+    const before = new Set(
+      (
+        await stores.examinations
+          .listByNode(candidate.session.scope, candidate.nodeId)
+          .catch(() => [])
+      ).map((examination) => examination.examinationId),
+    );
+    const watched = watchingSkips(outbox);
+    const gate = await examineInQueue(
+      { ...environment, outbox: watched.outbox },
+      {
+        session: candidate.session,
+        job: candidate.job,
+        node: verifiedNode,
+        commitSha,
+        base: head,
+        verification,
+      },
+    );
+    if (gate.kind === "stopped") {
+      const stopping = [
+        ...(await stores.examinations
+          .listByNode(candidate.session.scope, candidate.nodeId)
+          .catch(() => [])),
+      ]
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .at(-1);
+      trace.note(
+        "examination: stopped",
+        stopping === undefined ? [] : [{ kind: "examination", ref: stopping.examinationId }],
+      );
+      return "examination_stopped";
+    }
+    if (gate.examination !== undefined) {
+      trace.note(
+        before.has(gate.examination.examinationId)
+          ? "examination: carried"
+          : "examination: cleared",
+        [{ kind: "examination", ref: gate.examination.examinationId }],
+      );
+    } else if (
+      watched.skipped() ||
+      environment.skippedReviews?.get(candidate.nodeId) !== undefined
+    ) {
+      trace.note("examination: skipped");
+    }
 
     const result = await integrateNode(environment, {
       session: candidate.session,
@@ -280,6 +430,7 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
         result.checkpointId,
       );
     }
+    return result.kind === "integrated" ? "integrated" : "failed";
   };
 
   /** The node on its replayed commit, or `undefined` when it conflicted and failed. */
@@ -287,6 +438,7 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
     candidate: IntegrationCandidate,
     node: ExecutionNode,
     head: CommitSha,
+    trace: Trace,
   ): Promise<ExecutionNode | undefined> => {
     const from = node.commitSha;
     if (from === null) {
@@ -316,7 +468,12 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
             onto: head,
             atMs: clock.now(),
           });
+    trace.note(replayed.ok ? "reconciled" : "conflict", [
+      { kind: "commit", ref: from },
+      { kind: "commit", ref: head },
+    ]);
     if (!replayed.ok) {
+      trace.conflicted = true;
       const paths = replayed.conflicts.length > 0 ? replayed.conflicts.join(", ") : replayed.detail;
       outbox.emit({
         type: "integration.conflict",
@@ -380,7 +537,16 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
   return {
     integrate: (candidate) =>
       new Promise<void>((resolve) => {
-        waiting.set(candidate.nodeId, { candidate, done: resolve });
+        const predecessor = current !== candidate.nodeId ? current : undefined;
+        waiting.set(candidate.nodeId, { candidate, done: resolve, predecessor });
+        observe(candidate, "queue", {
+          transition: "start",
+          refs: commitRefs(candidate),
+          ...(candidate.origin === undefined ? {} : { reason: candidate.origin }),
+          ...(predecessor === undefined
+            ? {}
+            : { blockers: [{ kind: "queue_predecessor", ref: predecessor }] }),
+        });
         void run();
       }),
     activity: () => ({ integrating: current, waiting: [...waiting.keys()] }),

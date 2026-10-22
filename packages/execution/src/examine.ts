@@ -54,6 +54,10 @@ import type {
   ExecutionNode,
   ExecutionNodeId,
   JobContract,
+  LaunchRef,
+  LifecycleObservation,
+  MeasurementCounters,
+  MeasurementSummary,
   RouteChoice,
   RouteTarget,
   RoutingDecision,
@@ -66,15 +70,18 @@ import {
   MAX_EXAMINATION_QUESTIONS,
   MAX_FIX_ATTEMPTS,
   MAX_RULING_ATTEMPTS,
+  MeasurementObservationSchema,
   outcomeOfCommands,
   VerificationSchema,
 } from "@nightshift/contracts";
 import {
+  baselineFor,
   examinationBlocks,
   examinationRequirementFor,
   labelCost,
   nowIso,
   policyOfRun,
+  routeUsageFromCounters,
   transition,
   transitionAgent,
 } from "@nightshift/core";
@@ -106,6 +113,11 @@ import {
   updateRef,
 } from "./git/index.js";
 import { createHookSink } from "./hook-sink.js";
+import {
+  createMeasurementRecorder,
+  type MeasurementRecorder,
+  publishedSummaryFor,
+} from "./measurement/recorder.js";
 import { unmetWhereThisRuns } from "./prerequisites-here.js";
 import { unavailableUntil } from "./route-availability.js";
 import { programRulings, rulingsCarriedBy } from "./rulings.js";
@@ -127,6 +139,8 @@ export interface ExaminationContext {
   readonly commitSha: CommitSha;
   readonly patchId: string;
   readonly implementerAgentId: AgentId;
+  /** The routing decision of the attempt examined, when known (P20). */
+  readonly implementerRoutingDecisionId?: RoutingDecision["routingDecisionId"];
   readonly examinerRoute: RoutingDecision["chosen"];
   readonly requiredByRisk: JobContract["risk"];
   readonly blocking: boolean;
@@ -382,7 +396,7 @@ const LIMIT_WAIT_POLL_MS = 60_000;
 
 const progress = (
   environment: ExecutionEnvironment,
-  input: ExamineInput,
+  input: Pick<ExamineInput, "node">,
   message: string,
 ): void => {
   environment.outbox.emit({
@@ -576,6 +590,7 @@ const examineOnSomeRoute = async (
       commitSha: input.commitSha,
       patchId: gathered.patchId,
       implementerAgentId: builder.agent.agentId,
+      implementerRoutingDecisionId: builder.routingDecisionId,
       examinerRoute: route.target,
       requiredByRisk: input.job.risk,
       blocking: requirement.blockOnMaterialFindings,
@@ -659,6 +674,7 @@ export const examine = async (
       };
     }
     announceVerdict(environment, input, examination);
+    await closeFixedFindings(environment, input, examination);
     // Awaited here, not returned as a promise: the `finally` below removes the
     // checkout, and an arbiter `verdictOf` starts works in it. Returned
     // unawaited, the checkout went while the arbiter was being handed it, and
@@ -676,7 +692,14 @@ export const examine = async (
 const builderOf = async (
   environment: ExecutionEnvironment,
   input: ExamineInput,
-): Promise<{ readonly agent: Agent; readonly route: RoutingDecision["chosen"] } | undefined> => {
+): Promise<
+  | {
+      readonly agent: Agent;
+      readonly route: RoutingDecision["chosen"];
+      readonly routingDecisionId: RoutingDecision["routingDecisionId"];
+    }
+  | undefined
+> => {
   const decisions = await environment.stores.routingDecisions.listByNode(
     input.session.scope,
     input.node.executionNodeId,
@@ -686,7 +709,9 @@ const builderOf = async (
     .sort((a, b) => a.attempt - b.attempt)
     .at(-1);
   const agent = await implementerOf(environment, input);
-  return last === undefined || agent === undefined ? undefined : { agent, route: last.chosen };
+  return last === undefined || agent === undefined
+    ? undefined
+    : { agent, route: last.chosen, routingDecisionId: last.routingDecisionId };
 };
 
 /**
@@ -750,7 +775,14 @@ const gatherEvidence = async (
       risk: input.job.risk,
       blocking: requirement.blockOnMaterialFindings,
       fixAttempt,
-      ...(previous !== undefined && fixAttempt > 0 ? { previousFindings: previous.findings } : {}),
+      ...(previous !== undefined && fixAttempt > 0
+        ? {
+            previousFindings: previous.findings.map((finding) => ({
+              ...finding,
+              examinationId: previous.examinationId,
+            })),
+          }
+        : {}),
       ...(rulings === undefined ? {} : { rulings }),
     },
   };
@@ -794,6 +826,81 @@ const announceVerdict = (
     executionNodeId: input.node.executionNodeId,
     agentId: examination.examinerAgentId,
   });
+};
+
+const findingKey = (examinationId: string, findingId: string): string =>
+  `${examinationId}:${findingId}`;
+
+/**
+ * Closes, as `fixed`, the earlier findings a later examination of the node did
+ * not raise again. `fixed` means only that: reassessed by a later examination
+ * of a later attempt and not raised again, following `repeats` chains. A
+ * `failed` examination, one of the same attempt, and a ruling-only check (which
+ * may close only the findings its rulings name) do not close anything. Never
+ * touches a finding that is not `unresolved` and material. Never throws.
+ */
+export const closeFixedFindings = async (
+  environment: ExecutionEnvironment,
+  input: Pick<ExamineInput, "session" | "node">,
+  recorded: Examination,
+): Promise<void> => {
+  try {
+    if (recorded.outcome === "failed") return;
+    const scope = input.session.scope;
+    const all = await environment.stores.examinations.listByNode(scope, input.node.executionNodeId);
+    const latest = all.find((examination) => examination.examinationId === recorded.examinationId);
+    const current = latest ?? recorded;
+    const byKey = new Map<string, ExaminationFinding>();
+    for (const examination of all) {
+      for (const finding of examination.findings) {
+        byKey.set(findingKey(examination.examinationId, finding.id), finding);
+      }
+    }
+    // Every finding some finding of the current examination is a later occurrence of.
+    const reached = new Set<string>();
+    for (const finding of current.findings) {
+      let next = finding.repeats;
+      while (next !== undefined) {
+        const key = findingKey(next.examinationId, next.findingId);
+        if (reached.has(key)) break;
+        reached.add(key);
+        next = byKey.get(key)?.repeats;
+      }
+    }
+    const rulingIds =
+      current.followsRulings === undefined
+        ? undefined
+        : new Set(current.followsRulings.map((ruling) => ruling.findingId));
+    const at = nowIso(environment.clock);
+    for (const earlier of all) {
+      if (earlier.examinationId === current.examinationId) continue;
+      if (earlier.createdAt >= current.createdAt) continue;
+      const laterAttempt =
+        current.fixAttempt > earlier.fixAttempt ||
+        current.implementerAgentId !== earlier.implementerAgentId;
+      if (!laterAttempt) continue;
+      let changed = false;
+      const findings = earlier.findings.map((finding) => {
+        if (finding.severity !== "material" || finding.resolution !== "unresolved") return finding;
+        if (rulingIds !== undefined && !rulingIds.has(finding.id)) return finding;
+        if (reached.has(findingKey(earlier.examinationId, finding.id))) return finding;
+        changed = true;
+        return {
+          ...finding,
+          resolution: "fixed" as const,
+          resolvedBy: {
+            authority: "agent" as const,
+            examinationId: current.examinationId,
+            reason: `not raised again by ${current.examinationId}`,
+            at,
+          },
+        };
+      });
+      if (changed) await environment.stores.examinations.put({ ...earlier, findings });
+    }
+  } catch {
+    progress(environment, input, "could not mark earlier findings fixed; they stay unresolved");
+  }
 };
 
 /**
@@ -1023,6 +1130,8 @@ const candidateVerification = async (
     }),
   ];
   const workerId = worker?.agentId;
+  const attemptDecisionId = (await builderOf(environment, input).catch(() => undefined))
+    ?.routingDecisionId;
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
     ...input.session.scope,
@@ -1030,6 +1139,7 @@ const candidateVerification = async (
     executionNodeId: input.node.executionNodeId,
     jobContractId: input.job.jobContractId,
     agentId: workerId,
+    ...(attemptDecisionId === undefined ? {} : { routingDecisionId: attemptDecisionId }),
     commitSha: input.commitSha,
     phase: "candidate",
     commands,
@@ -1093,7 +1203,93 @@ export interface HelperAgent {
   readonly agent: Agent;
   readonly decision: RoutingDecision;
   readonly token: string | undefined;
+  /** This agent's measurement recorder, spanning every launch of it. */
+  readonly recorder: MeasurementRecorder;
+  /** Whether the recorder has a segment open to take a lifecycle observation, and which launch it is. */
+  readonly segment: { open: boolean; launch?: LaunchRef; agentMs?: number };
 }
+
+/** What a helper's lifecycle observation says; the rest is stamped from the helper and the clock. */
+export interface LifecycleSpec {
+  readonly operationId: string;
+  readonly phase: string;
+  readonly transition: "start" | "end" | "note";
+  readonly reason?: string;
+  readonly blockers?: LifecycleObservation["blockers"];
+  readonly refs?: LifecycleObservation["refs"];
+  readonly parentOperationId?: string;
+}
+
+const lifecycleCounters = new WeakMap<object, Map<string, number>>();
+
+/**
+ * Observes a transition of an examination-side operation: a complete
+ * `LifecycleObservation` through the S-01 seam, as a `lifecycle.observed` event
+ * and, while the helper's recorder segment is open, into its ledger. Never
+ * throws; `undefined` when the observation could not be built.
+ */
+export const observeLifecycle = (
+  environment: ExecutionEnvironment,
+  input: Pick<HelperInput, "session" | "node">,
+  helper: HelperAgent,
+  spec: LifecycleSpec,
+): LifecycleObservation | undefined => {
+  try {
+    const at = nowIso(environment.clock);
+    const base = `${spec.operationId}:${spec.transition}:${at}`;
+    // The same transition of the same operation in one instant is another
+    // occurrence (a note, or a rerun on a frozen clock), not a redelivery.
+    const counts = lifecycleCounters.get(environment.outbox) ?? new Map<string, number>();
+    lifecycleCounters.set(environment.outbox, counts);
+    const seen = counts.get(base) ?? 0;
+    counts.set(base, seen + 1);
+    const scope = input.session.scope;
+    const candidate = {
+      kind: "lifecycle",
+      observationId: seen === 0 ? base : `${base}:${seen}`,
+      schemaVersion: 1,
+      projectId: scope.projectId,
+      programId: scope.programId,
+      runId: scope.runId,
+      executionNodeId: input.node.executionNodeId,
+      agentId: helper.agent.agentId,
+      ...(helper.segment.launch === undefined ? {} : { launch: helper.segment.launch }),
+      source: "engine",
+      provenance: { adapter: "execution" },
+      occurredAt: at,
+      receivedAt: at,
+      inclusion: "self",
+      operationId: spec.operationId,
+      phase: spec.phase,
+      transition: spec.transition,
+      ...(spec.reason === undefined ? {} : { reason: spec.reason.slice(0, 400) }),
+      blockers: spec.blockers ?? [],
+      ...(spec.refs === undefined ? {} : { refs: spec.refs }),
+      ...(spec.parentOperationId === undefined
+        ? {}
+        : { parentOperationId: spec.parentOperationId }),
+    };
+    const parsed = MeasurementObservationSchema.safeParse(candidate);
+    if (!parsed.success || parsed.data.kind !== "lifecycle") return undefined;
+    const observation = parsed.data;
+    environment.outbox.emit({
+      type: "lifecycle.observed",
+      source: "control-plane",
+      payload: observation,
+      executionNodeId: input.node.executionNodeId,
+      agentId: helper.agent.agentId,
+      occurredAt: at,
+    });
+    if (helper.segment.open) helper.recorder.lifecycle(observation);
+    return observation;
+  } catch {
+    return undefined;
+  }
+};
+
+/** The operation id of one examination of a node. */
+const examinationOperation = (nodeId: string, examinationId: string): string =>
+  `examination:${nodeId}:${examinationId}`;
 
 /** The part of an examination's input a helper agent needs: where, and for which job. */
 export type HelperInput = Pick<ExamineInput, "session" | "node" | "job">;
@@ -1104,6 +1300,8 @@ export const createHelper = async (
   input: HelperInput,
   role: "examiner" | "answerer" | "arbiter",
   route: RouteChoice,
+  /** What the helper is for, written on its routing decision. */
+  concerning: NonNullable<RoutingDecision["concerning"]>,
 ): Promise<HelperAgent> => {
   const { stores, clock, ids, outbox } = environment;
   const scope = input.session.scope;
@@ -1149,6 +1347,7 @@ export const createHelper = async (
     ...(route.position === undefined ? {} : { position: route.position }),
     ...(route.policyVersion === undefined ? {} : { policyVersion: route.policyVersion }),
     purpose,
+    concerning,
     createdAt: nowIso(clock),
   };
   await stores.routingDecisions.put(decision);
@@ -1160,8 +1359,38 @@ export const createHelper = async (
   });
   const started = transitionAgent(agent, "start", { at: nowIso(clock) });
   await stores.agents.put(started);
-  return { agent: started, decision, token };
+  const prices = input.session.run?.policy?.routingPolicy.prices;
+  const price = prices?.[route.target.model];
+  const recorder = createMeasurementRecorder(environment, {
+    scope,
+    executionNodeId: nodeId,
+    agent: started,
+    route: route.target,
+    routingDecisionId: decision.routingDecisionId,
+    ...(price === undefined ? {} : { price }),
+    ...(prices === undefined ? {} : { prices }),
+  });
+  return { agent: started, decision, token, recorder, segment: { open: false } };
 };
+
+/**
+ * What the helper's own session had consumed before it is resumed. Its first
+ * launch learned the session id only from its exit, so its segment carries none:
+ * the segments that started without one are the session being resumed.
+ */
+const ownSessionBaseline = (
+  summary: MeasurementSummary,
+  sessionId: string,
+): MeasurementCounters | undefined =>
+  baselineFor(
+    {
+      ...summary,
+      segments: summary.segments.map((segment) =>
+        segment.sessionId === undefined ? { ...segment, sessionId } : segment,
+      ),
+    },
+    sessionId,
+  );
 
 /** One run of a helper's harness process. */
 export const runHelper = async (
@@ -1173,8 +1402,13 @@ export const runHelper = async (
     readonly task: AgentTask;
     readonly mcp?: McpLaunch | undefined;
     readonly resume?: string | undefined;
+    /** The session's counters before this launch, when it is another agent's session. */
+    readonly baseline?: MeasurementCounters | undefined;
+    /** Lifecycle observations made as this launch begins, handed to the ledger once its segment is open. */
+    readonly opening?: readonly (LifecycleObservation | undefined)[];
   },
 ): Promise<HarnessExit> => {
+  const { recorder } = helper;
   const transcript = environment.paths.transcript(input.session.scope.runId, helper.agent.agentId);
   await mkdir(dirname(transcript), { recursive: true });
   // The helper's checkout is its own from here on (D-P10-25).
@@ -1184,7 +1418,20 @@ export const runHelper = async (
     await runAs.grant(launch.worktree);
     await runAs.grant(tmpDir);
   }
+  let exit: HarnessExit;
+  let launchedAtMs: number | undefined;
   try {
+    const ref = await recorder.startSegment({
+      ...(launch.resume === undefined ? {} : { sessionId: launch.resume }),
+      resumedSession: launch.resume !== undefined,
+      ...(launch.baseline === undefined ? {} : { baseline: launch.baseline }),
+    });
+    helper.segment.open = true;
+    helper.segment.launch = ref;
+    for (const observation of launch.opening ?? []) {
+      if (observation !== undefined) recorder.lifecycle(observation);
+    }
+    launchedAtMs = environment.clock.now();
     const handle = await environment.harness.start({
       agent: helper.agent,
       node: input.node,
@@ -1214,30 +1461,23 @@ export const runHelper = async (
       ...runAsOf(environment, helper.agent),
       task: launch.task,
       ...(launch.resume === undefined ? {} : { resume: { sessionId: launch.resume } }),
+      launch: ref,
+      measurements: recorder.sink,
     });
-    return await handle.exit;
+    exit = await handle.exit;
   } catch {
     // The adapter could not even attempt a launch: the helper did not run.
-    return { kind: "failed", exitCode: 127 };
+    exit = { kind: "failed", exitCode: 127 };
   }
-};
-
-/** What every run of a helper cost, added up: an examiner can run twice (D-P8-15). */
-const sumUsage = (exits: readonly HarnessExit[]): RoutingDecision["usage"] => {
-  const add = (a: number | undefined, b: number | undefined) =>
-    a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0);
-  return exits.reduce<RoutingDecision["usage"]>((total, exit) => {
-    if (exit.kind !== "completed" && exit.kind !== "failed") return total;
-    const reported = exit.usage ?? {};
-    const sum = {
-      inputTokens: add(total.inputTokens, reported.inputTokens),
-      outputTokens: add(total.outputTokens, reported.outputTokens),
-      cacheReadTokens: add(total.cacheReadTokens, reported.cacheReadTokens),
-      cacheWriteTokens: add(total.cacheWriteTokens, reported.cacheWriteTokens),
-      actualCostUsd: add(total.actualCostUsd, reported.actualCostUsd),
-    };
-    return Object.fromEntries(Object.entries(sum).filter(([, value]) => value !== undefined));
-  }, {});
+  // Agent time: this launch's own interval, summed over a helper's launches (P20).
+  if (launchedAtMs !== undefined) {
+    helper.segment.agentMs =
+      (helper.segment.agentMs ?? 0) + Math.max(0, environment.clock.now() - launchedAtMs);
+  }
+  recorder.recordExit(exit);
+  // A resume's baseline is read from what this launch left in the summary.
+  await recorder.drain();
+  return exit;
 };
 
 /** A helper agent's ending, with the session it kept, once. */
@@ -1275,11 +1515,23 @@ export const endHelper = async (
   succeeded: boolean,
 ): Promise<void> => {
   await endAgent(environment, input, helper, exits.at(-1), succeeded);
-  const prices = input.session.run?.policy?.routingPolicy.prices ?? {};
+  const price = input.session.run?.policy?.routingPolicy.prices[helper.decision.chosen.model];
+  const { summary } = await helper.recorder.close();
+  helper.segment.open = false;
   await environment.stores.routingDecisions
     .put({
       ...helper.decision,
-      usage: labelCost(sumUsage(exits), prices[helper.decision.chosen.model]),
+      usage: labelCost(
+        routeUsageFromCounters(summary.totals, {
+          ...(summary.valuation.reportedUsd === undefined
+            ? {}
+            : { reportedUsd: summary.valuation.reportedUsd }),
+          ...(helper.segment.agentMs === undefined
+            ? {}
+            : { agentMs: Math.round(helper.segment.agentMs) }),
+        }),
+        price,
+      ),
       outcome: succeeded ? "succeeded" : "failed",
     })
     .catch(() => {});
@@ -1312,7 +1564,11 @@ const runExaminer = async (
       readonly limited?: { readonly reason: string; readonly until?: string } | undefined;
     }
 > => {
-  const helper = await createHelper(environment, input, "examiner", run.route);
+  const helper = await createHelper(environment, input, "examiner", run.route, {
+    kind: "examination",
+    examinationId: run.frame.examinationId,
+  });
+  const operationId = examinationOperation(input.node.executionNodeId, run.frame.examinationId);
   const launchFor = (round: 1 | 2, questions: readonly ExaminationQuestion[]): McpLaunch =>
     services.mcp({
       projectId: input.session.scope.projectId,
@@ -1347,10 +1603,21 @@ const runExaminer = async (
   });
 
   const exits: HarnessExit[] = [];
+  const started = observeLifecycle(environment, input, helper, {
+    operationId,
+    phase: "examination",
+    transition: "start",
+    refs: [
+      { kind: "commit", ref: run.frame.commitSha },
+      { kind: "verification", ref: run.frame.verificationId },
+      { kind: "routing_decision", ref: helper.decision.routingDecisionId },
+    ],
+  });
   const first = await runHelper(environment, input, helper, {
     worktree: run.checkout,
     task: { kind: "examine", evidence: run.evidence, round: 1 },
     mcp: launchFor(1, []),
+    opening: [started],
   });
   exits.push(first);
   let examination = await environment.stores.examinations.get(
@@ -1376,6 +1643,7 @@ const runExaminer = async (
         task: { kind: "examine", evidence: run.evidence, round: 2, answers },
         mcp: launchFor(2, answers),
         resume: session,
+        baseline: ownSessionBaseline(helper.recorder.summary(), session),
       });
       exits.push(second);
       examination = await environment.stores.examinations.get(
@@ -1385,9 +1653,20 @@ const runExaminer = async (
     }
   }
 
+  const last = exits.at(-1);
+  observeLifecycle(environment, input, helper, {
+    operationId,
+    phase: "examination",
+    transition: "end",
+    reason:
+      examination !== undefined
+        ? `verdict: ${examination.outcome}`
+        : last?.kind === "completed"
+          ? "no_verdict"
+          : "examiner_failed",
+  });
   await endHelper(environment, input, helper, exits, examination !== undefined);
   if (examination !== undefined) return { examination };
-  const last = exits.at(-1);
   return {
     reason: "examiner_failed: the examiner ended without submitting a verdict",
     ended:
@@ -1456,25 +1735,68 @@ const answer = async (
     wasOverride: false,
   };
 
+  const concerning = { kind: "examination", examinationId: run.frame.examinationId } as const;
+  const examinationOp = examinationOperation(input.node.executionNodeId, run.frame.examinationId);
+  let launches = 0;
+  /** One answerer launch, as an operation of its own under the examination's. */
+  const launchAnswerer = async (
+    helper: HelperAgent,
+    launch: Parameters<typeof runHelper>[3],
+  ): Promise<{ readonly exit: HarnessExit; readonly finish: (answered: boolean) => void }> => {
+    launches += 1;
+    const operationId = `answer:${run.frame.examinationId}:${launches}`;
+    const opening = observeLifecycle(environment, input, helper, {
+      operationId,
+      phase: "answer",
+      transition: "start",
+      parentOperationId: examinationOp,
+      refs: [{ kind: "routing_decision", ref: helper.decision.routingDecisionId }],
+    });
+    const exit = await runHelper(environment, input, helper, { ...launch, opening: [opening] });
+    return {
+      exit,
+      finish: (answered) => {
+        observeLifecycle(environment, input, helper, {
+          operationId,
+          phase: "answer",
+          transition: "end",
+          parentOperationId: examinationOp,
+          reason: answered ? "answered" : exit.kind === "completed" ? "no_answer" : "answer_failed",
+        });
+      },
+    };
+  };
+
   if (builder.sessionId !== undefined) {
-    const helper = await createHelper(environment, input, "answerer", route);
-    const exit = await runHelper(environment, input, helper, {
+    const helper = await createHelper(environment, input, "answerer", route, concerning);
+    // Another agent's session: its tokens so far are the builder's, not this answerer's.
+    const builderSummary = await publishedSummaryFor(
+      environment.stores,
+      input.session.scope,
+      input.node.executionNodeId,
+      builder.agentId,
+    ).catch(() => undefined);
+    const baseline =
+      builderSummary === undefined ? undefined : baselineFor(builderSummary, builder.sessionId);
+    const { exit, finish } = await launchAnswerer(helper, {
       worktree: run.checkout,
       task: { kind: "answer", questions },
       resume: builder.sessionId,
+      baseline,
     });
     const answers = parseAnswers(
       exit.kind === "completed" ? exit.result : undefined,
       questions,
       "resumed_session",
     );
+    finish(answers !== undefined);
     await endHelper(environment, input, helper, [exit], answers !== undefined);
     if (answers !== undefined) return answers;
   }
 
   const transcript = await readTranscript(environment, input, builder.agentId);
-  const helper = await createHelper(environment, input, "answerer", route);
-  const exit = await runHelper(environment, input, helper, {
+  const helper = await createHelper(environment, input, "answerer", route, concerning);
+  const { exit, finish } = await launchAnswerer(helper, {
     worktree: run.checkout,
     task: { kind: "answer", questions, transcript },
   });
@@ -1483,6 +1805,7 @@ const answer = async (
     questions,
     "transcript",
   );
+  finish(answers !== undefined);
   await endHelper(environment, input, helper, [exit], answers !== undefined);
   return (
     answers ??
@@ -1683,8 +2006,29 @@ const rule = async (
     } catch {
       return undefined;
     }
-    const helper = await createHelper(environment, input, "arbiter", route);
+    const helper = await createHelper(environment, input, "arbiter", route, {
+      kind: "examination",
+      examinationId: ruling.examination.examinationId,
+      findingId: ruling.finding.id,
+    });
+    const operationId = `arbitration:${ruling.examination.examinationId}:${ruling.finding.id}`;
+    const parentOperationId = examinationOperation(
+      input.node.executionNodeId,
+      ruling.examination.examinationId,
+    );
+    const opening = observeLifecycle(environment, input, helper, {
+      operationId,
+      phase: "arbitration",
+      transition: "start",
+      parentOperationId,
+      refs: [
+        { kind: "examination", ref: ruling.examination.examinationId },
+        { kind: "finding", ref: ruling.finding.id },
+        { kind: "routing_decision", ref: helper.decision.routingDecisionId },
+      ],
+    });
     const exit = await runHelper(environment, input, helper, {
+      opening: [opening],
       worktree: ruling.checkout,
       task: {
         kind: "arbitrate",
@@ -1715,6 +2059,19 @@ const rule = async (
     const decision = [...(await environment.stores.decisions.listByRun(input.session.scope)).items]
       .filter((candidate) => candidate.agentId === helper.agent.agentId)
       .at(-1);
+    observeLifecycle(environment, input, helper, {
+      operationId,
+      phase: "arbitration",
+      transition: "end",
+      parentOperationId,
+      reason:
+        decision === undefined
+          ? "no_ruling"
+          : decision.choice === RULING_CHOICES.overturn
+            ? "overturned"
+            : "upheld",
+      ...(decision === undefined ? {} : { refs: [{ kind: "decision", ref: decision.decisionId }] }),
+    });
     await endHelper(environment, input, helper, [exit], decision !== undefined);
     const limited = decision === undefined ? limitOf(exit, environment) : undefined;
     if (limited === undefined || environment.routes === undefined) return decision;

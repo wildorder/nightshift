@@ -4,14 +4,22 @@
  * import it alongside the suite).
  */
 import {
+  type CompletionHistory,
+  type CompletionMemberRef,
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
   type Event,
+  MAX_COMPLETION_CHECKPOINTS,
+  MAX_COMPLETION_HISTORY_BYTES,
+  MAX_COMPLETION_MEMBERS,
+  MAX_COMPLETION_REVISIONS,
   type OrgConfig,
 } from "@nightshift/contracts";
 import {
+  completionHistoryBytes,
   createFixtures,
   makeAgent,
+  makeCompletionHistory,
   makeComputeUtilization,
   makeEvent,
   makeGateHealth,
@@ -20,6 +28,7 @@ import {
   makeProgramContract,
   makeProject,
   makeRootNode,
+  makeRunFeedback,
   OwnershipViolationError,
   StaleWriteError,
 } from "@nightshift/core";
@@ -210,6 +219,114 @@ describe("DynamoDB adapter specifics", () => {
       await stores.gateHealth.put(makeGateHealth(f));
       expect((await stores.programContracts.listByProject(f.scope.projectId)).items).toEqual([]);
       expect((await stores.computeUtilizations.listByProject(f.scope.projectId)).items).toEqual([]);
+    });
+  });
+
+  describe("run feedback and completion histories (P20)", () => {
+    it("keeps feedback beside the program's runs and a history under the project", async () => {
+      await stores.feedback.put(makeRunFeedback(f));
+      const history = makeCompletionHistory(f);
+      await stores.completionHistories.put(history);
+      const p = f.scope.projectId;
+      expect(table.allItems().map((item) => [item.PK, item.SK])).toEqual(
+        expect.arrayContaining([
+          [`PROJ#${p}#PROG#${f.scope.programId}`, `FEEDBACK#${f.scope.runId}`],
+          [`PROJ#${p}`, `COMPLETION#${history.completionHistoryId}`],
+        ]),
+      );
+      expect((await stores.runs.listByProgram(f.scope)).items).toEqual([]);
+    });
+
+    it("accepts the maximal completion history and reads it back equal", async () => {
+      const actor = { kind: "user", userId: "ann", orgId: f.ids.next("org") } as never;
+      const members: CompletionMemberRef[] = [
+        { programId: f.scope.programId, runId: f.scope.runId, role: "anchor" },
+        ...Array.from(
+          { length: MAX_COMPLETION_MEMBERS - 1 },
+          (): CompletionMemberRef => ({
+            programId: f.scope.programId,
+            runId: f.ids.next("run"),
+            role: "contributing",
+          }),
+        ),
+      ];
+      const measured = {
+        measuredTo: "2026-01-01T00:00:00.000Z",
+        readableMembers: MAX_COMPLETION_MEMBERS,
+        measuredMembers: MAX_COMPLETION_MEMBERS,
+        unmeasuredMembers: 0,
+        earliestStart: "2026-01-01T00:00:00.000Z",
+        leadTimeSeconds: 123456.789,
+        runCompletionSeconds: 123456.789,
+        activeSeconds: 123456.789,
+        tokens: {
+          input: 123456789,
+          output: 123456789,
+          cacheRead: 123456789,
+          cacheWrite: 123456789,
+          reasoning: 123456789,
+          inputConventionUnknown: 3,
+        },
+        usd: { estimated: 1234.5678, reported: 1234.5678 },
+        coverage: { complete: 40, partial: 5, unknown: 3, legacy: 1, missing: 1 },
+        infrastructure: { usd: 12.345678, members: MAX_COMPLETION_MEMBERS, withoutMachine: 0 },
+        recordedAt: "2026-01-01T00:00:00.000Z",
+      };
+      const checkpoints = Array.from({ length: MAX_COMPLETION_CHECKPOINTS }, (_, i) => ({
+        name: `checkpoint-${i}-${"n".repeat(60)}`,
+        programId: f.scope.programId,
+        runId: f.scope.runId,
+        feedbackVersion: 1,
+        verdictRecordedAt: "2026-01-01T00:00:00.000Z",
+        members: members.map((m) => ({ ...m })),
+        membershipVersion: 1,
+        recordedBy: actor,
+        recordedAt: "2026-01-01T00:00:00.000Z",
+        measured,
+      }));
+      const revision = (version: number) => ({
+        version,
+        actor,
+        recordedAt: "2026-01-01T00:00:00.000Z",
+        added: members.map((m) => ({ ...m })),
+        removed: members.map((m) => ({ ...m })),
+        title: "t".repeat(200),
+        checkpoint: "c".repeat(80),
+      });
+      // Version 1 is the only version a fresh put accepts; the log is filled regardless.
+      const base = { ...makeCompletionHistory(f), members, checkpoints };
+      let revisions = Array.from({ length: MAX_COMPLETION_REVISIONS }, () => revision(1));
+      const sized = (): CompletionHistory => ({ ...base, revisions }) as CompletionHistory;
+      while (
+        revisions.length > 1 &&
+        completionHistoryBytes(sized()) > MAX_COMPLETION_HISTORY_BYTES
+      ) {
+        revisions = revisions.slice(1);
+      }
+      const history = sized();
+      expect(revisions.length).toBeGreaterThan(1);
+      expect(completionHistoryBytes(history)).toBeGreaterThan(
+        MAX_COMPLETION_HISTORY_BYTES - 10_000,
+      );
+      await stores.completionHistories.put(history);
+      expect(await stores.completionHistories.get(f.scope, history.completionHistoryId)).toEqual(
+        history,
+      );
+    });
+
+    it("refuses a stale or replayed version and changes nothing", async () => {
+      const first = makeRunFeedback(f);
+      await stores.feedback.put(first);
+      await expect(stores.feedback.put(first)).rejects.toBeInstanceOf(StaleWriteError);
+      expect(await stores.feedback.get(f.scope)).toEqual(first);
+      const history = makeCompletionHistory(f);
+      await stores.completionHistories.put(history);
+      await expect(
+        stores.completionHistories.put({ ...history, title: "other" }),
+      ).rejects.toBeInstanceOf(StaleWriteError);
+      expect(await stores.completionHistories.get(f.scope, history.completionHistoryId)).toEqual(
+        history,
+      );
     });
   });
 

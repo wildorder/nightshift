@@ -78,6 +78,8 @@ describe("routing decision updates (D-P5-06)", () => {
       classification: { risk: "low", ambiguity: "low", testability: "weak" },
       policyVersion: 1,
       purpose: "examine",
+      causes: [{ kind: "unknown" }],
+      concerning: { kind: "plan_review" },
     };
     const changes: Partial<RoutingDecision> = {
       attempt: 2,
@@ -111,5 +113,24 @@ describe("routing decision updates (D-P5-06)", () => {
     // A sub-program's orchestrator is never verified: it produced no commit.
     expect(routeOutcomeForNodeStatus("succeeded")).toBe("succeeded");
     expect(routeOutcomeForNodeStatus("interrupted")).toBe("failed");
+  });
+});
+
+describe("routing causes and concerning (P20)", () => {
+  it("are immutable once recorded", () => {
+    expect(IMMUTABLE_ROUTING_FIELDS).toContain("causes");
+    expect(IMMUTABLE_ROUTING_FIELDS).toContain("concerning");
+    const decision = recorded({
+      attempt: 2,
+      previousRouteId: fixtures.ids.next("route"),
+      causes: [{ kind: "worker_failed" }],
+      concerning: { kind: "plan_review" },
+    });
+    expect(
+      explainRoutingUpdate(decision, { ...decision, causes: [{ kind: "unknown" }] }),
+    ).toContain("causes is immutable once a routing decision is recorded");
+    expect(explainRoutingUpdate(decision, { ...decision, concerning: undefined })).toContain(
+      "concerning is immutable once a routing decision is recorded",
+    );
   });
 });

@@ -1,3 +1,4 @@
+import type { MeasurementSummary, RoutingDecision } from "@nightshift/contracts";
 import {
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
@@ -6,7 +7,10 @@ import {
   RoutingNarrowingSchema,
 } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
+import { resourcesOf, sumResources } from "../report/resources.js";
+import { createFixtures, FIXTURE_TIMESTAMP } from "../testing/factories.js";
 import {
+  budgetEvaluation,
   budgetSpent,
   classificationOf,
   conservativeDefaults,
@@ -18,6 +22,7 @@ import {
   PolicyWideningError,
   requireEffectivePolicy,
   spendOf,
+  spendOfRun,
 } from "./policy.js";
 
 const org: Pick<OrgConfig, "routingPolicy" | "examinationPolicy" | "version"> = {
@@ -58,7 +63,12 @@ describe("classificationOf (D-P8-01)", () => {
 
   it("keeps what the job says", () => {
     expect(
-      classificationOf({ risk: "high", ambiguity: "medium", testability: "strong", kind: "fix" }),
+      classificationOf({
+        risk: "high",
+        ambiguity: "medium",
+        testability: "strong",
+        kind: "fix",
+      }),
     ).toEqual({
       risk: "high",
       ambiguity: "medium",
@@ -124,7 +134,10 @@ describe("effectivePolicy (D-P8-03)", () => {
   it("reads a narrowing written for ladders as the harnesses they were named for", () => {
     const routing = RoutingNarrowingSchema.parse({ ladders: ["claude"] });
     expect(routing).toEqual({ harnesses: ["claude"] });
-    const result = requireEffectivePolicy(org, { examinationPolicy: OFF, routing });
+    const result = requireEffectivePolicy(org, {
+      examinationPolicy: OFF,
+      routing,
+    });
     expect(result.routingPolicy.roles.examiner.map((route) => route.harness)).toEqual([
       "claude",
       "claude",
@@ -181,9 +194,12 @@ describe("failureClimbs (D-P8-07)", () => {
   it("climbs after a failure of the model's work", () => {
     expect(failureClimbs({ status: "verification_failed" })).toBe(true);
     expect(failureClimbs({ status: "examination_failed" })).toBe(true);
-    expect(failureClimbs({ status: "failed", outcomeReason: "the tests would not pass" })).toBe(
-      true,
-    );
+    expect(
+      failureClimbs({
+        status: "failed",
+        outcomeReason: "the tests would not pass",
+      }),
+    ).toBe(true);
   });
 
   it("keeps the route after a failure that is not the model's", () => {
@@ -222,14 +238,241 @@ describe("cost (D-P8-08)", () => {
     });
   });
 
+  it("does not label missing counters as a known zero", () => {
+    expect(labelCost({}, price)).toEqual({ costSource: "unknown" });
+    expect(labelCost({ inputTokens: 0, outputTokens: 0 }, price)).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedCostUsd: 0,
+      costSource: "estimated",
+    });
+  });
+
+  it("does not charge cached input twice when input is inclusive", () => {
+    const cached = { ...price, cacheReadPerMTok: 0.3, cacheWritePerMTok: 3.75 };
+    const usage = {
+      inputTokens: 1_000_000,
+      cacheReadTokens: 600_000,
+      cacheWriteTokens: 100_000,
+    };
+    const exclusive = estimateCost({ ...usage, inputTokens: 300_000 }, cached);
+    expect(estimateCost({ ...usage, inputIncludesCache: true }, cached)).toBeCloseTo(
+      exclusive ?? NaN,
+    );
+    expect(estimateCost({ ...usage, inputIncludesCache: false }, cached)).toBeGreaterThan(
+      exclusive ?? 0,
+    );
+  });
+
+  it("counts usages with neither dollars nor counters as unknown", () => {
+    expect(
+      spendOf([{}, { costSource: "unknown" }, { inputTokens: 1 }, { actualCostUsd: 1 }]),
+    ).toMatchObject({
+      unknown: 2,
+    });
+  });
+
   it("sums a run's spend, says when any of it is an estimate, and names the budget it spent", () => {
     const spend = spendOf([
       { actualCostUsd: 1, inputTokens: 100, outputTokens: 50 },
-      { estimatedCostUsd: 2, inputTokens: 10 },
+      { estimatedCostUsd: 2, inputTokens: 10, outputTokens: 0 },
     ]);
-    expect(spend).toEqual({ usd: 3, tokens: 160, estimated: true });
-    expect(budgetSpent(spend, { maxUsd: 3 })).toEqual({ budget: "maxUsd", limit: 3, spent: 3 });
+    expect(spend).toEqual({
+      usd: 3,
+      tokens: 160,
+      estimated: true,
+      unknown: 0,
+      tokensUnknown: 0,
+      evaluation: {
+        complete: true,
+        unpriced: 0,
+        unmeasured: 0,
+        estimateIncomplete: 0,
+        tokensIncomplete: 0,
+      },
+    });
+    expect(budgetSpent(spend, { maxUsd: 3 })).toEqual({
+      budget: "maxUsd",
+      limit: 3,
+      spent: 3,
+      evaluation: spend.evaluation,
+    });
     expect(budgetSpent(spend, { maxTokens: 200 })).toBeUndefined();
     expect(budgetSpent(spend, {})).toBeUndefined();
+  });
+});
+
+describe("spend evaluation (D-02)", () => {
+  const fixtures = createFixtures();
+  const route = (usage: RoutingDecision["usage"]): RoutingDecision => ({
+    schemaVersion: 1,
+    ...fixtures.scope,
+    routingDecisionId: fixtures.ids.next("route"),
+    executionNodeId: fixtures.rootNodeId,
+    attempt: 1,
+    eligibleOptions: [],
+    chosen: { harness: "claude", provider: "anthropic", model: "m" },
+    ruleId: "r",
+    wasOverride: false,
+    usage,
+    outcome: "verified",
+    previousRouteId: null,
+    createdAt: FIXTURE_TIMESTAMP,
+  });
+
+  it("counts counters without a price as unpriced and neither as unmeasured, never as complete", () => {
+    const spend = spendOf([{ inputTokens: 10, outputTokens: 5 }, {}, { actualCostUsd: 1 }]);
+    expect(spend.usd).toBe(1);
+    expect(spend.tokens).toBe(15);
+    expect(spend.evaluation).toEqual({
+      complete: false,
+      unpriced: 1,
+      unmeasured: 1,
+      estimateIncomplete: 0,
+      tokensIncomplete: 0,
+    });
+    expect(
+      spendOf([{ actualCostUsd: 1, inputTokens: 1, outputTokens: 1 }]).evaluation.complete,
+    ).toBe(true);
+  });
+
+  it("a reported dollar figure with a missing output counter is incomplete, not complete", () => {
+    const spend = spendOf([{ actualCostUsd: 1, inputTokens: 1000 }]);
+    expect(spend.usd).toBe(1);
+    expect(spend.evaluation).toEqual({
+      complete: false,
+      unpriced: 0,
+      unmeasured: 0,
+      estimateIncomplete: 0,
+      tokensIncomplete: 1,
+    });
+    // Output only is incomplete the same way.
+    expect(spendOf([{ actualCostUsd: 1, outputTokens: 5 }]).evaluation.tokensIncomplete).toBe(1);
+  });
+
+  it("an attempt with neither counters nor dollars stays unmeasured and is not double counted", () => {
+    expect(spendOf([{}]).evaluation).toEqual({
+      complete: false,
+      unpriced: 0,
+      unmeasured: 1,
+      estimateIncomplete: 0,
+      tokensIncomplete: 0,
+    });
+    // Dollars with no counters at all are priced, not half-counted: at the Spend level the
+    // evaluation is the dollar view; only a configured token limit folds the unknown tokens in.
+    expect(spendOf([{ actualCostUsd: 1 }]).evaluation.tokensIncomplete).toBe(0);
+  });
+
+  it("a dollars-only attempt completes a dollar limit but not a token limit", () => {
+    const spend = spendOf([{ actualCostUsd: 1 }]);
+    expect(spend.tokensUnknown).toBe(1);
+    expect(budgetEvaluation(spend, { maxUsd: 10 })).toMatchObject({
+      complete: true,
+      tokensIncomplete: 0,
+    });
+    expect(budgetEvaluation(spend, {})).toMatchObject({
+      complete: true,
+      tokensIncomplete: 0,
+    });
+    for (const policy of [{ maxTokens: 1000 }, { maxUsd: 10, maxTokens: 1000 }]) {
+      expect(budgetEvaluation(spend, policy)).toMatchObject({
+        complete: false,
+        tokensIncomplete: 1,
+      });
+    }
+    expect(budgetSpent(spend, { maxTokens: 0 })?.evaluation).toMatchObject({
+      complete: false,
+      tokensIncomplete: 1,
+    });
+    expect(budgetSpent(spend, { maxUsd: 1 })?.evaluation.complete).toBe(true);
+  });
+
+  it("normalizes input like reports: exclusive input gains its cache tokens", () => {
+    expect(
+      spendOf([
+        {
+          inputTokens: 100,
+          cacheReadTokens: 50,
+          inputIncludesCache: false,
+          outputTokens: 10,
+        },
+        {
+          inputTokens: 100,
+          cacheReadTokens: 50,
+          inputIncludesCache: true,
+          outputTokens: 10,
+        },
+      ]).tokens,
+    ).toBe(160 + 110);
+  });
+
+  it("spendOfRun takes a summary-backed route's tokens and dollars as the report does", () => {
+    const decision = route({ inputTokens: 1, outputTokens: 1 });
+    const summary = {
+      measurementVersion: 1,
+      ...fixtures.scope,
+      measurementSummaryId: fixtures.ids.next("meas"),
+      executionNodeId: decision.executionNodeId,
+      agentId: fixtures.ids.next("agent"),
+      role: "worker",
+      routingDecisionId: decision.routingDecisionId,
+      route: decision.chosen,
+      observedModels: [],
+      segments: [],
+      totals: {
+        inputTokens: 100,
+        cacheReadTokens: 40,
+        inputIncludesCache: false,
+        outputTokens: 20,
+      },
+      coverage: "complete",
+      gaps: [],
+      ledger: {
+        chunks: 0,
+        artifactIds: [],
+        observationCount: 0,
+        publishedCount: 0,
+      },
+      valuation: {
+        source: "estimated",
+        usd: 2,
+        estimatedUsd: 2,
+        completeness: { unvaluedRequests: 1, remainderValued: true },
+      },
+      createdAt: FIXTURE_TIMESTAMP,
+      updatedAt: FIXTURE_TIMESTAMP,
+    } as unknown as MeasurementSummary;
+    const spend = spendOfRun({ routes: [decision], measurements: [summary] });
+    const totals = sumResources([resourcesOf(decision, [summary])]);
+    expect(spend.tokens).toBe(140 + 20);
+    expect(spend.tokens).toBe((totals.tokens.input ?? 0) + (totals.tokens.output ?? 0));
+    expect(spend.usd).toBe(2);
+    expect(spend.estimated).toBe(true);
+    expect(spend.evaluation).toEqual({
+      complete: false,
+      unpriced: 0,
+      unmeasured: 0,
+      estimateIncomplete: 1,
+      // Exclusive input without cache counters: the normalized total is a lower bound.
+      tokensIncomplete: 1,
+    });
+  });
+
+  it("enforces on what is known and reports the evaluation", () => {
+    const spend = spendOf([{ inputTokens: 600, outputTokens: 500 }, { actualCostUsd: 5 }]);
+    expect(budgetSpent(spend, { maxTokens: 1000 })).toMatchObject({
+      budget: "maxTokens",
+      spent: 1100,
+      evaluation: { complete: false, unpriced: 1 },
+    });
+    expect(budgetEvaluation(spend, { maxUsd: 10 })).toEqual({
+      configured: true,
+      complete: false,
+      unpriced: 1,
+      unmeasured: 0,
+      estimateIncomplete: 0,
+      tokensIncomplete: 0,
+    });
+    expect(budgetEvaluation(spend, {}).configured).toBe(false);
   });
 });

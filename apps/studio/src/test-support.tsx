@@ -8,11 +8,12 @@ import {
   createFixtures,
   type Fixtures,
   type IdGenerator,
+  type ProjectStores,
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { QueryClient } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { App } from "./app.js";
 import type { Studio } from "./studio.js";
 
@@ -22,6 +23,8 @@ export interface Mounted {
   readonly orgId: OrgId;
   readonly signedOut: boolean[];
   readonly client: QueryClient;
+  /** The router's current path and query, updated as the page navigates. */
+  readonly location: { current: string };
 }
 
 export interface MountOptions {
@@ -33,7 +36,15 @@ export interface MountOptions {
   readonly documents?: Readonly<Record<string, string>>;
   readonly ids?: IdGenerator;
   readonly now?: () => string;
+  /** Serve the page from these instead of the seeded stores (reads that fail or hang). */
+  readonly serve?: (seeded: InMemoryStores) => ProjectStores;
 }
+
+const LocationProbe = ({ into }: { readonly into: { current: string } }) => {
+  const location = useLocation();
+  into.current = `${location.pathname}${location.search}`;
+  return null;
+};
 
 export const mountStudio = async (
   seed: (stores: InMemoryStores, f: Fixtures, orgId: OrgId) => Promise<void>,
@@ -47,7 +58,7 @@ export const mountStudio = async (
   const signedOut: boolean[] = [];
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const studio: Studio = {
-    stores,
+    stores: opts.serve?.(stores) ?? stores,
     identity: { subject: "u1", email: "tim@example.test", activeOrgClaim: undefined },
     orgId,
     signOut: async () => void signedOut.push(true),
@@ -64,12 +75,14 @@ export const mountStudio = async (
     ...(opts.pollMs === undefined ? {} : { pollMs: opts.pollMs }),
   };
   const at = typeof opts.at === "function" ? opts.at(f) : (opts.at ?? "/");
+  const location = { current: at };
   render(
     <MemoryRouter initialEntries={[at]}>
+      <LocationProbe into={location} />
       <App studio={studio} client={client} />
     </MemoryRouter>,
   );
-  return { stores, f, orgId, signedOut, client };
+  return { stores, f, orgId, signedOut, client, location };
 };
 
 /** The run page's path for a fixture world's own run. */

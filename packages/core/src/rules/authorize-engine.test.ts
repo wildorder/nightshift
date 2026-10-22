@@ -57,6 +57,13 @@ const FORBIDDEN: readonly Operation[] = [
   "computeRecommendation.get",
   "warmCache.get",
   "orgCredential.put",
+  "feedback.get",
+  "feedback.put",
+  "feedback.listByProgram",
+  "completion.get",
+  "completion.put",
+  "completion.listByRun",
+  "completion.listByProject",
   "orgCredential.list",
   "orgGithub.put",
   "orgGithub.get",
@@ -239,5 +246,15 @@ describe("the generation fence (D-P10-18)", () => {
     const refusal = authorize(engine(1), "node.put", target());
     expect(refusal.allowed).toBe(false);
     if (!refusal.allowed) expect(refusal.detail).not.toMatch(/token:|bearer|eyJ/i);
+  });
+});
+
+describe("the engine and measurement summaries (P20)", () => {
+  it("writes within its run and reads across its program", () => {
+    expect(ENGINE_ACCESS["measurement.put"]).toBe("own_run");
+    expect(ENGINE_ACCESS["measurement.get"]).toBe("own_program");
+    expect(ENGINE_ACCESS["measurement.listByNode"]).toBe("own_program");
+    expect(ENGINE_ACCESS["measurement.listByRun"]).toBe(ENGINE_ACCESS["artifact.list"]);
+    expect(authorize(engine(), "measurement.put", target())).toEqual({ allowed: true });
   });
 });

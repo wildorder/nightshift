@@ -24,6 +24,7 @@ import {
   type ExaminationRequirement,
   type ExecutionNode,
   type JobContract,
+  type MeasurementSummary,
   type ModelPrice,
   type OrgConfig,
   type ProgramContract,
@@ -31,12 +32,20 @@ import {
   ROUTING_ROLES,
   type RouteSpec,
   type RouteUsage,
+  type RoutingDecision,
   type RoutingPolicy,
   type RoutingRole,
   type Run,
   sameRoute,
   stricterExaminationPolicy,
 } from "@nightshift/contracts";
+import { countersFromRouteUsage } from "../measurement/normalize.js";
+import {
+  type AttemptResources,
+  resourcesOf,
+  rootResourcesOf,
+  tokensOf,
+} from "../report/resources.js";
 
 /**
  * A job's classification, defaults filled (D-P8-01): risk as stated (a Job
@@ -185,19 +194,37 @@ export const NO_CLIMB_REASON_PREFIXES: readonly string[] = [
  * estimate.
  */
 export const estimateCost = (
-  usage: Pick<RouteUsage, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens">,
+  usage: Pick<
+    RouteUsage,
+    "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "inputIncludesCache"
+  >,
   price: ModelPrice | undefined,
 ): number | undefined => {
   if (price === undefined) return undefined;
+  // Inclusive input already contains the cache tokens: price only the remainder
+  // at the input rate, so cached input is not charged twice.
+  const input =
+    usage.inputIncludesCache === true && usage.inputTokens !== undefined
+      ? Math.max(
+          0,
+          usage.inputTokens - (usage.cacheReadTokens ?? 0) - (usage.cacheWriteTokens ?? 0),
+        )
+      : usage.inputTokens;
   const perToken = (perMillion: number | undefined, tokens: number | undefined): number =>
     ((perMillion ?? 0) * (tokens ?? 0)) / 1_000_000;
   return (
-    perToken(price.inputPerMTok, usage.inputTokens) +
+    perToken(price.inputPerMTok, input) +
     perToken(price.outputPerMTok, usage.outputTokens) +
     perToken(price.cacheReadPerMTok ?? price.inputPerMTok, usage.cacheReadTokens) +
     perToken(price.cacheWritePerMTok ?? price.inputPerMTok, usage.cacheWriteTokens)
   );
 };
+
+const hasCounters = (usage: RouteUsage): boolean =>
+  usage.inputTokens !== undefined ||
+  usage.outputTokens !== undefined ||
+  usage.cacheReadTokens !== undefined ||
+  usage.cacheWriteTokens !== undefined;
 
 /**
  * Usage with its dollars labelled (D-P8-08): what the harness reported, else an
@@ -205,44 +232,198 @@ export const estimateCost = (
  */
 export const labelCost = (usage: RouteUsage, price: ModelPrice | undefined): RouteUsage => {
   if (usage.actualCostUsd !== undefined) return { ...usage, costSource: "reported" };
+  // Missing counters are not a known zero: nothing was measured, so nothing is estimated.
+  if (!hasCounters(usage)) return { ...usage, costSource: "unknown" };
   const estimate = estimateCost(usage, price);
   return estimate === undefined
     ? { ...usage, costSource: "unknown" }
     : { ...usage, estimatedCostUsd: estimate, costSource: "estimated" };
 };
 
-/** What a run has spent, from its routing decisions (D-P8-08). Tokens are input plus output. */
+/** What a spend leaves unknown. Complete means every attempt was measured, priced and fully valued. */
+export interface SpendEvaluation {
+  readonly complete: boolean;
+  /** Attempts with token counters but no dollar figure: $0 here is not known to be free. */
+  readonly unpriced: number;
+  /** Attempts with neither counters nor dollars: nothing was measured. */
+  readonly unmeasured: number;
+  /** Summary valuations that leave some usage unvalued, so the estimate understates. */
+  readonly estimateIncomplete: number;
+  /** Attempts whose tokens lack an input or output counter, whatever dollar figure they carry. */
+  readonly tokensIncomplete: number;
+}
+
+/**
+ * What a run has spent (D-P8-08, D-02). Tokens are input (normalized to include
+ * cache where the convention is known) plus output, as reports show them. The
+ * dollars are the figures known; `evaluation` says what they leave out.
+ */
 export interface Spend {
   readonly usd: number;
   readonly tokens: number;
   /** True when any dollar figure in `usd` is an estimate. */
   readonly estimated: boolean;
+  /** Usages with neither a dollar figure nor any token counter: unmeasured, not free. */
+  readonly unknown: number;
+  /**
+   * Attempts with a dollar figure and no token counter at all: priced, so complete for a
+   * dollar limit, but their tokens are unknown, which a token limit cannot certify.
+   * Absent counts as 0.
+   */
+  readonly tokensUnknown?: number;
+  readonly evaluation: SpendEvaluation;
 }
 
+const evaluationOf = (
+  unpriced: number,
+  unmeasured: number,
+  estimateIncomplete: number,
+  tokensIncomplete: number,
+): SpendEvaluation => ({
+  complete:
+    unpriced === 0 && unmeasured === 0 && estimateIncomplete === 0 && tokensIncomplete === 0,
+  unpriced,
+  unmeasured,
+  estimateIncomplete,
+  tokensIncomplete,
+});
+
+const spendOfAttempts = (items: readonly AttemptResources[]): Spend => {
+  let usd = 0;
+  let tokens = 0;
+  let estimated = false;
+  let unpriced = 0;
+  let unmeasured = 0;
+  let estimateIncomplete = 0;
+  let tokensIncomplete = 0;
+  let tokensUnknown = 0;
+  for (const item of items) {
+    const { reported, estimated: estimate } = item.usd;
+    // One figure per attempt, reported preferred: never both.
+    usd += reported ?? estimate ?? 0;
+    if (reported === undefined && estimate !== undefined) estimated = true;
+    tokens += (item.tokens.input ?? 0) + (item.tokens.output ?? 0);
+    if (item.estimateIncomplete === true) estimateIncomplete += 1;
+    const counted =
+      item.tokens.input !== undefined ||
+      item.tokens.output !== undefined ||
+      item.tokens.cacheRead !== undefined ||
+      item.tokens.cacheWrite !== undefined;
+    // Token coverage is judged apart from dollars: a figure with no output counter is still partial.
+    // An attempt with dollars and no counters at all is priced, not partial: nothing was half-counted.
+    // An exclusive input with an absent cache counter is a lower bound, so it is partial too.
+    if (
+      counted &&
+      (item.tokens.input === undefined ||
+        item.tokens.output === undefined ||
+        item.tokens.inputPartial === true)
+    ) {
+      tokensIncomplete += 1;
+    }
+    if (!counted && (reported !== undefined || estimate !== undefined)) tokensUnknown += 1;
+    if (reported === undefined && estimate === undefined) {
+      if (counted) unpriced += 1;
+      else unmeasured += 1;
+    }
+  }
+  return {
+    usd,
+    tokens,
+    estimated,
+    unknown: unmeasured,
+    tokensUnknown,
+    evaluation: evaluationOf(unpriced, unmeasured, estimateIncomplete, tokensIncomplete),
+  };
+};
+
+/** Spend from routing usages alone, with the token definition reports use. */
 export const spendOf = (usages: readonly RouteUsage[]): Spend =>
-  usages.reduce<Spend>(
-    (total, usage) => ({
-      usd: total.usd + (usage.actualCostUsd ?? usage.estimatedCostUsd ?? 0),
-      tokens: total.tokens + (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
-      estimated:
-        total.estimated ||
-        (usage.actualCostUsd === undefined && usage.estimatedCostUsd !== undefined),
-    }),
-    { usd: 0, tokens: 0, estimated: false },
+  spendOfAttempts(
+    usages.map((usage) => ({
+      tokens: tokensOf(countersFromRouteUsage(usage)),
+      usd: {
+        ...(usage.estimatedCostUsd === undefined ? {} : { estimated: usage.estimatedCostUsd }),
+        ...(usage.actualCostUsd === undefined ? {} : { reported: usage.actualCostUsd }),
+        source: usage.costSource ?? "none",
+      },
+      coverage: hasCounters(usage) ? "legacy" : "missing",
+    })),
   );
 
-/** Which budget, if any, `spend` has used up (D-P8-08). */
+/**
+ * Spend from a run's routing decisions and measurement summaries: the same
+ * per-route resources, and so the same totals, the report shows. The root
+ * launch's summary (no routing decision) is part of it (D-02): configured
+ * limits see its known usage. `rootNodeIds` names the root nodes; one without
+ * a summary is unmeasured, not free. Without it, only roots with summaries count.
+ */
+export const spendOfRun = (input: {
+  readonly routes: readonly RoutingDecision[];
+  readonly measurements: readonly MeasurementSummary[];
+  readonly rootNodeIds?: readonly string[];
+}): Spend =>
+  spendOfAttempts([
+    ...input.routes.map((route) => resourcesOf(route, input.measurements)),
+    ...rootResourcesOf(input.measurements, input.rootNodeIds),
+  ]);
+
+/**
+ * What a budget evaluation leaves out, for reporting. `configured` is whether
+ * any limit is set; an incomplete evaluation is never a certificate of "within budget".
+ */
+export const budgetEvaluation = (
+  spend: Spend,
+  costPolicy: Pick<ProgramContract["costPolicy"], "maxUsd" | "maxTokens">,
+): SpendEvaluation & { readonly configured: boolean } => ({
+  configured: costPolicy.maxUsd !== undefined || costPolicy.maxTokens !== undefined,
+  ...limitAwareEvaluation(spend, costPolicy),
+});
+
+/**
+ * A token limit cannot be certified over attempts whose tokens are unknown (D-02), so
+ * dollars-only attempts count as `tokensIncomplete` when `maxTokens` is configured.
+ * A dollar limit (or none) sees the Spend's own evaluation.
+ */
+const limitAwareEvaluation = (
+  spend: Spend,
+  costPolicy: Pick<ProgramContract["costPolicy"], "maxUsd" | "maxTokens">,
+): SpendEvaluation => {
+  const unknown = spend.tokensUnknown ?? 0;
+  if (costPolicy.maxTokens === undefined || unknown === 0) return spend.evaluation;
+  const { unpriced, unmeasured, estimateIncomplete, tokensIncomplete } = spend.evaluation;
+  return evaluationOf(unpriced, unmeasured, estimateIncomplete, tokensIncomplete + unknown);
+};
+
+/**
+ * Which budget, if any, `spend` has used up (D-P8-08). A limit is enforced on
+ * what is known; `evaluation` says whether that was everything.
+ */
 export const budgetSpent = (
   spend: Spend,
   costPolicy: Pick<ProgramContract["costPolicy"], "maxUsd" | "maxTokens">,
 ):
-  | { readonly budget: "maxUsd" | "maxTokens"; readonly limit: number; readonly spent: number }
+  | {
+      readonly budget: "maxUsd" | "maxTokens";
+      readonly limit: number;
+      readonly spent: number;
+      readonly evaluation: SpendEvaluation;
+    }
   | undefined => {
   if (costPolicy.maxUsd !== undefined && spend.usd >= costPolicy.maxUsd) {
-    return { budget: "maxUsd", limit: costPolicy.maxUsd, spent: spend.usd };
+    return {
+      budget: "maxUsd",
+      limit: costPolicy.maxUsd,
+      spent: spend.usd,
+      evaluation: spend.evaluation,
+    };
   }
   if (costPolicy.maxTokens !== undefined && spend.tokens >= costPolicy.maxTokens) {
-    return { budget: "maxTokens", limit: costPolicy.maxTokens, spent: spend.tokens };
+    return {
+      budget: "maxTokens",
+      limit: costPolicy.maxTokens,
+      spent: spend.tokens,
+      evaluation: limitAwareEvaluation(spend, costPolicy),
+    };
   }
   return undefined;
 };

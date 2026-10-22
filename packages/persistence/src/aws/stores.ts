@@ -10,6 +10,7 @@ import {
   AgentSchema,
   ArtifactSchema,
   CheckpointSchema,
+  CompletionHistorySchema,
   ComputeUtilizationSchema,
   DecisionSchema,
   type Dispatch,
@@ -18,6 +19,7 @@ import {
   ExecutionNodeSchema,
   GateHealthSchema,
   JobContractSchema,
+  MeasurementSummarySchema,
   MembershipSchema,
   OrgComputeUsageSchema,
   OrgConfigSchema,
@@ -26,6 +28,7 @@ import {
   ProgramContractSchema,
   ProjectSchema,
   RoutingDecisionSchema,
+  RunFeedbackSchema,
   RunSchema,
   UserSchema,
   VerificationSchema,
@@ -93,6 +96,30 @@ export const createAwsStores = ({
     index?: NodeIndexKey,
   ): Promise<void> => {
     await table.put({ TableName: tableName, Item: toItem(entity, key, record, index) });
+  };
+
+  /** A compare-and-set put on `version` (absent counts as 0), as an org's config uses. */
+  const putVersioned = async <T extends { readonly version: number }>(
+    entity: string,
+    label: string,
+    schema: Parser<T>,
+    key: TableKey,
+    record: T,
+  ): Promise<void> => {
+    const previous = record.version - 1;
+    try {
+      await table.put({
+        TableName: tableName,
+        Item: toItem(entity, key, record),
+        ConditionExpression: previous === 0 ? "attribute_not_exists(#pk)" : "#version = :previous",
+        ExpressionAttributeNames: previous === 0 ? { "#pk": "PK" } : { "#version": "version" },
+        ...(previous === 0 ? {} : { ExpressionAttributeValues: { ":previous": previous } }),
+      });
+    } catch (error) {
+      if (!isConditionalCheckFailure(error)) throw error;
+      const stored = await getRecord(schema, key);
+      throw new StaleWriteError(label, previous, stored?.version ?? 0);
+    }
   };
 
   const listPage = async <T>(
@@ -269,6 +296,51 @@ export const createAwsStores = ({
         await putRecord("GateHealth", keys.gateHealth(parsed.projectId), parsed);
       },
       get: (projectId) => getRecord(GateHealthSchema, keys.gateHealth(projectId)),
+    },
+
+    // P20 (D-04): a compare-and-set on `version`, as an org's config is. Only
+    // GetItem, PutItem and Query: the API role has no UpdateItem or DeleteItem.
+    feedback: {
+      put: async (feedback) => {
+        const parsed = RunFeedbackSchema.parse(feedback);
+        await putVersioned(
+          "RunFeedback",
+          "run feedback",
+          RunFeedbackSchema,
+          keys.feedback(parsed),
+          parsed,
+        );
+      },
+      get: (scope) => getRecord(RunFeedbackSchema, keys.feedback(scope)),
+      listByProgram: (scope, page) =>
+        listPage(RunFeedbackSchema, inTable(keys.feedbackPartition(scope)), page),
+    },
+
+    // P20 (D-05): listed by the project partition and filtered by anchor.
+    completionHistories: {
+      put: async (history) => {
+        const parsed = CompletionHistorySchema.parse(history);
+        await putVersioned(
+          "CompletionHistory",
+          "completion history",
+          CompletionHistorySchema,
+          keys.completionHistory(parsed.projectId, parsed.completionHistoryId),
+          parsed,
+        );
+      },
+      get: (scope, completionHistoryId) =>
+        getRecord(
+          CompletionHistorySchema,
+          keys.completionHistory(scope.projectId, completionHistoryId),
+        ),
+      listByRun: async (scope) =>
+        (
+          await listAll(CompletionHistorySchema, inTable(keys.completionPartition(scope.projectId)))
+        ).filter(
+          (history) => history.programId === scope.programId && history.runId === scope.runId,
+        ),
+      listByProject: (projectId, page) =>
+        listPage(CompletionHistorySchema, inTable(keys.completionPartition(projectId)), page),
     },
 
     installationClaims: {
@@ -510,6 +582,36 @@ export const createAwsStores = ({
       },
       listByNode: (scope, nodeId) =>
         listAll(RoutingDecisionSchema, inIndex(keys.nodeIndexPartition(scope, nodeId, "ROUTE"))),
+    },
+
+    measurements: {
+      // A summary is updated in place; the condition refuses a write whose
+      // `updatedAt` is older than the stored one, and that refusal is a no-op.
+      put: async (summary) => {
+        const parsed = MeasurementSummarySchema.parse(summary);
+        const scope = runScopeOf(parsed);
+        try {
+          await table.put({
+            TableName: tableName,
+            Item: toItem(
+              "MeasurementSummary",
+              keys.runRecord(scope, "MEAS", parsed.measurementSummaryId),
+              parsed,
+              keys.nodeIndex(scope, parsed.executionNodeId, "MEAS", parsed.measurementSummaryId),
+            ),
+            ConditionExpression: "attribute_not_exists(#pk) OR #updatedAt <= :updatedAt",
+            ExpressionAttributeNames: { "#pk": "PK", "#updatedAt": "updatedAt" },
+            ExpressionAttributeValues: { ":updatedAt": parsed.updatedAt },
+          });
+        } catch (error) {
+          if (!isConditionalCheckFailure(error)) throw error;
+        }
+      },
+      get: (scope, id) => getRecord(MeasurementSummarySchema, keys.runRecord(scope, "MEAS", id)),
+      listByNode: (scope, nodeId) =>
+        listAll(MeasurementSummarySchema, inIndex(keys.nodeIndexPartition(scope, nodeId, "MEAS"))),
+      listByRun: (scope, page) =>
+        listPage(MeasurementSummarySchema, inTable(keys.runRecordPartition(scope, "MEAS")), page),
     },
 
     artifacts: {

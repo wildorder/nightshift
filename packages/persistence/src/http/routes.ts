@@ -10,11 +10,13 @@ import type {
   AgentId,
   ArtifactId,
   CheckpointId,
+  CompletionHistoryId,
   ComputeArchitecture,
   DecisionId,
   ExaminationId,
   ExecutionNodeId,
   JobContractId,
+  MeasurementSummaryId,
   OrgId,
   ProgramId,
   ProjectId,
@@ -82,6 +84,16 @@ export const routes = {
   publicationStrands: (scope: RunScope) => `${routes.inRun(scope)}/publication/strands`,
   computeUtilization: (scope: RunScope) => `${routes.inRun(scope)}/compute`,
 
+  // Run feedback and completion histories (P20, D-04, D-05).
+  feedback: (scope: RunScope) => `${routes.inRun(scope)}/feedback`,
+  programFeedback: (scope: ProgramScope) =>
+    `${routes.program(scope.projectId, scope.programId)}/feedback`,
+  completionHistories: (scope: RunScope) => `${routes.inRun(scope)}/completion-histories`,
+  completionHistory: (scope: RunScope, completionHistoryId: CompletionHistoryId) =>
+    `${routes.completionHistories(scope)}/${completionHistoryId}`,
+  projectCompletionHistories: (projectId: ProjectId) =>
+    `/projects/${projectId}/completion-histories`,
+
   nodes: (scope: RunScope) => `${routes.inRun(scope)}/nodes`,
   node: (scope: RunScope, nodeId: ExecutionNodeId) => `${routes.nodes(scope)}/${nodeId}`,
   children: (scope: RunScope, nodeId: ExecutionNodeId) => `${routes.node(scope, nodeId)}/children`,
@@ -117,6 +129,12 @@ export const routes = {
     `${routes.inRun(scope)}/routing-decisions/${routingDecisionId}`,
   nodeRoutingDecisions: (scope: RunScope, nodeId: ExecutionNodeId) =>
     `${routes.node(scope, nodeId)}/routing-decisions`,
+
+  measurements: (scope: RunScope) => `${routes.inRun(scope)}/measurements`,
+  measurement: (scope: RunScope, measurementSummaryId: MeasurementSummaryId) =>
+    `${routes.measurements(scope)}/${measurementSummaryId}`,
+  nodeMeasurements: (scope: RunScope, nodeId: ExecutionNodeId) =>
+    `${routes.node(scope, nodeId)}/measurements`,
 
   artifacts: (scope: RunScope) => `${routes.inRun(scope)}/artifacts`,
   artifact: (scope: RunScope, artifactId: ArtifactId) => `${routes.artifacts(scope)}/${artifactId}`,

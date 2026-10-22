@@ -183,7 +183,7 @@ describe("the why, in the Studio (SC-P14-08)", () => {
 
   it("opens the Status tab with a line per story, done or not", async () => {
     const out: { ids?: Seeded } = {};
-    await mountStudio(seed(out), { at: runPathOf, documents });
+    await mountStudio(seed(out), { at: (f: Fixtures) => `${runPathOf(f)}?tab=status`, documents });
     const stories = await screen.findByRole("list", { name: "Stories" });
     await waitFor(() =>
       expect(stories.querySelector('[data-story="US-01"]')?.textContent).toMatch(/^met/),

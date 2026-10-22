@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFixtures, makeProgramContract, makeRun } from "../testing/factories.js";
+import { emptyMeasuredReport } from "../testing/report-defaults.js";
 import type { JobReport, RunReport, StrandReport } from "./report.js";
 import { programStatus } from "./status.js";
 
@@ -32,6 +33,7 @@ const strand = (over: Partial<StrandReport> = {}): StrandReport => ({
 const report = (over: Partial<RunReport> = {}): RunReport => ({
   program: makeProgramContract(f, { costPolicy: { maxUsd: 25 } }),
   run: makeRun(f, { status: "succeeded" }),
+  ...emptyMeasuredReport(makeRun(f, { status: "succeeded" })),
   strands: [],
   criteria: [],
   pendingPrerequisites: [],
@@ -77,10 +79,72 @@ describe("programStatus (D-P13-09)", () => {
     );
     expect(status.strands).toEqual({ total: 2, succeeded: 1 });
     expect(status.jobs).toMatchObject({ total: 3, landed: 2, failed: 1, retried: 1 });
-    expect(status.spend).toEqual({ usd: 14.2, estimated: true, unpriced: 1, budgetUsd: 25 });
+    expect(status.spend).toEqual({
+      usd: 14.2,
+      estimated: true,
+      unpriced: 1,
+      tokens: 2,
+      budgetUsd: 25,
+      evaluation: {
+        configured: true,
+        complete: false,
+        unpriced: 1,
+        unmeasured: 0,
+        estimateIncomplete: 0,
+        tokensIncomplete: 0,
+      },
+    });
     expect(status.waiting).toEqual([
       { kind: "failed", subject: "S-02 The store", reason: "tests failed twice" },
     ]);
+  });
+
+  it("takes the spend from the report's budget when it has one", () => {
+    const status = programStatus(
+      report({
+        usage: [
+          {
+            harness: "claude",
+            model: "m",
+            purpose: "work",
+            attempts: 1,
+            inputTokens: 1,
+            outputTokens: 1,
+            costUsd: 1,
+            estimated: false,
+            unpriced: 0,
+          },
+        ],
+        budget: {
+          usd: 7.5,
+          tokens: 900,
+          estimated: true,
+          evaluation: {
+            configured: true,
+            complete: false,
+            unpriced: 1,
+            unmeasured: 2,
+            estimateIncomplete: 1,
+            tokensIncomplete: 0,
+          },
+        },
+      }),
+    );
+    expect(status.spend).toEqual({
+      usd: 7.5,
+      tokens: 900,
+      estimated: true,
+      unpriced: 1,
+      budgetUsd: 25,
+      evaluation: {
+        configured: true,
+        complete: false,
+        unpriced: 1,
+        unmeasured: 2,
+        estimateIncomplete: 1,
+        tokensIncomplete: 0,
+      },
+    });
   });
 
   it("puts a human prerequisite first, then provisional and blocked strands, each with a reason", () => {

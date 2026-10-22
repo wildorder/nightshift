@@ -82,10 +82,12 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       ...f.scope,
       jobContractId: f.ids.next("job"),
       decisionId: f.ids.next("dec"),
+      completionHistoryId: f.ids.next("comp"),
       checkpointId: f.ids.next("ckpt"),
       verificationId: f.ids.next("ver"),
       examinationId: f.ids.next("exam"),
       routingDecisionId: f.ids.next("route"),
+      measurementSummaryId: f.ids.next("meas"),
       artifactId: f.ids.next("art"),
       // Program-scoped planning routes (P7): named by a digest and an `HP-nn`, not by an id.
       // P8: an org's own configuration routes are named by the org.
@@ -178,6 +180,16 @@ describe("a delegating token does exactly what D-P6-04 grants, on its own node",
       expect(answer).toEqual({ status: 403, code: "execution_forbidden_operation" });
       return;
     }
+    if (
+      ORCHESTRATOR_ACCESS[operation] === "own_subtree" &&
+      route.method === "GET" &&
+      !route.path.includes("{nodeId}")
+    ) {
+      // A route by record id (P20 `measurement.get`) names no node, so a
+      // subtree reach cannot be shown there and fails closed.
+      expect(answer).toEqual({ status: 403, code: "execution_out_of_scope" });
+      return;
+    }
     expect(answer.status, `${route.method} ${route.path} answered ${answer.code}`).not.toBe(403);
   });
 });
@@ -189,7 +201,12 @@ describe("a delegating token reaches a node it delegated only where the table sa
     });
     const access = ORCHESTRATOR_ACCESS[operation];
     // `own_program` is like `own_run` here: a reach that names no node (P7).
-    if (access === "own_subtree" || access === "own_run" || access === "own_program") {
+    const nodeless =
+      access === "own_subtree" && route.method === "GET" && !route.path.includes("{nodeId}");
+    if (
+      !nodeless &&
+      (access === "own_subtree" || access === "own_run" || access === "own_program")
+    ) {
       expect(answer.status, `${route.method} ${route.path} answered ${answer.code}`).not.toBe(403);
       return;
     }

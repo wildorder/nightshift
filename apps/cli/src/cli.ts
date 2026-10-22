@@ -17,6 +17,7 @@
  * {@link runCli}.
  */
 import { parseArgs } from "node:util";
+import { type CompletionVerb, completion } from "./commands/completion.js";
 import { planConversation } from "./commands/conversation.js";
 import { decisionBrief, reverseDecision } from "./commands/decision.js";
 import { recordedGates, recordGates } from "./commands/gate-health.js";
@@ -37,6 +38,7 @@ import {
 import { planCheck, planRatify } from "./commands/plan.js";
 import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
+import { rateRun } from "./commands/rate.js";
 import { remoteCancel, remoteResume, remoteStatus } from "./commands/remote.js";
 import { writeRunReport } from "./commands/report.js";
 import { resume } from "./commands/resume.js";
@@ -70,7 +72,14 @@ Usage:
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision reverse <program> <decisionId> --choice <new> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision brief <program> <decisionId> [--out <path>] [--run <id>] [--repo <path>]
-  nightshift report <program> [--run <id>] [--repo <path>]
+  nightshift report <program> [--run <id>] [--json [--role <r>] [--model <m>] [--since <iso>] [--until <iso>]] [--repo <path>]
+  nightshift rate <program> up|down|clear [--run <id>] [--repo <path>]
+  nightshift completion create <program> --title <t> [--run <id>] [--repo <path>]
+  nightshift completion list <program> [--repo <path>]
+  nightshift completion show|suggest <program> --history <id> [--repo <path>]
+  nightshift completion add <program> --history <id> --member <programId>/<runId> [--role contributing|correction] [--repo <path>]
+  nightshift completion remove <program> --history <id> --member <programId>/<runId> [--repo <path>]
+  nightshift completion checkpoint <program> --history <id> --name <n> --member <programId>/<runId> [--repo <path>]
   nightshift org config get [--org <id>]
   nightshift org config set <file> [--org <id>]
   nightshift org github install [--installation <id>] [--org <id>]
@@ -573,11 +582,20 @@ const doDecision = async (
 };
 
 const doReport = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift report <program> [--run <id>] [--repo <path>]";
+  const usage =
+    "nightshift report <program> [--run <id>] [--json [--role <r>] [--model <m>] [--since <iso>] [--until <iso>]] [--repo <path>]";
   const { values, positionals } = parse(
     {
       args: [...args],
-      options: { run: { type: "string" }, repo: { type: "string" } },
+      options: {
+        run: { type: "string" },
+        repo: { type: "string" },
+        json: { type: "boolean" },
+        role: { type: "string" },
+        model: { type: "string" },
+        since: { type: "string" },
+        until: { type: "string" },
+      },
       allowPositionals: true,
       strict: true,
     },
@@ -587,10 +605,148 @@ const doReport = async (environment: CliEnvironment, args: readonly string[]): P
   if (id === undefined) throw new UsageError("`nightshift report` needs a program", usage);
   const run = optional(values, "run");
   const repo = optional(values, "repo");
+  const role = optional(values, "role");
+  const model = optional(values, "model");
+  const since = optional(values, "since");
+  const until = optional(values, "until");
+  for (const [flag, value] of [
+    ["--since", since],
+    ["--until", until],
+  ] as const) {
+    if (value !== undefined && Number.isNaN(Date.parse(value))) {
+      throw new UsageError(`${flag} takes an ISO timestamp, not \`${value}\``, usage);
+    }
+  }
+  const json = values.json === true;
+  const filters = {
+    ...(role === undefined ? {} : { role }),
+    ...(model === undefined ? {} : { model }),
+    ...(since === undefined ? {} : { from: since }),
+    ...(until === undefined ? {} : { to: until }),
+  };
+  if (!json && Object.keys(filters).length > 0) {
+    throw new UsageError(
+      "--role, --model, --since and --until narrow the export: add --json",
+      usage,
+    );
+  }
   return writeRunReport(environment, {
     id,
     ...(run === undefined ? {} : { run }),
     ...(repo === undefined ? {} : { repo }),
+    ...(json ? { json, filters } : {}),
+  });
+};
+
+const doRate = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage = "nightshift rate <program> up|down|clear [--run <id>] [--repo <path>]";
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: { run: { type: "string" }, repo: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  const [id, action, ...extra] = positionals;
+  if (id === undefined) throw new UsageError("`nightshift rate` needs a program", usage);
+  if (action !== "up" && action !== "down" && action !== "clear") {
+    throw new UsageError("`nightshift rate <program>` takes `up`, `down` or `clear`", usage);
+  }
+  if (extra.length > 0) throw new UsageError(`unexpected argument \`${extra[0]}\``, usage);
+  const run = optional(values, "run");
+  const repo = optional(values, "repo");
+  return rateRun(environment, {
+    id,
+    action,
+    ...(run === undefined ? {} : { run }),
+    ...(repo === undefined ? {} : { repo }),
+  });
+};
+
+const COMPLETION_USAGE =
+  "nightshift completion create <program> --title <t> [--run <id>]\n" +
+  "nightshift completion list <program>\n" +
+  "nightshift completion show|suggest <program> --history <id>\n" +
+  "nightshift completion add <program> --history <id> --member <programId>/<runId> [--role contributing|correction]\n" +
+  "nightshift completion remove <program> --history <id> --member <programId>/<runId>\n" +
+  "nightshift completion checkpoint <program> --history <id> --name <n> --member <programId>/<runId>";
+
+/** The options each verb takes; `--repo` belongs to all of them. */
+const COMPLETION_FLAGS: Readonly<Record<CompletionVerb, readonly string[]>> = {
+  create: ["title", "run"],
+  list: [],
+  show: ["history"],
+  suggest: ["history"],
+  add: ["history", "member", "role"],
+  remove: ["history", "member"],
+  checkpoint: ["history", "member", "name"],
+};
+
+const doCompletion = async (
+  environment: CliEnvironment,
+  args: readonly string[],
+): Promise<number> => {
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: {
+        title: { type: "string" },
+        run: { type: "string" },
+        history: { type: "string" },
+        member: { type: "string" },
+        role: { type: "string" },
+        name: { type: "string" },
+        repo: { type: "string" },
+      },
+      allowPositionals: true,
+      strict: true,
+    },
+    COMPLETION_USAGE,
+  );
+  const [verb, id, ...extra] = positionals;
+  if (verb === undefined || !Object.hasOwn(COMPLETION_FLAGS, verb)) {
+    throw new UsageError(
+      "`nightshift completion` takes create, list, show, suggest, add, remove or checkpoint",
+      COMPLETION_USAGE,
+    );
+  }
+  const known = verb as CompletionVerb;
+  if (id === undefined) {
+    throw new UsageError(`\`nightshift completion ${known}\` needs a program`, COMPLETION_USAGE);
+  }
+  if (extra.length > 0) {
+    throw new UsageError(`unexpected argument \`${extra[0]}\``, COMPLETION_USAGE);
+  }
+  for (const flag of Object.keys(values)) {
+    if (flag !== "repo" && !(COMPLETION_FLAGS[known] as readonly string[]).includes(flag)) {
+      throw new UsageError(`\`completion ${known}\` does not take --${flag}`, COMPLETION_USAGE);
+    }
+  }
+  const role = optional(values, "role");
+  if (role !== undefined && role !== "contributing" && role !== "correction") {
+    throw new UsageError("--role must be `contributing` or `correction`", COMPLETION_USAGE);
+  }
+  const needs = (flag: string): string => required(values, flag, COMPLETION_USAGE);
+  const pick = (flag: string): Record<string, string> => {
+    const value = optional(values, flag);
+    return value === undefined ? {} : { [flag]: value };
+  };
+  if (known === "create") needs("title");
+  if (known === "add" || known === "remove" || known === "checkpoint") needs("member");
+  if (known === "checkpoint") needs("name");
+  if (known !== "create" && known !== "list") needs("history");
+  return completion(environment, {
+    verb: known,
+    id,
+    ...pick("repo"),
+    ...pick("run"),
+    ...pick("title"),
+    ...pick("history"),
+    ...pick("member"),
+    ...pick("name"),
+    ...(role === undefined ? {} : { role }),
   });
 };
 
@@ -755,6 +911,10 @@ const dispatch = async (
       return doDecision(environment, args);
     case "report":
       return doReport(environment, args);
+    case "rate":
+      return doRate(environment, args);
+    case "completion":
+      return doCompletion(environment, args);
     case "org":
       return doOrg(environment, args);
     case "remote":

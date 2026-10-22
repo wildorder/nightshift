@@ -38,6 +38,8 @@ export const ExaminationIdSchema = rawId("exam").brand<"ExaminationId">();
 export const RoutingDecisionIdSchema = rawId("route").brand<"RoutingDecisionId">();
 export const ArtifactIdSchema = rawId("art").brand<"ArtifactId">();
 export const EventIdSchema = rawId("evt").brand<"EventId">();
+export const MeasurementSummaryIdSchema = rawId("meas").brand<"MeasurementSummaryId">();
+export const CompletionHistoryIdSchema = rawId("comp").brand<"CompletionHistoryId">();
 
 export type OrgId = z.infer<typeof OrgIdSchema>;
 export type ProjectId = z.infer<typeof ProjectIdSchema>;
@@ -53,6 +55,8 @@ export type ExaminationId = z.infer<typeof ExaminationIdSchema>;
 export type RoutingDecisionId = z.infer<typeof RoutingDecisionIdSchema>;
 export type ArtifactId = z.infer<typeof ArtifactIdSchema>;
 export type EventId = z.infer<typeof EventIdSchema>;
+export type MeasurementSummaryId = z.infer<typeof MeasurementSummaryIdSchema>;
+export type CompletionHistoryId = z.infer<typeof CompletionHistoryIdSchema>;
 
 /**
  * Every ID prefix, keyed by prefix. `core`'s generator iterates this so a new
@@ -73,6 +77,8 @@ export const ID_SCHEMAS = {
   route: RoutingDecisionIdSchema,
   art: ArtifactIdSchema,
   evt: EventIdSchema,
+  meas: MeasurementSummaryIdSchema,
+  comp: CompletionHistoryIdSchema,
 } as const;
 
 export type IdPrefix = keyof typeof ID_SCHEMAS;

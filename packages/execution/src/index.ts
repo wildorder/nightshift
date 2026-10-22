@@ -27,6 +27,7 @@ export {
   type CarryOverInput,
   carriedStrandsFor,
 } from "./carry-over.js";
+export { type CausesOfRetryInput, causesOfRetry, type StrandFailures } from "./causes.js";
 export { routingDataset } from "./dataset.js";
 export {
   type EndGatesResult,
@@ -73,6 +74,7 @@ export {
 export {
   arbitrateAll,
   carriedExamination,
+  closeFixedFindings,
   continuedByNightshift,
   describeBlocking,
   EXAMINATION_CONTEXT_ENV,
@@ -128,6 +130,36 @@ export {
 export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";
 export { type IntegrateInput, type IntegrateResult, integrateNode } from "./integrate.js";
+export { blockerKey, type LifecycleInput, observeLifecycle } from "./lifecycle.js";
+export {
+  appendJournalLine,
+  durableAppend,
+  type Journal,
+  type JournalContext,
+  JournalContextSchema,
+  type JournalFs,
+  type JournalLine,
+  JournalLineSchema,
+  type JournalOwner,
+  nodeJournalFs,
+  openJournal,
+  readJournal,
+} from "./measurement/journal.js";
+export {
+  createMeasurementRecorder,
+  type EngineObservation,
+  type MeasurementRecorder,
+  type MeasurementRecorderInput,
+  type MeasurementRecorderLimits,
+  publishedSummaryFor,
+  type StartSegmentOptions,
+} from "./measurement/recorder.js";
+export {
+  LIVE_WINDOW_MS,
+  type RecoveryOptions,
+  type RecoveryResult,
+  recoverMeasurementJournals,
+} from "./measurement/recover.js";
 export { createMergeQueue, type MergeQueue } from "./merge-queue.js";
 export {
   createEventOutbox,
@@ -252,6 +284,7 @@ export {
   planProblems,
   planStateOf,
   renderPlan,
+  reviewStrandPlan,
   STRAND_PLAN_CONTEXT,
   STRAND_PLAN_REVIEW_CONTEXT,
 } from "./strand-plan.js";

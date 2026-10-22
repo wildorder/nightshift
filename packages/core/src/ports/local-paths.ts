@@ -31,6 +31,13 @@ export interface LocalPaths {
   spool(runId: string): string;
   /** Where an adapter writes an agent's raw transcript until it is uploaded. */
   transcript(runId: string, agentId: string): string;
+  /** The directory of a run's measurement journals (P20): one file per agent launch. */
+  measurementsDir(runId: string): string;
+  /**
+   * One launch's measurement journal, a file inside {@link measurementsDir} named
+   * `<agentId>__<launchId>.ndjson`, so both identifiers parse back from the name.
+   */
+  measurementJournal(runId: string, agentId: string, launchId: string): string;
   /**
    * The temp directory every process in `checkout` is given (P15): one per
    * checkout, on the state directory's disk, never the machine's shared `/tmp`.

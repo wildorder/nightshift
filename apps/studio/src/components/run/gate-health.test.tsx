@@ -4,6 +4,7 @@
  * Nodes, gathered from the run's `environment.fault` events.
  */
 import {
+  type Fixtures,
   makeEvent,
   makeProgramContract,
   makeProject,
@@ -70,7 +71,7 @@ describe("the gate health's environment fault", () => {
           }),
         );
       },
-      { at: runPathOf },
+      { at: (f: Fixtures) => `${runPathOf(f)}?tab=status` },
     );
 
     const card = await gateCard();

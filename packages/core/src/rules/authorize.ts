@@ -114,6 +114,11 @@ export type Operation =
   // Routing.
   | "routingDecision.put"
   | "routingDecision.listByNode"
+  // Measurement summaries (P20).
+  | "measurement.put"
+  | "measurement.get"
+  | "measurement.listByNode"
+  | "measurement.listByRun"
   // Artifacts.
   | "artifact.list"
   | "artifact.put"
@@ -143,6 +148,15 @@ export type Operation =
   // P15: a project's gate-health record (D-P15-07).
   | "gateHealth.get"
   | "gateHealth.put"
+  // P20 (D-04, D-05): a person's verdict on a run, and the completion histories
+  // they assemble. A user's to write; no execution reads or writes them.
+  | "feedback.get"
+  | "feedback.put"
+  | "feedback.listByProgram"
+  | "completion.get"
+  | "completion.put"
+  | "completion.listByRun"
+  | "completion.listByProject"
   // An org's provider keys and its GitHub installation (D-P10-23, D-P10-02).
   | "orgCredential.put"
   | "orgCredential.list"
@@ -266,6 +280,10 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   // Why a job runs where it runs is Nightshift's record, not the worker's.
   "routingDecision.put": "forbidden",
   "routingDecision.listByNode": "own_node",
+  "measurement.put": "forbidden",
+  "measurement.get": "own_node",
+  "measurement.listByNode": "own_node",
+  "measurement.listByRun": "own_run",
 
   // Artifacts are readable within the run. A worker writes none: its oversized
   // event payloads are dropped with a reason rather than spilled to S3, so
@@ -304,6 +322,15 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   // the engine, never by an agent, and no agent needs to read it.
   "gateHealth.get": "forbidden",
   "gateHealth.put": "forbidden",
+  // P20 (D-04, D-05): a human verdict and a completion history belong to a user;
+  // no execution needs to read them, and the report tolerates the refusal.
+  "feedback.get": "forbidden",
+  "feedback.put": "forbidden",
+  "feedback.listByProgram": "forbidden",
+  "completion.get": "forbidden",
+  "completion.put": "forbidden",
+  "completion.listByRun": "forbidden",
+  "completion.listByProject": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
@@ -393,6 +420,10 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
 
   "routingDecision.put": "forbidden",
   "routingDecision.listByNode": "own_subtree",
+  "measurement.put": "forbidden",
+  "measurement.get": "own_subtree",
+  "measurement.listByNode": "own_subtree",
+  "measurement.listByRun": "own_run",
 
   "artifact.list": "own_run",
   "artifact.put": "forbidden",
@@ -418,6 +449,15 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "warmCache.get": "forbidden",
   "gateHealth.get": "forbidden",
   "gateHealth.put": "forbidden",
+  // P20 (D-04, D-05): a human verdict and a completion history belong to a user;
+  // no execution needs to read them, and the report tolerates the refusal.
+  "feedback.get": "forbidden",
+  "feedback.put": "forbidden",
+  "feedback.listByProgram": "forbidden",
+  "completion.get": "forbidden",
+  "completion.put": "forbidden",
+  "completion.listByRun": "forbidden",
+  "completion.listByProject": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
@@ -534,6 +574,10 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
 
   "routingDecision.put": "own_run",
   "routingDecision.listByNode": "own_program",
+  "measurement.put": "own_run",
+  "measurement.get": "own_program",
+  "measurement.listByNode": "own_program",
+  "measurement.listByRun": "own_program",
 
   "artifact.list": "own_program",
   "artifact.put": "own_run",
@@ -566,6 +610,15 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   // strand or a repair lands. Its project's alone, and the write is fenced.
   "gateHealth.get": "own_project",
   "gateHealth.put": "own_project",
+  // P20 (D-04, D-05): a human verdict and a completion history belong to a user;
+  // no execution needs to read them, and the report tolerates the refusal.
+  "feedback.get": "forbidden",
+  "feedback.put": "forbidden",
+  "feedback.listByProgram": "forbidden",
+  "completion.get": "forbidden",
+  "completion.put": "forbidden",
+  "completion.listByRun": "forbidden",
+  "completion.listByProject": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
   "orgGithub.put": "forbidden",
@@ -617,6 +670,9 @@ export const READ_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
   "examination.get",
   "examination.listByNode",
   "routingDecision.listByNode",
+  "measurement.get",
+  "measurement.listByNode",
+  "measurement.listByRun",
   "artifact.list",
   "artifact.get",
   "orgConfig.get",
@@ -626,6 +682,11 @@ export const READ_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
   "computeRecommendation.get",
   "warmCache.get",
   "gateHealth.get",
+  "feedback.get",
+  "feedback.listByProgram",
+  "completion.get",
+  "completion.listByRun",
+  "completion.listByProject",
   "orgCredential.list",
   "orgGithub.get",
   "githubApp.get",

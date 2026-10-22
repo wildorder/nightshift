@@ -22,6 +22,7 @@
  * loops: two passes reading the same tree would both see the same free slot.
  */
 import {
+  type AttemptCause,
   type CommitSha,
   type Effort,
   type Examination,
@@ -30,12 +31,16 @@ import {
   isOpenMaterialFinding,
   type JobContract,
   type JobContractId,
+  lifecycleObservationsOf,
+  lifecycleOperationId,
+  type MeasurementSummary,
   type RouteChoice,
   type RouteTarget,
-  type RouteUsage,
+  type RoutingDecision,
 } from "@nightshift/contracts";
 import {
   blockedBy,
+  budgetEvaluation,
   budgetSpent,
   buildTree,
   ConcurrencyLimitExceededError,
@@ -51,7 +56,7 @@ import {
   RETRYABLE_STATUSES,
   type Spend,
   type StrandOutcomes,
-  spendOf,
+  spendOfRun,
   strandAttempts,
   strandOutcomes,
   strandsOf,
@@ -59,10 +64,12 @@ import {
   transition,
 } from "@nightshift/core";
 import type { AgentTask, McpLaunch } from "@nightshift/harness";
+import { causesOfRetry, type StrandFailures } from "./causes.js";
 import type { ExecutionEnvironment, RunSession, WorkerLaunchIdentity } from "./environment.js";
 import { arbitrateAll, fixOf, latestExamination, rulingDue } from "./examine.js";
 import { reconcileGateRepairs } from "./gate-repair.js";
 import { baseRef, git, jobBranch, revParse } from "./git/index.js";
+import { blockerKey, observeLifecycle } from "./lifecycle.js";
 import {
   createMergeQueue,
   type MergeQueue,
@@ -172,6 +179,8 @@ export interface Submission {
   readonly resume?: { readonly sessionId: string } | undefined;
   /** `job` unless said otherwise (D-P6-03). */
   readonly kind?: "job" | "sub-program";
+  /** P20: why this attempt is made, when it follows another. */
+  readonly causes?: readonly AttemptCause[] | undefined;
 }
 
 export interface Submitted {
@@ -294,6 +303,14 @@ interface Pending {
   readonly submission: Submission;
   readonly node: ExecutionNode;
   waiting: WaitingReason | undefined;
+  /** P20: the wait's lifecycle occurrence, open from entering pending until it starts or is withdrawn. */
+  wait?: { readonly operationId: string; readonly attempt: number; key: string } | undefined;
+}
+
+/** What a wait is waiting on, in the lifecycle vocabulary (P20). */
+interface Blocker {
+  readonly kind: string;
+  readonly ref: string;
 }
 
 export const createEngine = (options: EngineOptions): Engine => {
@@ -318,6 +335,76 @@ export const createEngine = (options: EngineOptions): Engine => {
   let closed = false;
   let preservingWork = false;
   let preparing = false;
+
+  // --- Lifecycle: the wait (P20) ----------------------------------------------------------
+  //
+  // A node's wait is observed from entering `pending` to leaving it. It carries
+  // the whole set of what it waits on, and a note whenever that set changes.
+  const observeWait = (
+    entry: Pending,
+    step: "start" | "note" | "end",
+    rest: { readonly reason?: string; readonly blockers?: readonly Blocker[] } = {},
+  ): void => {
+    if (entry.wait === undefined) return;
+    observeLifecycle(environment, {
+      scope: session.scope,
+      nodeId: entry.node.executionNodeId,
+      operationId: entry.wait.operationId,
+      attempt: entry.wait.attempt,
+      phase: "wait",
+      transition: step,
+      ...rest,
+    });
+  };
+
+  /** Opens the wait for the attempt after `workAttempts` earlier ones. */
+  const beginWait = (entry: Pending, workAttempts: number, reason?: string): void => {
+    const attempt = workAttempts + 1;
+    entry.wait = {
+      operationId: lifecycleOperationId("wait", entry.node.executionNodeId, String(attempt)),
+      attempt,
+      key: "",
+    };
+    observeWait(entry, "start", reason === undefined ? {} : { reason });
+  };
+
+  const endWait = (entry: Pending, reason: string): void => {
+    observeWait(entry, "end", { reason });
+    entry.wait = undefined;
+  };
+
+  /** A note when the set of blockers is not the one last told. */
+  const noteWait = (entry: Pending, blockers: readonly Blocker[]): void => {
+    if (entry.wait === undefined) return;
+    const key = blockerKey(blockers);
+    if (key === entry.wait.key) return;
+    entry.wait.key = key;
+    // Nothing left to wait on is told by the wait's end, which follows.
+    if (blockers.length === 0) return;
+    observeWait(entry, "note", { reason: "blockers changed", blockers });
+  };
+
+  /** True when the record holds a start of `operationId` whose end was never observed. */
+  const hasOpenOccurrence = async (operationId: string): Promise<boolean> => {
+    try {
+      const events = [];
+      let cursor: string | undefined;
+      do {
+        const page = await stores.events.listByRun(
+          session.scope,
+          cursor === undefined ? {} : { cursor },
+        );
+        events.push(...page.items);
+        cursor = page.cursor;
+      } while (cursor !== undefined);
+      const last = lifecycleObservationsOf(events)
+        .filter((observation) => observation.operationId === operationId)
+        .at(-1);
+      return last !== undefined && last.transition !== "end";
+    } catch {
+      return false;
+    }
+  };
 
   // --- The route onto the branch: one per run, and it is here (D-P6-05) -------------
   const queue = options.mergeQueue ?? createMergeQueue(environment);
@@ -411,25 +498,68 @@ export const createEngine = (options: EngineOptions): Engine => {
   let spend: Spend | undefined;
   let budgetAnnounced = false;
 
+  // The counts last announced as incomplete; a changed count is announced again.
+  let incompleteAnnounced: string | undefined;
+
   const readSpend = async (): Promise<Spend> => {
-    const usages: RouteUsage[] = [];
-    for (const node of await readNodes()) {
-      for (const decision of await stores.routingDecisions.listByNode(
-        session.scope,
-        node.executionNodeId,
-      )) {
-        usages.push(decision.usage);
-      }
+    const routes: RoutingDecision[] = [];
+    const nodes = await readNodes();
+    for (const node of nodes) {
+      routes.push(
+        ...(await stores.routingDecisions.listByNode(session.scope, node.executionNodeId)),
+      );
     }
-    return spendOf(usages);
+    const measurements: MeasurementSummary[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await stores.measurements.listByRun(
+        session.scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      measurements.push(...page.items);
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    // The root launch's summaries are among `measurements` (D-02): limits see its known usage,
+    // and a root node without one is unmeasured, which keeps the evaluation incomplete.
+    const rootNodeIds = nodes
+      .filter((node) => node.parentNodeId === null)
+      .map((node) => node.executionNodeId);
+    return spendOfRun({ routes, measurements, rootNodeIds });
   };
 
-  /** True when a budget is spent, which every queued node is then told, once on the record. */
-  const budgetExhausted = async (): Promise<boolean> => {
-    if (!budgeted) return false;
+  /** Which budget is spent, which every queued node is then told, once on the record. */
+  const budgetExhausted = async (): Promise<"maxUsd" | "maxTokens" | undefined> => {
+    if (!budgeted) return undefined;
     spend ??= await readSpend();
-    const spent = budgetSpent(spend, costPolicy);
-    if (spent === undefined) return false;
+    const evaluation = budgetEvaluation(spend, costPolicy);
+    if (!evaluation.complete) {
+      // A limit that cannot be evaluated completely is enforced on what is known and said so.
+      const key = `${evaluation.unpriced}/${evaluation.unmeasured}/${evaluation.estimateIncomplete}/${evaluation.tokensIncomplete}`;
+      if (key !== incompleteAnnounced) {
+        incompleteAnnounced = key;
+        const [budget, limit, spentNow] =
+          costPolicy.maxUsd !== undefined
+            ? (["maxUsd", costPolicy.maxUsd, spend.usd] as const)
+            : (["maxTokens", costPolicy.maxTokens ?? 0, spend.tokens] as const);
+        outbox.emit({
+          type: "run.budget_evaluation_incomplete",
+          source: "control-plane",
+          payload: {
+            budget,
+            limit,
+            spent: spentNow,
+            unpriced: evaluation.unpriced,
+            unmeasured: evaluation.unmeasured,
+            estimateIncomplete: evaluation.estimateIncomplete,
+            tokensIncomplete: evaluation.tokensIncomplete,
+          },
+          executionNodeId: session.rootNodeId,
+        });
+      }
+    }
+    const exhausted = budgetSpent(spend, costPolicy);
+    if (exhausted === undefined) return undefined;
+    const spent = { budget: exhausted.budget, limit: exhausted.limit, spent: exhausted.spent };
     const reason: WaitingReason = { kind: "budget_spent", ...spent, estimated: spend.estimated };
     for (const entry of pending) entry.waiting = reason;
     if (!budgetAnnounced) {
@@ -441,7 +571,7 @@ export const createEngine = (options: EngineOptions): Engine => {
         executionNodeId: session.rootNodeId,
       });
     }
-    return true;
+    return spent.budget;
   };
 
   // --- Fallback (P8, D-P8-06) ------------------------------------------------------------
@@ -463,26 +593,47 @@ export const createEngine = (options: EngineOptions): Engine => {
       }
     };
 
-  /** True when nothing may start at all: closed, idle, or out of time or money. */
-  const holding = async (): Promise<boolean> =>
-    closed || preparing || pending.length === 0 || wallClockSpent() || (await budgetExhausted());
-
   /** Starts the first queued node that may start. False when none could. */
   const startNext = async (): Promise<boolean> => {
     await ready;
-    if (await holding()) return false;
+    if (closed || preparing || pending.length === 0) return false;
+    // Out of time or money: nothing starts, and every queued node is told so.
+    const extra: Blocker[] = [];
+    if (wallClockSpent()) {
+      extra.push({ kind: "wall_clock", ref: session.scope.runId });
+    } else {
+      const budget = await budgetExhausted();
+      if (budget !== undefined) extra.push({ kind: "budget", ref: budget });
+    }
+    const holding = extra.length > 0;
 
     // A retry may enter the queue while the records are being read. Only judge
     // entries already queued when this snapshot began; an older failed record
     // must not withdraw the retry that replaced it.
     const candidates = [...pending];
-    const nodes = await readNodes();
-    const tree = buildTree(nodes);
-    const outcomes = planned ? await readStrandOutcomes(nodes) : {};
+    let tree: ExecutionTree;
+    let outcomes: StrandOutcomes;
+    try {
+      const nodes = await readNodes();
+      tree = buildTree(nodes);
+      outcomes = planned ? await readStrandOutcomes(nodes) : {};
+    } catch (error) {
+      if (!holding) throw error;
+      for (const entry of candidates) noteWait(entry, extra);
+      return false;
+    }
     for (const entry of candidates) {
       if (!pending.includes(entry)) continue;
-      const free = !heldByStrands(entry, outcomes) && mayStartNow(tree, entry);
-      if (free && (await start(entry))) return true;
+      const verdict = blockersOf(tree, entry, outcomes);
+      if (verdict.withdrawn) {
+        // Withdrawn by somebody else: cancelled through the control plane.
+        remove(entry);
+        endWait(entry, "cancelled");
+        continue;
+      }
+      if (!holding) entry.waiting = verdict.waiting;
+      noteWait(entry, [...verdict.blockers, ...extra]);
+      if (!holding && verdict.blockers.length === 0 && (await start(entry))) return true;
     }
     return false;
   };
@@ -525,16 +676,6 @@ export const createEngine = (options: EngineOptions): Engine => {
       if (strandContinuing(node, rounds) !== undefined) outcomes[strandId] = "running";
     }
     return outcomes;
-  };
-
-  /** True while a strand's dependencies have not all succeeded. Records what it waits for. */
-  const heldByStrands = (entry: Pending, outcomes: StrandOutcomes): boolean => {
-    const strandId = entry.submission.job.strandId;
-    if (strandId === undefined) return false;
-    const waitingFor = strandWaitingFor(session.program, outcomes, strandId);
-    if (waitingFor.length === 0) return false;
-    entry.waiting = { kind: "strands", waitingFor };
-    return true;
   };
 
   /**
@@ -598,42 +739,70 @@ export const createEngine = (options: EngineOptions): Engine => {
     }
   };
 
-  /** Whether `entry` has a free slot in `tree`. Records why not, or drops it if withdrawn. */
-  const mayStartNow = (tree: ExecutionTree, entry: Pending): boolean => {
+  /**
+   * Everything `entry` waits on now, not the first reason only (P20): a
+   * dependency and a full parent can hold it at once. `waiting` is the one
+   * reason `job.get` tells, by the order of precedence it always had.
+   */
+  const blockersOf = (
+    tree: ExecutionTree,
+    entry: Pending,
+    outcomes: StrandOutcomes,
+  ): {
+    readonly withdrawn: boolean;
+    readonly blockers: Blocker[];
+    readonly waiting: WaitingReason | undefined;
+  } => {
     const id = entry.node.executionNodeId;
     if (tree.nodes.get(id)?.status !== "queued") {
-      // Withdrawn by somebody else: cancelled through the control plane.
-      remove(entry);
-      return false;
+      return { withdrawn: true, blockers: [], waiting: undefined };
+    }
+    const blockers: Blocker[] = [];
+    let waiting: WaitingReason | undefined;
+    const strandId = entry.submission.job.strandId;
+    if (strandId !== undefined) {
+      const waitingFor = strandWaitingFor(session.program, outcomes, strandId);
+      if (waitingFor.length > 0) {
+        waiting = { kind: "strands", waitingFor };
+        for (const strand of waitingFor) blockers.push({ kind: "strand", ref: strand });
+      }
     }
     const parent =
       entry.node.parentNodeId === null ? undefined : tree.nodes.get(entry.node.parentNodeId);
-    if (parent?.kind === "sub-program" && parent.status !== "running") {
-      entry.waiting = {
+    const parentInactive = parent?.kind === "sub-program" && parent.status !== "running";
+    if (parentInactive) {
+      waiting ??= {
         kind: "parent_inactive",
         parentNodeId: parent.executionNodeId,
         status: parent.status,
       };
-      return false;
+      blockers.push({ kind: "parent_inactive", ref: parent.executionNodeId });
     }
     // A strand's job starts when every job it depends on has merged onto the
     // strand (P18, D-P18-02): independent ones start at once.
-    const waitingFor = entry.submission.job.dependencies.filter((dependency) => {
+    const unmerged = entry.submission.job.dependencies.filter((dependency) => {
       const depended = [...tree.nodes.values()].find((node) => node.jobContractId === dependency);
       return depended?.status !== "merged" && depended?.status !== "integrated";
     });
-    if (waitingFor.length > 0) {
-      entry.waiting = { kind: "jobs", waitingFor };
-      return false;
+    if (unmerged.length > 0) {
+      waiting ??= { kind: "jobs", waitingFor: unmerged };
+      for (const dependency of unmerged) blockers.push({ kind: "job", ref: dependency });
     }
-    const slot = maySlotStart(tree, id, limits);
-    if (slot.free) return true;
-    entry.waiting = {
-      kind: "parent_full",
-      running: slot.running,
-      maxConcurrency: slot.maxConcurrency,
-    };
-    return false;
+    if (!parentInactive) {
+      const slot = maySlotStart(tree, id, limits);
+      if (!slot.free) {
+        waiting ??= {
+          kind: "parent_full",
+          running: slot.running,
+          maxConcurrency: slot.maxConcurrency,
+        };
+        blockers.push({
+          kind: "parent_slot",
+          ref: entry.node.parentNodeId ?? session.rootNodeId,
+        });
+      }
+    }
+    return { withdrawn: false, blockers, waiting };
   };
 
   const remove = (entry: Pending): void => {
@@ -653,8 +822,11 @@ export const createEngine = (options: EngineOptions): Engine => {
         reroute: rerouteFor(entry.submission),
         ...(entry.submission.task === undefined ? {} : { task: entry.submission.task }),
         ...(entry.submission.resume === undefined ? {} : { resume: entry.submission.resume }),
+        ...(entry.submission.causes === undefined ? {} : { causes: entry.submission.causes }),
+        claimed: () => endWait(entry, "started"),
       });
       remove(entry);
+      endWait(entry, "started");
       active.set(started.nodeId, started);
       const orchestrates = entry.node.kind === "sub-program";
       if (orchestrates) orchestrators.add(started.nodeId);
@@ -702,6 +874,9 @@ export const createEngine = (options: EngineOptions): Engine => {
           running: error.running,
           maxConcurrency: error.maxConcurrency,
         };
+        noteWait(entry, [
+          { kind: "parent_slot", ref: entry.node.parentNodeId ?? session.rootNodeId },
+        ]);
         return false;
       }
       // A slot write can fail before startJob enters its launch cleanup. Keep
@@ -711,6 +886,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       if (stored?.status === "queued") throw error;
       // A launch that failed after claiming its slot ended its node durably.
       remove(entry);
+      endWait(entry, "started");
       return true;
     }
   };
@@ -763,7 +939,12 @@ export const createEngine = (options: EngineOptions): Engine => {
   const retryJob = async (
     jobContractId: JobContractId,
     /** P18 (D-P18-05): continue the last session with this task, on the same route. */
-    continuing?: { readonly task: AgentTask; readonly resume: { readonly sessionId: string } },
+    continuing?: {
+      readonly task: AgentTask;
+      readonly resume: { readonly sessionId: string };
+      /** P20: what the strand's landing failed on, which is why this round is made. */
+      readonly failures?: StrandFailures;
+    },
   ): Promise<boolean> => {
     if (closed) return false;
     const nodeId =
@@ -801,8 +982,10 @@ export const createEngine = (options: EngineOptions): Engine => {
 
     // A fix of blocking findings (D-P8-13): at most two, and none once an
     // arbiter has upheld one. Refused with the reason, before anything moves.
-    const fix = fixOf(await examinationsOf(nodeId));
+    const examinations = await examinationsOf(nodeId);
+    const fix = fixOf(examinations);
     if (fix.refused !== undefined) throw new FixLimitError(fix.refused);
+    const causes = await causesOf(node, examinations, fix, continuing?.failures, nodeId);
 
     // Where the retry goes (D-P8-07): one rung up after a failure of the model,
     // the same route after one that was not. The router decides; the
@@ -814,6 +997,7 @@ export const createEngine = (options: EngineOptions): Engine => {
     const retried: Submission = {
       ...rest0,
       route: await route,
+      ...(causes.length === 0 ? {} : { causes }),
       ...(continuing !== undefined
         ? { task: continuing.task, resume: continuing.resume }
         : fix.task === undefined
@@ -830,12 +1014,42 @@ export const createEngine = (options: EngineOptions): Engine => {
     outbox.emit({
       type: "node.queued",
       source: "control-plane",
-      payload: { jobContractId, retryOf: node.status },
+      payload: { jobContractId, retryOf: node.status, causes },
       executionNodeId: nodeId,
     });
-    pending.push({ submission: retried, node: requeued, waiting: undefined });
+    const entry: Pending = { submission: retried, node: requeued, waiting: undefined };
+    const workAttempts = attemptsOf(
+      await stores.routingDecisions.listByNode(session.scope, nodeId),
+    ).length;
+    pending.push(entry);
+    beginWait(entry, workAttempts);
     await pump();
     return true;
+  };
+
+  /** Why the next attempt is made, from how the last one ended. Never fails the retry. */
+  const causesOf = async (
+    node: Pick<ExecutionNode, "status" | "outcomeReason">,
+    examinations: readonly Examination[],
+    fix: ReturnType<typeof fixOf>,
+    failures?: StrandFailures,
+    nodeId?: ExecutionNodeId,
+  ): Promise<AttemptCause[]> => {
+    try {
+      const verifications =
+        nodeId === undefined
+          ? undefined
+          : await stores.verifications.listByNode(session.scope, nodeId);
+      return causesOfRetry({
+        node,
+        examinations,
+        fix,
+        ...(verifications === undefined ? {} : { verifications }),
+        ...(failures === undefined ? {} : { strandFailures: failures }),
+      });
+    } catch {
+      return [];
+    }
   };
 
   /**
@@ -904,6 +1118,7 @@ export const createEngine = (options: EngineOptions): Engine => {
     await retryJob(node.jobContractId, {
       task: { kind: "strand_fix", round, of: MAX_STRAND_FIX_ROUNDS, ...failures },
       resume: { sessionId: orchestrator.sessionId },
+      failures,
     });
   };
 
@@ -1085,12 +1300,42 @@ export const createEngine = (options: EngineOptions): Engine => {
    */
   const retryOf = async (
     node: ExecutionNode,
-  ): Promise<{ readonly previous?: RouteContext["previous"]; readonly task?: AgentTask }> => {
+  ): Promise<{
+    readonly previous?: RouteContext["previous"];
+    readonly task?: AgentTask;
+    readonly causes?: readonly AttemptCause[];
+  }> => {
     if (node.status !== "queued") return {};
     const previous = await previousAttempt(node.executionNodeId);
     if (previous === undefined) return {};
-    const task = fixOf(await examinationsOf(node.executionNodeId)).task;
-    return task === undefined ? { previous } : { previous, task };
+    const examinations = await examinationsOf(node.executionNodeId);
+    const fix = fixOf(examinations);
+    // The orchestrator's retry dropped the node's own reason; the last attempt's
+    // route outcome and the failure it announced say how it ended.
+    const last = attemptsOf(
+      await stores.routingDecisions.listByNode(session.scope, node.executionNodeId),
+    ).at(-1);
+    const reason = await lastFailureReason(node.executionNodeId).catch(() => undefined);
+    const causes = await causesOf(
+      {
+        status:
+          last?.outcome === "verification_failed"
+            ? "verification_failed"
+            : last?.outcome === "pending"
+              ? "interrupted"
+              : "failed",
+        ...(reason === undefined ? {} : { outcomeReason: reason }),
+      },
+      examinations,
+      fix,
+      undefined,
+      node.executionNodeId,
+    );
+    return {
+      previous,
+      ...(fix.task === undefined ? {} : { task: fix.task }),
+      ...(causes.length === 0 ? {} : { causes }),
+    };
   };
 
   /** A delegated node, queued: as it is when it already is, through the table's edge when it is not. */
@@ -1118,7 +1363,14 @@ export const createEngine = (options: EngineOptions): Engine => {
       await refuse(node, "this node was delegated without a Job Contract the engine can read");
       return false;
     }
-    const { previous, task } = await retryOf(node);
+    const { previous, task, causes } = await retryOf(node);
+    // Work attempts so far, and whether the record already holds this wait's
+    // start without its end: that is an engine that restarted, not a new wait.
+    const workAttempts = attemptsOf(
+      await stores.routingDecisions.listByNode(session.scope, id),
+    ).length;
+    const waitOperation = lifecycleOperationId("wait", id, String(workAttempts + 1));
+    const recovered = node.status === "queued" && (await hasOpenOccurrence(waitOperation));
     let route: RouteChoice;
     try {
       if (options.route === undefined) throw new Error("this engine was given no way to route it");
@@ -1139,10 +1391,13 @@ export const createEngine = (options: EngineOptions): Engine => {
       route,
       kind: node.kind === "sub-program" ? "sub-program" : "job",
       ...(task === undefined ? {} : { task }),
+      ...(causes === undefined ? {} : { causes }),
     };
     submissions.set(job.jobContractId, submission);
     nodeOfJob.set(job.jobContractId, id);
-    pending.push({ submission, node: queued, waiting: undefined });
+    const entry: Pending = { submission, node: queued, waiting: undefined };
+    pending.push(entry);
+    beginWait(entry, workAttempts, recovered ? "recovered" : undefined);
     return true;
   };
 
@@ -1214,7 +1469,12 @@ export const createEngine = (options: EngineOptions): Engine => {
     ) {
       return { refused: "its last examination has no open material finding to dispute" };
     }
-    if (node.status !== "failed" || node.jobContractId === null) {
+    // `failed` when the examination beside the queue stopped it; `examination_failed`
+    // when the queue's own examination did.
+    if (
+      (node.status !== "failed" && node.status !== "examination_failed") ||
+      node.jobContractId === null
+    ) {
       return {
         refused: `only a job its examination stopped can be disputed; this one is ${node.status}`,
       };
@@ -1308,6 +1568,10 @@ export const createEngine = (options: EngineOptions): Engine => {
       },
       executionNodeId: nodeId,
     });
+    // The examined work is not built again: the last work attempt is the one it lands as.
+    const attempt =
+      attemptsOf(await stores.routingDecisions.listByNode(session.scope, nodeId)).at(-1)?.attempt ??
+      1;
     void queue
       .integrate({
         session,
@@ -1317,6 +1581,9 @@ export const createEngine = (options: EngineOptions): Engine => {
         worktree,
         branch: jobBranch(session.scope.runId, nodeId),
         base,
+        attempt,
+        origin: "readmitted",
+        commitSha: examination.commitSha,
       })
       .finally(() => void pump());
     return { kind: "overturned", nodeId };
@@ -1402,6 +1669,7 @@ export const createEngine = (options: EngineOptions): Engine => {
 
   const withdraw = async (entry: Pending, reason: string): Promise<void> => {
     remove(entry);
+    endWait(entry, "withdrawn");
     const node = await stores.executionNodes.get(session.scope, entry.node.executionNodeId);
     if (node === undefined || isSettled(node.status)) return;
     await stores.executionNodes.put({
@@ -1457,6 +1725,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       });
       const entry: Pending = { submission, node, waiting: undefined };
       pending.push(entry);
+      beginWait(entry, 0);
       submissions.set(submission.job.jobContractId, submission);
       nodeOfJob.set(submission.job.jobContractId, node.executionNodeId);
       await pump();

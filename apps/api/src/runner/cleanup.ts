@@ -8,7 +8,9 @@
  * becomes the project's warm cache, the volume is deleted, superseded snapshots
  * past the kept history are deleted, and the dispatch records all of it. Each
  * call advances the state by what EC2 has done since; the reconciler calls it
- * every minute until `cleanup.volumeDeleted` is true.
+ * every minute until `cleanup.volumeDeleted` is true. `cleanup.terminatedAt`
+ * is when the stop's terminate was REQUESTED, not an observed ending; the
+ * observed ending is each attempt's `terminatedAt`.
  */
 import type { Dispatch, WarmCache, WarmSnapshot } from "@nightshift/contracts";
 import { WARM_CACHE_HISTORY } from "@nightshift/contracts";
@@ -52,7 +54,10 @@ const recordFailure = async (
 ): Promise<Dispatch> => {
   const next: Dispatch = {
     ...dispatch,
-    cleanup: { ...dispatch.cleanup, failures: [...dispatch.cleanup.failures, failure] },
+    cleanup: {
+      ...dispatch.cleanup,
+      failures: [...dispatch.cleanup.failures, failure],
+    },
     updatedAt: nowIso(deps.clock),
   };
   // On the record for the customer, and in the log for the operator: a
@@ -60,6 +65,82 @@ const recordFailure = async (
   console.error(`cleanup ${dispatch.runId}: ${failure}`);
   await deps.stores.dispatches.put(next);
   return next;
+};
+
+/**
+ * What was learned of the current (last) attempt's machine: a terminate
+ * request accepted (`terminationRequestedAt`, asynchronous, not an ending), the
+ * observed ending (`terminatedAt`: describe said terminated or not found), or a
+ * terminate request that failed. An existing `terminatedAt` is never
+ * overwritten, a request time never replaces an earlier one, and a failure
+ * never replaces either.
+ */
+export const withMachineEnding = (
+  dispatch: Dispatch,
+  ending:
+    | { readonly terminatedAt: string }
+    | { readonly terminationRequestedAt: string }
+    | { readonly terminationFailed: true },
+): Dispatch => {
+  const last = dispatch.attempts.length - 1;
+  return {
+    ...dispatch,
+    attempts: dispatch.attempts.map((attempt, index) => {
+      if (index !== last || attempt.terminatedAt !== undefined) return attempt;
+      if ("terminationRequestedAt" in ending && attempt.terminationRequestedAt !== undefined)
+        return attempt;
+      return { ...attempt, ...ending };
+    }),
+  };
+};
+
+/**
+ * Confirm the observed ending of every attempt whose machine was asked to
+ * terminate (or whose terminate request failed) and has no `terminatedAt`:
+ * describe the instance and stamp `terminatedAt` when it is terminated or no
+ * longer found. This reaches the machines of earlier, replaced attempts, which
+ * nothing else revisits. It never throws: a describe or store failure is
+ * logged and left for the next pass.
+ */
+export const confirmTerminations = async (
+  deps: Pick<CleanupDeps, "stores" | "compute" | "clock">,
+  dispatch: Dispatch,
+): Promise<Dispatch> => {
+  try {
+    const last = dispatch.attempts.length - 1;
+    const confirmed = new Set<number>();
+    for (const [index, attempt] of dispatch.attempts.entries()) {
+      if (attempt.terminatedAt !== undefined) continue;
+      if (attempt.terminationRequestedAt === undefined && attempt.terminationFailed !== true)
+        continue;
+      const instanceId = attempt.instanceId ?? (index === last ? dispatch.instanceId : undefined);
+      if (instanceId === undefined) continue;
+      try {
+        const described = await deps.compute.describe(instanceId);
+        if (described === undefined || described.state === "terminated")
+          confirmed.add(attempt.generation);
+      } catch (error) {
+        console.error(`confirm ${dispatch.runId}: describe ${instanceId}:`, error);
+      }
+    }
+    if (confirmed.size === 0) return dispatch;
+    // Re-read so a heartbeat that landed meanwhile is not overwritten.
+    const at = nowIso(deps.clock);
+    const fresh = (await deps.stores.dispatches.get(scopeOf(dispatch))) ?? dispatch;
+    const next: Dispatch = {
+      ...fresh,
+      attempts: fresh.attempts.map((attempt) =>
+        confirmed.has(attempt.generation) && attempt.terminatedAt === undefined
+          ? { ...attempt, terminatedAt: at }
+          : attempt,
+      ),
+    };
+    await deps.stores.dispatches.put(next);
+    return next;
+  } catch (error) {
+    console.error(`confirm ${dispatch.runId}: terminations:`, error);
+    return dispatch;
+  }
 };
 
 /**
@@ -76,13 +157,33 @@ export const enforceStop = async (deps: CleanupDeps, dispatch: Dispatch): Promis
     } catch (error) {
       await recordFailure(
         deps,
-        dispatch,
+        withMachineEnding(dispatch, { terminationFailed: true }),
         `terminate ${dispatch.instanceId}: ${error instanceof Error ? error.message : String(error)}`,
       );
       return "waiting";
     }
   }
-  await deps.stores.dispatches.put(transitionDispatch(dispatch, "stopped", nowIso(deps.clock)));
+  const at = nowIso(deps.clock);
+  const last = dispatch.attempts.length - 1;
+  const stopped = transitionDispatch(
+    dispatch.instanceId === undefined
+      ? dispatch
+      : withMachineEnding(dispatch, { terminationRequestedAt: at }),
+    "stopped",
+    at,
+  );
+  await deps.stores.dispatches.put({
+    ...stopped,
+    attempts: stopped.attempts.map((attempt, index) =>
+      index === last && attempt.endedAt === undefined
+        ? { ...attempt, endedAt: at, endReason: "stopped" as const }
+        : attempt,
+    ),
+    cleanup: {
+      ...stopped.cleanup,
+      terminatedAt: stopped.cleanup.terminatedAt ?? at,
+    },
+  });
   return "terminated";
 };
 
@@ -94,25 +195,64 @@ export const enforceStop = async (deps: CleanupDeps, dispatch: Dispatch): Promis
  */
 export const cleanupStopped = async (
   deps: CleanupDeps,
-  dispatch: Dispatch,
+  original: Dispatch,
 ): Promise<CleanupStep> => {
+  let dispatch = original;
   if (dispatch.status !== "stopped" && dispatch.status !== "failed") return "waiting";
   if (dispatch.cleanup.volumeDeleted) return "done";
   const scope = scopeOf(dispatch);
   const at = nowIso(deps.clock);
 
+  // Earlier attempts' machines, and this one's, whose termination was asked
+  // for: their observed endings are confirmed before anything else.
+  dispatch = await confirmTerminations(deps, dispatch);
+
   // The machine, if it is somehow still there.
   if (dispatch.instanceId !== undefined) {
     const described = await deps.compute.describe(dispatch.instanceId);
     if (described !== undefined && described.state !== "terminated") {
-      if (described.state !== "shutting-down") await deps.compute.terminate(dispatch.instanceId);
+      if (described.state !== "shutting-down") {
+        try {
+          await deps.compute.terminate(dispatch.instanceId);
+        } catch (error) {
+          console.error(`cleanup ${dispatch.runId}: terminate ${dispatch.instanceId}:`, error);
+          await deps.stores.dispatches.put({
+            ...withMachineEnding(dispatch, { terminationFailed: true }),
+            updatedAt: at,
+          });
+          return "waiting";
+        }
+        // A request, not an ending: the next pass observes the machine gone.
+        await deps.stores.dispatches.put({
+          ...withMachineEnding(dispatch, { terminationRequestedAt: at }),
+          cleanup: {
+            ...dispatch.cleanup,
+            terminatedAt: dispatch.cleanup.terminatedAt ?? at,
+          },
+          updatedAt: at,
+        });
+      }
       return "waiting";
+    }
+    // Terminated, or no longer found for an instance this dispatch knew: an
+    // observed ending.
+    const last = dispatch.attempts[dispatch.attempts.length - 1];
+    if (last !== undefined && last.terminatedAt === undefined) {
+      dispatch = {
+        ...withMachineEnding(dispatch, { terminatedAt: at }),
+        updatedAt: at,
+      };
+      await deps.stores.dispatches.put(dispatch);
     }
   }
   if (dispatch.volumeId === undefined) {
     await deps.stores.dispatches.put({
       ...dispatch,
-      cleanup: { ...dispatch.cleanup, volumeDeleted: true },
+      cleanup: {
+        ...dispatch.cleanup,
+        volumeDeleted: true,
+        volumeDeletedAt: at,
+      },
       updatedAt: at,
     });
     return "done";
@@ -134,7 +274,11 @@ export const cleanupStopped = async (
       }
       await deps.stores.dispatches.put({
         ...dispatch,
-        cleanup: { ...dispatch.cleanup, volumeDeleted: true },
+        cleanup: {
+          ...dispatch.cleanup,
+          volumeDeleted: true,
+          volumeDeletedAt: at,
+        },
         updatedAt: at,
       });
       return "volume_deleted";
@@ -172,7 +316,10 @@ export const cleanupStopped = async (
       // Start again next tick: the snapshot is gone or broken.
       await recordFailure(
         deps,
-        { ...dispatch, cleanup: { ...dispatch.cleanup, snapshotId: undefined } },
+        {
+          ...dispatch,
+          cleanup: { ...dispatch.cleanup, snapshotId: undefined },
+        },
         `snapshot ${dispatch.cleanup.snapshotId} ${snapshot === undefined ? "vanished" : "errored"}`,
       );
       return "waiting";
@@ -234,7 +381,7 @@ export const cleanupStopped = async (
   }
   await deps.stores.dispatches.put({
     ...dispatch,
-    cleanup: { ...dispatch.cleanup, volumeDeleted: true },
+    cleanup: { ...dispatch.cleanup, volumeDeleted: true, volumeDeletedAt: at },
     updatedAt: at,
   });
   return "volume_deleted";

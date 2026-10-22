@@ -22,7 +22,8 @@ const PAGES: readonly [string, (f: Fixtures, decisionId: string) => string, RegE
   ["project", (f) => `/projects/${f.scope.projectId}`, /Programs/],
   ["project settings", (f) => `/projects/${f.scope.projectId}/settings`, /Contract policies/],
   ["organisation settings", () => "/settings", /Organisation settings/],
-  ["run", (f) => runPathOf(f), /Program status/],
+  ["run overview", (f) => runPathOf(f), /This run/],
+  ["run status", (f) => `${runPathOf(f)}?tab=status`, /Program status/],
   [
     "decision",
     (f, id) => `${runPathOf(f)}/decisions/${id}`,

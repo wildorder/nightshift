@@ -18,6 +18,7 @@ import type {
   ComputeCeilings,
   ComputeTier,
   Dispatch,
+  DispatchAttempt,
   DispatchProgress,
   DispatchPublication,
   DispatchStatus,
@@ -248,11 +249,14 @@ export const beginReplacement = (
   dispatch: Dispatch,
   reason: "lease_lost" | "resume",
   at: string,
+  endReason: NonNullable<DispatchAttempt["endReason"]> = reason === "resume"
+    ? "replaced"
+    : "lease_lost",
 ): Dispatch => {
   const generation = nextGeneration(dispatch);
   const attempts = dispatch.attempts.map((attempt, index) =>
     index === dispatch.attempts.length - 1 && attempt.endedAt === undefined
-      ? { ...attempt, endedAt: at }
+      ? { ...attempt, endedAt: at, endReason }
       : attempt,
   );
   const { instanceId: _instanceId, leaseExpiresAt: _lease, failure: _failure, ...rest } = dispatch;
@@ -265,6 +269,34 @@ export const beginReplacement = (
     reason === "resume" ? "resume" : "recover",
     at,
   );
+};
+
+/** Most stage entries a dispatch keeps; the oldest are dropped. */
+export const MAX_DISPATCH_STAGES = 64;
+
+/**
+ * Appends the progress's (generation, stage) to the stage history when it
+ * differs from the last entry; otherwise returns `stages` itself. Capped by
+ * dropping the oldest.
+ */
+export const foldStages = (
+  stages: Dispatch["stages"] | undefined,
+  progress: DispatchProgress,
+): NonNullable<Dispatch["stages"]> => {
+  const current = stages ?? [];
+  const last = current[current.length - 1];
+  if (
+    last !== undefined &&
+    last.generation === progress.generation &&
+    last.stage === progress.stage
+  ) {
+    return current;
+  }
+  const next = [
+    ...current,
+    { generation: progress.generation, stage: progress.stage, startedAt: progress.stageStartedAt },
+  ];
+  return next.length > MAX_DISPATCH_STAGES ? next.slice(next.length - MAX_DISPATCH_STAGES) : next;
 };
 
 /** Whether a settled dispatch can still be resumed: it has a snapshot inside its retention. */

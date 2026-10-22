@@ -2,6 +2,7 @@
 import type { ExecutionNode, JobContract } from "@nightshift/contracts";
 import {
   createFixtures,
+  emptyMeasuredReport,
   makeDecision,
   makeJobContract,
   makeNode,
@@ -94,6 +95,7 @@ const world = () => {
   const report: RunReport = {
     program,
     run: makeRun(f, { status: "succeeded" }),
+    ...emptyMeasuredReport(makeRun(f, { status: "succeeded" })),
     strands: [
       strandReport("S-01", s1.jobNode),
       strandReport("S-02", s2.jobNode, 3),

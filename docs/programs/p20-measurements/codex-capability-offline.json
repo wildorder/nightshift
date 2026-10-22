@@ -1,0 +1,76 @@
+{
+  "harness": "codex",
+  "harnessVersion": "0.155.1",
+  "producedAt": "2026-10-21T00:28:13.161Z",
+  "mode": "offline",
+  "transports": ["sse"],
+  "authMode": "auth.env_openai_api_key_present=false,auth.env_codex_api_key_present=false,auth.env_provider_key_present=true",
+  "fieldsObserved": [
+    "app.version",
+    "attempt",
+    "auth",
+    "cache_write_token_count",
+    "cached_token_count",
+    "duration_ms",
+    "event.timestamp",
+    "http.response.status_code",
+    "input_token_count",
+    "last_token_usage",
+    "model",
+    "originator",
+    "output_token_count",
+    "reasoning_token_count",
+    "response_id",
+    "thread_token_usage",
+    "tool_token_count"
+  ],
+  "nativeChildren": "not_observed",
+  "dimensions": [
+    {
+      "name": "transport_sse",
+      "status": "observed"
+    },
+    {
+      "name": "transport_websocket",
+      "status": "unverified",
+      "note": "not seen; extend CODEX_VERIFIED_TRANSPORTS only after a live observation"
+    },
+    {
+      "name": "request_counters",
+      "status": "observed"
+    },
+    {
+      "name": "cache_write_counter",
+      "status": "observed"
+    },
+    {
+      "name": "reasoning_counter",
+      "status": "observed"
+    },
+    {
+      "name": "native_children",
+      "status": "unverified",
+      "note": "a scripted provider cannot make Codex spawn a child; only the live probe can"
+    },
+    {
+      "name": "interrupted_run",
+      "status": "observed",
+      "note": "a stop after the first response retained exactly that request"
+    },
+    {
+      "name": "resume_continuation",
+      "status": "observed",
+      "note": "a resume emitted only its own request; the thread total continued"
+    },
+    {
+      "name": "real_backend",
+      "status": "unverified",
+      "note": "a scripted loopback provider answered; the real backend was not contacted"
+    },
+    {
+      "name": "auth_mode",
+      "status": "observed",
+      "note": "auth.env_openai_api_key_present=false,auth.env_codex_api_key_present=false,auth.env_provider_key_present=true"
+    }
+  ]
+}

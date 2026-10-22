@@ -18,7 +18,7 @@ import {
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it } from "vitest";
-import { cleanupStopped, enforceStop } from "./cleanup.js";
+import { cleanupStopped, confirmTerminations, enforceStop } from "./cleanup.js";
 import { machineTags, provisionDispatch, subnetFor, subnetsFor } from "./provision.js";
 import { recoverLostLease } from "./recover.js";
 
@@ -93,7 +93,10 @@ const fakeCompute = (): FakeCompute => {
       compute.attached.push({ volumeId, instanceId, device });
       const current = compute.instances.get(instanceId);
       if (current !== undefined)
-        compute.instances.set(instanceId, { ...current, workspaceVolumeId: volumeId });
+        compute.instances.set(instanceId, {
+          ...current,
+          workspaceVolumeId: volumeId,
+        });
     },
     terminate: async (instanceId) => {
       compute.terminated.push(instanceId);
@@ -342,7 +345,13 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
       await enforceStop(w.cleanup(), (await w.stores.dispatches.get(w.f.scope)) as Dispatch),
     ).toBe("terminated");
     expect(w.compute.terminated).toEqual(["i-1"]);
-    expect((await w.stores.dispatches.get(w.f.scope))?.status).toBe("stopped");
+    const stopped = await w.stores.dispatches.get(w.f.scope);
+    expect(stopped?.status).toBe("stopped");
+    expect(stopped?.attempts.at(-1)).toMatchObject({
+      endedAt: new Date(NOW).toISOString(),
+      endReason: "stopped",
+    });
+    expect(stopped?.cleanup.terminatedAt).toBe(new Date(NOW).toISOString());
     const fresh = await world({
       status: "stopping",
       instanceId: "i-2",
@@ -382,7 +391,21 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
     expect(await cleanupStopped(w.cleanup(), await dispatch())).toBe("volume_deleted");
     expect(w.compute.deletedVolumes).toEqual(["vol-1"]);
     expect((await dispatch()).cleanup.volumeDeleted).toBe(true);
+    expect((await dispatch()).cleanup.volumeDeletedAt).toBe(new Date(NOW).toISOString());
     expect(await cleanupStopped(w.cleanup(), await dispatch())).toBe("done");
+  });
+
+  it("records terminatedAt when cleanup terminates a machine that is still there", async () => {
+    const w = await world({
+      status: "stopped",
+      instanceId: "i-1",
+      volumeId: "vol-1",
+    });
+    w.compute.instances.set("i-1", { instanceId: "i-1", state: "running" });
+    const dispatch = () => w.stores.dispatches.get(w.f.scope) as Promise<Dispatch>;
+    expect(await cleanupStopped(w.cleanup(), await dispatch())).toBe("waiting");
+    expect(w.compute.terminated).toEqual(["i-1"]);
+    expect((await dispatch()).cleanup.terminatedAt).toBe(new Date(NOW).toISOString());
   });
 
   it("keeps three superseded snapshots and deletes the fourth", async () => {
@@ -396,7 +419,10 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
       takenAt: "2026-10-01T10:00:00.000Z",
     });
     await w.stores.warmCaches.put(
-      makeWarmCache(w.f, { current: older(1), history: [older(2), older(3), older(4)] }),
+      makeWarmCache(w.f, {
+        current: older(1),
+        history: [older(2), older(3), older(4)],
+      }),
     );
     const dispatch = () => w.stores.dispatches.get(w.f.scope) as Promise<Dispatch>;
     await cleanupStopped(w.cleanup(), await dispatch());
@@ -417,6 +443,199 @@ describe("cleanup (D-P10-15, D-P10-18)", () => {
     expect(await cleanupStopped(w.cleanup(), dispatch)).toBe("volume_deleted");
     expect(w.compute.snapshots.size).toBe(0);
     expect(await w.stores.warmCaches.get(w.f.scope.projectId, "x86_64")).toBeUndefined();
+  });
+
+  it("records the attempt's terminationRequestedAt (not terminatedAt) when enforceStop terminates, and terminationFailed when it throws", async () => {
+    const quiet = {
+      status: "stopping" as const,
+      instanceId: "i-1",
+      updatedAt: new Date(NOW - 60_000).toISOString(),
+    };
+    const ok = await world(quiet);
+    await enforceStop(ok.cleanup(), (await ok.stores.dispatches.get(ok.f.scope)) as Dispatch);
+    const done = (await ok.stores.dispatches.get(ok.f.scope)) as Dispatch;
+    expect(done.attempts.at(-1)?.terminationRequestedAt).toBe(new Date(NOW).toISOString());
+    expect(done.attempts.at(-1)?.terminatedAt).toBeUndefined();
+    expect(done.attempts.at(-1)?.terminationFailed).toBeUndefined();
+
+    const bad = await world(quiet);
+    bad.compute.terminate = async () => {
+      throw new Error("Throttled");
+    };
+    expect(
+      await enforceStop(bad.cleanup(), (await bad.stores.dispatches.get(bad.f.scope)) as Dispatch),
+    ).toBe("waiting");
+    const failed = (await bad.stores.dispatches.get(bad.f.scope)) as Dispatch;
+    expect(failed.attempts.at(-1)?.terminatedAt).toBeUndefined();
+    expect(failed.attempts.at(-1)?.terminationFailed).toBe(true);
+    expect(failed.cleanup.failures[0]).toContain("Throttled");
+  });
+
+  it("never overwrites an attempt's existing terminatedAt", async () => {
+    const earlier = "2026-10-01T11:30:00.000Z";
+    const w = await world({
+      status: "stopping",
+      instanceId: "i-1",
+      updatedAt: new Date(NOW - 60_000).toISOString(),
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T11:00:00.000Z",
+          terminatedAt: earlier,
+        },
+      ],
+    });
+    await enforceStop(w.cleanup(), (await w.stores.dispatches.get(w.f.scope)) as Dispatch);
+    expect(
+      ((await w.stores.dispatches.get(w.f.scope)) as Dispatch).attempts.at(-1)?.terminatedAt,
+    ).toBe(earlier);
+  });
+
+  it("cleanupStopped records a request on terminate, waits while shutting-down, and stamps terminatedAt only once describe says terminated or not found", async () => {
+    const ok = await world({
+      status: "stopped",
+      instanceId: "i-1",
+      volumeId: "vol-1",
+    });
+    ok.compute.instances.set("i-1", { instanceId: "i-1", state: "running" });
+    const okNow = () => ok.stores.dispatches.get(ok.f.scope) as Promise<Dispatch>;
+    await cleanupStopped(ok.cleanup(), await okNow());
+    expect((await okNow()).attempts.at(-1)?.terminationRequestedAt).toBe(
+      new Date(NOW).toISOString(),
+    );
+    expect((await okNow()).attempts.at(-1)?.terminatedAt).toBeUndefined();
+
+    // Still shutting down: waits, no ending.
+    ok.compute.instances.set("i-1", {
+      instanceId: "i-1",
+      state: "shutting-down",
+    });
+    expect(await cleanupStopped(ok.cleanup(), await okNow())).toBe("waiting");
+    expect((await okNow()).attempts.at(-1)?.terminatedAt).toBeUndefined();
+
+    // Observed terminated: the ending is stamped.
+    ok.compute.instances.set("i-1", { instanceId: "i-1", state: "terminated" });
+    await cleanupStopped(ok.cleanup(), await okNow());
+    expect((await okNow()).attempts.at(-1)?.terminatedAt).toBe(new Date(NOW).toISOString());
+
+    // Not found after a request: also an observed ending.
+    const vanished = await world({
+      status: "stopped",
+      instanceId: "i-1",
+      volumeId: "vol-1",
+    });
+    vanished.compute.instances.set("i-1", {
+      instanceId: "i-1",
+      state: "running",
+    });
+    const vNow = () => vanished.stores.dispatches.get(vanished.f.scope) as Promise<Dispatch>;
+    await cleanupStopped(vanished.cleanup(), await vNow());
+    vanished.compute.instances.delete("i-1");
+    await cleanupStopped(vanished.cleanup(), await vNow());
+    expect((await vNow()).attempts.at(-1)?.terminatedAt).toBe(new Date(NOW).toISOString());
+
+    const bad = await world({
+      status: "stopped",
+      instanceId: "i-1",
+      volumeId: "vol-1",
+    });
+    bad.compute.instances.set("i-1", { instanceId: "i-1", state: "running" });
+    bad.compute.terminate = async () => {
+      throw new Error("Throttled");
+    };
+    expect(
+      await cleanupStopped(
+        bad.cleanup(),
+        (await bad.stores.dispatches.get(bad.f.scope)) as Dispatch,
+      ),
+    ).toBe("waiting");
+    const failed = (await bad.stores.dispatches.get(bad.f.scope)) as Dispatch;
+    expect(failed.attempts.at(-1)?.terminatedAt).toBeUndefined();
+    expect(failed.attempts.at(-1)?.terminationRequestedAt).toBeUndefined();
+    expect(failed.attempts.at(-1)?.terminationFailed).toBe(true);
+
+    const gone = await world({
+      status: "stopped",
+      instanceId: "i-1",
+      volumeId: "vol-1",
+    });
+    gone.compute.instances.set("i-1", {
+      instanceId: "i-1",
+      state: "terminated",
+    });
+    await cleanupStopped(
+      gone.cleanup(),
+      (await gone.stores.dispatches.get(gone.f.scope)) as Dispatch,
+    );
+    const seen = (await gone.stores.dispatches.get(gone.f.scope)) as Dispatch;
+    expect(seen.attempts.at(-1)?.terminatedAt).toBe(new Date(NOW).toISOString());
+    expect(gone.compute.terminated).toEqual([]);
+  });
+
+  it("confirmTerminations stamps a replaced attempt's observed ending, leaves a running one, never overwrites, and never throws", async () => {
+    const requested = "2026-10-01T11:10:00.000Z";
+    const w = await world({
+      status: "running",
+      instanceId: "i-2",
+      generation: 2,
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T11:00:00.000Z",
+          endedAt: "2026-10-01T11:05:00.000Z",
+          endReason: "lease_lost",
+          instanceId: "i-1",
+          terminationRequestedAt: requested,
+        },
+        {
+          generation: 2,
+          reason: "lease_lost",
+          startedAt: "2026-10-01T11:06:00.000Z",
+          instanceId: "i-2",
+        },
+      ],
+    });
+    const get = () => w.stores.dispatches.get(w.f.scope) as Promise<Dispatch>;
+    w.compute.instances.set("i-1", { instanceId: "i-1", state: "running" });
+    await confirmTerminations(w.cleanup(), await get());
+    expect((await get()).attempts[0]?.terminatedAt).toBeUndefined();
+
+    w.compute.instances.set("i-1", { instanceId: "i-1", state: "terminated" });
+    await confirmTerminations(w.cleanup(), await get());
+    const after = await get();
+    expect(after.attempts[0]).toMatchObject({
+      terminationRequestedAt: requested,
+      terminatedAt: new Date(NOW).toISOString(),
+    });
+    expect(after.attempts[1]?.terminatedAt).toBeUndefined();
+
+    // Already confirmed: untouched even if the clock moved.
+    const unchanged = await confirmTerminations(w.cleanup(), after);
+    expect(unchanged.attempts[0]?.terminatedAt).toBe(new Date(NOW).toISOString());
+
+    // A describe failure is left for the next pass.
+    const flaky = await world({
+      status: "running",
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T11:00:00.000Z",
+          instanceId: "i-1",
+          terminationFailed: true,
+        },
+      ],
+    });
+    flaky.compute.describe = async () => {
+      throw new Error("Throttled");
+    };
+    const result = await confirmTerminations(
+      flaky.cleanup(),
+      (await flaky.stores.dispatches.get(flaky.f.scope)) as Dispatch,
+    );
+    expect(result.attempts[0]?.terminatedAt).toBeUndefined();
   });
 
   it("records a failure and tries again next tick when EC2 refuses", async () => {
@@ -477,11 +696,19 @@ describe("recovery of a lapsed lease (T6, D-P10-18, D-P10-05)", () => {
     expect(await recoverLostLease(w.recover(), await dispatch())).toBe("replacing");
     expect(w.compute.terminated).toEqual(["i-old"]);
     const replacing = await dispatch();
-    expect(replacing).toMatchObject({ status: "provisioning", generation: 2, volumeId: "vol-run" });
+    expect(replacing).toMatchObject({
+      status: "provisioning",
+      generation: 2,
+      volumeId: "vol-run",
+    });
     expect(replacing.instanceId).toBeUndefined();
     expect(replacing.attempts).toHaveLength(2);
+    expect(replacing.attempts[0]).toMatchObject({ endReason: "lease_lost" });
     expect(replacing.attempts[0]?.endedAt).toBeDefined();
-    expect(replacing.attempts[1]).toMatchObject({ generation: 2, reason: "lease_lost" });
+    expect(replacing.attempts[1]).toMatchObject({
+      generation: 2,
+      reason: "lease_lost",
+    });
 
     // The old machine still holds the volume for a moment; the attach is retried.
     w.compute.attachRefusals = 2;
@@ -506,6 +733,107 @@ describe("recovery of a lapsed lease (T6, D-P10-18, D-P10-05)", () => {
     ]);
   });
 
+  it("records the request time, not terminatedAt, on the old attempt when the lost lease's terminate succeeds", async () => {
+    const w = await world({
+      status: "running",
+      instanceId: "i-old",
+      volumeId: "vol-run",
+      leaseExpiresAt: lapsed,
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T11:00:00.000Z",
+        },
+      ],
+    });
+    await recoverLostLease(w.recover(), (await w.stores.dispatches.get(w.f.scope)) as Dispatch);
+    const after = (await w.stores.dispatches.get(w.f.scope)) as Dispatch;
+    expect(after.attempts[0]).toMatchObject({
+      endReason: "lease_lost",
+      terminationRequestedAt: new Date(NOW).toISOString(),
+    });
+    expect(after.attempts[0]?.terminatedAt).toBeUndefined();
+    expect(after.attempts[0]?.terminationFailed).toBeUndefined();
+  });
+
+  it("closes the attempt logically but leaves terminatedAt absent when the terminate throws", async () => {
+    const replacing = await world({
+      status: "running",
+      instanceId: "i-old",
+      volumeId: "vol-run",
+      leaseExpiresAt: lapsed,
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T11:00:00.000Z",
+        },
+      ],
+    });
+    replacing.compute.terminate = async () => {
+      throw new Error("Throttled");
+    };
+    expect(
+      await recoverLostLease(
+        replacing.recover(),
+        (await replacing.stores.dispatches.get(replacing.f.scope)) as Dispatch,
+      ),
+    ).toBe("replacing");
+    const after = (await replacing.stores.dispatches.get(replacing.f.scope)) as Dispatch;
+    expect(after.attempts[0]).toMatchObject({
+      endedAt: new Date(NOW).toISOString(),
+      endReason: "lease_lost",
+      terminationFailed: true,
+    });
+    expect(after.attempts[0]?.terminatedAt).toBeUndefined();
+
+    const exhausted = await world({
+      status: "running",
+      instanceId: "i-3",
+      volumeId: "vol-run",
+      leaseExpiresAt: lapsed,
+      generation: 3,
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: "2026-10-01T10:00:00.000Z",
+          endedAt: "2026-10-01T10:30:00.000Z",
+        },
+        {
+          generation: 2,
+          reason: "lease_lost",
+          startedAt: "2026-10-01T10:30:00.000Z",
+          endedAt: "2026-10-01T11:00:00.000Z",
+        },
+        {
+          generation: 3,
+          reason: "lease_lost",
+          startedAt: "2026-10-01T11:00:00.000Z",
+        },
+      ],
+    });
+    exhausted.compute.terminate = async () => {
+      throw new Error("Throttled");
+    };
+    expect(
+      await recoverLostLease(
+        exhausted.recover(),
+        (await exhausted.stores.dispatches.get(exhausted.f.scope)) as Dispatch,
+      ),
+    ).toBe("exhausted");
+    const last = (
+      (await exhausted.stores.dispatches.get(exhausted.f.scope)) as Dispatch
+    ).attempts.at(-1);
+    expect(last).toMatchObject({
+      endedAt: new Date(NOW).toISOString(),
+      endReason: "failed",
+      terminationFailed: true,
+    });
+    expect(last?.terminatedAt).toBeUndefined();
+  });
+
   it("fails the dispatch as recovery_exhausted when no attempt remains", async () => {
     const w = await world({
       status: "running",
@@ -526,7 +854,11 @@ describe("recovery of a lapsed lease (T6, D-P10-18, D-P10-05)", () => {
           startedAt: "2026-10-01T10:30:00.000Z",
           endedAt: "2026-10-01T11:00:00.000Z",
         },
-        { generation: 3, reason: "lease_lost", startedAt: "2026-10-01T11:00:00.000Z" },
+        {
+          generation: 3,
+          reason: "lease_lost",
+          startedAt: "2026-10-01T11:00:00.000Z",
+        },
       ],
     });
     const dispatch = () => w.stores.dispatches.get(w.f.scope) as Promise<Dispatch>;
@@ -535,6 +867,10 @@ describe("recovery of a lapsed lease (T6, D-P10-18, D-P10-05)", () => {
     expect(await dispatch()).toMatchObject({
       status: "failed",
       failure: { code: "recovery_exhausted" },
+    });
+    expect((await dispatch()).attempts.at(-1)).toMatchObject({
+      endedAt: new Date(NOW).toISOString(),
+      endReason: "failed",
     });
   });
 
@@ -621,7 +957,11 @@ describe("recovery of a lapsed lease (T6, D-P10-18, D-P10-05)", () => {
           startedAt: "2026-10-01T10:00:00.000Z",
           endedAt: "2026-10-01T11:00:00.000Z",
         },
-        { generation: 2, reason: "lease_lost", startedAt: "2026-10-01T11:00:00.000Z" },
+        {
+          generation: 2,
+          reason: "lease_lost",
+          startedAt: "2026-10-01T11:00:00.000Z",
+        },
       ],
     });
     w.compute.attachRefusals = 1000;

@@ -23,6 +23,7 @@ import {
   DISPATCH_TRANSITIONS,
   type DispatchTransitionEvent,
   foldProgress,
+  foldStages,
   hasPendingIntent,
   holdBehind,
   isCurrentGeneration,
@@ -598,5 +599,43 @@ describe("a strand's branch at GitHub (A-60)", () => {
     const done = resolveStrandPublication(stale, branch, sha("2"), { status: "published" }, at);
     expect(pendingStrandPublications(done)).toEqual([]);
     expect(hasPendingIntent(done)).toBe(false);
+  });
+});
+
+describe("foldStages (P20)", () => {
+  const progress = (generation: number, stage: DispatchProgress["stage"], at: string) =>
+    ({ stage, generation, stageStartedAt: at, updatedAt: at }) as DispatchProgress;
+
+  it("appends a new stage, and does not duplicate the same generation and stage", () => {
+    const first = foldStages(undefined, progress(1, "up", AT));
+    expect(first).toEqual([{ generation: 1, stage: "up", startedAt: AT }]);
+    expect(foldStages(first, progress(1, "up", LATER))).toBe(first);
+    const second = foldStages(first, progress(1, "workspace", LATER));
+    expect(second).toHaveLength(2);
+    expect(foldStages(second, progress(2, "workspace", LATER))).toHaveLength(3);
+  });
+
+  it("caps the history at 64, dropping the oldest", () => {
+    let stages: ReturnType<typeof foldStages> | undefined;
+    for (let generation = 1; generation <= 70; generation++) {
+      stages = foldStages(stages, progress(generation, "up", AT));
+    }
+    expect(stages).toHaveLength(64);
+    expect(stages?.[0]?.generation).toBe(7);
+    expect(stages?.at(-1)?.generation).toBe(70);
+  });
+});
+
+describe("beginReplacement end reasons (P20)", () => {
+  it("writes the reason the closed attempt ended", () => {
+    const running = at("running", { instanceId: "i-1", leaseExpiresAt: AT });
+    expect(beginReplacement(running, "lease_lost", LATER).attempts[0]?.endReason).toBe(
+      "lease_lost",
+    );
+    const settled = at("stopped", { failure: { code: "recovery_exhausted", message: "x" } });
+    expect(beginReplacement(settled, "resume", LATER).attempts[0]?.endReason).toBe("replaced");
+    expect(beginReplacement(running, "lease_lost", LATER, "failed").attempts[0]?.endReason).toBe(
+      "failed",
+    );
   });
 });

@@ -1,26 +1,37 @@
 /**
- * `nightshift report <program> [--run <id>]` (P9, D-P9-06).
+ * `nightshift report <program> [--run <id>] [--json [--role --model --since --until]]` (P9, D-P9-06).
  *
  * Writes a run's `report.md` again from the control plane alone, so a report
  * read before a decision was reversed shows the reversal, and the correction
- * that followed, after it. The latest run by default.
+ * that followed, after it. The latest run by default. `--json` also writes the
+ * versioned export (`report.json`) beside it, its attempts narrowed by the
+ * filters.
  */
 
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Run } from "@nightshift/contracts";
-import { gatherReport, renderReport } from "@nightshift/core";
+import {
+  exportReport,
+  gatherReport,
+  type ReportExportFilters,
+  renderReport,
+} from "@nightshift/core";
 import type { CliEnvironment } from "../environment.js";
-import { UsageError } from "../failures.js";
 import { readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession } from "../session.js";
+import { findRun } from "./program-run.js";
 import { REPORT_FILE } from "./run-program.js";
 
 export interface ReportOptions {
   readonly id: string;
   readonly run?: string;
   readonly repo?: string;
+  /** Also write the versioned JSON export. */
+  readonly json?: boolean;
+  readonly filters?: ReportExportFilters;
 }
+
+export const REPORT_JSON_FILE = "report.json";
 
 export const writeRunReport = async (
   environment: CliEnvironment,
@@ -30,27 +41,18 @@ export const writeRunReport = async (
   const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment);
   const program = { projectId: files.contract.projectId, programId: files.contract.programId };
-  const runs: Run[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await session.stores.runs.listByProgram(
-      program,
-      cursor === undefined ? {} : { cursor },
-    );
-    runs.push(...page.items);
-    cursor = page.cursor;
-  } while (cursor !== undefined);
-  const run = runs
-    .filter((candidate) => options.run === undefined || candidate.runId === options.run)
-    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
-  if (run === undefined) {
-    throw new UsageError(
-      `no run of \`${options.id}\`${options.run === undefined ? "" : ` named ${options.run}`}`,
-    );
-  }
+  const run = await findRun(session, program, options.id, options.run);
   const report = await gatherReport(session.stores, { ...program, runId: run.runId });
   const path = join(repoPath, files.directory, REPORT_FILE);
   await writeFile(path, renderReport(report));
   environment.out(`report for run ${run.runId}: ${path}`);
+  if (options.json === true) {
+    const jsonPath = join(repoPath, files.directory, REPORT_JSON_FILE);
+    await writeFile(
+      jsonPath,
+      `${JSON.stringify(exportReport(report, options.filters), null, 2)}\n`,
+    );
+    environment.out(`export for run ${run.runId}: ${jsonPath}`);
+  }
   return 0;
 };

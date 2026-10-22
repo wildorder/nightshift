@@ -12,16 +12,18 @@ import {
 const VALID_ULID = "01HF7YAT00GGGGGGGGGGGGGGGG";
 
 describe("identifier prefixes", () => {
-  it("covers exactly the prefixes ratified in D-P1-07", () => {
+  it("covers exactly the prefixes ratified in D-P1-07 plus P20's meas", () => {
     expect([...ID_PREFIXES].sort()).toEqual(
       [
         "agent",
         "art",
         "ckpt",
+        "comp",
         "dec",
         "evt",
         "exam",
         "job",
+        "meas",
         "node",
         "org",
         "proj",

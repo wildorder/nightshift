@@ -22,6 +22,7 @@ import {
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
   type Event,
+  type MeasurementSummary,
   type OrgConfig,
   type ProgramId,
   type ProjectId,
@@ -35,6 +36,7 @@ import {
   isSequenced,
   makeAgent,
   makeCheckpoint,
+  makeCompletionHistory,
   makeComputeUtilization,
   makeDecision,
   makeDispatch,
@@ -48,6 +50,7 @@ import {
   makeProject,
   makeRootNode,
   makeRun,
+  makeRunFeedback,
   makeUser,
   makeVerification,
   makeWarmCache,
@@ -520,6 +523,226 @@ export const describePortConformance = <S extends ProjectStores>(
       });
     });
 
+    describe("run feedback (P20, D-04)", () => {
+      const nextRun = (f: Fixtures): RunScope => ({
+        ...f.scope,
+        runId: f.ids.next("run") as RunId,
+      });
+      const at = (f: Fixtures, scope: RunScope, version: number) =>
+        makeRunFeedback(f, {
+          ...scope,
+          version,
+          revisions: Array.from({ length: version }, (_, i) => ({
+            version: i + 1,
+            verdict: "worked",
+            actor: makeRunFeedback(f).actor,
+            recordedAt: makeRunFeedback(f).recordedAt,
+          })),
+        });
+
+      it("round trips, and answers undefined when absent", async () => {
+        expect(await stores.feedback.get(a.scope)).toBeUndefined();
+        const record = makeRunFeedback(a);
+        await stores.feedback.put(record);
+        expect(await stores.feedback.get(a.scope)).toEqual(record);
+      });
+
+      it("is isolated by project, including a partially matching chain", async () => {
+        await stores.feedback.put(makeRunFeedback(a));
+        expect(await stores.feedback.get(b.scope)).toBeUndefined();
+        expect(
+          await stores.feedback.get({ ...a.scope, projectId: b.scope.projectId }),
+        ).toBeUndefined();
+        expect(
+          await stores.feedback.get({ ...a.scope, programId: b.scope.programId }),
+        ).toBeUndefined();
+        expect((await stores.feedback.listByProgram(b.scope)).items).toEqual([]);
+      });
+
+      it("refuses an invalid record and stores nothing", async () => {
+        const bad = { ...makeRunFeedback(a), verdict: "maybe" };
+        await expect(stores.feedback.put(bad as never)).rejects.toThrow();
+        expect(await stores.feedback.get(a.scope)).toBeUndefined();
+      });
+
+      it("writes only on top of the version the writer read", async () => {
+        await expect(stores.feedback.put(at(a, a.scope, 2))).rejects.toBeInstanceOf(
+          StaleWriteError,
+        );
+        expect(await stores.feedback.get(a.scope)).toBeUndefined();
+        await stores.feedback.put(at(a, a.scope, 1));
+        await expect(stores.feedback.put(at(a, a.scope, 1))).rejects.toBeInstanceOf(
+          StaleWriteError,
+        );
+        await stores.feedback.put(at(a, a.scope, 2));
+        await expect(stores.feedback.put(at(a, a.scope, 1))).rejects.toBeInstanceOf(
+          StaleWriteError,
+        );
+        expect((await stores.feedback.get(a.scope))?.version).toBe(2);
+      });
+
+      it("lets exactly one of two concurrent writes at the same version land", async () => {
+        const first = makeRunFeedback(a);
+        const second = makeRunFeedback(a, {
+          verdict: "did_not_work",
+          revisions: [{ ...first.revisions[0], verdict: "did_not_work" }],
+        });
+        const results = await Promise.allSettled([
+          stores.feedback.put(first),
+          stores.feedback.put(second),
+        ]);
+        expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+        const rejected = results.filter((r) => r.status === "rejected");
+        expect(rejected).toHaveLength(1);
+        expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(StaleWriteError);
+        const stored = await stores.feedback.get(a.scope);
+        expect([first, second]).toContainEqual(stored);
+      });
+
+      it("lists a program's feedback without repeating or dropping", async () => {
+        const total = 7;
+        const expected: RunId[] = [];
+        for (let i = 0; i < total; i += 1) {
+          const scope = nextRun(a);
+          expected.push(scope.runId);
+          await stores.feedback.put(makeRunFeedback(a, scope));
+        }
+        await stores.feedback.put(makeRunFeedback(b));
+        const seen: RunId[] = [];
+        let cursor: string | undefined;
+        let guard = 0;
+        do {
+          const page = await stores.feedback.listByProgram(
+            a.scope,
+            cursor === undefined ? { limit: 3 } : { limit: 3, cursor },
+          );
+          seen.push(...page.items.map((item) => item.runId));
+          cursor = page.cursor;
+          guard += 1;
+          expect(guard).toBeLessThan(10);
+        } while (cursor !== undefined);
+        expect([...seen].sort()).toEqual([...expected].sort());
+      });
+    });
+
+    describe("completion histories (P20, D-05)", () => {
+      const secondVersion = (history: ReturnType<typeof makeCompletionHistory>) =>
+        makeCompletionHistory(a, {
+          ...history,
+          version: 2,
+          revisions: [...history.revisions, { ...history.revisions[0], version: 2 }],
+        });
+
+      it("round trips, and answers undefined when absent", async () => {
+        const history = makeCompletionHistory(a);
+        expect(
+          await stores.completionHistories.get(a.scope, history.completionHistoryId),
+        ).toBeUndefined();
+        await stores.completionHistories.put(history);
+        expect(await stores.completionHistories.get(a.scope, history.completionHistoryId)).toEqual(
+          history,
+        );
+      });
+
+      it("is isolated by project, including a partially matching chain", async () => {
+        const history = makeCompletionHistory(a);
+        await stores.completionHistories.put(history);
+        const id = history.completionHistoryId;
+        expect(await stores.completionHistories.get(b.scope, id)).toBeUndefined();
+        expect(
+          await stores.completionHistories.get({ ...a.scope, projectId: b.scope.projectId }, id),
+        ).toBeUndefined();
+        expect((await stores.completionHistories.listByProject(b.scope.projectId)).items).toEqual(
+          [],
+        );
+        expect(await stores.completionHistories.listByRun(b.scope)).toEqual([]);
+      });
+
+      it("refuses an invalid record and stores nothing", async () => {
+        const history = makeCompletionHistory(a);
+        const bad = { ...history, title: "" };
+        await expect(stores.completionHistories.put(bad as never)).rejects.toThrow();
+        expect(
+          await stores.completionHistories.get(a.scope, history.completionHistoryId),
+        ).toBeUndefined();
+      });
+
+      it("writes only on top of the version the writer read", async () => {
+        const history = makeCompletionHistory(a);
+        const id = history.completionHistoryId;
+        await expect(stores.completionHistories.put(secondVersion(history))).rejects.toBeInstanceOf(
+          StaleWriteError,
+        );
+        expect(await stores.completionHistories.get(a.scope, id)).toBeUndefined();
+        await stores.completionHistories.put(history);
+        await expect(stores.completionHistories.put(history)).rejects.toBeInstanceOf(
+          StaleWriteError,
+        );
+        await stores.completionHistories.put(secondVersion(history));
+        expect((await stores.completionHistories.get(a.scope, id))?.version).toBe(2);
+        await expect(stores.completionHistories.put(history)).rejects.toBeInstanceOf(
+          StaleWriteError,
+        );
+      });
+
+      it("lets exactly one of two concurrent writes at the same version land", async () => {
+        const first = makeCompletionHistory(a);
+        const second = { ...first, title: "A rival title" };
+        const results = await Promise.allSettled([
+          stores.completionHistories.put(first),
+          stores.completionHistories.put(second),
+        ]);
+        expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+        const rejected = results.filter((r) => r.status === "rejected");
+        expect(rejected).toHaveLength(1);
+        expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(StaleWriteError);
+      });
+
+      it("lists a project's histories without repeating or dropping", async () => {
+        const total = 7;
+        const expected: string[] = [];
+        for (let i = 0; i < total; i += 1) {
+          const history = makeCompletionHistory(a);
+          expected.push(history.completionHistoryId);
+          await stores.completionHistories.put(history);
+        }
+        await stores.completionHistories.put(makeCompletionHistory(b));
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        let guard = 0;
+        do {
+          const page = await stores.completionHistories.listByProject(
+            a.scope.projectId,
+            cursor === undefined ? { limit: 3 } : { limit: 3, cursor },
+          );
+          seen.push(...page.items.map((item) => item.completionHistoryId));
+          cursor = page.cursor;
+          guard += 1;
+          expect(guard).toBeLessThan(10);
+        } while (cursor !== undefined);
+        expect([...seen].sort()).toEqual([...expected].sort());
+      });
+
+      it("lists by run only the histories anchored on that run", async () => {
+        const otherRun: RunScope = { ...a.scope, runId: a.ids.next("run") as RunId };
+        const mine = makeCompletionHistory(a);
+        const members = [{ programId: otherRun.programId, runId: otherRun.runId, role: "anchor" }];
+        const theirs = makeCompletionHistory(a, {
+          ...otherRun,
+          members,
+          revisions: [{ ...mine.revisions[0], added: members }],
+        });
+        await stores.completionHistories.put(mine);
+        await stores.completionHistories.put(theirs);
+        expect(
+          (await stores.completionHistories.listByRun(a.scope)).map((h) => h.completionHistoryId),
+        ).toEqual([mine.completionHistoryId]);
+        expect(
+          (await stores.completionHistories.listByRun(otherRun)).map((h) => h.completionHistoryId),
+        ).toEqual([theirs.completionHistoryId]);
+      });
+    });
+
     describe("organisation grouping (T2, A-21)", () => {
       it("round-trips a project with its orgId", async () => {
         const orgId = a.ids.next("org");
@@ -899,6 +1122,153 @@ export const describePortConformance = <S extends ProjectStores>(
       });
     });
 
+    describe("measurement summaries (P20 S-01)", () => {
+      const T0 = "2026-01-01T00:00:00.000Z";
+      const T1 = "2026-01-01T00:00:01.000Z";
+      const T2 = "2026-01-01T00:00:02.000Z";
+
+      /** Every optional field absent: the shape of the oldest record that can exist. */
+      const summaryFor = (
+        f: Fixtures,
+        overrides: Partial<MeasurementSummary> = {},
+      ): MeasurementSummary => ({
+        schemaVersion: 1,
+        measurementVersion: 1,
+        ...f.scope,
+        measurementSummaryId: f.ids.next("meas"),
+        executionNodeId: f.rootNodeId,
+        agentId: f.ids.next("agent"),
+        role: "worker",
+        routingDecisionId: null,
+        route: { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" },
+        observedModels: [],
+        segments: [],
+        totals: {},
+        coverage: "unknown",
+        gaps: [],
+        ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+        valuation: { source: "unknown" },
+        createdAt: T0,
+        updatedAt: T0,
+        ...overrides,
+      });
+
+      it("round trips a summary", async () => {
+        const summary = summaryFor(a, {
+          observedModels: ["claude-sonnet-5"],
+          totals: { inputTokens: 100, outputTokens: 20, inputIncludesCache: false },
+          childCounters: { inputTokens: 5 },
+          coverage: "partial",
+          gaps: [{ reason: "receipt_lost", count: 2 }],
+          ledger: { chunks: 1, artifactIds: [], observationCount: 3, publishedCount: 2 },
+          valuation: { source: "reported", usd: 0.5, reportedUsd: 0.5, basis: "provider" },
+          updatedAt: T1,
+        });
+        await stores.measurements.put(summary);
+        expect(await stores.measurements.get(a.scope, summary.measurementSummaryId)).toEqual(
+          summary,
+        );
+      });
+
+      it("returns undefined for a summary that does not exist", async () => {
+        expect(await stores.measurements.get(a.scope, a.ids.next("meas"))).toBeUndefined();
+      });
+
+      it("replaces in place, keeping one record per id and returning the newer", async () => {
+        const first = summaryFor(a);
+        const second = {
+          ...first,
+          totals: { inputTokens: 10 },
+          ledger: { ...first.ledger, observationCount: 1, publishedCount: 1 },
+          updatedAt: T1,
+        };
+        await stores.measurements.put(first);
+        await stores.measurements.put(second);
+        expect(await stores.measurements.get(a.scope, first.measurementSummaryId)).toEqual(second);
+        expect((await stores.measurements.listByRun(a.scope)).items).toEqual([second]);
+      });
+
+      it("ignores a put whose updatedAt is older than the stored record's", async () => {
+        const newer = { ...summaryFor(a), totals: { inputTokens: 50 }, updatedAt: T2 };
+        const older = { ...newer, totals: { inputTokens: 1 }, updatedAt: T1 };
+        await stores.measurements.put(newer);
+        await stores.measurements.put(older);
+        expect(await stores.measurements.get(a.scope, newer.measurementSummaryId)).toEqual(newer);
+      });
+
+      it("replaces when updatedAt is equal", async () => {
+        const first = summaryFor(a, { updatedAt: T1 });
+        const same = { ...first, totals: { inputTokens: 7 } };
+        await stores.measurements.put(first);
+        await stores.measurements.put(same);
+        expect(await stores.measurements.get(a.scope, first.measurementSummaryId)).toEqual(same);
+      });
+
+      it("lists only the requested node's summaries", async () => {
+        const other = makeNode(a, a.rootNodeId);
+        const mine = summaryFor(a);
+        const theirs = summaryFor(a, { executionNodeId: other.executionNodeId });
+        await stores.measurements.put(mine);
+        await stores.measurements.put(theirs);
+        expect(await stores.measurements.listByNode(a.scope, a.rootNodeId)).toEqual([mine]);
+        expect(await stores.measurements.listByNode(a.scope, other.executionNodeId)).toEqual([
+          theirs,
+        ]);
+      });
+
+      it("lists a run's summaries ordered by id, and paginates", async () => {
+        const created = [1, 2, 3, 4, 5].map(() => summaryFor(a));
+        for (const summary of [...created].reverse()) await stores.measurements.put(summary);
+        const expected = created
+          .map((summary) => summary.measurementSummaryId)
+          .sort((x, y) => (x < y ? -1 : 1));
+
+        const ids: string[] = [];
+        let cursor: string | undefined;
+        let guard = 0;
+        do {
+          const page = await stores.measurements.listByRun(
+            a.scope,
+            cursor === undefined ? { limit: 2 } : { limit: 2, cursor },
+          );
+          expect(page.items.length).toBeLessThanOrEqual(2);
+          ids.push(...page.items.map((item) => item.measurementSummaryId));
+          cursor = page.cursor;
+          guard += 1;
+          expect(guard).toBeLessThan(10);
+        } while (cursor !== undefined);
+        expect(ids).toEqual(expected);
+      });
+
+      it("isolates summaries by project", async () => {
+        const summary = summaryFor(a);
+        await stores.measurements.put(summary);
+        await stores.measurements.put(summaryFor(b));
+        expect(
+          await stores.measurements.get(b.scope, summary.measurementSummaryId),
+        ).toBeUndefined();
+        expect(await stores.measurements.listByNode(b.scope, a.rootNodeId)).toEqual([]);
+        expect((await stores.measurements.listByRun(a.scope)).items).toEqual([summary]);
+      });
+
+      it("refuses a summary that claims more published than observed", async () => {
+        const bad = summaryFor(a, {
+          ledger: { chunks: 0, artifactIds: [], observationCount: 1, publishedCount: 2 },
+        });
+        await expect(stores.measurements.put(bad)).rejects.toThrow();
+        expect(await stores.measurements.get(a.scope, bad.measurementSummaryId)).toBeUndefined();
+      });
+
+      it("reads back a record with every optional field absent", async () => {
+        const minimal = summaryFor(a);
+        expect(minimal.childCounters).toBeUndefined();
+        await stores.measurements.put(minimal);
+        expect(await stores.measurements.get(a.scope, minimal.measurementSummaryId)).toEqual(
+          minimal,
+        );
+      });
+    });
+
     describe("validation on write", () => {
       it("refuses a record whose schemaVersion is not 1", async () => {
         const node = makeRootNode(a);
@@ -983,6 +1353,9 @@ export const describePortConformance = <S extends ProjectStores>(
           stores.routingDecisions.listByNode,
           stores.artifacts.listByRun,
           stores.computeUtilizations.listByProject,
+          stores.feedback.listByProgram,
+          stores.completionHistories.listByRun,
+          stores.completionHistories.listByProject,
           // The identity half, only for an adapter that has one.
           ...(options.identity === undefined
             ? []

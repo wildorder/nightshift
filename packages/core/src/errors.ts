@@ -19,7 +19,12 @@ export type DomainErrorCode =
   | "verification_evidence"
   | "decision_authority"
   | "reversibility_softened"
-  | "stale_write";
+  | "stale_write"
+  /**
+   * D-05. `apps/api/src/errors.ts` and `packages/persistence/src/http/errors.ts`
+   * are exhaustive tables over this union; J3 extends them (to 422).
+   */
+  | "completion_membership";
 
 export abstract class DomainError extends Error {
   abstract readonly code: DomainErrorCode;
@@ -187,6 +192,32 @@ export class StaleWriteError extends DomainError {
     super(
       `${record} is at version ${actual}, not ${expected}; read it again and reapply the change`,
     );
+  }
+}
+
+export type CompletionMembershipReason =
+  | "measurement_unavailable"
+  | "unknown_run"
+  | "anchor_mismatch"
+  | "duplicate"
+  | "checkpoint_immutable"
+  | "checkpoint_not_positive"
+  | "checkpoint_not_member";
+
+/**
+ * A completion history write named a membership the project cannot support
+ * (D-05): a run that does not exist, an anchor that is not the record's own
+ * run, a duplicate member, or a checkpoint that was altered or is not on a
+ * member currently rated `worked`.
+ */
+export class CompletionMembershipError extends DomainError {
+  readonly code = "completion_membership" as const;
+
+  constructor(
+    readonly ref: { readonly programId: string; readonly runId: string },
+    readonly reason: CompletionMembershipReason,
+  ) {
+    super(`completion membership refused for ${ref.programId}/${ref.runId}: ${reason}`);
   }
 }
 

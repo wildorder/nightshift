@@ -1,0 +1,73 @@
+{
+  "harness": "codex",
+  "harnessVersion": "0.155.1",
+  "producedAt": "2026-10-21T22:27:42.515Z",
+  "mode": "live",
+  "transports": ["sse"],
+  "authMode": "auth.env_openai_api_key_present=false,auth.env_codex_api_key_present=false",
+  "fieldsObserved": [
+    "app.version",
+    "auth",
+    "last_token_usage",
+    "model",
+    "originator",
+    "response_id",
+    "thread_token_usage"
+  ],
+  "nativeChildren": "unverified",
+  "dimensions": [
+    {
+      "name": "transport_sse",
+      "status": "observed"
+    },
+    {
+      "name": "transport_websocket",
+      "status": "unverified",
+      "note": "not seen; extend CODEX_VERIFIED_TRANSPORTS only after a live observation"
+    },
+    {
+      "name": "request_counters",
+      "status": "unverified",
+      "note": "no completed response seen"
+    },
+    {
+      "name": "cache_write_counter",
+      "status": "not_observed"
+    },
+    {
+      "name": "reasoning_counter",
+      "status": "not_observed"
+    },
+    {
+      "name": "native_children",
+      "status": "unverified",
+      "note": "no child conversation or rollout was observed"
+    },
+    {
+      "name": "interrupted_run",
+      "status": "unverified",
+      "note": "run ended failed"
+    },
+    {
+      "name": "resume_continuation",
+      "status": "unverified",
+      "note": "the main run gave no thread to resume"
+    },
+    {
+      "name": "real_backend",
+      "status": "failed",
+      "note": "the main run failed before a response was reported"
+    },
+    {
+      "name": "auth_mode",
+      "status": "observed",
+      "note": "auth.env_openai_api_key_present=false,auth.env_codex_api_key_present=false"
+    }
+  ],
+  "notes": [
+    "Metadata only: no prompt, response or tool text was written.",
+    "A dimension that is not 'observed' is unverified: absence in one run is not proof.",
+    "To trust a websocket transport, add 'websocket' to CODEX_VERIFIED_TRANSPORTS in packages/harness-codex/src/telemetry.ts only after a committed matrix lists transport_websocket as observed.",
+    "To trust native child visibility, set CODEX_VERIFIED_NATIVE_CHILDREN to true in the same file only after a committed matrix reports nativeChildren 'observed'."
+  ]
+}

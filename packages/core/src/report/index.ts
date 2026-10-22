@@ -6,6 +6,9 @@
  * the Studio render one computation. Pure over `ProjectStores`, which is why
  * these live in `core` and not above the execution layer.
  */
+
+export * from "./attempts.js";
+export * from "./completion.js";
 export {
   type CorrectionReport,
   type DecisionPlace,
@@ -15,11 +18,18 @@ export {
   renderCorrections,
   renderDecisionGraph,
 } from "./decision-graph.js";
+export * from "./definitions.js";
+export * from "./delivery.js";
 export { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
+export * from "./export.js";
+export * from "./feedback.js";
+export * from "./infrastructure.js";
+export * from "./operations.js";
 export {
   DEPARTURE_PREFIX,
   type FlakeReport,
   type GateHealthReport,
+  gatherMemberFigures,
   gatherReport,
   type JobReport,
   type RepairReport,
@@ -29,6 +39,20 @@ export {
   type StrandReport,
   type UsageRow,
 } from "./report.js";
+export {
+  type AttemptResources,
+  type ResourceCoverage,
+  type ResourceDollars,
+  type ResourceTokens,
+  type ResourceTotals,
+  resourcesOf,
+  resourcesOfSummary,
+  rootResourcesOf,
+  rootSummariesOf,
+  sumResources,
+  tokensOf,
+} from "./resources.js";
+export * from "./review.js";
 export {
   type ProgramStatus,
   programStatus,

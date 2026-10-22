@@ -22,6 +22,7 @@ import {
   nowIso,
   transitionDispatch,
 } from "@nightshift/core";
+import { confirmTerminations, withMachineEnding } from "./cleanup.js";
 
 export interface RecoverDeps {
   readonly stores: NightshiftStores;
@@ -34,21 +35,37 @@ export type RecoveryStep = "alive" | "replacing" | "exhausted";
 /** One look at a live dispatch: nothing when its lease holds, a replacement or a failure when it lapsed. */
 export const recoverLostLease = async (
   deps: RecoverDeps,
-  dispatch: Dispatch,
+  original: Dispatch,
 ): Promise<RecoveryStep> => {
+  let dispatch = original;
   const nowMs = deps.clock.now();
-  if (!leaseLost(dispatch, nowMs)) return "alive";
+  if (!leaseLost(dispatch, nowMs)) {
+    // The run goes on; an earlier, replaced attempt's machine may still owe its observed ending.
+    await confirmTerminations(deps, dispatch);
+    return "alive";
+  }
   const at = nowIso(deps.clock);
   if (dispatch.instanceId !== undefined) {
     // Gone or going; either way nothing of this generation may keep running.
-    await deps.compute.terminate(dispatch.instanceId).catch((error: unknown) => {
+    try {
+      await deps.compute.terminate(dispatch.instanceId);
+      dispatch = withMachineEnding(dispatch, { terminationRequestedAt: at });
+    } catch (error) {
       console.error(`recover ${dispatch.runId}: terminate ${dispatch.instanceId}:`, error);
-    });
+      // The machine may still be running: no observed ending.
+      dispatch = withMachineEnding(dispatch, { terminationFailed: true });
+    }
   }
   if (attemptsExhausted(dispatch)) {
+    const last = dispatch.attempts.length - 1;
     const failed = transitionDispatch(
       {
         ...dispatch,
+        attempts: dispatch.attempts.map((attempt, index) =>
+          index === last && attempt.endedAt === undefined
+            ? { ...attempt, endedAt: at, endReason: "failed" as const }
+            : attempt,
+        ),
         failure: {
           code: "recovery_exhausted",
           message: `the lease lapsed on attempt ${dispatch.attempts.length}; no attempts remain`,
@@ -60,6 +77,6 @@ export const recoverLostLease = async (
     await deps.stores.dispatches.put(failed);
     return "exhausted";
   }
-  await deps.stores.dispatches.put(beginReplacement(dispatch, "lease_lost", at));
+  await deps.stores.dispatches.put(beginReplacement(dispatch, "lease_lost", at, "lease_lost"));
   return "replacing";
 };

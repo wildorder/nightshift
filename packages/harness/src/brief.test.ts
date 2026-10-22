@@ -8,6 +8,7 @@ import {
 } from "@nightshift/core";
 import { describe, expect, it } from "vitest";
 import { nightshiftToolNames, renderWorkerBrief, STRAND_DEPARTURE_PREFIX } from "./brief.js";
+import type { EarlierFinding } from "./harness.js";
 
 const build = (programOverrides: Partial<Record<keyof ProgramContract, unknown>> = {}) => {
   const f = createFixtures();
@@ -707,5 +708,57 @@ describe("a strand's plan reviewer (P18, D-P18-01)", () => {
       "examination.ask",
       "examination.submit",
     ]);
+  });
+});
+
+describe("the earlier findings an examiner is shown (P20 S-05)", () => {
+  const brief = (previousFindings: readonly EarlierFinding[] | undefined, fixAttempt: number) => {
+    const f = createFixtures();
+    return renderWorkerBrief({
+      job: makeJobContract(f),
+      node: makeNode(f, f.rootNodeId),
+      program: makeProgramContract(f),
+      worktree: "/tmp/wt/x",
+      task: {
+        kind: "examine",
+        round: 1,
+        evidence: {
+          diff: "",
+          diffTruncated: false,
+          changedTests: [],
+          verification: [],
+          risk: "high",
+          blocking: true,
+          fixAttempt,
+          ...(previousFindings === undefined ? {} : { previousFindings }),
+        },
+      },
+    });
+  };
+  const earlier: EarlierFinding = {
+    id: "F-03",
+    severity: "material",
+    summary: "The retry loop is unbounded.",
+    evidence: [{ kind: "contract", clause: "Retries are bounded." }],
+    resolution: "unresolved",
+    examinationId: "exam_01M5DZHQQ7MFBBXVAKN1R8HZ9Z" as EarlierFinding["examinationId"],
+  };
+
+  it("shows each earlier finding with its examination and finding id", () => {
+    const text = brief([earlier], 1);
+    expect(text).toContain(`[examination ${earlier.examinationId}, finding F-03]`);
+    expect(text).toContain("F-03 (material): The retry loop is unbounded.");
+  });
+
+  it("tells the examiner to set repeats for the same defect, and that fixed means only not raised again", () => {
+    const text = brief([earlier], 1);
+    expect(text).toContain("repeats: { examinationId, findingId }");
+    expect(text).toContain("same defect");
+    expect(text).toContain("recorded as fixed, which means only that you did not raise it again");
+  });
+
+  it("says nothing of earlier findings on a first attempt", () => {
+    const text = brief(undefined, 0);
+    expect(text).not.toContain("repeats: { examinationId, findingId }");
   });
 });

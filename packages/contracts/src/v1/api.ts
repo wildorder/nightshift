@@ -20,10 +20,12 @@ import { AgentSchema } from "./agent.js";
 import { ArtifactKindSchema, ArtifactSchema, ArtifactUriSchema } from "./artifact.js";
 import { CheckpointSchema } from "./checkpoint.js";
 import { IsoTimestampSchema } from "./common.js";
+import { CompletionHistorySchema } from "./completion.js";
 import { DecisionSchema } from "./decision.js";
 import { EventSchema, inlinePayloadBytes, MAX_INLINE_PAYLOAD_BYTES } from "./event.js";
 import { ExaminationSchema } from "./examination.js";
 import { ExecutionNodeSchema } from "./execution-node.js";
+import { RunFeedbackSchema } from "./feedback.js";
 import { JobContractSchema } from "./job-contract.js";
 import {
   CheckDispatchSchema,
@@ -305,3 +307,11 @@ export const PrerequisiteListResponseSchema = z.strictObject({
   items: z.array(PrerequisiteSchema),
 });
 export type PrerequisiteListResponse = z.infer<typeof PrerequisiteListResponseSchema>;
+
+/** `GET …/programs/{programId}/feedback`. */
+export const RunFeedbackPageSchema = pageResponseSchema(RunFeedbackSchema);
+export type RunFeedbackPage = z.infer<typeof RunFeedbackPageSchema>;
+
+/** `GET /projects/{projectId}/completion-histories`. */
+export const CompletionHistoryPageSchema = pageResponseSchema(CompletionHistorySchema);
+export type CompletionHistoryPage = z.infer<typeof CompletionHistoryPageSchema>;

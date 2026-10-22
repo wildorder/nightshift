@@ -35,20 +35,26 @@ import type {
   Agent,
   Artifact,
   Checkpoint,
+  CompletionHistory,
   Decision,
   ExecutionRole,
   GateHealth,
   JobContract,
+  MeasurementSummary,
   OrgId,
   Principal,
   Project,
   RoutingDecision,
   Run,
+  RunFeedback,
   UserId,
   Verification,
 } from "@nightshift/contracts";
 import { DEFAULT_EXAMINATION_POLICY, DEFAULT_ROUTING_POLICY } from "@nightshift/contracts";
 import {
+  buildCompletionHistory,
+  buildRunFeedback,
+  CompletionMembershipError,
   createFixedClock,
   createFixtures,
   type Fixtures,
@@ -117,6 +123,7 @@ const PORT_METHODS = {
   verifications: ["put", "get", "listByNode"],
   examinations: ["put", "get", "listByNode"],
   routingDecisions: ["put", "listByNode"],
+  measurements: ["put", "get", "listByNode", "listByRun"],
   artifacts: ["put", "get", "listByRun"],
   orgConfigs: ["get", "put"],
   // P10: the control plane owns these records; the adapter reads them and names
@@ -127,6 +134,9 @@ const PORT_METHODS = {
   warmCaches: ["put", "get", "delete"],
   // P15: written whole by the operator or the engine, so it has a write route.
   gateHealth: ["put", "get"],
+  // P20 (D-04, D-05): a person's verdict, and the histories they assemble.
+  feedback: ["put", "get", "listByProgram"],
+  completionHistories: ["put", "get", "listByRun", "listByProject"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
 /** `store.method` for every entry above. */
@@ -550,6 +560,176 @@ describe("decisions, checkpoints, verifications, examinations and routing", () =
     expect(await world.http.routingDecisions.listByNode(routing, root.executionNodeId)).toEqual([
       routing,
     ]);
+  });
+});
+
+describe("measurement summaries (P20)", () => {
+  it("puts, gets and lists a summary, and ignores a stale replacement", async () => {
+    const { root } = await seed();
+    const summary: MeasurementSummary = {
+      schemaVersion: 1,
+      measurementVersion: 1,
+      ...world.f.scope,
+      measurementSummaryId: world.f.ids.next("meas"),
+      executionNodeId: root.executionNodeId,
+      agentId: world.f.ids.next("agent"),
+      role: "worker",
+      routingDecisionId: null,
+      route: { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" },
+      observedModels: [],
+      segments: [],
+      totals: { inputTokens: 3 },
+      coverage: "unknown",
+      gaps: [],
+      ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+      valuation: { source: "unknown" },
+      createdAt: NOW,
+      updatedAt: "2099-01-01T00:00:00.000Z",
+    };
+    await world.http.measurements.put(summary);
+    expect(await world.http.measurements.get(summary, summary.measurementSummaryId)).toEqual(
+      summary,
+    );
+    expect(await world.http.measurements.listByNode(summary, root.executionNodeId)).toEqual([
+      summary,
+    ]);
+    expect((await world.http.measurements.listByRun(summary)).items).toEqual([summary]);
+
+    await world.http.measurements.put({ ...summary, totals: {}, updatedAt: NOW });
+    expect(await world.http.measurements.get(summary, summary.measurementSummaryId)).toEqual(
+      summary,
+    );
+    expect(await world.http.measurements.get(summary, world.f.ids.next("meas"))).toBeUndefined();
+  });
+});
+
+describe("run feedback and completion histories (P20, D-04, D-05)", () => {
+  const ENDED = "2026-09-15T11:00:00.000Z";
+  const rated = async () => {
+    const seeded = await seed();
+    const run = { ...seeded.run, status: "succeeded", endedAt: ENDED } as Run;
+    await world.backing.runs.put(run);
+    const actor = { kind: "user", userId: world.subject, orgId: world.orgId } as const;
+    return { ...seeded, run, actor };
+  };
+
+  it("puts, gets and lists a verdict, and the server writes the attribution", async () => {
+    const { run, actor } = await rated();
+    const first = buildRunFeedback({ scope: run, verdict: "worked", actor, at: ENDED });
+    await world.http.feedback.put(first);
+    const stored = await world.http.feedback.get(run);
+    expect(stored).toMatchObject({ version: 1, verdict: "worked", recordedAt: NOW, actor });
+    expect((await world.http.feedback.listByProgram(run)).items).toEqual([stored]);
+    expect(await world.backing.feedback.get(run)).toEqual(stored);
+
+    // The same write again is a replay; one that skips a version is stale.
+    await world.http.feedback.put(first);
+    const skipped = { ...first, version: 3, revisions: [{ ...first.revisions[0], version: 3 }] };
+    const stale = await rejectionOf(world.http.feedback.put(skipped as RunFeedback));
+    expect(stale).toBeInstanceOf(StaleWriteError);
+    expect(
+      await world.http.feedback.get({ ...run, runId: world.f.ids.next("run") }),
+    ).toBeUndefined();
+  });
+
+  it("puts, gets and lists a history, and refuses a member outside the project", async () => {
+    const { run, actor } = await rated();
+    const history = buildCompletionHistory({
+      scope: run,
+      completionHistoryId: world.f.ids.next("comp"),
+      title: "Outcome",
+      members: [{ programId: run.programId, runId: run.runId, role: "anchor" }],
+      actor,
+      at: ENDED,
+    });
+    await world.http.completionHistories.put(history);
+    const id = history.completionHistoryId;
+    const stored = await world.http.completionHistories.get(run, id);
+    expect(stored).toMatchObject({ version: 1, completionHistoryId: id, updatedAt: NOW });
+    expect(await world.http.completionHistories.listByRun(run)).toEqual([stored]);
+    expect((await world.http.completionHistories.listByProject(run.projectId)).items).toEqual([
+      stored,
+    ]);
+    expect(await world.http.completionHistories.get(run, world.f.ids.next("comp"))).toBeUndefined();
+
+    const stranger = {
+      programId: run.programId,
+      runId: world.f.ids.next("run"),
+      role: "contributing",
+    } as const;
+    const refused = await rejectionOf(
+      world.http.completionHistories.put(
+        buildCompletionHistory({
+          stored: stored as CompletionHistory,
+          scope: run,
+          completionHistoryId: id,
+          title: "Outcome",
+          members: [...history.members, stranger],
+          actor,
+          at: NOW,
+        }),
+      ),
+    );
+    expect(refused).toBeInstanceOf(CompletionMembershipError);
+    const skipped = {
+      ...history,
+      version: 3,
+      revisions: [{ ...history.revisions[0], version: 3 }],
+    };
+    const stale = await rejectionOf(
+      world.http.completionHistories.put(skipped as CompletionHistory),
+    );
+    expect(stale).toBeInstanceOf(StaleWriteError);
+  });
+
+  it("decodes a checkpoint refused for unavailable measurement evidence into a thrown error", async () => {
+    const { run, actor } = await rated();
+    await world.http.feedback.put(
+      buildRunFeedback({ scope: run, verdict: "worked", actor, at: ENDED }),
+    );
+    const history = buildCompletionHistory({
+      scope: run,
+      completionHistoryId: world.f.ids.next("comp"),
+      title: "Outcome",
+      members: [{ programId: run.programId, runId: run.runId, role: "anchor" }],
+      actor,
+      at: ENDED,
+      checkpoint: { name: "ship", programId: run.programId, runId: run.runId },
+    });
+    world.backing.measurements.listByRun = () => Promise.reject(new Error("store down"));
+
+    // A single attempt shows the decoded refusal; the default policy retries a 5xx and then
+    // hands back the last answer.
+    const once = createHttpStores({
+      transport: createFetchTransport({
+        endpoint: world.plane.url,
+        tokens: staticTokenProvider("ignored-by-the-local-plane"),
+        retry: { attempts: 1, initialDelayMs: 0, factor: 1, maxDelayMs: 0 },
+      }),
+      actingOrg: world.orgId,
+    });
+    const refused = await rejectionOf(once.completionHistories.put(history));
+    expect(refused).toBeInstanceOf(ControlPlaneError);
+    expect((refused as ControlPlaneError).status).toBe(503);
+    expect((refused as ControlPlaneError).code).toBe("measurement_unavailable");
+    expect((refused as ControlPlaneError).message).toContain("store down");
+
+    const retried = await rejectionOf(
+      createHttpStores({
+        transport: createFetchTransport({
+          endpoint: world.plane.url,
+          tokens: staticTokenProvider("ignored-by-the-local-plane"),
+          retry: { attempts: 2, initialDelayMs: 0, factor: 1, maxDelayMs: 0 },
+        }),
+        actingOrg: world.orgId,
+      }).completionHistories.put(history),
+    );
+    expect(retried).toBeInstanceOf(ControlPlaneError);
+    expect((retried as ControlPlaneError).status).toBe(503);
+    expect((retried as ControlPlaneError).code).toBe("measurement_unavailable");
+    expect(
+      await world.backing.completionHistories.get(run, history.completionHistoryId),
+    ).toBeUndefined();
   });
 });
 

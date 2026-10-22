@@ -32,6 +32,8 @@ export const DOMAIN_ERROR_STATUS: Readonly<Record<DomainErrorCode, number>> = {
   reversibility_softened: 409,
   // A versioned write that lost a race (P8): the caller reads again and reapplies.
   stale_write: 409,
+  // D-05: a completion membership the project cannot support is unprocessable.
+  completion_membership: 422,
 };
 
 /** Where a failure happened, for the one log line a 500 writes. Never the body. */

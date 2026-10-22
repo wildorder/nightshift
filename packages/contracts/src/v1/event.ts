@@ -118,6 +118,13 @@ export const EventTypeSchema = z.enum([
   "finding.ruled",
   /** Added in P8 (D-P8-08). A budget is spent; nothing new starts. Payload: which and how much. */
   "run.budget_spent",
+  /**
+   * Added in P20 (D-02). A budget is configured but its evaluation leaves usage
+   * out (unpriced, unmeasured or incompletely valued attempts), so the spend
+   * shown is a floor, not a precise cap. Payload: `budget`, `limit`, `spent`,
+   * `unpriced`, `unmeasured`, `estimateIncomplete` and `tokensIncomplete`.
+   */
+  "run.budget_evaluation_incomplete",
   // Gate health — P15.
   /**
    * Added in P15 (D-P15-03). The run's one mechanical pass at the start found
@@ -152,6 +159,14 @@ export const EventTypeSchema = z.enum([
   "checkpoint.created",
   "routing.decided",
   "artifact.recorded",
+  /**
+   * Added in P20. The payload is one complete `LifecycleObservation` (see
+   * `measurement.ts`), emitted by the engine for the lifecycle operations it
+   * owns: waits, startup, setup, work, queue residence, integration and
+   * examination. Payloads stay under the inline bound because an observation is
+   * itself bounded at 4096 bytes.
+   */
+  "lifecycle.observed",
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 

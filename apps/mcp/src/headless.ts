@@ -24,6 +24,7 @@ import {
   type ExecutionNode,
   type JobContract,
   JobContractSchema,
+  lifecycleOperationId,
   type ProgramContract,
   type RouteTarget,
   type Run,
@@ -43,8 +44,11 @@ import {
   addDetachedWorktree,
   createEventOutbox,
   createHookSink,
+  createMeasurementRecorder,
   createRouteAvailability,
+  type EventOutbox,
   freshScratch,
+  observeLifecycle,
   pruneWorktrees,
   revParse,
   tryGit,
@@ -105,6 +109,11 @@ export interface HeadlessResult {
   readonly transcript: string;
   /** Every root's transcript, in order, when a limit replaced one (D-P8-06, as amended 2026-10-12). */
   readonly transcripts: readonly { readonly agentId: Agent["agentId"]; readonly path: string }[];
+  /** Every root's measurement summary, in order: each root is its own agent with its own summary. */
+  readonly measurements: readonly {
+    readonly agentId: Agent["agentId"];
+    readonly measurementSummaryId: string;
+  }[];
 }
 
 /**
@@ -326,7 +335,13 @@ export type RootLaunch = (
   input: HeadlessInput,
   unavailable: readonly { readonly harness: string; readonly model: string }[],
   limitNote: string | undefined,
-) => Promise<Omit<HeadlessResult, "transcripts"> & { readonly route: RouteTarget }>;
+) => Promise<RootEnding>;
+
+/** What one root's launch reports: the result so far, its route and its summary. */
+export type RootEnding = Omit<HeadlessResult, "transcripts" | "measurements"> & {
+  readonly route: RouteTarget;
+  readonly measurementSummaryId: string;
+};
 
 /**
  * A root a usage limit stopped, on a run still running, is replaced by one on
@@ -341,11 +356,16 @@ export const replacingLimitedRoots = async (
 ): Promise<HeadlessResult> => {
   const routes = createRouteAvailability(clock);
   const transcripts: { agentId: Agent["agentId"]; path: string }[] = [];
+  const measurements: { agentId: Agent["agentId"]; measurementSummaryId: string }[] = [];
   let launch: HeadlessInput = input;
   let limitNote: string | undefined;
   for (let relaunch = 0; ; relaunch += 1) {
     const ended = await launchOne(launch, routes.unavailable(), limitNote);
     transcripts.push({ agentId: ended.agentId, path: ended.transcript });
+    measurements.push({
+      agentId: ended.agentId,
+      measurementSummaryId: ended.measurementSummaryId,
+    });
     const { exit } = ended;
     if (
       exit.kind !== "failed" ||
@@ -353,8 +373,8 @@ export const replacingLimitedRoots = async (
       ended.run.status !== "running" ||
       relaunch >= MAX_ROOT_RELAUNCHES
     ) {
-      const { route: _route, ...result } = ended;
-      return { ...result, transcripts };
+      const { route: _route, measurementSummaryId: _summary, ...result } = ended;
+      return { ...result, transcripts, measurements };
     }
     routes.markUnavailable(ended.route, unavailableUntil(exit, clock));
     limitNote = rootLimitNote(ended.route.model, exit.unavailable);
@@ -377,13 +397,48 @@ const rootLimitNote = (model: string, reason: string): string =>
     "before acting, and carry on from there.",
   ].join("\n");
 
-const launchRoot = async (
+/** The root's recorder: no routing decision, so the summary's `route` is the only record of the choice. */
+const rootRecorder = (
+  runtime: Runtime,
+  outbox: EventOutbox,
+  run: Run,
+  root: {
+    readonly scope: RunScope;
+    readonly rootNode: ExecutionNode;
+    readonly agent: Agent;
+    readonly route: RouteTarget;
+  },
+) => {
+  const prices = run.policy?.routingPolicy.prices;
+  const price = prices?.[root.route.model];
+  return createMeasurementRecorder(
+    {
+      stores: runtime.stores,
+      bodies: runtime.bodies,
+      clock: runtime.clock,
+      ids: runtime.ids,
+      paths: runtime.paths,
+      outbox,
+    },
+    {
+      scope: root.scope,
+      executionNodeId: root.rootNode.executionNodeId,
+      agent: root.agent,
+      route: root.route,
+      routingDecisionId: null,
+      ...(price === undefined ? {} : { price }),
+      ...(prices === undefined ? {} : { prices }),
+    },
+  );
+};
+
+export const launchRoot = async (
   runtime: Runtime,
   env: Env,
   input: HeadlessInput,
   unavailable: readonly { readonly harness: string; readonly model: string }[],
   limitNote: string | undefined,
-): Promise<Omit<HeadlessResult, "transcripts"> & { readonly route: RouteTarget }> => {
+): Promise<RootEnding> => {
   const { stores, clock, ids } = runtime;
   const { scope } = input;
   const { program, run, rootNode, planText } = await requireRecords(runtime, scope);
@@ -441,6 +496,9 @@ const launchRoot = async (
     createdAt: nowIso(clock),
   };
   await stores.agents.put(agent);
+  const startupOperation = lifecycleOperationId("startup", rootNode.executionNodeId, "1");
+  const workOperation = lifecycleOperationId("work", rootNode.executionNodeId, "1");
+  const startupAt = nowIso(clock);
 
   const base = await revParse(runtime.git, input.repoPath, program.repository.programBranch);
   const worktree = runtime.paths.worktree(scope.runId, rootNode.executionNodeId);
@@ -467,28 +525,99 @@ const launchRoot = async (
     writerId: `${agent.agentId}-launcher`,
   });
 
-  const handle = await runtime.harness.start({
+  // The root has no routing decision: the human's pin, or the routed choice, is the summary's route.
+  const recorder = rootRecorder(runtime, outbox, run, {
+    scope,
+    rootNode,
     agent,
-    node: rootNode,
-    job: brief,
-    program,
-    worktree,
-    tmpDir,
-    model: route.target,
-    mcp: rootLaunch(env, { repoPath: input.repoPath, agentId: agent.agentId }),
-    tools: refusingWorkerTools("the root orchestrator reaches Nightshift through its MCP launch"),
-    sink: createHookSink({
-      outbox,
-      executionNodeId: rootNode.executionNodeId,
-      agentId: agent.agentId,
-    }),
-    transcriptPath: transcript,
+    route: route.target,
   });
-  const exit = await handle.exit;
+  // Observation only (P20): the root's startup and work, told as any node's are.
+  const observe = (
+    rest: Omit<Parameters<typeof observeLifecycle>[1], "scope" | "nodeId" | "agentId" | "attempt">,
+  ) =>
+    observeLifecycle(
+      { outbox, clock, ids },
+      {
+        scope,
+        nodeId: rootNode.executionNodeId,
+        agentId: agent.agentId,
+        attempt: 1,
+        ...rest,
+      },
+    );
+  observe({
+    operationId: startupOperation,
+    phase: "startup",
+    transition: "start",
+    occurredAt: startupAt,
+  });
+  let exit: HarnessExit;
+  let processStarted = false;
+  try {
+    const launch = await recorder.startSegment({ resumedSession: false });
+    const handle = await runtime.harness.start({
+      agent,
+      node: rootNode,
+      job: brief,
+      program,
+      worktree,
+      tmpDir,
+      model: route.target,
+      mcp: rootLaunch(env, { repoPath: input.repoPath, agentId: agent.agentId }),
+      tools: refusingWorkerTools("the root orchestrator reaches Nightshift through its MCP launch"),
+      sink: createHookSink({
+        outbox,
+        executionNodeId: rootNode.executionNodeId,
+        agentId: agent.agentId,
+      }),
+      transcriptPath: transcript,
+      launch,
+      measurements: recorder.sink,
+    });
+    processStarted = true;
+    observe({
+      operationId: startupOperation,
+      phase: "startup",
+      transition: "end",
+      reason: "process started",
+      launch,
+      recorder,
+    });
+    observe({ operationId: workOperation, phase: "work", transition: "start", launch, recorder });
+    exit = await handle.exit;
+    observe({
+      operationId: workOperation,
+      phase: "work",
+      transition: "end",
+      reason: exit.kind,
+      launch,
+      recorder,
+    });
+  } catch (error) {
+    if (!processStarted) {
+      observe({
+        operationId: startupOperation,
+        phase: "startup",
+        transition: "end",
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+    await recorder.close({ kind: "failed", exitCode: 127 }).catch(() => {});
+    throw error;
+  }
+  const { summary } = await recorder.close(exit);
   await outbox.flush(5_000).catch(() => {});
 
   const ended = (await stores.runs.get(scope, scope.runId)) ?? run;
-  return { exit, run: ended, agentId: agent.agentId, transcript, route: route.target };
+  return {
+    exit,
+    run: ended,
+    agentId: agent.agentId,
+    transcript,
+    route: route.target,
+    measurementSummaryId: summary.measurementSummaryId,
+  };
 };
 
 export const describeHeadlessEnding = (result: HeadlessResult): string =>

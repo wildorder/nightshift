@@ -26,7 +26,7 @@ import {
 import { nowIso } from "@nightshift/core";
 import { z } from "zod";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
-import { createHelper, endHelper, runHelper } from "./examine.js";
+import { createHelper, endHelper, observeLifecycle, runHelper } from "./examine.js";
 
 export const STRAND_PLAN_CONTEXT = "STRAND PLAN:";
 export const STRAND_PLAN_REVIEW_CONTEXT = "STRAND PLAN REVIEW:";
@@ -271,7 +271,20 @@ const reviewWith = async (
   const scope = input.session.scope;
   const nodeId = input.node.executionNodeId;
   const helperInput = { session: input.session, node: input.node, job: input.job };
-  const helper = await createHelper(environment, helperInput, "examiner", route);
+  const helper = await createHelper(environment, helperInput, "examiner", route, {
+    kind: "plan_review",
+    decisionId: input.plan.decisionId,
+  });
+  const operationId = `plan_review:${nodeId}:${input.round}`;
+  const opening = observeLifecycle(environment, helperInput, helper, {
+    operationId,
+    phase: "plan_review",
+    transition: "start",
+    refs: [
+      { kind: "decision", ref: input.plan.decisionId },
+      { kind: "routing_decision", ref: helper.decision.routingDecisionId },
+    ],
+  });
   const verdictFile = join(
     environment.paths.scratch(input.worktree),
     `plan-review-${helper.agent.agentId}.json`,
@@ -287,6 +300,7 @@ const reviewWith = async (
     agentId: helper.agent.agentId,
   });
   const exit = await runHelper(environment, helperInput, helper, {
+    opening: [opening],
     worktree: input.worktree,
     task: {
       kind: "review_plan",
@@ -311,6 +325,12 @@ const reviewWith = async (
     .then((text) => PlanReviewSchema.safeParse(JSON.parse(text)))
     .catch(() => undefined);
   const review = handed?.success === true ? handed.data : undefined;
+  observeLifecycle(environment, helperInput, helper, {
+    operationId,
+    phase: "plan_review",
+    transition: "end",
+    reason: review === undefined ? "no_review" : `verdict: ${review.verdict}`,
+  });
   await endHelper(environment, helperInput, helper, [exit], review !== undefined);
   await record(review, helper.agent.agentId);
   return review;

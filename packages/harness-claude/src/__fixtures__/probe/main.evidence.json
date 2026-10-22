@@ -1,0 +1,66 @@
+{
+  "dimension": "main",
+  "observedAt": "2026-10-21T00:23:43.526Z",
+  "claudeCodeVersion": "2.1.286",
+  "captureMode": "otlp",
+  "transport": {
+    "paths": ["/v1/logs"],
+    "contentTypes": ["application/json"]
+  },
+  "resourceAttributeKeys": [],
+  "appVersions": ["2.1.286"],
+  "eventCounts": {
+    "api_error": 1,
+    "managed_settings_resolved": 1,
+    "mcp_server_connection": 1,
+    "plugin_loaded": 3,
+    "user_prompt": 1
+  },
+  "apiRequest": {
+    "attributeTypes": {},
+    "present": {
+      "request_id": false,
+      "client_request_id": false,
+      "session.id": false,
+      "cost_usd": false,
+      "cost_usd_micros": false,
+      "duration_ms": false,
+      "effort": false,
+      "speed": false,
+      "agent.name": false,
+      "query_source": false,
+      "event.timestamp": false,
+      "event.sequence": false
+    },
+    "querySourceClasses": {
+      "main": 0,
+      "child": 0,
+      "compact": 0,
+      "other": 0
+    }
+  },
+  "requests": 0,
+  "apiErrors": 1,
+  "dropped": {
+    "records": 0,
+    "attributes": 104,
+    "unidentifiedRequests": 0
+  },
+  "complete": false,
+  "reasons": ["no_api_request"],
+  "exit": {
+    "kind": "failed",
+    "coverage": "partial",
+    "usageScope": "launch",
+    "inclusion": "self",
+    "hasUsage": true,
+    "observedModel": "claude-sonnet-5-5"
+  },
+  "stream": {
+    "snapshotCount": 0,
+    "streamRequestCount": 0,
+    "sawCompactBoundary": false,
+    "sawSubagent": false
+  },
+  "unverified": "live capability unverified: the provider refused the request (api_error / authentication)"
+}

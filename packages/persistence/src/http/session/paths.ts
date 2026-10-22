@@ -213,6 +213,18 @@ export const transcriptPath = (
   environment: PathEnvironment = {},
 ): string => join(agentStateDir(runId, agentId, environment), "transcript.jsonl");
 
+/** `<run state>/measurements`: a run's measurement journals (P20). */
+export const measurementsDirPath = (runId: string, environment: PathEnvironment = {}): string =>
+  join(runStateDir(runId, environment), "measurements");
+
+/** `<measurements>/<agentId>__<launchId>.ndjson`: both ids parse back from the name. */
+export const measurementJournalPath = (
+  runId: string,
+  agentId: string,
+  launchId: string,
+  environment: PathEnvironment = {},
+): string => join(measurementsDirPath(runId, environment), `${agentId}__${launchId}.ndjson`);
+
 /** The last `count` characters of an identifier, for a short worktree path. */
 export const idTail = (id: string, count = 8): string => id.slice(-count);
 
@@ -243,5 +255,8 @@ export const createLocalPaths = (environment: PathEnvironment = {}): LocalPaths 
   runDir: (runId) => runStateDir(runId, environment),
   spool: (runId) => spoolPath(runId, environment),
   transcript: (runId, agentId) => transcriptPath(runId, agentId, environment),
+  measurementsDir: (runId) => measurementsDirPath(runId, environment),
+  measurementJournal: (runId, agentId, launchId) =>
+    measurementJournalPath(runId, agentId, launchId, environment),
   scratch: (checkout) => scratchPath(checkout, environment),
 });

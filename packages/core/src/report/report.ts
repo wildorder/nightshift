@@ -20,7 +20,10 @@
 import {
   type Agent,
   type CarriedStrand,
+  type CompletionHistory,
+  type ComputeUtilization,
   type Decision,
+  type Dispatch,
   type EnvironmentFaultPayload,
   type Event,
   type Examination,
@@ -28,12 +31,19 @@ import {
   type ExecutionNodeId,
   type GateHealth,
   type GateHealthVerdict,
+  type IsoTimestamp,
   type JobContract,
+  lifecycleObservationsOf,
+  type MeasurementSummary,
   type Prerequisite,
   type ProgramContract,
+  type ProgramId,
+  type ProjectId,
   type RepairCause,
   type RoutingDecision,
   type Run,
+  type RunFeedback,
+  type RunId,
   type SetupStep,
   SetupStepSchema,
   type StrandPublication,
@@ -55,11 +65,21 @@ import {
   strandOutcomes,
   strandsOf,
 } from "../rules/plan.js";
+import { budgetEvaluation, spendOfRun } from "../rules/policy.js";
 import {
   adjustmentDecisionsOf,
   type StepAdjustments,
   stepAdjustmentsOf,
 } from "../rules/step-adjustments.js";
+import { type AttemptRow, attemptRowsOf } from "./attempts.js";
+import {
+  type CompletionFigures,
+  type CompletionReport,
+  completionEvidenceLines,
+  completionOf,
+  type MemberEvidence,
+  workItemEvidenceOf,
+} from "./completion.js";
 import {
   type CorrectionReport,
   type DecisionReport,
@@ -68,7 +88,33 @@ import {
   renderCorrections,
   renderDecisionGraph,
 } from "./decision-graph.js";
+import { type DeliveryReport, deliveryOf, type FirstAttemptFigures } from "./delivery.js";
 import { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
+import { definitionsOfSections, metricSectionsOf } from "./export.js";
+import {
+  type FeedbackCoverage,
+  feedbackCoverageOf,
+  type RunFeedbackReport,
+  runFeedbackOf,
+} from "./feedback.js";
+import {
+  type InfrastructureReport,
+  infrastructureOf,
+  infrastructureUnavailable,
+  occupancyOf,
+} from "./infrastructure.js";
+import { type OperationsReport, operationsOf } from "./operations.js";
+import {
+  MISSING_RESOURCES,
+  type PriceBasis,
+  type ResourceTotals,
+  resourcesOf,
+  resourcesOfSummary,
+  rootResourcesOf,
+  rootSummariesOf,
+  sumResources,
+} from "./resources.js";
+import { type OverheadRow, type ReviewReport, reviewOf } from "./review.js";
 import { storyStatuses } from "./stories.js";
 import { type VerificationTimeReport, verificationTimeOf } from "./verification-time.js";
 
@@ -146,6 +192,28 @@ export interface UsageRow {
    * of 0 with routes unpriced is unknown, not free.
    */
   readonly unpriced: number;
+  /** Routes with any token counter observed. Absent: the row predates this figure. */
+  readonly tokensObserved?: number;
+  /** Routes whose dollars are the harness's own report. */
+  readonly reportedAttempts?: number;
+  /** Routes whose dollars are an API-equivalent estimate from a price list. */
+  readonly estimatedAttempts?: number;
+  /** Dollars of the routes counted in `reportedAttempts`; never added to `estimatedUsd`. */
+  readonly reportedUsd?: number;
+  /** Dollars of the routes counted in `estimatedAttempts`; never added to `reportedUsd`. */
+  readonly estimatedUsd?: number;
+  /** Routes whose estimate leaves some usage unvalued. */
+  readonly estimateIncomplete?: number;
+  /** The price lists the estimates came from, per model. */
+  readonly priceBases?: readonly PriceBasis[];
+}
+
+/** The run's spend against its budgets, with what the evaluation could not see. */
+export interface BudgetReport {
+  readonly usd: number;
+  readonly tokens: number;
+  readonly estimated: boolean;
+  readonly evaluation: ReturnType<typeof budgetEvaluation>;
 }
 
 export interface RunReport {
@@ -164,6 +232,10 @@ export interface RunReport {
   /** P9: what this program corrects, when it is a correction (D-P9-06). */
   readonly corrections: readonly CorrectionReport[];
   readonly usage: readonly UsageRow[];
+  /** One row per attempt, with its resources: what the export filters. Absent before this was kept. */
+  readonly attempts?: readonly AttemptRow[];
+  /** Spend against the budgets; absent for a report gathered before this was kept. */
+  readonly budget?: BudgetReport;
   /** P8: the arbiter's rulings, which lead the report (D-P8-13). */
   readonly rulings: readonly RulingReport[];
   /** Work that went on unreviewed because no examiner could review it, for a human (2026-10-13). */
@@ -178,6 +250,22 @@ export interface RunReport {
    * local run, which publishes nothing.
    */
   readonly publication?: PublicationReport;
+  /** P20 S-05: where the run's time went, from lifecycle observations. */
+  readonly operations: OperationsReport;
+  /** P20 S-05: work items, first-attempt success, outcomes and rework. */
+  readonly delivery: DeliveryReport;
+  /** P20 S-05: examination coverage, dispositions and review overhead. */
+  readonly review: ReviewReport;
+  /** P20 S-05: the machine's lifetime and expense; absent when no dispatch or no basis. */
+  readonly infrastructure?: InfrastructureReport;
+  /** D-04: the human verdict on this run. */
+  readonly feedback: RunFeedbackReport;
+  /** D-04: how many of this program's ended runs carry a verdict. */
+  readonly feedbackCoverage: FeedbackCoverage;
+  /** D-05: the completion histories this run is a member of. */
+  readonly completions: readonly CompletionReport[];
+  /** The moment the report was gathered, to which open intervals were observed. */
+  readonly asOf: IsoTimestamp;
 }
 
 export interface PublicationReport {
@@ -288,6 +376,12 @@ interface Records {
   readonly outcomes: StrandOutcomes;
   /** What the run carried over from an earlier run of the same plan. */
   readonly carried: readonly CarriedStrand[];
+  /** P20 S-05: every agent of every node, every event and measurement summary, read once. */
+  readonly agents: readonly Agent[];
+  readonly events: readonly Event[];
+  readonly measurements: readonly MeasurementSummary[];
+  readonly dispatch: Dispatch | undefined;
+  readonly utilization: ComputeUtilization | undefined;
 }
 
 const jobReportOf = (records: Records, node: ExecutionNode): JobReport => ({
@@ -354,14 +448,47 @@ const strandReportOf = (
   };
 };
 
-const usageOf = (routes: readonly RoutingDecision[]): UsageRow[] => {
+/** The harness and model shown for a root launch that has no summary: nothing was observed. */
+const UNMEASURED_ROOT = { harness: "unknown", model: "unmeasured" } as const;
+
+/**
+ * Usage rows: one per harness / model / purpose over the routing decisions,
+ * plus a `root` row per root launch (D-02). A root with a measurement summary
+ * is valued by it; one without is a row of its own with nothing measured.
+ */
+const usageOf = (
+  routes: readonly RoutingDecision[],
+  measurements: readonly MeasurementSummary[] = [],
+  rootNodeIds: readonly string[] = [],
+): UsageRow[] => {
   const rows = new Map<string, UsageRow>();
-  for (const route of routes) {
-    const purpose = route.purpose ?? "work";
-    const key = `${route.chosen.harness} / ${route.chosen.model} / ${purpose}`;
-    const so = rows.get(key) ?? {
+  const summaries = rootSummariesOf(measurements);
+  const launches = [
+    ...routes.map((route) => ({
       harness: route.chosen.harness,
       model: route.chosen.model,
+      purpose: route.purpose ?? "work",
+      // A summary's valuation is the better evidence; a route's own usage is the legacy fallback.
+      resources: resourcesOf(route, measurements),
+    })),
+    ...rootNodeIds.map((id) => {
+      const summary = summaries.get(id);
+      return summary === undefined
+        ? { ...UNMEASURED_ROOT, purpose: "root", resources: MISSING_RESOURCES }
+        : {
+            harness: summary.route.harness,
+            model: summary.route.model,
+            purpose: "root",
+            resources: resourcesOfSummary(summary),
+          };
+    }),
+  ];
+  for (const launch of launches) {
+    const { purpose, resources } = launch;
+    const key = `${launch.harness} / ${launch.model} / ${purpose}`;
+    const so: UsageRow = rows.get(key) ?? {
+      harness: launch.harness,
+      model: launch.model,
       purpose,
       attempts: 0,
       inputTokens: 0,
@@ -369,21 +496,51 @@ const usageOf = (routes: readonly RoutingDecision[]): UsageRow[] => {
       costUsd: 0,
       estimated: false,
       unpriced: 0,
+      tokensObserved: 0,
+      reportedAttempts: 0,
+      estimatedAttempts: 0,
+      reportedUsd: 0,
+      estimatedUsd: 0,
+      estimateIncomplete: 0,
+      priceBases: [],
     };
+    const { tokens, usd } = resources;
+    const observed =
+      tokens.input !== undefined ||
+      tokens.output !== undefined ||
+      tokens.cacheRead !== undefined ||
+      tokens.cacheWrite !== undefined;
+    const useEstimate = usd.reported === undefined && usd.estimated !== undefined;
+    const bases = [...(so.priceBases ?? [])];
+    for (const basis of resources.priceBases ?? []) {
+      if (
+        !bases.some(
+          (seen) =>
+            seen.model === basis.model &&
+            seen.source === basis.source &&
+            seen.version === basis.version &&
+            seen.incomplete === basis.incomplete,
+        )
+      ) {
+        bases.push(basis);
+      }
+    }
     rows.set(key, {
       ...so,
       attempts: so.attempts + 1,
-      inputTokens: so.inputTokens + (route.usage.inputTokens ?? 0),
-      outputTokens: so.outputTokens + (route.usage.outputTokens ?? 0),
-      costUsd: so.costUsd + (route.usage.actualCostUsd ?? route.usage.estimatedCostUsd ?? 0),
-      estimated:
-        so.estimated ||
-        (route.usage.actualCostUsd === undefined && route.usage.estimatedCostUsd !== undefined),
-      unpriced:
-        so.unpriced +
-        (route.usage.actualCostUsd === undefined && route.usage.estimatedCostUsd === undefined
-          ? 1
-          : 0),
+      inputTokens: so.inputTokens + (tokens.input ?? 0),
+      outputTokens: so.outputTokens + (tokens.output ?? 0),
+      costUsd: so.costUsd + (usd.reported ?? usd.estimated ?? 0),
+      estimated: so.estimated || useEstimate,
+      unpriced: so.unpriced + (usd.reported === undefined && usd.estimated === undefined ? 1 : 0),
+      tokensObserved: (so.tokensObserved ?? 0) + (observed ? 1 : 0),
+      reportedAttempts: (so.reportedAttempts ?? 0) + (usd.reported === undefined ? 0 : 1),
+      estimatedAttempts: (so.estimatedAttempts ?? 0) + (useEstimate ? 1 : 0),
+      reportedUsd: (so.reportedUsd ?? 0) + (usd.reported ?? 0),
+      estimatedUsd: (so.estimatedUsd ?? 0) + (useEstimate ? (usd.estimated ?? 0) : 0),
+      estimateIncomplete:
+        (so.estimateIncomplete ?? 0) + (resources.estimateIncomplete === true ? 1 : 0),
+      priceBases: bases,
     });
   }
   return [...rows.values()];
@@ -417,12 +574,8 @@ export interface UnreviewedReport {
 }
 
 /** The run's skipped reviews, the latest per node: what a human still has to review. */
-const unreviewedOf = async (
-  stores: ProjectStores,
-  scope: RunScope,
-  records: Records,
-): Promise<UnreviewedReport[]> => {
-  const events = await readAll<Event>((page) => stores.events.listByRun(scope, page));
+const unreviewedOf = (records: Records): UnreviewedReport[] => {
+  const { events } = records;
   const latest = new Map<string, Event>();
   for (const event of events) {
     if (event.type === "examination.skipped" && event.executionNodeId !== null) {
@@ -500,6 +653,8 @@ const readRecords = async (
   scope: RunScope,
   program: ProgramContract,
   carried: readonly CarriedStrand[],
+  /** A caller that reads the machine records itself, to tell a failed read from none, skips them. */
+  readMachine = true,
 ): Promise<Records> => {
   const nodes = await readAll<ExecutionNode>((page) =>
     stores.executionNodes.listByRun(scope, page),
@@ -507,11 +662,24 @@ const readRecords = async (
   const jobs = await readAll<JobContract>((page) => stores.jobContracts.listByRun(scope, page));
   const decisions = await readAll<Decision>((page) => stores.decisions.listByRun(scope, page));
   const jobOf = new Map(jobs.map((job) => [job.jobContractId as string, job]));
+  const events = await readAll<Event>((page) => stores.events.listByRun(scope, page));
+  const measurements = await readAll<MeasurementSummary>((page) =>
+    stores.measurements.listByRun(scope, page),
+  );
+  const dispatch = readMachine
+    ? await stores.dispatches.get(scope).catch(() => undefined)
+    : undefined;
+  const utilization = readMachine
+    ? await stores.computeUtilizations.get(scope).catch(() => undefined)
+    : undefined;
+  const agents: Agent[] = [];
 
   const routesOf = new Map<string, readonly RoutingDecision[]>();
   const examinationsOf = new Map<string, readonly Examination[]>();
   const agentOf = new Map<string, Agent>();
   for (const node of nodes) {
+    const nodeAgents = await stores.agents.listByNode(scope, node.executionNodeId);
+    agents.push(...nodeAgents);
     if (node.parentNodeId === null) continue;
     routesOf.set(
       node.executionNodeId,
@@ -520,7 +688,7 @@ const readRecords = async (
     if (node.kind !== "job") continue;
     const examinations = await stores.examinations.listByNode(scope, node.executionNodeId);
     if (examinations.length > 0) {
-      for (const agent of await stores.agents.listByNode(scope, node.executionNodeId)) {
+      for (const agent of nodeAgents) {
         agentOf.set(agent.agentId, agent);
       }
       examinationsOf.set(
@@ -573,6 +741,11 @@ const readRecords = async (
     strandNodes,
     outcomes,
     carried,
+    agents,
+    events,
+    measurements,
+    dispatch,
+    utilization,
   };
 };
 
@@ -620,7 +793,7 @@ const gatherGateHealth = async (
   nodes: readonly ExecutionNode[],
   verifications: readonly Verification[],
 ): Promise<GateHealthReport> => {
-  const events = await readAll<Event>((page) => stores.events.listByRun(scope, page));
+  const { events } = records;
   let red: GateHealthReport["red"];
   const repaired = new Map<string, Readonly<Record<string, unknown>>>();
   for (const event of events) {
@@ -711,6 +884,22 @@ const gatherVerifications = async (
   return verifications;
 };
 
+const budgetOf = (
+  program: ProgramContract,
+  routes: readonly RoutingDecision[],
+  measurements: readonly MeasurementSummary[],
+  rootNodeIds: readonly string[],
+): BudgetReport => {
+  // As the engine reads it: the root launch's summary counts, an absent one is unmeasured (D-02).
+  const spend = spendOfRun({ routes, measurements, rootNodeIds });
+  return {
+    usd: spend.usd,
+    tokens: spend.tokens,
+    estimated: spend.estimated,
+    evaluation: budgetEvaluation(spend, program.costPolicy),
+  };
+};
+
 export const gatherReport = async (stores: ProjectStores, scope: RunScope): Promise<RunReport> => {
   const program = await stores.programContracts.get(scope.projectId, scope.programId);
   const run = await stores.runs.get(scope, scope.runId);
@@ -721,11 +910,22 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   const blocked = blockedBy(program, records.outcomes);
   const strands = strandsOf(program).map((strand) => strandReportOf(records, strand, blocked));
   const rulings = rulingsOf(records);
-  const unreviewed = await unreviewedOf(stores, scope, records);
+  const unreviewed = unreviewedOf(records);
   const nodes = [...records.tree.nodes.values()].sort((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   );
   const verifications = await gatherVerifications(stores, scope, nodes);
+
+  const p20 = p20Of(records, run, nodes, verifications);
+  const feedbackSections = await feedbackSectionsOf(stores, scope, run, p20.asOf, {
+    evidence: memberEvidenceOf(scope, run, records, p20),
+    resources: resourcesOfRoutes(
+      [...records.routesOf.values()].flat(),
+      records.measurements,
+      rootIdsOf(nodes),
+    ),
+    ...(p20.infrastructure === undefined ? {} : { infrastructure: p20.infrastructure }),
+  });
 
   return {
     program,
@@ -751,7 +951,20 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
       records.jobOf,
     ),
     corrections: await gatherCorrections(stores, program),
-    usage: usageOf([...records.routesOf.values()].flat()),
+    usage: usageOf([...records.routesOf.values()].flat(), records.measurements, rootIdsOf(nodes)),
+    attempts: attemptRowsOf({
+      routes: [...records.routesOf.values()].flat(),
+      measurements: records.measurements,
+      agents: records.agents,
+      nodes,
+      strandOfNode: (nodeId) => strands.find((strand) => strand.nodeIds.includes(nodeId))?.id,
+    }),
+    budget: budgetOf(
+      program,
+      [...records.routesOf.values()].flat(),
+      records.measurements,
+      rootIdsOf(nodes),
+    ),
     rulings,
     unreviewed,
     gateHealth: await gatherGateHealth(stores, scope, records, nodes, verifications),
@@ -764,16 +977,412 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
       verifications,
       { maxWallClockSeconds: program.costPolicy?.maxWallClockSeconds },
     ),
-    ...(await gatherPublication(stores, scope, program.repository.programBranch)),
+    ...publicationOf(records.dispatch, program.repository.programBranch),
+    ...p20,
+    ...feedbackSections,
   };
 };
 
-const gatherPublication = async (
+interface MemberFigures {
+  readonly evidence?: MemberEvidence;
+  /**
+   * Why the lifecycle records behind `evidence` could not be read. Apart from
+   * `unavailable`: a checkpoint freezes time and resources only, so it is not
+   * refused for evidence the history view alone shows.
+   */
+  readonly evidenceUnavailable?: string;
+  readonly resources?: ResourceTotals;
+  readonly infrastructure?: InfrastructureReport;
+  /** Why a read the model figures need failed; the figures are then absent, not zero. */
+  readonly unavailable?: string;
+}
+
+const reasonOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/** The run's root nodes: their launches have no routing decision (S-01). */
+const rootIdsOf = (nodes: readonly ExecutionNode[]): string[] =>
+  nodes.filter((node) => node.parentNodeId === null).map((node) => node.executionNodeId);
+
+/** Routes' resources and each root launch's summary (D-02); a root without one is unmeasured. */
+const resourcesOfRoutes = (
+  routes: readonly RoutingDecision[],
+  measurements: readonly MeasurementSummary[],
+  rootNodeIds: readonly string[],
+): ResourceTotals =>
+  sumResources([
+    ...routes.map((route) => resourcesOf(route, measurements)),
+    ...rootResourcesOf(measurements, rootNodeIds),
+  ]);
+
+/** Every agent and (non-root) routing decision of the nodes; absent when any read was refused. */
+const nodeRecordsOf = async (
   stores: ProjectStores,
   scope: RunScope,
+  nodes: readonly ExecutionNode[] | undefined,
+): Promise<{ agents?: Agent[]; routes?: RoutingDecision[]; failure?: string }> => {
+  if (nodes === undefined) return {};
+  const agents: Agent[] = [];
+  const routes: RoutingDecision[] = [];
+  for (const node of nodes) {
+    const nodeAgents = await (async () =>
+      stores.agents.listByNode(scope, node.executionNodeId))().catch((e: unknown) => e);
+    if (!Array.isArray(nodeAgents)) return { failure: `agents: ${reasonOf(nodeAgents)}` };
+    agents.push(...(nodeAgents as Agent[]));
+    if (node.parentNodeId === null) continue;
+    const nodeRoutes = await (async () =>
+      stores.routingDecisions.listByNode(scope, node.executionNodeId))().catch((e: unknown) => e);
+    if (!Array.isArray(nodeRoutes)) return { failure: `routes: ${reasonOf(nodeRoutes)}` };
+    routes.push(...(nodeRoutes as RoutingDecision[]));
+  }
+  return { agents, routes };
+};
+
+/** What a member run contributes to a completion history, from figures already computed. */
+const memberEvidenceOf = (
+  scope: RunScope,
+  run: Run,
+  records: Records,
+  p20: Pick<RunReport, "operations" | "delivery" | "review">,
+): MemberEvidence => {
+  const { operations } = p20;
+  return {
+    delivery: p20.delivery,
+    review: p20.review,
+    operations: {
+      startedAt: operations.startedAt,
+      ...(operations.endedAt === undefined ? {} : { endedAt: operations.endedAt }),
+      ...(operations.elapsedMs === undefined ? {} : { elapsedMs: operations.elapsedMs }),
+      unions: operations.unions,
+      endings: operations.endings,
+      summedWorkMs: operations.concurrency.summedWorkMs,
+    },
+    carriedStrands: run.carriedStrands ?? [],
+    workItems: workItemEvidenceOf(
+      scope.programId,
+      scope.runId,
+      [...records.tree.nodes.values()],
+      [...records.jobOf.values()],
+      [...records.routesOf.values()].flat(),
+    ),
+  };
+};
+
+/**
+ * One completion member run's model and machine figures. Every read is
+ * tolerated: a figure whose records could not all be read is absent, not zero.
+ * Without occupancy the machine figures carry `infrastructureOf`'s legacy coverage.
+ */
+const memberFiguresOf = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  run: Run,
+  asOf: IsoTimestamp,
+  withEvidence = true,
+): Promise<MemberFigures> => {
+  const failures: string[] = [];
+  let evidenceFailure: string | undefined;
+  // The same reducers a single run's report uses, over records read once. When
+  // that read fails the evidence is absent and the figures fall back to their own reads.
+  const read = !withEvidence
+    ? undefined
+    : await (async () => {
+        const program = await stores.programContracts.get(scope.projectId, scope.programId);
+        if (program === undefined) throw new Error("program is not in the control plane");
+        const records = await readRecords(stores, scope, program, run.carriedStrands ?? [], false);
+        const sorted = [...records.tree.nodes.values()].sort((a, b) =>
+          a.createdAt.localeCompare(b.createdAt),
+        );
+        const verifications = await gatherVerifications(stores, scope, sorted);
+        return {
+          records,
+          nodes: sorted,
+          evidence: memberEvidenceOf(
+            scope,
+            run,
+            records,
+            p20Of(records, run, sorted, verifications),
+          ),
+        };
+      })().catch((e: unknown) => {
+        evidenceFailure = reasonOf(e);
+        return undefined;
+      });
+  const nodes =
+    read?.nodes ??
+    (await (async () =>
+      readAll<ExecutionNode>((page) => stores.executionNodes.listByRun(scope, page)))().catch(
+      (e: unknown) => {
+        failures.push(`nodes: ${reasonOf(e)}`);
+        return undefined;
+      },
+    ));
+  const measurements =
+    read?.records.measurements ??
+    (await (async () =>
+      readAll<MeasurementSummary>((page) => stores.measurements.listByRun(scope, page)))().catch(
+      (e: unknown) => {
+        failures.push(`measurements: ${reasonOf(e)}`);
+        return undefined;
+      },
+    ));
+  // A failed read is a failure; a successful read that finds nothing is a plain absence.
+  let machineReadFailed = false;
+  const dispatch = await (async () => stores.dispatches.get(scope))().catch((e: unknown) => {
+    machineReadFailed = true;
+    failures.push(`dispatch: ${reasonOf(e)}`);
+    return undefined;
+  });
+  const utilization = await (async () => stores.computeUtilizations.get(scope))().catch(
+    (e: unknown) => {
+      machineReadFailed = true;
+      failures.push(`utilization: ${reasonOf(e)}`);
+      return undefined;
+    },
+  );
+  const { agents, routes, failure } =
+    read === undefined
+      ? await nodeRecordsOf(stores, scope, nodes)
+      : {
+          agents: [...read.records.agents],
+          routes: [...read.records.routesOf.values()].flat(),
+          failure: undefined,
+        };
+  if (failure !== undefined) failures.push(failure);
+  const evidence = read?.evidence;
+  const infrastructure =
+    agents === undefined || machineReadFailed
+      ? undefined
+      : infrastructureOf({
+          run,
+          ...(dispatch === undefined ? {} : { dispatch }),
+          ...(utilization === undefined ? {} : { utilization }),
+          agents,
+          asOf,
+        });
+  return {
+    ...(evidence === undefined ? {} : { evidence }),
+    ...(evidenceFailure === undefined ? {} : { evidenceUnavailable: evidenceFailure }),
+    ...(routes === undefined || measurements === undefined
+      ? {}
+      : { resources: resourcesOfRoutes(routes, measurements, rootIdsOf(nodes ?? [])) }),
+    ...(infrastructure === undefined ? {} : { infrastructure }),
+    ...(failures.length === 0 ? {} : { unavailable: failures.join("; ") }),
+  };
+};
+
+/**
+ * The model and machine figures of completion member runs, each run read once.
+ * Every read is tolerated: a figure whose records could not all be read is
+ * absent, not zero. Keys are `${programId}/${runId}`; a member whose run is not
+ * in `runs` is skipped.
+ */
+export const gatherMemberFigures = async (
+  stores: ProjectStores,
+  projectId: ProjectId,
+  members: readonly { readonly programId: ProgramId; readonly runId: RunId }[],
+  runs: ReadonlyMap<string, Run>,
+  asOf: IsoTimestamp,
+  options: { readonly evidence?: boolean } = {},
+): Promise<{
+  resources: Map<string, ResourceTotals>;
+  infrastructure: Map<string, InfrastructureReport>;
+  evidence: Map<string, MemberEvidence>;
+  /**
+   * Members whose delivery, review or lifecycle records could not be read, with
+   * the reason: their evidence is absent, not zero. Not a reason to refuse a checkpoint.
+   */
+  evidenceUnavailable: Map<string, string>;
+  /** Members whose nodes, routes, measurements, agents, dispatch or utilization read failed, with the reason. */
+  unavailable: Map<string, string>;
+}> => {
+  const resources = new Map<string, ResourceTotals>();
+  const infrastructure = new Map<string, InfrastructureReport>();
+  const evidence = new Map<string, MemberEvidence>();
+  const evidenceUnavailable = new Map<string, string>();
+  const unavailable = new Map<string, string>();
+  const done = new Set<string>();
+  for (const member of members) {
+    const key = `${member.programId}/${member.runId}`;
+    const run = runs.get(key);
+    if (run === undefined || done.has(key)) continue;
+    done.add(key);
+    const figures = await memberFiguresOf(
+      stores,
+      { projectId, programId: member.programId, runId: member.runId },
+      run,
+      asOf,
+      options.evidence !== false,
+    );
+    if (figures.resources !== undefined) resources.set(key, figures.resources);
+    if (figures.infrastructure !== undefined) infrastructure.set(key, figures.infrastructure);
+    if (figures.evidence !== undefined) evidence.set(key, figures.evidence);
+    if (figures.evidenceUnavailable !== undefined) {
+      evidenceUnavailable.set(key, figures.evidenceUnavailable);
+    }
+    if (figures.unavailable !== undefined) unavailable.set(key, figures.unavailable);
+  }
+  return { resources, infrastructure, evidence, evidenceUnavailable, unavailable };
+};
+
+/**
+ * D-04/D-05 reads. Each is tolerated: an execution principal that is refused,
+ * or a control plane older than these stores, still gets its report.
+ */
+const feedbackSectionsOf = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  run: Run,
+  asOf: IsoTimestamp,
+  current: MemberFigures,
+): Promise<Pick<RunReport, "feedback" | "feedbackCoverage" | "completions">> => {
+  const own = await (async () => stores.feedback.get(scope))().catch(() => undefined);
+  const programRuns = await readAll<Run>((page) => stores.runs.listByProgram(scope, page)).catch(
+    () => [run],
+  );
+  const programFeedback = await readAll<RunFeedback>((page) =>
+    stores.feedback.listByProgram(scope, page),
+  ).catch(() => (own === undefined ? [] : [own]));
+  const histories = await readAll<CompletionHistory>((page) =>
+    stores.completionHistories.listByProject(scope.projectId, page),
+  ).catch(() => []);
+  const mine = histories.filter((history) =>
+    history.members.some((m) => m.programId === scope.programId && m.runId === scope.runId),
+  );
+  const runs = new Map<string, Run>();
+  const feedback = new Map<string, RunFeedback>();
+  const resources = new Map<string, ResourceTotals>();
+  const infrastructure = new Map<string, InfrastructureReport>();
+  const evidence = new Map<string, MemberEvidence>();
+  const evidenceUnavailable = new Map<string, string>();
+  const unavailable = new Map<string, string>();
+  const self = `${scope.programId}/${scope.runId}`;
+  // A checkpoint is reported from its stored measurement, so only current
+  // members are gathered; each run is read once across histories.
+  for (const member of new Set(
+    mine.flatMap((h) => h.members.map((m) => `${m.programId}/${m.runId}`)),
+  )) {
+    const [programId, runId] = member.split("/") as [ProgramId, RunId];
+    const memberScope = { projectId: scope.projectId, programId, runId };
+    const found = await (async () => stores.runs.get(memberScope, runId))().catch(() => undefined);
+    if (found !== undefined) runs.set(member, found);
+    const verdict = await (async () => stores.feedback.get(memberScope))().catch(() => undefined);
+    if (verdict !== undefined) feedback.set(member, verdict);
+    if (found === undefined) continue;
+    const figures =
+      member === self ? current : await memberFiguresOf(stores, memberScope, found, asOf);
+    if (figures.resources !== undefined) resources.set(member, figures.resources);
+    if (figures.infrastructure !== undefined) infrastructure.set(member, figures.infrastructure);
+    if (figures.evidence !== undefined) evidence.set(member, figures.evidence);
+    if (figures.evidenceUnavailable !== undefined) {
+      evidenceUnavailable.set(member, figures.evidenceUnavailable);
+    }
+    if (figures.unavailable !== undefined) unavailable.set(member, figures.unavailable);
+  }
+  return {
+    feedback: runFeedbackOf(run, own),
+    feedbackCoverage: feedbackCoverageOf(programRuns, programFeedback),
+    completions: mine.map((history) =>
+      completionOf({
+        history,
+        runs,
+        feedback,
+        resources,
+        infrastructure,
+        evidence,
+        evidenceUnavailable,
+        unavailable,
+        asOf,
+      }),
+    ),
+  };
+};
+
+/**
+ * The newest timestamp on any record read. `gatherReport` has no clock (core
+ * is offline and the stores carry none), so the report's `asOf` is taken from
+ * the newest record rather than from the wall clock.
+ */
+const newestOf = (
+  run: Run,
+  records: Records,
+  verifications: readonly Verification[],
+): IsoTimestamp => {
+  const stamps: string[] = [run.startedAt];
+  if (run.endedAt !== undefined) stamps.push(run.endedAt);
+  for (const node of records.tree.nodes.values()) stamps.push(node.createdAt);
+  for (const event of records.events) stamps.push(event.occurredAt, event.recordedAt);
+  for (const agent of records.agents) {
+    stamps.push(agent.createdAt);
+    if (agent.startedAt !== undefined) stamps.push(agent.startedAt);
+    if (agent.endedAt !== undefined) stamps.push(agent.endedAt);
+  }
+  for (const verification of verifications) {
+    stamps.push(verification.startedAt);
+    if (verification.endedAt !== undefined) stamps.push(verification.endedAt);
+  }
+  return stamps.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a)) as IsoTimestamp;
+};
+
+/** The S-05 reducers over what `readRecords` already read: no store is read twice. */
+const p20Of = (
+  records: Records,
+  run: Run,
+  nodes: readonly ExecutionNode[],
+  verifications: readonly Verification[],
+): Pick<RunReport, "operations" | "delivery" | "review" | "infrastructure" | "asOf"> => {
+  const asOf = newestOf(run, records, verifications);
+  const jobs = [...records.jobOf.values()];
+  const routes = [...records.routesOf.values()].flat();
+  const examinations = [...records.examinationsOf.values()].flat();
+  const operations = operationsOf({
+    run,
+    nodes,
+    jobs,
+    agents: records.agents,
+    routes,
+    verifications,
+    examinations,
+    observations: lifecycleObservationsOf(records.events),
+    asOf,
+  });
+  const occupancy = occupancyOf({ operations, agents: records.agents, asOf });
+  const infrastructure = infrastructureOf({
+    run,
+    ...(records.dispatch === undefined ? {} : { dispatch: records.dispatch }),
+    ...(records.utilization === undefined ? {} : { utilization: records.utilization }),
+    agents: records.agents,
+    occupancy,
+    asOf,
+  });
+  return {
+    operations,
+    delivery: deliveryOf({
+      nodes,
+      jobs,
+      routes,
+      verifications,
+      measurements: records.measurements,
+    }),
+    review: reviewOf({
+      nodes,
+      jobs,
+      routes,
+      examinations,
+      decisions: records.decisions,
+      agents: records.agents,
+      measurements: records.measurements,
+      events: records.events,
+    }),
+    ...(infrastructure === undefined ? {} : { infrastructure }),
+    asOf,
+  };
+};
+
+const publicationOf = (
+  dispatch: Dispatch | undefined,
   branch: string,
-): Promise<{ readonly publication?: PublicationReport }> => {
-  const dispatch = await stores.dispatches.get(scope).catch(() => undefined);
+): { readonly publication?: PublicationReport } => {
   if (dispatch === undefined) return {};
   const landed = new Set([
     ...dispatch.publication.intents.map((intent) => intent.head),
@@ -1097,14 +1706,16 @@ const renderVerificationTime = (time: VerificationTimeReport): string[] => {
         ? "."
         : `; the forecast assumed ${forecast.landings} landings at ${humanDuration(forecast.landingMs)} each, ≈ ${humanDuration(forecast.projectedMs)}, measured on ${forecast.machine}.`),
     "",
-    "| Step | Runs | Total | Per run | Quiet start | Queue / candidate / end | Forecast per run |",
-    "|------|------|-------|---------|-------------|-------------------------|------------------|",
+    `Retained rerun time: ${humanDuration(time.steps.reduce((sum, step) => sum + step.rerunMs, 0))} across ${time.steps.reduce((sum, step) => sum + step.rerunRuns, 0)} flaky first run(s) and failed rerun(s), included in the totals.`,
+    "",
+    "| Step | Runs | Total | Reruns | Per run | Quiet start | Queue / candidate / end | Forecast per run |",
+    "|------|------|-------|--------|---------|-------------|-------------------------|------------------|",
     ...time.steps.map((step) => {
       const per = step.runs === 0 ? "—" : humanDuration(step.totalMs / step.runs);
       const quiet = step.runs === 0 ? "—" : humanDuration(step.quietMs / step.runs);
       const phases = `${step.byPhase.queue.runs} / ${step.byPhase.candidate.runs} / ${step.byPhase.run.runs}`;
       const forecastPer = step.forecastMs === undefined ? "—" : humanDuration(step.forecastMs);
-      return `| \`${step.id}\` | ${step.runs} | ${humanDuration(step.totalMs)} | ${per} | ${quiet} | ${phases} | ${forecastPer} |`;
+      return `| \`${step.id}\` | ${step.runs} | ${humanDuration(step.totalMs)} | ${step.rerunRuns === 0 ? "none" : `${step.rerunRuns} (${humanDuration(step.rerunMs)})`} | ${per} | ${quiet} | ${phases} | ${forecastPer} |`;
     }),
     "",
     ...(time.recommendations.length === 0
@@ -1243,7 +1854,45 @@ const costCell = (row: UsageRow): string => {
   return row.unpriced === 0 ? known : `${known} + ${row.unpriced} unknown`;
 };
 
-/** The run's totals against its budgets (D-P8-08). */
+const tokenCell = (row: UsageRow, value: number): string =>
+  row.tokensObserved === 0 ? "not observed" : String(value);
+
+/** One kind of a row's dollars, with how many attempts carried it; absent says so. */
+const subtotalCell = (count: number | undefined, dollars: number | undefined): string =>
+  count === undefined
+    ? NOT_OBSERVED
+    : count === 0
+      ? "none"
+      : `${count}: $${(dollars ?? 0).toFixed(2)}`;
+
+/** What kind of dollars a row holds, where they came from and how much of the row they cover. */
+const basisCell = (row: UsageRow): string => {
+  const reported = row.reportedAttempts ?? 0;
+  const estimated = row.estimatedAttempts ?? 0;
+  const label =
+    reported > 0 && estimated > 0
+      ? "provider-reported and API-equivalent estimate"
+      : reported > 0
+        ? "provider-reported"
+        : estimated > 0
+          ? "API-equivalent estimate"
+          : "unknown";
+  const bases = (row.priceBases ?? [])
+    .filter((basis) => basis.source !== undefined || basis.version !== undefined)
+    .map(
+      (basis) =>
+        `${basis.source ?? "price list"}${basis.version === undefined ? "" : ` ${basis.version}`}`,
+    );
+  const incomplete = row.estimateIncomplete ?? 0;
+  return [
+    label,
+    ...(estimated > 0 && bases.length > 0 ? [`price list ${[...new Set(bases)].join(", ")}`] : []),
+    `${row.attempts - row.unpriced} of ${row.attempts} attempts valued`,
+    ...(incomplete > 0 ? [`${incomplete} estimate(s) leave usage unvalued`] : []),
+  ].join("; ");
+};
+
+/** The run's totals against its budgets (D-P8-08). An incomplete evaluation never claims a precise cap. */
 const renderBudget = (report: RunReport): string[] => {
   const { maxUsd, maxTokens } = report.program.costPolicy;
   if (maxUsd === undefined && maxTokens === undefined) return [];
@@ -1251,6 +1900,34 @@ const renderBudget = (report: RunReport): string[] => {
   const tokens = report.usage.reduce((total, row) => total + row.inputTokens + row.outputTokens, 0);
   const estimated = report.usage.some((row) => row.estimated);
   const unpriced = report.usage.reduce((total, row) => total + row.unpriced, 0);
+  const evaluation = report.budget?.evaluation;
+  if (evaluation !== undefined && !evaluation.complete) {
+    const why = `${evaluation.unpriced} attempt${evaluation.unpriced === 1 ? "" : "s"} unpriced, ${evaluation.unmeasured} unmeasured${
+      evaluation.tokensIncomplete > 0
+        ? `, ${evaluation.tokensIncomplete} with incomplete token counters`
+        : ""
+    }`;
+    const known = report.budget ?? { usd, tokens };
+    const limits = [
+      ...(maxUsd === undefined
+        ? []
+        : [
+            `the maxUsd limit could not be evaluated completely: ${why}${
+              evaluation.estimateIncomplete > 0
+                ? `, ${evaluation.estimateIncomplete} estimate(s) leave usage unvalued`
+                : ""
+            } ($${known.usd.toFixed(2)} known so far, a lower bound)`,
+          ]),
+      ...(maxTokens === undefined
+        ? []
+        : evaluation.unmeasured > 0 || evaluation.tokensIncomplete > 0
+          ? [
+              `the maxTokens limit could not be evaluated completely: ${why} (${known.tokens} tokens known so far, a lower bound)`,
+            ]
+          : []),
+    ];
+    if (limits.length > 0) return ["", `Budget: ${limits.join("; ")}.`];
+  }
   const caveats = [
     ...(estimated ? ["partly estimated"] : []),
     ...(unpriced > 0 ? [`${unpriced} route(s) unpriced and not counted`] : []),
@@ -1319,6 +1996,462 @@ const renderNotVerified = ({ skipped, raised }: StepAdjustments): string[] => {
   ];
 };
 
+const NOT_OBSERVED = "not observed";
+
+const secs = (ms: number | undefined): string =>
+  ms === undefined ? NOT_OBSERVED : humanDuration(ms);
+const num = (value: number | undefined): string =>
+  value === undefined ? NOT_OBSERVED : String(value);
+const pct = (value: number | undefined): string =>
+  value === undefined ? NOT_OBSERVED : `${(value * 100).toFixed(0)}%`;
+const usd = (value: number | undefined): string =>
+  value === undefined ? NOT_OBSERVED : `$${value.toFixed(2)}`;
+const recordOf = (record: Readonly<Record<string, number>>): string => {
+  const entries = Object.entries(record).filter(([, value]) => value > 0);
+  return entries.length === 0
+    ? "none"
+    : entries.map(([key, value]) => `${key} ${value}`).join(", ");
+};
+
+const resourcesLine = (totals: ResourceTotals): string => {
+  const { tokens, coverage } = totals;
+  const cover = Object.entries(coverage)
+    .filter(([, count]) => count > 0)
+    .map(([kind, count]) => `${kind} ${count}`)
+    .join(", ");
+  const attempts = Object.values(coverage).reduce((sum, n) => sum + n, 0);
+  const valued = attempts - totals.unpriced;
+  const { estimated, reported } = totals.usd;
+  // Zero is not "none": a figure with nothing valued, or the other kind alone, is not observed.
+  const estimate = valued === 0 || (estimated === 0 && reported > 0) ? undefined : estimated;
+  const report = valued === 0 || (reported === 0 && estimated > 0) ? undefined : reported;
+  const bases = (totals.priceBases ?? [])
+    .filter((basis) => basis.source !== undefined || basis.version !== undefined)
+    .map(
+      (basis) =>
+        `${basis.source ?? "price list"}${basis.version === undefined ? "" : ` ${basis.version}`}`,
+    );
+  const incomplete = totals.estimateIncomplete ?? 0;
+  return `input ${num(tokens.input)}, output ${num(tokens.output)} tokens (${totals.tokenCoverage} coverage${
+    cover === "" ? "" : `: ${cover}`
+  }); estimated ${usd(estimate)}${
+    estimate === undefined
+      ? ""
+      : ` (API-equivalent estimate${bases.length === 0 ? "" : `; price list ${[...new Set(bases)].join(", ")}`}; ${valued} of ${attempts} attempts valued${incomplete > 0 ? `; ${incomplete} incomplete` : ""})`
+  }, reported ${usd(report)}${report === undefined ? "" : " (provider-reported)"}${
+    totals.unpriced > 0 ? `; ${totals.unpriced} unpriced` : ""
+  }`;
+};
+
+/** "Where the time went" (P20, S-05): observed intervals only; an open one is never closed. */
+const renderOperations = (ops: OperationsReport): string[] => {
+  const { unions, endings, chain } = ops;
+  return [
+    "## Where the time went",
+    "",
+    `Elapsed ${secs(ops.elapsedMs)} (as of ${ops.asOf}); elapsed is the run's window and phase figures below are interval unions. Peak concurrency ${ops.concurrency.peak}.`,
+    "",
+    ...(ops.concurrency.summedWorkMs === undefined
+      ? []
+      : [
+          `- **summed work (overlapping; not elapsed):** ${secs(ops.concurrency.summedWorkMs)}, each closed work interval counted in full`,
+        ]),
+    "",
+    `- **By phase (union, counted once):** work ${secs(unions.work)}, wait ${secs(unions.wait)}, queue ${secs(unions.queue)}, integration ${secs(unions.integration)}, examination ${secs(unions.examination)}, setup ${secs(unions.setup)}, startup ${secs(unions.startup)}, verification ${secs(unions.verification)}`,
+    `- **Wait by blocker kind:** ${
+      Object.keys(unions.waitByBlockerKind).length === 0
+        ? "none"
+        : Object.entries(unions.waitByBlockerKind)
+            .map(([kind, ms]) => `${kind} ${secs(ms)}`)
+            .join(", ")
+    }`,
+    `- **Unattributed:** ${secs(ops.unattributedMs)}. **Ambiguous (open or incomplete, in no union):** ${secs(ops.ambiguousMs)}`,
+    `- **Endings:** integrated ${endings.integrated}, merged ${endings.merged}, integration conflict ${endings.integration_conflict}, verification failed ${endings.verification_failed}, failed ${endings.failed}, deferred ${endings.deferred}, examination stopped ${endings.examination_stopped}, examination skipped ${endings.examinationSkipped}, other ${endings.other}`,
+    "",
+    `Observed chain (not a claim about a faster schedule): covers ${secs(chain.coveredMs)} of ${secs(chain.elapsedMs)}, coverage ${pct(chain.coverage)}, ${
+      chain.incomplete
+        ? `incomplete${chain.stoppedBecause === undefined ? "" : ` (${chain.stoppedBecause})`}`
+        : "complete"
+    }; ${chain.ambiguous.length} ambiguous step(s).`,
+    "",
+    ...(chain.steps.length === 0
+      ? ["No chain was observed.", ""]
+      : [
+          ...chain.steps.map(
+            (step) =>
+              `1. ${step.nodeId} ${step.phase} ${step.from} to ${step.to} (${secs(Date.parse(step.to) - Date.parse(step.from))}, via ${step.link})`,
+          ),
+          "",
+        ]),
+    ...chain.ambiguous.map(
+      (tie) =>
+        `- Tie at ${tie.operationId}: ${tie.candidates.map((c) => `${c.nodeId} ${c.phase}`).join(" or ")}`,
+    ),
+    ...(chain.ambiguous.length === 0 ? [] : [""]),
+  ];
+};
+
+const attemptLine = (label: string, figures: FirstAttemptFigures): string =>
+  `${label}: ${figures.succeeded}/${figures.denominator} (${pct(figures.rate)}), ${figures.unfinished} unfinished`;
+
+/** "Delivery" (P20, S-05): settled work items only in a rate's denominator. */
+const renderDelivery = (delivery: DeliveryReport): string[] => {
+  const { firstAttempt, outcomes, rework } = delivery;
+  return [
+    "## Delivery",
+    "",
+    `${delivery.workItems} work item(s) and ${delivery.repairJobs} repair job(s) in ${delivery.strands} strand(s); ${delivery.attempts} attempt(s), ${delivery.helperCalls} helper call(s).`,
+    "",
+    `- **First-attempt success:** ${attemptLine("all jobs", firstAttempt)}; coverage ${firstAttempt.coverage}${
+      firstAttempt.reasons.length === 0 ? "" : ` (${firstAttempt.reasons.join("; ")})`
+    }`,
+    `- **Excluding repair jobs:** ${attemptLine("jobs", firstAttempt.excludingRepairs)}`,
+    `- **Outcomes:** ${recordOf(outcomes.counts)}; failed by ${recordOf(outcomes.failedBy)}`,
+    `- **Rework:** ${rework.attempts} attempt(s), each counted once`,
+    ...rework.byCause.map(
+      (row) =>
+        `  - ${row.kind}: ${row.attempts} attempt(s), ${row.sharedAttempts} shared with another cause; ${resourcesLine(row.resources)}`,
+    ),
+    `  - unknown cause: ${rework.unknownCause.attempts} attempt(s); ${resourcesLine(rework.unknownCause.resources)}`,
+    `- **First attempts:** ${resourcesLine(rework.resources.firstAttempts)}`,
+    `- **All rework:** ${resourcesLine(rework.resources.rework)}`,
+    "",
+  ];
+};
+
+/** "Review" (P20, S-05): coverage and overhead; a ruling is agreement, not truth. */
+const renderReview = (review: ReviewReport): string[] => {
+  const { coverage, dispositions, overhead, linkage } = review;
+  const row = (label: string, value: OverheadRow): string =>
+    `${label}: ${value.calls} call(s); ${resourcesLine(value.resources)}`;
+  return [
+    "## Review",
+    "",
+    `- **Coverage:** ${coverage.examinedNodes} node(s) examined, ${coverage.examinedByStrand} examined by strand, ${coverage.landedUnexamined} landed unexamined, ${coverage.skipped} skipped; ${coverage.examinations.total} examination(s) (${recordOf(coverage.examinations.byOutcome)})`,
+    `- **Dispositions:** ${dispositions.unique} unique finding(s); latest ${recordOf(dispositions.byLatest)}; rulings ${recordOf(dispositions.rulings)}. ${dispositions.note}`,
+    "- **Overhead by role (apart from repairs):**",
+    `  - ${row("examiner", overhead.examiner)}`,
+    `  - ${row("answerer", overhead.answerer)}`,
+    `  - ${row("arbiter", overhead.arbiter)}`,
+    `  - ${row("plan review", overhead.planReview)}`,
+    `- **Repairs caused by review:** ${review.repairs.attempts} attempt(s); ${resourcesLine(review.repairs.resources)}`,
+    `- **Linkage:** findings ${recordOf(linkage.findings)}; ${linkage.helpersUnlinked} helper call(s) unlinked; ${linkage.repairsWithoutFindings} repair(s) without findings`,
+    "",
+  ];
+};
+
+/** "Machine" (P20, S-05): one line when local expense has no configured basis. */
+const renderMachine = (infrastructure: InfrastructureReport | undefined): string[] => {
+  if (infrastructure === undefined) {
+    return [
+      "## Machine",
+      "",
+      infrastructureUnavailable("no dispatch is recorded for this run"),
+      "",
+    ];
+  }
+  const { lifetime, components, recorded, reconciliation, occupancy, apportionment } =
+    infrastructure;
+  return [
+    "## Machine",
+    "",
+    `- **Lifetime:** ${secs(lifetime.instanceLifetimeMs)} (coverage ${lifetime.coverage}; ${lifetime.observedEndings} observed ending(s), ${lifetime.runnerOnlyEndings} runner-only ending(s); last machine ending ${lifetime.lastEndedAt ?? NOT_OBSERVED}, last runner ending ${lifetime.lastRunnerEndedAt ?? NOT_OBSERVED}; ${lifetime.openAttempts} attempt(s) without an observed end; gaps between attempts ${secs(lifetime.gapsBetweenAttemptsMs)})`,
+    ...infrastructure.attempts.map(
+      (a) =>
+        `  - attempt ${a.generation} (${a.reason}): ${
+          a.lifetimeMs === undefined
+            ? `machine end unobserved${a.runnerLifetimeMs === undefined ? ", runner not ended" : `, runner ran ${secs(a.runnerLifetimeMs)} at least (lower bound)`}`
+            : `machine lived ${secs(a.lifetimeMs)} (observed terminatedAt ${a.terminatedAt})`
+        }${a.endedAt === undefined ? "" : `; runner ended ${a.endedAt}${a.endReason === undefined ? "" : ` (${a.endReason})`}`}${a.afterRunnerMs === undefined ? "" : `; ${secs(a.afterRunnerMs)} after the runner stopped`}${a.terminationRequestedAt === undefined ? "" : `; termination requested ${a.terminationRequestedAt}`}${a.terminationFailed === true ? "; termination request failed" : ""}`,
+    ),
+    `- **Instance:** ${usd(components.instance.usd)} for ${components.instance.seconds}s (runner-metered ${components.instance.runnerMeteredSeconds}s), ${components.instance.basis} (${components.instance.provenance}; ${components.instance.coverage})`,
+    `- **Volume:** ${usd(components.volume.usd)} for ${components.volume.seconds}s${components.volume.open ? ", open" : ""} (${components.volume.provenance})`,
+    `- **Total:** ${usd(components.total.usd)} (${components.total.basis})`,
+    `- **Recorded spend:** ${JSON.stringify(recorded)}; computed ${usd(reconciliation.computedUsd)} against metered ${usd(reconciliation.meteredUsd)} over ${reconciliation.meteredSeconds}s (${reconciliation.covers})${
+      reconciliation.discrepancy === undefined
+        ? ""
+        : `. **Discrepancy:** computed ${usd(reconciliation.discrepancy.computedUsd)} vs metered ${usd(reconciliation.discrepancy.meteredUsd)}`
+    }`,
+    `- **Occupancy:** coverage ${occupancy.coverage}; busy ${secs(occupancy.busyMs)}${occupancy.idleMs === undefined ? " at least" : ""}, idle ${occupancy.idleMs === undefined ? `not claimed${occupancy.idleNote === undefined ? "" : ` (${occupancy.idleNote})`}` : secs(occupancy.idleMs)}, provisioning ${secs(occupancy.provisioningMs)}, setup ${occupancy.setupSeconds === undefined ? NOT_OBSERVED : `${occupancy.setupSeconds}s`}; peak ${occupancy.peakConcurrentOccupants} concurrent occupant(s)`,
+    ...(apportionment.perNode === undefined
+      ? [
+          `- **Per-node shares:** none${apportionment.note === undefined ? "" : `. ${apportionment.note}`}`,
+        ]
+      : [
+          `- **Per-node shares (${apportionment.method}):**`,
+          ...apportionment.perNode.map(
+            (node) => `  - ${node.nodeId}: ${secs(node.occupiedMs)}, ${usd(node.shareUsd)}`,
+          ),
+          ...(apportionment.unapportionedUsd === undefined
+            ? []
+            : [`  - unapportioned ${usd(apportionment.unapportionedUsd)}`]),
+          ...(apportionment.unapportioned ?? []).map(
+            (a) => `  - attempt ${a.generation}: ${usd(a.usd)} unapportioned (${a.why})`,
+          ),
+          ...(apportionment.note === undefined ? [] : [`  - ${apportionment.note}`]),
+        ]),
+    "",
+  ];
+};
+
+const seconds = (value: number | undefined): string => {
+  if (value === undefined) return "none";
+  const whole = Math.round(value);
+  const minutes = Math.floor(whole / 60);
+  return minutes === 0 ? `${whole} s` : `${minutes} min ${whole % 60} s`;
+};
+
+const percent = (value: number | undefined): string =>
+  value === undefined ? "n/a" : `${Math.round(value * 100)}%`;
+
+/** "Human verdict" (D-04): a person's one-click verdict; it names no finding, examiner or cause. */
+const renderHumanVerdict = (report: RunReport): string[] => {
+  const { feedback, feedbackCoverage: c } = report;
+  const verdict =
+    feedback.verdict === "worked"
+      ? "worked"
+      : feedback.verdict === "did_not_work"
+        ? "did not work"
+        : "not rated";
+  return [
+    "## Human verdict",
+    "",
+    "A person's one-click verdict on whether the run worked. It is not a verification and says nothing about why.",
+    "",
+    `- Verdict: **${verdict}**`,
+    ...(feedback.by === undefined ? [] : [`- By: ${feedback.by}`]),
+    ...(feedback.recordedAt === undefined ? [] : [`- When: ${feedback.recordedAt}`]),
+    ...(feedback.resultCommit === undefined ? [] : [`- Result commit: ${feedback.resultCommit}`]),
+    ...(feedback.ratingDelaySeconds === undefined
+      ? []
+      : [
+          `- Rating delay: ${seconds(feedback.ratingDelaySeconds)} after the run ended (calendar time, not work time)`,
+        ]),
+    `- This program: ${c.rated} of ${c.eligible} ended run(s) rated; ${c.positive} worked, ${c.negative} did not; positive share among rated ${percent(c.positiveShare)}; ${c.unrated} unrated.`,
+    "",
+  ];
+};
+
+const renderCompletionFigures = (f: CompletionFigures): string[] => [
+  `lead time ${f.leadTimeSeconds === undefined ? "none (no worked verdict)" : seconds(f.leadTimeSeconds)}`,
+  `run completion ${seconds(f.runCompletionSeconds)}`,
+  `active union ${seconds(f.activeSeconds)}`,
+  ...renderCompletionResources(f),
+];
+
+/** The combined estimate: a lower bound where anything is missing, and never a bill. */
+const renderCombined = (f: CompletionFigures): string[] => {
+  const c = f.combined;
+  if (c === undefined) return ["combined estimate not observed"];
+  const parts = [
+    c.model === undefined ? "model estimate not observed" : `model ${usd(c.model)}`,
+    c.infrastructure === undefined
+      ? "machine estimate not observed"
+      : `machine ${usd(c.infrastructure)}`,
+  ];
+  const gaps = [
+    ...(c.coverage.unmeasuredMembers > 0
+      ? [`${c.coverage.unmeasuredMembers} member(s) unmeasured`]
+      : []),
+    ...(c.coverage.estimateIncomplete > 0
+      ? [`${c.coverage.estimateIncomplete} attempt(s) with incomplete valuation`]
+      : []),
+    ...(c.coverage.membersWithoutMachine > 0
+      ? [`${c.coverage.membersWithoutMachine} member(s) without a machine report`]
+      : []),
+    ...(c.coverage.attemptsWithoutEstimate === undefined
+      ? ["attempts without an estimate: not recorded"]
+      : c.coverage.attemptsWithoutEstimate > 0
+        ? [`${c.coverage.attemptsWithoutEstimate} attempt(s) without an estimate`]
+        : []),
+  ];
+  return [
+    `combined API-equivalent estimate ${c.lowerBound ? "at least " : ""}${usd(c.usd)} (${parts.join(" + ")}; ${
+      c.lowerBound
+        ? `lower bound: ${gaps.length === 0 ? "a component is missing" : gaps.join(", ")}`
+        : "complete"
+    }; an estimate, not a bill; reported dollars are shown apart and not added)`,
+  ];
+};
+
+const renderCompletionResources = (f: CompletionFigures): string[] => {
+  const r = f.resources;
+  const c = r?.coverage;
+  const attempts = c === undefined ? 0 : c.complete + c.partial + c.unknown + c.legacy + c.missing;
+  const figure = (value: number | undefined): string =>
+    attempts === 0 || value === undefined ? NOT_OBSERVED : String(value);
+  /** `none` when no attempt carried the figure; a genuinely observed $0 stays $0.00. */
+  const dollars = (value: number | undefined, carried: number | undefined): string => {
+    if (carried === undefined) {
+      // A checkpoint recorded before the counts were kept cannot tell none from zero.
+      return value === undefined || value === 0
+        ? "not recorded"
+        : `${usd(value)} (attempt count not recorded)`;
+    }
+    return carried === 0 ? "none" : `${usd(value)} for ${carried} of ${attempts} attempts`;
+  };
+  const machines = f.infrastructure;
+  const total = f.measuredMembers + f.unmeasuredMembers;
+  return [
+    ...(f.unmeasuredMembers === 0
+      ? []
+      : [
+          `measured ${f.measuredMembers} of ${total} members${
+            f.unavailable === undefined || f.unavailable.length === 0
+              ? ""
+              : `; measurement unavailable for ${f.unavailable.join(", ")}`
+          }`,
+        ]),
+    `tokens in ${figure(r?.tokens.input)}, out ${figure(r?.tokens.output)}`,
+    r === undefined || attempts === 0
+      ? "dollars not observed"
+      : `estimated: ${dollars(r.usd.estimated, r.estimatedAttempts)}, reported: ${dollars(r.usd.reported, r.reportedAttempts)} (separate figures)`,
+    ...renderCombined(f),
+    machines === undefined || machines.members === 0
+      ? "machine dollars not observed"
+      : `infrastructure ${usd(machines.usd)} over ${machines.members} member run(s)`,
+    ...(machines === undefined || machines.withoutMachine === 0
+      ? []
+      : [`machines ${machines.members} of ${machines.members + machines.withoutMachine} members`]),
+    ...(c === undefined || attempts === 0
+      ? []
+      : [
+          `token coverage complete ${c.complete}, partial ${c.partial}, unknown ${c.unknown}, legacy ${c.legacy}, missing ${c.missing}`,
+        ]),
+  ];
+};
+
+/** Near the top: which completion histories this run is in, and the reminder that the run's own outcome is not completion. */
+const renderCompletionHistories = (report: RunReport): string[] => {
+  const { completions, run } = report;
+  if (completions.length === 0) {
+    return [
+      "## Completion histories",
+      "",
+      "none recorded: nightshift completion create ... groups the runs that delivered one outcome. This run's own outcome is not completion.",
+      "",
+    ];
+  }
+  return [
+    "## Completion histories",
+    "",
+    "This run's own outcome is not completion: a completion history groups the runs that delivered one outcome.",
+    "",
+    ...completions.map((c) => {
+      const mine = c.members.find((m) => m.programId === run.programId && m.runId === run.runId);
+      const contributing = c.members.filter((m) => m.role === "contributing").length;
+      return `- **${c.title}** (\`${c.completionHistoryId}\`): this run is ${mine?.role ?? "a member"}; ${contributing} contributing run(s); verdict coverage ${c.coverage.rated} of ${c.coverage.eligible} rated, ${c.coverage.positive} worked, ${c.coverage.negative} did not.`;
+    }),
+    "",
+  ];
+};
+
+/** A member's own tokens and estimate; absent evidence is said so, never printed as zero. */
+const memberFiguresText = (m: CompletionReport["members"][number]): string => {
+  const tokens =
+    m.tokens === undefined
+      ? "tokens not observed"
+      : `tokens in ${m.tokens.input ?? NOT_OBSERVED}, out ${m.tokens.output ?? NOT_OBSERVED}`;
+  const estimate =
+    m.estimatedUsd === undefined ? "estimate not observed" : `estimate ${usd(m.estimatedUsd)}`;
+  return `${tokens}; ${estimate}`;
+};
+
+/** A member's own delivery summary; absent evidence is said so. */
+const memberSummaryText = (m: CompletionReport["members"][number]): string =>
+  m.summary === undefined
+    ? "delivery not observed"
+    : `first attempt ${m.summary.firstAttempt.succeeded} of ${m.summary.firstAttempt.of}, rework ${m.summary.reworkAttempts}, findings ${m.summary.uniqueFindings}${m.summary.elapsedMs === undefined ? "" : `, elapsed ${Number((m.summary.elapsedMs / 1000).toFixed(3))}s`}`;
+
+/** The price list behind each model estimate: model, source, version, and whether it left usage unvalued. */
+const renderPriceBases = (
+  bases:
+    | readonly {
+        source?: string | undefined;
+        version?: string | undefined;
+        model: string;
+        incomplete: boolean;
+      }[]
+    | undefined,
+): string[] =>
+  bases === undefined || bases.length === 0
+    ? ["Price basis: none recorded.", ""]
+    : [
+        "Price basis of the model estimate:",
+        ...bases.map(
+          (b) =>
+            `- ${b.model}: source ${b.source ?? NOT_OBSERVED}, version ${b.version ?? NOT_OBSERVED}, incomplete ${b.incomplete ? "yes" : "no"}`,
+        ),
+        "",
+      ];
+
+/** "Completion" (D-05): lead time, run completion and active union are three figures, none of them work time. */
+const renderCompletions = (completions: readonly CompletionReport[]): string[] => {
+  if (completions.length === 0) return [];
+  return [
+    "## Completion",
+    "",
+    "Lead time, run completion and the active union are three different figures; none is human work time.",
+    "",
+    ...completions.flatMap((c) => [
+      `### ${c.title} (membership v${c.version})`,
+      "",
+      `As of ${c.asOf}; membership version ${c.version}.`,
+      "",
+      ...c.members.map(
+        (m) =>
+          `- ${m.programId}/${m.runId}: ${m.role}, ${m.unreadable === true ? "unreadable" : `${m.status}, ${m.verdict}`}; carried strands ${m.carriedStrands}; ${memberFiguresText(m)}; ${memberSummaryText(m)}`,
+      ),
+      "",
+      ...renderPriceBases(c.current.combined?.priceBases),
+      `Coverage: ${c.coverage.rated} of ${c.coverage.eligible} rated; ${c.coverage.positive} worked, ${c.coverage.negative} did not; positive share among rated ${percent(c.coverage.positiveShare)}.`,
+      `Now: ${renderCompletionFigures(c.current).join("; ")}.`,
+      ...completionEvidenceLines(c.current).map((line) => `- ${line}`),
+      "Checkpoints freeze time and resources only; the delivery, rework, review and bottleneck lines above are the live view.",
+      ...c.checkpoints.map(
+        (k) =>
+          `Checkpoint ${k.name} (membership v${k.membershipVersion}): ${renderCompletionFigures(k).join("; ")}.`,
+      ),
+      ...(c.laterFixes.length === 0
+        ? []
+        : [`Later fixes: ${c.laterFixes.map((m) => `${m.programId}/${m.runId}`).join(", ")}.`]),
+      "",
+    ]),
+  ];
+};
+
+/** Every metric the report used: what it measures and over what denominator, as the export embeds them. */
+const renderDefinitions = (report: RunReport): string[] => [
+  "## Definitions",
+  "",
+  ...definitionsOfSections(metricSectionsOf(report)).map(
+    (d) => `- **${d.label}** (\`${d.id}\`): ${d.definition} Denominator: ${d.denominator}`,
+  ),
+  "",
+];
+
+/** Request-ledger artifacts per attempt, and the route that serves them. */
+const renderRequestEvidence = (attempts: readonly AttemptRow[] | undefined): string[] => [
+  "## Request evidence",
+  "",
+  "Per-request ledgers are stored as artifacts. Fetch one through the authorized download route:",
+  "operation `artifact.createDownloadUrl`, `POST .../artifacts/{artifactId}/download-url`.",
+  "",
+  ...(attempts === undefined || attempts.length === 0
+    ? ["No attempts recorded.", ""]
+    : [
+        "| Attempt | Artifacts | Ids |",
+        "|---|---|---|",
+        ...attempts.map(
+          (a) =>
+            `| ${a.nodeId} ${a.purpose} #${a.attempt} | ${a.ledgerArtifactIds.length} | ${
+              a.ledgerArtifactIds.length === 0 ? "none" : a.ledgerArtifactIds.join(", ")
+            } |`,
+        ),
+        "",
+      ]),
+];
+
 /** The report as markdown. Pure: the same records always give the same document. */
 export const renderReport = (report: RunReport): string => {
   const { program, run, strands } = report;
@@ -1334,6 +2467,7 @@ export const renderReport = (report: RunReport): string => {
     `${succeeded} of ${strands.length} strands succeeded; ${provisional} deferred; ${strands.filter(isParked).length} parked. Wall clock ${duration(run)}.`,
     "",
     ...renderNotVerified(report.stepAdjustments),
+    ...renderCompletionHistories(report),
     ...renderPublication(report.publication),
     ...renderCorrections(report.corrections),
     ...renderRulings(report.rulings),
@@ -1368,14 +2502,26 @@ export const renderReport = (report: RunReport): string => {
     "Token counts are what each harness reported and are not comparable across harnesses.",
     "A cost marked * is estimated from the price table, not reported by the harness. A cost",
     "that is unknown had neither: give the org's price table a price for that model to estimate it.",
+    "Each attempt counts one figure in the cost column (reported when it has one, else estimated). The",
+    "Reported and Estimated columns split that by kind; provider-reported dollars are never summed with",
+    "an API-equivalent estimate.",
     "",
-    "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost (USD) |",
-    "|---|---|---|---|---|---|---|",
+    "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost per attempt (USD) | Reported (n: USD) | Estimated (n: USD) | Basis |",
+    "|---|---|---|---|---|---|---|---|---|---|",
     ...report.usage.map(
       (row) =>
-        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${row.inputTokens} | ${row.outputTokens} | ${costCell(row)} |`,
+        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${tokenCell(row, row.inputTokens)} | ${tokenCell(row, row.outputTokens)} | ${costCell(row)} | ${subtotalCell(row.reportedAttempts, row.reportedUsd)} | ${subtotalCell(row.estimatedAttempts, row.estimatedUsd)} | ${basisCell(row)} |`,
     ),
     ...renderBudget(report),
+    "",
+    ...renderOperations(report.operations),
+    ...renderDelivery(report.delivery),
+    ...renderHumanVerdict(report),
+    ...renderCompletions(report.completions),
+    ...renderReview(report.review),
+    ...renderMachine(report.infrastructure),
+    ...renderRequestEvidence(report.attempts),
+    ...renderDefinitions(report),
   ];
   return `${lines.join("\n").trimEnd()}\n`;
 };

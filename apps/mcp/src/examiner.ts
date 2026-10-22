@@ -17,6 +17,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   type Decision,
   type Examination,
+  ExaminationIdSchema,
   ExaminationSchema,
   FindingEvidenceSchema,
   FindingSeveritySchema,
@@ -119,6 +120,12 @@ export const registerExaminerTools = (server: McpServer, deps: HelperDeps): void
                 .describe(
                   "Only when you were asked to check an arbiter's ruling: the ruled finding's id this one says is still not carried out.",
                 ),
+              repeats: z
+                .object({ examinationId: ExaminationIdSchema, findingId: z.string().min(1) })
+                .optional()
+                .describe(
+                  "Only when this is the same defect as a finding of an earlier examination of this job: that examination's id and the finding's id, as the brief shows them.",
+                ),
             }),
           )
           .default([]),
@@ -128,6 +135,31 @@ export const registerExaminerTools = (server: McpServer, deps: HelperDeps): void
       guarded(async () => {
         if (submitted)
           throw new ToolRefusal("validation_failed", "your verdict is already recorded");
+        if (findings.some((finding) => finding.repeats !== undefined)) {
+          const earlier = await environment.stores.examinations.listByNode(
+            identity.scope,
+            identity.executionNodeId,
+          );
+          for (const finding of findings) {
+            const named = finding.repeats;
+            if (named === undefined) continue;
+            const found = earlier.find(
+              (examination) => examination.examinationId === named.examinationId,
+            );
+            if (found === undefined) {
+              throw new ToolRefusal(
+                "validation_failed",
+                `repeats names examination ${named.examinationId}, which is not an earlier examination of this job. Use an id from the earlier findings in your brief, or leave repeats out.`,
+              );
+            }
+            if (!found.findings.some((candidate) => candidate.id === named.findingId)) {
+              throw new ToolRefusal(
+                "validation_failed",
+                `repeats names finding ${named.findingId}, which examination ${named.examinationId} did not raise.`,
+              );
+            }
+          }
+        }
         const examination: Examination = ExaminationSchema.parse({
           schemaVersion: 1,
           ...identity.scope,
@@ -137,6 +169,9 @@ export const registerExaminerTools = (server: McpServer, deps: HelperDeps): void
           commitSha: context.commitSha,
           patchId: context.patchId,
           implementerAgentId: context.implementerAgentId,
+          ...(context.implementerRoutingDecisionId === undefined
+            ? {}
+            : { implementerRoutingDecisionId: context.implementerRoutingDecisionId }),
           examinerAgentId: identity.agentId,
           examinerRoute: context.examinerRoute,
           requiredByRisk: context.requiredByRisk,
@@ -157,6 +192,7 @@ export const registerExaminerTools = (server: McpServer, deps: HelperDeps): void
             evidence: finding.evidence,
             resolution: "unresolved",
             ...(finding.concerns === undefined ? {} : { concerns: finding.concerns }),
+            ...(finding.repeats === undefined ? {} : { repeats: finding.repeats }),
           })),
           createdAt: nowIso(environment.clock),
         });

@@ -270,6 +270,14 @@ may need changes anywhere, and only a planner reading the code can see where.)
 Reversibility classes are honest: `reversible`, `compensatable`, `irreversible`.
 An irreversible external effect is never described as reversible.
 
+## 6a. Measurements
+
+Resource, time, rework and verdict measurement (P20) is documented as built in
+`docs/programs/p20-measurements/measurements.md`: token and dollar semantics, budget
+evaluation, coverage, completion histories, the versioned report export, request-ledger
+artifacts, the Studio overview, and the opt-in live capability probes with their current
+status. Requirements are in `docs/programs/p20-measurements/plan.md`.
+
 ## 7. Testing posture
 
 - `contracts` / `core`: unit and property tests, offline, no AWS.

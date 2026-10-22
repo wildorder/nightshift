@@ -136,7 +136,8 @@ describe("the run page", () => {
       return found;
     };
 
-    // Criteria, unmet on an unplanned run: on the Status tab, the first.
+    // The Overview opens first; criteria, unmet on an unplanned run, are on the Status tab.
+    await tab("Status");
     await waitFor(() => expect(screen.getByText("Invoices persist")).toBeTruthy());
 
     // Jobs and their reasons, on the Work tab.

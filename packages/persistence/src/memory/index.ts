@@ -25,6 +25,9 @@ import {
   type Checkpoint,
   type CheckpointId,
   CheckpointSchema,
+  type CompletionHistory,
+  type CompletionHistoryId,
+  CompletionHistorySchema,
   type ComputeArchitecture,
   type ComputeUtilization,
   ComputeUtilizationSchema,
@@ -46,6 +49,9 @@ import {
   type JobContract,
   type JobContractId,
   JobContractSchema,
+  type MeasurementSummary,
+  type MeasurementSummaryId,
+  MeasurementSummarySchema,
   type Membership,
   MembershipSchema,
   type OrgComputeUsage,
@@ -65,6 +71,8 @@ import {
   type RoutingDecision,
   RoutingDecisionSchema,
   type Run,
+  type RunFeedback,
+  RunFeedbackSchema,
   type RunId,
   RunSchema,
   type User,
@@ -81,6 +89,7 @@ import {
   type AppendResult,
   type ArtifactStore,
   type CheckpointStore,
+  type CompletionHistoryStore,
   type ComputeLedgerStore,
   type ComputeUtilizationStore,
   type CredentialsStore,
@@ -92,6 +101,7 @@ import {
   type GateHealthStore,
   type InstallationClaimStore,
   type JobContractStore,
+  type MeasurementSummaryStore,
   type MembershipStore,
   type NightshiftStores,
   type OrgConfigStore,
@@ -102,6 +112,7 @@ import {
   type ProgramScope,
   type ProjectStore,
   type RoutingDecisionStore,
+  type RunFeedbackStore,
   type RunScope,
   type RunStore,
   type SequenceLedger,
@@ -184,6 +195,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const verifications = table<Verification>("verifications");
   const examinations = table<Examination>("examinations");
   const routingDecisions = table<RoutingDecision>("routingDecisions");
+  const measurements = table<MeasurementSummary>("measurements");
   const artifacts = table<Artifact>("artifacts");
   const users = table<User>("users");
   const memberships = table<Membership>("memberships");
@@ -194,6 +206,9 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const warmCaches = table<WarmCache>("warmCaches");
   // P15: one gate-health record per project.
   const gateHealths = table<GateHealth>("gateHealth");
+  // P20: a run's verdict, and the project's completion histories.
+  const feedback = table<RunFeedback>("feedback");
+  const completionHistories = table<CompletionHistory>("completionHistories");
   const installationClaims = table<{ installationId: number; orgId: OrgId; at: string }>(
     "installationClaims",
   );
@@ -215,6 +230,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     verifications,
     examinations,
     routingDecisions,
+    measurements,
     artifacts,
     users,
     memberships,
@@ -223,6 +239,8 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     computeUtilizations,
     warmCaches,
     gateHealths,
+    feedback,
+    completionHistories,
     installationClaims,
     credentials,
     computeLedger,
@@ -456,6 +474,25 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
         .filter((record) => record.executionNodeId === executionNodeId),
   };
 
+  const measurementStore: MeasurementSummaryStore = {
+    put: async (summary) => {
+      const parsed = MeasurementSummarySchema.parse(summary);
+      const key = `${runPrefix(parsed)}${parsed.measurementSummaryId}`;
+      // Replaces in place; a replayed stale write must not roll the summary back.
+      const stored = measurements.get(key);
+      if (stored !== undefined && parsed.updatedAt < stored.updatedAt) return;
+      measurements.set(key, parsed);
+    },
+    get: async (scope: RunScope, measurementSummaryId: MeasurementSummaryId) =>
+      measurements.get(`${runPrefix(scope)}${measurementSummaryId}`),
+    listByNode: async (scope: RunScope, executionNodeId: ExecutionNodeId) =>
+      measurements
+        .scan(runPrefix(scope))
+        .filter((record) => record.executionNodeId === executionNodeId),
+    listByRun: async (scope: RunScope, page?: PageRequest) =>
+      paginate(measurements.scan(runPrefix(scope)), page),
+  };
+
   const artifactStore: ArtifactStore = {
     put: async (artifact) => {
       // The schema is strict and has no content field, so a record carrying
@@ -549,6 +586,45 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     get: async (projectId: ProjectId) => gateHealths.get(projectPrefix({ projectId })),
   };
 
+  const feedbackStore: RunFeedbackStore = {
+    put: async (record) => {
+      const parsed = RunFeedbackSchema.parse(record);
+      const key = runPrefix(parsed);
+      atomically(() => {
+        const stored = feedback.get(key)?.version ?? 0;
+        if (stored !== parsed.version - 1) {
+          throw new StaleWriteError("run feedback", parsed.version - 1, stored);
+        }
+        feedback.set(key, parsed);
+      });
+    },
+    get: async (scope: RunScope) => feedback.get(runPrefix(scope)),
+    listByProgram: async (scope: ProgramScope, page?: PageRequest) =>
+      paginate(feedback.scan(programPrefix(scope)), page),
+  };
+
+  const completionHistoryStore: CompletionHistoryStore = {
+    put: async (history) => {
+      const parsed = CompletionHistorySchema.parse(history);
+      const key = `${projectPrefix(parsed)}${parsed.completionHistoryId}`;
+      atomically(() => {
+        const stored = completionHistories.get(key)?.version ?? 0;
+        if (stored !== parsed.version - 1) {
+          throw new StaleWriteError("completion history", parsed.version - 1, stored);
+        }
+        completionHistories.set(key, parsed);
+      });
+    },
+    get: async (scope: RunScope, completionHistoryId: CompletionHistoryId) =>
+      completionHistories.get(`${projectPrefix(scope)}${completionHistoryId}`),
+    listByRun: async (scope: RunScope) =>
+      completionHistories
+        .scan(projectPrefix(scope))
+        .filter((h) => h.programId === scope.programId && h.runId === scope.runId),
+    listByProject: async (projectId: ProjectId, page?: PageRequest) =>
+      paginate(completionHistories.scan(projectPrefix({ projectId })), page),
+  };
+
   const installationClaimStore: InstallationClaimStore = {
     claim: async (installationId, orgId, at) =>
       atomically(() => {
@@ -600,6 +676,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     verifications: verificationStore,
     examinations: examinationStore,
     routingDecisions: routingDecisionStore,
+    measurements: measurementStore,
     artifacts: artifactStore,
     users: userStore,
     memberships: membershipStore,
@@ -608,6 +685,8 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     computeUtilizations: computeUtilizationStore,
     warmCaches: warmCacheStore,
     gateHealth: gateHealthStore,
+    feedback: feedbackStore,
+    completionHistories: completionHistoryStore,
     installationClaims: installationClaimStore,
     credentials: credentialsStore,
     computeLedger: computeLedgerStore,

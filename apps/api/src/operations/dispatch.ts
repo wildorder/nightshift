@@ -39,6 +39,7 @@ import {
   emptyUtilization,
   estimateUsd,
   foldProgress,
+  foldStages,
   foldUtilization,
   installationGranting,
   isDispatchTerminal,
@@ -53,6 +54,7 @@ import {
   runHoursOf,
   runnerStopped,
   transitionDispatch,
+  volumeUsdPerHour,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError, parseBody } from "../http.js";
 import { runScopeFrom } from "../params.js";
@@ -187,6 +189,13 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
     tier: body.tier,
     instanceType: spec.instanceType,
     usdPerHour: spec.usdPerHour,
+    priceBasis: {
+      usdPerHour: spec.usdPerHour,
+      volumeUsdPerHour: volumeUsdPerHour(body.tier),
+      source: "COMPUTE_TIERS (AWS on-demand price feed, D-P10-26)",
+      asOf: "2026-09-25",
+      region: "us-west-2",
+    },
     amiVersion: deps.runner?.amiVersion ?? "none",
     generation: 1,
     idempotencyKey: body.idempotencyKey,
@@ -374,7 +383,20 @@ export const heartbeat: Handler = async (context) => {
   const previousUsd = dispatch.spend.meteredUsd;
   const attempts = dispatch.attempts.map((attempt) =>
     attempt.generation === dispatch.generation
-      ? { ...attempt, meteredSeconds: Math.max(attempt.meteredSeconds ?? 0, body.meteredSeconds) }
+      ? {
+          ...attempt,
+          meteredSeconds: Math.max(attempt.meteredSeconds ?? 0, body.meteredSeconds),
+          ...(body.report === "ready" && attempt.readyAt === undefined ? { readyAt: at } : {}),
+          ...(body.report === "running" && attempt.runningAt === undefined
+            ? { runningAt: at }
+            : {}),
+          ...(body.report === "stopped" && attempt.endedAt === undefined
+            ? {
+                endedAt: at,
+                endReason: body.failure === undefined ? ("stopped" as const) : ("failed" as const),
+              }
+            : {}),
+        }
       : attempt,
   );
   const meteredSeconds = attempts.reduce(
@@ -403,7 +425,10 @@ export const heartbeat: Handler = async (context) => {
     // the dispatch's status, including one that also reports `stopped` (P16 S-03).
     ...(body.progress === undefined
       ? {}
-      : { progress: foldProgress(dispatch.progress, body.progress, dispatch.generation, at) }),
+      : (() => {
+          const progress = foldProgress(dispatch.progress, body.progress, dispatch.generation, at);
+          return { progress, stages: foldStages(dispatch.stages, progress) };
+        })()),
     updatedAt: at,
   };
   await deps.stores.dispatches.put(dispatch);

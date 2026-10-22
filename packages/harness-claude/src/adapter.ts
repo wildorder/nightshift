@@ -65,10 +65,12 @@ import type { Clock } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
 import type {
   Duration,
+  ExitMeasures,
   Harness,
   HarnessExit,
   HarnessHandle,
   HarnessStartInput,
+  MeasurementSink,
   RunAs,
 } from "@nightshift/harness";
 import {
@@ -76,9 +78,18 @@ import {
   type CliLauncher,
   commandAs,
   hookTypeForExit,
+  millis,
   promptFor,
   withTmpDir,
 } from "@nightshift/harness";
+import {
+  type ClaudeCapture,
+  type ClaudeCaptureResult,
+  claudeTelemetryHeaderEnv,
+  claudeTelemetryHeadersFile,
+  claudeTelemetryHeadersHelper,
+  startClaudeCapture,
+} from "./capture.js";
 import {
   buildClaudeArgs,
   buildEmptyMcpConfig,
@@ -162,6 +173,35 @@ const finishingToolsFor = (mcpServerName: string | undefined): ReadonlySet<strin
  */
 const SIGTERM_AT = 0.5;
 
+/** How long the receiver gets to flush and report at an ending. */
+const CAPTURE_STOP_GRACE_MS = 1500;
+/** The bound on the whole stop, so a stalled receiver cannot hold `exit` open. */
+const CAPTURE_STOP_BOUND_MS = 2000;
+
+/** Where a launch's request measurements come from. */
+export type ClaudeCaptureMode = "otlp" | "stream" | "none";
+
+/** What the adapter hands `onCapture` at an ending, while the journal still exists. */
+export interface ClaudeCaptureReport {
+  readonly agentId: string;
+  readonly mode: ClaudeCaptureMode;
+  /** The receiver's result. Absent when capture did not run or its stop failed. */
+  readonly result?: ClaudeCaptureResult;
+  /** The receiver journal; valid only for the duration of the `onCapture` call. */
+  readonly journalPath?: string;
+  /** Why capture could not start, when the launch fell back to stream mode. */
+  readonly startError?: string;
+  /** Why the capture result is missing, when `stop` rejected or timed out. */
+  readonly stopError?: string;
+}
+
+export interface ClaudeRequestCaptureOptions {
+  /** Default true. False keeps request measurement to the stream. */
+  readonly enabled?: boolean;
+  /** The exporter's flush interval, for a test that cannot wait a second. */
+  readonly exportIntervalMs?: number;
+}
+
 interface RunState {
   readonly interpreter: StreamInterpreter;
   readonly exit: Promise<HarnessExit>;
@@ -169,6 +209,13 @@ interface RunState {
   readonly env: Readonly<Record<string, string>>;
   child: SpawnedChild | undefined;
   configDir: string | undefined;
+  /** Per-run capture state: the receiver, its directory, and the mode it implies. */
+  readonly mode: ClaudeCaptureMode;
+  readonly capture: ClaudeCapture | undefined;
+  captureDir: string | undefined;
+  captureStartError: string | undefined;
+  /** True once the one `finish` sequence has begun. */
+  finishing: boolean;
   /** Who the process runs as (D-P10-25), for signalling it as that user. */
   runAs: RunAs | undefined;
   /** Why the transcript could not be opened, if it could not. Reported on the ending. */
@@ -204,6 +251,15 @@ export interface ClaudeHarnessOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** Injected so the POSIX process-group kill is testable. */
   readonly kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Request capture (P20 S-02); on by default whenever a launch supplies `measurements`. */
+  readonly requestCapture?: ClaudeRequestCaptureOptions;
+  /**
+   * Called once per launch at its ending, synchronously, before the capture and
+   * config directories are removed. Errors in it are swallowed.
+   */
+  readonly onCapture?: (report: ClaudeCaptureReport) => void;
+  /** Injected so a test needs no real receiver process. */
+  readonly startCapture?: typeof startClaudeCapture;
 }
 
 /**
@@ -220,6 +276,8 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
   const platform = options.platform ?? process.platform;
   const parentEnv = options.env ?? process.env;
   const launcher = options.launcher;
+  const startCapture = options.startCapture ?? startClaudeCapture;
+  const captureEnabled = options.requestCapture?.enabled !== false;
   const kill =
     options.kill ??
     ((pid, signal) => {
@@ -240,6 +298,43 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       resolveExit = resolve;
     });
 
+    // Request capture starts first: whether the stream also derives request
+    // observations depends on it. A start failure is never a launch failure.
+    let capture: ClaudeCapture | undefined;
+    let captureDir: string | undefined;
+    let captureStartError: string | undefined;
+    if (input.measurements !== undefined && captureEnabled) {
+      try {
+        captureDir = fs.makeTempDir("nightshift-claude-capture-");
+        capture = await startCapture({
+          journalPath: join(captureDir, "telemetry.ndjson"),
+          sink: input.measurements,
+          fallbackVersion: VERIFIED_CLAUDE_VERSION,
+          ...(options.requestCapture?.exportIntervalMs === undefined
+            ? {}
+            : { exportIntervalMs: options.requestCapture.exportIntervalMs }),
+        });
+      } catch (error) {
+        captureStartError = messageOf(error);
+        if (captureDir !== undefined) fs.removeDir(captureDir);
+        captureDir = undefined;
+      }
+    }
+    const mode: ClaudeCaptureMode =
+      input.measurements === undefined ? "none" : capture === undefined ? "stream" : "otlp";
+
+    // Counts the stream-derived request observations, for the exit's coverage.
+    let streamedRequests = 0;
+    const streamSink: MeasurementSink | undefined =
+      input.measurements === undefined
+        ? undefined
+        : {
+            observe: (observation) => {
+              if (observation.kind === "request") streamedRequests += 1;
+              input.measurements?.observe(observation);
+            },
+          };
+
     // Closing stdin ends the session; this decides when (`session.ts`). The
     // child is spawned below, so the closer reaches it through the state.
     const closer = createSessionCloser({ close: () => state.child?.stdin?.end() });
@@ -249,11 +344,25 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       context: { agentId: input.agent.agentId },
       finishingTools: finishingToolsFor(input.mcp?.name),
       onActivity: closer.onActivity,
+      ...(streamSink === undefined ? {} : { measurements: streamSink }),
+      streamRequests: mode !== "otlp",
       ...(input.runAs === undefined ? {} : { started: { user: input.runAs.user } }),
     });
 
+    // The capability is in neither this environment nor the argv derived from
+    // it, except on win32 where no other user runs the process (module header).
     const env = withTmpDir(
-      sanitizeClaudeEnvironment({ platform, parentEnv, extra: HEADLESS_CLAUDE_ENV }),
+      sanitizeClaudeEnvironment({
+        platform,
+        parentEnv,
+        extra: {
+          ...HEADLESS_CLAUDE_ENV,
+          ...(capture === undefined ? {} : capture.env),
+          ...(capture !== undefined && platform === "win32"
+            ? claudeTelemetryHeaderEnv(capture.capability)
+            : {}),
+        },
+      }),
       input.tmpDir,
     );
 
@@ -264,6 +373,11 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       env,
       child: undefined,
       configDir: undefined,
+      mode,
+      capture,
+      captureDir,
+      captureStartError,
+      finishing: false,
       runAs: input.runAs,
       transcriptError: undefined,
       settledExit: undefined,
@@ -305,10 +419,94 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       resolveExit(exit);
     };
 
+    /** Stops the receiver within a bound; never rejects, never outlives the bound. */
+    const stopCapture = async (): Promise<{
+      result?: ClaudeCaptureResult;
+      stopError?: string;
+    }> => {
+      if (state.capture === undefined) return {};
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const bound = new Promise<"timeout">((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), CAPTURE_STOP_BOUND_MS);
+        });
+        const stopped = await Promise.race([
+          state.capture.stop(millis(CAPTURE_STOP_GRACE_MS)),
+          bound,
+        ]);
+        return stopped === "timeout"
+          ? { stopError: "capture stop timed out" }
+          : { result: stopped };
+      } catch (error) {
+        return { stopError: messageOf(error) };
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    };
+
+    /**
+     * The one ending sequence, run once whatever the ending: stop the capture,
+     * hand `onCapture` the journal while it exists, remove the capture then the
+     * config directory, and only then settle. `build` makes the exit from what
+     * the capture reported. Nothing in it can keep `exit` from settling.
+     */
+    const finish = (
+      build: (capture: CaptureEnding) => {
+        readonly exit: HarnessExit;
+        readonly extra?: Readonly<Record<string, unknown>>;
+      },
+    ): void => {
+      if (state.finishing) return;
+      state.finishing = true;
+      void (async () => {
+        let ending: CaptureEnding = { mode, requestsStreamed: streamedRequests };
+        try {
+          const stopped = await stopCapture();
+          ending = {
+            mode,
+            requestsStreamed: streamedRequests,
+            ...optionalField("result", stopped.result),
+            ...optionalField("stopError", stopped.stopError),
+            ...optionalField("startError", state.captureStartError),
+          };
+          if (options.onCapture !== undefined && mode !== "none") {
+            try {
+              options.onCapture({
+                agentId: input.agent.agentId,
+                mode,
+                ...optionalField("result", stopped.result),
+                ...(state.captureDir === undefined
+                  ? {}
+                  : { journalPath: join(state.captureDir, "telemetry.ndjson") }),
+                ...optionalField("startError", state.captureStartError),
+                ...optionalField("stopError", stopped.stopError),
+              });
+            } catch {
+              // An observer's fault is not the run's.
+            }
+          }
+        } finally {
+          if (state.captureDir !== undefined) fs.removeDir(state.captureDir);
+          if (state.configDir !== undefined) fs.removeDir(state.configDir);
+        }
+        const built = build(ending);
+        settle(built.exit, { ...built.extra, ...capturePayload(ending) });
+      })().catch(() => {
+        // Unreachable by construction; `exit` must settle regardless.
+        settle({ kind: "failed", exitCode: UNKNOWN_EXIT_CODE });
+      });
+    };
+
     /** A launch that never got off the ground. Rule 3: `failed`, not a rejection. */
     const failToLaunch = (reason: string): HarnessHandle => {
-      if (state.configDir !== undefined) fs.removeDir(state.configDir);
-      settle({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE }, { summary: reason });
+      finish((ending) => ({
+        exit: {
+          kind: "failed",
+          exitCode: SPAWN_FAILURE_EXIT_CODE,
+          ...measuresFor(interpreter.outcome, ending, false),
+        },
+        extra: { summary: reason },
+      }));
       const handle: HarnessHandle = { agentId: input.agent.agentId, exit: exitPromise };
       runs.set(handle, state);
       return handle;
@@ -319,20 +517,34 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
     let settingsPath: string;
     try {
       configDir = fs.makeTempDir("nightshift-claude-");
+      state.configDir = configDir;
       mcpConfigPath = join(configDir, "mcp.json");
       settingsPath = join(configDir, "settings.json");
       fs.writeConfigFile(
         mcpConfigPath,
         input.mcp === undefined ? buildEmptyMcpConfig() : buildMcpConfig(input.mcp),
       );
-      fs.writeConfigFile(settingsPath, buildSettings());
+      let otelHeadersHelper: string | undefined;
+      if (capture !== undefined) {
+        // 0600, before the grant below hands the directory to the agent's user.
+        // On win32 there is no helper and the header travels in the environment.
+        const headersPath = join(configDir, "otel-headers.json");
+        otelHeadersHelper = claudeTelemetryHeadersHelper(headersPath, platform);
+        if (otelHeadersHelper !== undefined) {
+          fs.writeConfigFile(headersPath, claudeTelemetryHeadersFile(capture.capability));
+        }
+      }
+      fs.writeConfigFile(
+        settingsPath,
+        buildSettings(otelHeadersHelper === undefined ? {} : { otelHeadersHelper }),
+      );
       // Another user runs the process (D-P10-25): the configuration, which
       // carries this agent's own token and launch, becomes that user's to read.
+      // The capture directory is never granted: the journal stays the engine's.
       if (input.runAs !== undefined) await input.runAs.grant(configDir);
     } catch (error) {
       return failToLaunch(`could not write the Claude configuration: ${messageOf(error)}`);
     }
-    state.configDir = configDir;
 
     let transcript: TranscriptSink | undefined;
     if (input.transcriptPath !== undefined) {
@@ -401,20 +613,31 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       // only place the reason exists.
       interpreter.end();
       transcript?.close();
-      fs.removeDir(configDir);
-      settle(
-        { kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE },
-        { summary: `${CLAUDE_COMMAND} failed to run: ${error.message}` },
-      );
+      finish((ending) => ({
+        exit: {
+          kind: "failed",
+          exitCode: SPAWN_FAILURE_EXIT_CODE,
+          ...measuresFor(interpreter.outcome, ending, false),
+        },
+        extra: { summary: `${CLAUDE_COMMAND} failed to run: ${error.message}` },
+      }));
     });
 
     child.on("close", (code, signal) => {
       closer.dispose();
       interpreter.end();
       transcript?.close();
-      fs.removeDir(configDir);
       const extra = stderrTail.trim().length === 0 ? {} : { summary: stderrTail.trim() };
-      settle(exitFor(state.cancelRequested, code, signal, interpreter.outcome), extra);
+      finish((ending) => ({
+        exit: exitFor(
+          state.cancelRequested,
+          code,
+          signal,
+          interpreter.outcome,
+          measuresFor(interpreter.outcome, ending, state.cancelRequested || signal !== null),
+        ),
+        extra,
+      }));
     });
 
     const handle: HarnessHandle = {
@@ -499,7 +722,83 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
     return settled === undefined ? "started" : agentStatusForExit(settled);
   };
 
-  return { id: CLAUDE_HARNESS_ID, capabilities: { usage: true }, start, cancel, status };
+  return {
+    id: CLAUDE_HARNESS_ID,
+    capabilities: { usage: true, observations: true },
+    start,
+    cancel,
+    status,
+  };
+};
+
+/** What the capture reported at an ending, as the exit and the payload read it. */
+interface CaptureEnding {
+  readonly mode: ClaudeCaptureMode;
+  /** Stream-derived request observations emitted (stream mode only). */
+  readonly requestsStreamed: number;
+  readonly result?: ClaudeCaptureResult;
+  readonly startError?: string;
+  readonly stopError?: string;
+}
+
+/**
+ * The exit's measures: the stream's usage and scope merged with the capture's
+ * verdict. `complete` needs all of: a complete, uninterrupted stream result;
+ * the otlp mode; and a complete capture result. Otherwise `partial` when
+ * anything was seen, `unknown` when nothing was.
+ */
+const measuresFor = (
+  outcome: StreamOutcome,
+  ending: CaptureEnding,
+  interrupted: boolean,
+): ExitMeasures => {
+  const measures = outcome.measures;
+  const requestsSeen = ending.requestsStreamed + (ending.result?.requests ?? 0);
+  const coverage =
+    !interrupted &&
+    measures.resultCoverage === "complete" &&
+    ending.mode === "otlp" &&
+    ending.result?.complete === true
+      ? "complete"
+      : measures.usage !== undefined || requestsSeen > 0
+        ? "partial"
+        : "unknown";
+  return {
+    ...(measures.usage === undefined
+      ? {}
+      : {
+          usage: measures.usage,
+          ...optionalField("counters", measures.counters),
+          usageScope: measures.usageScope,
+          inclusion: measures.inclusion,
+        }),
+    ...optionalField("observedModel", measures.observedModel),
+    coverage,
+  };
+};
+
+/** The bounded `capture` field of the ending payload. */
+const capturePayload = (ending: CaptureEnding): Readonly<Record<string, unknown>> => {
+  if (ending.mode === "none") return {};
+  const result = ending.result;
+  const reasons: string[] = [
+    ...(result?.reasons ?? []),
+    ...(ending.mode === "stream" ? ["stream_only"] : []),
+    ...(ending.stopError === undefined ? [] : ["capture_stop_failed"]),
+  ];
+  return {
+    capture: {
+      mode: ending.mode,
+      requests: ending.mode === "otlp" ? (result?.requests ?? 0) : ending.requestsStreamed,
+      apiErrors: result?.apiErrors ?? 0,
+      dropped: (result?.droppedRecords ?? 0) + (result?.unidentifiedRequests ?? 0),
+      complete: ending.mode === "otlp" && result?.complete === true,
+      reasons: reasons.slice(0, 8),
+      ...optionalField("gap", result?.gap),
+      ...optionalField("startError", ending.startError?.slice(0, 200)),
+      ...optionalField("stopError", ending.stopError?.slice(0, 200)),
+    },
+  };
 };
 
 /** The exit mapping, as the table at the top of this file states it. */
@@ -508,14 +807,15 @@ const exitFor = (
   code: number | null,
   signal: string | null,
   outcome: StreamOutcome,
+  measured: ExitMeasures,
 ): HarnessExit => {
-  if (cancelRequested) return { kind: "cancelled" };
-  if (signal !== null) return { kind: "interrupted", signal };
+  if (cancelRequested) return { kind: "cancelled", ...measured };
+  if (signal !== null) return { kind: "interrupted", signal, ...measured };
   // Contract v1: what the run cost rides on the exit, where Claude said. P8: so
   // do the session a question can resume (D-P8-15) and, when the provider
   // refused before any work, that the route could not start (D-P8-06).
   const said = {
-    ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+    ...measured,
     ...(outcome.sessionId === undefined ? {} : { sessionId: outcome.sessionId }),
   };
   if (code === 0 && outcome.sawResult && !outcome.resultErrored) {

@@ -38,9 +38,27 @@ export const DispatchAttemptSchema = z.strictObject({
   reason: DispatchAttemptReasonSchema,
   startedAt: IsoTimestampSchema,
   endedAt: IsoTimestampSchema.optional(),
+  /** P20: when the machine reported ready, and when its work began running. */
+  readyAt: IsoTimestampSchema.optional(),
+  runningAt: IsoTimestampSchema.optional(),
+  /** P20: why this machine's attempt ended. */
+  endReason: z.enum(["stopped", "failed", "lease_lost", "replaced", "cancelled"]).optional(),
   instanceId: z.string().min(1).optional(),
   /** Seconds this machine has been metered for, from its heartbeats. */
   meteredSeconds: z.int().min(0).optional(),
+  /**
+   * P20: a terminate request for this attempt's instance was accepted.
+   * Termination is asynchronous; this is not its completion.
+   */
+  terminationRequestedAt: IsoTimestampSchema.optional(),
+  /**
+   * P20: the OBSERVED machine ending only: the control plane described the
+   * instance as terminated (or no longer found after a request). `endedAt` is
+   * the runner's ending and `terminationRequestedAt` a request; neither is this.
+   */
+  terminatedAt: IsoTimestampSchema.optional(),
+  /** P20: a terminate request for this attempt's instance failed; the machine may still be running. */
+  terminationFailed: z.boolean().optional(),
 });
 export type DispatchAttempt = z.infer<typeof DispatchAttemptSchema>;
 
@@ -332,6 +350,9 @@ export const DispatchCleanupSchema = z.strictObject({
   /** Set when EC2 reports the snapshot complete; until then the volume is kept. */
   snapshotTakenAt: IsoTimestampSchema.optional(),
   volumeDeleted: z.boolean(),
+  /** P20: when the instance was terminated and the volume deleted. */
+  terminatedAt: IsoTimestampSchema.optional(),
+  volumeDeletedAt: IsoTimestampSchema.optional(),
   failures: z.array(z.string().min(1)),
 });
 export type DispatchCleanup = z.infer<typeof DispatchCleanupSchema>;
@@ -514,6 +535,27 @@ export const DispatchSchema = z.strictObject({
   lockfileHashes: z.record(z.string().min(1), z.string().min(1)).optional(),
   /** The runner's latest progress, P16 S-03. */
   progress: DispatchProgressSchema.optional(),
+  /** P20: the price the machine was metered at, for pricing it after the fact. */
+  priceBasis: z
+    .strictObject({
+      usdPerHour: z.number().min(0),
+      volumeUsdPerHour: z.number().min(0),
+      source: z.string().max(200),
+      asOf: z.string().max(40),
+      region: z.string().max(40),
+    })
+    .optional(),
+  /** P20: each runner stage as it began, per generation, oldest dropped past 64. */
+  stages: z
+    .array(
+      z.strictObject({
+        generation: z.int().min(1),
+        stage: RunnerStageSchema,
+        startedAt: IsoTimestampSchema,
+      }),
+    )
+    .max(64)
+    .optional(),
   requestedAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
 });

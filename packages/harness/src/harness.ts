@@ -38,6 +38,11 @@
  * 6. **One transport per worker.** A worker's four operations reach `WorkerTools`
  *    either through the MCP server in `input.mcp` or through `input.tools`
  *    directly, never both: two transports are two ways to report one job.
+ * 7. **Every exit variant carries the usage the adapter saw.** `cancelled` and
+ *    `interrupted` too: what was spent before the stop was still spent. An
+ *    adapter that cannot say leaves `coverage` unknown rather than claim
+ *    completeness. `RouteUsage.inputIncludesCache` states the adapter's input
+ *    convention, so a reader never has to guess whether cache is in the input.
  */
 
 import type {
@@ -45,10 +50,12 @@ import type {
   AgentId,
   AgentStatus,
   ExaminationFinding,
+  ExaminationId,
   ExaminationQuestion,
   ExaminationRuling,
   ExecutionNode,
   JobContract,
+  MeasurementCounters,
   ProgramContract,
   RiskLevel,
   RouteTarget,
@@ -56,6 +63,7 @@ import type {
   VerificationCommandResult,
 } from "@nightshift/contracts";
 import type { HookSink } from "./hooks.js";
+import type { MeasurementSink } from "./measurement.js";
 import type { RunAs } from "./run-as.js";
 import type { WorkerTools } from "./tools.js";
 
@@ -89,6 +97,9 @@ export interface McpLaunch {
  * changed, and what the checks said. Never the implementer's summary,
  * transcript or commit message.
  */
+/** A finding of an earlier examination, with the examination that raised it. */
+export type EarlierFinding = ExaminationFinding & { readonly examinationId: ExaminationId };
+
 export interface ExaminationEvidence {
   /** The diff under examination, from the base the work was cut from. Possibly truncated. */
   readonly diff: string;
@@ -109,8 +120,12 @@ export interface ExaminationEvidence {
   readonly blocking: boolean;
   /** 0 for the first attempt; 1 or 2 for a fix. */
   readonly fixAttempt: number;
-  /** A fix's examiner sees what the last examination found, so it can say whether it is fixed. */
-  readonly previousFindings?: readonly ExaminationFinding[];
+  /**
+   * A fix's examiner sees what the last examination found, so it can say
+   * whether it is fixed. Each carries the examination it came from, which a
+   * finding that is the same defect again names in `repeats`.
+   */
+  readonly previousFindings?: readonly EarlierFinding[];
   /**
    * The arbiter's rulings this attempt carried out (D-P8-13, as amended
    * 2026-09-25). Present, the examiner judges only whether each was.
@@ -338,10 +353,49 @@ export interface HarnessStartInput {
    * a laptop, where every process is the operator's.
    */
   readonly runAs?: RunAs;
+  /**
+   * The launch this start belongs to. The execution layer always supplies it.
+   * An adapter puts it on nothing itself (the recorder stamps it onto each
+   * observation), but may use `launchId` to scope its own files.
+   */
+  readonly launch?: { readonly launchId: string; readonly segment: number };
+  /**
+   * Where the adapter reports measurement observations. Absent, the adapter
+   * emits none and keeps supplying its exit aggregate.
+   */
+  readonly measurements?: MeasurementSink;
+}
+
+/** Usage and its provenance, carried by every `HarnessExit` variant. */
+export interface ExitMeasures {
+  /** The usage seen, including before a stop (`cancelled`, `interrupted`). */
+  readonly usage?: RouteUsage;
+  /**
+   * What `usage` covers. Absent means `launch`: this launch only. An adapter
+   * whose provider reports session totals across a resume must say `session`.
+   */
+  readonly usageScope?: "launch" | "session";
+  /**
+   * The adapter's full measurement counters for the same population and scope
+   * as `usage`. When present the recorder records them instead of deriving
+   * counters from `usage`, so fields `RouteUsage` cannot carry (reasoningTokens,
+   * and the absent-means-unknown distinction) survive the exit.
+   */
+  readonly counters?: MeasurementCounters;
+  /** The model the provider actually answered with, distinct from `input.model`. */
+  readonly observedModel?: string;
+  /** The adapter's own statement of how complete its usage is for this launch. */
+  readonly coverage?: "complete" | "partial" | "unknown";
+  /**
+   * What the exit's `usage` population covers. Absent means `self`, which is
+   * what every adapter so far reports. An adapter whose exit aggregate includes
+   * native children (Claude's whole-tree modelUsage) says `includes_children`.
+   */
+  readonly inclusion?: "self" | "includes_children" | "unknown";
 }
 
 /** Why a worker process stopped. Exactly one of these settles `HarnessHandle.exit`. */
-export type HarnessExit =
+type HarnessExitBody =
   /** The process ended cleanly and the provider reported a final result. */
   | {
       readonly kind: "completed";
@@ -386,6 +440,26 @@ export type HarnessExit =
   /** `cancel` was called and the process stopped because of it. */
   | { readonly kind: "cancelled" };
 
+export type HarnessExit = HarnessExitBody & ExitMeasures;
+
+/** The usage an exit carries, whichever variant it is. */
+export const usageOfExit = (exit: HarnessExit): RouteUsage | undefined => exit.usage;
+
+/** The full counters an exit carries, when the adapter supplied them. */
+export const countersOfExit = (exit: HarnessExit): MeasurementCounters | undefined => exit.counters;
+
+/** The adapter's coverage statement; `unknown` when it made none. */
+export const coverageOfExit = (exit: HarnessExit): "complete" | "partial" | "unknown" =>
+  exit.coverage ?? "unknown";
+
+/** Whether the exit's usage includes native children; `self` when the adapter did not say. */
+export const inclusionOfExit = (exit: HarnessExit): "self" | "includes_children" | "unknown" =>
+  exit.inclusion ?? "self";
+
+/** What the exit's usage covers; `launch` when the adapter did not say. */
+export const usageScopeOfExit = (exit: HarnessExit): "launch" | "session" =>
+  exit.usageScope ?? "launch";
+
 export interface HarnessHandle {
   /** Always `input.agent.agentId`. */
   readonly agentId: AgentId;
@@ -408,6 +482,12 @@ export interface HarnessCapabilities {
    * any; the execution layer writes it to the job's `RoutingDecision` (A-13).
    */
   readonly usage: boolean;
+  /**
+   * True when the adapter emits request-level observations through
+   * `HarnessStartInput.measurements`. Absent means false: such an adapter keeps
+   * supplying its exit aggregate.
+   */
+  readonly observations?: boolean;
 }
 
 export interface Harness {

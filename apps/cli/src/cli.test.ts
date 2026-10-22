@@ -38,6 +38,9 @@ describe("the command line", () => {
     expect(USAGE).toContain("Gate-health records are optional diagnostics");
     expect(USAGE).toContain("Failing baseline checks do not prevent work from starting");
     expect(USAGE).toContain("must still pass before integration");
+    expect(USAGE).toContain("nightshift rate <program> up|down|clear [--run <id>] [--repo <path>]");
+    expect(USAGE).toContain("nightshift completion create <program> --title <t>");
+    expect(USAGE).toContain("nightshift completion checkpoint <program> --history <id> --name <n>");
     expect(USAGE).not.toContain("S-00 that every other strand depends on");
     expect(USAGE).not.toContain("stops when a gate fails");
     expect(USAGE).not.toContain("audits the gates against your laptop's");

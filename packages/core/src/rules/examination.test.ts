@@ -192,3 +192,27 @@ describe("examinationBlocks", () => {
     );
   });
 });
+
+describe("finding repeats and fixing examination (P20)", () => {
+  const EXAM = "exam_01HF7YAT00GGGGGGGGGGGGGGGG" as never;
+
+  it("refuses a change to repeats", () => {
+    const before = withFinding(example(), { repeats: { examinationId: EXAM, findingId: "f-1" } });
+    const after = withFinding(before, { repeats: { examinationId: EXAM, findingId: "f-2" } });
+    expect(explainExaminationUpdate(before, after).join()).toContain(
+      "may change only its resolution",
+    );
+    expect(
+      explainExaminationUpdate(before, withFinding(before, { repeats: undefined })).length,
+    ).toBe(1);
+  });
+
+  it("accepts unresolved -> fixed naming the examination and no decision", () => {
+    const before = example();
+    const fixed = withFinding(before, {
+      resolution: "fixed",
+      resolvedBy: { authority: "agent", examinationId: EXAM, at: AT },
+    });
+    expect(explainExaminationUpdate(before, fixed)).toEqual([]);
+  });
+});

@@ -24,6 +24,8 @@ import type {
   CalendarMonth,
   Checkpoint,
   CheckpointId,
+  CompletionHistory,
+  CompletionHistoryId,
   ComputeArchitecture,
   ComputeUtilization,
   Decision,
@@ -38,6 +40,8 @@ import type {
   GateHealth,
   JobContract,
   JobContractId,
+  MeasurementSummary,
+  MeasurementSummaryId,
   Membership,
   OrgComputeUsage,
   OrgConfig,
@@ -51,6 +55,7 @@ import type {
   Provider,
   RoutingDecision,
   Run,
+  RunFeedback,
   RunId,
   User,
   UserId,
@@ -207,6 +212,25 @@ export interface RoutingDecisionStore {
   ): Promise<readonly RoutingDecision[]>;
 }
 
+/**
+ * The compact measurement record (P20), updated in place as observations arrive.
+ * `put` replaces; a put whose `updatedAt` is strictly older than the stored
+ * record's is ignored, so a replayed stale write cannot roll a summary back.
+ * An equal `updatedAt` replaces.
+ */
+export interface MeasurementSummaryStore {
+  put(summary: MeasurementSummary): Promise<void>;
+  get(
+    scope: RunScope,
+    measurementSummaryId: MeasurementSummaryId,
+  ): Promise<MeasurementSummary | undefined>;
+  listByNode(
+    scope: RunScope,
+    executionNodeId: ExecutionNodeId,
+  ): Promise<readonly MeasurementSummary[]>;
+  listByRun(scope: RunScope, page?: PageRequest): Promise<Page<MeasurementSummary>>;
+}
+
 export interface ArtifactStore {
   /**
    * Records a reference to stored output. Implementations must reject anything
@@ -300,6 +324,41 @@ export interface GateHealthStore {
 }
 
 /**
+ * A run's feedback (D-04): one record per run, keyed by the run.
+ */
+export interface RunFeedbackStore {
+  /**
+   * Stores `feedback` only if the stored one is at `feedback.version - 1`
+   * (absent counts as 0). Throws `StaleWriteError` otherwise and changes
+   * nothing; an equal-version replay is stale too.
+   */
+  put(feedback: RunFeedback): Promise<void>;
+  get(scope: RunScope): Promise<RunFeedback | undefined>;
+  /** Every run's feedback in one program, in ascending `runId` order. */
+  listByProgram(scope: ProgramScope, page?: PageRequest): Promise<Page<RunFeedback>>;
+}
+
+/**
+ * A project's completion histories (D-05), stored under the project and
+ * addressed with the anchor run's scope.
+ */
+export interface CompletionHistoryStore {
+  /**
+   * Compare-and-set exactly as {@link RunFeedbackStore.put}: stored only if the
+   * stored history is at `history.version - 1`, else `StaleWriteError`.
+   */
+  put(history: CompletionHistory): Promise<void>;
+  get(
+    scope: RunScope,
+    completionHistoryId: CompletionHistoryId,
+  ): Promise<CompletionHistory | undefined>;
+  /** The histories anchored on that run. */
+  listByRun(scope: RunScope): Promise<readonly CompletionHistory[]>;
+  /** Every history in one project, in ascending id order. */
+  listByProject(projectId: ProjectId, page?: PageRequest): Promise<Page<CompletionHistory>>;
+}
+
+/**
  * Which org holds a GitHub App installation (P10, D-P10-02). One installation
  * is one customer's: a second org claiming it is refused, so a repository's
  * publication authority cannot be borrowed by recording someone else's
@@ -362,6 +421,7 @@ export interface ProjectStores {
   readonly verifications: VerificationStore;
   readonly examinations: ExaminationStore;
   readonly routingDecisions: RoutingDecisionStore;
+  readonly measurements: MeasurementSummaryStore;
   readonly artifacts: ArtifactStore;
   readonly orgConfigs: OrgConfigStore;
   // P10: the remote runner's records.
@@ -371,6 +431,10 @@ export interface ProjectStores {
   readonly installationClaims: InstallationClaimStore;
   // P15: the project's gate health.
   readonly gateHealth: GateHealthStore;
+  // P20 (D-04): a run's human verdict.
+  readonly feedback: RunFeedbackStore;
+  // P20 (D-05): explicit groupings of runs that delivered one outcome.
+  readonly completionHistories: CompletionHistoryStore;
 }
 
 /**

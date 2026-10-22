@@ -7,8 +7,13 @@ import {
   AGGREGATE_EXAMPLES,
   type Decision,
   DecisionSchema,
+  type Event,
   type Examination,
   ExaminationSchema,
+  type ExecutionNode,
+  type IsoTimestamp,
+  type LifecycleObservation,
+  type MeasurementSummary,
   type ProgramContract,
   ProgramContractSchema,
   type RoutingDecision,
@@ -17,8 +22,24 @@ import {
   RunSchema,
 } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
+import type { ProjectStores } from "../ports/stores.js";
+import { buildCompletionHistory } from "../rules/completion.js";
+import { buildRunFeedback } from "../rules/feedback.js";
+import {
+  createFixtures,
+  makeAgent,
+  makeDispatch,
+  makeEvent,
+  makeJobContract,
+  makeNode,
+  makeProgramContract,
+  makeRootNode,
+  makeRun,
+} from "../testing/factories.js";
+import { emptyMeasuredReport } from "../testing/report-defaults.js";
 import { environmentFaultOf, renderEnvironmentFault } from "./environment-fault.js";
-import { type RunReport, renderReport } from "./report.js";
+import { gatherReport, type RunReport, renderReport } from "./report.js";
+import { DISPOSITION_NOTE } from "./review.js";
 
 const program = ProgramContractSchema.parse(
   structuredClone(AGGREGATE_EXAMPLES.ProgramContract) as Record<string, unknown>,
@@ -60,6 +81,7 @@ const report = (patch: Partial<RunReport> = {}): RunReport => ({
     verificationTime: { steps: [], landings: 0, verifications: 0, totalMs: 0, recommendations: [] },
   },
   stepAdjustments: { skipped: [], raised: [] },
+  ...emptyMeasuredReport(run),
   ...patch,
 });
 
@@ -287,6 +309,8 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
           kind: "landing",
           runs: 12,
           totalMs: 12 * 41_000,
+          rerunRuns: 0,
+          rerunMs: 0,
           quietMs: 0,
           byPhase: {
             queue: { runs: 10, totalMs: 10 * 41_000 },
@@ -300,6 +324,8 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
           kind: "landing",
           runs: 12,
           totalMs: 12 * 700_000,
+          rerunRuns: 0,
+          rerunMs: 0,
           quietMs: 12 * 30_000,
           byPhase: {
             queue: { runs: 10, totalMs: 10 * 700_000 },
@@ -351,8 +377,8 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
     expect(text).toContain(
       "2h 28m across 12 verifications and 10 landings; the forecast assumed 12 landings at 12m 19s each, ≈ 2h 27m, measured on darwin arm64.",
     );
-    expect(text).toContain("| `e2e` | 12 | 2h 20m | 11m 40s | 30.0s | 10 / 2 / 0 | — |");
-    expect(text).toContain("| `build` | 12 | 8m 12s | 41.0s | 0.0s | 10 / 2 / 0 | 39.0s |");
+    expect(text).toContain("| `e2e` | 12 | 2h 20m | none | 11m 40s | 30.0s | 10 / 2 / 0 | — |");
+    expect(text).toContain("| `build` | 12 | 8m 12s | none | 41.0s | 0.0s | 10 / 2 / 0 | 39.0s |");
     expect(text).toContain(
       "- **e2e at the end** (rule 9): saves ≈ 1h 33m — 11m 40s × 10 landings − 11m 40s × 2 runs at the end.",
     );
@@ -662,5 +688,669 @@ describe("the report's Not verified section (P19)", () => {
 
   it("is absent when there is nothing", () => {
     expect(renderReport(report())).not.toContain("Not verified");
+  });
+});
+
+describe("the report's S-05 sections (P20)", () => {
+  it("prints each section from the test builder, with the caveat, coverage tallies and 'not observed'", () => {
+    const empty = report();
+    const text = renderReport(
+      report({
+        delivery: {
+          ...empty.delivery,
+          firstAttempt: {
+            ...empty.delivery.firstAttempt,
+            succeeded: 1,
+            denominator: 2,
+            unfinished: 3,
+            coverage: "partial",
+            reasons: ["1 attempt(s) have no measurement"],
+          },
+        },
+      }),
+    );
+    for (const heading of ["## Where the time went", "## Delivery", "## Review", "## Machine"]) {
+      expect(text).toContain(heading);
+    }
+    expect(text.indexOf("## Usage")).toBeLessThan(text.indexOf("## Where the time went"));
+    expect(text).toContain("Elapsed not observed");
+    expect(text).toContain("all jobs: 1/2 (not observed), 3 unfinished; coverage partial");
+    expect(text).toContain("1 attempt(s) have no measurement");
+    expect(text).toContain("(complete coverage)");
+    expect(text).toContain(DISPOSITION_NOTE);
+    expect(text).toContain("Local machine expense is not reported");
+    expect(text).toContain("input not observed");
+  });
+
+  it("fills operations, delivery, review and infrastructure from a small run", async () => {
+    const f = createFixtures();
+    const at = (ms: number): IsoTimestamp =>
+      new Date(Date.parse("2026-01-01T00:00:00.000Z") + ms).toISOString() as IsoTimestamp;
+    const programRun = makeRun(f, { startedAt: at(0), endedAt: at(20_000), status: "succeeded" });
+    const root = makeRootNode(f);
+    const jobs = [makeJobContract(f), makeJobContract(f)];
+    const nodes: ExecutionNode[] = [
+      root,
+      ...jobs.map((job) =>
+        makeNode(f, f.rootNodeId, { jobContractId: job.jobContractId, status: "integrated" }),
+      ),
+    ];
+    const jobNodes = nodes.slice(1);
+    const events: Event[] = [];
+    let n = 0;
+    const span = (node: ExecutionNode, phase: string, from: number, to: number): void => {
+      for (const [transition, when] of [
+        ["start", from],
+        ["end", to],
+      ] as const) {
+        n += 1;
+        const observation = {
+          schemaVersion: 1,
+          ...f.scope,
+          observationId: `obs-${n}`,
+          executionNodeId: node.executionNodeId,
+          source: "engine",
+          provenance: { adapter: "engine" },
+          occurredAt: at(when),
+          receivedAt: at(when),
+          inclusion: "self",
+          kind: "lifecycle",
+          operationId: `${phase}:${node.executionNodeId}`,
+          phase,
+          transition,
+          blockers: [],
+          ...(transition === "end" && phase === "integration" ? { reason: "integrated" } : {}),
+        } as LifecycleObservation;
+        events.push(
+          makeEvent(f, {
+            type: "lifecycle.observed",
+            sequence: n,
+            executionNodeId: node.executionNodeId,
+            payload: observation as unknown as Record<string, unknown>,
+            occurredAt: at(when),
+            recordedAt: at(when),
+          }),
+        );
+      }
+    };
+    const [a, b] = jobNodes as [ExecutionNode, ExecutionNode];
+    span(a, "work", 0, 6000);
+    span(a, "integration", 6000, 8000);
+    span(b, "work", 2000, 10_000);
+    span(b, "integration", 10_000, 12_000);
+    // An examiner runs after the implementation: busy, not idle.
+    span(b, "examination", 12_000, 15_000);
+
+    const examination = ExaminationSchema.parse({
+      ...(structuredClone(AGGREGATE_EXAMPLES.Examination) as Record<string, unknown>),
+      ...f.scope,
+      executionNodeId: a.executionNodeId,
+      findings: [],
+      outcome: "passed",
+    }) as Examination;
+    const summary = {
+      measurementVersion: 1,
+      ...f.scope,
+      measurementSummaryId: "meas-1",
+      executionNodeId: a.executionNodeId,
+      agentId: "agent-1",
+      role: "worker",
+      routingDecisionId: null,
+      route: { harness: "claude", provider: "anthropic", model: "m" },
+      observedModels: [],
+      segments: [],
+      totals: { inputTokens: 100, outputTokens: 20 },
+      coverage: "complete",
+      gaps: [],
+      ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+      valuation: { source: "unknown" },
+      createdAt: at(0),
+      updatedAt: at(0),
+    } as unknown as MeasurementSummary;
+    const dispatch = makeDispatch(f, {
+      status: "stopped",
+      requestedAt: at(0),
+      attempts: [
+        {
+          generation: 1,
+          reason: "dispatch",
+          startedAt: at(0),
+          readyAt: at(1000),
+          endedAt: at(20_000),
+          endReason: "stopped",
+          terminationRequestedAt: at(20_500),
+          terminatedAt: at(25_000),
+        },
+      ],
+    });
+    const agent = makeAgent(f, a.executionNodeId, { startedAt: at(0), endedAt: at(6000) });
+
+    const page = <T>(items: readonly T[]) => ({ items });
+    const calls: string[] = [];
+    const stub = (name: string, value: unknown) => (): Promise<unknown> => {
+      calls.push(name);
+      return Promise.resolve(value);
+    };
+    const stores = {
+      programContracts: {
+        get: stub("programContracts.get", makeProgramContract(f, { strands: [] })),
+        listByProject: stub("programContracts.listByProject", page([])),
+      },
+      runs: { get: stub("runs.get", programRun) },
+      executionNodes: { listByRun: stub("executionNodes.listByRun", page(nodes)) },
+      jobContracts: { listByRun: stub("jobContracts.listByRun", page(jobs)) },
+      decisions: { listByRun: stub("decisions.listByRun", page([])), get: stub("d", undefined) },
+      events: { listByRun: stub("events.listByRun", page(events)) },
+      measurements: { listByRun: stub("measurements.listByRun", page([summary])) },
+      dispatches: { get: stub("dispatches.get", dispatch) },
+      computeUtilizations: { get: stub("computeUtilizations.get", undefined) },
+      agents: { listByNode: stub("agents.listByNode", [agent]) },
+      routingDecisions: { listByNode: stub("routingDecisions.listByNode", []) },
+      examinations: {
+        listByNode: (_scope: unknown, nodeId: string) =>
+          Promise.resolve(nodeId === a.executionNodeId ? [examination] : []),
+      },
+      verifications: { listByNode: stub("verifications.listByNode", []) },
+      gateHealth: { get: stub("gateHealth.get", undefined) },
+    } as unknown as ProjectStores;
+
+    const gathered = await gatherReport(stores, f.scope);
+    expect(calls.filter((c) => c === "events.listByRun")).toHaveLength(1);
+    expect(calls.filter((c) => c === "dispatches.get")).toHaveLength(1);
+
+    const { operations, delivery, review, infrastructure } = gathered;
+    expect(gathered.asOf).toBe(at(20_000));
+    expect(operations.elapsedMs).toBe(20_000);
+    expect(operations.unions.work).toBe(10_000);
+    expect(operations.unions.integration).toBe(4000);
+    expect(operations.concurrency.peak).toBe(2);
+    expect(operations.endings.integrated).toBe(2);
+    expect(delivery.workItems).toBe(2);
+    expect(delivery.firstAttempt.denominator).toBe(2);
+    expect(delivery.outcomes.counts.landed).toBe(2);
+    expect(review.coverage.examinedNodes).toBe(1);
+    expect(review.coverage.examinations.total).toBe(1);
+    expect(review.coverage.landedUnexamined).toBe(1);
+    expect(infrastructure?.occupancy.peakConcurrentOccupants).toBe(2);
+    expect(infrastructure?.occupancy.busyMs).toBe(15_000);
+
+    const text = renderReport(gathered);
+    expect(text).toContain("## Where the time went");
+    expect(text).toContain("Peak concurrency 2");
+    expect(text).toContain("## Machine");
+    expect(infrastructure?.attempts[0]).toMatchObject({ lifetimeMs: 25_000, afterRunnerMs: 5000 });
+    expect(text).toContain("1 observed ending(s), 0 runner-only ending(s)");
+    expect(text).toMatch(/after the runner stopped/);
+    expect(text).toContain("termination requested");
+    expect(text).not.toContain("Local machine expense is not reported");
+  });
+});
+
+describe("the report's Human verdict and Completion sections (D-04, D-05)", () => {
+  const at = (ms: number): IsoTimestamp =>
+    new Date(Date.UTC(2026, 9, 1) + ms).toISOString() as IsoTimestamp;
+  const page = <T>(items: readonly T[]) => Promise.resolve({ items });
+  const baseStores = (f: ReturnType<typeof createFixtures>, ended: Run) =>
+    ({
+      programContracts: {
+        get: () => Promise.resolve(makeProgramContract(f, { strands: [] })),
+        listByProject: () => page([]),
+      },
+      runs: {
+        get: (_scope: unknown, runId: string) =>
+          Promise.resolve(runId === ended.runId ? ended : undefined),
+        listByProgram: () => page([ended]),
+      },
+      executionNodes: { listByRun: () => page([makeRootNode(f)]) },
+      jobContracts: { listByRun: () => page([]) },
+      decisions: { listByRun: () => page([]), get: () => Promise.resolve(undefined) },
+      events: { listByRun: () => page([]) },
+      measurements: { listByRun: () => page([]) },
+      dispatches: { get: () => Promise.resolve(undefined) },
+      computeUtilizations: { get: () => Promise.resolve(undefined) },
+      agents: { listByNode: () => Promise.resolve([]) },
+      routingDecisions: { listByNode: () => Promise.resolve([]) },
+      examinations: { listByNode: () => Promise.resolve([]) },
+      verifications: { listByNode: () => Promise.resolve([]) },
+      gateHealth: { get: () => Promise.resolve(undefined) },
+    }) as Record<string, unknown>;
+
+  it("renders the verdict, coverage and completion from the stores", async () => {
+    const f = createFixtures();
+    const actor = { kind: "user", userId: "ann", orgId: "org_01HF7YAT00GGGGGGGGGGGGGGGG" } as never;
+    const ended = makeRun(f, {
+      status: "failed",
+      outcomeReason: "x",
+      startedAt: at(0),
+      endedAt: at(100_000),
+    });
+    const feedback = buildRunFeedback({
+      scope: f.scope,
+      verdict: "did_not_work",
+      actor,
+      at: at(160_000),
+    });
+    const history = buildCompletionHistory({
+      scope: f.scope,
+      completionHistoryId: f.ids.next("comp"),
+      title: "Ship the thing",
+      members: [{ programId: f.scope.programId, runId: f.scope.runId, role: "anchor" }],
+      actor,
+      at: at(1000),
+    });
+    const stores = {
+      ...baseStores(f, ended),
+      feedback: {
+        get: () => Promise.resolve(feedback),
+        listByProgram: () => page([feedback]),
+      },
+      completionHistories: { listByProject: () => page([history]) },
+    } as unknown as ProjectStores;
+    const gathered = await gatherReport(stores, f.scope);
+    expect(gathered.feedback).toEqual({
+      verdict: "did_not_work",
+      recordedAt: at(160_000),
+      by: "ann",
+      ratingDelaySeconds: 60,
+      revisions: 1,
+    });
+    expect(gathered.feedbackCoverage).toEqual({
+      eligible: 1,
+      rated: 1,
+      positive: 0,
+      negative: 1,
+      positiveShare: 0,
+      unrated: 0,
+    });
+    expect(gathered.completions).toHaveLength(1);
+    expect(gathered.completions[0]?.members).toHaveLength(1);
+    const text = renderReport(gathered);
+    expect(text).toContain("## Human verdict");
+    expect(text).toContain("- Verdict: **did not work**");
+    expect(text).toContain("- By: ann");
+    expect(text).toContain(
+      "- Rating delay: 1 min 0 s after the run ended (calendar time, not work time)",
+    );
+    expect(text).toContain(
+      "1 of 1 ended run(s) rated; 0 worked, 1 did not; positive share among rated 0%",
+    );
+    expect(text).toContain("\n## Completion\n");
+    expect(text).toContain("### Ship the thing (membership v1)");
+    expect(text).toContain("anchor, failed, did_not_work");
+    expect(text).toContain("lead time none (no worked verdict)");
+    expect(text.indexOf("## Human verdict")).toBeGreaterThan(text.indexOf("## Delivery"));
+    expect(text.indexOf("\n## Completion\n")).toBeGreaterThan(text.indexOf("## Human verdict"));
+    const verdictSection = text.slice(
+      text.indexOf("## Human verdict"),
+      text.indexOf("\n## Completion\n"),
+    );
+    expect(verdictSection).not.toMatch(/finding|examiner|cause:/i);
+  });
+
+  it("still renders when the feedback reads are refused or absent", async () => {
+    const f = createFixtures();
+    const ended = makeRun(f, { status: "succeeded", startedAt: at(0), endedAt: at(1000) });
+    const refuse = () => Promise.reject(new Error("forbidden"));
+    const refused = {
+      ...baseStores(f, ended),
+      feedback: { get: refuse, listByProgram: refuse },
+      completionHistories: { listByProject: refuse },
+    } as unknown as ProjectStores;
+    for (const stores of [refused, baseStores(f, ended) as unknown as ProjectStores]) {
+      const gathered = await gatherReport(stores, f.scope);
+      expect(gathered.feedback).toEqual({ verdict: "not_rated", revisions: 0 });
+      expect(gathered.completions).toEqual([]);
+      expect(gathered.feedbackCoverage.rated).toBe(0);
+      const text = renderReport(gathered);
+      expect(text).toContain("- Verdict: **not rated**");
+      expect(text).not.toContain("\n## Completion\n");
+    }
+  });
+});
+
+describe("the report's usage, budget, time and completion wording (P20 J6)", () => {
+  const usageRow = {
+    harness: "claude",
+    model: "m1",
+    purpose: "work",
+    attempts: 3,
+    inputTokens: 300,
+    outputTokens: 30,
+    costUsd: 1.5,
+    estimated: true,
+    unpriced: 1,
+    tokensObserved: 3,
+    reportedAttempts: 0,
+    estimatedAttempts: 2,
+    estimateIncomplete: 1,
+    priceBases: [{ source: "anthropic-list", version: "2026-10", model: "m1", incomplete: true }],
+  };
+
+  it("shows provenance, the estimate label and estimate coverage on an estimated row", () => {
+    const text = renderReport(report({ usage: [usageRow] }));
+    expect(text).toContain(
+      "API-equivalent estimate; price list anthropic-list 2026-10; 2 of 3 attempts valued",
+    );
+    expect(text).toContain("1 estimate(s) leave usage unvalued");
+    expect(text).toContain("| 1.50* + 1 unknown |");
+  });
+
+  it("names each model's own price list when a row mixes models", () => {
+    const text = renderReport(
+      report({
+        usage: [
+          {
+            ...usageRow,
+            priceBases: [
+              { source: "A", version: "v1", model: "a", incomplete: false },
+              { source: "B", version: "v2", model: "b", incomplete: false },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("price list A v1, B v2");
+  });
+
+  it("shows the root launch as its own row, and an unmeasured root as unknown rather than zero", () => {
+    const measured = {
+      ...usageRow,
+      model: "root-model",
+      purpose: "root",
+      attempts: 1,
+      inputTokens: 50,
+      outputTokens: 5,
+      costUsd: 0.75,
+      estimated: false,
+      unpriced: 0,
+      tokensObserved: 1,
+      reportedAttempts: 1,
+      estimatedAttempts: 0,
+      estimateIncomplete: 0,
+      priceBases: [],
+    };
+    const text = renderReport(report({ usage: [measured] }));
+    expect(text).toContain("root-model");
+    expect(text).toContain("root");
+    expect(text).toContain("0.75");
+
+    const unmeasured = {
+      ...measured,
+      harness: "unknown",
+      model: "unmeasured",
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      unpriced: 1,
+      tokensObserved: 0,
+      reportedAttempts: 0,
+    };
+    const missing = renderReport(report({ usage: [unmeasured] }));
+    expect(missing).toContain("unmeasured");
+    expect(missing).not.toContain("| 0.00 |");
+    expect(missing).toMatch(/unmeasured.*unknown/);
+  });
+
+  it("prints reported and estimated sub-totals apart on a row with one of each", () => {
+    const text = renderReport(
+      report({
+        usage: [
+          {
+            ...usageRow,
+            attempts: 2,
+            costUsd: 3,
+            unpriced: 0,
+            reportedAttempts: 1,
+            estimatedAttempts: 1,
+            reportedUsd: 2,
+            estimatedUsd: 1,
+            estimateIncomplete: 0,
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("Cost per attempt (USD)");
+    const row = text.split("\n").find((line) => line.startsWith("| claude | m1 | work |")) ?? "";
+    expect(row).toContain("| 3.00* | 1: $2.00 | 1: $1.00 |");
+    expect(text).toContain("never summed with");
+  });
+
+  it("labels reported and unknown rows, and shows not observed, never 0, for missing tokens and dollars", () => {
+    const text = renderReport(
+      report({
+        usage: [
+          {
+            ...usageRow,
+            purpose: "examine",
+            unpriced: 0,
+            estimatedAttempts: 0,
+            reportedAttempts: 3,
+            estimated: false,
+            priceBases: [],
+          },
+          {
+            ...usageRow,
+            purpose: "answer",
+            attempts: 2,
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: 0,
+            unpriced: 2,
+            tokensObserved: 0,
+            reportedAttempts: 0,
+            estimatedAttempts: 0,
+            estimateIncomplete: 0,
+            priceBases: [],
+          },
+        ],
+      }),
+    );
+    expect(text).toContain("provider-reported; 3 of 3 attempts valued");
+    const unknown = text.split("\n").find((line) => line.includes("| answer |")) ?? "";
+    expect(unknown).toContain(
+      "| not observed | not observed | unknown | none | none | unknown; 0 of 2 attempts valued |",
+    );
+    expect(unknown).not.toMatch(/\| 0 \|/);
+  });
+
+  it("says the limit could not be evaluated, with no cap and no 'within budget', when incomplete", () => {
+    const base = report({ usage: [usageRow] });
+    const text = renderReport({
+      ...base,
+      program: { ...base.program, costPolicy: { ...base.program.costPolicy, maxUsd: 5 } },
+      budget: {
+        usd: 1.5,
+        tokens: 330,
+        estimated: true,
+        evaluation: {
+          configured: true,
+          complete: false,
+          unpriced: 2,
+          unmeasured: 1,
+          estimateIncomplete: 0,
+          tokensIncomplete: 0,
+        },
+      },
+    });
+    expect(text).toContain(
+      "the maxUsd limit could not be evaluated completely: 2 attempts unpriced, 1 unmeasured",
+    );
+    expect(text).not.toMatch(/within budget/i);
+    expect(text).not.toContain("of $5");
+  });
+
+  it("keeps the precise cap when the evaluation is complete", () => {
+    const base = report({ usage: [{ ...usageRow, unpriced: 0, estimateIncomplete: 0 }] });
+    const text = renderReport({
+      ...base,
+      program: { ...base.program, costPolicy: { ...base.program.costPolicy, maxUsd: 5 } },
+      budget: {
+        usd: 1.5,
+        tokens: 330,
+        estimated: true,
+        evaluation: {
+          configured: true,
+          complete: true,
+          unpriced: 0,
+          unmeasured: 0,
+          estimateIncomplete: 0,
+          tokensIncomplete: 0,
+        },
+      },
+    });
+    expect(text).toContain("of $5");
+    expect(text).not.toContain("could not be evaluated");
+  });
+
+  it("shows the rerun time verification now retains", () => {
+    const phases = {
+      queue: { runs: 0, totalMs: 0 },
+      candidate: { runs: 0, totalMs: 0 },
+      run: { runs: 2, totalMs: 90_000 },
+    };
+    const text = renderReport(
+      report({
+        gateHealth: {
+          audit: undefined,
+          red: undefined,
+          repairs: [],
+          flakes: [],
+          verificationTime: {
+            steps: [
+              {
+                id: "unit",
+                kind: "landing",
+                runs: 2,
+                totalMs: 90_000,
+                rerunRuns: 1,
+                rerunMs: 30_000,
+                quietMs: 0,
+                byPhase: phases,
+              },
+            ],
+            landings: 1,
+            verifications: 1,
+            totalMs: 90_000,
+            recommendations: [],
+          },
+        },
+      }),
+    );
+    expect(text).toContain("| Reruns |");
+    expect(text).toContain("| `unit` | 2 | 1m 30s | 1 (30.0s) |");
+    expect(text).toContain(
+      "Retained rerun time: 30.0s across 1 flaky first run(s) and failed rerun(s)",
+    );
+  });
+
+  it("labels summed work as overlapping, not elapsed", () => {
+    const base = report();
+    const text = renderReport({
+      ...base,
+      operations: {
+        ...base.operations,
+        concurrency: { ...base.operations.concurrency, summedWorkMs: 120_000 },
+      },
+    });
+    expect(text).toContain("summed work (overlapping; not elapsed):** 2m 00s");
+    expect(text).toContain("phase figures below are interval unions");
+  });
+
+  it("lists the run's completion histories near the top, or says none is recorded", () => {
+    const none = renderReport(report());
+    expect(none).toContain("## Completion histories");
+    expect(none).toContain("none recorded: nightshift completion create ...");
+    expect(none.indexOf("## Completion histories")).toBeLessThan(none.indexOf("## Strands"));
+    const withOne = renderReport(
+      report({
+        completions: [
+          {
+            asOf: "2026-01-01T00:00:00.000Z",
+            completionHistoryId: "comp_1",
+            title: "Ship billing",
+            version: 2,
+            members: [
+              {
+                programId: run.programId,
+                runId: run.runId,
+                role: "anchor",
+                verdict: "worked",
+                carriedStrands: 0,
+              },
+              {
+                programId: "prog_b",
+                runId: "run_b",
+                role: "contributing",
+                verdict: "not_rated",
+                carriedStrands: 0,
+              },
+            ],
+            coverage: {
+              eligible: 2,
+              rated: 1,
+              positive: 1,
+              negative: 0,
+              positiveShare: 1,
+              unrated: 1,
+            },
+            current: {
+              activeSeconds: 10,
+              measuredMembers: 0,
+              unmeasuredMembers: 2,
+              membershipVersion: 2,
+            },
+            checkpoints: [],
+            laterFixes: [],
+          },
+        ],
+      }),
+    );
+    expect(withOne).toContain("**Ship billing**");
+    expect(withOne).toContain(
+      "this run is anchor; 1 contributing run(s); verdict coverage 1 of 2 rated",
+    );
+    expect(withOne).toContain("This run's own outcome is not completion");
+  });
+
+  it("renders the combined estimate as a lower bound, never a bill", () => {
+    const text = renderReport(
+      report({
+        completions: [
+          {
+            asOf: "2026-01-01T00:00:00.000Z",
+            completionHistoryId: "comp_1",
+            title: "T",
+            version: 1,
+            members: [],
+            coverage: { eligible: 1, rated: 0, positive: 0, negative: 0, unrated: 1 },
+            current: {
+              activeSeconds: 10,
+              measuredMembers: 1,
+              unmeasuredMembers: 1,
+              membershipVersion: 1,
+              combined: {
+                usd: 2.5,
+                model: 2,
+                infrastructure: 0.5,
+                coverage: {
+                  measuredMembers: 1,
+                  unmeasuredMembers: 1,
+                  estimateIncomplete: 0,
+                  membersWithoutMachine: 1,
+                  attemptsWithoutEstimate: 2,
+                },
+                lowerBound: true,
+                priceBases: [],
+              },
+            },
+            checkpoints: [],
+            laterFixes: [],
+          },
+        ],
+      }),
+    );
+    expect(text).toContain(
+      "combined API-equivalent estimate at least $2.50 (model $2.00 + machine $0.50; lower bound: 1 member(s) unmeasured, 1 member(s) without a machine report, 2 attempt(s) without an estimate; an estimate, not a bill",
+    );
   });
 });
