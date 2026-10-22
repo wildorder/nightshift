@@ -299,6 +299,7 @@ describe("nightshift completion", () => {
                 unmeasuredMembers: 1,
                 estimateIncomplete: 1,
                 membersWithoutMachine: 1,
+                attemptsWithoutEstimate: 2,
               },
               lowerBound: true,
               priceBases: [],
@@ -310,7 +311,7 @@ describe("nightshift completion", () => {
     expect(await completion(world, "show", "--history", world.historyId)).toBe(0);
     const line = world.created.out.find((l) => l.startsWith("checkpoint `partial`")) as string;
     expect(line).toContain(
-      "combined API-equivalent estimate lower bound $2.0000 (model $1.5000 + machine $0.5000; 2 members measured; 1 members unmeasured, 1 attempts with incomplete valuation, 1 members without a machine report; an estimate, not a bill",
+      "combined API-equivalent estimate lower bound $2.0000 (model $1.5000 + machine $0.5000; 2 members measured; 1 members unmeasured, 1 attempts with incomplete valuation, 1 members without a machine report, 2 attempts without an estimate; an estimate, not a bill",
     );
   });
 

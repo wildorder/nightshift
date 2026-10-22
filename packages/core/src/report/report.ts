@@ -2259,6 +2259,11 @@ const renderCombined = (f: CompletionFigures): string[] => {
     ...(c.coverage.membersWithoutMachine > 0
       ? [`${c.coverage.membersWithoutMachine} member(s) without a machine report`]
       : []),
+    ...(c.coverage.attemptsWithoutEstimate === undefined
+      ? ["attempts without an estimate: not recorded"]
+      : c.coverage.attemptsWithoutEstimate > 0
+        ? [`${c.coverage.attemptsWithoutEstimate} attempt(s) without an estimate`]
+        : []),
   ];
   return [
     `combined API-equivalent estimate ${c.lowerBound ? "at least " : ""}${usd(c.usd)} (${parts.join(" + ")}; ${

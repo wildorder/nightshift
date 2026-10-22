@@ -453,6 +453,7 @@ describe("the combined estimate", () => {
     tokenCoverage: "complete",
     priceBases: [{ source: "list", version: "v1", model: "m", incomplete }],
     estimateIncomplete: incomplete ? 1 : 0,
+    estimatedAttempts: 1,
   });
   const machine = (usd: number) =>
     ({
@@ -492,6 +493,7 @@ describe("the combined estimate", () => {
       unmeasuredMembers: 0,
       estimateIncomplete: 0,
       membersWithoutMachine: 0,
+      attemptsWithoutEstimate: 0,
     });
     expect(m.combined?.priceBases).toEqual([
       { source: "list", version: "v1", model: "m", incomplete: false },
@@ -526,6 +528,51 @@ describe("the combined estimate", () => {
     );
     expect(incomplete.combined?.lowerBound).toBe(true);
     expect(incomplete.combined?.coverage.estimateIncomplete).toBe(1);
+  });
+
+  it("is a lower bound when an attempt has reported dollars or tokens but no estimate", () => {
+    const machines = new Map([
+      [keyOf(a), machine(0.5)],
+      [keyOf(b), machine(0)],
+    ]);
+    const twoAttempts = (second: Partial<ResourceTotals>): ResourceTotals => ({
+      ...priced(1),
+      coverage: { complete: 2, partial: 0, unknown: 0, legacy: 0, missing: 0 },
+      ...second,
+    });
+    // The examiner's case: one estimated attempt, one with reported dollars only.
+    const reportedOnly = measure(
+      new Map([
+        [keyOf(a), twoAttempts({ usd: { estimated: 1, reported: 2 }, reportedAttempts: 1 })],
+        [keyOf(b), priced(0)],
+      ]),
+      machines,
+    );
+    expect(reportedOnly.combined?.lowerBound).toBe(true);
+    expect(reportedOnly.combined?.coverage.attemptsWithoutEstimate).toBe(1);
+    expect(reportedOnly.combined?.usd).toBe(1.5);
+    expect(reportedOnly.combined?.model).toBe(1);
+    expect(reportedOnly.combined?.infrastructure).toBe(0.5);
+    // An unpriced attempt: tokens, no dollars.
+    const unpriced = measure(
+      new Map([
+        [keyOf(a), twoAttempts({ unpriced: 1 })],
+        [keyOf(b), priced(0)],
+      ]),
+      machines,
+    );
+    expect(unpriced.combined?.lowerBound).toBe(true);
+    expect(unpriced.combined?.coverage.attemptsWithoutEstimate).toBe(1);
+    // Fully estimated stays complete.
+    const full = measure(
+      new Map([
+        [keyOf(a), twoAttempts({ estimatedAttempts: 2 })],
+        [keyOf(b), priced(0)],
+      ]),
+      machines,
+    );
+    expect(full.combined?.lowerBound).toBe(false);
+    expect(full.combined?.coverage.attemptsWithoutEstimate).toBe(0);
   });
 
   it("is a lower bound in the current view when a member's measurement is unavailable", () => {
@@ -587,6 +634,7 @@ describe("the combined estimate", () => {
       ]),
     }).history;
     expect(stored.checkpoints[0]?.measured.combined?.usd).toBe(4);
+    expect(stored.checkpoints[0]?.measured.combined?.coverage.attemptsWithoutEstimate).toBe(0);
     const later = completionOf({
       history: stored,
       runs: mruns,

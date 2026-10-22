@@ -55,6 +55,12 @@ export const CompletionCombinedSchema = z.strictObject({
     /** Attempts whose model estimate leaves some usage unvalued. */
     estimateIncomplete: nonNegativeInt,
     membersWithoutMachine: nonNegativeInt,
+    /**
+     * Measured attempts with no derived API-equivalent estimate (unpriced, reported
+     * dollars only, or without a summary). Absent in checkpoints stored before it was
+     * counted; read that as not recorded, never zero.
+     */
+    attemptsWithoutEstimate: nonNegativeInt.optional(),
   }),
   lowerBound: z.boolean(),
   priceBases: z.array(

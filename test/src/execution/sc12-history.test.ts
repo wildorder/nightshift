@@ -1566,6 +1566,9 @@ describe("the complete SC-12 history", () => {
     expect(
       history?.checkpoints.map((c) => [c.name, c.programId, c.runId, c.membershipVersion]),
     ).toEqual([["after-correction", programB.programId, correctionRun.runId, 4]]);
+    // 14 attempts (11 measured plus the three unmeasured root launches), 11 with an estimate.
+    expect(history?.checkpoints[0]?.measured.combined?.coverage.attemptsWithoutEstimate).toBe(3);
+    expect(history?.checkpoints[0]?.measured.combined?.lowerBound).toBe(true);
     expect(history?.checkpoints[0]?.feedbackVersion).toBe(3);
     expect(history?.checkpoints[0]?.verdictRecordedAt).toBe("2026-09-15T14:10:00.000Z");
     // Every revision of the membership is attributed.
@@ -1626,6 +1629,7 @@ describe("the complete SC-12 history", () => {
     expect(completion?.current.resources?.tokens).toMatchObject({ input: 80_000, output: 15_800 });
     close(completion?.current.resources?.usd.estimated, HISTORY.usd);
     expect(completion?.current.measuredMembers).toBe(3);
+    expect(completion?.current.combined?.coverage.attemptsWithoutEstimate).toBe(3);
     expect(completion?.current.resources?.coverage).toEqual({
       complete: 11,
       partial: 0,
@@ -1753,6 +1757,7 @@ describe("the complete SC-12 history", () => {
       "Now: lead time 130 min 0 s; run completion 70 min 0 s; active union 50 min 0 s; tokens in 80000, out 15800; estimated: $0.47 for 11 of 14 attempts, reported: none (separate figures)",
       // The three unmeasured root launches keep the combined estimate a lower bound (D-02).
       "token coverage complete 11, partial 0, unknown 0, legacy 0, missing 3.",
+      "3 attempt(s) without an estimate",
       `${programB.programId}/${correctionRun.runId}: correction, succeeded, worked`,
       `${programA.programId}/${failedRun.runId}: contributing, failed, not_rated`,
       `${programA.programId}/${run1.runId}: anchor, succeeded, did_not_work`,
@@ -1872,6 +1877,7 @@ describe("the complete SC-12 history", () => {
       "combined API-equivalent estimate lower bound $0.4670 (model $0.4670",
     );
     expect(lines[5]).toContain("3 members measured");
+    expect(lines[5]).toContain("3 attempts without an estimate");
     // The live view then prints the history-wide delivery, rework, review and bottleneck lines.
     expect(lines.slice(6, 10).map((line) => line.split(":")[0])).toEqual([
       "  delivery",

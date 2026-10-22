@@ -94,6 +94,7 @@ export const FAKE_MEASURED: CompletionMeasurement = {
       unmeasuredMembers: 0,
       estimateIncomplete: 0,
       membersWithoutMachine: 0,
+      attemptsWithoutEstimate: 0,
     },
     lowerBound: false,
     priceBases: [{ model: "model-a", source: "table", version: "v7", incomplete: false }],

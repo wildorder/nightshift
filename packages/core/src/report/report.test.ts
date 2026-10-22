@@ -1337,6 +1337,7 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
                   unmeasuredMembers: 1,
                   estimateIncomplete: 0,
                   membersWithoutMachine: 1,
+                  attemptsWithoutEstimate: 2,
                 },
                 lowerBound: true,
                 priceBases: [],
@@ -1349,7 +1350,7 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
       }),
     );
     expect(text).toContain(
-      "combined API-equivalent estimate at least $2.50 (model $2.00 + machine $0.50; lower bound: 1 member(s) unmeasured, 1 member(s) without a machine report; an estimate, not a bill",
+      "combined API-equivalent estimate at least $2.50 (model $2.00 + machine $0.50; lower bound: 1 member(s) unmeasured, 1 member(s) without a machine report, 2 attempt(s) without an estimate; an estimate, not a bill",
     );
   });
 });

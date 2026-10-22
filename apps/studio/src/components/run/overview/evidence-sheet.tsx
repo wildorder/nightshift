@@ -452,7 +452,7 @@ export const HistoryEvidenceSheet = ({
       ...(combined === undefined
         ? []
         : [
-            `Model measured ${combined.coverage.measuredMembers} of ${combined.coverage.measuredMembers + combined.coverage.unmeasuredMembers} members; ${combined.coverage.estimateIncomplete} with unvalued usage; ${combined.coverage.membersWithoutMachine} without a machine.`,
+            `Model measured ${combined.coverage.measuredMembers} of ${combined.coverage.measuredMembers + combined.coverage.unmeasuredMembers} members; ${combined.coverage.estimateIncomplete} with unvalued usage; ${combined.coverage.membersWithoutMachine} without a machine; attempts without an estimate: ${combined.coverage.attemptsWithoutEstimate ?? "not recorded"}.`,
             ...(combined.priceBases.length === 0
               ? ["Price provenance: not recorded."]
               : combined.priceBases.map(

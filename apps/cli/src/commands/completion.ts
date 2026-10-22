@@ -180,6 +180,11 @@ const combinedText = (combined: CompletionFigures["combined"]): string => {
     ...(coverage.membersWithoutMachine > 0
       ? [`${coverage.membersWithoutMachine} members without a machine report`]
       : []),
+    ...(coverage.attemptsWithoutEstimate === undefined
+      ? ["attempts without an estimate: not recorded"]
+      : coverage.attemptsWithoutEstimate > 0
+        ? [`${coverage.attemptsWithoutEstimate} attempts without an estimate`]
+        : []),
     ...(combined.model === undefined ? ["no model estimate"] : []),
   ];
   const parts = [

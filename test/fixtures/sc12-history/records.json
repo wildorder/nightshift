@@ -2841,7 +2841,8 @@
                 "measuredMembers": 3,
                 "unmeasuredMembers": 0,
                 "estimateIncomplete": 0,
-                "membersWithoutMachine": 3
+                "membersWithoutMachine": 3,
+                "attemptsWithoutEstimate": 3
               },
               "lowerBound": true,
               "priceBases": [

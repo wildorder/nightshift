@@ -179,8 +179,11 @@ const Consumption = ({ figures }: { readonly figures: CompletionFigures }) => {
             {combined.coverage.estimateIncomplete > 0
               ? `, ${combined.coverage.estimateIncomplete} with unvalued usage`
               : ""}
-            ; {combined.coverage.membersWithoutMachine} without a machine. An estimate, never a
-            bill.
+            ; {combined.coverage.membersWithoutMachine} without a machine
+            {combined.coverage.attemptsWithoutEstimate === undefined
+              ? "; attempts without an estimate: not recorded"
+              : `; ${combined.coverage.attemptsWithoutEstimate} attempts without an estimate`}
+            . An estimate, never a bill.
           </>
         )}
       </Line>
@@ -633,7 +636,13 @@ const FigureList = ({ figures }: { readonly figures: CompletionFigures }) => {
         Combined estimate:{" "}
         {figures.combined === undefined
           ? NOT_OBSERVED
-          : `${dollarsText(figures.combined.usd)}${figures.combined.lowerBound ? " (lower bound)" : ""}`}
+          : `${dollarsText(figures.combined.usd)}${figures.combined.lowerBound ? " (lower bound)" : ""}${
+              figures.combined.coverage.attemptsWithoutEstimate === undefined
+                ? "; attempts without an estimate: not recorded"
+                : figures.combined.coverage.attemptsWithoutEstimate > 0
+                  ? `; ${figures.combined.coverage.attemptsWithoutEstimate} attempts without an estimate`
+                  : ""
+            }`}
       </li>
     </ul>
   );

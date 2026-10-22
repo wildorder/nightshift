@@ -488,6 +488,9 @@ const combinedOf = (
   const unmeasuredMembers = readable - measured.length;
   // A measured member whose root launch has no summary (D-02) leaves usage out: a lower bound.
   const unmeasuredLaunches = measured.some((member) => member.coverage.missing > 0);
+  const attempts =
+    totals === undefined ? 0 : Object.values(totals.coverage).reduce((a, b) => a + b, 0);
+  const attemptsWithoutEstimate = Math.max(0, attempts - (totals?.estimatedAttempts ?? 0));
   return {
     usd: (model ?? 0) + (infrastructure ?? 0),
     ...(model === undefined ? {} : { model }),
@@ -497,6 +500,7 @@ const combinedOf = (
       unmeasuredMembers,
       estimateIncomplete,
       membersWithoutMachine,
+      attemptsWithoutEstimate,
     },
     lowerBound:
       model === undefined ||
@@ -504,6 +508,7 @@ const combinedOf = (
       unavailable > 0 ||
       unmeasuredLaunches ||
       estimateIncomplete > 0 ||
+      attemptsWithoutEstimate > 0 ||
       membersWithoutMachine > 0,
     priceBases: [...(totals?.priceBases ?? [])],
   };

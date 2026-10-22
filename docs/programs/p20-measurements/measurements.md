@@ -197,6 +197,11 @@ Contract `packages/contracts/src/v1/completion.ts`; figures
   roles `anchor`, `contributing`, `correction`); never inferred from program identity;
   never across projects. Each member counts once by `programId/runId` (identity, not equal
   totals).
+- **Combined estimate coverage**: `coverage.attemptsWithoutEstimate` counts every measured
+  attempt (the summed coverage counts, including launches with no summary) minus those with a
+  derived API-equivalent estimate, independent of token measurement and reported dollars. Above
+  zero the combined figure is a lower bound and the count is printed with it; a checkpoint stored
+  before the field existed shows "not recorded", never zero.
 - **Frozen checkpoints**: named positive-verdict snapshots; a checkpoint reports from its
   stored `measured` block alone (`measureCompletion`), clipped at its boundary, so later
   changes never rewrite it. A read failure of a member's figures refuses capture rather than
