@@ -198,6 +198,36 @@ Contract `packages/contracts/src/v1/completion.ts`; figures
   `packages/core/src/report/completion-report.test.ts`: "reports a throwing dispatch read
   as unavailable and absent from infrastructure", its utilization twin, and "does not mark a
   member unavailable when the dispatch read finds nothing".
+- **History-wide delivery, rework, review and bottlenecks** (the live view,
+  `CompletionReport.current`; one text for the report and `nightshift completion show`,
+  `completionEvidenceLines`). A checkpoint **freezes time and resources only**; none of
+  these blocks is stored in it. Each member's evidence is gathered by `gatherMemberFigures`
+  from the same S-05 reducers a single run's report uses (`p20Of`: `deliveryOf`,
+  `reviewOf`, `operationsOf`); the run being reported reuses its own figures and
+  `gatherReport` is never called recursively. A member whose records cannot be read has no
+  evidence: it is named in `evidenceCoverage.unavailable` (with the reason) and the block
+  says "evidence from n of m members"; with no evidence at all the line reads
+  "not observed", never zero. This read failure does not refuse a checkpoint.
+  - **Identity.** A work item is `${programId}/${strandId}` for a strand-bearing job node
+    (a job node without a strand is its own identity). The same identity attempted in
+    several member runs counts **once**: its first attempt is the earliest-created attempt
+    across the members, every later attempt, in any member, is rework. It succeeded on the
+    first attempt only if it landed with exactly one attempt in the whole history.
+    Denominator = settled work items; unfinished ones are reported beside it, never in it.
+  - **Carried strands.** A strand a member carried over (`Run.carriedStrands`) is not
+    counted for that member. When the run that built it is a member it is counted there;
+    when it is not, it is counted under `carriedFromOutside` and excluded.
+  - **Rework by cause** sums each member's `ReworkReport` rows (shared repairs counted once,
+    as that reducer does) and adds one attempt, `crossRunAttempts`, for each node that
+    re-attempts an identity in a later member run, attributed to the earlier node's failure
+    (`verification_failed`, `integration_conflict`, ...) or "re-attempted in a later run".
+  - **Review** sums examiner dispositions (upheld, overturned, risk accepted), unique findings
+    (identified inside one run, so summed, not matched across runs) and overhead.
+  - **Bottlenecks are summed over member runs, not elapsed.** Each member's wait, queue,
+    integration and examination unions are added as they are, so overlapping runs count
+    twice. The history's elapsed time stays `active_seconds` / `run_completion_time`.
+  - The export carries the blocks inside `completions[].current`; its `completions` section
+    lists the delivery, rework, review and summed-time metric ids.
 - **Lower bounds**: `combined.lowerBound` is true when any member or valuation is
   missing, or a measured member's root launch has no summary (counted as `missing` in its
   token coverage; a member with nothing but an unmeasured root is itself unmeasured); `infrastructure` and `resources` are absent, not zero, without evidence;

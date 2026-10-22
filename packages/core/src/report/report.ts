@@ -72,7 +72,14 @@ import {
   stepAdjustmentsOf,
 } from "../rules/step-adjustments.js";
 import { type AttemptRow, attemptRowsOf } from "./attempts.js";
-import { type CompletionReport, completionOf } from "./completion.js";
+import {
+  type CompletionFigures,
+  type CompletionReport,
+  completionEvidenceLines,
+  completionOf,
+  type MemberEvidence,
+  workItemEvidenceOf,
+} from "./completion.js";
 import {
   type CorrectionReport,
   type DecisionReport,
@@ -646,6 +653,8 @@ const readRecords = async (
   scope: RunScope,
   program: ProgramContract,
   carried: readonly CarriedStrand[],
+  /** A caller that reads the machine records itself, to tell a failed read from none, skips them. */
+  readMachine = true,
 ): Promise<Records> => {
   const nodes = await readAll<ExecutionNode>((page) =>
     stores.executionNodes.listByRun(scope, page),
@@ -657,8 +666,12 @@ const readRecords = async (
   const measurements = await readAll<MeasurementSummary>((page) =>
     stores.measurements.listByRun(scope, page),
   );
-  const dispatch = await stores.dispatches.get(scope).catch(() => undefined);
-  const utilization = await stores.computeUtilizations.get(scope).catch(() => undefined);
+  const dispatch = readMachine
+    ? await stores.dispatches.get(scope).catch(() => undefined)
+    : undefined;
+  const utilization = readMachine
+    ? await stores.computeUtilizations.get(scope).catch(() => undefined)
+    : undefined;
   const agents: Agent[] = [];
 
   const routesOf = new Map<string, readonly RoutingDecision[]>();
@@ -905,6 +918,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
 
   const p20 = p20Of(records, run, nodes, verifications);
   const feedbackSections = await feedbackSectionsOf(stores, scope, run, p20.asOf, {
+    evidence: memberEvidenceOf(scope, run, records, p20),
     resources: resourcesOfRoutes(
       [...records.routesOf.values()].flat(),
       records.measurements,
@@ -970,6 +984,13 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
 };
 
 interface MemberFigures {
+  readonly evidence?: MemberEvidence;
+  /**
+   * Why the lifecycle records behind `evidence` could not be read. Apart from
+   * `unavailable`: a checkpoint freezes time and resources only, so it is not
+   * refused for evidence the history view alone shows.
+   */
+  readonly evidenceUnavailable?: string;
   readonly resources?: ResourceTotals;
   readonly infrastructure?: InfrastructureReport;
   /** Why a read the model figures need failed; the figures are then absent, not zero. */
@@ -1017,6 +1038,36 @@ const nodeRecordsOf = async (
   return { agents, routes };
 };
 
+/** What a member run contributes to a completion history, from figures already computed. */
+const memberEvidenceOf = (
+  scope: RunScope,
+  run: Run,
+  records: Records,
+  p20: Pick<RunReport, "operations" | "delivery" | "review">,
+): MemberEvidence => {
+  const { operations } = p20;
+  return {
+    delivery: p20.delivery,
+    review: p20.review,
+    operations: {
+      startedAt: operations.startedAt,
+      ...(operations.endedAt === undefined ? {} : { endedAt: operations.endedAt }),
+      ...(operations.elapsedMs === undefined ? {} : { elapsedMs: operations.elapsedMs }),
+      unions: operations.unions,
+      endings: operations.endings,
+      summedWorkMs: operations.concurrency.summedWorkMs,
+    },
+    carriedStrands: run.carriedStrands ?? [],
+    workItems: workItemEvidenceOf(
+      scope.programId,
+      scope.runId,
+      [...records.tree.nodes.values()],
+      [...records.jobOf.values()],
+      [...records.routesOf.values()].flat(),
+    ),
+  };
+};
+
 /**
  * One completion member run's model and machine figures. Every read is
  * tolerated: a figure whose records could not all be read is absent, not zero.
@@ -1027,22 +1078,54 @@ const memberFiguresOf = async (
   scope: RunScope,
   run: Run,
   asOf: IsoTimestamp,
+  withEvidence = true,
 ): Promise<MemberFigures> => {
   const failures: string[] = [];
-  const nodes = await (async () =>
-    readAll<ExecutionNode>((page) => stores.executionNodes.listByRun(scope, page)))().catch(
-    (e: unknown) => {
-      failures.push(`nodes: ${reasonOf(e)}`);
-      return undefined;
-    },
-  );
-  const measurements = await (async () =>
-    readAll<MeasurementSummary>((page) => stores.measurements.listByRun(scope, page)))().catch(
-    (e: unknown) => {
-      failures.push(`measurements: ${reasonOf(e)}`);
-      return undefined;
-    },
-  );
+  let evidenceFailure: string | undefined;
+  // The same reducers a single run's report uses, over records read once. When
+  // that read fails the evidence is absent and the figures fall back to their own reads.
+  const read = !withEvidence
+    ? undefined
+    : await (async () => {
+        const program = await stores.programContracts.get(scope.projectId, scope.programId);
+        if (program === undefined) throw new Error("program is not in the control plane");
+        const records = await readRecords(stores, scope, program, run.carriedStrands ?? [], false);
+        const sorted = [...records.tree.nodes.values()].sort((a, b) =>
+          a.createdAt.localeCompare(b.createdAt),
+        );
+        const verifications = await gatherVerifications(stores, scope, sorted);
+        return {
+          records,
+          nodes: sorted,
+          evidence: memberEvidenceOf(
+            scope,
+            run,
+            records,
+            p20Of(records, run, sorted, verifications),
+          ),
+        };
+      })().catch((e: unknown) => {
+        evidenceFailure = reasonOf(e);
+        return undefined;
+      });
+  const nodes =
+    read?.nodes ??
+    (await (async () =>
+      readAll<ExecutionNode>((page) => stores.executionNodes.listByRun(scope, page)))().catch(
+      (e: unknown) => {
+        failures.push(`nodes: ${reasonOf(e)}`);
+        return undefined;
+      },
+    ));
+  const measurements =
+    read?.records.measurements ??
+    (await (async () =>
+      readAll<MeasurementSummary>((page) => stores.measurements.listByRun(scope, page)))().catch(
+      (e: unknown) => {
+        failures.push(`measurements: ${reasonOf(e)}`);
+        return undefined;
+      },
+    ));
   // A failed read is a failure; a successful read that finds nothing is a plain absence.
   let machineReadFailed = false;
   const dispatch = await (async () => stores.dispatches.get(scope))().catch((e: unknown) => {
@@ -1057,8 +1140,16 @@ const memberFiguresOf = async (
       return undefined;
     },
   );
-  const { agents, routes, failure } = await nodeRecordsOf(stores, scope, nodes);
+  const { agents, routes, failure } =
+    read === undefined
+      ? await nodeRecordsOf(stores, scope, nodes)
+      : {
+          agents: [...read.records.agents],
+          routes: [...read.records.routesOf.values()].flat(),
+          failure: undefined,
+        };
   if (failure !== undefined) failures.push(failure);
+  const evidence = read?.evidence;
   const infrastructure =
     agents === undefined || machineReadFailed
       ? undefined
@@ -1070,6 +1161,8 @@ const memberFiguresOf = async (
           asOf,
         });
   return {
+    ...(evidence === undefined ? {} : { evidence }),
+    ...(evidenceFailure === undefined ? {} : { evidenceUnavailable: evidenceFailure }),
     ...(routes === undefined || measurements === undefined
       ? {}
       : { resources: resourcesOfRoutes(routes, measurements, rootIdsOf(nodes ?? [])) }),
@@ -1090,14 +1183,23 @@ export const gatherMemberFigures = async (
   members: readonly { readonly programId: ProgramId; readonly runId: RunId }[],
   runs: ReadonlyMap<string, Run>,
   asOf: IsoTimestamp,
+  options: { readonly evidence?: boolean } = {},
 ): Promise<{
   resources: Map<string, ResourceTotals>;
   infrastructure: Map<string, InfrastructureReport>;
+  evidence: Map<string, MemberEvidence>;
+  /**
+   * Members whose delivery, review or lifecycle records could not be read, with
+   * the reason: their evidence is absent, not zero. Not a reason to refuse a checkpoint.
+   */
+  evidenceUnavailable: Map<string, string>;
   /** Members whose nodes, routes, measurements, agents, dispatch or utilization read failed, with the reason. */
   unavailable: Map<string, string>;
 }> => {
   const resources = new Map<string, ResourceTotals>();
   const infrastructure = new Map<string, InfrastructureReport>();
+  const evidence = new Map<string, MemberEvidence>();
+  const evidenceUnavailable = new Map<string, string>();
   const unavailable = new Map<string, string>();
   const done = new Set<string>();
   for (const member of members) {
@@ -1110,12 +1212,17 @@ export const gatherMemberFigures = async (
       { projectId, programId: member.programId, runId: member.runId },
       run,
       asOf,
+      options.evidence !== false,
     );
     if (figures.resources !== undefined) resources.set(key, figures.resources);
     if (figures.infrastructure !== undefined) infrastructure.set(key, figures.infrastructure);
+    if (figures.evidence !== undefined) evidence.set(key, figures.evidence);
+    if (figures.evidenceUnavailable !== undefined) {
+      evidenceUnavailable.set(key, figures.evidenceUnavailable);
+    }
     if (figures.unavailable !== undefined) unavailable.set(key, figures.unavailable);
   }
-  return { resources, infrastructure, unavailable };
+  return { resources, infrastructure, evidence, evidenceUnavailable, unavailable };
 };
 
 /**
@@ -1146,6 +1253,8 @@ const feedbackSectionsOf = async (
   const feedback = new Map<string, RunFeedback>();
   const resources = new Map<string, ResourceTotals>();
   const infrastructure = new Map<string, InfrastructureReport>();
+  const evidence = new Map<string, MemberEvidence>();
+  const evidenceUnavailable = new Map<string, string>();
   const unavailable = new Map<string, string>();
   const self = `${scope.programId}/${scope.runId}`;
   // A checkpoint is reported from its stored measurement, so only current
@@ -1164,13 +1273,27 @@ const feedbackSectionsOf = async (
       member === self ? current : await memberFiguresOf(stores, memberScope, found, asOf);
     if (figures.resources !== undefined) resources.set(member, figures.resources);
     if (figures.infrastructure !== undefined) infrastructure.set(member, figures.infrastructure);
+    if (figures.evidence !== undefined) evidence.set(member, figures.evidence);
+    if (figures.evidenceUnavailable !== undefined) {
+      evidenceUnavailable.set(member, figures.evidenceUnavailable);
+    }
     if (figures.unavailable !== undefined) unavailable.set(member, figures.unavailable);
   }
   return {
     feedback: runFeedbackOf(run, own),
     feedbackCoverage: feedbackCoverageOf(programRuns, programFeedback),
     completions: mine.map((history) =>
-      completionOf({ history, runs, feedback, resources, infrastructure, unavailable, asOf }),
+      completionOf({
+        history,
+        runs,
+        feedback,
+        resources,
+        infrastructure,
+        evidence,
+        evidenceUnavailable,
+        unavailable,
+        asOf,
+      }),
     ),
   };
 };
@@ -2109,7 +2232,7 @@ const renderHumanVerdict = (report: RunReport): string[] => {
   ];
 };
 
-const renderCompletionFigures = (f: CompletionReport["current"]): string[] => [
+const renderCompletionFigures = (f: CompletionFigures): string[] => [
   `lead time ${f.leadTimeSeconds === undefined ? "none (no worked verdict)" : seconds(f.leadTimeSeconds)}`,
   `run completion ${seconds(f.runCompletionSeconds)}`,
   `active union ${seconds(f.activeSeconds)}`,
@@ -2117,7 +2240,7 @@ const renderCompletionFigures = (f: CompletionReport["current"]): string[] => [
 ];
 
 /** The combined estimate: a lower bound where anything is missing, and never a bill. */
-const renderCombined = (f: CompletionReport["current"]): string[] => {
+const renderCombined = (f: CompletionFigures): string[] => {
   const c = f.combined;
   if (c === undefined) return ["combined estimate not observed"];
   const parts = [
@@ -2146,7 +2269,7 @@ const renderCombined = (f: CompletionReport["current"]): string[] => {
   ];
 };
 
-const renderCompletionResources = (f: CompletionReport["current"]): string[] => {
+const renderCompletionResources = (f: CompletionFigures): string[] => {
   const r = f.resources;
   const c = r?.coverage;
   const attempts = c === undefined ? 0 : c.complete + c.partial + c.unknown + c.legacy + c.missing;
@@ -2229,6 +2352,12 @@ const memberFiguresText = (m: CompletionReport["members"][number]): string => {
   return `${tokens}; ${estimate}`;
 };
 
+/** A member's own delivery summary; absent evidence is said so. */
+const memberSummaryText = (m: CompletionReport["members"][number]): string =>
+  m.summary === undefined
+    ? "delivery not observed"
+    : `first attempt ${m.summary.firstAttempt.succeeded} of ${m.summary.firstAttempt.of}, rework ${m.summary.reworkAttempts}, findings ${m.summary.uniqueFindings}${m.summary.elapsedMs === undefined ? "" : `, elapsed ${Number((m.summary.elapsedMs / 1000).toFixed(3))}s`}`;
+
 /** The price list behind each model estimate: model, source, version, and whether it left usage unvalued. */
 const renderPriceBases = (
   bases:
@@ -2266,12 +2395,14 @@ const renderCompletions = (completions: readonly CompletionReport[]): string[] =
       "",
       ...c.members.map(
         (m) =>
-          `- ${m.programId}/${m.runId}: ${m.role}, ${m.unreadable === true ? "unreadable" : `${m.status}, ${m.verdict}`}; carried strands ${m.carriedStrands}; ${memberFiguresText(m)}`,
+          `- ${m.programId}/${m.runId}: ${m.role}, ${m.unreadable === true ? "unreadable" : `${m.status}, ${m.verdict}`}; carried strands ${m.carriedStrands}; ${memberFiguresText(m)}; ${memberSummaryText(m)}`,
       ),
       "",
       ...renderPriceBases(c.current.combined?.priceBases),
       `Coverage: ${c.coverage.rated} of ${c.coverage.eligible} rated; ${c.coverage.positive} worked, ${c.coverage.negative} did not; positive share among rated ${percent(c.coverage.positiveShare)}.`,
       `Now: ${renderCompletionFigures(c.current).join("; ")}.`,
+      ...completionEvidenceLines(c.current).map((line) => `- ${line}`),
+      "Checkpoints freeze time and resources only; the delivery, rework, review and bottleneck lines above are the live view.",
       ...c.checkpoints.map(
         (k) =>
           `Checkpoint ${k.name} (membership v${k.membershipVersion}): ${renderCompletionFigures(k).join("; ")}.`,

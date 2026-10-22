@@ -58,6 +58,7 @@ import {
   RoutingDecisionSchema,
   type Run,
   RunFeedbackSchema,
+  type RunId,
   RunSchema,
   type UserPrincipal,
   VerificationSchema,
@@ -67,6 +68,7 @@ import {
   buildRunFeedback,
   type Clock,
   type CompletionFigures,
+  completionEvidenceLines,
   completionOf,
   createSteppingClock,
   type DeliveryReport,
@@ -74,9 +76,11 @@ import {
   gatherMemberFigures,
   gatherReport,
   isSettled,
+  type MemberEvidence,
   nowIso,
   type RunScope,
   renderReport,
+  type WorkItemEvidence,
 } from "@nightshift/core";
 import {
   completeJob,
@@ -1818,12 +1822,261 @@ describe("the complete SC-12 history", () => {
       "combined API-equivalent estimate lower bound $0.4670 (model $0.4670",
     );
     expect(lines[5]).toContain("3 members measured");
-    expect(lines[6]).toContain("checkpoint `after-correction` (2026-09-15T14:20:00.000Z): ");
-    expect(lines[6]).toContain(`${times}measured to 2026-09-15T14:10:00.000Z, ${spent}`);
-    expect(lines.slice(7)).toEqual([
+    // The live view then prints the history-wide delivery, rework, review and bottleneck lines.
+    expect(lines.slice(6, 10).map((line) => line.split(":")[0])).toEqual([
+      "  delivery",
+      "  rework",
+      "  review",
+      "  bottlenecks, summed over member runs (not elapsed)",
+    ]);
+    expect(lines[10]).toContain("checkpoint `after-correction` (2026-09-15T14:20:00.000Z): ");
+    expect(lines[10]).toContain(`${times}measured to 2026-09-15T14:10:00.000Z, ${spent}`);
+    expect(lines.slice(11)).toEqual([
       `  snapshot member ${memberOf(run1)} anchor succeeded did_not_work`,
       `  snapshot member ${memberOf(failedRun)} contributing failed not_rated`,
       `  snapshot member ${memberOf(correctionRun)} correction succeeded worked`,
+    ]);
+  });
+
+  it("reads history-wide delivery, rework, review and bottlenecks the same through the report, the export and the CLI", async () => {
+    const { terminal, run1, historyId } = facts;
+    const report = await reportOf(run1);
+    const exported = exportReport(report);
+    const shown = await terminal.run("completion", "show", "alpha", "--history", historyId);
+    expect(shown.code, shown.err.join("\n")).toBe(0);
+
+    const coverage = { withEvidence: 3, readable: 3, unavailable: [] };
+    const [completion] = report.completions;
+    expect(completion?.current).toMatchObject({
+      evidenceCoverage: coverage,
+      delivery: {
+        workItems: 6,
+        succeededFirstAttempt: 2,
+        denominator: 6,
+        unfinished: 0,
+        cancelled: 0,
+        reattemptedAcrossRuns: 0,
+        carriedFromOutside: 0,
+        excludingRepairs: { succeededFirstAttempt: 2, denominator: 6, unfinished: 0 },
+        coverage,
+      },
+      rework: {
+        attempts: 3,
+        crossRunAttempts: 0,
+        byCause: [
+          { kind: "examination_findings", attempts: 1, crossRunAttempts: 0, sharedAttempts: 0 },
+          { kind: "integration_conflict", attempts: 1, crossRunAttempts: 0, sharedAttempts: 0 },
+          { kind: "verification_failed", attempts: 1, crossRunAttempts: 0, sharedAttempts: 0 },
+        ],
+        unknownCause: 0,
+        coverage,
+      },
+      review: {
+        dispositions: { upheld: 0, overturned: 0, risk_accepted: 0 },
+        uniqueFindings: 1,
+        overhead: { examiner: { calls: 2 }, answerer: { calls: 0 } },
+        coverage,
+      },
+      operations: {
+        summed: { wait: 0, queue: 0, integration: 45_000, examination: 0, summedWorkMs: 405_000 },
+        coverage,
+      },
+    });
+    expect(completion?.current.review?.overhead.examiner.resources.tokens).toMatchObject({
+      input: 5_500,
+      output: 900,
+    });
+    expect(
+      completion?.current.operations?.members.map((m) => [m.elapsedMs, m.summedWorkMs]),
+    ).toEqual([
+      [1_800_000, 405_000],
+      [1_200_000, 0],
+      [600_000, 0],
+    ]);
+    // Each member links its own summary.
+    expect(completion?.members.map((m) => m.summary)).toEqual([
+      {
+        firstAttempt: { succeeded: 1, of: 4 },
+        reworkAttempts: 3,
+        uniqueFindings: 1,
+        elapsedMs: 1_800_000,
+      },
+      {
+        firstAttempt: { succeeded: 0, of: 1 },
+        reworkAttempts: 0,
+        uniqueFindings: 0,
+        elapsedMs: 1_200_000,
+      },
+      {
+        firstAttempt: { succeeded: 1, of: 1 },
+        reworkAttempts: 0,
+        uniqueFindings: 0,
+        elapsedMs: 600_000,
+      },
+    ]);
+
+    // The export passes the blocks through unchanged.
+    expect(exported.completions[0]?.current).toMatchObject({
+      delivery: completion?.current.delivery,
+      rework: completion?.current.rework,
+      review: completion?.current.review,
+      operations: completion?.current.operations,
+      evidenceCoverage: coverage,
+    });
+    expect(exported.metricsBySection.completions).toEqual(
+      expect.arrayContaining([
+        "first_attempt_success",
+        "rework_by_cause",
+        "examiner_dispositions",
+        "review_overhead",
+        "summed_work_time",
+      ]),
+    );
+    for (const id of exported.metricsBySection.completions ?? []) {
+      expect(exported.definitions.map((d) => d.id)).toContain(id);
+    }
+
+    // The report and the CLI print the same four lines.
+    const lines = [
+      "delivery: first attempt succeeded 2 of 6 settled work items (0 unfinished, 0 cancelled), 0 re-attempted across runs; evidence from 3 of 3 members",
+      "rework: 3 attempts — examination_findings 1, integration_conflict 1, verification_failed 1; 0 from later runs re-attempting; evidence from 3 of 3 members",
+      "review: dispositions upheld 0, overturned 0, risk accepted 0; 1 unique finding; overhead examiner 2 calls, answerer 0, arbiter 0, plan review 0, tokens in 5500, out 900; evidence from 3 of 3 members",
+      "bottlenecks, summed over member runs (not elapsed): waiting 0s, queue 0s, integration 45s, examination 0s; work 405s; evidence from 3 of 3 members",
+    ];
+    const text = renderReport(report);
+    for (const line of lines) {
+      expect(text).toContain(`- ${line}`);
+      expect(shown.out).toContain(`  ${line}`);
+    }
+    expect(text).toContain(
+      "Checkpoints freeze time and resources only; the delivery, rework, review and bottleneck lines above are the live view.",
+    );
+  });
+
+  it("counts a work item attempted in several member runs once, and a carried strand once", async () => {
+    const { world, run1, failedRun, correctionRun, programA, programB } = facts;
+    const [stored] = await readAll((p) =>
+      world.stores.completionHistories.listByProject(run1.projectId, p),
+    );
+    const history = stored as CompletionHistory;
+    const runs = new Map(
+      await Promise.all(
+        history.members.map(async (member) => {
+          const run = await world.stores.runs.get(
+            { projectId: run1.projectId, programId: member.programId },
+            member.runId,
+          );
+          return [memberOf(member), run as Run] as const;
+        }),
+      ),
+    );
+    const gathered = await gatherMemberFigures(
+      world.stores,
+      run1.projectId,
+      history.members,
+      runs,
+      facts.asOf,
+    );
+    const key = (ref: { programId: string; runId: string }) => memberOf(ref);
+    const A = programA.programId;
+    const B = programB.programId;
+    const item = (
+      identity: string,
+      firstAt: string,
+      outcome: WorkItemEvidence["outcome"],
+      failure?: string,
+    ): WorkItemEvidence => ({
+      identity,
+      strandBearing: true,
+      repair: false,
+      nodeId: `${identity}@${firstAt}`,
+      firstAt,
+      attempts: 1,
+      outcome,
+      ...(failure === undefined ? {} : { failure }),
+    });
+    const evidence = (
+      ref: { programId: string; runId: string },
+      workItems: WorkItemEvidence[],
+      carriedStrands: MemberEvidence["carriedStrands"] = [],
+    ): [string, MemberEvidence] => [
+      key(ref),
+      { ...(gathered.evidence.get(key(ref)) as MemberEvidence), workItems, carriedStrands },
+    ];
+    const outside = "run_0000000000000000000000OUT1" as RunId;
+    const report = completionOf({
+      history,
+      runs,
+      feedback: new Map(),
+      resources: gathered.resources,
+      evidence: new Map([
+        // Run 1 failed s1 and landed s0.
+        evidence(run1, [
+          item(`${A}/s1`, "2026-09-15T12:00:00.000Z", "verification_failed", "verification_failed"),
+          item(`${A}/s0`, "2026-09-15T12:00:05.000Z", "landed"),
+        ]),
+        // The failed run carried s0 from run 1 (a member), re-attempted s1 and failed s2.
+        evidence(
+          failedRun,
+          [
+            item(`${A}/s0`, "2026-09-15T12:20:00.000Z", "landed"),
+            item(`${A}/s1`, "2026-09-15T12:21:00.000Z", "landed"),
+            item(`${A}/s2`, "2026-09-15T12:22:00.000Z", "failed", "integration_conflict"),
+          ],
+          [{ strandId: "s0", fromRunId: run1.runId, landed: [] }] as never,
+        ),
+        // The correction run, in program B, carried s9 from a run outside the history.
+        evidence(correctionRun, [item(`${B}/s2`, "2026-09-15T13:00:00.000Z", "landed")], [
+          { strandId: "s9", fromRunId: outside, landed: [] },
+        ] as never),
+      ]),
+      asOf: facts.asOf,
+    });
+    // A member whose evidence is missing is named, never counted as zero.
+    const partial = completionOf({
+      history,
+      runs,
+      feedback: new Map(),
+      evidence: new Map([...gathered.evidence].filter(([k]) => k !== key(correctionRun))),
+      evidenceUnavailable: new Map([[key(correctionRun), "events: refused"]]),
+      asOf: facts.asOf,
+    });
+    expect(partial.current.evidenceCoverage).toEqual({
+      withEvidence: 2,
+      readable: 3,
+      unavailable: [key(correctionRun)],
+      reasons: { [key(correctionRun)]: "events: refused" },
+    });
+    expect(partial.current.delivery?.coverage.withEvidence).toBe(2);
+    expect(completionEvidenceLines(partial.current)[0]).toContain(
+      `evidence from 2 of 3 members; no evidence for ${key(correctionRun)} (events: refused)`,
+    );
+    const none = completionOf({
+      history,
+      runs,
+      feedback: new Map(),
+      evidence: new Map(),
+      asOf: facts.asOf,
+    });
+    expect(
+      completionEvidenceLines(none.current).map((l) => l.split(":")[1]?.trim().slice(0, 12)),
+    ).toEqual(["not observed", "not observed", "not observed", "not observed"]);
+    const { delivery, rework } = report.current;
+    // s1 once (its first attempt failed), s0 once (not again for the run that carried it), s2, and B's s2.
+    expect(delivery).toMatchObject({
+      workItems: 4,
+      succeededFirstAttempt: 2,
+      denominator: 4,
+      unfinished: 0,
+      reattemptedAcrossRuns: 1,
+      carriedFromOutside: 1,
+    });
+    expect(rework?.attempts).toBe(4);
+    expect(rework?.crossRunAttempts).toBe(1);
+    expect(rework?.byCause.map((row) => [row.kind, row.attempts, row.crossRunAttempts])).toEqual([
+      ["examination_findings", 1, 0],
+      ["integration_conflict", 1, 0],
+      ["verification_failed", 2, 1],
     ]);
   });
 

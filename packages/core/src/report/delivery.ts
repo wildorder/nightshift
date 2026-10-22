@@ -146,7 +146,7 @@ export const finalOutcomeOf = (
   }
 };
 
-const failureReasonOf = (reason: string | undefined): FailureReason => {
+export const failureReasonOf = (reason: string | undefined): FailureReason => {
   const prefixes: readonly FailureReason[] = [
     "examination_failed",
     "examination_upheld",
