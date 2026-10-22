@@ -265,6 +265,12 @@ export interface Spend {
   readonly estimated: boolean;
   /** Usages with neither a dollar figure nor any token counter: unmeasured, not free. */
   readonly unknown: number;
+  /**
+   * Attempts with a dollar figure and no token counter at all: priced, so complete for a
+   * dollar limit, but their tokens are unknown, which a token limit cannot certify.
+   * Absent counts as 0.
+   */
+  readonly tokensUnknown?: number;
   readonly evaluation: SpendEvaluation;
 }
 
@@ -290,6 +296,7 @@ const spendOfAttempts = (items: readonly AttemptResources[]): Spend => {
   let unmeasured = 0;
   let estimateIncomplete = 0;
   let tokensIncomplete = 0;
+  let tokensUnknown = 0;
   for (const item of items) {
     const { reported, estimated: estimate } = item.usd;
     // One figure per attempt, reported preferred: never both.
@@ -307,6 +314,7 @@ const spendOfAttempts = (items: readonly AttemptResources[]): Spend => {
     if (counted && (item.tokens.input === undefined || item.tokens.output === undefined)) {
       tokensIncomplete += 1;
     }
+    if (!counted && (reported !== undefined || estimate !== undefined)) tokensUnknown += 1;
     if (reported === undefined && estimate === undefined) {
       if (counted) unpriced += 1;
       else unmeasured += 1;
@@ -317,6 +325,7 @@ const spendOfAttempts = (items: readonly AttemptResources[]): Spend => {
     tokens,
     estimated,
     unknown: unmeasured,
+    tokensUnknown,
     evaluation: evaluationOf(unpriced, unmeasured, estimateIncomplete, tokensIncomplete),
   };
 };
@@ -361,8 +370,23 @@ export const budgetEvaluation = (
   costPolicy: Pick<ProgramContract["costPolicy"], "maxUsd" | "maxTokens">,
 ): SpendEvaluation & { readonly configured: boolean } => ({
   configured: costPolicy.maxUsd !== undefined || costPolicy.maxTokens !== undefined,
-  ...spend.evaluation,
+  ...limitAwareEvaluation(spend, costPolicy),
 });
+
+/**
+ * A token limit cannot be certified over attempts whose tokens are unknown (D-02), so
+ * dollars-only attempts count as `tokensIncomplete` when `maxTokens` is configured.
+ * A dollar limit (or none) sees the Spend's own evaluation.
+ */
+const limitAwareEvaluation = (
+  spend: Spend,
+  costPolicy: Pick<ProgramContract["costPolicy"], "maxUsd" | "maxTokens">,
+): SpendEvaluation => {
+  const unknown = spend.tokensUnknown ?? 0;
+  if (costPolicy.maxTokens === undefined || unknown === 0) return spend.evaluation;
+  const { unpriced, unmeasured, estimateIncomplete, tokensIncomplete } = spend.evaluation;
+  return evaluationOf(unpriced, unmeasured, estimateIncomplete, tokensIncomplete + unknown);
+};
 
 /**
  * Which budget, if any, `spend` has used up (D-P8-08). A limit is enforced on
@@ -392,7 +416,7 @@ export const budgetSpent = (
       budget: "maxTokens",
       limit: costPolicy.maxTokens,
       spent: spend.tokens,
-      evaluation: spend.evaluation,
+      evaluation: limitAwareEvaluation(spend, costPolicy),
     };
   }
   return undefined;

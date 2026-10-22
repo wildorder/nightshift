@@ -380,6 +380,72 @@ describe("a budget that cannot be evaluated completely (D-02)", () => {
   });
 });
 
+describe("a dollars-only legacy route under each limit (D-02)", () => {
+  const run = async (costPolicy: { maxUsd?: number; maxTokens?: number }) => {
+    const { world, engine, submit } = await rig(
+      async (context, finish) => {
+        const name = context.input.job.objective;
+        await writeModule(context.worktree, name);
+        await finish(`${name}: done`);
+        return {
+          kind: "completed",
+          usage: name === "priced" ? { actualCostUsd: 1 } : { inputTokens: 900, outputTokens: 200 },
+        };
+      },
+      { costPolicy },
+    );
+    const settle = async (name: string) => {
+      const job = await submit(name);
+      expect(await until(world, job.nodeId, (status) => isSettled(status as never))).toBe(
+        "integrated",
+      );
+      await routesSettled(world, job.nodeId);
+      const deadline = Date.now() + 30_000;
+      while (!engine.idle() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    await settle("priced");
+    await settle("known");
+    const held = await submit("held");
+    const incomplete = (await eventsOf(world)).filter(
+      (event) => event.type === "run.budget_evaluation_incomplete",
+    );
+    return { world, engine, held, incomplete };
+  };
+
+  it("leaves a token limit's evaluation incomplete and still enforces it on known tokens", async () => {
+    const { world, engine, held, incomplete } = await run({ maxTokens: 1_000 });
+    expect(incomplete.map((event) => event.payload)).toContainEqual(
+      expect.objectContaining({
+        budget: "maxTokens",
+        limit: 1_000,
+        tokensIncomplete: 1,
+      }),
+    );
+    expect(await world.stores.executionNodes.get(world.scope, held.nodeId)).toMatchObject({
+      status: "queued",
+    });
+    expect(engine.waiting(held.jobId)).toMatchObject({
+      kind: "budget_spent",
+      budget: "maxTokens",
+      spent: 1_100,
+    });
+    await engine.close("the test is over");
+  });
+
+  it("does not make a dollar limit's evaluation incomplete", async () => {
+    const { engine, incomplete } = await run({ maxUsd: 50 });
+    expect(incomplete.map((event) => event.payload)).not.toContainEqual(
+      expect.objectContaining({ tokensIncomplete: 1 }),
+    );
+    for (const event of incomplete) {
+      expect(event.payload).toMatchObject({ tokensIncomplete: 0 });
+    }
+    await engine.close("the test is over");
+  });
+});
+
 describe("the root launch counts against the budget (D-02)", () => {
   const rootSummary = (world: World): MeasurementSummary => ({
     schemaVersion: 1,

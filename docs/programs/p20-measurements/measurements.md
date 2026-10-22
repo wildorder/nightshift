@@ -99,6 +99,11 @@ bound when anything is missing) are separate again.
   reported dollars cannot certify an attempt whose tokens are half-counted. An attempt
   with neither counters nor dollars is only `unmeasured`; dollars with no counters at all
   are priced, not `tokensIncomplete`.
+- The evaluation is limit-aware. A dollars-only attempt (a dollar figure, no token counter
+  at all) completes a `maxUsd` evaluation, but leaves a `maxTokens` evaluation incomplete,
+  counted in `tokensIncomplete`: unknown usage must not silently satisfy a configured token
+  budget. `Spend.evaluation` stays the dollar view; `budgetEvaluation` and `budgetSpent`
+  fold in `Spend.tokensUnknown` only when `maxTokens` is configured.
 - An incomplete evaluation is enforced on what is known, announced once per distinct count
   with `run.budget_evaluation_incomplete`, and **never certified as within budget**. The
   report and Studio say "cannot be evaluated completely" with the counts (adding "k with
