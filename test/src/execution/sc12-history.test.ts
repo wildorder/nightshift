@@ -771,14 +771,32 @@ const play = async (): Promise<Facts> => {
   await one.idle();
 
   clock.advance(30_000);
+  // The 45 seconds belong to the integration interval of "first", which the merge queue closes
+  // with an `end` observation stamped from the clock *after* "first" is stored as `integrated`
+  // (merge-queue.ts, integrateOne). A story that advanced the clock once `until(first, settled)`
+  // returned would race that observation: on a loaded machine the `end` is stamped before the
+  // advance and the union is 0. So the advance happens inside the write of "first" as integrated,
+  // which is guaranteed to precede the `end` observation and to follow the `start` one. It first
+  // waits for the "second" worker to be at its hold, so its work interval opened at the same
+  // instant "first" started integrating and runs the whole 45 seconds.
+  let firstId: ExecutionNodeId | undefined;
+  let landed = false;
+  const nodes = world.stores.executionNodes;
+  const putNode = nodes.put.bind(nodes);
+  nodes.put = async (node) => {
+    if (node.executionNodeId === firstId && node.status === "integrated" && !landed) {
+      landed = true;
+      await vi.waitFor(() => expect(atHold).toBe(true), { timeout: 60_000 });
+      clock.advance(45_000);
+    }
+    return putNode(node);
+  };
   jobs.first = await one.submit("first module");
+  firstId = jobs.first.nodeId;
   jobs.second = await one.submit("second module");
   expect(await one.until(jobs.first.nodeId, settled)).toBe("integrated");
   // The second job was cut from the head the first one has now moved, and works for 45 seconds.
-  // Wait until it is actually working: advancing the clock before its interval opens would leave
-  // the integration union at 0 under load.
-  await vi.waitFor(() => expect(atHold).toBe(true), { timeout: 60_000 });
-  clock.advance(45_000);
+  expect(landed).toBe(true);
   hold.open();
   expect(await one.until(jobs.second.nodeId, settled)).toBe("failed");
   await one.idle();
