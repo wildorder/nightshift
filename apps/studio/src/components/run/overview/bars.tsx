@@ -5,7 +5,7 @@
  * never drawn on these scales. A group with no observed counters has no bar and
  * says "not observed".
  */
-import type { RunReport } from "@nightshift/core";
+import type { CompletionRework, RunReport } from "@nightshift/core";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,7 +32,7 @@ export interface Bar {
 
 const SHADES = ["bg-chart-1", "bg-chart-2", "bg-chart-3", "bg-chart-4", "bg-chart-5"] as const;
 
-const BarChart = ({
+export const BarChart = ({
   title,
   unit,
   bars,
@@ -270,6 +270,60 @@ export const ReworkBars = ({
       bars={bars}
       totalText={`Total: ${rework.attempts} rework attempt${rework.attempts === 1 ? "" : "s"}, each counted once; an attempt with several causes appears under each, so the bars can add to more.`}
       selected={selected}
+      onSelect={onSelect}
+      color={2}
+    />
+  );
+};
+
+/** Rework by cause across a history's members; each attempt counted once, so the parts are additive. */
+export const HistoryReworkBars = ({
+  rework,
+  onSelect,
+}: {
+  readonly rework: CompletionRework;
+  readonly onSelect: (selection: Selection) => void;
+}) => {
+  const rows = [
+    ...rework.byCause.map((row) => ({
+      key: row.kind,
+      label: row.kind.replaceAll("_", " "),
+      attempts: row.attempts,
+      cross: row.crossRunAttempts,
+      shared: row.sharedAttempts,
+    })),
+    ...(rework.unknownCause > 0
+      ? [
+          {
+            key: "unknown",
+            label: "cause unknown",
+            attempts: rework.unknownCause,
+            cross: 0,
+            shared: 0,
+          },
+        ]
+      : []),
+  ];
+  const bars: Bar[] = rows.map((row) => ({
+    key: row.key,
+    label: row.label,
+    value: row.attempts,
+    valueText: `${row.attempts} attempt${row.attempts === 1 ? "" : "s"}`,
+    detail: `${row.cross} from a later run re-attempting${row.shared > 0 ? `; ${row.shared} also counted under another cause` : ""}`,
+    selection: {
+      key: `history-bar:cause:${row.key}`,
+      title: "Repair and review",
+      metrics: ["rework_by_cause"],
+      scope: { kind: "cause", value: row.key },
+    },
+  }));
+  return (
+    <BarChart
+      title="Rework by cause"
+      unit="attempts"
+      bars={bars}
+      totalText={`Total: ${rework.attempts} rework attempt${rework.attempts === 1 ? "" : "s"} across the member runs, each counted once (${rework.crossRunAttempts} from a later run re-attempting); an attempt with several causes appears under each, so the bars can add to more. Counts only; tokens and dollars are not drawn here.`}
+      selected={undefined}
       onSelect={onSelect}
       color={2}
     />

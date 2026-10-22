@@ -38,6 +38,13 @@ import {
   verdictText,
 } from "../../../lib/overview.js";
 import { ArtifactLink } from "../parts.js";
+import {
+  acrossText,
+  hasObservedTime,
+  IDENTITY_RULE,
+  memberTimeText,
+  missingMembers,
+} from "./history-figures.js";
 import { decisionHref, findingTexts, memberRunHref, workHref } from "./links.js";
 import { HISTORY_TILE_SELECTIONS, type HistoryTileId, type Selection } from "./selection.js";
 
@@ -397,10 +404,45 @@ export const HistoryEvidenceSheet = ({
   const figures = history.current;
   const total = figures.measuredMembers + figures.unmeasuredMembers;
   const coverage: string[] = [];
-  if (tile === "time") {
+  // Which coverage block the tile stands on, for the coverage and missing-member lines.
+  let blockCoverage = figures.evidenceCoverage;
+  if (tile === "delivered") {
+    const d = figures.delivery;
+    blockCoverage = d?.coverage ?? figures.evidenceCoverage;
+    coverage.push(
+      d === undefined
+        ? `Delivery: ${NOT_OBSERVED}; no member run left delivery evidence.`
+        : `First attempt succeeded ${d.succeededFirstAttempt} of ${d.denominator} settled unique work items; ${d.unfinished} unfinished work items are not in the denominator (${d.cancelled} settled as cancelled, inside it).`,
+      ...(d === undefined
+        ? []
+        : [
+            `${d.workItems} unique work items in all; ${d.reattemptedAcrossRuns} attempted in more than one member run. Excluding repairs: ${d.excludingRepairs.succeededFirstAttempt} of ${d.excludingRepairs.denominator} settled, ${d.excludingRepairs.unfinished} unfinished.`,
+            `${d.carriedFromOutside} carried strand${d.carriedFromOutside === 1 ? "" : "s"} built by a run outside this history: excluded, counted here.`,
+          ]),
+      IDENTITY_RULE,
+    );
+  } else if (tile === "review") {
+    const w = figures.rework;
+    const r = figures.review;
+    blockCoverage = r?.coverage ?? figures.evidenceCoverage;
+    if (w === undefined || r === undefined) {
+      coverage.push(`Rework and review: ${NOT_OBSERVED}; no member run left evidence.`);
+    } else {
+      coverage.push(
+        `${w.attempts} rework attempts (${w.crossRunAttempts} from a later run re-attempting)${w.byCause.length === 0 ? "" : `: ${w.byCause.map((row) => `${row.kind.replaceAll("_", " ")} ${row.attempts}`).join(", ")}`}${w.unknownCause > 0 ? `; ${w.unknownCause} with no recorded cause` : ""}. An attempt with several causes appears under each.`,
+        `Examiner dispositions: upheld ${r.dispositions.upheld}, overturned ${r.dispositions.overturned}, risk accepted ${r.dispositions.risk_accepted}; ${r.uniqueFindings} unique finding${r.uniqueFindings === 1 ? "" : "s"}, identified inside each run and summed over the member runs.`,
+        `Review overhead, calls and tokens apart from dollars: examiner ${r.overhead.examiner.calls}, answerer ${r.overhead.answerer.calls}, arbiter ${r.overhead.arbiter.calls}, plan review ${r.overhead.planReview.calls}; examiner tokens ${compactCount(r.overhead.examiner.resources.tokens.input)} in, ${compactCount(r.overhead.examiner.resources.tokens.output)} out.`,
+        "Each rework attempt is counted once. Association with rework is not causation.",
+      );
+    }
+  } else if (tile === "time") {
+    const o = figures.operations;
     coverage.push(
       `Lead time ${seconds(figures.leadTimeSeconds)}, run completion time ${seconds(figures.runCompletionSeconds)}, active time ${seconds(figures.activeSeconds)}.`,
       `Measured ${figures.measuredMembers} of ${total} members.`,
+      o === undefined || !o.members.some(hasObservedTime)
+        ? `Waiting, queue, integration and examination: ${NOT_OBSERVED}; no member run left timing evidence.`
+        : `Summed over member runs, overlapping, not elapsed: waiting ${seconds(o.summed.wait / 1000)}, queue ${seconds(o.summed.queue / 1000)}, integration ${seconds(o.summed.integration / 1000)}, examination ${seconds(o.summed.examination / 1000)}, work ${seconds(o.summed.summedWorkMs / 1000)}.`,
     );
   } else if (tile === "consumed") {
     const combined = figures.combined;
@@ -477,6 +519,28 @@ export const HistoryEvidenceSheet = ({
               </p>
             </section>
 
+            {tile !== "delivered" && tile !== "review" && tile !== "time" ? null : (
+              <section className="grid gap-1" aria-label="Coverage">
+                <h3 className="font-medium">Coverage</h3>
+                <p>
+                  Evidence {acrossText(history, blockCoverage)}; {blockCoverage?.readable ?? 0}{" "}
+                  readable.
+                </p>
+                {missingMembers(history, blockCoverage).length === 0 ? (
+                  <p className="text-muted-foreground">No member run is missing.</p>
+                ) : (
+                  <List>
+                    {missingMembers(history, blockCoverage).map((m) => (
+                      <li key={m.key}>
+                        <code className="font-mono break-all">{m.key}</code>: {NOT_OBSERVED} (
+                        {m.why})
+                      </li>
+                    ))}
+                  </List>
+                )}
+              </section>
+            )}
+
             <section className="grid gap-1" aria-label="Member runs">
               <h3 className="font-medium">Member runs ({history.members.length})</h3>
               <List>
@@ -492,6 +556,11 @@ export const HistoryEvidenceSheet = ({
                     {member.programId === scope.programId && member.runId === scope.runId
                       ? " (this run)"
                       : ""}
+                    {tile === "delivered" || tile === "review" || tile === "time" ? (
+                      <span className="block text-muted-foreground">
+                        {memberEvidenceText(tile, history, member)}
+                      </span>
+                    ) : null}
                   </li>
                 ))}
               </List>
@@ -501,4 +570,18 @@ export const HistoryEvidenceSheet = ({
       </SheetContent>
     </Sheet>
   );
+};
+
+/** What one member contributes to a tile, from its own summary: before the history deduplicates. */
+const memberEvidenceText = (
+  tile: "delivered" | "review" | "time",
+  history: CompletionReport,
+  member: CompletionReport["members"][number],
+): string => {
+  if (tile === "time") return memberTimeText(history, member);
+  const s = member.summary;
+  if (s === undefined) return `${NOT_OBSERVED}: no evidence from this run`;
+  return tile === "delivered"
+    ? `in this run alone, first attempt succeeded ${s.firstAttempt.succeeded} of ${s.firstAttempt.of} settled work items`
+    : `in this run alone, ${s.reworkAttempts} rework attempt${s.reworkAttempts === 1 ? "" : "s"}, ${s.uniqueFindings} unique finding${s.uniqueFindings === 1 ? "" : "s"}`;
 };

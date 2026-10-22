@@ -4,12 +4,18 @@
  * evaluation's cue on the run's Consumed tile.
  */
 import type { ProgramId, Run, RunId } from "@nightshift/contracts";
-import { createCountingIdGenerator, makeEvent, type ProjectStores } from "@nightshift/core";
-import { screen, waitFor, within } from "@testing-library/react";
+import {
+  type CompletionReport,
+  createCountingIdGenerator,
+  makeEvent,
+  type ProjectStores,
+} from "@nightshift/core";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { runPath, SCENARIOS, type ScenarioName, type Seeded } from "../../../preview/scenarios.js";
 import { mountStudio } from "../../../test-support.js";
+import { HistoryTiles } from "./history.js";
 
 const TITLE = "Invoices persist and webhooks deliver once";
 
@@ -469,5 +475,147 @@ describe("the budget evaluation", () => {
       ) as HTMLElement,
     );
     expect((await screen.findByRole("dialog")).textContent).toContain("no limit is configured");
+  });
+});
+
+describe("a completion history's delivery, rework, review and time evidence", () => {
+  const tileOf = async (id: string): Promise<HTMLElement> => {
+    const tiles = await screen.findByRole("group", {
+      name: "Headline summaries for this completion history",
+    });
+    return tiles.querySelector(`[data-history-tile='${id}']`) as HTMLElement;
+  };
+
+  it("replaces the run's tiles with Delivered and Repair and review from the history, never mixing", async () => {
+    const { facts } = await mount();
+    await waitFor(() => expect(runTiles()?.textContent).toContain("1 of 4"));
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "Scope" }),
+      `history:${facts.historyId}`,
+    );
+    const delivered = await tileOf("delivered");
+    const repair = await tileOf("review");
+    expect(delivered.tagName).toBe("BUTTON");
+    expect(repair.tagName).toBe("BUTTON");
+    expect(delivered.textContent).toContain("unique work items");
+    expect(delivered.textContent).toMatch(/across \d+ of 3 member runs/);
+    expect(repair.textContent).toContain("rework attempt");
+    expect(repair.textContent).toContain("Examiner dispositions:");
+    expect(repair.textContent).toContain("unique, summed over member runs");
+    // The run's own tiles, with their "settled jobs" wording, are gone.
+    expect(runTiles()).toBeNull();
+    expect(historyTiles()?.textContent).not.toContain("settled jobs");
+    expect(historyTiles()?.querySelectorAll("[data-tile]")).toHaveLength(0);
+    // Time, Consumed and Rating stay beside them.
+    for (const id of ["time", "consumed", "rating"]) expect(await tileOf(id)).toBeTruthy();
+    // No score and no arrow.
+    expect(historyTiles()?.textContent).not.toMatch(/[↑↓▲▼]|score/i);
+  });
+
+  it("opens evidence dialogs with definition, denominator, identity rule, coverage and member links", async () => {
+    const { facts } = await mount({ query: (id) => `scope=history:${id}` });
+    for (const [tile, definitions] of [
+      ["delivered", ["Definition: First-attempt success"]],
+      [
+        "review",
+        [
+          "Definition: Rework by cause",
+          "Definition: Examiner dispositions",
+          "Definition: Review overhead",
+        ],
+      ],
+    ] as const) {
+      const button = await tileOf(tile);
+      button.focus();
+      await userEvent.keyboard("{Enter}");
+      const sheet = await screen.findByRole("dialog");
+      for (const name of definitions) {
+        expect(within(sheet).getByRole("region", { name })).toBeTruthy();
+      }
+      expect(sheet.textContent).toContain("Denominator and coverage:");
+      const coverage = within(sheet).getByRole("region", { name: "Coverage" });
+      expect(coverage.textContent).toMatch(/Evidence across \d+ of 3 member runs/);
+      if (tile === "delivered") {
+        expect(sheet.textContent).toContain("counted once across the member runs");
+        expect(sheet.textContent).toContain("carried strand");
+      }
+      const links = within(sheet)
+        .getAllByRole("link")
+        .map((l) => l.getAttribute("href"));
+      expect(links).toHaveLength(3);
+      expect(links.every((h) => h?.endsWith(`?scope=history:${facts.historyId}`))).toBe(true);
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    }
+  });
+
+  it("gives the per-member time table a text equivalent labelled as summed, not elapsed", async () => {
+    await mount({ query: (id) => `scope=history:${id}` });
+    const table = await screen.findByRole("table", {
+      name: "Elapsed and summed bottleneck time by run",
+    });
+    expect(within(table).getAllByRole("row")).toHaveLength(1 + 3 + 1);
+    const panel = screen.getByTestId("history-time-table");
+    expect(panel.textContent).toContain("Summed over member runs, overlapping; not elapsed");
+    const text = screen.getByTestId("history-time-text").textContent ?? "";
+    expect(text).toContain("Summed over member runs, overlapping, not elapsed");
+    expect((text.match(/elapsed/g) ?? []).length).toBeGreaterThanOrEqual(4);
+    // The member timeline stays the elapsed view.
+    expect((await screen.findByTestId("history-timeline")).querySelectorAll("li")).toHaveLength(3);
+    // No dollars on the time table.
+    expect(panel.textContent).not.toContain("$");
+  });
+
+  it("names the member with no records in a partial history and counts only members with evidence", async () => {
+    await mount({ name: "partial-history", query: (id) => `scope=history:${id}` });
+    const delivered = await tileOf("delivered");
+    await waitFor(() => expect(delivered.textContent).toContain("across 1 of 2 member runs"));
+    await userEvent.click(delivered);
+    const sheet = await screen.findByRole("dialog");
+    const coverage = within(sheet).getByRole("region", { name: "Coverage" });
+    expect(coverage.textContent).toContain("Evidence across 1 of 2 member runs");
+    expect(coverage.textContent).toContain("not observed (the run is not in the records read)");
+    const members = within(within(sheet).getByRole("region", { name: "Member runs" }))
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    expect(members.some((m) => m.includes("not observed: no evidence from this run"))).toBe(true);
+  });
+
+  it("reads not observed, never 0, when no member carries evidence", () => {
+    const coverage = { withEvidence: 0, readable: 2, unavailable: ["p/a", "p/b"] };
+    const history = {
+      completionHistoryId: "chist_x",
+      title: "No evidence",
+      version: 1,
+      members: [
+        { programId: "p", runId: "a", role: "anchor", verdict: "not_rated", carriedStrands: 0 },
+        {
+          programId: "p",
+          runId: "b",
+          role: "contributing",
+          verdict: "not_rated",
+          carriedStrands: 0,
+        },
+      ],
+      coverage: { eligible: 2, rated: 0, positive: 0, negative: 0, unrated: 2 },
+      current: {
+        activeSeconds: 0,
+        measuredMembers: 0,
+        unmeasuredMembers: 2,
+        membershipVersion: 1,
+        evidenceCoverage: coverage,
+      },
+      checkpoints: [],
+      laterFixes: [],
+      asOf: "2026-09-28T12:00:00.000Z",
+    } as unknown as CompletionReport;
+    render(<HistoryTiles history={history} onSelect={() => undefined} />);
+    const delivered = document.querySelector("[data-history-tile='delivered']") as HTMLElement;
+    const repair = document.querySelector("[data-history-tile='review']") as HTMLElement;
+    for (const tile of [delivered, repair]) {
+      expect(tile.textContent).toContain("not observed");
+      expect(tile.textContent).toContain("across 0 of 2 member runs");
+      expect(tile.textContent).not.toMatch(/\b0 of 0\b|none settled|0 rework|success/i);
+    }
   });
 });

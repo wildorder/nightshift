@@ -54,15 +54,29 @@ export const TILE_SELECTIONS: Readonly<Record<TileId, Selection>> = {
   },
 };
 
-export type HistoryTileId = "time" | "consumed" | "rating";
+export type HistoryTileId = "delivered" | "time" | "consumed" | "review" | "rating";
 
 /** The history's tiles open the same sheet, with the completion metrics' definitions. */
 export const HISTORY_TILE_SELECTIONS: Readonly<
   Record<HistoryTileId, { readonly title: string; readonly metrics: readonly MetricId[] }>
 > = {
+  delivered: {
+    title: "Delivered",
+    metrics: ["first_attempt_success"],
+  },
   time: {
     title: "Time to a working result",
-    metrics: ["completion_lead_time", "run_completion_time", "active_seconds"],
+    metrics: [
+      "completion_lead_time",
+      "run_completion_time",
+      "active_seconds",
+      "summed_work_time",
+      "wait_time",
+    ],
+  },
+  review: {
+    title: "Repair and review",
+    metrics: ["rework_by_cause", "examiner_dispositions", "review_overhead"],
   },
   consumed: {
     title: "Consumed across the members",

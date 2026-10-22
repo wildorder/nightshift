@@ -266,4 +266,100 @@ describe("the SC-12 history in the Studio", () => {
     expect(await screen.findByRole("dialog")).toBeTruthy();
     expect(downloadUrl).not.toHaveBeenCalled();
   });
+  it("reads history-wide delivery, rework, review and bottlenecks, matching the per-member rows", async () => {
+    await mount(`?scope=history:${history.completionHistoryId}`);
+    await waitFor(() =>
+      expect(screen.getByTestId("scope-label").textContent).toBe(
+        "Completion history: Ordered modules",
+      ),
+    );
+    // No run-scope tile stays beside the history's.
+    expect(screen.queryByRole("group", { name: "Headline summaries for this run" })).toBeNull();
+
+    // "reads history-wide delivery, rework, review and bottlenecks the same through the report,
+    // the export and the CLI": delivery succeededFirstAttempt 2 of denominator 6, unfinished 0,
+    // carriedFromOutside 0, coverage 3 of 3 members.
+    const delivered = await historyTile("delivered");
+    expect(delivered.textContent).toContain("2 of 6");
+    expect(delivered.textContent).toContain("2 of 6 unique work items");
+    expect(delivered.textContent).toContain("Unfinished: 0 work items");
+    expect(delivered.textContent).toContain("across 3 of 3 member runs");
+    expect(delivered.textContent).not.toContain("Carried from outside");
+
+    // Same assertion: rework attempts 3, byCause examination_findings 1, integration_conflict 1,
+    // verification_failed 1; review dispositions upheld 0, overturned 0, risk_accepted 0 and
+    // uniqueFindings 1.
+    const repair = await historyTile("review");
+    expect(repair.textContent).toContain("3 rework attempts");
+    expect(repair.textContent).toContain("examination findings 1");
+    expect(repair.textContent).toContain("integration conflict 1");
+    expect(repair.textContent).toContain("verification failed 1");
+    expect(repair.textContent).toContain("upheld 0, overturned 0, risk accepted 0");
+    expect(repair.textContent).toContain("1 unique");
+    expect(repair.textContent).toContain("across 3 of 3 member runs");
+
+    const bars = await screen.findByRole("region", { name: "Rework by cause" });
+    expect(
+      within(bars).getByRole("button", { name: /^examination findings: 1 attempt$/ }),
+    ).toBeTruthy();
+    expect(
+      within(bars).getByRole("button", { name: /^integration conflict: 1 attempt$/ }),
+    ).toBeTruthy();
+    expect(
+      within(bars).getByRole("button", { name: /^verification failed: 1 attempt$/ }),
+    ).toBeTruthy();
+    expect(within(bars).getByTestId("bar-total").textContent).toContain("3 rework attempts");
+
+    // Same assertion: operations.members elapsedMs 1_800_000 / 1_200_000 / 600_000. The committed
+    // fixture holds no lifecycle events, so the summed integration 45_000 and work 405_000 of that
+    // assertion cannot be rebuilt from it: the Studio says "not observed" for them, never 0.
+    const table = await screen.findByRole("table", {
+      name: "Elapsed and summed bottleneck time by run",
+    });
+    const rows = within(table)
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) =>
+        within(row)
+          .getAllByRole("cell")
+          .map((c) => c.textContent),
+      );
+    expect(rows.map((cells) => cells.slice(1))).toEqual([
+      ["30m", "not observed", "not observed", "not observed", "not observed"],
+      ["20m", "not observed", "not observed", "not observed", "not observed"],
+      ["10m", "not observed", "not observed", "not observed", "not observed"],
+      ["not summed", "not observed", "not observed", "not observed", "not observed"],
+    ]);
+    const text = screen.getByTestId("history-time-text").textContent ?? "";
+    expect(text).toContain("integration not observed");
+    expect(text).toContain("not elapsed");
+
+    // Same assertion, `completion?.members.map((m) => m.summary)`: each member's own row is
+    // 1 of 4 / 0 of 1 / 1 of 1 first attempts, 3 / 0 / 0 rework attempts, 1 / 0 / 0 findings;
+    // the history-wide 2 of 6 and 3 and 1 are their sums.
+    await userEvent.click(delivered);
+    let sheet = await screen.findByRole("dialog");
+    const memberRows = within(within(sheet).getByRole("region", { name: "Member runs" }))
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    expect(memberRows).toHaveLength(3);
+    expect(memberRows[0]).toContain("succeeded 1 of 4 settled");
+    expect(memberRows[1]).toContain("succeeded 0 of 1 settled");
+    expect(memberRows[2]).toContain("succeeded 1 of 1 settled");
+    expect(sheet.textContent).toContain("counted once across the member runs");
+    expect(within(sheet).getByRole("region", { name: "Coverage" }).textContent).toContain(
+      "across 3 of 3 member runs",
+    );
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await userEvent.click(await historyTile("review"));
+    sheet = await screen.findByRole("dialog");
+    const reviewRows = within(within(sheet).getByRole("region", { name: "Member runs" }))
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "");
+    expect(reviewRows[0]).toContain("3 rework attempts, 1 unique finding");
+    expect(reviewRows[1]).toContain("0 rework attempts, 0 unique findings");
+    expect(reviewRows[2]).toContain("0 rework attempts, 0 unique findings");
+  });
 });
