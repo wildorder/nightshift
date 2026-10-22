@@ -34,7 +34,12 @@ import type {
   UpdateCommandInput,
   UpdateCommandOutput,
 } from "@aws-sdk/lib-dynamodb";
-import { NODE_INDEX_NAME } from "../keys.js";
+import {
+  EVENT_SEQUENCE_ATTRIBUTE,
+  EVENT_SEQUENCE_INDEX_NAME,
+  EVENT_SEQUENCE_PARTITION_ATTRIBUTE,
+  NODE_INDEX_NAME,
+} from "../keys.js";
 import type { TableClient } from "../table-client.js";
 import {
   applyUpdate,
@@ -77,15 +82,24 @@ const keyString = (pk: unknown, sk: unknown): string => {
   return JSON.stringify([pk, sk]);
 };
 
-type KeySchema = readonly [hash: string, range: string];
+/** A key schema: hash and range attribute names, and whether the range is a number. */
+type KeySchema = readonly [hash: string, range: string, numeric?: boolean];
 const TABLE_KEYS: KeySchema = ["PK", "SK"];
-const INDEX_KEYS: KeySchema = ["GSI1PK", "GSI1SK"];
+/** The table's global secondary indexes, as the data stack defines them. */
+const INDEXES: Readonly<Record<string, KeySchema>> = {
+  [NODE_INDEX_NAME]: ["GSI1PK", "GSI1SK"],
+  [EVENT_SEQUENCE_INDEX_NAME]: [EVENT_SEQUENCE_PARTITION_ATTRIBUTE, EVENT_SEQUENCE_ATTRIBUTE, true],
+};
 
 /** Sort order within a query: the range key, then the table key as a tie-break. */
 const compareForSchema =
-  ([, range]: KeySchema) =>
+  ([, range, numeric]: KeySchema) =>
   (a: Item, b: Item): number => {
-    const parts = [range, "PK", "SK"];
+    if (numeric === true) {
+      const difference = Number(a[range] ?? 0) - Number(b[range] ?? 0);
+      if (difference !== 0) return difference < 0 ? -1 : 1;
+    }
+    const parts = numeric === true ? ["PK", "SK"] : [range, "PK", "SK"];
     for (const part of parts) {
       const left = String(a[part] ?? "");
       const right = String(b[part] ?? "");
@@ -237,7 +251,7 @@ export class FakeTable implements TableClient {
 
   async query(input: QueryCommandInput): Promise<QueryCommandOutput> {
     this.assertTable(input.TableName);
-    if (input.IndexName !== undefined && input.IndexName !== NODE_INDEX_NAME) {
+    if (input.IndexName !== undefined && INDEXES[input.IndexName] === undefined) {
       throw validationError(`the table has no index named ${input.IndexName}`);
     }
     if (input.IndexName !== undefined && input.ConsistentRead === true) {
@@ -246,7 +260,8 @@ export class FakeTable implements TableClient {
     if (input.KeyConditionExpression === undefined) {
       throw validationError("a query needs a KeyConditionExpression");
     }
-    const schema = input.IndexName === undefined ? TABLE_KEYS : INDEX_KEYS;
+    const schema =
+      input.IndexName === undefined ? TABLE_KEYS : (INDEXES[input.IndexName] as KeySchema);
     const usage = new PlaceholderUsage();
     const names = input.ExpressionAttributeNames;
     const values = input.ExpressionAttributeValues;
@@ -257,9 +272,14 @@ export class FakeTable implements TableClient {
         : parseCondition(input.FilterExpression, names, values, usage);
     usage.assertAllUsed(names, values);
 
-    const [hash, range] = schema;
+    const [hash, range, numeric] = schema;
+    // A sparse index: only items with both of its keys, of the right types, are in it.
     const matching = [...this.items.values()]
-      .filter((item) => typeof item[hash] === "string" && typeof item[range] === "string")
+      .filter(
+        (item) =>
+          typeof item[hash] === "string" &&
+          typeof item[range] === (numeric === true ? "number" : "string"),
+      )
       .filter((item) => evaluate(keyCondition, item))
       .sort(compareForSchema(schema));
     if (input.ScanIndexForward === false) matching.reverse();

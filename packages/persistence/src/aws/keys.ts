@@ -33,8 +33,23 @@ export interface NodeIndexKey {
   readonly GSI1SK: string;
 }
 
-/** The one GSI (§4.2). Its name is part of the contract, not a CDK-generated value. */
+/** The node GSI (§4.2). Its name is part of the contract, not a CDK-generated value. */
 export const NODE_INDEX_NAME = "gsi_node";
+
+/**
+ * The event-sequence GSI (2026-10-22): a run's events by `sequence`, so a reader
+ * from sequence N reads what follows N and nothing before it. Sparse: an event
+ * gains these two attributes when the materializer numbers it, and only then
+ * appears in the index. Without it every page of a run's events, every poll from
+ * a sequence and every full read paged by the API read the run's whole event
+ * partition: P20's first run read ~2.25 million items per full read at 15,000
+ * events, and the month's DynamoDB bill was $105 of reads.
+ */
+export const EVENT_SEQUENCE_INDEX_NAME = "gsi_event_sequence";
+/** The index's partition key: the event's own `PK`, the run's event partition. */
+export const EVENT_SEQUENCE_PARTITION_ATTRIBUTE = "SEQPK";
+/** The index's sort key, a number: the event's `sequence`. */
+export const EVENT_SEQUENCE_ATTRIBUTE = "SEQ";
 
 /** Sort-key prefixes for run-scoped records, one per aggregate (§4.1). */
 export const RUN_RECORD_TYPES = {

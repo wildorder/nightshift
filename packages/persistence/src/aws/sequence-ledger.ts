@@ -18,7 +18,12 @@ import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import type { SequenceLedger, StampOutcome } from "@nightshift/core";
 import { COUNTER_ATTRIBUTE } from "./events.js";
 import type { Item } from "./items.js";
-import { keys, type TableKey } from "./keys.js";
+import {
+  EVENT_SEQUENCE_ATTRIBUTE,
+  EVENT_SEQUENCE_PARTITION_ATTRIBUTE,
+  keys,
+  type TableKey,
+} from "./keys.js";
 import { conditionFailures, type TableClient } from "./table-client.js";
 
 export interface SequenceLedgerConfig {
@@ -57,15 +62,24 @@ const advanceCounter = (
         },
       };
 
-/** Stamps `sequence` on the event, only if it still exists and is unnumbered. */
+/**
+ * Stamps `sequence` on the event, only if it still exists and is unnumbered, and
+ * gives it the event-sequence index's keys in the same write, so a numbered event
+ * is in the index and an unnumbered one never is (2026-10-22).
+ */
 const stampEvent = (tableName: string, key: TableKey, sequence: number): TransactItem => ({
   Update: {
     TableName: tableName,
     Key: key,
-    UpdateExpression: "SET #sequence = :sequence",
+    UpdateExpression: "SET #sequence = :sequence, #seqpk = :seqpk, #seq = :sequence",
     ConditionExpression: "attribute_exists(#pk) AND attribute_type(#sequence, :null)",
-    ExpressionAttributeNames: { "#pk": "PK", "#sequence": "sequence" },
-    ExpressionAttributeValues: { ":sequence": sequence, ":null": "NULL" },
+    ExpressionAttributeNames: {
+      "#pk": "PK",
+      "#sequence": "sequence",
+      "#seqpk": EVENT_SEQUENCE_PARTITION_ATTRIBUTE,
+      "#seq": EVENT_SEQUENCE_ATTRIBUTE,
+    },
+    ExpressionAttributeValues: { ":sequence": sequence, ":null": "NULL", ":seqpk": key.PK },
   },
 });
 
