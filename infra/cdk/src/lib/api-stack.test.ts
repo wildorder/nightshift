@@ -84,6 +84,17 @@ describe("NightshiftApiStack", () => {
     expect(() => synth()).not.toThrow();
   });
 
+  it("lets the API query both indexes, the node index and events by sequence (2026-10-22)", () => {
+    const { template } = synth();
+    const queried = statementsOf(template)
+      .filter((statement) => actionsOf(statement).includes("dynamodb:Query"))
+      .flatMap((statement) => stringsIn(statement.Resource));
+    expect(queried.some((value) => value.includes("/index/gsi_node"))).toBe(true);
+    // Granted on the table and gsi_node only, every events listing was refused
+    // AccessDenied on the first deploy of the index.
+    expect(queried.some((value) => value.includes("/index/gsi_event_sequence"))).toBe(true);
+  });
+
   it("is named nightshift-<stage>-api, including for a non-default stage", () => {
     const app = testApp();
     expect(new NightshiftApiStack(app, "Dev", { stage: "dev" }).stackName).toBe(
