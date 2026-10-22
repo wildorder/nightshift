@@ -2,7 +2,7 @@
 export { NightshiftApiStack } from "./api-stack.js";
 export { MonthlyCostBudget, type MonthlyCostBudgetProps } from "./budget.js";
 export { DATA_EXPORT_KEYS, type DataExportKey, dataExportName } from "./data-exports.js";
-export { NightshiftDataStack, NODE_INDEX_NAME } from "./data-stack.js";
+export { EVENT_SEQUENCE_INDEX_NAME, NightshiftDataStack, NODE_INDEX_NAME } from "./data-stack.js";
 export { NightshiftDnsStack } from "./dns-stack.js";
 export {
   apiHostnameFor,

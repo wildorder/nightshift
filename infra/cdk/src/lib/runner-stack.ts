@@ -25,7 +25,7 @@ import * as nodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
 import type { Construct } from "constructs";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
-import { NODE_INDEX_NAME } from "./data-stack.js";
+import { EVENT_SEQUENCE_INDEX_NAME, NODE_INDEX_NAME } from "./data-stack.js";
 import { apiHostnameFor } from "./hostnames.js";
 import {
   containmentComponent,
@@ -455,7 +455,12 @@ export class NightshiftRunnerStack extends Stack {
       // found the grant stopped at the table.
       new iam.PolicyStatement({
         actions: ["dynamodb:Query"],
-        resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
+        resources: [
+          tableArn,
+          `${tableArn}/index/${NODE_INDEX_NAME}`,
+          // A run's events by sequence (2026-10-22): every events listing reads it.
+          `${tableArn}/index/${EVENT_SEQUENCE_INDEX_NAME}`,
+        ],
       }),
       new iam.PolicyStatement({
         // T6: a replacement attaches the run's volume to its new machine.

@@ -54,7 +54,7 @@ import { ApiGatewayv2DomainProperties } from "aws-cdk-lib/aws-route53-targets";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import type { Construct } from "constructs";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
-import { NODE_INDEX_NAME } from "./data-stack.js";
+import { EVENT_SEQUENCE_INDEX_NAME, NODE_INDEX_NAME } from "./data-stack.js";
 import { apiHostnameFor, type HostnamesMode, studioOriginsFor, ZONE_NAME } from "./hostnames.js";
 import { GITHUB_APP_SECRET_NAME, runnerExportName } from "./runner-stack.js";
 import {
@@ -265,14 +265,19 @@ export class NightshiftApiStack extends Stack {
     const apiRole = this.executionRole("ApiFunctionRole", apiLogs, [
       // Exactly what the adapters call: gets and puts (including the puts inside
       // TransactWriteItems, which IAM authorises per item) and queries on the
-      // table and its one index. No update or delete: the API never issues one.
+      // table and its two indexes. No update or delete: the API never issues one.
       new iam.PolicyStatement({
         actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
         resources: [tableArn],
       }),
       new iam.PolicyStatement({
         actions: ["dynamodb:Query"],
-        resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
+        resources: [
+          tableArn,
+          `${tableArn}/index/${NODE_INDEX_NAME}`,
+          // A run's events by sequence (2026-10-22): every events listing reads it.
+          `${tableArn}/index/${EVENT_SEQUENCE_INDEX_NAME}`,
+        ],
       }),
       // `s3:PutObject` on the bucket's objects, for **signing only** (T2, A-08).
       // The presigned-upload route computes a signature from the credentials the
