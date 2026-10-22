@@ -24,7 +24,16 @@ export interface Parser<T> {
  */
 export const REVISION_ATTRIBUTE = "REV";
 
-const KEY_ATTRIBUTES = new Set(["PK", "SK", "GSI1PK", "GSI1SK", REVISION_ATTRIBUTE]);
+const KEY_ATTRIBUTES = new Set([
+  "PK",
+  "SK",
+  "GSI1PK",
+  "GSI1SK",
+  // The event-sequence index (2026-10-22): keys, not fields of the event.
+  "SEQPK",
+  "SEQ",
+  REVISION_ATTRIBUTE,
+]);
 
 /**
  * DynamoDB refuses any item over 400 KB. The guard below stops short of it so the

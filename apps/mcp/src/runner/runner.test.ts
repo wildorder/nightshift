@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { join as posixJoin } from "node:path/posix";
 import {
   type HeartbeatResponse,
   HeartbeatResponseSchema,
@@ -1712,16 +1713,18 @@ describe("placing provider credentials (D-P10-23, D-P10-30)", () => {
       );
     const env = await place();
     expect(env.ANTHROPIC_API_KEY).toBe("sk-ant-key");
+    // The runner runs on Linux and builds its paths with POSIX joins, on every
+    // platform the tests run on; the expectation is joined the same way.
     expect(calls).toEqual([
-      `reclaim ${join(base, "project")}`,
-      `grant project ${join(base, "project")}`,
+      `reclaim ${posixJoin(base, "project")}`,
+      `grant project ${posixJoin(base, "project")}`,
     ]);
     // A restart on the same machine: the copies are there, the project user's; reclaim comes first again.
     calls.length = 0;
     await place();
     expect(calls).toEqual([
-      `reclaim ${join(base, "project")}`,
-      `grant project ${join(base, "project")}`,
+      `reclaim ${posixJoin(base, "project")}`,
+      `grant project ${posixJoin(base, "project")}`,
     ]);
     await rm(base, { recursive: true, force: true });
   });
