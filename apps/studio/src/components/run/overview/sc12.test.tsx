@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   CompletionHistorySchema,
+  EventSchema,
   ExaminationSchema,
   ExecutionNodeSchema,
   MeasurementSummarySchema,
@@ -42,6 +43,7 @@ const parsed = {
     records.completionHistories?.map((r) => CompletionHistorySchema.parse(r)) ?? [],
   verifications: records.verifications?.map((r) => VerificationSchema.parse(r)) ?? [],
   examinations: records.examinations?.map((r) => ExaminationSchema.parse(r)) ?? [],
+  events: records.events?.map((r) => EventSchema.parse(r)) ?? [],
 };
 
 const history = parsed.completionHistories[0];
@@ -79,6 +81,8 @@ const mount = async (
       for (const m of parsed.measurements) await stores.measurements.put(m);
       for (const v of parsed.verifications) await stores.verifications.put(v);
       for (const x of parsed.examinations) await stores.examinations.put(x);
+      // Appended in the fixture's order; the store numbers them densely in that order.
+      for (const e of parsed.events) await stores.events.append(e);
       await replay(
         parsed.feedback,
         (r) => stores.feedback.put(r),
@@ -137,7 +141,9 @@ describe("the SC-12 history in the Studio", () => {
       completionHistories: 1,
       verifications: 8,
       examinations: 2,
+      events: parsed.events.length,
     });
+    expect(parsed.events.length).toBeGreaterThan(0);
   });
 
   it("reads program A's first run: delivered, consumed, rework and findings", async () => {
@@ -310,9 +316,12 @@ describe("the SC-12 history in the Studio", () => {
     ).toBeTruthy();
     expect(within(bars).getByTestId("bar-total").textContent).toContain("3 rework attempts");
 
-    // Same assertion: operations.members elapsedMs 1_800_000 / 1_200_000 / 600_000. The committed
-    // fixture holds no lifecycle events, so the summed integration 45_000 and work 405_000 of that
-    // assertion cannot be rebuilt from it: the Studio says "not observed" for them, never 0.
+    // Same assertion: operations.members elapsedMs 1_800_000 / 1_200_000 / 600_000, and the
+    // history's operations.summed { wait: 0, queue: 0, integration: 45_000, examination: 0,
+    // summedWorkMs: 405_000 } ("separates elapsed time from the union of active intervals" gives
+    // the anchor run's unions.integration 45_000 and concurrency.summedWorkMs 405_000). Only the
+    // anchor run's lifecycle events are in the fixture's story, so it shows 0s, 0s, 45s, 0s; the
+    // two later runs recorded none, so the Studio says "not observed" for them, never 0.
     const table = await screen.findByRole("table", {
       name: "Elapsed and summed bottleneck time by run",
     });
@@ -325,13 +334,13 @@ describe("the SC-12 history in the Studio", () => {
           .map((c) => c.textContent),
       );
     expect(rows.map((cells) => cells.slice(1))).toEqual([
-      ["30m", "not observed", "not observed", "not observed", "not observed"],
+      ["30m", "0s", "0s", "45s", "0s"],
       ["20m", "not observed", "not observed", "not observed", "not observed"],
       ["10m", "not observed", "not observed", "not observed", "not observed"],
-      ["not summed", "not observed", "not observed", "not observed", "not observed"],
+      ["not summed", "0s", "0s", "45s", "0s"],
     ]);
     const text = screen.getByTestId("history-time-text").textContent ?? "";
-    expect(text).toContain("integration not observed");
+    expect(text).toContain("waiting 0s, queue 0s, integration 45s, examination 0s, work 6m 45s");
     expect(text).toContain("not elapsed");
 
     // Same assertion, `completion?.members.map((m) => m.summary)`: each member's own row is

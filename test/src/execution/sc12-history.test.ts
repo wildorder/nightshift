@@ -38,6 +38,8 @@ import {
   type CompletionHistory,
   CompletionHistorySchema,
   type Decision,
+  type Event,
+  EventSchema,
   type Examination,
   ExaminationSchema,
   type ExecutionNode,
@@ -1132,6 +1134,26 @@ const recordsOf = async (f: Facts) => {
       ),
     );
   }
+  // The lifecycle observations the operations report is built from, run by run, in the order
+  // they were recorded; a tie between parallel jobs falls to the job's name and the operation.
+  const events: Event[] = [];
+  for (const scope of scopes) {
+    const found = (await readAll((p) => stores.events.listByRun(scope, p))).filter(
+      (event) => event.type === "lifecycle.observed",
+    );
+    const nameOf = (event: Event) => f.names.get(event.executionNodeId as ExecutionNodeId) ?? "";
+    const operationOf = (event: Event) => String(event.payload.operationId ?? "");
+    events.push(
+      ...found.sort(
+        (a, b) =>
+          a.recordedAt.localeCompare(b.recordedAt) ||
+          nameOf(a).localeCompare(nameOf(b)) ||
+          operationOf(a)
+            .replace(/_[0-9A-Z]{26}/g, "")
+            .localeCompare(operationOf(b).replace(/_[0-9A-Z]{26}/g, "")),
+      ),
+    );
+  }
   const present = <T>(items: readonly (T | undefined)[]): T[] =>
     items.filter((item): item is T => item !== undefined);
   return {
@@ -1150,6 +1172,15 @@ const recordsOf = async (f: Facts) => {
     ),
     verifications: await byNode((scope, id) => stores.verifications.listByNode(scope, id)),
     examinations: await byNode((scope, id) => stores.examinations.listByNode(scope, id)),
+    // Two things in an event depend on which of two parallel jobs the scheduler saw first, not
+    // on the story: the writer's counter in the idempotency key, and the queue predecessor a
+    // queued job could name. The fixture numbers the key by position and leaves queue
+    // blockers unnamed; every time, phase and transition stays as it was observed.
+    events: events.map((event, index) => ({
+      ...event,
+      idempotencyKey: `lifecycle-${index + 1}`,
+      payload: event.payload.phase === "queue" ? { ...event.payload, blockers: [] } : event.payload,
+    })),
   };
 };
 
@@ -1244,6 +1275,7 @@ const FIXTURE_SCHEMAS = {
   completionHistories: CompletionHistorySchema,
   verifications: VerificationSchema,
   examinations: ExaminationSchema,
+  events: EventSchema,
 } as const;
 
 const expectContractShapes = (records: Record<string, unknown[]>): void => {
@@ -2136,6 +2168,8 @@ describe("the complete SC-12 history", () => {
       completionHistories: 1,
       verifications: 8,
       examinations: 2,
+      events: records.events?.length ?? 0,
     });
+    expect(records.events?.length).toBeGreaterThan(0);
   });
 });
