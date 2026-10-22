@@ -23,6 +23,7 @@ import type { CompletionFigures, CompletionResources } from "@nightshift/core";
 import {
   buildCompletionHistory,
   CompletionMembershipError,
+  completionEvidenceLines,
   completionOf,
   gatherMemberFigures,
   nowIso,
@@ -412,6 +413,8 @@ const show = async (
     runs: currentRuns,
     resources: gathered.resources,
     infrastructure: gathered.infrastructure,
+    evidence: gathered.evidence,
+    evidenceUnavailable: gathered.evidenceUnavailable,
     unavailable: gathered.unavailable,
     feedback: new Map([...feedback].filter(([key]) => current.has(key))),
     asOf,
@@ -425,7 +428,11 @@ const show = async (
         member.tokens === undefined
           ? "tokens not observed"
           : `tokens input ${count(member.tokens.input)}, output ${count(member.tokens.output)}`
-      }, ${member.estimatedUsd === undefined ? "estimate not observed" : `estimate ${dollars(member.estimatedUsd)}`}`,
+      }, ${member.estimatedUsd === undefined ? "estimate not observed" : `estimate ${dollars(member.estimatedUsd)}`}, ${
+        member.summary === undefined
+          ? "delivery not observed"
+          : `first attempt ${member.summary.firstAttempt.succeeded} of ${member.summary.firstAttempt.of}, rework ${member.summary.reworkAttempts}, findings ${member.summary.uniqueFindings}${member.summary.elapsedMs === undefined ? "" : `, elapsed ${member.summary.elapsedMs / 1000}s`}`
+      }`,
     );
   }
   const { coverage } = report;
@@ -438,6 +445,8 @@ const show = async (
     report.current,
     `as of ${report.asOf}, membership version ${report.version}`,
   );
+  // The live view only: a checkpoint freezes time and resources, not these.
+  for (const line of completionEvidenceLines(report.current)) environment.out(`  ${line}`);
   for (const checkpoint of history.checkpoints) {
     environment.out(checkpointLine(checkpoint));
     for (const member of checkpoint.members) {

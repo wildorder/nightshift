@@ -51,6 +51,16 @@ export const METRICS_BY_SECTION: Readonly<Record<string, readonly MetricId[]>> =
     "active_seconds",
     "combined_estimate",
     "infrastructure_estimate",
+    "first_attempt_success",
+    "rework_attempts",
+    "rework_by_cause",
+    "examiner_dispositions",
+    "review_overhead",
+    "summed_work_time",
+    "wait_time",
+    "queue_time",
+    "integration_time",
+    "examination_time",
   ],
 };
 

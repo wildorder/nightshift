@@ -97,6 +97,7 @@ export const putCompletionHistory: Handler = async ({ deps, request, params, pri
           proposed.members,
           memberRuns,
           verdictAt ?? nowIso(deps.clock),
+          { evidence: false },
         );
   let decided: ReturnType<typeof reconcileCompletionWrite>;
   try {

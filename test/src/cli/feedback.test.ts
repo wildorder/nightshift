@@ -403,12 +403,21 @@ describe("nightshift completion (D-05)", () => {
     const shown = [...op.out];
     expect(shown[0]).toBe(`completion history ${id} "Orders" (version 4)`);
     expect(shown.slice(1, 4)).toEqual([
-      `member ${at(run1)} anchor failed did_not_work, carried strands 0, tokens not observed, estimate not observed`,
-      `member ${at(run3)} correction succeeded worked, carried strands 0, tokens not observed, estimate not observed`,
-      `member ${at(run2)} contributing succeeded not_rated, carried strands 0, tokens not observed, estimate not observed`,
+      `member ${at(run1)} anchor failed did_not_work, carried strands 0, tokens not observed, estimate not observed, first attempt 0 of 0, rework 0, findings 0, elapsed 1800s`,
+      `member ${at(run3)} correction succeeded worked, carried strands 0, tokens not observed, estimate not observed, first attempt 0 of 0, rework 0, findings 0, elapsed 120s`,
+      `member ${at(run2)} contributing succeeded not_rated, carried strands 0, tokens not observed, estimate not observed, first attempt 0 of 0, rework 0, findings 0, elapsed 300s`,
     ]);
     expect(shown[4]).toBe("rated 2 of 3 finished runs, positive share 50%");
-    const checkpointLine = shown[6] as string;
+    // The live view then prints history-wide delivery, rework, review and bottleneck lines.
+    expect(shown.slice(6, 10).map((line) => line.split(":")[0])).toEqual([
+      "  delivery",
+      "  rework",
+      "  review",
+      "  bottlenecks, summed over member runs (not elapsed)",
+    ]);
+    expect(shown[6]).toContain("first attempt succeeded 0 of 0 settled work items");
+    expect(shown[6]).toContain("evidence from 3 of 3 members");
+    const checkpointLine = shown[10] as string;
     expect(shown[5]).toMatch(/^now: lead time /);
     expect(shown[5]).toContain(`lead time ${spelled(leadSeconds)}, run completion `);
     expect(checkpointLine).toContain(
@@ -419,12 +428,12 @@ describe("nightshift completion (D-05)", () => {
     expect(checkpointLine).toContain("combined estimate not observed");
     expect(checkpointLine).not.toMatch(/combined API-equivalent estimate/);
     // Each checkpoint is followed by its snapshot members, one line each.
-    expect(shown.slice(7)).toEqual([
+    expect(shown.slice(11)).toEqual([
       `  snapshot member ${at(run1)} anchor failed did_not_work`,
       `  snapshot member ${at(run3)} correction succeeded worked`,
       `  snapshot member ${at(run2)} contributing succeeded not_rated`,
     ]);
-    expect(shown).toHaveLength(10);
+    expect(shown).toHaveLength(14);
 
     // Clearing the accepted run's vote leaves the checkpoint's figures where they were.
     expect(await cli("rate", "beta", "clear")).toBe(0);
@@ -432,7 +441,7 @@ describe("nightshift completion (D-05)", () => {
     const later = [...op.out];
     expect(later[4]).toBe("rated 1 of 3 finished runs, positive share 0%");
     expect(later[5]).toMatch(/^now: lead time none, run completion none, /);
-    expect(later[6]).toBe(checkpointLine);
+    expect(later[10]).toBe(checkpointLine);
     const finalHistory = (await stores.completionHistories.listByProject(projectId)).items[0];
     expect(finalHistory?.checkpoints).toEqual(afterRefusal?.checkpoints);
   });
