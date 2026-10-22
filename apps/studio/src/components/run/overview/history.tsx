@@ -24,12 +24,21 @@ import { compactCount, dollarsText, NOT_OBSERVED, spanText } from "../../../lib/
 import { useStudio } from "../../../studio.js";
 import { StatusBadge } from "../../status-badge.js";
 import { AcceptanceState } from "../verdict.js";
+import { HistoryReworkBars } from "./bars.js";
 import { HistoryEvidenceSheet } from "./evidence-sheet.js";
+import {
+  acrossText,
+  hasObservedTime,
+  memberKey,
+  memberOperations,
+  memberTimeText,
+  missingMembers,
+  unionText,
+} from "./history-figures.js";
 import { memberRunHref } from "./links.js";
 import type { HistoryTileId } from "./selection.js";
 
-const keyOf = (member: { programId: string; runId: string }): string =>
-  `${member.programId}/${member.runId}`;
+const keyOf = memberKey;
 
 const seconds = (value: number | undefined, absent: string): string =>
   value === undefined ? absent : spanText(value * 1000);
@@ -216,6 +225,82 @@ const Times = ({ figures }: { readonly figures: CompletionFigures }) => (
   </>
 );
 
+const Delivered = ({ history }: { readonly history: CompletionReport }) => {
+  const d = history.current.delivery;
+  if (d === undefined) {
+    return (
+      <>
+        <Big>{NOT_OBSERVED}</Big>
+        <Line label="Coverage:">
+          {acrossText(history, history.current.evidenceCoverage)}; no member run left delivery
+          evidence
+        </Line>
+      </>
+    );
+  }
+  return (
+    <>
+      {d.denominator === 0 ? (
+        <Big>none settled yet</Big>
+      ) : (
+        <Big>
+          {d.succeededFirstAttempt} of {d.denominator}
+        </Big>
+      )}
+      <Line label="First-attempt success:">
+        {d.denominator === 0
+          ? "no work item has settled"
+          : `${d.succeededFirstAttempt} of ${d.denominator} unique work items`}
+      </Line>
+      <Line label="Unfinished:">{d.unfinished} work items, not in the denominator</Line>
+      <Line label="Coverage:">{acrossText(history, d.coverage)}</Line>
+      {d.carriedFromOutside === 0 ? null : (
+        <Line label="Carried from outside:">
+          {d.carriedFromOutside} strand{d.carriedFromOutside === 1 ? "" : "s"} built by a run that
+          is not a member, not counted
+        </Line>
+      )}
+    </>
+  );
+};
+
+const Repair = ({ history }: { readonly history: CompletionReport }) => {
+  const { rework, review } = history.current;
+  if (rework === undefined || review === undefined) {
+    return (
+      <>
+        <Big>{NOT_OBSERVED}</Big>
+        <Line label="Coverage:">
+          {acrossText(history, history.current.evidenceCoverage)}; no member run left rework or
+          review evidence
+        </Line>
+      </>
+    );
+  }
+  const causes = [...rework.byCause]
+    .sort((a, b) => b.attempts - a.attempts)
+    .slice(0, 3)
+    .map((row) => `${row.kind.replaceAll("_", " ")} ${row.attempts}`);
+  const d = review.dispositions;
+  return (
+    <>
+      <Big>
+        {rework.attempts} rework attempt{rework.attempts === 1 ? "" : "s"}
+      </Big>
+      <Line label="Top causes:">
+        {causes.length === 0 ? "none" : causes.join(", ")}
+        {rework.unknownCause > 0 ? `; ${rework.unknownCause} with no recorded cause` : ""}
+      </Line>
+      <Line label="Examiner dispositions:">
+        upheld {d.upheld}, overturned {d.overturned}, risk accepted {d.risk_accepted}
+      </Line>
+      <Line label="Findings:">{review.uniqueFindings} unique, summed over member runs</Line>
+      <Line label="Coverage:">{acrossText(history, review.coverage)}</Line>
+      <Line label="Read with care:">association with rework is not causation</Line>
+    </>
+  );
+};
+
 export const HistoryTiles = ({
   history,
   selected,
@@ -229,6 +314,14 @@ export const HistoryTiles = ({
     className="m-0 grid min-w-0 gap-3 border-0 p-0 sm:grid-cols-2 xl:grid-cols-3"
     aria-label="Headline summaries for this completion history"
   >
+    <HistoryTile
+      id="delivered"
+      label="Delivered"
+      selected={selected === "delivered"}
+      onSelect={onSelect}
+    >
+      <Delivered history={history} />
+    </HistoryTile>
     <HistoryTile
       id="time"
       label="Time to a working result"
@@ -244,6 +337,14 @@ export const HistoryTiles = ({
       onSelect={onSelect}
     >
       <Consumption figures={history.current} />
+    </HistoryTile>
+    <HistoryTile
+      id="review"
+      label="Repair and review"
+      selected={selected === "review"}
+      onSelect={onSelect}
+    >
+      <Repair history={history} />
     </HistoryTile>
     <HistoryTile
       id="rating"
@@ -412,6 +513,110 @@ const MemberTimeline = ({
   );
 };
 
+/** Each member's elapsed time and its overlapping wait/queue/integration/examination unions. */
+const MemberTimeTable = ({
+  history,
+  scope,
+}: {
+  readonly history: CompletionReport;
+  readonly scope: RunScope;
+}) => {
+  const ops = history.current.operations;
+  const span = (ms: number | undefined) => (ms === undefined ? NOT_OBSERVED : spanText(ms));
+  const anyObserved = (ops?.members ?? []).some(hasObservedTime);
+  const summedText = (ms: number | undefined) => (anyObserved ? span(ms) : NOT_OBSERVED);
+  return (
+    <div className="grid gap-2" data-testid="history-time-table">
+      <p className="text-xs text-muted-foreground">
+        Summed over member runs, overlapping; not elapsed. Two runs that waited at the same time
+        both count it, so these do not add up to the history's elapsed time.
+      </p>
+      <p className="sr-only" data-testid="history-time-text">
+        {history.members
+          .map(
+            (member) =>
+              `Run ${member.runId.slice(-8)} (${member.role}): ${memberTimeText(history, member)}.`,
+          )
+          .join(" ")}{" "}
+        {ops === undefined
+          ? `Summed over member runs: ${NOT_OBSERVED}.`
+          : `Summed over member runs, overlapping, not elapsed: waiting ${summedText(ops.summed.wait)}, queue ${summedText(ops.summed.queue)}, integration ${summedText(ops.summed.integration)}, examination ${summedText(ops.summed.examination)}, work ${summedText(ops.summed.summedWorkMs)}; ${acrossText(history, ops.coverage)}.`}
+      </p>
+      <p className="text-xs text-muted-foreground sm:hidden">
+        Scroll the table sideways for every column.
+      </p>
+      <section
+        className="overflow-x-auto rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: a keyboard user must be able to scroll the table
+        tabIndex={0}
+        aria-label="Time by run, scrollable"
+      >
+        <table
+          aria-label="Elapsed and summed bottleneck time by run"
+          className="w-full min-w-[34rem] text-sm"
+        >
+          <thead className="text-left text-xs text-muted-foreground">
+            <tr>
+              <th className="pr-3 pb-1 font-medium">Run</th>
+              <th className="pr-3 pb-1 font-medium">Elapsed</th>
+              <th className="pr-3 pb-1 font-medium">Waiting</th>
+              <th className="pr-3 pb-1 font-medium">Queue</th>
+              <th className="pr-3 pb-1 font-medium">Integration</th>
+              <th className="pb-1 font-medium">Examination</th>
+            </tr>
+          </thead>
+          <tbody className="tabular-nums">
+            {history.members.map((member) => {
+              const m = memberOperations(history, member);
+              return (
+                <tr key={keyOf(member)} className="border-t border-border">
+                  <td className="py-1.5 pr-3">
+                    <Link
+                      className="font-mono underline"
+                      to={memberRunHref(scope, member, history.completionHistoryId)}
+                    >
+                      run {member.runId.slice(-8)}
+                    </Link>{" "}
+                    <span className="text-xs text-muted-foreground">{member.role}</span>
+                  </td>
+                  <td className="py-1.5 pr-3">
+                    {m !== undefined && m.elapsedMs === undefined && m.endedAt === undefined
+                      ? "still running"
+                      : span(m?.elapsedMs)}
+                  </td>
+                  <td className="py-1.5 pr-3">{unionText(m, "wait")}</td>
+                  <td className="py-1.5 pr-3">{unionText(m, "queue")}</td>
+                  <td className="py-1.5 pr-3">{unionText(m, "integration")}</td>
+                  <td className="py-1.5">{unionText(m, "examination")}</td>
+                </tr>
+              );
+            })}
+            <tr className="border-t border-border font-medium">
+              <td className="py-1.5 pr-3">Summed over runs</td>
+              <td className="py-1.5 pr-3 text-muted-foreground">not summed</td>
+              <td className="py-1.5 pr-3">{summedText(ops?.summed.wait)}</td>
+              <td className="py-1.5 pr-3">{summedText(ops?.summed.queue)}</td>
+              <td className="py-1.5 pr-3">{summedText(ops?.summed.integration)}</td>
+              <td className="py-1.5">{summedText(ops?.summed.examination)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <p className="text-xs text-muted-foreground">
+        {ops === undefined
+          ? `${NOT_OBSERVED}: no member run left timing evidence.`
+          : `Summed work ${summedText(ops.summed.summedWorkMs)} (overlapping). ${acrossText(history, ops.coverage)}.`}
+        {missingMembers(history, ops?.coverage ?? history.current.evidenceCoverage).map((m) => (
+          <span key={m.key}>
+            {" "}
+            <code className="font-mono break-all">{m.key}</code>: {NOT_OBSERVED} ({m.why}).
+          </span>
+        ))}
+      </p>
+    </div>
+  );
+};
+
 const FigureList = ({ figures }: { readonly figures: CompletionFigures }) => {
   const total = figures.measuredMembers + figures.unmeasuredMembers;
   return (
@@ -464,8 +669,28 @@ export const HistoryBody = ({
         />
       </Section>
 
+      <Section title="Rework by cause">
+        {history.current.rework === undefined ? (
+          <p className="text-sm text-muted-foreground" data-testid="history-rework-empty">
+            {NOT_OBSERVED}: {acrossText(history, history.current.evidenceCoverage)} left rework
+            evidence.
+          </p>
+        ) : (
+          <>
+            <p className="sr-only">
+              Rework attempts by cause across the member runs, in counts of attempts. Each attempt
+              is counted once. Show as text gives the same figures as a table.
+            </p>
+            <HistoryReworkBars rework={history.current.rework} onSelect={() => setTile("review")} />
+          </>
+        )}
+      </Section>
+
       <Section title="Where the time went, by run">
         <MemberTimeline history={history} report={report} scope={scope} />
+        <div className="mt-4 border-t border-border pt-3">
+          <MemberTimeTable history={history} scope={scope} />
+        </div>
       </Section>
 
       <Section title="Checkpoints">
