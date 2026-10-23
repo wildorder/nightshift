@@ -45,7 +45,7 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "project.get": "forbidden",
   "program.list": "forbidden",
   "program.put": "forbidden",
-  "program.get": "forbidden",
+  "program.get": "own_program",
   "program.ratify": "forbidden",
   "program.createPlanUploadUrl": "forbidden",
   "program.getPlanDocument": "forbidden",
@@ -216,6 +216,17 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
       ...elsewhere.scope,
     });
     expect(result).toMatchObject({ allowed: false });
+  });
+
+  it("reads its own program's contract and refuses another program's (P21 S-02)", () => {
+    const own = at("self", LEGITIMATE.self);
+    expect(authorize(orchestrator, "program.get", own)).toEqual({ allowed: true });
+    expect(
+      authorize(orchestrator, "program.get", { ...own, programId: elsewhere.scope.programId }),
+    ).toMatchObject({ allowed: false, reason: "execution_out_of_scope" });
+    expect(
+      authorize(orchestrator, "program.get", { ...own, projectId: elsewhere.scope.projectId }),
+    ).toMatchObject({ allowed: false, reason: "execution_out_of_scope" });
   });
 
   it("fails closed when nobody placed the target in the tree", () => {

@@ -41,10 +41,8 @@ import {
   NIGHTSHIFT_CONFIG_FILE,
   type NightshiftConfig,
   NightshiftConfigSchema,
-  PROGRAMS_DIRECTORY,
   type Principal,
   type ProgramContract,
-  programContractPath,
   type SetupStep,
   SetupStepSchema,
   stepRunsAt,
@@ -204,42 +202,6 @@ const configAt = async (
   return text === undefined ? undefined : NightshiftConfigSchema.parse(JSON.parse(text));
 };
 
-/**
- * The program's authored contract at `commit`: `docs/programs/{programId}/`,
- * or whichever program directory's contract names this program, since a
- * directory is named for the program rather than by its id.
- */
-const authoredContractAt = async (
-  runner: GitRunner,
-  repo: string,
-  commit: string,
-  programId: string,
-): Promise<unknown> => {
-  const direct = await show(runner, repo, commit, programContractPath(programId));
-  if (direct !== undefined) return JSON.parse(direct);
-  const listed = await tryGit(
-    runner,
-    ["ls-tree", "-r", "--name-only", commit, "--", PROGRAMS_DIRECTORY],
-    { cwd: repo },
-  );
-  if (listed.exitCode !== 0) return undefined;
-  const candidates = listed.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((path) => /^docs\/programs\/[^/]+\/contract\.json$/.test(path));
-  for (const path of candidates) {
-    const text = await show(runner, repo, commit, path);
-    if (text === undefined) continue;
-    try {
-      const parsed: unknown = JSON.parse(text);
-      if ((parsed as { programId?: unknown } | null)?.programId === programId) return parsed;
-    } catch {
-      // Somebody else's contract, and not valid JSON: not this program's either.
-    }
-  }
-  return undefined;
-};
-
 /** What a checkout's contract files say about the run's gates and its wall clock. */
 export interface ContractGates {
   readonly verification: readonly VerificationStep[];
@@ -248,33 +210,21 @@ export interface ContractGates {
 
 /**
  * The run's verification steps and `costPolicy.maxWallClockSeconds` as the
- * contract files at `commit` of `repo` state them, merged over
- * `nightshift.config.json` as `nightshift run` merges them: the single contract
- * file (`contractFile`) when it names `programId`, else the program's
- * `docs/programs/{id}/contract.json`. Undefined when no contract can be read.
- * For a reader that may not ask the control plane for the contract (a strand).
+ * program's contract in the control plane states them, merged over
+ * `nightshift.config.json` at `commit` of `repo` as `nightshift run` merges
+ * them. `contract` is the plane's contract or a loader for it; the contract is
+ * never read from git. Undefined when no contract can be read. For a reader
+ * that may not hold the contract itself (a strand).
  */
 export const contractGatesAt = async (
   runner: GitRunner,
   repo: string,
   commit: string,
-  programId: string,
-  contractFile?: string,
+  contract: ProgramContract | (() => Promise<ProgramContract | undefined>),
 ): Promise<ContractGates | undefined> => {
+  const authored =
+    typeof contract === "function" ? await contract().catch(() => undefined) : contract;
   const config = await configAt(runner, repo, commit).catch(() => undefined);
-  let authored: unknown;
-  if (contractFile !== undefined) {
-    const text = await show(runner, repo, commit, contractFile);
-    if (text !== undefined) {
-      try {
-        const parsed: unknown = JSON.parse(text);
-        if ((parsed as { programId?: unknown } | null)?.programId === programId) authored = parsed;
-      } catch {
-        // Not a contract: look for the planned program's.
-      }
-    }
-  }
-  authored ??= await authoredContractAt(runner, repo, commit, programId).catch(() => undefined);
   if (authored === undefined) return undefined;
   const merged = mergeProgramFiles(authored, config) as {
     readonly verification?: unknown;
@@ -302,33 +252,20 @@ const canonical = (value: unknown): string =>
 const sameSteps = (a: unknown, b: unknown): boolean => canonical(a) === canonical(b);
 
 /**
- * The merged setup and verification at `commit`, as `nightshift run {id}`
- * merges them: the program's `contract.json` over `nightshift.config.json`.
- *
- * A contract authored elsewhere (not under `docs/programs/`) has no file here
- * to read, so the config's own setup and verification apply over the current
- * ones, and only where this landing changed them in the config: a project
- * default the run's contract has always overridden is not a repair's change.
+ * The run's setup and verification after the landing at `commit`: the plane's
+ * contract is the authored one (`current` already carries it, and any earlier
+ * repair), and `nightshift.config.json` at the commit applies over `current`
+ * only where this landing changed it: a project default the run's contract has
+ * always overridden is not a repair's change.
  */
 export const gateDefinitionsAt = async (
   runner: GitRunner,
   repo: string,
   commit: string,
-  session: GateSession,
+  _session: GateSession,
   current: GateDefinitions,
 ): Promise<GateDefinitions> => {
   const config = await configAt(runner, repo, commit);
-  const authored = await authoredContractAt(runner, repo, commit, session.program.programId);
-  if (authored !== undefined) {
-    const merged = mergeProgramFiles(authored, config) as {
-      readonly setup?: unknown;
-      readonly verification?: unknown;
-    };
-    return {
-      setup: SetupStepSchema.array().parse(merged.setup ?? []),
-      verification: VerificationStepSchema.array().min(1).parse(merged.verification),
-    };
-  }
   if (config === undefined) return current;
   const before = await configAt(runner, repo, `${commit}^`).catch(() => undefined);
   return {

@@ -2,11 +2,11 @@
  * `step.timeout` and `step.skip` in the root's and a strand's servers (P19 S-02).
  *
  * The tools' own handlers over in-memory stores: what is under test is what each
- * server reads, refuses and records. The strand's server reads the contract in
- * its checkout at HEAD (a temp git repo) and the verifications it can see.
+ * server reads, refuses and records. The strand's server reads the contract from
+ * the control plane (its checkout holds none) and the verifications it can see.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -163,19 +163,13 @@ const strandWorld = async (): Promise<World> => {
   const { f, stores, program, ownNode, verify, sibling } = await common("strand");
   const repo = mkdtempSync(join(tmpdir(), "step-adjustments-"));
   temporary.push(repo);
-  writeFileSync(
-    join(repo, "nightshift.program.json"),
-    JSON.stringify({
-      programId: program.programId,
-      verification: STEPS,
-      costPolicy: program.costPolicy,
-    }),
-  );
+  // The contract is in the control plane alone: the checkout holds no contract file.
+  await stores.programContracts.put(program);
   const git = (...args: string[]) =>
     execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: repo });
   git("init", "-q");
   git("add", "-A");
-  git("commit", "-q", "-m", "contract");
+  git("commit", "-q", "--allow-empty", "-m", "empty checkout");
   const tools = toolsOf((server) =>
     registerSubOrchestratorTools(server, {
       identity: {
@@ -403,9 +397,9 @@ describe("a strand's skip, from the history it can read", () => {
     expect(String(result.text)).toContain("announced on this strand's node");
   });
 
-  it("refuses with a clear message when its checkout holds no contract", async () => {
+  it("refuses with a clear message when the control plane holds no contract", async () => {
     const world = await strandWorld();
-    // A program id the checkout's contract does not name.
+    // A plane with no contract for the program.
     const tools = toolsOf((server) =>
       registerSubOrchestratorTools(server, {
         identity: {
@@ -416,7 +410,10 @@ describe("a strand's skip, from the history it can read", () => {
           worktree: tmpdir(),
         },
         environment: {
-          stores: world.stores,
+          stores: {
+            ...world.stores,
+            programContracts: { ...world.stores.programContracts, get: async () => undefined },
+          },
           clock: { now: () => 0 },
           git: nodeGitRunner,
           outbox: { emit: () => undefined },

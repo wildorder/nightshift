@@ -385,9 +385,10 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "project.get": "forbidden",
   "program.list": "forbidden",
   "program.put": "forbidden",
-  // Above the run, like a worker. Limits and policy are the API's and the
-  // engine's to apply; its brief carries what it needs of the program.
-  "program.get": "forbidden",
+  // Its own program's contract and no other: a strand's step.timeout and
+  // step.skip read the run's verification steps and wall clock from it, the
+  // plane being the contract's only home (P21 S-02).
+  "program.get": "own_program",
 
   // As for a worker: prerequisites are readable, and nothing of a plan is writable.
   "program.ratify": "forbidden",
