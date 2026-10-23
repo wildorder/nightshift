@@ -22,6 +22,7 @@ import { nodeGitRunner } from "@nightshift/execution";
 import { currentStage, type FetchLike } from "@nightshift/persistence/http";
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
 import { scriptedHarnessModule } from "../slice/context.js";
 import {
   authoredProgram,
@@ -251,8 +252,18 @@ describe("a stranger's first run, on a local instance", () => {
 
     // The gates' audit is kept in the local plane, like every other record (D-P15-07).
     expect(await cli("gates", PROGRAM, "--record", "--repo", fixture.repo)).toBe(0);
-    expect(await cli("plan", "check", PROGRAM, "--repo", fixture.repo)).toBe(0);
-    expect(await cli("plan", "ratify", PROGRAM, "--repo", fixture.repo)).toBe(0);
+    expect(
+      await cli(
+        "plan",
+        "check",
+        PROGRAM,
+        "--dir",
+        programDirectory(fixture.repo, PROGRAM),
+        "--repo",
+        fixture.repo,
+      ),
+    ).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
     const ran = await cli("run", PROGRAM, "--repo", fixture.repo);
     expect(ran, `${out.join("\n")}\n${err.join("\n")}`).toBe(0);
     const reportPath = join(directory, "report.md");
@@ -294,6 +305,16 @@ describe("a stranger's first run, on a local instance", () => {
     // The plan document the plane held, read back through its own route, and
     // the gate-health record, still there and still holding.
     expect(await cli("gates", PROGRAM, "--recorded", "--repo", fixture.repo)).toBe(0);
-    expect(await cli("plan", "check", PROGRAM, "--repo", fixture.repo)).toBe(0);
+    expect(
+      await cli(
+        "plan",
+        "check",
+        PROGRAM,
+        "--dir",
+        programDirectory(fixture.repo, PROGRAM),
+        "--repo",
+        fixture.repo,
+      ),
+    ).toBe(0);
   });
 });

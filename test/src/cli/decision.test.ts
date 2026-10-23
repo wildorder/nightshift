@@ -25,6 +25,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { recordHealthyGates } from "./gate-health.js";
 import { type Operator, signIn } from "./operator.js";
+import { programDirectory } from "./plan-scratch.js";
 
 let op: Operator;
 let repo: string;
@@ -241,7 +242,17 @@ describe("a correction's contract (D-P9-04, D-P9-05)", () => {
     };
     await writeCorrection([{ ...target, reversedBy: op.ids.next("dec") as never }], program);
     await recordHealthyGates(op, repo, "demo-fix");
-    expect(await cli("plan", "check", "demo-fix", "--repo", repo)).toBe(1);
+    expect(
+      await cli(
+        "plan",
+        "check",
+        "demo-fix",
+        "--dir",
+        programDirectory(repo, "demo-fix"),
+        "--repo",
+        repo,
+      ),
+    ).toBe(1);
     expect(op.err.join("\n")).toContain("is not a decision of run");
 
     await cli(
@@ -258,7 +269,18 @@ describe("a correction's contract (D-P9-04, D-P9-05)", () => {
     );
     const reversal = /Recorded (dec_[0-9A-Z]+)/.exec(op.out.join("\n"))?.[1];
     await writeCorrection([{ ...target, reversedBy: reversal as never }], program);
-    expect(await cli("plan", "check", "demo-fix", "--repo", repo), op.err.join("\n")).toBe(0);
+    expect(
+      await cli(
+        "plan",
+        "check",
+        "demo-fix",
+        "--dir",
+        programDirectory(repo, "demo-fix"),
+        "--repo",
+        repo,
+      ),
+      op.err.join("\n"),
+    ).toBe(0);
     expect(op.out.join("\n")).toContain(`FLAG ${decision.decisionId} is irreversible`);
   });
 });

@@ -5,7 +5,7 @@
  *   nightshift plan conversation <program> --keep 3,5-7 [--summary <file>]
  *   nightshift plan conversation <program> --summary <file>
  *
- * Keeps the planning conversation in `docs/programs/{id}/conversation.md`: a
+ * Keeps the planning conversation in the plan draft's next version, as its conversation document: a
  * summary, and the exchanges that shaped the plan, word for word. The planning
  * skill **chooses** (message numbers from `--list`, and a summary it wrote); this
  * command **copies**, from the harness's own transcript, so no excerpt can be a
@@ -13,15 +13,8 @@
  * a process because reading it is a harness's code. It is only read: nothing
  * but the chosen messages is written, and only here.
  */
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import {
-  NIGHTSHIFT_CONFIG_FILE,
-  NightshiftConfigSchema,
-  PROGRAMS_DIRECTORY,
-} from "@nightshift/contracts";
-import {
-  CONVERSATION_FILE,
   type ConversationSession,
   emptyConversation,
   keepMessages,
@@ -29,13 +22,18 @@ import {
   parseSelection,
   renderConversation,
 } from "@nightshift/core";
+import { createHttpPlanning } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { CONTRACT_FILE, isProgramDirectoryName, resolveFrom } from "../program-files.js";
+import { isProgramDirectoryName, resolveFrom } from "../program-files.js";
+import { openSession } from "../session.js";
+import { configAt, resolveScope } from "./plan.js";
 
 export interface ConversationOptions {
   readonly id: string;
+  /** Where `nightshift.config.json` is, if one is at hand. */
   readonly repo?: string;
+  readonly project?: string;
   /** Message numbers to keep, `3,5-7`. */
   readonly keep?: string;
   /** A file holding the summary, which replaces the one kept. */
@@ -44,38 +42,27 @@ export interface ConversationOptions {
   readonly session?: string;
 }
 
-const readText = async (path: string): Promise<string | undefined> => {
-  try {
-    return await readFile(path, "utf8");
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw cause;
-  }
-};
-
 /**
- * Whether this program keeps its conversation: its own contract's word, else
- * the repository's, else yes (D-P14-06). Read raw, because the first round of
- * planning comes before the contract is whole.
+ * Whether this program keeps its conversation: the latest version's contract's
+ * word, else the repository config's if one is at hand, else yes (D-P14-06).
+ * Read raw, because the first round of planning comes before the contract is whole.
  */
-const keeps = async (repoPath: string, id: string): Promise<boolean> => {
-  const contractText = await readText(join(repoPath, PROGRAMS_DIRECTORY, id, CONTRACT_FILE));
-  if (contractText !== undefined) {
-    try {
-      const stated = (JSON.parse(contractText) as { keepConversation?: unknown }).keepConversation;
-      if (typeof stated === "boolean") return stated;
-    } catch {
-      // A contract mid-draft that does not parse says nothing about this.
-    }
+const keeps = async (
+  environment: CliEnvironment,
+  repo: string | undefined,
+  contractText: string,
+): Promise<boolean> => {
+  try {
+    const stated = (JSON.parse(contractText) as { keepConversation?: unknown }).keepConversation;
+    if (typeof stated === "boolean") return stated;
+  } catch {
+    // A contract mid-draft that does not parse says nothing about this.
   }
-  const configText = await readText(join(repoPath, NIGHTSHIFT_CONFIG_FILE));
-  if (configText === undefined) return true;
-  return NightshiftConfigSchema.parse(JSON.parse(configText)).keepConversation !== false;
+  return (await configAt(environment, repo))?.keepConversation !== false;
 };
 
 const readSession = async (
   environment: CliEnvironment,
-  repoPath: string,
   session: string | undefined,
 ): Promise<ConversationSession> => {
   const entry = environment.assets?.transcriptPath;
@@ -88,7 +75,7 @@ const readSession = async (
   const result = await environment.exec(
     process.execPath,
     [entry, ...(session === undefined ? [] : ["--session", resolveFrom(environment.cwd, session)])],
-    { cwd: repoPath },
+    { cwd: environment.cwd },
   );
   const last = result.stdout.trim().split("\n").at(-1) ?? "";
   if (result.exitCode !== 0 || last === "") {
@@ -116,21 +103,37 @@ export const planConversation = async (
   if (!isProgramDirectoryName(options.id)) {
     throw new UsageError(`\`${options.id}\` is not a program id`);
   }
-  const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  if (!(await keeps(repoPath, options.id))) {
+  const signedIn = await openSession(environment);
+  const scope = await resolveScope(environment, signedIn, options);
+  const planning = createHttpPlanning({ transport: signedIn.transport });
+  const latest = await planning.getVersion(scope);
+  if (latest === undefined) {
+    throw new UsageError(
+      `the plane has no draft of \`${options.id}\``,
+      "Put a version first: nightshift plan put <program> --dir <scratch>.",
+    );
+  }
+  const document = async (ref: { readonly sha256: string }): Promise<string> => {
+    const found = await planning.planDocument(scope, ref.sha256);
+    if (found === undefined) throw new UsageError(`the plane holds no document ${ref.sha256}`);
+    return found.text;
+  };
+  const contractText = await document(latest.version.contract);
+  if (!(await keeps(environment, options.repo, contractText))) {
     environment.err(
       `${options.id} keeps no planning conversation (keepConversation is false), so nothing was read or written.`,
     );
     return 1;
   }
-  const directory = join(repoPath, PROGRAMS_DIRECTORY, options.id);
-  const path = join(directory, CONVERSATION_FILE);
-  const existingText = await readText(path);
+  const existingText =
+    latest.version.conversation === undefined
+      ? undefined
+      : await document(latest.version.conversation);
   const existing =
     existingText === undefined
       ? emptyConversation(options.id)
       : parseConversation(options.id, existingText);
-  const session = await readSession(environment, repoPath, options.session);
+  const session = await readSession(environment, options.session);
   const keptHere = new Set(
     existing.sessions
       .filter((kept) => kept.harness === session.harness && kept.sessionId === session.sessionId)
@@ -162,17 +165,24 @@ export const planConversation = async (
       ? undefined
       : await readFile(resolveFrom(environment.cwd, options.summary), "utf8");
   const next = keepMessages(existing, session, chosen, summary);
-  await mkdir(directory, { recursive: true });
-  await writeFile(path, renderConversation(next));
+  const stored = await planning.putVersion(
+    scope,
+    {
+      contract: contractText,
+      planText: await document(latest.version.plan),
+      conversationText: renderConversation(next),
+    },
+    latest.version.version,
+  );
 
   const added = chosen.filter((index) => !keptHere.has(index)).length;
   const total = next.sessions.reduce((sum, kept) => sum + kept.kept.length, 0);
   environment.out(
-    `kept ${added} more ${added === 1 ? "message" : "messages"} from this session in ${PROGRAMS_DIRECTORY}/${options.id}/${CONVERSATION_FILE} (${total} in all)` +
+    `kept ${added} more ${added === 1 ? "message" : "messages"} from this session in version ${stored.version.version} of ${options.id} (${total} in all)` +
       `${summary === undefined ? "" : "; summary replaced"}.`,
   );
   environment.out(
-    "Read it before committing: cut anything you would rather not keep, but do not reword an excerpt.",
+    "Read it with `nightshift plan show --dir`: cut anything you would rather not keep, but do not reword an excerpt.",
   );
   return 0;
 };

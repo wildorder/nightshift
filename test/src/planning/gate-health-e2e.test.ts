@@ -21,6 +21,7 @@ import {
 } from "@nightshift/persistence/http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Operator, SUBJECT, signIn } from "../cli/operator.js";
+import { programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
 import {
   authoredProgram,
   type MaterialisedRepo,
@@ -164,20 +165,25 @@ afterEach(async () => {
 
 describe("optional gate-health diagnostics through the CLI", () => {
   it("checks and ratifies without an audit, and a stale optional audit does not block readiness", async () => {
-    expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
-    expect(await cli("plan", "ratify", PROGRAM), said()).toBe(0);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+      said(),
+    ).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM), said()).toBe(0);
     // Actual unresolved plan decisions still block readiness.
     const { answer: _answer, ...open } = (contract.decisions ?? [])[0] as PlannedDecision;
     await writeProgram({ decisions: [open] });
     commit("an open question");
-    expect(await cli("plan", "check", PROGRAM)).toBe(1);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+    ).toBe(1);
     expect(op.err[0]).toBe("NOT READY: 1 reason");
     expect(said()).toContain("decision D-01 has no answer");
     expect(said()).not.toContain("the project's gates have never been audited");
     expect(await cli("gates", PROGRAM, "--recorded")).toBe(1);
     expect(said()).toContain("no gate-health record");
     // Ratify applies the same readiness, and ratifies nothing.
-    expect(await cli("plan", "ratify", PROGRAM)).toBe(1);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(1);
     expect(said()).toContain("decision D-01 has no answer");
 
     await writeProgram();
@@ -199,7 +205,10 @@ describe("optional gate-health diagnostics through the CLI", () => {
     });
     expect(said()).toContain(`fingerprint ${recorded?.fingerprint.slice(0, 12)}`);
 
-    expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+      said(),
+    ).toBe(0);
     expect(op.out[0]).toBe("READY");
     expect(await cli("gates", PROGRAM, "--recorded"), said()).toBe(0);
     expect(said()).toContain("verdict     healthy");
@@ -213,7 +222,10 @@ describe("optional gate-health diagnostics through the CLI", () => {
     // A commit that touches nothing the gates depend on keeps the record.
     await writeFile(join(fixture.repo, "README.md"), "a note\n");
     commit("a note");
-    expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+      said(),
+    ).toBe(0);
 
     const pkg = JSON.parse(await readFile(join(fixture.repo, "package.json"), "utf8"));
     await writeFile(
@@ -221,8 +233,11 @@ describe("optional gate-health diagnostics through the CLI", () => {
       `${JSON.stringify({ ...pkg, scripts: { ...pkg.scripts, pretest: "echo hi" } }, null, 2)}\n`,
     );
     commit("a pre-hook");
-    expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
-    expect(await cli("plan", "ratify", PROGRAM), said()).toBe(0);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+      said(),
+    ).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM), said()).toBe(0);
     expect(await cli("gates", PROGRAM, "--recorded")).toBe(1);
     expect(said()).toContain("does not match");
     expect(said()).toContain("stale");
@@ -230,7 +245,7 @@ describe("optional gate-health diagnostics through the CLI", () => {
 
   it("audits the plan being re-planned, not the one last ratified, so plan check agrees with the record", async () => {
     expect(await cli("gates", PROGRAM, "--record"), said()).toBe(0);
-    expect(await cli("plan", "ratify", PROGRAM), said()).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM), said()).toBe(0);
 
     // Re-planned: a setup step the ratified plan does not have. The record
     // must be of these gates, which plan check and ratification judge.
@@ -238,7 +253,10 @@ describe("optional gate-health diagnostics through the CLI", () => {
     commit("re-plan with a setup");
     expect(await cli("gates", PROGRAM, "--record"), said()).toBe(0);
     expect(said()).toContain("setup:prepare");
-    expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+      said(),
+    ).toBe(0);
     expect(op.out[0]).toBe("READY");
   }, 120_000);
 
@@ -277,7 +295,9 @@ describe("optional gate-health diagnostics through the CLI", () => {
     expect(await cli("gates", PROGRAM, "--recorded")).toBe(1);
     expect(said()).toContain("repairing: 1 finding is being fixed (F-01 → D-02)");
 
-    expect(await cli("plan", "check", PROGRAM)).toBe(1);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+    ).toBe(1);
     const reasons = said();
     expect(reasons).toContain("decision D-02 has no answer");
     expect(op.err[0]).toBe("NOT READY: 1 reason");
@@ -287,9 +307,12 @@ describe("optional gate-health diagnostics through the CLI", () => {
     // The optional record can reference a decision absent from this plan.
     await writeProgram();
     commit("keep gate recommendations outside this program");
-    expect(await cli("plan", "check", PROGRAM), said()).toBe(0);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+      said(),
+    ).toBe(0);
     expect(op.out[0]).toBe("READY");
-    expect(await cli("plan", "ratify", PROGRAM), said()).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM), said()).toBe(0);
   }, 120_000);
 
   it("refuses a findings file with problems, listing every one, and records nothing", async () => {
@@ -384,7 +407,7 @@ describe("optional gate-health diagnostics through the CLI", () => {
     expect(await cli("gates", PROGRAM, "--record"), said()).toBe(0);
     expect(said()).toContain("not run: release-check waits on HP-01");
     const healthy = await record();
-    expect(await cli("plan", "ratify", PROGRAM), said()).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM), said()).toBe(0);
 
     // Satisfied on the control plane; the file on disk still says pending.
     await writeFile(join(outside, "release-token"), "present");
@@ -443,6 +466,8 @@ describe("optional gate-health diagnostics through the CLI", () => {
         "plan",
         "check",
         PROGRAM,
+        "--dir",
+        programDirectory(fixture.repo, PROGRAM),
         "--repo",
         fixture.repo,
       ]),

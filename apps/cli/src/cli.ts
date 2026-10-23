@@ -35,7 +35,7 @@ import {
   providersSet,
   providersStatus,
 } from "./commands/org-remote.js";
-import { planCheck, planRatify } from "./commands/plan.js";
+import { planCheck, planPut, planRatify, planShow } from "./commands/plan.js";
 import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
 import { rateRun } from "./commands/rate.js";
@@ -59,9 +59,11 @@ Usage:
   nightshift use <stage>
   nightshift project create --name <name> [--description <text>]
   nightshift init [--project <id> | --name <name>] [--clients <claude,codex,cursor|all|none>] [--yes] [--repo <path>]
-  nightshift plan check <program> [--repo <path>]
-  nightshift plan ratify <program> [--repo <path>]
-  nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>]
+  nightshift plan put <program> --dir <scratch> [--based-on <n>] [--project <id>]
+  nightshift plan show <program> [--version <n>] [--dir <scratch>] [--project <id>]
+  nightshift plan check <program> [--dir <scratch>] [--project <id>]
+  nightshift plan ratify <program> [--project <id>]
+  nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>] [--project <id>]
   nightshift preflight <program> [--repo <path>] [--recheck]
   nightshift gates <program> [--record [--findings <file>] | --recorded] [--landings <n>] [--json] [--repo <path>]
   nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--repo <path>]
@@ -92,12 +94,19 @@ Usage:
   nightshift id <prefix>
   nightshift --help | --version
 
-A <program> is the name of its directory under docs/programs/, which holds its
-plan.md and contract.json. \`plan check\` answers READY or every reason, and its
-exit code is the answer; nothing runs until \`plan ratify\` has recorded the plan.
-\`plan conversation\` keeps the planning session's summary and the exchanges that
-shaped the plan, word for word, in conversation.md; the stories' quotes are
-checked against it.
+A plan lives on the control plane as versions of a draft, readable from anywhere.
+\`plan put\` writes the next version from a scratch directory (contract.json,
+plan.md, optional conversation.md) outside any repository; a put based on an
+older version than the latest is refused and names the latest. \`plan show\` prints
+a version, its author and the draft's state, and with --dir writes its files to a
+scratch. \`plan check\` answers READY or every reason for the latest version, and
+its exit code is the answer (--dir checks a scratch offline); nothing runs until
+\`plan ratify\` has ratified the latest version by its hash. \`plan conversation\`
+keeps the planning session's summary and the exchanges that shaped the plan, word
+for word, as the next version's conversation; the stories' quotes are checked
+against it. The project is --project, else the scratch's contract, else
+nightshift.config.json at hand, else the one project with a draft of the program.
+A <program> in the commands below is the name of its directory under docs/programs/.
 \`run <program>\` then takes it to docs/programs/<program>/report.md with nobody
 watching, and exits non-zero when anything was parked. --attended only creates
 the run, for your own orchestrator session to attach to. A check that needs
@@ -378,33 +387,54 @@ const doInit = async (environment: CliEnvironment, args: readonly string[]): Pro
 };
 
 const CONVERSATION_USAGE =
-  "nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>] [--repo <path>]";
+  "nightshift plan conversation <program> [--list | --keep <3,5-7>] [--summary <file>] [--session <path>] [--project <id>] [--repo <path>]";
+
+const versionNumber = (
+  name: string,
+  value: string | undefined,
+  usage: string,
+): number | undefined => {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new UsageError(`--${name} must be a version number, 1 or more`, usage);
+  }
+  return parsed;
+};
 
 const doPlan = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const [subcommand, ...rest] = args;
-  const usage = "nightshift plan check|ratify|conversation <program> [--repo <path>]";
+  const usage = "nightshift plan put|show|check|ratify|conversation <program> [--project <id>]";
   if (subcommand === "conversation") {
     const { id, repo, values } = programArgs(rest, CONVERSATION_USAGE, {
       list: { type: "boolean" },
       keep: { type: "string" },
       summary: { type: "string" },
       session: { type: "string" },
+      project: { type: "string" },
     });
     const keep = optional(values, "keep");
     const summary = optional(values, "summary");
     const session = optional(values, "session");
+    const project = optional(values, "project");
     if (values.list === true && (keep !== undefined || summary !== undefined)) {
       throw new UsageError("--list shows the messages; it keeps nothing", CONVERSATION_USAGE);
     }
     return planConversation(environment, {
       id,
       ...(repo === undefined ? {} : { repo }),
+      ...(project === undefined ? {} : { project }),
       ...(keep === undefined ? {} : { keep }),
       ...(summary === undefined ? {} : { summary }),
       ...(session === undefined ? {} : { session }),
     });
   }
-  if (subcommand !== "check" && subcommand !== "ratify") {
+  if (
+    subcommand !== "put" &&
+    subcommand !== "show" &&
+    subcommand !== "check" &&
+    subcommand !== "ratify"
+  ) {
     throw new UsageError(
       subcommand === undefined
         ? "`nightshift plan` needs a subcommand"
@@ -412,19 +442,33 @@ const doPlan = async (environment: CliEnvironment, args: readonly string[]): Pro
       usage,
     );
   }
-  const { id, repo, values } = programArgs(
-    rest,
-    usage,
-    subcommand === "ratify" ? { "no-push": { type: "boolean" } } : {},
-  );
+  const flags: Record<string, { type: "boolean" | "string" }> = { project: { type: "string" } };
+  if (subcommand !== "ratify") flags.dir = { type: "string" };
+  if (subcommand === "put") flags["based-on"] = { type: "string" };
+  if (subcommand === "show") flags.version = { type: "string" };
+  const { id, repo, values } = programArgs(rest, usage, flags);
+  const project = optional(values, "project");
+  const dir = optional(values, "dir");
+  const version = versionNumber("version", optional(values, "version"), usage);
+  const basedOn = versionNumber("based-on", optional(values, "based-on"), usage);
   const options = {
     id,
     ...(repo === undefined ? {} : { repo }),
-    ...(values["no-push"] === true ? { push: false } : {}),
+    ...(project === undefined ? {} : { project }),
+    ...(dir === undefined ? {} : { dir }),
+    ...(version === undefined ? {} : { version }),
+    ...(basedOn === undefined ? {} : { basedOn }),
   };
-  return subcommand === "check"
-    ? planCheck(environment, options)
-    : planRatify(environment, options);
+  switch (subcommand) {
+    case "put":
+      return planPut(environment, options);
+    case "show":
+      return planShow(environment, options);
+    case "check":
+      return planCheck(environment, options);
+    default:
+      return planRatify(environment, options);
+  }
 };
 
 const doPreflight = async (

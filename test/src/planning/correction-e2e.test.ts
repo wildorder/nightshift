@@ -25,6 +25,7 @@ import {
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, signIn } from "../cli/operator.js";
+import { programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
 import { scriptedHarnessModule } from "../slice/context.js";
 import {
   authoredProgram,
@@ -173,8 +174,11 @@ describe("a reversed decision, corrected by a plan (SC-P9-08)", () => {
     // The project's gates, audited once (D-P15-07): the correction below is
     // checked against the same record, because its gates are the same.
     expect(await cli("gates", "modules", "--record"), op.err.join("\n")).toBe(0);
-    expect(await cli("plan", "check", "modules"), op.err.join("\n")).toBe(0);
-    expect(await cli("plan", "ratify", "modules"), op.err.join("\n")).toBe(0);
+    expect(
+      await cli("plan", "check", "modules", "--dir", programDirectory(fixture.repo, "modules")),
+      op.err.join("\n"),
+    ).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, "modules"), op.err.join("\n")).toBe(0);
     expect(await cli("run", "modules"), `${op.out.join("\n")}\n${op.err.join("\n")}`).toBe(0);
     const runId = op.out.find((line) => /^run_[0-9A-Z]+$/.test(line)) ?? "";
 
@@ -248,9 +252,12 @@ describe("a reversed decision, corrected by a plan (SC-P9-08)", () => {
     git("add", "-A");
     git("commit", "-qm", "plan the correction");
 
-    expect(await cli("plan", "check", "fix"), op.err.join("\n")).toBe(0);
+    expect(
+      await cli("plan", "check", "fix", "--dir", programDirectory(fixture.repo, "fix")),
+      op.err.join("\n"),
+    ).toBe(0);
     expect(op.out.join("\n")).toContain(`FLAG ${decisionId} is irreversible`);
-    expect(await cli("plan", "ratify", "fix"), op.err.join("\n")).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, "fix"), op.err.join("\n")).toBe(0);
 
     // Refused until the owner confirms; nothing started.
     expect(await cli("run", "fix")).not.toBe(0);

@@ -18,6 +18,7 @@ import type { ProgramContract, Strand } from "@nightshift/contracts";
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, signIn } from "../cli/operator.js";
+import { programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
 import { scriptedHarnessModule } from "../slice/context.js";
 import {
   authoredProgram,
@@ -203,9 +204,12 @@ describe("a planned program, from a plan on disk to a landed program, through th
     // Planning audits the gates and records them healthy (D-P15-01, D-P15-07).
     expect(await cli("gates", PROGRAM, "--record"), op.err.join("\n")).toBe(0);
     expect(op.out.join("\n")).toContain("recorded the gates as healthy");
-    expect(await cli("plan", "check", PROGRAM), op.err.join("\n")).toBe(0);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+      op.err.join("\n"),
+    ).toBe(0);
     expect(op.out[0]).toBe("READY");
-    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
 
     // The hurdle is only a later strand's, so the run starts, and says so.
     const ran = await cli("run", PROGRAM);
