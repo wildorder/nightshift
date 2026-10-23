@@ -47,7 +47,12 @@ if (tableName === "" || tableName.includes("\t")) {
 }
 console.log(`Backfilling ${tableName} as ${identity.arn}.`);
 
-const client = DynamoDBDocumentClient.from(new DynamoDBClient({ region: EXPECTED_REGION }));
+// Adaptive retries with room to wait: a burst of index writes is throttled
+// while the index absorbs it, and the default three attempts gave up mid-scan
+// on both first runs (2026-10-22).
+const client = DynamoDBDocumentClient.from(
+  new DynamoDBClient({ region: EXPECTED_REGION, maxAttempts: 12, retryMode: "adaptive" }),
+);
 let scanned = 0;
 let updated = 0;
 let nodeIndexed = 0;
