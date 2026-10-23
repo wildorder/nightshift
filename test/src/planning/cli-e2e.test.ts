@@ -18,7 +18,12 @@ import type { ProgramContract, Strand } from "@nightshift/contracts";
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, signIn } from "../cli/operator.js";
-import { addOrigin, programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
+import {
+  addOrigin,
+  programDirectory,
+  ratifyFromFiles,
+  writeConfigFor,
+} from "../cli/plan-scratch.js";
 import { scriptedHarnessModule } from "../slice/context.js";
 import {
   authoredProgram,
@@ -143,6 +148,8 @@ beforeEach(async () => {
   // under docs/programs. The first real planned run found that run.attach looked
   // only for the old file, and the headless root wrote one by hand to get past it.
   git("rm", "-q", "nightshift.program.json");
+  // The plan is on the plane; the repository names its project for run.attach to find it.
+  await writeConfigFor(fixture.repo, contract);
   git("add", "-A");
   git("-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", "plan the modules");
 
@@ -222,8 +229,14 @@ describe("a planned program, from a plan on disk to a landed program, through th
       "deferred: S-01, S-02, S-03 are done on the provisional line, waiting on HP-01",
     );
 
-    // The program branch received none of it (A-05); the provisional line has all six.
-    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(before);
+    // The program branch received none of the work (A-05) — only the one publication
+    // commit at finish, which touches docs/programs/{id}/ and nothing else (P21);
+    // the provisional line has all six.
+    const published = git("rev-parse", PROGRAM_BRANCH);
+    expect(git("rev-list", "--count", `${before}..${published}`)).toBe("1");
+    for (const file of git("diff", "--name-only", before, published).split("\n")) {
+      expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
+    }
     const runId = op.out.find((line) => /^run_[0-9A-Z]+$/.test(line)) ?? "";
     expect(runId).not.toBe("");
     const provisional = git(
@@ -246,7 +259,7 @@ describe("a planned program, from a plan on disk to a landed program, through th
     // Resuming before the human has done it resumes nothing, and says what is unmet.
     expect(await cli("resume", PROGRAM)).toBe(1);
     expect(op.err.join("\n")).toContain("UNMET HP-01");
-    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(before);
+    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(published);
 
     // The human is back.
     await writeFile(join(outside, "release-token"), "present");
@@ -265,7 +278,8 @@ describe("a planned program, from a plan on disk to a landed program, through th
     expect(finalReport).toContain("Nothing was deferred.");
     expect(finalReport).toContain("| met |");
     expect(finalReport).not.toContain("NOT met");
-    // The report leaves the checkout as clean as it found it, bar itself.
-    expect(git("status", "--porcelain")).toBe(`?? docs/programs/${PROGRAM}/report.md`);
+    // The report was published at finish, so it is tracked; the rewrite is the one
+    // change the checkout carries.
+    expect(git("status", "--porcelain")).toBe(`M docs/programs/${PROGRAM}/report.md`);
   }, 240_000);
 });

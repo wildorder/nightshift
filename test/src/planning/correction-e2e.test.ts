@@ -25,7 +25,12 @@ import {
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, signIn } from "../cli/operator.js";
-import { addOrigin, programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
+import {
+  addOrigin,
+  programDirectory,
+  ratifyFromFiles,
+  writeConfigFor,
+} from "../cli/plan-scratch.js";
 import { scriptedHarnessModule } from "../slice/context.js";
 import {
   authoredProgram,
@@ -103,6 +108,9 @@ beforeEach(async () => {
   });
   await addOrigin(fixture.repo, join(fixture.stateDir, "..", "origin"));
   git("rm", "-q", "nightshift.program.json");
+  // The plan is on the plane; the repository names its project for run.attach to find it.
+  await writeConfigFor(fixture.repo, fixture.program);
+  git("add", "-A");
   git("commit", "-qm", "planned programs live under docs/programs");
   environment = {
     ...op.environment,

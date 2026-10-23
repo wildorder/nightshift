@@ -22,7 +22,12 @@ import { nodeGitRunner } from "@nightshift/execution";
 import { currentStage, type FetchLike } from "@nightshift/persistence/http";
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { addOrigin, programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
+import {
+  addOrigin,
+  programDirectory,
+  ratifyFromFiles,
+  writeConfigFor,
+} from "../cli/plan-scratch.js";
 import { scriptedHarnessModule } from "../slice/context.js";
 import {
   authoredProgram,
@@ -240,6 +245,8 @@ describe("a stranger's first run, on a local instance", () => {
       ].join("\n"),
     );
     git("rm", "-q", "nightshift.program.json");
+    // The plan is on the plane; the repository names its project for run.attach to find it.
+    await writeConfigFor(fixture.repo, contract);
     git("add", "-A");
     git(
       "-c",
