@@ -231,6 +231,7 @@ export type PlanDraftReason =
   | "no_draft"
   | "not_latest_version"
   | "plan_hash_required"
+  | "name_taken"
   | "conflict";
 
 /**

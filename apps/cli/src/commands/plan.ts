@@ -395,6 +395,8 @@ export const planPut = async (
           : { conversationText: scratch.conversationText }),
       },
       basedOn,
+      // A program named by its directory name keeps that name on the plane.
+      ProgramIdSchema.safeParse(options.id).success ? undefined : options.id,
     );
   } catch (error) {
     if (error instanceof PlanDraftError && /stale_base/.test(error.message)) {

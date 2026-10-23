@@ -210,6 +210,61 @@ describe("writing versions", () => {
     }
   });
 
+  it("records a name, keeps it on a later put without one, and refuses another program's", async () => {
+    const w = await setup();
+    const named = (contract: ProgramContract, basedOn: number | null, name?: string) => ({
+      ...putBody(w, contract, basedOn),
+      ...(name === undefined ? {} : { name }),
+    });
+    expect(
+      (await call(w, "POST", `${w.paths.draft}/versions`, named(draftContract(w), null, "p1-demo")))
+        .status,
+    ).toBe(201);
+    expect(((await call(w, "GET", w.paths.draft)).body as PlanDraft).name).toBe("p1-demo");
+    expect(
+      (
+        await call(
+          w,
+          "POST",
+          `${w.paths.draft}/versions`,
+          named(draftContract(w, { outOfScope: ["x"] }), 1),
+        )
+      ).status,
+    ).toBe(201);
+    expect(((await call(w, "GET", w.paths.draft)).body as PlanDraft).name).toBe("p1-demo");
+
+    const otherId = w.f.ids.next("prog") as ProgramContract["programId"];
+    const other = draftContract(w, { programId: otherId });
+    const otherScope = { projectId: w.f.scope.projectId, programId: otherId };
+    const otherUpload = (text: string): string => {
+      const hash = sha256(text);
+      w.objects.set(planDocumentObjectKey(otherScope, hash), new TextEncoder().encode(text));
+      return hash;
+    };
+    const otherPut = (name: string) => ({
+      contractSha256: otherUpload(JSON.stringify(other)),
+      planSha256: otherUpload(PLAN),
+      basedOn: null,
+      name,
+    });
+    const otherDraft = `${w.paths.project}/programs/${otherId}/plan-draft/versions`;
+    const refused = await call(w, "POST", otherDraft, otherPut("p1-demo"));
+    expect(refused.status).toBe(409);
+    expect(errorCode(refused)).toBe("plan_draft");
+    expect((await call(w, "POST", otherDraft, otherPut("p2-other"))).status).toBe(201);
+    // The holder may put its own name again.
+    expect(
+      (
+        await call(
+          w,
+          "POST",
+          `${w.paths.draft}/versions`,
+          named(draftContract(w, { outOfScope: ["y"] }), 2, "p1-demo"),
+        )
+      ).status,
+    ).toBe(201);
+  });
+
   it("refuses a contract that is not JSON naming this program, and keeps one that fails the schema", async () => {
     const w = await setup();
     expect((await putVersion(w, "not json", null)).status).toBe(422);

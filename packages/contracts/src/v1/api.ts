@@ -36,7 +36,7 @@ import {
   PrerequisiteSchema,
   Sha256HexSchema,
 } from "./plan.js";
-import { PlanDraftSchema, PlanDraftVersionSchema } from "./plan-draft.js";
+import { PlanDraftNameSchema, PlanDraftSchema, PlanDraftVersionSchema } from "./plan-draft.js";
 import { ProgramContractSchema } from "./program-contract.js";
 import { ProjectSchema } from "./project.js";
 import { RoutingDecisionSchema } from "./routing-decision.js";
@@ -303,6 +303,8 @@ export const PlanDraftPutVersionBodySchema = z.strictObject({
   conversationSha256: Sha256HexSchema.optional(),
   /** The latest version the writer saw; `null` for the first. */
   basedOn: z.int().min(1).nullable(),
+  /** The program's directory name; kept by the draft when a later put omits it. */
+  name: PlanDraftNameSchema.optional(),
 });
 export type PlanDraftPutVersionBody = z.infer<typeof PlanDraftPutVersionBodySchema>;
 
