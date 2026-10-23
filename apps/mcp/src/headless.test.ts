@@ -189,10 +189,35 @@ describe("a root stopped by a usage limit (D-P8-06, as amended 2026-10-12)", () 
     expect(second?.[2]).toMatch(/stopped by a usage limit[\s\S]*It ran on opus/);
   });
 
+  it("replaces a root refused before it attached, on a run still pending (2026-10-23)", async () => {
+    const launches: Parameters<RootLaunch>[] = [];
+    const result = await replacingLimitedRoots(
+      clock,
+      { scope, repoPath: "/repo" },
+      async (...args) => {
+        launches.push(args);
+        const first = launches.length === 1;
+        return {
+          exit: first ? limited : { kind: "completed" },
+          run: run(first ? "pending" : "succeeded"),
+          agentId: `agent_${launches.length}` as never,
+          transcript: `t${launches.length}`,
+          route: route(first ? "fable" : "opus"),
+          measurementSummaryId: `meas_${launches.length}`,
+        };
+      },
+    );
+    expect(launches).toHaveLength(2);
+    expect(launches[1]?.[1]).toEqual([{ harness: "h", model: "fable" }]);
+    expect(result.exit.kind).toBe("completed");
+  });
+
   it("leaves every other ending to the run: a failure, or a run no longer running", async () => {
     for (const [exit, status] of [
       [{ kind: "failed" as const, exitCode: 1 }, "running"],
+      [{ kind: "failed" as const, exitCode: 1 }, "pending"],
       [limited, "interrupted"],
+      [limited, "succeeded"],
     ] as const) {
       let launched = 0;
       await replacingLimitedRoots(clock, { scope, repoPath: "/repo" }, async () => {
@@ -229,6 +254,8 @@ describe("the root's measurements", () => {
     options: {
       prices?: Record<string, { inputPerMTok: number; outputPerMTok: number }>;
       requestModels?: readonly string[];
+      /** A root refused before it attached leaves the run pending (2026-10-23). */
+      attaches?: boolean;
     } = {},
   ) => {
     const f: Fixtures = createFixtures();
@@ -291,7 +318,9 @@ describe("the root's measurements", () => {
         }
         // The first root brings the run to running, as its attached server would.
         const run = await stores.runs.get(f.scope, f.scope.runId);
-        if (run !== undefined) await stores.runs.put({ ...run, status: "running" });
+        if (run !== undefined && options.attaches !== false) {
+          await stores.runs.put({ ...run, status: "running" });
+        }
         return {
           agentId: input.agent.agentId,
           exit: Promise.resolve(exits[index] ?? { kind: "completed" }),
@@ -419,5 +448,18 @@ describe("the root's measurements", () => {
     expect(summary?.segments[0]?.exitKind).toBe(kind);
     expect(summary?.totals).toMatchObject({ inputTokens: 55, outputTokens: 5 });
     expect(summary?.routingDecisionId).toBeNull();
+  });
+
+  it("launches again on a pending run whose earlier root left its worktree (2026-10-23)", async () => {
+    // The first root was refused before it attached, so the run is still
+    // pending; the restart's root must not trip over the worktree it left.
+    const r = rig(
+      [{ kind: "failed", exitCode: 1 } as HarnessExit, { kind: "completed" } as HarnessExit],
+      { attaches: false },
+    );
+    await r.seed();
+    await launchRoot(r.runtime, {}, input(r.f, r.repo), [], undefined);
+    const again = await launchRoot(r.runtime, {}, input(r.f, r.repo), [], undefined);
+    expect(again.exit.kind).toBe("completed");
   });
 });
