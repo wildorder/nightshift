@@ -54,13 +54,11 @@ import {
   conservativeDefaults,
   currentStepTime,
   type DelegationRejection,
-  gatherReport,
   highestSequence,
   isDoneForNow,
   nowIso,
   type ProjectStores,
   pendingCount,
-  renderReport,
   STEP_TIMED_OUT_EXIT_CODE,
   type StepAdjustments,
   type StrandBrief,
@@ -70,7 +68,6 @@ import {
   strandsOf,
 } from "@nightshift/core";
 import {
-  commitPublication,
   continuedByNightshift,
   type EndGatesResult,
   endProgramNode,
@@ -93,6 +90,7 @@ import { z } from "zod";
 import { type ActivityFeed, createActivityFeed, renderActivity } from "./activity.js";
 import { CLASSIFICATION_INPUTS } from "./classification.js";
 import { fullyPublished, settlePublication, unpublishedReason } from "./publication-settle.js";
+import { type Published, publishPlannedRun } from "./publish-run.js";
 import type { RefusalCode } from "./results.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 import { routeJob } from "./routing.js";
@@ -655,20 +653,11 @@ const endGatesEnding = async (
   return { kind: "ended", outcome, why: reason };
 };
 
-interface Published {
-  /** The program branch's head after the publication commit. */
-  readonly head: string;
-  readonly directory: string;
-}
-
 /**
- * The publication of a finished planned run (P21, D-03): the ratified contract,
- * the plan, the conversation and the rendered report, committed into
- * `docs/programs/{name}/` on the program branch, all from the control plane's
- * records. On a machine the new head is raised as a publication intent, as a
- * landing's is; locally nothing is pushed. A run that is not planned, or whose
- * draft has no name, publishes nothing. A failure is the answer's to report:
- * the run has ended, and what it built is not in doubt.
+ * The publication of a finished planned run (P21, D-03); see `publishPlannedRun`.
+ * A run that is not planned, or whose draft has no name, publishes nothing. A
+ * failure is the answer's to report: the run has ended, and what it built is
+ * not in doubt.
  */
 const publishFinished = async (
   state: OrchestratorSession,
@@ -676,48 +665,22 @@ const publishFinished = async (
 ): Promise<{ readonly published?: Published; readonly failure?: string }> => {
   if (attached.planSections === undefined) return {};
   const { scope, program } = attached.session;
+  let name: string | undefined;
   try {
-    const name = await programNameOf(state, scope);
-    if (name === undefined) return {};
-    const { stores, planText } = state.runtime;
-    const sha256 = (await stores.executionNodes.get(scope, attached.session.rootNodeId))?.plan
-      ?.planDocument.sha256;
-    const stored = await stores.programContracts.get(scope.projectId, scope.programId);
-    if (stored === undefined || sha256 === undefined || planText === undefined) {
-      return { failure: "the control plane did not supply the contract and plan" };
-    }
-    const plan = await planText(scope, sha256);
-    if (plan === undefined)
-      return { failure: "the control plane did not supply the plan document" };
-    const conversation =
-      stored.conversation === undefined
-        ? undefined
-        : await planText(scope, stored.conversation.sha256);
-    const report = renderReport(await gatherReport(stores, scope));
-    const result = await commitPublication(state.runtime.git, {
-      repo: state.repoPath,
-      programBranch: program.repository.programBranch,
-      name,
-      files: {
-        "contract.json": `${JSON.stringify(stored, null, 2)}\n`,
-        "plan.md": plan,
-        ...(conversation === undefined ? {} : { "conversation.md": conversation }),
-        "report.md": report,
-      },
-      message: `Publish the plan, contract${conversation === undefined ? "" : ", conversation"} and report of ${name}`,
-      atMs: Date.parse(nowIso(state.runtime.clock)),
-    });
-    if (!result.published)
-      return { published: { head: result.head, directory: `docs/programs/${name}` } };
-    await attached.environment.publish?.({
-      head: result.head,
-      programBranch: program.repository.programBranch,
-      repoPath: state.repoPath,
-    });
-    return { published: { head: result.head, directory: `docs/programs/${name}` } };
+    name = await programNameOf(state, scope);
   } catch (error) {
     return { failure: error instanceof Error ? error.message : String(error) };
   }
+  return publishPlannedRun(state.runtime, {
+    scope,
+    program,
+    repoPath: state.repoPath,
+    name,
+    rootNodeId: attached.session.rootNodeId,
+    ...(attached.environment.publish === undefined
+      ? {}
+      : { publish: attached.environment.publish }),
+  });
 };
 
 /** One feed per attached run, so each call answers "since the last one". */

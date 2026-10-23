@@ -45,6 +45,7 @@ let op: Operator;
 let fixture: MaterialisedRepo;
 let outside: string;
 let environment: CliEnvironment;
+let ratifiedIds: { projectId: string; programId: string };
 
 const git = (...args: string[]): string =>
   execFileSync("git", args, { cwd: fixture.repo, encoding: "utf8" }).trim();
@@ -140,6 +141,7 @@ beforeEach(async () => {
       },
     ],
   };
+  ratifiedIds = { projectId: created.projectId, programId: contract.programId };
   const directory = join(fixture.repo, "docs", "programs", PROGRAM);
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "contract.json"), `${JSON.stringify(contract, null, 2)}\n`);
@@ -278,8 +280,47 @@ describe("a planned program, from a plan on disk to a landed program, through th
     expect(finalReport).toContain("Nothing was deferred.");
     expect(finalReport).toContain("| met |");
     expect(finalReport).not.toContain("NOT met");
-    // The report was published at finish, so it is tracked; the rewrite is the one
-    // change the checkout carries.
-    expect(git("status", "--porcelain")).toBe(`M docs/programs/${PROGRAM}/report.md`);
+    // The run ended again, so the program branch got the updated report as a
+    // second publication commit (P21, D-03); the checkout is left clean.
+    const republished = git("rev-parse", PROGRAM_BRANCH);
+    const publishedReport = git("show", `${PROGRAM_BRANCH}:docs/programs/${PROGRAM}/report.md`);
+    expect(publishedReport).toContain("3 of 3 strands succeeded; 0 deferred; 0 parked.");
+    expect(publishedReport).toContain("Nothing was deferred.");
+    expect(publishedReport).not.toContain("NOT met");
+    const publications = git(
+      "log",
+      "--format=%H",
+      "--grep=^Publish the plan",
+      `${before}..${PROGRAM_BRANCH}`,
+    ).split("\n");
+    expect(publications).toHaveLength(2);
+    for (const commit of publications) {
+      for (const file of git("diff-tree", "--no-commit-id", "--name-only", "-r", commit).split(
+        "\n",
+      )) {
+        expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
+      }
+    }
+    expect(git("status", "--porcelain")).toBe("");
+
+    // Ending again with nothing changed publishes nothing: the resume process
+    // run once more finds nothing deferred and commits no second time.
+    const again = await environment.exec?.(
+      process.execPath,
+      [
+        RESUME,
+        "--project",
+        ratifiedIds.projectId,
+        "--program",
+        ratifiedIds.programId,
+        "--run",
+        runId,
+        "--repo",
+        fixture.repo,
+      ],
+      { cwd: fixture.repo },
+    );
+    expect(again?.exitCode, again?.stderr).toBe(0);
+    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(republished);
   }, 240_000);
 });

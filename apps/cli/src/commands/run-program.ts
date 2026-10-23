@@ -64,6 +64,27 @@ import { watchDispatch } from "./watch.js";
 
 export const REPORT_FILE = "report.md";
 
+/**
+ * Writes the run's report into the checkout, unless the checkout already tracks
+ * one: a finished planned run publishes its report onto the program branch
+ * (P21, D-03), which is where it is read from, and rewriting a tracked file
+ * would leave the checkout modified. Returns the path either way.
+ */
+export const writeReportUnlessTracked = async (
+  environment: CliEnvironment,
+  repoPath: string,
+  directory: string,
+  text: string,
+): Promise<string> => {
+  const path = join(repoPath, directory, REPORT_FILE);
+  const tracked = await environment.git(
+    ["ls-files", "--error-unmatch", "--", `${directory.replace(/\\/g, "/")}/${REPORT_FILE}`],
+    { cwd: repoPath },
+  );
+  if (tracked.exitCode !== 0) await writeFile(path, text);
+  return path;
+};
+
 export interface RunProgramOptions {
   readonly repoPath: string;
   /** Create the run and stop: a human's own session will orchestrate it, as before P7. */
@@ -543,8 +564,12 @@ export const runProgram = async (
     runId: started.run.runId,
   };
   const report = await gatherReport(session.stores, scope);
-  const reportPath = join(options.repoPath, files.directory, REPORT_FILE);
-  await writeFile(reportPath, renderReport(report));
+  const reportPath = await writeReportUnlessTracked(
+    environment,
+    options.repoPath,
+    files.directory,
+    renderReport(report),
+  );
 
   const succeeded = report.strands.filter((strand) => strand.outcome === "succeeded").length;
   environment.out(

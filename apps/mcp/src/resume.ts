@@ -17,6 +17,7 @@
 import type { RunScope } from "@nightshift/core";
 import { createEventOutbox, type ResumeResult, resumeDeferred } from "@nightshift/execution";
 import type { Runtime } from "./compose.js";
+import { publishPlannedRun } from "./publish-run.js";
 import { routeJob } from "./routing.js";
 import { buildEnvironment } from "./session.js";
 
@@ -48,7 +49,7 @@ export const runResume = async (runtime: Runtime, input: ResumeInput): Promise<R
   try {
     // A check that fails here is retried as the run would retry it (P9,
     // D-P9-07): routed by the run's own policy, one rung up, a worker of its own.
-    return await resumeDeferred(
+    const result = await resumeDeferred(
       environment,
       { scope, program, repoPath: input.repoPath },
       {
@@ -56,6 +57,23 @@ export const runResume = async (runtime: Runtime, input: ResumeInput): Promise<R
         mcp: (identity) => runtime.workerLaunch(identity),
       },
     );
+    // The run ends again here (P21, D-03): the program branch gets the updated
+    // report as a new publication commit, or nothing if no published file changed.
+    if (result.blocked === undefined) {
+      const name = (await runtime.stores.planDrafts.get(scope.projectId, scope.programId))?.name;
+      const { failure } = await publishPlannedRun(runtime, {
+        scope,
+        program,
+        repoPath: input.repoPath,
+        name,
+        rootNodeId: run.rootNodeId,
+        ...(environment.publish === undefined ? {} : { publish: environment.publish }),
+      });
+      if (failure !== undefined) {
+        process.stderr.write(`[nightshift-resume] could not publish: ${failure}\n`);
+      }
+    }
+    return result;
   } finally {
     await outbox.flush(5_000).catch(() => {});
   }

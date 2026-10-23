@@ -82,12 +82,11 @@ export const isDirty = async (runner: GitRunner, repo: string): Promise<boolean>
  * D-P7-03), and it is the one thing Nightshift leaves there. Untracked, it is
  * not the operator's work in progress and must not stop the next landing: found
  * when the first `nightshift resume` was refused by the report of the run it was
- * resuming. Untracked (`??`), or modified (` M`) once a finished planned run
- * has published it onto the program branch (P21): `run`, `resume` and `report`
- * rewrite it from the control plane, and no landing touches it. Staged changes
- * to it are a human's, like any other.
+ * resuming. Only untracked (`??`): a finished planned run publishes the report
+ * onto the program branch (P21) and the CLI no longer rewrites it there, so a
+ * modified or staged report is a human's, like any other change.
  */
-const NIGHTSHIFT_REPORT = /^(\?\?|\s?M) "?docs\/programs\/[^/]+\/report\.md"?$/;
+const NIGHTSHIFT_REPORT = /^\?\? "?docs\/programs\/[^/]+\/report\.md"?$/;
 // (The first line of the output may have lost its leading space to a trim.)
 const isNightshiftReport = (porcelainLine: string): boolean =>
   NIGHTSHIFT_REPORT.test(porcelainLine.trimEnd());

@@ -26,8 +26,6 @@
  * code is 0 when everything deferred has landed.
  */
 
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { Prerequisite, ProgramContract, Run } from "@nightshift/contracts";
 import { gatherReport, renderReport } from "@nightshift/core";
 import {
@@ -49,7 +47,7 @@ import { resolveFrom } from "../program-files.js";
 import { findProgram } from "../program-source.js";
 import { openSession, type Session } from "../session.js";
 import { republishRun, unpublishedOf } from "./republish.js";
-import { REPORT_FILE } from "./run-program.js";
+import { writeReportUnlessTracked } from "./run-program.js";
 
 export interface ResumeOptions {
   readonly id: string;
@@ -210,8 +208,12 @@ export const resume = async (
       program.repository.programBranch,
     );
     const report = await gatherReport(session.stores, sessionFor(newest).scope);
-    const reportPath = join(repoPath, files.directory, REPORT_FILE);
-    await writeFile(reportPath, renderReport(report));
+    const reportPath = await writeReportUnlessTracked(
+      environment,
+      repoPath,
+      files.directory,
+      renderReport(report),
+    );
     environment.out(`report: ${reportPath}`);
     if (outcome !== "published") return 1;
     republished = true;
@@ -268,8 +270,12 @@ export const resume = async (
   reportStop(environment, result);
 
   const report = await gatherReport(session.stores, sessionFor(chosen).scope);
-  const reportPath = join(repoPath, files.directory, REPORT_FILE);
-  await writeFile(reportPath, renderReport(report));
+  const reportPath = await writeReportUnlessTracked(
+    environment,
+    repoPath,
+    files.directory,
+    renderReport(report),
+  );
   environment.out(`report: ${reportPath}`);
   return result.stoppedAt === undefined && result.failed.length === 0 ? 0 : 1;
 };
