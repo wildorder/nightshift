@@ -420,14 +420,13 @@ const exitCodeFor = (report: RunReport): number => {
  * The ratified record a run executes. Asking to run a plan is approving it
  * (2026-10-16): when the plan on disk is not the one the control plane holds
  * ratified — never ratified, or edited since — it is ratified here, under the
- * same rules as `nightshift plan ratify` (READY, committed), and then held to
+ * same rules as `nightshift plan ratify` (READY), and then held to
  * its hash like any other. `undefined`, with the reasons said, when it cannot be.
  */
 const ratifiedForRun = async (
   environment: CliEnvironment,
   session: Session,
   files: ProgramFiles,
-  repoPath: string,
 ): Promise<ProgramContract | undefined> => {
   try {
     return await requireRatifiedPlan(session.stores, files.contract, files.planText);
@@ -438,7 +437,7 @@ const ratifiedForRun = async (
   environment.out(
     `ratifying ${files.directory}: asking to run a plan approves it, so it is recorded under its hash first`,
   );
-  if ((await ratifyPlan(environment, session, repoPath, files)) === undefined) return undefined;
+  if ((await ratifyPlan(environment, session, files)) === undefined) return undefined;
   return requireRatifiedPlan(session.stores, files.contract, files.planText);
 };
 
@@ -454,7 +453,7 @@ export const runProgram = async (
     ids: environment.ids,
     git: environment.git,
   };
-  const ratified = await ratifiedForRun(environment, session, files, options.repoPath);
+  const ratified = await ratifiedForRun(environment, session, files);
   if (ratified === undefined) return { started: undefined, exitCode: 1 };
   if (
     options.remote !== true &&

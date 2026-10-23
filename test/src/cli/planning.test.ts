@@ -210,13 +210,19 @@ describe("nightshift plan ratify", () => {
     ).toBeUndefined();
   });
 
-  it("refuses uncommitted changes: the hash must name something git can reproduce", async () => {
+  it("ratifies an uncommitted plan with the planHash a committed copy of the same files has", async () => {
     await writeFile(programPath("plan.md"), `${PLAN}\nAn afterthought.\n`);
-    expect(await cli("plan", "ratify", PROGRAM)).toBe(1);
-    expect(op.err.join("\n")).toContain(`docs/programs/${PROGRAM}/plan.md`);
-    expect(
-      await stores().programContracts.get(contract.projectId, contract.programId),
-    ).toBeUndefined();
+    expect(await cli("plan", "ratify", PROGRAM, "--no-push")).toBe(0);
+    const uncommitted = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(uncommitted?.status).toBe("ratified");
+    expect(op.err.join("\n")).not.toContain("uncommitted");
+
+    commit("commit the afterthought");
+    expect(await cli("plan", "ratify", PROGRAM, "--no-push")).toBe(0);
+    const committed = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(committed?.status).toBe("ratified");
+    expect(committed?.planHash).toBe(uncommitted?.planHash);
+    expect(committed?.planDocument).toEqual(uncommitted?.planDocument);
   });
 
   it("uploads the plan, records the hash, and the document reads back byte for byte", async () => {
@@ -289,13 +295,13 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     expect(recorded?.ratifications).toHaveLength(1);
   });
 
-  it("refuses to ratify an uncommitted plan, and starts nothing", async () => {
+  it("ratifies an uncommitted plan, then runs it", async () => {
     await writeFile(programPath("plan.md"), `${PLAN}\nAn uncommitted thought.\n`);
-    expect(await cli("run", PROGRAM)).toBe(1);
-    expect(op.err.join("\n")).toContain("the plan has uncommitted changes");
-    expect(
-      await stores().programContracts.get(contract.projectId, contract.programId),
-    ).toBeUndefined();
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended")).toBe(0);
+    expect(op.err.join("\n")).not.toContain("uncommitted");
+    const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(recorded?.status).toBe("ratified");
   });
 
   it("stops at preflight when a first strand's prerequisite is unmet, and starts nothing", async () => {
@@ -332,10 +338,6 @@ describe("nightshift run {id} (SC-P7-04)", () => {
   it("ratifies a plan edited and committed after ratification again, and runs the new one", async () => {
     await cli("plan", "ratify", PROGRAM);
     await writeFile(programPath("plan.md"), `${PLAN}\nA quiet change of mind.\n`);
-    // Uncommitted, the edit is refused: a hash must name something git has.
-    expect(await cli("run", PROGRAM)).toBe(1);
-    expect(op.err.join("\n")).toContain("the plan has uncommitted changes");
-
     commit("change the plan");
     await writeFile(join(fixture.repo, "release-token"), "present");
     expect(await cli("run", PROGRAM, "--attended")).toBe(0);

@@ -4,9 +4,9 @@
  * `check` is deterministic and touches nothing: it reads the two files, runs
  * `checkPlan` from `core`, and its exit code is the answer. Optional gate
  * diagnostics do not participate in readiness. `ratify` is the gate.
- * It refuses a plan that is not `READY`, and one with uncommitted changes,
- * because the hash has to name something git can reproduce; then it uploads the
- * plan document and records the hash. If the upload fails, nothing is ratified.
+ * It refuses a plan that is not `READY`; then it uploads the plan document and
+ * records the hash. The hash names the documents the control plane stores, not
+ * a commit, so a plan need not be committed to be ratified. If the upload fails, nothing is ratified.
  */
 
 import type { ProgramContract } from "@nightshift/contracts";
@@ -139,31 +139,8 @@ export const planCheck = async (
   return 0;
 };
 
-/** Paths under the program directory, or the config, that git does not have as they are on disk. */
-const uncommittedChanges = async (
-  environment: CliEnvironment,
-  repoPath: string,
-  files: ProgramFiles,
-): Promise<readonly string[]> => {
-  const result = await environment.git(
-    ["status", "--porcelain", "--", files.directory, "nightshift.config.json"],
-    { cwd: repoPath },
-  );
-  if (result.exitCode !== 0) {
-    throw new UsageError(
-      `${repoPath} is not a git repository nightshift can read`,
-      result.stderr.trim() ||
-        "A plan is ratified from a commit, so that its hash names something reproducible.",
-    );
-  }
-  return result.stdout
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line !== "");
-};
-
 /**
- * Ratifies the plan on disk: READY, committed, uploaded and recorded under its
+ * Ratifies the plan on disk: READY, uploaded and recorded under its
  * hash. The one way a plan is ratified, by `nightshift plan ratify` and by
  * `nightshift run`, whose asking to run a plan is the human's approval of it
  * (2026-10-16). `undefined`, with the reasons said, when it cannot be.
@@ -171,23 +148,12 @@ const uncommittedChanges = async (
 export const ratifyPlan = async (
   environment: CliEnvironment,
   session: Session,
-  repoPath: string,
   files: ProgramFiles,
 ): Promise<ProgramContract | undefined> => {
   const result = readinessOf(files);
   if (!result.ready) {
     printReasons(environment, result);
     environment.err("Nothing was ratified. Fix the plan and run `nightshift plan check` again.");
-    return undefined;
-  }
-
-  const dirty = await uncommittedChanges(environment, repoPath, files);
-  if (dirty.length > 0) {
-    environment.err(
-      "the plan has uncommitted changes, so its hash would name nothing git can reproduce:",
-    );
-    for (const line of dirty) environment.err(`  ${line}`);
-    environment.err("Commit them, then ratify. Nothing was ratified.");
     return undefined;
   }
 
@@ -218,7 +184,7 @@ export const planRatify = async (
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment);
-  const ratified = await ratifyPlan(environment, session, repoPath, files);
+  const ratified = await ratifyPlan(environment, session, files);
   if (ratified === undefined) return 1;
   // Ratified means dispatchable from anywhere: the program branch goes to
   // GitHub now, fast-forward only (2026-10-13). A failure here does not undo
