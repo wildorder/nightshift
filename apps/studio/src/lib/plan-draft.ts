@@ -54,43 +54,51 @@ export interface DecisionAnswer {
 }
 
 /**
- * Each planned decision of the latest contract with who answered it: the author
- * of the newest version whose act answers it; failing that, the author of the
- * earliest version whose contract carries the answer; otherwise nobody.
+ * Each planned decision of the latest contract with who gave its answer. The
+ * versions are walked oldest first, tracking per decision the current answer
+ * and its source: an `answer` act whose answer the version's contract carries
+ * (or an unreadable contract's act) makes the source "answered"; any other
+ * change of the answer inside a contract makes it "written"; otherwise the
+ * source stays. The source is returned only when the tracked answer is the
+ * latest contract's; otherwise nobody is named.
  *
  * `contracts` maps a version number to its parsed contract (unparseable or
- * missing ones are simply not consulted).
+ * missing ones are consulted only for their act).
  */
 export const decisionAnswers = (
   latest: ProgramContract,
   versions: readonly PlanDraftVersion[],
   contracts: ReadonlyMap<number, ParsedContract>,
-): readonly DecisionAnswer[] =>
-  (latest.decisions ?? []).map((decision): DecisionAnswer => {
+): readonly DecisionAnswer[] => {
+  const ordered = [...versions].sort((a, b) => a.version - b.version);
+  return (latest.decisions ?? []).map((decision): DecisionAnswer => {
     if (decision.answer === undefined) return { decision };
-    const answering = versions
-      .filter((v) => v.act.kind === "answer" && v.act.decisionId === decision.id)
-      .sort((a, b) => b.version - a.version)[0];
-    if (answering !== undefined) {
-      return {
-        decision,
-        source: { how: "answered", by: answering.author, version: answering.version },
-      };
+    let value: string | undefined;
+    let source: AnswerSource | undefined;
+    for (const v of ordered) {
+      const act = v.act;
+      const answered = act.kind === "answer" && act.decisionId === decision.id ? act : undefined;
+      const parsed = contracts.get(v.version);
+      if (parsed?.ok !== true) {
+        if (answered !== undefined) {
+          value = answered.answer;
+          source = { how: "answered", by: v.author, version: v.version };
+        }
+        continue;
+      }
+      const ans = parsed.contract.decisions?.find((d) => d.id === decision.id)?.answer;
+      if (answered !== undefined && ans === answered.answer) {
+        value = ans;
+        source = { how: "answered", by: v.author, version: v.version };
+      } else if (ans !== value) {
+        value = ans;
+        source =
+          ans === undefined ? undefined : { how: "written", by: v.author, version: v.version };
+      }
     }
-    const written = versions
-      .filter((v) => {
-        const parsed = contracts.get(v.version);
-        const found =
-          parsed?.ok === true
-            ? parsed.contract.decisions?.find((d) => d.id === decision.id)
-            : undefined;
-        return found?.answer !== undefined;
-      })
-      .sort((a, b) => a.version - b.version)[0];
-    return written === undefined
-      ? { decision }
-      : { decision, source: { how: "written", by: written.author, version: written.version } };
+    return value === decision.answer && source !== undefined ? { decision, source } : { decision };
   });
+};
 
 export interface IdChanges {
   readonly added: readonly string[];
@@ -102,6 +110,8 @@ export interface VersionChanges {
   readonly act: PlanDraftAct;
   readonly planChanged: boolean;
   readonly conversationChanged: boolean;
+  /** The contract document's hash differs from the previous version's. */
+  readonly contractChanged: boolean;
   /** Absent when either contract could not be parsed. */
   readonly contract:
     | {
@@ -109,6 +119,8 @@ export interface VersionChanges {
         readonly strands: IdChanges;
         readonly decisions: IdChanges;
         readonly prerequisites: IdChanges;
+        /** Other top-level contract keys whose value differs. */
+        readonly fields: readonly string[];
       }
     | { readonly unparseable: string };
 }
@@ -139,6 +151,13 @@ const byId = <T extends { readonly id: string }>(
 export const noIdChanges = (changes: IdChanges): boolean =>
   changes.added.length + changes.removed.length + changes.changed.length === 0;
 
+const COLLECTIONS: ReadonlySet<string> = new Set([
+  "stories",
+  "strands",
+  "decisions",
+  "prerequisites",
+]);
+
 /** What `version` changed from `previous`. */
 export const versionChanges = (
   version: PlanDraftVersion,
@@ -150,6 +169,7 @@ export const versionChanges = (
     act: version.act,
     planChanged: version.plan.sha256 !== previous.plan.sha256,
     conversationChanged: version.conversation?.sha256 !== previous.conversation?.sha256,
+    contractChanged: version.contract.sha256 !== previous.contract.sha256,
   };
   if (now?.ok !== true || before?.ok !== true) {
     const why =
@@ -169,6 +189,13 @@ export const versionChanges = (
       strands: byId(a.strands, b.strands),
       decisions: byId(a.decisions, b.decisions),
       prerequisites: byId(a.prerequisites, b.prerequisites),
+      fields: [...new Set([...Object.keys(a), ...Object.keys(b)])]
+        .filter((key) => !COLLECTIONS.has(key))
+        .filter(
+          (key) =>
+            stable((a as Record<string, unknown>)[key]) !==
+            stable((b as Record<string, unknown>)[key]),
+        ),
     },
   };
 };

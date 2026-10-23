@@ -76,6 +76,67 @@ describe("decisionAnswers", () => {
     expect(principalLabel(one?.source?.by ?? alice)).toBe("bob");
   });
 
+  const withAnswer = (answer?: string) =>
+    contractOf({ decisions: [decision("D-01", answer === undefined ? {} : { answer })] });
+  const act = (answer: string) => ({ kind: "answer", decisionId: "D-01", answer });
+
+  it("names the writer when a later write replaces an answered value", () => {
+    const latest = contractAt({ decisions: [decision("D-01", { answer: "b" })] });
+    const versions = [version(1, { author: alice, act: act("a") }), version(2, { author: bob })];
+    const contracts = new Map([
+      [1, withAnswer("a")],
+      [2, withAnswer("b")],
+    ]);
+    const [one] = decisionAnswers(latest, versions, contracts);
+    expect(one?.source).toMatchObject({ how: "written", version: 2 });
+    expect(principalLabel(one?.source?.by ?? alice)).toBe("bob");
+  });
+
+  it("keeps the answerer across an unrelated later write", () => {
+    const latest = contractAt({ decisions: [decision("D-01", { answer: "a" })] });
+    const versions = [version(1, { author: alice, act: act("a") }), version(2, { author: bob })];
+    const contracts = new Map([
+      [1, withAnswer("a")],
+      [2, withAnswer("a")],
+    ]);
+    const [one] = decisionAnswers(latest, versions, contracts);
+    expect(one?.source).toMatchObject({ how: "answered", version: 1 });
+    expect(principalLabel(one?.source?.by ?? bob)).toBe("alice");
+  });
+
+  it("names the answerer when an answer act replaces a written value", () => {
+    const latest = contractAt({ decisions: [decision("D-01", { answer: "c" })] });
+    const versions = [version(1, { author: bob }), version(2, { author: alice, act: act("c") })];
+    const contracts = new Map([
+      [1, withAnswer("a")],
+      [2, withAnswer("c")],
+    ]);
+    const [one] = decisionAnswers(latest, versions, contracts);
+    expect(one?.source).toMatchObject({ how: "answered", version: 2 });
+  });
+
+  it("attributes a removed then re-added answer to the re-adding version", () => {
+    const latest = contractAt({ decisions: [decision("D-01", { answer: "a" })] });
+    const versions = [
+      version(1, { author: alice }),
+      version(2, { author: bob }),
+      version(3, { author: alice }),
+    ];
+    const contracts = new Map([
+      [1, withAnswer("a")],
+      [2, withAnswer()],
+      [3, withAnswer("a")],
+    ]);
+    const [one] = decisionAnswers(latest, versions, contracts);
+    expect(one?.source).toMatchObject({ how: "written", version: 3 });
+  });
+
+  it("names nobody when the tracked answer is not the latest one", () => {
+    const latest = contractAt({ decisions: [decision("D-01", { answer: "z" })] });
+    const [one] = decisionAnswers(latest, [version(1, { act: act("a") })], new Map());
+    expect(one?.source).toBeUndefined();
+  });
+
   it("leaves an unanswered decision unattributed", () => {
     const latest = contractAt({ decisions: [decision("D-01")] });
     const [one] = decisionAnswers(latest, [version(1)], new Map());
@@ -120,6 +181,33 @@ describe("versionChanges", () => {
       changed: ["D-01"],
     });
     expect(changes.contract.stories.removed).toEqual(["US-01"]);
+  });
+
+  it("lists other contract fields that differ", () => {
+    const base = contractOf();
+    const v2 = version(2);
+    const one = versionChanges(v2, v1, contractOf({ objective: "something else" }), base);
+    const two = versionChanges(
+      v2,
+      v1,
+      contractOf({
+        verification: [
+          { ...(base.ok ? base.contract.verification[0] : {}), command: "echo changed" },
+        ],
+      }),
+      base,
+    );
+    if ("unparseable" in one.contract || "unparseable" in two.contract) throw new Error("parsed");
+    expect(one.contract.fields).toEqual(["objective"]);
+    expect(two.contract.fields).toEqual(["verification"]);
+  });
+
+  it("sets contractChanged with no field differences for a hash-only change", () => {
+    const v2 = version(2, { contract: { uri: "s3://y", sha256: "9".repeat(64), sizeBytes: 1 } });
+    const changes = versionChanges(v2, v1, contractOf(), contractOf());
+    expect(changes.contractChanged).toBe(true);
+    if ("unparseable" in changes.contract) throw new Error("parsed");
+    expect(changes.contract.fields).toEqual([]);
   });
 
   it("says so when a contract does not parse", () => {

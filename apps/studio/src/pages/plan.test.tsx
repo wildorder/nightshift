@@ -201,6 +201,79 @@ describe("the plan page", () => {
     expect(order).toEqual(["2", "1"]);
   });
 
+  const seedTwo =
+    (second: { author: typeof alice; act?: Record<string, unknown> }) =>
+    async (stores: InMemoryStores, f: Fixtures) => {
+      const at = "2026-09-01T10:00:00.000Z";
+      await stores.planDrafts.appendVersion(
+        makePlanDraftVersion(f, {
+          version: 1,
+          contract: ref("5"),
+          plan: ref("2"),
+          author: alice,
+          act: { kind: "answer", decisionId: "D-01", answer: "s3" },
+          createdAt: at,
+        }),
+        () => reconcilePlanDraftWrite({ scope: f.scope, basedOn: null, at }).draft,
+      );
+      const at2 = "2026-09-02T10:00:00.000Z";
+      await stores.planDrafts.appendVersion(
+        makePlanDraftVersion(f, {
+          version: 2,
+          contract: ref("6"),
+          plan: ref("2"),
+          createdAt: at2,
+          ...second,
+        }),
+        (current) =>
+          reconcilePlanDraftWrite({
+            ...(current === undefined ? {} : { stored: current }),
+            scope: f.scope,
+            basedOn: 1,
+            at: at2,
+          }).draft,
+      );
+    };
+  const twoDocs = (f: Fixtures, answer: string, objective: string) => ({
+    [sha("2")]: "# The plan\n\nBody.",
+    [sha("5")]: JSON.stringify(makeProgramContract(f, { decisions: [decision({ answer: "s3" })] })),
+    [sha("6")]: JSON.stringify(
+      makeProgramContract(f, { objective, decisions: [decision({ answer })] }),
+    ),
+  });
+
+  it("shows a contract field edit that touches nothing else", async () => {
+    const base = makeProgramContract(f0, {}).objective;
+    await mountStudio(seedTwo({ author: bob }), {
+      at: planPath,
+      documents: twoDocs(f0, "s3", `${base} revised`),
+      checks: { 2: READY },
+    });
+    const two = await waitFor(() => {
+      const el = document.querySelector('[data-version="2"]') as HTMLElement | null;
+      if (el === null || !el.textContent?.includes("contract fields")) throw new Error("not yet");
+      return el;
+    });
+    expect(two.textContent).toContain("contract fields changed: objective");
+    expect(two.textContent).not.toContain("no changes to the documents");
+  });
+
+  it("names the writer, not the earlier answerer, of an overwritten answer", async () => {
+    const base = makeProgramContract(f0, {}).objective;
+    await mountStudio(seedTwo({ author: bob }), {
+      at: planPath,
+      documents: twoDocs(f0, "gcs", base),
+      checks: { 2: READY },
+    });
+    const decisionEl = await waitFor(() => {
+      const el = document.querySelector('[data-decision="D-01"]') as HTMLElement | null;
+      if (el === null || !el.textContent?.includes("Answer: gcs")) throw new Error("not yet");
+      return el;
+    });
+    expect(decisionEl.textContent).not.toContain("alice");
+    expect(decisionEl.textContent).toContain("bob");
+  });
+
   it("still shows the check reasons when the contract does not parse", async () => {
     await mountStudio(seedDraft, {
       at: planPath,

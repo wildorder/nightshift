@@ -270,18 +270,29 @@ const changeText = (label: string, changes: IdChanges): string[] => [
   ...(changes.changed.length === 0 ? [] : [`${label} changed: ${changes.changed.join(", ")}`]),
 ];
 
+const contractLines = (changes: VersionChanges): string[] => {
+  if ("unparseable" in changes.contract) {
+    return [`contract comparison unavailable: ${changes.contract.unparseable}`];
+  }
+  const lines = [
+    ...changeText("stories", changes.contract.stories),
+    ...changeText("strands", changes.contract.strands),
+    ...changeText("decisions", changes.contract.decisions),
+    ...changeText("prerequisites", changes.contract.prerequisites),
+    ...(changes.contract.fields.length === 0
+      ? []
+      : [`contract fields changed: ${changes.contract.fields.join(", ")}`]),
+  ];
+  return lines.length === 0 && changes.contractChanged
+    ? ["contract document changed (no field differences found)"]
+    : lines;
+};
+
 const ChangeLines = ({ changes }: { readonly changes: VersionChanges }) => {
   const lines = [
     ...(changes.planChanged ? ["plan document changed"] : []),
     ...(changes.conversationChanged ? ["conversation changed"] : []),
-    ...("unparseable" in changes.contract
-      ? [`contract comparison unavailable: ${changes.contract.unparseable}`]
-      : [
-          ...changeText("stories", changes.contract.stories),
-          ...changeText("strands", changes.contract.strands),
-          ...changeText("decisions", changes.contract.decisions),
-          ...changeText("prerequisites", changes.contract.prerequisites),
-        ]),
+    ...contractLines(changes),
   ];
   return (
     <ul className="ml-4 list-disc text-muted-foreground">
