@@ -147,16 +147,25 @@ export interface RatificationInput {
   readonly conversationSha256?: string | undefined;
 }
 
+/** A ratification that passed every check and has not been written. */
+export interface PreparedRatification {
+  readonly status: 200 | 201;
+  readonly body: ProgramContract;
+  /** False when the same ratification is already recorded, so there is nothing to write. */
+  readonly write: boolean;
+}
+
 /**
- * The checks and the record of a ratification, shared by the contract-in-body
- * form and the draft-version form so the two cannot drift: the same documents
- * are held to the same hash, the same readiness and the same correction rules,
- * and the same `ProgramContract` is recorded.
+ * The checks of a ratification and the contract it would record, with nothing
+ * written. Shared by the contract-in-body form and the draft-version form so
+ * the two cannot drift: the same documents are held to the same hash, the same
+ * readiness and the same correction rules, and the same `ProgramContract` is
+ * recorded.
  */
-export const ratifyContract = async (
+export const prepareRatification = async (
   deps: ApiDeps,
   input: RatificationInput,
-): Promise<{ readonly status: 200 | 201; readonly body: ProgramContract }> => {
+): Promise<PreparedRatification> => {
   const { scope, contract } = input;
   if (!isPlanned(contract)) {
     throw new HttpError(
@@ -222,7 +231,7 @@ export const ratifyContract = async (
     existing.planHash === computed.hash &&
     existing.conversation?.sha256 === conversationRef?.sha256
   ) {
-    return { status: 200, body: existing };
+    return { status: 200, body: existing, write: false };
   }
 
   const ratification: Ratification = {
@@ -244,6 +253,21 @@ export const ratifyContract = async (
       -MAX_RATIFICATION_HISTORY,
     ),
   });
-  await deps.stores.programContracts.put(ratified);
-  return { status: existing === undefined ? 201 : 200, body: ratified };
+  return { status: existing === undefined ? 201 : 200, body: ratified, write: true };
 };
+
+/** Writes what {@link prepareRatification} prepared. */
+export const writeRatification = async (
+  deps: ApiDeps,
+  prepared: PreparedRatification,
+): Promise<{ readonly status: 200 | 201; readonly body: ProgramContract }> => {
+  if (prepared.write) await deps.stores.programContracts.put(prepared.body);
+  return { status: prepared.status, body: prepared.body };
+};
+
+/** The checks and the record of a ratification, in one step. */
+export const ratifyContract = async (
+  deps: ApiDeps,
+  input: RatificationInput,
+): Promise<{ readonly status: 200 | 201; readonly body: ProgramContract }> =>
+  writeRatification(deps, await prepareRatification(deps, input));

@@ -24,6 +24,7 @@ import {
   type Event,
   type MeasurementSummary,
   type OrgConfig,
+  type PlanDraft,
   type ProgramId,
   type ProjectId,
   type RunId,
@@ -390,8 +391,18 @@ export const describePortConformance = <S extends ProjectStores>(
             sizeBytes: planBytes,
           },
         });
-      const append = (version: number) =>
-        stores.planDrafts.appendVersion(draftAt(version), versionAt(version));
+      /** The draft once `version` is appended, as the plan-draft rules make it. */
+      const appendOf = (current: PlanDraft | undefined, version: number): PlanDraft => {
+        if (current?.state === "declined") throw new PlanDraftError("declined", "declined");
+        if ((current?.latestVersion ?? 0) !== version - 1) {
+          throw new PlanDraftError("stale_base", "stale");
+        }
+        return { ...(current ?? draftAt(version)), state: "draft", latestVersion: version };
+      };
+      const append = (version: number, planBytes = version) =>
+        stores.planDrafts.appendVersion(versionAt(version, planBytes), (current) =>
+          appendOf(current, version),
+        );
 
       it("is absent until a first version is appended", async () => {
         expect(await stores.planDrafts.get(projectId, programId)).toBeUndefined();
@@ -417,7 +428,7 @@ export const describePortConformance = <S extends ProjectStores>(
       it("keeps a stored version immutable: appending its number again is refused", async () => {
         await append(1);
         await append(2);
-        const different = stores.planDrafts.appendVersion(draftAt(2), versionAt(2, 999));
+        const different = append(2, 999);
         await expect(different).rejects.toBeInstanceOf(PlanDraftError);
         await expect(append(1)).rejects.toBeInstanceOf(PlanDraftError);
         expect(await stores.planDrafts.getVersion(projectId, programId, 2)).toEqual(versionAt(2));
@@ -434,17 +445,14 @@ export const describePortConformance = <S extends ProjectStores>(
 
       it("refuses a draft that does not describe the version", async () => {
         await expect(
-          stores.planDrafts.appendVersion(draftAt(2), versionAt(1)),
+          stores.planDrafts.appendVersion(versionAt(1), () => draftAt(2)),
         ).rejects.toBeInstanceOf(PlanDraftError);
         expect(await stores.planDrafts.get(projectId, programId)).toBeUndefined();
       });
 
       it("leaves exactly one of two concurrent appends of the same number", async () => {
         await append(1);
-        const results = await Promise.allSettled([
-          stores.planDrafts.appendVersion(draftAt(2), versionAt(2, 111)),
-          stores.planDrafts.appendVersion(draftAt(2), versionAt(2, 222)),
-        ]);
+        const results = await Promise.allSettled([append(2, 111), append(2, 222)]);
         expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
         const lost = results.find((r) => r.status === "rejected");
         expect(lost?.status === "rejected" && lost.reason).toBeInstanceOf(PlanDraftError);
@@ -452,6 +460,47 @@ export const describePortConformance = <S extends ProjectStores>(
         const stored = await stores.planDrafts.getVersion(projectId, programId, 2);
         expect(stored?.plan.sizeBytes).toBe(winner);
         expect((await stores.planDrafts.listVersions(projectId, programId)).items).toHaveLength(2);
+      });
+
+      const actBy = (kind: "declined" | "changes_requested") => (current: PlanDraft) => ({
+        ...current,
+        state: kind === "declined" ? ("declined" as const) : ("draft" as const),
+        acts: [
+          ...current.acts,
+          {
+            kind,
+            version: current.latestVersion,
+            by: versionAt(1).author,
+            at: current.updatedAt,
+          },
+        ],
+      });
+
+      it("refuses an append computed before a decline, leaving the draft declined with its act", async () => {
+        await append(1);
+        const read = await stores.planDrafts.get(projectId, programId);
+        await stores.planDrafts.update(projectId, programId, actBy("declined"));
+        const declined = await stores.planDrafts.get(projectId, programId);
+        await expect(
+          stores.planDrafts.appendVersion(versionAt(2), (current) => {
+            expect(current?.latestVersion).toBe(read?.latestVersion);
+            return appendOf(current, 2);
+          }),
+        ).rejects.toBeInstanceOf(PlanDraftError);
+        expect(await stores.planDrafts.get(projectId, programId)).toEqual(declined);
+        expect(declined?.state).toBe("declined");
+        expect(declined?.acts.map((act) => act.kind)).toEqual(["declined"]);
+        expect(await stores.planDrafts.getVersion(projectId, programId, 2)).toBeUndefined();
+      });
+
+      it("keeps a changes_requested act recorded between the read and the append", async () => {
+        await append(1);
+        await stores.planDrafts.update(projectId, programId, actBy("changes_requested"));
+        await append(2);
+        const stored = await stores.planDrafts.get(projectId, programId);
+        expect(stored?.latestVersion).toBe(2);
+        expect(stored?.acts.map((act) => act.kind)).toEqual(["changes_requested"]);
+        expect(await stores.planDrafts.getVersion(projectId, programId, 2)).toEqual(versionAt(2));
       });
 
       it("lists versions in order, and pages them", async () => {
@@ -527,7 +576,7 @@ export const describePortConformance = <S extends ProjectStores>(
 
       it("keeps one project's drafts from another's", async () => {
         await append(1);
-        await stores.planDrafts.appendVersion(makePlanDraft(b), makePlanDraftVersion(b));
+        await stores.planDrafts.appendVersion(makePlanDraftVersion(b), () => makePlanDraft(b));
         expect((await stores.planDrafts.listByProject(projectId)).items).toEqual([draftAt(1)]);
         expect((await stores.planDrafts.listByProject(b.scope.projectId)).items).toEqual([
           makePlanDraft(b),

@@ -629,25 +629,26 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       planDraftVersions.get(versionKey({ projectId, programId }, version)),
     listVersions: async (projectId: ProjectId, programId: ProgramId, page?: PageRequest) =>
       paginate(planDraftVersions.scan(programPrefix({ projectId, programId })), page),
-    appendVersion: async (draft, version) => {
-      const parsedDraft = PlanDraftSchema.parse(draft);
+    appendVersion: async (version, next) => {
       const parsedVersion = PlanDraftVersionSchema.parse(version);
-      if (
-        parsedDraft.projectId !== parsedVersion.projectId ||
-        parsedDraft.programId !== parsedVersion.programId ||
-        parsedDraft.latestVersion !== parsedVersion.version
-      ) {
-        throw new PlanDraftError("conflict", "the draft does not describe the version appended");
-      }
-      const draftKey = `${projectPrefix(parsedDraft)}${parsedDraft.programId}`;
+      const draftKey = `${projectPrefix(parsedVersion)}${parsedVersion.programId}`;
       const key = versionKey(parsedVersion, parsedVersion.version);
       atomically(() => {
-        const latest = planDrafts.get(draftKey)?.latestVersion ?? 0;
+        const current = planDrafts.get(draftKey);
+        const latest = current?.latestVersion ?? 0;
         if (planDraftVersions.has(key) || latest !== parsedVersion.version - 1) {
           throw new PlanDraftError(
             "conflict",
             `version ${parsedVersion.version} cannot be appended: the latest stored is ${latest}`,
           );
+        }
+        const parsedDraft = PlanDraftSchema.parse(next(current));
+        if (
+          parsedDraft.projectId !== parsedVersion.projectId ||
+          parsedDraft.programId !== parsedVersion.programId ||
+          parsedDraft.latestVersion !== parsedVersion.version
+        ) {
+          throw new PlanDraftError("conflict", "the draft does not describe the version appended");
         }
         planDraftVersions.set(key, parsedVersion);
         planDrafts.set(draftKey, parsedDraft);

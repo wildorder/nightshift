@@ -357,14 +357,23 @@ export interface PlanDraftStore {
     page?: PageRequest,
   ): Promise<Page<PlanDraftVersion>>;
   /**
-   * Writes `version` and `draft` as one atomic step, only if no version
-   * `version.version` exists and the stored draft's `latestVersion` is
+   * Writes `version` and the draft `next(current)` as one atomic step, only if no
+   * version `version.version` exists and the stored draft's `latestVersion` is
    * `version.version - 1` (no draft stored when it is 1). Otherwise throws
    * `PlanDraftError` (`conflict`) and changes nothing: a stored version is never
    * replaced, and of two concurrent appends of the same number exactly one lands.
-   * `draft.latestVersion` must equal `version.version`.
+   *
+   * `next` receives the draft as stored inside the atomic step (undefined for the
+   * first version) and applies the plan-draft rules to it, so an act recorded
+   * since the caller's read is kept and a declined draft is refused (by `next`
+   * throwing). It is pure and may be called more than once. Its result must
+   * describe `version`: same project and program, `latestVersion` equal to
+   * `version.version`.
    */
-  appendVersion(draft: PlanDraft, version: PlanDraftVersion): Promise<void>;
+  appendVersion(
+    version: PlanDraftVersion,
+    next: (current: PlanDraft | undefined) => PlanDraft,
+  ): Promise<void>;
   /**
    * Replaces the stored draft with `change(stored)` as one atomic step, exactly
    * as {@link ProgramContractStore.update}: `undefined` with `change` never

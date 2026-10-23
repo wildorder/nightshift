@@ -46,7 +46,13 @@ import { type ApiDeps, type ApiResponse, HttpError, parseBody } from "../http.js
 import { assertChainMatches, parsePageQuery, programScopeFrom, projectIdFrom } from "../params.js";
 import type { Handler } from "../router.js";
 import { pageBody, requireProject, withCursor } from "./common.js";
-import { planStore, ratifyContract, readPlanDocument, sha256Hex } from "./ratification.js";
+import {
+  planStore,
+  prepareRatification,
+  readPlanDocument,
+  sha256Hex,
+  writeRatification,
+} from "./ratification.js";
 
 /** A stored document, as the reference a version keeps. A missing one is the writer's mistake, so 422. */
 const documentRef = async (
@@ -254,7 +260,18 @@ export const putPlanDraftVersion: Handler = async ({ deps, request, params, prin
     act: { kind: "write" },
     createdAt: at,
   });
-  await deps.stores.planDrafts.appendVersion(next.draft, version);
+  // Reconciled again against the draft as stored inside the append, so an act
+  // recorded since the read above is kept and a decline refuses the write.
+  await deps.stores.planDrafts.appendVersion(
+    version,
+    (current) =>
+      reconcilePlanDraftWrite({
+        ...(current === undefined ? {} : { stored: current }),
+        scope,
+        basedOn: body.basedOn,
+        at,
+      }).draft,
+  );
   return versionResponse(deps, scope, version, 201);
 };
 
@@ -330,7 +347,16 @@ export const answerPlanDraftDecision: Handler = async ({ deps, request, params, 
     },
     createdAt: at,
   });
-  await deps.stores.planDrafts.appendVersion(next.draft, version);
+  await deps.stores.planDrafts.appendVersion(
+    version,
+    (current) =>
+      reconcilePlanDraftWrite({
+        ...(current === undefined ? {} : { stored: current }),
+        scope,
+        basedOn: draft.latestVersion,
+        at,
+      }).draft,
+  );
   return versionResponse(deps, scope, version, 201);
 };
 
@@ -382,7 +408,8 @@ export const declinePlanDraft: Handler = async ({ deps, request, params, princip
 /**
  * `program.ratify` with a plan hash instead of a contract: the plane ratifies the
  * latest version's stored documents with exactly the contract-in-body checks and
- * record, then notes the act on the draft.
+ * record. The act is noted on the draft before the contract is written, so a
+ * retry completes a write that failed between the two.
  */
 export const ratifyDraftVersion = async (
   deps: ApiDeps,
@@ -419,26 +446,36 @@ export const ratifyDraftVersion = async (
       contract.reasons,
     );
   }
-  const done = await ratifyContract(deps, {
+  // Every check first, writing nothing; then the act, which the plane refuses
+  // (409) if a version or a decline landed meanwhile; only then the contract.
+  const prepared = await prepareRatification(deps, {
     scope,
     contract: contract.contract,
     planHash: hash,
     planSha256: latest.plan.sha256,
     conversationSha256: latest.conversation?.sha256,
   });
-  // A retry of a ratification already recorded leaves the draft as it is.
-  if (draft.state !== "ratified") {
-    await deps.stores.planDrafts.update(scope.projectId, scope.programId, (current) =>
-      applyPlanDraftAct(current, {
-        kind: "ratified",
-        version: latest.version,
-        by: principal,
-        planHash: hash,
-        at: nowIso(deps.clock),
-      }),
-    );
-  }
-  return done;
+  const at = nowIso(deps.clock);
+  await deps.stores.planDrafts.update(scope.projectId, scope.programId, (current) => {
+    // A retry of a ratification already recorded leaves the draft as it is.
+    const last = current.acts.at(-1);
+    if (
+      current.state === "ratified" &&
+      last?.kind === "ratified" &&
+      last.version === latest.version &&
+      last.planHash === hash
+    ) {
+      return undefined;
+    }
+    return applyPlanDraftAct(current, {
+      kind: "ratified",
+      version: latest.version,
+      by: principal,
+      planHash: hash,
+      at,
+    });
+  });
+  return writeRatification(deps, prepared);
 };
 
 const readAllVersions = async (

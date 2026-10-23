@@ -316,67 +316,104 @@ export const createAwsStores = ({
           inTable(keys.planDraftVersionPartition(projectId, programId)),
           page,
         ),
-      appendVersion: async (draft, version) => {
-        const parsedDraft = PlanDraftSchema.parse(draft);
+      appendVersion: async (version, next) => {
         const parsedVersion = PlanDraftVersionSchema.parse(version);
-        if (
-          parsedDraft.projectId !== parsedVersion.projectId ||
-          parsedDraft.programId !== parsedVersion.programId ||
-          parsedDraft.latestVersion !== parsedVersion.version
-        ) {
-          throw new PlanDraftError("conflict", "the draft does not describe the version appended");
-        }
+        const draftKey = keys.planDraft(parsedVersion.projectId, parsedVersion.programId);
         const previous = parsedVersion.version - 1;
-        try {
-          await table.transactWrite({
-            TransactItems: [
-              {
-                Put: {
-                  TableName: tableName,
-                  Item: toItem(
-                    "PlanDraftVersion",
-                    keys.planDraftVersion(
-                      parsedVersion.projectId,
-                      parsedVersion.programId,
-                      parsedVersion.version,
-                    ),
-                    parsedVersion,
-                  ),
-                  ConditionExpression: "attribute_not_exists(#pk)",
-                  ExpressionAttributeNames: { "#pk": "PK" },
-                },
-              },
-              {
-                Put: {
-                  TableName: tableName,
-                  Item: {
-                    ...toItem(
-                      "PlanDraft",
-                      keys.planDraft(parsedDraft.projectId, parsedDraft.programId),
-                      parsedDraft,
-                    ),
-                    [REVISION_ATTRIBUTE]: randomUUID(),
-                  },
-                  ...(previous === 0
-                    ? {
-                        ConditionExpression: "attribute_not_exists(#pk)",
-                        ExpressionAttributeNames: { "#pk": "PK" },
-                      }
-                    : {
-                        ConditionExpression: "#latest = :previous",
-                        ExpressionAttributeNames: { "#latest": "latestVersion" },
-                        ExpressionAttributeValues: { ":previous": previous },
-                      }),
-                },
-              },
-            ],
+        for (let attempt = 1; ; attempt += 1) {
+          const output = await table.get({
+            TableName: tableName,
+            Key: draftKey,
+            ConsistentRead: true,
           });
-        } catch (error) {
-          if (conditionFailures(error)?.some(Boolean) !== true) throw error;
-          throw new PlanDraftError(
-            "conflict",
-            `version ${parsedVersion.version} cannot be appended: it exists, or the latest stored is not ${previous}`,
-          );
+          const current =
+            output.Item === undefined ? undefined : fromItem(PlanDraftSchema, output.Item);
+          if ((current?.latestVersion ?? 0) !== previous) {
+            throw new PlanDraftError(
+              "conflict",
+              `version ${parsedVersion.version} cannot be appended: the latest stored is ${current?.latestVersion ?? 0}`,
+            );
+          }
+          const parsedDraft = PlanDraftSchema.parse(next(current));
+          if (
+            parsedDraft.projectId !== parsedVersion.projectId ||
+            parsedDraft.programId !== parsedVersion.programId ||
+            parsedDraft.latestVersion !== parsedVersion.version
+          ) {
+            throw new PlanDraftError(
+              "conflict",
+              "the draft does not describe the version appended",
+            );
+          }
+          const read = output.Item?.[REVISION_ATTRIBUTE];
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: toItem(
+                      "PlanDraftVersion",
+                      keys.planDraftVersion(
+                        parsedVersion.projectId,
+                        parsedVersion.programId,
+                        parsedVersion.version,
+                      ),
+                      parsedVersion,
+                    ),
+                    ConditionExpression: "attribute_not_exists(#pk)",
+                    ExpressionAttributeNames: { "#pk": "PK" },
+                  },
+                },
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: {
+                      ...toItem("PlanDraft", draftKey, parsedDraft),
+                      [REVISION_ATTRIBUTE]: randomUUID(),
+                    },
+                    ...(current === undefined
+                      ? {
+                          ConditionExpression: "attribute_not_exists(#pk)",
+                          ExpressionAttributeNames: { "#pk": "PK" },
+                        }
+                      : typeof read === "string"
+                        ? {
+                            ConditionExpression: "#rev = :rev",
+                            ExpressionAttributeNames: { "#rev": REVISION_ATTRIBUTE },
+                            ExpressionAttributeValues: { ":rev": read },
+                          }
+                        : {
+                            ConditionExpression:
+                              "attribute_exists(#pk) AND attribute_not_exists(#rev)",
+                            ExpressionAttributeNames: {
+                              "#pk": "PK",
+                              "#rev": REVISION_ATTRIBUTE,
+                            },
+                          }),
+                  },
+                },
+              ],
+            });
+            return;
+          } catch (error) {
+            const failures = conditionFailures(error);
+            if (failures === undefined || !failures.some(Boolean)) throw error;
+            // The version already exists: it is immutable, so this append lost.
+            if (failures[0] === true) {
+              throw new PlanDraftError(
+                "conflict",
+                `version ${parsedVersion.version} cannot be appended: it exists`,
+              );
+            }
+            // Only the draft moved since the read: read it again and reconcile.
+            if (attempt >= MAX_UPDATE_ATTEMPTS) {
+              throw new PlanDraftError(
+                "conflict",
+                `version ${parsedVersion.version} cannot be appended: the draft kept changing`,
+              );
+            }
+          }
         }
       },
       update: async (projectId, programId, change) => {

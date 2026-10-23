@@ -1227,7 +1227,7 @@ describe("planDrafts (P21)", () => {
     expect((await planning.getVersion(f.scope, 1))?.version).toEqual(first.version);
 
     const version = first.version;
-    await expect(http.planDrafts.appendVersion(draft as never, version)).rejects.toThrow(
+    await expect(http.planDrafts.appendVersion(version, () => draft as never)).rejects.toThrow(
       /plan-draft\/versions/,
     );
     await expect(
@@ -1279,5 +1279,92 @@ describe("planDrafts (P21)", () => {
       null,
     );
     expect((await planning.decline(other, 1, "no")).state).toBe("declined");
+  });
+
+  describe("ratifying a draft by its hash", () => {
+    /** A draft whose latest version is ready, and its hash. */
+    const readyDraft = async () => {
+      const { f, transport, http } = world;
+      await http.projects.put(aProject(f));
+      const planning = createHttpPlanning({ transport });
+      await planning.putVersion(f.scope, { contract: contractOf(f), planText: PLAN }, null);
+      const answered = await planning.answerDecision(f.scope, {
+        decisionId: "D-01",
+        answer: "a",
+        basedOn: 1,
+      });
+      return { planning, hash: answered.version.planHash as string, f };
+    };
+
+    /** Runs `inject` once, just before the ratified act reaches the store. */
+    const beforeTheAct = (inject: () => Promise<unknown>) => {
+      const drafts = world.backing.planDrafts;
+      const original = drafts.update.bind(drafts);
+      let injected = false;
+      drafts.update = async (projectId, programId, change) => {
+        if (!injected) {
+          injected = true;
+          await inject();
+        }
+        return original(projectId, programId, change);
+      };
+    };
+
+    it("answers 409 and ratifies nothing when a version lands before the act", async () => {
+      const { planning, hash, f } = await readyDraft();
+      beforeTheAct(() =>
+        planning.putVersion(f.scope, { contract: contractOf(f), planText: `${PLAN}\nMore.\n` }, 2),
+      );
+      const refused = await rejectionOf(planning.ratifyVersion(f.scope, hash));
+      expect(refused).toBeInstanceOf(PlanDraftError);
+      const program = await world.backing.programContracts.get(
+        f.scope.projectId,
+        f.scope.programId,
+      );
+      expect(program?.status).not.toBe("ratified");
+      const draft = await world.backing.planDrafts.get(f.scope.projectId, f.scope.programId);
+      expect(draft?.latestVersion).toBe(3);
+      expect(draft?.acts.map((act) => act.kind)).not.toContain("ratified");
+    });
+
+    it("answers 409 and ratifies nothing when a decline lands before the act", async () => {
+      const { planning, hash, f } = await readyDraft();
+      beforeTheAct(() => planning.decline(f.scope, 2, "no"));
+      const refused = await rejectionOf(planning.ratifyVersion(f.scope, hash));
+      expect(refused).toBeInstanceOf(PlanDraftError);
+      const program = await world.backing.programContracts.get(
+        f.scope.projectId,
+        f.scope.programId,
+      );
+      expect(program?.status).not.toBe("ratified");
+      const draft = await world.backing.planDrafts.get(f.scope.projectId, f.scope.programId);
+      expect(draft?.state).toBe("declined");
+      expect(draft?.acts.map((act) => act.kind)).toEqual(["declined"]);
+    });
+
+    it("completes the contract when a retry follows a failure between the act and the write", async () => {
+      const { planning, hash, f } = await readyDraft();
+      const programs = world.backing.programContracts;
+      const original = programs.put.bind(programs);
+      let failing = true;
+      programs.put = async (contract) => {
+        if (failing) throw new Error("the write failed");
+        return original(contract);
+      };
+      await expect(planning.ratifyVersion(f.scope, hash)).rejects.toThrow();
+      expect(
+        (await world.backing.planDrafts.get(f.scope.projectId, f.scope.programId))?.state,
+      ).toBe("ratified");
+      expect((await programs.get(f.scope.projectId, f.scope.programId))?.status).not.toBe(
+        "ratified",
+      );
+
+      failing = false;
+      const ratified = await planning.ratifyVersion(f.scope, hash);
+      expect(ratified).toMatchObject({ status: "ratified", planHash: hash });
+      expect(await programs.get(f.scope.projectId, f.scope.programId)).toEqual(ratified);
+      const draft = await world.backing.planDrafts.get(f.scope.projectId, f.scope.programId);
+      expect(draft?.acts.filter((act) => act.kind === "ratified")).toHaveLength(1);
+    });
   });
 });
