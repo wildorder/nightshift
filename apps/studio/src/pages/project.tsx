@@ -3,7 +3,7 @@
  * D-P11-10). Runs are gathered by listing each program's runs and merging; no
  * index is added for it.
  */
-import type { ProgramContract, Project, ProjectId, Run } from "@nightshift/contracts";
+import type { PlanDraft, ProgramContract, Project, ProjectId, Run } from "@nightshift/contracts";
 import { ProjectIdSchema } from "@nightshift/contracts";
 import { isPlanned, prerequisitesOf } from "@nightshift/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,6 +29,7 @@ import { ProgramStatusSummary } from "../components/program-status.js";
 import { StatusBadge } from "../components/status-badge.js";
 import { CardStories } from "../components/stories.js";
 import { between, shortId, when } from "../lib/format.js";
+import { planPathOf } from "../lib/paths.js";
 import { readAll } from "../lib/read-all.js";
 import { useRunStatus } from "../lib/run-status.js";
 import { useStudio } from "../studio.js";
@@ -69,6 +70,50 @@ export const usePrograms = (projectId: ProjectId) => {
       );
     },
   });
+};
+
+const usePlanDrafts = (projectId: ProjectId) => {
+  const { stores } = useStudio();
+  return useQuery({
+    queryKey: ["plan-drafts", projectId],
+    queryFn: (): Promise<readonly PlanDraft[]> =>
+      readAll((page) => stores.planDrafts.listByProject(projectId, page)),
+  });
+};
+
+/** The project's plan drafts, each linking to its plan page; a failed read stays inline. */
+const PlansSection = ({ projectId }: { readonly projectId: ProjectId }) => {
+  const drafts = usePlanDrafts(projectId);
+  if (drafts.isPending) return null;
+  if (drafts.isError)
+    return (
+      <p role="alert" className="mb-8 text-sm text-muted-foreground">
+        Could not list plan drafts: {String(drafts.error)}
+      </p>
+    );
+  if (drafts.data.length === 0) return null;
+  return (
+    <>
+      <h2 className="mb-3 text-lg font-semibold">Plans</h2>
+      <ul className="mb-8 grid gap-2" aria-label="Plans">
+        {drafts.data.map((draft) => (
+          <li key={draft.programId} className="flex flex-wrap items-center gap-2 text-sm">
+            <Link
+              to={planPathOf(draft)}
+              className="font-mono font-medium underline-offset-4 hover:underline"
+            >
+              {draft.programId}
+            </Link>
+            <StatusBadge
+              status={draft.state === "ratified" ? "succeeded" : "pending"}
+              label={draft.state}
+            />
+            <span className="text-muted-foreground">latest version {draft.latestVersion}</span>
+          </li>
+        ))}
+      </ul>
+    </>
+  );
 };
 
 const EditProject = ({
@@ -323,12 +368,20 @@ export const ProjectPage = () => {
                   <CardStories program={program} />
                   <LatestRunStatus program={program} runs={runs} />
                   <PlanState program={program} />
+                  <Link
+                    to={planPathOf(program)}
+                    className="text-sm font-medium underline-offset-4 hover:underline"
+                  >
+                    Plan
+                  </Link>
                 </CardContent>
               </Card>
             </li>
           ))}
         </ul>
       )}
+
+      <PlansSection projectId={projectId} />
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold">Runs</h2>

@@ -10,7 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Radio } from "lucide-react";
 import { lazy, Suspense } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Sheet,
@@ -47,6 +47,7 @@ import { StoryCard, StoryLines } from "../components/stories.js";
 import { between, shortId, shortSha, when } from "../lib/format.js";
 import { LIVE_STATUSES, useLiveEvents } from "../lib/live.js";
 import { narrate } from "../lib/narrate.js";
+import { planPathOf } from "../lib/paths.js";
 import { readAll } from "../lib/read-all.js";
 import { useRunStatus } from "../lib/run-status.js";
 import { DEFAULT_POLL_MS, useStudio } from "../studio.js";
@@ -203,6 +204,11 @@ const WhyTab = ({ report, scope }: { readonly report: RunReport; readonly scope:
         )}
       </Panel>
       <Panel title="The plan, as ratified">
+        <p className="mb-2 text-sm">
+          <Link to={planPathOf(scope)} className="font-medium underline-offset-4 hover:underline">
+            Open the plan page
+          </Link>
+        </p>
         {report.program.planDocument === undefined ? (
           <p className="text-sm text-muted-foreground">This program has no ratified plan.</p>
         ) : plan.isPending ? (
@@ -358,6 +364,14 @@ export const RunPage = () => {
         description={
           <>
             <p>{report?.program.objective ?? scope.programId}</p>
+            <p>
+              <Link
+                to={planPathOf(scope)}
+                className="font-medium underline-offset-4 hover:underline"
+              >
+                Plan
+              </Link>
+            </p>
             <p>
               {r.location} · started {when(r.startedAt)} · ended {when(r.endedAt)} · took{" "}
               {between(r.startedAt, r.endedAt)}

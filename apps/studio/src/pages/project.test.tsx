@@ -1,4 +1,10 @@
-import { makeProgramContract, makeProject, makeRun } from "@nightshift/core";
+import {
+  makePlanDraft,
+  makePlanDraftVersion,
+  makeProgramContract,
+  makeProject,
+  makeRun,
+} from "@nightshift/core";
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
@@ -126,5 +132,62 @@ describe("the project page", () => {
     await waitFor(() => expect(screen.getByText(/Contract policies/)).toBeTruthy());
     expect(screen.getByLabelText(/policies of prog_/).textContent).toContain('"maxConcurrency": 4');
     expect(screen.getByText(/org config v3/)).toBeTruthy();
+  });
+
+  it("links every program to its plan page, and lists drafts with no contract or runs", async () => {
+    let contractProgram = "";
+    let draftOnly = "";
+    await mountStudio(async (stores, f, orgId) => {
+      await stores.projects.put(makeProject(f, { orgId, projectId: PROJECT_ID, name: "keyart" }));
+      const a = makeProgramContract(f, { projectId: PROJECT_ID, objective: "Program A" });
+      contractProgram = a.programId;
+      await stores.programContracts.put(a);
+      draftOnly = f.ids.next("prog");
+      const version = makePlanDraftVersion(f, { projectId: PROJECT_ID, programId: draftOnly });
+      await stores.planDrafts.appendVersion(version, () =>
+        makePlanDraft(f, { projectId: PROJECT_ID, programId: draftOnly, state: "awaiting_owner" }),
+      );
+    }, `/projects/${PROJECT_ID}`);
+
+    const plans = await screen.findByRole("list", { name: "Plans" });
+    const link = within(plans).getByRole("link", { name: draftOnly });
+    expect(link.getAttribute("href")).toBe(`/projects/${PROJECT_ID}/programs/${draftOnly}/plan`);
+    expect(plans.textContent).toContain("awaiting_owner");
+    expect(plans.textContent).toContain("latest version 1");
+    expect(screen.getByRole("link", { name: "Plan" }).getAttribute("href")).toBe(
+      `/projects/${PROJECT_ID}/programs/${contractProgram}/plan`,
+    );
+  });
+
+  it("omits the Plans section when the project has no drafts", async () => {
+    await mountStudio(async (stores, f, orgId) => {
+      await stores.projects.put(makeProject(f, { orgId, projectId: PROJECT_ID, name: "keyart" }));
+    }, `/projects/${PROJECT_ID}`);
+    await screen.findByRole("heading", { name: "keyart" });
+    expect(screen.queryByRole("heading", { name: "Plans" })).toBeNull();
+  });
+
+  it("keeps the page when the draft read fails", async () => {
+    await mountStudio(
+      async (stores, f, orgId) => {
+        await stores.projects.put(makeProject(f, { orgId, projectId: PROJECT_ID, name: "keyart" }));
+      },
+      {
+        at: `/projects/${PROJECT_ID}`,
+        serve: (stores) => ({
+          ...stores,
+          planDrafts: {
+            ...stores.planDrafts,
+            listByProject: async () => {
+              throw new Error("drafts down");
+            },
+          },
+        }),
+      },
+    );
+    expect((await screen.findByText(/Could not list plan drafts/)).textContent).toContain(
+      "drafts down",
+    );
+    expect(screen.getByRole("heading", { name: "keyart" })).toBeTruthy();
   });
 });
