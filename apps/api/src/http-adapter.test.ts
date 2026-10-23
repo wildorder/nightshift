@@ -117,7 +117,7 @@ const PORT_METHODS = {
   executionNodes: ["put", "get", "listByRun", "listChildren"],
   jobContracts: ["put", "get", "listByRun"],
   agents: ["put", "get", "listByNode"],
-  events: ["append", "listByRun", "nextSequence"],
+  events: ["append", "listByRun", "listByNode", "nextSequence"],
   decisions: ["put", "get", "listByRun"],
   checkpoints: ["put", "get", "listByRun"],
   verifications: ["put", "get", "listByNode"],
@@ -426,6 +426,36 @@ describe("events", () => {
 
     const after = await world.http.events.listByRun(world.f.scope, { afterSequence: 1 });
     expect(after.items.map((e) => e.sequence)).toEqual([2, 3]);
+  });
+
+  it("passes a node and a type through, for one node's events of one kind (2026-10-22)", async () => {
+    await seed();
+    const node = world.f.rootNodeId;
+    for (const [key, type] of [
+      ["n0", "tool.called"],
+      ["n1", "node.failed"],
+      ["n2", "node.failed"],
+    ] as const) {
+      await world.http.events.append(
+        makeEvent(world.f, { idempotencyKey: key, executionNodeId: node, type }),
+      );
+    }
+    await world.http.events.append(makeEvent(world.f, { idempotencyKey: "run-level" }));
+    world.settle();
+
+    const all = await world.http.events.listByNode(world.f.scope, node);
+    expect(all.items.map((e) => e.idempotencyKey)).toEqual(["n0", "n1", "n2"]);
+    const failed = await world.http.events.listByNode(world.f.scope, node, {
+      type: "node.failed",
+      limit: 1,
+    });
+    expect(failed.items.map((e) => e.idempotencyKey)).toEqual(["n1"]);
+    const rest = await world.http.events.listByNode(world.f.scope, node, {
+      type: "node.failed",
+      limit: 1,
+      ...(failed.cursor === undefined ? {} : { cursor: failed.cursor }),
+    });
+    expect(rest.items.map((e) => e.idempotencyKey)).toEqual(["n2"]);
   });
 
   it("pages, passing the opaque cursor through unchanged", async () => {

@@ -26,6 +26,7 @@ import {
   EVENT_SEQUENCE_PARTITION_ATTRIBUTE,
   keys,
 } from "./keys.js";
+import { queryAll } from "./query.js";
 import { conditionFailures, type TableClient } from "./table-client.js";
 
 export interface EventStoreConfig {
@@ -224,7 +225,14 @@ export const createEventStore = ({ tableName, table }: EventStoreConfig): EventS
             {
               Put: {
                 TableName: tableName,
-                Item: toItem("Event", keys.event(scope, parsed.eventId), stored),
+                Item: toItem(
+                  "Event",
+                  keys.event(scope, parsed.eventId),
+                  stored,
+                  parsed.executionNodeId === null
+                    ? undefined
+                    : keys.eventByNode(scope, parsed.executionNodeId, parsed.type, parsed.eventId),
+                ),
                 ...notExists,
               },
             },
@@ -281,6 +289,27 @@ export const createEventStore = ({ tableName, table }: EventStoreConfig): EventS
       items.push(...tail);
       if (limit === undefined || items.length <= limit) return { items };
       return pageOf(items, limit, through);
+    },
+
+    // A node's events from the node index, by type when one is named; few, so
+    // read whole, ordered as `listByRun` orders them, and paged here.
+    listByNode: async (scope, executionNodeId, options = {}) => {
+      assertLimit(options.limit);
+      const items = await queryAll(table, tableName, {
+        partition: `NODE#${scope.projectId}#${scope.programId}#${scope.runId}#${executionNodeId}`,
+        prefix: options.type === undefined ? "EVT#" : `EVT#${options.type}#`,
+        index: true,
+      });
+      const ordered = orderEvents(items.map((item) => fromItem(EventSchema, item)));
+      const start = options.cursor === undefined ? undefined : decodePosition(options.cursor);
+      const remaining =
+        start === undefined ? ordered : ordered.filter((event) => comesAfter(event, start));
+      if (options.limit === undefined || remaining.length <= options.limit) {
+        return { items: remaining };
+      }
+      const page = remaining.slice(0, options.limit);
+      const last = page[page.length - 1] as Event;
+      return { items: page, cursor: encodeCursor({ ...positionOf(last) }) };
     },
 
     nextSequence,

@@ -293,18 +293,21 @@ class Narration {
 export const createActivityFeed = (stores: ProjectStores, scope: RunScope): ActivityFeed => {
   const handed = new Set<string>();
 
-  const read = async (): Promise<{ lines: ActivityLine[]; ids: string[] }> => {
-    const [events, nodes, jobs, decisions] = await Promise.all([
-      readAll((page) => stores.events.listByRun(scope, page)),
+  /** Everything the run holds now, for `all`, which shows the whole story. */
+  const readContext = async (): Promise<Context> => {
+    const [nodes, jobs, decisions] = await Promise.all([
       readAll((page) => stores.executionNodes.listByRun(scope, page)),
       readAll((page) => stores.jobContracts.listByRun(scope, page)),
       readAll((page) => stores.decisions.listByRun(scope, page)),
     ]);
-    const context: Context = {
+    return {
       nodes: new Map(nodes.map((node) => [node.executionNodeId as string, node])),
       jobs: new Map(jobs.map((job) => [job.jobContractId as string, job])),
       decisions: new Map(decisions.map((decision) => [decision.decisionId as string, decision])),
     };
+  };
+
+  const narrate = (events: readonly Event[], context: Context) => {
     const ordered = [...events].sort(
       (a, b) => a.occurredAt.localeCompare(b.occurredAt) || a.eventId.localeCompare(b.eventId),
     );
@@ -313,9 +316,82 @@ export const createActivityFeed = (stores: ProjectStores, scope: RunScope): Acti
     return { lines: narration.finish(), ids: narration.ids };
   };
 
+  // What `since` has read so far (2026-10-22): the last sequence it was given,
+  // so the next call reads only what follows, and the nodes, jobs and decisions
+  // it has met, refreshed only when an event names one it does not know. It
+  // read the run's whole log and every node, job and decision on every root
+  // `job.wait` before, which on a long run was the run's most frequent read.
+  let after: number | undefined;
+  let context: Context | undefined;
+
+  /** The context, read again where `events` name something it does not hold. */
+  const contextFor = async (events: readonly Event[]): Promise<Context> => {
+    if (context === undefined) {
+      context = await readContext();
+      return context;
+    }
+    const known = context;
+    const unknownNode = events.some(
+      (event) => event.executionNodeId !== null && !known.nodes.has(event.executionNodeId),
+    );
+    const nodes = unknownNode
+      ? new Map(
+          (await readAll((page) => stores.executionNodes.listByRun(scope, page))).map((node) => [
+            node.executionNodeId as string,
+            node,
+          ]),
+        )
+      : known.nodes;
+    const jobIds = events.flatMap((event) => {
+      const node = event.executionNodeId === null ? undefined : nodes.get(event.executionNodeId);
+      const named = payloadOf(event).jobContractId;
+      return [
+        ...(node?.jobContractId === null || node?.jobContractId === undefined
+          ? []
+          : [node.jobContractId as string]),
+        ...(typeof named === "string" ? [named] : []),
+      ];
+    });
+    const jobs = jobIds.some((id) => !known.jobs.has(id))
+      ? new Map(
+          (await readAll((page) => stores.jobContracts.listByRun(scope, page))).map((job) => [
+            job.jobContractId as string,
+            job,
+          ]),
+        )
+      : known.jobs;
+    const decisions = events.some((event) => {
+      const named = payloadOf(event).decisionId;
+      return typeof named === "string" && !known.decisions.has(named);
+    })
+      ? new Map(
+          (await readAll((page) => stores.decisions.listByRun(scope, page))).map((decision) => [
+            decision.decisionId as string,
+            decision,
+          ]),
+        )
+      : known.decisions;
+    context = { nodes, jobs, decisions };
+    return context;
+  };
+
   return {
     since: async () => {
-      const { lines, ids } = await read();
+      // From the last sequence given, through the event-sequence index: the
+      // first call reads the whole log (an unnumbered event among it is in
+      // `handed`, so its return once numbered is not told twice).
+      const events = await readAll((page) =>
+        stores.events.listByRun(
+          scope,
+          after === undefined ? page : { ...page, afterSequence: after },
+        ),
+      );
+      for (const event of events) {
+        if (event.sequence !== null && (after === undefined || event.sequence > after)) {
+          after = event.sequence;
+        }
+      }
+      const { lines, ids } = narrate(events, await contextFor(events));
       for (const id of ids) handed.add(id);
       return lines;
     },
@@ -323,7 +399,11 @@ export const createActivityFeed = (stores: ProjectStores, scope: RunScope): Acti
       const saved = new Set(handed);
       handed.clear();
       try {
-        const { lines } = await read();
+        const [events, fresh] = await Promise.all([
+          readAll((page) => stores.events.listByRun(scope, page)),
+          readContext(),
+        ]);
+        const { lines } = narrate(events, fresh);
         return lines.slice(-limit);
       } finally {
         for (const id of saved) handed.add(id);

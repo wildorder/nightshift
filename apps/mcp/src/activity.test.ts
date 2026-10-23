@@ -105,3 +105,89 @@ describe("an environment fault in the Meanwhile lines (P16 D-07)", () => {
     ]);
   });
 });
+
+describe("the feed a root's job.wait reads (2026-10-22)", () => {
+  /** The store, counting the events each `listByRun` returned and the node lists read. */
+  const counting = (stores: ReturnType<typeof createInMemoryStores>) => {
+    const reads = { events: 0, nodeLists: 0 };
+    return {
+      reads,
+      stores: {
+        ...stores,
+        events: {
+          ...stores.events,
+          listByRun: async (...args: Parameters<typeof stores.events.listByRun>) => {
+            const page = await stores.events.listByRun(...args);
+            reads.events += page.items.length;
+            return page;
+          },
+        },
+        executionNodes: {
+          ...stores.executionNodes,
+          listByRun: async (...args: Parameters<typeof stores.executionNodes.listByRun>) => {
+            reads.nodeLists += 1;
+            return stores.executionNodes.listByRun(...args);
+          },
+        },
+      },
+    };
+  };
+
+  it("reads only what followed the last wait, tells each line once, and names a node met later", async () => {
+    const f = createFixtures();
+    const base = createInMemoryStores();
+    await base.executionNodes.put(makeRootNode(f));
+    const first = makeJobContract(f, { objective: "Add the first thing.", strandId: "S-01" });
+    await base.jobContracts.put(first);
+    const firstNode = makeNode(f, f.rootNodeId, { jobContractId: first.jobContractId });
+    await base.executionNodes.put(firstNode);
+    for (let i = 0; i < 20; i += 1) {
+      await base.events.append(
+        makeEvent(f, {
+          type: "node.progress",
+          executionNodeId: firstNode.executionNodeId,
+          payload: { message: `step ${i}` },
+        }),
+      );
+    }
+    const { stores, reads } = counting(base);
+    const feed = createActivityFeed(stores as never, f.scope);
+    const opening = renderActivity(await feed.since());
+    expect(opening.filter((line) => line.includes("step "))).toHaveLength(20);
+    const nodeListsAfterOpening = reads.nodeLists;
+
+    // A wait with nothing new reads nothing, and says nothing.
+    reads.events = 0;
+    expect(await feed.since()).toEqual([]);
+    expect(reads.events).toBe(0);
+
+    // A new strand's node appears, and two events: only those two are read, the
+    // new node is named, and nothing already told is told again.
+    const second = makeJobContract(f, { objective: "Add the second thing.", strandId: "S-02" });
+    await base.jobContracts.put(second);
+    const secondNode = makeNode(f, f.rootNodeId, { jobContractId: second.jobContractId });
+    await base.executionNodes.put(secondNode);
+    for (const [node, message] of [
+      [firstNode, "step 20"],
+      [secondNode, "begun"],
+    ] as const) {
+      await base.events.append(
+        makeEvent(f, {
+          type: "node.progress",
+          executionNodeId: node.executionNodeId,
+          payload: { message },
+        }),
+      );
+    }
+    reads.events = 0;
+    const later = renderActivity(await feed.since());
+    expect(reads.events).toBe(2);
+    expect(later).toHaveLength(2);
+    expect(later.some((line) => line.includes("S-02") && line.includes("begun"))).toBe(true);
+    expect(later.some((line) => line.includes("S-01") && line.includes("step 20"))).toBe(true);
+    expect(reads.nodeLists).toBe(nodeListsAfterOpening + 1);
+
+    // The whole story is still there for run.activity.
+    expect((await feed.all(100)).length).toBe(22);
+  });
+});

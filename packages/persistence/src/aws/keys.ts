@@ -68,7 +68,7 @@ export const RUN_RECORD_TYPES = {
 export type RunRecordType = (typeof RUN_RECORD_TYPES)[keyof typeof RUN_RECORD_TYPES];
 
 /** `CHILD` is what an execution node writes into its parent's index partition (§4.2). */
-export type NodeIndexType = Exclude<RunRecordType, "NODE" | "JOB"> | "CHILD";
+export type NodeIndexType = Exclude<RunRecordType, "NODE" | "JOB"> | "CHILD" | "EVT";
 
 const runChain = (scope: RunScope): string =>
   `${scope.projectId}#${scope.programId}#${scope.runId}`;
@@ -239,6 +239,16 @@ export const keys = {
   }),
 
   counter: (scope: RunScope): TableKey => ({ PK: `EVT#${runChain(scope)}`, SK: COUNTER_SORT_KEY }),
+
+  /**
+   * An event's place in the node index (2026-10-22): under its node, by type,
+   * then identifier, so a reader of one kind of a node's events starts and
+   * stops at that kind. A run-level event (no node) is not in it.
+   */
+  eventByNode: (scope: RunScope, nodeId: string, type: string, eventId: string): NodeIndexKey => ({
+    GSI1PK: `NODE#${runChain(scope)}#${nodeId}`,
+    GSI1SK: `EVT#${type}#${eventId}`,
+  }),
 
   idempotency: (scope: RunScope, idempotencyKey: string): TableKey => ({
     PK: `EVT#${runChain(scope)}`,

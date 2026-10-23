@@ -961,6 +961,74 @@ export const describePortConformance = <S extends ProjectStores>(
       });
     });
 
+    describe("one node's events (2026-10-22)", () => {
+      it("lists a node's events alone, in listByRun's order, and only one type when asked", async () => {
+        const node = a.rootNodeId;
+        const other = makeNode(a, a.rootNodeId).executionNodeId;
+        const mine = [
+          makeEvent(a, { idempotencyKey: "m0", executionNodeId: node, type: "tool.called" }),
+          makeEvent(a, { idempotencyKey: "m1", executionNodeId: node, type: "node.failed" }),
+          makeEvent(a, { idempotencyKey: "m2", executionNodeId: node, type: "tool.called" }),
+          makeEvent(a, { idempotencyKey: "m3", executionNodeId: node, type: "node.failed" }),
+        ];
+        await stores.events.append(mine[0] as never);
+        await stores.events.append(makeEvent(a, { idempotencyKey: "x0", executionNodeId: other }));
+        await stores.events.append(makeEvent(a, { idempotencyKey: "run-level" }));
+        for (const event of mine.slice(1)) await stores.events.append(event);
+        await settle();
+
+        const all = (await stores.events.listByRun(a.scope)).items;
+        const expected = all.filter((e) => e.executionNodeId === node).map((e) => e.eventId);
+        const listed = (await stores.events.listByNode(a.scope, node)).items;
+        expect(listed.map((e) => e.eventId)).toEqual(expected);
+        expect(listed.map((e) => e.idempotencyKey)).toEqual(["m0", "m1", "m2", "m3"]);
+
+        const failures = (await stores.events.listByNode(a.scope, node, { type: "node.failed" }))
+          .items;
+        expect(failures.map((e) => e.idempotencyKey)).toEqual(["m1", "m3"]);
+        expect(
+          (await stores.events.listByNode(a.scope, other)).items.map((e) => e.idempotencyKey),
+        ).toEqual(["x0"]);
+      });
+
+      it("pages a node's events without losing or repeating one", async () => {
+        const node = a.rootNodeId;
+        for (let i = 0; i < 7; i += 1) {
+          await stores.events.append(
+            makeEvent(a, { idempotencyKey: `p${i}`, executionNodeId: node, type: "tool.called" }),
+          );
+        }
+        await settle();
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await stores.events.listByNode(
+            a.scope,
+            node,
+            cursor === undefined ? { limit: 3 } : { limit: 3, cursor },
+          );
+          seen.push(...page.items.map((e) => e.idempotencyKey));
+          cursor = page.cursor;
+        } while (cursor !== undefined);
+        expect(seen).toEqual(["p0", "p1", "p2", "p3", "p4", "p5", "p6"]);
+      });
+
+      it("keeps one run's node events from another run's", async () => {
+        await stores.events.append(
+          makeEvent(a, { idempotencyKey: "a0", executionNodeId: a.rootNodeId }),
+        );
+        await stores.events.append(
+          makeEvent(b, { idempotencyKey: "b0", executionNodeId: b.rootNodeId }),
+        );
+        await settle();
+        expect(
+          (await stores.events.listByNode(a.scope, a.rootNodeId)).items.map(
+            (e) => e.idempotencyKey,
+          ),
+        ).toEqual(["a0"]);
+      });
+    });
+
     describe("event ordering", () => {
       it("assigns sequences from zero, densely", async () => {
         for (let i = 0; i < 5; i += 1) {

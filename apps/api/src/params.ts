@@ -103,6 +103,15 @@ export const parsePageQuery = (
     : { limit, cursor: query.cursor };
 };
 
+/** A node named in a query, as `?node=`: a valid node identifier or a 400. */
+export const parseQueryNodeId = (value: string): IdOf<"node"> => {
+  const result = ID_SCHEMAS.node.safeParse(value);
+  if (!result.success) {
+    throw new HttpError(400, "invalid_query", "node is not a valid node_ identifier");
+  }
+  return result.data as IdOf<"node">;
+};
+
 export const parseAfterSequence = (
   query: Readonly<Record<string, string | undefined>>,
 ): number | undefined =>

@@ -323,6 +323,19 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
           },
         }),
       ),
+    listByNode: async (scope, executionNodeId, options_) =>
+      readPage(
+        EventSchema,
+        await send(transport, {
+          method: "GET",
+          path: routes.events(scope),
+          query: {
+            ...pageQuery(options_),
+            node: executionNodeId,
+            ...(options_?.type === undefined ? {} : { type: options_.type }),
+          },
+        }),
+      ),
     /**
      * The number the next event to be numbered will receive.
      *
