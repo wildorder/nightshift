@@ -5,7 +5,7 @@
  * lets a test mount them over `@nightshift/persistence/memory` with no browser
  * session and no network: the same pages, the same records.
  */
-import type { ArtifactId, OrgId } from "@nightshift/contracts";
+import type { ArtifactId, OrgId, PlanDraftVersionResponse } from "@nightshift/contracts";
 import type { IdGenerator, ProgramScope, ProjectStores, RunScope } from "@nightshift/core";
 import { createContext, useContext } from "react";
 import type { Identity } from "./auth/session.js";
@@ -35,6 +35,13 @@ export interface Studio {
    */
   readonly documents?: {
     planDocument(scope: ProgramScope, sha256: string): Promise<string | undefined>;
+  };
+  /**
+   * A plan draft's version with the check the plane computed (P21), read-only.
+   * `getVersion` does not carry the check. `undefined` when the plane has no such version.
+   */
+  readonly drafts?: {
+    version(scope: ProgramScope, version: number): Promise<PlanDraftVersionResponse | undefined>;
   };
   /** How often a live run's page asks for new events (D-P11-05). */
   readonly pollMs?: number;

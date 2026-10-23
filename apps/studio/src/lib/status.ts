@@ -58,6 +58,11 @@ const TONE_OF: Readonly<Record<string, Tone>> = {
   strand: "neutral",
   job: "neutral",
   ruling: "warning",
+  // P21: a plan draft's state.
+  draft: "neutral",
+  awaiting_owner: "warning",
+  ratified: "success",
+  declined: "danger",
 };
 
 /** The tone of a status; anything the table does not know is neutral. */

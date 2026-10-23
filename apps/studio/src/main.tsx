@@ -6,6 +6,7 @@
 import {
   ArtifactDownloadResponseSchema,
   PlanDocumentResponseSchema,
+  PlanDraftVersionResponseSchema,
   ProjectSchema,
 } from "@nightshift/contracts";
 import { createUlidIdGenerator, nowIso, systemClock } from "@nightshift/core";
@@ -78,6 +79,21 @@ const documentsOver = (transport: Transport): NonNullable<Studio["documents"]> =
   },
 });
 
+/** A draft version with the plane's check of it: reads only (P21, D-04). */
+const draftsOver = (transport: Transport): NonNullable<Studio["drafts"]> => ({
+  version: async (scope, version) => {
+    const response = await transport({
+      method: "GET",
+      path: routes.planDraftVersion(scope, version),
+    });
+    if (response.status === 404) return undefined;
+    if (response.status !== 200) {
+      throw new Error(`the control plane would not serve the draft version (${response.status})`);
+    }
+    return PlanDraftVersionResponseSchema.parse(response.body);
+  },
+});
+
 /** Everything below the session: the same for a hosted stage and a local instance. */
 const renderStudio = async (
   transport: Transport,
@@ -93,6 +109,7 @@ const renderStudio = async (
     now: () => nowIso(systemClock),
     artifacts: artifactsOver(transport),
     documents: documentsOver(transport),
+    drafts: draftsOver(transport),
     signOut: signOutAndLeave,
   };
   render(

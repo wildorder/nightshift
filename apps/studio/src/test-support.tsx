@@ -2,7 +2,7 @@
  * Mounting the Studio over the memory stores (D-P11-07): what every page test
  * starts from. Nothing here opens a socket or reads a browser session.
  */
-import type { OrgId } from "@nightshift/contracts";
+import type { OrgId, PlanDraftCheck } from "@nightshift/contracts";
 import {
   createCountingIdGenerator,
   createFixtures,
@@ -34,6 +34,8 @@ export interface MountOptions {
   readonly artifacts?: Studio["artifacts"];
   /** The program's stored documents, by SHA-256 (P14). */
   readonly documents?: Readonly<Record<string, string>>;
+  /** The plane's check of each draft version, keyed by version number (P21); absent: no port. */
+  readonly checks?: Readonly<Record<number, PlanDraftCheck>>;
   readonly ids?: IdGenerator;
   readonly now?: () => string;
   /** Serve the page from these instead of the seeded stores (reads that fail or hang). */
@@ -70,6 +72,23 @@ export const mountStudio = async (
       : {
           documents: {
             planDocument: async (_scope, sha256) => opts.documents?.[sha256],
+          },
+        }),
+    ...(opts.checks === undefined
+      ? {}
+      : {
+          drafts: {
+            version: async (scope, version) => {
+              const stored = await stores.planDrafts.getVersion(
+                scope.projectId,
+                scope.programId,
+                version,
+              );
+              const check = opts.checks?.[version];
+              return stored === undefined || check === undefined
+                ? undefined
+                : { version: stored, check };
+            },
           },
         }),
     ...(opts.pollMs === undefined ? {} : { pollMs: opts.pollMs }),
