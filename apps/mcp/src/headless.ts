@@ -344,10 +344,12 @@ export type RootEnding = Omit<HeadlessResult, "transcripts" | "measurements"> & 
 };
 
 /**
- * A root a usage limit stopped, on a run still running, is replaced by one on
+ * A root a usage limit stopped, on a run not yet ended, is replaced by one on
  * the next route (D-P8-06, as amended 2026-10-12). It takes over as a runner
  * restart's root does: what the last one had in flight is on the record. Every
- * other ending is the run's, as it always was.
+ * other ending is the run's, as it always was. A run still `pending` counts:
+ * a root refused on its first request never attached, and was not replaced,
+ * until 2026-10-23 (foodfly's run, refused on Fable, never tried Opus).
  */
 export const replacingLimitedRoots = async (
   clock: Runtime["clock"],
@@ -370,7 +372,7 @@ export const replacingLimitedRoots = async (
     if (
       exit.kind !== "failed" ||
       exit.unavailable === undefined ||
-      ended.run.status !== "running" ||
+      (ended.run.status !== "running" && ended.run.status !== "pending") ||
       relaunch >= MAX_ROOT_RELAUNCHES
     ) {
       const { route: _route, measurementSummaryId: _summary, ...result } = ended;
@@ -503,12 +505,14 @@ export const launchRoot = async (
   const base = await revParse(runtime.git, input.repoPath, program.repository.programBranch);
   const worktree = runtime.paths.worktree(scope.runId, rootNode.executionNodeId);
   await mkdir(dirname(worktree), { recursive: true });
-  if (resuming) {
-    // The checkout came back from the sidecar with the lost root's worktree in
-    // it (T6); this root gets a fresh one at the same path.
-    await tryGit(runtime.git, ["worktree", "remove", "--force", worktree], { cwd: input.repoPath });
-    await rm(worktree, { recursive: true, force: true });
-  }
+  // An earlier root of this run may have left its worktree here: a lost
+  // machine's, back from the sidecar (T6), or a root that a limit stopped or
+  // the process lost before it attached. A root's worktree is a detached
+  // checkout it only reads, so this root always gets a fresh one at the same
+  // path; clearing it only for a running run left restarts of a pending one
+  // failing "already exists" (2026-10-23).
+  await tryGit(runtime.git, ["worktree", "remove", "--force", worktree], { cwd: input.repoPath });
+  await rm(worktree, { recursive: true, force: true });
   await pruneWorktrees(runtime.git, input.repoPath);
   await addDetachedWorktree(runtime.git, { repo: input.repoPath, path: worktree, base });
   // The root's temp directory, beside its worktree, like every agent's (scratch.ts).
