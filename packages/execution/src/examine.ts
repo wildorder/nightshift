@@ -1693,18 +1693,19 @@ const askedBy = async (
   input: ExamineInput,
   agentId: AgentId,
 ): Promise<readonly string[]> => {
-  // The examiner's server flushed its event before its process ended.
+  // The examiner's server flushed its event before its process ended, on the
+  // node its token is bound to, the examined one: that node's questions alone,
+  // not the run's whole log (2026-10-22).
   const found: string[] = [];
   let cursor: string | undefined;
   do {
-    const page = await environment.stores.events.listByRun(
+    const page = await environment.stores.events.listByNode(
       input.session.scope,
-      cursor === undefined ? {} : { cursor },
+      input.node.executionNodeId,
+      cursor === undefined ? { type: "examination.asked" } : { type: "examination.asked", cursor },
     );
     for (const event of page.items) {
-      if (event.type === "examination.asked" && event.agentId === agentId) {
-        found.push(...questionsIn(event.payload));
-      }
+      if (event.agentId === agentId) found.push(...questionsIn(event.payload));
     }
     cursor = page.cursor;
   } while (cursor !== undefined);

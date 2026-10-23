@@ -106,6 +106,7 @@ import {
   type NightshiftStores,
   type OrgConfigStore,
   OwnershipViolationError,
+  orderEvents,
   type Page,
   type PageRequest,
   type ProgramContractStore,
@@ -411,6 +412,22 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
           ? ordered
           : ordered.filter((e) => e.sequence !== null && e.sequence > after);
       return paginate(filtered, options);
+    },
+    listByNode: async (
+      scope: RunScope,
+      executionNodeId: ExecutionNodeId,
+      options?: PageRequest & { readonly type?: string },
+    ) => {
+      const mine = orderEvents(
+        events
+          .scan(runPrefix(scope))
+          .filter(
+            (e) =>
+              e.executionNodeId === executionNodeId &&
+              (options?.type === undefined || e.type === options.type),
+          ),
+      );
+      return paginate(mine, options);
     },
     nextSequence: async (scope: RunScope) => sequences.get(runPrefix(scope)) ?? 0,
   };

@@ -31,6 +31,7 @@
 import {
   type CheckpointId,
   type Decision,
+  type Event,
   EventSchema,
   type ExecutionNode,
   type ExecutionNodeId,
@@ -50,7 +51,7 @@ import {
   type VerificationStep,
   VerificationStepSchema,
 } from "@nightshift/contracts";
-import { type GateHealthStore, nowIso, type ProjectStores } from "@nightshift/core";
+import { type GateHealthStore, nowIso, orderEvents, type ProjectStores } from "@nightshift/core";
 import type { LandingEnvironment, RunSession } from "./environment.js";
 import { fingerprintAtCommit, gitBlobReader } from "./gate-fingerprint.js";
 import { type GitRunner, revParse, tryGit } from "./git/index.js";
@@ -125,19 +126,31 @@ const deriveGateDefinitions = async (
   session: GateSession,
 ): Promise<GateDefinitions> => {
   let current = ratified(session.program);
-  let cursor: string | undefined;
-  do {
-    const page = await stores.events.listByRun(
-      session.scope,
-      cursor === undefined ? {} : { cursor },
-    );
-    for (const event of page.items) {
-      if (event.type === "gate.repaired") current = applyRepaired(current, event.payload);
-    }
-    cursor = page.cursor;
-  } while (cursor !== undefined);
+  // A `gate.repaired` is on its repair job's node, and only a landed repair has
+  // one: those nodes' own events, in the run's order, not the run's whole log
+  // (2026-10-22).
+  const repaired = orderEvents(
+    (
+      await Promise.all(
+        (
+          await landedRepairs(stores, session)
+        ).map((repair) => repairedEventsOf(stores, session, repair.node.executionNodeId)),
+      )
+    ).flat(),
+  );
+  for (const event of repaired) current = applyRepaired(current, event.payload);
   return current;
 };
+
+/** The `gate.repaired` events on one node. */
+const repairedEventsOf = (
+  stores: ProjectStores,
+  session: GateSession,
+  nodeId: ExecutionNodeId,
+): Promise<readonly Event[]> =>
+  readAll((page) =>
+    stores.events.listByNode(session.scope, nodeId, { ...page, type: "gate.repaired" }),
+  );
 
 /**
  * The run's current setup and verification: the ratified contract's, or what
@@ -492,16 +505,22 @@ const appendRepaired = async (
   );
 };
 
-/** The `gate.repaired` events already on the record, by job contract id. */
+/**
+ * The repairs among `repairs` whose `gate.repaired` is already on the record,
+ * by job contract id: each repair's own node, not the run's whole log.
+ */
 const repairedJobs = async (
   stores: ProjectStores,
   session: GateSession,
+  repairs: readonly LandedRepair[],
 ): Promise<ReadonlySet<string>> => {
-  const events = await readAll((page) => stores.events.listByRun(session.scope, page));
+  const events = (
+    await Promise.all(
+      repairs.map((repair) => repairedEventsOf(stores, session, repair.node.executionNodeId)),
+    )
+  ).flat();
   return new Set(
-    events
-      .filter((event) => event.type === "gate.repaired")
-      .map((event) => String((event.payload as { jobContractId?: unknown }).jobContractId)),
+    events.map((event) => String((event.payload as { jobContractId?: unknown }).jobContractId)),
   );
 };
 
@@ -511,7 +530,7 @@ const recordRepairs = async (
   session: RunSession,
   repairs: readonly LandedRepair[],
 ): Promise<void> => {
-  const recorded = await repairedJobs(environment.stores, session);
+  const recorded = await repairedJobs(environment.stores, session, repairs);
   for (const repair of repairs) {
     if (recorded.has(repair.job.jobContractId)) continue;
     const before = await gateDefinitions(environment, session);

@@ -3,8 +3,14 @@
  */
 import { AppendEventBodySchema, EventSchema } from "@nightshift/contracts";
 import { highestSequence, nowIso, pendingCount } from "@nightshift/core";
-import { parseBody } from "../http.js";
-import { assertChainMatches, parseAfterSequence, parsePageQuery, runScopeFrom } from "../params.js";
+import { HttpError, parseBody } from "../http.js";
+import {
+  assertChainMatches,
+  parseAfterSequence,
+  parsePageQuery,
+  parseQueryNodeId,
+  runScopeFrom,
+} from "../params.js";
 import type { Handler } from "../router.js";
 import { pageAt, pageBody, readAll, requireRun, withCursor } from "./common.js";
 
@@ -25,8 +31,21 @@ export const listEvents: Handler = async ({ deps, request, params }) => {
   const scope = runScopeFrom(params);
   const page = parsePageQuery(request.query);
   const afterSequence = parseAfterSequence(request.query);
+  const node = request.query.node;
+  const type = request.query.type;
   await requireRun(deps.stores, scope);
 
+  // One node's events, by type when named (2026-10-22): the same reading
+  // permission as the run's, about less of it.
+  if (node !== undefined && node !== "") {
+    if (afterSequence !== undefined) {
+      throw new HttpError(400, "invalid_query", "node and afterSequence cannot be combined");
+    }
+    const nodeId = parseQueryNodeId(node);
+    const options = type === undefined || type === "" ? page : { ...page, type };
+    const result = await withCursor(() => deps.stores.events.listByNode(scope, nodeId, options));
+    return { status: 200, body: pageBody(result) };
+  }
   const options = afterSequence === undefined ? page : { ...page, afterSequence };
   const result = await withCursor(() => deps.stores.events.listByRun(scope, options));
   return { status: 200, body: pageBody(result) };

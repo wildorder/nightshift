@@ -384,15 +384,25 @@ export const createEngine = (options: EngineOptions): Engine => {
     observeWait(entry, "note", { reason: "blockers changed", blockers });
   };
 
-  /** True when the record holds a start of `operationId` whose end was never observed. */
-  const hasOpenOccurrence = async (operationId: string): Promise<boolean> => {
+  /**
+   * True when the record holds a start of `operationId` whose end was never
+   * observed: from the node's own lifecycle events, not the run's whole log
+   * (2026-10-22).
+   */
+  const hasOpenOccurrence = async (
+    nodeId: ExecutionNodeId,
+    operationId: string,
+  ): Promise<boolean> => {
     try {
       const events = [];
       let cursor: string | undefined;
       do {
-        const page = await stores.events.listByRun(
+        const page = await stores.events.listByNode(
           session.scope,
-          cursor === undefined ? {} : { cursor },
+          nodeId,
+          cursor === undefined
+            ? { type: "lifecycle.observed" }
+            : { type: "lifecycle.observed", cursor },
         );
         events.push(...page.items);
         cursor = page.cursor;
@@ -1370,7 +1380,7 @@ export const createEngine = (options: EngineOptions): Engine => {
       await stores.routingDecisions.listByNode(session.scope, id),
     ).length;
     const waitOperation = lifecycleOperationId("wait", id, String(workAttempts + 1));
-    const recovered = node.status === "queued" && (await hasOpenOccurrence(waitOperation));
+    const recovered = node.status === "queued" && (await hasOpenOccurrence(id, waitOperation));
     let route: RouteChoice;
     try {
       if (options.route === undefined) throw new Error("this engine was given no way to route it");
@@ -1605,24 +1615,22 @@ export const createEngine = (options: EngineOptions): Engine => {
     return { target: last.chosen, position: last.position, climb };
   };
 
-  /** Why a node last failed, as its `node.failed` event said. */
+  /**
+   * Why a node last failed, as its `node.failed` event said: that node's
+   * failures alone, not the run's whole log (2026-10-22).
+   */
   const lastFailureReason = async (nodeId: ExecutionNodeId): Promise<string | undefined> => {
     let reason: string | undefined;
     let cursor: string | undefined;
     do {
-      const page = await stores.events.listByRun(
+      const page = await stores.events.listByNode(
         session.scope,
-        cursor === undefined ? {} : { cursor },
+        nodeId,
+        cursor === undefined ? { type: "node.failed" } : { type: "node.failed", cursor },
       );
       for (const event of page.items) {
         const said = (event.payload as { reason?: unknown }).reason;
-        if (
-          event.executionNodeId === nodeId &&
-          event.type === "node.failed" &&
-          typeof said === "string"
-        ) {
-          reason = said;
-        }
+        if (typeof said === "string") reason = said;
       }
       cursor = page.cursor;
     } while (cursor !== undefined);

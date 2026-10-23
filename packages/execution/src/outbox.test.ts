@@ -41,6 +41,7 @@ const recordingStore = (): {
         return { stored: true, event };
       },
       listByRun: async (): Promise<Page<Event>> => ({ items: appended }),
+      listByNode: async (): Promise<Page<Event>> => ({ items: [] }),
       nextSequence: async () => appended.length,
     },
   };
@@ -128,6 +129,7 @@ describe("delivery", () => {
           return new Promise(() => {});
         },
         listByRun: async () => ({ items: [] }),
+        listByNode: async () => ({ items: [] }),
         nextSequence: async () => 0,
       },
       scope: f.scope,

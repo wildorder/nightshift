@@ -174,6 +174,18 @@ export interface EventStore {
     options?: PageRequest & { readonly afterSequence?: number },
   ): Promise<Page<Event>>;
   /**
+   * One node's events, in the order `listByRun` gives them, and only those of
+   * `type` when it is given (2026-10-22). What a reader about one node asks
+   * instead of reading the run's whole log: a node's last failure, an
+   * examiner's questions, a repair's record of what it changed. A node's events
+   * are mostly its agent's tool calls, so a reader that wants one kind names it.
+   */
+  listByNode(
+    scope: RunScope,
+    executionNodeId: ExecutionNodeId,
+    options?: PageRequest & { readonly type?: string },
+  ): Promise<Page<Event>>;
+  /**
    * The number the next event to be numbered in this run will receive, which is
    * also how many of its events have been numbered so far.
    */
