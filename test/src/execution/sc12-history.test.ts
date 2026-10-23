@@ -110,6 +110,7 @@ import {
 } from "@nightshift/persistence/http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AUTH_DOMAIN, CLIENT_ID, SUBJECT } from "../cli/operator.js";
+import { writeConfigFor } from "../cli/plan-scratch.js";
 import { createFakeHarness, type ScriptContext } from "./fake-harness.js";
 import { cleanupWorlds, createWorld, type World } from "./world.js";
 
@@ -582,6 +583,8 @@ const signInTo = async (world: World, programs: Readonly<Record<string, ProgramC
     onInterrupt: () => () => undefined,
   };
   const repo = join(root, "repo");
+  const [firstProgram] = Object.values(programs);
+  if (firstProgram !== undefined) await writeConfigFor(repo, firstProgram);
   for (const [name, program] of Object.entries(programs)) {
     await mkdir(join(repo, "docs", "programs", name), { recursive: true });
     await writeFile(

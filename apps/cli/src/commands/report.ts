@@ -17,7 +17,8 @@ import {
   renderReport,
 } from "@nightshift/core";
 import type { CliEnvironment } from "../environment.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram } from "../program-source.js";
 import { openSession } from "../session.js";
 import { findRun } from "./program-run.js";
 import { REPORT_FILE } from "./run-program.js";
@@ -38,11 +39,21 @@ export const writeRunReport = async (
   options: ReportOptions,
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment);
-  const program = { projectId: files.contract.projectId, programId: files.contract.programId };
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    use: "ratified",
+  });
+  const program = {
+    projectId: files.contract.projectId,
+    programId: files.contract.programId,
+  };
   const run = await findRun(session, program, options.id, options.run);
-  const report = await gatherReport(session.stores, { ...program, runId: run.runId });
+  const report = await gatherReport(session.stores, {
+    ...program,
+    runId: run.runId,
+  });
   const path = join(repoPath, files.directory, REPORT_FILE);
   await writeFile(path, renderReport(report));
   environment.out(`report for run ${run.runId}: ${path}`);

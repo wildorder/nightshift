@@ -45,7 +45,8 @@ import {
 } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram } from "../program-source.js";
 import { openSession, type Session } from "../session.js";
 import { republishRun, unpublishedOf } from "./republish.js";
 import { REPORT_FILE } from "./run-program.js";
@@ -145,8 +146,12 @@ export const resume = async (
   options: ResumeOptions,
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment);
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    use: "ratified",
+  });
   const planning = createHttpPlanning({ transport: session.transport });
 
   const program = await session.stores.programContracts.get(
@@ -166,7 +171,11 @@ export const resume = async (
     git: environment.git,
     outbox: createEventOutbox({
       events: session.stores.events,
-      scope: { projectId: run.projectId, programId: run.programId, runId: run.runId },
+      scope: {
+        projectId: run.projectId,
+        programId: run.programId,
+        runId: run.runId,
+      },
       clock: environment.clock,
       ids: environment.ids,
       // Its own writer: a resume is not the run's orchestrator, and says so (A-30).
@@ -175,7 +184,11 @@ export const resume = async (
     prerequisites: planning,
   });
   const sessionFor = (run: Run) => ({
-    scope: { projectId: run.projectId, programId: run.programId, runId: run.runId },
+    scope: {
+      projectId: run.projectId,
+      programId: run.programId,
+      runId: run.runId,
+    },
     program,
     repoPath,
   });

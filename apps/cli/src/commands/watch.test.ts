@@ -388,6 +388,44 @@ describe("nightshift remote status", () => {
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, "contract.json"), JSON.stringify(makeProgramContract(f)));
     await writeFile(join(directory, "plan.md"), "# The plan\n");
+    const contract = makeProgramContract(f);
+    await writeFile(
+      join(repo, "nightshift.config.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId: contract.projectId,
+        contextDocs: [],
+        verification: contract.verification,
+        modelPolicy: contract.modelPolicy,
+        delegationLimits: contract.delegationLimits,
+        costPolicy: contract.costPolicy,
+      }),
+    );
+    // The program lives on the plane: a draft named for it, whose latest version is found.
+    const ref = { uri: "s3://plans/p1-fixture", sha256: "b".repeat(64), sizeBytes: 12 };
+    const draft = {
+      schemaVersion: 1,
+      projectId: contract.projectId,
+      programId: contract.programId,
+      name: "p1-fixture",
+      state: "draft",
+      latestVersion: 1,
+      acts: [],
+      createdAt: "2026-09-15T08:00:00.000Z",
+      updatedAt: "2026-09-15T08:00:00.000Z",
+    };
+    const version = {
+      schemaVersion: 1,
+      projectId: contract.projectId,
+      programId: contract.programId,
+      version: 1,
+      contract: ref,
+      plan: ref,
+      author: { kind: "user", userId: TEST_SUBJECT, orgId: "org_01J0000000000000000000FAKE" },
+      act: { kind: "write" },
+      createdAt: "2026-09-15T08:00:00.000Z",
+    };
+    const documents = new Map([[ref.sha256, JSON.stringify(contract)]]);
     let polled = 0;
     const plane = createFakeFetch((request) => {
       if (request.url.startsWith(`https://${TEST_AUTH_DOMAIN}/`)) {
@@ -402,6 +440,17 @@ describe("nightshift remote status", () => {
         const answer = answers[Math.min(polled, answers.length - 1)];
         polled += 1;
         return { status: 200, body: JSON.stringify(answer) };
+      }
+      if (request.method === "GET" && /\/plan-drafts$/.test(path)) {
+        return { status: 200, body: JSON.stringify({ items: [draft] }) };
+      }
+      if (request.method === "GET" && /\/plan-draft\/versions\/latest$/.test(path)) {
+        return { status: 200, body: JSON.stringify({ version, check: { ready: true } }) };
+      }
+      const document = /\/plan-documents\/([^/]+)$/.exec(path);
+      if (request.method === "GET" && document?.[1] !== undefined) {
+        const text = documents.get(document[1]) ?? "# The plan\n";
+        return { status: 200, body: JSON.stringify({ planDocument: ref, text }) };
       }
       return { status: 404, body: JSON.stringify({ error: { code: "not_found", message: path } }) };
     });

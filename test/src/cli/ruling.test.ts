@@ -25,6 +25,7 @@ import {
 } from "@nightshift/persistence/http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, signIn } from "./operator.js";
+import { writeConfigFor } from "./plan-scratch.js";
 
 let op: Operator;
 let repo: string;
@@ -85,6 +86,7 @@ const seed = async () => {
     createdAt: "2026-09-25T10:00:00.000Z",
   };
   await stores.decisions.put(ruling);
+  await writeConfigFor(repo, program);
   await mkdir(join(repo, "docs", "programs", "demo"), { recursive: true });
   await writeFile(join(repo, "docs", "programs", "demo", "contract.json"), JSON.stringify(program));
   await writeFile(join(repo, "docs", "programs", "demo", "plan.md"), "# Demo\n");

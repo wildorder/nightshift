@@ -21,7 +21,7 @@ import {
 } from "@nightshift/persistence/http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Operator, SUBJECT, signIn } from "../cli/operator.js";
-import { programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
+import { programDirectory, putFromFiles, ratifyFromFiles } from "../cli/plan-scratch.js";
 import {
   authoredProgram,
   type MaterialisedRepo,
@@ -251,6 +251,7 @@ describe("optional gate-health diagnostics through the CLI", () => {
     // must be of these gates, which plan check and ratification judge.
     await writeProgram({ setup: [{ id: "prepare", command: 'node -e "process.exit(0)"' }] });
     commit("re-plan with a setup");
+    expect(await putFromFiles(cli, fixture.repo, PROGRAM), said()).toBe(0);
     expect(await cli("gates", PROGRAM, "--record"), said()).toBe(0);
     expect(said()).toContain("setup:prepare");
     expect(

@@ -7,19 +7,23 @@
  * `docs/programs/{name}/` committed, is put on the plane once (the import) and
  * found there from then on. `readProgramFiles` stays as the importer's reader.
  */
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   mergeProgramFiles,
   type PlanDraft,
   type PlanDraftVersion,
+  PROGRAMS_DIRECTORY,
   type ProgramContract,
   ProgramContractSchema,
   ProjectIdSchema,
 } from "@nightshift/contracts";
-import type { ProgramScope } from "@nightshift/core";
+import { isPlanned, type ProgramScope } from "@nightshift/core";
 import { createHttpPlanning, type PlanningClient } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "./environment.js";
 import { UsageError } from "./failures.js";
 import {
+  CONTRACT_FILE,
   isProgramDirectoryName,
   readConfig,
   readProgramFiles,
@@ -54,6 +58,14 @@ export interface ProgramSource {
 const planningOf = (session: Session): PlanningClient =>
   createHttpPlanning({ transport: session.transport });
 
+const projectIdIn = (json: string): unknown => {
+  try {
+    return (JSON.parse(json) as { projectId?: unknown }).projectId;
+  } catch {
+    return undefined;
+  }
+};
+
 const projectOf = async (
   environment: CliEnvironment,
   options: FindProgramOptions,
@@ -63,18 +75,26 @@ const projectOf = async (
     if (!parsed.success) throw new UsageError(`\`${options.project}\` is not a project id`);
     return parsed.data;
   }
-  const config = await readConfig(resolveFrom(environment.cwd, options.repoPath));
-  if (config === undefined) {
-    throw new UsageError(
-      `cannot tell which project \`${options.name}\` belongs to`,
-      "Pass --project <id>, or run from a repository with nightshift.config.json.",
-    );
-  }
-  return config.projectId;
+  const repoPath = resolveFrom(environment.cwd, options.repoPath);
+  const config = await readConfig(repoPath);
+  if (config !== undefined) return config.projectId;
+  // A program planned before P21 in a repository with no config states its project itself.
+  const committed = await readFile(
+    join(repoPath, PROGRAMS_DIRECTORY, options.name, CONTRACT_FILE),
+    "utf8",
+  ).catch(() => undefined);
+  const stated = ProjectIdSchema.safeParse(
+    committed === undefined ? undefined : projectIdIn(committed),
+  );
+  if (stated.success) return stated.data;
+  throw new UsageError(
+    `cannot tell which project \`${options.name}\` belongs to`,
+    "Pass --project <id>, or run from a repository with nightshift.config.json.",
+  );
 };
 
 /** The project's draft with this name, if it has one. */
-const draftNamed = async (
+export const draftNamed = async (
   session: Session,
   projectId: ProgramScope["projectId"],
   name: string,
@@ -112,7 +132,10 @@ const importCommitted = async (
     throw error;
   });
   const planning = planningOf(session);
-  const scope: ProgramScope = { projectId, programId: committed.contract.programId };
+  const scope: ProgramScope = {
+    projectId,
+    programId: committed.contract.programId,
+  };
   if (committed.contract.projectId !== projectId) {
     throw new UsageError(
       `docs/programs/${options.name}/contract.json is for project ${committed.contract.projectId}, not ${projectId}`,
@@ -181,8 +204,13 @@ export const findProgram = async (
   const version = latest.version;
   const directory = `docs/programs/${options.name}`;
 
-  if (options.use === "ratified") {
-    const contract = await session.stores.programContracts.get(projectId, draft.programId);
+  const recorded = await session.stores.programContracts.get(projectId, draft.programId);
+  // A contract with no strands is run as it stands and never ratified; what a run
+  // of it executed is the draft's latest.
+  const unplanned =
+    recorded !== undefined && recorded.planDocument === undefined && !isPlanned(recorded);
+  if (options.use === "ratified" && !unplanned) {
+    const contract = recorded;
     if (contract?.planDocument === undefined) {
       throw new UsageError(
         `\`${options.name}\` has not been ratified`,

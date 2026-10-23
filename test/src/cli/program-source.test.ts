@@ -2,11 +2,14 @@
  * `findProgram` (P21 S-02): a program found by name on the plane, and the import
  * of one planned before P21.
  */
+
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProject, findProgram, openSession, runCli } from "@nightshift/cli";
 import type { ProgramContract } from "@nightshift/contracts";
+import { createFixtures, makeCheckpoint, makeNode, makeRootNode, makeRun } from "@nightshift/core";
 import {
   createFetchTransport,
   createHttpStores,
@@ -177,5 +180,100 @@ describe("nightshift plan put <name>", () => {
       await rm(scratch, { recursive: true, force: true });
     }
     expect((await draftsOf().get(contract.projectId, contract.programId))?.name).toBe("p1-demo");
+  });
+});
+
+describe("commands that find a program only in the plane", () => {
+  beforeEach(async () => {
+    await recordHealthyGates(op, fixture.repo, PROGRAM);
+    expect(await putFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
+    await rm(join(fixture.repo, "docs"), { recursive: true, force: true });
+  });
+
+  it("preflight finds it and answers on its prerequisites", async () => {
+    expect(await cli("preflight", PROGRAM), op.err.join("\n")).toBe(0);
+    expect(op.out.at(-1)).toBe("no human prerequisites: nothing to check");
+  });
+
+  it("report finds it, and says it has no run rather than no program", async () => {
+    expect(await cli("report", PROGRAM)).not.toBe(0);
+    const said = op.err.join("\n");
+    expect(said).not.toMatch(/does not exist|has not been ratified|no program/);
+    expect(said).toContain(PROGRAM);
+  });
+
+  it("resume finds it, and says it has no run rather than no program", async () => {
+    const code = await cli("resume", PROGRAM);
+    const said = [...op.out, ...op.err].join("\n");
+    expect(said, `exit ${code}`).not.toMatch(/does not exist|has not been ratified|no program/);
+    expect(said).toContain(PROGRAM);
+  });
+});
+
+describe("nightshift decision brief", () => {
+  it("renders from the plan text rootNode.plan names, with no plan.md on disk", async () => {
+    await recordHealthyGates(op, fixture.repo, PROGRAM);
+    const text = `${PLAN}\nKeep orders in one table, said the plane.\n`;
+    await writeProgram(text);
+    expect(await putFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
+    await rm(join(fixture.repo, "docs"), { recursive: true, force: true });
+
+    const stores = createHttpStores({
+      transport: createFetchTransport({
+        endpoint: op.plane.url,
+        tokens: staticTokenProvider("ignored-by-the-local-plane"),
+      }),
+      actingOrg: op.orgId,
+    });
+    const ratified = await stores.programContracts.get(contract.projectId, contract.programId);
+    if (ratified?.planDocument === undefined || ratified.planHash === undefined) {
+      throw new Error("not ratified");
+    }
+    const base = createFixtures();
+    const f = {
+      ...base,
+      scope: { ...base.scope, projectId: contract.projectId, programId: contract.programId },
+    };
+    const root = makeRootNode(f, {
+      plan: { planHash: ratified.planHash, planDocument: ratified.planDocument },
+    });
+    await stores.runs.put(makeRun(f, { rootNodeId: root.executionNodeId }));
+    await stores.executionNodes.put(root);
+    const node = makeNode(f, root.executionNodeId);
+    await stores.executionNodes.put(node);
+    const head = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: fixture.repo,
+      encoding: "utf8",
+    }).trim();
+    const checkpoint = makeCheckpoint(f, root.executionNodeId, { commitSha: head as never });
+    await stores.checkpoints.put(checkpoint);
+    const decisionId = f.ids.next("dec");
+    await stores.decisions.put({
+      schemaVersion: 1,
+      ...f.scope,
+      decisionId,
+      executionNodeId: node.executionNodeId,
+      agentId: null,
+      context: "S-01: how to store orders",
+      alternatives: [{ summary: "a table per region", rejectedBecause: "more to migrate" }],
+      choice: "one table",
+      rationale: "simplest",
+      reversibility: "reversible",
+      checkpointBefore: checkpoint.checkpointId,
+      produced: { commits: [] },
+      affectedNodes: [],
+      authority: "agent",
+      supersedesDecisionId: null,
+      createdAt: "2026-09-27T10:01:00.000Z",
+    } as never);
+
+    const out = join(fixture.repo, "brief.md");
+    expect(
+      await cli("decision", "brief", PROGRAM, decisionId, "--out", out),
+      op.err.join("\n"),
+    ).toBe(0);
+    expect(await readFile(out, "utf8")).toContain("Keep orders in one table, said the plane.");
   });
 });

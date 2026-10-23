@@ -26,6 +26,7 @@ import {
 } from "@nightshift/persistence/http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, signIn } from "./operator.js";
+import { writeConfigFor } from "./plan-scratch.js";
 
 let op: Operator;
 let dir: string;
@@ -132,6 +133,7 @@ describe("nightshift routes export (SC-P8-15)", () => {
       policyVersion: 0,
       createdAt: "2026-09-25T10:00:00.000Z",
     });
+    await writeConfigFor(dir, program);
     await mkdir(join(dir, "docs", "programs", "demo"), { recursive: true });
     await writeFile(
       join(dir, "docs", "programs", "demo", "contract.json"),

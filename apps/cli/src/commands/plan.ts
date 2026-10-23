@@ -50,6 +50,7 @@ import {
   readConfig,
   resolveFrom,
 } from "../program-files.js";
+import { draftNamed, type ProgramSource } from "../program-source.js";
 import { openSession, type Session } from "../session.js";
 
 /** The scratch's marker: the version its files were last put as or shown from. */
@@ -156,6 +157,17 @@ export const resolveScope = async (
   session: Session,
   options: Pick<PlanOptions, "id" | "repo" | "project" | "dir">,
 ): Promise<ProgramScope> => {
+  if (ProgramIdSchema.safeParse(options.id).success === false) {
+    // A name is the plane's to resolve first: the draft that carries it.
+    const projectId =
+      options.project !== undefined
+        ? ProjectIdSchema.safeParse(options.project).data
+        : (await configAt(environment, options.repo))?.projectId;
+    if (projectId !== undefined) {
+      const named = await draftNamed(session, projectId, options.id);
+      if (named !== undefined) return { projectId, programId: named.programId };
+    }
+  }
   const programId = await programIdOf(environment, options);
   if (options.project !== undefined) {
     const parsed = ProjectIdSchema.safeParse(options.project);
@@ -247,7 +259,10 @@ const printReasons = (
 const correctionOf = async (
   environment: CliEnvironment,
   files: PlanDocuments,
-): Promise<{ readonly problems: readonly string[]; readonly flags: readonly string[] }> => {
+): Promise<{
+  readonly problems: readonly string[];
+  readonly flags: readonly string[];
+}> => {
   const targets = files.contract.corrects ?? [];
   if (targets.length === 0) return { problems: [], flags: [] };
   const session = await openSession(environment);
@@ -362,7 +377,10 @@ export const planPut = async (
   }
   const session = await openSession(environment);
   const planning = planningOf(session);
-  const scope = { projectId: scratch.contract.projectId, programId: scratch.contract.programId };
+  const scope = {
+    projectId: scratch.contract.projectId,
+    programId: scratch.contract.programId,
+  };
   const draft = await planning.getDraft(scope);
   const marker = await readMarker(scratch.directory);
   const basedOn = options.basedOn ?? marker ?? null;
@@ -578,6 +596,35 @@ export const ratifyPlan = async (
   const ratified = await planning.ratify(files.contract, files.planText, files.conversationText);
 
   printRatified(environment, files.directory, ratified);
+  return ratified;
+};
+
+/**
+ * Ratifies the plane's latest version of a program by its hash, for
+ * `nightshift run`, whose asking to run a plan is the human's approval of it
+ * (2026-10-16). `undefined`, with the reasons said, when it is not READY.
+ */
+export const ratifyVersionOf = async (
+  environment: CliEnvironment,
+  session: Session,
+  source: Pick<ProgramSource, "scope" | "directory">,
+): Promise<ProgramContract | undefined> => {
+  const planning = planningOf(session);
+  const latest = await planning.getVersion(source.scope);
+  if (latest === undefined)
+    throw new UsageError(`the plane has no draft of \`${source.directory}\``);
+  if (!latest.check.ready || latest.version.planHash === undefined) {
+    printReasons(
+      environment,
+      latest.check.ready ? { reasons: [{ message: "the contract does not parse" }] } : latest.check,
+    );
+    environment.err(
+      "Nothing was ratified. Fix the plan, put a new version and run `nightshift plan check` again.",
+    );
+    return undefined;
+  }
+  const ratified = await planning.ratifyVersion(source.scope, latest.version.planHash);
+  printRatified(environment, source.directory, ratified);
   return ratified;
 };
 

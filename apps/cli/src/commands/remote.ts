@@ -43,7 +43,8 @@ import { ControlPlaneError, routes, send } from "@nightshift/persistence/http";
 import type { CliEnvironment, Exec } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { ensureProgramBranch, publishProgramBranch } from "../program-branch.js";
-import { type ProgramFiles, readConfig, readProgramFiles, resolveFrom } from "../program-files.js";
+import { readConfig, resolveFrom } from "../program-files.js";
+import { findProgram, type ProgramSource } from "../program-source.js";
 import { openSession, type Session } from "../session.js";
 import { STAGE_WORDS, watchDispatch } from "./watch.js";
 
@@ -208,7 +209,10 @@ export const assertRemoteReady = async (
 
 const orgOf = async (session: Session, projectId: string): Promise<string> =>
   ProjectSchema.parse(
-    await send(session.transport, { method: "GET", path: routes.project(projectId as never) }),
+    await send(session.transport, {
+      method: "GET",
+      path: routes.project(projectId as never),
+    }),
   ).orgId;
 
 /**
@@ -232,7 +236,10 @@ export const dispatchRun = async (
   };
   const orgId = await orgOf(session, scope.projectId);
   const orgConfig = OrgConfigSchema.parse(
-    await send(session.transport, { method: "GET", path: routes.orgConfig(orgId as never) }),
+    await send(session.transport, {
+      method: "GET",
+      path: routes.orgConfig(orgId as never),
+    }),
   );
   const ceilings = orgConfig.compute ?? DEFAULT_COMPUTE_CEILINGS;
   const hours = runHoursOf(contract.costPolicy.maxWallClockSeconds, ceilings);
@@ -285,10 +292,13 @@ export const dispatchRun = async (
 const dispatchOf = async (
   environment: CliEnvironment,
   session: Session,
-  files: ProgramFiles,
+  files: ProgramSource,
   runId: string | undefined,
 ): Promise<{ scope: RunScope; dispatch: Dispatch | undefined }> => {
-  const programScope = { projectId: files.contract.projectId, programId: files.contract.programId };
+  const programScope = {
+    projectId: files.contract.projectId,
+    programId: files.contract.programId,
+  };
   if (runId !== undefined) {
     const scope = { ...programScope, runId: runId as never };
     return { scope, dispatch: await session.stores.dispatches.get(scope) };
@@ -301,7 +311,10 @@ const dispatchOf = async (
     if (dispatch !== undefined) return { scope, dispatch };
   }
   environment.err(`program ${files.contract.programId} has no remote run; name one with --run`);
-  return { scope: { ...programScope, runId: "" as never }, dispatch: undefined };
+  return {
+    scope: { ...programScope, runId: "" as never },
+    dispatch: undefined,
+  };
 };
 
 /** An environment fault's cause, and the fault side by side when the events were read. */
@@ -405,8 +418,12 @@ export interface RemoteOptions {
 
 const openFor = async (environment: CliEnvironment, options: RemoteOptions) => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment);
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    use: "latest",
+  });
   return { files, session };
 };
 
@@ -436,14 +453,17 @@ export const remoteStatus = async (
  */
 export const ceilingOf = async (
   session: Session,
-  files: Pick<ProgramFiles, "contract">,
+  files: Pick<ProgramSource, "contract">,
   dispatch: Dispatch,
 ): Promise<number | undefined> => {
   if (dispatch.spend.ceilingSeconds !== undefined) return dispatch.spend.ceilingSeconds;
   try {
     const orgId = await orgOf(session, dispatch.projectId);
     const orgConfig = OrgConfigSchema.parse(
-      await send(session.transport, { method: "GET", path: routes.orgConfig(orgId as never) }),
+      await send(session.transport, {
+        method: "GET",
+        path: routes.orgConfig(orgId as never),
+      }),
     );
     const ceilings = orgConfig.compute ?? DEFAULT_COMPUTE_CEILINGS;
     return Math.round(runHoursOf(files.contract.costPolicy.maxWallClockSeconds, ceilings) * 3600);

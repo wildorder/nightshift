@@ -3,9 +3,48 @@
  * is the control plane (P21), so these put the files from a scratch and ratify
  * the version the plane then holds.
  */
-import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+
+import { execFileSync } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/** The repository's `nightshift.config.json`, with the defaults a program's contract states. */
+export const writeConfigFor = async (
+  repo: string,
+  contract: {
+    readonly projectId: string;
+    readonly verification: unknown;
+    readonly modelPolicy: unknown;
+    readonly delegationLimits: unknown;
+    readonly costPolicy: unknown;
+  },
+): Promise<void> => {
+  await mkdir(repo, { recursive: true });
+  await writeFile(
+    join(repo, "nightshift.config.json"),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      projectId: contract.projectId,
+      contextDocs: [],
+      verification: contract.verification,
+      modelPolicy: contract.modelPolicy,
+      delegationLimits: contract.delegationLimits,
+      costPolicy: contract.costPolicy,
+    })}\n`,
+  );
+};
+
+/**
+ * An empty bare repository as the checkout's `origin`: a run makes sure the
+ * program branch is at origin too. Made at `at`, or in a temporary directory to remove afterwards.
+ */
+export const addOrigin = async (repo: string, at?: string): Promise<string> => {
+  const origin = at ?? (await mkdtemp(join(tmpdir(), "nightshift-origin-")));
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  execFileSync("git", ["remote", "add", "origin", origin], { cwd: repo });
+  return origin;
+};
 
 type Cli = (...argv: string[]) => Promise<number>;
 

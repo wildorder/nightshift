@@ -55,10 +55,10 @@ import { createHttpArtifactBodyStore, createHttpPlanning } from "@nightshift/per
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { checkOutProgramBranch, ensureProgramBranch } from "../program-branch.js";
-import type { ProgramFiles } from "../program-files.js";
+import type { ProgramSource } from "../program-source.js";
 import type { Session } from "../session.js";
 import { auditProgramGates, describeAudit } from "./gates.js";
-import { ratifyPlan } from "./plan.js";
+import { ratifyVersionOf } from "./plan.js";
 import { assertRemoteReady, dispatchRun, type RemoteReadiness } from "./remote.js";
 import { watchDispatch } from "./watch.js";
 
@@ -198,7 +198,11 @@ const requireConfirmations = async (
   const corrected: Decision[] = [];
   for (const target of program.corrects ?? []) {
     const decision = await session.stores.decisions.get(
-      { projectId: program.projectId, programId: target.programId, runId: target.runId },
+      {
+        projectId: program.projectId,
+        programId: target.programId,
+        runId: target.runId,
+      },
       target.decisionId,
     );
     if (decision !== undefined) corrected.push(decision);
@@ -234,7 +238,10 @@ const recordConfirmations = async (
       agentId: null,
       context: irreversibleConfirmationContext(decision.decisionId),
       alternatives: [
-        { summary: "Do not run the correction", rejectedBecause: "the owner confirmed it" },
+        {
+          summary: "Do not run the correction",
+          rejectedBecause: "the owner confirmed it",
+        },
       ],
       choice: "Run the correction",
       rationale: `Confirmed with --confirm-irreversible ${decision.decisionId}.`,
@@ -353,7 +360,9 @@ const beforeStart = async (
   // The gates, before anything is created. A red base starts the run all the
   // same: this is baseline evidence, not a scheduling prerequisite.
   if (options.remote !== true) {
-    return { audit: await auditBeforeStart(environment, ratified, options.repoPath) };
+    return {
+      audit: await auditBeforeStart(environment, ratified, options.repoPath),
+    };
   }
   // P10: everything the checkout can say against a remote dispatch, before the
   // run exists (SC-P10-02). The ratified record, not the file: ratification
@@ -376,7 +385,7 @@ const beforeStart = async (
  */
 const startAfter = async (
   deps: StartRunEnvironment,
-  files: ProgramFiles,
+  files: ProgramSource,
   options: RunProgramOptions,
   before: BeforeStart,
 ): Promise<StartedRun> => {
@@ -427,7 +436,7 @@ const exitCodeFor = (report: RunReport): number => {
 const ratifiedForRun = async (
   environment: CliEnvironment,
   session: Session,
-  files: ProgramFiles,
+  files: ProgramSource,
 ): Promise<ProgramContract | undefined> => {
   try {
     return await requireRatifiedPlan(session.stores, files.contract, files.planText);
@@ -438,14 +447,14 @@ const ratifiedForRun = async (
   environment.out(
     `ratifying ${files.directory}: asking to run a plan approves it, so it is recorded under its hash first`,
   );
-  if ((await ratifyPlan(environment, session, files)) === undefined) return undefined;
+  if ((await ratifyVersionOf(environment, session, files)) === undefined) return undefined;
   return requireRatifiedPlan(session.stores, files.contract, files.planText);
 };
 
 export const runProgram = async (
   environment: CliEnvironment,
   session: Session,
-  files: ProgramFiles,
+  files: ProgramSource,
   options: RunProgramOptions,
 ): Promise<RunProgramResult> => {
   const deps = {

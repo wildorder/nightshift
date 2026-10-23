@@ -22,7 +22,7 @@ import { nodeGitRunner } from "@nightshift/execution";
 import { currentStage, type FetchLike } from "@nightshift/persistence/http";
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
+import { addOrigin, programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
 import { scriptedHarnessModule } from "../slice/context.js";
 import {
   authoredProgram,
@@ -187,6 +187,7 @@ describe("a stranger's first run, on a local instance", () => {
       projectId: created.projectId as never,
       delegationLimits: { maxDepth: 2, maxConcurrency: 2 },
     });
+    await addOrigin(fixture.repo, join(fixture.stateDir, "..", "origin"));
     const git = (...args: string[]) =>
       execFileSync("git", args, { cwd: fixture.repo, encoding: "utf8" }).trim();
     const base = await authoredProgram();
