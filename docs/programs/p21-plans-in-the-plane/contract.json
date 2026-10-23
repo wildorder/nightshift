@@ -1,0 +1,307 @@
+{
+  "schemaVersion": 1,
+  "programId": "prog_01M5N69XHZ3W5AXS7M0YPHHZX1",
+  "status": "planning",
+  "objective": "Make the control plane a plan's only home: a draft is stored there as content-hashed versions with their author, readable from anywhere, answerable one decision at a time and ratified by a person by its hash; `nightshift run` makes and pushes the program branch itself and needs no plan file in any repository; nothing reads the plan from git, and a finished planned run publishes its plan, contract, conversation and report into docs/programs/{id}/ on the program branch as history. The authority is docs/programs/p21-plans-in-the-plane/plan.md.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p21-plans-in-the-plane"
+  },
+  "createdAt": "2026-10-23T18:00:00Z",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "The owner, planning a program for Nightshift to build",
+      "problem": "Before anything runs, the plan has to be committed onto a program branch made by hand and pushed; ratify refuses a plan that is not committed, and the planning session ends in git chores.",
+      "outcome": "They plan, then run: no branch to make, nothing to commit, no plan file in the repository.",
+      "words": [
+        "one of the super annoying things about the planning is the ceremony around commiting your docs to it's own branch before running the program.",
+        "if this is the last time we use plan-program and have it create a wonky program branch and all that shit I will be so so so so happy"
+      ]
+    },
+    {
+      "id": "US-02",
+      "who": "The owner away from their desk, and the people and agents who will propose work to them",
+      "problem": "A plan exists only as files in one checkout, so it can be read and decided on only at that machine, and nothing records who wrote it or who answered what.",
+      "outcome": "A plan is in the plane: readable from the CLI or the Studio anywhere, written by a person or an agent, each decision answered on its own by a person, and approved or declined by a person.",
+      "words": [
+        "yes, i want it cloud... so i can take it with me.",
+        "i wanted to provide that context to make sure we built it in a way that supports that collaboration in the future"
+      ]
+    },
+    {
+      "id": "US-03",
+      "who": "A future agent or developer working in the repository",
+      "problem": "Plans and reports end up in the repository only when someone remembers to commit them, so the history of what was planned and what happened is patchy.",
+      "outcome": "Every finished planned run leaves its plan, contract, conversation and report in docs/programs/{id}/ on the program branch, and so in the PR.",
+      "words": [
+        "I'm ok committing that to the docs.. i suppose that helps future agents know the history."
+      ]
+    }
+  ],
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "A program can be planned, checked, ratified and run end to end with no plan file in any repository and no branch or commit made by a person.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "`nightshift run` creates `program/{id}` from the base branch's head and pushes it when it does not exist, locally and remotely.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "A draft is stored in the plane as immutable content-hashed versions, each naming its author (a human, or an agent's execution identity), and any version can be read with `nightshift plan show` and in the Studio from any machine.",
+      "serves": [
+        "US-02"
+      ]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "Through the API, one decision of a draft can be answered on its own, changes can be requested, and a draft can be declined or ratified; each of those is refused to anyone but a human principal, while an agent may write versions.",
+      "serves": [
+        "US-02"
+      ]
+    },
+    {
+      "id": "SC-05",
+      "outcome": "When a planned run finishes, Nightshift commits `docs/programs/{id}/` (contract, plan, conversation, report) from the plane onto the program branch, the commit touches no other path, and nothing in Nightshift reads that copy as the plan.",
+      "serves": [
+        "US-03"
+      ]
+    },
+    {
+      "id": "SC-06",
+      "outcome": "A program planned the old way, with committed files, still checks, ratifies and runs, and existing ratifications, runs and records keep their meaning.",
+      "serves": [
+        "US-01"
+      ]
+    }
+  ],
+  "constraints": [
+    "The plan hash is computed exactly as today, so every existing ratification still names the same plan.",
+    "A draft version is never changed once written; an edit or an answer is a new version.",
+    "Only a human principal answers a decision, requests changes, declines or ratifies; the author of a version is recorded from the caller, never claimed.",
+    "After ratification nothing reads a plan or contract from git: the plane's documents are the plan.",
+    "The program branch moves only by verified landings, and by the one publication commit at finish, which touches only docs/programs/{id}/.",
+    "Windows keeps working: the CLI's plan commands run in Git Bash on the Windows CI leg."
+  ],
+  "outOfScope": [
+    "Delivering plans or decisions to Slack, WhatsApp, email or any channel",
+    "Taking in requests or bug reports, and agents writing plans from them",
+    "Answering decisions or approving in the Studio (D-04)",
+    "Any change to how a plan is hashed"
+  ],
+  "scope": {
+    "includes": [
+      "packages/**",
+      "apps/**",
+      "skills/**",
+      "test/**",
+      "docs/**",
+      "AGENTS.md",
+      "scripts/**"
+    ],
+    "excludes": [
+      "infra/**"
+    ],
+    "forbiddenActions": [
+      "deploy any stack",
+      "build a runner image",
+      "push to main",
+      "edit another program's documents under docs/programs/"
+    ]
+  },
+  "strands": [
+    {
+      "id": "S-01",
+      "name": "Drafts and approval in the plane",
+      "scope": {
+        "summary": "The draft record, its API and authorization, and the CLI's plan commands",
+        "includes": [
+          "packages/contracts/**",
+          "packages/core/**",
+          "packages/persistence/**",
+          "apps/api/**",
+          "apps/cli/src/commands/plan.ts",
+          "apps/cli/src/commands/conversation.ts",
+          "apps/cli/src/**",
+          "packages/execution/src/start-run.ts",
+          "test/**"
+        ],
+        "excludes": [
+          "apps/studio/**",
+          "skills/**"
+        ]
+      },
+      "acceptance": [
+        "A draft's versions are immutable, content-hashed, and name their author from the caller's principal; a write based on an older version than the latest is refused.",
+        "`nightshift plan put`, `plan show`, `plan check` and `plan ratify` work from the plane with no plan file in any repository; `plan conversation` stores the kept conversation into the next version.",
+        "Answering one decision makes a new version carrying the answer and who gave it; requesting changes, declining and ratifying are recorded acts; all four are refused to an execution principal.",
+        "Ratifying a version records the same ratification shape and hash as today, and `ratifyPlan` no longer refuses an uncommitted plan.",
+        "Conformance on every adapter, and authorization tests for every act."
+      ],
+      "successCriteria": [
+        "SC-03",
+        "SC-04",
+        "SC-06"
+      ],
+      "dependsOn": [],
+      "prerequisites": []
+    },
+    {
+      "id": "S-02",
+      "name": "Runs that need no plan in the repository",
+      "scope": {
+        "summary": "Finding a program from the plane, the program branch made by `run`, the engine reading the plane's contract, and the publication at finish",
+        "includes": [
+          "apps/cli/**",
+          "apps/mcp/**",
+          "packages/execution/**",
+          "packages/core/**",
+          "apps/api/**",
+          "test/**"
+        ],
+        "excludes": [
+          "apps/studio/**",
+          "skills/**"
+        ]
+      },
+      "acceptance": [
+        "Every command that found a program in docs/programs on disk finds it in the plane; committed files from before P21 are imported as a draft's first version on the first run that sees them.",
+        "`nightshift run` creates and pushes `program/{id}` from the base branch when it does not exist, for a local and a remote run.",
+        "Gate repair, project setup and a strand's step tools read the plane's contract; a strand may read its own program's contract; `run.start` and `decision brief` take the plan from the plane.",
+        "A finished planned run commits docs/programs/{id}/ (contract, plan, conversation, report) from the plane onto the program branch, the publisher pushes it, and a core rule refuses that commit if it touches any other path.",
+        "An end-to-end test runs a plan that exists only in the plane, from no branch to a finished run with the published directory on the branch."
+      ],
+      "successCriteria": [
+        "SC-01",
+        "SC-02",
+        "SC-05",
+        "SC-06"
+      ],
+      "dependsOn": [
+        "S-01"
+      ],
+      "prerequisites": []
+    },
+    {
+      "id": "S-03",
+      "name": "Reading a draft in the Studio",
+      "scope": {
+        "summary": "A plan page in the Studio",
+        "includes": [
+          "apps/studio/**"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "A program's plan page shows the latest version (stories, strands, decisions with answers and who gave them, prerequisites), its check result and state, and its earlier versions, linked from the project page and from a run.",
+        "It reads only; nothing on it changes a draft."
+      ],
+      "successCriteria": [
+        "SC-03"
+      ],
+      "dependsOn": [
+        "S-01"
+      ],
+      "prerequisites": []
+    },
+    {
+      "id": "S-04",
+      "name": "The skills and the record",
+      "scope": {
+        "summary": "The planning and running skills, their tests, and the architecture and agent docs",
+        "includes": [
+          "skills/**",
+          "test/src/skills/**",
+          "docs/architecture.md",
+          "docs/vision.md",
+          "AGENTS.md"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "`plan-program` writes drafts with `nightshift plan put`, reads them with `plan show`, and ends at `nightshift run {id}` with no branch and no commit; `run-program` drops its program-branch and committed-plan preconditions; the skill tests pin the new wording.",
+        "docs/architecture.md records the ruling as a decision amending A-58, and AGENTS.md says where a plan lives."
+      ],
+      "successCriteria": [
+        "SC-01"
+      ],
+      "dependsOn": [
+        "S-01",
+        "S-02"
+      ],
+      "prerequisites": []
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "Where does a plan draft live while it is being planned?",
+      "options": [
+        "In the plane, as content-hashed versions",
+        "As files outside any repository",
+        "As untracked files in the repository"
+      ],
+      "leaning": "In the plane, as content-hashed versions",
+      "answer": "In the plane, as content-hashed versions",
+      "rationale": "The owner wants to take a plan with them and read it anywhere, and later have a person or agent write a plan from a request and send its decisions to the owner on a channel of their choice; a draft on one laptop supports none of that. Built so an agent can write versions and only a person answers decisions, requests changes, declines or approves.",
+      "touches": [
+        "S-01",
+        "S-02",
+        "S-03",
+        "S-04"
+      ]
+    },
+    {
+      "id": "D-02",
+      "question": "Does a copy of the plan end up in the repository?",
+      "options": [
+        "Never",
+        "Nightshift commits docs/programs/{id}/ onto the program branch when the run finishes",
+        "Nightshift commits it when the run starts"
+      ],
+      "leaning": "Nightshift commits docs/programs/{id}/ onto the program branch when the run finishes",
+      "answer": "Nightshift commits docs/programs/{id}/ onto the program branch when the run finishes",
+      "rationale": "It helps future agents know the history, and it lands with the work in the PR; it is a publication that nothing reads back.",
+      "touches": [
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-03",
+      "question": "Is the publication commit at finish verified like a landing?",
+      "options": [
+        "Verified like any landing (one more full gate run)",
+        "Committed unverified, because a core rule allows it only when it touches docs/programs/{id}/ and nothing executes that directory"
+      ],
+      "leaning": "Committed unverified, because a core rule allows it only when it touches docs/programs/{id}/ and nothing executes that directory",
+      "touches": [
+        "S-02"
+      ],
+      "answer": "Committed unverified, because a core rule allows it only when it touches docs/programs/{id}/ and nothing executes that directory",
+      "rationale": "Running verification after committing documents is wasteful: the commit touches only docs/programs/{id}/, which nothing executes once the engine reads the plan from the plane, and a core rule refuses it if it touches anything else."
+    },
+    {
+      "id": "D-04",
+      "question": "Can a draft's decisions be answered and the draft approved in the Studio in this program?",
+      "options": [
+        "Not yet: the Studio reads drafts; answering and approving are API and CLI acts until the channels come (PK-17)",
+        "Yes: answer, request changes, decline and approve in the Studio now"
+      ],
+      "leaning": "Not yet: the Studio reads drafts; answering and approving are API and CLI acts until the channels come (PK-17)",
+      "touches": [
+        "S-03"
+      ],
+      "answer": "Not yet: the Studio reads drafts; answering and approving are API and CLI acts until the channels come (PK-17)",
+      "rationale": "The Studio's cleanup is a much bigger issue and comes later; this program's Studio page only reads a draft."
+    }
+  ]
+}
