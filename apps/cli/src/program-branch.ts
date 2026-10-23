@@ -12,7 +12,7 @@
  * origin ahead of the checkout is a pull to make, and diverged history is a
  * human's to resolve, each refused with what to do.
  */
-import { type GitRunner, tryGit, tryRevParse } from "@nightshift/execution";
+import { currentBranch, type GitRunner, isDirty, tryGit, tryRevParse } from "@nightshift/execution";
 import { UsageError } from "./failures.js";
 
 export interface PublishOptions {
@@ -117,4 +117,103 @@ export const publishProgramBranch = async (
       : `pushed ${branch} to origin: ${short(origin)} -> ${short(head)}`,
   );
   return origin === undefined ? { kind: "pushed", head } : { kind: "pushed", head, from: origin };
+};
+
+export type BranchEnsured =
+  | { readonly kind: "present" }
+  | { readonly kind: "created"; readonly head: string; readonly from: string }
+  | { readonly kind: "tracked"; readonly head: string };
+
+/**
+ * Makes the program branch exist, here and at origin, so no plan file has to
+ * have created it. Origin's is fetched first. Neither side has it: it is made
+ * at the head of origin's `baseBranch` (the local one when origin has none) with
+ * no checkout, and pushed with upstream. Origin has it and this checkout does
+ * not: the local branch is made at origin's head, tracking it. Otherwise
+ * nothing; {@link publishProgramBranch}'s checks are the next word.
+ */
+export const ensureProgramBranch = async (
+  runner: GitRunner,
+  repo: string,
+  branch: string,
+  baseBranch: string,
+  options: PublishOptions,
+): Promise<BranchEnsured> => {
+  const origin = await fetchOrigin(runner, repo, branch);
+  const local = await tryRevParse(runner, repo, branch);
+  if (local !== undefined) return { kind: "present" };
+  if (origin !== undefined) {
+    const tracked = await tryGit(
+      runner,
+      ["branch", "--track", branch, `refs/remotes/origin/${branch}`],
+      { cwd: repo },
+    );
+    if (tracked.exitCode !== 0) {
+      throw new UsageError(
+        `could not make ${branch} from origin's: ${tracked.stderr.trim() || `git branch exited ${tracked.exitCode}`}`,
+        `Run \`git branch --track ${branch} origin/${branch}\` and look at what it says.`,
+      );
+    }
+    options.out(`made ${branch} here at origin's ${short(origin)}, tracking it`);
+    return { kind: "tracked", head: origin };
+  }
+
+  if (!options.push) {
+    throw new UsageError(
+      `${branch} exists neither here nor at origin, and --no-push forbids pushing the one this run would make`,
+      `Create and push it from ${baseBranch} (\`git branch ${branch} ${baseBranch} && git push -u origin ${branch}\`), or run without --no-push and Nightshift will.`,
+    );
+  }
+  const base =
+    (await fetchOrigin(runner, repo, baseBranch)) ?? (await tryRevParse(runner, repo, baseBranch));
+  if (base === undefined) {
+    throw new UsageError(
+      `${branch} does not exist and its base ${baseBranch} exists neither here nor at origin`,
+      `Check repository.baseBranch in the plan, and that origin has ${baseBranch}.`,
+    );
+  }
+  const made = await tryGit(runner, ["branch", "--no-track", branch, base], { cwd: repo });
+  if (made.exitCode !== 0) {
+    throw new UsageError(
+      `could not create ${branch}: ${made.stderr.trim() || `git branch exited ${made.exitCode}`}`,
+    );
+  }
+  const pushed = await tryGit(runner, ["push", "--set-upstream", "origin", `${branch}:${branch}`], {
+    cwd: repo,
+  });
+  if (pushed.exitCode !== 0) {
+    await tryGit(runner, ["branch", "-D", branch], { cwd: repo });
+    throw new UsageError(
+      `could not push ${branch} to origin: ${pushed.stderr.trim() || `git push exited ${pushed.exitCode}`}`,
+      `Push it yourself (\`git push -u origin ${branch}\`) and run it again.`,
+    );
+  }
+  options.out(
+    `created ${branch} at ${short(base)}, the head of ${baseBranch}, and pushed it to origin`,
+  );
+  return { kind: "created", head: base, from: baseBranch };
+};
+
+/**
+ * A local run works on the program branch: checks it out, refusing, with the
+ * reason, when the working tree is dirty and it is not already out.
+ */
+export const checkOutProgramBranch = async (
+  runner: GitRunner,
+  repo: string,
+  branch: string,
+): Promise<void> => {
+  if ((await currentBranch(runner, repo)) === branch) return;
+  if (await isDirty(runner, repo)) {
+    throw new UsageError(
+      `the working tree in ${repo} has uncommitted changes, so ${branch} cannot be checked out`,
+      `Commit or stash them, or \`git switch ${branch}\` yourself, then run it again.`,
+    );
+  }
+  const switched = await tryGit(runner, ["switch", branch], { cwd: repo });
+  if (switched.exitCode !== 0) {
+    throw new UsageError(
+      `could not check out ${branch}: ${switched.stderr.trim() || `git switch exited ${switched.exitCode}`}`,
+    );
+  }
 };

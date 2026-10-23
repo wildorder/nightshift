@@ -54,6 +54,7 @@ import {
 import { createHttpArtifactBodyStore, createHttpPlanning } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
+import { checkOutProgramBranch, ensureProgramBranch } from "../program-branch.js";
 import type { ProgramFiles } from "../program-files.js";
 import type { Session } from "../session.js";
 import { auditProgramGates, describeAudit } from "./gates.js";
@@ -455,6 +456,18 @@ export const runProgram = async (
   };
   const ratified = await ratifiedForRun(environment, session, files);
   if (ratified === undefined) return { started: undefined, exitCode: 1 };
+  if (options.remote !== true) {
+    // The branch the run reads its base from exists and is the one checked out.
+    const branch = ratified.repository.programBranch;
+    await ensureProgramBranch(
+      environment.git,
+      options.repoPath,
+      branch,
+      ratified.repository.baseBranch,
+      { push: options.push !== false, out: (line) => environment.out(line) },
+    );
+    await checkOutProgramBranch(environment.git, options.repoPath, branch);
+  }
   if (
     options.remote !== true &&
     (await preflightFirstStrands(environment, session, ratified, options.repoPath)) === undefined

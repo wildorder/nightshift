@@ -9,7 +9,11 @@ import { join } from "node:path";
 import { git, nodeGitRunner } from "@nightshift/execution";
 import { afterEach, describe, expect, it } from "vitest";
 import { UsageError } from "./failures.js";
-import { publishProgramBranch } from "./program-branch.js";
+import {
+  checkOutProgramBranch,
+  ensureProgramBranch,
+  publishProgramBranch,
+} from "./program-branch.js";
 
 const BRANCH = "program/rooms";
 const dirs: string[] = [];
@@ -131,5 +135,79 @@ describe("publishProgramBranch", () => {
     const error = await publish(there).result.catch((cause: unknown) => cause);
     expect(String(error)).toMatch(/does not exist/);
     expect((error as UsageError).usage).toMatch(/git switch program\/rooms/);
+  });
+});
+
+/** A bare origin with only `main`, and a clone of it on `main`. */
+const bare = async () => {
+  const w = await world();
+  await run(w.here, "checkout", "-q", "main");
+  await run(w.here, "branch", "-q", "-D", BRANCH);
+  return w;
+};
+
+const ensure = (repo: string, push = true) => {
+  const lines: string[] = [];
+  return {
+    lines,
+    result: ensureProgramBranch(nodeGitRunner, repo, BRANCH, "main", {
+      push,
+      out: (line) => lines.push(line),
+    }),
+  };
+};
+
+describe("ensureProgramBranch", () => {
+  it("makes the branch at main's head, pushes it and checks it out, for a local run", async () => {
+    const { origin, here } = await bare();
+    const main = await headOf(here, "main");
+    const { lines, result } = ensure(here);
+    expect((await result).kind).toBe("created");
+    expect(await headOf(origin, BRANCH)).toBe(main);
+    expect(await headOf(here, BRANCH)).toBe(main);
+    expect(lines.join("\n")).toMatch(/created program\/rooms at/);
+    await checkOutProgramBranch(nodeGitRunner, here, BRANCH);
+    expect((await run(here, "rev-parse", "--abbrev-ref", "HEAD")).trim()).toBe(BRANCH);
+    expect((await run(here, "rev-parse", `${BRANCH}@{upstream}`)).trim()).toBe(main);
+  });
+
+  it("for a remote run, makes and pushes it and leaves the checkout where it was", async () => {
+    const { origin, here } = await bare();
+    const main = await headOf(here, "main");
+    await ensure(here).result;
+    expect(await headOf(origin, BRANCH)).toBe(main);
+    expect((await run(here, "rev-parse", "--abbrev-ref", "HEAD")).trim()).toBe("main");
+    expect(await publish(here).result).toEqual({ kind: "in-step", head: main });
+  });
+
+  it("with --no-push, refuses and creates nothing, here or at origin", async () => {
+    const { origin, here } = await bare();
+    await expect(ensure(here, false).result).rejects.toThrow(/--no-push/);
+    await expect(headOf(origin, BRANCH)).rejects.toThrow();
+    await expect(headOf(here, BRANCH)).rejects.toThrow();
+  });
+
+  it("makes a tracking branch at origin's head when only origin has it", async () => {
+    const { here, clone } = await world();
+    await run(here, "push", "-q", "origin", BRANCH);
+    const head = await headOf(here, BRANCH);
+    const there = await clone("there");
+    expect(await ensure(there).result).toEqual({ kind: "tracked", head });
+    expect(await headOf(there, BRANCH)).toBe(head);
+    expect((await run(there, "rev-parse", `${BRANCH}@{upstream}`)).trim()).toBe(head);
+  });
+
+  it("does nothing when the branch is already here", async () => {
+    const { here } = await world();
+    expect(await ensure(here).result).toEqual({ kind: "present" });
+  });
+
+  it("refuses to check the branch out over a dirty working tree", async () => {
+    const { here } = await bare();
+    await ensure(here).result;
+    await writeFile(join(here, "base"), "changed\n", "utf8");
+    await expect(checkOutProgramBranch(nodeGitRunner, here, BRANCH)).rejects.toThrow(
+      /uncommitted changes/,
+    );
   });
 });

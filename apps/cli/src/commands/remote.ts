@@ -42,7 +42,7 @@ import { currentBranch, type GitRunner, isDirty, type StartedRun } from "@nights
 import { ControlPlaneError, routes, send } from "@nightshift/persistence/http";
 import type { CliEnvironment, Exec } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { publishProgramBranch } from "../program-branch.js";
+import { ensureProgramBranch, publishProgramBranch } from "../program-branch.js";
 import { type ProgramFiles, readConfig, readProgramFiles, resolveFrom } from "../program-files.js";
 import { openSession, type Session } from "../session.js";
 import { STAGE_WORDS, watchDispatch } from "./watch.js";
@@ -186,10 +186,9 @@ export const assertRemoteReady = async (
   // The machine clones from GitHub, never from this checkout: the branch is
   // fetched, then pushed when origin lacks it or is behind (2026-10-13).
   const branch = contract.repository.programBranch;
-  const { head } = await publishProgramBranch(environment.git, repoPath, branch, {
-    push,
-    out: (line) => environment.out(line),
-  });
+  const say = { push, out: (line: string) => environment.out(line) };
+  await ensureProgramBranch(environment.git, repoPath, branch, contract.repository.baseBranch, say);
+  const { head } = await publishProgramBranch(environment.git, repoPath, branch, say);
   const onBranch = await currentBranch(environment.git, repoPath);
   if (onBranch !== branch) {
     environment.err(
