@@ -486,6 +486,7 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     schemaVersion: 1,
     projectId: EXAMPLE_IDS.projectId,
     programId: EXAMPLE_IDS.programId,
+    name: "p1-demo",
     state: "awaiting_owner",
     latestVersion: 2,
     acts: [

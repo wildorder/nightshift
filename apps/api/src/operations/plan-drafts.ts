@@ -213,6 +213,30 @@ export const getLatestPlanDraftVersion: Handler = async ({ deps, params }) => {
   );
 };
 
+/** A name another program's draft in the project holds is refused (409). */
+const assertNameFree = async (
+  stores: NightshiftStores,
+  scope: ProgramScope,
+  name: string,
+): Promise<void> => {
+  let cursor: string | undefined;
+  do {
+    const page = await stores.planDrafts.listByProject(scope.projectId, {
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    const holder = page.items.find(
+      (draft) => draft.name === name && draft.programId !== scope.programId,
+    );
+    if (holder !== undefined) {
+      throw new PlanDraftError(
+        "name_taken",
+        `the name \`${name}\` is held by program ${holder.programId}`,
+      );
+    }
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+};
+
 export const putPlanDraftVersion: Handler = async ({ deps, request, params, principal }) => {
   const body = parseBody(PlanDraftPutVersionBodySchema, request.body);
   const scope = programScopeFrom(params);
@@ -239,12 +263,14 @@ export const putPlanDraftVersion: Handler = async ({ deps, request, params, prin
   assertChainMatches(scope, json as { projectId?: string; programId?: string });
   const parsed = parseContract(contract.text);
 
+  if (body.name !== undefined) await assertNameFree(deps.stores, scope, body.name);
   const at = nowIso(deps.clock);
   const stored = await deps.stores.planDrafts.get(scope.projectId, scope.programId);
   const next = reconcilePlanDraftWrite({
     ...(stored === undefined ? {} : { stored }),
     scope,
     basedOn: body.basedOn,
+    name: body.name,
     at,
   });
   const version = PlanDraftVersionSchema.parse({
@@ -269,6 +295,7 @@ export const putPlanDraftVersion: Handler = async ({ deps, request, params, prin
         ...(current === undefined ? {} : { stored: current }),
         scope,
         basedOn: body.basedOn,
+        name: body.name,
         at,
       }).draft,
   );

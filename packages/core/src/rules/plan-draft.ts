@@ -11,6 +11,7 @@ import {
   type IsoTimestamp,
   MAX_PLAN_DRAFT_ACTS,
   type PlanDraft,
+  type PlanDraftName,
   type PlanDraftRecordedAct,
   type PlanDraftState,
   type Principal,
@@ -24,6 +25,8 @@ export interface PlanDraftWriteInput {
   readonly scope: ProgramScope;
   /** The version the writer started from; null when there is no draft yet. */
   readonly basedOn: number | null;
+  /** The program name this write records; the draft keeps its own when omitted. */
+  readonly name?: PlanDraftName | undefined;
   readonly at: IsoTimestamp;
 }
 
@@ -40,7 +43,7 @@ export interface PlanDraftWriteOutcome {
  * is non-null for a program with no draft. The state goes back to `draft`.
  */
 export const reconcilePlanDraftWrite = (input: PlanDraftWriteInput): PlanDraftWriteOutcome => {
-  const { stored, scope, basedOn, at } = input;
+  const { stored, scope, basedOn, at, name } = input;
   if (stored === undefined) {
     if (basedOn !== null) {
       throw new PlanDraftError("no_draft", `there is no draft to base version ${basedOn + 1} on`);
@@ -51,6 +54,7 @@ export const reconcilePlanDraftWrite = (input: PlanDraftWriteInput): PlanDraftWr
         schemaVersion: 1,
         projectId: scope.projectId,
         programId: scope.programId,
+        ...(name === undefined ? {} : { name }),
         state: "draft",
         latestVersion: 1,
         acts: [],
@@ -69,7 +73,16 @@ export const reconcilePlanDraftWrite = (input: PlanDraftWriteInput): PlanDraftWr
     );
   }
   const version = stored.latestVersion + 1;
-  return { version, draft: { ...stored, state: "draft", latestVersion: version, updatedAt: at } };
+  return {
+    version,
+    draft: {
+      ...stored,
+      ...(name === undefined ? {} : { name }),
+      state: "draft",
+      latestVersion: version,
+      updatedAt: at,
+    },
+  };
 };
 
 export type PlanDraftActKind = PlanDraftRecordedAct["kind"];

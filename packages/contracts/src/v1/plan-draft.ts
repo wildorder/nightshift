@@ -65,9 +65,18 @@ export const PlanDraftRecordedActSchema = z.strictObject({
 });
 export type PlanDraftRecordedAct = z.infer<typeof PlanDraftRecordedActSchema>;
 
+/** A program's directory name (`p1-billing`): how a person names a draft before it has a hash. */
+export const PlanDraftNameSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
+  .refine((value) => !value.endsWith(".json"), "a name is not a file name");
+export type PlanDraftName = z.infer<typeof PlanDraftNameSchema>;
+
 export const PlanDraftSchema = z.strictObject({
   ...projectScoped,
   programId: ProgramIdSchema,
+  /** The program's directory name; unique among the project's drafts. */
+  name: PlanDraftNameSchema.optional(),
   state: PlanDraftStateSchema,
   latestVersion: z.int().min(1),
   /** The newest {@link MAX_PLAN_DRAFT_ACTS} acts, oldest first. */

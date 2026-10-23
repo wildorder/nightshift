@@ -73,6 +73,7 @@ export interface PlanningClient {
     scope: ProgramScope,
     documents: DraftDocuments,
     basedOn: number | null,
+    name?: string | undefined,
   ): Promise<PlanDraftVersionResponse>;
   /** The draft record; `undefined` when the program has none. */
   getDraft(scope: ProgramScope): Promise<PlanDraft | undefined>;
@@ -191,7 +192,7 @@ export const createHttpPlanning = (options: HttpPlanningOptions): PlanningClient
       );
     },
 
-    putVersion: async (scope, documents, basedOn) => {
+    putVersion: async (scope, documents, basedOn, name) => {
       const contract =
         typeof documents.contract === "string"
           ? documents.contract
@@ -220,6 +221,7 @@ export const createHttpPlanning = (options: HttpPlanningOptions): PlanningClient
               planSha256,
               ...(conversationSha256 === undefined ? {} : { conversationSha256 }),
               basedOn,
+              ...(name === undefined ? {} : { name }),
             },
           },
           [201],
