@@ -10,7 +10,8 @@ import type { RunVerdict } from "@nightshift/contracts";
 import { buildRunFeedback, isRunRateable, nowIso, StaleWriteError } from "@nightshift/core";
 import { ControlPlaneError, isTokenProfile } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram } from "../program-source.js";
 import { openFreshSession } from "../session.js";
 import { actingUser, findRun } from "./program-run.js";
 
@@ -39,9 +40,16 @@ export const rateRun = async (
   options: RateOptions,
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
   const session = await openFreshSession(environment);
-  const program = { projectId: files.contract.projectId, programId: files.contract.programId };
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    use: "ratified",
+  });
+  const program = {
+    projectId: files.contract.projectId,
+    programId: files.contract.programId,
+  };
   const run = await findRun(session, program, options.id, options.run);
   const scope = { ...program, runId: run.runId };
   const verdict = VERDICTS[options.action];

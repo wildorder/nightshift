@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProject, runCli } from "@nightshift/cli";
+import { createProject, openSession, runCli } from "@nightshift/cli";
 import type { ProgramContract, Strand } from "@nightshift/contracts";
 import {
   createFetchTransport,
@@ -41,6 +41,8 @@ const PLAN = [
 let op: Operator;
 let fixture: MaterialisedRepo;
 let contract: ProgramContract;
+
+let origin: string;
 
 const git = (...args: string[]): string =>
   execFileSync("git", args, { cwd: fixture.repo, encoding: "utf8" });
@@ -151,11 +153,16 @@ beforeEach(async () => {
   );
   await writeProgram();
   commit("plan the demo program");
+  // A run makes sure the program branch is at origin too.
+  origin = await mkdtemp(join(tmpdir(), "nightshift-origin-"));
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git("remote", "add", "origin", origin);
   // Audited and healthy (D-P15-08), so the plan's own readiness is what each test is about.
   await recordHealthyGates(op, fixture.repo, PROGRAM);
 });
 
 afterEach(async () => {
+  await rm(origin, { recursive: true, force: true });
   await op.cleanup();
   await fixture.remove();
   await op.plane.close();
@@ -401,7 +408,7 @@ describe("nightshift plan put, show and check, from the plane", () => {
 describe("nightshift preflight (SC-P7-05)", () => {
   it("refuses a program that is not ratified", async () => {
     expect(await cli("preflight", PROGRAM)).toBe(2);
-    expect(op.err.join("\n")).toContain("is not ratified");
+    expect(op.err.join("\n")).toContain("has not been ratified");
   });
 
   it("prints the remediation for what is unmet, and marks only what passed", async () => {
@@ -484,14 +491,28 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     });
   });
 
-  it("ratifies a plan edited and committed after ratification again, and runs the new one", async () => {
+  it("ratifies a version put after ratification again, by its hash, and runs the new one", async () => {
     await ratifyFromFiles(cli, fixture.repo, PROGRAM);
     await writeFile(programPath("plan.md"), `${PLAN}\nA quiet change of mind.\n`);
-    commit("change the plan");
+    expect(await putFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
     await writeFile(join(fixture.repo, "release-token"), "present");
     expect(await cli("run", PROGRAM, "--attended")).toBe(0);
     const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
     expect(recorded?.ratifications).toHaveLength(2);
+  });
+
+  it("runs the plane's latest version of a program with no docs/programs directory, ratified by its hash", async () => {
+    expect(await putFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    await rm(join(fixture.repo, "docs"), { recursive: true, force: true });
+    commit("the plan lives on the plane");
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended")).toBe(0);
+    const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
+    const latest = await createHttpPlanning({
+      transport: (await openSession(op.environment)).transport,
+    }).getVersion({ projectId: contract.projectId, programId: contract.programId });
+    expect(recorded?.status).toBe("ratified");
+    expect(recorded?.planHash).toBe(latest?.version.planHash);
   });
 
   it("still runs a contract by its path", async () => {

@@ -10,7 +10,8 @@ import { ProjectIdSchema } from "@nightshift/contracts";
 import { routingDataset } from "@nightshift/execution";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram } from "../program-source.js";
 import { openSession, type Session } from "../session.js";
 
 export interface RoutesExportOptions {
@@ -21,9 +22,10 @@ export interface RoutesExportOptions {
 }
 
 const readAll = async <T>(
-  read: (page: {
-    cursor?: string;
-  }) => Promise<{ readonly items: readonly T[]; readonly cursor?: string | undefined }>,
+  read: (page: { cursor?: string }) => Promise<{
+    readonly items: readonly T[];
+    readonly cursor?: string | undefined;
+  }>,
 ): Promise<T[]> => {
   const items: T[] = [];
   let cursor: string | undefined;
@@ -47,7 +49,10 @@ const exportRuns = async (
     .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   let lines = 0;
   for (const run of runs) {
-    for (const line of await routingDataset(session.stores, { ...scope, runId: run.runId })) {
+    for (const line of await routingDataset(session.stores, {
+      ...scope,
+      runId: run.runId,
+    })) {
       environment.out(JSON.stringify(line));
       lines += 1;
     }
@@ -76,7 +81,12 @@ export const exportRoutes = async (
   if (options.id === undefined)
     throw new UsageError("a program id, or --project <id>, is required");
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    ...(options.project === undefined ? {} : { project: options.project }),
+    use: "ratified",
+  });
   const lines = await exportRuns(environment, session, files.contract, options.run);
   environment.err(`${lines} routing decision(s).`);
   return 0;

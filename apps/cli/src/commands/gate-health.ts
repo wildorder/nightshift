@@ -28,7 +28,8 @@ import { z } from "zod";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { fingerprintAtCommit, gitBlobReader, type ReadBlob } from "../gate-fingerprint.js";
-import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram, type ProgramSource } from "../program-source.js";
 import { type FreshSession, openFreshSession, openSession, type Session } from "../session.js";
 import {
   auditProgramGates,
@@ -83,7 +84,10 @@ const refuse = (environment: CliEnvironment, problems: readonly string[], file: 
 const readReview = async (
   environment: CliEnvironment,
   path: string,
-): Promise<{ readonly review?: Review; readonly problems: readonly string[] }> => {
+): Promise<{
+  readonly review?: Review;
+  readonly problems: readonly string[];
+}> => {
   let text: string;
   try {
     text = await readFile(resolveFrom(environment.cwd, path), "utf8");
@@ -214,7 +218,16 @@ export const recordGates = async (
   options: RecordGatesOptions,
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
+  const found = await openFreshSession(environment).catch((error: unknown) => {
+    environment.err(`cannot record the audit: ${sessionProblem(error)}. Nothing was recorded.`);
+    return undefined;
+  });
+  if (found === undefined) return 1;
+  const files = await findProgram(environment, found, {
+    repoPath,
+    name: options.id,
+    use: "latest",
+  });
 
   let review: Review = { machinery: [], findings: [] };
   if (options.findings !== undefined) {
@@ -258,7 +271,11 @@ export const recordGates = async (
   });
   describePlan(environment.out, plan, audit.base, machine);
   const resolved = await resolveGates(environment, repoPath, audit.base, contract);
-  describeRecommendations(environment.out, recommend(plan, resolved), files.contractPath);
+  describeRecommendations(
+    environment.out,
+    recommend(plan, resolved),
+    `${files.directory}/contract.json`,
+  );
 
   const machinery = sortedUnique([
     ...review.machinery,
@@ -292,7 +309,7 @@ export const recordGates = async (
 const currentFingerprint = async (
   environment: CliEnvironment,
   repoPath: string,
-  files: ProgramFiles,
+  files: ProgramSource,
   record: GateHealth,
 ): Promise<{ readonly head: string; readonly fingerprint: string }> => {
   const head = await revParse(environment.git, repoPath, files.contract.repository.programBranch);
@@ -327,7 +344,16 @@ export const recordedGates = async (
   options: RecordedGatesOptions,
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
+  const files = await findProgram(environment, await openSession(environment), {
+    repoPath,
+    name: options.id,
+    use: "latest",
+  }).catch((error: unknown) => {
+    if (error instanceof UsageError) throw error;
+    environment.err(`cannot read the project's gate-health record: ${sessionProblem(error)}`);
+    return undefined;
+  });
+  if (files === undefined) return 1;
   const read = await readRecord(environment, files.contract.projectId);
   if (!read.ok) {
     environment.err(`cannot read the project's gate-health record: ${read.why}`);

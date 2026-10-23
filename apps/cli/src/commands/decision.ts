@@ -19,9 +19,11 @@ import {
   splitPlanSections,
   whyNotReversible,
 } from "@nightshift/core";
+import { createHttpPlanning } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { type ProgramFiles, readProgramFiles, resolveFrom } from "../program-files.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram, type ProgramSource } from "../program-source.js";
 import { openSession, type Session } from "../session.js";
 import { REPORT_FILE } from "./run-program.js";
 
@@ -44,7 +46,7 @@ export interface BriefOptions extends DecisionTarget {
 
 interface Found {
   readonly session: Session;
-  readonly files: ProgramFiles;
+  readonly files: ProgramSource;
   readonly repoPath: string;
   readonly run: Run;
   readonly decision: Decision;
@@ -76,9 +78,16 @@ export const findDecision = async (
   if (!parsed.success) throw new UsageError(`\`${options.decisionId}\` is not a decision id`);
   const decisionId: DecisionId = parsed.data;
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment);
-  const program = { projectId: files.contract.projectId, programId: files.contract.programId };
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    use: "ratified",
+  });
+  const program = {
+    projectId: files.contract.projectId,
+    programId: files.contract.programId,
+  };
   const runs = (await readAll((page) => session.stores.runs.listByProgram(program, page)))
     .filter((run) => options.run === undefined || run.runId === options.run)
     .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
@@ -112,7 +121,11 @@ const reversalOf = (decision: Decision, decisions: readonly Decision[]): Decisio
 export const reverseDecision = async (
   environment: CliEnvironment,
   options: ReverseOptions,
-): Promise<{ readonly exitCode: number; readonly reversal: Decision; readonly found: Found }> => {
+): Promise<{
+  readonly exitCode: number;
+  readonly reversal: Decision;
+  readonly found: Found;
+}> => {
   const found = await findDecision(environment, options);
   const { decision, run } = found;
   const refusal = whyNotReversible(decision);
@@ -218,7 +231,11 @@ const where = (
 /** The brief a correction is planned from (D-P9-03), as markdown. */
 export const renderBrief = async (environment: CliEnvironment, found: Found): Promise<string> => {
   const { decision, decisions, files, repoPath, run, session } = found;
-  const scope = { projectId: run.projectId, programId: run.programId, runId: run.runId };
+  const scope = {
+    projectId: run.projectId,
+    programId: run.programId,
+    runId: run.runId,
+  };
   const reversal = reversalOf(decision, decisions);
   const before = await session.stores.checkpoints.get(scope, decision.checkpointBefore);
   const branch = files.contract.repository.programBranch;
@@ -235,7 +252,17 @@ export const renderBrief = async (environment: CliEnvironment, found: Found): Pr
           .split("\n")
           .filter(Boolean);
   const produced = decision.produced?.commits ?? [];
-  const place = where(decision, files.contract, files.planText);
+  const rootNode = await session.stores.executionNodes.get(scope, run.rootNodeId);
+  const executed = rootNode?.plan?.planDocument.sha256;
+  const planText =
+    executed === undefined
+      ? files.planText
+      : ((
+          await createHttpPlanning({
+            transport: session.transport,
+          }).planDocument({ projectId: run.projectId, programId: run.programId }, executed)
+        )?.text ?? files.planText);
+  const place = where(decision, files.contract, planText);
   const report = await readFile(join(repoPath, files.directory, REPORT_FILE), "utf8").catch(
     () => undefined,
   );

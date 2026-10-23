@@ -127,6 +127,18 @@ export const createWorld = async (): Promise<World> => {
   const contract = makeProgramContract(f);
   await writeFile(join(directory, "contract.json"), JSON.stringify(contract));
   await writeFile(join(directory, "plan.md"), "# The plan\n");
+  await writeFile(
+    join(repo, "nightshift.config.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      projectId: contract.projectId,
+      contextDocs: [],
+      verification: contract.verification,
+      modelPolicy: contract.modelPolicy,
+      delegationLimits: contract.delegationLimits,
+      costPolicy: contract.costPolicy,
+    }),
+  );
 
   const plane = createFakeControlPlane({
     apiEndpoint: TEST_API,
@@ -136,7 +148,37 @@ export const createWorld = async (): Promise<World> => {
   const runs: Run[] = [];
   const feedback = new Map<string, RunFeedback>();
   const histories: CompletionHistory[] = [];
-  const contracts: ProgramContract[] = [contract];
+  const planText = "# The plan\n";
+  const planDocument = {
+    uri: "s3://plans/the-plan.md",
+    sha256: "a".repeat(64),
+    sizeBytes: planText.length,
+  };
+  // The plane holds the program: a draft by its name, and the ratified contract
+  // naming its plan document.
+  const draft = {
+    schemaVersion: 1,
+    projectId: contract.projectId,
+    programId: contract.programId,
+    name: PROGRAM_DIRECTORY,
+    state: "ratified",
+    latestVersion: 1,
+    acts: [],
+    createdAt: "2026-09-15T08:00:00.000Z",
+    updatedAt: "2026-09-15T08:00:00.000Z",
+  };
+  const draftVersion = {
+    schemaVersion: 1,
+    projectId: contract.projectId,
+    programId: contract.programId,
+    version: 1,
+    contract: planDocument,
+    plan: planDocument,
+    author: { kind: "user", userId: TEST_SUBJECT, orgId: DEFAULT_TEST_ORG },
+    act: { kind: "write" },
+    createdAt: "2026-09-15T08:00:00.000Z",
+  };
+  const contracts: ProgramContract[] = [{ ...contract, planDocument }];
   const puts: World["puts"] = [];
   const world: World = {
     f,
@@ -163,6 +205,9 @@ export const createWorld = async (): Promise<World> => {
   const nodeList = /\/nodes\/([^/]+)\/(agents|routing-decisions|examinations|verifications)$/;
   const programList = /^\/projects\/[^/]+\/programs$/;
   const projectHistories = /^\/projects\/[^/]+\/completion-histories$/;
+  const planDrafts = /^\/projects\/[^/]+\/plan-drafts$/;
+  const draftVersions = /\/plan-draft\/versions\/(latest|\d+)$/;
+  const planDocuments = /\/plan-documents\/[^/]+$/;
   const oneHistory = /\/completion-histories\/(comp_[^/]+)$/;
 
   const fetch: FetchLike = async (url, init) => {
@@ -192,6 +237,13 @@ export const createWorld = async (): Promise<World> => {
         }
         m = programRuns.exec(path);
         if (m) return reply(page(runs.filter((r) => r.programId === m?.[1])));
+        if (planDrafts.test(path)) return reply(page([draft]));
+        if (draftVersions.test(path)) {
+          return reply(json(200, { version: draftVersion, check: { ready: true } }));
+        }
+        if (planDocuments.test(path)) {
+          return reply(json(200, { planDocument, text: planText }));
+        }
         if (programList.test(path)) return reply(page(contracts));
         m = oneProgram.exec(path);
         if (m) {

@@ -18,7 +18,7 @@ import type { ProgramContract, Strand } from "@nightshift/contracts";
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, signIn } from "../cli/operator.js";
-import { programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
+import { addOrigin, programDirectory, ratifyFromFiles } from "../cli/plan-scratch.js";
 import { scriptedHarnessModule } from "../slice/context.js";
 import {
   authoredProgram,
@@ -95,6 +95,7 @@ beforeEach(async () => {
     projectId: created.projectId as never,
     delegationLimits: { maxDepth: 2, maxConcurrency: 3 },
   });
+  await addOrigin(fixture.repo, join(fixture.stateDir, "..", "origin"));
 
   // Outside the repository, so doing it leaves the checkout clean: an untracked
   // file would make integration refuse, correctly, and confusingly.

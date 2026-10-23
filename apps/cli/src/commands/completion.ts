@@ -33,7 +33,8 @@ import {
 import { ControlPlaneError, isTokenProfile } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram } from "../program-source.js";
 import { type FreshSession, openFreshSession } from "../session.js";
 import { actingUser, findRun, listRuns } from "./program-run.js";
 
@@ -145,7 +146,10 @@ const carriedText = (value: number, carried: number | undefined, attempts: numbe
 
 const usdText = (
   usd: CompletionResources["usd"] | undefined,
-  carried: { readonly reported?: number | undefined; readonly estimated?: number | undefined },
+  carried: {
+    readonly reported?: number | undefined;
+    readonly estimated?: number | undefined;
+  },
   attempts: number,
 ): string =>
   usd === undefined
@@ -219,8 +223,12 @@ export const completion = async (
   options: CompletionOptions,
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
   const session = await openFreshSession(environment);
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    use: "ratified",
+  });
   const { projectId, programId } = files.contract;
   const program = { projectId, programId };
 
@@ -276,7 +284,11 @@ export const completion = async (
   const key = keyOf(member);
   const propose = async (
     members: readonly CompletionMemberRef[],
-    checkpoint?: { readonly name: string; readonly programId: ProgramId; readonly runId: RunId },
+    checkpoint?: {
+      readonly name: string;
+      readonly programId: ProgramId;
+      readonly runId: RunId;
+    },
   ): Promise<CompletionHistory> =>
     buildCompletionHistory({
       stored,
@@ -373,7 +385,10 @@ const readMembers = async (
     const run = await session.stores.runs.get(scope, member.runId);
     if (run === undefined) continue;
     runs.set(keyOf(member), run);
-    const rated = await session.stores.feedback.get({ ...scope, runId: member.runId });
+    const rated = await session.stores.feedback.get({
+      ...scope,
+      runId: member.runId,
+    });
     if (rated !== undefined) feedback.set(keyOf(member), rated);
   }
   return { runs, feedback };
@@ -471,7 +486,10 @@ const suggest = async (
   session: FreshSession,
   history: CompletionHistory,
 ): Promise<number> => {
-  const anchorScope = { projectId: history.projectId, programId: history.programId };
+  const anchorScope = {
+    projectId: history.projectId,
+    programId: history.programId,
+  };
   const anchorRun = await session.stores.runs.get(anchorScope, history.runId);
   if (anchorRun === undefined)
     throw new UsageError(`the anchor run ${history.runId} is unreadable`);
@@ -488,10 +506,18 @@ const suggest = async (
   const runs: Run[] = [];
   for (const contract of programs) {
     runs.push(
-      ...(await listRuns(session, { projectId: history.projectId, programId: contract.programId })),
+      ...(await listRuns(session, {
+        projectId: history.projectId,
+        programId: contract.programId,
+      })),
     );
   }
-  const suggestions = suggestCompletionMembers({ history, anchorRun, programs, runs });
+  const suggestions = suggestCompletionMembers({
+    history,
+    anchorRun,
+    programs,
+    runs,
+  });
   if (suggestions.length === 0) {
     environment.out(`nothing suggested for ${history.completionHistoryId}`);
     return 0;

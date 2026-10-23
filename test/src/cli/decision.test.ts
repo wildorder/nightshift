@@ -25,7 +25,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { recordHealthyGates } from "./gate-health.js";
 import { type Operator, signIn } from "./operator.js";
-import { programDirectory } from "./plan-scratch.js";
+import { programDirectory, writeConfigFor } from "./plan-scratch.js";
 
 let op: Operator;
 let repo: string;
@@ -111,6 +111,7 @@ const seed = async (reversibility: Decision["reversibility"] = "reversible") => 
     createdAt: "2026-09-27T10:01:00.000Z",
   };
   await stores.decisions.put(decision);
+  await writeConfigFor(repo, program);
   await mkdir(join(repo, "docs", "programs", "demo"), { recursive: true });
   await writeFile(join(repo, "docs", "programs", "demo", "contract.json"), JSON.stringify(program));
   await writeFile(join(repo, "docs", "programs", "demo", "plan.md"), PLAN);
