@@ -301,4 +301,25 @@ describe("a decision's page (SC-P14-08)", () => {
     expect(within(serves).getByText("Every ticket names its tenant")).toBeTruthy();
     expect(within(serves).queryByText(/past invoices/)).toBeNull();
   });
+
+  it("links the run page and the Why tab to the program's plan page", async () => {
+    let plan = "";
+    await mountStudio(
+      async (stores, f, orgId) => {
+        await stores.projects.put(makeProject(f, { orgId, projectId: f.scope.projectId }));
+        await stores.programContracts.put(makeProgramContract(f));
+        await stores.runs.put(makeRun(f, { status: "succeeded" }));
+        await stores.executionNodes.put(makeRootNode(f, { status: "succeeded" }));
+        plan = `/projects/${f.scope.projectId}/programs/${f.scope.programId}/plan`;
+      },
+      { at: (f: Fixtures) => `${runPathOf(f)}?tab=why` },
+    );
+    await screen.findByRole("heading", { name: /^Run / });
+    await waitFor(() => {
+      const hrefs = screen
+        .getAllByRole("link", { name: /plan/i })
+        .map((l) => l.getAttribute("href"));
+      expect(hrefs.filter((h) => h === plan)).toHaveLength(2);
+    });
+  });
 });
