@@ -46,6 +46,9 @@ const setup = async () => {
       const body = objects.get(planDocumentObjectKey(scope, hash));
       return body === undefined ? undefined : { uri: "s3://bucket/plan", body };
     },
+    put: async () => {
+      throw new Error("not used");
+    },
   };
   const principal: RequestPrincipal = { kind: "user", userId: subject };
   const deps = { stores, clock: createFixedClock(Date.parse(NOW)), plans };

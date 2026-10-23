@@ -18,9 +18,7 @@
  * prerequisite is to report a zero exit (D-P7-05). `authorize` keeps the route
  * to user principals: an execution token may read prerequisites and write none.
  */
-import { createHash } from "node:crypto";
 import {
-  MAX_RATIFICATION_HISTORY,
   PLAN_DOCUMENT_CONTENT_TYPE,
   type PlanDocumentResponse,
   PlanDocumentUploadRequestBodySchema,
@@ -32,42 +30,16 @@ import {
   type PrerequisiteWriteBody,
   PrerequisiteWriteBodySchema,
   type Principal,
-  type ProgramContract,
   ProgramContractSchema,
-  type Ratification,
-  RatificationRequestBodySchema,
+  RatificationBodySchema,
 } from "@nightshift/contracts";
-import {
-  checkPlan,
-  explainCorrection,
-  isPlanned,
-  nowIso,
-  type PlanDocumentStore,
-  parseConversation,
-  planHash,
-  prerequisitesOf,
-  splitPlanSections,
-  withLaptopCheck,
-  withMachineCheck,
-} from "@nightshift/core";
-import { type ApiDeps, HttpError, parseBody } from "../http.js";
+import { nowIso, prerequisitesOf, withLaptopCheck, withMachineCheck } from "@nightshift/core";
+import { HttpError, parseBody } from "../http.js";
 import { assertChainMatches, type PathParams, programScopeFrom } from "../params.js";
 import type { Handler } from "../router.js";
 import { requireProgram, requireProject } from "./common.js";
-
-const sha256Hex = (input: string | Uint8Array): string =>
-  createHash("sha256").update(input).digest("hex");
-
-const planStore = (deps: ApiDeps): PlanDocumentStore => {
-  if (deps.plans === undefined) {
-    throw new HttpError(
-      501,
-      "plans_unavailable",
-      "this control plane was wired without a plan document store",
-    );
-  }
-  return deps.plans;
-};
+import { ratifyDraftVersion } from "./plan-drafts.js";
+import { planStore, ratifyContract, readPlanDocument } from "./ratification.js";
 
 const planSha256From = (params: PathParams): string => {
   const result = PlanHashSchema.safeParse(params.sha256);
@@ -106,41 +78,18 @@ export const createPlanUploadUrl: Handler = async ({ deps, request, params }) =>
   return { status: 200, body: response };
 };
 
-/** The stored bytes as text, held to the name they were stored under. */
-const readPlanDocument = async (
-  deps: ApiDeps,
-  scope: ReturnType<typeof programScopeFrom>,
-  sha256: string,
-): Promise<{ readonly uri: string; readonly text: string; readonly sizeBytes: number }> => {
-  const stored = await planStore(deps).get(scope, sha256);
-  if (stored === undefined) {
-    throw new HttpError(
-      404,
-      "not_found",
-      `no plan document ${sha256} is stored for program ${scope.programId}`,
-    );
-  }
-  const actual = sha256Hex(stored.body);
-  if (actual !== sha256) {
-    throw new HttpError(
-      422,
-      "plan_document_mismatch",
-      `the document stored as ${sha256} hashes to ${actual}`,
-    );
-  }
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(stored.body);
-  } catch {
-    throw new HttpError(422, "plan_document_mismatch", "the plan document is not UTF-8 text");
-  }
-  return { uri: stored.uri, text, sizeBytes: stored.body.length };
-};
-
 export const getPlanDocument: Handler = async ({ deps, params }) => {
   const scope = programScopeFrom(params);
   const sha256 = planSha256From(params);
-  await requireProgram(deps.stores, scope);
+  // A draft's documents are readable before its program record exists, which is
+  // only from the first ratification.
+  const program = await deps.stores.programContracts.get(scope.projectId, scope.programId);
+  if (
+    program === undefined &&
+    (await deps.stores.planDrafts.get(scope.projectId, scope.programId)) === undefined
+  ) {
+    await requireProgram(deps.stores, scope);
+  }
   const document = await readPlanDocument(deps, scope, sha256);
   const response: PlanDocumentResponse = {
     planDocument: { uri: document.uri, sha256, sizeBytes: document.sizeBytes },
@@ -149,166 +98,20 @@ export const getPlanDocument: Handler = async ({ deps, params }) => {
   return { status: 200, body: response };
 };
 
-/**
- * A prerequisite keeps the checks it already has, the laptop's and the
- * machines', only while its `verifyCommand` is the one that was run; anything a
- * client says about status or checks is dropped. Hurdles the engine discovered (D-P7-10) are the control plane's
- * own record and survive a re-ratification.
- */
-const carryPrerequisites = (
-  existing: ProgramContract | undefined,
-  next: ProgramContract,
-): Prerequisite[] | undefined => {
-  const before = existing === undefined ? [] : prerequisitesOf(existing);
-  const planned = prerequisitesOf(next)
-    .filter((prerequisite) => prerequisite.discoveredInRunId === undefined)
-    .map(
-      ({
-        status: _status,
-        lastCheck: _lastCheck,
-        machineChecks: _machineChecks,
-        ...prerequisite
-      }): Prerequisite => {
-        const was = before.find((candidate) => candidate.id === prerequisite.id);
-        return was !== undefined && was.verifyCommand === prerequisite.verifyCommand
-          ? {
-              ...prerequisite,
-              status: was.status,
-              ...(was.lastCheck === undefined ? {} : { lastCheck: was.lastCheck }),
-              ...(was.machineChecks === undefined ? {} : { machineChecks: was.machineChecks }),
-            }
-          : { ...prerequisite, status: "pending" };
-      },
-    );
-  const discovered = before.filter(
-    (prerequisite) =>
-      prerequisite.discoveredInRunId !== undefined &&
-      !planned.some((candidate) => candidate.id === prerequisite.id),
-  );
-  const all = [...planned, ...discovered];
-  return all.length === 0 && next.prerequisites === undefined ? undefined : all;
-};
-
-/**
- * A correction may name only decisions of this project that a human has
- * reversed (P9, D-P9-04). Read from the project's own partitions: the chain in
- * the contract is the caller's, and the project was already checked.
- */
-const assertCorrectable = async (deps: ApiDeps, contract: ProgramContract): Promise<void> => {
-  const problems: string[] = [];
-  for (const target of contract.corrects ?? []) {
-    const scope = {
-      projectId: contract.projectId,
-      programId: target.programId,
-      runId: target.runId,
-    };
-    problems.push(
-      ...explainCorrection({
-        target,
-        decision: await deps.stores.decisions.get(scope, target.decisionId),
-        reversal: await deps.stores.decisions.get(scope, target.reversedBy),
-      }),
-    );
-  }
-  if (problems.length > 0) {
-    throw new HttpError(422, "correction_invalid", problems.join("; "));
-  }
-};
-
-export const ratifyProgram: Handler = async ({ deps, request, params }) => {
-  const body = parseBody(RatificationRequestBodySchema, request.body);
+export const ratifyProgram: Handler = async ({ deps, request, params, principal }) => {
+  const body = parseBody(RatificationBodySchema, request.body);
   const scope = programScopeFrom(params);
+  if (!("contract" in body)) return ratifyDraftVersion(deps, scope, body.planHash, principal);
   assertChainMatches(scope, body.contract);
   await requireProject(deps.stores, scope.projectId);
-
-  if (!isPlanned(body.contract)) {
-    throw new HttpError(
-      422,
-      "plan_not_ready",
-      "the contract has no strands, so there is no plan to ratify; it runs as it is",
-    );
-  }
-
-  const document = await readPlanDocument(deps, scope, body.planSha256);
-  const computed = planHash(body.contract, document.text, sha256Hex);
-  if (computed.plan !== body.planSha256) {
-    // Only a document stored with CRLF line endings gets here: it is hashed as
-    // stored above, and as normalised by `planHash`.
-    throw new HttpError(
-      422,
-      "plan_document_mismatch",
-      "the plan document must be uploaded with LF line endings, as it is hashed",
-    );
-  }
-  if (computed.hash !== body.planHash) {
-    throw new HttpError(
-      422,
-      "plan_hash_mismatch",
-      `the plan hash is ${computed.hash} for this contract and document, not ${body.planHash}`,
-    );
-  }
-
-  // P14 (D-P14-04, D-P14-06): the kept conversation is read from the store like
-  // the plan, and the stories' quotes are held to the bytes held here.
-  const conversation =
-    body.conversationSha256 === undefined
-      ? undefined
-      : await readPlanDocument(deps, scope, body.conversationSha256);
-  const readiness = checkPlan(
-    body.contract,
-    splitPlanSections(document.text),
-    conversation === undefined ? undefined : parseConversation(scope.programId, conversation.text),
-  );
-  if (!readiness.ready) {
-    throw new HttpError(
-      422,
-      "plan_not_ready",
-      `the plan is not ready: ${readiness.reasons.map((reason) => reason.message).join("; ")}`,
-      readiness.reasons,
-    );
-  }
-
-  await assertCorrectable(deps, body.contract);
-
-  const existing = await deps.stores.programContracts.get(scope.projectId, scope.programId);
-  const conversationRef =
-    conversation === undefined || body.conversationSha256 === undefined
-      ? undefined
-      : {
-          uri: conversation.uri,
-          sha256: body.conversationSha256,
-          sizeBytes: conversation.sizeBytes,
-        };
-  // Ratifying what is already ratified is a retry, not a second ratification.
-  if (
-    existing?.status === "ratified" &&
-    existing.planHash === computed.hash &&
-    existing.conversation?.sha256 === conversationRef?.sha256
-  ) {
-    return { status: 200, body: existing };
-  }
-
-  const ratification: Ratification = {
-    planHash: computed.hash,
-    planDocument: { uri: document.uri, sha256: computed.plan, sizeBytes: document.sizeBytes },
-    ...(conversationRef === undefined ? {} : { conversation: conversationRef }),
-    ratifiedAt: nowIso(deps.clock),
-  };
-  const prerequisites = carryPrerequisites(existing, body.contract);
-  const { conversation: _stale, ...contract } = body.contract;
-  const ratified = ProgramContractSchema.parse({
-    ...contract,
-    ...(conversationRef === undefined ? {} : { conversation: conversationRef }),
-    ...(prerequisites === undefined ? {} : { prerequisites }),
-    status: "ratified",
-    planHash: ratification.planHash,
-    planDocument: ratification.planDocument,
-    ratifications: [...(existing?.ratifications ?? []), ratification].slice(
-      -MAX_RATIFICATION_HISTORY,
-    ),
+  const done = await ratifyContract(deps, {
+    scope,
+    contract: body.contract,
+    planHash: body.planHash,
+    planSha256: body.planSha256,
+    conversationSha256: body.conversationSha256,
   });
-  await deps.stores.programContracts.put(ratified);
-  return { status: existing === undefined ? 201 : 200, body: ratified };
+  return done;
 };
 
 export const listPrerequisites: Handler = async ({ deps, params }) => {

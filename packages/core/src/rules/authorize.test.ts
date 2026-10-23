@@ -128,6 +128,16 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "program.getPlanDocument": "forbidden",
   "prerequisite.list": "own_program",
   "prerequisite.put": "forbidden",
+  "planDraft.get": "own_project",
+  "planDraft.listByProject": "own_project",
+  "planDraft.listVersions": "own_project",
+  "planDraft.getVersion": "own_project",
+  "planDraft.getLatestVersion": "own_project",
+  "planDraft.putVersion": "own_project",
+  "planDraft.markAwaitingOwner": "own_project",
+  "planDraft.answer": "forbidden",
+  "planDraft.requestChanges": "forbidden",
+  "planDraft.decline": "forbidden",
   "run.list": "forbidden",
   "run.put": "forbidden",
   "run.get": "own_run",
@@ -231,7 +241,7 @@ describe("an execution principal", () => {
     (operation) => {
       const access = EXPECTED_ACCESS[operation];
       const result = authorize(execution, operation, siblingTarget);
-      if (access === "own_run" || access === "own_program") {
+      if (access === "own_run" || access === "own_program" || access === "own_project") {
         // Run- and program-scoped reads do not care which node the path happens to name.
         expect(result).toEqual({ allowed: true });
         return;

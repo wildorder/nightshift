@@ -62,6 +62,19 @@ export const routes = {
   prerequisite: (scope: ProgramScope, prerequisiteId: string) =>
     `${routes.prerequisites(scope)}/${prerequisiteId}`,
 
+  // A program's plan draft (P21). Ratifying a version is `ratifications`.
+  planDrafts: (projectId: ProjectId) => `/projects/${projectId}/plan-drafts`,
+  planDraft: (scope: ProgramScope) =>
+    `${routes.program(scope.projectId, scope.programId)}/plan-draft`,
+  planDraftVersions: (scope: ProgramScope) => `${routes.planDraft(scope)}/versions`,
+  planDraftVersion: (scope: ProgramScope, version: number) =>
+    `${routes.planDraftVersions(scope)}/${version}`,
+  planDraftLatest: (scope: ProgramScope) => `${routes.planDraftVersions(scope)}/latest`,
+  planDraftAnswers: (scope: ProgramScope) => `${routes.planDraft(scope)}/answers`,
+  planDraftChangeRequests: (scope: ProgramScope) => `${routes.planDraft(scope)}/change-requests`,
+  planDraftAwaitingOwner: (scope: ProgramScope) => `${routes.planDraft(scope)}/awaiting-owner`,
+  planDraftDecline: (scope: ProgramScope) => `${routes.planDraft(scope)}/decline`,
+
   /** The tier a program's project should run on, from its past runs (P10, D-P10-14b). */
   computeRecommendation: (scope: ProgramScope) =>
     `${routes.program(scope.projectId, scope.programId)}/compute/recommendation`,

@@ -94,6 +94,7 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       orgId,
       sha256: "a".repeat(64),
       prerequisiteId: "HP-01",
+      version: "1",
       provider: "anthropic",
       installationId: "1",
       agentId: agent.agentId,
@@ -205,7 +206,10 @@ describe("a delegating token reaches a node it delegated only where the table sa
       access === "own_subtree" && route.method === "GET" && !route.path.includes("{nodeId}");
     if (
       !nodeless &&
-      (access === "own_subtree" || access === "own_run" || access === "own_program")
+      (access === "own_subtree" ||
+        access === "own_run" ||
+        access === "own_program" ||
+        access === "own_project")
     ) {
       expect(answer.status, `${route.method} ${route.path} answered ${answer.code}`).not.toBe(403);
       return;
@@ -217,7 +221,8 @@ describe("a delegating token reaches a node it delegated only where the table sa
 describe("a delegating token reaches nothing on a sibling's node", () => {
   it.each(
     eachRoute.filter(
-      ([operation]) => !["own_run", "own_program"].includes(ORCHESTRATOR_ACCESS[operation]),
+      ([operation]) =>
+        !["own_run", "own_program", "own_project"].includes(ORCHESTRATOR_ACCESS[operation]),
     ),
   )("%s", async (operation, route) => {
     for (const nodeId of [w.sibling, w.root]) {

@@ -51,6 +51,16 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "program.getPlanDocument": "forbidden",
   "prerequisite.list": "own_program",
   "prerequisite.put": "forbidden",
+  "planDraft.get": "own_project",
+  "planDraft.listByProject": "own_project",
+  "planDraft.listVersions": "own_project",
+  "planDraft.getVersion": "own_project",
+  "planDraft.getLatestVersion": "own_project",
+  "planDraft.putVersion": "own_project",
+  "planDraft.markAwaitingOwner": "own_project",
+  "planDraft.answer": "forbidden",
+  "planDraft.requestChanges": "forbidden",
+  "planDraft.decline": "forbidden",
   "run.list": "forbidden",
   "run.put": "forbidden",
   "run.get": "own_run",
@@ -170,7 +180,12 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
       for (const relation of ["descendant", "new_child"] as const) {
         const result = authorize(orchestrator, operation, at(relation, LEGITIMATE[relation]));
         const access = EXPECTED[operation];
-        if (access === "own_subtree" || access === "own_run" || access === "own_program") {
+        if (
+          access === "own_subtree" ||
+          access === "own_run" ||
+          access === "own_program" ||
+          access === "own_project"
+        ) {
           expect(result, relation).toEqual({ allowed: true });
         } else {
           expect(result, relation).toMatchObject({ allowed: false });
@@ -184,7 +199,7 @@ describe("an orchestrator execution principal (D-P6-04)", () => {
     (operation) => {
       const result = authorize(orchestrator, operation, at("outside", LEGITIMATE.outside));
       const access = EXPECTED[operation];
-      if (access === "own_run" || access === "own_program") {
+      if (access === "own_run" || access === "own_program" || access === "own_project") {
         expect(result).toEqual({ allowed: true });
         return;
       }

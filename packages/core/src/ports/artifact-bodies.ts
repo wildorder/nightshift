@@ -134,6 +134,18 @@ export interface PlanDocumentStore {
   signUpload(request: PlanDocumentUploadRequest): Promise<ArtifactUploadTarget>;
   /** `undefined` when nothing has been uploaded under this hash. */
   get(scope: ProgramScope, sha256: string): Promise<StoredPlanDocument | undefined>;
+  /**
+   * Stores a document the control plane itself made (P21: the contract an
+   * answered decision produces), under the same key an upload of those bytes
+   * would use. `sha256` is the digest of `body`; the adapter holds the object
+   * store to it, so a name and its bytes cannot disagree.
+   */
+  put(
+    scope: ProgramScope,
+    sha256: string,
+    body: Uint8Array,
+    contentType: string,
+  ): Promise<StoredPlanDocument>;
 }
 
 export interface StoredPlanDocument {
