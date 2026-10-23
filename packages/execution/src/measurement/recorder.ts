@@ -452,16 +452,39 @@ export const createMeasurementRecorder = (
     return { undrained };
   };
 
+  /**
+   * The summary as if every observation already received were applied: the
+   * ones journaled and folded, and those still queued or being journaled,
+   * folded onto a copy. An observation is folded only after its journal write,
+   * so `current` trails what was received; this view does not, and costs no
+   * waiting on the disk. Folded at `current`'s own time, reading no clock.
+   */
+  const receivedView = (): MeasurementSummary => {
+    let view = current;
+    for (const item of inFlight === undefined ? queue : [inFlight, ...queue]) {
+      view =
+        item.observation.kind === "terminal_summary"
+          ? foldExit(view, item.runtime.ref, item.observation, item.sequence, view.updatedAt)
+          : foldObservationPriced(view, item.observation, item.sequence, view.updatedAt, prices);
+    }
+    return view;
+  };
+
   const startSegment = async (options: StartSegmentOptions): Promise<LaunchRef> => {
     const launchId =
       options.launchId ?? `launch_${randomLaunchSuffix(environment.ids.next("meas"))}`;
     const segment = current.segments.reduce((max, s) => Math.max(max, s.segment), -1) + 1;
     const ref: LaunchRef = { agentId: agent.agentId, launchId, segment };
     const at = now();
+    // A resumed session is measured from where its earlier segments left it, as
+    // received, not as journaled so far: read from `current` while the last
+    // snapshot was still being journaled, the baseline came out unknown and the
+    // resume's whole share was excluded (2026-10-22: a 150-token session counted
+    // 100 on a fast machine).
     const baseline =
       options.baseline ??
       (options.resumedSession && options.sessionId !== undefined
-        ? baselineFor(current, options.sessionId)
+        ? baselineFor(receivedView(), options.sessionId)
         : undefined);
     update((summary) =>
       startCoreSegment(summary, ref, {

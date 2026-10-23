@@ -841,7 +841,11 @@ describe("the publication protocol under a crash", () => {
     const world = await build();
     const recorder = world.recorder({
       pid: DEAD_PID,
-      limits: { publishEvery: { observations: 1, ms: 3_600_000 } },
+      // 513 observations are each journaled and fsynced before they publish,
+      // which takes longer than the default five-second drain on APFS and NTFS;
+      // the overflow is the subject here, not the deadline (which has its own
+      // tests), so the drain is given the test's whole budget.
+      limits: { publishEvery: { observations: 1, ms: 3_600_000 }, drainDeadlineMs: 110_000 },
     });
     await recorder.startSegment({ resumedSession: false });
     for (let i = 0; i < 513; i += 1)

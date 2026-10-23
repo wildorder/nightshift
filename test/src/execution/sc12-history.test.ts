@@ -1247,11 +1247,36 @@ const formatJson = (value: unknown, indent = 0, column = indent): string => {
  * placeholders in the order they first appear, and the durations the machine
  * measured set to zero. The placeholders keep the shape the contracts check.
  */
-const fixtureText = async (f: Facts): Promise<string> => {
-  let text = JSON.stringify(pinned(await recordsOf(f)));
-  for (const root of new Set([f.world.root, await realpath(f.world.root)])) {
-    text = text.split(root).join(FIXTURE_ROOT);
+/**
+ * Every string in `value` with the world's root replaced by `FIXTURE_ROOT`, and
+ * a Windows path under it written with forward slashes, so the fixture is the
+ * same on every machine (2026-10-22: replacing in the JSON text missed Windows
+ * paths, whose backslashes JSON escapes).
+ */
+const withoutMachinePaths = (value: unknown, roots: readonly string[]): unknown => {
+  if (typeof value === "string") {
+    const root = roots.find((candidate) => value.includes(candidate));
+    if (root === undefined) return value;
+    return value
+      .split(root)
+      .map((part, index) => (index === 0 ? part : part.replaceAll("\\", "/")))
+      .join(FIXTURE_ROOT);
   }
+  if (Array.isArray(value)) return value.map((item) => withoutMachinePaths(item, roots));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, withoutMachinePaths(item, roots)]),
+    );
+  }
+  return value;
+};
+
+const fixtureText = async (f: Facts): Promise<string> => {
+  // The longer form first, so a root that is a prefix of another is not cut short.
+  const roots = [...new Set([f.world.root, await realpath(f.world.root)])].sort(
+    (a, b) => b.length - a.length,
+  );
+  let text = JSON.stringify(withoutMachinePaths(pinned(await recordsOf(f)), roots));
   const ids = new Map<string, string>();
   text = text.replace(/\b([a-z]+)_([0-9A-HJKMNP-TV-Z]{26})\b/g, (whole, prefix: string) => {
     const known = ids.get(whole) ?? `${prefix}_${placeholderUlid(ids.size + 1)}`;
@@ -2149,8 +2174,17 @@ describe("the complete SC-12 history", () => {
       await mkdir(join(FIXTURE_PATH, ".."), { recursive: true });
       await writeFile(FIXTURE_PATH, text, "utf8");
     } else if (committed !== text) {
+      // The first line that differs, so a mismatch on another machine says what.
+      const ours = text.split("\n");
+      const theirs = (committed ?? "").split("\n");
+      const at = ours.findIndex((line, index) => line !== theirs[index]);
+      const differs =
+        committed === undefined
+          ? ""
+          : `First difference at line ${at + 1}:\n  committed: ${theirs[at] ?? "(end)"}\n  produced:  ${ours[at] ?? "(end)"}\n`;
       throw new Error(
         `${FIXTURE_NAME} ${committed === undefined ? "is missing" : "no longer matches the records this story produces"}.\n` +
+          differs +
           `If the change is intended, regenerate it and commit the result:\n` +
           `  ${MEASUREMENT_FIXTURES_ENV}=write npx vitest run test/src/execution/sc12-history.test.ts`,
       );

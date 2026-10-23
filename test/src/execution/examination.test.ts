@@ -187,7 +187,11 @@ const examinerUnlessLimited = async (
     kind: "failed",
     exitCode: 1,
     unavailable: "the provider answered 429 after work began: You have hit your usage limit",
-    availableAgainAt: new Date(world.environment.clock.now() + 600_000).toISOString(),
+    // Resets long after the run: the world's clock steps a second a reading, and
+    // a run's own readings (measurement ticks among them) arrive on real-time
+    // timers, so ten minutes of readings could pass before the assertion on a
+    // slow machine (2026-10-22, the Windows leg). A limit is out for the run.
+    availableAgainAt: new Date(world.environment.clock.now() + 30 * 86_400_000).toISOString(),
     workBegan: true,
   };
 };

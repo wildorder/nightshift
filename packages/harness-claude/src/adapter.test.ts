@@ -8,7 +8,9 @@
  * the exit matrix be exhaustive rather than illustrative.
  */
 
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExecutionNode, RouteTarget } from "@nightshift/contracts";
 import {
@@ -1404,6 +1406,24 @@ describe("request capture: the finish sequence", () => {
   });
 });
 
+/**
+ * Takes this process's own access to `path` away, as a chown to another user
+ * would: mode 000 where POSIX modes bind the owner, an explicit deny for the
+ * current user on Windows, where modes do not (2026-10-22: under `chmod` alone
+ * the Windows leg could still traverse it, and cleaned it up first).
+ */
+const revokeOwnAccess = (path: string): void => {
+  if (process.platform === "win32") {
+    execFileSync("icacls", [path, "/deny", `${userInfo().username}:(OI)(CI)F`]);
+  } else chmodSync(path, 0o000);
+};
+const restoreOwnAccess = (path: string): void => {
+  if (process.platform === "win32") {
+    execFileSync("icacls", [path, "/remove:d", userInfo().username]);
+  } else chmodSync(path, 0o700);
+};
+
+// Root ignores modes, so nothing can be revoked from it.
 describe.skipIf(process.getuid?.() === 0)(
   "request capture: after the grant (real filesystem)",
   () => {
@@ -1443,7 +1463,7 @@ describe.skipIf(process.getuid?.() === 0)(
           grant: async (path) => {
             granted.push(path);
             // Stands in for `chown -R project:nightshift`: the engine can no longer traverse it.
-            chmodSync(path, 0o000);
+            revokeOwnAccess(path);
           },
         },
       });
@@ -1459,7 +1479,7 @@ describe.skipIf(process.getuid?.() === 0)(
       // The engine's journal directory is gone. The unreadable config directory
       // (which a real chown would equally leave to its grantee) is cleaned up here.
       expect(existsSync(report.journalPath ?? "")).toBe(false);
-      chmodSync(granted[0] ?? "", 0o700);
+      restoreOwnAccess(granted[0] ?? "");
       rmSync(granted[0] ?? "", { recursive: true, force: true });
     }, 30_000);
   },

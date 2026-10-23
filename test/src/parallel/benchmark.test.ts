@@ -86,6 +86,10 @@ const runTree = async (maxConcurrency: number) => {
       .map((node) => `${node.kind}@${node.depth}:${node.status}`)
       .sort(),
     allSettled: nodes.every((node) => node.parentNodeId === null || isSettled(node.status)),
+    /** Why each node that did not succeed ended as it did, for a failure to say. */
+    reasons: nodes
+      .filter((node) => node.outcomeReason !== undefined)
+      .map((node) => `${node.kind}@${node.depth}:${node.status}: ${node.outcomeReason}`),
     files: files.trim().split("\n").sort(),
   };
 };
@@ -96,7 +100,7 @@ describe("forced serial against parallel (SC-P6-12)", () => {
     const parallel = await runTree(2);
 
     expect(serial.allSettled && parallel.allSettled).toBe(true);
-    expect(serial.statuses).toEqual([
+    expect(serial.statuses, serial.reasons.join("\n")).toEqual([
       "job@1:integrated",
       "job@1:integrated",
       // A strand's jobs merge onto it, and it lands once, whole (P18).
@@ -104,7 +108,7 @@ describe("forced serial against parallel (SC-P6-12)", () => {
       "job@2:merged",
       "sub-program@1:integrated",
     ]);
-    expect(parallel.statuses).toEqual(serial.statuses);
+    expect(parallel.statuses, parallel.reasons.join("\n")).toEqual(serial.statuses);
     expect(parallel.files).toEqual(serial.files);
 
     process.stdout.write(

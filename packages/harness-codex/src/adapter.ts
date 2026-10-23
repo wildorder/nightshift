@@ -69,7 +69,7 @@
  * cooperative stop. The `git` guard is a POSIX shell script and is **not
  * installed on Windows**; A-29 is the enforcement there as everywhere.
  */
-import { posix } from "node:path";
+import { posix, win32 } from "node:path";
 import type { AgentStatus } from "@nightshift/contracts";
 import type { Clock } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
@@ -287,6 +287,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
           runAs: input.runAs,
           sink: input.measurements,
           resumeSessionId: input.resume?.sessionId,
+          join: platform === "win32" ? win32.join : posix.join,
         });
       } catch {
         // Measurement is evidence, not the run.
