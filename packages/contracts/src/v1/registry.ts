@@ -20,6 +20,7 @@ import { ExecutionNodeSchema } from "./execution-node.js";
 import { RunFeedbackSchema } from "./feedback.js";
 import { GateHealthSchema } from "./gate-health.js";
 import { JobContractSchema } from "./job-contract.js";
+import { PlanDraftSchema, PlanDraftVersionSchema } from "./plan-draft.js";
 import { ProgramContractSchema } from "./program-contract.js";
 import { ProjectSchema } from "./project.js";
 import { RoutingDecisionSchema } from "./routing-decision.js";
@@ -31,7 +32,7 @@ import { WarmCacheSchema } from "./warm-cache.js";
  * Exactly the aggregates listed in the source plan, Stage 1, plus the three
  * P10 added for remote execution (D-P10-18, D-P10-14, D-P10-15): a run's
  * `Dispatch` and `ComputeUtilization`, and a project's `WarmCache`; and P15's
- * project `GateHealth` (D-P15-07).
+ * project `GateHealth` (D-P15-07); and P21's project-scoped `PlanDraft` and `PlanDraftVersion`.
  */
 export const AGGREGATE_NAMES = [
   "Project",
@@ -51,6 +52,8 @@ export const AGGREGATE_NAMES = [
   "ComputeUtilization",
   "WarmCache",
   "GateHealth",
+  "PlanDraft",
+  "PlanDraftVersion",
   "RunFeedback",
   "CompletionHistory",
 ] as const;
@@ -77,6 +80,8 @@ export const AGGREGATE_SCHEMAS: {
   ComputeUtilization: ComputeUtilizationSchema,
   WarmCache: WarmCacheSchema,
   GateHealth: GateHealthSchema,
+  PlanDraft: PlanDraftSchema,
+  PlanDraftVersion: PlanDraftVersionSchema,
   RunFeedback: RunFeedbackSchema,
   CompletionHistory: CompletionHistorySchema,
 };
@@ -91,5 +96,7 @@ export const RUN_SCOPED_AGGREGATES: readonly AggregateName[] = AGGREGATE_NAMES.f
     name !== "Project" &&
     name !== "ProgramContract" &&
     name !== "WarmCache" &&
-    name !== "GateHealth",
+    name !== "GateHealth" &&
+    name !== "PlanDraft" &&
+    name !== "PlanDraftVersion",
 );

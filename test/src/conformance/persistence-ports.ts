@@ -46,6 +46,8 @@ import {
   makeMembership,
   makeNode,
   makeOrgCredential,
+  makePlanDraft,
+  makePlanDraftVersion,
   makeProgramContract,
   makeProject,
   makeRootNode,
@@ -56,6 +58,7 @@ import {
   makeWarmCache,
   nextUserId,
   orderEvents,
+  PlanDraftError,
   type ProjectStores,
   type RunScope,
   StaleWriteError,
@@ -368,6 +371,169 @@ export const describePortConformance = <S extends ProjectStores>(
         );
         const stored = await stores.programContracts.get(a.scope.projectId, a.scope.programId);
         expect([...(stored?.outOfScope ?? [])].sort()).toEqual([...writers].sort());
+      });
+    });
+
+    describe("a plan draft and its versions (P21)", () => {
+      let projectId: ProjectId;
+      let programId: ProgramId;
+      beforeEach(() => {
+        ({ projectId, programId } = a.scope);
+      });
+      const draftAt = (latestVersion: number) => makePlanDraft(a, { latestVersion });
+      const versionAt = (version: number, planBytes = version) =>
+        makePlanDraftVersion(a, {
+          version,
+          plan: {
+            uri: `s3://plans/plan-${version}.md`,
+            sha256: "2".repeat(64),
+            sizeBytes: planBytes,
+          },
+        });
+      const append = (version: number) =>
+        stores.planDrafts.appendVersion(draftAt(version), versionAt(version));
+
+      it("is absent until a first version is appended", async () => {
+        expect(await stores.planDrafts.get(projectId, programId)).toBeUndefined();
+        expect(await stores.planDrafts.getVersion(projectId, programId, 1)).toBeUndefined();
+        expect((await stores.planDrafts.listVersions(projectId, programId)).items).toEqual([]);
+        expect(
+          await stores.planDrafts.update(projectId, programId, (current) => current),
+        ).toBeUndefined();
+      });
+
+      it("stores version 1 with its draft and reads both back", async () => {
+        await append(1);
+        expect(await stores.planDrafts.get(projectId, programId)).toEqual(draftAt(1));
+        expect(await stores.planDrafts.getVersion(projectId, programId, 1)).toEqual(versionAt(1));
+      });
+
+      it("refuses a first version that is not number 1, storing nothing", async () => {
+        await expect(append(2)).rejects.toBeInstanceOf(PlanDraftError);
+        expect(await stores.planDrafts.get(projectId, programId)).toBeUndefined();
+        expect(await stores.planDrafts.getVersion(projectId, programId, 2)).toBeUndefined();
+      });
+
+      it("keeps a stored version immutable: appending its number again is refused", async () => {
+        await append(1);
+        await append(2);
+        const different = stores.planDrafts.appendVersion(draftAt(2), versionAt(2, 999));
+        await expect(different).rejects.toBeInstanceOf(PlanDraftError);
+        await expect(append(1)).rejects.toBeInstanceOf(PlanDraftError);
+        expect(await stores.planDrafts.getVersion(projectId, programId, 2)).toEqual(versionAt(2));
+        expect(await stores.planDrafts.getVersion(projectId, programId, 1)).toEqual(versionAt(1));
+        expect((await stores.planDrafts.get(projectId, programId))?.latestVersion).toBe(2);
+      });
+
+      it("refuses version n when the latest is not n-1, storing nothing", async () => {
+        await append(1);
+        await expect(append(3)).rejects.toBeInstanceOf(PlanDraftError);
+        expect(await stores.planDrafts.getVersion(projectId, programId, 3)).toBeUndefined();
+        expect((await stores.planDrafts.get(projectId, programId))?.latestVersion).toBe(1);
+      });
+
+      it("refuses a draft that does not describe the version", async () => {
+        await expect(
+          stores.planDrafts.appendVersion(draftAt(2), versionAt(1)),
+        ).rejects.toBeInstanceOf(PlanDraftError);
+        expect(await stores.planDrafts.get(projectId, programId)).toBeUndefined();
+      });
+
+      it("leaves exactly one of two concurrent appends of the same number", async () => {
+        await append(1);
+        const results = await Promise.allSettled([
+          stores.planDrafts.appendVersion(draftAt(2), versionAt(2, 111)),
+          stores.planDrafts.appendVersion(draftAt(2), versionAt(2, 222)),
+        ]);
+        expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+        const lost = results.find((r) => r.status === "rejected");
+        expect(lost?.status === "rejected" && lost.reason).toBeInstanceOf(PlanDraftError);
+        const winner = results.findIndex((r) => r.status === "fulfilled") === 0 ? 111 : 222;
+        const stored = await stores.planDrafts.getVersion(projectId, programId, 2);
+        expect(stored?.plan.sizeBytes).toBe(winner);
+        expect((await stores.planDrafts.listVersions(projectId, programId)).items).toHaveLength(2);
+      });
+
+      it("lists versions in order, and pages them", async () => {
+        for (let n = 1; n <= 11; n++) await append(n);
+        const listed = await stores.planDrafts.listVersions(projectId, programId);
+        expect(listed.items.map((v) => v.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        const seen: number[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await stores.planDrafts.listVersions(projectId, programId, {
+            limit: 4,
+            ...(cursor === undefined ? {} : { cursor }),
+          });
+          seen.push(...page.items.map((v) => v.version));
+          cursor = page.cursor;
+        } while (cursor !== undefined);
+        expect(seen).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+      });
+
+      it("updates the draft with an act, and a change of undefined leaves it", async () => {
+        await append(1);
+        const act = {
+          kind: "awaiting_owner" as const,
+          version: 1,
+          by: makePlanDraftVersion(a).author,
+          at: "2026-01-01T00:05:00.000Z",
+        };
+        const changed = await stores.planDrafts.update(projectId, programId, (current) => ({
+          ...current,
+          state: "awaiting_owner",
+          acts: [...current.acts, act],
+        }));
+        expect(changed?.state).toBe("awaiting_owner");
+        expect(await stores.planDrafts.get(projectId, programId)).toEqual(changed);
+        const left = await stores.planDrafts.update(projectId, programId, () => undefined);
+        expect(left).toEqual(changed);
+      });
+
+      it("applies every one of overlapping acts: none undoes another", async () => {
+        await append(1);
+        const by = makePlanDraftVersion(a).author;
+        const notes = ["one", "two", "three", "four"];
+        await Promise.all(
+          notes.map((note) =>
+            stores.planDrafts.update(projectId, programId, (current) => ({
+              ...current,
+              acts: [
+                ...current.acts,
+                { kind: "changes_requested", version: 1, by, note, at: "2026-01-01T00:05:00.000Z" },
+              ],
+            })),
+          ),
+        );
+        const stored = await stores.planDrafts.get(projectId, programId);
+        expect(stored?.acts.map((act) => act.note).sort()).toEqual([...notes].sort());
+      });
+
+      it("changes nothing when the change throws, and refuses to move the latest version", async () => {
+        await append(1);
+        await expect(
+          stores.planDrafts.update(projectId, programId, () => {
+            throw new Error("refused");
+          }),
+        ).rejects.toThrow("refused");
+        await expect(
+          stores.planDrafts.update(projectId, programId, (current) => ({
+            ...current,
+            latestVersion: 5,
+          })),
+        ).rejects.toBeInstanceOf(PlanDraftError);
+        expect(await stores.planDrafts.get(projectId, programId)).toEqual(draftAt(1));
+      });
+
+      it("keeps one project's drafts from another's", async () => {
+        await append(1);
+        await stores.planDrafts.appendVersion(makePlanDraft(b), makePlanDraftVersion(b));
+        expect((await stores.planDrafts.listByProject(projectId)).items).toEqual([draftAt(1)]);
+        expect((await stores.planDrafts.listByProject(b.scope.projectId)).items).toEqual([
+          makePlanDraft(b),
+        ]);
+        expect(await stores.planDrafts.get(b.scope.projectId, programId)).toBeUndefined();
+        expect(await stores.planDrafts.getVersion(projectId, b.scope.programId, 1)).toBeUndefined();
       });
     });
 

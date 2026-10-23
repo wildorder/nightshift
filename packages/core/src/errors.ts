@@ -24,7 +24,9 @@ export type DomainErrorCode =
    * D-05. `apps/api/src/errors.ts` and `packages/persistence/src/http/errors.ts`
    * are exhaustive tables over this union; J3 extends them (to 422).
    */
-  | "completion_membership";
+  | "completion_membership"
+  /** P21: a plan draft write or act the draft's state refuses, or a lost append race. */
+  | "plan_draft";
 
 export abstract class DomainError extends Error {
   abstract readonly code: DomainErrorCode;
@@ -218,6 +220,31 @@ export class CompletionMembershipError extends DomainError {
     readonly reason: CompletionMembershipReason,
   ) {
     super(`completion membership refused for ${ref.programId}/${ref.runId}: ${reason}`);
+  }
+}
+
+export type PlanDraftReason =
+  | "declined"
+  | "stale_base"
+  | "no_draft"
+  | "not_latest_version"
+  | "plan_hash_required"
+  | "conflict";
+
+/**
+ * A plan draft write or act was refused (P21): the draft is declined, the write
+ * was based on a version that is not the latest (or on one when there is no
+ * draft), the act names a version that is not the latest, or the store found the
+ * version already written. Nothing was changed.
+ */
+export class PlanDraftError extends DomainError {
+  readonly code = "plan_draft" as const;
+
+  constructor(
+    readonly reason: PlanDraftReason,
+    detail: string,
+  ) {
+    super(`plan draft refused (${reason}): ${detail}`);
   }
 }
 

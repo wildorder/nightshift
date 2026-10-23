@@ -166,6 +166,28 @@ export const keys = {
     SK: "GATE-HEALTH",
   }),
 
+  /** A program's plan draft (P21): one row under its project, beside the program contract. */
+  planDraft: (projectId: ProjectId, programId: ProgramId): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `PLANDRAFT#${programId}`,
+  }),
+
+  planDraftPartition: (projectId: ProjectId) => ({
+    PK: `PROJ#${projectId}`,
+    prefix: "PLANDRAFT#",
+  }),
+
+  /** One immutable version of a plan draft (P21), zero-padded so versions list in order. */
+  planDraftVersion: (projectId: ProjectId, programId: ProgramId, version: number): TableKey => ({
+    PK: `PROJ#${projectId}#PROG#${programId}`,
+    SK: `PLANDRAFTV#${String(version).padStart(10, "0")}`,
+  }),
+
+  planDraftVersionPartition: (projectId: ProjectId, programId: ProgramId) => ({
+    PK: `PROJ#${projectId}#PROG#${programId}`,
+    prefix: "PLANDRAFTV#",
+  }),
+
   /** A run's feedback (P20, D-04): one row per run, beside the runs of its program. */
   feedback: (scope: RunScope): TableKey => ({
     PK: `PROJ#${scope.projectId}#PROG#${scope.programId}`,

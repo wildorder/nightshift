@@ -48,6 +48,8 @@ import type {
   OrgCredential,
   OrgCredentialView,
   OrgId,
+  PlanDraft,
+  PlanDraftVersion,
   ProgramContract,
   ProgramId,
   Project,
@@ -336,6 +338,48 @@ export interface GateHealthStore {
 }
 
 /**
+ * A program's plan draft (P21): immutable, numbered versions and the one small
+ * record that says where the series stands. Project scoped, keyed by program.
+ */
+export interface PlanDraftStore {
+  get(projectId: ProjectId, programId: ProgramId): Promise<PlanDraft | undefined>;
+  /** Every program's draft in one project, in ascending program id order. */
+  listByProject(projectId: ProjectId, page?: PageRequest): Promise<Page<PlanDraft>>;
+  getVersion(
+    projectId: ProjectId,
+    programId: ProgramId,
+    version: number,
+  ): Promise<PlanDraftVersion | undefined>;
+  /** A draft's versions in ascending version order. */
+  listVersions(
+    projectId: ProjectId,
+    programId: ProgramId,
+    page?: PageRequest,
+  ): Promise<Page<PlanDraftVersion>>;
+  /**
+   * Writes `version` and `draft` as one atomic step, only if no version
+   * `version.version` exists and the stored draft's `latestVersion` is
+   * `version.version - 1` (no draft stored when it is 1). Otherwise throws
+   * `PlanDraftError` (`conflict`) and changes nothing: a stored version is never
+   * replaced, and of two concurrent appends of the same number exactly one lands.
+   * `draft.latestVersion` must equal `version.version`.
+   */
+  appendVersion(draft: PlanDraft, version: PlanDraftVersion): Promise<void>;
+  /**
+   * Replaces the stored draft with `change(stored)` as one atomic step, exactly
+   * as {@link ProgramContractStore.update}: `undefined` with `change` never
+   * called when no draft is stored; `change` is pure and may be called more than
+   * once; returning `undefined` leaves the draft as it is. A change that throws
+   * (an act the rules refuse) changes nothing. It may not alter `latestVersion`.
+   */
+  update(
+    projectId: ProjectId,
+    programId: ProgramId,
+    change: (current: PlanDraft) => PlanDraft | undefined,
+  ): Promise<PlanDraft | undefined>;
+}
+
+/**
  * A run's feedback (D-04): one record per run, keyed by the run.
  */
 export interface RunFeedbackStore {
@@ -443,6 +487,8 @@ export interface ProjectStores {
   readonly installationClaims: InstallationClaimStore;
   // P15: the project's gate health.
   readonly gateHealth: GateHealthStore;
+  // P21: a program's plan draft and its versions.
+  readonly planDrafts: PlanDraftStore;
   // P20 (D-04): a run's human verdict.
   readonly feedback: RunFeedbackStore;
   // P20 (D-05): explicit groupings of runs that delivered one outcome.

@@ -34,6 +34,7 @@ import {
   IllegalTransitionError,
   OutcomeReasonRequiredError,
   OwnershipViolationError,
+  PlanDraftError,
   ReversibilitySoftenedError,
   StaleWriteError,
   TreeStructureError,
@@ -92,6 +93,7 @@ const DOMAIN_ERRORS: Readonly<Record<DomainErrorCode, (message: string) => Domai
   stale_write: () => new StaleWriteError("", 0, 0),
   completion_membership: () =>
     new CompletionMembershipError({ programId: "", runId: "" }, "unknown_run"),
+  plan_draft: () => new PlanDraftError("conflict", ""),
 };
 
 const isDomainErrorCode = (code: string): code is DomainErrorCode =>

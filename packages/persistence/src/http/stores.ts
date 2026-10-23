@@ -77,6 +77,7 @@ import type {
   OrgConfigStore,
   Page,
   PageRequest,
+  PlanDraftStore,
   ProgramContractStore,
   ProgramScope,
   ProjectStore,
@@ -596,6 +597,19 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     get: (projectId) => getOrUndefined(transport, GateHealthSchema, routes.gateHealth(projectId)),
   };
 
+  // P21: drafts have no route yet; the API for drafts replaces this stub.
+  const notServed = async (): Promise<never> => {
+    throw new Error("not served by the control plane yet");
+  };
+  const planDrafts: PlanDraftStore = {
+    get: notServed,
+    listByProject: notServed,
+    getVersion: notServed,
+    listVersions: notServed,
+    appendVersion: notServed,
+    update: notServed,
+  };
+
   // P20 (D-04): the server rewrites attribution and answers the stored record.
   const feedback: RunFeedbackStore = {
     put: async (record) => {
@@ -653,6 +667,7 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     computeUtilizations,
     warmCaches,
     gateHealth,
+    planDrafts,
     installationClaims,
     programContracts,
     runs,
