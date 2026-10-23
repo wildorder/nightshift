@@ -34,7 +34,9 @@ import {
   PlanDocumentRefSchema,
   PlanHashSchema,
   PrerequisiteSchema,
+  Sha256HexSchema,
 } from "./plan.js";
+import { PlanDraftSchema, PlanDraftVersionSchema } from "./plan-draft.js";
 import { ProgramContractSchema } from "./program-contract.js";
 import { ProjectSchema } from "./project.js";
 import { RoutingDecisionSchema } from "./routing-decision.js";
@@ -269,6 +271,90 @@ export const RatificationRequestBodySchema = z.strictObject({
   conversationSha256: PlanHashSchema.optional(),
 });
 export type RatificationRequestBody = z.infer<typeof RatificationRequestBodySchema>;
+
+/**
+ * `POST …/programs/{programId}/ratifications` naming a draft version (P21): the
+ * hash of the latest version, and nothing else. The control plane ratifies that
+ * version's stored documents, with exactly the checks the contract-in-body form
+ * gets.
+ */
+export const RatifyDraftVersionBodySchema = z.strictObject({ planHash: PlanHashSchema });
+export type RatifyDraftVersionBody = z.infer<typeof RatifyDraftVersionBodySchema>;
+
+/** Either form of `POST …/ratifications`. */
+export const RatificationBodySchema = z.union([
+  RatificationRequestBodySchema,
+  RatifyDraftVersionBodySchema,
+]);
+export type RatificationBody = z.infer<typeof RatificationBodySchema>;
+
+// ---------------------------------------------------------------------------
+// Plan drafts (P21)
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST …/programs/{programId}/plan-draft/versions`. The documents are named by
+ * their sha256, already uploaded through the plan-documents upload. The author
+ * is the caller's principal and is never sent.
+ */
+export const PlanDraftPutVersionBodySchema = z.strictObject({
+  contractSha256: Sha256HexSchema,
+  planSha256: Sha256HexSchema,
+  conversationSha256: Sha256HexSchema.optional(),
+  /** The latest version the writer saw; `null` for the first. */
+  basedOn: z.int().min(1).nullable(),
+});
+export type PlanDraftPutVersionBody = z.infer<typeof PlanDraftPutVersionBodySchema>;
+
+/** One reason a version is not ready; the kinds are `checkPlan`'s, plus `contract_invalid`. */
+export const PlanDraftCheckReasonSchema = z.looseObject({
+  kind: z.string().min(1),
+  message: z.string().min(1),
+});
+
+/** What the plane's `checkPlan` says of a version's stored documents. */
+export const PlanDraftCheckSchema = z.union([
+  z.strictObject({ ready: z.literal(true) }),
+  z.strictObject({ ready: z.literal(false), reasons: z.array(PlanDraftCheckReasonSchema) }),
+]);
+export type PlanDraftCheck = z.infer<typeof PlanDraftCheckSchema>;
+
+/** A version with the check the plane computed from its stored documents. */
+export const PlanDraftVersionResponseSchema = z.strictObject({
+  version: PlanDraftVersionSchema,
+  check: PlanDraftCheckSchema,
+});
+export type PlanDraftVersionResponse = z.infer<typeof PlanDraftVersionResponseSchema>;
+
+export const PlanDraftPageSchema = pageResponseSchema(PlanDraftSchema);
+export type PlanDraftPage = z.infer<typeof PlanDraftPageSchema>;
+
+export const PlanDraftVersionPageSchema = pageResponseSchema(PlanDraftVersionSchema);
+export type PlanDraftVersionPage = z.infer<typeof PlanDraftVersionPageSchema>;
+
+/** `POST …/plan-draft/answers`: one decision, answered on the latest version. */
+export const PlanDraftAnswerBodySchema = z.strictObject({
+  decisionId: z.string().min(1),
+  answer: z.string().min(1),
+  rationale: z.string().min(1).optional(),
+  /** The latest version the answerer saw; a newer one makes the answer stale (409). */
+  basedOn: z.int().min(1).optional(),
+});
+export type PlanDraftAnswerBody = z.infer<typeof PlanDraftAnswerBodySchema>;
+
+/** `POST …/plan-draft/change-requests`: a note on a version. */
+export const PlanDraftRequestChangesBodySchema = z.strictObject({
+  version: z.int().min(1),
+  note: z.string().min(1),
+});
+export type PlanDraftRequestChangesBody = z.infer<typeof PlanDraftRequestChangesBodySchema>;
+
+/** `POST …/plan-draft/awaiting-owner` and `…/decline`: an act on a version, with an optional note. */
+export const PlanDraftActBodySchema = z.strictObject({
+  version: z.int().min(1),
+  note: z.string().min(1).optional(),
+});
+export type PlanDraftActBody = z.infer<typeof PlanDraftActBodySchema>;
 
 /**
  * `PUT …/programs/{programId}/prerequisites/{prerequisiteId}`, one of:

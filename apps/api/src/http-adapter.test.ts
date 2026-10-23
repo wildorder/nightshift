@@ -78,6 +78,7 @@ import {
   makeVerification,
   makeWarmCache,
   nextUserId,
+  PlanDraftError,
   type ProjectStores,
   rejectionOf,
   StaleWriteError,
@@ -86,6 +87,7 @@ import {
   ControlPlaneError,
   createFetchTransport,
   createHttpArtifactBodyStore,
+  createHttpPlanning,
   createHttpStores,
   routes,
   send,
@@ -137,17 +139,15 @@ const PORT_METHODS = {
   // P20 (D-04, D-05): a person's verdict, and the histories they assemble.
   feedback: ["put", "get", "listByProgram"],
   completionHistories: ["put", "get", "listByRun", "listByProject"],
-  // P21: the adapter's methods are a typed stub until the API for drafts exists.
+  // P21: the reads go over the routes; the two writes name the routes that make versions.
   planDrafts: ["get", "listByProject", "getVersion", "listVersions", "appendVersion", "update"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
 /** `store.method` for every entry above. */
 const everyPortMethod = (): readonly string[] =>
-  Object.entries(PORT_METHODS)
-    // planDrafts.* is exempt until the next job (the API for drafts) serves it
-    // and removes this filter along with the adapter's stub.
-    .filter(([store]) => store !== "planDrafts")
-    .flatMap(([store, methods]) => methods.map((method) => `${store}.${method}`));
+  Object.entries(PORT_METHODS).flatMap(([store, methods]) =>
+    methods.map((method) => `${store}.${method}`),
+  );
 
 /** What this file has actually called, accumulated across every test. */
 const exercised = new Set<string>();
@@ -1162,5 +1162,122 @@ describe("a project's gate health (P15, D-P15-07)", () => {
       }
     }
     expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(makeGateHealth(f));
+  });
+});
+
+describe("planDrafts (P21)", () => {
+  const PLAN = "# Fixture\n\n## Strands\n\n### S-01 The API\n\nA route.\n";
+
+  const contractOf = (f: Fixtures) =>
+    makeProgramContract(f, {
+      status: "planning",
+      strands: [
+        {
+          id: "S-01",
+          name: "The API",
+          scope: { summary: "somewhere", includes: ["src/**"], excludes: [] },
+          acceptance: ["green"],
+          successCriteria: ["SC-01"],
+          dependsOn: [],
+          prerequisites: [],
+        },
+      ],
+      decisions: [{ id: "D-01", question: "Which?", options: ["a", "b"], touches: "all" }],
+    });
+
+  it("reads drafts and versions over the routes, and refuses the whole-record writes", async () => {
+    const { http, f, transport, subject, orgId } = world;
+    await http.projects.put(aProject(f));
+    const planning = createHttpPlanning({ transport });
+    expect(await http.planDrafts.get(f.scope.projectId, f.scope.programId)).toBeUndefined();
+    expect(await planning.getDraft(f.scope)).toBeUndefined();
+    expect(await planning.getVersion(f.scope)).toBeUndefined();
+
+    const first = await planning.putVersion(
+      f.scope,
+      { contract: contractOf(f), planText: PLAN },
+      null,
+    );
+    const author = { kind: "user", userId: subject, orgId };
+    expect(first.version).toMatchObject({ version: 1, author, act: { kind: "write" } });
+    expect(first.check.ready).toBe(false);
+    await planning.putVersion(
+      f.scope,
+      { contract: contractOf(f), planText: `${PLAN}\nMore.\n` },
+      1,
+    );
+
+    const draft = await http.planDrafts.get(f.scope.projectId, f.scope.programId);
+    expect(draft).toMatchObject({ state: "draft", latestVersion: 2 });
+    expect(await planning.getDraft(f.scope)).toEqual(draft);
+    expect((await http.planDrafts.listByProject(f.scope.projectId)).items).toEqual([draft]);
+    expect(
+      (await http.planDrafts.listVersions(f.scope.projectId, f.scope.programId)).items.map(
+        (v) => v.version,
+      ),
+    ).toEqual([1, 2]);
+    expect(await http.planDrafts.getVersion(f.scope.projectId, f.scope.programId, 1)).toEqual(
+      first.version,
+    );
+    expect(
+      await http.planDrafts.getVersion(f.scope.projectId, f.scope.programId, 3),
+    ).toBeUndefined();
+    expect((await planning.listVersions(f.scope)).map((v) => v.version)).toEqual([1, 2]);
+    expect((await planning.getVersion(f.scope))?.version.version).toBe(2);
+    expect((await planning.getVersion(f.scope, 1))?.version).toEqual(first.version);
+
+    const version = first.version;
+    await expect(http.planDrafts.appendVersion(draft as never, version)).rejects.toThrow(
+      /plan-draft\/versions/,
+    );
+    await expect(
+      http.planDrafts.update(f.scope.projectId, f.scope.programId, () => undefined),
+    ).rejects.toThrow(/plan-draft\/versions/);
+    // A stale write is a typed conflict.
+    const stale = await rejectionOf(
+      planning.putVersion(f.scope, { contract: contractOf(f), planText: PLAN }, 1),
+    );
+    expect(stale).toBeInstanceOf(PlanDraftError);
+  });
+
+  it("drives the owner's acts and ratifies the latest version by its hash", async () => {
+    const { f, transport, http } = world;
+    await http.projects.put(aProject(f));
+    const planning = createHttpPlanning({ transport });
+    await planning.putVersion(f.scope, { contract: contractOf(f), planText: PLAN }, null);
+
+    expect((await planning.markAwaitingOwner(f.scope, 1)).state).toBe("awaiting_owner");
+    expect((await planning.requestChanges(f.scope, 1, "answer D-01")).state).toBe("draft");
+
+    const answered = await planning.answerDecision(f.scope, {
+      decisionId: "D-01",
+      answer: "a",
+      rationale: "because",
+      basedOn: 1,
+    });
+    expect(answered.version).toMatchObject({ version: 2, act: { kind: "answer" } });
+    expect(answered.check).toEqual({ ready: true });
+
+    const ratified = await planning.ratifyVersion(f.scope, answered.version.planHash as string);
+    expect(ratified).toMatchObject({ status: "ratified", planHash: answered.version.planHash });
+    expect(await http.programContracts.get(f.scope.projectId, f.scope.programId)).toEqual(ratified);
+    const after = await planning.getDraft(f.scope);
+    expect(after?.state).toBe("ratified");
+    expect(after?.acts.map((act) => act.kind)).toEqual([
+      "awaiting_owner",
+      "changes_requested",
+      "ratified",
+    ]);
+
+    // A second program declines.
+    const g = createFixtures();
+    await http.projects.put(aProject(f));
+    const other = { projectId: f.scope.projectId, programId: g.scope.programId };
+    await planning.putVersion(
+      other,
+      { contract: { ...contractOf(f), programId: other.programId }, planText: PLAN },
+      null,
+    );
+    expect((await planning.decline(other, 1, "no")).state).toBe("declined");
   });
 });

@@ -110,6 +110,25 @@ describe("plan documents (P7, D-P7-02)", () => {
     expect(await store.get(scope, sha)).toEqual({ uri: `s3://bucket/${key}`, body });
   });
 
+  it("puts a document the plane made under its key, held to its digest", async () => {
+    const f = createFixtures();
+    const objects = new FakeObjectStore("bucket");
+    const store = createPlanDocumentStore({ bucketName: "bucket", s3: {} as S3Client, objects });
+    const scope = { projectId: f.scope.projectId, programId: f.scope.programId };
+    const body = new TextEncoder().encode("{}\n");
+    const digest = createHash("sha256").update(body).digest("hex");
+    const key = `plans/${scope.projectId}/${scope.programId}/${digest}.md`;
+
+    expect(await store.put(scope, digest, body, "text/markdown; charset=utf-8")).toEqual({
+      uri: `s3://bucket/${key}`,
+      body,
+    });
+    expect(await store.get(scope, digest)).toEqual({ uri: `s3://bucket/${key}`, body });
+    await expect(store.put(scope, sha, body, "text/markdown; charset=utf-8")).rejects.toThrow(
+      /hashes to/,
+    );
+  });
+
   it("reads S3's AccessDenied for a missing key as absent, and rethrows anything else", async () => {
     const f = createFixtures();
     const scope = { projectId: f.scope.projectId, programId: f.scope.programId };

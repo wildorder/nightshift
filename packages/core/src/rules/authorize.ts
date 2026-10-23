@@ -75,6 +75,17 @@ export type Operation =
   | "program.getPlanDocument"
   | "prerequisite.list"
   | "prerequisite.put"
+  // A program's plan draft (P21): versions written, read and answered.
+  | "planDraft.get"
+  | "planDraft.listByProject"
+  | "planDraft.listVersions"
+  | "planDraft.getVersion"
+  | "planDraft.getLatestVersion"
+  | "planDraft.putVersion"
+  | "planDraft.markAwaitingOwner"
+  | "planDraft.answer"
+  | "planDraft.requestChanges"
+  | "planDraft.decline"
   // Runs.
   | "run.list"
   | "run.put"
@@ -220,6 +231,20 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "program.getPlanDocument": "forbidden",
   "prerequisite.list": "own_program",
   "prerequisite.put": "forbidden",
+
+  // A plan draft (P21). Reading it, writing a version and marking it for the
+  // owner are open to an execution in its own project; answering, requesting
+  // changes and declining are a person's, as ratifying is.
+  "planDraft.get": "own_project",
+  "planDraft.listByProject": "own_project",
+  "planDraft.listVersions": "own_project",
+  "planDraft.getVersion": "own_project",
+  "planDraft.getLatestVersion": "own_project",
+  "planDraft.putVersion": "own_project",
+  "planDraft.markAwaitingOwner": "own_project",
+  "planDraft.answer": "forbidden",
+  "planDraft.requestChanges": "forbidden",
+  "planDraft.decline": "forbidden",
 
   // Its own run is readable; it may not list a program's runs, or write one.
   "run.list": "forbidden",
@@ -370,6 +395,20 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "program.getPlanDocument": "forbidden",
   "prerequisite.list": "own_program",
   "prerequisite.put": "forbidden",
+
+  // A plan draft (P21). Reading it, writing a version and marking it for the
+  // owner are open to an execution in its own project; answering, requesting
+  // changes and declining are a person's, as ratifying is.
+  "planDraft.get": "own_project",
+  "planDraft.listByProject": "own_project",
+  "planDraft.listVersions": "own_project",
+  "planDraft.getVersion": "own_project",
+  "planDraft.getLatestVersion": "own_project",
+  "planDraft.putVersion": "own_project",
+  "planDraft.markAwaitingOwner": "own_project",
+  "planDraft.answer": "forbidden",
+  "planDraft.requestChanges": "forbidden",
+  "planDraft.decline": "forbidden",
 
   "run.list": "forbidden",
   "run.put": "forbidden",
@@ -529,6 +568,20 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "prerequisite.list": "own_program",
   "prerequisite.put": "own_program",
 
+  // A plan draft (P21). Reading it, writing a version and marking it for the
+  // owner are open to an execution in its own project; answering, requesting
+  // changes and declining are a person's, as ratifying is.
+  "planDraft.get": "own_project",
+  "planDraft.listByProject": "own_project",
+  "planDraft.listVersions": "own_project",
+  "planDraft.getVersion": "own_project",
+  "planDraft.getLatestVersion": "own_project",
+  "planDraft.putVersion": "own_project",
+  "planDraft.markAwaitingOwner": "own_project",
+  "planDraft.answer": "forbidden",
+  "planDraft.requestChanges": "forbidden",
+  "planDraft.decline": "forbidden",
+
   // D-P10-29: the engine reads every record of its own program, earlier runs
   // included (the program's rulings and carried-over work are read across its
   // runs). It writes only within its own run, under the dispatch's generation.
@@ -650,6 +703,11 @@ export const READ_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
   "program.get",
   "program.getPlanDocument",
   "prerequisite.list",
+  "planDraft.get",
+  "planDraft.listByProject",
+  "planDraft.listVersions",
+  "planDraft.getVersion",
+  "planDraft.getLatestVersion",
   "run.list",
   "run.get",
   "run.getState",

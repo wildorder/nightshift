@@ -77,6 +77,11 @@ const setup = async (): Promise<World> => {
       const body = objects.get(key);
       return body === undefined ? undefined : { uri: `s3://bucket/${key}`, body };
     },
+    put: async (scope, hash, body) => {
+      const key = planDocumentObjectKey(scope, hash);
+      objects.set(key, body);
+      return { uri: `s3://bucket/${key}`, body };
+    },
   };
   const project = `/projects/${f.scope.projectId}`;
   const program = `${project}/programs/${f.scope.programId}`;
