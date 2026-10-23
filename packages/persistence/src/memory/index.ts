@@ -61,6 +61,10 @@ import {
   type OrgCredential,
   OrgCredentialSchema,
   type OrgId,
+  type PlanDraft,
+  PlanDraftSchema,
+  type PlanDraftVersion,
+  PlanDraftVersionSchema,
   type ProgramContract,
   ProgramContractSchema,
   type ProgramId,
@@ -109,6 +113,8 @@ import {
   orderEvents,
   type Page,
   type PageRequest,
+  PlanDraftError,
+  type PlanDraftStore,
   type ProgramContractStore,
   type ProgramScope,
   type ProjectStore,
@@ -207,6 +213,9 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const warmCaches = table<WarmCache>("warmCaches");
   // P15: one gate-health record per project.
   const gateHealths = table<GateHealth>("gateHealth");
+  // P21: a program's plan draft, and its immutable versions.
+  const planDrafts = table<PlanDraft>("planDrafts");
+  const planDraftVersions = table<PlanDraftVersion>("planDraftVersions");
   // P20: a run's verdict, and the project's completion histories.
   const feedback = table<RunFeedback>("feedback");
   const completionHistories = table<CompletionHistory>("completionHistories");
@@ -240,6 +249,8 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     computeUtilizations,
     warmCaches,
     gateHealths,
+    planDrafts,
+    planDraftVersions,
     feedback,
     completionHistories,
     installationClaims,
@@ -603,6 +614,68 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     get: async (projectId: ProjectId) => gateHealths.get(projectPrefix({ projectId })),
   };
 
+  /** Zero-padded, so versions scan in numeric order. */
+  const versionKey = (
+    scope: { readonly projectId: ProjectId; readonly programId: ProgramId },
+    version: number,
+  ): string => `${programPrefix(scope)}${String(version).padStart(10, "0")}`;
+
+  const planDraftStore: PlanDraftStore = {
+    get: async (projectId: ProjectId, programId: ProgramId) =>
+      planDrafts.get(`${projectPrefix({ projectId })}${programId}`),
+    listByProject: async (projectId: ProjectId, page?: PageRequest) =>
+      paginate(planDrafts.scan(projectPrefix({ projectId })), page),
+    getVersion: async (projectId: ProjectId, programId: ProgramId, version: number) =>
+      planDraftVersions.get(versionKey({ projectId, programId }, version)),
+    listVersions: async (projectId: ProjectId, programId: ProgramId, page?: PageRequest) =>
+      paginate(planDraftVersions.scan(programPrefix({ projectId, programId })), page),
+    appendVersion: async (draft, version) => {
+      const parsedDraft = PlanDraftSchema.parse(draft);
+      const parsedVersion = PlanDraftVersionSchema.parse(version);
+      if (
+        parsedDraft.projectId !== parsedVersion.projectId ||
+        parsedDraft.programId !== parsedVersion.programId ||
+        parsedDraft.latestVersion !== parsedVersion.version
+      ) {
+        throw new PlanDraftError("conflict", "the draft does not describe the version appended");
+      }
+      const draftKey = `${projectPrefix(parsedDraft)}${parsedDraft.programId}`;
+      const key = versionKey(parsedVersion, parsedVersion.version);
+      atomically(() => {
+        const latest = planDrafts.get(draftKey)?.latestVersion ?? 0;
+        if (planDraftVersions.has(key) || latest !== parsedVersion.version - 1) {
+          throw new PlanDraftError(
+            "conflict",
+            `version ${parsedVersion.version} cannot be appended: the latest stored is ${latest}`,
+          );
+        }
+        planDraftVersions.set(key, parsedVersion);
+        planDrafts.set(draftKey, parsedDraft);
+      });
+    },
+    update: async (projectId, programId, change) =>
+      atomically(() => {
+        const key = `${projectPrefix({ projectId })}${programId}`;
+        const current = planDrafts.get(key);
+        if (current === undefined) return undefined;
+        const changed = change(current);
+        if (changed === undefined) return current;
+        const parsed = PlanDraftSchema.parse(changed);
+        if (
+          parsed.latestVersion !== current.latestVersion ||
+          parsed.projectId !== projectId ||
+          parsed.programId !== programId
+        ) {
+          throw new PlanDraftError(
+            "conflict",
+            "an update cannot move the draft's identity or latest version",
+          );
+        }
+        planDrafts.set(key, parsed);
+        return parsed;
+      }),
+  };
+
   const feedbackStore: RunFeedbackStore = {
     put: async (record) => {
       const parsed = RunFeedbackSchema.parse(record);
@@ -702,6 +775,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     computeUtilizations: computeUtilizationStore,
     warmCaches: warmCacheStore,
     gateHealth: gateHealthStore,
+    planDrafts: planDraftStore,
     feedback: feedbackStore,
     completionHistories: completionHistoryStore,
     installationClaims: installationClaimStore,

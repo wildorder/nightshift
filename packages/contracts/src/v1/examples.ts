@@ -481,6 +481,42 @@ export const AGGREGATE_EXAMPLES: { readonly [K in AggregateName]: unknown } = {
     auditedAt: AT_LATER,
   },
 
+  // P21 (S-01): a draft awaiting its owner, and the second version it names.
+  PlanDraft: {
+    schemaVersion: 1,
+    projectId: EXAMPLE_IDS.projectId,
+    programId: EXAMPLE_IDS.programId,
+    state: "awaiting_owner",
+    latestVersion: 2,
+    acts: [
+      {
+        kind: "awaiting_owner",
+        version: 2,
+        by: { kind: "user", userId: "operator-01", orgId: EXAMPLE_IDS.orgId },
+        at: AT_LATER,
+      },
+    ],
+    createdAt: AT,
+    updatedAt: AT_LATER,
+  },
+  PlanDraftVersion: {
+    schemaVersion: 1,
+    projectId: EXAMPLE_IDS.projectId,
+    programId: EXAMPLE_IDS.programId,
+    version: 2,
+    contract: { uri: "s3://plans/contract-2.json", sha256: "b".repeat(64), sizeBytes: 2048 },
+    plan: { uri: "s3://plans/plan-2.md", sha256: "c".repeat(64), sizeBytes: 4096 },
+    planHash: "d".repeat(64),
+    author: { kind: "user", userId: "operator-01", orgId: EXAMPLE_IDS.orgId },
+    act: {
+      kind: "answer",
+      decisionId: "D-01",
+      answer: "Use the shared gate.",
+      rationale: "Simpler.",
+    },
+    createdAt: AT_LATER,
+  },
+
   // D-04: a person's verdict on the run, after one correction.
   RunFeedback: {
     schemaVersion: 1,

@@ -24,6 +24,7 @@ export * from "./membership.js";
 export * from "./model-catalog.js";
 export * from "./org-config.js";
 export * from "./plan.js";
+export * from "./plan-draft.js";
 export * from "./principal.js";
 export * from "./program-contract.js";
 export * from "./project.js";

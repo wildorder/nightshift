@@ -31,6 +31,10 @@ import {
   GateHealthSchema,
   type JobContract,
   JobContractSchema,
+  type PlanDraft,
+  PlanDraftSchema,
+  type PlanDraftVersion,
+  PlanDraftVersionSchema,
   type ProgramContract,
   ProgramContractSchema,
   type ProgramContractScope,
@@ -454,6 +458,38 @@ const FIXTURE_ACTOR = {
   userId: "fixture-operator",
   orgId: "org_01HF7YAT00GGGGGGGGGGGGGGGG",
 } as const;
+
+/** P21: a draft at version 1 awaiting nothing yet. */
+export const makePlanDraft = (f: Fixtures, overrides: Overrides<PlanDraft> = {}): PlanDraft =>
+  PlanDraftSchema.parse({
+    schemaVersion: 1,
+    projectId: f.scope.projectId,
+    programId: f.scope.programId,
+    state: "draft",
+    latestVersion: 1,
+    acts: [],
+    createdAt: AT,
+    updatedAt: AT,
+    ...overrides,
+  });
+
+/** P21: version 1 of a draft, a plain write by the fixture operator. */
+export const makePlanDraftVersion = (
+  f: Fixtures,
+  overrides: Overrides<PlanDraftVersion> = {},
+): PlanDraftVersion =>
+  PlanDraftVersionSchema.parse({
+    schemaVersion: 1,
+    projectId: f.scope.projectId,
+    programId: f.scope.programId,
+    version: 1,
+    contract: { uri: "s3://plans/contract.json", sha256: "1".repeat(64), sizeBytes: 100 },
+    plan: { uri: "s3://plans/plan.md", sha256: "2".repeat(64), sizeBytes: 200 },
+    author: FIXTURE_ACTOR,
+    act: { kind: "write" },
+    createdAt: AT,
+    ...overrides,
+  });
 
 /** D-04: a first positive verdict on the fixture run. */
 export const makeRunFeedback = (f: Fixtures, overrides: Overrides<RunFeedback> = {}): RunFeedback =>
