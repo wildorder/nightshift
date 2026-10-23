@@ -101,6 +101,11 @@ export interface ProjectStore {
 
 export interface ProgramContractStore {
   put(contract: ProgramContract): Promise<void>;
+  /**
+   * Stores the contract only when none is stored, throwing
+   * `ProgramContractExistsError` otherwise (P21: racing first ratifications).
+   */
+  create(contract: ProgramContract): Promise<void>;
   get(projectId: ProjectId, programId: ProgramId): Promise<ProgramContract | undefined>;
   /**
    * Replaces the stored contract with `change(stored)` as one atomic step, and

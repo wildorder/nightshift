@@ -60,6 +60,7 @@ import {
   nextUserId,
   orderEvents,
   PlanDraftError,
+  ProgramContractExistsError,
   type ProjectStores,
   type RunScope,
   StaleWriteError,
@@ -357,6 +358,35 @@ export const describePortConformance = <S extends ProjectStores>(
         expect(
           (await stores.programContracts.get(a.scope.projectId, a.scope.programId))?.outOfScope,
         ).toEqual(["a CLI"]);
+      });
+
+      it("creates a contract only where none is stored, and refuses a second", async () => {
+        const contract = makeProgramContract(a);
+        await stores.programContracts.create(contract);
+        expect(await stores.programContracts.get(a.scope.projectId, a.scope.programId)).toEqual(
+          contract,
+        );
+        await expect(
+          stores.programContracts.create({ ...contract, outOfScope: ["a UI"] }),
+        ).rejects.toThrow(ProgramContractExistsError);
+        expect(await stores.programContracts.get(a.scope.projectId, a.scope.programId)).toEqual(
+          contract,
+        );
+      });
+
+      it("lets exactly one of racing creates land", async () => {
+        const contract = makeProgramContract(a);
+        const outcomes = await Promise.allSettled(
+          ["one", "two", "three"].map((writer) =>
+            stores.programContracts.create({ ...contract, outOfScope: [writer] }),
+          ),
+        );
+        expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+        for (const outcome of outcomes) {
+          if (outcome.status === "rejected") {
+            expect(outcome.reason).toBeInstanceOf(ProgramContractExistsError);
+          }
+        }
       });
 
       it("lands every one of overlapping changes: none undoes another", async () => {

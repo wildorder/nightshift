@@ -195,6 +195,12 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
         body: contract,
       });
     },
+    create: async () => {
+      throw new Error(
+        "the control plane creates a program contract by ratifying a plan; there is no route " +
+          "that creates one conditionally. Use program.ratify.",
+      );
+    },
     get: (projectId: ProjectId, programId: ProgramId) =>
       getOrUndefined(transport, ProgramContractSchema, routes.program(projectId, programId)),
     update: async () => {

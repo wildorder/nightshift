@@ -18,6 +18,7 @@ import {
   isPlanned,
   nowIso,
   type PlanDocumentStore,
+  ProgramContractExistsError,
   type ProgramScope,
   parseConversation,
   planHash,
@@ -147,13 +148,58 @@ export interface RatificationInput {
   readonly conversationSha256?: string | undefined;
 }
 
+/** The ratification state of the stored contract a ratification was prepared from. */
+export interface RatificationBasis {
+  readonly status: ProgramContract["status"];
+  readonly planHash: string | undefined;
+  readonly ratifications: readonly Ratification[];
+}
+
 /** A ratification that passed every check and has not been written. */
 export interface PreparedRatification {
   readonly status: 200 | 201;
   readonly body: ProgramContract;
   /** False when the same ratification is already recorded, so there is nothing to write. */
   readonly write: boolean;
+  /** What the preparation read: the stored contract's ratification state, or `undefined` when none was stored. */
+  readonly basis?: RatificationBasis | undefined;
+  /** What publication rebuilds the contract from, against whatever is stored by then. */
+  readonly source?: {
+    readonly contract: ProgramContract;
+    readonly ratification: Ratification;
+    readonly conversation: ProgramContract["conversation"];
+  };
 }
+
+const basisOf = (contract: ProgramContract): RatificationBasis => ({
+  status: contract.status,
+  planHash: contract.planHash,
+  ratifications: contract.ratifications ?? [],
+});
+
+const sameBasis = (current: ProgramContract, basis: RatificationBasis): boolean =>
+  JSON.stringify(basisOf(current)) === JSON.stringify(basis);
+
+/** The contract a ratification records, over the contract stored now (pure). */
+const buildRatified = (
+  source: NonNullable<PreparedRatification["source"]>,
+  existing: ProgramContract | undefined,
+): ProgramContract => {
+  const { contract, ratification, conversation } = source;
+  const prerequisites = carryPrerequisites(existing, contract);
+  const { conversation: _stale, ...rest } = contract;
+  return ProgramContractSchema.parse({
+    ...rest,
+    ...(conversation === undefined ? {} : { conversation }),
+    ...(prerequisites === undefined ? {} : { prerequisites }),
+    status: "ratified",
+    planHash: ratification.planHash,
+    planDocument: ratification.planDocument,
+    ratifications: [...(existing?.ratifications ?? []), ratification].slice(
+      -MAX_RATIFICATION_HISTORY,
+    ),
+  });
+};
 
 /**
  * The checks of a ratification and the contract it would record, with nothing
@@ -240,29 +286,72 @@ export const prepareRatification = async (
     ...(conversationRef === undefined ? {} : { conversation: conversationRef }),
     ratifiedAt: nowIso(deps.clock),
   };
-  const prerequisites = carryPrerequisites(existing, contract);
-  const { conversation: _stale, ...rest } = contract;
-  const ratified = ProgramContractSchema.parse({
-    ...rest,
-    ...(conversationRef === undefined ? {} : { conversation: conversationRef }),
-    ...(prerequisites === undefined ? {} : { prerequisites }),
-    status: "ratified",
-    planHash: ratification.planHash,
-    planDocument: ratification.planDocument,
-    ratifications: [...(existing?.ratifications ?? []), ratification].slice(
-      -MAX_RATIFICATION_HISTORY,
-    ),
-  });
-  return { status: existing === undefined ? 201 : 200, body: ratified, write: true };
+  const source = { contract, ratification, conversation: conversationRef };
+  return {
+    status: existing === undefined ? 201 : 200,
+    body: buildRatified(source, existing),
+    write: true,
+    basis: existing === undefined ? undefined : basisOf(existing),
+    source,
+  };
 };
 
-/** Writes what {@link prepareRatification} prepared. */
+/**
+ * Publishes what {@link prepareRatification} prepared as a compare-and-swap
+ * against the contract state it was prepared from: an update for an existing
+ * contract, a conditional create for none. When the stored ratification state
+ * is no longer what preparation saw, nothing is written and the answer is 409
+ * `ratification_superseded`, unless the stored contract already records exactly
+ * this ratification. The contract is rebuilt from the stored one inside the
+ * change, so prerequisites written meanwhile are carried.
+ */
 export const writeRatification = async (
   deps: ApiDeps,
   prepared: PreparedRatification,
 ): Promise<{ readonly status: 200 | 201; readonly body: ProgramContract }> => {
-  if (prepared.write) await deps.stores.programContracts.put(prepared.body);
-  return { status: prepared.status, body: prepared.body };
+  const { source, basis } = prepared;
+  if (!prepared.write || source === undefined) {
+    return { status: prepared.status, body: prepared.body };
+  }
+  const { projectId, programId } = source.contract;
+  const store = deps.stores.programContracts;
+  const superseded = () =>
+    new HttpError(
+      409,
+      "ratification_superseded",
+      "the contract was ratified again while this ratification was being made; nothing was written",
+    );
+  const alreadyRecorded = (current: ProgramContract): boolean =>
+    current.status === "ratified" &&
+    current.planHash === source.ratification.planHash &&
+    current.conversation?.sha256 === source.conversation?.sha256;
+
+  if (basis === undefined) {
+    try {
+      const built = buildRatified(source, undefined);
+      await store.create(built);
+      return { status: 201, body: built };
+    } catch (error) {
+      if (!(error instanceof ProgramContractExistsError)) throw error;
+    }
+  }
+
+  let outcome: { readonly body: ProgramContract; readonly written: boolean } | undefined;
+  const stored = await store.update(projectId, programId, (current) => {
+    outcome = undefined;
+    if (basis !== undefined && sameBasis(current, basis)) {
+      const built = buildRatified(source, current);
+      outcome = { body: built, written: true };
+      return built;
+    }
+    if (alreadyRecorded(current)) {
+      outcome = { body: current, written: false };
+      return undefined;
+    }
+    return undefined;
+  });
+  if (stored === undefined || outcome === undefined) throw superseded();
+  return { status: 200, body: outcome.body };
 };
 
 /** The checks and the record of a ratification, in one step. */

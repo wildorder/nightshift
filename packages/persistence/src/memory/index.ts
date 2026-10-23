@@ -115,6 +115,7 @@ import {
   type PageRequest,
   PlanDraftError,
   type PlanDraftStore,
+  ProgramContractExistsError,
   type ProgramContractStore,
   type ProgramScope,
   type ProjectStore,
@@ -310,6 +311,16 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     put: async (contract) => {
       const parsed = ProgramContractSchema.parse(contract);
       programContracts.set(`${projectPrefix(parsed)}${parsed.programId}`, parsed);
+    },
+    create: async (contract) => {
+      const parsed = ProgramContractSchema.parse(contract);
+      atomically(() => {
+        const key = `${projectPrefix(parsed)}${parsed.programId}`;
+        if (programContracts.get(key) !== undefined) {
+          throw new ProgramContractExistsError(parsed.programId);
+        }
+        programContracts.set(key, parsed);
+      });
     },
     get: async (projectId: ProjectId, programId: ProgramId) =>
       programContracts.get(`${projectPrefix({ projectId })}${programId}`),

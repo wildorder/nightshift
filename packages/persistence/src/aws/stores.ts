@@ -43,6 +43,7 @@ import {
   type Page,
   type PageRequest,
   PlanDraftError,
+  ProgramContractExistsError,
   type ProjectStore,
   runScopeOf,
   StaleWriteError,
@@ -558,6 +559,29 @@ export const createAwsStores = ({
             [REVISION_ATTRIBUTE]: randomUUID(),
           },
         });
+      },
+      create: async (contract) => {
+        const parsed = ProgramContractSchema.parse(contract);
+        try {
+          await table.put({
+            TableName: tableName,
+            Item: {
+              ...toItem(
+                "ProgramContract",
+                keys.programContract(parsed.projectId, parsed.programId),
+                parsed,
+              ),
+              [REVISION_ATTRIBUTE]: randomUUID(),
+            },
+            ConditionExpression: "attribute_not_exists(#pk)",
+            ExpressionAttributeNames: { "#pk": "PK" },
+          });
+        } catch (error) {
+          if (isConditionalCheckFailure(error)) {
+            throw new ProgramContractExistsError(parsed.programId);
+          }
+          throw error;
+        }
       },
       get: (projectId, programId) =>
         getRecord(ProgramContractSchema, keys.programContract(projectId, programId)),

@@ -36,6 +36,7 @@ export const DOMAIN_ERROR_STATUS: Readonly<Record<DomainErrorCode, number>> = {
   completion_membership: 422,
   // P21: a draft write or act the draft's state refuses; the caller reads the draft again.
   plan_draft: 409,
+  program_contract_exists: 409,
 };
 
 /** Where a failure happened, for the one log line a 500 writes. Never the body. */

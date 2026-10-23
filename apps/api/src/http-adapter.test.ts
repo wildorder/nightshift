@@ -114,7 +114,7 @@ const NOW = "2026-09-15T12:00:00.000Z";
  */
 const PORT_METHODS = {
   projects: ["put", "get", "listByOrg"],
-  programContracts: ["put", "get", "listByProject", "update"],
+  programContracts: ["put", "create", "get", "listByProject", "update"],
   runs: ["put", "get", "listByProgram"],
   executionNodes: ["put", "get", "listByRun", "listChildren"],
   jobContracts: ["put", "get", "listByRun"],
@@ -975,6 +975,7 @@ describe("the remote runner's records (P10)", () => {
     await expect(http.computeUtilizations.listByProject(f.scope.projectId)).rejects.toThrow(
       /recommendation/,
     );
+    await expect(http.programContracts.create(makeProgramContract(f))).rejects.toThrow(/ratifying/);
     // A contract is changed in place by the control plane alone (P16, D-08).
     await expect(
       http.programContracts.update(f.scope.projectId, f.scope.programId, (current) => current),
@@ -1345,9 +1346,9 @@ describe("planDrafts (P21)", () => {
     it("completes the contract when a retry follows a failure between the act and the write", async () => {
       const { planning, hash, f } = await readyDraft();
       const programs = world.backing.programContracts;
-      const original = programs.put.bind(programs);
+      const original = programs.create.bind(programs);
       let failing = true;
-      programs.put = async (contract) => {
+      programs.create = async (contract) => {
         if (failing) throw new Error("the write failed");
         return original(contract);
       };

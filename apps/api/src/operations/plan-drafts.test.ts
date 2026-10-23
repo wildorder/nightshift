@@ -432,6 +432,205 @@ describe("ratifying a version by its hash", () => {
   });
 });
 
+describe("publishing a ratification is a compare-and-swap (P21)", () => {
+  /** The plane's stores with a gate in front of publication: calls wait there until released. */
+  const gated = (w: World) => {
+    const inner = w.deps.stores.programContracts;
+    let arrived = 0;
+    let release: () => void = () => {};
+    let open = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let armed = true;
+    const wait = async () => {
+      if (!armed) return;
+      arrived += 1;
+      await open;
+    };
+    const programContracts = {
+      ...inner,
+      create: async (contract: ProgramContract) => {
+        await wait();
+        return inner.create(contract);
+      },
+      update: async (...args: Parameters<typeof inner.update>) => {
+        await wait();
+        return inner.update(...args);
+      },
+    };
+    const world: World = {
+      ...w,
+      deps: { ...w.deps, stores: { ...w.deps.stores, programContracts } },
+    };
+    return {
+      world,
+      arrivals: async (count: number) => {
+        while (arrived < count) await new Promise((resolve) => setTimeout(resolve, 1));
+      },
+      disarm: () => {
+        armed = false;
+      },
+      release: () => {
+        release();
+        open = Promise.resolve();
+      },
+    };
+  };
+
+  const answered = async (w: World, overrides: Partial<ProgramContract> = {}) => {
+    await putVersion(w, draftContract(w, overrides), null);
+    await call(w, "POST", `${w.paths.draft}/answers`, { decisionId: "D-01", answer: "a" });
+    return (await call(w, "POST", `${w.paths.draft}/answers`, { decisionId: "D-02", answer: "b" }))
+      .body as VersionBody;
+  };
+
+  /** A new ready version: the latest one's contract with a change. */
+  const edited = async (w: World, latest: VersionBody, change: Partial<ProgramContract>) => {
+    const text = new TextDecoder().decode(
+      w.objects.get(planDocumentObjectKey(w.f.scope, latest.version.contract.sha256)),
+    );
+    const contract = { ...(JSON.parse(text) as ProgramContract), ...change };
+    return (await putVersion(w, contract, latest.version.version)).body as VersionBody;
+  };
+
+  const stored = (w: World) =>
+    w.deps.stores.programContracts.get(w.f.scope.projectId, w.f.scope.programId);
+
+  const ratifyBy = (w: World, hash: string) =>
+    call(w, "POST", `${w.paths.program}/ratifications`, { planHash: hash });
+
+  it("refuses an older ratification resumed after a newer one completed, and writes nothing", async () => {
+    const gate = gated(await setup());
+    const w = gate.world;
+    const v1 = await answered(w);
+    // v1's ratification, paused before it publishes; its act is already recorded.
+    const paused = ratifyBy(w, v1.version.planHash as string);
+    await gate.arrivals(1);
+    const v2 = await edited(w, v1, { outOfScope: ["a UI"] });
+    expect(v2.version.planHash).not.toBe(v1.version.planHash);
+    gate.disarm();
+    expect((await ratifyBy(w, v2.version.planHash as string)).status).toBe(201);
+    const before = await stored(w);
+    gate.release();
+    const resumed = await paused;
+    expect(resumed.status).toBe(409);
+    expect(errorCode(resumed)).toBe("ratification_superseded");
+    expect(await stored(w)).toEqual(before);
+    expect(before?.planHash).toBe(v2.version.planHash);
+    expect(before?.ratifications?.map((entry) => entry.planHash)).toEqual([v2.version.planHash]);
+  });
+
+  it("lets exactly one of two first ratifications create; the other confirms it", async () => {
+    const gate = gated(await setup());
+    const w = gate.world;
+    const v1 = await answered(w);
+    const hash = v1.version.planHash as string;
+    const both = [ratifyBy(w, hash), ratifyBy(w, hash)];
+    await gate.arrivals(2);
+    gate.disarm();
+    gate.release();
+    const statuses = (await Promise.all(both)).map((response) => response.status).sort();
+    expect(statuses).toEqual([200, 201]);
+    const contract = await stored(w);
+    expect(contract?.ratifications).toHaveLength(1);
+    expect(contract?.planHash).toBe(hash);
+    expect(((await call(w, "GET", w.paths.draft)).body as PlanDraft).acts).toHaveLength(1);
+  });
+
+  it("answers 409 to a first ratification of another plan when one already created the contract", async () => {
+    const base = await setup();
+    const inner = base.deps.stores.programContracts;
+    const gate = gated(base);
+    const w = gate.world;
+    const v1 = await answered(w);
+    const paused = ratifyBy(w, v1.version.planHash as string);
+    await gate.arrivals(1);
+    // Another plane-side writer creates the program's contract meanwhile.
+    await inner.create(makeProgramContract(w.f, { status: "planning", planHash: undefined }));
+    gate.disarm();
+    gate.release();
+    const response = await paused;
+    expect(response.status).toBe(409);
+    expect(errorCode(response)).toBe("ratification_superseded");
+    expect((await stored(w))?.status).toBe("planning");
+  });
+
+  it("carries a prerequisite check that landed between preparing and publishing", async () => {
+    const gate = gated(await setup());
+    const w = gate.world;
+    const withPrerequisite: Partial<ProgramContract> = {
+      strands: (draftContract(w).strands ?? []).map((strand) =>
+        strand.id === "S-01" ? { ...strand, prerequisites: ["HP-01"] } : strand,
+      ),
+      prerequisites: [
+        {
+          id: "HP-01",
+          description: "A key exists.",
+          remediation: "Create it.",
+          verifyCommand: "test -n x",
+          status: "pending",
+        },
+      ],
+    };
+    const v1 = await answered(w, withPrerequisite);
+    gate.disarm();
+    expect((await ratifyBy(w, v1.version.planHash as string)).status).toBe(201);
+    const v2 = await edited(w, v1, { outOfScope: ["a UI"] });
+
+    const gate2 = gated(w);
+    const paused = ratifyBy(gate2.world, v2.version.planHash as string);
+    await gate2.arrivals(1);
+    await w.deps.stores.programContracts.update(
+      w.f.scope.projectId,
+      w.f.scope.programId,
+      (current) => ({
+        ...current,
+        prerequisites: (current.prerequisites ?? []).map((prerequisite) => ({
+          ...prerequisite,
+          status: "satisfied" as const,
+          lastCheck: { exitCode: 0, checkedAt: NOW, where: "laptop" as const },
+        })),
+      }),
+    );
+    gate2.release();
+    expect((await paused).status).toBe(200);
+    const contract = await stored(w);
+    expect(contract?.planHash).toBe(v2.version.planHash);
+    expect(contract?.prerequisites?.[0]?.status).toBe("satisfied");
+    expect(contract?.ratifications).toHaveLength(2);
+  });
+
+  it("heals a retry whose act was recorded but whose contract was not published", async () => {
+    const w = await setup();
+    const v1 = await answered(w);
+    const hash = v1.version.planHash as string;
+    const inner = w.deps.stores.programContracts;
+    let fail = true;
+    const flaky: World = {
+      ...w,
+      deps: {
+        ...w.deps,
+        stores: {
+          ...w.deps.stores,
+          programContracts: {
+            ...inner,
+            create: async (contract) => {
+              if (fail) throw new Error("unavailable");
+              return inner.create(contract);
+            },
+          },
+        },
+      },
+    };
+    expect((await ratifyBy(flaky, hash)).status).toBe(500);
+    expect(((await call(w, "GET", w.paths.draft)).body as PlanDraft).state).toBe("ratified");
+    expect(await stored(w)).toBeUndefined();
+    fail = false;
+    expect((await ratifyBy(flaky, hash)).status).toBe(201);
+    expect((await stored(w))?.planHash).toBe(hash);
+  });
+});
+
 describe("who may do what", () => {
   const ROLES: readonly ExecutionRole[] = [
     "worker",

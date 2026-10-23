@@ -26,7 +26,9 @@ export type DomainErrorCode =
    */
   | "completion_membership"
   /** P21: a plan draft write or act the draft's state refuses, or a lost append race. */
-  | "plan_draft";
+  | "plan_draft"
+  /** P21: a program contract was created where one is already stored. */
+  | "program_contract_exists";
 
 export abstract class DomainError extends Error {
   abstract readonly code: DomainErrorCode;
@@ -245,6 +247,18 @@ export class PlanDraftError extends DomainError {
     detail: string,
   ) {
     super(`plan draft refused (${reason}): ${detail}`);
+  }
+}
+
+/**
+ * A program contract was created where one is already stored (P21): two first
+ * ratifications raced, and the second must not replace the first.
+ */
+export class ProgramContractExistsError extends DomainError {
+  readonly code = "program_contract_exists" as const;
+
+  constructor(readonly programId: string) {
+    super(`program ${programId} already has a stored contract`);
   }
 }
 
