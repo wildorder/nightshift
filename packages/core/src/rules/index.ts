@@ -21,6 +21,7 @@ export * from "./plan.js";
 export * from "./plan-draft.js";
 export * from "./policy.js";
 export * from "./prerequisite-checks.js";
+export * from "./publication.js";
 export * from "./routing-transitions.js";
 export * from "./run-transitions.js";
 export * from "./step-adjustments.js";

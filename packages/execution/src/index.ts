@@ -181,6 +181,7 @@ export {
   type ProvisionalLineSession,
   repairProvisionalLine,
 } from "./provisional-line.js";
+export * from "./publication-commit.js";
 export * from "./publish.js";
 export {
   gateRedPayload,

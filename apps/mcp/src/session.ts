@@ -11,7 +11,7 @@
  * `program.status` go to the control plane, so an orchestrator and a human
  * reading `GET …/state` never disagree.
  */
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type {
   Agent,
@@ -26,7 +26,6 @@ import type {
 } from "@nightshift/contracts";
 import {
   NIGHTSHIFT_CONFIG_FILE,
-  PROGRAMS_DIRECTORY,
   ProgramIdSchema,
   ProjectIdSchema,
   RunIdSchema,
@@ -176,62 +175,53 @@ const refOf = (raw: unknown, config: unknown): ProgramRef | undefined => {
     : undefined;
 };
 
+/** The project `nightshift.config.json` names, when it names one. */
+const configuredProject = (config: unknown): ProjectId | undefined => {
+  const parsed = ProjectIdSchema.safeParse(
+    (config as { projectId?: unknown } | undefined)?.projectId,
+  );
+  return parsed.success ? parsed.data : undefined;
+};
+
 /**
- * Every program this repository holds a contract for: the single authored
- * contract file of an unplanned program, and each planned program's
- * `docs/programs/{id}/contract.json` (P7, D-P7-03), whose `projectId` may come
- * from `nightshift.config.json`. Only the identifiers are taken from the files;
- * the **record** is the authority for the contract's content (§4.5).
- *
- * Found by the first real planned run (foodfly, 2026-09-22): this read the
- * contract file alone, which a planned program does not have, and the headless
- * root got past it by writing one by hand, which dirtied the checkout.
+ * Every program this repository belongs to: the single authored contract file
+ * of an unplanned program, and each plan draft the control plane holds for the
+ * project of `nightshift.config.json` (P21: a planned program's plan is on the
+ * plane, not under `docs/programs/`). Only the identifiers are taken; the
+ * **record** is the authority for the contract's content (§4.5).
  */
 const repositoryPrograms = async (state: OrchestratorSession): Promise<ProgramRef[]> => {
   const config = await readJson(resolve(state.repoPath, NIGHTSHIFT_CONFIG_FILE));
   const refs: ProgramRef[] = [];
   const single = refOf(await readJson(resolve(state.repoPath, state.contractFile)), config);
   if (single !== undefined) refs.push(single);
-  const programsDir = resolve(state.repoPath, PROGRAMS_DIRECTORY);
-  let entries: string[] = [];
-  try {
-    entries = await readdir(programsDir);
-  } catch {
-    // No planned programs here.
-  }
-  for (const entry of entries.sort()) {
-    const ref = refOf(await readJson(resolve(programsDir, entry, "contract.json")), config);
-    if (ref !== undefined && !refs.some((known) => known.programId === ref.programId)) {
-      refs.push(ref);
+  const projectId = configuredProject(config);
+  if (projectId === undefined) return refs;
+  let cursor: string | undefined;
+  do {
+    const page = await state.runtime.stores.planDrafts.listByProject(projectId, {
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    for (const draft of page.items) {
+      if (!refs.some((known) => known.programId === draft.programId)) {
+        refs.push({ projectId, programId: draft.programId });
+      }
     }
-  }
+    cursor = page.cursor;
+  } while (cursor !== undefined);
   return refs;
 };
 
 /**
- * The directory under `docs/programs/` whose contract names `programId`, for
- * writing that program's `report.md` beside its plan. `undefined` for a program
- * with no planned directory.
+ * The name a planned program has on the plane (its directory name under
+ * `docs/programs/`), from its plan draft. `undefined` for a program with no
+ * draft or a draft with no name: such a run publishes nothing.
  */
-export const programDirectoryOf = async (
+export const programNameOf = async (
   state: OrchestratorSession,
-  programId: ProgramId,
-): Promise<string | undefined> => {
-  const programsDir = resolve(state.repoPath, PROGRAMS_DIRECTORY);
-  let entries: string[] = [];
-  try {
-    entries = await readdir(programsDir);
-  } catch {
-    return undefined;
-  }
-  for (const entry of entries.sort()) {
-    const raw = await readJson(resolve(programsDir, entry, "contract.json"));
-    if ((raw as { programId?: unknown } | undefined)?.programId === programId) {
-      return resolve(programsDir, entry);
-    }
-  }
-  return undefined;
-};
+  scope: { readonly projectId: ProjectId; readonly programId: ProgramId },
+): Promise<string | undefined> =>
+  (await state.runtime.stores.planDrafts.get(scope.projectId, scope.programId))?.name;
 
 /**
  * Which of this repository's programs a run belongs to: the one that holds the
@@ -246,8 +236,8 @@ const repositoryProgram = async (
   if (refs.length === 0) {
     throw new ToolRefusal(
       "not_found",
-      `this repository has no program contract (neither ${state.contractFile} nor ` +
-        `${PROGRAMS_DIRECTORY}/<id>/contract.json), so there is no way to know which program it belongs to`,
+      `this repository has no program contract (not ${state.contractFile}, and the plane holds no ` +
+        "plan draft for the project of nightshift.config.json), so there is no way to know which program it belongs to",
     );
   }
   if (refs.length === 1) return refs[0] as ProgramRef;

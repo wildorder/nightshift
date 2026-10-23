@@ -19,8 +19,8 @@
  * (D-P3-07) and a delegation that would need it is refused up front.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   Checkpoint,
@@ -40,6 +40,8 @@ import {
   type JobKind,
   NIGHTSHIFT_CONFIG_FILE,
   NightshiftConfigSchema,
+  ProgramIdSchema,
+  ProjectIdSchema,
   RepairCauseSchema,
   type Reversibility,
   ReversibilitySchema,
@@ -68,6 +70,7 @@ import {
   strandsOf,
 } from "@nightshift/core";
 import {
+  commitPublication,
   continuedByNightshift,
   type EndGatesResult,
   endProgramNode,
@@ -98,7 +101,7 @@ import {
   attachRun,
   createCheckpointAt,
   describeNodeLine,
-  programDirectoryOf,
+  programNameOf,
   startNewRun,
 } from "./session.js";
 import {
@@ -148,6 +151,21 @@ const readIfPresent = async (path: string): Promise<string | undefined> => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+};
+
+/** The plan document the program's ratified contract names, read from the plane; `undefined` when there is none. */
+const ratifiedPlanText = async (
+  state: OrchestratorSession,
+  authored: unknown,
+): Promise<string | undefined> => {
+  const ids = authored as { projectId?: unknown; programId?: unknown } | null;
+  const projectId = ProjectIdSchema.safeParse(ids?.projectId);
+  const programId = ProgramIdSchema.safeParse(ids?.programId);
+  if (!projectId.success || !programId.success) return undefined;
+  const stored = await state.runtime.stores.programContracts.get(projectId.data, programId.data);
+  const sha256 = stored?.planDocument?.sha256;
+  if (sha256 === undefined) return undefined;
+  return state.runtime.planText?.({ projectId: projectId.data, programId: programId.data }, sha256);
 };
 
 const requireAttached = (state: OrchestratorSession) => {
@@ -637,20 +655,69 @@ const endGatesEnding = async (
   return { kind: "ended", outcome, why: reason };
 };
 
-/** `docs/programs/{id}/report.md` for a planned run; nothing for any other. */
-const writeReport = async (
+interface Published {
+  /** The program branch's head after the publication commit. */
+  readonly head: string;
+  readonly directory: string;
+}
+
+/**
+ * The publication of a finished planned run (P21, D-03): the ratified contract,
+ * the plan, the conversation and the rendered report, committed into
+ * `docs/programs/{name}/` on the program branch, all from the control plane's
+ * records. On a machine the new head is raised as a publication intent, as a
+ * landing's is; locally nothing is pushed. A run that is not planned, or whose
+ * draft has no name, publishes nothing. A failure is the answer's to report:
+ * the run has ended, and what it built is not in doubt.
+ */
+const publishFinished = async (
   state: OrchestratorSession,
   attached: AttachedRun,
-): Promise<string | undefined> => {
-  if (attached.planSections === undefined) return undefined;
-  const directory = await programDirectoryOf(state, attached.session.scope.programId);
-  if (directory === undefined) return undefined;
-  const path = resolve(directory, "report.md");
-  await writeFile(
-    path,
-    renderReport(await gatherReport(state.runtime.stores, attached.session.scope)),
-  );
-  return path;
+): Promise<{ readonly published?: Published; readonly failure?: string }> => {
+  if (attached.planSections === undefined) return {};
+  const { scope, program } = attached.session;
+  try {
+    const name = await programNameOf(state, scope);
+    if (name === undefined) return {};
+    const { stores, planText } = state.runtime;
+    const sha256 = (await stores.executionNodes.get(scope, attached.session.rootNodeId))?.plan
+      ?.planDocument.sha256;
+    const stored = await stores.programContracts.get(scope.projectId, scope.programId);
+    if (stored === undefined || sha256 === undefined || planText === undefined) {
+      return { failure: "the control plane did not supply the contract and plan" };
+    }
+    const plan = await planText(scope, sha256);
+    if (plan === undefined)
+      return { failure: "the control plane did not supply the plan document" };
+    const conversation =
+      stored.conversation === undefined
+        ? undefined
+        : await planText(scope, stored.conversation.sha256);
+    const report = renderReport(await gatherReport(stores, scope));
+    const result = await commitPublication(state.runtime.git, {
+      repo: state.repoPath,
+      programBranch: program.repository.programBranch,
+      name,
+      files: {
+        "contract.json": `${JSON.stringify(stored, null, 2)}\n`,
+        "plan.md": plan,
+        ...(conversation === undefined ? {} : { "conversation.md": conversation }),
+        "report.md": report,
+      },
+      message: `Publish the plan, contract${conversation === undefined ? "" : ", conversation"} and report of ${name}`,
+      atMs: Date.parse(nowIso(state.runtime.clock)),
+    });
+    if (!result.published)
+      return { published: { head: result.head, directory: `docs/programs/${name}` } };
+    await attached.environment.publish?.({
+      head: result.head,
+      programBranch: program.repository.programBranch,
+      repoPath: state.repoPath,
+    });
+    return { published: { head: result.head, directory: `docs/programs/${name}` } };
+  } catch (error) {
+    return { failure: error instanceof Error ? error.message : String(error) };
+  }
 };
 
 /** One feed per attached run, so each call answers "since the last one". */
@@ -825,9 +892,10 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         const repo = resolve(repoPath ?? process.cwd());
         const path = resolve(repo, programContractPath);
         const authored: unknown = JSON.parse(await readFile(path, "utf8"));
-        // A planned program's two files sit together (D-P7-03), and its contract
-        // inherits the project's defaults, exactly as `nightshift run {id}` reads it.
-        const planText = await readIfPresent(resolve(dirname(path), "plan.md"));
+        // A planned program's plan is on the plane (P21): the document its
+        // ratified contract names, by sha256. Its contract inherits the
+        // project's defaults, exactly as `nightshift run {id}` reads it.
+        const planText = await ratifiedPlanText(state, authored);
         const configText = await readIfPresent(resolve(repo, NIGHTSHIFT_CONFIG_FILE));
         const contract =
           configText === undefined
@@ -933,15 +1001,19 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         const notVerified = await notVerifiedOf(state, attached);
         const { ending, why } = await publicationEnding(state, attached, gated.outcome, gated.why);
         await endRun(state, attached, ending, why);
-        // A planned run's report, beside its plan, as `nightshift run` writes it
-        // for a run nobody watched: written from the control plane alone.
-        const reportPath = await writeReport(state, attached);
+        // A planned run's documents and report, published onto the program
+        // branch from the control plane's records alone (P21, D-03).
+        const { published, failure } = await publishFinished(state, attached);
         return ok(
           `${describeNotVerified(notVerified)} Run ${attached.session.scope.runId} is ${ending}.` +
             (ending === outcome ? "" : ` ${why}`) +
-            (reportPath === undefined ? "" : ` The report is at ${reportPath}.`),
+            (published === undefined
+              ? ""
+              : ` The plan, contract and report are published in ${published.directory}/ at ${published.head.slice(0, 8)}.`) +
+            (failure === undefined ? "" : ` They could not be published: ${failure}.`),
           {
-            ...(reportPath === undefined ? {} : { reportPath }),
+            ...(published === undefined ? {} : { published }),
+            ...(failure === undefined ? {} : { publicationFailure: failure }),
             runId: attached.session.scope.runId,
             outcome: ending,
             notVerified,
