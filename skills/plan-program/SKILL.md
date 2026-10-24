@@ -1,6 +1,6 @@
 ---
 name: plan-program
-description: Plan a Nightshift program with the human, in documents, before anything runs — who it is for and why (user stories in the human's own words), outcomes, the seams (strands), each strand's approach from the code, the decisions that are expensive to reverse, and the human prerequisites — written to docs/programs/{id}/plan.md and contract.json, with the conversation that shaped them kept in conversation.md; and it is revised in place until `nightshift plan check` answers READY. Also plans a correction after the human reverses a decision, from its brief. Use when someone wants to plan a program, turn a brief into something Nightshift can run unattended, re-plan after a report, correct a reversed decision, or asks "plan this", "what would the strands be", "is this ready to run", "correct D-…".
+description: Plan a Nightshift program with the human, in documents, before anything runs — who it is for and why (user stories in the human's own words), outcomes, the seams (strands), each strand's approach from the code, the decisions that are expensive to reverse, and the human prerequisites — written as contract.json and plan.md in a scratch directory outside any repository, with the conversation that shaped them kept in conversation.md, and stored in the Nightshift control plane as versions with `nightshift plan put`; each round is a new version, revised on top of the latest until `nightshift plan check` answers READY, and the human's yes ends at `nightshift run`. Also plans a correction after the human reverses a decision, from its brief. Use when someone wants to plan a program, turn a brief into something Nightshift can run unattended, re-plan after a report, correct a reversed decision, or asks "plan this", "what would the strands be", "is this ready to run", "correct D-…".
 ---
 
 # Planning a program with the human
@@ -9,7 +9,13 @@ You are planning **with** a developer, not for them. The product of this stage i
 their understanding: they should come out of it knowing roughly what will be
 built and how, having made the decisions they care about, and confident it will
 run to the end without them. The documents are how that understanding is formed
-and checked, so **the files are the review surface, not this conversation**.
+and checked, so **the drafted documents are the review surface, not this conversation**.
+
+The plan lives only in the control plane, as content-hashed versions of a draft,
+each with its author. You work on a scratch copy in a directory **outside any
+repository**, never under `docs/programs/{id}/`: nothing about planning touches
+git. (Earlier programs' published `docs/programs/{id}/` may still be read as
+history.)
 
 Nothing executes until the human ratifies the plan. After that,
 `nightshift run {id}` runs it end to end with nobody watching, and reports
@@ -42,7 +48,7 @@ human's attention there.
 
 ## 0. Make sure it is Nightshift v1 you are talking to
 
-Run `nightshift --help` once. It must list `plan check`, `plan ratify`,
+Run `nightshift --help` once. It must list `plan put`, `plan show`, `plan check`, `plan ratify`,
 `preflight`, `run` and `resume`. If it does not, the `nightshift` on the PATH is
 an older tool with the same name, and nothing below will work: stop and say so
 (the fix on this machine is `npm link` from the Nightshift repository's
@@ -58,9 +64,10 @@ Read, in this order, whatever exists:
 2. The vision (`visionPath`), `docs/as-built.md`, `AGENTS.md` or `CLAUDE.md`, and
    every document in `contextDocs`.
 3. `docs/backlog/`, if there is one: work somebody already thought about.
-4. `docs/programs/` — the programs that came before, so this one's id, its
-   documents and its style match theirs.
-5. **When re-planning:** the prior `docs/programs/{id}/report.md`, first. It says
+4. `docs/programs/` — the programs that came before (published there as
+   history), so this one's id, its documents and its style match theirs.
+5. **When re-planning:** the prior report, first (`docs/programs/{id}/report.md`
+   on the program branch, where a finished run published it). It says
    which strands succeeded, which were parked and why, which are provisional and
    which prerequisite they wait on, and — leading each strand — **where the run
    departed from the approach the last plan gave it**. A departure is the code
@@ -68,8 +75,10 @@ Read, in this order, whatever exists:
 
 ## 2. Settle the program id and the brief
 
-The id is the directory name under `docs/programs/`, in the repository's existing
-style (`p3-billing`). Ask only for what is missing. A brief that is one sentence
+The id is the draft's name in the plane (and the directory the finished run will
+publish under `docs/programs/`), in the repository's existing style
+(`p3-billing`). Make a scratch directory for it outside the repository, for
+example `mktemp -d`; every file below is written there. Ask only for what is missing. A brief that is one sentence
 is fine; you will grow it from the code.
 
 ## 2a. Who is it for: the stories, first
@@ -334,14 +343,20 @@ An answered decision is a constraint, not a fork: it is recorded with authority
 is ever built on the alternative. A decision you would happily let the run make
 does not belong in the list.
 
-## 8. Write the two files
+## 8. Write the two files, and put them
 
-Write, **to disk**, in the repository:
+Write, into the **scratch directory** (outside any repository, never under
+`docs/programs/{id}/`):
 
-- `docs/programs/{id}/plan.md` — from `templates/plan.md` beside this skill,
+- `<scratch>/plan.md` — from `templates/plan.md` beside this skill,
   matched to how this repository's earlier programs are written.
-- `docs/programs/{id}/contract.json` — the Program Contract, `"status":
-  "planning"`.
+- `<scratch>/contract.json` — the Program Contract, `"status": "planning"`.
+
+Then store the round: `nightshift plan put {id} --dir <scratch>`. It writes the
+next version of the draft, recorded with you as its author. A put based on an
+older version than the latest is **refused and names the latest**: run
+`nightshift plan show {id}`, read what is there, and rework your change on top
+of it.
 
 **One home per fact.** Structured facts live in the contract: success criteria,
 strands with their scopes, acceptance and `dependsOn`, prerequisites with their
@@ -429,13 +444,13 @@ is found, checked, and handed to its orchestrator.
 
 Then keep the conversation (§8a), and reply with a **short** summary — the
 stories and the strands in a line each, the decisions you need from them, the
-prerequisites — and the paths. Do not paste the documents into the conversation.
+prerequisites — and the version `plan put` reported. Do not paste the documents into the conversation.
 
 ## 8a. Keep the conversation, every round
 
 The human's reasons live in this conversation, and they are gone once it ends.
 At the end of **every** round, keep what shaped the plan in
-`docs/programs/{id}/conversation.md`:
+`<scratch>/conversation.md`, stored with the plan:
 
 1. `nightshift plan conversation {id}` lists this session's messages, numbered
    (the human's and yours, never a tool's), with `*` beside those already kept.
@@ -450,23 +465,29 @@ At the end of **every** round, keep what shaped the plan in
    repository. It is labelled as yours.
 4. `nightshift plan conversation {id} --keep 3,7-9 --summary <file>`. It copies
    the chosen messages from the transcript word for word, masks anything shaped
-   like a credential, and extends the file without duplicating what is there.
+   like a credential, and extends the draft's conversation without duplicating
+   what is there. Then `nightshift plan show {id} --dir <scratch>` refreshes the
+   scratch and `nightshift plan put {id} --dir <scratch>` stores it if you edited it.
 
-Tell the human the file is there and that they should **read it before it is
-committed**: they may cut anything, and should not reword an excerpt, since the
+Tell the human the conversation is in the draft and that they should **read it
+before they ratify**: they may cut anything, and should not reword an excerpt, since the
 stories' quotes are checked against it. When the repository or the contract says
 `"keepConversation": false`, skip this step and leave `words` out.
 
-## 9. Revise in place, for as many rounds as it takes
+## 9. Revise, a new version each round, for as many rounds as it takes
 
-Every revision is an edit to those files. The human may edit them by hand; read
-them again before you change anything, and never overwrite their edits with your
-last draft. Keep going until they are happy. There is no round limit and no
+Every revision is a new version, never an edit of an old one. The human or
+another author may have written a newer version than yours: before you change
+anything, read the draft back with `nightshift plan show {id} [--version n]
+[--dir <scratch>]`, and never overwrite their changes with your last draft. Edit
+the scratch files, check them (§10), and store them with
+`nightshift plan put {id} --dir <scratch>`. Keep going until they are happy. There is no round limit and no
 hurry: this is the cheap place to be wrong.
 
 ## 10. Check, and say what is not ready
 
-Run `nightshift plan check {id}`. It is deterministic and answers `READY` or
+Run `nightshift plan check {id}` (the plane's latest version; `--dir <scratch>`
+checks a scratch before you put it). It is deterministic and answers `READY` or
 every reason at once: no story, a story missing who, problem or outcome, a
 story no criterion serves or a criterion that serves no story, a quote the kept
 conversation does not hold, an unclaimed success criterion, a strand scope outside the
@@ -479,34 +500,23 @@ fix is a narrower scope, an `excludes`, or an honest `dependsOn`.
 
 When it says `READY`, tell the human, and ask one question: **"Run it?"**
 (or, when they want to look first, "Ratify it to run later?"). Asking to run a
-plan is approving it: `nightshift run {id}` ratifies a READY, committed plan
+plan is approving it: `nightshift run {id}` ratifies the READY latest version
 itself and then runs it, so there is no separate ceremony for the human to
 remember (2026-10-16). Your job is to make saying yes cost nothing. When they
-say yes, do all of this yourself:
+say yes, your last step is:
 
-1. **The program branch.** The contract's `repository.programBranch` (say
-   `program/{id}`) must exist and be **checked out**: Nightshift integrates by
-   fast-forwarding the branch the checkout is on, and refuses any other. Create it
-   from the base branch if it does not exist, and check it out:
-   `git checkout -b program/{id} main` (or `git checkout program/{id}` if it does).
-   The working tree must be otherwise clean; if it is not, stop and say what is
-   in the way.
-2. **Commit the plan on that branch.** `nightshift.config.json`, if it is new,
-   and `docs/programs/{id}/` (the plan, the contract and the conversation), and
-   nothing else:
-   `git add nightshift.config.json docs/programs/{id} && git commit -m "plan: {id}"`.
-   A plan is ratified from a commit, so its hash names something git can
-   reproduce.
-3. **Run it, or ratify it.** When they said run: `nightshift run {id} --remote`
-   (or without `--remote` to run here, or `/run-program {id}` to orchestrate it
-   from this session), in the background, and say the run id and how to watch
-   it (`nightshift remote status {id} --watch`). It ratifies
-   the plan, pushes the program branch (fast-forward only) and checks every
-   prerequisite where the work runs. When they said ratify only:
-   `nightshift plan ratify {id}`. Either refuses a plan that is not READY or has
-   uncommitted changes; fix that and run it again, never work around it. A
-   command that says the sign-in has expired means `nightshift login` for the
-   human, nothing else.
+- **Run it:** `nightshift run {id} --remote` (or without `--remote` to run here,
+  or `/run-program {id}` to orchestrate it from this session), in the
+  background, and say the run id and how to watch it
+  (`nightshift remote status {id} --watch`). It ratifies the plan by its hash,
+  makes and pushes the program branch itself (fast-forward only), and checks
+  every prerequisite where the work runs. You create no branch and commit
+  nothing; the plan needs no file in any repository.
+- **Or ratify only**, when they said "ratify to run later": `nightshift plan ratify {id}`.
+
+Either refuses a plan that is not READY; fix that and run it again, never work
+around it. A command that says the sign-in has expired means `nightshift login`
+for the human, nothing else.
 
 Prerequisites are checked by their `verifyCommand` where the work runs, once
 per run: on this machine by `nightshift run` and `nightshift gates`, and on a
@@ -519,9 +529,10 @@ you to correct the program under their new one, the correction is a program like
 any other, planned with them from its **brief**:
 
 ```text
-nightshift decision brief <program> <decisionId> --out docs/programs/<correction-id>/brief.md
+nightshift decision brief <program> <decisionId> --out <scratch>/brief.md
 ```
 
+The scratch is a directory outside any repository, for the correction's id.
 Read the whole brief before proposing anything. It holds the fork in the road:
 what was decided and why, the alternatives weighed and why each was rejected
 (the human's new decision is often one of those, and why it was rejected is
@@ -562,7 +573,9 @@ Then plan as in steps 2a to 10, with these differences:
   awkward to verify.
 - Split a program because a human step exists. Hoist it.
 - Answer a decision on the human's behalf and record it as theirs.
-- Ratify without the human's explicit yes, or start the run: ratifying is their
-  judgement, and the run is `/run-program`'s.
-- Edit a ratified plan and expect it to run: it is refused until ratified again,
-  and that is the point of the gate.
+- Ratify or run without the human's explicit yes: ratifying is their judgement,
+  and `nightshift run {id}` is how their yes is carried out.
+- Edit a ratified plan and expect it to run: a new version is not the ratified
+  one and is refused until ratified again, and that is the point of the gate.
+- Create or check out a branch, or commit anything, to plan: a plan lives only
+  in the plane.

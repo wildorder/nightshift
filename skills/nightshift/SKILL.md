@@ -17,14 +17,15 @@ integrates anything.
 ## A program with a ratified plan
 
 Some programs are **planned**: a human worked out the seams, the approach and the
-expensive decisions in `docs/programs/{id}/plan.md` and `contract.json` (the
-`plan-program` skill), and ratified them with `nightshift plan ratify {id}`.
+expensive decisions in a plan that lives in the control plane, as `plan.md` and
+`contract.json` (the `plan-program` skill), and ratified them with `nightshift plan ratify {id}`.
 **A ratified plan is what you execute.** You do not re-plan it.
 
 - The usual way to run one is unattended: `nightshift run {id}` (or the
   `run-program` skill, from a session) checks the plan is the one that was
   ratified, runs preflight, starts an orchestrator with nobody watching, and
-  writes `docs/programs/{id}/report.md`.
+  publishes `docs/programs/{id}/` (plan, contract, conversation, report) onto
+  the program branch when it finishes.
 - If the human would rather you orchestrate it from this session, they run
   `nightshift run {id} --attended` and you `run.attach` as below. Then:
   - Delegate **each ratified strand** with
@@ -50,7 +51,7 @@ expensive decisions in `docs/programs/{id}/plan.md` and `contract.json` (the
     See `run-program` for the optional repair call.
   - Finish `succeeded` only if every strand succeeded; `deferred` if nothing
     failed and some work is deferred; otherwise `failed`, naming what was parked.
-- If the plan on disk was edited after it was ratified, the run is refused until
+- If the plan in the plane was edited after it was ratified, the run is refused until
   it is ratified again. That is the gate working. Tell the human; do not work
   around it.
 
