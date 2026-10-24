@@ -25,7 +25,7 @@
  * stops where a human would want to look and can tell which kind of stop it is.
  */
 
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ArtifactId, Decision, Prerequisite, ProgramContract } from "@nightshift/contracts";
 import {
@@ -81,7 +81,10 @@ export const writeReportUnlessTracked = async (
     ["ls-files", "--error-unmatch", "--", `${directory.replace(/\\/g, "/")}/${REPORT_FILE}`],
     { cwd: repoPath },
   );
-  if (tracked.exitCode !== 0) await writeFile(path, text);
+  if (tracked.exitCode !== 0) {
+    await mkdir(join(repoPath, directory), { recursive: true });
+    await writeFile(path, text);
+  }
   return path;
 };
 

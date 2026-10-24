@@ -8,7 +8,7 @@
  * filters.
  */
 
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   exportReport,
@@ -54,6 +54,7 @@ export const writeRunReport = async (
     ...program,
     runId: run.runId,
   });
+  await mkdir(join(repoPath, files.directory), { recursive: true });
   const path = join(repoPath, files.directory, REPORT_FILE);
   await writeFile(path, renderReport(report));
   environment.out(`report for run ${run.runId}: ${path}`);

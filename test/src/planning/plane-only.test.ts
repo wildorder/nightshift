@@ -8,8 +8,10 @@
  * server it starts, the engine and merge queue, git with a bare origin.
  * Scripted: the models.
  */
+
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -201,6 +203,14 @@ describe("a plan whose home is the plane (P21 S-02)", () => {
     expect(git("show", `${PROGRAM_BRANCH}:docs/programs/${NAME}/report.md`)).toContain(
       "1 of 1 strands succeeded",
     );
+
+    // On a checkout with no docs/programs at all, `report` writes the report into a new directory.
+    git("checkout", "-q", "main");
+    expect(existsSync(join(fixture.repo, "docs", "programs"))).toBe(false);
+    expect(await cli("report", NAME), said()).toBe(0);
+    expect(
+      await readFile(join(fixture.repo, "docs", "programs", NAME, "report.md"), "utf8"),
+    ).toContain("1 of 1 strands succeeded");
   }, 240_000);
 
   it("imports a program with committed files and no draft as version 1 on its first run, and runs it", async () => {
