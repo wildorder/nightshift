@@ -481,6 +481,7 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
     ].join("\n"),
     ["ACCEPTANCE CRITERIA", numbered(job.acceptance)].join("\n"),
     renderStrandContinued(input.strandContinued),
+    input.task?.kind === "fix" ? renderStrandRetry(input.task) : undefined,
     renderProgramRulings(input.rulings, "orchestrator"),
     ...(job.strandId === undefined
       ? []
@@ -1064,6 +1065,33 @@ const renderRulingsToCarryOut = (rulings: readonly ExaminationRuling[]): string 
     "  says true of what you hand in. The next examination checks only that.",
     "",
     ...rulings.map(describeRuling),
+  ].join("\n");
+
+/**
+ * A strand the root retried after its landing was not accepted (PIP-30). A
+ * strand's branch survives a retry, so the work is there to change; the same
+ * change is never examined again, so handing it back unchanged fails at once.
+ */
+const renderStrandRetry = (task: Extract<AgentTask, { kind: "fix" }>): string =>
+  [
+    task.rulings === undefined
+      ? "THIS STRAND'S LAST LANDING WAS NOT ACCEPTED — fix this first"
+      : "AN ARBITER HAS RULED ON THIS STRAND — carry this out first",
+    "",
+    "  Your branch still holds the strand's earlier work, and its landing was examined",
+    task.rulings === undefined
+      ? "  by an independent model, which found what is below. Change the work so that none"
+      : "  and an arbiter ruled that what is below stands. The ruling is final, not open to",
+    task.rulings === undefined
+      ? "  of it is true, with jobs of your own, then complete again. The new landing is"
+      : "  argument: make it true with jobs of your own, then complete again. The next",
+    task.rulings === undefined ? "  examined again." : "  examination checks exactly that.",
+    "  The same change is never examined twice: a strand completed with nothing changed",
+    "  keeps its verdict and fails at once.",
+    "",
+    ...(task.rulings === undefined
+      ? task.findings.map(describeFinding)
+      : task.rulings.map(describeRuling)),
   ].join("\n");
 
 const renderRulingsToCheck = (rulings: readonly ExaminationRuling[]): string =>

@@ -100,6 +100,8 @@ interface Built {
   /** Every move of a strand's branch the engine asked to publish (A-60). */
   readonly moves: StrandMove[];
   readonly close: () => Promise<unknown>;
+  /** How many times an examiner ran on the strand. */
+  readonly examinerRuns: () => number;
 }
 
 /**
@@ -113,6 +115,8 @@ const buildStrand = async (options: {
   readonly examined?: (round: number) => "material" | "clean";
   /** What the plan reviewer writes to the file it is given; nothing when absent. */
   readonly review?: string;
+  /** The orchestrator's fix rounds hand the strand back without changing it. */
+  readonly unchangedFixes?: boolean;
 }): Promise<Built> => {
   let world: World | undefined;
   const starts: HarnessStartInput[] = [];
@@ -191,6 +195,10 @@ const buildStrand = async (options: {
     if (task?.kind === "strand_fix") {
       // The same session, told exactly what failed (D-P18-05).
       fixes += 1;
+      if (options.unchangedFixes === true) {
+        await complete(context);
+        return { kind: "completed", sessionId: "strand-session" };
+      }
       const name = `F${fixes}`;
       await delegate(
         context,
@@ -393,6 +401,7 @@ const buildStrand = async (options: {
     strandNodeId,
     final,
     close: () => engine.close("the test is done"),
+    examinerRuns: () => examinations,
   };
 };
 
@@ -502,6 +511,21 @@ describe("a strand built as P18 builds it", () => {
     ]);
     expect(await programFiles(w)).toContain("src/answer.js");
     await built.close();
+  }, 120_000);
+});
+
+describe("a strand landing handed back unchanged (PIP-30)", () => {
+  it("keeps its blocking verdict and is not examined again", async () => {
+    const built = await buildStrand({
+      redTest: false,
+      // The second examiner would let it land, as P21's did.
+      examined: (round) => (round === 1 ? "material" : "clean"),
+      unchangedFixes: true,
+    });
+    await built.close();
+    expect(built.examinerRuns()).toBe(1);
+    expect(built.final.status).not.toBe("integrated");
+    expect(built.final.outcomeReason).toContain("the same change is not examined again");
   }, 120_000);
 });
 

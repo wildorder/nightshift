@@ -217,7 +217,11 @@ export const reviewStrandPlan = async (
     if (before === undefined || recorded) return;
     recorded = true;
     const verdict: PlanReviewVerdict =
-      review !== undefined ? review.verdict : undeliverable !== undefined ? "undeliverable" : "not reviewed";
+      review !== undefined
+        ? review.verdict
+        : undeliverable !== undefined
+          ? "undeliverable"
+          : "not reviewed";
     const decision: Decision = {
       schemaVersion: 1,
       ...scope,

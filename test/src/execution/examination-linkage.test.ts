@@ -755,6 +755,8 @@ describe("what a later examination may close", () => {
       }[];
       readonly implementerAgentId?: string;
       readonly followsRulings?: Examination["followsRulings"];
+      /** The change examined: each examination's own unless named, as separate attempts' are. */
+      readonly patchId?: string;
     }): Promise<Examination> => {
       clockTick += 1;
       const base = (
@@ -767,7 +769,7 @@ describe("what a later examination may close", () => {
         executionNodeId: made.nodeId,
         verificationId: base?.verificationId ?? made.world.ids.next("ver"),
         commitSha: "a".repeat(40),
-        patchId: "b".repeat(40),
+        patchId: spec.patchId ?? clockTick.toString(16).padStart(40, "b"),
         implementerAgentId: spec.implementerAgentId ?? agent?.agentId,
         examinerAgentId: made.world.ids.next("agent"),
         examinerRoute: EXAMINER,
@@ -859,6 +861,25 @@ describe("what a later examination may close", () => {
     });
     await t.close(other);
     expect(resolutionsOf(await t.reread(e1))).toEqual([["F-01", "fixed"]]);
+  });
+
+  it("closes nothing on another agent's examination of the very same change (PIP-30)", async () => {
+    const t = await bare();
+    const unmet = await t.build({
+      fixAttempt: 2,
+      outcome: "findings_raised",
+      findings: [{ id: "F-01" }],
+      patchId: "c".repeat(40),
+    });
+    const resubmitted = await t.build({
+      fixAttempt: 2,
+      outcome: "findings_raised",
+      findings: [{ id: "F-01", severity: "minor" }],
+      implementerAgentId: t.world.ids.next("agent"),
+      patchId: "c".repeat(40),
+    });
+    await t.close(resubmitted);
+    expect(resolutionsOf(await t.reread(unmet))).toEqual([["F-01", "unresolved"]]);
   });
 
   it("never touches disputed or upheld findings", async () => {
