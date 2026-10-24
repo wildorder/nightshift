@@ -27,6 +27,8 @@ import type {
   DecisionId,
   ExecutionNode,
   JobContract,
+  ProgramId,
+  ProjectId,
   Repair,
   RepairCause,
   RouteChoice,
@@ -151,19 +153,82 @@ const readIfPresent = async (path: string): Promise<string | undefined> => {
   }
 };
 
-/** The plan document the program's ratified contract names, read from the plane; `undefined` when there is none. */
-const ratifiedPlanText = async (
+/** The ratified contract the plane holds for a program, and the plan document it names. */
+interface RatifiedProgram {
+  readonly contract: unknown;
+  readonly planText: string;
+}
+
+const ratifiedProgram = async (
+  state: OrchestratorSession,
+  projectId: ProjectId,
+  programId: ProgramId,
+): Promise<RatifiedProgram | undefined> => {
+  const stored = await state.runtime.stores.programContracts.get(projectId, programId);
+  const sha256 = stored?.planDocument?.sha256;
+  if (stored === undefined || sha256 === undefined) return undefined;
+  const planText = await state.runtime.planText?.({ projectId, programId }, sha256);
+  return planText === undefined ? undefined : { contract: stored, planText };
+};
+
+/** The planned program a plan draft named `name` on the plane stands for; refuses when it cannot be run. */
+const ratifiedProgramNamed = async (
+  state: OrchestratorSession,
+  name: string,
+  config: unknown,
+): Promise<RatifiedProgram> => {
+  const projectId = ProjectIdSchema.safeParse(
+    (config as { projectId?: unknown } | undefined)?.projectId,
+  );
+  if (!projectId.success) {
+    throw new ToolRefusal(
+      "validation_failed",
+      `${NIGHTSHIFT_CONFIG_FILE} names no project, so there is no way to find the program \`${name}\` on the plane`,
+    );
+  }
+  let cursor: string | undefined;
+  let draft: { readonly programId: ProgramId } | undefined;
+  do {
+    const page = await state.runtime.stores.planDrafts.listByProject(projectId.data, {
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    draft = page.items.find((candidate) => candidate.name === name);
+    cursor = draft === undefined ? page.cursor : undefined;
+  } while (draft === undefined && cursor !== undefined);
+  if (draft === undefined) {
+    throw new ToolRefusal("not_found", `the plane has no plan draft named \`${name}\``);
+  }
+  const stored = await state.runtime.stores.programContracts.get(projectId.data, draft.programId);
+  if (stored?.planDocument === undefined) {
+    throw new ToolRefusal(
+      "validation_failed",
+      `\`${name}\` has not been ratified. Ratify it with \`nightshift plan ratify ${name}\`.`,
+    );
+  }
+  const ratified = await ratifiedProgram(state, projectId.data, draft.programId);
+  if (ratified === undefined) {
+    throw new ToolRefusal(
+      "not_found",
+      `the plane holds no ratified plan ${stored.planDocument.sha256} for \`${name}\``,
+    );
+  }
+  return ratified;
+};
+
+/**
+ * A contract file that is planned (has strands) only identifies its program:
+ * the plane's ratified contract, when it holds one, is what runs.
+ */
+const ratifiedForFile = async (
   state: OrchestratorSession,
   authored: unknown,
-): Promise<string | undefined> => {
-  const ids = authored as { projectId?: unknown; programId?: unknown } | null;
-  const projectId = ProjectIdSchema.safeParse(ids?.projectId);
-  const programId = ProgramIdSchema.safeParse(ids?.programId);
+): Promise<RatifiedProgram | undefined> => {
+  const file = authored as { projectId?: unknown; programId?: unknown; strands?: unknown } | null;
+  if (!Array.isArray(file?.strands) || file.strands.length === 0) return undefined;
+  const projectId = ProjectIdSchema.safeParse(file.projectId);
+  const programId = ProgramIdSchema.safeParse(file.programId);
   if (!projectId.success || !programId.success) return undefined;
-  const stored = await state.runtime.stores.programContracts.get(projectId.data, programId.data);
-  const sha256 = stored?.planDocument?.sha256;
-  if (sha256 === undefined) return undefined;
-  return state.runtime.planText?.({ projectId: projectId.data, programId: programId.data }, sha256);
+  return ratifiedProgram(state, projectId.data, programId.data);
 };
 
 const requireAttached = (state: OrchestratorSession) => {
@@ -842,28 +907,48 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     {
       title: "Start a run",
       description:
-        "Validate an authored Program Contract, persist it with its run, root node and initial " +
-        "checkpoint, and bind this server to it. The same function `nightshift run` calls.",
+        "Start a run of a program and bind this server to it: give `program`, a planned program's name " +
+        "on the plane (its ratified contract and plan are read from there, no file needed), or " +
+        "`programContractPath`, an authored Program Contract (a planned one is replaced by the plane's " +
+        "ratified contract; the file only identifies it). Persists the contract with its run, root node " +
+        "and initial checkpoint. The same function `nightshift run` calls.",
       inputSchema: {
-        programContractPath: z.string().min(1),
+        program: z.string().min(1).optional(),
+        programContractPath: z.string().min(1).optional(),
         model: z.string().min(1),
         repoPath: z.string().min(1).optional(),
       },
     },
-    async ({ programContractPath, model, repoPath }) =>
+    async ({ program, programContractPath, model, repoPath }) =>
       guarded(async () => {
+        if ((program === undefined) === (programContractPath === undefined)) {
+          throw new ToolRefusal(
+            "validation_failed",
+            "give exactly one of `program` (a planned program's name) or `programContractPath`",
+          );
+        }
         const repo = resolve(repoPath ?? process.cwd());
-        const path = resolve(repo, programContractPath);
-        const authored: unknown = JSON.parse(await readFile(path, "utf8"));
-        // A planned program's plan is on the plane (P21): the document its
-        // ratified contract names, by sha256. Its contract inherits the
-        // project's defaults, exactly as `nightshift run {id}` reads it.
-        const planText = await ratifiedPlanText(state, authored);
         const configText = await readIfPresent(resolve(repo, NIGHTSHIFT_CONFIG_FILE));
-        const contract =
+        const config: unknown =
           configText === undefined
-            ? authored
-            : inheritFromConfig(authored, NightshiftConfigSchema.parse(JSON.parse(configText)));
+            ? undefined
+            : NightshiftConfigSchema.parse(JSON.parse(configText));
+        // A planned program is on the plane (P21): its ratified contract and the
+        // plan that contract names, by sha256. No contract is read from disk for it.
+        let authored: unknown;
+        let ratified: RatifiedProgram | undefined;
+        if (program !== undefined) {
+          ratified = await ratifiedProgramNamed(state, program, config);
+          authored = ratified.contract;
+        } else {
+          const path = resolve(repo, programContractPath as string);
+          authored = JSON.parse(await readFile(path, "utf8"));
+          ratified = await ratifiedForFile(state, authored);
+          if (ratified !== undefined) authored = ratified.contract;
+        }
+        const planText = ratified?.planText;
+        const contract =
+          config === undefined ? authored : inheritFromConfig(authored, config as never);
         const started = await startNewRun(state, {
           program: contract,
           repoPath: repo,
