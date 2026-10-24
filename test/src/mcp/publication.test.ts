@@ -8,9 +8,21 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { ProgramContract } from "@nightshift/contracts";
-import { git, type Landing, nodeGitRunner } from "@nightshift/execution";
-import { createNightshiftServer } from "@nightshift/mcp";
+import type { Dispatch, ProgramContract } from "@nightshift/contracts";
+import { createFixtures, makeDispatch } from "@nightshift/core";
+import {
+  createPublicationQueue,
+  git,
+  type Landing,
+  nodeGitRunner,
+  type PublishLanding,
+} from "@nightshift/execution";
+import {
+  createNightshiftServer,
+  publishPlannedRun,
+  type Runtime,
+  runResume,
+} from "@nightshift/mcp";
 import {
   createFetchTransport,
   createHttpPlanning,
@@ -112,13 +124,150 @@ const plannedWorld = async (named: boolean) => {
   return { world, contract, ratified, planning };
 };
 
-const start = async (world: BaseWorld, landings: Landing[] | undefined) => {
+/** A machine's plane and publisher, faked: the real queue over an upload and a request that can fail. */
+interface Machine {
+  readonly dispatch: () => Dispatch;
+  readonly landing: PublishLanding;
+  readonly uploads: () => number;
+  readonly requests: () => number;
+  /** The heads the fake origin ended up with, in order. */
+  readonly origin: string[];
+  /** Faults still to happen; a test may clear them to let a retry through. */
+  readonly faults: { uploadFailures: number; requestFailures: number; refuse: boolean };
+}
+
+const machineOf = async (
+  world: BaseWorld,
+  faults: { uploadFailures?: number; requestFailures?: number; refuse?: boolean },
+): Promise<Machine> => {
+  const base = (await run(world, ["rev-parse", PROGRAM_BRANCH])).trim();
+  const fixtures = createFixtures();
+  let dispatch = {
+    ...makeDispatch(fixtures, { status: "running" }),
+    input: { ...makeDispatch(fixtures, { status: "running" }).input, baseSha: base },
+    publication: { intents: [] },
+  } as unknown as Dispatch;
+  const origin: string[] = [];
+  let uploads = 0;
+  let requests = 0;
+  const live = {
+    uploadFailures: faults.uploadFailures ?? 0,
+    requestFailures: faults.requestFailures ?? 0,
+    refuse: faults.refuse ?? false,
+  };
+  const landing = createPublicationQueue({
+    predecessor: async () =>
+      (dispatch.publication.intents.at(-1)?.head ?? dispatch.publication.head ?? base) as never,
+    packDir: join(world.stateDir, "packs"),
+    upload: async (_pack, head) => {
+      uploads += 1;
+      if (live.uploadFailures > 0) {
+        live.uploadFailures -= 1;
+        throw new Error("upload failed");
+      }
+      return { key: `bundle/${head}` };
+    },
+    request: async (body) => {
+      requests += 1;
+      if (live.requestFailures > 0) {
+        live.requestFailures -= 1;
+        throw new Error("request failed");
+      }
+      const refused = live.refuse;
+      dispatch = {
+        ...dispatch,
+        publication: {
+          ...(refused ? { blocked: "the push was refused" } : { head: body.head }),
+          intents: [
+            ...dispatch.publication.intents,
+            {
+              ...body,
+              status: refused ? "protected" : "published",
+              requestedAt: "2026-10-23T00:00:00.000Z",
+            },
+          ],
+        },
+      } as unknown as Dispatch;
+      if (!refused) origin.push(body.head);
+    },
+    log: () => {},
+  });
+  return {
+    dispatch: () => dispatch,
+    landing,
+    uploads: () => uploads,
+    requests: () => requests,
+    origin,
+    faults: live,
+  };
+};
+
+const runtimeOf = (
+  world: BaseWorld,
+  landings: Landing[] | undefined,
+  machine?: Machine,
+): Runtime => {
   const planning = createHttpPlanning({
     transport: createFetchTransport({
       endpoint: world.plane.url,
       tokens: staticTokenProvider("ignored-by-the-local-plane"),
     }),
   });
+  return {
+    // On a machine the run waits for the publisher; here it has nothing outstanding.
+    stores:
+      landings === undefined && machine === undefined
+        ? world.stores
+        : {
+            ...world.stores,
+            dispatches: {
+              ...world.stores.dispatches,
+              get: async () =>
+                machine?.dispatch() ??
+                ({
+                  attempts: [],
+                  publication: { intents: [] },
+                  cleanup: { volumeDeleted: false, failures: [] },
+                  requestedAt: "2026-10-23T00:00:00.000Z",
+                  tier: "better",
+                  usdPerHour: 0.9,
+                  spend: { estimatedUsd: 1, ceilingSeconds: 3600 },
+                } as never),
+            },
+          },
+    bodies: world.bodies,
+    tokens: world.tokens,
+    harness: createFakeHarness({ script: async () => ({ kind: "completed" }) }),
+    paths: localPathsIn(world.stateDir),
+    git: nodeGitRunner,
+    transport: (async () => ({ status: 500, body: undefined })) as never,
+    ids: world.ids,
+    clock: world.clock,
+    endpoint: world.plane.url,
+    planText: async (scope, sha256) => (await planning.planDocument(scope, sha256))?.text,
+    ...(landings === undefined && machine === undefined
+      ? {}
+      : {
+          publication: () => ({
+            landing:
+              machine?.landing ??
+              (async (landing: Landing) => {
+                landings?.push(landing);
+              }),
+            strand: async () => {},
+          }),
+        }),
+    workerEnvironment: workerEnvironmentIn(world),
+    workerLaunch: () => ({
+      name: "nightshift",
+      command: process.execPath,
+      args: ["--version"],
+      env: {},
+    }),
+  };
+};
+
+const start = async (world: BaseWorld, landings: Landing[] | undefined, machine?: Machine) => {
   const server = await createNightshiftServer({
     env: {
       NIGHTSHIFT_API_ENDPOINT: world.plane.url,
@@ -126,55 +275,7 @@ const start = async (world: BaseWorld, landings: Landing[] | undefined) => {
       NIGHTSHIFT_STATE_DIR: world.stateDir,
     },
     cwd: world.repo,
-    runtime: {
-      // On a machine the run waits for the publisher; here it has nothing outstanding.
-      stores:
-        landings === undefined
-          ? world.stores
-          : {
-              ...world.stores,
-              dispatches: {
-                ...world.stores.dispatches,
-                get: async () =>
-                  ({
-                    attempts: [],
-                    publication: { intents: [] },
-                    cleanup: { volumeDeleted: false, failures: [] },
-                    requestedAt: "2026-10-23T00:00:00.000Z",
-                    tier: "better",
-                    usdPerHour: 0.9,
-                    spend: { estimatedUsd: 1, ceilingSeconds: 3600 },
-                  }) as never,
-              },
-            },
-      bodies: world.bodies,
-      tokens: world.tokens,
-      harness: createFakeHarness({ script: async () => ({ kind: "completed" }) }),
-      paths: localPathsIn(world.stateDir),
-      git: nodeGitRunner,
-      transport: (async () => ({ status: 500, body: undefined })) as never,
-      ids: world.ids,
-      clock: world.clock,
-      endpoint: world.plane.url,
-      planText: async (scope, sha256) => (await planning.planDocument(scope, sha256))?.text,
-      ...(landings === undefined
-        ? {}
-        : {
-            publication: () => ({
-              landing: async (landing: Landing) => {
-                landings.push(landing);
-              },
-              strand: async () => {},
-            }),
-          }),
-      workerEnvironment: workerEnvironmentIn(world),
-      workerLaunch: () => ({
-        name: "nightshift",
-        command: process.execPath,
-        args: ["--version"],
-        env: {},
-      }),
-    },
+    runtime: runtimeOf(world, landings, machine),
   });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
@@ -307,8 +408,8 @@ describe("run.start resolves a planned program from the plane", () => {
 describe("run.finish of a planned run publishes its documents (D-03)", () => {
   it("leaves one commit holding exactly the four files, and raises a publication intent on a machine", async () => {
     const { world, ratified } = await plannedWorld(true);
-    const landings: Landing[] = [];
-    const mcp = await start(world, landings);
+    const machine = await machineOf(world, {});
+    const mcp = await start(world, undefined, machine);
     const started = await mcp.call("run.start", {
       programContractPath: CONTRACT_FILE,
       model: MODEL,
@@ -348,7 +449,8 @@ describe("run.finish of a planned run publishes its documents (D-03)", () => {
     // Nothing is left untracked in the checkout.
     expect((await run(world, ["status", "--porcelain"])).trim()).toBe("");
 
-    expect(landings.at(-1)).toMatchObject({ head: after, programBranch: PROGRAM_BRANCH });
+    expect(machine.origin).toEqual([after]);
+    expect(machine.dispatch().publication.intents.map((i) => i.head)).toEqual([after]);
   });
 
   it("publishes nothing for a draft with no name", async () => {
@@ -385,5 +487,206 @@ describe("run.finish of a planned run publishes its documents (D-03)", () => {
     expect(finished.ok, JSON.stringify(finished)).toBe(true);
     await mcp.stop();
     expect((await run(world, ["rev-parse", PROGRAM_BRANCH])).trim()).not.toBe(before);
+  });
+});
+
+describe("run.finish settles the documentation head like a landing (F-01)", () => {
+  type Faults = Parameters<typeof machineOf>[1];
+
+  /** A planned run whose strand is carried, so it may end `succeeded`, finished on a faked machine. */
+  const finishOnMachine = async (faults: Faults, outcome: "succeeded" | "failed" = "succeeded") => {
+    const { world } = await plannedWorld(true);
+    const machine = await machineOf(world, faults);
+    const first = await start(world, undefined, machine);
+    const started = await first.call("run.start", {
+      programContractPath: CONTRACT_FILE,
+      model: MODEL,
+      repoPath: world.repo,
+    });
+    expect(started.ok, JSON.stringify(started)).toBe(true);
+    await first.stop();
+    const scope = {
+      projectId: world.program.projectId,
+      programId: world.program.programId,
+      runId: started.runId as never,
+    };
+    const recorded = await world.backing.runs.get(scope, scope.runId);
+    if (recorded === undefined) throw new Error("the started run is not recorded");
+    await world.backing.runs.put({
+      ...recorded,
+      status: "running",
+      carriedStrands: [
+        {
+          strandId: "S-01" as never,
+          fromRunId: "run_01M5N7AQ77S182QK7FWSBHJNKA" as never,
+          landed: [],
+        },
+      ],
+    });
+    // A session that attaches now finds the strand carried, so the run may succeed.
+    const mcp = await start(world, undefined, machine);
+    const attached = await mcp.call("run.attach", { model: MODEL, runId: started.runId });
+    expect(attached.ok, JSON.stringify(attached)).toBe(true);
+    const before = (await run(world, ["rev-parse", PROGRAM_BRANCH])).trim();
+    const finished = await mcp.call("run.finish", { outcome, reason: "by the test" });
+    await mcp.stop();
+    const head = (await run(world, ["rev-parse", PROGRAM_BRANCH])).trim();
+    const ended = await world.stores.runs.get(scope, scope.runId);
+    return { world, machine, finished, before, head, ended, scope };
+  };
+
+  it("ends succeeded with one four-file commit, published, and a report that states the ending", async () => {
+    const { world, machine, finished, before, head, ended } = await finishOnMachine({});
+    expect(finished.ok, JSON.stringify(finished)).toBe(true);
+    expect(finished.outcome).toBe("succeeded");
+    expect(ended?.status).toBe("succeeded");
+    expect((await run(world, ["rev-list", `${before}..${head}`])).trim().split("\n")).toHaveLength(
+      1,
+    );
+    expect(
+      (await run(world, ["diff", "--name-only", before, head])).trim().split("\n").sort(),
+    ).toEqual(
+      ["contract.json", "conversation.md", "plan.md", "report.md"].map(
+        (f) => `docs/programs/${NAME}/${f}`,
+      ),
+    );
+    // The docs head is what the fake origin has, and the dispatch records it.
+    expect(machine.origin).toEqual([head]);
+    expect(machine.dispatch().publication.head).toBe(head);
+    expect(finished.published).toMatchObject({ head });
+    expect(await show(world, `${head}:docs/programs/${NAME}/report.md`)).toContain("**succeeded**");
+  });
+
+  it("ends succeeded when the first upload of the docs head fails and republishing succeeds", async () => {
+    const { machine, finished, head, ended } = await finishOnMachine({ uploadFailures: 1 });
+    expect(finished.ok, JSON.stringify(finished)).toBe(true);
+    expect(finished.outcome).toBe("succeeded");
+    expect(ended?.status).toBe("succeeded");
+    expect(machine.uploads()).toBe(2);
+    expect(machine.origin).toEqual([head]);
+    expect(machine.dispatch().publication.intents.map((i) => i.status)).toEqual(["published"]);
+    expect(finished.published).toMatchObject({ head });
+    expect(finished.publicationFailure).toBeUndefined();
+  });
+
+  it("ends succeeded when the first request fails and republishing succeeds", async () => {
+    const { machine, finished, head } = await finishOnMachine({ requestFailures: 1 });
+    expect(finished.outcome).toBe("succeeded");
+    expect(machine.origin).toEqual([head]);
+    expect(machine.dispatch().publication.head).toBe(head);
+  });
+
+  it("ends deferred with the unpublished reason when the upload keeps failing, and reports no publication", async () => {
+    const { world, machine, finished, head, ended } = await finishOnMachine({
+      uploadFailures: 100,
+    });
+    expect(finished.ok, JSON.stringify(finished)).toBe(true);
+    expect(finished.outcome).toBe("deferred");
+    expect(ended?.status).toBe("interrupted");
+    expect(ended?.outcomeReason).toContain("final documentation commit");
+    expect(machine.dispatch().publication.intents).toEqual([]);
+    expect(machine.origin).toEqual([]);
+    expect(finished.published).toBeUndefined();
+    expect(finished.publicationFailure).toBeDefined();
+    // The checkout's report is true about the ending the run was given.
+    expect(await show(world, `${head}:docs/programs/${NAME}/report.md`)).toContain(
+      "**interrupted**",
+    );
+  });
+
+  it("ends deferred when the request keeps failing", async () => {
+    const { machine, finished, ended } = await finishOnMachine({ requestFailures: 100 });
+    expect(finished.outcome).toBe("deferred");
+    expect(ended?.outcomeReason).toContain("final documentation commit");
+    expect(machine.dispatch().publication.intents).toEqual([]);
+    expect(finished.published).toBeUndefined();
+    expect(finished.publicationFailure).toBeDefined();
+  });
+
+  it("ends deferred when the publisher refuses the docs head's push", async () => {
+    const { machine, finished, ended } = await finishOnMachine({ refuse: true });
+    expect(finished.outcome).toBe("deferred");
+    expect(ended?.status).toBe("interrupted");
+    expect(ended?.outcomeReason).toContain("could not be published");
+    expect(machine.dispatch().publication.intents.map((i) => i.status)).toEqual(["protected"]);
+    expect(machine.origin).toEqual([]);
+    expect(finished.published).toBeUndefined();
+    expect(finished.publicationFailure).toBeDefined();
+  });
+
+  it("publishPlannedRun reports failure, not published, when its intent was not recorded", async () => {
+    const { world } = await plannedWorld(true);
+    const machine = await machineOf(world, { uploadFailures: 100 });
+    const mcp = await start(world, undefined, machine);
+    const started = await mcp.call("run.start", {
+      programContractPath: CONTRACT_FILE,
+      model: MODEL,
+      repoPath: world.repo,
+    });
+    await mcp.stop();
+    const scope = {
+      projectId: world.program.projectId,
+      programId: world.program.programId,
+      runId: started.runId as never,
+    };
+    const result = await publishPlannedRun(runtimeOf(world, undefined, machine), {
+      scope,
+      program: world.program,
+      repoPath: world.repo,
+      name: NAME,
+      rootNodeId: (await world.backing.runs.get(scope, scope.runId))?.rootNodeId as never,
+      publish: machine.landing,
+    });
+    const head = (await run(world, ["rev-parse", PROGRAM_BRANCH])).trim();
+    expect(result.published).toBeUndefined();
+    expect(result.failure).toContain("was not requested");
+    expect(result.committed?.head).toBe(head);
+    expect(machine.dispatch().publication.intents).toEqual([]);
+  });
+
+  describe("nightshift resume on a machine", () => {
+    it("settles the docs head: an intent the run could not raise is raised and published", async () => {
+      const { world, machine, scope } = await finishOnMachine({ uploadFailures: 100 });
+      machine.faults.uploadFailures = 0;
+      const outcome = await runResume(runtimeOf(world, undefined, machine), {
+        scope,
+        repoPath: world.repo,
+      });
+      expect(outcome.publicationFailure).toBeUndefined();
+      // The resume's own report commit is on top of the run's, and it is what GitHub has.
+      const after = (await run(world, ["rev-parse", PROGRAM_BRANCH])).trim();
+      expect(machine.origin).toEqual([after]);
+      expect(machine.dispatch().publication.head).toBe(after);
+    });
+
+    it("reports the publication failure when the docs head still cannot reach GitHub", async () => {
+      const { world, machine, scope } = await finishOnMachine({ uploadFailures: 100 });
+      const outcome = await runResume(runtimeOf(world, undefined, machine), {
+        scope,
+        repoPath: world.repo,
+      });
+      expect(outcome.publicationFailure).toContain("final documentation commit");
+      expect(machine.origin).toEqual([]);
+    });
+
+    it("has nothing to push locally", async () => {
+      const { world } = await plannedWorld(true);
+      const mcp = await start(world, undefined);
+      const started = await mcp.call("run.start", {
+        programContractPath: CONTRACT_FILE,
+        model: MODEL,
+        repoPath: world.repo,
+      });
+      await mcp.stop();
+      const outcome = await runResume(runtimeOf(world, undefined), {
+        scope: {
+          projectId: world.program.projectId,
+          programId: world.program.programId,
+          runId: started.runId as never,
+        },
+        repoPath: world.repo,
+      });
+      expect(outcome.publicationFailure).toBeUndefined();
+    });
   });
 });

@@ -34,7 +34,17 @@ export interface Landing {
   readonly repoPath: string;
 }
 
-export type PublishLanding = (landing: Landing) => Promise<void>;
+/**
+ * What a publish hook can say about its request. A landing's caller ignores it
+ * (the next landing carries a failed one); the final documentation commit's
+ * does not: `requested: false` means no intent was recorded.
+ */
+export interface PublishResult {
+  readonly requested: boolean;
+  readonly detail?: string;
+}
+
+export type PublishLanding = (landing: Landing) => Promise<PublishResult | undefined | void>;
 
 /** A strand's branch moved (A-60): a job merged onto it, or the program head merged in. */
 export interface StrandMove {
@@ -105,12 +115,12 @@ export const packCommits = async (
  * covers both ranges.
  */
 export const createPublicationQueue = (options: PublicationQueueOptions): PublishLanding => {
-  let chain: Promise<void> = Promise.resolve();
+  let chain: Promise<unknown> = Promise.resolve();
   return (landing) => {
-    chain = chain.then(async () => {
+    const result = chain.then(async (): Promise<PublishResult> => {
       try {
         const predecessor = await options.predecessor();
-        if (landing.head === predecessor) return;
+        if (landing.head === predecessor) return { requested: true };
         const pack = await packCommits(
           landing.repoPath,
           options.packDir,
@@ -126,13 +136,17 @@ export const createPublicationQueue = (options: PublicationQueueOptions): Publis
         options.log(
           `publication requested: ${landing.programBranch} ${predecessor.slice(0, 12)} → ${landing.head.slice(0, 12)} (${pack.length} bytes)`,
         );
+        return { requested: true };
       } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
         options.log(
-          `publication of ${landing.head.slice(0, 12)} could not be requested: ${error instanceof Error ? error.message : String(error)}; the next landing will carry it`,
+          `publication of ${landing.head.slice(0, 12)} could not be requested: ${detail}; the next landing will carry it`,
         );
+        return { requested: false, detail };
       }
     });
-    return chain;
+    chain = result;
+    return result;
   };
 };
 

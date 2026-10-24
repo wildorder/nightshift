@@ -26,7 +26,9 @@ export {
   JOB_WAIT_CAP_ENV,
   registerOrchestratorTools,
 } from "./orchestrator.js";
+export { publishPlannedRun } from "./publish-run.js";
 export { asRefusal, type RefusalCode, ToolRefusal } from "./results.js";
+export { type ResumeOutcome, ResumeRefusal, runResume } from "./resume.js";
 export {
   type Env,
   EXECUTION_TOKEN_ENV,

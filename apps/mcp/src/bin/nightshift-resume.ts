@@ -42,7 +42,7 @@ const main = async (): Promise<number> => {
   say(`run ${scope.runId}; control plane ${runtime.endpoint}`);
   const result = await runResume(runtime, { scope, repoPath: values.repo });
   process.stdout.write(`${JSON.stringify(result)}\n`);
-  return 0;
+  return result.publicationFailure === undefined ? 0 : 1;
 };
 
 main()

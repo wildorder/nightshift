@@ -52,17 +52,26 @@ export const settlePublication = async (
   }
 };
 
-/** Whether GitHub has everything the run landed. */
-export const fullyPublished = (state: PublicationState | undefined): boolean =>
-  state !== undefined && (state.kind === "published" || state.kind === "none");
+/**
+ * Whether GitHub has everything the run landed, and `head` when one is given:
+ * a record with every intent published but not `head` (its request never
+ * recorded, or refused) lacks it.
+ */
+export const fullyPublished = (state: PublicationState | undefined, head?: string): boolean =>
+  state !== undefined &&
+  (state.kind === "published" || state.kind === "none") &&
+  (head === undefined || state.head === head);
 
 /** Why a run whose work GitHub lacks did not succeed, and what brings it there. */
-export const unpublishedReason = (state: PublicationState | undefined): string => {
+export const unpublishedReason = (state: PublicationState | undefined, head?: string): string => {
   const recovery =
     "Every landing is on the machine's program branch and in the run's stored bundles; " +
     "once the cause is fixed, `nightshift resume` for the program publishes them without a machine.";
   if (state === undefined) {
     return `GitHub may not have this run's work: its publication could not be read. ${recovery}`;
+  }
+  if (head !== undefined && (state.kind === "published" || state.kind === "none")) {
+    return `GitHub does not have this run's final documentation commit ${head.slice(0, 12)}: its publication was not recorded or was refused. ${recovery}`;
   }
   const count = state.unpublished.length;
   const landings = `${count} landing${count === 1 ? "" : "s"}`;
