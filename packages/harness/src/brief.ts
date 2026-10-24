@@ -125,6 +125,22 @@ const headlessSession = (finish: string): string =>
     "  stopped with it.",
   ].join("\n");
 
+/**
+ * How an orchestrator waits (PIP-31). A strand orchestrator once slept in its
+ * shell for half an hour at a time instead of calling job.wait, because each
+ * wait came back empty and nothing told it why or what a sleep costs.
+ */
+export const HOW_TO_WAIT = [
+  "HOW TO WAIT",
+  "",
+  "  Wait only with job.wait (and strand.review.wait for a plan review). Never sleep or",
+  "  poll in your shell: a shell sleep cannot be woken, so a job that fails, conflicts or",
+  "  needs you waits for as long as you sleep. job.wait returns the moment one of the jobs",
+  "  settles. When none has, it returns in under a minute, because the harness would time",
+  "  the call out; that return is normal. Call job.wait again at once: calling it again",
+  "  costs nothing.",
+].join("\n");
+
 const bullets = (items: readonly string[]): string =>
   items.length === 0 ? "  (none)" : items.map((item) => `  - ${item}`).join("\n");
 
@@ -465,6 +481,7 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
     ].join("\n"),
     ["ACCEPTANCE CRITERIA", numbered(job.acceptance)].join("\n"),
     renderStrandContinued(input.strandContinued),
+    input.task?.kind === "fix" ? renderStrandRetry(input.task) : undefined,
     renderProgramRulings(input.rulings, "orchestrator"),
     ...(job.strandId === undefined
       ? []
@@ -541,6 +558,7 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "  the same files, or they conflict on your branch; the review checks this. Each job",
       "  costs a worker's start, so do not split work finer than it is worth.",
     ].join("\n"),
+    HOW_TO_WAIT,
     [
       "SAY WHAT EACH JOB IS — it decides the model, and who examines it",
       "",
@@ -738,6 +756,7 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       '     work is deferred: name the prerequisites it waits on. Otherwise "failed", with a',
       "     reason that names what was parked and why. A human reads it in the morning.",
     ].join("\n"),
+    HOW_TO_WAIT,
     [
       "YOU DO NOT WRITE CODE; DELEGATE IT",
       "",
@@ -867,7 +886,8 @@ const renderPlanReviewBrief = (
       "",
       "  nightshift plan.review.submit { verdict, summary, findings }",
       "    verdict: sound (build it as planned) or revise (change it first).",
-      "    findings: [{ severity: material | minor, summary, jobs? }]",
+      "    findings: [{ severity: material | minor, summary, jobs? }] — every change you ask",
+      "      for is a finding: a revise with no findings is refused.",
       "",
       "  Read the code you need, then submit. You change nothing.",
     ].join("\n"),
@@ -1045,6 +1065,33 @@ const renderRulingsToCarryOut = (rulings: readonly ExaminationRuling[]): string 
     "  says true of what you hand in. The next examination checks only that.",
     "",
     ...rulings.map(describeRuling),
+  ].join("\n");
+
+/**
+ * A strand the root retried after its landing was not accepted (PIP-30). A
+ * strand's branch survives a retry, so the work is there to change; the same
+ * change is never examined again, so handing it back unchanged fails at once.
+ */
+const renderStrandRetry = (task: Extract<AgentTask, { kind: "fix" }>): string =>
+  [
+    task.rulings === undefined
+      ? "THIS STRAND'S LAST LANDING WAS NOT ACCEPTED — fix this first"
+      : "AN ARBITER HAS RULED ON THIS STRAND — carry this out first",
+    "",
+    "  Your branch still holds the strand's earlier work, and its landing was examined",
+    task.rulings === undefined
+      ? "  by an independent model, which found what is below. Change the work so that none"
+      : "  and an arbiter ruled that what is below stands. The ruling is final, not open to",
+    task.rulings === undefined
+      ? "  of it is true, with jobs of your own, then complete again. The new landing is"
+      : "  argument: make it true with jobs of your own, then complete again. The next",
+    task.rulings === undefined ? "  examined again." : "  examination checks exactly that.",
+    "  The same change is never examined twice: a strand completed with nothing changed",
+    "  keeps its verdict and fails at once.",
+    "",
+    ...(task.rulings === undefined
+      ? task.findings.map(describeFinding)
+      : task.rulings.map(describeRuling)),
   ].join("\n");
 
 const renderRulingsToCheck = (rulings: readonly ExaminationRuling[]): string =>

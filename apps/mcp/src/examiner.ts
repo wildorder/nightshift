@@ -285,7 +285,7 @@ export const registerPlanReviewTools = (server: McpServer, deps: HelperDeps): vo
       title: "Submit your review of the strand's job plan",
       description:
         "Your verdict, once. `sound`: build it as planned. `revise`: it should change before " +
-        "anything is built; say what, in findings. A finding is `material` when building the plan " +
+        "anything is built; say what, in findings (at least one: a revise with none is refused). A finding is `material` when building the plan " +
         "as it stands would miss the strand's acceptance, conflict, or waste real time; `minor` otherwise.",
       inputSchema: {
         verdict: z.enum(["sound", "revise"]),
@@ -311,6 +311,12 @@ export const registerPlanReviewTools = (server: McpServer, deps: HelperDeps): vo
       guarded(async () => {
         if (submitted)
           throw new ToolRefusal("validation_failed", "your review is already recorded");
+        if (input.verdict === "revise" && input.findings.length === 0) {
+          throw new ToolRefusal(
+            "validation_failed",
+            "a `revise` verdict says what to change: add a finding for each change, or submit `sound`",
+          );
+        }
         const review = PlanReviewSchema.parse(input);
         await writeFile(file, JSON.stringify(review));
         submitted = true;

@@ -295,6 +295,23 @@ export const carriedExamination = (
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .at(-1);
 
+/**
+ * The examination whose verdict this very change still carries, when that
+ * verdict stops it: the latest examination of the same patch, if it blocks. A
+ * finding overturned by an arbiter no longer blocks, so the change then lands
+ * on the examination it has (`carriedExamination`).
+ */
+export const standingBlock = (
+  examinations: readonly Examination[],
+  patchId: string,
+): Examination | undefined => {
+  const same = [...examinations]
+    .filter((examination) => examination.patchId === patchId && examination.outcome !== "failed")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .at(-1);
+  return same !== undefined && examinationBlocks(same) ? same : undefined;
+};
+
 const latestOf = (examinations: readonly Examination[]): Examination | undefined =>
   [...examinations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
 
@@ -730,13 +747,34 @@ const gatherEvidence = async (
       readonly verification: Verification;
       readonly patchId: string;
     }
-  | Extract<ExaminationOutcome, { kind: "postponed" | "candidate_failed" }>
+  | Extract<ExaminationOutcome, { kind: "postponed" | "candidate_failed" | "blocked" }>
 > => {
   const diff = await git(
     environment.git,
     ["diff", "--no-color", "--no-ext-diff", input.base, input.commitSha],
     { cwd: checkout },
   );
+  // A change keeps its verdict (PIP-30). Examined again unchanged, a blocked
+  // change was once let land by a second examiner who saw it otherwise, an
+  // arbiter's ruling and all.
+  const standing = standingBlock(
+    await environment.stores.examinations.listByNode(
+      input.session.scope,
+      input.node.executionNodeId,
+    ),
+    patchIdOf(diff),
+  );
+  if (standing !== undefined) {
+    return {
+      kind: "blocked",
+      examination: standing,
+      reason:
+        `${describeBlocking(standing)} (unchanged since examination ${standing.examinationId}: the same change is not examined again)`.slice(
+          0,
+          1_900,
+        ),
+    };
+  }
   let verification = input.verification;
   if (verification !== undefined) {
     // No candidate check runs here to set the checkout up, and the examiner works in it.
@@ -875,9 +913,12 @@ export const closeFixedFindings = async (
     for (const earlier of all) {
       if (earlier.examinationId === current.examinationId) continue;
       if (earlier.createdAt >= current.createdAt) continue;
+      // The same patch is the same work, whoever handed it in (PIP-30): an
+      // examination of it is no reassessment of a later attempt.
       const laterAttempt =
-        current.fixAttempt > earlier.fixAttempt ||
-        current.implementerAgentId !== earlier.implementerAgentId;
+        current.patchId !== earlier.patchId &&
+        (current.fixAttempt > earlier.fixAttempt ||
+          current.implementerAgentId !== earlier.implementerAgentId);
       if (!laterAttempt) continue;
       let changed = false;
       const findings = earlier.findings.map((finding) => {

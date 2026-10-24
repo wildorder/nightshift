@@ -412,6 +412,71 @@ describe("headless sessions", () => {
     expect(orchestrator).toContain("subprogram.complete or subprogram.fail: a session that ends");
   });
 
+  it("tells every orchestrator to wait only with job.wait, and why (PIP-31)", () => {
+    const strandBrief = renderWorkerBrief({
+      job,
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program,
+      worktree: "/tmp/w",
+    });
+    const rootBrief = renderWorkerBrief({
+      job: makeJobContract(f, { objective: "# The plan\n\n### S-01 First\n\nA module." }),
+      node: makeRootNode(f, { status: "validated" }),
+      program: makeProgramContract(f, {
+        status: "planning",
+        strands: [
+          {
+            id: "S-01",
+            name: "First",
+            scope: { summary: "s", includes: ["src/**"], excludes: [] },
+            acceptance: ["green"],
+            successCriteria: [],
+            dependsOn: [],
+            prerequisites: [],
+          },
+        ],
+      }),
+      worktree: "/tmp/read-only",
+    });
+    const worker = renderWorkerBrief({
+      job,
+      node: makeNode(f, f.rootNodeId),
+      program,
+      worktree: "/tmp/w",
+    });
+    for (const brief of [strandBrief, rootBrief]) {
+      expect(brief).toContain("HOW TO WAIT");
+      expect(brief).toContain("Never sleep or\n  poll in your shell");
+      expect(brief).toContain("Call job.wait again at once");
+    }
+    expect(worker).not.toContain("HOW TO WAIT");
+  });
+
+  it("tells a retried strand the ruling it must carry out, and that unchanged work fails (PIP-30)", () => {
+    const brief = renderWorkerBrief({
+      job,
+      node: makeNode(f, f.rootNodeId, { kind: "sub-program" }),
+      program,
+      worktree: "/tmp/w",
+      task: {
+        kind: "fix",
+        findings: [],
+        rulings: [
+          {
+            findingId: "F-01",
+            decisionId: f.ids.next("dec") as never,
+            summary: "resume never publishes the documents",
+            rationale: "a failed final upload must be recoverable by nightshift resume",
+          },
+        ],
+      },
+    });
+    expect(brief).toContain("AN ARBITER HAS RULED ON THIS STRAND");
+    expect(brief).toContain("F-01: resume never publishes the documents");
+    expect(brief).toContain("The same change is never examined twice");
+    expect(brief).toContain("HOW THIS STRAND IS BUILT");
+  });
+
   it("resumes a session that stopped without reporting with a reminder, not the whole brief", () => {
     const brief = renderWorkerBrief({
       job,

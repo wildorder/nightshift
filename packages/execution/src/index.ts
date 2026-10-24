@@ -283,6 +283,7 @@ export {
   type PlanReview,
   PlanReviewSchema,
   planProblems,
+  planReviewVerdictOf,
   planStateOf,
   renderPlan,
   reviewStrandPlan,

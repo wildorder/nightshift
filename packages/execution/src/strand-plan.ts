@@ -61,6 +61,30 @@ export const PlanReviewSchema = z.strictObject({
 });
 export type PlanReview = z.infer<typeof PlanReviewSchema>;
 
+/** How a review round ended, as its decision's context says it. */
+export type PlanReviewVerdict = PlanReview["verdict"] | "not reviewed" | "undeliverable";
+
+/**
+ * A review as the reader takes it (PIP-32): a `revise` that names nothing to
+ * change asks for nothing, so it is `sound`. The tool refuses one; a reviewer
+ * that wrote the file another way is held to the same rule here.
+ */
+const takenAs = (review: PlanReview): PlanReview =>
+  review.verdict === "revise" && review.findings.length === 0
+    ? { ...review, verdict: "sound" }
+    : review;
+
+/** The verdict a review decision records, read back from its context. */
+export const planReviewVerdictOf = (decision: Decision): PlanReviewVerdict | undefined => {
+  const verdict = decision.context.split(" — ").at(-1);
+  return verdict === "sound" ||
+    verdict === "revise" ||
+    verdict === "not reviewed" ||
+    verdict === "undeliverable"
+    ? verdict
+    : undefined;
+};
+
 /** A plan's jobs, said for a human and a reviewer: the decision's choice. */
 export const renderPlan = (jobs: readonly PlannedJob[]): string =>
   jobs
@@ -184,25 +208,37 @@ export const reviewStrandPlan = async (
   const nodeId = input.node.executionNodeId;
   const checkpoints = await stores.checkpoints.listByRun(scope);
   const before = checkpoints.items.at(-1);
-  const record = async (review: PlanReview | undefined, agentId: string | null): Promise<void> => {
-    if (before === undefined) return;
+  let recorded = false;
+  const record = async (
+    review: PlanReview | undefined,
+    agentId: string | null,
+    undeliverable?: string,
+  ): Promise<void> => {
+    if (before === undefined || recorded) return;
+    recorded = true;
+    const verdict: PlanReviewVerdict =
+      review !== undefined
+        ? review.verdict
+        : undeliverable !== undefined
+          ? "undeliverable"
+          : "not reviewed";
     const decision: Decision = {
       schemaVersion: 1,
       ...scope,
       decisionId: ids.next("dec"),
       executionNodeId: nodeId,
       agentId: agentId as Decision["agentId"],
-      context: `${STRAND_PLAN_REVIEW_CONTEXT} round ${input.round} of ${MAX_PLAN_REVIEWS} — ${
-        review === undefined ? "not reviewed" : review.verdict
-      }`,
+      context: `${STRAND_PLAN_REVIEW_CONTEXT} round ${input.round} of ${MAX_PLAN_REVIEWS} — ${verdict}`,
       alternatives: [
         { summary: "build the plan as authored" },
         { summary: "revise the plan before building" },
       ],
       choice:
-        review === undefined
-          ? "No reviewer could review the plan; the strand builds on it unreviewed."
-          : renderReview(review),
+        review !== undefined
+          ? renderReview(review)
+          : undeliverable !== undefined
+            ? `The reviewer handed back a review that could not be read (${undeliverable}); the strand builds on its plan as if unreviewed.`
+            : "No reviewer could review the plan; the strand builds on it unreviewed.",
       rationale:
         review === undefined
           ? "A run never stops for a missing reviewer (D-P18-01); the strand's landing is still verified and examined."
@@ -265,7 +301,11 @@ const reviewWith = async (
   input: Parameters<typeof reviewStrandPlan>[1],
   services: NonNullable<ExecutionEnvironment["examination"]>,
   route: ReturnType<NonNullable<ExecutionEnvironment["examination"]>["examinerRoute"]>,
-  record: (review: PlanReview | undefined, agentId: string | null) => Promise<void>,
+  record: (
+    review: PlanReview | undefined,
+    agentId: string | null,
+    undeliverable?: string,
+  ) => Promise<void>,
 ): Promise<PlanReview | undefined> => {
   const { outbox } = environment;
   const scope = input.session.scope;
@@ -321,17 +361,32 @@ const reviewWith = async (
       extraEnv: { [PLAN_REVIEW_FILE_ENV]: verdictFile },
     }),
   });
-  const handed = await readFile(verdictFile, "utf8")
-    .then((text) => PlanReviewSchema.safeParse(JSON.parse(text)))
-    .catch(() => undefined);
-  const review = handed?.success === true ? handed.data : undefined;
+  // No file: the reviewer handed nothing back. A file that cannot be read as a
+  // review: it reviewed, and what it said cannot be delivered (PIP-32).
+  const text = await readFile(verdictFile, "utf8").catch(() => undefined);
+  let review: PlanReview | undefined;
+  let undeliverable: string | undefined;
+  if (text !== undefined) {
+    try {
+      const handed = PlanReviewSchema.safeParse(JSON.parse(text));
+      if (handed.success) review = takenAs(handed.data);
+      else undeliverable = handed.error.issues.map((issue) => issue.message).join("; ");
+    } catch (error) {
+      undeliverable = error instanceof Error ? error.message : String(error);
+    }
+  }
   observeLifecycle(environment, helperInput, helper, {
     operationId,
     phase: "plan_review",
     transition: "end",
-    reason: review === undefined ? "no_review" : `verdict: ${review.verdict}`,
+    reason:
+      review !== undefined
+        ? `verdict: ${review.verdict}`
+        : undeliverable !== undefined
+          ? "undeliverable"
+          : "no_review",
   });
   await endHelper(environment, helperInput, helper, [exit], review !== undefined);
-  await record(review, helper.agent.agentId);
+  await record(review, helper.agent.agentId, undeliverable);
   return review;
 };

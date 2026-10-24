@@ -675,15 +675,18 @@ describe("the S-05 sections of the run report, over the real engine", () => {
   }, 120_000);
 
   it("2: a material finding, a repair attempt and a clean second examination", async () => {
+    let attempt = 0;
     const r = await rig({
       work: {
         alpha: async (context) => {
           await addModule("alpha")(context);
-          // Each attempt is a different change.
+          // Each attempt is a different change: each starts from the same head,
+          // and the same change keeps its verdict (PIP-30).
+          attempt += 1;
           await edit(
             context.worktree,
             "src/attempt.js",
-            (text) => `${text}// attempt
+            (text) => `${text}// attempt ${attempt}
 `,
           );
         },
