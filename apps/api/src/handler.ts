@@ -109,6 +109,7 @@ import {
   putRoutingDecision,
   putVerification,
 } from "./operations/records.js";
+import { deleteProjectSecret, listProjectSecrets, putProjectSecret } from "./operations/secrets.js";
 import { createArtifactUploadUrl } from "./operations/uploads.js";
 import { matchRoute, type Route } from "./router.js";
 
@@ -148,6 +149,25 @@ export const ROUTES: readonly Route[] = [
     path: "/orgs/{orgId}/credentials",
     operation: "orgCredential.list",
     handler: listOrgCredentials,
+  },
+  // A project's secrets (A-62).
+  {
+    method: "PUT",
+    path: `${PROJECT}/secrets/{name}`,
+    operation: "projectSecret.put",
+    handler: putProjectSecret,
+  },
+  {
+    method: "GET",
+    path: `${PROJECT}/secrets`,
+    operation: "projectSecret.list",
+    handler: listProjectSecrets,
+  },
+  {
+    method: "DELETE",
+    path: `${PROJECT}/secrets/{name}`,
+    operation: "projectSecret.delete",
+    handler: deleteProjectSecret,
   },
   {
     method: "PUT",
@@ -599,6 +619,7 @@ export const ROUTES: readonly Route[] = [
  */
 export const MASKED_BODY_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
   "orgCredential.put",
+  "projectSecret.put",
 ]);
 
 export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise<ApiResponse> => {

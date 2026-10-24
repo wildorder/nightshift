@@ -17,6 +17,7 @@ import { z } from "zod";
 import { AgentIdSchema, ArtifactIdSchema } from "../ids.js";
 import { CommitShaSchema, IsoTimestampSchema, runScoped } from "./common.js";
 import { ComputeTierSchema } from "./compute.js";
+import { SecretNameSchema } from "./secrets.js";
 
 export const DispatchStatusSchema = z.enum([
   "requested",
@@ -636,6 +637,8 @@ export const HeartbeatResponseSchema = z.strictObject({
   /** The runner must stop: cancelled, over a ceiling, or superseded. */
   stop: z.boolean(),
   credentials: z.record(z.string().min(1), z.string().min(1)).optional(),
+  /** A-62: the project's secrets, by name, under the same terms as `credentials`. */
+  secrets: z.record(SecretNameSchema, z.string().min(1)).optional(),
 });
 export type HeartbeatResponse = z.infer<typeof HeartbeatResponseSchema>;
 

@@ -32,6 +32,7 @@ export {
   type PlanningClient,
   sha256Hex,
 } from "./planning.js";
+export { forgetRedactions, redactFromNowOn, redactOutbound } from "./redaction.js";
 export { routes } from "./routes.js";
 export * from "./session/index.js";
 export { createHttpStores, type HttpStoresOptions } from "./stores.js";

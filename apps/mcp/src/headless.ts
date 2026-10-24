@@ -130,7 +130,12 @@ export class HeadlessRefusal extends Error {
 /** The launch for the root's own MCP server: the orchestrator role, in the program checkout. */
 export const rootLaunch = (
   env: Env,
-  input: { readonly repoPath: string; readonly agentId: string },
+  input: {
+    readonly repoPath: string;
+    readonly agentId: string;
+    /** A-62: the project's secrets the program declares, passed through by name. */
+    readonly secrets?: readonly string[];
+  },
 ): McpLaunch => {
   const binary = fileURLToPath(new URL("./bin/nightshift-mcp.js", import.meta.url));
   // The operator's own session, as a human's orchestrator has: whatever of these
@@ -167,6 +172,7 @@ export const rootLaunch = (
     "XDG_STATE_HOME",
     "PATH",
     "Path",
+    ...(input.secrets ?? []),
   ]) {
     const value = env[name];
     if (value !== undefined && value !== "") passThrough[name] = value;
@@ -568,7 +574,11 @@ export const launchRoot = async (
       worktree,
       tmpDir,
       model: route.target,
-      mcp: rootLaunch(env, { repoPath: input.repoPath, agentId: agent.agentId }),
+      mcp: rootLaunch(env, {
+        repoPath: input.repoPath,
+        agentId: agent.agentId,
+        ...(program.secrets === undefined ? {} : { secrets: program.secrets }),
+      }),
       tools: refusingWorkerTools("the root orchestrator reaches Nightshift through its MCP launch"),
       sink: createHookSink({
         outbox,

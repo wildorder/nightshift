@@ -283,6 +283,7 @@ export const runVerification = async (
   // a project's script names what it keeps per verification by it.
   const verificationId = environment.ids.next("ver");
   const projectEnv = {
+    ...(environment.secretEnv ?? {}),
     ...(environment.projectEnv ?? {}),
     ...verificationFacts({ verificationId, headSha: input.commitSha, baseSha: input.baseSha }),
   };

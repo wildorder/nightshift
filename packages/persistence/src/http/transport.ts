@@ -38,6 +38,7 @@
  */
 import type { Clock } from "@nightshift/core";
 import { ControlPlaneUnreachableError, toThrowable } from "./errors.js";
+import { redactOutbound } from "./redaction.js";
 
 export interface ControlPlaneRequest {
   readonly method: "GET" | "PUT" | "POST" | "DELETE";
@@ -158,7 +159,10 @@ export const createFetchTransport = (options: FetchTransportOptions): Transport 
       const response = await doFetch(url, {
         method: request.method,
         headers,
-        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+        // A-62: no secret this process holds leaves it in a record.
+        ...(request.body === undefined
+          ? {}
+          : { body: redactOutbound(JSON.stringify(request.body)) }),
       });
       return {
         kind: "response",

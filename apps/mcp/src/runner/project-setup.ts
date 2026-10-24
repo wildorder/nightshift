@@ -1,5 +1,10 @@
 /** Retryable project preparation. It never resets the checkout or ends a run. */
-import type { Dispatch, ProgramContract } from "@nightshift/contracts";
+import {
+  type Dispatch,
+  declaredSecrets,
+  type ProgramContract,
+  redactSecrets,
+} from "@nightshift/contracts";
 import { maskCredentials, type RunScope } from "@nightshift/core";
 import { z } from "zod";
 import { parseProjectEnv } from "../project-env.js";
@@ -42,6 +47,8 @@ interface SetupInput {
   readonly load: () => Promise<{ dispatch: Dispatch; program: ProgramContract }>;
   /** Test seam: production always uses the same checkout preparation implementation. */
   readonly perform?: typeof prepareProject;
+  /** A-62: where the program's declared secrets are read from, by name. */
+  readonly secretsFrom?: Readonly<Record<string, string | undefined>>;
 }
 
 /** Output may contain arbitrary project text: redact credential-shaped values before returning it. */
@@ -50,10 +57,12 @@ const redact = (value: string): string =>
     /(\b(?:token|password|secret|api[_-]?key)\s*[=:]\s*)\S+/gi,
     "$1[masked]",
   );
-const diagnostic = (value: string): string => redact(value).slice(-4000);
-
 export const createProjectSetup = (input: SetupInput): ProjectSetup => {
   const { machine, layout } = input;
+  // A-62: what this preparation was given, masked out of its log and its diagnostics.
+  let secrets: Readonly<Record<string, string>> = {};
+  const clean = (value: string): string => redactSecrets(redact(value), secrets);
+  const diagnostic = (value: string): string => clean(value).slice(-4000);
   const file = `${layout.run}/project-setup.json`;
   let current: ProjectSetupStatus = {
     state: "not_started",
@@ -125,7 +134,7 @@ export const createProjectSetup = (input: SetupInput): ProjectSetup => {
       let log = "";
       let logWrite = Promise.resolve();
       const append = (line: string) => {
-        log += `${redact(line)}\n`;
+        log += `${clean(line)}\n`;
         const snapshot = log;
         logWrite = logWrite.then(() => machine.writeFile(logPath, snapshot));
         // Errors are observed at completion; do not create an unhandled rejection mid-setup.
@@ -144,11 +153,13 @@ export const createProjectSetup = (input: SetupInput): ProjectSetup => {
         (async () => {
           await persist();
           const { dispatch, program } = await input.load();
+          secrets = declaredSecrets(program.secrets, input.secretsFrom ?? {});
           const prepared = await (input.perform ?? prepareProject)(machine, {
             layout,
             dispatch,
             program,
             projectUser: input.projectUser,
+            secrets,
             log: (line) => {
               append(line);
               current = { ...current, detail: diagnostic(line), updatedAt: machine.now() };

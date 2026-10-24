@@ -129,6 +129,8 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       // installation route by the installation.
       provider: "anthropic",
       installationId: "1",
+      // A-62: a project's secret.
+      name: "NPM_TOKEN",
     },
     execution: {
       kind: "execution",

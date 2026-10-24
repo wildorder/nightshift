@@ -286,6 +286,33 @@ describe("what it launches", () => {
     expect(calls[0]?.args.join(" ")).toContain('"NIGHTSHIFT_EXECUTION_TOKEN" = "worker-token"');
   });
 
+  it("gives the agent and its commands the project's declared secrets, and no other variable (A-62)", async () => {
+    const world = fakes();
+    const events: HookEvent[] = [];
+    const harness = createCodexHarness({
+      spawn: world.spawn,
+      fs: world.fs,
+      env: { ...PARENT_ENV, NPM_TOKEN: "ghp_x", OTHER_TOKEN: "y" },
+      platform: "darwin",
+    });
+    const input = startInput(events);
+    const handle = await harness.start({
+      ...input,
+      program: { ...input.program, secrets: ["NPM_TOKEN"] },
+    });
+    world.children[0]?.close(0);
+    await handle.exit;
+    const env = world.calls[0]?.options.env ?? {};
+    expect(env.NPM_TOKEN).toBe("ghp_x");
+    expect(env.OTHER_TOKEN).toBeUndefined();
+    expect(world.calls[0]?.args).toContain("shell_environment_policy.ignore_default_excludes=true");
+  });
+
+  it("leaves Codex's own excludes on when the program declares no secret", async () => {
+    const { calls } = await run((child) => child.close(0));
+    expect(calls[0]?.args.join(" ")).not.toContain("ignore_default_excludes");
+  });
+
   it("puts a git guard first on the model's PATH, and never on the process's own", async () => {
     const { calls, executables, removed } = await run((child) => child.close(0));
     // The first real worker: a guard on the process's PATH reaches the worker's

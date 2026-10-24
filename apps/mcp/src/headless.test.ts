@@ -122,6 +122,18 @@ describe("resuming a run on a replacement machine (P10, T6)", () => {
   });
 });
 
+describe("the root's MCP server and the project's secrets (A-62)", () => {
+  it("is given the secrets the program declares, by name, and no other variable", () => {
+    const env = rootLaunch(
+      { NPM_TOKEN: "ghp_x", UNDECLARED_TOKEN: "y", PATH: "/usr/bin" },
+      { repoPath: "/r", agentId: "agent-root", secrets: ["NPM_TOKEN", "NOT_SET"] },
+    ).env;
+    expect(env.NPM_TOKEN).toBe("ghp_x");
+    expect(env.UNDECLARED_TOKEN).toBeUndefined();
+    expect(env.NOT_SET).toBeUndefined();
+  });
+});
+
 describe("the remote root owns retryable project setup", () => {
   it("forwards the remote workspace to its MCP engine", () => {
     expect(

@@ -205,6 +205,8 @@ export interface PrepareInput {
   readonly projectUser?: string;
   /** Told where the workspace has got to (P16 S-03): the runner's heartbeat carries it. */
   readonly onProgress?: (progress: RunnerProgress) => void;
+  /** A-62: the project's declared secrets, given to each setup step and never written down. */
+  readonly secrets?: Readonly<Record<string, string>>;
 }
 
 export interface Prepared {
@@ -708,9 +710,12 @@ export const prepareProject = async (
   for (const step of program.setup ?? []) {
     log(`setup ${step.id}: ${step.command}`);
     progress("setup", `setup ${step.id}`.slice(0, 500));
+    // A-62: the project's declared secrets, under the project environment.
     const command = [
       "env",
-      ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
+      ...Object.entries({ ...(input.secrets ?? {}), ...env }).map(
+        ([key, value]) => `${key}=${value}`,
+      ),
       "bash",
       "-c",
       `umask 002 && cd ${JSON.stringify(layout.checkout)} && ${step.command}`,

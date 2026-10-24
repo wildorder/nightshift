@@ -43,6 +43,8 @@ import type { HarnessExit, HarnessStartInput } from "@nightshift/harness";
 import {
   createFetchTransport,
   createHttpStores,
+  forgetRedactions,
+  redactFromNowOn,
   staticTokenProvider,
 } from "@nightshift/persistence/http";
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,6 +53,7 @@ import { cleanupWorlds, createWorld, eventsOf, type World } from "./world.js";
 
 const dirs: string[] = [];
 afterEach(async () => {
+  forgetRedactions();
   await cleanupWorlds();
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
@@ -440,4 +443,41 @@ describe("a verification says where it is while it runs (2026-10-13)", () => {
       messages.some((message) => /^verification: probe exited 0 after [\d.]+ s$/.test(message)),
     ).toBe(true);
   }, 60_000);
+});
+
+describe("the project's secrets, given to every project step (A-62)", () => {
+  const SECRET = "ghp_project_secret_value_42";
+
+  it("reach setup, a check and its rerun, and are never in the log Nightshift stores", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ns-secret-"));
+    dirs.push(dir);
+    const file = join(dir, "runs").replace(/\\/g, "/");
+    // Records whether NPM_TOKEN reached it, prints it, and fails its first run.
+    const command = `"${process.execPath}" -e "const fs=require('fs');const f='${file}';const ok=process.env.NPM_TOKEN==='${SECRET}';const n=fs.existsSync(f)?fs.readFileSync(f,'utf8').split(' ').length-1:0;fs.appendFileSync(f,(ok?'ok':'missing')+' ');console.log('token is '+process.env.NPM_TOKEN);process.exit(!ok?7:n<1?1:0)"`;
+    const world = await worldWith(
+      {
+        secrets: ["NPM_TOKEN"],
+        setup: [{ id: "install", command }],
+        verification: [{ id: "probe", command }],
+      },
+      { laptop: true },
+    );
+    // As the composition root does once it knows the program's names.
+    redactFromNowOn({ NPM_TOKEN: SECRET });
+    const nodeId = await runThroughEngine(world, "low", { secretEnv: { NPM_TOKEN: SECRET } });
+
+    expect((await world.stores.executionNodes.get(world.scope, nodeId))?.status).toBe("integrated");
+    const runs = (await readFile(file, "utf8")).split(" ").filter((run) => run !== "");
+    expect(runs.length).toBeGreaterThan(1);
+    expect(runs.every((run) => run === "ok")).toBe(true);
+    expect(process.env.NPM_TOKEN).toBeUndefined();
+    const logs = [...world.plane.bodies.objects.keys()]
+      .map((key) => world.plane.bodies.text(key) ?? "")
+      .filter((text) => text.includes("token is"));
+    expect(logs.length).toBeGreaterThan(0);
+    for (const log of logs) {
+      expect(log).toContain("token is «NPM_TOKEN»");
+      expect(log).not.toContain(SECRET);
+    }
+  });
 });

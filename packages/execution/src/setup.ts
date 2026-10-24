@@ -47,7 +47,10 @@ export const prepareCheckout = async (
     // match (D-P10-24); the install runs only when they do not.
     reference: input.session.repoPath,
     // The project environment, on a machine (D-10), under the scratch.
-    env: projectStepEnv(environment.projectEnv, scratch),
+    env: projectStepEnv(
+      { ...(environment.secretEnv ?? {}), ...(environment.projectEnv ?? {}) },
+      scratch,
+    ),
   });
   const artifactId = await recordArtifact(environment, {
     scope: input.session.scope,

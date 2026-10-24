@@ -45,6 +45,7 @@ import { resume } from "./commands/resume.js";
 import { exportRoutes } from "./commands/routes.js";
 import { reverseRuling } from "./commands/ruling.js";
 import { run } from "./commands/run.js";
+import { secretList, secretRemove, secretSet } from "./commands/secrets.js";
 import { whoami } from "./commands/whoami.js";
 import type { CliEnvironment } from "./environment.js";
 import { describeFailure, failureLines, UsageError } from "./failures.js";
@@ -89,6 +90,9 @@ Usage:
   nightshift org github status [--org <id>]
   nightshift org providers set <anthropic|openai> [--file <path>] [--org <id>]
   nightshift org providers status [--org <id>]
+  nightshift secret set <NAME> [--project <id>] [--repo <path>]
+  nightshift secret list [--project <id>] [--repo <path>]
+  nightshift secret rm <NAME> [--project <id>] [--repo <path>]
   nightshift routes export <program> [--run <id>] [--repo <path>]
   nightshift routes export --project <id>
   nightshift id <prefix>
@@ -845,6 +849,32 @@ const doOrg = async (environment: CliEnvironment, args: readonly string[]): Prom
   throw new UsageError("`nightshift org` takes `config`, `github` or `providers`", usage);
 };
 
+/** `nightshift secret set|list|rm` (A-62): a project's secrets. */
+const doSecret = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage =
+    "nightshift secret set <NAME> | secret list | secret rm <NAME>  [--project <id>] [--repo <path>]";
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: { project: { type: "string" }, repo: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  const [verb, name] = positionals;
+  const project = optional(values, "project");
+  const repo = optional(values, "repo");
+  const options = {
+    ...(project === undefined ? {} : { project }),
+    ...(repo === undefined ? {} : { repo }),
+  };
+  if (verb === "set" && name !== undefined) return secretSet(environment, name, options);
+  if (verb === "list") return secretList(environment, options);
+  if (verb === "rm" && name !== undefined) return secretRemove(environment, name, options);
+  throw new UsageError("`nightshift secret` takes `set <NAME>`, `list` or `rm <NAME>`", usage);
+};
+
 /** `nightshift remote status|cancel|resume <program>` (P10, D-P10-18). */
 const doRemote = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage =
@@ -961,6 +991,8 @@ const dispatch = async (
       return doCompletion(environment, args);
     case "org":
       return doOrg(environment, args);
+    case "secret":
+      return doSecret(environment, args);
     case "remote":
       return doRemote(environment, args);
     case "routes":

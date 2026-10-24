@@ -39,6 +39,11 @@ export const routes = {
   /** Where the App is installed from. */
   githubApp: () => "/github/app",
 
+  /** A project's secrets (A-62): `PUT`/`DELETE` one, `GET` the views. */
+  projectSecrets: (projectId: ProjectId) => `/projects/${projectId}/secrets`,
+  projectSecret: (projectId: ProjectId, name: string) =>
+    `/projects/${projectId}/secrets/${encodeURIComponent(name)}`,
+
   projects: () => "/projects",
   project: (projectId: ProjectId) => `/projects/${projectId}`,
   programs: (projectId: ProjectId) => `/projects/${projectId}/programs`,

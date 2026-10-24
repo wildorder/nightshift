@@ -1090,6 +1090,7 @@ const candidateVerification = async (
   const verificationId = environment.ids.next("ver");
   const baseSha = await tryRevParse(environment.git, input.session.repoPath, `${input.commitSha}^`);
   const projectEnv = {
+    ...(environment.secretEnv ?? {}),
     ...(environment.projectEnv ?? {}),
     ...verificationFacts({ verificationId, headSha: input.commitSha, baseSha }),
   };

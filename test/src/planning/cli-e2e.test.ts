@@ -380,3 +380,35 @@ describe("a remote run whose final documents never left its machine (P21, F-01)"
     expect(git("rev-parse", PROGRAM_BRANCH)).toBe(atGitHub);
   }, 240_000);
 });
+
+describe("a program whose project declares a secret (A-62)", () => {
+  it("refuses a local run before it starts when the shell does not hold it", async () => {
+    const configPath = join(fixture.repo, "nightshift.config.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+    await writeFile(
+      configPath,
+      `${JSON.stringify({ ...config, secrets: ["NS_E2E_UNSET_TOKEN"] }, null, 2)}\n`,
+    );
+    git("add", "-A");
+    git(
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.test",
+      "commit",
+      "-qm",
+      "declare a secret",
+    );
+    await writeFile(join(outside, "release-token"), "present");
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    const before = git("rev-parse", PROGRAM_BRANCH);
+
+    const ran = await cli("run", PROGRAM);
+    const said = `${op.out.join("\n")}\n${op.err.join("\n")}`;
+    expect(ran, said).toBe(2);
+    expect(said).toContain("this program needs NS_E2E_UNSET_TOKEN, which this shell does not set");
+    expect(said).toContain("Export NS_E2E_UNSET_TOKEN=");
+    // Nothing started: no run commit on the program branch.
+    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(before);
+  }, 120_000);
+});

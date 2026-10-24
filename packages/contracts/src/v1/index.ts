@@ -33,6 +33,22 @@ export * from "./report-export.js";
 export * from "./routing-decision.js";
 export * from "./routing-policy.js";
 export * from "./run.js";
+export {
+  declaredSecrets,
+  MIN_REDACTED_SECRET_LENGTH,
+  type ProjectSecret,
+  ProjectSecretSchema,
+  type ProjectSecretsResponse,
+  ProjectSecretsResponseSchema,
+  type ProjectSecretView,
+  ProjectSecretViewSchema,
+  projectSecretPurpose,
+  redactSecrets,
+  type SecretName,
+  SecretNameSchema,
+  type SetProjectSecretBody,
+  SetProjectSecretBodySchema,
+} from "./secrets.js";
 export * from "./user.js";
 export * from "./verification.js";
 export * from "./warm-cache.js";

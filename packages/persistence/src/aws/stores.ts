@@ -28,7 +28,10 @@ import {
   PlanDraftSchema,
   PlanDraftVersionSchema,
   ProgramContractSchema,
+  type ProjectId,
   ProjectSchema,
+  type ProjectSecret,
+  ProjectSecretSchema,
   RoutingDecisionSchema,
   RunFeedbackSchema,
   RunSchema,
@@ -139,11 +142,29 @@ export const createAwsStores = ({
   const listAll = async <T>(schema: Parser<T>, query: PartitionQuery): Promise<readonly T[]> =>
     (await queryAll(table, tableName, query)).map((item) => fromItem(schema, item));
 
+  const sealedSecretsOf = async (projectId: ProjectId): Promise<readonly ProjectSecret[]> => {
+    if (credentialsTableName === undefined) return noCredentialsTable();
+    const partition = keys.projectSecretPartition(projectId);
+    const items = await queryAll(table, credentialsTableName, {
+      partition: partition.PK,
+      prefix: partition.prefix,
+    });
+    return items.map((item) => fromItem(ProjectSecretSchema, item));
+  };
+
   // The credentials table (D-P10-23). Same client, another table name, and the
   // only reads and writes that ever name it.
   const credentials: CredentialsStore =
     credentialsTableName === undefined
-      ? { put: noCredentialsTable, view: noCredentialsTable, sealed: noCredentialsTable }
+      ? {
+          put: noCredentialsTable,
+          view: noCredentialsTable,
+          sealed: noCredentialsTable,
+          putSecret: noCredentialsTable,
+          secrets: noCredentialsTable,
+          sealedSecrets: noCredentialsTable,
+          deleteSecret: noCredentialsTable,
+        }
       : {
           put: async (credential) => {
             const parsed = OrgCredentialSchema.parse(credential);
@@ -171,6 +192,32 @@ export const createAwsStores = ({
             return output.Item === undefined
               ? undefined
               : fromItem(OrgCredentialSchema, output.Item);
+          },
+          putSecret: async (secret) => {
+            const parsed = ProjectSecretSchema.parse(secret);
+            await table.put({
+              TableName: credentialsTableName,
+              Item: toItem(
+                "ProjectSecret",
+                keys.projectSecret(parsed.projectId, parsed.name),
+                parsed,
+              ),
+            });
+          },
+          secrets: async (projectId) =>
+            (await sealedSecretsOf(projectId)).map(({ name, lastFour, setAt }) => ({
+              name,
+              lastFour,
+              setAt,
+            })),
+          sealedSecrets: (projectId) => sealedSecretsOf(projectId),
+          deleteSecret: async (projectId, name) => {
+            const output = await table.delete({
+              TableName: credentialsTableName,
+              Key: keys.projectSecret(projectId, name),
+              ReturnValues: "ALL_OLD",
+            });
+            return output.Attributes !== undefined;
           },
         };
 

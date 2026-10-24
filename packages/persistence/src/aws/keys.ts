@@ -116,6 +116,17 @@ export const keys = {
 
   credentialPartition: (orgId: OrgId) => ({ PK: `ORG#${orgId}`, prefix: "PROVIDER#" }),
 
+  /** A project's sealed secret (A-62), in the credentials table beside its org's keys. */
+  projectSecret: (projectId: ProjectId, name: string): TableKey => ({
+    PK: `PROJECT#${projectId}`,
+    SK: `SECRET#${name}`,
+  }),
+
+  projectSecretPartition: (projectId: ProjectId) => ({
+    PK: `PROJECT#${projectId}`,
+    prefix: "SECRET#",
+  }),
+
   /** A run's dispatch (P10, D-P10-18): one row beside the run's records. */
   dispatch: (scope: RunScope): TableKey => ({ PK: `RUN#${runChain(scope)}`, SK: "DISPATCH" }),
 

@@ -426,6 +426,8 @@ describe("NightshiftApiStack", () => {
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:Query",
+          // A-62: a project's secret is deleted from the credentials table.
+          "dynamodb:DeleteItem",
           "s3:PutObject",
           // P7 (D-P7-02): ratification reads the uploaded plan document back.
           "s3:GetObject",

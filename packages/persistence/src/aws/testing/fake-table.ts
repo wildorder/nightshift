@@ -201,7 +201,13 @@ export class FakeTable implements TableClient {
 
   async delete(input: DeleteCommandInput): Promise<DeleteCommandOutput> {
     this.assertTable(input.TableName);
-    this.commit([this.deleteOperation(input)], "single");
+    const operation = this.deleteOperation(input);
+    // As DynamoDB answers: the item as it was, when asked, and only if there was one.
+    const before = this.items.get(operation.key);
+    this.commit([operation], "single");
+    if (input.ReturnValues === "ALL_OLD" && before !== undefined) {
+      return { $metadata: {}, Attributes: copy(before) };
+    }
     return { $metadata: {} };
   }
 

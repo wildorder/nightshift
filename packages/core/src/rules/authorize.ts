@@ -171,6 +171,10 @@ export type Operation =
   // An org's provider keys and its GitHub installation (D-P10-23, D-P10-02).
   | "orgCredential.put"
   | "orgCredential.list"
+  // A project's secrets (A-62): a person's alone, like an org's keys.
+  | "projectSecret.put"
+  | "projectSecret.list"
+  | "projectSecret.delete"
   | "orgGithub.put"
   | "orgGithub.get"
   | "orgGithub.delete"
@@ -358,6 +362,9 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "completion.listByProject": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
+  "projectSecret.put": "forbidden",
+  "projectSecret.list": "forbidden",
+  "projectSecret.delete": "forbidden",
   "orgGithub.put": "forbidden",
   "orgGithub.get": "forbidden",
   "orgGithub.delete": "forbidden",
@@ -500,6 +507,9 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "completion.listByProject": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
+  "projectSecret.put": "forbidden",
+  "projectSecret.list": "forbidden",
+  "projectSecret.delete": "forbidden",
   "orgGithub.put": "forbidden",
   "orgGithub.get": "forbidden",
   "orgGithub.delete": "forbidden",
@@ -675,6 +685,9 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "completion.listByProject": "forbidden",
   "orgCredential.put": "forbidden",
   "orgCredential.list": "forbidden",
+  "projectSecret.put": "forbidden",
+  "projectSecret.list": "forbidden",
+  "projectSecret.delete": "forbidden",
   "orgGithub.put": "forbidden",
   "orgGithub.get": "forbidden",
   "orgGithub.delete": "forbidden",

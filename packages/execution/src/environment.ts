@@ -191,6 +191,13 @@ export interface ExecutionEnvironment {
    * laptop, where a step runs in the developer's environment as it always has.
    */
   readonly projectEnv?: Readonly<Record<string, string>>;
+  /**
+   * A-62: the project's secrets the program declares, by name, as this engine
+   * holds them (a developer's shell on a laptop; the plane, through the
+   * runner, on a machine). Given to every project step beside the project
+   * environment, and to every agent, by the composition root.
+   */
+  readonly secretEnv?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -249,6 +256,7 @@ export type LandingEnvironment = Pick<
   | "runAs"
   | "reclaim"
   | "projectEnv"
+  | "secretEnv"
 >;
 
 /** Reads the program's prerequisites. Satisfied by `persistence/http`'s planning client. */

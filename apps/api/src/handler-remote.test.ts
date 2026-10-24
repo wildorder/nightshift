@@ -1361,3 +1361,107 @@ describe("an org's GitHub installations (D-P10-02, D-P10-28)", () => {
     });
   });
 });
+
+describe("a project's secrets (A-62)", () => {
+  const secretsOf = (w: Awaited<ReturnType<typeof setup>>) =>
+    `/projects/${w.f.scope.projectId}/secrets`;
+
+  it("seals a value under the project, answers views only, and deletes one", async () => {
+    const w = await setup();
+    await seed(w);
+    const set = await call(w, "PUT", `${secretsOf(w)}/NPM_TOKEN`, {
+      value: "ghp_very_secret_5678",
+    });
+    expect(set.status, JSON.stringify(set.body)).toBe(200);
+    expect(set.body).toEqual({ name: "NPM_TOKEN", lastFour: "5678", setAt: NOW });
+    const [stored] = await w.stores.credentials.sealedSecrets(w.f.scope.projectId);
+    expect(stored?.ciphertext).toBeDefined();
+    expect(JSON.stringify(stored)).not.toContain("very_secret");
+    const listed = await call(w, "GET", secretsOf(w));
+    expect(listed.body).toEqual({ items: [{ name: "NPM_TOKEN", lastFour: "5678", setAt: NOW }] });
+    expect((await call(w, "DELETE", `${secretsOf(w)}/NPM_TOKEN`)).status).toBe(204);
+    expect((await call(w, "DELETE", `${secretsOf(w)}/NPM_TOKEN`)).status).toBe(404);
+    expect((await call(w, "GET", secretsOf(w))).body).toEqual({ items: [] });
+  });
+
+  it("refuses a name nothing may be called, and an empty value", async () => {
+    const w = await setup();
+    await seed(w);
+    expect((await call(w, "PUT", `${secretsOf(w)}/PATH`, { value: "x" })).status).toBe(400);
+    expect((await call(w, "PUT", `${secretsOf(w)}/NIGHTSHIFT_X`, { value: "x" })).status).toBe(400);
+    expect((await call(w, "PUT", `${secretsOf(w)}/NPM_TOKEN`, { value: "" })).status).toBe(400);
+  });
+
+  it("is a person's alone: a run's engine can neither set nor list one", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    expect(
+      (
+        await call(
+          w,
+          "PUT",
+          `${secretsOf(w)}/NPM_TOKEN`,
+          { value: "ghp_x1234" },
+          engine(w, dispatch),
+        )
+      ).status,
+    ).toBe(403);
+    expect((await call(w, "GET", secretsOf(w), undefined, engine(w, dispatch))).status).toBe(403);
+  });
+
+  it("carries the project's secrets to its running engine, opened, and not before", async () => {
+    const w = await setup();
+    const dispatch = await provisioned(w, await dispatched(w));
+    await call(w, "PUT", `${secretsOf(w)}/NPM_TOKEN`, { value: "ghp_very_secret_5678" });
+    const ready = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "ready" }),
+      engine(w, dispatch),
+    );
+    expect((ready.body as { secrets?: unknown }).secrets).toBeUndefined();
+    const running = await call(
+      w,
+      "POST",
+      `${w.paths.run}/dispatch/heartbeat`,
+      heartbeatBody(1, { report: "running" }),
+      engine(w, dispatch),
+    );
+    expect((running.body as { secrets?: unknown }).secrets).toEqual({
+      NPM_TOKEN: "ghp_very_secret_5678",
+    });
+  });
+
+  it("never writes the value into a diagnostic, even when the route fails unexpectedly", async () => {
+    const w = await setup();
+    await seed(w);
+    const failing = {
+      ...w.stores,
+      credentials: {
+        ...w.stores.credentials,
+        putSecret: async () => {
+          throw new Error("the table is on fire");
+        },
+      },
+    };
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      lines.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(" "));
+    });
+    const response = await handleRequest(
+      { ...w.deps, stores: failing },
+      {
+        method: "PUT",
+        path: `${secretsOf(w)}/NPM_TOKEN`,
+        query: {},
+        body: { value: "ghp_very_secret_5678" },
+        principal: w.principal,
+      },
+    );
+    spy.mockRestore();
+    expect(response.status).toBe(500);
+    expect(lines.join("\n")).toContain("[body masked]");
+    expect(lines.join("\n")).not.toContain("very_secret");
+  });
+});

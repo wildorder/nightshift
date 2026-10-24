@@ -27,7 +27,13 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ArtifactId, Decision, Prerequisite, ProgramContract } from "@nightshift/contracts";
+import {
+  type ArtifactId,
+  type Decision,
+  declaredSecrets,
+  type Prerequisite,
+  type ProgramContract,
+} from "@nightshift/contracts";
 import {
   gatherReport,
   irreversibleConfirmationContext,
@@ -60,6 +66,7 @@ import type { Session } from "../session.js";
 import { auditProgramGates, describeAudit } from "./gates.js";
 import { ratifyVersionOf } from "./plan.js";
 import { assertRemoteReady, dispatchRun, type RemoteReadiness } from "./remote.js";
+import { listedSecrets } from "./secrets.js";
 import { watchDispatch } from "./watch.js";
 
 export const REPORT_FILE = "report.md";
@@ -475,6 +482,41 @@ const ratifiedForRun = async (
   return requireRatifiedPlan(session.stores, files.contract, files.planText);
 };
 
+/**
+ * A-62: every secret the program declares is held where the run will run,
+ * before anything starts: in this shell for a local run, on the plane for a
+ * remote one. A missing one is a refusal now, with the command that sets it,
+ * never a red `npm ci` at 3 a.m.
+ */
+const assertSecretsHeld = async (
+  environment: CliEnvironment,
+  session: Session,
+  contract: ProgramContract,
+  remote: boolean,
+): Promise<void> => {
+  const declared = contract.secrets ?? [];
+  if (declared.length === 0) return;
+  if (!remote) {
+    const held = declaredSecrets(declared, environment.paths.env ?? {});
+    const missing = declared.filter((name) => held[name] === undefined);
+    if (missing.length > 0) {
+      throw new UsageError(
+        `this program needs ${missing.join(", ")}, which this shell does not set; a local run gives every step and agent the project's secrets from the shell it starts in`,
+        `Export ${missing.map((name) => `${name}=…`).join(" ")} in this shell, then run it again.`,
+      );
+    }
+    return;
+  }
+  const set = new Set((await listedSecrets(session, contract.projectId)).map((item) => item.name));
+  const missing = declared.filter((name) => !set.has(name));
+  if (missing.length > 0) {
+    throw new UsageError(
+      `this program needs ${missing.join(", ")}, which the project has no value for on the control plane`,
+      missing.map((name) => `nightshift secret set ${name}`).join("\n"),
+    );
+  }
+};
+
 export const runProgram = async (
   environment: CliEnvironment,
   session: Session,
@@ -489,6 +531,7 @@ export const runProgram = async (
   };
   const ratified = await ratifiedForRun(environment, session, files);
   if (ratified === undefined) return { started: undefined, exitCode: 1 };
+  await assertSecretsHeld(environment, session, ratified, options.remote === true);
   if (options.remote !== true) {
     // The branch the run reads its base from exists and is the one checked out.
     const branch = ratified.repository.programBranch;

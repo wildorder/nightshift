@@ -97,6 +97,8 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       version: "1",
       provider: "anthropic",
       installationId: "1",
+      // A-62: a project's secret.
+      name: "NPM_TOKEN",
       agentId: agent.agentId,
       siblingAgentId: siblingAgent.agentId,
     },

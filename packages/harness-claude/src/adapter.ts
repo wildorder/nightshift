@@ -60,7 +60,7 @@
  */
 
 import { join } from "node:path";
-import type { AgentStatus } from "@nightshift/contracts";
+import { type AgentStatus, declaredSecrets } from "@nightshift/contracts";
 import type { Clock } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
 import type {
@@ -356,6 +356,8 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
         platform,
         parentEnv,
         extra: {
+          // A-62: the project's secrets the program declares, as this process holds them.
+          ...declaredSecrets(input.program.secrets, parentEnv),
           ...HEADLESS_CLAUDE_ENV,
           ...(capture === undefined ? {} : capture.env),
           ...(capture !== undefined && platform === "win32"
