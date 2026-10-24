@@ -165,22 +165,6 @@ const seed =
 const documents = { [PLAN_SHA]: PLAN, [CONVERSATION_SHA]: CONVERSATION };
 
 describe("the why, in the Studio (SC-P14-08)", () => {
-  it("puts each program's story outcomes on its card, the first two and how many more", async () => {
-    const out: { ids?: Seeded } = {};
-    await mountStudio(seed(out), {
-      at: (f: Fixtures) => `/projects/${f.scope.projectId}`,
-    });
-    const stories = await screen.findByRole("list", { name: "Stories" });
-    expect(
-      within(stories).getByText("They only ever see their own company's invoices"),
-    ).toBeTruthy();
-    expect(
-      within(stories).getByText("Their past invoices still open and total as before"),
-    ).toBeTruthy();
-    expect(within(stories).queryByText("Every ticket names its tenant")).toBeNull();
-    expect(screen.getByText("+1 more")).toBeTruthy();
-  });
-
   it("opens the Status tab with a line per story, done or not", async () => {
     const out: { ids?: Seeded } = {};
     await mountStudio(seed(out), { at: (f: Fixtures) => `${runPathOf(f)}?tab=status`, documents });

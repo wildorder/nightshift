@@ -1,37 +1,26 @@
 /**
- * A project: its programs with their plans, and every run of them (T3,
- * D-P11-10). Runs are gathered by listing each program's runs and merging; no
- * index is added for it.
+ * A project: its programs, one slim row each, what is being built first, each
+ * with its runs (T3, D-P11-10; slimmed 2026-10-24, the owner: "programs should
+ * be listed the way runs are listed today"). A run is one attempt at a
+ * program, so runs are listed under theirs. Runs are gathered by listing each
+ * program's runs; no index is added for it.
  */
 import type { PlanDraft, ProgramContract, Project, ProjectId, Run } from "@nightshift/contracts";
 import { ProjectIdSchema } from "@nightshift/contracts";
-import { isPlanned, prerequisitesOf } from "@nightshift/core";
+import { prerequisitesOf } from "@nightshift/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
-import { Pencil, Settings } from "lucide-react";
+import { ChevronDown, ChevronRight, Pencil, Settings } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
-import { DataTable } from "../components/data-table.js";
 import { PageHeader } from "../components/page-header.js";
-import { ProgramStatusSummary } from "../components/program-status.js";
 import { StatusBadge } from "../components/status-badge.js";
-import { CardStories } from "../components/stories.js";
-import { between, shortId, when } from "../lib/format.js";
+import { between, readable, shortId } from "../lib/format.js";
 import { planPathOf } from "../lib/paths.js";
 import { readAll } from "../lib/read-all.js";
-import { useRunStatus } from "../lib/run-status.js";
 import { useStudio } from "../studio.js";
 
 export interface ProgramWithRuns {
@@ -79,41 +68,6 @@ const usePlanDrafts = (projectId: ProjectId) => {
     queryFn: (): Promise<readonly PlanDraft[]> =>
       readAll((page) => stores.planDrafts.listByProject(projectId, page)),
   });
-};
-
-/** The project's plan drafts, each linking to its plan page; a failed read stays inline. */
-const PlansSection = ({ projectId }: { readonly projectId: ProjectId }) => {
-  const drafts = usePlanDrafts(projectId);
-  if (drafts.isPending) return null;
-  if (drafts.isError)
-    return (
-      <p role="alert" className="mb-8 text-sm text-muted-foreground">
-        Could not list plan drafts: {String(drafts.error)}
-      </p>
-    );
-  if (drafts.data.length === 0) return null;
-  return (
-    <>
-      <h2 className="mb-3 text-lg font-semibold">Plans</h2>
-      <ul className="mb-8 grid gap-2" aria-label="Plans">
-        {drafts.data.map((draft) => (
-          <li key={draft.programId} className="flex flex-wrap items-center gap-2 text-sm">
-            <Link
-              to={planPathOf(draft)}
-              className="font-mono font-medium underline-offset-4 hover:underline"
-            >
-              {draft.programId}
-            </Link>
-            <StatusBadge
-              status={draft.state === "ratified" ? "succeeded" : "pending"}
-              label={draft.state}
-            />
-            <span className="text-muted-foreground">latest version {draft.latestVersion}</span>
-          </li>
-        ))}
-      </ul>
-    </>
-  );
 };
 
 const EditProject = ({
@@ -187,127 +141,180 @@ const EditProject = ({
   );
 };
 
-const PlanState = ({ program }: { readonly program: ProgramContract }) => {
-  if (!isPlanned(program))
-    return <span className="text-sm text-muted-foreground">unplanned contract</span>;
-  const latest = program.ratifications?.at(-1);
-  const pending = prerequisitesOf(program).filter((p) => p.status !== "satisfied");
-  return (
-    <div className="grid gap-1 text-sm">
-      <div className="flex flex-wrap items-center gap-2">
-        <StatusBadge
-          status={program.status === "ratified" ? "succeeded" : "pending"}
-          label={program.status ?? "planning"}
-        />
-        {latest === undefined ? null : (
-          <span className="text-muted-foreground">
-            ratified {when(latest.ratifiedAt)} · plan{" "}
-            <code className="font-mono">{latest.planHash.slice(0, 12)}</code>
-          </span>
-        )}
-      </div>
-      {pending.length === 0 ? null : (
-        <details>
-          <summary className="cursor-pointer text-status-warning-foreground">
-            {pending.length} pending prerequisite{pending.length === 1 ? "" : "s"}
-          </summary>
-          <ul className="mt-1 ml-4 list-disc">
-            {pending.map((p) => (
-              <li key={p.id}>
-                <span className="font-medium">{p.id}</span> {p.description}
-                <pre className="mt-1 rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap">
-                  {p.remediation}
-                </pre>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-    </div>
-  );
-};
-
-/** A program's latest run's status (D-P13-09), on its card. */
-const LatestRunStatus = ({ program, runs }: ProgramWithRuns) => {
-  const latest = [...runs].sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
-  const status = useRunStatus(latest);
-  if (latest === undefined) return <p className="text-sm text-muted-foreground">Not run yet.</p>;
-  if (status.isPending) return <Skeleton className="h-6 w-2/3" />;
-  if (status.data === undefined) return null;
-  return (
-    <div className="grid gap-2">
-      <ProgramStatusSummary status={status.data.status} compact />
-      <Link
-        to={`/projects/${program.projectId}/programs/${program.programId}/runs/${latest.runId}`}
-        className="text-sm font-medium underline-offset-4 hover:underline"
-      >
-        Open run {shortId(latest.runId)} · {when(latest.startedAt)}
-      </Link>
-    </div>
-  );
-};
-
-interface RunRow {
-  readonly program: ProgramContract;
-  readonly run: Run;
+/** One program as the project page lists it: its contract when ratified, its draft, and its runs. */
+interface ProgramRow {
+  readonly programId: string;
+  /** The program's name on the plane (its directory name); its id when it has none. */
+  readonly name: string;
+  readonly objective?: string;
+  readonly program?: ProgramContract;
+  readonly draft?: PlanDraft;
+  readonly runs: readonly Run[];
+  /** The latest run, when it has run. */
+  readonly latest?: Run;
 }
 
-const runColumns = (projectId: ProjectId): ColumnDef<RunRow, unknown>[] => [
-  {
-    id: "run",
-    header: "Run",
-    enableSorting: false,
-    cell: ({ row }) => (
-      <Link
-        to={`/projects/${projectId}/programs/${row.original.program.programId}/runs/${row.original.run.runId}`}
-        className="font-mono underline-offset-4 hover:underline"
-      >
-        {shortId(row.original.run.runId)}
-      </Link>
-    ),
-  },
-  { id: "program", header: "Program", accessorFn: (row) => row.program.objective },
-  {
-    id: "status",
-    header: "Status",
-    accessorFn: (row) => row.run.status,
-    cell: ({ row }) => <StatusBadge status={row.original.run.status} />,
-  },
-  { id: "where", header: "Where", accessorFn: (row) => row.run.location, enableSorting: false },
-  {
-    id: "started",
-    header: "Started",
-    accessorFn: (row) => row.run.startedAt,
-    cell: ({ row }) => when(row.original.run.startedAt),
-  },
-  {
-    id: "ended",
-    header: "Ended",
-    accessorFn: (row) => row.run.endedAt ?? "",
-    cell: ({ row }) => when(row.original.run.endedAt),
-  },
-  {
-    id: "took",
-    header: "Took",
-    enableSorting: false,
-    cell: ({ row }) => between(row.original.run.startedAt, row.original.run.endedAt),
-  },
-  {
-    id: "outcome",
-    header: "Outcome",
-    enableSorting: false,
-    cell: ({ row }) => (
-      <span className="text-muted-foreground">{row.original.run.outcomeReason ?? ""}</span>
-    ),
-  },
-];
+const LIVE_RUN_STATUSES: ReadonlySet<Run["status"]> = new Set(["pending", "running"]);
+
+const latestOf = (runs: readonly Run[]): Run | undefined =>
+  [...runs].sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
+
+/** When the program last did anything: its latest run's start, else its draft's last change. */
+const lastActivity = (row: ProgramRow): string =>
+  row.latest?.startedAt ?? row.draft?.updatedAt ?? row.program?.createdAt ?? "";
+
+/**
+ * Every program of the project, contract or draft alike, once each: what is
+ * being built first (a live run), then the most recently active.
+ */
+export const programRows = (
+  programs: readonly ProgramWithRuns[],
+  drafts: readonly PlanDraft[],
+): readonly ProgramRow[] => {
+  const draftOf = new Map(drafts.map((draft) => [draft.programId as string, draft]));
+  const rows: ProgramRow[] = programs.map(({ program, runs }) => {
+    const draft = draftOf.get(program.programId);
+    const latest = latestOf(runs);
+    return {
+      programId: program.programId,
+      name: draft?.name ?? program.programId,
+      objective: program.objective,
+      program,
+      ...(draft === undefined ? {} : { draft }),
+      runs,
+      ...(latest === undefined ? {} : { latest }),
+    };
+  });
+  const listed = new Set(rows.map((row) => row.programId));
+  for (const draft of drafts) {
+    if (listed.has(draft.programId)) continue;
+    rows.push({ programId: draft.programId, name: draft.name ?? draft.programId, draft, runs: [] });
+  }
+  const live = (row: ProgramRow): boolean =>
+    row.latest !== undefined && LIVE_RUN_STATUSES.has(row.latest.status);
+  return rows.sort(
+    (a, b) => Number(live(b)) - Number(live(a)) || lastActivity(b).localeCompare(lastActivity(a)),
+  );
+};
+
+/** A program's status in one badge: its latest run's, or where its plan stands when it has not run. */
+const ProgramBadge = ({ row }: { readonly row: ProgramRow }) => {
+  if (row.latest !== undefined) return <StatusBadge status={row.latest.status} />;
+  const state = row.draft?.state ?? row.program?.status ?? "planning";
+  return (
+    <StatusBadge
+      status={state === "ratified" ? "succeeded" : "pending"}
+      label={state === "ratified" ? "ratified, not run" : state.replace("_", " ")}
+    />
+  );
+};
+
+const runPath = (projectId: ProjectId, run: Run): string =>
+  `/projects/${projectId}/programs/${run.programId}/runs/${run.runId}`;
+
+/** A program's runs, newest first, shown when its row is opened. */
+const ProgramRuns = ({
+  projectId,
+  runs,
+}: {
+  readonly projectId: ProjectId;
+  readonly runs: readonly Run[];
+}) => (
+  <ul className="mt-2 grid gap-1 border-l pl-3 text-sm" aria-label="Runs">
+    {[...runs]
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .map((run) => (
+        <li key={run.runId} className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <Link
+            to={runPath(projectId, run)}
+            className="font-mono underline-offset-4 hover:underline"
+          >
+            {shortId(run.runId)}
+          </Link>
+          <StatusBadge status={run.status} />
+          <span className="text-muted-foreground">
+            {readable(run.startedAt)}
+            {run.endedAt === undefined ? "" : ` · took ${between(run.startedAt, run.endedAt)}`}
+          </span>
+          {run.outcomeReason === undefined ? null : (
+            <span
+              className="min-w-0 basis-full truncate text-muted-foreground"
+              title={run.outcomeReason}
+            >
+              {run.outcomeReason}
+            </span>
+          )}
+        </li>
+      ))}
+  </ul>
+);
+
+/** One program, slim: name, status, runs, when it last ran; its objective in full beneath. */
+const ProgramItem = ({
+  projectId,
+  row,
+  now,
+}: {
+  readonly projectId: ProjectId;
+  readonly row: ProgramRow;
+  readonly now: number;
+}) => {
+  const [open, setOpen] = useState(false);
+  const pending =
+    row.program === undefined
+      ? 0
+      : prerequisitesOf(row.program).filter((p) => p.status !== "satisfied").length;
+  return (
+    <li className="border-b py-3 last:border-b-0" data-testid="program-row">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <Link
+          to={planPathOf({ projectId, programId: row.programId } as never)}
+          className="font-mono font-medium underline-offset-4 hover:underline"
+          title="The plan"
+        >
+          {row.name}
+        </Link>
+        <ProgramBadge row={row} />
+        {row.latest === undefined ? null : (
+          <Link
+            to={runPath(projectId, row.latest)}
+            className="text-sm underline-offset-4 hover:underline"
+          >
+            last run {readable(row.latest.startedAt, now)}
+          </Link>
+        )}
+        {pending === 0 ? null : (
+          <span className="text-sm text-status-warning-foreground">
+            {pending} prerequisite{pending === 1 ? "" : "s"} pending
+          </span>
+        )}
+        {row.runs.length === 0 ? null : (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-muted-foreground"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+          >
+            {open ? <ChevronDown /> : <ChevronRight />}
+            {row.runs.length} run{row.runs.length === 1 ? "" : "s"}
+          </Button>
+        )}
+      </div>
+      {row.objective === undefined ? null : (
+        <p className="mt-1 text-sm text-muted-foreground">{row.objective}</p>
+      )}
+      {open ? <ProgramRuns projectId={projectId} runs={row.runs} /> : null}
+    </li>
+  );
+};
 
 export const ProjectPage = () => {
   const projectId = useProjectId();
   const project = useProject(projectId);
   const programs = usePrograms(projectId);
+  const drafts = usePlanDrafts(projectId);
   const [editing, setEditing] = useState(false);
-  const [statusFilter, setStatusFilter] = useState("all");
   if (project.isPending || programs.isPending)
     return <p className="text-muted-foreground">Loading project…</p>;
   if (project.isError)
@@ -316,11 +323,8 @@ export const ProjectPage = () => {
     return <p role="alert">Could not list programs: {String(programs.error)}</p>;
   if (project.data === undefined) return <p role="alert">No such project.</p>;
 
-  const runs: RunRow[] = programs.data.flatMap(({ program, runs }) =>
-    runs.map((run) => ({ program, run })),
-  );
-  const statuses = [...new Set(runs.map((r) => r.run.status))].sort();
-  const shown = statusFilter === "all" ? runs : runs.filter((r) => r.run.status === statusFilter);
+  const rows = programRows(programs.data, drafts.data ?? []);
+  const now = Date.now();
 
   return (
     <section>
@@ -348,64 +352,20 @@ export const ProjectPage = () => {
       {editing ? <EditProject project={project.data} onDone={() => setEditing(false)} /> : null}
 
       <h2 className="mb-3 text-lg font-semibold">Programs</h2>
-      {programs.data.length === 0 ? (
+      {drafts.isError ? (
+        <p role="alert" className="mb-3 text-sm text-muted-foreground">
+          Could not list plan drafts: {String(drafts.error)}
+        </p>
+      ) : null}
+      {rows.length === 0 ? (
         <p className="mb-6 text-muted-foreground">No programs yet.</p>
       ) : (
-        <ul className="mb-8 grid gap-4 lg:grid-cols-2">
-          {programs.data.map(({ program, runs }) => (
-            <li key={program.programId}>
-              <Card className="h-full">
-                <CardHeader>
-                  <CardTitle>{program.objective}</CardTitle>
-                  <CardDescription className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-xs">{program.programId}</span>
-                    <span>
-                      · {runs.length} run{runs.length === 1 ? "" : "s"}
-                    </span>
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="grid gap-4">
-                  <CardStories program={program} />
-                  <LatestRunStatus program={program} runs={runs} />
-                  <PlanState program={program} />
-                  <Link
-                    to={planPathOf(program)}
-                    className="text-sm font-medium underline-offset-4 hover:underline"
-                  >
-                    Plan
-                  </Link>
-                </CardContent>
-              </Card>
-            </li>
+        <ul className="mb-8" aria-label="Programs">
+          {rows.map((row) => (
+            <ProgramItem key={row.programId} projectId={projectId} row={row} now={now} />
           ))}
         </ul>
       )}
-
-      <PlansSection projectId={projectId} />
-
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold">Runs</h2>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger size="sm" className="w-40" aria-label="Filter by status">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All statuses</SelectItem>
-            {statuses.map((status) => (
-              <SelectItem key={status} value={status}>
-                {status}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <DataTable
-        label="Runs"
-        columns={runColumns(projectId)}
-        rows={shown}
-        initialSort={[{ id: "started", desc: true }]}
-        empty="No runs yet."
-      />
     </section>
   );
 };

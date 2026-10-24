@@ -5,7 +5,7 @@
  * from a job, strand or decision to a story is `storiesOf` in `core`, derived
  * from the record, never written at run time (D-P14-03).
  */
-import type { ProgramContract, Story } from "@nightshift/contracts";
+import type { Story } from "@nightshift/contracts";
 import type { RunReport, RunScope, StoryStatus } from "@nightshift/core";
 import { strandsOfDecision } from "@nightshift/core";
 import { Quote } from "lucide-react";
@@ -44,29 +44,6 @@ export const StoryLines = ({ statuses }: { readonly statuses: readonly StoryStat
     ))}
   </ul>
 );
-
-/** The first stories' outcomes on a program's card, and how many more there are. */
-export const CardStories = ({
-  program,
-  shown = 2,
-}: {
-  readonly program: ProgramContract;
-  readonly shown?: number;
-}) => {
-  const stories = program.stories ?? [];
-  if (stories.length === 0) return null;
-  const rest = stories.length - shown;
-  return (
-    <div className="grid gap-1">
-      <ul className="grid gap-1" aria-label="Stories">
-        {stories.slice(0, shown).map((story) => (
-          <StoryLine key={story.id} story={story} />
-        ))}
-      </ul>
-      {rest > 0 ? <p className="text-xs text-muted-foreground">+{rest} more</p> : null}
-    </div>
-  );
-};
 
 /** The human's own words, as they typed them in planning. */
 export const Words = ({
