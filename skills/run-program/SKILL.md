@@ -81,7 +81,10 @@ Check, and say what you find, without fixing anything the human did not ask for:
    wrong and what you are doing about it. Do not paste the lines; do not stay
    silent across waits either. When nothing changed but heartbeats, say so in
    five words or not at all. `run.activity` replays the whole run if the human
-   asks what happened.
+   asks what happened. Wait only with `job.wait`, never with a sleep in the
+   shell: a shell sleep cannot be woken, so a strand that fails waits on you
+   for as long as you sleep. A wait that returns with nothing settled is
+   normal; call it again at once.
 5. When a strand comes back failed, read why with `job.get`. Retry it
    (`job.retry`) when a second attempt from the current code can fix it — a
    conflict, a flaky check, a worker that gave up early — at most twice, and

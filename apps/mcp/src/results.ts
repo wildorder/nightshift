@@ -77,13 +77,21 @@ export class ToolRefusal extends Error {
  */
 export type ToolResult = CallToolResult;
 
-/** A successful result: the summary a model reads, and the data it acts on. */
+/**
+ * A successful result: the summary a model reads, and the data it acts on.
+ *
+ * The summary is in the structured half as `message` too, as a refusal's is.
+ * Claude Code hands its model only `structuredContent` when a result has one
+ * (2.1.309, PIP-32): a summary in `content` alone never reached a Claude agent,
+ * so a plan review's findings, a wait's "call it again" and every instruction a
+ * tool gave in words were lost. Codex shows both halves.
+ */
 export const ok = (
   summary: string,
   structuredContent: Record<string, unknown> = {},
 ): ToolResult => ({
   content: [{ type: "text", text: summary }],
-  structuredContent: { ok: true, ...structuredContent },
+  structuredContent: { ok: true, message: summary, ...structuredContent },
 });
 
 /** A refusal, in the same two halves. */

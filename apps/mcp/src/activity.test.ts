@@ -191,3 +191,40 @@ describe("the feed a root's job.wait reads (2026-10-22)", () => {
     expect((await feed.all(100)).length).toBe(22);
   });
 });
+
+describe("an orchestrator waiting in its shell (PIP-31)", () => {
+  it("warns of a long sleep by an orchestrator, and not of a worker's or a short one", async () => {
+    const f = createFixtures();
+    const stores = createInMemoryStores();
+    await stores.executionNodes.put(makeRootNode(f));
+    const job = makeJobContract(f, { objective: "Run the slow suite." });
+    const worker = makeNode(f, f.rootNodeId, { jobContractId: job.jobContractId });
+    await stores.jobContracts.put(job);
+    await stores.executionNodes.put(worker);
+    const at = (minute: number) => `2026-10-23T03:${String(minute).padStart(2, "0")}:00.000Z`;
+    const called = (nodeId: string, tool: string, summary: string, minute: number) =>
+      makeEvent(f, {
+        type: "tool.called",
+        executionNodeId: nodeId as never,
+        payload: { tool, toolUseId: f.ids.next("evt"), summary },
+        occurredAt: at(minute),
+      });
+    for (const event of [
+      called(f.rootNodeId, "Bash", "sleep 1500 && echo done", 1),
+      called(f.rootNodeId, "shell", "/bin/zsh -lc 'sleep 1800'", 2),
+      called(f.rootNodeId, "Bash", "sleep 5", 3),
+      called(worker.executionNodeId, "Bash", "sleep 900", 4),
+    ]) {
+      await stores.events.append(event);
+    }
+
+    const warnings = renderActivity(await createActivityFeed(stores, f.scope).since()).filter(
+      (line) => line.includes("warning:"),
+    );
+
+    expect(warnings).toEqual([
+      "03:01 root — warning: waiting in its shell (sleep 1500s) instead of job.wait, so nothing can wake it",
+      "03:02 root — warning: waiting in its shell (sleep 1800s) instead of job.wait, so nothing can wake it",
+    ]);
+  });
+});

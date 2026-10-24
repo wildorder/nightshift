@@ -3,12 +3,20 @@
  * defect as an earlier examination's names it in `repeats`, and the server
  * refuses a reference to an examination or finding the node does not have.
  */
+
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { AGGREGATE_EXAMPLES, type Examination } from "@nightshift/contracts";
-import { EXAMINATION_CONTEXT_ENV, type ExaminationContext } from "@nightshift/execution";
+import {
+  EXAMINATION_CONTEXT_ENV,
+  type ExaminationContext,
+  PLAN_REVIEW_FILE_ENV,
+} from "@nightshift/execution";
 import { createInMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it } from "vitest";
-import { registerExaminerTools } from "./examiner.js";
+import { registerExaminerTools, registerPlanReviewTools } from "./examiner.js";
 
 type Handler = (input: Record<string, unknown>) => Promise<{
   readonly isError?: boolean;
@@ -137,5 +145,35 @@ describe("examination.submit repeats", () => {
       examinationId,
     );
     expect(stored?.findings[0]).not.toHaveProperty("repeats");
+  });
+});
+
+describe("plan.review.submit (PIP-32)", () => {
+  const reviewTool = async () => {
+    const file = join(await mkdtemp(join(tmpdir(), "plan-review-")), "review.json");
+    const tools = new Map<string, Handler>();
+    registerPlanReviewTools(
+      {
+        registerTool: (name: string, _config: unknown, handler: Handler) => {
+          tools.set(name, handler);
+        },
+      } as unknown as McpServer,
+      { env: { [PLAN_REVIEW_FILE_ENV]: file } } as never,
+    );
+    return { submit: tools.get("plan.review.submit") as Handler, file };
+  };
+
+  it("refuses a revise that names nothing to change, and takes it once it does", async () => {
+    const { submit, file } = await reviewTool();
+    const empty = await submit({ verdict: "revise", summary: "Not right.", findings: [] });
+    expect(empty.isError).toBe(true);
+    expect(String(empty.structuredContent?.message)).toContain("add a finding");
+    const named = await submit({
+      verdict: "revise",
+      summary: "Not right.",
+      findings: [{ severity: "material", summary: "J1 and J2 collide", jobs: ["J1"] }],
+    });
+    expect(named.isError).toBeUndefined();
+    expect(JSON.parse(await readFile(file, "utf8")).findings).toHaveLength(1);
   });
 });

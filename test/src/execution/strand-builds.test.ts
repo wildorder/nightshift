@@ -36,6 +36,8 @@ import {
   type ExaminationServices,
   type ExecutionEnvironment,
   git,
+  PLAN_REVIEW_FILE_ENV,
+  planReviewVerdictOf,
   planStateOf,
   recordWorkerDecision,
   STRAND_PLAN_CONTEXT,
@@ -109,6 +111,8 @@ interface Built {
 const buildStrand = async (options: {
   readonly redTest: boolean;
   readonly examined?: (round: number) => "material" | "clean";
+  /** What the plan reviewer writes to the file it is given; nothing when absent. */
+  readonly review?: string;
 }): Promise<Built> => {
   let world: World | undefined;
   const starts: HarnessStartInput[] = [];
@@ -315,9 +319,13 @@ const buildStrand = async (options: {
         if (context.input.agent.role === "examiner") {
           // A plan review hands its verdict back in a file; writing none, the
           // plan is recorded as not reviewed and the strand builds (D-P18-01).
-          return context.input.task?.kind === "review_plan"
-            ? Promise.resolve({ kind: "completed" as const })
-            : examine(context.input);
+          if (context.input.task?.kind === "review_plan") {
+            const file = context.input.mcp?.env[PLAN_REVIEW_FILE_ENV];
+            return options.review === undefined || file === undefined
+              ? Promise.resolve({ kind: "completed" as const })
+              : writeFile(file, options.review).then(() => ({ kind: "completed" as const }));
+          }
+          return examine(context.input);
         }
         return context.input.node.kind === "sub-program" ? orchestrate(context) : work(context);
       },
@@ -494,5 +502,42 @@ describe("a strand built as P18 builds it", () => {
     ]);
     expect(await programFiles(w)).toContain("src/answer.js");
     await built.close();
+  }, 120_000);
+});
+
+describe("a strand plan review's verdict (PIP-32)", () => {
+  const reviewOf = async (review: string) => {
+    const built = await buildStrand({ redTest: false, examined: () => "clean", review });
+    const state = await planStateOf(built.world.environment, built.world.scope, built.strandNodeId);
+    await built.close();
+    expect(state.reviews).toHaveLength(1);
+    return state.reviews[0] as NonNullable<(typeof state.reviews)[0]>;
+  };
+
+  it("carries a revise's findings in the recorded review", async () => {
+    const review = await reviewOf(
+      JSON.stringify({
+        verdict: "revise",
+        summary: "J1 and J2 collide.",
+        findings: [
+          { severity: "material", summary: "J1 and J2 both change src/a.js", jobs: ["J1"] },
+        ],
+      }),
+    );
+    expect(planReviewVerdictOf(review)).toBe("revise");
+    expect(review.choice).toContain("- [MATERIAL] J1 and J2 both change src/a.js (J1)");
+  }, 120_000);
+
+  it("takes a revise that names nothing to change as sound", async () => {
+    const review = await reviewOf(
+      JSON.stringify({ verdict: "revise", summary: "Looks off.", findings: [] }),
+    );
+    expect(planReviewVerdictOf(review)).toBe("sound");
+  }, 120_000);
+
+  it("records a review it cannot read as undeliverable, not as not reviewed", async () => {
+    const review = await reviewOf("{ this is not a review");
+    expect(planReviewVerdictOf(review)).toBe("undeliverable");
+    expect(review.choice).toContain("could not be read");
   }, 120_000);
 });

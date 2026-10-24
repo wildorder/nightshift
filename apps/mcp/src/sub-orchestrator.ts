@@ -52,6 +52,7 @@ import {
   MAX_PLAN_REVIEWS,
   PlannedJobSchema,
   planProblems,
+  planReviewVerdictOf,
   planStateOf,
   recordStepSkip,
   recordStepTimeout,
@@ -388,8 +389,9 @@ export const registerSubOrchestratorTools = (
     {
       title: "Wait for jobs you delegated",
       description:
-        "Block until the first of these jobs settles, or the cap elapses. Always returns: " +
-        "`timedOut` says whether a job settled or the wait did. A failed job Nightshift is " +
+        "Block until the first of these jobs settles, or the cap elapses (under a minute). Always " +
+        "returns: `timedOut` says whether a job settled or the wait did; a timed-out return is " +
+        "normal, so call it again at once, and never sleep in your shell. A failed job Nightshift is " +
         "still taking further (an arbiter ruling on it, or an upheld ruling about to be carried " +
         "out) is not settled, and `continuing` says why: wait for it, do not delegate it again.",
       inputSchema: {
@@ -410,11 +412,17 @@ export const registerSubOrchestratorTools = (
           WAIT_POLL_MS,
         );
         return first === undefined
-          ? ok(`None of ${wanted.length} jobs settled within ${limit}s. Call job.wait again.`, {
-              timedOut,
-              waitedSeconds: limit,
-              jobs: reports,
-            })
+          ? ok(
+              `None of ${wanted.length} jobs settled within ${limit}s: ` +
+                `${reports.map((r) => `${String(r.jobContractId)} ${String(r.status)}`).join(", ")}. ` +
+                "This wait is capped below the harness's own tool timeout, so call job.wait again " +
+                "at once; it returns the moment one settles. Never sleep in your shell instead.",
+              {
+                timedOut,
+                waitedSeconds: limit,
+                jobs: reports,
+              },
+            )
           : ok(describe(first), { ...first, timedOut, jobs: reports });
       }),
   );
@@ -627,7 +635,7 @@ export const registerSubOrchestratorTools = (
           if (clock.now() >= deadline) {
             return ok(
               `Still reviewing after ${cap}s — this wait is capped below the harness's own tool ` +
-                "timeout, so call strand.review.wait again.",
+                "timeout, so call strand.review.wait again at once. Never sleep in your shell instead.",
               { timedOut: true },
             );
           }
@@ -638,11 +646,8 @@ export const registerSubOrchestratorTools = (
         if (review === undefined) {
           return ok("No review is recorded; build the plan.", { timedOut: false, verdict: null });
         }
-        const verdict = review.context.endsWith("revise")
-          ? "revise"
-          : review.context.endsWith("sound")
-            ? "sound"
-            : null;
+        const recorded = planReviewVerdictOf(review);
+        const verdict = recorded === "revise" || recorded === "sound" ? recorded : null;
         const last = state.reviews.length >= MAX_PLAN_REVIEWS;
         return ok(
           `${review.context}\n\n${review.choice}\n\n` +

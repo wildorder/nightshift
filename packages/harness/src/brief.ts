@@ -125,6 +125,22 @@ const headlessSession = (finish: string): string =>
     "  stopped with it.",
   ].join("\n");
 
+/**
+ * How an orchestrator waits (PIP-31). A strand orchestrator once slept in its
+ * shell for half an hour at a time instead of calling job.wait, because each
+ * wait came back empty and nothing told it why or what a sleep costs.
+ */
+export const HOW_TO_WAIT = [
+  "HOW TO WAIT",
+  "",
+  "  Wait only with job.wait (and strand.review.wait for a plan review). Never sleep or",
+  "  poll in your shell: a shell sleep cannot be woken, so a job that fails, conflicts or",
+  "  needs you waits for as long as you sleep. job.wait returns the moment one of the jobs",
+  "  settles. When none has, it returns in under a minute, because the harness would time",
+  "  the call out; that return is normal. Call job.wait again at once: calling it again",
+  "  costs nothing.",
+].join("\n");
+
 const bullets = (items: readonly string[]): string =>
   items.length === 0 ? "  (none)" : items.map((item) => `  - ${item}`).join("\n");
 
@@ -541,6 +557,7 @@ export const renderSubOrchestratorBrief = (input: WorkerBriefInput): string => {
       "  the same files, or they conflict on your branch; the review checks this. Each job",
       "  costs a worker's start, so do not split work finer than it is worth.",
     ].join("\n"),
+    HOW_TO_WAIT,
     [
       "SAY WHAT EACH JOB IS — it decides the model, and who examines it",
       "",
@@ -738,6 +755,7 @@ export const renderPlanFollowingBrief = (input: WorkerBriefInput): string => {
       '     work is deferred: name the prerequisites it waits on. Otherwise "failed", with a',
       "     reason that names what was parked and why. A human reads it in the morning.",
     ].join("\n"),
+    HOW_TO_WAIT,
     [
       "YOU DO NOT WRITE CODE; DELEGATE IT",
       "",
@@ -867,7 +885,8 @@ const renderPlanReviewBrief = (
       "",
       "  nightshift plan.review.submit { verdict, summary, findings }",
       "    verdict: sound (build it as planned) or revise (change it first).",
-      "    findings: [{ severity: material | minor, summary, jobs? }]",
+      "    findings: [{ severity: material | minor, summary, jobs? }] — every change you ask",
+      "      for is a finding: a revise with no findings is refused.",
       "",
       "  Read the code you need, then submit. You change nothing.",
     ].join("\n"),

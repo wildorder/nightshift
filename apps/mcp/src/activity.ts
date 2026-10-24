@@ -223,6 +223,26 @@ interface Tally {
   at: string;
 }
 
+/** Shell sleeps shorter than this are a pause, not a wait. */
+const SHELL_SLEEP_WARNING_SECONDS = 60;
+
+/**
+ * The seconds an orchestrator's shell command sleeps, when it is a wait that
+ * should have been job.wait (PIP-31): a strand orchestrator once slept for
+ * half an hour at a time while its jobs settled unseen. A worker's sleeps are
+ * its own business.
+ */
+const orchestratorSleep = (context: Context, nodeId: string, event: Event): number | undefined => {
+  const kind = context.nodes.get(nodeId)?.kind;
+  if (kind === undefined || kind === "job") return undefined;
+  const payload = payloadOf(event);
+  if (payload.tool !== "Bash" && payload.tool !== "shell") return undefined;
+  const seconds = /\bsleep\s+(\d+)/.exec(String(payload.summary ?? ""))?.[1];
+  if (seconds === undefined) return undefined;
+  const value = Number(seconds);
+  return value >= SHELL_SLEEP_WARNING_SECONDS ? value : undefined;
+};
+
 /**
  * Turns one batch of events into lines. Tool calls are counted per node and
  * written out as one heartbeat line just before that node's next narrated line,
@@ -243,7 +263,16 @@ class Narration {
     const render = RENDER[event.type];
     if (event.type === "tool.called" && nodeId !== null) {
       this.ids.push(event.eventId);
-      if (!this.handed.has(event.eventId)) this.count(nodeId, event);
+      if (this.handed.has(event.eventId)) return;
+      this.count(nodeId, event);
+      const slept = orchestratorSleep(this.context, nodeId, event);
+      if (slept !== undefined) {
+        this.lines.push({
+          at: event.occurredAt,
+          who: whoIs(this.context, nodeId),
+          text: `warning: waiting in its shell (sleep ${slept}s) instead of job.wait, so nothing can wake it`,
+        });
+      }
       return;
     }
     if (render === undefined) return;
