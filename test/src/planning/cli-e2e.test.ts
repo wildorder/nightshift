@@ -324,3 +324,59 @@ describe("a planned program, from a plan on disk to a landed program, through th
     expect(git("rev-parse", PROGRAM_BRANCH)).toBe(republished);
   }, 240_000);
 });
+
+describe("a remote run whose final documents never left its machine (P21, F-01)", () => {
+  it("nightshift resume rebuilds them from the control plane and pushes them to GitHub", async () => {
+    const base = git("rev-parse", PROGRAM_BRANCH);
+    // No hurdle this time: the run lands everything and publishes its documents.
+    await writeFile(join(outside, "release-token"), "present");
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    const ran = await cli("run", PROGRAM);
+    expect(ran, `${op.out.join("\n")}\n${op.err.join("\n")}`).toBe(0);
+    const runId = op.out.find((line) => /^run_[0-9A-Z]+$/.test(line)) ?? "";
+    expect(runId).not.toBe("");
+
+    // As a machine leaves it when its last upload fails: GitHub has every
+    // landing and not the documentation commit on top, the run ended
+    // interrupted saying so, and the operator's checkout is behind GitHub.
+    const docsHead = git("rev-parse", PROGRAM_BRANCH);
+    const work = git("rev-parse", `${docsHead}^`);
+    for (const file of git("diff", "--name-only", work, docsHead).split("\n")) {
+      expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
+    }
+    git("push", "-q", "origin", `${work}:refs/heads/${PROGRAM_BRANCH}`);
+    git("reset", "-q", "--hard", base);
+    const scope = { ...ratifiedIds, runId } as never;
+    const recorded = await op.stores.runs.get(scope, runId as never);
+    if (recorded === undefined) throw new Error("the run is not recorded");
+    await op.stores.runs.put({
+      ...recorded,
+      location: "remote",
+      status: "interrupted",
+      outcomeReason: `GitHub does not have this run's final documentation commit ${docsHead.slice(0, 12)}.`,
+    });
+
+    const resumed = await cli("resume", PROGRAM);
+    const said = `${op.out.join("\n")}\n${op.err.join("\n")}`;
+    expect(resumed, said).toBe(0);
+    expect(said).not.toContain("nothing to resume");
+
+    // GitHub now has the documents, in one commit on top of its landings that
+    // touches only the program's directory, and the checkout is where GitHub is.
+    git("fetch", "-q", "origin");
+    const atGitHub = git("rev-parse", `origin/${PROGRAM_BRANCH}`);
+    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(atGitHub);
+    expect(git("rev-list", "--count", `${work}..${atGitHub}`)).toBe("1");
+    const changed = git("diff", "--name-only", work, atGitHub).split("\n");
+    for (const file of changed)
+      expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
+    expect(changed).toContain(`docs/programs/${PROGRAM}/report.md`);
+    expect(git("show", `${atGitHub}:docs/programs/${PROGRAM}/report.md`)).toContain(runId);
+
+    // Again, with GitHub holding everything: nothing is committed or pushed.
+    expect(await cli("resume", PROGRAM)).toBe(0);
+    git("fetch", "-q", "origin");
+    expect(git("rev-parse", `origin/${PROGRAM_BRANCH}`)).toBe(atGitHub);
+    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(atGitHub);
+  }, 240_000);
+});

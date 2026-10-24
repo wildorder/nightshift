@@ -644,31 +644,7 @@ describe("run.finish settles the documentation head like a landing (F-01)", () =
     expect(machine.dispatch().publication.intents).toEqual([]);
   });
 
-  describe("nightshift resume on a machine", () => {
-    it("settles the docs head: an intent the run could not raise is raised and published", async () => {
-      const { world, machine, scope } = await finishOnMachine({ uploadFailures: 100 });
-      machine.faults.uploadFailures = 0;
-      const outcome = await runResume(runtimeOf(world, undefined, machine), {
-        scope,
-        repoPath: world.repo,
-      });
-      expect(outcome.publicationFailure).toBeUndefined();
-      // The resume's own report commit is on top of the run's, and it is what GitHub has.
-      const after = (await run(world, ["rev-parse", PROGRAM_BRANCH])).trim();
-      expect(machine.origin).toEqual([after]);
-      expect(machine.dispatch().publication.head).toBe(after);
-    });
-
-    it("reports the publication failure when the docs head still cannot reach GitHub", async () => {
-      const { world, machine, scope } = await finishOnMachine({ uploadFailures: 100 });
-      const outcome = await runResume(runtimeOf(world, undefined, machine), {
-        scope,
-        repoPath: world.repo,
-      });
-      expect(outcome.publicationFailure).toContain("final documentation commit");
-      expect(machine.origin).toEqual([]);
-    });
-
+  describe("nightshift resume", () => {
     it("has nothing to push locally", async () => {
       const { world } = await plannedWorld(true);
       const mcp = await start(world, undefined);

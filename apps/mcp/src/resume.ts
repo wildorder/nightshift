@@ -17,7 +17,6 @@
 import type { RunScope } from "@nightshift/core";
 import { createEventOutbox, type ResumeResult, resumeDeferred } from "@nightshift/execution";
 import type { Runtime } from "./compose.js";
-import { fullyPublished, settlePublication, unpublishedReason } from "./publication-settle.js";
 import { publishPlannedRun } from "./publish-run.js";
 import { routeJob } from "./routing.js";
 import { buildEnvironment } from "./session.js";
@@ -31,7 +30,7 @@ export interface ResumeInput {
 /** Why a resume could not begin: a run or program the control plane does not hold. */
 export class ResumeRefusal extends Error {}
 
-/** A resume's result, and why the documentation head is not at GitHub when it is not. */
+/** A resume's result, and why the run's documents could not be committed when they could not. */
 export interface ResumeOutcome extends ResumeResult {
   readonly publicationFailure?: string;
 }
@@ -64,38 +63,21 @@ export const runResume = async (runtime: Runtime, input: ResumeInput): Promise<R
       },
     );
     // The run ends again here (P21, D-03): the program branch gets the updated
-    // report as a new publication commit, or nothing if no published file changed.
+    // report as a new publication commit, or nothing if no published file
+    // changed. This process runs in the operator's checkout, which has no
+    // publication hook: the CLI pushes what it committed (F-01).
     if (result.blocked === undefined) {
       const name = (await runtime.stores.planDrafts.get(scope.projectId, scope.programId))?.name;
-      const { published, committed, failure } = await publishPlannedRun(runtime, {
+      const { failure } = await publishPlannedRun(runtime, {
         scope,
         program,
         repoPath: input.repoPath,
         name,
         rootNodeId: run.rootNodeId,
-        ...(environment.publish === undefined ? {} : { publish: environment.publish }),
       });
-      let publicationFailure = failure;
-      // On a machine the documentation head is settled like a landing: a head
-      // GitHub does not have is reported, never passed over. Locally there is
-      // no hook and nothing to push.
-      const publish = environment.publish;
-      const head = (published ?? committed)?.head;
-      if (publish !== undefined && head !== undefined) {
-        const branch = program.repository.programBranch;
-        const state = await settlePublication({
-          read: () => runtime.stores.dispatches.get(scope),
-          republishHead: async () => {
-            await publish({ head, programBranch: branch, repoPath: input.repoPath });
-          },
-        });
-        publicationFailure = fullyPublished(state, head)
-          ? undefined
-          : unpublishedReason(state, head);
-      }
-      if (publicationFailure !== undefined) {
-        process.stderr.write(`[nightshift-resume] could not publish: ${publicationFailure}\n`);
-        return { ...result, publicationFailure };
+      if (failure !== undefined) {
+        process.stderr.write(`[nightshift-resume] could not publish: ${failure}\n`);
+        return { ...result, publicationFailure: failure };
       }
     }
     return result;

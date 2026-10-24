@@ -40,6 +40,8 @@ const idTokenFor = (claims: Record<string, unknown>): string => {
 
 export interface Operator {
   readonly plane: LocalControlPlane;
+  /** What the plane holds, for a suite to set up what only a machine would write. */
+  readonly stores: InMemoryStores;
   readonly environment: CliEnvironment;
   readonly out: string[];
   readonly err: string[];
@@ -165,6 +167,7 @@ export const signIn = async (options: SignInOptions = {}): Promise<Operator> => 
   };
 
   return {
+    stores: backing,
     plane,
     environment,
     out,

@@ -12,7 +12,15 @@
  * origin ahead of the checkout is a pull to make, and diverged history is a
  * human's to resolve, each refused with what to do.
  */
-import { currentBranch, type GitRunner, isDirty, tryGit, tryRevParse } from "@nightshift/execution";
+import {
+  currentBranch,
+  fastForward,
+  type GitRunner,
+  isDirty,
+  tryGit,
+  tryRevParse,
+  updateRef,
+} from "@nightshift/execution";
 import { UsageError } from "./failures.js";
 
 export interface PublishOptions {
@@ -117,6 +125,54 @@ export const publishProgramBranch = async (
       : `pushed ${branch} to origin: ${short(origin)} -> ${short(head)}`,
   );
   return origin === undefined ? { kind: "pushed", head } : { kind: "pushed", head, from: origin };
+};
+
+/**
+ * Brings this checkout's `branch` up to origin's, fast-forward only, before
+ * anything is built on it here: a remote run landed its work at GitHub, so a
+ * resume that commits onto a stale local branch would make history GitHub
+ * cannot take. Ahead of origin is fine (the next push carries it); diverged is
+ * refused with what to do. Returns the local head afterwards, `undefined` when
+ * neither side has the branch.
+ */
+export const followOrigin = async (
+  runner: GitRunner,
+  repo: string,
+  branch: string,
+  out: (line: string) => void,
+): Promise<string | undefined> => {
+  const origin = await fetchOrigin(runner, repo, branch);
+  const local = await tryRevParse(runner, repo, branch);
+  if (origin === undefined || local === origin) return local;
+  if (local !== undefined && (await isAncestor(runner, repo, origin, local))) return local;
+  if (local !== undefined && !(await isAncestor(runner, repo, local, origin))) {
+    throw new UsageError(
+      `${branch} has diverged: ${short(local)} here, ${short(origin)} at origin`,
+      "Reconcile the two by hand; Nightshift never forces a push.",
+    );
+  }
+  if ((await currentBranch(runner, repo).catch(() => undefined)) === branch) {
+    if (await isDirty(runner, repo)) {
+      throw new UsageError(
+        `${branch} is checked out in ${repo} with uncommitted changes, and origin is ahead at ${short(origin)}`,
+        `Commit or stash them, then run it again: ${branch} must take origin's work first.`,
+      );
+    }
+    const moved = await fastForward(runner, repo, origin, Date.now());
+    if (!moved.ok) {
+      throw new UsageError(
+        `could not bring ${branch} up to origin's ${short(origin)}: ${moved.detail}`,
+      );
+    }
+  } else {
+    await updateRef(runner, repo, `refs/heads/${branch}`, origin as never);
+  }
+  out(
+    local === undefined
+      ? `made ${branch} here at origin's ${short(origin)}`
+      : `brought ${branch} up to origin: ${short(local)} -> ${short(origin)}`,
+  );
+  return origin;
 };
 
 export type BranchEnsured =

@@ -71,7 +71,10 @@ export const unpublishedReason = (state: PublicationState | undefined, head?: st
     return `GitHub may not have this run's work: its publication could not be read. ${recovery}`;
   }
   if (head !== undefined && (state.kind === "published" || state.kind === "none")) {
-    return `GitHub does not have this run's final documentation commit ${head.slice(0, 12)}: its publication was not recorded or was refused. ${recovery}`;
+    return (
+      `GitHub does not have this run's final documentation commit ${head.slice(0, 12)}: its publication was not recorded or was refused. ` +
+      "The documents are the control plane's records; `nightshift resume` for the program rebuilds them in your checkout and pushes them."
+    );
   }
   const count = state.unpublished.length;
   const landings = `${count} landing${count === 1 ? "" : "s"}`;
