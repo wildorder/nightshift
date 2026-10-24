@@ -17,6 +17,7 @@
 import type { RunScope } from "@nightshift/core";
 import { createEventOutbox, type ResumeResult, resumeDeferred } from "@nightshift/execution";
 import type { Runtime } from "./compose.js";
+import { publishPlannedRun } from "./publish-run.js";
 import { routeJob } from "./routing.js";
 import { buildEnvironment } from "./session.js";
 
@@ -29,7 +30,12 @@ export interface ResumeInput {
 /** Why a resume could not begin: a run or program the control plane does not hold. */
 export class ResumeRefusal extends Error {}
 
-export const runResume = async (runtime: Runtime, input: ResumeInput): Promise<ResumeResult> => {
+/** A resume's result, and why the run's documents could not be committed when they could not. */
+export interface ResumeOutcome extends ResumeResult {
+  readonly publicationFailure?: string;
+}
+
+export const runResume = async (runtime: Runtime, input: ResumeInput): Promise<ResumeOutcome> => {
   const { scope } = input;
   const run = await runtime.stores.runs.get(scope, scope.runId);
   if (run === undefined) throw new ResumeRefusal(`no run ${scope.runId} in this program`);
@@ -48,7 +54,7 @@ export const runResume = async (runtime: Runtime, input: ResumeInput): Promise<R
   try {
     // A check that fails here is retried as the run would retry it (P9,
     // D-P9-07): routed by the run's own policy, one rung up, a worker of its own.
-    return await resumeDeferred(
+    const result = await resumeDeferred(
       environment,
       { scope, program, repoPath: input.repoPath },
       {
@@ -56,6 +62,25 @@ export const runResume = async (runtime: Runtime, input: ResumeInput): Promise<R
         mcp: (identity) => runtime.workerLaunch(identity),
       },
     );
+    // The run ends again here (P21, D-03): the program branch gets the updated
+    // report as a new publication commit, or nothing if no published file
+    // changed. This process runs in the operator's checkout, which has no
+    // publication hook: the CLI pushes what it committed (F-01).
+    if (result.blocked === undefined) {
+      const name = (await runtime.stores.planDrafts.get(scope.projectId, scope.programId))?.name;
+      const { failure } = await publishPlannedRun(runtime, {
+        scope,
+        program,
+        repoPath: input.repoPath,
+        name,
+        rootNodeId: run.rootNodeId,
+      });
+      if (failure !== undefined) {
+        process.stderr.write(`[nightshift-resume] could not publish: ${failure}\n`);
+        return { ...result, publicationFailure: failure };
+      }
+    }
+    return result;
   } finally {
     await outbox.flush(5_000).catch(() => {});
   }

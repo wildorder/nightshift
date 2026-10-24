@@ -12,6 +12,13 @@ describe("key schema matches contract §4.1 and §4.2", () => {
     ["org pointer", keys.orgProject(org, p), `ORG#${org}`, `PROJ#${p}`],
     ["program contract", keys.programContract(p, g), `PROJ#${p}`, `PROG#${g}`],
     ["gate health", keys.gateHealth(p), `PROJ#${p}`, "GATE-HEALTH"],
+    ["plan draft", keys.planDraft(p, g), `PROJ#${p}`, `PLANDRAFT#${g}`],
+    [
+      "plan draft version",
+      keys.planDraftVersion(p, g, 12),
+      `PROJ#${p}#PROG#${g}`,
+      "PLANDRAFTV#0000000012",
+    ],
     ["run feedback", keys.feedback(f.scope), `PROJ#${p}#PROG#${g}`, `FEEDBACK#${r}`],
     ["completion history", keys.completionHistory(p, "comp_X"), `PROJ#${p}`, "COMPLETION#comp_X"],
     ["run", keys.run(f.scope, r), `PROJ#${p}#PROG#${g}`, `RUN#${r}`],
@@ -47,6 +54,8 @@ describe("key schema matches contract §4.1 and §4.2", () => {
     const projectOwned = [
       keys.project(p),
       keys.programContract(p, g),
+      keys.planDraft(p, g),
+      keys.planDraftVersion(p, g, 1),
       keys.run(f.scope, r),
       keys.feedback(f.scope),
       keys.completionHistory(p, "comp_X"),

@@ -207,6 +207,15 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
         ? undefined
         : { uri: `s3://${LOCAL_BUCKET}/${key}`, body: found.body };
     },
+    put: async (scope, sha256, body, contentType) => {
+      const key = planDocumentObjectKey(scope, sha256);
+      const stored = localBodyOf(body, contentType);
+      if (stored.sha256 !== sha256) {
+        throw new Error(`the plan document hashes to ${stored.sha256}, not ${sha256}`);
+      }
+      objects.set(key, stored);
+      return { uri: `s3://${LOCAL_BUCKET}/${key}`, body };
+    },
   };
 
   const uploads: ArtifactUploadSigner = {

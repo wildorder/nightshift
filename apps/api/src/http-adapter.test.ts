@@ -78,6 +78,7 @@ import {
   makeVerification,
   makeWarmCache,
   nextUserId,
+  PlanDraftError,
   type ProjectStores,
   rejectionOf,
   StaleWriteError,
@@ -86,6 +87,7 @@ import {
   ControlPlaneError,
   createFetchTransport,
   createHttpArtifactBodyStore,
+  createHttpPlanning,
   createHttpStores,
   routes,
   send,
@@ -112,7 +114,7 @@ const NOW = "2026-09-15T12:00:00.000Z";
  */
 const PORT_METHODS = {
   projects: ["put", "get", "listByOrg"],
-  programContracts: ["put", "get", "listByProject", "update"],
+  programContracts: ["put", "create", "get", "listByProject", "update"],
   runs: ["put", "get", "listByProgram"],
   executionNodes: ["put", "get", "listByRun", "listChildren"],
   jobContracts: ["put", "get", "listByRun"],
@@ -137,6 +139,8 @@ const PORT_METHODS = {
   // P20 (D-04, D-05): a person's verdict, and the histories they assemble.
   feedback: ["put", "get", "listByProgram"],
   completionHistories: ["put", "get", "listByRun", "listByProject"],
+  // P21: the reads go over the routes; the two writes name the routes that make versions.
+  planDrafts: ["get", "listByProject", "getVersion", "listVersions", "appendVersion", "update"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
 /** `store.method` for every entry above. */
@@ -971,6 +975,7 @@ describe("the remote runner's records (P10)", () => {
     await expect(http.computeUtilizations.listByProject(f.scope.projectId)).rejects.toThrow(
       /recommendation/,
     );
+    await expect(http.programContracts.create(makeProgramContract(f))).rejects.toThrow(/ratifying/);
     // A contract is changed in place by the control plane alone (P16, D-08).
     await expect(
       http.programContracts.update(f.scope.projectId, f.scope.programId, (current) => current),
@@ -1158,5 +1163,244 @@ describe("a project's gate health (P15, D-P15-07)", () => {
       }
     }
     expect(await backing.gateHealth.get(f.scope.projectId)).toEqual(makeGateHealth(f));
+  });
+});
+
+describe("planDrafts (P21)", () => {
+  const PLAN = "# Fixture\n\n## Strands\n\n### S-01 The API\n\nA route.\n";
+
+  const contractOf = (f: Fixtures) =>
+    makeProgramContract(f, {
+      status: "planning",
+      strands: [
+        {
+          id: "S-01",
+          name: "The API",
+          scope: { summary: "somewhere", includes: ["src/**"], excludes: [] },
+          acceptance: ["green"],
+          successCriteria: ["SC-01"],
+          dependsOn: [],
+          prerequisites: [],
+        },
+      ],
+      decisions: [{ id: "D-01", question: "Which?", options: ["a", "b"], touches: "all" }],
+    });
+
+  it("reads drafts and versions over the routes, and refuses the whole-record writes", async () => {
+    const { http, f, transport, subject, orgId } = world;
+    await http.projects.put(aProject(f));
+    const planning = createHttpPlanning({ transport });
+    expect(await http.planDrafts.get(f.scope.projectId, f.scope.programId)).toBeUndefined();
+    expect(await planning.getDraft(f.scope)).toBeUndefined();
+    expect(await planning.getVersion(f.scope)).toBeUndefined();
+
+    const first = await planning.putVersion(
+      f.scope,
+      { contract: contractOf(f), planText: PLAN },
+      null,
+    );
+    const author = { kind: "user", userId: subject, orgId };
+    expect(first.version).toMatchObject({ version: 1, author, act: { kind: "write" } });
+    expect(first.check.ready).toBe(false);
+    await planning.putVersion(
+      f.scope,
+      { contract: contractOf(f), planText: `${PLAN}\nMore.\n` },
+      1,
+    );
+
+    const draft = await http.planDrafts.get(f.scope.projectId, f.scope.programId);
+    expect(draft).toMatchObject({ state: "draft", latestVersion: 2 });
+    expect(await planning.getDraft(f.scope)).toEqual(draft);
+    expect((await http.planDrafts.listByProject(f.scope.projectId)).items).toEqual([draft]);
+    expect(
+      (await http.planDrafts.listVersions(f.scope.projectId, f.scope.programId)).items.map(
+        (v) => v.version,
+      ),
+    ).toEqual([1, 2]);
+    expect(await http.planDrafts.getVersion(f.scope.projectId, f.scope.programId, 1)).toEqual(
+      first.version,
+    );
+    expect(
+      await http.planDrafts.getVersion(f.scope.projectId, f.scope.programId, 3),
+    ).toBeUndefined();
+    expect((await planning.listVersions(f.scope)).map((v) => v.version)).toEqual([1, 2]);
+    expect((await planning.getVersion(f.scope))?.version.version).toBe(2);
+    expect((await planning.getVersion(f.scope, 1))?.version).toEqual(first.version);
+
+    const version = first.version;
+    await expect(http.planDrafts.appendVersion(version, () => draft as never)).rejects.toThrow(
+      /plan-draft\/versions/,
+    );
+    await expect(
+      http.planDrafts.update(f.scope.projectId, f.scope.programId, () => undefined),
+    ).rejects.toThrow(/plan-draft\/versions/);
+    // A stale write is a typed conflict.
+    const stale = await rejectionOf(
+      planning.putVersion(f.scope, { contract: contractOf(f), planText: PLAN }, 1),
+    );
+    expect(stale).toBeInstanceOf(PlanDraftError);
+  });
+
+  it("answers 409 to a rename and to a name another program holds", async () => {
+    const { f, transport, http } = world;
+    await http.projects.put(aProject(f));
+    const planning = createHttpPlanning({ transport });
+    await planning.putVersion(f.scope, { contract: contractOf(f), planText: PLAN }, null, "alpha");
+
+    const renamed = await rejectionOf(
+      planning.putVersion(
+        f.scope,
+        { contract: contractOf(f), planText: `${PLAN}\n2\n` },
+        1,
+        "beta",
+      ),
+    );
+    expect(renamed).toBeInstanceOf(PlanDraftError);
+    expect((renamed as PlanDraftError).message).toMatch(/name_mismatch|fixed once set/);
+    // Omitting the name keeps it.
+    await planning.putVersion(f.scope, { contract: contractOf(f), planText: `${PLAN}\n2\n` }, 1);
+    expect((await planning.getDraft(f.scope))?.name).toBe("alpha");
+
+    const g = createFixtures();
+    const other = { projectId: f.scope.projectId, programId: g.scope.programId };
+    const taken = await rejectionOf(
+      planning.putVersion(
+        other,
+        { contract: { ...contractOf(f), programId: other.programId }, planText: PLAN },
+        null,
+        "alpha",
+      ),
+    );
+    expect(taken).toBeInstanceOf(PlanDraftError);
+    expect((taken as PlanDraftError).message).toMatch(/name_taken|is held by/);
+    expect(await planning.getDraft(other)).toBeUndefined();
+  });
+
+  it("drives the owner's acts and ratifies the latest version by its hash", async () => {
+    const { f, transport, http } = world;
+    await http.projects.put(aProject(f));
+    const planning = createHttpPlanning({ transport });
+    await planning.putVersion(f.scope, { contract: contractOf(f), planText: PLAN }, null);
+
+    expect((await planning.markAwaitingOwner(f.scope, 1)).state).toBe("awaiting_owner");
+    expect((await planning.requestChanges(f.scope, 1, "answer D-01")).state).toBe("draft");
+
+    const answered = await planning.answerDecision(f.scope, {
+      decisionId: "D-01",
+      answer: "a",
+      rationale: "because",
+      basedOn: 1,
+    });
+    expect(answered.version).toMatchObject({ version: 2, act: { kind: "answer" } });
+    expect(answered.check).toEqual({ ready: true });
+
+    const ratified = await planning.ratifyVersion(f.scope, answered.version.planHash as string);
+    expect(ratified).toMatchObject({ status: "ratified", planHash: answered.version.planHash });
+    expect(await http.programContracts.get(f.scope.projectId, f.scope.programId)).toEqual(ratified);
+    const after = await planning.getDraft(f.scope);
+    expect(after?.state).toBe("ratified");
+    expect(after?.acts.map((act) => act.kind)).toEqual([
+      "awaiting_owner",
+      "changes_requested",
+      "ratified",
+    ]);
+
+    // A second program declines.
+    const g = createFixtures();
+    await http.projects.put(aProject(f));
+    const other = { projectId: f.scope.projectId, programId: g.scope.programId };
+    await planning.putVersion(
+      other,
+      { contract: { ...contractOf(f), programId: other.programId }, planText: PLAN },
+      null,
+    );
+    expect((await planning.decline(other, 1, "no")).state).toBe("declined");
+  });
+
+  describe("ratifying a draft by its hash", () => {
+    /** A draft whose latest version is ready, and its hash. */
+    const readyDraft = async () => {
+      const { f, transport, http } = world;
+      await http.projects.put(aProject(f));
+      const planning = createHttpPlanning({ transport });
+      await planning.putVersion(f.scope, { contract: contractOf(f), planText: PLAN }, null);
+      const answered = await planning.answerDecision(f.scope, {
+        decisionId: "D-01",
+        answer: "a",
+        basedOn: 1,
+      });
+      return { planning, hash: answered.version.planHash as string, f };
+    };
+
+    /** Runs `inject` once, just before the ratified act reaches the store. */
+    const beforeTheAct = (inject: () => Promise<unknown>) => {
+      const drafts = world.backing.planDrafts;
+      const original = drafts.update.bind(drafts);
+      let injected = false;
+      drafts.update = async (projectId, programId, change) => {
+        if (!injected) {
+          injected = true;
+          await inject();
+        }
+        return original(projectId, programId, change);
+      };
+    };
+
+    it("answers 409 and ratifies nothing when a version lands before the act", async () => {
+      const { planning, hash, f } = await readyDraft();
+      beforeTheAct(() =>
+        planning.putVersion(f.scope, { contract: contractOf(f), planText: `${PLAN}\nMore.\n` }, 2),
+      );
+      const refused = await rejectionOf(planning.ratifyVersion(f.scope, hash));
+      expect(refused).toBeInstanceOf(PlanDraftError);
+      const program = await world.backing.programContracts.get(
+        f.scope.projectId,
+        f.scope.programId,
+      );
+      expect(program?.status).not.toBe("ratified");
+      const draft = await world.backing.planDrafts.get(f.scope.projectId, f.scope.programId);
+      expect(draft?.latestVersion).toBe(3);
+      expect(draft?.acts.map((act) => act.kind)).not.toContain("ratified");
+    });
+
+    it("answers 409 and ratifies nothing when a decline lands before the act", async () => {
+      const { planning, hash, f } = await readyDraft();
+      beforeTheAct(() => planning.decline(f.scope, 2, "no"));
+      const refused = await rejectionOf(planning.ratifyVersion(f.scope, hash));
+      expect(refused).toBeInstanceOf(PlanDraftError);
+      const program = await world.backing.programContracts.get(
+        f.scope.projectId,
+        f.scope.programId,
+      );
+      expect(program?.status).not.toBe("ratified");
+      const draft = await world.backing.planDrafts.get(f.scope.projectId, f.scope.programId);
+      expect(draft?.state).toBe("declined");
+      expect(draft?.acts.map((act) => act.kind)).toEqual(["declined"]);
+    });
+
+    it("completes the contract when a retry follows a failure between the act and the write", async () => {
+      const { planning, hash, f } = await readyDraft();
+      const programs = world.backing.programContracts;
+      const original = programs.create.bind(programs);
+      let failing = true;
+      programs.create = async (contract) => {
+        if (failing) throw new Error("the write failed");
+        return original(contract);
+      };
+      await expect(planning.ratifyVersion(f.scope, hash)).rejects.toThrow();
+      expect(
+        (await world.backing.planDrafts.get(f.scope.projectId, f.scope.programId))?.state,
+      ).toBe("ratified");
+      expect((await programs.get(f.scope.projectId, f.scope.programId))?.status).not.toBe(
+        "ratified",
+      );
+
+      failing = false;
+      const ratified = await planning.ratifyVersion(f.scope, hash);
+      expect(ratified).toMatchObject({ status: "ratified", planHash: hash });
+      expect(await programs.get(f.scope.projectId, f.scope.programId)).toEqual(ratified);
+      const draft = await world.backing.planDrafts.get(f.scope.projectId, f.scope.programId);
+      expect(draft?.acts.filter((act) => act.kind === "ratified")).toHaveLength(1);
+    });
   });
 });

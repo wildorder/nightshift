@@ -141,4 +141,9 @@ export {
   readConfig,
   readProgramFiles,
 } from "./program-files.js";
+export {
+  type FindProgramOptions,
+  findProgram,
+  type ProgramSource,
+} from "./program-source.js";
 export { type FreshSession, openFreshSession, openSession, type Session } from "./session.js";

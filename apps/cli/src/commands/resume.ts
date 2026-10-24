@@ -17,6 +17,13 @@
  * bundles, once the human has fixed what refused them. That is the latest run
  * unless `--run` names one, and needs no machine.
  *
+ * A remote run's program branch here is first brought up to GitHub's, and
+ * whatever the resume commits is pushed back (P21, F-01): its documents too.
+ * When a remote run's machine could not get its final documentation commit to
+ * the plane, that commit went with the machine; the documents are the control
+ * plane's records, so the resume rebuilds them here and pushes them, with
+ * nothing deferred to land.
+ *
  * Step 2 runs in `apps/mcp`'s `nightshift-resume`, a process of its own, because
  * deferred work the run's policy says to examine is examined there once its
  * checks pass (P8, D-P8-14), and an examiner is an agent the CLI may not start
@@ -26,8 +33,6 @@
  * code is 0 when everything deferred has landed.
  */
 
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { Prerequisite, ProgramContract, Run } from "@nightshift/contracts";
 import { gatherReport, renderReport } from "@nightshift/core";
 import {
@@ -37,6 +42,7 @@ import {
   type ResumeResult,
   resumeDeferred,
   runPreflight,
+  tryRevParse,
 } from "@nightshift/execution";
 import {
   createHttpArtifactBodyStore,
@@ -45,10 +51,12 @@ import {
 } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
+import { followOrigin, publishProgramBranch } from "../program-branch.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram } from "../program-source.js";
 import { openSession, type Session } from "../session.js";
 import { republishRun, unpublishedOf } from "./republish.js";
-import { REPORT_FILE } from "./run-program.js";
+import { writeReportUnlessTracked } from "./run-program.js";
 
 export interface ResumeOptions {
   readonly id: string;
@@ -56,6 +64,9 @@ export interface ResumeOptions {
   /** The run to resume. Defaults to the program's latest run that has deferred work. */
   readonly run?: string;
 }
+
+/** A run its machine or its orchestrator may still be working: not this command's to touch. */
+const ACTIVE: ReadonlySet<Run["status"]> = new Set(["pending", "running"]);
 
 const runsOf = async (session: Session, program: ProgramContract): Promise<Run[]> => {
   const scope = { projectId: program.projectId, programId: program.programId };
@@ -145,8 +156,12 @@ export const resume = async (
   options: ResumeOptions,
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
   const session = await openSession(environment);
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    use: "ratified",
+  });
   const planning = createHttpPlanning({ transport: session.transport });
 
   const program = await session.stores.programContracts.get(
@@ -166,7 +181,11 @@ export const resume = async (
     git: environment.git,
     outbox: createEventOutbox({
       events: session.stores.events,
-      scope: { projectId: run.projectId, programId: run.programId, runId: run.runId },
+      scope: {
+        projectId: run.projectId,
+        programId: run.programId,
+        runId: run.runId,
+      },
       clock: environment.clock,
       ids: environment.ids,
       // Its own writer: a resume is not the run's orchestrator, and says so (A-30).
@@ -175,7 +194,11 @@ export const resume = async (
     prerequisites: planning,
   });
   const sessionFor = (run: Run) => ({
-    scope: { projectId: run.projectId, programId: run.programId, runId: run.runId },
+    scope: {
+      projectId: run.projectId,
+      programId: run.programId,
+      runId: run.runId,
+    },
     program,
     repoPath,
   });
@@ -188,21 +211,37 @@ export const resume = async (
   // A remote run's landings GitHub lacks go first: the latest run's, or the
   // named one's. An older run's are not retried behind a newer run's back.
   const newest = candidates[0];
+  const branch = program.repository.programBranch;
   let republished = false;
   if (newest !== undefined && (await unpublishedOf(session, newest)).length > 0) {
-    const outcome = await republishRun(
-      environment,
-      session,
-      newest,
-      program.repository.programBranch,
-    );
+    const outcome = await republishRun(environment, session, newest, branch);
     const report = await gatherReport(session.stores, sessionFor(newest).scope);
-    const reportPath = join(repoPath, files.directory, REPORT_FILE);
-    await writeFile(reportPath, renderReport(report));
+    const reportPath = await writeReportUnlessTracked(
+      environment,
+      repoPath,
+      files.directory,
+      renderReport(report),
+    );
     environment.out(`report: ${reportPath}`);
     if (outcome !== "published") return 1;
     republished = true;
   }
+
+  // A remote run's work is at GitHub, not here: whatever this resume commits
+  // (a deferred landing, the run's documents) goes on top of what GitHub has,
+  // and is pushed there, so none of it is held only on this machine.
+  const remote = newest !== undefined && newest.location === "remote";
+  if (remote) await followOrigin(environment.git, repoPath, branch, environment.out);
+  const pushRemote = async (): Promise<void> => {
+    if (!remote) return;
+    const pushed = await publishProgramBranch(environment.git, repoPath, branch, {
+      push: true,
+      out: environment.out,
+    });
+    if (pushed.kind === "in-step") {
+      environment.out(`GitHub's ${branch} is at ${pushed.head.slice(0, 12)}, as here`);
+    }
+  };
 
   let chosen: Run | undefined;
   for (const run of candidates) {
@@ -212,6 +251,33 @@ export const resume = async (
     }
   }
   if (chosen === undefined) {
+    // An ended remote run with nothing deferred may still lack its documents
+    // at GitHub (P21, D-03): its machine committed them at finish, and if that
+    // commit never reached the plane it went with the machine. They are the
+    // control plane's records, so they are rebuilt here and pushed; a run
+    // whose documents GitHub already has commits nothing.
+    if (remote && newest !== undefined && !ACTIVE.has(newest.status)) {
+      if (environment.exec === undefined || environment.assets?.resumePath === undefined) {
+        environment.err(
+          `run ${newest.runId}'s documents can only be rebuilt by nightshift-resume, which this CLI was built without`,
+        );
+        return 1;
+      }
+      const before = await tryRevParse(environment.git, repoPath, branch);
+      await landDeferred(environment, newest, repoPath, async () => ({
+        landed: [],
+        retried: [],
+        failed: [],
+      }));
+      const after = await tryRevParse(environment.git, repoPath, branch);
+      if (after !== undefined && after !== before) {
+        environment.out(
+          `run ${newest.runId}: its plan, contract and report are committed on ${branch} at ${after.slice(0, 12)}`,
+        );
+      }
+      await pushRemote();
+      return 0;
+    }
     if (republished) return 0;
     environment.out(
       options.run === undefined
@@ -255,8 +321,13 @@ export const resume = async (
   reportStop(environment, result);
 
   const report = await gatherReport(session.stores, sessionFor(chosen).scope);
-  const reportPath = join(repoPath, files.directory, REPORT_FILE);
-  await writeFile(reportPath, renderReport(report));
+  const reportPath = await writeReportUnlessTracked(
+    environment,
+    repoPath,
+    files.directory,
+    renderReport(report),
+  );
   environment.out(`report: ${reportPath}`);
+  await pushRemote();
   return result.stoppedAt === undefined && result.failed.length === 0 ? 0 : 1;
 };

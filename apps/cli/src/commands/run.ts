@@ -18,13 +18,9 @@ import { isPlanned } from "@nightshift/core";
 import { startRun } from "@nightshift/execution";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import {
-  isProgramDirectoryName,
-  type ProgramFiles,
-  readProgramFiles,
-  resolveFrom,
-} from "../program-files.js";
-import { openSession } from "../session.js";
+import { isProgramDirectoryName, resolveFrom } from "../program-files.js";
+import { findProgram, type ProgramSource } from "../program-source.js";
+import { openSession, type Session } from "../session.js";
 import { REMOTE_NEEDS_PLAN } from "./remote.js";
 import { runProgram } from "./run-program.js";
 
@@ -73,22 +69,27 @@ interface RunSource {
   readonly program: unknown;
   readonly planText?: string;
   /** Set when the source is a program directory, which is what a planned program is run from. */
-  readonly files?: ProgramFiles;
+  readonly files?: ProgramSource;
 }
 
 /**
  * `nightshift run <contract path>` keeps working; `nightshift run {id}` names a
- * program's directory under `docs/programs/` (D-P7-03). A path that exists wins,
+ * program on the plane, whose latest version is run (P21 S-02). A path that exists wins,
  * so a contract file that happens to be named like an id is still a file.
  */
 const readSource = async (
   environment: CliEnvironment,
+  session: Session,
   options: RunOptions,
   repoPath: string,
 ): Promise<RunSource> => {
   const contractPath = resolveFrom(environment.cwd, options.contract);
   if (isProgramDirectoryName(options.contract) && !(await isFile(contractPath))) {
-    const files = await readProgramFiles(repoPath, options.contract);
+    const files = await findProgram(environment, session, {
+      repoPath,
+      name: options.contract,
+      use: "latest",
+    });
     return { program: files.contract, planText: files.planText, files };
   }
   return { program: await readContractFile(contractPath) };
@@ -126,10 +127,11 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
       "Drop `--remote` to start a local run from a contract.",
     );
   }
-  const source = await readSource(environment, options, repoPath);
+  const session = await openSession(environment);
+  const source = await readSource(environment, session, options, repoPath);
   if (options.remote && source.files === undefined) {
     throw new UsageError(
-      `${REMOTE_REFUSAL}; no docs/programs/${options.contract}/ under ${repoPath}`,
+      `${REMOTE_REFUSAL}; the plane has no program named ${options.contract}`,
       "Run from the repository root, or pass --repo <path>.",
     );
   }
@@ -139,8 +141,6 @@ export const run = async (environment: CliEnvironment, options: RunOptions): Pro
       "Plan it (`nightshift plan check`) and ratify it, or drop `--remote` to run the contract locally.",
     );
   }
-
-  const session = await openSession(environment);
 
   if (source.files !== undefined && isPlanned(source.files.contract)) {
     const planned = await runProgram(environment, session, source.files, {

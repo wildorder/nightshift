@@ -18,6 +18,12 @@ import type { ProgramContract, Strand } from "@nightshift/contracts";
 import { sanitizeEnvironment } from "@nightshift/verification";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, signIn } from "../cli/operator.js";
+import {
+  addOrigin,
+  programDirectory,
+  ratifyFromFiles,
+  writeConfigFor,
+} from "../cli/plan-scratch.js";
 import { scriptedHarnessModule } from "../slice/context.js";
 import {
   authoredProgram,
@@ -39,6 +45,7 @@ let op: Operator;
 let fixture: MaterialisedRepo;
 let outside: string;
 let environment: CliEnvironment;
+let ratifiedIds: { projectId: string; programId: string };
 
 const git = (...args: string[]): string =>
   execFileSync("git", args, { cwd: fixture.repo, encoding: "utf8" }).trim();
@@ -94,6 +101,7 @@ beforeEach(async () => {
     projectId: created.projectId as never,
     delegationLimits: { maxDepth: 2, maxConcurrency: 3 },
   });
+  await addOrigin(fixture.repo, join(fixture.stateDir, "..", "origin"));
 
   // Outside the repository, so doing it leaves the checkout clean: an untracked
   // file would make integration refuse, correctly, and confusingly.
@@ -133,6 +141,7 @@ beforeEach(async () => {
       },
     ],
   };
+  ratifiedIds = { projectId: created.projectId, programId: contract.programId };
   const directory = join(fixture.repo, "docs", "programs", PROGRAM);
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "contract.json"), `${JSON.stringify(contract, null, 2)}\n`);
@@ -141,6 +150,8 @@ beforeEach(async () => {
   // under docs/programs. The first real planned run found that run.attach looked
   // only for the old file, and the headless root wrote one by hand to get past it.
   git("rm", "-q", "nightshift.program.json");
+  // The plan is on the plane; the repository names its project for run.attach to find it.
+  await writeConfigFor(fixture.repo, contract);
   git("add", "-A");
   git("-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", "plan the modules");
 
@@ -203,9 +214,12 @@ describe("a planned program, from a plan on disk to a landed program, through th
     // Planning audits the gates and records them healthy (D-P15-01, D-P15-07).
     expect(await cli("gates", PROGRAM, "--record"), op.err.join("\n")).toBe(0);
     expect(op.out.join("\n")).toContain("recorded the gates as healthy");
-    expect(await cli("plan", "check", PROGRAM), op.err.join("\n")).toBe(0);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+      op.err.join("\n"),
+    ).toBe(0);
     expect(op.out[0]).toBe("READY");
-    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
 
     // The hurdle is only a later strand's, so the run starts, and says so.
     const ran = await cli("run", PROGRAM);
@@ -217,8 +231,14 @@ describe("a planned program, from a plan on disk to a landed program, through th
       "deferred: S-01, S-02, S-03 are done on the provisional line, waiting on HP-01",
     );
 
-    // The program branch received none of it (A-05); the provisional line has all six.
-    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(before);
+    // The program branch received none of the work (A-05) — only the one publication
+    // commit at finish, which touches docs/programs/{id}/ and nothing else (P21);
+    // the provisional line has all six.
+    const published = git("rev-parse", PROGRAM_BRANCH);
+    expect(git("rev-list", "--count", `${before}..${published}`)).toBe("1");
+    for (const file of git("diff", "--name-only", before, published).split("\n")) {
+      expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
+    }
     const runId = op.out.find((line) => /^run_[0-9A-Z]+$/.test(line)) ?? "";
     expect(runId).not.toBe("");
     const provisional = git(
@@ -241,7 +261,7 @@ describe("a planned program, from a plan on disk to a landed program, through th
     // Resuming before the human has done it resumes nothing, and says what is unmet.
     expect(await cli("resume", PROGRAM)).toBe(1);
     expect(op.err.join("\n")).toContain("UNMET HP-01");
-    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(before);
+    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(published);
 
     // The human is back.
     await writeFile(join(outside, "release-token"), "present");
@@ -260,7 +280,103 @@ describe("a planned program, from a plan on disk to a landed program, through th
     expect(finalReport).toContain("Nothing was deferred.");
     expect(finalReport).toContain("| met |");
     expect(finalReport).not.toContain("NOT met");
-    // The report leaves the checkout as clean as it found it, bar itself.
-    expect(git("status", "--porcelain")).toBe(`?? docs/programs/${PROGRAM}/report.md`);
+    // The run ended again, so the program branch got the updated report as a
+    // second publication commit (P21, D-03); the checkout is left clean.
+    const republished = git("rev-parse", PROGRAM_BRANCH);
+    const publishedReport = git("show", `${PROGRAM_BRANCH}:docs/programs/${PROGRAM}/report.md`);
+    expect(publishedReport).toContain("3 of 3 strands succeeded; 0 deferred; 0 parked.");
+    expect(publishedReport).toContain("Nothing was deferred.");
+    expect(publishedReport).not.toContain("NOT met");
+    const publications = git(
+      "log",
+      "--format=%H",
+      "--grep=^Publish the plan",
+      `${before}..${PROGRAM_BRANCH}`,
+    ).split("\n");
+    expect(publications).toHaveLength(2);
+    for (const commit of publications) {
+      for (const file of git("diff-tree", "--no-commit-id", "--name-only", "-r", commit).split(
+        "\n",
+      )) {
+        expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
+      }
+    }
+    expect(git("status", "--porcelain")).toBe("");
+
+    // Ending again with nothing changed publishes nothing: the resume process
+    // run once more finds nothing deferred and commits no second time.
+    const again = await environment.exec?.(
+      process.execPath,
+      [
+        RESUME,
+        "--project",
+        ratifiedIds.projectId,
+        "--program",
+        ratifiedIds.programId,
+        "--run",
+        runId,
+        "--repo",
+        fixture.repo,
+      ],
+      { cwd: fixture.repo },
+    );
+    expect(again?.exitCode, again?.stderr).toBe(0);
+    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(republished);
+  }, 240_000);
+});
+
+describe("a remote run whose final documents never left its machine (P21, F-01)", () => {
+  it("nightshift resume rebuilds them from the control plane and pushes them to GitHub", async () => {
+    const base = git("rev-parse", PROGRAM_BRANCH);
+    // No hurdle this time: the run lands everything and publishes its documents.
+    await writeFile(join(outside, "release-token"), "present");
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    const ran = await cli("run", PROGRAM);
+    expect(ran, `${op.out.join("\n")}\n${op.err.join("\n")}`).toBe(0);
+    const runId = op.out.find((line) => /^run_[0-9A-Z]+$/.test(line)) ?? "";
+    expect(runId).not.toBe("");
+
+    // As a machine leaves it when its last upload fails: GitHub has every
+    // landing and not the documentation commit on top, the run ended
+    // interrupted saying so, and the operator's checkout is behind GitHub.
+    const docsHead = git("rev-parse", PROGRAM_BRANCH);
+    const work = git("rev-parse", `${docsHead}^`);
+    for (const file of git("diff", "--name-only", work, docsHead).split("\n")) {
+      expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
+    }
+    git("push", "-q", "origin", `${work}:refs/heads/${PROGRAM_BRANCH}`);
+    git("reset", "-q", "--hard", base);
+    const scope = { ...ratifiedIds, runId } as never;
+    const recorded = await op.stores.runs.get(scope, runId as never);
+    if (recorded === undefined) throw new Error("the run is not recorded");
+    await op.stores.runs.put({
+      ...recorded,
+      location: "remote",
+      status: "interrupted",
+      outcomeReason: `GitHub does not have this run's final documentation commit ${docsHead.slice(0, 12)}.`,
+    });
+
+    const resumed = await cli("resume", PROGRAM);
+    const said = `${op.out.join("\n")}\n${op.err.join("\n")}`;
+    expect(resumed, said).toBe(0);
+    expect(said).not.toContain("nothing to resume");
+
+    // GitHub now has the documents, in one commit on top of its landings that
+    // touches only the program's directory, and the checkout is where GitHub is.
+    git("fetch", "-q", "origin");
+    const atGitHub = git("rev-parse", `origin/${PROGRAM_BRANCH}`);
+    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(atGitHub);
+    expect(git("rev-list", "--count", `${work}..${atGitHub}`)).toBe("1");
+    const changed = git("diff", "--name-only", work, atGitHub).split("\n");
+    for (const file of changed)
+      expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
+    expect(changed).toContain(`docs/programs/${PROGRAM}/report.md`);
+    expect(git("show", `${atGitHub}:docs/programs/${PROGRAM}/report.md`)).toContain(runId);
+
+    // Again, with GitHub holding everything: nothing is committed or pushed.
+    expect(await cli("resume", PROGRAM)).toBe(0);
+    git("fetch", "-q", "origin");
+    expect(git("rev-parse", `origin/${PROGRAM_BRANCH}`)).toBe(atGitHub);
+    expect(git("rev-parse", PROGRAM_BRANCH)).toBe(atGitHub);
   }, 240_000);
 });

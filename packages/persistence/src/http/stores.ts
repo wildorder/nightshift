@@ -46,6 +46,9 @@ import {
   MeasurementSummarySchema,
   OrgConfigSchema,
   type OrgId,
+  PlanDraftSchema,
+  PlanDraftVersionResponseSchema,
+  PlanDraftVersionSchema,
   ProgramContractSchema,
   type ProgramId,
   type ProjectId,
@@ -77,6 +80,7 @@ import type {
   OrgConfigStore,
   Page,
   PageRequest,
+  PlanDraftStore,
   ProgramContractStore,
   ProgramScope,
   ProjectStore,
@@ -190,6 +194,12 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
         path: routes.program(contract.projectId, contract.programId),
         body: contract,
       });
+    },
+    create: async () => {
+      throw new Error(
+        "the control plane creates a program contract by ratifying a plan; there is no route " +
+          "that creates one conditionally. Use program.ratify.",
+      );
     },
     get: (projectId: ProjectId, programId: ProgramId) =>
       getOrUndefined(transport, ProgramContractSchema, routes.program(projectId, programId)),
@@ -596,6 +606,47 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     get: (projectId) => getOrUndefined(transport, GateHealthSchema, routes.gateHealth(projectId)),
   };
 
+  // P21: reads go over the routes; a version is written by `putVersion` or an
+  // act, which the planning client calls, so the whole-record writes are refused.
+  const draftWritesAre = async (): Promise<never> => {
+    throw new Error(
+      "the control plane appends versions and records acts itself. Use POST .../plan-draft/versions, " +
+        ".../answers, .../change-requests, .../awaiting-owner, .../decline or .../ratifications.",
+    );
+  };
+  const planDrafts: PlanDraftStore = {
+    get: (projectId, programId) =>
+      getOrUndefined(transport, PlanDraftSchema, routes.planDraft({ projectId, programId })),
+    listByProject: async (projectId, page) =>
+      readPage(
+        PlanDraftSchema,
+        await send(transport, {
+          method: "GET",
+          path: routes.planDrafts(projectId),
+          query: pageQuery(page),
+        }),
+      ),
+    getVersion: async (projectId, programId, version) =>
+      (
+        await getOrUndefined(
+          transport,
+          PlanDraftVersionResponseSchema,
+          routes.planDraftVersion({ projectId, programId }, version),
+        )
+      )?.version,
+    listVersions: async (projectId, programId, page) =>
+      readPage(
+        PlanDraftVersionSchema,
+        await send(transport, {
+          method: "GET",
+          path: routes.planDraftVersions({ projectId, programId }),
+          query: pageQuery(page),
+        }),
+      ),
+    appendVersion: draftWritesAre,
+    update: draftWritesAre,
+  };
+
   // P20 (D-04): the server rewrites attribution and answers the stored record.
   const feedback: RunFeedbackStore = {
     put: async (record) => {
@@ -653,6 +704,7 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     computeUtilizations,
     warmCaches,
     gateHealth,
+    planDrafts,
     installationClaims,
     programContracts,
     runs,

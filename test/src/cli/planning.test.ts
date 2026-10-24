@@ -4,10 +4,11 @@
  * `run {id}` as far as T3 takes it (SC-P7-03, SC-P7-04, SC-P7-05).
  */
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProject, runCli } from "@nightshift/cli";
+import { createProject, openSession, runCli } from "@nightshift/cli";
 import type { ProgramContract, Strand } from "@nightshift/contracts";
 import {
   createFetchTransport,
@@ -23,6 +24,7 @@ import {
 } from "../slice/fixture-repo.js";
 import { recordHealthyGates } from "./gate-health.js";
 import { type Operator, signIn } from "./operator.js";
+import { programDirectory, putFromFiles, ratifyFromFiles } from "./plan-scratch.js";
 
 const PROGRAM = "p1-demo";
 const PLAN = [
@@ -39,6 +41,8 @@ const PLAN = [
 let op: Operator;
 let fixture: MaterialisedRepo;
 let contract: ProgramContract;
+
+let origin: string;
 
 const git = (...args: string[]): string =>
   execFileSync("git", args, { cwd: fixture.repo, encoding: "utf8" });
@@ -149,11 +153,16 @@ beforeEach(async () => {
   );
   await writeProgram();
   commit("plan the demo program");
+  // A run makes sure the program branch is at origin too.
+  origin = await mkdtemp(join(tmpdir(), "nightshift-origin-"));
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git("remote", "add", "origin", origin);
   // Audited and healthy (D-P15-08), so the plan's own readiness is what each test is about.
   await recordHealthyGates(op, fixture.repo, PROGRAM);
 });
 
 afterEach(async () => {
+  await rm(origin, { recursive: true, force: true });
   await op.cleanup();
   await fixture.remove();
   await op.plane.close();
@@ -161,7 +170,9 @@ afterEach(async () => {
 
 describe("nightshift plan check", () => {
   it("answers READY, inheriting what the contract does not state from the config", async () => {
-    expect(await cli("plan", "check", PROGRAM)).toBe(0);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+    ).toBe(0);
     expect(op.out[0]).toBe("READY");
     expect(op.out[1]).toContain("1 strands, 1 prerequisites");
   });
@@ -175,7 +186,9 @@ describe("nightshift plan check", () => {
       },
       "# Demo\n\nNo strand sections at all.\n",
     );
-    expect(await cli("plan", "check", PROGRAM)).toBe(1);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+    ).toBe(1);
     const said = op.err.join("\n");
     expect(op.err[0]).toMatch(/^NOT READY: \d+ reasons$/);
     expect(said).toContain("is claimed by no strand");
@@ -186,23 +199,35 @@ describe("nightshift plan check", () => {
   it("reports the plan's own reasons without requiring a fresh gate audit", async () => {
     await breakAGate();
     await writeProgram({ prerequisites: [] });
-    expect(await cli("plan", "check", PROGRAM)).toBe(1);
+    expect(
+      await cli("plan", "check", PROGRAM, "--dir", programDirectory(fixture.repo, PROGRAM)),
+    ).toBe(1);
     const said = op.err.join("\n");
     expect(said).not.toContain("the gates changed since they were audited at");
     expect(said).toContain("HP-01");
   });
 
-  it("refuses an id that is not a program here, as a usage error", async () => {
-    expect(await cli("plan", "check", "p9-nothing")).toBe(2);
-    expect(op.err.join("\n")).toContain("there is no program `p9-nothing` here");
-    expect(await cli("plan", "check", "../escape")).toBe(2);
+  it("refuses a scratch that is not there, and an id that is not a program id, as usage errors", async () => {
+    expect(
+      await cli(
+        "plan",
+        "check",
+        "p9-nothing",
+        "--dir",
+        programDirectory(fixture.repo, "p9-nothing"),
+      ),
+    ).toBe(2);
+    expect(op.err.join("\n")).toContain("contract.json does not exist");
+    expect(
+      await cli("plan", "check", "../escape", "--dir", programDirectory(fixture.repo, "../escape")),
+    ).toBe(2);
   });
 });
 
 describe("nightshift plan ratify", () => {
-  it("refuses a plan that is not ready, and ratifies nothing", async () => {
+  it("refuses a version that is not ready, and ratifies nothing", async () => {
     await writeProgram({ prerequisites: [] });
-    commit("break the plan");
+    expect(await putFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
     expect(await cli("plan", "ratify", PROGRAM)).toBe(1);
     expect(op.err.join("\n")).toContain("Nothing was ratified");
     expect(
@@ -210,18 +235,23 @@ describe("nightshift plan ratify", () => {
     ).toBeUndefined();
   });
 
-  it("refuses uncommitted changes: the hash must name something git can reproduce", async () => {
+  it("ratifies the latest version with the planHash the same files have, committed or not", async () => {
     await writeFile(programPath("plan.md"), `${PLAN}\nAn afterthought.\n`);
-    expect(await cli("plan", "ratify", PROGRAM)).toBe(1);
-    expect(op.err.join("\n")).toContain(`docs/programs/${PROGRAM}/plan.md`);
-    expect(
-      await stores().programContracts.get(contract.projectId, contract.programId),
-    ).toBeUndefined();
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    const uncommitted = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(uncommitted?.status).toBe("ratified");
+
+    commit("commit the afterthought");
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    const committed = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(committed?.status).toBe("ratified");
+    expect(committed?.planHash).toBe(uncommitted?.planHash);
+    expect(committed?.planDocument).toEqual(uncommitted?.planDocument);
   });
 
   it("uploads the plan, records the hash, and the document reads back byte for byte", async () => {
-    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
-    expect(op.out[0]).toBe(`ratified docs/programs/${PROGRAM}`);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    expect(op.out[0]).toBe(`ratified ${PROGRAM} version 1`);
 
     const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
     expect(recorded?.status).toBe("ratified");
@@ -243,14 +273,146 @@ describe("nightshift plan ratify", () => {
   });
 });
 
+describe("nightshift plan put, show and check, from the plane", () => {
+  let scratch: string;
+  let outside: string;
+  const planning = () =>
+    createHttpPlanning({
+      transport: createFetchTransport({
+        endpoint: op.plane.url,
+        tokens: staticTokenProvider("ignored-by-the-local-plane"),
+      }),
+    });
+  const scope = () => ({ projectId: contract.projectId, programId: contract.programId });
+  /** A command run from a directory in no repository, naming the project and nothing else. */
+  const away = (...argv: string[]): Promise<number> => {
+    op.out.length = 0;
+    op.err.length = 0;
+    return runCli({ ...op.environment, cwd: outside }, [...argv, "--project", contract.projectId]);
+  };
+  /** The scratch's contract states its project: nothing is read from a repository. */
+  const writeScratch = async (patch: Partial<ProgramContract> = {}, plan = PLAN): Promise<void> => {
+    await writeFile(
+      join(scratch, "contract.json"),
+      `${JSON.stringify({ ...contract, ...patch }, null, 2)}\n`,
+    );
+    await writeFile(join(scratch, "plan.md"), plan);
+  };
+
+  beforeEach(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "nightshift-scratch-"));
+    outside = await mkdtemp(join(tmpdir(), "nightshift-outside-"));
+    await rm(programPath(), { recursive: true, force: true });
+    await writeScratch();
+  });
+
+  afterEach(async () => {
+    await rm(scratch, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  it("puts a scratch, shows it, checks it READY, and ratifies it, with no plan file in any repository", async () => {
+    expect(await away("plan", "put", contract.programId, "--dir", scratch)).toBe(0);
+    expect(op.out[0]).toContain("put version 1 of prog_");
+    expect(await readFile(join(scratch, ".nightshift-plan-version"), "utf8")).toBe("1\n");
+
+    expect(await away("plan", "show", contract.programId)).toBe(0);
+    const shown = op.out.join("\n");
+    expect(shown).toContain("version 1 of 1");
+    expect(shown).toContain("author");
+    expect(shown).toContain("act     write");
+    expect(shown).toContain("state   draft");
+    expect(shown).toContain("check   READY");
+
+    expect(await away("plan", "check", contract.programId)).toBe(0);
+    expect(op.out[0]).toBe("READY");
+
+    expect(await away("plan", "ratify", contract.programId)).toBe(0);
+    const ratified = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(ratified?.status).toBe("ratified");
+    expect(ratified?.ratifications).toHaveLength(1);
+    const draft = await planning().getDraft(scope());
+    expect(draft?.state).toBe("ratified");
+    expect(draft?.acts.at(-1)).toMatchObject({ kind: "ratified", planHash: ratified?.planHash });
+    expect(
+      await stores().programContracts.get(contract.projectId, contract.programId),
+    ).toBeDefined();
+  });
+
+  it("answers NOT READY with every reason, and the exit code is the answer", async () => {
+    await writeScratch({ prerequisites: [] });
+    expect(await away("plan", "put", contract.programId, "--dir", scratch)).toBe(0);
+    expect(await away("plan", "check", contract.programId)).toBe(1);
+    expect(op.err[0]).toMatch(/^NOT READY: \d+ reasons?$/);
+    expect(op.err.join("\n")).toContain("HP-01");
+    expect(await away("plan", "ratify", contract.programId)).toBe(1);
+    expect(op.err.join("\n")).toContain("Nothing was ratified");
+  });
+
+  it("refuses a put based on an older version than the latest, and names the latest", async () => {
+    expect(await away("plan", "put", contract.programId, "--dir", scratch)).toBe(0);
+    await writeFile(join(scratch, "plan.md"), `${PLAN}\nSecond.\n`);
+    expect(await away("plan", "put", contract.programId, "--dir", scratch)).toBe(0);
+    expect(await readFile(join(scratch, ".nightshift-plan-version"), "utf8")).toBe("2\n");
+
+    await writeFile(join(scratch, "plan.md"), `${PLAN}\nThird, from a stale base.\n`);
+    expect(await away("plan", "put", contract.programId, "--dir", scratch, "--based-on", "1")).toBe(
+      1,
+    );
+    expect(op.err.join("\n")).toMatch(/latest version is 2/);
+    expect((await planning().getDraft(scope()))?.latestVersion).toBe(2);
+  });
+
+  it("will not put over an existing draft without knowing the version it saw", async () => {
+    expect(await away("plan", "put", contract.programId, "--dir", scratch)).toBe(0);
+    const fresh = await mkdtemp(join(tmpdir(), "nightshift-scratch-"));
+    try {
+      await writeFile(join(fresh, "contract.json"), await readFile(join(scratch, "contract.json")));
+      await writeFile(join(fresh, "plan.md"), PLAN);
+      expect(await away("plan", "put", contract.programId, "--dir", fresh)).toBe(2);
+      expect(op.err.join("\n")).toContain("version 1");
+    } finally {
+      await rm(fresh, { recursive: true, force: true });
+    }
+  });
+
+  it("shows a version into a scratch with its marker, so the next put is based on it", async () => {
+    expect(await away("plan", "put", contract.programId, "--dir", scratch)).toBe(0);
+    const other = await mkdtemp(join(tmpdir(), "nightshift-scratch-"));
+    try {
+      expect(await away("plan", "show", contract.programId, "--version", "1", "--dir", other)).toBe(
+        0,
+      );
+      expect(await readFile(join(other, "plan.md"), "utf8")).toBe(PLAN);
+      expect(JSON.parse(await readFile(join(other, "contract.json"), "utf8")).programId).toBe(
+        contract.programId,
+      );
+      expect(await readFile(join(other, ".nightshift-plan-version"), "utf8")).toBe("1\n");
+      await writeFile(join(other, "plan.md"), `${PLAN}\nEdited elsewhere.\n`);
+      expect(await away("plan", "put", contract.programId, "--dir", other)).toBe(0);
+      expect((await planning().getDraft(scope()))?.latestVersion).toBe(2);
+    } finally {
+      await rm(other, { recursive: true, force: true });
+    }
+  });
+
+  it("checks a scratch offline, with the same answers", async () => {
+    expect(await away("plan", "check", contract.programId, "--dir", scratch)).toBe(0);
+    expect(op.out[0]).toBe("READY");
+    await writeScratch({}, "# Demo\n\nNo strand sections at all.\n");
+    expect(await away("plan", "check", contract.programId, "--dir", scratch)).toBe(1);
+    expect(op.err.join("\n")).toContain("S-01 has no section in the plan document");
+  });
+});
+
 describe("nightshift preflight (SC-P7-05)", () => {
   it("refuses a program that is not ratified", async () => {
     expect(await cli("preflight", PROGRAM)).toBe(2);
-    expect(op.err.join("\n")).toContain("is not ratified");
+    expect(op.err.join("\n")).toContain("has not been ratified");
   });
 
   it("prints the remediation for what is unmet, and marks only what passed", async () => {
-    await cli("plan", "ratify", PROGRAM);
+    await ratifyFromFiles(cli, fixture.repo, PROGRAM);
 
     expect(await cli("preflight", PROGRAM)).toBe(1);
     const said = op.err.join("\n");
@@ -289,17 +451,17 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     expect(recorded?.ratifications).toHaveLength(1);
   });
 
-  it("refuses to ratify an uncommitted plan, and starts nothing", async () => {
+  it("ratifies an uncommitted plan, then runs it", async () => {
     await writeFile(programPath("plan.md"), `${PLAN}\nAn uncommitted thought.\n`);
-    expect(await cli("run", PROGRAM)).toBe(1);
-    expect(op.err.join("\n")).toContain("the plan has uncommitted changes");
-    expect(
-      await stores().programContracts.get(contract.projectId, contract.programId),
-    ).toBeUndefined();
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended")).toBe(0);
+    expect(op.err.join("\n")).not.toContain("uncommitted");
+    const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
+    expect(recorded?.status).toBe("ratified");
   });
 
   it("stops at preflight when a first strand's prerequisite is unmet, and starts nothing", async () => {
-    await cli("plan", "ratify", PROGRAM);
+    await ratifyFromFiles(cli, fixture.repo, PROGRAM);
     expect(await cli("run", PROGRAM)).toBe(1);
     const said = op.err.join("\n");
     expect(said).toContain("UNMET HP-01");
@@ -313,7 +475,7 @@ describe("nightshift run {id} (SC-P7-04)", () => {
   });
 
   it("starts a run of the ratified plan, whose program node carries it", async () => {
-    await cli("plan", "ratify", PROGRAM);
+    await ratifyFromFiles(cli, fixture.repo, PROGRAM);
     await writeFile(join(fixture.repo, "release-token"), "present");
     // This suite's environment can start no process, so the run is left for an
     // orchestrator to attach to, as `--attended` asks for. T5 runs it to a report.
@@ -329,25 +491,35 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     });
   });
 
-  it("ratifies a plan edited and committed after ratification again, and runs the new one", async () => {
-    await cli("plan", "ratify", PROGRAM);
+  it("ratifies a version put after ratification again, by its hash, and runs the new one", async () => {
+    await ratifyFromFiles(cli, fixture.repo, PROGRAM);
     await writeFile(programPath("plan.md"), `${PLAN}\nA quiet change of mind.\n`);
-    // Uncommitted, the edit is refused: a hash must name something git has.
-    expect(await cli("run", PROGRAM)).toBe(1);
-    expect(op.err.join("\n")).toContain("the plan has uncommitted changes");
-
-    commit("change the plan");
+    expect(await putFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
     await writeFile(join(fixture.repo, "release-token"), "present");
     expect(await cli("run", PROGRAM, "--attended")).toBe(0);
     const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
     expect(recorded?.ratifications).toHaveLength(2);
   });
 
+  it("runs the plane's latest version of a program with no docs/programs directory, ratified by its hash", async () => {
+    expect(await putFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
+    await rm(join(fixture.repo, "docs"), { recursive: true, force: true });
+    commit("the plan lives on the plane");
+    await writeFile(join(fixture.repo, "release-token"), "present");
+    expect(await cli("run", PROGRAM, "--attended")).toBe(0);
+    const recorded = await stores().programContracts.get(contract.projectId, contract.programId);
+    const latest = await createHttpPlanning({
+      transport: (await openSession(op.environment)).transport,
+    }).getVersion({ projectId: contract.projectId, programId: contract.programId });
+    expect(recorded?.status).toBe("ratified");
+    expect(recorded?.planHash).toBe(latest?.version.planHash);
+  });
+
   it("still runs a contract by its path", async () => {
     expect(await cli("run", join(fixture.repo, "nightshift.program.json"))).toBe(0);
   });
   it("audits the gates first, on stderr, so the run id is still the first line out", async () => {
-    await cli("plan", "ratify", PROGRAM);
+    await ratifyFromFiles(cli, fixture.repo, PROGRAM);
     await writeFile(join(fixture.repo, "release-token"), "present");
     expect(await cli("run", PROGRAM, "--attended")).toBe(0);
     expect(op.out[0]).toMatch(/^run_/);
@@ -360,7 +532,7 @@ describe("nightshift run {id} (SC-P7-04)", () => {
     await breakAGate();
     // Recorded healthy as it was ratified: the gate broke between ratification and the run.
     await recordHealthyGates(op, fixture.repo, PROGRAM);
-    expect(await cli("plan", "ratify", PROGRAM)).toBe(0);
+    expect(await ratifyFromFiles(cli, fixture.repo, PROGRAM)).toBe(0);
     await writeFile(join(fixture.repo, "release-token"), "present");
     expect(await cli("run", PROGRAM, "--attended")).toBe(0);
     expect(op.out[0]).toMatch(/^run_/);
@@ -396,7 +568,7 @@ describe("nightshift run {id} (SC-P7-04)", () => {
   });
 
   it("records no gate.red when the base is green", async () => {
-    await cli("plan", "ratify", PROGRAM);
+    await ratifyFromFiles(cli, fixture.repo, PROGRAM);
     await writeFile(join(fixture.repo, "release-token"), "present");
     expect(await cli("run", PROGRAM, "--attended")).toBe(0);
     const runs = await stores().runs.listByProgram(
@@ -471,14 +643,44 @@ describe("nightshift plan conversation (P14, SC-P14-03, SC-P14-05, SC-P14-06)", 
       ),
     });
 
-  it("lists the session, keeps the chosen messages word for word, checks the quotes, and ratifies it", async () => {
+  const latestConversation = async (): Promise<string | undefined> => {
+    const planning = createHttpPlanning({
+      transport: createFetchTransport({
+        endpoint: op.plane.url,
+        tokens: staticTokenProvider("ignored"),
+      }),
+    });
+    const scope = { projectId: contract.projectId, programId: contract.programId };
+    const latest = await planning.getVersion(scope);
+    return latest?.version.conversation === undefined
+      ? undefined
+      : (await planning.planDocument(scope, latest.version.conversation.sha256))?.text;
+  };
+  const versions = async (): Promise<number> => {
+    const planning = createHttpPlanning({
+      transport: createFetchTransport({
+        endpoint: op.plane.url,
+        tokens: staticTokenProvider("ignored"),
+      }),
+    });
+    return (
+      await planning.listVersions({
+        projectId: contract.projectId,
+        programId: contract.programId,
+      })
+    ).length;
+  };
+
+  it("lists the session, stores the chosen messages word for word as the next version, checks the quotes, and ratifies it", async () => {
     await quoting(QUOTE);
+    expect(await putFromFiles(say, fixture.repo, PROGRAM)).toBe(0);
     expect(await say("plan", "check", PROGRAM)).toBe(1);
     expect(op.err.join("\n")).toContain("no planning conversation is kept");
 
     expect(await say("plan", "conversation", PROGRAM, "--session", TRANSCRIPT)).toBe(0);
     expect(op.out[0]).toMatch(/^\s+1\s+Human\s+let's plan tenant billing/);
     expect(op.out.at(-1)).toContain("5 messages in this session; 0 kept");
+    expect(await versions()).toBe(1);
 
     const summary = join(fixture.repo, "..", "summary.md");
     await writeFile(summary, "The owner wants tenant isolation with no bypass.\n");
@@ -495,14 +697,18 @@ describe("nightshift plan conversation (P14, SC-P14-03, SC-P14-05, SC-P14-06)", 
         summary,
       ),
     ).toBe(0);
-    const kept = await readFile(programPath("conversation.md"), "utf8");
+    expect(op.out.join("\n")).toContain("version 2 of p1-demo");
+    expect(await versions()).toBe(2);
+    const kept = (await latestConversation()) ?? "";
     expect(kept).toContain("The owner wants tenant isolation with no bypass.");
     expect(kept).toContain("and support staff get no bypass");
     expect(kept).not.toContain("weather");
     expect(kept).toContain("*Kept 3 of 5 messages; the rest led to nothing in the plan.*");
+    // Nothing was written to the repository.
+    await expect(readFile(programPath("conversation.md"), "utf8")).rejects.toThrow();
+    expect(git("status", "--porcelain")).not.toContain("conversation");
 
     expect(await say("plan", "check", PROGRAM)).toBe(0);
-    commit("keep the conversation");
     expect(await say("plan", "ratify", PROGRAM)).toBe(0);
     const ratified = await stores().programContracts.get(contract.projectId, contract.programId);
     expect(ratified?.conversation?.sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -511,28 +717,32 @@ describe("nightshift plan conversation (P14, SC-P14-03, SC-P14-05, SC-P14-06)", 
   });
 
   it("refuses a paraphrase, and a quote only the assistant said", async () => {
-    await writeFile(join(fixture.repo, "..", "s.md"), "summary\n");
-    await mkdir(programPath(), { recursive: true });
+    await quoting("admins should not see other companies' invoices");
+    expect(await putFromFiles(say, fixture.repo, PROGRAM)).toBe(0);
     expect(
       await say("plan", "conversation", PROGRAM, "--session", TRANSCRIPT, "--keep", "1,2"),
     ).toBe(0);
-    await quoting("admins should not see other companies' invoices");
     expect(await say("plan", "check", PROGRAM)).toBe(1);
     expect(op.err.join("\n")).toContain("is not in the human's kept messages word for word");
     await quoting("Invoices are read with no tenant filter.");
+    expect(await putFromFiles(say, fixture.repo, PROGRAM)).toBe(0);
     expect(await say("plan", "check", PROGRAM)).toBe(1);
   });
 
-  it("refuses a message number the session does not have, and writes nothing", async () => {
+  it("refuses a message number the session does not have, and stores nothing", async () => {
+    expect(await putFromFiles(say, fixture.repo, PROGRAM)).toBe(0);
     expect(await say("plan", "conversation", PROGRAM, "--session", TRANSCRIPT, "--keep", "9")).toBe(
       2,
     );
     expect(op.err.join("\n")).toContain("outside this session's messages, 1 to 5");
+    expect(await versions()).toBe(1);
   });
 
-  it("reads and writes nothing when the program keeps no conversation", async () => {
+  it("reads and stores nothing when the program keeps no conversation", async () => {
     await writeProgram({ keepConversation: false });
+    expect(await putFromFiles(say, fixture.repo, PROGRAM)).toBe(0);
     expect(await say("plan", "conversation", PROGRAM, "--session", TRANSCRIPT)).toBe(1);
     expect(op.err.join("\n")).toContain("keeps no planning conversation");
+    expect(await versions()).toBe(1);
   });
 });

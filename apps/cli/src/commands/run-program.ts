@@ -25,7 +25,7 @@
  * stops where a human would want to look and can tell which kind of stop it is.
  */
 
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ArtifactId, Decision, Prerequisite, ProgramContract } from "@nightshift/contracts";
 import {
@@ -54,14 +54,39 @@ import {
 import { createHttpArtifactBodyStore, createHttpPlanning } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import type { ProgramFiles } from "../program-files.js";
+import { checkOutProgramBranch, ensureProgramBranch } from "../program-branch.js";
+import type { ProgramSource } from "../program-source.js";
 import type { Session } from "../session.js";
 import { auditProgramGates, describeAudit } from "./gates.js";
-import { ratifyPlan } from "./plan.js";
+import { ratifyVersionOf } from "./plan.js";
 import { assertRemoteReady, dispatchRun, type RemoteReadiness } from "./remote.js";
 import { watchDispatch } from "./watch.js";
 
 export const REPORT_FILE = "report.md";
+
+/**
+ * Writes the run's report into the checkout, unless the checkout already tracks
+ * one: a finished planned run publishes its report onto the program branch
+ * (P21, D-03), which is where it is read from, and rewriting a tracked file
+ * would leave the checkout modified. Returns the path either way.
+ */
+export const writeReportUnlessTracked = async (
+  environment: CliEnvironment,
+  repoPath: string,
+  directory: string,
+  text: string,
+): Promise<string> => {
+  const path = join(repoPath, directory, REPORT_FILE);
+  const tracked = await environment.git(
+    ["ls-files", "--error-unmatch", "--", `${directory.replace(/\\/g, "/")}/${REPORT_FILE}`],
+    { cwd: repoPath },
+  );
+  if (tracked.exitCode !== 0) {
+    await mkdir(join(repoPath, directory), { recursive: true });
+    await writeFile(path, text);
+  }
+  return path;
+};
 
 export interface RunProgramOptions {
   readonly repoPath: string;
@@ -197,7 +222,11 @@ const requireConfirmations = async (
   const corrected: Decision[] = [];
   for (const target of program.corrects ?? []) {
     const decision = await session.stores.decisions.get(
-      { projectId: program.projectId, programId: target.programId, runId: target.runId },
+      {
+        projectId: program.projectId,
+        programId: target.programId,
+        runId: target.runId,
+      },
       target.decisionId,
     );
     if (decision !== undefined) corrected.push(decision);
@@ -233,7 +262,10 @@ const recordConfirmations = async (
       agentId: null,
       context: irreversibleConfirmationContext(decision.decisionId),
       alternatives: [
-        { summary: "Do not run the correction", rejectedBecause: "the owner confirmed it" },
+        {
+          summary: "Do not run the correction",
+          rejectedBecause: "the owner confirmed it",
+        },
       ],
       choice: "Run the correction",
       rationale: `Confirmed with --confirm-irreversible ${decision.decisionId}.`,
@@ -352,7 +384,9 @@ const beforeStart = async (
   // The gates, before anything is created. A red base starts the run all the
   // same: this is baseline evidence, not a scheduling prerequisite.
   if (options.remote !== true) {
-    return { audit: await auditBeforeStart(environment, ratified, options.repoPath) };
+    return {
+      audit: await auditBeforeStart(environment, ratified, options.repoPath),
+    };
   }
   // P10: everything the checkout can say against a remote dispatch, before the
   // run exists (SC-P10-02). The ratified record, not the file: ratification
@@ -375,7 +409,7 @@ const beforeStart = async (
  */
 const startAfter = async (
   deps: StartRunEnvironment,
-  files: ProgramFiles,
+  files: ProgramSource,
   options: RunProgramOptions,
   before: BeforeStart,
 ): Promise<StartedRun> => {
@@ -420,14 +454,13 @@ const exitCodeFor = (report: RunReport): number => {
  * The ratified record a run executes. Asking to run a plan is approving it
  * (2026-10-16): when the plan on disk is not the one the control plane holds
  * ratified — never ratified, or edited since — it is ratified here, under the
- * same rules as `nightshift plan ratify` (READY, committed), and then held to
+ * same rules as `nightshift plan ratify` (READY), and then held to
  * its hash like any other. `undefined`, with the reasons said, when it cannot be.
  */
 const ratifiedForRun = async (
   environment: CliEnvironment,
   session: Session,
-  files: ProgramFiles,
-  repoPath: string,
+  files: ProgramSource,
 ): Promise<ProgramContract | undefined> => {
   try {
     return await requireRatifiedPlan(session.stores, files.contract, files.planText);
@@ -438,14 +471,14 @@ const ratifiedForRun = async (
   environment.out(
     `ratifying ${files.directory}: asking to run a plan approves it, so it is recorded under its hash first`,
   );
-  if ((await ratifyPlan(environment, session, repoPath, files)) === undefined) return undefined;
+  if ((await ratifyVersionOf(environment, session, files)) === undefined) return undefined;
   return requireRatifiedPlan(session.stores, files.contract, files.planText);
 };
 
 export const runProgram = async (
   environment: CliEnvironment,
   session: Session,
-  files: ProgramFiles,
+  files: ProgramSource,
   options: RunProgramOptions,
 ): Promise<RunProgramResult> => {
   const deps = {
@@ -454,8 +487,20 @@ export const runProgram = async (
     ids: environment.ids,
     git: environment.git,
   };
-  const ratified = await ratifiedForRun(environment, session, files, options.repoPath);
+  const ratified = await ratifiedForRun(environment, session, files);
   if (ratified === undefined) return { started: undefined, exitCode: 1 };
+  if (options.remote !== true) {
+    // The branch the run reads its base from exists and is the one checked out.
+    const branch = ratified.repository.programBranch;
+    await ensureProgramBranch(
+      environment.git,
+      options.repoPath,
+      branch,
+      ratified.repository.baseBranch,
+      { push: options.push !== false, out: (line) => environment.out(line) },
+    );
+    await checkOutProgramBranch(environment.git, options.repoPath, branch);
+  }
   if (
     options.remote !== true &&
     (await preflightFirstStrands(environment, session, ratified, options.repoPath)) === undefined
@@ -522,8 +567,12 @@ export const runProgram = async (
     runId: started.run.runId,
   };
   const report = await gatherReport(session.stores, scope);
-  const reportPath = join(options.repoPath, files.directory, REPORT_FILE);
-  await writeFile(reportPath, renderReport(report));
+  const reportPath = await writeReportUnlessTracked(
+    environment,
+    options.repoPath,
+    files.directory,
+    renderReport(report),
+  );
 
   const succeeded = report.strands.filter((strand) => strand.outcome === "succeeded").length;
   environment.out(

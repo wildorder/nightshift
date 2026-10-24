@@ -35,6 +35,7 @@ import {
 } from "@nightshift/persistence/http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, SUBJECT, signIn } from "./operator.js";
+import { writeConfigFor } from "./plan-scratch.js";
 
 let op: Operator;
 let repo: string;
@@ -196,6 +197,7 @@ const seed = async () => {
     endedAt: "2026-09-15T11:05:00.000Z",
   });
 
+  await writeConfigFor(repo, progA);
   for (const [name, program] of [
     ["alpha", progA],
     ["beta", progB],

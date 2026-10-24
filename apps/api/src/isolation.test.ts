@@ -123,6 +123,8 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       orgId,
       sha256: "a".repeat(64),
       prerequisiteId: "HP-01",
+      // P21: a draft version is named by its number.
+      version: "1",
       // P10: an org's provider key routes are named by the provider, and an
       // installation route by the installation.
       provider: "anthropic",

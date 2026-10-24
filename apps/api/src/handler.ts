@@ -51,6 +51,18 @@ import { getJobContract, listJobContracts, putJobContract } from "./operations/j
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
 import { getOrgConfig, putOrgConfig } from "./operations/org-config.js";
 import {
+  answerPlanDraftDecision,
+  declinePlanDraft,
+  getLatestPlanDraftVersion,
+  getPlanDraft,
+  getPlanDraftVersion,
+  listPlanDraftsByProject,
+  listPlanDraftVersions,
+  markPlanDraftAwaitingOwner,
+  putPlanDraftVersion,
+  requestPlanDraftChanges,
+} from "./operations/plan-drafts.js";
+import {
   createPlanUploadUrl,
   getPlanDocument,
   listPrerequisites,
@@ -226,6 +238,69 @@ export const ROUTES: readonly Route[] = [
     path: `${PROGRAM}/prerequisites/{prerequisiteId}`,
     operation: "prerequisite.put",
     handler: putPrerequisite,
+  },
+
+  // P21: a program's plan draft, which exists from its first version, before any
+  // ratification makes the program. Ratifying a version is `program.ratify`.
+  {
+    method: "GET",
+    path: `${PROJECT}/plan-drafts`,
+    operation: "planDraft.listByProject",
+    handler: listPlanDraftsByProject,
+  },
+  {
+    method: "GET",
+    path: `${PROGRAM}/plan-draft`,
+    operation: "planDraft.get",
+    handler: getPlanDraft,
+  },
+  {
+    method: "POST",
+    path: `${PROGRAM}/plan-draft/versions`,
+    operation: "planDraft.putVersion",
+    handler: putPlanDraftVersion,
+  },
+  {
+    method: "GET",
+    path: `${PROGRAM}/plan-draft/versions`,
+    operation: "planDraft.listVersions",
+    handler: listPlanDraftVersions,
+  },
+  {
+    method: "GET",
+    path: `${PROGRAM}/plan-draft/versions/latest`,
+    operation: "planDraft.getLatestVersion",
+    handler: getLatestPlanDraftVersion,
+  },
+  {
+    method: "GET",
+    path: `${PROGRAM}/plan-draft/versions/{version}`,
+    operation: "planDraft.getVersion",
+    handler: getPlanDraftVersion,
+  },
+  {
+    method: "POST",
+    path: `${PROGRAM}/plan-draft/answers`,
+    operation: "planDraft.answer",
+    handler: answerPlanDraftDecision,
+  },
+  {
+    method: "POST",
+    path: `${PROGRAM}/plan-draft/change-requests`,
+    operation: "planDraft.requestChanges",
+    handler: requestPlanDraftChanges,
+  },
+  {
+    method: "POST",
+    path: `${PROGRAM}/plan-draft/awaiting-owner`,
+    operation: "planDraft.markAwaitingOwner",
+    handler: markPlanDraftAwaitingOwner,
+  },
+  {
+    method: "POST",
+    path: `${PROGRAM}/plan-draft/decline`,
+    operation: "planDraft.decline",
+    handler: declinePlanDraft,
   },
 
   // Runs. `PUT` on an existing run applies the run table in `core` (T2).

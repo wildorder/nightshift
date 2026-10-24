@@ -60,6 +60,7 @@ import {
 } from "@nightshift/persistence/http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Operator, signIn } from "../cli/operator.js";
+import { writeConfigFor } from "../cli/plan-scratch.js";
 import { createFakeHarness, type ScriptContext } from "./fake-harness.js";
 import { cleanupWorlds, createWorld, type World } from "./world.js";
 
@@ -450,6 +451,7 @@ describe("a run recorded before request-level capture", () => {
         createdAt: at,
       }),
     );
+    await writeConfigFor(repo, program);
     await mkdir(join(repo, "docs", "programs", "legacy"), { recursive: true });
     await writeFile(
       join(repo, "docs", "programs", "legacy", "contract.json"),

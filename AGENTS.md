@@ -58,12 +58,13 @@ of provider or harness.
 See `docs/vision.md` for the full product vision.
 See `docs/architecture.md` for settled and open architectural decisions.
 See `docs/programs/staging.md` for how v1 is split into programs.
-See `docs/programs/` for program plans and manifests. From P7 on a *product's*
-programs are planned as `docs/programs/{id}/plan.md` + `contract.json`
-(`skills/plan-program`). Nightshift's own programs keep their single contract
-document (`docs/programs/pNN-*.md`), which stays the authority; since P15 a program
-may also be planned for Nightshift to build (`docs/programs/{id}/plan.md` +
-`contract.json`, pointing at that document) and run like any product's.
+See `docs/programs/` for program plans and manifests. Nightshift's own programs
+keep their single contract document (`docs/programs/pNN-*.md`), which stays the
+authority. Since P21 (A-61) a *product's* program (and a Nightshift program
+planned for Nightshift to build) is planned in the control plane, as the
+versions of a plan draft (`skills/plan-program`); `docs/programs/{id}/` on a
+program branch holds the plan, contract, conversation and report of a finished
+run as a publication, history that nothing reads back.
 See `tasks/{program-id}/` for task specs.
 
 ### Greenfield Boundary — read first
@@ -367,6 +368,14 @@ Neutrality) on 2026-09-16.** Rationale and decision IDs live in
   instance belong to P10. Nightshift never runs a worker as a per-job hosted
   environment.
 
+**As built for P21 (Plans in the plane).** The lasting decision is A-61: a plan
+is a draft in the control plane, as content-hashed versions with their author,
+written by `nightshift plan put` and ratified by its hash with no committed file,
+commit or branch; `nightshift run` makes and pushes the program branch; nothing
+reads a plan from git; a finished planned run publishes plan, contract,
+conversation and report into `docs/programs/{id}/` on the program branch.
+Authority `docs/programs/p21-plans-in-the-plane/plan.md`.
+
 **As built for P14 (Intent), 2026-09-30.** The details a later program needs and
 cannot derive; full account in `docs/programs/p14-intent.md` §13. The lasting
 decision is A-50.
@@ -603,8 +612,10 @@ A-46.
 cannot derive; full account in `docs/programs/p7-planning.md` §13. The lasting
 decisions are A-42, A-43 and A-44.
 
-- **A plan is two files and a gate.** `docs/programs/{id}/plan.md` and
-  `contract.json`; a contract inherits what it does not state from
+- **A plan is two documents and a gate.** A plan and a contract, stored in the
+  control plane as a draft's versions since P21 (A-61; before it they were the
+  committed files `docs/programs/{id}/plan.md` and `contract.json`, which a
+  finished run now publishes); a contract inherits what it does not state from
   `nightshift.config.json` (`inheritFromConfig` in `contracts`), and the **merged**
   contract is what is checked, hashed, ratified and run. The planned fields on
   `ProgramContract` are `.optional()` with no zod defaults, so a contract written
@@ -677,10 +688,12 @@ decisions are A-42, A-43 and A-44.
   deferred. There is **no automatic fix job or cone replay** at resume: the fix is
   the next program, planned with the report in hand.
 - `isDirty` lists untracked files individually and ignores an untracked
-  `docs/programs/*/report.md`, which `nightshift run` leaves in the checkout.
-- **A planned repository has no `nightshift.program.json`.** `run.attach` finds
-  the program under `docs/programs/`, by the run named or the only pending run.
-  `run.finish` writes a planned run's `report.md`, attended or not. An attended
+  `docs/programs/*/report.md`, which older runs left in the checkout (since P21
+  the report is published at finish, on the program branch).
+- **A planned repository has no `nightshift.program.json`.** Since P21 the plan
+  is in the control plane, and `run.attach` resolves the program from there, by
+  the run named or the only pending run; `docs/programs/{id}/` is written only
+  as a publication when `run.finish` ends a planned run, attended or not. An attended
   session sees below the root through `job.wait`, which returns the record's
   lines since the last call labelled by strand and job, and `run.activity`,
   which replays the run (`apps/mcp/src/activity.ts`). `run-program` is attended

@@ -19,17 +19,20 @@
  * (D-P3-07) and a delegation that would need it is refused up front.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   Checkpoint,
   DecisionId,
   ExecutionNode,
   JobContract,
+  ProgramId,
+  ProjectId,
   Repair,
   RepairCause,
   RouteChoice,
+  Run,
 } from "@nightshift/contracts";
 import {
   type Effort,
@@ -40,6 +43,8 @@ import {
   type JobKind,
   NIGHTSHIFT_CONFIG_FILE,
   NightshiftConfigSchema,
+  ProgramIdSchema,
+  ProjectIdSchema,
   RepairCauseSchema,
   type Reversibility,
   ReversibilitySchema,
@@ -52,13 +57,11 @@ import {
   conservativeDefaults,
   currentStepTime,
   type DelegationRejection,
-  gatherReport,
   highestSequence,
   isDoneForNow,
   nowIso,
   type ProjectStores,
   pendingCount,
-  renderReport,
   STEP_TIMED_OUT_EXIT_CODE,
   type StepAdjustments,
   type StrandBrief,
@@ -90,6 +93,7 @@ import { z } from "zod";
 import { type ActivityFeed, createActivityFeed, renderActivity } from "./activity.js";
 import { CLASSIFICATION_INPUTS } from "./classification.js";
 import { fullyPublished, settlePublication, unpublishedReason } from "./publication-settle.js";
+import { type PublishedRun, publishPlannedRun } from "./publish-run.js";
 import type { RefusalCode } from "./results.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
 import { routeJob } from "./routing.js";
@@ -98,7 +102,7 @@ import {
   attachRun,
   createCheckpointAt,
   describeNodeLine,
-  programDirectoryOf,
+  programNameOf,
   startNewRun,
 } from "./session.js";
 import {
@@ -148,6 +152,84 @@ const readIfPresent = async (path: string): Promise<string | undefined> => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+};
+
+/** The ratified contract the plane holds for a program, and the plan document it names. */
+interface RatifiedProgram {
+  readonly contract: unknown;
+  readonly planText: string;
+}
+
+const ratifiedProgram = async (
+  state: OrchestratorSession,
+  projectId: ProjectId,
+  programId: ProgramId,
+): Promise<RatifiedProgram | undefined> => {
+  const stored = await state.runtime.stores.programContracts.get(projectId, programId);
+  const sha256 = stored?.planDocument?.sha256;
+  if (stored === undefined || sha256 === undefined) return undefined;
+  const planText = await state.runtime.planText?.({ projectId, programId }, sha256);
+  return planText === undefined ? undefined : { contract: stored, planText };
+};
+
+/** The planned program a plan draft named `name` on the plane stands for; refuses when it cannot be run. */
+const ratifiedProgramNamed = async (
+  state: OrchestratorSession,
+  name: string,
+  config: unknown,
+): Promise<RatifiedProgram> => {
+  const projectId = ProjectIdSchema.safeParse(
+    (config as { projectId?: unknown } | undefined)?.projectId,
+  );
+  if (!projectId.success) {
+    throw new ToolRefusal(
+      "validation_failed",
+      `${NIGHTSHIFT_CONFIG_FILE} names no project, so there is no way to find the program \`${name}\` on the plane`,
+    );
+  }
+  let cursor: string | undefined;
+  let draft: { readonly programId: ProgramId } | undefined;
+  do {
+    const page = await state.runtime.stores.planDrafts.listByProject(projectId.data, {
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    draft = page.items.find((candidate) => candidate.name === name);
+    cursor = draft === undefined ? page.cursor : undefined;
+  } while (draft === undefined && cursor !== undefined);
+  if (draft === undefined) {
+    throw new ToolRefusal("not_found", `the plane has no plan draft named \`${name}\``);
+  }
+  const stored = await state.runtime.stores.programContracts.get(projectId.data, draft.programId);
+  if (stored?.planDocument === undefined) {
+    throw new ToolRefusal(
+      "validation_failed",
+      `\`${name}\` has not been ratified. Ratify it with \`nightshift plan ratify ${name}\`.`,
+    );
+  }
+  const ratified = await ratifiedProgram(state, projectId.data, draft.programId);
+  if (ratified === undefined) {
+    throw new ToolRefusal(
+      "not_found",
+      `the plane holds no ratified plan ${stored.planDocument.sha256} for \`${name}\``,
+    );
+  }
+  return ratified;
+};
+
+/**
+ * A contract file that is planned (has strands) only identifies its program:
+ * the plane's ratified contract, when it holds one, is what runs.
+ */
+const ratifiedForFile = async (
+  state: OrchestratorSession,
+  authored: unknown,
+): Promise<RatifiedProgram | undefined> => {
+  const file = authored as { projectId?: unknown; programId?: unknown; strands?: unknown } | null;
+  if (!Array.isArray(file?.strands) || file.strands.length === 0) return undefined;
+  const projectId = ProjectIdSchema.safeParse(file.projectId);
+  const programId = ProgramIdSchema.safeParse(file.programId);
+  if (!projectId.success || !programId.success) return undefined;
+  return ratifiedProgram(state, projectId.data, programId.data);
 };
 
 const requireAttached = (state: OrchestratorSession) => {
@@ -436,12 +518,16 @@ const publicationEnding = async (
   attached: AttachedRun,
   outcome: "succeeded" | "failed" | "cancelled" | "deferred",
   reason: string | undefined,
+  /** The final documentation commit, when this finish made one: GitHub must have it. */
+  docsHead?: string,
 ): Promise<{
   readonly ending: "succeeded" | "failed" | "cancelled" | "deferred";
   readonly why: string | undefined;
+  /** Whether GitHub has everything (always true for a local run). */
+  readonly settled: boolean;
 }> => {
   const publish = attached.environment.publish;
-  if (publish === undefined) return { ending: outcome, why: reason };
+  if (publish === undefined) return { ending: outcome, why: reason, settled: true };
   const { scope, repoPath, program } = attached.session;
   const branch = program.repository.programBranch;
   const published = await settlePublication({
@@ -451,10 +537,14 @@ const publicationEnding = async (
       if (head !== undefined) await publish({ head, programBranch: branch, repoPath });
     },
   });
-  if (fullyPublished(published)) return { ending: outcome, why: reason };
-  const unpublished = unpublishedReason(published);
-  if (outcome === "succeeded") return { ending: "deferred", why: unpublished };
-  return { ending: outcome, why: reason === undefined ? unpublished : `${reason} ${unpublished}` };
+  if (fullyPublished(published, docsHead)) return { ending: outcome, why: reason, settled: true };
+  const unpublished = unpublishedReason(published, docsHead);
+  if (outcome === "succeeded") return { ending: "deferred", why: unpublished, settled: false };
+  return {
+    ending: outcome,
+    why: reason === undefined ? unpublished : `${reason} ${unpublished}`,
+    settled: false,
+  };
 };
 
 /**
@@ -637,21 +727,48 @@ const endGatesEnding = async (
   return { kind: "ended", outcome, why: reason };
 };
 
-/** `docs/programs/{id}/report.md` for a planned run; nothing for any other. */
-const writeReport = async (
+/**
+ * The publication of a finished planned run (P21, D-03); see `publishPlannedRun`.
+ * A run that is not planned, or whose draft has no name, publishes nothing. A
+ * failure is the answer's to report: the run has ended, and what it built is
+ * not in doubt.
+ */
+const publishFinished = async (
   state: OrchestratorSession,
   attached: AttachedRun,
-): Promise<string | undefined> => {
-  if (attached.planSections === undefined) return undefined;
-  const directory = await programDirectoryOf(state, attached.session.scope.programId);
-  if (directory === undefined) return undefined;
-  const path = resolve(directory, "report.md");
-  await writeFile(
-    path,
-    renderReport(await gatherReport(state.runtime.stores, attached.session.scope)),
-  );
-  return path;
+  ending: { readonly status: Run["status"]; readonly reason?: string },
+  /** Raise the commit's intent; `false` commits locally only. */
+  raise = true,
+): Promise<PublishedRun> => {
+  if (attached.planSections === undefined) return {};
+  const { scope, program } = attached.session;
+  let name: string | undefined;
+  try {
+    name = await programNameOf(state, scope);
+  } catch (error) {
+    return { failure: error instanceof Error ? error.message : String(error) };
+  }
+  return publishPlannedRun(state.runtime, {
+    scope,
+    program,
+    repoPath: state.repoPath,
+    name,
+    rootNodeId: attached.session.rootNodeId,
+    ending,
+    ...(!raise || attached.environment.publish === undefined
+      ? {}
+      : { publish: attached.environment.publish }),
+  });
 };
+
+/** The run status and reason a report states for an ending (`deferred` is stored as `interrupted`). */
+const endingStatus = (
+  outcome: "succeeded" | "failed" | "cancelled" | "deferred",
+  reason: string | undefined,
+): { readonly status: Run["status"]; readonly reason?: string } => ({
+  status: outcome === "deferred" ? "interrupted" : outcome,
+  ...(reason === undefined ? {} : { reason }),
+});
 
 /** One feed per attached run, so each call answers "since the last one". */
 const feeds = new WeakMap<AttachedRun, ActivityFeed>();
@@ -812,27 +929,48 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
     {
       title: "Start a run",
       description:
-        "Validate an authored Program Contract, persist it with its run, root node and initial " +
-        "checkpoint, and bind this server to it. The same function `nightshift run` calls.",
+        "Start a run of a program and bind this server to it: give `program`, a planned program's name " +
+        "on the plane (its ratified contract and plan are read from there, no file needed), or " +
+        "`programContractPath`, an authored Program Contract (a planned one is replaced by the plane's " +
+        "ratified contract; the file only identifies it). Persists the contract with its run, root node " +
+        "and initial checkpoint. The same function `nightshift run` calls.",
       inputSchema: {
-        programContractPath: z.string().min(1),
+        program: z.string().min(1).optional(),
+        programContractPath: z.string().min(1).optional(),
         model: z.string().min(1),
         repoPath: z.string().min(1).optional(),
       },
     },
-    async ({ programContractPath, model, repoPath }) =>
+    async ({ program, programContractPath, model, repoPath }) =>
       guarded(async () => {
+        if ((program === undefined) === (programContractPath === undefined)) {
+          throw new ToolRefusal(
+            "validation_failed",
+            "give exactly one of `program` (a planned program's name) or `programContractPath`",
+          );
+        }
         const repo = resolve(repoPath ?? process.cwd());
-        const path = resolve(repo, programContractPath);
-        const authored: unknown = JSON.parse(await readFile(path, "utf8"));
-        // A planned program's two files sit together (D-P7-03), and its contract
-        // inherits the project's defaults, exactly as `nightshift run {id}` reads it.
-        const planText = await readIfPresent(resolve(dirname(path), "plan.md"));
         const configText = await readIfPresent(resolve(repo, NIGHTSHIFT_CONFIG_FILE));
-        const contract =
+        const config: unknown =
           configText === undefined
-            ? authored
-            : inheritFromConfig(authored, NightshiftConfigSchema.parse(JSON.parse(configText)));
+            ? undefined
+            : NightshiftConfigSchema.parse(JSON.parse(configText));
+        // A planned program is on the plane (P21): its ratified contract and the
+        // plan that contract names, by sha256. No contract is read from disk for it.
+        let authored: unknown;
+        let ratified: RatifiedProgram | undefined;
+        if (program !== undefined) {
+          ratified = await ratifiedProgramNamed(state, program, config);
+          authored = ratified.contract;
+        } else {
+          const path = resolve(repo, programContractPath as string);
+          authored = JSON.parse(await readFile(path, "utf8"));
+          ratified = await ratifiedForFile(state, authored);
+          if (ratified !== undefined) authored = ratified.contract;
+        }
+        const planText = ratified?.planText;
+        const contract =
+          config === undefined ? authored : inheritFromConfig(authored, config as never);
         const started = await startNewRun(state, {
           program: contract,
           repoPath: repo,
@@ -931,17 +1069,45 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
           );
         }
         const notVerified = await notVerifiedOf(state, attached);
-        const { ending, why } = await publicationEnding(state, attached, gated.outcome, gated.why);
+        // A planned run's documents and report, committed onto the program
+        // branch from the control plane's records alone (P21, D-03) BEFORE the
+        // run is settled and ended, so the docs head is the head GitHub must
+        // have; the report states the ending asked for.
+        const docs = await publishFinished(state, attached, endingStatus(gated.outcome, gated.why));
+        const docsHead = (docs.published ?? docs.committed)?.head;
+        const { ending, why, settled } = await publicationEnding(
+          state,
+          attached,
+          gated.outcome,
+          gated.why,
+          docsHead,
+        );
+        // Settlement may change the ending (deferred for a head GitHub lacks);
+        // the checkout's report is then made true locally, and published by the
+        // resume that ends the run.
+        if (docsHead !== undefined && (ending !== gated.outcome || why !== gated.why)) {
+          await publishFinished(state, attached, endingStatus(ending, why), false);
+        }
         await endRun(state, attached, ending, why);
-        // A planned run's report, beside its plan, as `nightshift run` writes it
-        // for a run nobody watched: written from the control plane alone.
-        const reportPath = await writeReport(state, attached);
+        // A documentation head GitHub has is published, whatever the first
+        // request did; one it lacks is a failure, never `published`.
+        const where = docs.published ?? docs.committed;
+        const published = settled ? where : undefined;
+        const failure = settled
+          ? docsHead === undefined
+            ? docs.failure
+            : undefined
+          : (docs.failure ?? (docsHead === undefined ? undefined : why));
         return ok(
           `${describeNotVerified(notVerified)} Run ${attached.session.scope.runId} is ${ending}.` +
             (ending === outcome ? "" : ` ${why}`) +
-            (reportPath === undefined ? "" : ` The report is at ${reportPath}.`),
+            (published === undefined
+              ? ""
+              : ` The plan, contract and report are published in ${published.directory}/ at ${published.head.slice(0, 8)}.`) +
+            (failure === undefined ? "" : ` They could not be published: ${failure}.`),
           {
-            ...(reportPath === undefined ? {} : { reportPath }),
+            ...(published === undefined ? {} : { published }),
+            ...(failure === undefined ? {} : { publicationFailure: failure }),
             runId: attached.session.scope.runId,
             outcome: ending,
             notVerified,

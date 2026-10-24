@@ -68,7 +68,6 @@ import { NoCheckpointError } from "@nightshift/harness";
 import { z } from "zod";
 import { CLASSIFICATION_INPUTS } from "./classification.js";
 import { guarded, ok, ToolRefusal, waitForFirstSettled } from "./results.js";
-import { DEFAULT_CONTRACT_FILE } from "./session.js";
 import {
   asStepRefusal,
   refuseAdjustmentContext,
@@ -691,10 +690,10 @@ export const registerSubOrchestratorTools = (
   // --- A run's adjustments to a step's time (P19 S-02) ---------------------------
 
   /**
-   * A strand's token may not read the program contract or another node's
-   * verifications, so it reads what it may: the verification steps and
-   * `costPolicy.maxWallClockSeconds` from the contract in its own checkout at
-   * HEAD, and the fullest verification history it can see: its own subtree's
+   * A strand's token may read its own program's contract but not another
+   * node's verifications, so it reads what it may: the verification steps and
+   * `costPolicy.maxWallClockSeconds` from the program contract in the control plane (its own program's, which its token may read) merged
+   * with the config in its own checkout at HEAD, and the fullest verification history it can see: its own subtree's
    * verifications plus every verification a `verification.completed` event of
    * the run names (the engine emits one for each record it writes), each read
    * with `verifications.get`. This is the best the strand can see; the engine
@@ -702,18 +701,13 @@ export const registerSubOrchestratorTools = (
    * verification.
    */
   const contractGates = async () => {
-    const gates = await contractGatesAt(
-      environment.git,
-      identity.worktree,
-      "HEAD",
-      scope.programId,
-      deps.env?.NIGHTSHIFT_CONTRACT_FILE ?? DEFAULT_CONTRACT_FILE,
+    const gates = await contractGatesAt(environment.git, identity.worktree, "HEAD", () =>
+      stores.programContracts.get(scope.projectId, scope.programId),
     ).catch(() => undefined);
     if (gates === undefined) {
       throw new ToolRefusal(
         "not_found",
-        "the run's contract could not be read from this checkout at HEAD (neither the contract " +
-          "file nor docs/programs/*/contract.json names this program), so its steps are unknown",
+        "the run's program contract could not be read from the control plane, so its steps are unknown",
       );
     }
     return gates;

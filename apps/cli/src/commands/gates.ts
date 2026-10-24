@@ -45,7 +45,8 @@ import {
 import { createLocalPaths } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { describeFailure } from "../failures.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram } from "../program-source.js";
 import { openSession, type Session } from "../session.js";
 import { filesAt, measureRuntime } from "./remote.js";
 
@@ -235,7 +236,10 @@ export const prerequisitesUnmetHere = async (
     record: async (_scope, prerequisiteId, exitCode) => {
       const prerequisite = byId.get(prerequisiteId);
       if (prerequisite === undefined) throw new Error(`no prerequisite ${prerequisiteId}`);
-      return withLaptopCheck(prerequisite, { exitCode, checkedAt: nowIso(environment.clock) });
+      return withLaptopCheck(prerequisite, {
+        exitCode,
+        checkedAt: nowIso(environment.clock),
+      });
     },
   });
   for (const check of checked.checks) {
@@ -346,7 +350,10 @@ export const landingsFor = async (
 ): Promise<{ readonly count: number; readonly source: LandingsSource }> => {
   if (given !== undefined) return { count: given, source: "given" };
   if (session !== undefined) {
-    const scope = { projectId: contract.projectId, programId: contract.programId };
+    const scope = {
+      projectId: contract.projectId,
+      programId: contract.programId,
+    };
     const runs = await session.stores.runs.listByProgram(scope).catch(() => undefined);
     const last = [...(runs?.items ?? [])]
       .filter((run) => run.endedAt !== undefined && run.endedAt !== null)
@@ -373,7 +380,9 @@ export const resolveGates = async (
   contract: ProgramContract,
 ): Promise<Map<string, ResolvedCommand>> => {
   const read = async (path: string): Promise<string | undefined> => {
-    const shown = await environment.git(["show", `${sha}:${path}`], { cwd: repoPath });
+    const shown = await environment.git(["show", `${sha}:${path}`], {
+      cwd: repoPath,
+    });
     return shown.exitCode === 0 ? shown.stdout : undefined;
   };
   const resolved = new Map<string, ResolvedCommand>();
@@ -387,7 +396,11 @@ export const resolveGates = async (
   return resolved;
 };
 
-const KIND_LABEL = { setup: "setup  ", landing: "landing", end: "end    " } as const;
+const KIND_LABEL = {
+  setup: "setup  ",
+  landing: "landing",
+  end: "end    ",
+} as const;
 
 /** The plan, as §4.1 of P17 lays it out: measured numbers, labelled. */
 export const describePlan = (
@@ -495,7 +508,12 @@ export const gates = async (
   options: GatesOptions,
 ): Promise<GatesResult> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
+  const session = await openSession(environment);
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    use: "latest",
+  });
   const contract = files.contract;
   // With --json, everything a person reads goes to stderr and stdout carries
   // the one document an agent reads.
@@ -503,10 +521,6 @@ export const gates = async (
   const human: CliEnvironment = json ? { ...environment, out: environment.err } : environment;
   // The control plane is only asked how many landings the last run made; the
   // audit itself needs nothing from it. Signed out, it says so and goes on.
-  const session = await openSession(environment).catch((error: unknown) => {
-    human.err(`note: ${sessionProblem(error)}; the projection assumes the default landings`);
-    return undefined;
-  });
   const unmet = await prerequisitesUnmetHere(human, contract, repoPath);
   const audit = await auditProgramGates(human, contract, repoPath, human.out, {
     unmet,
@@ -526,7 +540,7 @@ export const gates = async (
     plan,
     await resolveGates(environment, repoPath, audit.base, contract),
   );
-  describeRecommendations(human.out, recommendations, files.contractPath);
+  describeRecommendations(human.out, recommendations, `${files.directory}/contract.json`);
   if (json) {
     environment.out(
       JSON.stringify(
@@ -545,5 +559,11 @@ export const gates = async (
       ),
     );
   }
-  return { exitCode: audit.red ? 1 : 0, audit, runtimeFindings: runtimes, plan, recommendations };
+  return {
+    exitCode: audit.red ? 1 : 0,
+    audit,
+    runtimeFindings: runtimes,
+    plan,
+    recommendations,
+  };
 };

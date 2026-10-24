@@ -11,7 +11,8 @@ import { type PreflightCheck, runPreflight } from "@nightshift/execution";
 import { createHttpPlanning } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
-import { readProgramFiles, resolveFrom } from "../program-files.js";
+import { resolveFrom } from "../program-files.js";
+import { findProgram } from "../program-source.js";
 import { openSession } from "../session.js";
 
 export interface PreflightOptions {
@@ -51,10 +52,17 @@ export const preflight = async (
   options: PreflightOptions,
 ): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
-  const files = await readProgramFiles(repoPath, options.id);
-  const scope = { projectId: files.contract.projectId, programId: files.contract.programId };
-
   const session = await openSession(environment);
+  const files = await findProgram(environment, session, {
+    repoPath,
+    name: options.id,
+    use: "ratified",
+  });
+  const scope = {
+    projectId: files.contract.projectId,
+    programId: files.contract.programId,
+  };
+
   const planning = createHttpPlanning({ transport: session.transport });
   // The control plane's record, not the file's: statuses live there, and a
   // hurdle a run discovered (D-P7-10) exists nowhere else.

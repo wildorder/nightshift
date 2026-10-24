@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Route, Routes } from "react-router";
 import { ThemeProvider } from "./components/theme-provider.js";
 import { DecisionPage } from "./pages/decision.js";
+import { PlanPage } from "./pages/plan.js";
 import { ProjectPage } from "./pages/project.js";
 import { ProjectSettingsPage } from "./pages/project-settings.js";
 import { ProjectsPage } from "./pages/projects.js";
@@ -31,6 +32,7 @@ export const App = ({
             <Route index element={<ProjectsPage />} />
             <Route path="projects/:projectId" element={<ProjectPage />} />
             <Route path="projects/:projectId/settings" element={<ProjectSettingsPage />} />
+            <Route path="projects/:projectId/programs/:programId/plan" element={<PlanPage />} />
             <Route
               path="projects/:projectId/programs/:programId/runs/:runId"
               element={<RunPage />}

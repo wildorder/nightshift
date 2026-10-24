@@ -248,12 +248,8 @@ describe("a strand's step times out, is raised, then skipped", () => {
       if (task?.kind === "strand_fix") {
         fixes.push(task);
         const environment = environmentFor(context);
-        const gates = await contractGatesAt(
-          nodeGitRunner,
-          context.worktree,
-          "HEAD",
-          identity.scope.programId,
-          CONTRACT_FILE,
+        const gates = await contractGatesAt(nodeGitRunner, context.worktree, "HEAD", () =>
+          world.stores.programContracts.get(identity.scope.projectId, identity.scope.programId),
         );
         if (gates === undefined) throw new Error("the strand cannot read its contract");
         const record = (input: Parameters<typeof recordWorkerDecision>[3]) =>

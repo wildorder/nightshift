@@ -53,7 +53,8 @@ its plan, and decides what to delegate. Nightshift never prescribes that reasoni
 workflow.
 
 **A human plans first, and only as far as it pays.** Before anything runs, a
-developer and an agent work a program out together in a document: the outcomes,
+developer and an agent work a program out together in a plan that lives in the
+control plane, readable from anywhere: the outcomes,
 the seams (a few **strands**), each strand's approach at the fidelity a developer
 wants before saying yes, the decisions that are expensive to reverse, and
 everything only a human can do, done *before* the run with a command that proves

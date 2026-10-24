@@ -18,13 +18,11 @@ describe("setup commands after a committed repository repair", () => {
     delegationLimits: original.delegationLimits,
     costPolicy: original.costPolicy,
   };
-  const runner = (explicit: boolean): GitRunner => {
+  const runner = (changed: boolean): GitRunner => {
+    const before = { ...config, setup: original.setup };
     const files: Record<string, string> = {
       "HEAD:nightshift.config.json": JSON.stringify(config),
-      [`HEAD:docs/programs/${original.programId}/contract.json`]: JSON.stringify({
-        ...original,
-        ...(explicit ? {} : { setup: undefined }),
-      }),
+      "HEAD^:nightshift.config.json": JSON.stringify(changed ? before : config),
     };
     return async (args) => {
       const text = files[args[1] ?? ""];
@@ -32,13 +30,13 @@ describe("setup commands after a committed repository repair", () => {
     };
   };
 
-  it("uses the repaired config when the authored contract inherits setup", async () => {
+  it("uses the repaired config when the landing changed the config setup", async () => {
     const result = await projectSetupProgram(
       createInMemoryStores(),
       f.scope,
       original,
       "/repo",
-      runner(false),
+      runner(true),
     );
     expect(result.setup).toEqual(fixed);
     expect(result.verification).toBe(original.verification);
@@ -46,13 +44,13 @@ describe("setup commands after a committed repository repair", () => {
     expect(original.setup?.[0]?.command).toBe("broken-install");
   });
 
-  it("keeps an explicit contract setup above repository defaults", async () => {
+  it("keeps the plane contract setup when the landing left the config alone", async () => {
     const result = await projectSetupProgram(
       createInMemoryStores(),
       f.scope,
       original,
       "/repo",
-      runner(true),
+      runner(false),
     );
     expect(result.setup).toEqual(original.setup);
   });

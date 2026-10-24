@@ -18,6 +18,7 @@ import {
   artifactObjectKey,
   type PlanDocumentStore,
   planDocumentObjectKey,
+  type StoredPlanDocument,
 } from "@nightshift/core";
 
 export interface PutObjectInput {
@@ -307,6 +308,21 @@ export const createPlanDocumentStore = (config: PlanDocumentStoreConfig): PlanDo
       const key = planDocumentObjectKey(scope, sha256);
       const body = await readIfPresent(objects, { Bucket: config.bucketName, Key: key });
       return body === undefined ? undefined : { uri: `s3://${config.bucketName}/${key}`, body };
+    },
+    put: async (scope, sha256, body, contentType): Promise<StoredPlanDocument> => {
+      const key = planDocumentObjectKey(scope, sha256);
+      const digest = createHash("sha256").update(body).digest();
+      if (digest.toString("hex") !== sha256) {
+        throw new Error(`the plan document hashes to ${digest.toString("hex")}, not ${sha256}`);
+      }
+      await objects.putObject({
+        Bucket: config.bucketName,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+        ChecksumSHA256: digest.toString("base64"),
+      });
+      return { uri: `s3://${config.bucketName}/${key}`, body };
     },
   };
 };

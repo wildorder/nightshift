@@ -25,6 +25,8 @@ import {
   OrgConfigSchema,
   OrgCredentialSchema,
   type OrgId,
+  PlanDraftSchema,
+  PlanDraftVersionSchema,
   ProgramContractSchema,
   ProjectSchema,
   RoutingDecisionSchema,
@@ -40,6 +42,8 @@ import {
   OwnershipViolationError,
   type Page,
   type PageRequest,
+  PlanDraftError,
+  ProgramContractExistsError,
   type ProjectStore,
   runScopeOf,
   StaleWriteError,
@@ -298,6 +302,195 @@ export const createAwsStores = ({
       get: (projectId) => getRecord(GateHealthSchema, keys.gateHealth(projectId)),
     },
 
+    // P21: a version is written once, with the draft, in one conditional
+    // transaction; an act is a compare-and-swap on the draft's revision.
+    planDrafts: {
+      get: (projectId, programId) =>
+        getRecord(PlanDraftSchema, keys.planDraft(projectId, programId)),
+      listByProject: (projectId, page) =>
+        listPage(PlanDraftSchema, inTable(keys.planDraftPartition(projectId)), page),
+      getVersion: (projectId, programId, version) =>
+        getRecord(PlanDraftVersionSchema, keys.planDraftVersion(projectId, programId, version)),
+      listVersions: (projectId, programId, page) =>
+        listPage(
+          PlanDraftVersionSchema,
+          inTable(keys.planDraftVersionPartition(projectId, programId)),
+          page,
+        ),
+      appendVersion: async (version, next) => {
+        const parsedVersion = PlanDraftVersionSchema.parse(version);
+        const draftKey = keys.planDraft(parsedVersion.projectId, parsedVersion.programId);
+        const previous = parsedVersion.version - 1;
+        for (let attempt = 1; ; attempt += 1) {
+          const output = await table.get({
+            TableName: tableName,
+            Key: draftKey,
+            ConsistentRead: true,
+          });
+          const current =
+            output.Item === undefined ? undefined : fromItem(PlanDraftSchema, output.Item);
+          if ((current?.latestVersion ?? 0) !== previous) {
+            throw new PlanDraftError(
+              "conflict",
+              `version ${parsedVersion.version} cannot be appended: the latest stored is ${current?.latestVersion ?? 0}`,
+            );
+          }
+          const parsedDraft = PlanDraftSchema.parse(next(current));
+          if (
+            parsedDraft.projectId !== parsedVersion.projectId ||
+            parsedDraft.programId !== parsedVersion.programId ||
+            parsedDraft.latestVersion !== parsedVersion.version
+          ) {
+            throw new PlanDraftError(
+              "conflict",
+              "the draft does not describe the version appended",
+            );
+          }
+          const read = output.Item?.[REVISION_ATTRIBUTE];
+          const nameItems =
+            parsedDraft.name === undefined
+              ? []
+              : [
+                  {
+                    Put: {
+                      TableName: tableName,
+                      Item: toItem(
+                        "PlanDraftName",
+                        keys.planDraftName(parsedVersion.projectId, parsedDraft.name),
+                        { programId: parsedVersion.programId },
+                      ),
+                      ConditionExpression: "attribute_not_exists(#pk) OR #program = :program",
+                      ExpressionAttributeNames: { "#pk": "PK", "#program": "programId" },
+                      ExpressionAttributeValues: { ":program": parsedVersion.programId },
+                    },
+                  },
+                ];
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                ...nameItems,
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: toItem(
+                      "PlanDraftVersion",
+                      keys.planDraftVersion(
+                        parsedVersion.projectId,
+                        parsedVersion.programId,
+                        parsedVersion.version,
+                      ),
+                      parsedVersion,
+                    ),
+                    ConditionExpression: "attribute_not_exists(#pk)",
+                    ExpressionAttributeNames: { "#pk": "PK" },
+                  },
+                },
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: {
+                      ...toItem("PlanDraft", draftKey, parsedDraft),
+                      [REVISION_ATTRIBUTE]: randomUUID(),
+                    },
+                    ...(current === undefined
+                      ? {
+                          ConditionExpression: "attribute_not_exists(#pk)",
+                          ExpressionAttributeNames: { "#pk": "PK" },
+                        }
+                      : typeof read === "string"
+                        ? {
+                            ConditionExpression: "#rev = :rev",
+                            ExpressionAttributeNames: { "#rev": REVISION_ATTRIBUTE },
+                            ExpressionAttributeValues: { ":rev": read },
+                          }
+                        : {
+                            ConditionExpression:
+                              "attribute_exists(#pk) AND attribute_not_exists(#rev)",
+                            ExpressionAttributeNames: {
+                              "#pk": "PK",
+                              "#rev": REVISION_ATTRIBUTE,
+                            },
+                          }),
+                  },
+                },
+              ],
+            });
+            return;
+          } catch (error) {
+            const failures = conditionFailures(error);
+            if (failures === undefined || !failures.some(Boolean)) throw error;
+            // Another program holds the name: nothing was written.
+            if (nameItems.length > 0 && failures[0] === true) {
+              const holder = await getRecord(
+                { parse: (value: unknown) => value as { programId: string } },
+                keys.planDraftName(parsedVersion.projectId, parsedDraft.name as string),
+              );
+              throw new PlanDraftError(
+                "name_taken",
+                `the name \`${parsedDraft.name}\` is held by program ${holder?.programId ?? "another program"}`,
+              );
+            }
+            const at = nameItems.length;
+            // The version already exists: it is immutable, so this append lost.
+            if (failures[at] === true) {
+              throw new PlanDraftError(
+                "conflict",
+                `version ${parsedVersion.version} cannot be appended: it exists`,
+              );
+            }
+            // Only the draft moved since the read: read it again and reconcile.
+            if (attempt >= MAX_UPDATE_ATTEMPTS) {
+              throw new PlanDraftError(
+                "conflict",
+                `version ${parsedVersion.version} cannot be appended: the draft kept changing`,
+              );
+            }
+          }
+        }
+      },
+      update: async (projectId, programId, change) => {
+        const key = keys.planDraft(projectId, programId);
+        for (let attempt = 1; ; attempt += 1) {
+          const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
+          if (output.Item === undefined) return undefined;
+          const current = fromItem(PlanDraftSchema, output.Item);
+          const changed = change(current);
+          if (changed === undefined) return current;
+          const parsed = PlanDraftSchema.parse(changed);
+          if (
+            parsed.latestVersion !== current.latestVersion ||
+            parsed.projectId !== projectId ||
+            parsed.programId !== programId
+          ) {
+            throw new PlanDraftError(
+              "conflict",
+              "an update cannot move the draft's identity or latest version",
+            );
+          }
+          const read = output.Item[REVISION_ATTRIBUTE];
+          try {
+            await table.put({
+              TableName: tableName,
+              Item: { ...toItem("PlanDraft", key, parsed), [REVISION_ATTRIBUTE]: randomUUID() },
+              ...(typeof read === "string"
+                ? {
+                    ConditionExpression: "#rev = :rev",
+                    ExpressionAttributeNames: { "#rev": REVISION_ATTRIBUTE },
+                    ExpressionAttributeValues: { ":rev": read },
+                  }
+                : {
+                    ConditionExpression: "attribute_exists(#pk) AND attribute_not_exists(#rev)",
+                    ExpressionAttributeNames: { "#pk": "PK", "#rev": REVISION_ATTRIBUTE },
+                  }),
+            });
+            return parsed;
+          } catch (error) {
+            if (!isConditionalCheckFailure(error) || attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+          }
+        }
+      },
+    },
+
     // P20 (D-04): a compare-and-set on `version`, as an org's config is. Only
     // GetItem, PutItem and Query: the API role has no UpdateItem or DeleteItem.
     feedback: {
@@ -397,6 +590,29 @@ export const createAwsStores = ({
             [REVISION_ATTRIBUTE]: randomUUID(),
           },
         });
+      },
+      create: async (contract) => {
+        const parsed = ProgramContractSchema.parse(contract);
+        try {
+          await table.put({
+            TableName: tableName,
+            Item: {
+              ...toItem(
+                "ProgramContract",
+                keys.programContract(parsed.projectId, parsed.programId),
+                parsed,
+              ),
+              [REVISION_ATTRIBUTE]: randomUUID(),
+            },
+            ConditionExpression: "attribute_not_exists(#pk)",
+            ExpressionAttributeNames: { "#pk": "PK" },
+          });
+        } catch (error) {
+          if (isConditionalCheckFailure(error)) {
+            throw new ProgramContractExistsError(parsed.programId);
+          }
+          throw error;
+        }
       },
       get: (projectId, programId) =>
         getRecord(ProgramContractSchema, keys.programContract(projectId, programId)),

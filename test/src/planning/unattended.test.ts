@@ -8,7 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ProgramContract, Strand } from "@nightshift/contracts";
@@ -134,18 +134,16 @@ const prepare = async (
     ],
   };
   const planText = plan(tags);
-  await createHttpPlanning({ transport: ctx.transport }).ratify(contract, planText);
-  // The program's directory, committed, as a planned repository has it: the
-  // orchestrator finds the program there and writes the report beside it.
-  const directory = join(ctx.fixture.repo, "docs", "programs", "three-strands");
-  await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, "contract.json"), `${JSON.stringify(contract, null, 2)}\n`);
-  await writeFile(join(directory, "plan.md"), planText);
-  await git(nodeGitRunner, ["add", "-A"], { cwd: ctx.fixture.repo });
-  await git(
-    nodeGitRunner,
-    ["-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "-qm", "plan"],
-    { cwd: ctx.fixture.repo },
+  const conversationText = "Owner: one file per module.\nPlanner: agreed.\n";
+  const planning = createHttpPlanning({ transport: ctx.transport });
+  const ratified = await planning.ratify(contract, planText, conversationText);
+  // The plan's home is the plane (P21): its draft carries the program's name,
+  // and no docs/programs directory is committed to the repository.
+  await planning.putVersion(
+    { projectId: contract.projectId, programId: contract.programId },
+    { contract: `${JSON.stringify(ratified, null, 2)}\n`, planText, conversationText },
+    null,
+    "three-strands",
   );
   return { ctx, contract, planText };
 };
@@ -229,7 +227,13 @@ const launch = async (ctx: SliceContext, contract: ProgramContract, planText: st
   const report = await gatherReport(ctx.stores, scope);
   const log = await git(
     nodeGitRunner,
-    ["log", "--format=%s", `${started.baseCommit}..${PROGRAM_BRANCH}`],
+    [
+      "log",
+      "--format=%s",
+      "--invert-grep",
+      "--grep=^Publish the plan",
+      `${started.baseCommit}..${PROGRAM_BRANCH}`,
+    ],
     { cwd: ctx.fixture.repo },
   );
   return { ctx, scope, answer, events, report, log, planText, started };
@@ -344,12 +348,32 @@ describe("nightshift run {id}, unattended (SC-P7-06)", () => {
     expect([...(d01?.produced?.commits ?? [])].sort()).toEqual(landedUnder(touched));
     expect(text).toContain("## Decision graph");
     expect(text).toContain("**Plan:** D-01: One file per module?");
-    // The orchestrator's run.finish wrote it: nothing else in this test writes one.
-    const written = await readFile(
-      join(ctx.fixture.repo, "docs", "programs", "three-strands", "report.md"),
-      "utf8",
+    // run.finish published it, with the plan, contract and conversation, as one
+    // commit on the program branch that touches only docs/programs/three-strands/.
+    const published = await git(
+      nodeGitRunner,
+      ["log", "-1", "--format=%H", "--grep=^Publish the plan", PROGRAM_BRANCH],
+      { cwd: ctx.fixture.repo },
     );
-    expect(written).toContain("3 of 3 strands succeeded");
+    const publishedFiles = await git(
+      nodeGitRunner,
+      ["show", "--name-only", "--format=", published.trim()],
+      { cwd: ctx.fixture.repo },
+    );
+    expect(publishedFiles.trim().split("\n").sort()).toEqual(
+      ["contract.json", "conversation.md", "plan.md", "report.md"].map(
+        (file) => `docs/programs/three-strands/${file}`,
+      ),
+    );
+    const head = (file: string) =>
+      git(nodeGitRunner, ["show", `${PROGRAM_BRANCH}:docs/programs/three-strands/${file}`], {
+        cwd: ctx.fixture.repo,
+      });
+    expect(await head("report.md")).toContain("3 of 3 strands succeeded");
+    expect(await head("plan.md")).toBe(planText);
+    expect(await head("conversation.md")).toContain("Planner: agreed.");
+    const stored = await ctx.stores.programContracts.get(scope.projectId, scope.programId);
+    expect(JSON.parse(await head("contract.json"))).toEqual(stored);
 
     // What a session orchestrating this run would have been told as it went:
     // every strand's work, in the plan's terms, from the record alone.

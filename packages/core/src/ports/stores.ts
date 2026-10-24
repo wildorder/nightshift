@@ -48,6 +48,8 @@ import type {
   OrgCredential,
   OrgCredentialView,
   OrgId,
+  PlanDraft,
+  PlanDraftVersion,
   ProgramContract,
   ProgramId,
   Project,
@@ -99,6 +101,11 @@ export interface ProjectStore {
 
 export interface ProgramContractStore {
   put(contract: ProgramContract): Promise<void>;
+  /**
+   * Stores the contract only when none is stored, throwing
+   * `ProgramContractExistsError` otherwise (P21: racing first ratifications).
+   */
+  create(contract: ProgramContract): Promise<void>;
   get(projectId: ProjectId, programId: ProgramId): Promise<ProgramContract | undefined>;
   /**
    * Replaces the stored contract with `change(stored)` as one atomic step, and
@@ -336,6 +343,62 @@ export interface GateHealthStore {
 }
 
 /**
+ * A program's plan draft (P21): immutable, numbered versions and the one small
+ * record that says where the series stands. Project scoped, keyed by program.
+ */
+export interface PlanDraftStore {
+  get(projectId: ProjectId, programId: ProgramId): Promise<PlanDraft | undefined>;
+  /** Every program's draft in one project, in ascending program id order. */
+  listByProject(projectId: ProjectId, page?: PageRequest): Promise<Page<PlanDraft>>;
+  getVersion(
+    projectId: ProjectId,
+    programId: ProgramId,
+    version: number,
+  ): Promise<PlanDraftVersion | undefined>;
+  /** A draft's versions in ascending version order. */
+  listVersions(
+    projectId: ProjectId,
+    programId: ProgramId,
+    page?: PageRequest,
+  ): Promise<Page<PlanDraftVersion>>;
+  /**
+   * Writes `version` and the draft `next(current)` as one atomic step, only if no
+   * version `version.version` exists and the stored draft's `latestVersion` is
+   * `version.version - 1` (no draft stored when it is 1). Otherwise throws
+   * `PlanDraftError` (`conflict`) and changes nothing: a stored version is never
+   * replaced, and of two concurrent appends of the same number exactly one lands.
+   *
+   * `next` receives the draft as stored inside the atomic step (undefined for the
+   * first version) and applies the plan-draft rules to it, so an act recorded
+   * since the caller's read is kept and a declined draft is refused (by `next`
+   * throwing). It is pure and may be called more than once. Its result must
+   * describe `version`: same project and program, `latestVersion` equal to
+   * `version.version`.
+   *
+   * A draft that carries a name reserves (projectId, name) for its program in the
+   * same atomic step as the version and draft writes. A name reserved by another
+   * program throws `PlanDraftError` (`name_taken`) and writes nothing, so of two
+   * programs of one project claiming the same name concurrently exactly one wins.
+   */
+  appendVersion(
+    version: PlanDraftVersion,
+    next: (current: PlanDraft | undefined) => PlanDraft,
+  ): Promise<void>;
+  /**
+   * Replaces the stored draft with `change(stored)` as one atomic step, exactly
+   * as {@link ProgramContractStore.update}: `undefined` with `change` never
+   * called when no draft is stored; `change` is pure and may be called more than
+   * once; returning `undefined` leaves the draft as it is. A change that throws
+   * (an act the rules refuse) changes nothing. It may not alter `latestVersion`.
+   */
+  update(
+    projectId: ProjectId,
+    programId: ProgramId,
+    change: (current: PlanDraft) => PlanDraft | undefined,
+  ): Promise<PlanDraft | undefined>;
+}
+
+/**
  * A run's feedback (D-04): one record per run, keyed by the run.
  */
 export interface RunFeedbackStore {
@@ -443,6 +506,8 @@ export interface ProjectStores {
   readonly installationClaims: InstallationClaimStore;
   // P15: the project's gate health.
   readonly gateHealth: GateHealthStore;
+  // P21: a program's plan draft and its versions.
+  readonly planDrafts: PlanDraftStore;
   // P20 (D-04): a run's human verdict.
   readonly feedback: RunFeedbackStore;
   // P20 (D-05): explicit groupings of runs that delivered one outcome.

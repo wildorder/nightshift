@@ -30,6 +30,7 @@ import {
 } from "../slice/fixture-repo.js";
 import { recordHealthyGates } from "./gate-health.js";
 import { type Operator, signIn } from "./operator.js";
+import { ratifyFromFiles } from "./plan-scratch.js";
 
 const PROGRAM = "p16-reference";
 const PLAN = [
@@ -194,7 +195,7 @@ beforeEach(async () => {
   git("push", "-q", "-u", "origin", PROGRAM_BRANCH);
   await recordHealthyGates(op, fixture.repo, PROGRAM);
   expect(
-    await cli(op.environment, "plan", "ratify", PROGRAM),
+    await ratifyFromFiles(cli.bind(null, op.environment), fixture.repo, PROGRAM),
     [...op.out, ...op.err].join("\n"),
   ).toBe(0);
   // The human has done the first strand's, and one of the later strand's; the
