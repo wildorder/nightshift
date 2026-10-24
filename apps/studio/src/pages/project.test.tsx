@@ -77,19 +77,28 @@ describe("the project page", () => {
     }, `/projects/${PROJECT_ID}`);
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "keyart" })).toBeTruthy());
-    const programs = screen.getAllByRole("list").find((l) => l.textContent?.includes("Program A"));
-    expect(programs?.textContent).toContain("Program B (planned)");
-    expect(screen.getByText("unplanned contract")).toBeTruthy();
-    expect(screen.getByText("ratified")).toBeTruthy();
-    expect(screen.getByText(/1 pending prerequisite/)).toBeTruthy();
-    expect(screen.getByText("gh secret set KEY")).toBeTruthy();
-
-    const rows = within(screen.getByRole("table")).getAllByRole("row").slice(1);
+    const rows = within(screen.getByRole("list", { name: "Programs" })).getAllByTestId(
+      "program-row",
+    );
     expect(rows).toHaveLength(2);
+    // The most recently active first; each row slim, its objective beneath.
+    expect(rows[0]?.textContent).toContain("Program B (planned)");
     expect(rows[0]?.textContent).toContain("failed");
-    expect(rows[0]?.textContent).toContain("a strand was parked");
+    expect(rows[0]?.textContent).toContain("1 prerequisite pending");
+    expect(rows[0]?.textContent).toMatch(/last run Sep 27, .*ago/);
+    expect(rows[0]?.textContent).not.toContain("2026-09-27T");
+    expect(rows[1]?.textContent).toContain("Program A");
     expect(rows[1]?.textContent).toContain("succeeded");
-    expect(rows[1]?.textContent).toContain("10.0 min");
+    // A program's runs are under it, shown when it is opened.
+    expect(screen.queryByRole("list", { name: "Runs" })).toBeNull();
+    await userEvent.click(within(rows[0] as HTMLElement).getByRole("button", { name: /1 run/ }));
+    expect(
+      within(rows[0] as HTMLElement).getByRole("list", { name: "Runs" }).textContent,
+    ).toContain("a strand was parked");
+    await userEvent.click(within(rows[1] as HTMLElement).getByRole("button", { name: /1 run/ }));
+    expect(
+      within(rows[1] as HTMLElement).getByRole("list", { name: "Runs" }).textContent,
+    ).toContain("took 10.0 min");
 
     // Editing the name writes the project back.
     await userEvent.click(screen.getByRole("button", { name: "Edit" }));
@@ -149,22 +158,76 @@ describe("the project page", () => {
       );
     }, `/projects/${PROJECT_ID}`);
 
-    const plans = await screen.findByRole("list", { name: "Plans" });
-    const link = within(plans).getByRole("link", { name: draftOnly });
-    expect(link.getAttribute("href")).toBe(`/projects/${PROJECT_ID}/programs/${draftOnly}/plan`);
-    expect(plans.textContent).toContain("awaiting_owner");
-    expect(plans.textContent).toContain("latest version 1");
-    expect(screen.getByRole("link", { name: "Plan" }).getAttribute("href")).toBe(
+    const programs = await screen.findByRole("list", { name: "Programs" });
+    const draft = within(programs).getByRole("link", { name: draftOnly });
+    expect(draft.getAttribute("href")).toBe(`/projects/${PROJECT_ID}/programs/${draftOnly}/plan`);
+    expect(programs.textContent).toContain("awaiting owner");
+    expect(within(programs).getByRole("link", { name: contractProgram }).getAttribute("href")).toBe(
       `/projects/${PROJECT_ID}/programs/${contractProgram}/plan`,
     );
   });
 
-  it("omits the Plans section when the project has no drafts", async () => {
+  it("names a program by the name it was planned under, and puts the one being built first", async () => {
+    let running = "";
+    await mountStudio(async (stores, f, orgId) => {
+      await stores.projects.put(makeProject(f, { orgId, projectId: PROJECT_ID, name: "keyart" }));
+      const old = makeProgramContract(f, { projectId: PROJECT_ID, objective: "The old one" });
+      const building = makeProgramContract(f, {
+        projectId: PROJECT_ID,
+        programId: f.ids.next("prog"),
+        objective: "The one being built",
+      });
+      running = building.programId;
+      for (const program of [old, building]) await stores.programContracts.put(program);
+      const version = makePlanDraftVersion(f, {
+        projectId: PROJECT_ID,
+        programId: building.programId,
+      });
+      await stores.planDrafts.appendVersion(version, () =>
+        makePlanDraft(f, {
+          projectId: PROJECT_ID,
+          programId: building.programId,
+          state: "ratified",
+          name: "p22-the-build",
+        }),
+      );
+      await stores.runs.put(
+        makeRun(f, {
+          projectId: PROJECT_ID,
+          programId: old.programId,
+          runId: f.ids.next("run"),
+          status: "succeeded",
+          startedAt: "2026-10-23T09:00:00.000Z",
+          endedAt: "2026-10-23T10:00:00.000Z",
+        }),
+      );
+      await stores.runs.put(
+        makeRun(f, {
+          projectId: PROJECT_ID,
+          programId: building.programId,
+          runId: f.ids.next("run"),
+          status: "running",
+          startedAt: "2026-10-20T09:00:00.000Z",
+        }),
+      );
+    }, `/projects/${PROJECT_ID}`);
+    const rows = within(await screen.findByRole("list", { name: "Programs" })).getAllByTestId(
+      "program-row",
+    );
+    expect(rows[0]?.textContent).toContain("p22-the-build");
+    expect(rows[0]?.textContent).toContain("running");
+    expect(rows[0]?.textContent).not.toContain(running);
+    expect(rows[1]?.textContent).toContain("The old one");
+  });
+
+  it("has no separate plans or runs sections: both are programs' rows", async () => {
     await mountStudio(async (stores, f, orgId) => {
       await stores.projects.put(makeProject(f, { orgId, projectId: PROJECT_ID, name: "keyart" }));
     }, `/projects/${PROJECT_ID}`);
     await screen.findByRole("heading", { name: "keyart" });
     expect(screen.queryByRole("heading", { name: "Plans" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Runs" })).toBeNull();
+    expect(screen.getByText("No programs yet.")).toBeTruthy();
   });
 
   it("keeps the page when the draft read fails", async () => {
