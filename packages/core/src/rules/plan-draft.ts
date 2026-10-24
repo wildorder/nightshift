@@ -72,6 +72,12 @@ export const reconcilePlanDraftWrite = (input: PlanDraftWriteInput): PlanDraftWr
       `the write is based on ${basedOn === null ? "no version" : `version ${basedOn}`}, but the latest is ${stored.latestVersion}`,
     );
   }
+  if (name !== undefined && stored.name !== undefined && name !== stored.name) {
+    throw new PlanDraftError(
+      "name_mismatch",
+      `the draft is named \`${stored.name}\`; a name is fixed once set, so \`${name}\` is refused`,
+    );
+  }
   const version = stored.latestVersion + 1;
   return {
     version,

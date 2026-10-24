@@ -232,6 +232,7 @@ export type PlanDraftReason =
   | "not_latest_version"
   | "plan_hash_required"
   | "name_taken"
+  | "name_mismatch"
   | "conflict";
 
 /**

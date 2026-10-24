@@ -172,6 +172,12 @@ export const keys = {
     SK: `PLANDRAFT#${programId}`,
   }),
 
+  /** The reservation of a plan draft's name within its project (P21). */
+  planDraftName: (projectId: ProjectId, name: string): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `PLANDRAFTNAME#${name}`,
+  }),
+
   planDraftPartition: (projectId: ProjectId) => ({
     PK: `PROJ#${projectId}`,
     prefix: "PLANDRAFT#",

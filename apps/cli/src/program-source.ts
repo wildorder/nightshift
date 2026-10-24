@@ -99,16 +99,22 @@ export const draftNamed = async (
   projectId: ProgramScope["projectId"],
   name: string,
 ): Promise<PlanDraft | undefined> => {
+  const found: PlanDraft[] = [];
   let cursor: string | undefined;
   do {
     const page = await session.stores.planDrafts.listByProject(projectId, {
       ...(cursor === undefined ? {} : { cursor }),
     });
-    const found = page.items.find((draft) => draft.name === name);
-    if (found !== undefined) return found;
+    found.push(...page.items.filter((draft) => draft.name === name));
     cursor = page.cursor;
   } while (cursor !== undefined);
-  return undefined;
+  if (found.length > 1) {
+    throw new UsageError(
+      `more than one program in the project is named \`${name}\`: ${found.map((draft) => draft.programId).join(", ")}`,
+      "Rename or drop all but one of them on the plane.",
+    );
+  }
+  return found[0];
 };
 
 /**

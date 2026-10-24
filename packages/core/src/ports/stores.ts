@@ -374,6 +374,11 @@ export interface PlanDraftStore {
    * throwing). It is pure and may be called more than once. Its result must
    * describe `version`: same project and program, `latestVersion` equal to
    * `version.version`.
+   *
+   * A draft that carries a name reserves (projectId, name) for its program in the
+   * same atomic step as the version and draft writes. A name reserved by another
+   * program throws `PlanDraftError` (`name_taken`) and writes nothing, so of two
+   * programs of one project claiming the same name concurrently exactly one wins.
    */
   appendVersion(
     version: PlanDraftVersion,

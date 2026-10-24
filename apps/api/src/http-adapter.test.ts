@@ -1241,6 +1241,41 @@ describe("planDrafts (P21)", () => {
     expect(stale).toBeInstanceOf(PlanDraftError);
   });
 
+  it("answers 409 to a rename and to a name another program holds", async () => {
+    const { f, transport, http } = world;
+    await http.projects.put(aProject(f));
+    const planning = createHttpPlanning({ transport });
+    await planning.putVersion(f.scope, { contract: contractOf(f), planText: PLAN }, null, "alpha");
+
+    const renamed = await rejectionOf(
+      planning.putVersion(
+        f.scope,
+        { contract: contractOf(f), planText: `${PLAN}\n2\n` },
+        1,
+        "beta",
+      ),
+    );
+    expect(renamed).toBeInstanceOf(PlanDraftError);
+    expect((renamed as PlanDraftError).message).toMatch(/name_mismatch|fixed once set/);
+    // Omitting the name keeps it.
+    await planning.putVersion(f.scope, { contract: contractOf(f), planText: `${PLAN}\n2\n` }, 1);
+    expect((await planning.getDraft(f.scope))?.name).toBe("alpha");
+
+    const g = createFixtures();
+    const other = { projectId: f.scope.projectId, programId: g.scope.programId };
+    const taken = await rejectionOf(
+      planning.putVersion(
+        other,
+        { contract: { ...contractOf(f), programId: other.programId }, planText: PLAN },
+        null,
+        "alpha",
+      ),
+    );
+    expect(taken).toBeInstanceOf(PlanDraftError);
+    expect((taken as PlanDraftError).message).toMatch(/name_taken|is held by/);
+    expect(await planning.getDraft(other)).toBeUndefined();
+  });
+
   it("drives the owner's acts and ratifies the latest version by its hash", async () => {
     const { f, transport, http } = world;
     await http.projects.put(aProject(f));

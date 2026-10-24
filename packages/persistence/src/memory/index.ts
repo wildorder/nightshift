@@ -217,6 +217,8 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   // P21: a program's plan draft, and its immutable versions.
   const planDrafts = table<PlanDraft>("planDrafts");
   const planDraftVersions = table<PlanDraftVersion>("planDraftVersions");
+  // P21: (project, name) -> the program that holds the name.
+  const planDraftNames = table<{ programId: ProgramId }>("planDraftNames");
   // P20: a run's verdict, and the project's completion histories.
   const feedback = table<RunFeedback>("feedback");
   const completionHistories = table<CompletionHistory>("completionHistories");
@@ -252,6 +254,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     gateHealths,
     planDrafts,
     planDraftVersions,
+    planDraftNames,
     feedback,
     completionHistories,
     installationClaims,
@@ -660,6 +663,17 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
           parsedDraft.latestVersion !== parsedVersion.version
         ) {
           throw new PlanDraftError("conflict", "the draft does not describe the version appended");
+        }
+        if (parsedDraft.name !== undefined) {
+          const nameKey = `${projectPrefix(parsedVersion)}${parsedDraft.name}`;
+          const holder = planDraftNames.get(nameKey);
+          if (holder !== undefined && holder.programId !== parsedVersion.programId) {
+            throw new PlanDraftError(
+              "name_taken",
+              `the name \`${parsedDraft.name}\` is held by program ${holder.programId}`,
+            );
+          }
+          planDraftNames.set(nameKey, { programId: parsedVersion.programId });
         }
         planDraftVersions.set(key, parsedVersion);
         planDrafts.set(draftKey, parsedDraft);

@@ -604,6 +604,32 @@ export const describePortConformance = <S extends ProjectStores>(
         expect(await stores.planDrafts.get(projectId, programId)).toEqual(draftAt(1));
       });
 
+      it("reserves a name for one program: of two concurrent first claims exactly one lands", async () => {
+        const other = b.scope.programId;
+        const claim = (programId: ProgramId) =>
+          stores.planDrafts.appendVersion(makePlanDraftVersion(a, { programId, version: 1 }), () =>
+            makePlanDraft(a, { programId, name: "shared-name", latestVersion: 1 }),
+          );
+        const results = await Promise.allSettled([claim(programId), claim(other)]);
+        expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+        const lost = results.find((r) => r.status === "rejected");
+        expect(lost?.status === "rejected" && lost.reason).toBeInstanceOf(PlanDraftError);
+        expect(lost?.status === "rejected" && (lost.reason as PlanDraftError).reason).toBe(
+          "name_taken",
+        );
+        const winner = results[0]?.status === "fulfilled" ? programId : other;
+        const loser = winner === programId ? other : programId;
+        expect(await stores.planDrafts.get(projectId, loser)).toBeUndefined();
+        expect(await stores.planDrafts.getVersion(projectId, loser, 1)).toBeUndefined();
+        expect((await stores.planDrafts.get(projectId, winner))?.name).toBe("shared-name");
+        // The holder may append again under its own name.
+        await stores.planDrafts.appendVersion(
+          makePlanDraftVersion(a, { programId: winner, version: 2 }),
+          (current) => ({ ...(current as PlanDraft), latestVersion: 2 }),
+        );
+        expect((await stores.planDrafts.get(projectId, winner))?.latestVersion).toBe(2);
+      });
+
       it("keeps one project's drafts from another's", async () => {
         await append(1);
         await stores.planDrafts.appendVersion(makePlanDraftVersion(b), () => makePlanDraft(b));

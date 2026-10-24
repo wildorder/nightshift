@@ -34,6 +34,17 @@ describe("reconcilePlanDraftWrite", () => {
     expect(draft).toMatchObject({ state: "draft", latestVersion: 1, acts: [], createdAt: T1 });
   });
 
+  it("refuses a different name once the draft has one, and keeps it when none is given", () => {
+    const stored = draftAt({ name: "alpha" });
+    expect(
+      reason(() => reconcilePlanDraftWrite({ stored, scope, basedOn: 2, name: "beta", at: T2 })),
+    ).toBe("name_mismatch");
+    const same = reconcilePlanDraftWrite({ stored, scope, basedOn: 2, name: "alpha", at: T2 });
+    expect(same.draft.name).toBe("alpha");
+    const kept = reconcilePlanDraftWrite({ stored, scope, basedOn: 2, at: T2 });
+    expect(kept.draft.name).toBe("alpha");
+  });
+
   it("refuses a write based on a version when there is no draft", () => {
     expect(reason(() => reconcilePlanDraftWrite({ scope, basedOn: 1, at: T1 }))).toBe("no_draft");
   });

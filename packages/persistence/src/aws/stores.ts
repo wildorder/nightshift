@@ -347,9 +347,28 @@ export const createAwsStores = ({
             );
           }
           const read = output.Item?.[REVISION_ATTRIBUTE];
+          const nameItems =
+            parsedDraft.name === undefined
+              ? []
+              : [
+                  {
+                    Put: {
+                      TableName: tableName,
+                      Item: toItem(
+                        "PlanDraftName",
+                        keys.planDraftName(parsedVersion.projectId, parsedDraft.name),
+                        { programId: parsedVersion.programId },
+                      ),
+                      ConditionExpression: "attribute_not_exists(#pk) OR #program = :program",
+                      ExpressionAttributeNames: { "#pk": "PK", "#program": "programId" },
+                      ExpressionAttributeValues: { ":program": parsedVersion.programId },
+                    },
+                  },
+                ];
           try {
             await table.transactWrite({
               TransactItems: [
+                ...nameItems,
                 {
                   Put: {
                     TableName: tableName,
@@ -400,8 +419,20 @@ export const createAwsStores = ({
           } catch (error) {
             const failures = conditionFailures(error);
             if (failures === undefined || !failures.some(Boolean)) throw error;
+            // Another program holds the name: nothing was written.
+            if (nameItems.length > 0 && failures[0] === true) {
+              const holder = await getRecord(
+                { parse: (value: unknown) => value as { programId: string } },
+                keys.planDraftName(parsedVersion.projectId, parsedDraft.name as string),
+              );
+              throw new PlanDraftError(
+                "name_taken",
+                `the name \`${parsedDraft.name}\` is held by program ${holder?.programId ?? "another program"}`,
+              );
+            }
+            const at = nameItems.length;
             // The version already exists: it is immutable, so this append lost.
-            if (failures[0] === true) {
+            if (failures[at] === true) {
               throw new PlanDraftError(
                 "conflict",
                 `version ${parsedVersion.version} cannot be appended: it exists`,
