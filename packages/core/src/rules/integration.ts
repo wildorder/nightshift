@@ -76,7 +76,12 @@ export const mayEndProgramNode = (
 ): ProgramNodeEndingCheck => {
   const node = getNode(tree, nodeId);
   if (node.kind === "job") return { allowed: false, reason: "is_a_job", unsettled: [] };
-  if (node.status !== "running") return { allowed: false, reason: "not_running", unsettled: [] };
+  // A run's root its interrupted ending left `cancelled` may end again when a
+  // resume settles the run (A-63), held to the same rule about what is under it.
+  const settling = node.kind === "program" && node.status === "cancelled";
+  if (node.status !== "running" && !settling) {
+    return { allowed: false, reason: "not_running", unsettled: [] };
+  }
   const unsettled = descendantsOf(tree, nodeId).filter(
     (descendant) => !isDoneForNow(getNode(tree, descendant).status),
   );

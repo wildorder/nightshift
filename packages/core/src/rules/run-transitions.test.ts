@@ -34,10 +34,17 @@ describe("run transition table", () => {
     }
   });
 
-  it("leaves terminal statuses with no outgoing transition", () => {
+  it("leaves terminal statuses with no outgoing transition but an interrupted run's settling (A-63)", () => {
     for (const status of RUN_TERMINAL_STATUSES) {
-      expect(Object.keys(RUN_TRANSITIONS[status])).toEqual([]);
+      expect(Object.keys(RUN_TRANSITIONS[status])).toEqual(
+        status === "interrupted" ? ["settle"] : [],
+      );
       expect(isRunTerminal(status)).toBe(true);
+    }
+    expect(nextRunStatus("interrupted", "settle")).toBe("succeeded");
+    for (const status of RUN_STATUSES) {
+      if (status === "interrupted") continue;
+      expect(canTransitionRun(status, "settle"), status).toBe(false);
     }
   });
 

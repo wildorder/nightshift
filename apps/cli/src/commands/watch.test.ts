@@ -583,3 +583,20 @@ describe("the machine is ready when its root orchestrates (2026-10-17)", () => {
     expect(endingOf(running(at(60, "workspace")))).toBeUndefined();
   });
 });
+
+describe("a dispatch stopped because every route is at its limit (2026-10-24)", () => {
+  it("is not a failure: the run is kept, to be resumed", () => {
+    const f = createFixtures();
+    expect(
+      endingOf(
+        makeDispatch(f, {
+          status: "failed",
+          failure: {
+            code: "routes_limited",
+            message: "every route the root may run on is at its limit",
+          },
+        }),
+      ),
+    ).toEqual({ kind: "limited" });
+  });
+});

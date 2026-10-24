@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import { createRunnerPlane, createRuntime } from "../compose.js";
-import { describeHeadlessEnding, runHeadless } from "../headless.js";
+import { describeHeadlessEnding, describeRoutesLimited, runHeadless } from "../headless.js";
 import { createReclaim } from "../run-as.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
@@ -131,6 +131,14 @@ runRunner({
           `root ${agentId}'s transcript could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
+    }
+    // Every route at its limit (2026-10-24): not a failed start to count and
+    // restart, and nothing to do with setup. The dispatch ends saying so, its
+    // run kept as it stands, for `remote resume` once a limit resets.
+    if (result.routesLimited !== undefined) {
+      const message = describeRoutesLimited(result.routesLimited);
+      say(message);
+      return { failure: { code: "routes_limited", message: message.slice(0, 500) } };
     }
     if (
       result.exit.kind !== "completed" ||

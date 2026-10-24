@@ -1,6 +1,6 @@
 import { type ProgramContract, RunIdSchema, type Strand } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
-import { createFixtures, makeProgramContract } from "../testing/index.js";
+import { createFixtures, makeNode, makeProgramContract, makeRootNode } from "../testing/index.js";
 import { emptyConversation, keepMessages } from "./conversation.js";
 import {
   blockedBy,
@@ -14,6 +14,7 @@ import {
   mayStartStrand,
   type PlanReason,
   planHash,
+  runSettles,
   samePlanContent,
   scopesOverlap,
   splitPlanSections,
@@ -555,5 +556,62 @@ describe("the gate (D-P7-02)", () => {
         }),
       ),
     ).toBe(true);
+  });
+});
+
+describe("runSettles (A-63)", () => {
+  const f = createFixtures();
+  const program = makeProgramContract(f, {
+    strands: [strand("S-01", ["src/a/**"]), strand("S-02", ["src/b/**"])],
+  });
+  const root = makeRootNode(f, { status: "cancelled" });
+  const strandNode = (strandId: string, status: "integrated" | "failed") => {
+    const jobContractId = f.ids.next("job");
+    return {
+      node: makeNode(f, root.executionNodeId, { kind: "sub-program", status, jobContractId }),
+      entry: [jobContractId as string, strandId] as const,
+    };
+  };
+
+  it("settles a run every one of whose strands succeeded, here or carried, with nothing still to happen", () => {
+    const a = strandNode("S-01", "integrated");
+    expect(
+      runSettles({
+        program,
+        nodes: [root, a.node],
+        strandOfJob: new Map([a.entry]),
+        carried: [{ strandId: "S-02" }],
+      }),
+    ).toEqual({ settles: true });
+  });
+
+  it("does not settle a run with a strand that did not succeed, was never delegated, or work still deferred", () => {
+    const a = strandNode("S-01", "integrated");
+    const b = strandNode("S-02", "failed");
+    expect(
+      runSettles({
+        program,
+        nodes: [root, a.node, b.node],
+        strandOfJob: new Map([a.entry, b.entry]),
+      }),
+    ).toMatchObject({ settles: false, why: expect.stringContaining("S-02 (failed)") });
+    expect(
+      runSettles({ program, nodes: [root, a.node], strandOfJob: new Map([a.entry]) }),
+    ).toMatchObject({ settles: false, why: expect.stringContaining("S-02 (never delegated)") });
+    const deferred = makeNode(f, a.node.executionNodeId, { status: "deferred" });
+    expect(
+      runSettles({
+        program,
+        nodes: [root, a.node, deferred],
+        strandOfJob: new Map([a.entry]),
+        carried: [{ strandId: "S-02" }],
+      }),
+    ).toMatchObject({ settles: false });
+  });
+
+  it("never settles an unplanned run", () => {
+    expect(
+      runSettles({ program: makeProgramContract(f), nodes: [root], strandOfJob: new Map() }),
+    ).toMatchObject({ settles: false, why: "the run follows no plan" });
   });
 });

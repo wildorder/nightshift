@@ -31,6 +31,7 @@ import { DEFAULT_STEP_CLEANUP_SECONDS, DEFAULT_STEP_TIMEOUT_SECONDS } from "@nig
 import { humanSaid, type KeptConversation } from "./conversation.js";
 import { buildTree, descendantsOf } from "./execution-tree.js";
 import { globContains, singleSegmentMatches, uncoveredGlobs } from "./globs.js";
+import { isSettled } from "./integration.js";
 
 // --- the planned part of a contract, absent meaning empty ---------------------
 
@@ -327,6 +328,39 @@ export const strandAttempts = (
     );
     return [{ strandId, status: node.status, createdAt: node.createdAt, hasDeferredWork }];
   });
+};
+
+/**
+ * Whether an `interrupted` run's records say it is finished, so a resume may
+ * settle it as `succeeded` (`settle`): every strand of its plan succeeded, here
+ * or carried from an earlier run, and nothing under its root is still to happen
+ * (nothing deferred, running or waiting). An unplanned run never settles here:
+ * only a plan says what finished means. `why` names what is still open.
+ */
+export const runSettles = (input: {
+  readonly program: ProgramContract;
+  readonly nodes: readonly ExecutionNode[];
+  readonly strandOfJob: ReadonlyMap<string, string>;
+  readonly carried?: readonly { readonly strandId: string }[];
+}): { readonly settles: true } | { readonly settles: false; readonly why: string } => {
+  const strands = strandsOf(input.program);
+  if (strands.length === 0) return { settles: false, why: "the run follows no plan" };
+  const outcomes = strandOutcomes(strandAttempts(input.nodes, input.strandOfJob), input.carried);
+  const open = strands.filter((strand) => outcomes[strand.id] !== "succeeded");
+  if (open.length > 0) {
+    return {
+      settles: false,
+      why: `these strands have not succeeded: ${open.map((strand) => `${strand.id} (${outcomes[strand.id] ?? "never delegated"})`).join(", ")}`,
+    };
+  }
+  const pending = input.nodes.filter((node) => node.kind !== "program" && !isSettled(node.status));
+  if (pending.length > 0) {
+    return {
+      settles: false,
+      why: `${pending.length} node(s) are still ${[...new Set(pending.map((node) => node.status))].join(", ")}`,
+    };
+  }
+  return { settles: true };
 };
 
 const requireStrand = (contract: ProgramContract, id: string): Strand => {

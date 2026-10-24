@@ -367,6 +367,12 @@ export const DispatchFailureCodeSchema = z.enum([
   "input_refused",
   /** The runner could not prepare the workspace: mount, clone, checkout or setup (P16 SC-07). */
   "setup_failed",
+  /**
+   * Every route the root orchestrator may run on is at its limit (2026-10-24).
+   * Nothing failed: the run is kept as it stands, and `remote resume` takes it
+   * up once a limit resets. The message names each route and when it is back.
+   */
+  "routes_limited",
   /** A gate green in the reference audit is red on the machine (P16 D-07). */
   "environment_fault",
 ]);
@@ -380,6 +386,7 @@ export type DispatchFailureCode = z.infer<typeof DispatchFailureCodeSchema>;
 export const RunnerFailureCodeSchema = DispatchFailureCodeSchema.extract([
   "setup_failed",
   "environment_fault",
+  "routes_limited",
 ]);
 export type RunnerFailureCode = z.infer<typeof RunnerFailureCodeSchema>;
 

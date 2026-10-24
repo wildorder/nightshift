@@ -218,7 +218,19 @@ export const transition = (
  * (SC-P1-15), and this one rule, beside it, is the only way in.
  */
 export const maySucceed = (node: Pick<ExecutionNode, "kind" | "status">): boolean =>
-  node.kind !== "job" && node.status === "running";
+  (node.kind !== "job" && node.status === "running") ||
+  // A run's root left `cancelled` by an interrupted ending, settled by resume.
+  (node.kind === "program" && node.status === "cancelled");
+
+/**
+ * The program node of a run that settled after `nightshift resume` (`settle`):
+ * `succeeded`, from the `cancelled` its interrupted ending left. Any other
+ * node is returned as it is.
+ */
+export const settleRunNode = (programNode: ExecutionNode, at: IsoTimestamp): ExecutionNode =>
+  programNode.kind === "program" && programNode.status === "cancelled"
+    ? { ...programNode, status: "succeeded", updatedAt: at }
+    : programNode;
 
 /**
  * The program node's ending, from its run's (P5, D-P5-06).

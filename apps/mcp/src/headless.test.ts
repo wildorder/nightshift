@@ -21,10 +21,12 @@ import { createInMemoryStores } from "@nightshift/persistence/memory";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Runtime } from "./compose.js";
 import {
+  describeRoutesLimited,
   type HeadlessInput,
   interruptOrphans,
   launchRoot,
   type RootLaunch,
+  type RoutesLimited,
   recoveryNote,
   remoteEnvironmentNote,
   replacingLimitedRoots,
@@ -222,6 +224,105 @@ describe("a root stopped by a usage limit (D-P8-06, as amended 2026-10-12)", () 
     expect(launches).toHaveLength(2);
     expect(launches[1]?.[1]).toEqual([{ harness: "h", model: "fable" }]);
     expect(result.exit.kind).toBe("completed");
+  });
+
+  it("ends with every route's limit, its run kept, when none is left, instead of throwing (2026-10-24)", async () => {
+    let launched = 0;
+    const result = await replacingLimitedRoots(
+      clock,
+      { scope, repoPath: "/repo" },
+      async (_input, unavailable) => {
+        launched += 1;
+        // Routing refuses once both routes are out, as `firstEligible` does.
+        if (unavailable.length >= 2) {
+          throw Object.assign(new Error("nothing on the orchestrator's list can run now"), {
+            name: "RoutingRefusedError",
+            code: "no_eligible_route",
+          });
+        }
+        return {
+          exit: limited,
+          run: run("running"),
+          agentId: `agent_${launched}` as never,
+          transcript: `t${launched}`,
+          route: route(launched === 1 ? "opus" : "astra"),
+          measurementSummaryId: `meas_${launched}`,
+        };
+      },
+      { sleep: async () => expect.fail("a limit five hours off is not waited out") },
+    );
+    expect(launched).toBe(3);
+    expect(result.run.status).toBe("running");
+    expect(result.transcripts.map((t) => t.path)).toEqual(["t1", "t2"]);
+    expect(result.routesLimited).toEqual({
+      routes: [
+        {
+          harness: "h",
+          model: "opus",
+          reason: limited.unavailable,
+          until: limited.availableAgainAt,
+        },
+        {
+          harness: "h",
+          model: "astra",
+          reason: limited.unavailable,
+          until: limited.availableAgainAt,
+        },
+      ],
+      earliestReturn: limited.availableAgainAt,
+    });
+    const said = describeRoutesLimited(result.routesLimited as RoutesLimited);
+    expect(said).toContain("opus (until 2026-10-12T15:00:00.000Z");
+    expect(said).toContain(
+      "resume it after 2026-10-12T15:00:00.000Z with `nightshift remote resume <program>`",
+    );
+  });
+
+  it("waits out a limit that resets within minutes, then goes on (2026-10-24)", async () => {
+    let now = Date.parse("2026-10-12T10:00:00.000Z");
+    const soon = { ...limited, availableAgainAt: "2026-10-12T10:05:00.000Z" };
+    const waited: number[] = [];
+    let launched = 0;
+    const result = await replacingLimitedRoots(
+      { now: () => now },
+      { scope, repoPath: "/repo" },
+      async (_input, unavailable) => {
+        launched += 1;
+        if (launched === 1) {
+          return {
+            exit: soon,
+            run: run("running"),
+            agentId: "agent_1" as never,
+            transcript: "t1",
+            route: route("opus"),
+            measurementSummaryId: "meas_1",
+          };
+        }
+        if (unavailable.length > 0) {
+          throw Object.assign(new Error("nothing can run now"), {
+            name: "RoutingRefusedError",
+            code: "no_eligible_route",
+          });
+        }
+        return {
+          exit: { kind: "completed" },
+          run: run("succeeded"),
+          agentId: "agent_2" as never,
+          transcript: "t2",
+          route: route("opus"),
+          measurementSummaryId: "meas_2",
+        };
+      },
+      {
+        sleep: async (ms) => {
+          waited.push(ms);
+          now += ms;
+        },
+      },
+    );
+    expect(waited).toEqual([5 * 60_000]);
+    expect(result.exit.kind).toBe("completed");
+    expect(result.routesLimited).toBeUndefined();
   });
 
   it("leaves every other ending to the run: a failure, or a run no longer running", async () => {

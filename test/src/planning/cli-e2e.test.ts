@@ -287,6 +287,20 @@ describe("a planned program, from a plan on disk to a landed program, through th
     expect(publishedReport).toContain("3 of 3 strands succeeded; 0 deferred; 0 parked.");
     expect(publishedReport).toContain("Nothing was deferred.");
     expect(publishedReport).not.toContain("NOT met");
+    // Resumed to its end, the run ends true (A-63): succeeded, its root with it.
+    expect(op.out.join("\n")).toContain(`run ${runId} is succeeded`);
+    expect(publishedReport).toContain("**succeeded**");
+    const settledRun = await op.stores.runs.get({ ...ratifiedIds, runId } as never, runId as never);
+    expect(settledRun?.status).toBe("succeeded");
+    expect(settledRun?.outcomeReason).toBeUndefined();
+    expect(
+      (
+        await op.stores.executionNodes.get(
+          { ...ratifiedIds, runId } as never,
+          settledRun?.rootNodeId as never,
+        )
+      )?.status,
+    ).toBe("succeeded");
     const publications = git(
       "log",
       "--format=%H",
@@ -372,6 +386,11 @@ describe("a remote run whose final documents never left its machine (P21, F-01)"
       expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
     expect(changed).toContain(`docs/programs/${PROGRAM}/report.md`);
     expect(git("show", `${atGitHub}:docs/programs/${PROGRAM}/report.md`)).toContain(runId);
+    // Its work is all at GitHub now, so the run interrupted for it settles (A-63).
+    expect(git("show", `${atGitHub}:docs/programs/${PROGRAM}/report.md`)).toContain(
+      "**succeeded**",
+    );
+    expect((await op.stores.runs.get(scope, runId as never))?.status).toBe("succeeded");
 
     // Again, with GitHub holding everything: nothing is committed or pushed.
     expect(await cli("resume", PROGRAM)).toBe(0);

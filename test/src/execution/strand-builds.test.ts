@@ -102,6 +102,8 @@ interface Built {
   readonly close: () => Promise<unknown>;
   /** How many times an examiner ran on the strand. */
   readonly examinerRuns: () => number;
+  /** The strand delegated again, as it settled, when `redelegate` asked for it. */
+  readonly redelegated?: ExecutionNode;
 }
 
 /**
@@ -117,6 +119,10 @@ const buildStrand = async (options: {
   readonly review?: string;
   /** The orchestrator's fix rounds hand the strand back without changing it. */
   readonly unchangedFixes?: boolean;
+  /** The plan's strand this is; absent, an unplanned sub-program. */
+  readonly strandId?: string;
+  /** Once it settles, the same strand is delegated again on a node of its own. */
+  readonly redelegate?: boolean;
 }): Promise<Built> => {
   let world: World | undefined;
   const starts: HarnessStartInput[] = [];
@@ -362,38 +368,69 @@ const buildStrand = async (options: {
       moves.push(move);
     },
   };
+  // A planned run is the same run with strands on its contract (engine.test.ts).
+  const session =
+    options.strandId === undefined
+      ? w.session
+      : {
+          ...w.session,
+          program: {
+            ...w.session.program,
+            status: "planning" as const,
+            strands: [
+              {
+                id: options.strandId,
+                name: "The a and b modules",
+                scope: { summary: "the modules", includes: ["src/**"], excludes: [] },
+                acceptance: ["node --test passes"],
+                successCriteria: [],
+                dependsOn: [],
+                prerequisites: [],
+              },
+            ],
+          },
+        };
   const engine = createEngine({
     environment,
-    session: w.session,
+    session,
     mcp,
     route: () => ROUTE,
     discoveryIntervalMs: 50,
   });
   const risk: RiskLevel = options.examined === undefined ? "low" : "medium";
-  const strand = await engine.submit({
-    job: JobContractSchema.parse({
-      schemaVersion: 1,
-      ...w.scope,
-      jobContractId: w.ids.next("job"),
-      objective: "The a and b modules.",
-      acceptance: ["node --test passes"],
-      dependencies: [],
-      risk,
-      ambiguity: "low",
-      kind: "orchestrate",
-      createdAt: nowIso(w.environment.clock),
-    }),
-    depth: 1,
-    parentNodeId: w.session.rootNodeId,
-    route: ROUTE,
-    kind: "sub-program",
-  });
-  const strandNodeId = strand.nodeId as ExecutionNodeId;
-  const final = await until("the strand to settle", async () => {
-    const node = await w.stores.executionNodes.get(w.scope, strandNodeId);
-    return node !== undefined && isSettled(node.status) && engine.idle() ? node : undefined;
-  });
+  const delegateStrand = async () => {
+    const submitted = await engine.submit({
+      job: JobContractSchema.parse({
+        schemaVersion: 1,
+        ...w.scope,
+        jobContractId: w.ids.next("job"),
+        objective: "The a and b modules.",
+        acceptance: ["node --test passes"],
+        dependencies: [],
+        risk,
+        ambiguity: "low",
+        kind: "orchestrate",
+        ...(options.strandId === undefined ? {} : { strandId: options.strandId }),
+        createdAt: nowIso(w.environment.clock),
+      }),
+      depth: 1,
+      parentNodeId: w.session.rootNodeId,
+      route: ROUTE,
+      kind: "sub-program",
+    });
+    const nodeId = submitted.nodeId as ExecutionNodeId;
+    const settled = await until("the strand to settle", async () => {
+      const node = await w.stores.executionNodes.get(w.scope, nodeId);
+      return node !== undefined && isSettled(node.status) && engine.idle() ? node : undefined;
+    });
+    return { nodeId, settled };
+  };
+  const first = await delegateStrand();
+  const strandNodeId = first.nodeId;
+  const final = first.settled;
+  const redelegated = options.redelegate === true ? (await delegateStrand()).settled : undefined;
   return {
+    ...(redelegated === undefined ? {} : { redelegated }),
     world: w,
     starts,
     moves,
@@ -527,6 +564,24 @@ describe("a strand landing handed back unchanged (PIP-30)", () => {
     expect(built.final.status).not.toBe("integrated");
     expect(built.final.outcomeReason).toContain("the same change is not examined again");
   }, 120_000);
+});
+
+describe("a strand delegated again with the same change (PIP-30)", () => {
+  it("keeps the verdict its earlier node was given, and is not examined again", async () => {
+    const built = await buildStrand({
+      redTest: false,
+      strandId: "S-01",
+      examined: (round) => (round === 1 ? "material" : "clean"),
+      unchangedFixes: true,
+      redelegate: true,
+    });
+    await built.close();
+    expect(built.final.status).not.toBe("integrated");
+    expect(built.redelegated?.executionNodeId).not.toBe(built.strandNodeId);
+    expect(built.redelegated?.status).not.toBe("integrated");
+    expect(built.redelegated?.outcomeReason).toContain("the same change is not examined again");
+    expect(built.examinerRuns()).toBe(1);
+  }, 180_000);
 });
 
 describe("a strand plan review's verdict (PIP-32)", () => {

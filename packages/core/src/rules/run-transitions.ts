@@ -17,7 +17,7 @@
 import type { IsoTimestamp, Run, RunStatus } from "@nightshift/contracts";
 import { IllegalTransitionError, OutcomeReasonRequiredError } from "../errors.js";
 
-export type RunTransitionEvent = "start" | "succeed" | "fail" | "cancel" | "interrupt";
+export type RunTransitionEvent = "start" | "succeed" | "fail" | "cancel" | "interrupt" | "settle";
 
 export const RUN_TRANSITION_EVENTS: readonly RunTransitionEvent[] = [
   "start",
@@ -25,6 +25,7 @@ export const RUN_TRANSITION_EVENTS: readonly RunTransitionEvent[] = [
   "fail",
   "cancel",
   "interrupt",
+  "settle",
 ];
 
 export const RUN_STATUSES: readonly RunStatus[] = [
@@ -36,7 +37,11 @@ export const RUN_STATUSES: readonly RunStatus[] = [
   "interrupted",
 ];
 
-/** Nothing leaves these. A run that reaches one of them is settled for good. */
+/**
+ * The statuses a run ends in. Nothing leaves them but one edge: an
+ * `interrupted` run that `nightshift resume` finds finished in its records
+ * settles as `succeeded` (`settle`, `runSettles`), so a resumed run ends true.
+ */
 export const RUN_TERMINAL_STATUSES: readonly RunStatus[] = [
   "succeeded",
   "failed",
@@ -68,7 +73,8 @@ export const RUN_TRANSITIONS: RunTransitionTable = {
   succeeded: {},
   failed: {},
   cancelled: {},
-  interrupted: {},
+  // Stopped short to be taken up again: once resumed to the end, it settles.
+  interrupted: { settle: "succeeded" },
 };
 
 export const nextRunStatus = (from: RunStatus, event: RunTransitionEvent): RunStatus | undefined =>
