@@ -239,6 +239,71 @@ describe("run.start and run.attach with no docs/programs in the checkout", () =>
   });
 });
 
+describe("run.start resolves a planned program from the plane", () => {
+  it("starts by program name with no docs/programs and no contract file", async () => {
+    const { world, contract } = await plannedWorld(true);
+    await rm(join(world.repo, "docs", "programs"), { recursive: true, force: true });
+    await rm(join(world.repo, CONTRACT_FILE), { force: true });
+    await writeFile(
+      join(world.repo, "nightshift.config.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        projectId: contract.projectId,
+        contextDocs: [],
+        verification: contract.verification,
+        modelPolicy: contract.modelPolicy,
+        delegationLimits: contract.delegationLimits,
+        costPolicy: contract.costPolicy,
+      })}\n`,
+    );
+    const mcp = await start(world, undefined);
+    const started = await mcp.call("run.start", {
+      program: NAME,
+      model: MODEL,
+      repoPath: world.repo,
+    });
+    expect(started.ok, JSON.stringify(started)).toBe(true);
+    expect(started.programId).toBe(contract.programId);
+    const refused = await mcp.call("run.start", {
+      program: "p9-none",
+      model: MODEL,
+      repoPath: world.repo,
+    });
+    expect(refused.ok).toBe(false);
+    const both = await mcp.call("run.start", {
+      program: NAME,
+      programContractPath: CONTRACT_FILE,
+      model: MODEL,
+      repoPath: world.repo,
+    });
+    expect(both.ok).toBe(false);
+    await mcp.stop();
+  });
+
+  it("ignores a stale planned contract file in favour of the plane's ratified contract", async () => {
+    const { world, contract } = await plannedWorld(true);
+    await writeFile(
+      join(world.repo, CONTRACT_FILE),
+      `${JSON.stringify({ ...contract, objective: "stale file" }, null, 2)}\n`,
+    );
+    const mcp = await start(world, undefined);
+    const started = await mcp.call("run.start", {
+      programContractPath: CONTRACT_FILE,
+      model: MODEL,
+      repoPath: world.repo,
+    });
+    expect(started.ok, JSON.stringify(started)).toBe(true);
+    const recorded = await world.stores.programContracts.get(
+      contract.projectId,
+      contract.programId,
+    );
+    expect(recorded?.planDocument).toBeDefined();
+    expect(recorded?.objective).toBe(contract.objective);
+    expect(contract.objective).not.toBe("stale file");
+    await mcp.stop();
+  });
+});
+
 describe("run.finish of a planned run publishes its documents (D-03)", () => {
   it("leaves one commit holding exactly the four files, and raises a publication intent on a machine", async () => {
     const { world, ratified } = await plannedWorld(true);
