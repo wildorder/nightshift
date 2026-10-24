@@ -29,15 +29,12 @@ the `nightshift` on the PATH is an older tool of the same name: stop and say so.
 
 Check, and say what you find, without fixing anything the human did not ask for:
 
-- **The checkout is on the program branch and clean.** `git branch --show-current`
-  is the contract's `repository.programBranch`, and `git status --porcelain`
-  prints nothing but, at most, `docs/programs/{id}/report.md` from an earlier
-  run. Nightshift integrates by fast-forwarding the branch the checkout is on and
-  refuses a dirty tree; a run started on the wrong branch fails its first landing
-  hours later.
-- **The plan is READY and committed.** `nightshift plan check {id}` says
-  `READY`. `nightshift run` ratifies it if it is not ratified yet, or was edited
-  since: asking to run a plan is approving it.
+- **The plan is READY.** `nightshift plan check {id}` says `READY` against the
+  plane's latest version of the draft; no plan file need exist in any repository.
+  `nightshift run` ratifies it if it is not ratified yet, or was edited since:
+  asking to run a plan is approving it. It also
+  makes and pushes the program branch when it is absent; you do not create or
+  check out a branch.
 - **Prerequisites.** `nightshift run` checks every one where the work runs, once
   for the run; `nightshift preflight {id}` shows the same ahead of time. An
   unmet prerequisite that a *first* strand needs stops the run before it starts;
@@ -171,10 +168,12 @@ command prints them after the run id.
 
 ## 4. When it ends
 
-Attended: `run.finish` writes `docs/programs/{id}/report.md` and names it; read
-it. Dark: you are notified when the command exits. `nightshift run` exits 0 when every strand succeeded, 3 when nothing failed but
-some work is deferred, 1 otherwise, and always writes
-`docs/programs/{id}/report.md`. Read the report and give the human the shape of
+Attended: `run.finish` ends the run and publishes the planned run's
+`docs/programs/{id}/` (plan, contract, conversation and report) onto the program
+branch; read the report. Dark: you are notified when the command exits. `nightshift run` exits 0 when every strand succeeded, 3 when nothing failed but
+some work is deferred, 1 otherwise, and a finished planned run always publishes
+`docs/programs/{id}/` (plan, contract, conversation, report) onto the program
+branch. Read the report and give the human the shape of
 it, in this order:
 
 1. The one line: succeeded, deferred, or failed, and how many strands each way.
@@ -218,7 +217,7 @@ decision** and correct it:
 
 ```text
 nightshift decision reverse {id} <decisionId> --choice "<their choice>" --reason "<why>"
-nightshift decision brief {id} <decisionId> --out docs/programs/<correction-id>/brief.md
+nightshift decision brief {id} <decisionId> --out <scratch>/brief.md
 ```
 
 then `/plan-program` to plan the correction from the brief, with them.
@@ -237,7 +236,6 @@ saying so. Read the rewritten report to the human as above.
 
 ## What you must not do
 
-- Start a run on a branch other than the program branch, or with a dirty tree.
 - Edit the plan or the contract to get past a refusal.
 - Mark a prerequisite satisfied by any means but its `verifyCommand` passing.
 - Retry, cancel or "help" a job by hand while the run is up. The engine

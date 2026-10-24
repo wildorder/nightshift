@@ -98,8 +98,21 @@ describe("the run-program skill", () => {
       "Every **departure** from the plan's approach",
       "nightshift resume {id}",
       "Edit the plan or the contract to get past a refusal",
+      "nightshift plan check {id}",
+      "makes and pushes the program branch",
+      "publishes the planned run's",
     ]) {
       expect(text, phrase).toContain(phrase);
+    }
+    // The plan lives in the plane: no program-branch or committed-plan precondition.
+    for (const banned of [
+      "The checkout is on the program branch and clean",
+      "READY and committed",
+      "git branch --show-current",
+      "git status --porcelain",
+      "Start a run on a branch other than the program branch",
+    ]) {
+      expect(text, banned).not.toContain(banned);
     }
   });
 });
@@ -117,7 +130,8 @@ describe("the skill", () => {
       "nightshift plan check {id}",
       '**"Run it?"**',
       "nightshift run {id} --remote",
-      "git checkout -b program/{id} main",
+      "nightshift plan put {id} --dir <scratch>",
+      "nightshift plan show {id}",
       "nightshift plan ratify {id}",
       "/run-program {id}",
       "Those are **all** the fields.",
@@ -126,10 +140,34 @@ describe("the skill", () => {
       "**copied exactly**",
       "what it led to, not by\n   how far from the brief it wandered",
       "nightshift plan conversation {id} --keep 3,7-9 --summary <file>",
-      "read it before it is\ncommitted",
+      "read it\nbefore they ratify",
     ]) {
       expect(text, phrase).toContain(phrase);
     }
+  });
+
+  it("keeps a plan only in the plane: no branch, no commit, no plan files in the repository", async () => {
+    const text = await readFile(skill("SKILL.md"), "utf8");
+    for (const banned of [
+      "git checkout",
+      "git commit",
+      "git add",
+      "program/{id} main",
+      "refuses a plan that is not READY or has\n  uncommitted changes",
+      "Write, **to disk**, in the repository",
+      "docs/programs/{id}/plan.md",
+      "docs/programs/{id}/contract.json",
+      "docs/programs/{id}/conversation.md",
+      "--out docs/programs",
+      "Revise in place",
+    ]) {
+      expect(text, banned).not.toContain(banned);
+    }
+    expect(text).toContain("outside any\nrepository");
+    expect(text).toContain("refused and names the latest");
+    expect(text).toContain("nightshift plan check {id}");
+    expect(text).toContain("`nightshift run {id} --remote`");
+    expect(text).toContain("makes and pushes the program branch itself");
   });
 
   it("ships a contract example that is a valid planned contract", async () => {
