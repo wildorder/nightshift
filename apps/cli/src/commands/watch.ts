@@ -245,13 +245,17 @@ const plainDisplay = (environment: CliEnvironment): Display => {
 type Ending =
   | { readonly kind: "go"; readonly verdict: "agrees" | "red" | "skipped" | "started" }
   | { readonly kind: "fault" }
+  | { readonly kind: "limited" }
   | { readonly kind: "failed" }
   | { readonly kind: "stopped" };
 
 /** The dispatch's ending, if it has one; `undefined` while it is still worth waiting. */
 export const endingOf = (dispatch: Dispatch): Ending | undefined => {
   if (dispatch.status === "failed") {
-    return dispatch.failure?.code === "environment_fault" ? { kind: "fault" } : { kind: "failed" };
+    if (dispatch.failure?.code === "environment_fault") return { kind: "fault" };
+    // Every route at its limit (2026-10-24): nothing failed, and the run is kept.
+    if (dispatch.failure?.code === "routes_limited") return { kind: "limited" };
+    return { kind: "failed" };
   }
   if (!LIVE.has(dispatch.status)) return { kind: "stopped" };
   const progress = dispatch.progress;
@@ -295,6 +299,13 @@ const goLines = (program: string, verdict: "agrees" | "red" | "skipped" | "start
 
 const failedLines = (dispatch: Dispatch): string[] => [
   `the dispatch failed: ${dispatch.failure?.code ?? "unknown"}: ${dispatch.failure?.message ?? "no reason was recorded"}`,
+];
+
+const limitedLines = (dispatch: Dispatch, program: string): string[] => [
+  `the dispatch stopped: ${dispatch.failure?.message ?? "every route is at its limit"}`.replace(
+    "<program>",
+    program,
+  ),
 ];
 
 const faultLines = (dispatch: Dispatch, fault: EnvironmentFaultPayload | undefined): string[] => [
@@ -347,6 +358,8 @@ const answered = async (
       return { lines: goLines(target.program, ending.verdict), code: 0 };
     case "failed":
       return { lines: failedLines(dispatch), code: 1 };
+    case "limited":
+      return { lines: limitedLines(dispatch, target.program), code: 3 };
     case "stopped":
       return { lines: stoppedLines(dispatch, target.program), code: 1 };
     case "fault": {

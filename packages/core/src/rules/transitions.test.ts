@@ -14,6 +14,7 @@ import {
   nextStatus,
   OCCUPIES_CONCURRENCY_SLOT,
   RETRYABLE_STATUSES,
+  settleRunNode,
   TERMINAL_STATUSES,
   TRANSITION_EVENTS,
   TRANSITIONS,
@@ -236,12 +237,29 @@ describe("a program node's ending (D-P5-06)", () => {
     expect(isTerminal("succeeded")).toBe(true);
   });
 
-  it("lets only a running program or sub-program node succeed", () => {
+  it("lets only a running program or sub-program node succeed, or a run's root its resume settled (A-63)", () => {
     for (const status of EXECUTION_NODE_STATUSES) {
       expect(maySucceed(nodeOf("job", status)), `job ${status}`).toBe(false);
-      for (const kind of ["program", "sub-program"] as const) {
-        expect(maySucceed(nodeOf(kind, status)), `${kind} ${status}`).toBe(status === "running");
-      }
+      expect(maySucceed(nodeOf("sub-program", status)), `sub-program ${status}`).toBe(
+        status === "running",
+      );
+      expect(maySucceed(nodeOf("program", status)), `program ${status}`).toBe(
+        status === "running" || status === "cancelled",
+      );
+    }
+  });
+
+  it("settles a run's cancelled root as succeeded, and touches nothing else (A-63)", () => {
+    expect(settleRunNode(nodeOf("program", "cancelled"), at)).toMatchObject({
+      status: "succeeded",
+      updatedAt: at,
+    });
+    for (const node of [
+      nodeOf("program", "failed"),
+      nodeOf("sub-program", "cancelled"),
+      nodeOf("job", "cancelled"),
+    ]) {
+      expect(settleRunNode(node, at)).toBe(node);
     }
   });
 

@@ -114,7 +114,46 @@ export interface HeadlessResult {
     readonly agentId: Agent["agentId"];
     readonly measurementSummaryId: string;
   }[];
+  /**
+   * Every route the root may run on is at its limit (2026-10-24): the run is
+   * left as it stands, its work kept, to be resumed once one resets. Each
+   * route, why it is out, and until when when its provider said; the earliest
+   * of those, when any.
+   */
+  readonly routesLimited?: RoutesLimited;
 }
+
+export interface RoutesLimited {
+  readonly routes: readonly {
+    readonly harness: string;
+    readonly model: string;
+    readonly reason: string;
+    readonly until?: string;
+  }[];
+  readonly earliestReturn?: string;
+}
+
+/** A limit that resets this soon is waited out on the machine rather than ending the dispatch. */
+export const ROUTE_LIMIT_WAIT_MS = 15 * 60_000;
+
+/** The refusal routing gives when every route on a role's list is out. */
+const noRouteLeft = (error: unknown): boolean =>
+  error instanceof Error &&
+  error.name === "RoutingRefusedError" &&
+  (error as { readonly code?: unknown }).code === "no_eligible_route";
+
+/** One line for a human: each route, why it is out, and when it is back. */
+export const describeRoutesLimited = (limited: RoutesLimited): string =>
+  `every route the root orchestrator may run on is at its limit: ${limited.routes
+    .map(
+      (route) =>
+        `${route.model} (${route.until === undefined ? "for this run" : `until ${route.until}`}: ${route.reason})`,
+    )
+    .join("; ")}. The run is kept as it stands; ${
+    limited.earliestReturn === undefined
+      ? "resume it once a limit is lifted"
+      : `resume it after ${limited.earliestReturn}`
+  } with \`nightshift remote resume <program>\`.`;
 
 /**
  * How many times a root stopped by a usage limit is replaced on another route
@@ -361,14 +400,55 @@ export const replacingLimitedRoots = async (
   clock: Runtime["clock"],
   input: HeadlessInput,
   launchOne: RootLaunch,
+  options: {
+    /** Waits out a limit that resets within `ROUTE_LIMIT_WAIT_MS`; a suite's is instant. */
+    readonly sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<HeadlessResult> => {
+  const sleep = options.sleep ?? ((ms: number) => new Promise((done) => setTimeout(done, ms)));
   const routes = createRouteAvailability(clock);
   const transcripts: { agentId: Agent["agentId"]; path: string }[] = [];
   const measurements: { agentId: Agent["agentId"]; measurementSummaryId: string }[] = [];
+  // Every route a limit took out, as its root ended (2026-10-24).
+  const limits = new Map<string, RoutesLimited["routes"][number]>();
   let launch: HeadlessInput = input;
   let limitNote: string | undefined;
-  for (let relaunch = 0; ; relaunch += 1) {
-    const ended = await launchOne(launch, routes.unavailable(), limitNote);
+  let last: RootEnding | undefined;
+  const resultOf = (ended: RootEnding, routesLimited?: RoutesLimited): HeadlessResult => {
+    const { route: _route, measurementSummaryId: _summary, ...result } = ended;
+    return {
+      ...result,
+      transcripts,
+      measurements,
+      ...(routesLimited === undefined ? {} : { routesLimited }),
+    };
+  };
+  const limited = (): RoutesLimited => {
+    const earliestReturn = routes.earliestReturn([...limits.values()]);
+    return {
+      routes: [...limits.values()],
+      ...(earliestReturn === undefined ? {} : { earliestReturn }),
+    };
+  };
+  for (let relaunch = 0; ; ) {
+    let ended: RootEnding;
+    try {
+      ended = await launchOne(launch, routes.unavailable(), limitNote);
+    } catch (error) {
+      // Nothing on the list can run now: every route is at its limit. A limit
+      // about to reset is waited out; any other ends the root, its run kept,
+      // to be resumed, never failed as if its setup had (2026-10-24).
+      if (last === undefined || !noRouteLeft(error)) throw error;
+      const back = limited().earliestReturn;
+      const wait = back === undefined ? undefined : Date.parse(back) - clock.now();
+      if (wait !== undefined && wait <= ROUTE_LIMIT_WAIT_MS) {
+        await sleep(Math.max(0, wait));
+        continue;
+      }
+      return resultOf(last, limited());
+    }
+    last = ended;
+    relaunch += 1;
     transcripts.push({ agentId: ended.agentId, path: ended.transcript });
     measurements.push({
       agentId: ended.agentId,
@@ -378,13 +458,19 @@ export const replacingLimitedRoots = async (
     if (
       exit.kind !== "failed" ||
       exit.unavailable === undefined ||
-      (ended.run.status !== "running" && ended.run.status !== "pending") ||
-      relaunch >= MAX_ROOT_RELAUNCHES
+      (ended.run.status !== "running" && ended.run.status !== "pending")
     ) {
-      const { route: _route, measurementSummaryId: _summary, ...result } = ended;
-      return { ...result, transcripts, measurements };
+      return resultOf(ended);
     }
-    routes.markUnavailable(ended.route, unavailableUntil(exit, clock));
+    const until = unavailableUntil(exit, clock);
+    limits.set(`${ended.route.harness}/${ended.route.model}`, {
+      harness: ended.route.harness,
+      model: ended.route.model,
+      reason: exit.unavailable,
+      ...(until === undefined ? {} : { until }),
+    });
+    if (relaunch > MAX_ROOT_RELAUNCHES) return resultOf(ended, limited());
+    routes.markUnavailable(ended.route, until);
     limitNote = rootLimitNote(ended.route.model, exit.unavailable);
     // The human's pin was for the route that is now out: the next root is routed.
     launch = {

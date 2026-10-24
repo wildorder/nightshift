@@ -102,6 +102,18 @@ const reportStop = (environment: CliEnvironment, result: ResumeResult): void => 
   }
 };
 
+/** A-63: says when the resume settled the run, which it decides from the run's records. */
+const saySettled = (environment: CliEnvironment, run: Run, result: ResumeResult): void => {
+  const ended = result as ResumeResult & {
+    readonly settled?: boolean;
+    readonly unsettled?: string;
+  };
+  if (ended.settled === true) {
+    environment.out(`run ${run.runId} is succeeded: every strand succeeded and its end gates pass`);
+  }
+  if (ended.unsettled !== undefined) environment.out(ended.unsettled);
+};
+
 const printUnmet = (environment: CliEnvironment, pending: readonly Prerequisite[]): void => {
   for (const prerequisite of pending) {
     environment.err(`UNMET ${prerequisite.id}  ${prerequisite.description}`);
@@ -256,19 +268,26 @@ export const resume = async (
     // commit never reached the plane it went with the machine. They are the
     // control plane's records, so they are rebuilt here and pushed; a run
     // whose documents GitHub already has commits nothing.
-    if (remote && newest !== undefined && !ACTIVE.has(newest.status)) {
+    // An interrupted run with nothing left to land may be finished all the
+    // same (A-63): the resume process settles it from its records.
+    if (
+      newest !== undefined &&
+      !ACTIVE.has(newest.status) &&
+      (remote || newest.status === "interrupted")
+    ) {
       if (environment.exec === undefined || environment.assets?.resumePath === undefined) {
         environment.err(
-          `run ${newest.runId}'s documents can only be rebuilt by nightshift-resume, which this CLI was built without`,
+          `run ${newest.runId} can only be settled and its documents rebuilt by nightshift-resume, which this CLI was built without`,
         );
         return 1;
       }
       const before = await tryRevParse(environment.git, repoPath, branch);
-      await landDeferred(environment, newest, repoPath, async () => ({
+      const ended = await landDeferred(environment, newest, repoPath, async () => ({
         landed: [],
         retried: [],
         failed: [],
       }));
+      saySettled(environment, newest, ended);
       const after = await tryRevParse(environment.git, repoPath, branch);
       if (after !== undefined && after !== before) {
         environment.out(
@@ -318,6 +337,7 @@ export const resume = async (
     `run ${chosen.runId}: ${result.landed.length} landed on the program branch` +
       (result.retried.length === 0 ? "" : `, ${result.retried.length} of them after a retry`),
   );
+  saySettled(environment, chosen, result);
   reportStop(environment, result);
 
   const report = await gatherReport(session.stores, sessionFor(chosen).scope);

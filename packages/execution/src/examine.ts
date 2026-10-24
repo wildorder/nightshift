@@ -312,6 +312,56 @@ export const standingBlock = (
   return same !== undefined && examinationBlocks(same) ? same : undefined;
 };
 
+/**
+ * Every examination of the work this node is doing: its own, and, for a
+ * strand, every node of the same strand in the run, so a strand delegated
+ * again on a new node still carries the verdicts its earlier nodes were given
+ * (PIP-30). A retry on the node and a re-delegation are the same strand's work.
+ */
+const examinationsOfTheWork = async (
+  environment: Pick<ExecutionEnvironment, "stores">,
+  input: Pick<ExamineInput, "session" | "node" | "job">,
+): Promise<readonly Examination[]> => {
+  const { stores } = environment;
+  const scope = input.session.scope;
+  const strandId = input.job.strandId;
+  if (strandId === undefined)
+    return stores.examinations.listByNode(scope, input.node.executionNodeId);
+  const pages = async <T>(
+    list: (page: {
+      cursor?: string;
+    }) => Promise<{ items: readonly T[]; cursor?: string | undefined }>,
+  ): Promise<T[]> => {
+    const items: T[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await list(cursor === undefined ? {} : { cursor });
+      items.push(...page.items);
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return items;
+  };
+  const [nodes, jobs] = await Promise.all([
+    pages((page) => stores.executionNodes.listByRun(scope, page)),
+    pages((page) => stores.jobContracts.listByRun(scope, page)),
+  ]);
+  const ofStrand = new Set(
+    jobs.filter((job) => job.strandId === strandId).map((job) => job.jobContractId as string),
+  );
+  const strandNodes = nodes.filter(
+    (node) =>
+      node.executionNodeId === input.node.executionNodeId ||
+      (node.kind === input.node.kind &&
+        node.jobContractId !== null &&
+        ofStrand.has(node.jobContractId)),
+  );
+  return (
+    await Promise.all(
+      strandNodes.map((node) => stores.examinations.listByNode(scope, node.executionNodeId)),
+    )
+  ).flat();
+};
+
 const latestOf = (examinations: readonly Examination[]): Examination | undefined =>
   [...examinations].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).at(-1);
 
@@ -757,13 +807,7 @@ const gatherEvidence = async (
   // A change keeps its verdict (PIP-30). Examined again unchanged, a blocked
   // change was once let land by a second examiner who saw it otherwise, an
   // arbiter's ruling and all.
-  const standing = standingBlock(
-    await environment.stores.examinations.listByNode(
-      input.session.scope,
-      input.node.executionNodeId,
-    ),
-    patchIdOf(diff),
-  );
+  const standing = standingBlock(await examinationsOfTheWork(environment, input), patchIdOf(diff));
   if (standing !== undefined) {
     return {
       kind: "blocked",
