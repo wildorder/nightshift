@@ -11,7 +11,7 @@
  * is neither red nor passed; one that needs an unmet prerequisite did not run.
  */
 import type { CommitSha, ProgramContract } from "@nightshift/contracts";
-import { SETUP_STEP_ID_PREFIX } from "@nightshift/contracts";
+import { declaredSecrets, SETUP_STEP_ID_PREFIX } from "@nightshift/contracts";
 import {
   DEFAULT_LANDINGS,
   forecast,
@@ -42,7 +42,7 @@ import {
   revParse,
   runPreflight,
 } from "@nightshift/execution";
-import { createLocalPaths } from "@nightshift/persistence/http";
+import { createLocalPaths, redactFromNowOn } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { describeFailure } from "../failures.js";
 import { resolveFrom } from "../program-files.js";
@@ -110,12 +110,17 @@ export const auditProgramGates = async (
     ...(contract.setup ?? []).map((step) => `setup:${step.id}`.length),
     ...contract.verification.map((step) => step.id.length),
   );
+  // A-62: the project's declared secrets from this shell, as a local run gives
+  // them, and never in what this process prints or records.
+  const secrets = declaredSecrets(contract.secrets, environment.paths.env ?? {});
+  redactFromNowOn(secrets);
   return auditGates({
     git: environment.git,
     repoPath,
     base,
     program: contract,
     unmet,
+    env: secrets,
     // The scratch goes where a run's would: short, under the state directory.
     paths: createLocalPaths(environment.paths),
     onStep: (result) => {

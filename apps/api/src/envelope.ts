@@ -12,7 +12,7 @@
  * how a data key is made and unwrapped.
  */
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import type { OrgId, Provider } from "@nightshift/contracts";
+import type { OrgId } from "@nightshift/contracts";
 import type { Envelope, Sealed } from "@nightshift/core";
 
 /** How a data key is generated and later unwrapped, under one context. */
@@ -35,7 +35,7 @@ const additionalData = (context: EncryptionContext): Buffer =>
   Buffer.from(`nightshift-credential-v1\n${context.orgId}\n${context.provider}`, "utf8");
 
 export const createEnvelope = (wrapper: DataKeyWrapper): Envelope => ({
-  seal: async (orgId: OrgId, provider: Provider, plaintext: string): Promise<Sealed> => {
+  seal: async (orgId: OrgId, provider: string, plaintext: string): Promise<Sealed> => {
     const context = { orgId, provider };
     const { plaintextKey, wrappedKey } = await wrapper.generate(context);
     const iv = randomBytes(IV_BYTES);
@@ -48,7 +48,7 @@ export const createEnvelope = (wrapper: DataKeyWrapper): Envelope => ({
       wrappedKey: Buffer.from(wrappedKey).toString("base64"),
     };
   },
-  open: async (orgId: OrgId, provider: Provider, sealed: Sealed): Promise<string> => {
+  open: async (orgId: OrgId, provider: string, sealed: Sealed): Promise<string> => {
     const context = { orgId, provider };
     const plaintextKey = await wrapper.unwrap(context, Buffer.from(sealed.wrappedKey, "base64"));
     const bytes = Buffer.from(sealed.ciphertext, "base64");

@@ -28,6 +28,7 @@ import {
   type OrgComputeUsage,
   type OrgId,
   PROVIDERS,
+  type Project,
   type Provider,
   type RunId,
   refreshedCodexLogin,
@@ -61,6 +62,7 @@ import { runScopeFrom } from "../params.js";
 import type { Handler, RouteContext } from "../router.js";
 import { EngineTokenExpiredError, mintEngineToken } from "../tokens/mint.js";
 import { requireProgram, requireProject, requireRun } from "./common.js";
+import { openProjectSecrets } from "./secrets.js";
 
 export const requireDispatch = async (deps: ApiDeps, scope: RunScope): Promise<Dispatch> => {
   const dispatch = await deps.stores.dispatches.get(scope);
@@ -491,6 +493,7 @@ export const heartbeat: Handler = async (context) => {
     stop,
     ...(await renewedToken(context, dispatch, stop)),
     ...(await credentialsFor(deps, project.orgId, dispatch, stop)),
+    ...(await secretsFor(deps, project, dispatch, stop)),
   };
   return { status: 200, body: HeartbeatResponseSchema.parse(response) };
 };
@@ -559,6 +562,22 @@ const keepRefreshedLogin = async (
       `dispatch ${runId}: could not keep a refreshed Codex login: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+};
+
+/**
+ * The project's secrets, opened for the run's own machine (A-62): under the
+ * terms of the provider keys, only while the dispatch is `running` and the
+ * runner is to carry on. Project setup runs after `running`, so it has them.
+ */
+const secretsFor = async (
+  deps: ApiDeps,
+  project: Project,
+  dispatch: Dispatch,
+  stop: boolean,
+): Promise<Pick<HeartbeatResponse, "secrets">> => {
+  if (stop || dispatch.status !== "running") return {};
+  const secrets = await openProjectSecrets(deps, project);
+  return Object.keys(secrets).length === 0 ? {} : { secrets };
 };
 
 /**

@@ -51,6 +51,7 @@ import {
   makePlanDraftVersion,
   makeProgramContract,
   makeProject,
+  makeProjectSecret,
   makeRootNode,
   makeRun,
   makeRunFeedback,
@@ -1120,6 +1121,41 @@ export const describePortConformance = <S extends ProjectStores>(
           expect(await credentials.sealed(orgId, "anthropic")).toEqual(sealed);
           expect(await credentials.sealed(orgId, "openai")).toMatchObject({ lastFour: "abcd" });
           expect(await credentials.sealed(a.ids.next("org"), "anthropic")).toBeUndefined();
+        });
+
+        it("stores a project's sealed secrets beside its org's keys, listed by view only, and deletes one (A-62)", async () => {
+          const { credentials } = identity();
+          const orgId = a.ids.next("org");
+          const projectId = a.ids.next("proj");
+          const npm = makeProjectSecret(orgId, projectId);
+          await credentials.putSecret(npm);
+          await credentials.putSecret(
+            makeProjectSecret(orgId, projectId, { name: "SENTRY_TOKEN", lastFour: "abcd" }),
+          );
+          // Another project's, and the org's own key, are no part of it.
+          await credentials.putSecret(makeProjectSecret(orgId, a.ids.next("proj")));
+          await credentials.put(makeOrgCredential(orgId));
+          const view = await credentials.secrets(projectId);
+          expect(view).toEqual([
+            { name: "NPM_TOKEN", lastFour: "wxyz", setAt: npm.setAt },
+            { name: "SENTRY_TOKEN", lastFour: "abcd", setAt: npm.setAt },
+          ]);
+          for (const item of view) {
+            expect(Object.keys(item).sort()).toEqual(["lastFour", "name", "setAt"]);
+          }
+          expect(await credentials.sealedSecrets(projectId)).toContainEqual(npm);
+          // Set again, it is replaced, not added.
+          await credentials.putSecret({ ...npm, lastFour: "9999" });
+          expect((await credentials.secrets(projectId)).map((item) => item.lastFour)).toEqual([
+            "9999",
+            "abcd",
+          ]);
+          expect(await credentials.deleteSecret(projectId, "NPM_TOKEN")).toBe(true);
+          expect(await credentials.deleteSecret(projectId, "NPM_TOKEN")).toBe(false);
+          expect((await credentials.secrets(projectId)).map((item) => item.name)).toEqual([
+            "SENTRY_TOKEN",
+          ]);
+          expect(await credentials.view(orgId)).toHaveLength(1);
         });
 
         it("keeps an org's compute ledger by month (P10, D-P10-19)", async () => {

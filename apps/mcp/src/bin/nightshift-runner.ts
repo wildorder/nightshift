@@ -84,7 +84,11 @@ runRunner({
       providerKeys,
       ...(projectUser === undefined || projectUser === "" ? {} : { projectUser }),
       parentEnv: process.env,
+      // A-62: on the beat that carried the provider keys.
+      secrets: context.heartbeat.last?.secrets ?? {},
     });
+    const secretNames = Object.keys(context.heartbeat.last?.secrets ?? {});
+    if (secretNames.length > 0) say(`project secrets received: ${secretNames.join(", ")}`);
     const runtime = await createRuntime(env, "orchestrator");
     // Start intelligence before project setup; the root can inspect, repair and retry it.
     say(`root starting in ${context.layout.checkout}`);

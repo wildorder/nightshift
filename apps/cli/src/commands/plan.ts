@@ -600,19 +600,43 @@ export const ratifyPlan = async (
 };
 
 /**
- * Ratifies the plane's latest version of a program by its hash, for
- * `nightshift run`, whose asking to run a plan is the human's approval of it
- * (2026-10-16). `undefined`, with the reasons said, when it is not READY.
+ * Ratifies, for `nightshift run`, exactly what the run will run (2026-10-16:
+ * asking to run a plan is the human's approval of it). That is the plane's
+ * latest version with the repository's `nightshift.config.json` under it; when
+ * the config supplies something the stored version does not hold (a field
+ * added to the config since, `secrets` say), that contract is put first as the
+ * next version, so what is ratified, what is hashed at start and what runs are
+ * one contract. `undefined`, with the reasons said, when it is not READY.
  */
 export const ratifyVersionOf = async (
   environment: CliEnvironment,
   session: Session,
-  source: Pick<ProgramSource, "scope" | "directory">,
+  source: Pick<ProgramSource, "scope" | "directory" | "contract" | "planText" | "conversationText">,
 ): Promise<ProgramContract | undefined> => {
   const planning = planningOf(session);
-  const latest = await planning.getVersion(source.scope);
+  let latest = await planning.getVersion(source.scope);
   if (latest === undefined)
     throw new UsageError(`the plane has no draft of \`${source.directory}\``);
+  const running = planHash(source.contract, source.planText, sha256Hex).hash;
+  if (latest.version.planHash !== undefined && latest.version.planHash !== running) {
+    const written = await planning.putVersion(
+      source.scope,
+      {
+        contract: `${JSON.stringify(source.contract, null, 2)}\n`,
+        planText: source.planText,
+        ...(source.conversationText === undefined
+          ? {}
+          : { conversationText: source.conversationText }),
+      },
+      latest.version.version,
+    );
+    environment.out(
+      `put version ${written.version.version} of ${source.directory}: the plane's latest with this repository's nightshift.config.json under it`,
+    );
+    latest = await planning.getVersion(source.scope);
+    if (latest === undefined)
+      throw new UsageError(`the plane has no draft of \`${source.directory}\``);
+  }
   if (!latest.check.ready || latest.version.planHash === undefined) {
     printReasons(
       environment,

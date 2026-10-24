@@ -1782,6 +1782,23 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
   });
 });
 
+describe("the project's secrets on a machine (A-62)", () => {
+  it("are in the root's environment, under everything Nightshift sets itself", () => {
+    const env = rootEnvironment({
+      context: {
+        scope: f.scope,
+        dispatch: makeDispatch(f),
+        layout: layoutOf("/workspace", f.scope.runId),
+      } as never,
+      apiEndpoint: "https://api.dev.nightshift.invalid",
+      parentEnv: { PATH: "/usr/bin" },
+      secrets: { NPM_TOKEN: "ghp_x", NIGHTSHIFT_STATE_DIR: "/somewhere/else" },
+    });
+    expect(env.NPM_TOKEN).toBe("ghp_x");
+    expect(env.NIGHTSHIFT_STATE_DIR).toBe(`/workspace/runs/${f.scope.runId}`);
+  });
+});
+
 describe("the root's project environment (P16 S-01)", () => {
   it("names the project environment's file and never carries the environment itself (D-10)", () => {
     const layout = layoutOf("/workspace", f.scope.runId);

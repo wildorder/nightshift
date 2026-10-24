@@ -70,7 +70,7 @@
  * installed on Windows**; A-29 is the enforcement there as everywhere.
  */
 import { posix, win32 } from "node:path";
-import type { AgentStatus } from "@nightshift/contracts";
+import { type AgentStatus, declaredSecrets } from "@nightshift/contracts";
 import type { Clock } from "@nightshift/core";
 import { systemClock } from "@nightshift/core";
 import type {
@@ -216,7 +216,15 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       interpreter,
       exit: exitPromise,
       cwd: input.worktree,
-      env: withTmpDir(sanitizeCodexEnvironment({ platform, parentEnv }), input.tmpDir),
+      env: withTmpDir(
+        sanitizeCodexEnvironment({
+          platform,
+          parentEnv,
+          // A-62: the project's secrets the program declares, as this process holds them.
+          extra: declaredSecrets(input.program.secrets, parentEnv),
+        }),
+        input.tmpDir,
+      ),
       child: undefined,
       guardDir: undefined,
       runAs: input.runAs,
@@ -301,6 +309,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       shellPath,
       ...(input.resume === undefined ? {} : { resumeSessionId: input.resume.sessionId }),
       ...(capture?.otel === undefined ? {} : { otel: capture.otel }),
+      passSecrets: Object.keys(declaredSecrets(input.program.secrets, parentEnv)).length > 0,
     });
 
     let child: SpawnedChild;

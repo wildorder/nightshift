@@ -80,6 +80,7 @@ import {
   createLocalPaths,
   createTokenProvider,
   type PlanningClient,
+  redactFromNowOn,
   requireProfile,
   routes,
   send,
@@ -231,6 +232,14 @@ export interface Runtime {
    * project step the engine runs; absent on a laptop. Never this process's own.
    */
   readonly projectEnv?: ExecutionEnvironment["projectEnv"];
+  /**
+   * A-62: where the project's secrets are read from, by the names a program
+   * declares: the environment this runtime was made from (a developer's shell
+   * on a laptop; the runner's, holding the plane's, on a machine).
+   */
+  readonly secretsFrom?: Readonly<Record<string, string | undefined>>;
+  /** A-62: from now on, redacts these values from everything this process sends. */
+  readonly redactFromNowOn?: (secrets: Readonly<Record<string, string>>) => void;
   /** How to launch a worker's own MCP server, given the identity it must carry. */
   workerLaunch(identity: WorkerLaunchIdentity): McpLaunch;
   /**
@@ -638,6 +647,7 @@ const remoteProjectSetup = (
     layout: layoutOf(remoteRoot, setupScope.runId),
     projectEnv,
     projectUser,
+    secretsFrom: env,
     load: async () => {
       const [dispatch, program] = await Promise.all([
         stores.dispatches.get(setupScope),
@@ -705,6 +715,8 @@ export const createRuntime = async (env: Env, role: Role = "orchestrator"): Prom
     ...(projectEnv === undefined ? {} : { projectEnv }),
     ...(projectSetup === undefined ? {} : { projectSetup }),
     ...(site === undefined ? {} : { site }),
+    secretsFrom: env,
+    redactFromNowOn,
     planText: async (scope, sha256) =>
       (await createHttpPlanning({ transport }).planDocument(scope, sha256))?.text,
     prerequisites: createHttpPlanning({ transport }),

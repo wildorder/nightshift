@@ -256,6 +256,13 @@ it?** The tells:
   validation, OAuth app registration, app-store or registry ownership.
 - **Secrets the crew may not set** — production keys, signing keys, payment
   provider secrets.
+- **Secrets the work needs to run at all** — a registry token for `npm ci`, a
+  private package feed. These are not prerequisites: list each name in
+  `nightshift.config.json`'s `"secrets"` and have the human set it with
+  `nightshift secret set <NAME>` before the run. Every step and agent is given
+  it, a run is refused before it starts while one is unset, and its value is
+  redacted from what Nightshift stores (A-62). Recommend a read-only token
+  with an expiry: an agent's command that prints it sends it to the model.
 - **Third-party accounts** — a SaaS workspace, a billing relationship, a seat.
 - **DNS** — records in a zone the crew cannot write.
 

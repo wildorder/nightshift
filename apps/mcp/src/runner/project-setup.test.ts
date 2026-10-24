@@ -146,3 +146,31 @@ describe("retryable project preparation", () => {
     expect(input.projectEnv.PATH).toBe("/image/bin");
   });
 });
+
+describe("project preparation and the project's secrets (A-62)", () => {
+  it("gives setup the declared secrets, and keeps their values out of its log and diagnostics", async () => {
+    const input = fixture();
+    const program = { ...makeProgramContract(f), secrets: ["NPM_TOKEN"] };
+    const perform = vi
+      .fn<typeof import("./workspace.js").prepareProject>()
+      .mockImplementation(async (_machine, prepare) => {
+        prepare.log("npm ci with ghp_value_of_the_token");
+        throw new Error("setup install exited 1: 401 for ghp_value_of_the_token");
+      });
+    const service = createProjectSetup({
+      ...input,
+      load: async () => ({ dispatch: makeDispatch(f), program }),
+      secretsFrom: { NPM_TOKEN: "ghp_value_of_the_token", OTHER: "undeclared" },
+      perform,
+    });
+    await service.prepare();
+    await vi.waitFor(() => expect(service.preparing).toBe(false));
+    expect(perform.mock.calls[0]?.[1].secrets).toEqual({ NPM_TOKEN: "ghp_value_of_the_token" });
+    const failed = await service.status();
+    expect(failed.detail).toContain("«NPM_TOKEN»");
+    const written = [...input.files.values()].join("\n");
+    expect(written).toContain("«NPM_TOKEN»");
+    expect(written).not.toContain("ghp_value_of_the_token");
+    expect(failed.detail).not.toContain("ghp_value_of_the_token");
+  });
+});

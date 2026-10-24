@@ -25,6 +25,7 @@ import type {
   RunId,
 } from "@nightshift/contracts";
 import {
+  declaredSecrets,
   NIGHTSHIFT_CONFIG_FILE,
   ProgramIdSchema,
   ProjectIdSchema,
@@ -121,6 +122,20 @@ export const buildEnvironment = (
   outbox: EventOutbox,
   run: Run,
   program: ProgramContract,
+): ExecutionEnvironment => {
+  // A-62: the project's secrets this engine holds, given to every step and
+  // agent, and from now on redacted from everything this process sends.
+  const secretEnv = declaredSecrets(program.secrets, runtime.secretsFrom ?? {});
+  runtime.redactFromNowOn?.(secretEnv);
+  return environmentOf(runtime, outbox, run, program, secretEnv);
+};
+
+const environmentOf = (
+  runtime: Runtime,
+  outbox: EventOutbox,
+  run: Run,
+  program: ProgramContract,
+  secretEnv: Readonly<Record<string, string>>,
 ): ExecutionEnvironment => ({
   stores: runtime.stores,
   bodies: runtime.bodies,
@@ -142,6 +157,8 @@ export const buildEnvironment = (
   ...(runtime.site === undefined ? {} : { site: runtime.site }),
   // P16 (D-10): on a machine, every project step runs in the project environment.
   ...(runtime.projectEnv === undefined ? {} : { projectEnv: runtime.projectEnv }),
+  // A-62: and every one is given the project's secrets the program declares.
+  secretEnv,
   // P10 (T4): on a machine, a worker's token is a file the engine keeps fresh.
   ...(runtime.workerTokens === undefined ? {} : { workerTokens: runtime.workerTokens }),
   // P10 (D-P10-22): on a machine, every landing raises a publication intent,

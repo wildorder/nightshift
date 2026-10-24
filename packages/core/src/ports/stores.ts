@@ -54,6 +54,8 @@ import type {
   ProgramId,
   Project,
   ProjectId,
+  ProjectSecret,
+  ProjectSecretView,
   Provider,
   RoutingDecision,
   Run,
@@ -461,6 +463,15 @@ export interface CredentialsStore {
   put(credential: OrgCredential): Promise<void>;
   view(orgId: OrgId): Promise<readonly OrgCredentialView[]>;
   sealed(orgId: OrgId, provider: Provider): Promise<OrgCredential | undefined>;
+  /**
+   * A-62: a project's secrets, in the same table under the same envelope. Only
+   * views are listed; `sealedSecrets` is read by the heartbeat alone.
+   */
+  putSecret(secret: ProjectSecret): Promise<void>;
+  secrets(projectId: ProjectId): Promise<readonly ProjectSecretView[]>;
+  sealedSecrets(projectId: ProjectId): Promise<readonly ProjectSecret[]>;
+  /** Whether there was one to delete. */
+  deleteSecret(projectId: ProjectId, name: string): Promise<boolean>;
 }
 
 /**

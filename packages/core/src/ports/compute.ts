@@ -16,12 +16,13 @@ export interface Sealed {
 }
 
 /**
- * Envelope encryption under one key with the org and the provider as its
- * context (D-P10-23). A ciphertext moved to another org's row does not `open`.
+ * Envelope encryption under one key with the org and a purpose as its context
+ * (D-P10-23): a provider's name for an org's key, `projectSecretPurpose` for a
+ * project's secret (A-62). A ciphertext moved to another row does not `open`.
  */
 export interface Envelope {
-  seal(orgId: OrgId, provider: Provider, plaintext: string): Promise<Sealed>;
-  open(orgId: OrgId, provider: Provider, sealed: Sealed): Promise<string>;
+  seal(orgId: OrgId, purpose: Provider | (string & {}), plaintext: string): Promise<Sealed>;
+  open(orgId: OrgId, purpose: Provider | (string & {}), sealed: Sealed): Promise<string>;
 }
 
 /**

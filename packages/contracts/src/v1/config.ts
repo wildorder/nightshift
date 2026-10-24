@@ -27,6 +27,7 @@ import {
   type RoutingNarrowing,
   RoutingNarrowingSchema,
 } from "./routing-policy.js";
+import { SecretNameSchema } from "./secrets.js";
 
 export const NIGHTSHIFT_CONFIG_FILE = "nightshift.config.json";
 
@@ -65,6 +66,11 @@ export const NightshiftConfigSchema = z.strictObject({
    * the customer's choice; `recommended` is what the probe said at `init`.
    */
   compute: ComputeChoiceSchema.optional(),
+  /**
+   * A-62: the project's secrets every setup step, check and agent is given, by
+   * name. Values are set with `nightshift secret set` and never live here.
+   */
+  secrets: z.array(SecretNameSchema).optional(),
 });
 export type NightshiftConfig = z.infer<typeof NightshiftConfigSchema>;
 
@@ -81,6 +87,7 @@ export const INHERITED_CONTRACT_FIELDS = [
   "defaultRisk",
   "routing",
   "keepConversation",
+  "secrets",
 ] as const;
 
 /**

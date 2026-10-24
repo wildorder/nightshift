@@ -23,6 +23,7 @@ import {
   StrandSchema,
 } from "./plan.js";
 import { RoutingNarrowingSchema } from "./routing-policy.js";
+import { SecretNameSchema } from "./secrets.js";
 
 /** A program-level outcome the run is judged against. */
 export const SuccessCriterionSchema = z.strictObject({
@@ -336,6 +337,8 @@ export const ProgramContractSchema = z
     scope: ProgramContractScopeSchema,
     /** What makes a checkout usable before anything runs in it. Absent means nothing does. */
     setup: z.array(SetupStepSchema).optional(),
+    /** A-62: the project's secrets, by name, given to every step and agent. */
+    secrets: z.array(SecretNameSchema).optional(),
     verification: z.array(VerificationStepSchema).min(1),
     modelPolicy: ModelPolicySchema,
     examinationPolicy: ExaminationPolicySchema,

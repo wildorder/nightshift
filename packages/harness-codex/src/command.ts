@@ -164,6 +164,14 @@ export interface CodexCommandInput {
   readonly resumeSessionId?: string;
   /** P20 S-03: export this launch's Codex log telemetry to the loopback receiver. */
   readonly otel?: CodexOtelTarget;
+  /**
+   * A-62: the process carries the project's declared secrets, so the commands
+   * the model runs must too. Codex's default excludes drop every variable
+   * named like a key, a secret or a token, `NPM_TOKEN` among them; with them
+   * off, what reaches a command is the process's own environment, which is an
+   * allowlist holding no credential but the declared secrets.
+   */
+  readonly passSecrets?: boolean;
 }
 
 /**
@@ -183,6 +191,9 @@ export const buildCodexArgs = (input: CodexCommandInput): readonly string[] => [
   ...(input.shellPath === undefined
     ? []
     : ["-c", `shell_environment_policy.set=${tomlInlineTable({ PATH: input.shellPath })}`]),
+  ...(input.passSecrets === true
+    ? ["-c", "shell_environment_policy.ignore_default_excludes=true"]
+    : []),
   ...(input.mcp === undefined ? [] : mcpOverrides(input.mcp)),
   "--ignore-user-config",
   ...(input.otel === undefined ? [] : otelOverrides(input.otel)),

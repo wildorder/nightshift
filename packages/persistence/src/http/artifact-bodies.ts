@@ -25,6 +25,7 @@ import {
 } from "@nightshift/contracts";
 import type { ArtifactBodyStore, RunScope, StoredBody } from "@nightshift/core";
 import { ControlPlaneError } from "./errors.js";
+import { redactOutbound } from "./redaction.js";
 import { routes } from "./routes.js";
 import { send, type Transport } from "./transport.js";
 
@@ -54,8 +55,22 @@ export interface HttpArtifactBodyStoreOptions {
   readonly read?: (scope: RunScope, artifactId: ArtifactId) => Promise<Uint8Array | undefined>;
 }
 
-const toBytes = (body: Uint8Array | string): Uint8Array =>
-  typeof body === "string" ? new TextEncoder().encode(body) : body;
+/** Text a person or an agent could have printed a secret into; a pack or an image is not. */
+const isText = (contentType: string): boolean =>
+  /^text\/|json|xml|ndjson|yaml|x-log/i.test(contentType);
+
+/**
+ * The bytes to upload: a text body with every secret this process holds
+ * redacted (A-62), before it is measured, so the size and the digest are of
+ * what is stored.
+ */
+const toBytes = (body: Uint8Array | string, contentType: string): Uint8Array => {
+  if (!isText(contentType)) return typeof body === "string" ? new TextEncoder().encode(body) : body;
+  const text = typeof body === "string" ? body : new TextDecoder().decode(body);
+  const redacted = redactOutbound(text);
+  if (redacted === text && typeof body !== "string") return body;
+  return new TextEncoder().encode(redacted);
+};
 
 export const createHttpArtifactBodyStore = (
   options: HttpArtifactBodyStoreOptions,
@@ -64,7 +79,7 @@ export const createHttpArtifactBodyStore = (
 
   return {
     put: async (scope, artifactId, body, contentType): Promise<StoredBody> => {
-      const bytes = toBytes(body);
+      const bytes = toBytes(body, contentType);
       const target = ArtifactUploadResponseSchema.parse(
         await send(
           options.transport,

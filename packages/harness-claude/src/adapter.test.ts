@@ -336,6 +336,20 @@ describe("the launch, against a fake spawn", () => {
     expect(calls[0]?.options.env.NIGHTSHIFT_ROLE).toBeUndefined();
   });
 
+  it("gives the agent the project's declared secrets from its parent, and no other variable (A-62)", async () => {
+    const { spawn, calls } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    await createClaudeHarness({
+      spawn,
+      fs,
+      clock: createSteppingClock(Date.UTC(2026, 8, 15, 12, 0, 0), 1),
+      platform: "darwin",
+      env: { PATH: "/usr/bin", HOME: "/home/operator", NPM_TOKEN: "ghp_x", OTHER_TOKEN: "y" },
+    }).start({ ...startInput(), program: { ...startInput().program, secrets: ["NPM_TOKEN"] } });
+    expect(calls[0]?.options.env.NPM_TOKEN).toBe("ghp_x");
+    expect(calls[0]?.options.env.OTHER_TOKEN).toBeUndefined();
+  });
+
   it("gives the identity to the MCP server's own process instead, unchanged", async () => {
     const { spawn } = fakeSpawn();
     const files = fakeFileSystem();

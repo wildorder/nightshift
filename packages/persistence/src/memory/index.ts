@@ -71,6 +71,8 @@ import {
   type Project,
   type ProjectId,
   ProjectSchema,
+  type ProjectSecret,
+  ProjectSecretSchema,
   type Provider,
   type RoutingDecision,
   RoutingDecisionSchema,
@@ -226,6 +228,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     "installationClaims",
   );
   const credentials = table<OrgCredential>("credentials");
+  const projectSecrets = table<ProjectSecret>("projectSecrets");
   const computeLedger = table<OrgComputeUsage>("computeLedger");
 
   const all = [
@@ -259,6 +262,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     completionHistories,
     installationClaims,
     credentials,
+    projectSecrets,
     computeLedger,
   ];
 
@@ -768,6 +772,21 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
         .map(({ provider, lastFour, setAt }) => ({ provider, lastFour, setAt })),
     sealed: async (orgId: OrgId, provider: Provider) =>
       credentials.get(`${orgPrefix(orgId)}${provider}`),
+    putSecret: async (secret) => {
+      const parsed = ProjectSecretSchema.parse(secret);
+      projectSecrets.set(`${parsed.projectId}#${parsed.name}`, parsed);
+    },
+    secrets: async (projectId) =>
+      projectSecrets
+        .scan(`${projectId}#`)
+        .map(({ name, lastFour, setAt }) => ({ name, lastFour, setAt })),
+    sealedSecrets: async (projectId) => projectSecrets.scan(`${projectId}#`),
+    deleteSecret: async (projectId, name) => {
+      const key = `${projectId}#${name}`;
+      if (projectSecrets.get(key) === undefined) return false;
+      projectSecrets.delete(key);
+      return true;
+    },
   };
 
   const computeLedgerStore: ComputeLedgerStore = {

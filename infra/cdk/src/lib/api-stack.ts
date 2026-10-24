@@ -322,9 +322,9 @@ export class NightshiftApiStack extends Stack {
       }),
       // P10 (D-P10-23): the credentials table, gets, puts and queries, and no
       // other principal in any stack holds any action on it. The stream it does
-      // not have cannot be granted.
+      // not have cannot be granted. A-62: and deletes, for a project's secret.
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:DeleteItem"],
         resources: [credentialsTableArn],
       }),
       // P10 (D-P10-23): a data key per secret, and its unwrapping, under the one

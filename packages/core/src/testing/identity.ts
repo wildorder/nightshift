@@ -11,6 +11,9 @@ import {
   type OrgCredential,
   OrgCredentialSchema,
   type OrgId,
+  type ProjectId,
+  type ProjectSecret,
+  ProjectSecretSchema,
   type User,
   type UserId,
   UserIdSchema,
@@ -56,6 +59,24 @@ export const makeOrgCredential = (
     schemaVersion: 1,
     orgId,
     provider: "anthropic",
+    ciphertext: "Y2lwaGVydGV4dA==",
+    wrappedKey: "d3JhcHBlZC1rZXk=",
+    lastFour: "wxyz",
+    setAt: FIXTURE_TIMESTAMP,
+    ...overrides,
+  });
+
+/** A-62: a project's sealed secret, as the credentials table holds it. */
+export const makeProjectSecret = (
+  orgId: OrgId,
+  projectId: ProjectId,
+  overrides: Overrides<ProjectSecret> = {},
+): ProjectSecret =>
+  ProjectSecretSchema.parse({
+    schemaVersion: 1,
+    orgId,
+    projectId,
+    name: "NPM_TOKEN",
     ciphertext: "Y2lwaGVydGV4dA==",
     wrappedKey: "d3JhcHBlZC1rZXk=",
     lastFour: "wxyz",
