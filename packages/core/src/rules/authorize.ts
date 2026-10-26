@@ -556,7 +556,7 @@ export const ARBITER_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
  * and examiners' tokens, heartbeats, and asks for publication. Its reach is the
  * run, every node in it, and the program and project above it that the run
  * needs to read; it reads every record of its own program, earlier runs
- * included (D-P10-29). It cannot ratify a plan, reverse a human decision, change
+ * included (D-P10-29), and lists its project's programs for its report. It cannot ratify a plan, reverse a human decision, change
  * the org's configuration, read a key by any route but its heartbeat, or write
  * to another run. Every write it makes is further held to the dispatch's current
  * generation (`stale_generation`), which is the fence D-P10-18 describes.
@@ -566,7 +566,10 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "project.put": "forbidden",
   // The project carries the cross-account role the Bedrock route assumes (A-25).
   "project.get": "own_project",
-  "program.list": "forbidden",
+  // The project's programs, read (the owner, 2026-10-26): the report a run
+  // publishes at finish names the programs that corrected its decisions
+  // (D-P9-08), and on a machine the engine builds it. Reading, never writing.
+  "program.list": "own_project",
   "program.put": "forbidden",
   "program.get": "own_program",
 

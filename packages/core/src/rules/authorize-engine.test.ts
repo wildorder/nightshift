@@ -43,7 +43,6 @@ const target = (overrides: Partial<AuthorizationTarget> = {}): AuthorizationTarg
 const FORBIDDEN: readonly Operation[] = [
   "project.list",
   "project.put",
-  "program.list",
   "program.put",
   "program.ratify",
   "planDraft.answer",
@@ -86,7 +85,12 @@ describe("the engine's table (D-P10-20)", () => {
   });
 
   it("reaches the project and the program only for what the run needs to read or record", () => {
-    for (const operation of ["project.get", "gateHealth.get", "gateHealth.put"] as const) {
+    for (const operation of [
+      "project.get",
+      "program.list",
+      "gateHealth.get",
+      "gateHealth.put",
+    ] as const) {
       expect(ENGINE_ACCESS[operation], operation).toBe("own_project");
     }
     for (const operation of [
@@ -163,6 +167,21 @@ describe("the engine's table (D-P10-20)", () => {
     }
     const { requestedNodeStatus: _status, ...noStatus } = target();
     expect(authorize(engine(), "node.put", noStatus)).toMatchObject({ allowed: false });
+  });
+
+  it("lists its own project's programs, for the report it publishes at finish, and no other's (2026-10-26)", () => {
+    expect(
+      authorize(engine(), "program.list", {
+        projectId: here.scope.projectId,
+        currentGeneration: 2,
+      }),
+    ).toEqual({ allowed: true });
+    expect(
+      authorize(engine(), "program.list", {
+        projectId: elsewhere.scope.projectId,
+        currentGeneration: 2,
+      }),
+    ).toMatchObject({ allowed: false, reason: "execution_out_of_scope" });
   });
 
   it("reads and writes its own project's gate health, from any run of it (D-P15-07)", () => {
