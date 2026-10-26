@@ -512,8 +512,10 @@ describe("run.finish settles the documentation head like a landing (F-01)", () =
     };
     const recorded = await world.backing.runs.get(scope, scope.runId);
     if (recorded === undefined) throw new Error("the started run is not recorded");
+    // Running again, as a run is: the stopped session's ending is not kept.
+    const { endedAt: _endedAt, outcomeReason: _reason, ...live } = recorded;
     await world.backing.runs.put({
-      ...recorded,
+      ...live,
       status: "running",
       carriedStrands: [
         {
@@ -554,7 +556,11 @@ describe("run.finish settles the documentation head like a landing (F-01)", () =
     expect(machine.origin).toEqual([head]);
     expect(machine.dispatch().publication.head).toBe(head);
     expect(finished.published).toMatchObject({ head });
-    expect(await show(world, `${head}:docs/programs/${NAME}/report.md`)).toContain("**succeeded**");
+    const published = await show(world, `${head}:docs/programs/${NAME}/report.md`);
+    expect(published).toContain("**succeeded**");
+    // Measured to the ending it states, which the run record keeps too (2026-10-26).
+    expect(published).not.toContain("Wall clock not ended");
+    expect(published).toMatch(/Wall clock \d/);
   });
 
   it("ends succeeded when the first upload of the docs head fails and republishing succeeds", async () => {

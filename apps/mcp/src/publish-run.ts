@@ -30,7 +30,12 @@ export interface PublishRunInput {
    * (`run.finish` publishes before it ends the run): the run's status and
    * reason as the report should read them.
    */
-  readonly ending?: { readonly status: Run["status"]; readonly reason?: string };
+  readonly ending?: {
+    readonly status: Run["status"];
+    readonly reason?: string;
+    /** When the run ends: the report's wall clock is measured to it (2026-10-26). */
+    readonly endedAt?: string;
+  };
 }
 
 export interface PublishedRun {
@@ -72,6 +77,7 @@ export const publishPlannedRun = async (
               ...gathered.run,
               status: ending.status,
               ...(ending.reason === undefined ? {} : { outcomeReason: ending.reason }),
+              ...(ending.endedAt === undefined ? {} : { endedAt: ending.endedAt }),
             },
           },
     );
