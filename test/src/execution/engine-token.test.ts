@@ -16,7 +16,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JobContract, RouteChoice } from "@nightshift/contracts";
 import { JobContractSchema } from "@nightshift/contracts";
-import { nowIso } from "@nightshift/core";
+import { gatherReport, nowIso, renderReport } from "@nightshift/core";
 import {
   completeJob,
   createEngine,
@@ -111,6 +111,16 @@ describe("a worker launched under the engine's token (D-P10-20, D-P10-29)", () =
 
     const node = await world.environment.stores.executionNodes.get(world.scope, started.nodeId);
     expect(node?.status, node?.outcomeReason).toBe("integrated");
+  });
+
+  it("gathers its run's report, as run.finish publishes it on a machine (2026-10-26)", async () => {
+    // kitchen-modifier-86's finish: "an execution token may not program.list".
+    const world = await createWorld({
+      engine: true,
+      harness: createFakeHarness({ script: async () => ({ kind: "completed" }) }),
+    });
+    const report = await gatherReport(world.environment.stores, world.scope);
+    expect(renderReport(report)).toContain(world.scope.runId);
   });
 
   it("reads every run of its program, and writes nothing outside its own run", async () => {
