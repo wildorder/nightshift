@@ -26,7 +26,7 @@ import {
   type RouteChoice,
   type RouteTarget,
 } from "@nightshift/contracts";
-import { isSettled, markImplemented, nowIso } from "@nightshift/core";
+import { gatherReport, isSettled, markImplemented, nowIso } from "@nightshift/core";
 import {
   completeJob,
   createEngine,
@@ -548,6 +548,19 @@ describe("a strand built as P18 builds it", () => {
     ]);
     expect(await programFiles(w)).toContain("src/answer.js");
     await built.close();
+  }, 120_000);
+});
+
+describe("a strand's examination in its run's report (2026-10-26)", () => {
+  it("counts the strand as examined, and its jobs as examined by it", async () => {
+    const built = await buildStrand({ redTest: false, examined: () => "clean" });
+    await built.close();
+    expect(built.final.status).toBe("integrated");
+    const { review } = await gatherReport(built.world.stores, built.world.scope);
+    expect(review.coverage.examinations.total).toBe(1);
+    expect(review.coverage.examinedNodes).toBe(1);
+    expect(review.coverage.examinedByStrand).toBe(2);
+    expect(review.coverage.landedUnexamined).toBe(0);
   }, 120_000);
 });
 
