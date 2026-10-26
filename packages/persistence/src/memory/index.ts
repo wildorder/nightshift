@@ -14,6 +14,7 @@
  * - Every `put` re-parses its record through the contract schema, so a caller
  *   that built a record by casting is caught here rather than in DynamoDB.
  */
+import { isDeepStrictEqual } from "node:util";
 import {
   type Agent,
   type AgentId,
@@ -129,6 +130,7 @@ import {
   StaleWriteError,
   type StampOutcome,
   type UserStore,
+  VerificationExistsError,
   type VerificationStore,
   type WarmCacheStore,
 } from "@nightshift/core";
@@ -486,7 +488,16 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const verificationStore: VerificationStore = {
     put: async (verification) => {
       const parsed = VerificationSchema.parse(verification);
-      verifications.set(`${runPrefix(parsed)}${parsed.verificationId}`, parsed);
+      const key = `${runPrefix(parsed)}${parsed.verificationId}`;
+      // Evidence is written once: the same body again is a retry, a different one is refused.
+      atomically(() => {
+        const stored = verifications.get(key);
+        if (stored === undefined) {
+          verifications.set(key, parsed);
+        } else if (!isDeepStrictEqual(stored, parsed)) {
+          throw new VerificationExistsError(parsed.verificationId);
+        }
+      });
     },
     get: async (scope: RunScope, verificationId: VerificationId) =>
       verifications.get(`${runPrefix(scope)}${verificationId}`),

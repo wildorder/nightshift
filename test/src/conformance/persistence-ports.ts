@@ -65,6 +65,7 @@ import {
   type ProjectStores,
   type RunScope,
   StaleWriteError,
+  VerificationExistsError,
 } from "@nightshift/core";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -214,6 +215,34 @@ export const describePortConformance = <S extends ProjectStores>(
         expect(await stores.verifications.get(a.scope, verification.verificationId)).toEqual(
           verification,
         );
+      });
+
+      it("refuses a second, different put of a verification and keeps the first", async () => {
+        const node = makeRootNode(a);
+        const verification = makeVerification(a, node);
+        await stores.verifications.put(verification);
+        await expect(
+          stores.verifications.put({
+            ...verification,
+            endedAt: "2031-01-01T00:00:00.000Z",
+          }),
+        ).rejects.toThrow(VerificationExistsError);
+        expect(await stores.verifications.get(a.scope, verification.verificationId)).toEqual(
+          verification,
+        );
+        expect(await stores.verifications.listByNode(a.scope, node.executionNodeId)).toEqual([
+          verification,
+        ]);
+      });
+
+      it("accepts an identical second put of a verification", async () => {
+        const node = makeRootNode(a);
+        const verification = makeVerification(a, node);
+        await stores.verifications.put(verification);
+        await stores.verifications.put({ ...verification });
+        expect(await stores.verifications.listByNode(a.scope, node.executionNodeId)).toEqual([
+          verification,
+        ]);
       });
 
       it("overwrites a record on a second put of the same identifier", async () => {
@@ -379,7 +408,10 @@ export const describePortConformance = <S extends ProjectStores>(
         const contract = makeProgramContract(a);
         const outcomes = await Promise.allSettled(
           ["one", "two", "three"].map((writer) =>
-            stores.programContracts.create({ ...contract, outOfScope: [writer] }),
+            stores.programContracts.create({
+              ...contract,
+              outOfScope: [writer],
+            }),
           ),
         );
         expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
@@ -428,7 +460,11 @@ export const describePortConformance = <S extends ProjectStores>(
         if ((current?.latestVersion ?? 0) !== version - 1) {
           throw new PlanDraftError("stale_base", "stale");
         }
-        return { ...(current ?? draftAt(version)), state: "draft", latestVersion: version };
+        return {
+          ...(current ?? draftAt(version)),
+          state: "draft",
+          latestVersion: version,
+        };
       };
       const append = (version: number, planBytes = version) =>
         stores.planDrafts.appendVersion(versionAt(version, planBytes), (current) =>
@@ -580,7 +616,13 @@ export const describePortConformance = <S extends ProjectStores>(
               ...current,
               acts: [
                 ...current.acts,
-                { kind: "changes_requested", version: 1, by, note, at: "2026-01-01T00:05:00.000Z" },
+                {
+                  kind: "changes_requested",
+                  version: 1,
+                  by,
+                  note,
+                  at: "2026-01-01T00:05:00.000Z",
+                },
               ],
             })),
           ),
@@ -609,7 +651,11 @@ export const describePortConformance = <S extends ProjectStores>(
         const other = b.scope.programId;
         const claim = (programId: ProgramId) =>
           stores.planDrafts.appendVersion(makePlanDraftVersion(a, { programId, version: 1 }), () =>
-            makePlanDraft(a, { programId, name: "shared-name", latestVersion: 1 }),
+            makePlanDraft(a, {
+              programId,
+              name: "shared-name",
+              latestVersion: 1,
+            }),
           );
         const results = await Promise.allSettled([claim(programId), claim(other)]);
         expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
@@ -682,15 +728,25 @@ export const describePortConformance = <S extends ProjectStores>(
         await stores.dispatches.put(dispatch);
         expect(await stores.dispatches.get(a.scope)).toEqual(dispatch);
         expect(await stores.dispatches.get(b.scope)).toBeUndefined();
-        const moved = { ...dispatch, status: "running" as const, generation: 2 };
+        const moved = {
+          ...dispatch,
+          status: "running" as const,
+          generation: 2,
+        };
         await stores.dispatches.put(moved);
         expect(await stores.dispatches.get(a.scope)).toEqual(moved);
       });
 
       it("lists a project's utilization records newest run first, and only that project's", async () => {
         const older = makeComputeUtilization(a);
-        const newerScope: RunScope = { ...a.scope, runId: a.ids.next("run") as RunId };
-        const newer = makeComputeUtilization(a, { ...newerScope, tier: "better" });
+        const newerScope: RunScope = {
+          ...a.scope,
+          runId: a.ids.next("run") as RunId,
+        };
+        const newer = makeComputeUtilization(a, {
+          ...newerScope,
+          tier: "better",
+        });
         await stores.computeUtilizations.put(older);
         await stores.computeUtilizations.put(newer);
         await stores.computeUtilizations.put(makeComputeUtilization(b));
@@ -715,7 +771,10 @@ export const describePortConformance = <S extends ProjectStores>(
           stores.dispatches.put({ ...makeDispatch(a), generation: 0 } as never),
         ).rejects.toThrow();
         await expect(
-          stores.warmCaches.put({ ...makeWarmCache(a), architecture: "x86" } as never),
+          stores.warmCaches.put({
+            ...makeWarmCache(a),
+            architecture: "x86",
+          } as never),
         ).rejects.toThrow();
       });
     });
@@ -775,7 +834,13 @@ export const describePortConformance = <S extends ProjectStores>(
 
       it("refuses a record that is not what its schema says, storing nothing", async () => {
         const record = makeGateHealth(a);
-        const finding = { id: "F-01", rule: 1, found: "x", decisionId: "D-01", paths: [] };
+        const finding = {
+          id: "F-01",
+          rule: 1,
+          found: "x",
+          decisionId: "D-01",
+          paths: [],
+        };
         for (const bad of [
           { ...record, findings: [finding] },
           { ...record, verdict: "broken" },
@@ -823,10 +888,16 @@ export const describePortConformance = <S extends ProjectStores>(
         await stores.feedback.put(makeRunFeedback(a));
         expect(await stores.feedback.get(b.scope)).toBeUndefined();
         expect(
-          await stores.feedback.get({ ...a.scope, projectId: b.scope.projectId }),
+          await stores.feedback.get({
+            ...a.scope,
+            projectId: b.scope.projectId,
+          }),
         ).toBeUndefined();
         expect(
-          await stores.feedback.get({ ...a.scope, programId: b.scope.programId }),
+          await stores.feedback.get({
+            ...a.scope,
+            programId: b.scope.programId,
+          }),
         ).toBeUndefined();
         expect((await stores.feedback.listByProgram(b.scope)).items).toEqual([]);
       });
@@ -996,9 +1067,18 @@ export const describePortConformance = <S extends ProjectStores>(
       });
 
       it("lists by run only the histories anchored on that run", async () => {
-        const otherRun: RunScope = { ...a.scope, runId: a.ids.next("run") as RunId };
+        const otherRun: RunScope = {
+          ...a.scope,
+          runId: a.ids.next("run") as RunId,
+        };
         const mine = makeCompletionHistory(a);
-        const members = [{ programId: otherRun.programId, runId: otherRun.runId, role: "anchor" }];
+        const members = [
+          {
+            programId: otherRun.programId,
+            runId: otherRun.runId,
+            role: "anchor",
+          },
+        ];
         const theirs = makeCompletionHistory(a, {
           ...otherRun,
           members,
@@ -1027,7 +1107,10 @@ export const describePortConformance = <S extends ProjectStores>(
         const orgOne = a.ids.next("org");
         const orgTwo = b.ids.next("org");
         const first = makeProject(a, { orgId: orgOne });
-        const second = makeProject(a, { projectId: a.ids.next("proj"), orgId: orgOne });
+        const second = makeProject(a, {
+          projectId: a.ids.next("proj"),
+          orgId: orgOne,
+        });
         const elsewhere = makeProject(b, { orgId: orgTwo });
         for (const project of [first, second, elsewhere]) await stores.projects.put(project);
 
@@ -1040,7 +1123,9 @@ export const describePortConformance = <S extends ProjectStores>(
       });
 
       it("returns an empty page, not an error, for an org with no projects", async () => {
-        const page = await stores.projects.listByOrg(a.ids.next("org"), { limit: 5 });
+        const page = await stores.projects.listByOrg(a.ids.next("org"), {
+          limit: 5,
+        });
         expect(page.items).toEqual([]);
         expect(page.cursor).toBeUndefined();
       });
@@ -1049,7 +1134,10 @@ export const describePortConformance = <S extends ProjectStores>(
         const orgId = a.ids.next("org");
         const written: ProjectId[] = [];
         for (let i = 0; i < 5; i += 1) {
-          const project = makeProject(a, { projectId: a.ids.next("proj"), orgId });
+          const project = makeProject(a, {
+            projectId: a.ids.next("proj"),
+            orgId,
+          });
           await stores.projects.put(project);
           written.push(project.projectId);
         }
@@ -1119,7 +1207,9 @@ export const describePortConformance = <S extends ProjectStores>(
             expect(Object.keys(item).sort()).toEqual(["lastFour", "provider", "setAt"]);
           }
           expect(await credentials.sealed(orgId, "anthropic")).toEqual(sealed);
-          expect(await credentials.sealed(orgId, "openai")).toMatchObject({ lastFour: "abcd" });
+          expect(await credentials.sealed(orgId, "openai")).toMatchObject({
+            lastFour: "abcd",
+          });
           expect(await credentials.sealed(a.ids.next("org"), "anthropic")).toBeUndefined();
         });
 
@@ -1130,7 +1220,10 @@ export const describePortConformance = <S extends ProjectStores>(
           const npm = makeProjectSecret(orgId, projectId);
           await credentials.putSecret(npm);
           await credentials.putSecret(
-            makeProjectSecret(orgId, projectId, { name: "SENTRY_TOKEN", lastFour: "abcd" }),
+            makeProjectSecret(orgId, projectId, {
+              name: "SENTRY_TOKEN",
+              lastFour: "abcd",
+            }),
           );
           // Another project's, and the org's own key, are no part of it.
           await credentials.putSecret(makeProjectSecret(orgId, a.ids.next("proj")));
@@ -1273,10 +1366,26 @@ export const describePortConformance = <S extends ProjectStores>(
         const node = a.rootNodeId;
         const other = makeNode(a, a.rootNodeId).executionNodeId;
         const mine = [
-          makeEvent(a, { idempotencyKey: "m0", executionNodeId: node, type: "tool.called" }),
-          makeEvent(a, { idempotencyKey: "m1", executionNodeId: node, type: "node.failed" }),
-          makeEvent(a, { idempotencyKey: "m2", executionNodeId: node, type: "tool.called" }),
-          makeEvent(a, { idempotencyKey: "m3", executionNodeId: node, type: "node.failed" }),
+          makeEvent(a, {
+            idempotencyKey: "m0",
+            executionNodeId: node,
+            type: "tool.called",
+          }),
+          makeEvent(a, {
+            idempotencyKey: "m1",
+            executionNodeId: node,
+            type: "node.failed",
+          }),
+          makeEvent(a, {
+            idempotencyKey: "m2",
+            executionNodeId: node,
+            type: "tool.called",
+          }),
+          makeEvent(a, {
+            idempotencyKey: "m3",
+            executionNodeId: node,
+            type: "node.failed",
+          }),
         ];
         await stores.events.append(mine[0] as never);
         await stores.events.append(makeEvent(a, { idempotencyKey: "x0", executionNodeId: other }));
@@ -1302,7 +1411,11 @@ export const describePortConformance = <S extends ProjectStores>(
         const node = a.rootNodeId;
         for (let i = 0; i < 7; i += 1) {
           await stores.events.append(
-            makeEvent(a, { idempotencyKey: `p${i}`, executionNodeId: node, type: "tool.called" }),
+            makeEvent(a, {
+              idempotencyKey: `p${i}`,
+              executionNodeId: node,
+              type: "tool.called",
+            }),
           );
         }
         await settle();
@@ -1375,7 +1488,9 @@ export const describePortConformance = <S extends ProjectStores>(
           await stores.events.append(makeEvent(a, { idempotencyKey: `k${i}` }));
         }
         await settle();
-        const tail = await stores.events.listByRun(a.scope, { afterSequence: 3 });
+        const tail = await stores.events.listByRun(a.scope, {
+          afterSequence: 3,
+        });
         expect(tail.items.map(sequenceOf)).toEqual([4, 5]);
       });
 
@@ -1515,13 +1630,22 @@ export const describePortConformance = <S extends ProjectStores>(
         agentId: f.ids.next("agent"),
         role: "worker",
         routingDecisionId: null,
-        route: { harness: "claude", provider: "anthropic", model: "claude-sonnet-5" },
+        route: {
+          harness: "claude",
+          provider: "anthropic",
+          model: "claude-sonnet-5",
+        },
         observedModels: [],
         segments: [],
         totals: {},
         coverage: "unknown",
         gaps: [],
-        ledger: { chunks: 0, artifactIds: [], observationCount: 0, publishedCount: 0 },
+        ledger: {
+          chunks: 0,
+          artifactIds: [],
+          observationCount: 0,
+          publishedCount: 0,
+        },
         valuation: { source: "unknown" },
         createdAt: T0,
         updatedAt: T0,
@@ -1531,12 +1655,26 @@ export const describePortConformance = <S extends ProjectStores>(
       it("round trips a summary", async () => {
         const summary = summaryFor(a, {
           observedModels: ["claude-sonnet-5"],
-          totals: { inputTokens: 100, outputTokens: 20, inputIncludesCache: false },
+          totals: {
+            inputTokens: 100,
+            outputTokens: 20,
+            inputIncludesCache: false,
+          },
           childCounters: { inputTokens: 5 },
           coverage: "partial",
           gaps: [{ reason: "receipt_lost", count: 2 }],
-          ledger: { chunks: 1, artifactIds: [], observationCount: 3, publishedCount: 2 },
-          valuation: { source: "reported", usd: 0.5, reportedUsd: 0.5, basis: "provider" },
+          ledger: {
+            chunks: 1,
+            artifactIds: [],
+            observationCount: 3,
+            publishedCount: 2,
+          },
+          valuation: {
+            source: "reported",
+            usd: 0.5,
+            reportedUsd: 0.5,
+            basis: "provider",
+          },
           updatedAt: T1,
         });
         await stores.measurements.put(summary);
@@ -1564,7 +1702,11 @@ export const describePortConformance = <S extends ProjectStores>(
       });
 
       it("ignores a put whose updatedAt is older than the stored record's", async () => {
-        const newer = { ...summaryFor(a), totals: { inputTokens: 50 }, updatedAt: T2 };
+        const newer = {
+          ...summaryFor(a),
+          totals: { inputTokens: 50 },
+          updatedAt: T2,
+        };
         const older = { ...newer, totals: { inputTokens: 1 }, updatedAt: T1 };
         await stores.measurements.put(newer);
         await stores.measurements.put(older);
@@ -1582,7 +1724,9 @@ export const describePortConformance = <S extends ProjectStores>(
       it("lists only the requested node's summaries", async () => {
         const other = makeNode(a, a.rootNodeId);
         const mine = summaryFor(a);
-        const theirs = summaryFor(a, { executionNodeId: other.executionNodeId });
+        const theirs = summaryFor(a, {
+          executionNodeId: other.executionNodeId,
+        });
         await stores.measurements.put(mine);
         await stores.measurements.put(theirs);
         expect(await stores.measurements.listByNode(a.scope, a.rootNodeId)).toEqual([mine]);
@@ -1628,7 +1772,12 @@ export const describePortConformance = <S extends ProjectStores>(
 
       it("refuses a summary that claims more published than observed", async () => {
         const bad = summaryFor(a, {
-          ledger: { chunks: 0, artifactIds: [], observationCount: 1, publishedCount: 2 },
+          ledger: {
+            chunks: 0,
+            artifactIds: [],
+            observationCount: 1,
+            publishedCount: 2,
+          },
         });
         await expect(stores.measurements.put(bad)).rejects.toThrow();
         expect(await stores.measurements.get(a.scope, bad.measurementSummaryId)).toBeUndefined();
@@ -1648,7 +1797,10 @@ export const describePortConformance = <S extends ProjectStores>(
       it("refuses a record whose schemaVersion is not 1", async () => {
         const node = makeRootNode(a);
         await expect(
-          stores.executionNodes.put({ ...node, schemaVersion: 2 } as unknown as typeof node),
+          stores.executionNodes.put({
+            ...node,
+            schemaVersion: 2,
+          } as unknown as typeof node),
         ).rejects.toThrow();
       });
 
@@ -1665,7 +1817,9 @@ export const describePortConformance = <S extends ProjectStores>(
       it("refuses an event whose inline payload exceeds the bound", async () => {
         await expect(
           stores.events.append(
-            makeEvent(a, { idempotencyKey: "big" }) as Event & { payload: unknown },
+            makeEvent(a, { idempotencyKey: "big" }) as Event & {
+              payload: unknown;
+            },
           ),
         ).resolves.toBeDefined();
         const oversized = {
@@ -1760,7 +1914,10 @@ export const describePortConformance = <S extends ProjectStores>(
         const contract = makeProgramContract(a);
         const secondProgramId = a.ids.next("prog") as ProgramId;
         await stores.programContracts.put(contract);
-        await stores.programContracts.put({ ...contract, programId: secondProgramId });
+        await stores.programContracts.put({
+          ...contract,
+          programId: secondProgramId,
+        });
         expect((await stores.programContracts.listByProject(a.scope.projectId)).items).toHaveLength(
           2,
         );
