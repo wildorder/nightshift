@@ -6,7 +6,6 @@
  * `keys.ts`; records are re-parsed through their schemas on the way in and out.
  */
 import { randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import {
   AgentSchema,
   ArtifactSchema,
@@ -53,6 +52,7 @@ import {
   StaleWriteError,
   VerificationExistsError,
 } from "@nightshift/core";
+import { persistedEqual } from "../persisted-equal.js";
 import { createEventStore } from "./events.js";
 import { fromItem, type Item, type Parser, REVISION_ATTRIBUTE, toItem } from "./items.js";
 import { keys, type NodeIndexKey, type TableKey } from "./keys.js";
@@ -822,7 +822,7 @@ export const createAwsStores = ({
         } catch (error) {
           if (!isConditionalCheckFailure(error)) throw error;
           const stored = await getRecord(VerificationSchema, key);
-          if (stored === undefined || !isDeepStrictEqual(stored, parsed)) {
+          if (stored === undefined || !persistedEqual(stored, parsed)) {
             throw new VerificationExistsError(parsed.verificationId);
           }
         }

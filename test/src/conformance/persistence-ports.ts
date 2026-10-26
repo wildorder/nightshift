@@ -245,6 +245,33 @@ export const describePortConformance = <S extends ProjectStores>(
         ]);
       });
 
+      it("accepts an identical retry of a verification with explicitly-undefined optional fields", async () => {
+        const node = makeRootNode(a);
+        const base = makeVerification(a, node, { gateFingerprint: undefined });
+        const verification = {
+          ...base,
+          commands: base.commands.map((command) => ({ ...command, quietMs: undefined })),
+        };
+        await stores.verifications.put(verification);
+        await stores.verifications.put({ ...verification });
+        await stores.verifications.put(makeVerification(a, node, { ...verification }));
+        expect(await stores.verifications.listByNode(a.scope, node.executionNodeId)).toHaveLength(
+          1,
+        );
+        await expect(
+          stores.verifications.put({ ...verification, endedAt: "2031-01-01T00:00:00.000Z" }),
+        ).rejects.toThrow(VerificationExistsError);
+        await expect(
+          stores.verifications.put({
+            ...verification,
+            commands: verification.commands.map((command) => ({ ...command, quietMs: 5 })),
+          }),
+        ).rejects.toThrow(VerificationExistsError);
+        const kept = await stores.verifications.get(a.scope, verification.verificationId);
+        expect(kept?.endedAt).toEqual(verification.endedAt);
+        expect(kept?.commands[0]?.quietMs).toBeUndefined();
+      });
+
       it("overwrites a record on a second put of the same identifier", async () => {
         const node = makeRootNode(a, { status: "queued" });
         await stores.executionNodes.put(node);

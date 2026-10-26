@@ -14,7 +14,6 @@
  * - Every `put` re-parses its record through the contract schema, so a caller
  *   that built a record by casting is caught here rather than in DynamoDB.
  */
-import { isDeepStrictEqual } from "node:util";
 import {
   type Agent,
   type AgentId,
@@ -134,6 +133,7 @@ import {
   type VerificationStore,
   type WarmCacheStore,
 } from "@nightshift/core";
+import { persistedEqual } from "../persisted-equal.js";
 import {
   type Atomically,
   mapTables,
@@ -494,7 +494,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
         const stored = verifications.get(key);
         if (stored === undefined) {
           verifications.set(key, parsed);
-        } else if (!isDeepStrictEqual(stored, parsed)) {
+        } else if (!persistedEqual(stored, parsed)) {
           throw new VerificationExistsError(parsed.verificationId);
         }
       });
