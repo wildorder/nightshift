@@ -19,7 +19,7 @@ import type {
   ExecutionNode,
   ExecutionNodeId,
 } from "@nightshift/contracts";
-import { currentStepTime, STEP_TIMED_OUT_EXIT_CODE } from "@nightshift/core";
+import { currentStepTime, isLandingEvidence, STEP_TIMED_OUT_EXIT_CODE } from "@nightshift/core";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import { findingsToAnswer, verificationEvidence } from "./examine.js";
 import { gateDefinitions } from "./gate-repair.js";
@@ -220,7 +220,7 @@ export const strandFailures = async (
   const verification = [
     ...(await environment.stores.verifications.listByNode(session.scope, node.executionNodeId)),
   ]
-    .filter((record) => record.phase !== "candidate" && record.phase !== "run")
+    .filter((record) => isLandingEvidence(record.phase))
     .sort((a, b) => a.endedAt.localeCompare(b.endedAt))
     .at(-1);
   const failing =

@@ -34,7 +34,7 @@ import type {
   ExecutionNode,
   ExecutionNodeId,
 } from "@nightshift/contracts";
-import { nowIso, transition } from "@nightshift/core";
+import { isLandingEvidence, nowIso, transition } from "@nightshift/core";
 import type { LandingEnvironment, RunSession } from "./environment.js";
 import { reconcileGateRepairs } from "./gate-repair.js";
 import {
@@ -138,7 +138,7 @@ export const integrateNode = async (
     (record) =>
       record.commitSha === input.commitSha &&
       record.outcome === "passed" &&
-      record.phase !== "candidate",
+      isLandingEvidence(record.phase),
   );
   if (!verified)
     return { kind: "refused", reason: "no passing queue verification exists for this commit" };

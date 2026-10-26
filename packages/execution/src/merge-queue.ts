@@ -37,7 +37,7 @@ import type {
   Verification,
 } from "@nightshift/contracts";
 import { lifecycleOperationId } from "@nightshift/contracts";
-import { nextToIntegrate, nowIso, transition } from "@nightshift/core";
+import { isLandingEvidence, nextToIntegrate, nowIso, transition } from "@nightshift/core";
 import type { ExecutionEnvironment } from "./environment.js";
 import { examineInQueue, recordRulingLanded } from "./examine.js";
 import { effectiveHead, replayCommit } from "./git/index.js";
@@ -289,7 +289,7 @@ export const createMergeQueue = (environment: ExecutionEnvironment): MergeQueue 
           (record) =>
             record.commitSha === implemented.commitSha &&
             record.outcome === "passed" &&
-            record.phase !== "candidate",
+            isLandingEvidence(record.phase),
         )
         .sort((a, b) => a.endedAt.localeCompare(b.endedAt))
         .at(-1);
