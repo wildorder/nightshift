@@ -147,6 +147,38 @@ export const outcomeOfCommands = (
   return commands.some((command) => command.deferred !== undefined) ? "deferred" : "passed";
 };
 
+/**
+ * The verification phases, declared once. The order is the order the report
+ * and Studio render: queue / candidate / end.
+ */
+export const VERIFICATION_PHASES = ["queue", "candidate", "run"] as const;
+export type VerificationPhase = (typeof VERIFICATION_PHASES)[number];
+export const VerificationPhaseSchema = z.enum(VERIFICATION_PHASES);
+
+/**
+ * Whether a verification of this phase names a job. Total over the phases, so a
+ * new phase must state it.
+ */
+export const VERIFICATION_PHASE_HAS_JOB: Readonly<Record<VerificationPhase, boolean>> = {
+  queue: true,
+  candidate: true,
+  run: false,
+};
+
+/**
+ * Where a verification ran: on the operator's `laptop`, or on a `machine`
+ * identified by its generation and runner image version.
+ */
+export const VerificationEnvironmentSchema = z.discriminatedUnion("where", [
+  z.strictObject({ where: z.literal("laptop") }),
+  z.strictObject({
+    where: z.literal("machine"),
+    generation: z.int().min(1),
+    imageVersion: z.string().min(1),
+  }),
+]);
+export type VerificationEnvironment = z.infer<typeof VerificationEnvironmentSchema>;
+
 export const VerificationSchema = z
   .strictObject({
     ...runScoped,
@@ -172,7 +204,22 @@ export const VerificationSchema = z
      * program head once the work has landed. Recorded on the program node; it
      * verifies no job, and `succeeded` is refused until it has passed.
      */
-    phase: z.enum(["candidate", "queue", "run"]).optional(),
+    phase: VerificationPhaseSchema.optional(),
+    /**
+     * The commit the verified commit was checked against, or landed onto.
+     * Absent when not known, and on every record written before it.
+     */
+    baseSha: CommitShaSchema.optional(),
+    /**
+     * The P15 gate fingerprint at the verified commit.
+     * Absent on every record written before it.
+     */
+    gateFingerprint: z.string().min(1).optional(),
+    /**
+     * Where the verification ran. Absent when not recorded, and on every record
+     * written before it.
+     */
+    environment: VerificationEnvironmentSchema.optional(),
     /** Set when this verification evidences a specific program success criterion. */
     criterionId: z.string().min(1).optional(),
     commands: z.array(VerificationCommandResultSchema).min(1),
@@ -185,10 +232,14 @@ export const VerificationSchema = z
       "outcome must agree with the commands: failed when any step that ran exited non-zero, otherwise deferred when any step could not run, otherwise passed; a skipped step decides nothing",
     path: ["outcome"],
   })
-  .refine((value) => (value.jobContractId === null) === (value.phase === "run"), {
-    message: "a run verification has no job; every other verification names one",
-    path: ["jobContractId"],
-  });
+  .refine(
+    (value) =>
+      (value.jobContractId !== null) === VERIFICATION_PHASE_HAS_JOB[value.phase ?? "queue"],
+    {
+      message: "a run verification has no job; every other verification names one",
+      path: ["jobContractId"],
+    },
+  );
 export type Verification = z.infer<typeof VerificationSchema>;
 
 /**
