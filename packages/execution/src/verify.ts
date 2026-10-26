@@ -83,6 +83,7 @@ import { unmetWhereThisRuns } from "./prerequisites-here.js";
 import { recordArtifact, stepsAs } from "./runner.js";
 import { discardScratch, freshScratch, projectStepEnv } from "./scratch.js";
 import { limitsOf, notAppliedMessages, resolveSteps } from "./step-adjustments.js";
+import { gateFingerprintOf, verificationEnvironmentOf } from "./verification-provenance.js";
 
 export interface VerifyInput {
   readonly session: RunSession;
@@ -243,7 +244,9 @@ export interface RunVerificationInput {
    * `NIGHTSHIFT_BASE_SHA` (D-P17-06). Absent where there is none: the end gates
    * verify a head, not a change.
    */
-  readonly baseSha?: CommitSha | undefined;
+  readonly toldBaseSha?: CommitSha | undefined;
+  /** What the verification records it ran against (always known). */
+  readonly baseSha: CommitSha;
   readonly gates: GateDefinitions;
   /** The steps to run, from `gates.verification`: a job's landing steps, or the run's end gates. */
   readonly steps: readonly VerificationStep[];
@@ -285,7 +288,7 @@ export const runVerification = async (
   const projectEnv = {
     ...(environment.secretEnv ?? {}),
     ...(environment.projectEnv ?? {}),
-    ...verificationFacts({ verificationId, headSha: input.commitSha, baseSha: input.baseSha }),
+    ...verificationFacts({ verificationId, headSha: input.commitSha, baseSha: input.toldBaseSha }),
   };
 
   // A step that needs a human prerequisite nobody has met **cannot run**, and is
@@ -413,6 +416,7 @@ export const runVerification = async (
     ]),
   ];
 
+  const gateFingerprint = await gateFingerprintOf(environment, session, input.commitSha, gates);
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
     ...session.scope,
@@ -427,6 +431,9 @@ export const runVerification = async (
       : { routingDecisionId: input.routingDecisionId }),
     commitSha: input.commitSha,
     ...(input.phase === undefined ? {} : { phase: input.phase }),
+    baseSha: input.baseSha,
+    ...(gateFingerprint === undefined ? {} : { gateFingerprint }),
+    environment: verificationEnvironmentOf(environment.site),
     commands,
     outcome: outcomeOfCommands(commands),
     startedAt,
@@ -515,7 +522,8 @@ export const verifyNode = async (
     routingDecisionId: input.routingDecisionId,
     checkout: input.worktree,
     commitSha,
-    baseSha,
+    baseSha: baseSha ?? commitSha,
+    toldBaseSha: baseSha,
     gates,
     steps,
     label: "verification",

@@ -125,6 +125,7 @@ import { recordArtifact, runAsOf, stepsAs } from "./runner.js";
 import { discardScratch, ensureScratch, freshScratch, projectStepEnv } from "./scratch.js";
 import { prepareCheckout } from "./setup.js";
 import { limitsOf, resolveSteps } from "./step-adjustments.js";
+import { gateFingerprintOf, verificationEnvironmentOf } from "./verification-provenance.js";
 import { announceSteps, skippedStepsPayload } from "./verify.js";
 
 /** The environment variable an examiner's server reads its examination's frame from. */
@@ -1218,6 +1219,12 @@ const candidateVerification = async (
   const workerId = worker?.agentId;
   const attemptDecisionId = (await builderOf(environment, input).catch(() => undefined))
     ?.routingDecisionId;
+  const gateFingerprint = await gateFingerprintOf(
+    environment,
+    input.session,
+    input.commitSha,
+    gates,
+  );
   const verification = VerificationSchema.parse({
     schemaVersion: 1,
     ...input.session.scope,
@@ -1228,6 +1235,9 @@ const candidateVerification = async (
     ...(attemptDecisionId === undefined ? {} : { routingDecisionId: attemptDecisionId }),
     commitSha: input.commitSha,
     phase: "candidate",
+    baseSha: input.base,
+    ...(gateFingerprint === undefined ? {} : { gateFingerprint }),
+    environment: verificationEnvironmentOf(environment.site),
     commands,
     outcome: outcomeOfCommands(commands),
     startedAt,

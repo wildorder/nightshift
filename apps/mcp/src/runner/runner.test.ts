@@ -1769,6 +1769,7 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
       NIGHTSHIFT_API_TOKEN_FILE: tokenFile(f.scope.runId),
       NIGHTSHIFT_STATE_DIR: `/workspace/runs/${f.scope.runId}`,
       NIGHTSHIFT_PUBLISH_BASE: "b".repeat(40),
+      NIGHTSHIFT_IMAGE_VERSION: dispatch.amiVersion,
       NIGHTSHIFT_PINNED_RUN: `${f.scope.projectId}/${f.scope.programId}/${f.scope.runId}`,
       CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-x",
       NIGHTSHIFT_PROJECT_USER: "project",
