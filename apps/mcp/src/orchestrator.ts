@@ -485,6 +485,8 @@ const endRun = async (
   attached: AttachedRun,
   outcome: "succeeded" | "failed" | "cancelled" | "deferred",
   reason: string | undefined,
+  /** The ending's time, as the published report already states it. */
+  endedAt?: string,
 ): Promise<void> => {
   // The run table has no `deferred`, and P7 was not authorised to give it one.
   // `interrupted` is the honest fit: stopped short, durably, to be taken up again.
@@ -493,7 +495,7 @@ const endRun = async (
   const run = await stores.runs.get(attached.session.scope, attached.session.scope.runId);
   if (run === undefined) throw new ToolRefusal("not_found", "this run no longer exists");
   const why = reason === undefined ? {} : { outcomeReason: reason };
-  await stores.runs.put({ ...run, status, endedAt: nowIso(clock), ...why });
+  await stores.runs.put({ ...run, status, endedAt: endedAt ?? nowIso(clock), ...why });
   // The program node follows its run (D-P5-06): `succeeded`, never
   // `integrated`, because a program node integrates nothing.
   await endProgramNode(state.runtime, attached.session, status, reason);
@@ -736,7 +738,7 @@ const endGatesEnding = async (
 const publishFinished = async (
   state: OrchestratorSession,
   attached: AttachedRun,
-  ending: { readonly status: Run["status"]; readonly reason?: string },
+  ending: { readonly status: Run["status"]; readonly reason?: string; readonly endedAt?: string },
   /** Raise the commit's intent; `false` commits locally only. */
   raise = true,
 ): Promise<PublishedRun> => {
@@ -765,9 +767,11 @@ const publishFinished = async (
 const endingStatus = (
   outcome: "succeeded" | "failed" | "cancelled" | "deferred",
   reason: string | undefined,
-): { readonly status: Run["status"]; readonly reason?: string } => ({
+  endedAt: string,
+): { readonly status: Run["status"]; readonly reason?: string; readonly endedAt: string } => ({
   status: outcome === "deferred" ? "interrupted" : outcome,
   ...(reason === undefined ? {} : { reason }),
+  endedAt,
 });
 
 /** One feed per attached run, so each call answers "since the last one". */
@@ -1073,7 +1077,14 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         // branch from the control plane's records alone (P21, D-03) BEFORE the
         // run is settled and ended, so the docs head is the head GitHub must
         // have; the report states the ending asked for.
-        const docs = await publishFinished(state, attached, endingStatus(gated.outcome, gated.why));
+        // One time for the ending, the report the run publishes states and the
+        // run record keeps alike, so its wall clock is measured to it.
+        const endedAt = nowIso(state.runtime.clock);
+        const docs = await publishFinished(
+          state,
+          attached,
+          endingStatus(gated.outcome, gated.why, endedAt),
+        );
         const docsHead = (docs.published ?? docs.committed)?.head;
         const { ending, why, settled } = await publicationEnding(
           state,
@@ -1086,9 +1097,9 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         // the checkout's report is then made true locally, and published by the
         // resume that ends the run.
         if (docsHead !== undefined && (ending !== gated.outcome || why !== gated.why)) {
-          await publishFinished(state, attached, endingStatus(ending, why), false);
+          await publishFinished(state, attached, endingStatus(ending, why, endedAt), false);
         }
-        await endRun(state, attached, ending, why);
+        await endRun(state, attached, ending, why, endedAt);
         // A documentation head GitHub has is published, whatever the first
         // request did; one it lacks is a failure, never `published`.
         const where = docs.published ?? docs.committed;
