@@ -685,7 +685,10 @@ const readRecords = async (
       node.executionNodeId,
       await stores.routingDecisions.listByNode(scope, node.executionNodeId),
     );
-    if (node.kind !== "job") continue;
+    // A job's examinations, and since P18 a strand's: a strand is examined as a
+    // whole, on its own node (2026-10-26: the report said "0 examined" for a
+    // strand an examiner had passed, and left out its rulings).
+    if (node.kind === "program") continue;
     const examinations = await stores.examinations.listByNode(scope, node.executionNodeId);
     if (examinations.length > 0) {
       for (const agent of nodeAgents) {
