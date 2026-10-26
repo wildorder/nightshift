@@ -24,8 +24,10 @@ export const verificationEnvironmentOf = (
 
 /**
  * The P15 fingerprint of the gates at `commit`, from the project's gate-health
- * record. Absent with no store or no record (no machinery), and when it cannot
- * be computed: a verification never fails for it.
+ * record. Absent only when there is no gate-health store or the store has no
+ * record for the project (no machinery). Any other failure, a store read or the
+ * fingerprint computation, propagates: a verification is immutable, so it is
+ * not written without the fingerprint it should carry.
  */
 export const gateFingerprintOf = async (
   environment: Pick<ExecutionEnvironment, "stores">,
@@ -33,20 +35,16 @@ export const gateFingerprintOf = async (
   commit: CommitSha,
   gates: GateDefinitions,
 ): Promise<string | undefined> => {
-  try {
-    const store = environment.stores.gateHealth as GateHealthStore | undefined;
-    if (store === undefined) return undefined;
-    const record = await store.get(session.scope.projectId);
-    if (record === undefined) return undefined;
-    return await fingerprintAtCommit(
-      gitBlobReader(session.repoPath),
-      commit,
-      { setup: [...gates.setup], verification: [...gates.verification] },
-      record.machinery,
-    );
-  } catch {
-    return undefined;
-  }
+  const store = environment.stores.gateHealth as GateHealthStore | undefined;
+  if (store === undefined) return undefined;
+  const record = await store.get(session.scope.projectId);
+  if (record === undefined) return undefined;
+  return await fingerprintAtCommit(
+    gitBlobReader(session.repoPath),
+    commit,
+    { setup: [...gates.setup], verification: [...gates.verification] },
+    record.machinery,
+  );
 };
 
 /**

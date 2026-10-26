@@ -83,11 +83,36 @@ describe("the gate fingerprint a verification records", () => {
     );
   });
 
-  it("is absent with no record or no store, without failing", async () => {
+  it("is absent with no record or no store", async () => {
     const { repo, head } = await repoWithTwoCommits();
     const session = { repoPath: repo, scope: { projectId: "proj_1" } } as never;
     const none = { stores: { gateHealth: { get: async () => undefined } } } as never;
     expect(await gateFingerprintOf(none, session, head, gates)).toBeUndefined();
     expect(await gateFingerprintOf({ stores: {} } as never, session, head, gates)).toBeUndefined();
+  });
+
+  it("rejects when the store read throws", async () => {
+    const { repo, head } = await repoWithTwoCommits();
+    const session = { repoPath: repo, scope: { projectId: "proj_1" } } as never;
+    const broken = {
+      stores: {
+        gateHealth: {
+          get: async () => {
+            throw new Error("store down");
+          },
+        },
+      },
+    } as never;
+    await expect(gateFingerprintOf(broken, session, head, gates)).rejects.toThrow("store down");
+  });
+
+  it("rejects when the fingerprint cannot be computed", async () => {
+    const { head } = await repoWithTwoCommits();
+    const missing = join(tmpdir(), "ns-prov-no-such-repo");
+    const session = { repoPath: missing, scope: { projectId: "proj_1" } } as never;
+    const environment = {
+      stores: { gateHealth: { get: async () => ({ machinery: ["a.txt"] }) } },
+    } as never;
+    await expect(gateFingerprintOf(environment, session, head, gates)).rejects.toThrow();
   });
 });
