@@ -11,10 +11,30 @@
  * producing command results with zero exit codes, which the contract schema
  * cross-checks.
  */
-import type { CommitSha, ExecutionNode, IsoTimestamp, Verification } from "@nightshift/contracts";
+import type {
+  CommitSha,
+  ExecutionNode,
+  IsoTimestamp,
+  Verification,
+  VerificationPhase,
+} from "@nightshift/contracts";
 import { VerificationEvidenceError } from "../errors.js";
 import { sameRun } from "./ownership.js";
 import { transition } from "./transitions.js";
+
+const LANDING_EVIDENCE: Readonly<Record<VerificationPhase, boolean>> = {
+  queue: true,
+  candidate: false,
+  run: false,
+};
+
+/**
+ * Whether a verification of this phase can be evidence for landing. An absent
+ * phase reads as `queue`. Exhaustive over the phases, so a new phase must be
+ * classified here before the package compiles.
+ */
+export const isLandingEvidence = (phase: VerificationPhase | undefined): boolean =>
+  LANDING_EVIDENCE[phase ?? "queue"];
 
 /**
  * Every reason `verification` fails to evidence `node`. Empty means the evidence
@@ -29,8 +49,10 @@ export const explainEvidenceMismatch = (
   // P8 (D-P8-09): the check an examined job's snapshot gets on its own base is
   // what the examiner reads, not what lets it land. Only a verification on the
   // program head, in the merge queue, is evidence.
-  if (verification.phase === "candidate") {
-    reasons.push("a candidate verification, on the job's own base, is not evidence for landing");
+  if (!isLandingEvidence(verification.phase)) {
+    reasons.push(
+      `a ${verification.phase} verification, not one in the merge queue, is not evidence for landing`,
+    );
   }
 
   if (!sameRun(node, verification)) {

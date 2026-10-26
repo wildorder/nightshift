@@ -1,3 +1,4 @@
+import { VERIFICATION_PHASES, type VerificationPhase } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { IllegalTransitionError, VerificationEvidenceError } from "../errors.js";
 import {
@@ -12,6 +13,7 @@ import {
 import { transition } from "./transitions.js";
 import {
   explainEvidenceMismatch,
+  isLandingEvidence,
   isValidEvidence,
   isVerificationStale,
   markImplemented,
@@ -181,5 +183,26 @@ describe("isVerificationStale", () => {
     const verification = makeVerification(f, node, { jobContractId });
     const newHead = "4444444444444444444444444444444444444444";
     expect(isVerificationStale(node, verification, newHead)).toBe(true);
+  });
+});
+
+describe("isLandingEvidence", () => {
+  // Written out here on purpose: a new phase fails this test until it is classified.
+  const expected: Readonly<Record<VerificationPhase, boolean>> = {
+    queue: true,
+    candidate: false,
+    run: false,
+  };
+
+  it("classifies every verification phase, and only those", () => {
+    expect(Object.keys(expected).sort()).toEqual([...VERIFICATION_PHASES].sort());
+  });
+
+  it.each(VERIFICATION_PHASES)("classifies %s as the table says", (phase) => {
+    expect(isLandingEvidence(phase)).toBe(expected[phase]);
+  });
+
+  it("reads an absent phase as queue", () => {
+    expect(isLandingEvidence(undefined)).toBe(true);
   });
 });

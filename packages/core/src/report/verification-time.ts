@@ -8,15 +8,16 @@ import {
   type ProgramContract,
   SETUP_STEP_ID_PREFIX,
   stepRunsAt,
+  VERIFICATION_PHASES,
   type Verification,
   type VerificationForecast,
+  type VerificationPhase,
 } from "@nightshift/contracts";
 import { type Recommendation, recommend } from "../forecast/catalogue.js";
 import { END_GATE_RUNS, forecast, type MeasuredStep } from "../forecast/model.js";
 import { resolvedFromRecord } from "../forecast/record.js";
 
-export type VerificationPhase = "queue" | "candidate" | "run";
-export const VERIFICATION_PHASES: readonly VerificationPhase[] = ["queue", "candidate", "run"];
+export { VERIFICATION_PHASES, type VerificationPhase };
 
 export interface PhaseTime {
   readonly runs: number;
@@ -58,11 +59,10 @@ export interface VerificationTimeReport {
   readonly recommendations: readonly Recommendation[];
 }
 
-const emptyPhases = (): Record<VerificationPhase, { runs: number; totalMs: number }> => ({
-  queue: { runs: 0, totalMs: 0 },
-  candidate: { runs: 0, totalMs: 0 },
-  run: { runs: 0, totalMs: 0 },
-});
+const emptyPhases = (): Record<VerificationPhase, { runs: number; totalMs: number }> =>
+  Object.fromEntries(
+    VERIFICATION_PHASES.map((phase) => [phase, { runs: 0, totalMs: 0 }]),
+  ) as Record<VerificationPhase, { runs: number; totalMs: number }>;
 
 const kindOf = (program: ProgramContract, id: string): StepTimeReport["kind"] => {
   if (id.startsWith(SETUP_STEP_ID_PREFIX)) return "setup";
