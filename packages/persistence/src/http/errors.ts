@@ -40,6 +40,7 @@ import {
   StaleWriteError,
   TreeStructureError,
   VerificationEvidenceError,
+  VerificationExistsError,
 } from "@nightshift/core";
 
 /**
@@ -96,6 +97,7 @@ const DOMAIN_ERRORS: Readonly<Record<DomainErrorCode, (message: string) => Domai
     new CompletionMembershipError({ programId: "", runId: "" }, "unknown_run"),
   plan_draft: () => new PlanDraftError("conflict", ""),
   program_contract_exists: () => new ProgramContractExistsError(""),
+  verification_exists: () => new VerificationExistsError(""),
 };
 
 const isDomainErrorCode = (code: string): code is DomainErrorCode =>

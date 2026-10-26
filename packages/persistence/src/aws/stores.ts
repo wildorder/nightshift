@@ -6,6 +6,7 @@
  * `keys.ts`; records are re-parsed through their schemas on the way in and out.
  */
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   AgentSchema,
   ArtifactSchema,
@@ -50,6 +51,7 @@ import {
   type ProjectStore,
   runScopeOf,
   StaleWriteError,
+  VerificationExistsError,
 } from "@nightshift/core";
 import { createEventStore } from "./events.js";
 import { fromItem, type Item, type Parser, REVISION_ATTRIBUTE, toItem } from "./items.js";
@@ -804,12 +806,26 @@ export const createAwsStores = ({
       put: async (verification) => {
         const parsed = VerificationSchema.parse(verification);
         const scope = runScopeOf(parsed);
-        await putRecord(
-          "Verification",
-          keys.runRecord(scope, "VER", parsed.verificationId),
-          parsed,
-          keys.nodeIndex(scope, parsed.executionNodeId, "VER", parsed.verificationId),
-        );
+        const key = keys.runRecord(scope, "VER", parsed.verificationId);
+        try {
+          await table.put({
+            TableName: tableName,
+            Item: toItem(
+              "Verification",
+              key,
+              parsed,
+              keys.nodeIndex(scope, parsed.executionNodeId, "VER", parsed.verificationId),
+            ),
+            ConditionExpression: "attribute_not_exists(#pk)",
+            ExpressionAttributeNames: { "#pk": "PK" },
+          });
+        } catch (error) {
+          if (!isConditionalCheckFailure(error)) throw error;
+          const stored = await getRecord(VerificationSchema, key);
+          if (stored === undefined || !isDeepStrictEqual(stored, parsed)) {
+            throw new VerificationExistsError(parsed.verificationId);
+          }
+        }
       },
       get: (scope, id) => getRecord(VerificationSchema, keys.runRecord(scope, "VER", id)),
       listByNode: (scope, nodeId) =>
