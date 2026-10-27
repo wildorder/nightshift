@@ -6,7 +6,12 @@
  * any quota.
  */
 import { isConditionalCheckFailure, keys, type TableClient } from "@nightshift/persistence/aws";
-import type { PublishLock } from "../runner/publisher.js";
+import { isLineScope, type PublishLock, type PublishTarget } from "../runner/publisher.js";
+
+const lockKeyOf = (target: PublishTarget) =>
+  isLineScope(target)
+    ? keys.linePublishLock(target.projectId, target.branch)
+    : keys.publishLock(target.runId);
 
 export const createDynamoPublishLock = (table: TableClient, tableName: string): PublishLock => ({
   acquire: async (scope, leaseMs) => {
@@ -15,9 +20,11 @@ export const createDynamoPublishLock = (table: TableClient, tableName: string): 
       await table.put({
         TableName: tableName,
         Item: {
-          ...keys.publishLock(scope.runId),
+          ...lockKeyOf(scope),
           entity: "PublishLock",
-          runId: scope.runId,
+          ...(isLineScope(scope)
+            ? { projectId: scope.projectId, branch: scope.branch }
+            : { runId: scope.runId }),
           takenAt: new Date(now).toISOString(),
           expiresAtMs: now + leaseMs,
         },
@@ -32,6 +39,6 @@ export const createDynamoPublishLock = (table: TableClient, tableName: string): 
     }
   },
   release: async (scope) => {
-    await table.delete({ TableName: tableName, Key: keys.publishLock(scope.runId) });
+    await table.delete({ TableName: tableName, Key: lockKeyOf(scope) });
   },
 });

@@ -8,6 +8,7 @@
  * Composition only: the logic is `runner/publisher.ts`, held to the offline
  * suite over a local git server.
  */
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { S3Client } from "@aws-sdk/client-s3";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
@@ -17,7 +18,7 @@ import { createDynamoPublishLock } from "../aws/publish-lock.js";
 import { createS3BundleStore } from "../aws/s3-bundles.js";
 import { loadConfig } from "../config.js";
 import { createGitHubAppClient, type GitHubAppSecret } from "../github/app.js";
-import { publishAll } from "../runner/publisher.js";
+import { type LineScope, publishAll, publishLine } from "../runner/publisher.js";
 
 const config = loadConfig(process.env);
 const table = createAwsClients().table;
@@ -45,29 +46,62 @@ const githubSecret = (() => {
 const github = createGitHubAppClient({ secret: githubSecret });
 const bundles = createS3BundleStore(new S3Client({}), config.bucketName);
 
-export interface PublishEvent {
+export interface RunPublishEvent {
   readonly projectId: string;
   readonly programId: string;
   readonly runId: string;
 }
 
+/** A run's intents (`RunPublishEvent`), or a line's push. */
+export type PublishEvent =
+  | RunPublishEvent
+  | { readonly kind: "line"; readonly projectId: string; readonly branch: string };
+
+const isLineEvent = (
+  event: PublishEvent,
+): event is Extract<PublishEvent, { readonly kind: "line" }> =>
+  "kind" in event && event.kind === "line";
+
+/** Starts the line owner: the dispatch function, asynchronously, with the line's identity. */
+const startLineMachine = async (target: Pick<LineScope, "projectId" | "branch">): Promise<void> => {
+  const functionArn = config.dispatchFunctionArn;
+  if (functionArn === undefined)
+    throw new Error("the publisher needs NIGHTSHIFT_DISPATCH_FUNCTION_ARN");
+  await new LambdaClient({}).send(
+    new InvokeCommand({
+      FunctionName: functionArn,
+      InvocationType: "Event",
+      Payload: Buffer.from(
+        JSON.stringify({ kind: "line", projectId: target.projectId, branch: target.branch }),
+      ),
+    }),
+  );
+};
+
 export const handler = async (event: PublishEvent): Promise<Record<string, number>> => {
+  const deps = {
+    stores,
+    clock: systemClock,
+    github,
+    bundles,
+    lock,
+    startLineMachine,
+    log: (line: string) => console.warn(`publisher: ${line}`),
+  };
+  if (isLineEvent(event)) {
+    const step = await publishLine(deps, {
+      projectId: ProjectIdSchema.parse(event.projectId),
+      branch: event.branch,
+    });
+    console.warn(`publisher line ${event.branch}: ${step}`);
+    return { [step]: 1 };
+  }
   const scope = {
     projectId: ProjectIdSchema.parse(event.projectId),
     programId: ProgramIdSchema.parse(event.programId),
     runId: RunIdSchema.parse(event.runId),
   };
-  const counts = await publishAll(
-    {
-      stores,
-      clock: systemClock,
-      github,
-      bundles,
-      lock,
-      log: (line) => console.warn(`publisher: ${line}`),
-    },
-    scope,
-  );
+  const counts = await publishAll(deps, scope);
   console.warn(`publisher ${scope.runId}: ${JSON.stringify(counts)}`);
   return counts;
 };
