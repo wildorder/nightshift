@@ -1421,7 +1421,8 @@ const renderUnlanded = (unlanded: readonly StrandPublication[]): string[] =>
 
 /**
  * Whether GitHub has the run's work, said before anything else: a run whose
- * landings are not all at GitHub has not delivered, whatever its strands did.
+ * landings cannot reach GitHub has not delivered, whatever its strands did.
+ * Landings still queued are not that, and are said plainly.
  */
 const renderPublication = (publication: PublicationReport | undefined): string[] => {
   if (publication === undefined) return [];
@@ -1439,12 +1440,19 @@ const renderLandings = (publication: PublicationReport): string[] => {
   }
   const count = state.unpublished.length;
   const landings = `${count} landing${count === 1 ? "" : "s"}`;
+  if (state.kind === "pending") {
+    // Not a failure: the publisher pushes in order, and the run's report goes
+    // out behind them on the same chain, so the copy on GitHub can only exist
+    // once they are there. A refusal makes the chain blocked, and that leads.
+    return [
+      `${landings} of this run ${count === 1 ? "was" : "were"} still queued for the publisher when this report was written (${state.unpublished.map((intent) => `\`${intent.head.slice(0, 12)}\``).join(", ")}). It pushes them to \`${branch}\` in order, and the run's published report follows them, so its copy on GitHub means they are there too.`,
+      "",
+    ];
+  }
   return [
     "## NOT ON GITHUB — read this first",
     "",
-    state.kind === "blocked"
-      ? `${landings} of this run are not on GitHub's \`${branch}\`. ${state.blocked ?? ""}`.trimEnd()
-      : `${landings} of this run were still waiting for the publisher when this report was written.`,
+    `${landings} of this run are not on GitHub's \`${branch}\`. ${state.blocked ?? ""}`.trimEnd(),
     "",
     `GitHub's \`${branch}\` is at \`${state.head?.slice(0, 12) ?? "the run's base"}\`; the run's work ends at \`${state.tip?.slice(0, 12) ?? "?"}\`.`,
     "Every landing is kept in the run's stored bundles. Once the cause is fixed, `nightshift resume <program>` publishes them in order; no machine is needed.",
