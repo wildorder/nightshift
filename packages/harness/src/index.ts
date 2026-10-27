@@ -17,6 +17,7 @@ export {
   renderArbiterBrief,
   renderExaminerBrief,
   renderForbiddenActions,
+  renderLineBrief,
   renderPlanFollowingBrief,
   renderSubOrchestratorBrief,
   renderWorkerBrief,
@@ -39,10 +40,12 @@ export {
   type HarnessCapabilities,
   type HarnessExit,
   type HarnessHandle,
+  type HarnessLineStartInput,
   type HarnessStartInput,
   hookTypeForExit,
   inclusionOfExit,
   isoFromEpochSeconds,
+  type LineTask,
   type McpLaunch,
   millis,
   type ProgramRuling,
@@ -60,6 +63,7 @@ export {
   nullHookSink,
   recordingHookSink,
 } from "./hooks.js";
+export { cancelAtDeadline, LINE_DEADLINE_GRACE } from "./line-deadline.js";
 export {
   type HarnessObservation,
   type MeasurementSink,

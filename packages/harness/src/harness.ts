@@ -366,6 +366,43 @@ export interface HarnessStartInput {
   readonly measurements?: MeasurementSink;
 }
 
+/**
+ * What a line agent is there to do. The brief is the line owner's own text (the
+ * conflict, or the commit to examine); the prompt is rendered from it in
+ * `brief.ts`.
+ */
+export type LineTask =
+  | { readonly kind: "line_resolve"; readonly brief: string }
+  | { readonly kind: "line_examine"; readonly brief: string };
+
+/**
+ * A launch for the line owner's resolver or examiner (strand S-04). The line
+ * has no run: no persisted `Agent`, `ExecutionNode`, `JobContract` or
+ * `ProgramContract`, and none is invented. The caller mints `agentId` with its
+ * own IdGenerator and announces it durably before calling.
+ */
+export interface HarnessLineStartInput {
+  /** An ordinary `agent_<ULID>` minted by the caller. Put on the handle; never minted here. */
+  readonly agentId: AgentId;
+  readonly role: "line_resolver" | "line_examiner";
+  /** Absolute path to the worktree: the agent's working directory. */
+  readonly worktree: string;
+  /** The worktree's own temp directory; the adapter points `TMPDIR`, `TEMP` and `TMP` at it. */
+  readonly tmpDir?: string;
+  /** Harness, provider and model, as routing chose them. */
+  readonly model: RouteTarget;
+  /** The project user the process runs as, exactly as a worker's does. */
+  readonly runAs?: RunAs;
+  /**
+   * The agent's whole environment: project env and provider credentials. The
+   * adapter reads nothing from the engine's own environment for it.
+   */
+  readonly env: Readonly<Record<string, string>>;
+  /** ISO 8601. At this instant the adapter stops the agent and `exit` settles `cancelled`. */
+  readonly deadline: string;
+  readonly task: LineTask;
+}
+
 /** Usage and its provenance, carried by every `HarnessExit` variant. */
 export interface ExitMeasures {
   /** The usage seen, including before a stop (`cancelled`, `interrupted`). */
@@ -504,6 +541,14 @@ export interface Harness {
    * exists is reported through `exit`.
    */
   start(input: HarnessStartInput): Promise<HarnessHandle>;
+
+  /**
+   * Starts the line owner's resolver or examiner (strand S-04): the same handle
+   * and exit as `start`, with no run-scoped records, no MCP server and no
+   * worker tools. Git writes are denied as for a worker; an examiner may not
+   * edit files. Optional: an adapter that cannot serve a line leaves it out.
+   */
+  startLine?(input: HarnessLineStartInput): Promise<HarnessHandle>;
 
   /**
    * Stops a running worker: a cooperative stop first, then a hard kill after

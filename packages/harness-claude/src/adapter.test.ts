@@ -23,6 +23,7 @@ import {
 } from "@nightshift/core";
 import type {
   HarnessExit,
+  HarnessLineStartInput,
   HarnessStartInput,
   HookEvent,
   McpLaunch,
@@ -1498,3 +1499,113 @@ describe.skipIf(process.getuid?.() === 0)(
     }, 30_000);
   },
 );
+
+describe("startLine (strand S-04)", () => {
+  const AGENT_ID = "agent_01M5Z0000000000000000LINE1" as HarnessStartInput["agent"]["agentId"];
+  const lineInput = (
+    role: "line_resolver" | "line_examiner",
+    extra: Partial<HarnessLineStartInput> = {},
+  ): HarnessLineStartInput => ({
+    agentId: AGENT_ID,
+    role,
+    worktree: "/state/line/wt",
+    tmpDir: "/state/line/tmp",
+    model: MODEL,
+    env: { PATH: "/usr/bin", CUSTOM_PROJECT_VAR: "yes" },
+    deadline: "2999-01-01T00:00:00.000Z",
+    task:
+      role === "line_resolver"
+        ? { kind: "line_resolve", brief: "RESOLVE THE CONFLICT IN a.ts" }
+        : { kind: "line_examine", brief: "EXAMINE COMMIT abc" },
+    ...extra,
+  });
+
+  const promptOf = (child: FakeChild | undefined): string =>
+    (JSON.parse(child?.written[0] ?? "{}") as { message: { content: string } }).message.content;
+
+  it("sends the line task's prompt, runs in the worktree, passes no MCP server, and carries the given agentId", async () => {
+    const { spawn, calls, children } = fakeSpawn();
+    const { fs, written } = fakeFileSystem();
+    const handle = await harnessWith(spawn, fs).startLine?.(lineInput("line_resolver"));
+    expect(handle?.agentId).toBe(AGENT_ID);
+    expect(calls[0]?.options.cwd).toBe("/state/line/wt");
+    expect(promptOf(children[0])).toContain("RESOLVE THE CONFLICT IN a.ts");
+    expect(promptOf(children[0])).toContain("line resolver");
+    expect(written.get(MCP_CONFIG_PATH)).toBe(`${JSON.stringify({ mcpServers: {} }, null, 2)}\n`);
+    expect(calls[0]?.args).toContain("--strict-mcp-config");
+  });
+
+  it("uses the environment handed in and none of the engine's", async () => {
+    const { spawn, calls } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    await harnessWith(spawn, fs).startLine?.(lineInput("line_resolver"));
+    const env = calls[0]?.options.env ?? {};
+    expect(env.CUSTOM_PROJECT_VAR).toBe("yes");
+    expect(env.HOME).toBeUndefined();
+    expect(env.NIGHTSHIFT_ROLE).toBeUndefined();
+    expect(env.TMPDIR).toBe("/state/line/tmp");
+  });
+
+  it("denies git writes to the resolver, and file edits as well to the examiner", async () => {
+    const { spawn, calls } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    const harness = harnessWith(spawn, fs);
+    await harness.startLine?.(lineInput("line_resolver"));
+    await harness.startLine?.(lineInput("line_examiner"));
+    const denied = (call: SpawnCall | undefined): string =>
+      call?.args[(call.args.indexOf("--disallowedTools") ?? 0) + 1] ?? "";
+    expect(denied(calls[0])).toContain("Bash(git commit:*)");
+    expect(denied(calls[0])).toContain("Bash(git push:*)");
+    expect(denied(calls[0]).split(",")).not.toContain("Edit");
+    expect(denied(calls[1])).toContain("Bash(git commit:*)");
+    for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+      expect(denied(calls[1]).split(",")).toContain(tool);
+    }
+  });
+
+  it("launches and cancels through runAs", async () => {
+    const { spawn, calls, children } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    const kills: [number, string][] = [];
+    const harness = harnessWith(spawn, fs, { platform: "linux" });
+    const handle = await harness.startLine?.(
+      lineInput("line_resolver", {
+        runAs: {
+          user: "proj-1",
+          grant: async () => undefined,
+          kill: (pid, signal) => void kills.push([pid, signal]),
+        },
+      }),
+    );
+    expect(calls[0]?.file).toBe("sudo");
+    expect(calls[0]?.args.slice(0, 3)).toEqual(["-n", "-u", "proj-1"]);
+    if (handle === undefined) throw new Error("no handle");
+    const cancelled = harness.cancel(handle, millis(10));
+    expect(kills.length).toBeGreaterThan(0);
+    children[0]?.close(null, "SIGINT");
+    await cancelled;
+    expect((await handle.exit).kind).toBe("cancelled");
+  });
+
+  it("stops the agent at its deadline and settles the exit once", async () => {
+    vi.useFakeTimers();
+    const { spawn, children } = fakeSpawn();
+    const { fs } = fakeFileSystem();
+    const kills: string[] = [];
+    const harness = harnessWith(spawn, fs, {
+      platform: "linux",
+      kill: (_pid, signal) => void kills.push(signal),
+    });
+    const handle = await harness.startLine?.(
+      lineInput("line_resolver", {
+        deadline: new Date(Date.UTC(2026, 8, 15, 12, 0, 0, 50)).toISOString(),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(200);
+    expect(kills).toContain("SIGINT");
+    children[0]?.close(null, "SIGINT");
+    children[0]?.close(0);
+    const exit = await handle?.exit;
+    expect(exit?.kind).toBe("cancelled");
+  });
+});

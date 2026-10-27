@@ -443,6 +443,15 @@ export const createRoutedHarness = (construct: (harness: string) => Harness): Ha
       owners.set(handle, adapter);
       return handle;
     },
+    startLine: async (input) => {
+      const adapter = adapterFor(input.model.harness);
+      if (adapter.startLine === undefined) {
+        throw new Error(`the ${input.model.harness} harness cannot launch a line agent`);
+      }
+      const handle = await adapter.startLine(input);
+      owners.set(handle, adapter);
+      return handle;
+    },
     cancel: async (handle, grace) => {
       await owners.get(handle)?.cancel(handle, grace);
     },
