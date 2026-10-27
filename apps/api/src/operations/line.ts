@@ -474,7 +474,7 @@ export const lineHeartbeat: Handler = async (context) => {
   // Charged by the dispatch's cumulative spend against what the row already
   // holds for it, never by this beat's delta: a write that failed is repaired
   // by the next beat, and a repeated beat charges nothing.
-  const chargeKey = dispatchChargeKey(dispatch.branch, dispatch.generation);
+  const chargeKey = dispatchChargeKey(dispatch.branch, dispatch.engineAgentId);
   const baselineUsd =
     held !== undefined && held.charged?.[chargeKey] !== undefined
       ? 0
