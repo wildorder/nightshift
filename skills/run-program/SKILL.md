@@ -109,6 +109,10 @@ Check, and say what you find, without fixing anything the human did not ask for:
 You do not write code during the run, and you do not touch the checkout: every
 landing fast-forwards the branch it is on.
 
+When the run is remote and the project has a line, the run's published program
+branch is queued onto the project line and composed there by the line owner; the
+run never waits on it. `nightshift line status` shows the line.
+
 ### 2a. When a gate breaks
 
 Read the failure and distinguish an environment problem from a defect in the
