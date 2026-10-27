@@ -20,6 +20,9 @@ import {
   GateHealthSchema,
   type IsoTimestamp,
   JobContractSchema,
+  type LineDispatch,
+  LineDispatchSchema,
+  LineRecordSchema,
   MeasurementSummarySchema,
   MembershipSchema,
   OrgComputeUsageSchema,
@@ -33,6 +36,7 @@ import {
   ProjectSchema,
   type ProjectSecret,
   ProjectSecretSchema,
+  ProjectSelfStartedUsageSchema,
   RoutingDecisionSchema,
   RunFeedbackSchema,
   type RunId,
@@ -47,6 +51,7 @@ import {
   IllegalTransitionError,
   isNeverStartedRun,
   isRunTerminal,
+  lineHasWork,
   NEVER_STARTED_REASON,
   type NightshiftStores,
   nowIso,
@@ -309,31 +314,154 @@ export const createAwsStores = ({
       listPage(ProjectSchema, inTable(keys.orgProjectPartition(orgId)), page),
   };
 
-  /** Placeholders until J2 stores the project line; a call fails loudly rather than seeming to work. */
-  const notYet = (what: string) => async (): Promise<never> => {
-    throw new Error(`${what} is not stored in DynamoDB yet (Pipkin M1b, J2)`);
+  /**
+   * Reads the item at `key`, applies `change` and puts the result with `version`
+   * one higher, only if the stored `version` is still the one read; a lost race
+   * reads again. `create` handles an absent item (undefined: refuse the update).
+   */
+  const updateVersioned = async <T extends { readonly version: number }>(
+    entity: string,
+    schema: Parser<T>,
+    key: TableKey,
+    change: (current: T | undefined) => T | undefined,
+    indexOf?: (record: T) => NodeIndexKey | undefined,
+  ): Promise<T | undefined> => {
+    for (let attempt = 1; ; attempt += 1) {
+      const current = await getRecord(schema, key);
+      const next = change(current);
+      if (next === undefined) return current;
+      const parsed = schema.parse({ ...next, version: (current?.version ?? 0) + 1 });
+      try {
+        await table.put({
+          TableName: tableName,
+          Item: toItem(entity, key, parsed, indexOf?.(parsed)),
+          ConditionExpression:
+            current === undefined ? "attribute_not_exists(#pk)" : "#version = :previous",
+          ExpressionAttributeNames:
+            current === undefined ? { "#pk": "PK" } : { "#version": "version" },
+          ...(current === undefined
+            ? {}
+            : { ExpressionAttributeValues: { ":previous": current.version } }),
+        });
+        return parsed;
+      } catch (error) {
+        if (!isConditionalCheckFailure(error) || attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+      }
+    }
+  };
+
+  const lines: NightshiftStores["lines"] = {
+    get: (projectId, branch) => getRecord(LineRecordSchema, keys.line(projectId, branch)),
+    update: (projectId, branch, change) =>
+      updateVersioned(
+        "LineRecord",
+        LineRecordSchema,
+        keys.line(projectId, branch),
+        (current) => {
+          const next = change(current);
+          return next === undefined ? undefined : { ...next, projectId, branch };
+        },
+        (record) => (lineHasWork(record) ? keys.lineWorkIndex(projectId, branch) : undefined),
+      ),
+    listWithWork: async () => listAll(LineRecordSchema, inIndex(keys.lineWorkIndexPartition())),
+  };
+
+  const lineDispatches: NightshiftStores["lineDispatches"] = {
+    get: (projectId, branch) => getRecord(LineDispatchSchema, keys.lineDispatch(projectId, branch)),
+    start: async (next) => {
+      // The version continues a settled predecessor's, so a stale writer of the old
+      // row cannot match the new one; the condition alone decides who starts.
+      const stored = await getRecord(
+        LineDispatchSchema,
+        keys.lineDispatch(next.projectId, next.branch),
+      );
+      const parsed = LineDispatchSchema.parse({ ...next, version: (stored?.version ?? 0) + 1 });
+      try {
+        await table.put({
+          TableName: tableName,
+          Item: toItem(
+            "LineDispatch",
+            keys.lineDispatch(parsed.projectId, parsed.branch),
+            parsed,
+            keys.lineDispatchIndex(
+              parsed.status,
+              parsed.updatedAt,
+              parsed.projectId,
+              parsed.branch,
+            ),
+          ),
+          // Nothing stored, or a terminal dispatch whose cleanup settled and whose
+          // generation this one follows.
+          ConditionExpression:
+            "attribute_not_exists(#pk) OR ((#status = :stopped OR #status = :failed) AND " +
+            "attribute_exists(#cleanup.#settledAt) AND #generation = :previous)",
+          ExpressionAttributeNames: {
+            "#pk": "PK",
+            "#status": "status",
+            "#cleanup": "cleanup",
+            "#settledAt": "settledAt",
+            "#generation": "generation",
+          },
+          ExpressionAttributeValues: {
+            ":stopped": "stopped",
+            ":failed": "failed",
+            ":previous": parsed.generation - 1,
+          },
+        });
+        return "started";
+      } catch (error) {
+        if (!isConditionalCheckFailure(error)) throw error;
+        return "live";
+      }
+    },
+    update: async (projectId, branch, change) => {
+      const key = keys.lineDispatch(projectId, branch);
+      return updateVersioned(
+        "LineDispatch",
+        LineDispatchSchema,
+        key,
+        (current) => {
+          if (current === undefined) return undefined;
+          const next = change(current);
+          return next === undefined ? undefined : { ...next, projectId, branch };
+        },
+        (record) => keys.lineDispatchIndex(record.status, record.updatedAt, projectId, branch),
+      );
+    },
+    listByStatus: async (statuses) => {
+      const found: LineDispatch[] = [];
+      for (const status of statuses) {
+        found.push(
+          ...(await listAll(LineDispatchSchema, inIndex(keys.lineDispatchIndexPartition(status)))),
+        );
+      }
+      return found;
+    },
+  };
+
+  const projectSelfStartedUsage: NightshiftStores["projectSelfStartedUsage"] = {
+    get: (projectId, month) =>
+      getRecord(ProjectSelfStartedUsageSchema, keys.projectSelfStartedUsage(projectId, month)),
+    update: (projectId, month, change) =>
+      updateVersioned(
+        "ProjectSelfStartedUsage",
+        ProjectSelfStartedUsageSchema,
+        keys.projectSelfStartedUsage(projectId, month),
+        (current) => {
+          const next = change(current);
+          return next === undefined ? undefined : { ...next, projectId, month };
+        },
+      ),
   };
 
   return {
     projects,
     credentials,
 
-    // Pipkin M1b: J2 implements these three.
-    lines: {
-      get: notYet("the project line"),
-      update: notYet("the project line"),
-      listWithWork: notYet("the project line"),
-    },
-    lineDispatches: {
-      get: notYet("the line dispatch"),
-      start: notYet("the line dispatch"),
-      update: notYet("the line dispatch"),
-      listByStatus: notYet("the line dispatch"),
-    },
-    projectSelfStartedUsage: {
-      get: notYet("the project's self-started usage"),
-      update: notYet("the project's self-started usage"),
-    },
+    // Pipkin M1b: the project line.
+    lines,
+    lineDispatches,
+    projectSelfStartedUsage,
 
     // P10 (D-P10-19): one row per org and month, read to refuse a dispatch.
     computeLedger: {

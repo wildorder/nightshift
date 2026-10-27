@@ -74,6 +74,8 @@ import {
 } from "@nightshift/core";
 import { beforeEach, describe, expect, it } from "vitest";
 
+export { describeLinePortConformance } from "./line-ports.js";
+
 /**
  * Builds a fresh, empty set of stores. Called before every test, so no test can
  * depend on another's writes.

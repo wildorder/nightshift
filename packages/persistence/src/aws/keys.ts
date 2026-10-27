@@ -252,6 +252,51 @@ export const keys = {
     SK: "LIVERUN",
   }),
 
+  /** A project's line (Pipkin M1b), one row per line branch, under the project. */
+  line: (projectId: ProjectId, branch: string): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `LINE#${branch}`,
+  }),
+
+  /**
+   * The line's place in the work index: sparse, the line carries it only while
+   * `lineHasWork` holds, so one query of the partition lists every line with work.
+   */
+  lineWorkIndex: (projectId: ProjectId, branch: string): NodeIndexKey => ({
+    GSI1PK: "LINEWORK",
+    GSI1SK: `${projectId}#${branch}`,
+  }),
+
+  lineWorkIndexPartition: () => ({ GSI1PK: "LINEWORK", prefix: "" }),
+
+  /** A line owner's dispatch (Pipkin M1b): one row per line branch. */
+  lineDispatch: (projectId: ProjectId, branch: string): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `LINEDISPATCH#${branch}`,
+  }),
+
+  /** The line dispatches by status, on the node index as `dispatchIndex` is. */
+  lineDispatchIndex: (
+    status: DispatchStatus,
+    updatedAt: string,
+    projectId: ProjectId,
+    branch: string,
+  ): NodeIndexKey => ({
+    GSI1PK: `LINEDISPATCH#${status}`,
+    GSI1SK: `${updatedAt}#${projectId}#${branch}`,
+  }),
+
+  lineDispatchIndexPartition: (status: DispatchStatus) => ({
+    GSI1PK: `LINEDISPATCH#${status}`,
+    prefix: "",
+  }),
+
+  /** What a project's plane-started runs have cost it in one month. */
+  projectSelfStartedUsage: (projectId: ProjectId, month: CalendarMonth): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `SELFSTARTED#${month}`,
+  }),
+
   runPartition: (scope: ProgramScope) => ({
     PK: `PROJ#${scope.projectId}#PROG#${scope.programId}`,
     prefix: "RUN#",

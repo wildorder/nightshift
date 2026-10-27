@@ -11,6 +11,7 @@
  * `identity` and the identity section runs.
  */
 import { createInMemoryStores } from "@nightshift/persistence/memory";
+import { describeLinePortConformance } from "./line-ports.js";
 import { describePortConformance } from "./persistence-ports.js";
 
 describePortConformance("in-memory", (clock) => createInMemoryStores({ now: clock.now }), {
@@ -29,3 +30,5 @@ describePortConformance(
     },
   },
 );
+
+describeLinePortConformance("in-memory", (clock) => createInMemoryStores({ now: clock.now }));
