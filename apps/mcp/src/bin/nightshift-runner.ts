@@ -51,6 +51,8 @@ runRunner({
     : { projectUser: process.env.NIGHTSHIFT_PROJECT_USER }),
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
   onToken: (token, scope) => installTokenFile(scope.runId, token),
+  // The line owner's token, where a run's is: the machine's layout is the same.
+  onLineToken: (token, identity) => installTokenFile(identity.engineAgentId, token),
   readCachedToken: async (scope) => {
     try {
       return await readFile(tokenFile(scope.runId), "utf8");
