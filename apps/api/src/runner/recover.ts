@@ -61,6 +61,8 @@ export const recoverLease = async <D extends DispatchMachine>(
     readonly refuseReplacement?: (
       dispatch: D,
     ) => Promise<{ readonly code: string; readonly message: string } | undefined>;
+    /** The caller already observed the machine gone and recorded it: terminate is not asked again. */
+    readonly machineGone?: boolean;
   } = {},
 ): Promise<{ readonly step: RecoveryStep; readonly dispatch: D }> => {
   let dispatch = original;
@@ -70,7 +72,7 @@ export const recoverLease = async <D extends DispatchMachine>(
     return { step: "alive", dispatch };
   }
   const at = nowIso(ports.clock);
-  if (dispatch.instanceId !== undefined) {
+  if (dispatch.instanceId !== undefined && options.machineGone !== true) {
     // Gone or going; either way nothing of this generation may keep running.
     try {
       await ports.compute.terminate(dispatch.instanceId);

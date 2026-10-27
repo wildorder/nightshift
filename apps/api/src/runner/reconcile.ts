@@ -22,10 +22,12 @@ import {
   ensureLineDispatch,
   hasPendingIntent,
   isDispatchTerminal,
+  leaseLost,
   lineAdmission,
   lineQueueOwed,
+  nowIso,
 } from "@nightshift/core";
-import { cleanupStopped, enforceStop } from "./cleanup.js";
+import { cleanupStopped, enforceStop, withMachineEnding } from "./cleanup.js";
 import { cleanupLineDispatch, type LineCleanupDeps } from "./line-cleanup.js";
 import { failureCodeOf, lineCapUsd, recordLineWaiting } from "./line-support.js";
 import { type ProvisionDeps, provisionDispatch } from "./provision.js";
@@ -100,6 +102,64 @@ export const reconcileRuns = async (deps: ReconcileDeps, count: Counter): Promis
   }
 };
 
+/**
+ * Only one line owner is ever live: a replacement waits until the previous
+ * machine is authoritatively gone (not found, or terminated). A describe or
+ * terminate error is no proof. Answers the dispatch with the ending recorded
+ * when it is gone, and undefined when the machine may still run (the request
+ * or the failure is recorded, and the next pass looks again).
+ */
+const awaitMachineGone = async (
+  provision: ReconcileDeps["provision"],
+  dispatch: LineDispatch,
+  instanceId: string,
+): Promise<LineDispatch | undefined> => {
+  const { stores, compute, clock } = provision;
+  const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  const record = async (
+    failure: string | undefined,
+    change: (current: LineDispatch) => LineDispatch,
+  ): Promise<void> => {
+    if (failure !== undefined)
+      console.error(`line recover ${dispatch.projectId}/${dispatch.branch}: ${failure}`);
+    await stores.lineDispatches.update(dispatch.projectId, dispatch.branch, (current) =>
+      current.version === dispatch.version && current.generation === dispatch.generation
+        ? { ...change(current), updatedAt: nowIso(clock) }
+        : undefined,
+    );
+  };
+  const failed = (failure: string, terminate: boolean) => (current: LineDispatch) => ({
+    ...(terminate ? withMachineEnding(current, { terminationFailed: true }) : current),
+    cleanup: { ...current.cleanup, failures: [...current.cleanup.failures, failure] },
+  });
+  let described: Awaited<ReturnType<typeof compute.describe>>;
+  try {
+    described = await compute.describe(instanceId);
+  } catch (error) {
+    const failure = `describe ${instanceId}: ${message(error)}`;
+    await record(failure, failed(failure, false));
+    return undefined;
+  }
+  if (described === undefined || described.state === "terminated") {
+    return withMachineEnding(dispatch, { terminatedAt: nowIso(clock) });
+  }
+  if (described.state !== "shutting-down") {
+    try {
+      await compute.terminate(instanceId);
+    } catch (error) {
+      const failure = `terminate ${instanceId}: ${message(error)}`;
+      await record(failure, failed(failure, true));
+      return undefined;
+    }
+    const at = nowIso(clock);
+    await record(undefined, (current) =>
+      withMachineEnding(current, { terminationRequestedAt: at }),
+    );
+  }
+  // A request, not an ending: the next pass observes the machine gone.
+  return undefined;
+};
+
 /** Replaces a line dispatch whose lease lapsed, or ends it failed. */
 const recoverLineDispatch = async (
   deps: ReconcileDeps,
@@ -109,6 +169,15 @@ const recoverLineDispatch = async (
   const { provision } = deps;
   const { stores, compute, clock } = provision;
   const line = { projectId: dispatch.projectId, branch: dispatch.branch };
+  let original = dispatch;
+  if (dispatch.instanceId !== undefined && leaseLost(dispatch, clock.now())) {
+    const gone = await awaitMachineGone(provision, dispatch, dispatch.instanceId);
+    if (gone === undefined) {
+      count("line-lease:terminating");
+      return;
+    }
+    original = gone;
+  }
   const { step, dispatch: after } = await recoverLease<LineDispatch>(
     {
       compute,
@@ -123,8 +192,9 @@ const recoverLineDispatch = async (
         return applied;
       },
     },
-    dispatch,
+    original,
     {
+      machineGone: original !== dispatch,
       // Spend may have reached the cap while the owner ran.
       refuseReplacement: async () => {
         const project = await stores.projects.get(line.projectId);

@@ -367,6 +367,8 @@ describe("reconcile: line dispatches", () => {
     const f = await w.addLine({ dispatched: false });
     await w.stores.lineDispatches.start(makeLineDispatch(f));
     await install(w, f, live(f));
+    // The first pass asks the old machine to go; the next sees it gone.
+    await w.reconcile();
     const counts = await w.reconcile();
     expect(counts["line-lease:replacing"]).toBe(1);
     expect(w.compute.terminated).toContain("i-old");
@@ -375,6 +377,92 @@ describe("reconcile: line dispatches", () => {
     expect(dispatch.instanceId).not.toBe("i-old");
     expect(w.compute.launches[0]?.tags["nightshift-generation"]).toBe("2");
     expect(w.compute.launches[0]?.clientToken).toBe(`${dispatch.engineAgentId}-2`);
+  });
+
+  describe("lost lease: the old machine must be gone before a replacement", () => {
+    const setup = async () => {
+      const w = await world();
+      const f = await w.addLine({ dispatched: false });
+      await w.stores.lineDispatches.start(makeLineDispatch(f));
+      await install(
+        w,
+        f,
+        live(f, {
+          instanceId: "i-still-running",
+          attempts: [
+            {
+              generation: 1,
+              reason: "dispatch",
+              startedAt: "2026-10-15T11:00:00.000Z",
+              instanceId: "i-still-running",
+            },
+          ],
+        }),
+      );
+      w.compute.instances.set("i-still-running", {
+        instanceId: "i-still-running",
+        state: "running",
+        availabilityZone: "us-west-2a",
+      });
+      return { w, f };
+    };
+
+    it("does not replace when terminate throws, and records the failure", async () => {
+      const { w, f } = await setup();
+      w.compute.terminate = async () => {
+        throw new Error("EC2 unavailable");
+      };
+      const counts = await w.reconcile();
+      expect(counts["line-lease:terminating"]).toBe(1);
+      expect(counts["line-lease:replacing"]).toBeUndefined();
+      const after = await dispatchOf(w, f);
+      expect(after).toMatchObject({ generation: 1, status: "running" });
+      expect(after.attempts[0]?.terminationFailed).toBe(true);
+      expect(after.cleanup.failures).toEqual([expect.stringContaining("EC2 unavailable")]);
+      expect(w.compute.launches).toHaveLength(0);
+    });
+
+    it("does not replace when describe throws", async () => {
+      const { w, f } = await setup();
+      w.compute.describe = async () => {
+        throw new Error("throttled");
+      };
+      const counts = await w.reconcile();
+      expect(counts["line-lease:terminating"]).toBe(1);
+      const after = await dispatchOf(w, f);
+      expect(after.generation).toBe(1);
+      expect(after.cleanup.failures).toEqual([expect.stringContaining("describe i-still-running")]);
+      expect(w.compute.terminated).toEqual([]);
+      expect(w.compute.launches).toHaveLength(0);
+    });
+
+    it("terminates first, then launches exactly one replacement once the machine is gone", async () => {
+      const { w, f } = await setup();
+      const first = await w.reconcile();
+      expect(first["line-lease:terminating"]).toBe(1);
+      expect(w.compute.terminated).toEqual(["i-still-running"]);
+      expect(await dispatchOf(w, f)).toMatchObject({ generation: 1, status: "running" });
+      expect(w.compute.launches).toHaveLength(0);
+      // The fake marks it terminated at once: the next pass observes it gone.
+      const second = await w.reconcile();
+      expect(second["line-lease:replacing"]).toBe(1);
+      expect(w.compute.terminated).toEqual(["i-still-running"]);
+      expect(await dispatchOf(w, f)).toMatchObject({ generation: 2 });
+      expect(w.compute.launches).toHaveLength(1);
+      expect((await dispatchOf(w, f)).attempts[0]?.terminatedAt).toBeDefined();
+      await w.reconcile();
+      expect(w.compute.launches).toHaveLength(1);
+    });
+
+    it("replaces at once when the instance is not found", async () => {
+      const { w, f } = await setup();
+      w.compute.instances.delete("i-still-running");
+      const counts = await w.reconcile();
+      expect(counts["line-lease:replacing"]).toBe(1);
+      expect(w.compute.terminated).toEqual([]);
+      expect(await dispatchOf(w, f)).toMatchObject({ generation: 2 });
+      expect(w.compute.launches).toHaveLength(1);
+    });
   });
 
   it("ends the dispatch failed once the attempts are exhausted", async () => {
@@ -387,6 +475,8 @@ describe("reconcile: line dispatches", () => {
       startedAt: "2026-10-15T11:00:00.000Z",
     }));
     await install(w, f, live(f, { generation: 3, attempts }));
+    // The first pass asks the old machine to go; the next sees it gone.
+    await w.reconcile();
     const counts = await w.reconcile();
     expect(counts["line-lease:exhausted"]).toBe(1);
     expect(await dispatchOf(w, f)).toMatchObject({
@@ -409,6 +499,8 @@ describe("reconcile: line dispatches", () => {
         new Date(START).toISOString(),
       ),
     );
+    // The first pass asks the old machine to go; the next sees it gone.
+    await w.reconcile();
     const counts = await w.reconcile();
     expect(counts["line-lease:refused"]).toBe(1);
     expect(w.compute.launches).toHaveLength(0);
