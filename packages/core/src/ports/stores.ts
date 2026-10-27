@@ -144,6 +144,11 @@ export interface RunStore {
    *   in the same operation. "Ago" and the ending time are the store's own
    *   trusted clock; the marker records `claimedAt` from it, and a marker without
    *   one counts as claimed when first read. A run's `startedAt` is never used.
+   * - A marker whose holder run is missing or already terminal is stale (a
+   *   release or an adoption raced): it never refuses a put. The new run's claim
+   *   replaces it in the same atomic operation. Adopting a legacy holder's marker
+   *   is atomic with that holder still being live, so no marker is ever left for
+   *   a terminal run.
    * - A terminal status (`RUN_TERMINAL_STATUSES`) always persists the run, and
    *   releases the marker in the same atomic operation if and only if this run
    *   holds it. A terminal put of a run that does not hold the marker (absent,

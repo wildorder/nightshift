@@ -2215,6 +2215,29 @@ export const describePortConformance = <S extends ProjectStores>(
         );
       }
 
+      legacyIt(
+        "replaces a marker whose holder was left terminal, and still refuses a live one",
+        async () => {
+          const legacy = seeded("running");
+          await seed(legacy);
+          // The refusal adopts the marker for the legacy run.
+          await expect(stores.runs.put(fresh())).rejects.toBeInstanceOf(ProgramRunLiveError);
+          // The holder ends without the marker being released: the marker is stale.
+          await seed({
+            ...legacy,
+            status: "failed",
+            endedAt: "2026-01-01T01:00:00.000Z" as IsoTimestamp,
+            outcomeReason: "ended by the test",
+          });
+          const next = fresh();
+          await stores.runs.put(next);
+          expect(await stores.runs.get(a.scope, next.runId)).toEqual(next);
+          await expect(stores.runs.put(fresh())).rejects.toMatchObject({
+            liveRunId: next.runId,
+          });
+        },
+      );
+
       legacyIt("persists a terminal put of a legacy run, and then accepts a new run", async () => {
         const legacy = seeded("running");
         await seed(legacy);

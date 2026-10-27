@@ -616,16 +616,27 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
       };
     };
 
-    it("creates the marker for an adopted legacy run with a conditional put, and refuses", async () => {
-      const { f, table, stores, writes, seed } = setup();
+    it("adopts a legacy run in one transaction with a status check on it, and refuses", async () => {
+      const { f, table, stores, writes, transactions, seed } = setup();
       const legacy = makeRun(f, { status: "pending" });
       await seed(legacy);
-      const fresh = makeRun(f, { runId: f.ids.next("run") as typeof legacy.runId });
-      await expect(stores.runs.put(fresh)).rejects.toMatchObject({ liveRunId: legacy.runId });
-      expect(writes).toHaveLength(1);
-      expect(writes[0]?.item).toMatchObject({
-        ConditionExpression: "attribute_not_exists(#pk)",
-        Item: { ...keys.programLiveRun(f.scope), runId: legacy.runId },
+      const fresh = makeRun(f, {
+        runId: f.ids.next("run") as typeof legacy.runId,
+      });
+      await expect(stores.runs.put(fresh)).rejects.toMatchObject({
+        liveRunId: legacy.runId,
+      });
+      expect(writes).toHaveLength(0);
+      const adoption = transactions[0] ?? [];
+      expect(adoption).toHaveLength(2);
+      expect(adoption[0]).toMatchObject({
+        Put: {
+          ConditionExpression: "attribute_not_exists(#pk)",
+          Item: { ...keys.programLiveRun(f.scope), runId: legacy.runId },
+        },
+      });
+      expect(adoption[1]).toMatchObject({
+        ConditionCheck: { Key: keys.run(f.scope, legacy.runId) },
       });
       const marker = await table.get({
         TableName: tableName,
@@ -637,6 +648,92 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
         claimedAt: "2026-01-01T00:00:00.000Z",
       });
       expect(await stores.runs.get(f.scope, fresh.runId)).toBeUndefined();
+    });
+
+    it("leaves no marker when the legacy run ends between discovery and adoption", async () => {
+      const { f, table, stores, seed } = setup();
+      const legacy = makeRun(f, { status: "running" });
+      await seed(legacy);
+      const original = table.transactWrite.bind(table);
+      let raced = false;
+      table.transactWrite = async (input) => {
+        if (!raced) {
+          raced = true;
+          await stores.runs.put({
+            ...legacy,
+            status: "succeeded",
+            endedAt: "2026-01-01T00:00:01.000Z",
+          });
+        }
+        return original(input);
+      };
+      const fresh = makeRun(f, {
+        runId: f.ids.next("run") as typeof legacy.runId,
+      });
+      await stores.runs.put(fresh);
+      expect(raced).toBe(true);
+      const marker = await table.get({
+        TableName: tableName,
+        Key: keys.programLiveRun(f.scope),
+        ConsistentRead: true,
+      });
+      expect(marker.Item).toMatchObject({ runId: fresh.runId });
+      expect(await stores.runs.get(f.scope, fresh.runId)).toEqual(fresh);
+    });
+
+    it("replaces a marker whose holder is terminal, and refuses one whose holder is live", async () => {
+      const { f, table, stores, seed } = setup();
+      const done = makeRun(f, {
+        status: "succeeded",
+        endedAt: "2026-01-01T00:00:01.000Z",
+      });
+      await seed(done);
+      const putMarker = (runId: string) =>
+        table.put({
+          TableName: tableName,
+          Item: {
+            ...keys.programLiveRun(f.scope),
+            runId,
+            claimedAt: "2026-01-01T00:00:00.000Z",
+          },
+        });
+      await putMarker(done.runId);
+      const fresh = makeRun(f, {
+        runId: f.ids.next("run") as typeof done.runId,
+      });
+      await stores.runs.put(fresh);
+      const marker = await table.get({
+        TableName: tableName,
+        Key: keys.programLiveRun(f.scope),
+        ConsistentRead: true,
+      });
+      expect(marker.Item).toMatchObject({ runId: fresh.runId });
+      expect(await stores.runs.get(f.scope, fresh.runId)).toEqual(fresh);
+
+      const other = makeRun(f, {
+        runId: f.ids.next("run") as typeof done.runId,
+      });
+      await expect(stores.runs.put(other)).rejects.toMatchObject({
+        liveRunId: fresh.runId,
+      });
+    });
+
+    it("replaces a marker whose holder run is missing", async () => {
+      const { f, table, stores } = setup();
+      const ghost = f.ids.next("run");
+      await table.put({
+        TableName: tableName,
+        Item: {
+          ...keys.programLiveRun(f.scope),
+          runId: ghost,
+          claimedAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+      const fresh = makeRun(f, {
+        runId: f.ids.next("run") as ReturnType<typeof makeRun>["runId"],
+      });
+      await stores.runs.put(fresh);
+      expect(await stores.runs.get(f.scope, fresh.runId)).toEqual(fresh);
     });
 
     it("settles on the marker's runId and claimedAt being unchanged, at the trusted now", async () => {

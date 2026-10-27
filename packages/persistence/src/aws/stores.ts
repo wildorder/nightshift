@@ -883,19 +883,113 @@ export const createAwsStores = ({
           }
         };
 
-        /** Writes `item` as the marker only if none exists; false if one does. */
-        const createMarker = async (runId: RunId, now: IsoTimestamp): Promise<boolean> => {
+        /**
+         * Takes the marker on behalf of a legacy `holder`, only while no marker
+         * exists and the holder is still live, in one transaction. False when
+         * either changed, so the caller discovers again.
+         */
+        const adoptLegacy = async (holder: RunId, now: IsoTimestamp): Promise<boolean> => {
           try {
-            await table.put({
-              TableName: tableName,
-              Item: markerItem(runId, now),
-              ConditionExpression: "attribute_not_exists(#pk)",
-              ExpressionAttributeNames: { "#pk": "PK" },
+            await table.transactWrite({
+              TransactItems: [
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: markerItem(holder, now),
+                    ConditionExpression: "attribute_not_exists(#pk)",
+                    ExpressionAttributeNames: { "#pk": "PK" },
+                  },
+                },
+                {
+                  ConditionCheck: {
+                    TableName: tableName,
+                    Key: keys.run(parsed, holder),
+                    ConditionExpression: `attribute_exists(#pk) AND ${notTerminal}`,
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#status": "status",
+                    },
+                    ExpressionAttributeValues: terminalValues,
+                  },
+                },
+              ],
             });
             return true;
           } catch (error) {
-            if (!isConditionalCheckFailure(error)) throw error;
+            if (conditionFailures(error) === undefined) throw error;
             return false;
+          }
+        };
+
+        /**
+         * Replaces a stale marker (its holder is missing or terminal) with this
+         * run's claim, in one transaction with the run. "notStale" when the
+         * holder is live; "retry" when a condition failed.
+         */
+        const replaceStale = async (
+          holder: Required<LiveMarker>,
+          now: IsoTimestamp,
+        ): Promise<"replaced" | "notStale" | "retry"> => {
+          const stored = await getRecord(RunSchema, keys.run(parsed, holder.runId));
+          if (stored !== undefined && !isRunTerminal(stored.status)) return "notStale";
+          const holderGone = `attribute_not_exists(#pk) OR ${terminal
+            .map((_, i) => `#status = :t${i}`)
+            .join(" OR ")}`;
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: runItem,
+                    ConditionExpression: `attribute_not_exists(#pk) OR (${notTerminal})`,
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#status": "status",
+                    },
+                    ExpressionAttributeValues: terminalValues,
+                  },
+                },
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: markerItem(parsed.runId, now),
+                    ConditionExpression: "#runId = :holder AND #claimedAt = :claimedAt",
+                    ExpressionAttributeNames: {
+                      "#runId": "runId",
+                      "#claimedAt": "claimedAt",
+                    },
+                    ExpressionAttributeValues: {
+                      ":holder": holder.runId,
+                      ":claimedAt": holder.claimedAt,
+                    },
+                  },
+                },
+                {
+                  ConditionCheck: {
+                    TableName: tableName,
+                    Key: keys.run(parsed, holder.runId),
+                    ConditionExpression: holderGone,
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#status": "status",
+                    },
+                    ExpressionAttributeValues: terminalValues,
+                  },
+                },
+              ],
+            });
+            return "replaced";
+          } catch (error) {
+            const failed = conditionFailures(error);
+            if (failed === undefined) throw error;
+            if (failed[0] === true) {
+              const own = await getRecord(RunSchema, runKey);
+              if (own !== undefined && isRunTerminal(own.status)) {
+                throw new IllegalTransitionError(own.status, `put ${parsed.status}`);
+              }
+            }
+            return "retry";
           }
         };
 
@@ -910,7 +1004,7 @@ export const createAwsStores = ({
               // claim the marker on its behalf, then decide as for any holder.
               const legacy = await findLegacyHolder();
               if (legacy !== undefined) {
-                if (!(await createMarker(legacy, now))) {
+                if (!(await adoptLegacy(legacy, now))) {
                   if (attempt >= MAX_UPDATE_ATTEMPTS)
                     throw new ProgramRunLiveError(parsed.programId, legacy);
                   continue;
@@ -936,6 +1030,19 @@ export const createAwsStores = ({
             }
 
             if (marker !== undefined && marker.runId !== parsed.runId) {
+              // A marker whose holder is missing or terminal is stale: this
+              // run's claim replaces it.
+              const replaced = await replaceStale(
+                { runId: marker.runId, claimedAt: marker.claimedAt ?? now },
+                now,
+              );
+              if (replaced === "replaced") return;
+              if (replaced === "retry") {
+                if (attempt >= MAX_UPDATE_ATTEMPTS) {
+                  throw new ProgramRunLiveError(parsed.programId, marker.runId);
+                }
+                continue;
+              }
               // A holder that never started is ended in the same transaction
               // that moves the marker (D-07).
               const outcome = await settleNeverStarted(

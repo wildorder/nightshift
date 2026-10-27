@@ -413,24 +413,27 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
           // A holder that never started is ended in this same unit (D-07).
           const holderKey = `${liveKey}${marker.runId}`;
           const holder = runs.get(holderKey);
-          if (
-            holder === undefined ||
-            marker.claimedAt === undefined ||
-            !isNeverStartedRun(holder, {
-              hasDispatch: dispatches.get(runPrefix(holder)) !== undefined,
-              now,
-              claimedAt: marker.claimedAt,
-            })
-          ) {
-            return marker.runId;
+          // A marker whose holder is missing or terminal is stale: the new
+          // run's claim replaces it below.
+          if (holder !== undefined && !isRunTerminal(holder.status)) {
+            if (
+              marker.claimedAt === undefined ||
+              !isNeverStartedRun(holder, {
+                hasDispatch: dispatches.get(runPrefix(holder)) !== undefined,
+                now,
+                claimedAt: marker.claimedAt,
+              })
+            ) {
+              return marker.runId;
+            }
+            runs.set(
+              holderKey,
+              transitionRun(holder, "interrupt", {
+                endedAt: now,
+                outcomeReason: NEVER_STARTED_REASON,
+              }),
+            );
           }
-          runs.set(
-            holderKey,
-            transitionRun(holder, "interrupt", {
-              endedAt: now,
-              outcomeReason: NEVER_STARTED_REASON,
-            }),
-          );
         }
         runs.set(key, parsed);
         liveRuns.set(
