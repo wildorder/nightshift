@@ -103,6 +103,8 @@ export interface LineSettlement {
   batchId: string;
   composition?: Omit<LineCompositionBody, "batchId">;
   parked: Omit<LineParkBody, "batchId">[];
+  /** Present exactly when `composition` is: head = composition.commit, expectedPredecessor = composition.parent. */
+  push?: { head: CommitSha; expectedPredecessor: CommitSha; bundleKey: string };
 }
 
 export interface LineQueuePort {
@@ -113,9 +115,11 @@ export interface LineQueuePort {
 }
 
 export interface LinePublisherPort {
-  publish(input: {
+  /** Makes the commits durable (e.g. uploads the bundle) before anything is settled. */
+  stage(input: { head: CommitSha; expectedPredecessor: CommitSha }): Promise<{ bundleKey: string }>;
+  /** Waits for the pending push of `head` to resolve. */
+  outcome(input: {
     head: CommitSha;
-    expectedPredecessor: CommitSha;
   }): Promise<{ status: "published" } | { status: "rejected"; detail: string }>;
 }
 
@@ -127,6 +131,8 @@ export interface LineFailure {
   base: CommitSha;
   /** ISO timestamp: the composition's single deadline. */
   deadline: string;
+  /** Resolver attempts left in the composition's budget; 0 parks without an agent call. */
+  attemptsLeft: number;
   cause:
     | { kind: "conflict"; paths: string[]; detail: string }
     | {
@@ -173,11 +179,11 @@ export type LineResolution =
 
 export interface LineResolverAgentPort {
   /** The agent edits files in the worktree only, never git. */
-  resolve(input: {
-    brief: string;
-    worktree: LineWorktree;
-    deadline: string;
-  }): Promise<{ model: string; status: "finished" | "failed"; summary?: string }>;
+  resolve(input: { brief: string; worktree: LineWorktree; deadline: string }): Promise<{
+    model: string;
+    status: "finished" | "failed";
+    summary?: string;
+  }>;
   examine(input: {
     brief: string;
     worktree: LineWorktree;
@@ -186,7 +192,11 @@ export interface LineResolverAgentPort {
     verification: LineVerification;
     avoidModel: string;
     deadline: string;
-  }): Promise<{ model: string; verdict: "approved" | "rejected"; findings: string[] }>;
+  }): Promise<{
+    model: string;
+    verdict: "approved" | "rejected";
+    findings: string[];
+  }>;
 }
 
 export interface LineDecisionPort {
@@ -211,7 +221,7 @@ export interface LineComposerPorts {
   resolve: (failure: LineFailure) => Promise<LineResolution>;
   clock: Clock;
   /** `seconds` defaults to core's `LINE_COMPOSITION_SECONDS`; one deadline per batch. */
-  limits?: { seconds?: number };
+  limits?: { seconds?: number; attempts?: number };
 }
 
 export interface LineBatchOutcome {

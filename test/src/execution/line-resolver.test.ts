@@ -29,7 +29,11 @@ afterEach(async () => {
 interface Opts {
   edit?: (wt: LineWorktree, n: number) => Promise<void>;
   resolverStatus?: (n: number) => "finished" | "failed" | "throw";
-  examine?: (n: number) => { model: string; verdict: "approved" | "rejected"; findings: string[] };
+  examine?: (n: number) => {
+    model: string;
+    verdict: "approved" | "rejected";
+    findings: string[];
+  };
   passes?: (read: (path: string) => Promise<string | undefined>) => boolean | Promise<boolean>;
   advanceOnVerify?: number;
   advanceOnExamine?: number;
@@ -79,13 +83,21 @@ const setup = async (opts: Opts = {}) => {
       if (status === "throw") throw new Error("agent crashed");
       if (status === "failed") return { model: "model-a", status: "failed" };
       await opts.edit?.(worktree, resolveCalls);
-      return { model: "model-a", status: "finished", summary: "kept both sides" };
+      return {
+        model: "model-a",
+        status: "finished",
+        summary: "kept both sides",
+      };
     },
     async examine() {
       examineCalls += 1;
       now.ms += opts.advanceOnExamine ?? 0;
       return (
-        opts.examine?.(examineCalls) ?? { model: "model-b", verdict: "approved", findings: [] }
+        opts.examine?.(examineCalls) ?? {
+          model: "model-b",
+          verdict: "approved",
+          findings: [],
+        }
       );
     },
   };
@@ -117,6 +129,7 @@ const conflict = async (lr: LineRepo) => {
     unit: { kind: "range", range: { program: P1, upTo: unit } },
     base,
     deadline: DEADLINE,
+    attemptsLeft: 3,
     cause: { kind: "conflict", paths: ["a.txt"], detail: "CONFLICT in a.txt" },
   };
   return { base, unit, failure };
@@ -163,11 +176,15 @@ describe("resolveLineFailure", () => {
     });
     const base = await h.lr.commit("line", { "a.txt": "x\n" });
     const unit = await h.lr.commit("p1", { "b.txt": "y\n" });
-    const candidate = await h.lr.commit("cand", { "a.txt": "x\n", "b.txt": "y\n" });
+    const candidate = await h.lr.commit("cand", {
+      "a.txt": "x\n",
+      "b.txt": "y\n",
+    });
     const failure: LineFailure = {
       unit: { kind: "main", commit: unit },
       base,
       deadline: DEADLINE,
+      attemptsLeft: 3,
       cause: {
         kind: "red",
         candidate,
@@ -181,7 +198,14 @@ describe("resolveLineFailure", () => {
           startedAt: new Date(START).toISOString(),
           endedAt: new Date(START).toISOString(),
         },
-        logs: [{ stepId: "t", command: "npm test", exitCode: 1, tail: "TAIL-MARKER boom" }],
+        logs: [
+          {
+            stepId: "t",
+            command: "npm test",
+            exitCode: 1,
+            tail: "TAIL-MARKER boom",
+          },
+        ],
       },
     };
     const res = await resolveLineFailure(h.ports, failure);
@@ -210,7 +234,11 @@ describe("resolveLineFailure", () => {
       edit: mergeEdit,
       examine: (n) =>
         n === 1
-          ? { model: "model-b", verdict: "rejected", findings: ["FINDING-ONE dropped a line"] }
+          ? {
+              model: "model-b",
+              verdict: "rejected",
+              findings: ["FINDING-ONE dropped a line"],
+            }
           : { model: "model-a", verdict: "approved", findings: [] },
     });
     const { failure } = await conflict(h.lr);
@@ -256,6 +284,33 @@ describe("resolveLineFailure", () => {
     expect(res.verification?.outcome).toBe("passed");
     expect(h.calls().examine).toBe(1);
     expect(h.recorded).toHaveLength(0);
+    expect(h.open.size).toBe(0);
+  });
+
+  it("limits attempts to failure.attemptsLeft", async () => {
+    const h = await setup({ resolverStatus: () => "failed" });
+    const { failure } = await conflict(h.lr);
+    const res = await resolveLineFailure(h.ports, {
+      ...failure,
+      attemptsLeft: 1,
+    });
+    expect(res.kind).toBe("parked");
+    if (res.kind !== "parked") return;
+    expect(res.resolver).toEqual({ decision: "gave_up", attempts: 1 });
+    expect(h.calls().resolve).toBe(1);
+  });
+
+  it("parks at once with no agent call when attemptsLeft is 0", async () => {
+    const h = await setup();
+    const { failure } = await conflict(h.lr);
+    const res = await resolveLineFailure(h.ports, {
+      ...failure,
+      attemptsLeft: 0,
+    });
+    expect(res.kind).toBe("parked");
+    if (res.kind !== "parked") return;
+    expect(res.resolver).toEqual({ decision: "gave_up", attempts: 0 });
+    expect(h.calls()).toEqual({ resolve: 0, examine: 0 });
     expect(h.open.size).toBe(0);
   });
 });

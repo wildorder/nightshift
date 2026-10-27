@@ -101,7 +101,10 @@ const setup = async (
       agentCalls += 1;
       briefs.push(brief);
       const out = (await opts.agent?.({ brief, worktree, n: agentCalls }, now)) ?? {};
-      return { model: out.model ?? "model-a", status: out.status ?? "finished" };
+      return {
+        model: out.model ?? "model-a",
+        status: out.status ?? "finished",
+      };
     },
     async examine({ avoidModel }) {
       const model = opts.examiner?.({ model: avoidModel }) ?? "model-b";
@@ -125,9 +128,14 @@ const setup = async (
     checkout,
     verifier,
     publisher: {
-      publish: async (input) => {
-        published.push(input);
-        line.head = input.head;
+      stage: async (input) => ({ bundleKey: `bundles/${input.head}` }),
+      outcome: async ({ head }) => {
+        const push = settled.at(-1)?.push;
+        published.push({
+          head,
+          expectedPredecessor: push?.expectedPredecessor as CommitSha,
+        });
+        line.head = head;
         return { status: "published" };
       },
     },
@@ -145,12 +153,18 @@ const setup = async (
     clock,
   };
   const drain = (): Promise<LineBatchOutcome[]> =>
-    drainLine(ports, async () => ({ lineHead: line.head, mainHead: lr.initial }));
+    drainLine(ports, async () => ({
+      lineHead: line.head,
+      mainHead: lr.initial,
+    }));
   const assertSchemas = () => {
     for (const s of settled) {
       if (s.composition)
         expect(
-          LineCompositionBodySchema.safeParse({ batchId: s.batchId, ...s.composition }).success,
+          LineCompositionBodySchema.safeParse({
+            batchId: s.batchId,
+            ...s.composition,
+          }).success,
         ).toBe(true);
       for (const p of s.parked)
         expect(LineParkBodySchema.safeParse({ batchId: s.batchId, ...p }).success).toBe(true);
@@ -214,7 +228,10 @@ describe("the line engine, end to end", () => {
       },
     });
     const p1 = await t.lr.commit("p1", { "a.txt": "from p1\n" });
-    const p2 = await t.lr.commit("p2", { "a.txt": "from p2\n", "b.txt": "b\n" });
+    const p2 = await t.lr.commit("p2", {
+      "a.txt": "from p2\n",
+      "b.txt": "b\n",
+    });
     t.queue.push(
       batchOf("b1", [
         [P1, p1],
@@ -230,7 +247,10 @@ describe("the line engine, end to end", () => {
     expect(t.decisions).toHaveLength(1);
     expect(decision?.authority).toBe("line");
     expect(decision?.attempts).toBe(1);
-    expect(decision?.unit).toEqual({ kind: "range", range: { program: P2, upTo: p2 } });
+    expect(decision?.unit).toEqual({
+      kind: "range",
+      range: { program: P2, upTo: p2 },
+    });
     expect(decision?.base).not.toBe(t.settled[0]?.composition?.parent);
     expect(await t.lr.readFileAtCommit(decision?.base as CommitSha, "a.txt")).toBe("from p1\n");
     // Checked by the verifier and examined by a different model.
@@ -274,7 +294,10 @@ describe("the line engine, end to end", () => {
     // Parked, nothing published for it.
     expect(t.settled[0]?.composition).toBeUndefined();
     expect(t.settled[0]?.parked).toHaveLength(1);
-    expect(t.settled[0]?.parked[0]?.resolver).toEqual({ decision: "gave_up", attempts: 3 });
+    expect(t.settled[0]?.parked[0]?.resolver).toEqual({
+      decision: "gave_up",
+      attempts: 3,
+    });
     expect(outcomes[0]?.published).toBeUndefined();
     // The queue moved on to the next batch, which published.
     expect(t.published).toHaveLength(1);
@@ -334,7 +357,8 @@ describe("the line engine, end to end", () => {
     expect(t.settled).toHaveLength(1);
     expect(t.settled[0]?.composition).toBeUndefined();
     expect(t.settled[0]?.parked).toHaveLength(2);
-    expect(t.agentCalls()).toBe(6);
+    expect(t.agentCalls()).toBeLessThanOrEqual(3);
+    expect(t.agentCalls()).toBe(3);
     t.assertSchemas();
   });
 });
