@@ -12,7 +12,6 @@ import {
   appendQueueEntry,
   createFixtures,
   makeLineRecord,
-  requestPush,
   settleBatch,
   takeBatch,
 } from "@nightshift/core";
@@ -487,8 +486,7 @@ describe("drainLine", () => {
       { program: P1, upTo: a },
       at,
     );
-    // The real rules over an in-memory record. The settle path's push is modelled
-    // with requestPush until settleBatch carries it itself.
+    // The real rules over an in-memory record.
     let outcomeCalls = 0;
     h.ports.queue.takeBatch = async () => {
       const taken = takeBatch(record, 1, { batchId: "b1" }, at);
@@ -496,15 +494,9 @@ describe("drainLine", () => {
       return taken.batch ?? record.batch;
     };
     h.ports.queue.settle = async (s) => {
-      const { push, ...body } = s;
-      const change = settleBatch(record, body, { compositionId: "comp-1", parkedIds: [] }, at);
+      const change = settleBatch(record, s, { compositionId: "comp-1", parkedIds: [] }, 1, at);
       if (!change.ok) throw new Error("settle refused");
       record = change.record;
-      if (push) {
-        const pushed = requestPush(record, push, 1, at);
-        if (!pushed.ok) throw new Error("push refused");
-        record = pushed.record;
-      }
     };
     h.ports.publisher.outcome = async () => {
       outcomeCalls += 1;
