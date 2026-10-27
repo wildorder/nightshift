@@ -331,6 +331,83 @@ export const meterProjectUsage = (
   };
 };
 
+/** The key of a line dispatch in a usage row's `charged`. */
+export const dispatchChargeKey = (branch: string, generation: number): string =>
+  `${branch}#${generation}`;
+
+/** The calendar month before `month`. */
+export const previousMonthOf = (month: CalendarMonth): CalendarMonth => {
+  const [year, number] = month.split("-").map(Number) as [number, number];
+  return (
+    number === 1 ? `${year - 1}-12` : `${year}-${String(number - 1).padStart(2, "0")}`
+  ) as CalendarMonth;
+};
+
+/**
+ * What a dispatch has been charged in `month`'s row: its entry there, else the
+ * `baselineUsd` (what the previous month's row held for it, or 0).
+ */
+const chargedOf = (
+  current: ProjectSelfStartedUsage | undefined,
+  month: CalendarMonth,
+  key: string,
+  baselineUsd: number,
+): number =>
+  (current !== undefined && current.month === month ? current.charged?.[key] : undefined) ??
+  baselineUsd;
+
+/** Whether a dispatch's cumulative spend is ahead of what `month`'s row has charged for it. */
+export const dispatchChargeDue = (
+  current: ProjectSelfStartedUsage | undefined,
+  input: {
+    readonly month: CalendarMonth;
+    readonly key: string;
+    readonly dispatchUsd: number;
+    readonly baselineUsd: number;
+  },
+): boolean => input.dispatchUsd > chargedOf(current, input.month, input.key, input.baselineUsd);
+
+/**
+ * Charges a line dispatch's cumulative `dispatchUsd` to the project's row for
+ * `month`: the difference from what the row already holds for `key` is added,
+ * and the entry becomes the greater of the two. Idempotent: a repeat charges
+ * nothing, and a beat after a failed write charges what that one missed. A new
+ * month's row starts from `baselineUsd` (the previous month's entry), so a
+ * dispatch across the boundary is charged only what it spent after it.
+ */
+export const chargeDispatchUsage = (
+  current: ProjectSelfStartedUsage | undefined,
+  input: {
+    readonly projectId: ProjectId;
+    readonly month: CalendarMonth;
+    readonly capUsd: number;
+    readonly key: string;
+    readonly dispatchUsd: number;
+    readonly baselineUsd: number;
+  },
+  at: string,
+): ProjectSelfStartedUsage => {
+  const charged = chargedOf(current, input.month, input.key, input.baselineUsd);
+  const target = Math.max(charged, input.dispatchUsd);
+  const metered = meterProjectUsage(
+    current,
+    {
+      projectId: input.projectId,
+      month: input.month,
+      deltaUsd: target - charged,
+      capUsd: input.capUsd,
+    },
+    at,
+  );
+  return {
+    ...metered,
+    charged: {
+      ...(current !== undefined && current.month === input.month ? current.charged : {}),
+      [input.key]: target,
+    },
+  };
+};
+
 /** Whether the project's self-started spend for `month` has reached `capUsd`. */
 export const capReached = (
   usage: ProjectSelfStartedUsage | undefined,

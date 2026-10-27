@@ -201,6 +201,13 @@ export const ProjectSelfStartedUsageSchema = z.strictObject({
   capUsd: z.number().min(0),
   /** When the metered spend first reached the cap this month. */
   reachedAt: IsoTimestampSchema.optional(),
+  /**
+   * What each line dispatch has already been charged to this row, keyed
+   * `<branch>#<generation>`: the dispatch's cumulative metered dollars. A charge
+   * is the dispatch's spend less this, so a failed or repeated write is repaired
+   * or ignored rather than lost or doubled. Rows from before it have none.
+   */
+  charged: z.record(z.string(), z.number().min(0)).optional(),
   version: z.int().min(1),
   updatedAt: IsoTimestampSchema,
 });
