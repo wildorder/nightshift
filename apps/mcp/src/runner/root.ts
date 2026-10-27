@@ -318,6 +318,7 @@ export const rootEnvironment = (input: RootEnvironmentInput): Record<string, str
   // Which machine this is, so the engine judges a prerequisite by this
   // machine's own check for its generation, never the laptop's (D-P7-10).
   env.NIGHTSHIFT_DISPATCH_GENERATION = String(context.dispatch.generation);
+  env.NIGHTSHIFT_IMAGE_VERSION = context.dispatch.amiVersion;
   env.NIGHTSHIFT_PUBLISH_PACK_DIR = join(context.layout.run, "bundles");
   return env;
 };

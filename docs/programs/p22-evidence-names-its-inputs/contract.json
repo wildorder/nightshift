@@ -1,0 +1,238 @@
+{
+  "schemaVersion": 1,
+  "projectId": "proj_01M49RRHPS6B770S9G5HDCPSD2",
+  "programId": "prog_01M5X5YGVS0NNJM2CVS87ZXSPE",
+  "objective": "Make every verification evidence that can be relied on later: it records what it ran against, it counts as landing evidence only when its phase is one named as landing, and once written it is never changed. Pipkin M1a, PK-1 (PIP-7); PK-2 moves to M2 with PK-4 and PK-5. The authority is the plan document stored with this contract.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p22-evidence-names-its-inputs"
+  },
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "A verification made from now on records its base commit, the fingerprint of the gate definitions it ran, and where it ran (laptop, or machine with its dispatch generation and image version); a verification recorded before reads and renders unchanged.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "One rule in core names the phases that are landing evidence; every place that accepts landing evidence uses it, and a test over every phase fails if a phase is added without deciding whether it lands.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "Writing a verification that already exists with a different body is refused by every store (memory, SQLite, DynamoDB) as well as the API; writing the identical record again is harmless.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "The verification phases are declared once, and the report and the Studio read them from there, so a phase added later renders without editing either.",
+      "serves": [
+        "US-01"
+      ]
+    }
+  ],
+  "constraints": [
+    "Every new field on a verification is optional, and a verification recorded before this program reads and renders as it did.",
+    "What lands today still lands, and nothing that does not land today starts to: the rule accepts exactly the phases that count as landing evidence now.",
+    "No new verification phase and no new way to start a verification: that is PK-2, in M2.",
+    "Windows keeps working: nothing added assumes a POSIX shell or path."
+  ],
+  "scope": {
+    "includes": [
+      "packages/**",
+      "apps/**",
+      "test/**",
+      "docs/**",
+      "AGENTS.md"
+    ],
+    "excludes": [
+      "infra/**"
+    ],
+    "forbiddenActions": [
+      "deploy any stack",
+      "build a runner image",
+      "push to main",
+      "edit another program's documents under docs/programs/"
+    ]
+  },
+  "setup": [
+    {
+      "id": "install",
+      "command": "npm ci --prefer-offline"
+    }
+  ],
+  "verification": [
+    {
+      "id": "build",
+      "command": "npm run build"
+    },
+    {
+      "id": "typecheck",
+      "command": "npm run typecheck"
+    },
+    {
+      "id": "lint",
+      "command": "npm run lint"
+    },
+    {
+      "id": "test",
+      "command": "npm run test"
+    },
+    {
+      "id": "synth",
+      "command": "npm --workspace @nightshift/cdk run synth"
+    },
+    {
+      "id": "sterility",
+      "command": "npm run check:sterility"
+    }
+  ],
+  "modelPolicy": {
+    "allowedProviders": [
+      "anthropic",
+      "openai"
+    ],
+    "allowedModels": [],
+    "forbiddenModels": []
+  },
+  "examinationPolicy": {
+    "low": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "medium": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "high": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    }
+  },
+  "delegationLimits": {
+    "maxDepth": 2,
+    "maxConcurrency": 2
+  },
+  "costPolicy": {},
+  "defaultRisk": "medium",
+  "createdAt": "2026-10-26T22:40:25Z",
+  "status": "ratified",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "Anyone who later relies on a verification: the owner reading why something landed, and the Pipkin work that will reuse and compare evidence",
+      "problem": "A verification does not record what it ran against (the base, the gate definitions, the machine), so two results cannot be compared or trusted later; the code counts a verification as landing evidence by excluding the phases that do not land, so any new kind of verification would silently let work land; and two of the three stores let a verification be overwritten.",
+      "outcome": "Every verification names its inputs, counts as landing evidence only when its phase is one that lands, and can never be rewritten once recorded.",
+      "words": [
+        "seems like PK-1 and PK-2 are lightweight and low risk. I could execute those, run a couple tests, before doing PK-3 which seems higher risk?"
+      ]
+    }
+  ],
+  "strands": [
+    {
+      "id": "S-01",
+      "name": "Evidence that names its inputs",
+      "scope": {
+        "summary": "The verification record and its phases, the landing-evidence rule and its users, create-only verification stores, where verifications are built, and the report and Studio readers of the phases",
+        "includes": [
+          "packages/**",
+          "apps/**",
+          "test/**",
+          "docs/**",
+          "AGENTS.md"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "Every verification written by runVerification and by the candidate check carries baseSha, gateFingerprint and its environment identity; a record written before reads unchanged",
+        "One core rule names the landing phases, every acceptor of landing evidence uses it, and an exhaustive test over the phase vocabulary fails for a phase nobody classified",
+        "Memory, SQLite and DynamoDB refuse a second, different write of a verification and accept an identical one; the conformance suite proves it on all three",
+        "The phases are declared once in contracts, and the report, verification time and the Studio read them from there",
+        "docs/architecture.md records the decision",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-01",
+        "SC-02",
+        "SC-03",
+        "SC-04"
+      ],
+      "dependsOn": [],
+      "prerequisites": []
+    }
+  ],
+  "prerequisites": [],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "Does a verification record a separate setup hash beside the gate fingerprint?",
+      "options": [
+        "No: the gate fingerprint already hashes the setup steps, the verification steps, the gate machinery and every lockfile",
+        "Yes: a hash of the lockfiles and setup commands of its own"
+      ],
+      "leaning": "No: the gate fingerprint already hashes the setup steps, the verification steps, the gate machinery and every lockfile",
+      "answer": "No: the gate fingerprint already hashes the setup steps, the verification steps, the gate machinery and every lockfile",
+      "rationale": "One home per fact; a separate setup hash would record what the fingerprint already does.",
+      "touches": [
+        "S-01"
+      ]
+    },
+    {
+      "id": "D-02",
+      "question": "Is PK-2 (verify any commit on demand) built now, or with M2?",
+      "options": [
+        "With M2, beside PK-4 and PK-5, where a commit has a record to file evidence under and candidate qualification uses it",
+        "Now, limited to verifying within a live run"
+      ],
+      "leaning": "With M2, beside PK-4 and PK-5, where a commit has a record to file evidence under and candidate qualification uses it",
+      "answer": "With M2, beside PK-4 and PK-5, where a commit has a record to file evidence under and candidate qualification uses it",
+      "rationale": "Built once, where it is used: before PK-4 a verification outside a run has no honest home, and its main consumers are PK-5 and PK-7.",
+      "touches": "all"
+    }
+  ],
+  "outOfScope": [
+    "PK-2, verifying any commit on demand (moved to M2, with PK-4 and PK-5)",
+    "PK-3, one owner per development line (M1b)",
+    "Reusing one verification's evidence for another (PK-11)"
+  ],
+  "planHash": "1eeeeb0a70cfff3c3217a669b15eae70162c89ea64a61f313639377eaabbd48f",
+  "planDocument": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M5X5YGVS0NNJM2CVS87ZXSPE/a722fd7afb4dce3948b15376eddc69741f58602b4e08592e7285219a53eb067f.md",
+    "sha256": "a722fd7afb4dce3948b15376eddc69741f58602b4e08592e7285219a53eb067f",
+    "sizeBytes": 5960
+  },
+  "conversation": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M5X5YGVS0NNJM2CVS87ZXSPE/3aeeaaef44ad69a72cd31cda1666a9c8ef6c968c487f84a11f5bcc6b6b0b36f4.md",
+    "sha256": "3aeeaaef44ad69a72cd31cda1666a9c8ef6c968c487f84a11f5bcc6b6b0b36f4",
+    "sizeBytes": 13093
+  },
+  "ratifications": [
+    {
+      "planHash": "1eeeeb0a70cfff3c3217a669b15eae70162c89ea64a61f313639377eaabbd48f",
+      "planDocument": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M5X5YGVS0NNJM2CVS87ZXSPE/a722fd7afb4dce3948b15376eddc69741f58602b4e08592e7285219a53eb067f.md",
+        "sha256": "a722fd7afb4dce3948b15376eddc69741f58602b4e08592e7285219a53eb067f",
+        "sizeBytes": 5960
+      },
+      "conversation": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M5X5YGVS0NNJM2CVS87ZXSPE/3aeeaaef44ad69a72cd31cda1666a9c8ef6c968c487f84a11f5bcc6b6b0b36f4.md",
+        "sha256": "3aeeaaef44ad69a72cd31cda1666a9c8ef6c968c487f84a11f5bcc6b6b0b36f4",
+        "sizeBytes": 13093
+      },
+      "ratifiedAt": "2026-10-26T22:46:44.605Z"
+    }
+  ]
+}

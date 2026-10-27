@@ -173,5 +173,17 @@ describe("the engine's site (D-P7-10, 2026-10-16)", () => {
       machineSiteOf({ NIGHTSHIFT_PINNED_RUN: "proj_1/prog_1/run_01HZZZZZZZZZZZZZZZZZZZZZZZ" }),
     ).toBeUndefined();
     expect(machineSiteOf({})).toBeUndefined();
+    expect(
+      machineSiteOf({
+        NIGHTSHIFT_PINNED_RUN: "proj_1/prog_1/run_01HZZZZZZZZZZZZZZZZZZZZZZZ",
+        NIGHTSHIFT_DISPATCH_GENERATION: "2",
+        NIGHTSHIFT_IMAGE_VERSION: "1.2.3",
+      }),
+    ).toEqual({
+      where: "machine",
+      dispatch: { runId: "run_01HZZZZZZZZZZZZZZZZZZZZZZZ", generation: 2 },
+      imageVersion: "1.2.3",
+    });
+    expect(machineSiteOf({ NIGHTSHIFT_IMAGE_VERSION: "1.2.3" })).toBeUndefined();
   });
 });

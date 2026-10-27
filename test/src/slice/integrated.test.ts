@@ -124,6 +124,9 @@ describe("a job that works, end to end", () => {
     );
     expect(verifications).toHaveLength(1);
     expect(verifications[0]?.outcome).toBe("passed");
+    // It records what it ran against, and where.
+    expect(verifications[0]?.baseSha).toBeDefined();
+    expect(verifications[0]?.environment).toEqual({ where: "laptop" });
     expect(verifications[0]?.commands.map((command) => command.stepId)).toEqual(["test", "shape"]);
     for (const command of verifications[0]?.commands ?? []) {
       expect(command.exitCode).toBe(0);

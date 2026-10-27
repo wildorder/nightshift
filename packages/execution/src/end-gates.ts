@@ -27,6 +27,7 @@ import { endSteps, gateDefinitions } from "./gate-repair.js";
 import { addDetachedWorktree, pruneWorktrees, revParse, tryGit } from "./git/index.js";
 import { discardScratch } from "./scratch.js";
 import { limitsOf, resolveSteps, runAdjustmentDecisions } from "./step-adjustments.js";
+import { endGatesBaseOf } from "./verification-provenance.js";
 import { runVerification, skippedStepsPayload } from "./verify.js";
 
 /** One end gate that ran and failed, with the tail of what it printed. */
@@ -146,6 +147,7 @@ const runEndGates = async (
       agentId: session.orchestratorAgentId,
       checkout,
       commitSha: head,
+      baseSha: await endGatesBaseOf(environment, session, head),
       gates,
       steps,
       phase: "run",

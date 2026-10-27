@@ -28,7 +28,9 @@ export type DomainErrorCode =
   /** P21: a plan draft write or act the draft's state refuses, or a lost append race. */
   | "plan_draft"
   /** P21: a program contract was created where one is already stored. */
-  | "program_contract_exists";
+  | "program_contract_exists"
+  /** A verification was put where a different one is already stored under the same identifier. */
+  | "verification_exists";
 
 export abstract class DomainError extends Error {
   abstract readonly code: DomainErrorCode;
@@ -261,6 +263,18 @@ export class ProgramContractExistsError extends DomainError {
 
   constructor(readonly programId: string) {
     super(`program ${programId} already has a stored contract`);
+  }
+}
+
+/**
+ * A verification was put where a different one is already stored under its
+ * identifier. A verification is evidence: once written it is never changed.
+ */
+export class VerificationExistsError extends DomainError {
+  readonly code = "verification_exists" as const;
+
+  constructor(readonly verificationId: string) {
+    super(`verification ${verificationId} is already stored with a different body`);
   }
 }
 

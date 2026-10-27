@@ -16,7 +16,12 @@ import {
   type Run,
   type Verification,
 } from "@nightshift/contracts";
-import { type ProjectStores, type RunScope, routeUsageFromCounters } from "@nightshift/core";
+import {
+  isLandingEvidence,
+  type ProjectStores,
+  type RunScope,
+  routeUsageFromCounters,
+} from "@nightshift/core";
 
 const readAll = async <T>(
   read: (page: {
@@ -75,7 +80,7 @@ const judgementOf = (
     );
     // The queue's verdict is the attempt's; a candidate check stands only when the queue never ran.
     const verification =
-      newest(own.filter((candidate) => candidate.phase !== "candidate")) ?? newest(own);
+      newest(own.filter((candidate) => isLandingEvidence(candidate.phase))) ?? newest(own);
     const examination = newest(
       node.examinations.filter(
         (candidate) => candidate.implementerRoutingDecisionId === decision.routingDecisionId,
@@ -109,7 +114,7 @@ const judgementOf = (
   // Records are linked, and none names this attempt: it was not judged on its own.
   if (linked) return none;
   const verification = newest(
-    node.verifications.filter((candidate) => candidate.phase !== "candidate"),
+    node.verifications.filter((candidate) => isLandingEvidence(candidate.phase)),
   );
   const examination = newest(node.examinations);
   return {

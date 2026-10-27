@@ -30,6 +30,9 @@ import {
   EXAMINATION_CONTEXT_ENV,
   type ExaminationContext,
   type ExecutionEnvironment,
+  fingerprintAtCommit,
+  gateDefinitions,
+  gitBlobReader,
   runJob,
   verifyRunHead,
 } from "@nightshift/execution";
@@ -473,6 +476,45 @@ describe("the candidate verification", () => {
       skippedSteps: ["trial"],
     });
   });
+
+  it("records the job's base, its environment and, with a gate-health record, the gate fingerprint", async () => {
+    const trial = await counter(0);
+    const world = await worldWith(programWith(trial.command));
+    await world.stores.gateHealth.put({
+      schemaVersion: 1,
+      projectId: world.program.projectId,
+      programId: world.program.programId,
+      commit: world.baseCommit,
+      fingerprint: "a".repeat(64),
+      verdict: "healthy",
+      findings: [],
+      machinery: ["package.json"],
+      auditedBy: {
+        kind: "user",
+        userId: world.subject as never,
+        orgId: "org_01M4REPA1R0000000000000000" as never,
+      },
+      auditedAt: nowIso(world.environment.clock),
+    } as never);
+    const nodeId = await runThroughEngine(world, "high");
+
+    const stored = (await world.stores.verifications.listByNode(world.scope, nodeId)).find(
+      (verification) => verification.phase === "candidate",
+    );
+    expect(stored?.baseSha).toBe(world.baseCommit);
+    expect(stored?.environment).toEqual({ where: "laptop" });
+    expect(stored?.gateFingerprint).toBe(
+      await fingerprintAtCommit(
+        gitBlobReader(world.session.repoPath),
+        stored?.commitSha as never,
+        await gateDefinitions(world.environment, world.session).then((gates) => ({
+          setup: [...gates.setup],
+          verification: [...gates.verification],
+        })),
+        ["package.json"],
+      ),
+    );
+  });
 });
 
 describe("verifyRunHead", () => {
@@ -487,6 +529,10 @@ describe("verifyRunHead", () => {
     const first = await verifyRunHead(world.environment, world.session);
     expect(first.status).toBe("failed");
     expect(await runsOf()).toHaveLength(1);
+    // The stored end-gate record says what it ran against, and where.
+    const [stored] = await runsOf();
+    expect(stored?.baseSha).toBeDefined();
+    expect(stored?.environment).toEqual({ where: "laptop" });
     await verifyRunHead(world.environment, world.session);
     expect(await runsOf()).toHaveLength(1);
 

@@ -20,7 +20,12 @@ import {
 /** Where a run runs: on the laptop, or on the machine of one dispatch. */
 export type RunSite =
   | { readonly where: "laptop" }
-  | { readonly where: "machine"; readonly dispatch: CheckDispatch };
+  | {
+      readonly where: "machine";
+      readonly dispatch: CheckDispatch;
+      /** The image the machine runs, when known. */
+      readonly imageVersion?: string;
+    };
 
 /** This dispatch's own check of `prerequisite`, if its machine made one. */
 export const machineCheckOf = (

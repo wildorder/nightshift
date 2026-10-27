@@ -14,7 +14,12 @@ import type {
   RoutingDecision,
   Verification,
 } from "@nightshift/contracts";
-import { ProgramIdSchema, ProjectIdSchema, RunIdSchema } from "@nightshift/contracts";
+import {
+  ProgramIdSchema,
+  ProjectIdSchema,
+  RunIdSchema,
+  VERIFICATION_PHASES,
+} from "@nightshift/contracts";
 import type {
   DecisionReport,
   JobReport,
@@ -152,7 +157,7 @@ export const Verifications = ({
       {verifications.map((v) => (
         <li key={v.verificationId} className="rounded-lg border border-border p-1 text-xs">
           <div>
-            <StatusBadge status={v.outcome} /> {v.phase ?? "queue"} on{" "}
+            <StatusBadge status={v.outcome} /> {v.phase ?? VERIFICATION_PHASES[0]} on{" "}
             <code>{shortSha(v.commitSha)}</code> {between(v.startedAt, v.endedAt)}
             {v.criterionId === undefined ? "" : ` · criterion ${v.criterionId}`}
           </div>

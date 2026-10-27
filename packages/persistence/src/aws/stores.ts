@@ -50,7 +50,9 @@ import {
   type ProjectStore,
   runScopeOf,
   StaleWriteError,
+  VerificationExistsError,
 } from "@nightshift/core";
+import { persistedEqual } from "../persisted-equal.js";
 import { createEventStore } from "./events.js";
 import { fromItem, type Item, type Parser, REVISION_ATTRIBUTE, toItem } from "./items.js";
 import { keys, type NodeIndexKey, type TableKey } from "./keys.js";
@@ -804,12 +806,26 @@ export const createAwsStores = ({
       put: async (verification) => {
         const parsed = VerificationSchema.parse(verification);
         const scope = runScopeOf(parsed);
-        await putRecord(
-          "Verification",
-          keys.runRecord(scope, "VER", parsed.verificationId),
-          parsed,
-          keys.nodeIndex(scope, parsed.executionNodeId, "VER", parsed.verificationId),
-        );
+        const key = keys.runRecord(scope, "VER", parsed.verificationId);
+        try {
+          await table.put({
+            TableName: tableName,
+            Item: toItem(
+              "Verification",
+              key,
+              parsed,
+              keys.nodeIndex(scope, parsed.executionNodeId, "VER", parsed.verificationId),
+            ),
+            ConditionExpression: "attribute_not_exists(#pk)",
+            ExpressionAttributeNames: { "#pk": "PK" },
+          });
+        } catch (error) {
+          if (!isConditionalCheckFailure(error)) throw error;
+          const stored = await getRecord(VerificationSchema, key);
+          if (stored === undefined || !persistedEqual(stored, parsed)) {
+            throw new VerificationExistsError(parsed.verificationId);
+          }
+        }
       },
       get: (scope, id) => getRecord(VerificationSchema, keys.runRecord(scope, "VER", id)),
       listByNode: (scope, nodeId) =>

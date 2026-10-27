@@ -679,9 +679,11 @@ export const machineSiteOf = (env: Env): ExecutionEnvironment["site"] => {
   const pinned = pinnedRunOf(env.NIGHTSHIFT_PINNED_RUN);
   const generation = Number.parseInt(env.NIGHTSHIFT_DISPATCH_GENERATION ?? "", 10);
   if (pinned === undefined || !Number.isInteger(generation) || generation < 1) return undefined;
+  const imageVersion = env.NIGHTSHIFT_IMAGE_VERSION;
   return {
     where: "machine",
     dispatch: { runId: RunIdSchema.parse(pinned.runId), generation },
+    ...(imageVersion === undefined || imageVersion === "" ? {} : { imageVersion }),
   };
 };
 

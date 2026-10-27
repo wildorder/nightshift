@@ -6,7 +6,14 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/dist", "!**/cdk.out", "!**/*.tsbuildinfo", "!**/package-lock.json"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/cdk.out",
+      "!**/*.tsbuildinfo",
+      "!**/package-lock.json",
+      "!docs/programs/**/*.json"
+    ]
   },
   "formatter": {
     "enabled": true,

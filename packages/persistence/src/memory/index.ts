@@ -129,9 +129,11 @@ import {
   StaleWriteError,
   type StampOutcome,
   type UserStore,
+  VerificationExistsError,
   type VerificationStore,
   type WarmCacheStore,
 } from "@nightshift/core";
+import { persistedEqual } from "../persisted-equal.js";
 import {
   type Atomically,
   mapTables,
@@ -486,7 +488,16 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const verificationStore: VerificationStore = {
     put: async (verification) => {
       const parsed = VerificationSchema.parse(verification);
-      verifications.set(`${runPrefix(parsed)}${parsed.verificationId}`, parsed);
+      const key = `${runPrefix(parsed)}${parsed.verificationId}`;
+      // Evidence is written once: the same body again is a retry, a different one is refused.
+      atomically(() => {
+        const stored = verifications.get(key);
+        if (stored === undefined) {
+          verifications.set(key, parsed);
+        } else if (!persistedEqual(stored, parsed)) {
+          throw new VerificationExistsError(parsed.verificationId);
+        }
+      });
     },
     get: async (scope: RunScope, verificationId: VerificationId) =>
       verifications.get(`${runPrefix(scope)}${verificationId}`),

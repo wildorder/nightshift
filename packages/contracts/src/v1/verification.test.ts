@@ -4,15 +4,28 @@ import { AGGREGATE_EXAMPLES, EXAMPLE_IDS } from "./examples.js";
 import { RouteUsageSchema } from "./routing-decision.js";
 import {
   outcomeOfCommands,
+  VERIFICATION_PHASE_HAS_JOB,
+  VERIFICATION_PHASES,
   VerificationCommandResultSchema,
+  VerificationEnvironmentSchema,
   VerificationSchema,
 } from "./verification.js";
 
 const skipped = { decisionId: EXAMPLE_IDS.decisionId };
-const skippedStep = { stepId: "build", command: "npm run build", durationMs: 0, skipped };
+const skippedStep = {
+  stepId: "build",
+  command: "npm run build",
+  durationMs: 0,
+  skipped,
+};
 
 describe("a failed rerun (D-P15-06, P19 D-06)", () => {
-  const ran = { stepId: "build", command: "npm run build", exitCode: 124, durationMs: 5 };
+  const ran = {
+    stepId: "build",
+    command: "npm run build",
+    exitCode: 124,
+    durationMs: 5,
+  };
   const rerun = { exitCode: 1, durationMs: 3 };
 
   it("parses on a step that ran and failed, with or without a log", () => {
@@ -100,7 +113,10 @@ describe("attempt attribution (P20)", () => {
       }).success,
     ).toBe(true);
     expect(
-      ExaminationSchema.safeParse({ ...record, implementerRoutingDecisionId: "nope" }).success,
+      ExaminationSchema.safeParse({
+        ...record,
+        implementerRoutingDecisionId: "nope",
+      }).success,
     ).toBe(false);
   });
 
@@ -109,5 +125,63 @@ describe("attempt attribution (P20)", () => {
     expect(RouteUsageSchema.safeParse({ wallClockMs: 900, agentMs: 400 }).success).toBe(true);
     expect(RouteUsageSchema.safeParse({ agentMs: -1 }).success).toBe(false);
     expect(RouteUsageSchema.safeParse({ agentMs: 1.5 }).success).toBe(false);
+  });
+});
+
+describe("evidence identity", () => {
+  const example = AGGREGATE_EXAMPLES.Verification as Record<string, unknown>;
+
+  it("declares the phases in render order", () => {
+    expect([...VERIFICATION_PHASES]).toEqual(["queue", "candidate", "run"]);
+    expect(Object.keys(VERIFICATION_PHASE_HAS_JOB).sort()).toEqual([...VERIFICATION_PHASES].sort());
+  });
+
+  it("parses an old-shaped record unchanged", () => {
+    const parsed = VerificationSchema.parse(example);
+    expect(parsed).toEqual(example);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(example);
+  });
+
+  it("parses a laptop and a machine environment", () => {
+    expect(VerificationEnvironmentSchema.safeParse({ where: "laptop" }).success).toBe(true);
+    const machine = { where: "machine", generation: 3, imageVersion: "v7" };
+    expect(VerificationSchema.safeParse({ ...example, environment: machine }).success).toBe(true);
+  });
+
+  it.each([
+    ["generation", { where: "machine", imageVersion: "v7" }],
+    ["imageVersion", { where: "machine", generation: 3 }],
+    ["a zero generation", { where: "machine", generation: 0, imageVersion: "v7" }],
+    ["a laptop with a generation", { where: "laptop", generation: 1 }],
+  ])("refuses a machine environment missing %s", (_name, environment) => {
+    expect(VerificationEnvironmentSchema.safeParse(environment).success).toBe(false);
+  });
+
+  it("parses baseSha and gateFingerprint, refusing an empty fingerprint", () => {
+    const sha = example.commitSha;
+    expect(
+      VerificationSchema.safeParse({
+        ...example,
+        baseSha: sha,
+        gateFingerprint: "abc",
+      }).success,
+    ).toBe(true);
+    expect(VerificationSchema.safeParse({ ...example, gateFingerprint: "" }).success).toBe(false);
+  });
+
+  it("keeps the job/phase refine", () => {
+    expect(VerificationSchema.safeParse({ ...example, phase: "run" }).success).toBe(false);
+    expect(
+      VerificationSchema.safeParse({
+        ...example,
+        phase: "run",
+        jobContractId: null,
+      }).success,
+    ).toBe(true);
+    for (const phase of [undefined, "queue", "candidate"]) {
+      expect(VerificationSchema.safeParse({ ...example, phase, jobContractId: null }).success).toBe(
+        false,
+      );
+    }
   });
 });

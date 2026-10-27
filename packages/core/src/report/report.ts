@@ -116,7 +116,11 @@ import {
 } from "./resources.js";
 import { type OverheadRow, type ReviewReport, reviewOf } from "./review.js";
 import { storyStatuses } from "./stories.js";
-import { type VerificationTimeReport, verificationTimeOf } from "./verification-time.js";
+import {
+  VERIFICATION_PHASES,
+  type VerificationTimeReport,
+  verificationTimeOf,
+} from "./verification-time.js";
 
 export const DEPARTURE_PREFIX = "DEPARTURE:";
 
@@ -1716,7 +1720,7 @@ const renderVerificationTime = (time: VerificationTimeReport): string[] => {
     ...time.steps.map((step) => {
       const per = step.runs === 0 ? "—" : humanDuration(step.totalMs / step.runs);
       const quiet = step.runs === 0 ? "—" : humanDuration(step.quietMs / step.runs);
-      const phases = `${step.byPhase.queue.runs} / ${step.byPhase.candidate.runs} / ${step.byPhase.run.runs}`;
+      const phases = VERIFICATION_PHASES.map((phase) => step.byPhase[phase].runs).join(" / ");
       const forecastPer = step.forecastMs === undefined ? "—" : humanDuration(step.forecastMs);
       return `| \`${step.id}\` | ${step.runs} | ${humanDuration(step.totalMs)} | ${step.rerunRuns === 0 ? "none" : `${step.rerunRuns} (${humanDuration(step.rerunMs)})`} | ${per} | ${quiet} | ${phases} | ${forecastPer} |`;
     }),
