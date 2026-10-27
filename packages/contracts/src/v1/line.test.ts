@@ -54,7 +54,11 @@ describe("the line setting", () => {
     projectId: PROJECT,
     contextDocs: [],
     verification: [{ id: "test", command: "npm test" }],
-    modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
+    modelPolicy: {
+      allowedProviders: ["anthropic"],
+      allowedModels: [],
+      forbiddenModels: [],
+    },
     delegationLimits: { maxDepth: 3, maxConcurrency: 4 },
     costPolicy: {},
   });
@@ -71,7 +75,10 @@ describe("the line setting", () => {
 
   it("is optional on the config, which means off", () => {
     expect(base.line).toBeUndefined();
-    const on = NightshiftConfigSchema.parse({ ...base, line: { branch: "nightshift/develop" } });
+    const on = NightshiftConfigSchema.parse({
+      ...base,
+      line: { branch: "nightshift/develop" },
+    });
     expect(on.line).toEqual({ branch: "nightshift/develop" });
   });
 
@@ -81,7 +88,10 @@ describe("the line setting", () => {
       line: { branch: "nightshift/develop", monthlyUsd: 40 },
     });
     const merged = inheritFromConfig({ objective: "x" }, on) as Record<string, unknown>;
-    expect(merged.line).toEqual({ branch: "nightshift/develop", monthlyUsd: 40 });
+    expect(merged.line).toEqual({
+      branch: "nightshift/develop",
+      monthlyUsd: 40,
+    });
     const stated = inheritFromConfig({ line: { branch: "other" } }, on) as Record<string, unknown>;
     expect(stated.line).toEqual({ branch: "other" });
     expect("line" in (inheritFromConfig({ objective: "x" }, base) as object)).toBe(false);
@@ -92,7 +102,10 @@ describe("the line setting", () => {
     const parsed = ProgramContractSchema.parse(example);
     expect("line" in parsed).toBe(false);
     expect(JSON.stringify(parsed)).toBe(JSON.stringify(ProgramContractSchema.parse(parsed)));
-    const withLine = ProgramContractSchema.parse({ ...example, line: { branch: "x" } });
+    const withLine = ProgramContractSchema.parse({
+      ...example,
+      line: { branch: "x" },
+    });
     expect(withLine.line).toEqual({ branch: "x" });
   });
 });
@@ -156,18 +169,43 @@ describe("the line record", () => {
       ranges: [{ program: PROGRAM, upTo: B }],
       verification,
     };
-    const parked = { ranges: [{ program: PROGRAM, upTo: A }], reason: "conflict" };
+    const parked = {
+      ranges: [{ program: PROGRAM, upTo: A }],
+      reason: "conflict",
+    };
     const ok = (body: unknown) => LineSettleBodySchema.safeParse(body).success;
-    expect(ok({ batchId: "b", composition, parked: [] })).toBe(true);
+    const push = { head: B, expectedPredecessor: A, bundleKey: "k" };
+    expect(ok({ batchId: "b", composition, push, parked: [] })).toBe(true);
+    expect(ok({ batchId: "b", composition, parked: [] })).toBe(false);
+    expect(ok({ batchId: "b", push, parked: [] })).toBe(false);
+    expect(ok({ batchId: "b", composition, push: { ...push, head: A }, parked: [] })).toBe(false);
+    expect(
+      ok({
+        batchId: "b",
+        composition,
+        push: { ...push, expectedPredecessor: B },
+        parked: [],
+      }),
+    ).toBe(false);
     expect(ok({ batchId: "b", parked: [parked] })).toBe(true);
-    expect(ok({ batchId: "b", composition, parked: [parked] })).toBe(true);
+    expect(ok({ batchId: "b", composition, push, parked: [parked] })).toBe(true);
     expect(ok({ batchId: "b", parked: [] })).toBe(true);
-    expect(ok({ batchId: "b", composition: { ...composition, ranges: [] }, parked: [] })).toBe(
-      false,
-    );
-    expect(ok({ batchId: "b", composition: { ...composition, batchId: "b" }, parked: [] })).toBe(
-      false,
-    );
+    expect(
+      ok({
+        batchId: "b",
+        composition: { ...composition, ranges: [] },
+        push,
+        parked: [],
+      }),
+    ).toBe(false);
+    expect(
+      ok({
+        batchId: "b",
+        composition: { ...composition, batchId: "b" },
+        push,
+        parked: [],
+      }),
+    ).toBe(false);
     expect(ok({ batchId: "b", parked: [], stray: 1 })).toBe(false);
   });
 
@@ -190,7 +228,11 @@ describe("the line's request bodies and view", () => {
       }).success,
     ).toBe(true);
     expect(
-      LinePushBodySchema.safeParse({ head: B, expectedPredecessor: A, bundleKey: "k" }).success,
+      LinePushBodySchema.safeParse({
+        head: B,
+        expectedPredecessor: A,
+        bundleKey: "k",
+      }).success,
     ).toBe(true);
     expect(LineBundleUploadUrlBodySchema.safeParse({ generation: 1, id: "x" }).success).toBe(true);
   });

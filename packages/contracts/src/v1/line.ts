@@ -292,10 +292,14 @@ export const LineDispatchSchema = z.strictObject({
 export type LineDispatch = z.infer<typeof LineDispatchSchema>;
 
 /** `POST …/line/{branch}/batch`. */
-export const TakeLineBatchBodySchema = z.strictObject({ generation: z.int().min(1) });
+export const TakeLineBatchBodySchema = z.strictObject({
+  generation: z.int().min(1),
+});
 export type TakeLineBatchBody = z.infer<typeof TakeLineBatchBodySchema>;
 
-export const TakeLineBatchResponseSchema = z.strictObject({ batch: LineBatchSchema.optional() });
+export const TakeLineBatchResponseSchema = z.strictObject({
+  batch: LineBatchSchema.optional(),
+});
 export type TakeLineBatchResponse = z.infer<typeof TakeLineBatchResponseSchema>;
 
 /** `POST …/line/{branch}/compositions`. */
@@ -325,13 +329,6 @@ export type LineParkBody = z.infer<typeof LineParkBodySchema>;
  * engine produced, a composition and/or parked entries. Neither is allowed: a
  * batch whose ranges were all on the line already.
  */
-export const LineSettleBodySchema = z.strictObject({
-  batchId: z.string().min(1),
-  composition: LineCompositionBodySchema.omit({ batchId: true }).optional(),
-  parked: z.array(LineParkBodySchema.omit({ batchId: true })),
-});
-export type LineSettleBody = z.infer<typeof LineSettleBodySchema>;
-
 /** `POST …/line/{branch}/push`. */
 export const LinePushBodySchema = LinePushSchema.pick({
   head: true,
@@ -339,6 +336,51 @@ export const LinePushBodySchema = LinePushSchema.pick({
   bundleKey: true,
 });
 export type LinePushBody = z.infer<typeof LinePushBodySchema>;
+
+export const LineSettleBodySchema = z
+  .strictObject({
+    batchId: z.string().min(1),
+    composition: LineCompositionBodySchema.omit({ batchId: true }).optional(),
+    /** The publication of the composition, recorded with it so a dead owner cannot lose it. */
+    push: LinePushBodySchema.optional(),
+    parked: z.array(LineParkBodySchema.omit({ batchId: true })),
+  })
+  .superRefine((body, ctx) => {
+    const { composition, push } = body;
+    if (composition === undefined) {
+      if (push !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["push"],
+          message: "a push needs a composition to publish",
+        });
+      }
+      return;
+    }
+    if (push === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["push"],
+        message: "a composition must be settled with its push",
+      });
+      return;
+    }
+    if (push.head !== composition.commit) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["push", "head"],
+        message: "push.head must equal composition.commit",
+      });
+    }
+    if (push.expectedPredecessor !== composition.parent) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["push", "expectedPredecessor"],
+        message: "push.expectedPredecessor must equal composition.parent",
+      });
+    }
+  });
+export type LineSettleBody = z.infer<typeof LineSettleBodySchema>;
 
 /** `POST …/line/{branch}/bundle-upload-url`. */
 export const LineBundleUploadUrlBodySchema = z.strictObject({

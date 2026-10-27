@@ -286,11 +286,13 @@ export const postLineSettle: Handler = async ({ deps, request, params }) => {
   const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
   const compositionId = body.composition === undefined ? undefined : ids.next("comp");
   const parkedIds = body.parked.map(() => ids.next("comp"));
+  const dispatch = await requireLineDispatch(deps, target);
   const record = await applyLineChange(deps, target, (current) =>
     settleBatch(
       current,
       body,
       { ...(compositionId === undefined ? {} : { compositionId }), parkedIds },
+      dispatch.generation,
       at,
     ),
   );

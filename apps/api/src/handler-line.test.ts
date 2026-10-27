@@ -97,7 +97,9 @@ const setup = async (): Promise<World> => {
       },
       tokens: {
         issuer: ISSUER,
-        signer: { sign: async (input) => signWith("sha256", input, keys.privateKey) },
+        signer: {
+          sign: async (input) => signWith("sha256", input, keys.privateKey),
+        },
       },
     },
   };
@@ -117,7 +119,11 @@ const call = (
 const linePrincipal = (
   _w: World,
   dispatch: LineDispatch,
-  overrides: Partial<{ branch: string; generation: number; projectId: string }> = {},
+  overrides: Partial<{
+    branch: string;
+    generation: number;
+    projectId: string;
+  }> = {},
 ): RequestPrincipal =>
   ({
     kind: "line",
@@ -149,7 +155,10 @@ interface Seed {
 const seedLine = async (w: World, seed: Seed = {}) => {
   await w.stores.programContracts.put(
     makeProgramContract(w.f, {
-      line: { branch: BRANCH, ...(seed.capUsd === undefined ? {} : { monthlyUsd: seed.capUsd }) },
+      line: {
+        branch: BRANCH,
+        ...(seed.capUsd === undefined ? {} : { monthlyUsd: seed.capUsd }),
+      },
     }),
   );
   await w.stores.lines.update(w.f.scope.projectId, BRANCH, () =>
@@ -200,7 +209,9 @@ describe("authorization of the line routes", () => {
   it("refuses a line principal of another project or another branch", async () => {
     const w = await setup();
     const dispatch = await seedLine(w);
-    const otherBranch = linePrincipal(w, dispatch, { branch: "nightshift/other" });
+    const otherBranch = linePrincipal(w, dispatch, {
+      branch: "nightshift/other",
+    });
     const otherProject = linePrincipal(w, dispatch, {
       projectId: createFixtures().scope.projectId.replace(/.$/, "Z"),
     });
@@ -231,7 +242,10 @@ describe("authorization of the line routes", () => {
     expect((await call(w, "POST", cancel, {}, linePrincipal(w, dispatch))).status).toBe(403);
     const response = await call(w, "POST", cancel, {});
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ status: "stopping", failure: { code: "cancelled" } });
+    expect(response.body).toMatchObject({
+      status: "stopping",
+      failure: { code: "cancelled" },
+    });
   });
 });
 
@@ -355,9 +369,12 @@ describe("batch, compositions, parked and push", () => {
         ranges: [{ program, upTo: SHA }],
         verification: makeLineVerification(w.f),
       },
+      push: { head: SHA_B, expectedPredecessor: SHA, bundleKey: "bundles/k" },
       parked: [parked],
     };
     const url = lineUrl(w, BRANCH, "/settle");
+    const withoutPush = await call(w, "POST", url, { ...body, push: undefined }, me);
+    expect(withoutPush.status).toBe(400);
     const stale = await call(w, "POST", url, { ...body, batchId: "nope" }, me);
     expect(stale.status).toBe(409);
     expect(code(stale)).toBe("stale_batch");
@@ -365,7 +382,10 @@ describe("batch, compositions, parked and push", () => {
       w,
       "POST",
       url,
-      { ...body, parked: [{ ...parked, resolver: { decision: "gave_up", attempts: 4 } }] },
+      {
+        ...body,
+        parked: [{ ...parked, resolver: { decision: "gave_up", attempts: 4 } }],
+      },
       me,
     );
     expect(over.status).toBe(409);
@@ -377,8 +397,47 @@ describe("batch, compositions, parked and push", () => {
     expect(record?.compositions).toHaveLength(1);
     expect(record?.parked).toHaveLength(1);
     expect(record?.compositions[0]?.compositionId).not.toBe(record?.parked[0]?.compositionId);
+    expect(record?.push).toMatchObject({
+      head: SHA_B,
+      status: "pending",
+      generation: 1,
+    });
     // Settled: the same batch again is stale.
     expect((await call(w, "POST", url, body, me)).status).toBe(409);
+  });
+
+  it("refuses to settle a composition while a different push is pending", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w, { queue: [entry(w)] });
+    const me = linePrincipal(w, dispatch);
+    const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
+    const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
+    const other = {
+      head: SHA,
+      expectedPredecessor: SHA_B,
+      bundleKey: "bundles/o",
+    };
+    expect((await call(w, "POST", lineUrl(w, BRANCH, "/push"), other, me)).status).toBe(200);
+    const refused = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/settle"),
+      {
+        batchId,
+        composition: {
+          commit: SHA_B,
+          parent: SHA,
+          ranges: [{ program: w.f.scope.programId, upTo: SHA }],
+          verification: makeLineVerification(w.f),
+        },
+        push: { head: SHA_B, expectedPredecessor: SHA, bundleKey: "bundles/k" },
+        parked: [],
+      },
+      me,
+    );
+    expect(refused.status).toBe(409);
+    expect(code(refused)).toBe("conflict");
+    expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.batch).toBeDefined();
   });
 
   it("refuses settle to another principal and to a stale generation", async () => {
@@ -406,7 +465,11 @@ describe("batch, compositions, parked and push", () => {
       w,
       "POST",
       lineUrl(w, BRANCH, "/compositions"),
-      { ...composition(batchId, 4), ranges, verification: makeLineVerification(w.f) },
+      {
+        ...composition(batchId, 4),
+        ranges,
+        verification: makeLineVerification(w.f),
+      },
       me,
     );
     expect(over.status).toBe(409);
@@ -415,7 +478,12 @@ describe("batch, compositions, parked and push", () => {
       w,
       "POST",
       lineUrl(w, BRANCH, "/parked"),
-      { batchId, ranges, reason: "conflict", resolver: { decision: "gave_up", attempts: 4 } },
+      {
+        batchId,
+        ranges,
+        reason: "conflict",
+        resolver: { decision: "gave_up", attempts: 4 },
+      },
       me,
     );
     expect(parkedOver.status).toBe(409);
@@ -423,7 +491,12 @@ describe("batch, compositions, parked and push", () => {
       w,
       "POST",
       lineUrl(w, BRANCH, "/parked"),
-      { batchId, ranges, reason: "conflict", resolver: { decision: "gave_up", attempts: 3 } },
+      {
+        batchId,
+        ranges,
+        reason: "conflict",
+        resolver: { decision: "gave_up", attempts: 3 },
+      },
       me,
     );
     expect(parked.status, JSON.stringify(parked.body)).toBe(200);
@@ -437,11 +510,19 @@ describe("batch, compositions, parked and push", () => {
     const w = await setup();
     const dispatch = await seedLine(w);
     const me = linePrincipal(w, dispatch);
-    const push = { head: SHA_B, expectedPredecessor: SHA, bundleKey: "k/1.pack" };
+    const push = {
+      head: SHA_B,
+      expectedPredecessor: SHA,
+      bundleKey: "k/1.pack",
+    };
     const response = await call(w, "POST", lineUrl(w, BRANCH, "/push"), push, me);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
-    expect(record?.push).toMatchObject({ head: SHA_B, status: "pending", generation: 1 });
+    expect(record?.push).toMatchObject({
+      head: SHA_B,
+      status: "pending",
+      generation: 1,
+    });
     expect(published).toEqual([BRANCH]);
     const other = await call(
       w,
@@ -469,7 +550,10 @@ describe("bundle-upload-url", () => {
     const key = lineBundleObjectKey(w.f.scope.projectId, BRANCH, 1, "01ABC");
     expect(key).toBe(`${w.f.scope.projectId}/line/nightshift%2Fdevelop/1/01ABC.pack`);
     expect(w.signed).toEqual([key]);
-    expect(response.body).toMatchObject({ key, uploadUrl: expect.stringContaining(key) });
+    expect(response.body).toMatchObject({
+      key,
+      uploadUrl: expect.stringContaining(key),
+    });
   });
 
   it("refuses an id that would leave its prefix, and a stale generation", async () => {
@@ -524,7 +608,10 @@ describe("the heartbeat", () => {
       ...w.deps,
       github: {
         app: async () => ({ slug: "s", installUrl: "https://example.invalid" }),
-        installation: async () => ({ account: "example", repositories: ["example/fixture"] }),
+        installation: async () => ({
+          account: "example",
+          repositories: ["example/fixture"],
+        }),
         branchHead: async () => SHA,
         readToken: async () => ({ token: "ghs_read", expiresAt: NOW }),
         writeToken: async () => ({ token: "ghs_write", expiresAt: NOW }),
@@ -593,7 +680,10 @@ describe("the heartbeat", () => {
     expect(stored.failure?.code).toBe("line_cap");
     expect((await usageOf(w))?.reachedAt).toBe(NOW);
     const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
-    expect(record?.waiting).toMatchObject({ reason: "monthly_cap", since: NOW });
+    expect(record?.waiting).toMatchObject({
+      reason: "monthly_cap",
+      since: NOW,
+    });
   });
 
   it("counts spend made earlier by another branch of the same project", async () => {
@@ -660,7 +750,9 @@ describe("the heartbeat", () => {
 
   it("moves provisioning to ready and ready to running", async () => {
     const w = await setup();
-    const dispatch = await seedLine(w, { dispatch: { status: "provisioning" } });
+    const dispatch = await seedLine(w, {
+      dispatch: { status: "provisioning" },
+    });
     const me = linePrincipal(w, dispatch);
     const url = lineUrl(w, BRANCH, "/heartbeat");
     expect((await call(w, "POST", url, beat(1, { report: "ready" }), me)).body).toMatchObject({
@@ -833,7 +925,10 @@ describe("the heartbeat's charge to the project's ledger", () => {
     await call(w, "POST", url(w), beat(1, { meteredSeconds: 1800 }), principal);
     const october = (await heldDispatch(w)).spend.meteredUsd;
     await handleRequest(
-      { ...w.deps, clock: createFixedClock(Date.parse("2026-11-01T00:30:00.000Z")) },
+      {
+        ...w.deps,
+        clock: createFixedClock(Date.parse("2026-11-01T00:30:00.000Z")),
+      },
       {
         method: "POST",
         path: url(w),

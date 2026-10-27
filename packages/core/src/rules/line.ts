@@ -57,7 +57,10 @@ export type LineChange =
   | { readonly ok: true; readonly record: LineRecord }
   | ({ readonly ok: false } & LineRefusal);
 
-const refuse = (refusal: LineRefusal): LineChange => ({ ok: false, ...refusal });
+const refuse = (refusal: LineRefusal): LineChange => ({
+  ok: false,
+  ...refusal,
+});
 
 const sameRange = (
   a: Pick<LineRange, "program" | "upTo">,
@@ -67,8 +70,11 @@ const sameRange = (
 /** Whether a range up to `upTo` of `program` is already in the batch or in a composition. */
 const alreadyTaken = (record: LineRecord, program: ProgramId, upTo: CommitSha): boolean =>
   (record.batch?.entries ?? []).some((entry) => sameRange(entry, { program, upTo })) ||
-  record.compositions.some((composition) =>
-    composition.ranges.some((range) => sameRange(range, { program, upTo })),
+  record.compositions.some(
+    (composition) =>
+      (composition.pushed !== undefined ||
+        (record.push?.status === "pending" && record.push.head === composition.commit)) &&
+      composition.ranges.some((range) => sameRange(range, { program, upTo })),
   );
 
 /**
@@ -221,11 +227,22 @@ export const parkBatch = (
 export const settleBatch = (
   record: LineRecord,
   body: LineSettleBody,
-  ids: { readonly compositionId?: string; readonly parkedIds: readonly string[] },
+  ids: {
+    readonly compositionId?: string;
+    readonly parkedIds: readonly string[];
+  },
+  generation: number,
   at: string,
 ): LineChange => {
+  const pending = record.push?.status === "pending" ? record.push : undefined;
   const refusal =
     staleBatch(record, body.batchId) ??
+    (body.push !== undefined && pending !== undefined && pending.head !== body.push.head
+      ? ({
+          reason: "push_pending",
+          detail: `a push to ${pending.head.slice(0, 12)} is still pending`,
+        } as const)
+      : undefined) ??
     resolverOver(body.composition?.resolver) ??
     body.parked.map((entry) => resolverOver(entry.resolver)).find((r) => r !== undefined);
   if (refusal !== undefined) return refuse(refusal);
@@ -253,6 +270,19 @@ export const settleBatch = (
               ],
               MAX_LINE_COMPOSITIONS,
             ),
+      ...(body.push === undefined
+        ? {}
+        : {
+            push:
+              pending !== undefined
+                ? pending
+                : {
+                    ...body.push,
+                    generation,
+                    status: "pending" as const,
+                    requestedAt: at,
+                  },
+          }),
       parked:
         body.parked.length === 0
           ? record.parked
@@ -325,12 +355,37 @@ export const resolvePush = (
     });
   }
   const { detail: _previous, ...settled } = push;
+  const unpushed =
+    status === "published"
+      ? undefined
+      : record.compositions.find(
+          (composition) => composition.commit === head && composition.pushed === undefined,
+        );
+  const requeued =
+    unpushed === undefined
+      ? record.queue
+      : [
+          ...record.queue,
+          ...unpushed.ranges
+            .filter((range) => !record.queue.some((queued) => sameRange(queued, range)))
+            .map((range) => ({
+              program: range.program,
+              upTo: range.upTo,
+              enqueuedAt: at,
+            })),
+        ];
   return {
     ok: true,
     record: {
       ...record,
       ...(status === "published" ? { head } : {}),
-      push: { ...settled, status, resolvedAt: at, ...(detail === undefined ? {} : { detail }) },
+      queue: requeued,
+      push: {
+        ...settled,
+        status,
+        resolvedAt: at,
+        ...(detail === undefined ? {} : { detail }),
+      },
       compositions:
         status === "published"
           ? record.compositions.map((composition) =>

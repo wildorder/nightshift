@@ -92,12 +92,18 @@ describe("appendQueueEntry", () => {
     const { record } = takeBatch(queued(), 1, { batchId: "batch-1" }, AT);
     const composed = composeBatch(record, compositionBody("batch-1") as never, "comp-1", AT);
     if (!composed.ok) throw new Error("expected a composition");
-    expect(appendQueueEntry(composed.record, { program: P1, upTo: A }, LATER)).toBe(
+    const pushing = requestPush(
       composed.record,
-    );
-    expect(appendQueueEntry(composed.record, { program: P1, upTo: C }, LATER).queue).toHaveLength(
+      { head: C, expectedPredecessor: A, bundleKey: "k" },
       1,
+      AT,
     );
+    if (!pushing.ok) throw new Error("expected a push");
+    expect(appendQueueEntry(pushing.record, { program: P1, upTo: A }, LATER)).toBe(pushing.record);
+    expect(appendQueueEntry(pushing.record, { program: P1, upTo: C }, LATER).queue).toHaveLength(1);
+    const pushed = resolvePush(pushing.record, C, "published", undefined, LATER);
+    if (!pushed.ok) throw new Error("expected resolved");
+    expect(appendQueueEntry(pushed.record, { program: P1, upTo: A }, LATER)).toBe(pushed.record);
   });
 });
 
@@ -106,7 +112,11 @@ describe("takeBatch", () => {
     const { record, batch } = takeBatch(queued(), 2, { batchId: "batch-1" }, AT);
     expect(batch).toBeUndefined();
     expect(record.queue).toEqual([]);
-    expect(record.batch).toMatchObject({ batchId: "batch-1", generation: 2, takenAt: AT });
+    expect(record.batch).toMatchObject({
+      batchId: "batch-1",
+      generation: 2,
+      takenAt: AT,
+    });
     expect(record.batch?.entries.map((entry) => entry.upTo)).toEqual([A, B]);
   });
 
@@ -146,7 +156,11 @@ describe("composeBatch and parkBatch", () => {
   it("parks, clears the batch and records why", () => {
     const result = parkBatch(
       batched(),
-      { batchId: "batch-1", ranges: [{ program: P1, upTo: A }], reason: "conflict" } as never,
+      {
+        batchId: "batch-1",
+        ranges: [{ program: P1, upTo: A }],
+        reason: "conflict",
+      } as never,
       "comp-2",
       LATER,
     );
@@ -216,13 +230,20 @@ describe("composeBatch and parkBatch", () => {
     for (let i = 0; i < 52; i += 1) {
       record = appendQueueEntry(
         record,
-        { program: P2, upTo: (1000 + i).toString(16).padStart(40, "0") as never },
+        {
+          program: P2,
+          upTo: (1000 + i).toString(16).padStart(40, "0") as never,
+        },
         AT,
       );
       record = takeBatch(record, 1, { batchId: `p${i}` }, AT).record;
       const parked = parkBatch(
         record,
-        { batchId: `p${i}`, ranges: [{ program: P2, upTo: A }], reason: "r" } as never,
+        {
+          batchId: `p${i}`,
+          ranges: [{ program: P2, upTo: A }],
+          reason: "r",
+        } as never,
         `park-${i}`,
         AT,
       );
@@ -235,7 +256,11 @@ describe("composeBatch and parkBatch", () => {
 });
 
 describe("requestPush and resolvePush", () => {
-  const request = { head: C, expectedPredecessor: A, bundleKey: "proj/line/x/1/p.pack" };
+  const request = {
+    head: C,
+    expectedPredecessor: A,
+    bundleKey: "proj/line/x/1/p.pack",
+  };
 
   it("records a pending push for the generation, and the same head again is the same push", () => {
     const first = requestPush(empty(), request, 2, AT);
@@ -269,7 +294,10 @@ describe("requestPush and resolvePush", () => {
     const resolved = resolvePush(pushed.record, C, "published", undefined, LATER);
     if (!resolved.ok) throw new Error("expected ok");
     expect(resolved.record.head).toBe(C);
-    expect(resolved.record.push).toMatchObject({ status: "published", resolvedAt: LATER });
+    expect(resolved.record.push).toMatchObject({
+      status: "published",
+      resolvedAt: LATER,
+    });
     expect(resolved.record.compositions[0]?.pushed).toEqual({ at: LATER });
     expect(lineHasWork(resolved.record)).toBe(false);
     // A resolved push does not hold the next one.
@@ -282,7 +310,10 @@ describe("requestPush and resolvePush", () => {
     const resolved = resolvePush(pushed.record, C, "conflict", "the line moved", LATER);
     if (!resolved.ok) throw new Error("expected ok");
     expect(resolved.record.head).toBe(A);
-    expect(resolved.record.push).toMatchObject({ status: "conflict", detail: "the line moved" });
+    expect(resolved.record.push).toMatchObject({
+      status: "conflict",
+      detail: "the line moved",
+    });
   });
 
   it("refuses to resolve a push that is not the line's", () => {
@@ -306,7 +337,11 @@ describe("the project's self-started usage", () => {
 
   it("adds a delta and notes when the cap is first reached", () => {
     const first = meterProjectUsage(undefined, input("2026-10", 10), AT);
-    expect(first).toMatchObject({ meteredUsd: 10, capUsd: 25, month: "2026-10" });
+    expect(first).toMatchObject({
+      meteredUsd: 10,
+      capUsd: 25,
+      month: "2026-10",
+    });
     expect(first.reachedAt).toBeUndefined();
     const second = meterProjectUsage(first, input("2026-10", 15), LATER);
     expect(second.meteredUsd).toBe(25);
@@ -373,15 +408,27 @@ describe("charging a dispatch to the project's usage", () => {
   it("starts a new month's row from the baseline, and leaves other dispatches' entries", () => {
     const october = chargeDispatchUsage(undefined, charge(4), AT);
     const november = chargeDispatchUsage(october, charge(5, 4, "2026-11"), LATER);
-    expect(november).toMatchObject({ month: "2026-11", meteredUsd: 1, charged: { "b#1": 5 } });
+    expect(november).toMatchObject({
+      month: "2026-11",
+      meteredUsd: 1,
+      charged: { "b#1": 5 },
+    });
     const other = chargeDispatchUsage(november, { ...charge(2, 0, "2026-11"), key: "b#2" }, LATER);
-    expect(other).toMatchObject({ meteredUsd: 3, charged: { "b#1": 5, "b#2": 2 } });
+    expect(other).toMatchObject({
+      meteredUsd: 3,
+      charged: { "b#1": 5, "b#2": 2 },
+    });
   });
 
   it("parses rows from before the field and notes the cap", () => {
     const legacy = meterProjectUsage(
       undefined,
-      { projectId: f.scope.projectId, month: "2026-10", deltaUsd: 1, capUsd: 25 },
+      {
+        projectId: f.scope.projectId,
+        month: "2026-10",
+        deltaUsd: 1,
+        capUsd: 25,
+      },
       AT,
     );
     expect(legacy.charged).toBeUndefined();
@@ -413,7 +460,11 @@ describe("a line dispatch", () => {
 
   it("starts at generation 1, requested, estimated for one composition hour", () => {
     const first = newLineDispatch(base);
-    expect(first).toMatchObject({ generation: 1, status: "requested", version: 1 });
+    expect(first).toMatchObject({
+      generation: 1,
+      status: "requested",
+      version: 1,
+    });
     expect(first.spend.estimatedUsd).toBeCloseTo(0.5);
     expect(first.attempts).toEqual([{ generation: 1, reason: "dispatch", startedAt: AT }]);
   });
@@ -424,7 +475,10 @@ describe("a line dispatch", () => {
     const third = newLineDispatch({ ...base, previous: second });
     expect([first.generation, second.generation, third.generation]).toEqual([1, 2, 3]);
     expect(
-      newLineDispatch({ ...base, previous: makeLineDispatch(f, { generation: 7 }) }).generation,
+      newLineDispatch({
+        ...base,
+        previous: makeLineDispatch(f, { generation: 7 }),
+      }).generation,
     ).toBe(8);
   });
 });
@@ -497,7 +551,10 @@ describe("the dispatch machine rules over a line dispatch", () => {
     expect(replaced).toMatchObject({ generation: 2, status: "provisioning" });
     expect(replaced.instanceId).toBeUndefined();
     const failed = runnerStopped(replaced, { code: "setup_failed", message: "no" }, LATER);
-    expect(failed).toMatchObject({ status: "failed", failure: { code: "setup_failed" } });
+    expect(failed).toMatchObject({
+      status: "failed",
+      failure: { code: "setup_failed" },
+    });
   });
 });
 
@@ -521,13 +578,20 @@ describe("takeBatch cap", () => {
 describe("settleBatch", () => {
   const batched = () => takeBatch(queued(), 1, { batchId: "batch-1" }, AT).record;
   const { batchId: _id, ...composition } = compositionBody("batch-1");
+  const push = { head: C, expectedPredecessor: A, bundleKey: "k" };
   const parkedBody = { ranges: [{ program: P2, upTo: B }], reason: "conflict" };
 
   it("records the composition and every parked entry in one change and clears the batch", () => {
     const result = settleBatch(
       batched(),
-      { batchId: "batch-1", composition, parked: [parkedBody, parkedBody] } as never,
+      {
+        batchId: "batch-1",
+        composition,
+        push,
+        parked: [parkedBody, parkedBody],
+      } as never,
       { compositionId: "comp-1", parkedIds: ["park-1", "park-2"] },
+      1,
       LATER,
     );
     if (!result.ok) throw new Error("expected ok");
@@ -544,6 +608,7 @@ describe("settleBatch", () => {
       batched(),
       { batchId: "batch-1", parked: [] } as never,
       { parkedIds: [] },
+      1,
       LATER,
     );
     if (!result.ok) throw new Error("expected ok");
@@ -554,7 +619,7 @@ describe("settleBatch", () => {
 
   it("refuses a stale batch and resolver attempts above the limit", () => {
     expect(
-      settleBatch(batched(), { batchId: "batch-0", parked: [] } as never, { parkedIds: [] }, AT),
+      settleBatch(batched(), { batchId: "batch-0", parked: [] } as never, { parkedIds: [] }, 1, AT),
     ).toMatchObject({ ok: false, reason: "stale_batch" });
     const over = { decision: "gave_up", attempts: LINE_RESOLVER_ATTEMPTS + 1 };
     expect(
@@ -563,19 +628,88 @@ describe("settleBatch", () => {
         {
           batchId: "batch-1",
           composition: { ...composition, resolver: over },
+          push,
           parked: [],
         } as never,
         { compositionId: "c", parkedIds: [] },
+        1,
         AT,
       ),
     ).toMatchObject({ ok: false, reason: "resolver_attempts" });
     expect(
       settleBatch(
         batched(),
-        { batchId: "batch-1", parked: [{ ...parkedBody, resolver: over }] } as never,
+        {
+          batchId: "batch-1",
+          parked: [{ ...parkedBody, resolver: over }],
+        } as never,
         { parkedIds: ["p"] },
+        1,
         AT,
       ),
     ).toMatchObject({ ok: false, reason: "resolver_attempts" });
+  });
+
+  const settled = () => {
+    const result = settleBatch(
+      batched(),
+      { batchId: "batch-1", composition, push, parked: [] } as never,
+      { compositionId: "comp-1", parkedIds: [] },
+      3,
+      LATER,
+    );
+    if (!result.ok) throw new Error("expected ok");
+    return result.record;
+  };
+
+  it("carries the push with the composition, so it survives the owner dying", () => {
+    const record = settled();
+    expect(record.batch).toBeUndefined();
+    expect(record.compositions).toMatchObject([{ commit: C }]);
+    expect(record.push).toEqual({
+      ...push,
+      generation: 3,
+      status: "pending",
+      requestedAt: LATER,
+    });
+    expect(lineHasWork(record)).toBe(true);
+  });
+
+  it("refuses to settle while a different push is pending, and accepts the same head", () => {
+    const other = requestPush(
+      batched(),
+      { head: B, expectedPredecessor: A, bundleKey: "o" },
+      1,
+      AT,
+    );
+    if (!other.ok) throw new Error("expected ok");
+    const body = { batchId: "batch-1", composition, push, parked: [] } as never;
+    expect(
+      settleBatch(other.record, body, { compositionId: "c", parkedIds: [] }, 1, AT),
+    ).toMatchObject({ ok: false, reason: "push_pending" });
+    const same = requestPush(batched(), push, 1, AT);
+    if (!same.ok) throw new Error("expected ok");
+    expect(
+      settleBatch(same.record, body, { compositionId: "c", parkedIds: [] }, 1, LATER),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("requeues the ranges of a failed push, and accepts them again", () => {
+    const record = settled();
+    const taken = { program: P1, upTo: A };
+    expect(appendQueueEntry(record, taken, LATER).queue).toEqual([]);
+    const failed = resolvePush(record, C, "conflict", "moved", LATER);
+    if (!failed.ok) throw new Error("expected ok");
+    expect(failed.record.queue).toEqual([{ ...taken, enqueuedAt: LATER }]);
+    expect(appendQueueEntry(failed.record, taken, LATER).queue).toHaveLength(1);
+    const again = resolvePush(failed.record, C, "error", undefined, LATER);
+    if (!again.ok) throw new Error("expected ok");
+    expect(again.record.queue).toHaveLength(1);
+  });
+
+  it("does not requeue when the push published", () => {
+    const published = resolvePush(settled(), C, "published", undefined, LATER);
+    if (!published.ok) throw new Error("expected ok");
+    expect(published.record.queue).toEqual([]);
   });
 });
