@@ -20,6 +20,7 @@ import {
   LINE_RESOLVER_ATTEMPTS,
   lineHasWork,
   lineQueueOwed,
+  MAX_LINE_BATCH_ENTRIES,
   meterProjectUsage,
   newLineDispatch,
   occupiesComputeSlot,
@@ -27,6 +28,7 @@ import {
   previousMonthOf,
   requestPush,
   resolvePush,
+  settleBatch,
   takeBatch,
 } from "./line.js";
 
@@ -496,5 +498,84 @@ describe("the dispatch machine rules over a line dispatch", () => {
     expect(replaced.instanceId).toBeUndefined();
     const failed = runnerStopped(replaced, { code: "setup_failed", message: "no" }, LATER);
     expect(failed).toMatchObject({ status: "failed", failure: { code: "setup_failed" } });
+  });
+});
+
+describe("takeBatch cap", () => {
+  it("takes at most MAX_LINE_BATCH_ENTRIES of the oldest entries and leaves the rest queued", () => {
+    let record = empty();
+    for (let i = 0; i < MAX_LINE_BATCH_ENTRIES + 5; i += 1) {
+      record = appendQueueEntry(
+        record,
+        { program: P1, upTo: i.toString(16).padStart(40, "0") as never },
+        AT,
+      );
+    }
+    const taken = takeBatch(record, 1, { batchId: "batch-1" }, AT);
+    expect(taken.record.batch?.entries).toEqual(record.queue.slice(0, MAX_LINE_BATCH_ENTRIES));
+    expect(taken.record.queue).toEqual(record.queue.slice(MAX_LINE_BATCH_ENTRIES));
+    expect(taken.record.queue).toHaveLength(5);
+  });
+});
+
+describe("settleBatch", () => {
+  const batched = () => takeBatch(queued(), 1, { batchId: "batch-1" }, AT).record;
+  const { batchId: _id, ...composition } = compositionBody("batch-1");
+  const parkedBody = { ranges: [{ program: P2, upTo: B }], reason: "conflict" };
+
+  it("records the composition and every parked entry in one change and clears the batch", () => {
+    const result = settleBatch(
+      batched(),
+      { batchId: "batch-1", composition, parked: [parkedBody, parkedBody] } as never,
+      { compositionId: "comp-1", parkedIds: ["park-1", "park-2"] },
+      LATER,
+    );
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.record.batch).toBeUndefined();
+    expect(result.record.compositions).toMatchObject([
+      { compositionId: "comp-1", composedAt: LATER },
+    ]);
+    expect(result.record.parked.map((p) => p.compositionId)).toEqual(["park-1", "park-2"]);
+    expect(result.record.updatedAt).toBe(LATER);
+  });
+
+  it("settles with neither, clearing the batch", () => {
+    const result = settleBatch(
+      batched(),
+      { batchId: "batch-1", parked: [] } as never,
+      { parkedIds: [] },
+      LATER,
+    );
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.record.batch).toBeUndefined();
+    expect(result.record.compositions).toEqual([]);
+    expect(result.record.parked).toEqual([]);
+  });
+
+  it("refuses a stale batch and resolver attempts above the limit", () => {
+    expect(
+      settleBatch(batched(), { batchId: "batch-0", parked: [] } as never, { parkedIds: [] }, AT),
+    ).toMatchObject({ ok: false, reason: "stale_batch" });
+    const over = { decision: "gave_up", attempts: LINE_RESOLVER_ATTEMPTS + 1 };
+    expect(
+      settleBatch(
+        batched(),
+        {
+          batchId: "batch-1",
+          composition: { ...composition, resolver: over },
+          parked: [],
+        } as never,
+        { compositionId: "c", parkedIds: [] },
+        AT,
+      ),
+    ).toMatchObject({ ok: false, reason: "resolver_attempts" });
+    expect(
+      settleBatch(
+        batched(),
+        { batchId: "batch-1", parked: [{ ...parkedBody, resolver: over }] } as never,
+        { parkedIds: ["p"] },
+        AT,
+      ),
+    ).toMatchObject({ ok: false, reason: "resolver_attempts" });
   });
 });

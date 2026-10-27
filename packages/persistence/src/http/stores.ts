@@ -576,7 +576,7 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     getOrUndefined(transport, LineViewSchema, routes.line(projectId, branch));
   const lines: LineStore = {
     get: async (projectId, branch) => (await lineView(projectId, branch))?.record,
-    update: planeOwns("line record", "the line routes (batch, compositions, parked, push)"),
+    update: planeOwns("line record", "the line routes (batch, compositions, parked, settle, push)"),
     listWithWork: async () => {
       throw new Error("listing lines with work is the reconciler's read; no route serves it");
     },

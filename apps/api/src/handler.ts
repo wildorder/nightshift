@@ -56,6 +56,7 @@ import {
   postLineComposition,
   postLineParked,
   postLinePush,
+  postLineSettle,
   takeLineBatch,
 } from "./operations/line.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
@@ -145,6 +146,7 @@ export const ROUTES: readonly Route[] = [
     handler: postLineComposition,
   },
   { method: "POST", path: `${LINE}/parked`, operation: "line.park", handler: postLineParked },
+  { method: "POST", path: `${LINE}/settle`, operation: "line.settle", handler: postLineSettle },
   { method: "POST", path: `${LINE}/push`, operation: "line.push", handler: postLinePush },
   {
     method: "POST",

@@ -24,6 +24,8 @@ import {
   LineParkBodySchema,
   LinePushBodySchema,
   type LineRecord,
+  type LineSettleBody,
+  LineSettleBodySchema,
   type LineView,
   LineViewSchema,
   type OrgId,
@@ -58,6 +60,7 @@ import {
   repositoryNameOf,
   requestPush,
   runnerStopped,
+  settleBatch,
   takeBatch,
   transitionDispatch,
 } from "@nightshift/core";
@@ -268,6 +271,28 @@ export const postLineParked: Handler = async ({ deps, request, params }) => {
   const compositionId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("comp");
   const record = await applyLineChange(deps, target, (current) =>
     parkBatch(current, body, compositionId, at),
+  );
+  return { status: 200, body: record };
+};
+
+/** `POST …/line/{branch}/settle` — the batch settled with a composition and/or parked entries. */
+export const postLineSettle: Handler = async ({ deps, request, params }) => {
+  const target = targetOf(params);
+  const raw = request.body as { composition?: unknown; parked?: unknown } | null | undefined;
+  refuseResolverOver(raw?.composition);
+  if (Array.isArray(raw?.parked)) for (const entry of raw.parked) refuseResolverOver(entry);
+  const body: LineSettleBody = parseBody(LineSettleBodySchema, request.body);
+  const at = nowIso(deps.clock);
+  const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
+  const compositionId = body.composition === undefined ? undefined : ids.next("comp");
+  const parkedIds = body.parked.map(() => ids.next("comp"));
+  const record = await applyLineChange(deps, target, (current) =>
+    settleBatch(
+      current,
+      body,
+      { ...(compositionId === undefined ? {} : { compositionId }), parkedIds },
+      at,
+    ),
   );
   return { status: 200, body: record };
 };

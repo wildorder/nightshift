@@ -195,6 +195,7 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.takeBatch": "forbidden",
   "line.compose": "forbidden",
   "line.park": "forbidden",
+  "line.settle": "forbidden",
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
   "line.heartbeat": "forbidden",
@@ -568,13 +569,14 @@ describe("the project line (Pipkin M1b)", () => {
     generation: 1,
   };
 
-  it("names the eight line operations", () => {
+  it("names the nine line operations", () => {
     expect([...LINE_OPERATIONS].sort()).toEqual(
       [
         "line.get",
         "line.takeBatch",
         "line.compose",
         "line.park",
+        "line.settle",
         "line.push",
         "line.createBundleUploadUrl",
         "line.heartbeat",

@@ -339,6 +339,62 @@ describe("batch, compositions, parked and push", () => {
     expect((await call(w, "POST", lineUrl(w, BRANCH, "/compositions"), body, me)).status).toBe(409);
   });
 
+  it("settles a batch with a composition and parked entries in one change", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w, { queue: [entry(w), entry(w, SHA_B)] });
+    const me = linePrincipal(w, dispatch);
+    const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
+    const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
+    const program = w.f.scope.programId;
+    const parked = { ranges: [{ program, upTo: SHA_B }], reason: "conflict" };
+    const body = {
+      batchId,
+      composition: {
+        commit: SHA_B,
+        parent: SHA,
+        ranges: [{ program, upTo: SHA }],
+        verification: makeLineVerification(w.f),
+      },
+      parked: [parked],
+    };
+    const url = lineUrl(w, BRANCH, "/settle");
+    const stale = await call(w, "POST", url, { ...body, batchId: "nope" }, me);
+    expect(stale.status).toBe(409);
+    expect(code(stale)).toBe("stale_batch");
+    const over = await call(
+      w,
+      "POST",
+      url,
+      { ...body, parked: [{ ...parked, resolver: { decision: "gave_up", attempts: 4 } }] },
+      me,
+    );
+    expect(over.status).toBe(409);
+    expect(code(over)).toBe("resolver_attempts");
+    const ok = await call(w, "POST", url, body, me);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.batch).toBeUndefined();
+    expect(record?.compositions).toHaveLength(1);
+    expect(record?.parked).toHaveLength(1);
+    expect(record?.compositions[0]?.compositionId).not.toBe(record?.parked[0]?.compositionId);
+    // Settled: the same batch again is stale.
+    expect((await call(w, "POST", url, body, me)).status).toBe(409);
+  });
+
+  it("refuses settle to another principal and to a stale generation", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w, { queue: [entry(w)] });
+    const url = lineUrl(w, BRANCH, "/settle");
+    const body = { batchId: "x", parked: [] };
+    const principals = [
+      linePrincipal(w, dispatch, { branch: "nightshift/other" }),
+      linePrincipal(w, dispatch, { generation: 2 }),
+    ];
+    for (const principal of principals) {
+      expect((await call(w, "POST", url, body, principal)).status).toBe(403);
+    }
+  });
+
   it("refuses resolver attempts above 3 with 409, on compositions and parked", async () => {
     const w = await setup();
     const dispatch = await seedLine(w, { queue: [entry(w)] });

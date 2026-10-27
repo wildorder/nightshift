@@ -53,6 +53,7 @@ export const routes = {
   lineBatch: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/batch`,
   lineCompositions: (projectId: ProjectId, branch: string) =>
     `${routes.line(projectId, branch)}/compositions`,
+  lineSettle: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/settle`,
   lineParked: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/parked`,
   linePush: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/push`,
   lineBundleUploadUrl: (projectId: ProjectId, branch: string) =>

@@ -320,6 +320,18 @@ export const LineParkBodySchema = z.strictObject({
 });
 export type LineParkBody = z.infer<typeof LineParkBodySchema>;
 
+/**
+ * `POST …/line/{branch}/settle`: one batch settled with what the composition
+ * engine produced, a composition and/or parked entries. Neither is allowed: a
+ * batch whose ranges were all on the line already.
+ */
+export const LineSettleBodySchema = z.strictObject({
+  batchId: z.string().min(1),
+  composition: LineCompositionBodySchema.omit({ batchId: true }).optional(),
+  parked: z.array(LineParkBodySchema.omit({ batchId: true })),
+});
+export type LineSettleBody = z.infer<typeof LineSettleBodySchema>;
+
 /** `POST …/line/{branch}/push`. */
 export const LinePushBodySchema = LinePushSchema.pick({
   head: true,
