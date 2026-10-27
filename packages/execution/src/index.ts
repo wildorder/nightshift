@@ -131,6 +131,7 @@ export * from "./git/index.js";
 export { createHookSink, type HookSinkOptions } from "./hook-sink.js";
 export { type IntegrateInput, type IntegrateResult, integrateNode } from "./integrate.js";
 export { blockerKey, type LifecycleInput, observeLifecycle } from "./lifecycle.js";
+export * from "./line/index.js";
 export {
   appendJournalLine,
   durableAppend,
