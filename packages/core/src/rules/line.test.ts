@@ -11,8 +11,10 @@ import { beginReplacement, leaseLost, runnerStopped, transitionDispatch } from "
 import {
   appendQueueEntry,
   capReached,
+  chargeDispatchUsage,
   composeBatch,
   DEFAULT_LINE_MONTHLY_USD,
+  dispatchChargeDue,
   LINE_COMPOSITION_SECONDS,
   LINE_RESOLVER_ATTEMPTS,
   lineHasWork,
@@ -21,6 +23,7 @@ import {
   newLineDispatch,
   occupiesComputeSlot,
   parkBatch,
+  previousMonthOf,
   requestPush,
   resolvePush,
   takeBatch,
@@ -324,6 +327,61 @@ describe("the project's self-started usage", () => {
   it("never lets a negative delta pay the spend back", () => {
     const row = meterProjectUsage(undefined, input("2026-10", 5), AT);
     expect(meterProjectUsage(row, input("2026-10", -3), AT).meteredUsd).toBe(5);
+  });
+});
+
+describe("charging a dispatch to the project's usage", () => {
+  const charge = (dispatchUsd: number, baselineUsd = 0, month = "2026-10") => ({
+    projectId: f.scope.projectId,
+    month,
+    capUsd: 25,
+    key: "b#1",
+    dispatchUsd,
+    baselineUsd,
+  });
+
+  it("charges the dispatch's cumulative spend once, however often it is repeated", () => {
+    const first = chargeDispatchUsage(undefined, charge(2), AT);
+    expect(first).toMatchObject({ meteredUsd: 2, charged: { "b#1": 2 } });
+    const again = chargeDispatchUsage(first, charge(2), LATER);
+    expect(again.meteredUsd).toBe(2);
+    const more = chargeDispatchUsage(again, charge(3.5), LATER);
+    expect(more).toMatchObject({ meteredUsd: 3.5, charged: { "b#1": 3.5 } });
+    expect(chargeDispatchUsage(more, charge(1), LATER).meteredUsd).toBe(3.5);
+  });
+
+  it("knows when a charge is due", () => {
+    const row = chargeDispatchUsage(undefined, charge(2), AT);
+    const key = { month: "2026-10", key: "b#1", baselineUsd: 0 };
+    expect(dispatchChargeDue(row, { ...key, dispatchUsd: 2 })).toBe(false);
+    expect(dispatchChargeDue(row, { ...key, dispatchUsd: 2.1 })).toBe(true);
+    expect(dispatchChargeDue(undefined, { ...key, dispatchUsd: 0.1 })).toBe(true);
+    expect(dispatchChargeDue(undefined, { ...key, dispatchUsd: 0 })).toBe(false);
+  });
+
+  it("starts a new month's row from the baseline, and leaves other dispatches' entries", () => {
+    const october = chargeDispatchUsage(undefined, charge(4), AT);
+    const november = chargeDispatchUsage(october, charge(5, 4, "2026-11"), LATER);
+    expect(november).toMatchObject({ month: "2026-11", meteredUsd: 1, charged: { "b#1": 5 } });
+    const other = chargeDispatchUsage(november, { ...charge(2, 0, "2026-11"), key: "b#2" }, LATER);
+    expect(other).toMatchObject({ meteredUsd: 3, charged: { "b#1": 5, "b#2": 2 } });
+  });
+
+  it("parses rows from before the field and notes the cap", () => {
+    const legacy = meterProjectUsage(
+      undefined,
+      { projectId: f.scope.projectId, month: "2026-10", deltaUsd: 1, capUsd: 25 },
+      AT,
+    );
+    expect(legacy.charged).toBeUndefined();
+    const row = chargeDispatchUsage(legacy, charge(30), LATER);
+    expect(row.meteredUsd).toBe(31);
+    expect(row.reachedAt).toBe(LATER);
+  });
+
+  it("names the month before", () => {
+    expect(previousMonthOf("2026-11")).toBe("2026-10");
+    expect(previousMonthOf("2026-01")).toBe("2025-12");
   });
 });
 

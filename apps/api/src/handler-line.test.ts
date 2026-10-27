@@ -641,3 +641,92 @@ describe("the heartbeat", () => {
     expect(provisioned).toEqual([BRANCH]);
   });
 });
+
+describe("the heartbeat's charge to the project's ledger", () => {
+  const usageOf = (w: World, month = "2026-10") =>
+    w.stores.projectSelfStartedUsage.get(w.f.scope.projectId, month);
+  const url = (w: World) => lineUrl(w, BRANCH, "/heartbeat");
+
+  it("repairs a failed ledger write on the retry, records the cap and stops the machine", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w, { capUsd: 0.1 });
+    const real = w.stores.projectSelfStartedUsage;
+    let failures = 1;
+    const flaky: ApiDeps = {
+      ...w.deps,
+      stores: {
+        ...w.stores,
+        projectSelfStartedUsage: {
+          ...real,
+          get: real.get.bind(real),
+          update: async (...args: Parameters<typeof real.update>) => {
+            if (failures-- > 0) throw new Error("injected ledger failure");
+            return real.update(...args);
+          },
+        },
+      },
+    };
+    const principal = linePrincipal(w, dispatch);
+    const first = await handleRequest(flaky, {
+      method: "POST",
+      path: url(w),
+      query: {},
+      body: beat(1, { meteredSeconds: 3600 }),
+      principal,
+    });
+    expect(first.status).toBe(500);
+    expect(await usageOf(w)).toBeUndefined();
+    const spent = (await heldDispatch(w)).spend.meteredUsd;
+    expect(spent).toBeGreaterThan(0.1);
+
+    const retry = await handleRequest(flaky, {
+      method: "POST",
+      path: url(w),
+      query: {},
+      body: beat(1, { meteredSeconds: 3600 }),
+      principal,
+    });
+    expect(retry.body).toMatchObject({ stop: true, status: "stopping" });
+    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(spent);
+    expect((await usageOf(w))?.reachedAt).toBe(NOW);
+    expect((await heldDispatch(w)).failure?.code).toBe("line_cap");
+    expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.waiting).toMatchObject({
+      reason: "monthly_cap",
+    });
+  });
+
+  it("charges a dispatch once however many beats repeat its spend", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w, { capUsd: 100 });
+    const principal = linePrincipal(w, dispatch);
+    for (let i = 0; i < 3; i += 1) {
+      await call(w, "POST", url(w), beat(1, { meteredSeconds: 1800 }), principal);
+    }
+    const spent = (await heldDispatch(w)).spend.meteredUsd;
+    const row = await usageOf(w);
+    expect(row?.meteredUsd).toBeCloseTo(spent);
+    expect(row?.charged?.[`${BRANCH}#1`]).toBeCloseTo(spent);
+    expect(row?.version).toBe(1);
+  });
+
+  it("charges only the spend after a month boundary in the new month's row", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w, { capUsd: 100 });
+    const principal = linePrincipal(w, dispatch);
+    await call(w, "POST", url(w), beat(1, { meteredSeconds: 1800 }), principal);
+    const october = (await heldDispatch(w)).spend.meteredUsd;
+    await handleRequest(
+      { ...w.deps, clock: createFixedClock(Date.parse("2026-11-01T00:30:00.000Z")) },
+      {
+        method: "POST",
+        path: url(w),
+        query: {},
+        body: beat(1, { meteredSeconds: 3600 }),
+        principal,
+      },
+    );
+    const total = (await heldDispatch(w)).spend.meteredUsd;
+    expect((await usageOf(w, "2026-10"))?.meteredUsd).toBeCloseTo(october);
+    expect((await usageOf(w, "2026-11"))?.meteredUsd).toBeCloseTo(total - october);
+  });
+});

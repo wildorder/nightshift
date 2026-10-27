@@ -34,9 +34,12 @@ import {
   TakeLineBatchBodySchema,
 } from "@nightshift/contracts";
 import {
+  chargeDispatchUsage,
   composeBatch,
   createUlidIdGenerator,
   DEFAULT_LINE_MONTHLY_USD,
+  dispatchChargeDue,
+  dispatchChargeKey,
   ensureLineDispatch,
   foldProgress,
   foldStages,
@@ -48,10 +51,10 @@ import {
   type LineRefusal,
   leaseExpiryFrom,
   lineBundleObjectKey,
-  meterProjectUsage,
   meterUsd,
   nowIso,
   parkBatch,
+  previousMonthOf,
   repositoryNameOf,
   requestPush,
   runnerStopped,
@@ -468,12 +471,22 @@ export const lineHeartbeat: Handler = async (context) => {
   const capUsd = await capUsdOf(deps, target);
   const held = await deps.stores.projectSelfStartedUsage.get(target.projectId, month);
   let usage = held;
+  // Charged by the dispatch's cumulative spend against what the row already
+  // holds for it, never by this beat's delta: a write that failed is repaired
+  // by the next beat, and a repeated beat charges nothing.
+  const chargeKey = dispatchChargeKey(dispatch.branch, dispatch.generation);
+  const baselineUsd =
+    held !== undefined && held.charged?.[chargeKey] !== undefined
+      ? 0
+      : ((await deps.stores.projectSelfStartedUsage.get(target.projectId, previousMonthOf(month)))
+          ?.charged?.[chargeKey] ?? 0);
+  const charge = { month, key: chargeKey, dispatchUsd: meteredUsd, baselineUsd };
   if (
-    delta > 0 ||
+    dispatchChargeDue(held, charge) ||
     (held !== undefined && held.meteredUsd >= capUsd && held.reachedAt === undefined)
   ) {
     usage = await deps.stores.projectSelfStartedUsage.update(target.projectId, month, (row) =>
-      meterProjectUsage(row, { projectId: target.projectId, month, deltaUsd: delta, capUsd }, at),
+      chargeDispatchUsage(row, { projectId: target.projectId, capUsd, ...charge }, at),
     );
   }
 
