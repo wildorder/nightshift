@@ -407,6 +407,8 @@ const own = (
     readonly idleSeconds?: number;
     readonly resolveTo?: string;
     readonly log?: string[];
+    /** Runs everything as a project user and records the grants and reclaims in `plane.events`. */
+    readonly asProject?: boolean;
   } = {},
 ) =>
   runRunner({
@@ -438,6 +440,19 @@ const own = (
         createHarnesses: () => harnessesFor(plane.events, options.resolveTo),
         idleSeconds: options.idleSeconds ?? 3,
         pollMs: 500,
+        ...(options.asProject !== true
+          ? {}
+          : {
+              runAs: () => ({
+                user: "project",
+                grant: async (path: string) => {
+                  plane.events.push(`grant:${path}`);
+                },
+              }),
+              reclaim: async (path: string) => {
+                plane.events.push(`reclaim:${path}`);
+              },
+            }),
       }),
   });
 
@@ -661,5 +676,44 @@ describe("a replacement generation", () => {
     expect(plane.settles[0]?.body.batchId).toBe("comp_held");
     expect(plane.settles[0]?.body.composition?.ranges[0]?.upTo).toBe(aHead);
     expect(git(world.origin, "show", `${world.head(LINE)}:a.txt`)).toBe("a");
+  });
+});
+
+describe("project code runs as the project user (D-P10-30)", () => {
+  it("grants each worktree with its parent before an agent launches and before verifying, reclaims it before it is used again, and wraps every step", async () => {
+    const machine = lineMachine();
+    const plane = makePlane(world, machine);
+    plane.enqueue(world.programs.c, world.head(world.branches.c));
+    plane.enqueue(world.programs.d, world.head(world.branches.d));
+    expect(await own(machine, plane, { resolveTo: "from c and d\n", asProject: true })).toBe(0);
+
+    const trace = plane.events.filter((e) => /^(grant|reclaim|launch):/.test(e));
+    const rootOf = (event: string | undefined): string => (event ?? "").replace(/^[a-z]+:/, "");
+    const launches = trace.flatMap((event, at) => (event.startsWith("launch:") ? [at] : []));
+    expect(launches.length).toBeGreaterThanOrEqual(2);
+    for (const at of launches) {
+      // The nearest grant before the launch is the worktree's temporary parent.
+      const grant = trace
+        .slice(0, at)
+        .map((e) => e.startsWith("grant:"))
+        .lastIndexOf(true);
+      expect(grant).toBeGreaterThanOrEqual(0);
+      const root = rootOf(trace[grant]);
+      expect(root).toMatch(/nightshift-line-[^/\\]+$/);
+      // ...and it is reclaimed after the launch, before the next grant or launch.
+      const rest = trace.slice(at + 1);
+      const next = rest.findIndex((e) => e.startsWith("grant:") || e.startsWith("launch:"));
+      expect(rest.slice(0, next < 0 ? undefined : next)).toContain(`reclaim:${root}`);
+    }
+    // Every grant of a worktree root (the scratch is a deeper path) is reclaimed after it.
+    const roots = trace.filter((e) => e.startsWith("grant:") && /nightshift-line-[^/\\]+$/.test(e));
+    for (const grant of roots) {
+      const at = trace.indexOf(grant);
+      expect(trace.slice(at + 1)).toContain(`reclaim:${rootOf(grant)}`);
+    }
+    // Setup and landing steps were handed to `sudo -u project`, not run as the engine: the
+    // sandbox has no such user, so each failed on the wrapper, and the composition parked.
+    const parked = JSON.stringify(plane.settles.map((entry) => entry.body.parked));
+    expect(parked).toMatch(/sudo/);
   });
 });

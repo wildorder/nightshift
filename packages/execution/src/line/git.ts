@@ -18,6 +18,9 @@ export interface LineCheckoutOptions {
   scratchDir?: string;
 }
 
+/** The temporary directory `open` made for a worktree: what a user must be granted to enter it. */
+export const lineWorktreeRoot = (worktreePath: string): string => dirname(worktreePath);
+
 const lines = (text: string): string[] =>
   text
     .split("\n")

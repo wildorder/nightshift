@@ -41,12 +41,15 @@ import {
   type LineComposerPorts,
   type LinePublisherPort,
   type LineQueuePort,
+  type LineResolverAgentPort,
+  lineWorktreeRoot,
   packCommits,
   resolveLineFailure,
   type ScratchPaths,
   tryGit,
 } from "@nightshift/execution";
-import type { Harness, RunAs } from "@nightshift/harness";
+import { commandAs, type Harness, type RunAs } from "@nightshift/harness";
+import type { StepInvocation } from "@nightshift/verification";
 import { createLineAgents } from "./line-agents.js";
 import { awaitGithubToken, type LineRunnerContext, type RunnerWorkEnd } from "./main.js";
 import { awaitProviderCredentials } from "./root.js";
@@ -410,28 +413,62 @@ const ownLine = async (
     paths: options.paths,
     env: stepEnv,
     ...(options.reclaim === undefined ? {} : { reclaim: options.reclaim }),
+    // Every setup and check step runs as the project user (D-P10-30).
+    ...(runAs === undefined
+      ? {}
+      : {
+          grant: (path: string) => runAs.grant(path),
+          as: (invocation: StepInvocation): StepInvocation => {
+            const command = commandAs(runAs, invocation.file, invocation.args, invocation.env);
+            return { file: command.file, args: command.args, env: command.env };
+          },
+        }),
   });
+
+  // An agent runs as the project user in a worktree the engine made: the user
+  // is given the whole path, its temporary parent included, for the launch,
+  // and the engine takes it back before it merges, verifies or closes it.
+  // Built per use: the policy is the line's as last read.
+  const rawAgents = (): LineResolverAgentPort =>
+    createLineAgents({
+      harnesses,
+      policy: lastView.policy ?? DEFAULT_POLICY,
+      ids: options.ids,
+      env: agentEnv,
+      ...(runAs === undefined ? {} : { runAs }),
+      announce: async ({ agentId, role, target }) => {
+        await plane.announce({
+          agentId,
+          role,
+          model: target,
+          announcedAt: new Date(options.clock.now()).toISOString(),
+        });
+      },
+    });
+  const handedToProject = async <T>(
+    worktree: { readonly path: string },
+    launch: () => Promise<T>,
+  ): Promise<T> => {
+    if (runAs === undefined) return launch();
+    const root = lineWorktreeRoot(worktree.path);
+    try {
+      await runAs.grant(root);
+      return await launch();
+    } finally {
+      await options.reclaim?.(root);
+    }
+  };
+  const agents: LineResolverAgentPort = {
+    resolve: (input) => handedToProject(input.worktree, () => rawAgents().resolve(input)),
+    examine: (input) => handedToProject(input.worktree, () => rawAgents().examine(input)),
+  };
 
   const resolve: LineComposerPorts["resolve"] = (failure) =>
     resolveLineFailure(
       {
         checkout,
         verifier,
-        agents: createLineAgents({
-          harnesses,
-          policy: lastView.policy ?? DEFAULT_POLICY,
-          ids: options.ids,
-          env: agentEnv,
-          ...(runAs === undefined ? {} : { runAs }),
-          announce: async ({ agentId, role, target }) => {
-            await plane.announce({
-              agentId,
-              role,
-              model: target,
-              announcedAt: new Date(options.clock.now()).toISOString(),
-            });
-          },
-        }),
+        agents,
         decisions: {
           record: async (decision) => {
             await plane.decide(decision);
