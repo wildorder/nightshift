@@ -9,7 +9,7 @@ import { z } from "zod";
 import { DecisionIdSchema, ProgramIdSchema, RunIdSchema } from "../ids.js";
 import { IsoTimestampSchema, PathGlobSchema, programScoped, RiskLevelSchema } from "./common.js";
 import { ComputeChoiceSchema } from "./compute.js";
-import { LineConfigSchema } from "./line.js";
+import { LineConfigSchema } from "./line-config.js";
 import {
   MAX_RATIFICATION_HISTORY,
   PlanDocumentRefSchema,

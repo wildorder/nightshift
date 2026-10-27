@@ -12,7 +12,7 @@ import { z } from "zod";
 import { ProjectIdSchema } from "../ids.js";
 import { RiskLevelSchema } from "./common.js";
 import { ComputeChoiceSchema } from "./compute.js";
-import { LineConfigSchema } from "./line.js";
+import { LineConfigSchema } from "./line-config.js";
 import {
   CostPolicySchema,
   DelegationLimitsSchema,

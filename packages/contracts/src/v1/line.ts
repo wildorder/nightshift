@@ -32,20 +32,15 @@ import {
   HeartbeatResponseSchema,
   RunnerStageSchema,
 } from "./dispatch.js";
+import { EffectivePolicySchema } from "./org-config.js";
+import { RouteTargetSchema } from "./routing-decision.js";
 import {
   outcomeOfCommands,
   VerificationCommandResultSchema,
   VerificationOutcomeSchema,
 } from "./verification.js";
 
-/** `"line": {"branch": …}` in `nightshift.config.json`, and inherited into the program contract. */
-export const LineConfigSchema = z.strictObject({
-  /** The branch the line lives on, e.g. `nightshift/develop`. */
-  branch: z.string().min(1),
-  /** The cap on what the plane's own starts may spend on this line per month. Absent means the default. */
-  monthlyUsd: z.number().positive().optional(),
-});
-export type LineConfig = z.infer<typeof LineConfigSchema>;
+export { type LineConfig, LineConfigSchema } from "./line-config.js";
 
 /** A line's branch is a project's key into its line, so it is the whole of the line's identity beside the project. */
 export const LineBranchSchema = z.string().min(1);
@@ -53,6 +48,9 @@ export const LineBranchSchema = z.string().min(1);
 /** The most compositions and parked entries a line record keeps, the newest. */
 export const MAX_LINE_COMPOSITIONS = 50;
 export const MAX_LINE_PARKED = 50;
+/** The most resolver decisions a line record keeps, and agent announcements a line dispatch keeps, the newest. */
+export const MAX_LINE_DECISIONS = 50;
+export const MAX_LINE_AGENTS = 50;
 
 /** One range of a program's landed work: `from` (exclusive, absent for its start) up to `upTo`. */
 export const LineRangeSchema = z.strictObject({
@@ -135,6 +133,48 @@ export const LineParkedSchema = z.strictObject({
 });
 export type LineParked = z.infer<typeof LineParkedSchema>;
 
+/** What the resolver's fix was made of: the program's range, or the line's own main. */
+export const LineUnitSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("main"), commit: CommitShaSchema }),
+  z.strictObject({ kind: z.literal("range"), range: LineRangeSchema }),
+]);
+export type LineUnit = z.infer<typeof LineUnitSchema>;
+
+/** The body of a resolver's decision, as the execution's `LineResolverDecision`. */
+export const LineResolverDecisionBodySchema = z.strictObject({
+  authority: z.literal("line"),
+  unit: LineUnitSchema,
+  base: CommitShaSchema,
+  commit: CommitShaSchema,
+  context: z.string(),
+  alternatives: z.array(
+    z.strictObject({ summary: z.string(), rejectedBecause: z.string().optional() }),
+  ),
+  choice: z.string(),
+  rationale: z.string(),
+  reversibility: z.literal("reversible"),
+  resolverModel: z.string(),
+  examinerModel: z.string(),
+  attempts: z.int().min(0),
+  verificationId: VerificationIdSchema,
+  decidedAt: IsoTimestampSchema,
+});
+export type LineResolverDecisionBody = z.infer<typeof LineResolverDecisionBodySchema>;
+
+/** A resolver decision stored on the line record: recorded as a decision for later review (D-03). */
+export const LineDecisionSchema = LineResolverDecisionBodySchema.extend({
+  decisionId: z.string().min(1),
+  /** The owner generation that recorded it. */
+  generation: z.int().min(1),
+});
+export type LineDecision = z.infer<typeof LineDecisionSchema>;
+
+/** `POST …/line/{branch}/decisions`. */
+export const LineDecisionBodySchema = LineResolverDecisionBodySchema.extend({
+  generation: z.int().min(1),
+});
+export type LineDecisionBody = z.infer<typeof LineDecisionBodySchema>;
+
 export const LinePushStatusSchema = z.enum([
   "pending",
   "published",
@@ -189,6 +229,8 @@ export const LineRecordSchema = z.strictObject({
   parked: z.array(LineParkedSchema),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
+  /** Newest `MAX_LINE_DECISIONS` kept. Records from before decisions have none. */
+  decisions: z.array(LineDecisionSchema).optional(),
   updatedAt: IsoTimestampSchema,
 });
 export type LineRecord = z.infer<typeof LineRecordSchema>;
@@ -243,6 +285,16 @@ export const LineDispatchCleanupSchema = DispatchCleanupSchema.extend({
 });
 export type LineDispatchCleanup = z.infer<typeof LineDispatchCleanupSchema>;
 
+/** An agent the line owner announced before running it (A-04: nothing executes without a recorded identity). */
+export const LineAgentSchema = z.strictObject({
+  agentId: AgentIdSchema,
+  generation: z.int().min(1),
+  role: z.enum(["line_resolver", "line_examiner"]),
+  model: RouteTargetSchema,
+  announcedAt: IsoTimestampSchema,
+});
+export type LineAgent = z.infer<typeof LineAgentSchema>;
+
 export const LineDispatchSchema = z.strictObject({
   ...projectScoped,
   branch: LineBranchSchema,
@@ -266,6 +318,8 @@ export const LineDispatchSchema = z.strictObject({
   spend: DispatchSpendSchema,
   cleanup: LineDispatchCleanupSchema,
   failure: LineDispatchFailureSchema.optional(),
+  /** Newest `MAX_LINE_AGENTS` kept. Dispatches from before announcements have none. */
+  agents: z.array(LineAgentSchema).optional(),
   progress: DispatchProgressSchema.optional(),
   stages: z
     .array(
@@ -301,6 +355,13 @@ export const TakeLineBatchResponseSchema = z.strictObject({
   batch: LineBatchSchema.optional(),
 });
 export type TakeLineBatchResponse = z.infer<typeof TakeLineBatchResponseSchema>;
+
+/** `POST …/line/{branch}/agents`. */
+export const LineAgentBodySchema = z.strictObject({
+  generation: z.int().min(1),
+  agent: LineAgentSchema.omit({ generation: true }),
+});
+export type LineAgentBody = z.infer<typeof LineAgentBodySchema>;
 
 /** `POST …/line/{branch}/compositions`. */
 export const LineCompositionBodySchema = z.strictObject({
@@ -400,6 +461,8 @@ export const LineViewSchema = z.strictObject({
   record: LineRecordSchema,
   dispatch: LineDispatchSchema.optional(),
   usage: ProjectSelfStartedUsageSchema.optional(),
+  /** The policy the line's agents route under; absent while the org has no config. */
+  policy: EffectivePolicySchema.optional(),
   /** The programs that feed this line, with their branches. */
   programs: z.array(z.strictObject({ program: ProgramIdSchema, branch: z.string().min(1) })),
 });

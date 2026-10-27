@@ -1,4 +1,4 @@
-import type { LineRecord, ProgramId } from "@nightshift/contracts";
+import { type LineRecord, MAX_LINE_DECISIONS, type ProgramId } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import {
   createFixtures,
@@ -9,6 +9,7 @@ import {
 } from "../testing/factories.js";
 import { beginReplacement, leaseLost, runnerStopped, transitionDispatch } from "./dispatch.js";
 import {
+  announceLineAgent,
   appendQueueEntry,
   capReached,
   chargeDispatchUsage,
@@ -17,6 +18,7 @@ import {
   dispatchChargeDue,
   dispatchChargeKey,
   LINE_COMPOSITION_SECONDS,
+  LINE_IDLE_SECONDS,
   LINE_RESOLVER_ATTEMPTS,
   lineHasWork,
   lineQueueOwed,
@@ -26,6 +28,7 @@ import {
   occupiesComputeSlot,
   parkBatch,
   previousMonthOf,
+  recordLineDecision,
   requestPush,
   resolvePush,
   settleBatch,
@@ -724,5 +727,77 @@ describe("settleBatch", () => {
     const published = resolvePush(settled(), C, "published", undefined, LATER);
     if (!published.ok) throw new Error("expected ok");
     expect(published.record.queue).toEqual([]);
+  });
+});
+
+describe("recordLineDecision and announceLineAgent", () => {
+  const decisionBody = (overrides: Record<string, unknown> = {}) =>
+    ({
+      generation: 1,
+      authority: "line",
+      unit: { kind: "main", commit: "a".repeat(40) },
+      base: "b".repeat(40),
+      commit: "c".repeat(40),
+      context: "c",
+      alternatives: [],
+      choice: "x",
+      rationale: "r",
+      reversibility: "reversible",
+      resolverModel: "m",
+      examinerModel: "n",
+      attempts: 1,
+      verificationId: "ver_00000000000000000000000001",
+      decidedAt: AT,
+      ...overrides,
+    }) as never;
+
+  it("exports the idle wait", () => {
+    expect(LINE_IDLE_SECONDS).toBe(600);
+  });
+
+  it("records a decision once per (commit, unit), keeps the newest, and refuses a stale generation", () => {
+    const record = makeLineRecord(createFixtures());
+    const first = recordLineDecision(record, decisionBody(), "dec_1", 1, AT);
+    if (!first.ok) throw new Error("refused");
+    expect(first.record.decisions).toHaveLength(1);
+    const again = recordLineDecision(first.record, decisionBody(), "dec_2", 1, AT);
+    expect(again.ok && again.record).toBe(first.record);
+    let held = first.record;
+    for (let n = 0; n < MAX_LINE_DECISIONS + 5; n += 1) {
+      const next = recordLineDecision(
+        held,
+        decisionBody({ commit: n.toString(16).padStart(40, "0") }),
+        `dec_n${n}`,
+        1,
+        AT,
+      );
+      if (!next.ok) throw new Error("refused");
+      held = next.record;
+    }
+    expect(held.decisions).toHaveLength(MAX_LINE_DECISIONS);
+    expect(held.decisions?.at(-1)?.decisionId).toBe(`dec_n${MAX_LINE_DECISIONS + 4}`);
+    expect(recordLineDecision(record, decisionBody(), "dec_x", 2, AT)).toMatchObject({
+      ok: false,
+      reason: "stale_generation",
+    });
+  });
+
+  it("announces an agent once per agentId and refuses a stale generation", () => {
+    const dispatch = makeLineDispatch(createFixtures());
+    const agent = {
+      agentId: "agent_01M5XW8F0SCAAWKGW76RXXZQ98",
+      generation: dispatch.generation,
+      role: "line_examiner",
+      model: { harness: "h", provider: "p", model: "m" },
+      announcedAt: AT,
+    } as never;
+    const first = announceLineAgent(dispatch, agent, AT);
+    if (!first.ok) throw new Error("refused");
+    expect(first.dispatch.agents).toHaveLength(1);
+    const again = announceLineAgent(first.dispatch, agent, AT);
+    expect(again.ok && again.dispatch).toBe(first.dispatch);
+    expect(
+      announceLineAgent(dispatch, { ...(agent as object), generation: 99 } as never, AT),
+    ).toMatchObject({ ok: false, reason: "stale_generation" });
   });
 });

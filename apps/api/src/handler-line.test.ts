@@ -942,3 +942,133 @@ describe("the heartbeat's charge to the project's ledger", () => {
     expect((await usageOf(w, "2026-11"))?.meteredUsd).toBeCloseTo(total - october);
   });
 });
+
+const decisionBody = (generation: number, overrides: Record<string, unknown> = {}) => ({
+  generation,
+  authority: "line",
+  unit: { kind: "main", commit: SHA },
+  base: SHA_B,
+  commit: "c".repeat(40),
+  context: "a conflict in a.ts",
+  alternatives: [{ summary: "take theirs", rejectedBecause: "loses a fix" }],
+  choice: "merge both",
+  rationale: "both changes are needed",
+  reversibility: "reversible",
+  resolverModel: "m-1",
+  examinerModel: "m-2",
+  attempts: 1,
+  verificationId: "ver_00000000000000000000000001",
+  decidedAt: NOW,
+  ...overrides,
+});
+
+describe("resolver decisions", () => {
+  it("stores a decision once, refuses a stale generation, and refuses other principals", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w);
+    const me = linePrincipal(w, dispatch);
+    const url = lineUrl(w, BRANCH, "/decisions");
+    const first = await call(w, "POST", url, decisionBody(1), me);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect((first.body as LineRecord).decisions).toHaveLength(1);
+    const again = await call(w, "POST", url, decisionBody(1), me);
+    expect(again.status).toBe(200);
+    expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.decisions).toHaveLength(1);
+    const other = await call(w, "POST", url, decisionBody(1, { commit: "d".repeat(40) }), me);
+    expect((other.body as LineRecord).decisions).toHaveLength(2);
+
+    const stale = await call(w, "POST", url, decisionBody(0 + 2), me);
+    expect(stale.status).toBe(409);
+    expect(code(stale)).toBe("stale_generation");
+
+    expect(
+      (await call(w, "POST", url, decisionBody(1), linePrincipal(w, dispatch, { branch: "x" })))
+        .status,
+    ).toBe(403);
+    expect(
+      (await call(w, "POST", url, decisionBody(1), linePrincipal(w, dispatch, { generation: 2 })))
+        .status,
+    ).toBe(403);
+  });
+});
+
+describe("agent announcements", () => {
+  const agent = (id: string) => ({
+    agentId: `agent_${id}`,
+    role: "line_resolver",
+    model: { harness: "codex", provider: "openai", model: "m-1" },
+    announcedAt: NOW,
+  });
+  const ID_A = "01M5XW8F0SCAAWKGW76RXXZQ98";
+  const ID_B = "01M5XW8F0SCAAWKGW76RXXZQ99";
+
+  it("stores an agent once, refuses a stale generation and other principals", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w);
+    const me = linePrincipal(w, dispatch);
+    const url = lineUrl(w, BRANCH, "/agents");
+    const first = await call(w, "POST", url, { generation: 1, agent: agent(ID_A) }, me);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect((first.body as LineDispatch).agents).toHaveLength(1);
+    await call(w, "POST", url, { generation: 1, agent: agent(ID_A) }, me);
+    expect((await heldDispatch(w)).agents).toHaveLength(1);
+    await call(w, "POST", url, { generation: 1, agent: agent(ID_B) }, me);
+    expect((await heldDispatch(w)).agents).toHaveLength(2);
+
+    const stale = await call(w, "POST", url, { generation: 2, agent: agent(ID_A) }, me);
+    expect(stale.status).toBe(409);
+    expect(
+      (
+        await call(
+          w,
+          "POST",
+          url,
+          { generation: 1, agent: agent(ID_A) },
+          linePrincipal(w, dispatch, { generation: 2 }),
+        )
+      ).status,
+    ).toBe(403);
+  });
+
+  it("survives a heartbeat and a lease replacement", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w);
+    const me = linePrincipal(w, dispatch);
+    await call(w, "POST", lineUrl(w, BRANCH, "/agents"), { generation: 1, agent: agent(ID_A) }, me);
+    const beatResponse = await call(w, "POST", lineUrl(w, BRANCH, "/heartbeat"), beat(1), me);
+    expect(beatResponse.status).toBe(200);
+    expect((await heldDispatch(w)).agents).toHaveLength(1);
+    await w.stores.lineDispatches.update(w.f.scope.projectId, BRANCH, (current) =>
+      beginReplacement(current, "lease_lost", NOW),
+    );
+    const replaced = await heldDispatch(w);
+    expect(replaced.generation).toBe(2);
+    expect(replaced.agents).toHaveLength(1);
+  });
+});
+
+describe("GET the line's policy", () => {
+  it("is the org's effective policy, and absent without an org config", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w);
+    const me = linePrincipal(w, dispatch);
+    const none = await call(w, "GET", lineUrl(w), undefined, me);
+    expect((none.body as { policy?: unknown }).policy).toBeUndefined();
+    await w.stores.orgConfigs.put({
+      schemaVersion: 1,
+      orgId: w.orgId,
+      routingPolicy: DEFAULT_ROUTING_POLICY,
+      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      installations: [],
+      version: 1,
+      updatedAt: NOW,
+    } as never);
+    const some = await call(w, "GET", lineUrl(w), undefined, me);
+    expect(some.status, JSON.stringify(some.body)).toBe(200);
+    expect((some.body as { policy: unknown }).policy).toMatchObject({
+      routingPolicy: { roles: DEFAULT_ROUTING_POLICY.roles },
+      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      orgConfigVersion: 1,
+    });
+  });
+});
