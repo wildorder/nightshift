@@ -19,6 +19,7 @@ import {
 import { type Clock, type IdGenerator, nowIso } from "@nightshift/core";
 import {
   runCheckoutSteps,
+  type StepInvocation,
   type StepResult,
   setupAsStep,
   TIMEOUT_EXIT_CODE,
@@ -29,6 +30,7 @@ import { type GateDefinitions, landingSteps } from "../gate-repair.js";
 import { pristineCheckout } from "../git/operations.js";
 import type { GitRunner } from "../git/runner.js";
 import { discardScratch, freshScratch, projectStepEnv, type ScratchPaths } from "../scratch.js";
+import { lineWorktreeRoot } from "./git.js";
 import { LINE_LOG_TAIL_CHARS, type LineCommandLog, type LineVerifierPort } from "./ports.js";
 
 export interface LineVerifierOptions {
@@ -44,6 +46,18 @@ export interface LineVerifierOptions {
   paths: ScratchPaths;
   /** The project environment every step is given, over the sanitised base. */
   env?: Readonly<Record<string, string>>;
+  /**
+   * Wraps what each setup and landing step would spawn so it runs as the
+   * project user (D-P10-30), as a run's verification does (D-P10-25). Absent,
+   * the steps run as is.
+   */
+  as?: (invocation: StepInvocation) => StepInvocation;
+  /**
+   * Hands the project user a path the steps work in: the worktree with its
+   * temporary parent, and the scratch. Called after the tree is made pristine
+   * and before the first step; `reclaim` takes both back before this returns.
+   */
+  grant?: (path: string) => Promise<void>;
   /** Removes what project code wrote into a scratch, when the engine needs it done as another user. */
   reclaim?: (dir: string) => Promise<void>;
   /**
@@ -79,9 +93,14 @@ export const createLineVerifier = (options: LineVerifierOptions): LineVerifierPo
     };
     const results: StepResult[] = [];
     const scratch = await freshScratch(options.paths, worktree.path, options.reclaim);
+    const root = lineWorktreeRoot(worktree.path);
     let timedOut = false;
     let notRun: { stepId: string; command: string } | undefined;
     try {
+      if (options.grant !== undefined) {
+        await options.grant(root);
+        await options.grant(scratch);
+      }
       // Each step is run on its own so the deadline is checked before it and
       // bounds it. Setup stops the run at its first failure, as it does everywhere.
       const steps: { step: VerificationStep; isSetup: boolean }[] = [
@@ -107,6 +126,7 @@ export const createLineVerifier = (options: LineVerifierOptions): LineVerifierPo
           cwd: worktree.path,
           env: projectStepEnv(env, scratch),
           clock,
+          ...(options.as === undefined ? {} : { as: options.as }),
         });
         const [result] = checkout.checks;
         if (result === undefined) break;
@@ -115,6 +135,8 @@ export const createLineVerifier = (options: LineVerifierOptions): LineVerifierPo
         if (result.exitCode !== 0 && (isSetup || result.timedOut)) break;
       }
     } finally {
+      // The tree goes back to the engine whatever the steps left in it.
+      if (options.grant !== undefined) await options.reclaim?.(root).catch(() => undefined);
       await discardScratch(options.paths, worktree.path, options.reclaim);
     }
 

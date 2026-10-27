@@ -1,7 +1,7 @@
 /** The line verifier on real trivial shell steps in a real git checkout. */
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type CommitSha, LineVerificationSchema, stepRunsAt } from "@nightshift/contracts";
 import {
   createCountingIdGenerator,
@@ -189,5 +189,46 @@ describe("createLineVerifier", () => {
     });
     expect(result.verification.outcome).toBe("passed");
     expect(result.verification.commands[0]?.logArtifactId).toBe("art_01J0000000000000000000000A");
+  });
+
+  it("runs every setup and landing step through `as`, with the worktree and scratch granted first and reclaimed after", async () => {
+    const lr = await createLineRepo();
+    repos.push(lr);
+    const commit = await lr.commit("line", { x: "1" });
+    const wt = await lr.checkout().open(commit);
+    const scratchRoot = await mkdtemp(join(tmpdir(), "line-verifier-scratch-"));
+    dirs.push(scratchRoot);
+    const trace: string[] = [];
+    const verifier = createLineVerifier({
+      gates: {
+        setup: [{ id: "prep", command: node("0") }],
+        verification: [
+          { id: "a", command: node("0") },
+          { id: "b", command: node("0") },
+        ],
+      },
+      ids: createCountingIdGenerator(),
+      clock: systemClock,
+      runner: nodeGitRunner,
+      paths: { scratch: () => join(scratchRoot, "s") },
+      grant: async (path) => {
+        trace.push(`grant:${path}`);
+      },
+      reclaim: async (path) => {
+        trace.push(`reclaim:${path}`);
+      },
+      as: (invocation) => {
+        trace.push("as");
+        return invocation;
+      },
+    });
+    const result = await verifier.verify({ worktree: wt, commit, base: lr.initial });
+    expect(result.verification.outcome).toBe("passed");
+    expect(trace.filter((e) => e === "as")).toHaveLength(3);
+    const root = dirname(wt.path);
+    expect(trace.indexOf(`grant:${root}`)).toBeGreaterThanOrEqual(0);
+    expect(trace.indexOf(`grant:${root}`)).toBeLessThan(trace.indexOf("as"));
+    expect(trace.indexOf(`grant:${join(scratchRoot, "s")}`)).toBeLessThan(trace.indexOf("as"));
+    expect(trace.lastIndexOf("as")).toBeLessThan(trace.indexOf(`reclaim:${root}`));
   });
 });
