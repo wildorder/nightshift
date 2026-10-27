@@ -5,7 +5,12 @@
  * The record is exhaustive, so a new code in `core` fails to compile here until
  * someone decides its status.
  */
-import { type DomainErrorCode, isDomainError } from "@nightshift/core";
+import {
+  type DomainError,
+  type DomainErrorCode,
+  isDomainError,
+  ProgramRunLiveError,
+} from "@nightshift/core";
 import { ZodError } from "zod";
 import { type ApiResponse, errorBody, HttpError } from "./http.js";
 
@@ -38,6 +43,8 @@ export const DOMAIN_ERROR_STATUS: Readonly<Record<DomainErrorCode, number>> = {
   plan_draft: 409,
   program_contract_exists: 409,
   verification_exists: 409,
+  // PIP-9: a second live run of a program conflicts with the one already live.
+  program_run_live: 409,
 };
 
 /** Where a failure happened, for the one log line a 500 writes. Never the body. */
@@ -46,6 +53,12 @@ export interface FailureContext {
   /** The route's body is a secret (P10, D-P10-23); the log says so and nothing else. */
   readonly bodyMasked: boolean;
 }
+
+/** The structured fields a client rebuilds an error from (PIP-9); the rest travel as the message. */
+const domainErrorFields = (error: DomainError): Record<string, unknown> | undefined =>
+  error instanceof ProgramRunLiveError
+    ? { programId: error.programId, liveRunId: error.liveRunId }
+    : undefined;
 
 export const toErrorResponse = (error: unknown, context?: FailureContext): ApiResponse => {
   if (error instanceof HttpError) {
@@ -58,7 +71,10 @@ export const toErrorResponse = (error: unknown, context?: FailureContext): ApiRe
     };
   }
   if (isDomainError(error)) {
-    return { status: DOMAIN_ERROR_STATUS[error.code], body: errorBody(error.code, error.message) };
+    return {
+      status: DOMAIN_ERROR_STATUS[error.code],
+      body: errorBody(error.code, error.message, undefined, domainErrorFields(error)),
+    };
   }
   // Logged for the operator; never echoed, so no stack or internal detail leaks.
   // The request body is never logged; for a masked route the line says so.

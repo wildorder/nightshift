@@ -128,6 +128,22 @@ export interface ProgramContractStore {
 }
 
 export interface RunStore {
+  /**
+   * Writes the run and guards one live run per program, atomically (S-01, PIP-9):
+   *
+   * - A non-terminal status (pending/running) claims the program's live-run
+   *   marker in the same atomic operation as the run record. If another run of
+   *   the program holds it, throws `ProgramRunLiveError` naming the holder and
+   *   writes nothing. A run that holds the marker itself may be put again.
+   * - A terminal status (`RUN_TERMINAL_STATUSES`) always persists the run, and
+   *   releases the marker in the same atomic operation if and only if this run
+   *   holds it. A terminal put of a run that does not hold the marker (absent,
+   *   held by another run, or a repeated terminal write after release) persists
+   *   the run and leaves the marker untouched.
+   * - A put that would move a stored terminal run back to a non-terminal status
+   *   throws `IllegalTransitionError`, so an attach cannot revive a run ended
+   *   under it.
+   */
   put(run: Run): Promise<void>;
   get(scope: ProgramScope, runId: RunId): Promise<Run | undefined>;
   listByProgram(scope: ProgramScope, page?: PageRequest): Promise<Page<Run>>;

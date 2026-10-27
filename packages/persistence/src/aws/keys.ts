@@ -242,6 +242,16 @@ export const keys = {
     SK: `RUN#${runId}`,
   }),
 
+  /**
+   * The program's live-run marker (S-01, PIP-9): the run that holds the program's
+   * one live slot. Beside the program's runs, but its sort key does not begin
+   * with `RUN#`, so a listing of the runs never reads it.
+   */
+  programLiveRun: (scope: ProgramScope): TableKey => ({
+    PK: `PROJ#${scope.projectId}#PROG#${scope.programId}`,
+    SK: "LIVERUN",
+  }),
+
   runPartition: (scope: ProgramScope) => ({
     PK: `PROJ#${scope.projectId}#PROG#${scope.programId}`,
     prefix: "RUN#",

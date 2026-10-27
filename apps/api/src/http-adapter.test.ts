@@ -79,6 +79,7 @@ import {
   makeWarmCache,
   nextUserId,
   PlanDraftError,
+  ProgramRunLiveError,
   type ProjectStores,
   rejectionOf,
   StaleWriteError,
@@ -894,6 +895,19 @@ describe("refusals come back typed", () => {
 
     const failure = await rejectionOf(world.http.agents.put(agent));
     expect(failure).toBeInstanceOf(IllegalTransitionError);
+  });
+
+  it("turns a second live run of a program into ProgramRunLiveError naming the first (PIP-9)", async () => {
+    const { run } = await seed();
+    const second = makeRun(world.f, { runId: world.f.ids.next("run"), status: "pending" });
+
+    const failure = await rejectionOf(world.http.runs.put(second));
+    expect(failure).toBeInstanceOf(ProgramRunLiveError);
+    expect(failure).toMatchObject({
+      programId: world.f.scope.programId,
+      liveRunId: run.runId,
+    });
+    expect(await world.http.runs.get(world.f.scope, second.runId)).toBeUndefined();
   });
 
   it("turns a validation failure into ControlPlaneError 400, with the issues", async () => {

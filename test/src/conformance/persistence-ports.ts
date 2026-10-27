@@ -27,6 +27,7 @@ import {
   type PlanDraft,
   type ProgramId,
   type ProjectId,
+  type Run,
   type RunId,
 } from "@nightshift/contracts";
 import {
@@ -34,6 +35,7 @@ import {
   createFixtures,
   type Fixtures,
   type IdentityStores,
+  IllegalTransitionError,
   isSequenced,
   makeAgent,
   makeCheckpoint,
@@ -62,6 +64,7 @@ import {
   orderEvents,
   PlanDraftError,
   ProgramContractExistsError,
+  ProgramRunLiveError,
   type ProjectStores,
   type RunScope,
   StaleWriteError,
@@ -1923,13 +1926,124 @@ export const describePortConformance = <S extends ProjectStores>(
       });
     });
 
+    describe("one live run per program (S-01, PIP-9)", () => {
+      const ended = (
+        run: Run,
+        status: "succeeded" | "failed" | "cancelled" | "interrupted",
+      ): Run => ({
+        ...run,
+        status,
+        endedAt: "2026-01-01T01:00:00.000Z",
+        ...(status === "succeeded" ? {} : { outcomeReason: "ended by the test" }),
+      });
+      const second = (f: Fixtures, status: "pending" | "running" = "pending"): Run =>
+        makeRun(f, { runId: f.ids.next("run") as RunId, status });
+
+      for (const heldStatus of ["pending", "running"] as const) {
+        for (const refusedStatus of ["pending", "running"] as const) {
+          it(`refuses a ${refusedStatus} run beside a ${heldStatus} one, naming the holder, and stores nothing`, async () => {
+            const first = makeRun(a, { status: heldStatus });
+            await stores.runs.put(first);
+            const other = second(a, refusedStatus);
+            const refusal = await stores.runs.put(other).then(
+              () => undefined,
+              (error: unknown) => error,
+            );
+            expect(refusal).toBeInstanceOf(ProgramRunLiveError);
+            expect(refusal).toMatchObject({
+              programId: a.scope.programId,
+              liveRunId: first.runId,
+            });
+            expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
+            expect((await stores.runs.listByProgram(a.scope)).items).toHaveLength(1);
+          });
+        }
+      }
+
+      it("leaves another program unaffected", async () => {
+        await stores.runs.put(makeRun(a));
+        const otherProgram = makeRun(a, {
+          programId: a.ids.next("prog") as ProgramId,
+          runId: a.ids.next("run") as RunId,
+        });
+        await stores.runs.put(otherProgram);
+        await stores.runs.put(makeRun(b));
+      });
+
+      for (const status of ["succeeded", "failed", "cancelled", "interrupted"] as const) {
+        it(`accepts a new run once the first ends ${status}`, async () => {
+          const first = makeRun(a);
+          await stores.runs.put(first);
+          await stores.runs.put(ended(first, status));
+          const next = second(a, "running");
+          await stores.runs.put(next);
+          expect(await stores.runs.get(a.scope, next.runId)).toEqual(next);
+          const refusal = await stores.runs.put(second(a)).catch((error: unknown) => error);
+          expect(refusal).toMatchObject({ liveRunId: next.runId });
+        });
+      }
+
+      it("accepts updates to the live run itself", async () => {
+        const first = makeRun(a, { status: "pending" });
+        await stores.runs.put(first);
+        await stores.runs.put(first);
+        const running = { ...first, status: "running" as const };
+        await stores.runs.put(running);
+        await stores.runs.put(running);
+        expect(await stores.runs.get(a.scope, first.runId)).toEqual(running);
+      });
+
+      it("persists a terminal put of a run that does not hold the marker, leaving another's marker", async () => {
+        const holder = makeRun(a);
+        await stores.runs.put(holder);
+        // Never put live, so it holds nothing; it is written terminal directly.
+        const stray = ended(second(a), "failed");
+        await stores.runs.put(stray);
+        expect(await stores.runs.get(a.scope, stray.runId)).toEqual(stray);
+        // The holder's marker survives: a further live run is still refused.
+        const refusal = await stores.runs.put(second(a)).catch((error: unknown) => error);
+        expect(refusal).toMatchObject({ liveRunId: holder.runId });
+      });
+
+      it("persists a repeated terminal put after release, leaving the next run's marker", async () => {
+        const first = makeRun(a);
+        await stores.runs.put(first);
+        await stores.runs.put(ended(first, "failed"));
+        const next = second(a, "running");
+        await stores.runs.put(next);
+        const again = ended(first, "cancelled");
+        await stores.runs.put(again);
+        expect(await stores.runs.get(a.scope, first.runId)).toEqual(again);
+        const refusal = await stores.runs.put(second(a)).catch((error: unknown) => error);
+        expect(refusal).toMatchObject({ liveRunId: next.runId });
+      });
+
+      it("refuses to move a terminal run back to running, and changes nothing", async () => {
+        const first = makeRun(a);
+        await stores.runs.put(first);
+        const done = ended(first, "interrupted");
+        await stores.runs.put(done);
+        await expect(stores.runs.put({ ...first, status: "running" })).rejects.toThrow(
+          IllegalTransitionError,
+        );
+        expect(await stores.runs.get(a.scope, first.runId)).toEqual(done);
+        // The marker was released and stays released.
+        await stores.runs.put(second(a));
+      });
+    });
+
     describe("unused chain parts are still honoured", () => {
       it("distinguishes two runs of the same program", async () => {
         const runOne = makeRun(a);
         const secondRunId = a.ids.next("run") as RunId;
         const scopeTwo: RunScope = { ...a.scope, runId: secondRunId };
 
-        await stores.runs.put(runOne);
+        // One live run per program (PIP-9): the first has ended when the second starts.
+        await stores.runs.put({
+          ...runOne,
+          status: "succeeded",
+          endedAt: "2026-01-01T01:00:00.000Z",
+        });
         await stores.runs.put({ ...runOne, runId: secondRunId });
 
         expect((await stores.runs.listByProgram(a.scope)).items).toHaveLength(2);

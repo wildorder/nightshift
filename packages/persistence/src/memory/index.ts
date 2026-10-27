@@ -105,7 +105,9 @@ import {
   type ExaminationStore,
   type ExecutionNodeStore,
   type GateHealthStore,
+  IllegalTransitionError,
   type InstallationClaimStore,
+  isRunTerminal,
   type JobContractStore,
   type MeasurementSummaryStore,
   type MembershipStore,
@@ -119,6 +121,7 @@ import {
   type PlanDraftStore,
   ProgramContractExistsError,
   type ProgramContractStore,
+  ProgramRunLiveError,
   type ProgramScope,
   type ProjectStore,
   type RoutingDecisionStore,
@@ -197,6 +200,8 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const projectsByOrg = table<Project>("projectsByOrg");
   const programContracts = table<ProgramContract>("programContracts");
   const runs = table<Run>("runs");
+  // PIP-9: (project, program) -> the run that holds the program's live-run marker.
+  const liveRuns = table<{ runId: RunId }>("programLiveRuns");
   const executionNodes = table<ExecutionNode>("executionNodes");
   const jobContracts = table<JobContract>("jobContracts");
   const agents = table<Agent>("agents");
@@ -238,6 +243,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     projectsByOrg,
     programContracts,
     runs,
+    liveRuns,
     executionNodes,
     jobContracts,
     agents,
@@ -353,7 +359,27 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const runStore: RunStore = {
     put: async (run) => {
       const parsed = RunSchema.parse(run);
-      runs.set(`${programPrefix(parsed)}${parsed.runId}`, parsed);
+      // One unit (S-01, PIP-9): the run and the program's live-run marker move
+      // together, so no interleaving puts two live runs of one program.
+      atomically(() => {
+        const key = `${programPrefix(parsed)}${parsed.runId}`;
+        const liveKey = programPrefix(parsed);
+        const marker = liveRuns.get(liveKey);
+        if (isRunTerminal(parsed.status)) {
+          runs.set(key, parsed);
+          if (marker?.runId === parsed.runId) liveRuns.delete(liveKey);
+          return;
+        }
+        const stored = runs.get(key);
+        if (stored !== undefined && isRunTerminal(stored.status)) {
+          throw new IllegalTransitionError(stored.status, `put ${parsed.status}`);
+        }
+        if (marker !== undefined && marker.runId !== parsed.runId) {
+          throw new ProgramRunLiveError(parsed.programId, marker.runId);
+        }
+        runs.set(key, parsed);
+        liveRuns.set(liveKey, { runId: parsed.runId });
+      });
     },
     get: async (scope: ProgramScope, runId: RunId) => runs.get(`${programPrefix(scope)}${runId}`),
     listByProgram: async (scope: ProgramScope, page?: PageRequest) =>

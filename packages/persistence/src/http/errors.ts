@@ -36,6 +36,7 @@ import {
   OwnershipViolationError,
   PlanDraftError,
   ProgramContractExistsError,
+  ProgramRunLiveError,
   ReversibilitySoftenedError,
   StaleWriteError,
   TreeStructureError,
@@ -98,6 +99,7 @@ const DOMAIN_ERRORS: Readonly<Record<DomainErrorCode, (message: string) => Domai
   plan_draft: () => new PlanDraftError("conflict", ""),
   program_contract_exists: () => new ProgramContractExistsError(""),
   verification_exists: () => new VerificationExistsError(""),
+  program_run_live: () => new ProgramRunLiveError("", ""),
 };
 
 const isDomainErrorCode = (code: string): code is DomainErrorCode =>
@@ -108,16 +110,32 @@ interface ErrorBody {
     readonly code?: unknown;
     readonly message?: unknown;
     readonly issues?: unknown;
+    readonly programId?: unknown;
+    readonly liveRunId?: unknown;
   };
 }
 
-const readError = (body: unknown): { code: string; message: string; issues?: unknown[] } => {
+const readError = (
+  body: unknown,
+): {
+  code: string;
+  message: string;
+  issues?: unknown[];
+  programId?: string;
+  liveRunId?: string;
+} => {
   const error = (body as ErrorBody | null | undefined)?.error;
   const code = typeof error?.code === "string" ? error.code : "unknown_error";
   const message =
     typeof error?.message === "string" ? error.message : `the control plane refused the request`;
   const issues = Array.isArray(error?.issues) ? (error.issues as unknown[]) : undefined;
-  return issues === undefined ? { code, message } : { code, message, issues };
+  return {
+    code,
+    message,
+    ...(issues === undefined ? {} : { issues }),
+    ...(typeof error?.programId === "string" ? { programId: error.programId } : {}),
+    ...(typeof error?.liveRunId === "string" ? { liveRunId: error.liveRunId } : {}),
+  };
 };
 
 /**
@@ -129,7 +147,13 @@ const readError = (body: unknown): { code: string; message: string; issues?: unk
  * prose.
  */
 export const toThrowable = (status: number, body: unknown): Error => {
-  const { code, message, issues } = readError(body);
+  const { code, message, issues, programId, liveRunId } = readError(body);
+  if (code === "program_run_live" && programId !== undefined && liveRunId !== undefined) {
+    // The fields travel in the body (PIP-9): a caller branches on who holds the run.
+    const error = new ProgramRunLiveError(programId, liveRunId);
+    error.message = message;
+    return error;
+  }
   if (isDomainErrorCode(code)) {
     const error = DOMAIN_ERRORS[code](message);
     // The class is what a caller branches on; the message is what it shows a

@@ -30,7 +30,9 @@ export type DomainErrorCode =
   /** P21: a program contract was created where one is already stored. */
   | "program_contract_exists"
   /** A verification was put where a different one is already stored under the same identifier. */
-  | "verification_exists";
+  | "verification_exists"
+  /** PIP-9: a run was put for a program that already has another live run. */
+  | "program_run_live";
 
 export abstract class DomainError extends Error {
   abstract readonly code: DomainErrorCode;
@@ -275,6 +277,21 @@ export class VerificationExistsError extends DomainError {
 
   constructor(readonly verificationId: string) {
     super(`verification ${verificationId} is already stored with a different body`);
+  }
+}
+
+/**
+ * A run was put in a non-terminal status for a program whose live-run marker
+ * another run holds (S-01, PIP-9). Nothing was written; `liveRunId` names the holder.
+ */
+export class ProgramRunLiveError extends DomainError {
+  readonly code = "program_run_live" as const;
+
+  constructor(
+    readonly programId: string,
+    readonly liveRunId: string,
+  ) {
+    super(`program ${programId} already has a live run: ${liveRunId}`);
   }
 }
 

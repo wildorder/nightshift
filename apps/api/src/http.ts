@@ -129,8 +129,14 @@ export const errorBody = (
   code: string,
   message: string,
   issues?: readonly unknown[],
+  fields?: Readonly<Record<string, unknown>>,
 ): ErrorResponse => ({
-  error: issues === undefined ? { code, message } : { code, message, issues: [...issues] },
+  error: {
+    code,
+    message,
+    ...(issues === undefined ? {} : { issues: [...issues] }),
+    ...fields,
+  },
 });
 
 /** Validates a request body. Always the first thing an operation does (T4 deliverable 2). */

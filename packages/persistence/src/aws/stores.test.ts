@@ -28,6 +28,7 @@ import {
   makeProgramContract,
   makeProject,
   makeRootNode,
+  makeRun,
   makeRunFeedback,
   OwnershipViolationError,
   StaleWriteError,
@@ -461,5 +462,72 @@ describe("DynamoDB adapter specifics", () => {
       await stores.projects.put(project);
       expect(await stores.projects.get(project.projectId)).toEqual(project);
     });
+  });
+});
+
+describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
+  const tableName = "nightshift-test";
+
+  /** Every transaction the adapter sends, over a FakeTable. */
+  const recording = () => {
+    const table = new FakeTable({ tableName });
+    const transactions: NonNullable<Parameters<FakeTable["transactWrite"]>[0]["TransactItems"]>[] =
+      [];
+    const client = {
+      get: (input: Parameters<FakeTable["get"]>[0]) => table.get(input),
+      put: (input: Parameters<FakeTable["put"]>[0]) => table.put(input),
+      update: (input: Parameters<FakeTable["update"]>[0]) => table.update(input),
+      delete: (input: Parameters<FakeTable["delete"]>[0]) => table.delete(input),
+      scan: (input: Parameters<FakeTable["scan"]>[0]) => table.scan(input),
+      query: (input: Parameters<FakeTable["query"]>[0]) => table.query(input),
+      transactWrite: (input: Parameters<FakeTable["transactWrite"]>[0]) => {
+        transactions.push(input.TransactItems ?? []);
+        return table.transactWrite(input);
+      },
+    };
+    return { table, transactions, stores: createAwsStores({ tableName, table: client }) };
+  };
+
+  it("writes the run and the marker claim in one transaction, and puts the marker beside no run", async () => {
+    const { table, transactions, stores } = recording();
+    const f = createFixtures();
+    const run = makeRun(f, { status: "pending" });
+    await stores.runs.put(run);
+
+    expect(transactions).toHaveLength(1);
+    const [runPut, markerPut] = transactions[0] ?? [];
+    expect(runPut?.Put?.Item).toMatchObject(keys.run(f.scope, run.runId));
+    expect(markerPut?.Put?.Item).toMatchObject({
+      ...keys.programLiveRun(f.scope),
+      runId: run.runId,
+    });
+    const stored = await table.get({
+      TableName: tableName,
+      Key: keys.programLiveRun(f.scope),
+      ConsistentRead: true,
+    });
+    expect(stored.Item?.runId).toBe(run.runId);
+    // The marker is not a run: listing the program's runs never reads it.
+    expect((await stores.runs.listByProgram(f.scope)).items).toHaveLength(1);
+  });
+
+  it("writes the run and the marker release in one transaction", async () => {
+    const { table, transactions, stores } = recording();
+    const f = createFixtures();
+    const run = makeRun(f);
+    await stores.runs.put(run);
+    transactions.length = 0;
+    await stores.runs.put({ ...run, status: "succeeded", endedAt: "2026-01-01T01:00:00.000Z" });
+
+    expect(transactions).toHaveLength(1);
+    const [runPut, release] = transactions[0] ?? [];
+    expect(runPut?.Put?.Item).toMatchObject(keys.run(f.scope, run.runId));
+    expect(release?.Delete?.Key).toEqual(keys.programLiveRun(f.scope));
+    const gone = await table.get({
+      TableName: tableName,
+      Key: keys.programLiveRun(f.scope),
+      ConsistentRead: true,
+    });
+    expect(gone.Item).toBeUndefined();
   });
 });

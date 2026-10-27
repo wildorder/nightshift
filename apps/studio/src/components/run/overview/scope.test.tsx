@@ -3,7 +3,7 @@
  * with the history's figures and none of the run's own tiles, and the budget
  * evaluation's cue on the run's Consumed tile.
  */
-import type { ProgramId, Run, RunId } from "@nightshift/contracts";
+import type { ProgramId, RunId } from "@nightshift/contracts";
 import {
   type CompletionReport,
   createCountingIdGenerator,
@@ -21,6 +21,7 @@ const omitMissing = <T extends { missing?: unknown }>(completeness: T): Omit<T, 
   const { missing: _missing, ...rest } = completeness;
   return rest;
 };
+const LIVE_TITLE = "Invoices persist, retry in progress";
 const TITLE = "Invoices persist and webhooks deliver once";
 
 interface Options {
@@ -34,8 +35,6 @@ interface Options {
   readonly maxUsd?: number;
   /** Routes lose their usage, so the spend cannot be evaluated completely. */
   readonly wipeUsage?: boolean;
-  /** The run is still running, so the page polls. */
-  readonly live?: boolean;
   /** Every attempt's summary is complete and fully valued (the fixture has one that is not). */
   readonly fullyValued?: boolean;
   /** With fullyValued: the summaries' priced cache counters are absent, a lower-bound estimate. */
@@ -132,10 +131,6 @@ const mount = async (options: Options = {}) => {
             },
           } as typeof summary);
         }
-      }
-      if (options.live) {
-        const { endedAt: _ended, ...open } = (await stores.runs.get(scope, scope.runId)) as Run;
-        await stores.runs.put({ ...open, status: "running" });
       }
       const history = (await stores.completionHistories.listByProject(scope.projectId)).items[0];
       if (history === undefined) return;
@@ -435,13 +430,15 @@ describe("a completion history", () => {
   });
 
   it("keeps the history scope selected while the live poll refreshes the report", async () => {
+    // The `running-history` scenario: a run that is live from the start, since a
+    // terminal run is never put back to running (PIP-9).
     const { stores, seeded } = await mount({
-      live: true,
+      name: "running-history",
       pollMs: 25,
       query: (id) => `scope=history:${id}`,
     });
     expect((await screen.findByTestId("scope-label")).textContent).toBe(
-      `Completion history: ${TITLE}`,
+      `Completion history: ${LIVE_TITLE}`,
     );
     const before = screen.getAllByTestId("as-of")[0]?.textContent;
     await stores.events.append(
@@ -460,7 +457,7 @@ describe("a completion history", () => {
     await waitFor(() => expect(screen.getAllByTestId("as-of")[0]?.textContent).not.toBe(before), {
       timeout: 3000,
     });
-    expect(screen.getByTestId("scope-label").textContent).toBe(`Completion history: ${TITLE}`);
+    expect(screen.getByTestId("scope-label").textContent).toBe(`Completion history: ${LIVE_TITLE}`);
     expect(historyTiles()).not.toBeNull();
     expect(runTiles()).toBeNull();
   });

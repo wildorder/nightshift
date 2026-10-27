@@ -43,6 +43,8 @@ const setup = async (
   wrap: (
     stores: ReturnType<typeof createInMemoryStores>,
   ) => ReturnType<typeof createInMemoryStores> = (stores) => stores,
+  /** The sibling's run is stored still running, as `seedMeasured` needs it: a stored terminal run is never put back (PIP-9). */
+  siblingOpen = false,
 ) => {
   const stores = createInMemoryStores();
   const f = createFixtures();
@@ -69,8 +71,9 @@ const setup = async (
   const sibling = makeRun(f, {
     programId: otherProgram,
     runId: f.ids.next("run"),
-    status: "succeeded",
-    endedAt: EARLIER,
+    ...(siblingOpen
+      ? { status: "running" as const, startedAt: "2026-10-01T09:30:00.000Z" }
+      : { status: "succeeded" as const, endedAt: EARLIER }),
   });
   await stores.runs.put(sibling);
 
@@ -487,13 +490,8 @@ describe("measuring a checkpoint (D-05)", () => {
       programId: w.sibling.programId,
       runId: w.sibling.runId,
     };
-    const open = {
-      ...w.sibling,
-      status: "running" as const,
-      startedAt: "2026-10-01T09:30:00.000Z",
-    };
-    delete (open as { endedAt?: string }).endedAt;
-    await stores.runs.put(open);
+    const open = w.sibling;
+    if (open.status !== "running") throw new Error("seedMeasured needs setup(…, true)");
     const siblingRoot = makeRootNode(f, {
       ...scope,
       executionNodeId: w.sibling.rootNodeId,
@@ -582,7 +580,7 @@ describe("measuring a checkpoint (D-05)", () => {
     });
 
   it("bounds an open contributor at the verdict and holds its figures; later reads are unchanged", async () => {
-    const w = await setup();
+    const w = await setup(undefined, true);
     await seedMeasured(w);
     const stored = await created(w);
     const response = await w.call("PUT", w.path(), withSibling(w, stored));
@@ -636,7 +634,7 @@ describe("measuring a checkpoint (D-05)", () => {
   });
 
   it("replaces a forged measured block and forged revisions", async () => {
-    const w = await setup();
+    const w = await setup(undefined, true);
     await seedMeasured(w);
     const stored = await created(w);
     const proposal = withSibling(w, stored);
@@ -694,30 +692,33 @@ describe("measuring a checkpoint (D-05)", () => {
         reads.push(name);
         return fn(...args);
       };
-    const w = await setup((s) => ({
-      ...s,
-      executionNodes: {
-        ...s.executionNodes,
-        listByRun: count("nodes", s.executionNodes.listByRun),
-      },
-      measurements: {
-        ...s.measurements,
-        listByRun: count("measurements", s.measurements.listByRun),
-      },
-      dispatches: {
-        ...s.dispatches,
-        get: count("dispatches", s.dispatches.get),
-      },
-      computeUtilizations: {
-        ...s.computeUtilizations,
-        get: count("utilization", s.computeUtilizations.get),
-      },
-      agents: { ...s.agents, listByNode: count("agents", s.agents.listByNode) },
-      routingDecisions: {
-        ...s.routingDecisions,
-        listByNode: count("routes", s.routingDecisions.listByNode),
-      },
-    }));
+    const w = await setup(
+      (s) => ({
+        ...s,
+        executionNodes: {
+          ...s.executionNodes,
+          listByRun: count("nodes", s.executionNodes.listByRun),
+        },
+        measurements: {
+          ...s.measurements,
+          listByRun: count("measurements", s.measurements.listByRun),
+        },
+        dispatches: {
+          ...s.dispatches,
+          get: count("dispatches", s.dispatches.get),
+        },
+        computeUtilizations: {
+          ...s.computeUtilizations,
+          get: count("utilization", s.computeUtilizations.get),
+        },
+        agents: { ...s.agents, listByNode: count("agents", s.agents.listByNode) },
+        routingDecisions: {
+          ...s.routingDecisions,
+          listByNode: count("routes", s.routingDecisions.listByNode),
+        },
+      }),
+      true,
+    );
     await seedMeasured(w);
     const stored = await created(w);
     const plain = await w.call(
@@ -769,7 +770,7 @@ describe("measuring a checkpoint (D-05)", () => {
               }) as unknown as typeof original,
             },
           };
-        });
+        }, true);
 
       it("answers 503 measurement_unavailable, stores nothing, and a retry succeeds", async () => {
         failing.on = false;
@@ -826,16 +827,19 @@ describe("measuring a checkpoint (D-05)", () => {
   describe("when the dispatch cannot be read for a member", () => {
     const failing = { on: false };
     const guarded = () =>
-      setup((s) => ({
-        ...s,
-        dispatches: {
-          ...s.dispatches,
-          get: ((...args: Parameters<typeof s.dispatches.get>) =>
-            failing.on
-              ? Promise.reject(new Error("dispatch store down"))
-              : s.dispatches.get(...args)) as typeof s.dispatches.get,
-        },
-      }));
+      setup(
+        (s) => ({
+          ...s,
+          dispatches: {
+            ...s.dispatches,
+            get: ((...args: Parameters<typeof s.dispatches.get>) =>
+              failing.on
+                ? Promise.reject(new Error("dispatch store down"))
+                : s.dispatches.get(...args)) as typeof s.dispatches.get,
+          },
+        }),
+        true,
+      );
 
     it("answers 503 measurement_unavailable, stores nothing, and a retry succeeds", async () => {
       failing.on = false;
@@ -858,7 +862,7 @@ describe("measuring a checkpoint (D-05)", () => {
   });
 
   it("stores a local-run member's checkpoint with withoutMachine and no machine dollars", async () => {
-    const w = await setup();
+    const w = await setup(undefined, true);
     await seedMeasured(w);
     // The anchor has a dispatch; the open sibling is a local run with none.
     await w.stores.dispatches.put(makeDispatch(w.f, { ...w.f.scope }));
@@ -870,7 +874,7 @@ describe("measuring a checkpoint (D-05)", () => {
   });
 
   it("stores no machine figure for a checkpoint whose members are all local runs", async () => {
-    const w = await setup();
+    const w = await setup(undefined, true);
     await seedMeasured(w);
     const stored = await created(w);
     const response = await w.call("PUT", w.path(), withSibling(w, stored));

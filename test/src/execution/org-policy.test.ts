@@ -57,11 +57,19 @@ describe("the same fixture under two org configurations (SC-P8-14)", () => {
         { stores, clock, ids, git: world.git },
         { program, repoPath: repo },
       );
-      return {
+      const seen = {
         route: routeJob(run, program, job),
         examined: run.policy && examinationRequirementFor(run.policy.examinationPolicy, job.risk),
         version: run.policy?.orgConfigVersion,
       };
+      // A program has one live run (PIP-9): this one ends before the next starts.
+      await stores.runs.put({
+        ...run,
+        status: "cancelled",
+        endedAt: nowIso(clock),
+        outcomeReason: "the test read its policy",
+      });
+      return seen;
     };
 
     // Nobody has written the org's configuration: the seeded default.

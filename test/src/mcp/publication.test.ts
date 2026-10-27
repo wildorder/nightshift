@@ -504,7 +504,6 @@ describe("run.finish settles the documentation head like a landing (F-01)", () =
       repoPath: world.repo,
     });
     expect(started.ok, JSON.stringify(started)).toBe(true);
-    await first.stop();
     const scope = {
       projectId: world.program.projectId,
       programId: world.program.programId,
@@ -512,10 +511,10 @@ describe("run.finish settles the documentation head like a landing (F-01)", () =
     };
     const recorded = await world.backing.runs.get(scope, scope.runId);
     if (recorded === undefined) throw new Error("the started run is not recorded");
-    // Running again, as a run is: the stopped session's ending is not kept.
-    const { endedAt: _endedAt, outcomeReason: _reason, ...live } = recorded;
+    // The first session stays open until the run has ended: stopping it would
+    // interrupt the run, and a terminal run is never put back to running (PIP-9).
     await world.backing.runs.put({
-      ...live,
+      ...recorded,
       status: "running",
       carriedStrands: [
         {
@@ -532,6 +531,7 @@ describe("run.finish settles the documentation head like a landing (F-01)", () =
     const before = (await run(world, ["rev-parse", PROGRAM_BRANCH])).trim();
     const finished = await mcp.call("run.finish", { outcome, reason: "by the test" });
     await mcp.stop();
+    await first.stop();
     const head = (await run(world, ["rev-parse", PROGRAM_BRANCH])).trim();
     const ended = await world.stores.runs.get(scope, scope.runId);
     return { world, machine, finished, before, head, ended, scope };

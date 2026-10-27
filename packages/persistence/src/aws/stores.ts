@@ -41,13 +41,17 @@ import {
 } from "@nightshift/contracts";
 import {
   type CredentialsStore,
+  IllegalTransitionError,
+  isRunTerminal,
   type NightshiftStores,
   OwnershipViolationError,
   type Page,
   type PageRequest,
   PlanDraftError,
   ProgramContractExistsError,
+  ProgramRunLiveError,
   type ProjectStore,
+  RUN_TERMINAL_STATUSES,
   runScopeOf,
   StaleWriteError,
   VerificationExistsError,
@@ -707,7 +711,108 @@ export const createAwsStores = ({
     runs: {
       put: async (run) => {
         const parsed = RunSchema.parse(run);
-        await putRecord("Run", keys.run(parsed, parsed.runId), parsed);
+        const runKey = keys.run(parsed, parsed.runId);
+        const markerKey = keys.programLiveRun(parsed);
+        const runItem = toItem("Run", runKey, parsed);
+        const readMarker = async (): Promise<string | undefined> => {
+          const output = await table.get({
+            TableName: tableName,
+            Key: markerKey,
+            ConsistentRead: true,
+          });
+          const holder = output.Item?.runId;
+          return typeof holder === "string" ? holder : undefined;
+        };
+
+        if (!isRunTerminal(parsed.status)) {
+          // Claim (S-01, PIP-9): the run and the marker in one transaction. The
+          // run is refused if it is stored terminal; the marker if another run holds it.
+          const terminal = RUN_TERMINAL_STATUSES;
+          const terminalValues = Object.fromEntries(terminal.map((s, i) => [`:t${i}`, s]));
+          const notTerminal = terminal.map((_, i) => `#status <> :t${i}`).join(" AND ");
+          for (let attempt = 1; ; attempt += 1) {
+            try {
+              await table.transactWrite({
+                TransactItems: [
+                  {
+                    Put: {
+                      TableName: tableName,
+                      Item: runItem,
+                      ConditionExpression: `attribute_not_exists(#pk) OR (${notTerminal})`,
+                      ExpressionAttributeNames: { "#pk": "PK", "#status": "status" },
+                      ExpressionAttributeValues: terminalValues,
+                    },
+                  },
+                  {
+                    Put: {
+                      TableName: tableName,
+                      Item: { ...markerKey, entity: "ProgramLiveRun", runId: parsed.runId },
+                      ConditionExpression: "attribute_not_exists(#pk) OR #runId = :runId",
+                      ExpressionAttributeNames: { "#pk": "PK", "#runId": "runId" },
+                      ExpressionAttributeValues: { ":runId": parsed.runId },
+                    },
+                  },
+                ],
+              });
+              return;
+            } catch (error) {
+              const failed = conditionFailures(error);
+              if (failed === undefined) throw error;
+              if (failed[0] === true) {
+                const stored = await getRecord(RunSchema, runKey);
+                if (stored !== undefined && isRunTerminal(stored.status)) {
+                  throw new IllegalTransitionError(stored.status, `put ${parsed.status}`);
+                }
+              }
+              if (failed[1] === true) {
+                const holder = await readMarker();
+                if (holder !== undefined && holder !== parsed.runId) {
+                  throw new ProgramRunLiveError(parsed.programId, holder);
+                }
+              }
+              // Neither holds on a re-read: a concurrent release or write moved
+              // it between the failure and the read. Try again, a bounded number of times.
+              if (attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+            }
+          }
+        }
+
+        // Release (S-01, PIP-9): the run always persists; the marker goes with it
+        // only if this run holds it. A release race is retried, never a live-run refusal.
+        for (let attempt = 1; ; attempt += 1) {
+          const holder = await readMarker();
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                { Put: { TableName: tableName, Item: runItem } },
+                holder === parsed.runId
+                  ? {
+                      Delete: {
+                        TableName: tableName,
+                        Key: markerKey,
+                        ConditionExpression: "#runId = :runId",
+                        ExpressionAttributeNames: { "#runId": "runId" },
+                        ExpressionAttributeValues: { ":runId": parsed.runId },
+                      },
+                    }
+                  : {
+                      ConditionCheck: {
+                        TableName: tableName,
+                        Key: markerKey,
+                        ConditionExpression: "attribute_not_exists(#pk) OR #runId <> :runId",
+                        ExpressionAttributeNames: { "#pk": "PK", "#runId": "runId" },
+                        ExpressionAttributeValues: { ":runId": parsed.runId },
+                      },
+                    },
+              ],
+            });
+            return;
+          } catch (error) {
+            if (conditionFailures(error) === undefined || attempt >= MAX_UPDATE_ATTEMPTS) {
+              throw error;
+            }
+          }
+        }
       },
       get: (scope, runId) => getRecord(RunSchema, keys.run(scope, runId)),
       listByProgram: (scope, page) => listPage(RunSchema, inTable(keys.runPartition(scope)), page),
