@@ -18,16 +18,22 @@ export const NEVER_STARTED_REASON = "never started";
 export interface NeverStartedContext {
   /** Whether the run has a dispatch. */
   readonly hasDispatch: boolean;
-  /** The new run's `startedAt`. */
-  readonly at: IsoTimestamp;
+  /** The store's trusted clock now. Never a client-supplied `startedAt`. */
+  readonly now: IsoTimestamp;
+  /** When the store's trusted clock recorded the holder's claim on the program. */
+  readonly claimedAt: IsoTimestamp;
   /** Milliseconds; defaults to {@link NEVER_STARTED_GRACE}. */
   readonly grace?: number;
 }
 
+/**
+ * Whether `holder` never started: still pending, with no dispatch, and claimed
+ * longer ago than the grace by the store's own clock. The decision uses nothing
+ * a client wrote, so a skewed `startedAt` can neither settle a holder early nor
+ * keep one alive.
+ */
 export const isNeverStartedRun = (
-  holder: Pick<Run, "status" | "startedAt">,
-  { hasDispatch, at, grace = NEVER_STARTED_GRACE }: NeverStartedContext,
+  holder: Pick<Run, "status">,
+  { hasDispatch, now, claimedAt, grace = NEVER_STARTED_GRACE }: NeverStartedContext,
 ): boolean =>
-  holder.status === "pending" &&
-  !hasDispatch &&
-  Date.parse(at) > Date.parse(holder.startedAt) + grace;
+  holder.status === "pending" && !hasDispatch && Date.parse(now) > Date.parse(claimedAt) + grace;

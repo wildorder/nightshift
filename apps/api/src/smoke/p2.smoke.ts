@@ -393,7 +393,7 @@ describe("phase 1: reachability and auth (SC-P2-07)", () => {
 // --- Phase 2 ----------------------------------------------------------------------------
 describePortConformance(
   "phase 2: the deployed DynamoDB adapter (SC-P2-12)",
-  async () => {
+  async (clock) => {
     await waitForNumbering(stores.events, writtenRuns());
     await deletePartitions(clients.table, tableName, written);
     written.clear();
@@ -403,6 +403,7 @@ describePortConformance(
       tableName,
       table: trackingTable,
       credentialsTableName: context.credentialsTableName,
+      now: clock.now,
     });
   },
   {

@@ -32,6 +32,7 @@ import {
   DEFAULT_ROUTING_POLICY,
   type Event,
   type ExaminationPolicy,
+  type IsoTimestamp,
   type OrgId,
   type ProgramContract,
   type ProgramId,
@@ -217,7 +218,14 @@ export const createBaseWorld = async (options: BaseWorldOptions = {}): Promise<B
   await mkdir(stateDir, { recursive: true });
   await writeFixture(repo);
 
-  const backing = createInMemoryStores({ deferSequencing: true });
+  // A suite that pins the clock pins the store's too (F-02): its liveness
+  // decisions read the trusted clock, and the default stepping one would be
+  // advanced by every put.
+  const pinned = options.clock;
+  const backing = createInMemoryStores({
+    deferSequencing: true,
+    ...(pinned === undefined ? {} : { now: () => nowIso(pinned) as IsoTimestamp }),
+  });
   const ids = createUlidIdGenerator();
   const subject = "11111111-2222-3333-4444-555555555555";
   const orgId = ids.next("org");

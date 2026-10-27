@@ -12,6 +12,7 @@ import type { NightshiftStores } from "@nightshift/core";
 import {
   createAwsStores,
   createDynamoSequenceLedger,
+  keys,
   parseStreamRecord,
 } from "@nightshift/persistence/aws";
 import { FakeTable, routingTableClient, toStreamRecord } from "@nightshift/persistence/aws/testing";
@@ -28,15 +29,22 @@ interface FakeBackedStores extends NightshiftStores {
 
 describePortConformance<FakeBackedStores>(
   "DynamoDB adapter on FakeTable",
-  () => {
+  (clock) => {
     const table = new FakeTable({ tableName, pageItemCap: 3 });
     const credentials = new FakeTable({ tableName: credentialsTableName, pageItemCap: 3 });
     const client = routingTableClient({ [tableName]: table, [credentialsTableName]: credentials });
-    return { ...createAwsStores({ tableName, table: client, credentialsTableName }), table };
+    return {
+      ...createAwsStores({ tableName, table: client, credentialsTableName, now: clock.now }),
+      table,
+    };
   },
   {
     // The DynamoDB adapter implements both halves of the split (T2).
     identity: (stores) => stores,
+    // Below the port: the run record alone, with no marker beside it.
+    seedLegacyRun: async ({ table }, run) => {
+      await table.put({ TableName: tableName, Item: { ...run, ...keys.run(run, run.runId) } });
+    },
     settle: async ({ table }) => {
       const ledger = createDynamoSequenceLedger({ tableName, table });
       // Stamping writes stream records of its own (all ignored), so drain until quiet.

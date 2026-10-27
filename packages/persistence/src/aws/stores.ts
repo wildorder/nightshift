@@ -18,6 +18,7 @@ import {
   ExaminationSchema,
   ExecutionNodeSchema,
   GateHealthSchema,
+  type IsoTimestamp,
   JobContractSchema,
   MeasurementSummarySchema,
   MembershipSchema,
@@ -47,6 +48,7 @@ import {
   isRunTerminal,
   NEVER_STARTED_REASON,
   type NightshiftStores,
+  nowIso,
   OwnershipViolationError,
   type Page,
   type PageRequest,
@@ -57,6 +59,7 @@ import {
   RUN_TERMINAL_STATUSES,
   runScopeOf,
   StaleWriteError,
+  systemClock,
   transitionRun,
   VerificationExistsError,
 } from "@nightshift/core";
@@ -77,6 +80,17 @@ export interface AwsStoresConfig {
    * name rather than writing a key into the main table.
    */
   readonly credentialsTableName?: string;
+  /**
+   * The store's own clock, which dates a live-run claim and ends a never-started
+   * run. Never a client's `startedAt`. Defaults to the system clock.
+   */
+  readonly now?: () => IsoTimestamp;
+}
+
+/** A program's live-run marker; `claimedAt` is absent on one an older version wrote. */
+interface LiveMarker {
+  readonly runId: RunId;
+  readonly claimedAt?: IsoTimestamp;
 }
 
 /** The credentials table was not configured. The API answers 501 for it. */
@@ -100,7 +114,9 @@ export const createAwsStores = ({
   tableName,
   table,
   credentialsTableName,
+  now: clockNow,
 }: AwsStoresConfig): NightshiftStores => {
+  const trustedNow = clockNow ?? ((): IsoTimestamp => nowIso(systemClock) as IsoTimestamp);
   const getRecord = async <T>(schema: Parser<T>, key: TableKey): Promise<T | undefined> => {
     const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
     return output.Item === undefined ? undefined : fromItem(schema, output.Item);
@@ -755,33 +771,65 @@ export const createAwsStores = ({
         const runKey = keys.run(parsed, parsed.runId);
         const markerKey = keys.programLiveRun(parsed);
         const runItem = toItem("Run", runKey, parsed);
-        const readMarker = async (): Promise<RunId | undefined> => {
+        const terminal = RUN_TERMINAL_STATUSES;
+        const terminalValues = Object.fromEntries(terminal.map((s, i) => [`:t${i}`, s]));
+        const notTerminal = terminal.map((_, i) => `#status <> :t${i}`).join(" AND ");
+        const readMarker = async (): Promise<LiveMarker | undefined> => {
           const output = await table.get({
             TableName: tableName,
             Key: markerKey,
             ConsistentRead: true,
           });
           const holder = output.Item?.runId;
-          return typeof holder === "string" ? (holder as RunId) : undefined;
+          if (typeof holder !== "string") return undefined;
+          const claimed = output.Item?.claimedAt;
+          return {
+            runId: holder as RunId,
+            ...(typeof claimed === "string" ? { claimedAt: claimed as IsoTimestamp } : {}),
+          };
+        };
+        const markerItem = (runId: RunId, claimedAt: IsoTimestamp) => ({
+          ...markerKey,
+          entity: "ProgramLiveRun",
+          runId,
+          claimedAt,
+        });
+        /** The stored live run of the program that is not this one, lowest id first. */
+        const findLegacyHolder = async (): Promise<RunId | undefined> => {
+          const stored = await listAll(RunSchema, inTable(keys.runPartition(parsed)));
+          return stored
+            .filter((other) => other.runId !== parsed.runId && !isRunTerminal(other.status))
+            .map((other) => other.runId)
+            .sort()[0];
         };
 
-        /** Ends a never-started `holder` and takes the marker, in one transaction; false if it is not (or no longer) never-started. */
-        const settleNeverStarted = async (holder: RunId): Promise<boolean> => {
-          const holderKey = keys.run(parsed, holder);
+        /**
+         * Ends a never-started `holder` and takes the marker, in one transaction.
+         * "live" when it is not never-started (refuse); "retry" when the
+         * transaction's conditions failed, so the caller reads again and decides.
+         */
+        const settleNeverStarted = async (
+          holder: Required<LiveMarker>,
+          now: IsoTimestamp,
+        ): Promise<"settled" | "live" | "retry"> => {
+          const holderKey = keys.run(parsed, holder.runId);
           const stored = await getRecord(RunSchema, holderKey);
-          if (stored === undefined) return false;
-          const dispatchKey = keys.dispatch({ ...parsed, runId: holder });
+          if (stored === undefined) return "live";
+          const dispatchKey = keys.dispatch({ ...parsed, runId: holder.runId });
           const dispatched = (await getRecord(DispatchSchema, dispatchKey)) !== undefined;
-          if (!isNeverStartedRun(stored, { hasDispatch: dispatched, at: parsed.startedAt })) {
-            return false;
+          if (
+            !isNeverStartedRun(stored, {
+              hasDispatch: dispatched,
+              now,
+              claimedAt: holder.claimedAt,
+            })
+          ) {
+            return "live";
           }
           const ended = transitionRun(stored, "interrupt", {
-            endedAt: parsed.startedAt,
+            endedAt: now,
             outcomeReason: NEVER_STARTED_REASON,
           });
-          const terminal = RUN_TERMINAL_STATUSES;
-          const terminalValues = Object.fromEntries(terminal.map((s, i) => [`:t${i}`, s]));
-          const notTerminal = terminal.map((_, i) => `#status <> :t${i}`).join(" AND ");
           try {
             await table.transactWrite({
               TransactItems: [
@@ -808,10 +856,13 @@ export const createAwsStores = ({
                 {
                   Put: {
                     TableName: tableName,
-                    Item: { ...markerKey, entity: "ProgramLiveRun", runId: parsed.runId },
-                    ConditionExpression: "#runId = :holder",
-                    ExpressionAttributeNames: { "#runId": "runId" },
-                    ExpressionAttributeValues: { ":holder": holder },
+                    Item: markerItem(parsed.runId, now),
+                    ConditionExpression: "#runId = :holder AND #claimedAt = :claimedAt",
+                    ExpressionAttributeNames: { "#runId": "runId", "#claimedAt": "claimedAt" },
+                    ExpressionAttributeValues: {
+                      ":holder": holder.runId,
+                      ":claimedAt": holder.claimedAt,
+                    },
                   },
                 },
                 {
@@ -825,9 +876,25 @@ export const createAwsStores = ({
                 },
               ],
             });
-            return true;
+            return "settled";
           } catch (error) {
             if (conditionFailures(error) === undefined) throw error;
+            return "retry";
+          }
+        };
+
+        /** Writes `item` as the marker only if none exists; false if one does. */
+        const createMarker = async (runId: RunId, now: IsoTimestamp): Promise<boolean> => {
+          try {
+            await table.put({
+              TableName: tableName,
+              Item: markerItem(runId, now),
+              ConditionExpression: "attribute_not_exists(#pk)",
+              ExpressionAttributeNames: { "#pk": "PK" },
+            });
+            return true;
+          } catch (error) {
+            if (!isConditionalCheckFailure(error)) throw error;
             return false;
           }
         };
@@ -835,10 +902,54 @@ export const createAwsStores = ({
         if (!isRunTerminal(parsed.status)) {
           // Claim (S-01, PIP-9): the run and the marker in one transaction. The
           // run is refused if it is stored terminal; the marker if another run holds it.
-          const terminal = RUN_TERMINAL_STATUSES;
-          const terminalValues = Object.fromEntries(terminal.map((s, i) => [`:t${i}`, s]));
-          const notTerminal = terminal.map((_, i) => `#status <> :t${i}`).join(" AND ");
           for (let attempt = 1; ; attempt += 1) {
+            const now = trustedNow();
+            let marker = await readMarker();
+            if (marker === undefined) {
+              // A live run stored before the marker existed holds the program:
+              // claim the marker on its behalf, then decide as for any holder.
+              const legacy = await findLegacyHolder();
+              if (legacy !== undefined) {
+                if (!(await createMarker(legacy, now))) {
+                  if (attempt >= MAX_UPDATE_ATTEMPTS)
+                    throw new ProgramRunLiveError(parsed.programId, legacy);
+                  continue;
+                }
+                marker = { runId: legacy, claimedAt: now };
+              }
+            } else if (marker.claimedAt === undefined) {
+              // Written before claims were timed: claimed when first read.
+              try {
+                await table.put({
+                  TableName: tableName,
+                  Item: markerItem(marker.runId, now),
+                  ConditionExpression: "#runId = :runId AND attribute_not_exists(#claimedAt)",
+                  ExpressionAttributeNames: { "#runId": "runId", "#claimedAt": "claimedAt" },
+                  ExpressionAttributeValues: { ":runId": marker.runId },
+                });
+              } catch (error) {
+                if (!isConditionalCheckFailure(error)) throw error;
+                if (attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+                continue;
+              }
+              marker = { runId: marker.runId, claimedAt: now };
+            }
+
+            if (marker !== undefined && marker.runId !== parsed.runId) {
+              // A holder that never started is ended in the same transaction
+              // that moves the marker (D-07).
+              const outcome = await settleNeverStarted(
+                { runId: marker.runId, claimedAt: marker.claimedAt ?? now },
+                now,
+              );
+              if (outcome === "settled") return;
+              if (outcome === "live") throw new ProgramRunLiveError(parsed.programId, marker.runId);
+              if (attempt >= MAX_UPDATE_ATTEMPTS) {
+                throw new ProgramRunLiveError(parsed.programId, marker.runId);
+              }
+              continue;
+            }
+
             try {
               await table.transactWrite({
                 TransactItems: [
@@ -854,10 +965,17 @@ export const createAwsStores = ({
                   {
                     Put: {
                       TableName: tableName,
-                      Item: { ...markerKey, entity: "ProgramLiveRun", runId: parsed.runId },
-                      ConditionExpression: "attribute_not_exists(#pk) OR #runId = :runId",
-                      ExpressionAttributeNames: { "#pk": "PK", "#runId": "runId" },
-                      ExpressionAttributeValues: { ":runId": parsed.runId },
+                      Item: markerItem(parsed.runId, marker?.claimedAt ?? now),
+                      ...(marker === undefined
+                        ? {
+                            ConditionExpression: "attribute_not_exists(#pk)",
+                            ExpressionAttributeNames: { "#pk": "PK" },
+                          }
+                        : {
+                            ConditionExpression: "#runId = :runId",
+                            ExpressionAttributeNames: { "#runId": "runId" },
+                            ExpressionAttributeValues: { ":runId": parsed.runId },
+                          }),
                     },
                   },
                 ],
@@ -872,31 +990,8 @@ export const createAwsStores = ({
                   throw new IllegalTransitionError(stored.status, `put ${parsed.status}`);
                 }
               }
-              if (failed[1] === true) {
-                const holder = await readMarker();
-                if (holder !== undefined && holder !== parsed.runId) {
-                  // A holder that never started is ended in the same transaction
-                  // that moves the marker (D-07); any condition failure re-decides.
-                  if (await settleNeverStarted(holder)) return;
-                  const again = await readMarker();
-                  if (again !== undefined && again !== parsed.runId && again === holder) {
-                    const stored = await getRecord(RunSchema, keys.run(parsed, holder));
-                    const dispatched =
-                      (await getRecord(
-                        DispatchSchema,
-                        keys.dispatch({ ...parsed, runId: holder }),
-                      )) !== undefined;
-                    if (
-                      stored === undefined ||
-                      !isNeverStartedRun(stored, { hasDispatch: dispatched, at: parsed.startedAt })
-                    ) {
-                      throw new ProgramRunLiveError(parsed.programId, holder);
-                    }
-                  }
-                }
-              }
-              // Neither holds on a re-read: a concurrent release or write moved
-              // it between the failure and the read. Try again, a bounded number of times.
+              // The marker moved between the read and the write: read again,
+              // a bounded number of times.
               if (attempt >= MAX_UPDATE_ATTEMPTS) throw error;
             }
           }
@@ -905,7 +1000,7 @@ export const createAwsStores = ({
         // Release (S-01, PIP-9): the run always persists; the marker goes with it
         // only if this run holds it. A release race is retried, never a live-run refusal.
         for (let attempt = 1; ; attempt += 1) {
-          const holder = await readMarker();
+          const holder = (await readMarker())?.runId;
           try {
             await table.transactWrite({
               TransactItems: [

@@ -5,6 +5,11 @@
 import { createLocalStores } from "@nightshift/persistence/local";
 import { describePortConformance } from "./persistence-ports.js";
 
-describePortConformance("local (SQLite)", () => createLocalStores({ file: ":memory:" }), {
-  identity: (stores) => stores,
-});
+describePortConformance(
+  "local (SQLite)",
+  (clock) => createLocalStores({ file: ":memory:", now: clock.now }),
+  {
+    identity: (stores) => stores,
+    seedLegacyRun: (stores, run) => stores.seedRunWithoutMarker(run),
+  },
+);

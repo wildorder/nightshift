@@ -46,6 +46,7 @@ import {
   ExecutionNodeSchema,
   type GateHealth,
   GateHealthSchema,
+  type IsoTimestamp,
   type JobContract,
   type JobContractId,
   JobContractSchema,
@@ -114,6 +115,7 @@ import {
   type MembershipStore,
   NEVER_STARTED_REASON,
   type NightshiftStores,
+  nowIso,
   type OrgConfigStore,
   OwnershipViolationError,
   orderEvents,
@@ -133,6 +135,7 @@ import {
   type SequenceLedger,
   StaleWriteError,
   type StampOutcome,
+  systemClock,
   transitionRun,
   type UserStore,
   VerificationExistsError,
@@ -166,6 +169,11 @@ export interface InMemoryState {
    */
   materializeSequences(): number;
   /**
+   * Stores a run as an older version did, with no live-run marker beside it. A
+   * seam for testing the legacy-run guard; nothing in the product calls it.
+   */
+  seedRunWithoutMarker(run: Run): void;
+  /**
    * The same numbering one event at a time, through the port the Streams
    * consumer uses, so the consumer's logic can be tested offline (T6).
    */
@@ -187,6 +195,11 @@ export interface InMemoryOptions {
   readonly tables?: TableFactory;
   /** Runs a multi-write step as one unit. The default runs it directly. */
   readonly atomically?: Atomically;
+  /**
+   * The store's own clock, which dates a live-run claim and ends a never-started
+   * run. Never a client's `startedAt`. Defaults to the system clock.
+   */
+  readonly now?: () => IsoTimestamp;
 }
 
 export interface InMemoryStores extends NightshiftStores, InMemoryState {}
@@ -199,12 +212,13 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const deferSequencing = options.deferSequencing ?? false;
   const table = options.tables ?? mapTables;
   const atomically: Atomically = options.atomically ?? ((fn) => fn());
+  const trustedNow = options.now ?? ((): IsoTimestamp => nowIso(systemClock) as IsoTimestamp);
   const projects = table<Project>("projects");
   const projectsByOrg = table<Project>("projectsByOrg");
   const programContracts = table<ProgramContract>("programContracts");
   const runs = table<Run>("runs");
   // PIP-9: (project, program) -> the run that holds the program's live-run marker.
-  const liveRuns = table<{ runId: RunId }>("programLiveRuns");
+  const liveRuns = table<{ runId: RunId; claimedAt?: IsoTimestamp }>("programLiveRuns");
   const executionNodes = table<ExecutionNode>("executionNodes");
   const jobContracts = table<JobContract>("jobContracts");
   const agents = table<Agent>("agents");
@@ -363,44 +377,69 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     put: async (run) => {
       const parsed = RunSchema.parse(run);
       // One unit (S-01, PIP-9): the run and the program's live-run marker move
-      // together, so no interleaving puts two live runs of one program.
-      atomically(() => {
+      // together, so no interleaving puts two live runs of one program. A refusal
+      // is returned out of the unit and thrown after it, so what the unit settled
+      // or adopted (a legacy holder's marker) commits even under SQLite.
+      const refused = atomically((): RunId | undefined => {
         const key = `${programPrefix(parsed)}${parsed.runId}`;
         const liveKey = programPrefix(parsed);
-        const marker = liveRuns.get(liveKey);
+        let marker = liveRuns.get(liveKey);
         if (isRunTerminal(parsed.status)) {
           runs.set(key, parsed);
           if (marker?.runId === parsed.runId) liveRuns.delete(liveKey);
-          return;
+          return undefined;
         }
         const stored = runs.get(key);
         if (stored !== undefined && isRunTerminal(stored.status)) {
           throw new IllegalTransitionError(stored.status, `put ${parsed.status}`);
         }
+        const now = trustedNow();
+        if (marker === undefined) {
+          // A run stored before the marker existed holds the program all the same.
+          const legacy = runs
+            .scan(liveKey)
+            .filter((other) => other.runId !== parsed.runId && !isRunTerminal(other.status))
+            .sort((x, y) => (x.runId < y.runId ? -1 : x.runId > y.runId ? 1 : 0))[0];
+          if (legacy !== undefined) {
+            marker = { runId: legacy.runId, claimedAt: now };
+            liveRuns.set(liveKey, marker);
+          }
+        } else if (marker.claimedAt === undefined) {
+          // A marker from before claims were timed: claimed when first read.
+          marker = { runId: marker.runId, claimedAt: now };
+          liveRuns.set(liveKey, marker);
+        }
         if (marker !== undefined && marker.runId !== parsed.runId) {
           // A holder that never started is ended in this same unit (D-07).
-          const holderKey = `${programPrefix(parsed)}${marker.runId}`;
+          const holderKey = `${liveKey}${marker.runId}`;
           const holder = runs.get(holderKey);
           if (
             holder === undefined ||
+            marker.claimedAt === undefined ||
             !isNeverStartedRun(holder, {
               hasDispatch: dispatches.get(runPrefix(holder)) !== undefined,
-              at: parsed.startedAt,
+              now,
+              claimedAt: marker.claimedAt,
             })
           ) {
-            throw new ProgramRunLiveError(parsed.programId, marker.runId);
+            return marker.runId;
           }
           runs.set(
             holderKey,
             transitionRun(holder, "interrupt", {
-              endedAt: parsed.startedAt,
+              endedAt: now,
               outcomeReason: NEVER_STARTED_REASON,
             }),
           );
         }
         runs.set(key, parsed);
-        liveRuns.set(liveKey, { runId: parsed.runId });
+        liveRuns.set(
+          liveKey,
+          marker?.runId === parsed.runId ? marker : { runId: parsed.runId, claimedAt: now },
+        );
+        return undefined;
       });
+      if (refused !== undefined) throw new ProgramRunLiveError(parsed.programId, refused);
     },
     get: async (scope: ProgramScope, runId: RunId) => runs.get(`${programPrefix(scope)}${runId}`),
     listByProgram: async (scope: ProgramScope, page?: PageRequest) =>
@@ -902,6 +941,10 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       for (const store of all) store.clear();
       sequences.clear();
       appendOrder.length = 0;
+    },
+    seedRunWithoutMarker: (run) => {
+      const parsed = RunSchema.parse(run);
+      runs.set(`${programPrefix(parsed)}${parsed.runId}`, parsed);
     },
     materializeSequences: () => {
       // Append order, so numbering matches the order an ordered stream consumer

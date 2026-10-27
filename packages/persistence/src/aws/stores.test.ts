@@ -9,6 +9,7 @@ import {
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
   type Event,
+  type IsoTimestamp,
   MAX_COMPLETION_CHECKPOINTS,
   MAX_COMPLETION_HISTORY_BYTES,
   MAX_COMPLETION_MEMBERS,
@@ -555,9 +556,15 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
         return table.transactWrite(input);
       },
     };
-    stores = createAwsStores({ tableName, table: client });
+    let at = Date.parse("2026-01-01T00:00:00.000Z");
+    stores = createAwsStores({
+      tableName,
+      table: client,
+      now: () => new Date(at).toISOString() as IsoTimestamp,
+    });
     const holder = makeRun(f, { status: "pending", location: "remote" });
     await stores.runs.put(holder);
+    at += 60 * 60 * 1000;
     const fresh = makeRun(f, {
       runId: f.ids.next("run") as typeof holder.runId,
       status: "pending",
@@ -568,5 +575,141 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
     expect(await stores.runs.get(f.scope, holder.runId)).toEqual(holder);
     expect(await stores.runs.get(f.scope, fresh.runId)).toBeUndefined();
     expect(await stores.dispatches.get(f.scope)).toBeDefined();
+  });
+
+  describe("legacy live runs and the trusted clock (F-01, F-02)", () => {
+    const GRACE = 15 * 60 * 1000;
+    const setup = () => {
+      let at = Date.parse("2026-01-01T00:00:00.000Z");
+      const now = () => new Date(at).toISOString() as IsoTimestamp;
+      const table = new FakeTable({ tableName });
+      const writes: Array<{ kind: string; item: Record<string, unknown> }> = [];
+      const transactions: unknown[][] = [];
+      const client = {
+        get: (input: Parameters<FakeTable["get"]>[0]) => table.get(input),
+        put: (input: Parameters<FakeTable["put"]>[0]) => {
+          writes.push({ kind: "put", item: input as unknown as Record<string, unknown> });
+          return table.put(input);
+        },
+        update: (input: Parameters<FakeTable["update"]>[0]) => table.update(input),
+        delete: (input: Parameters<FakeTable["delete"]>[0]) => table.delete(input),
+        scan: (input: Parameters<FakeTable["scan"]>[0]) => table.scan(input),
+        query: (input: Parameters<FakeTable["query"]>[0]) => table.query(input),
+        transactWrite: (input: Parameters<FakeTable["transactWrite"]>[0]) => {
+          transactions.push(input.TransactItems ?? []);
+          return table.transactWrite(input);
+        },
+      };
+      const stores = createAwsStores({ tableName, table: client, now });
+      const f = createFixtures();
+      const seed = (run: ReturnType<typeof makeRun>) =>
+        table.put({ TableName: tableName, Item: { ...run, ...keys.run(f.scope, run.runId) } });
+      return {
+        f,
+        table,
+        stores,
+        writes,
+        transactions,
+        seed,
+        now,
+        advance: (ms: number) => (at += ms),
+      };
+    };
+
+    it("creates the marker for an adopted legacy run with a conditional put, and refuses", async () => {
+      const { f, table, stores, writes, seed } = setup();
+      const legacy = makeRun(f, { status: "pending" });
+      await seed(legacy);
+      const fresh = makeRun(f, { runId: f.ids.next("run") as typeof legacy.runId });
+      await expect(stores.runs.put(fresh)).rejects.toMatchObject({ liveRunId: legacy.runId });
+      expect(writes).toHaveLength(1);
+      expect(writes[0]?.item).toMatchObject({
+        ConditionExpression: "attribute_not_exists(#pk)",
+        Item: { ...keys.programLiveRun(f.scope), runId: legacy.runId },
+      });
+      const marker = await table.get({
+        TableName: tableName,
+        Key: keys.programLiveRun(f.scope),
+        ConsistentRead: true,
+      });
+      expect(marker.Item).toMatchObject({
+        runId: legacy.runId,
+        claimedAt: "2026-01-01T00:00:00.000Z",
+      });
+      expect(await stores.runs.get(f.scope, fresh.runId)).toBeUndefined();
+    });
+
+    it("settles on the marker's runId and claimedAt being unchanged, at the trusted now", async () => {
+      const { f, stores, transactions, advance, now } = setup();
+      const holder = makeRun(f, { status: "pending" });
+      await stores.runs.put(holder);
+      advance(GRACE + 1000);
+      const fresh = makeRun(f, {
+        runId: f.ids.next("run") as typeof holder.runId,
+        startedAt: "2026-01-01T09:00:00.000Z",
+      });
+      transactions.length = 0;
+      await stores.runs.put(fresh);
+      const settle = transactions[0] ?? [];
+      const markerPut = (settle as Array<{ Put?: { Item?: { SK?: string } } }>).find(
+        (item) => item.Put?.Item?.SK === "LIVERUN",
+      );
+      expect(markerPut).toMatchObject({
+        Put: {
+          ConditionExpression: "#runId = :holder AND #claimedAt = :claimedAt",
+          ExpressionAttributeValues: {
+            ":holder": holder.runId,
+            ":claimedAt": "2026-01-01T00:00:00.000Z",
+          },
+          Item: { runId: fresh.runId, claimedAt: now() },
+        },
+      });
+      expect(await stores.runs.get(f.scope, holder.runId)).toMatchObject({
+        status: "interrupted",
+        endedAt: now(),
+      });
+    });
+
+    it("does not settle when the marker's claim changed between the read and the write", async () => {
+      const { f, table, stores, advance, now } = setup();
+      const holder = makeRun(f, { status: "pending" });
+      await stores.runs.put(holder);
+      advance(GRACE + 1000);
+      // Another start re-claimed the marker for the same run id with a later time.
+      const original = table.transactWrite.bind(table);
+      let raced = false;
+      table.transactWrite = async (input) => {
+        if (!raced) {
+          raced = true;
+          await table.put({
+            TableName: tableName,
+            Item: { ...keys.programLiveRun(f.scope), runId: holder.runId, claimedAt: now() },
+          });
+        }
+        return original(input);
+      };
+      const fresh = makeRun(f, { runId: f.ids.next("run") as typeof holder.runId });
+      await expect(stores.runs.put(fresh)).rejects.toMatchObject({ liveRunId: holder.runId });
+      expect(await stores.runs.get(f.scope, holder.runId)).toEqual(holder);
+    });
+
+    it("treats a marker without claimedAt as claimed when first read", async () => {
+      const { f, table, stores, advance } = setup();
+      const holder = makeRun(f, { status: "pending", startedAt: "2025-12-01T00:00:00.000Z" });
+      await table.put({
+        TableName: tableName,
+        Item: { ...holder, ...keys.run(f.scope, holder.runId) },
+      });
+      await table.put({
+        TableName: tableName,
+        Item: { ...keys.programLiveRun(f.scope), entity: "ProgramLiveRun", runId: holder.runId },
+      });
+      advance(GRACE * 10);
+      const fresh = makeRun(f, { runId: f.ids.next("run") as typeof holder.runId });
+      await expect(stores.runs.put(fresh)).rejects.toMatchObject({ liveRunId: holder.runId });
+      advance(GRACE + 1000);
+      await stores.runs.put(fresh);
+      expect(await stores.runs.get(f.scope, holder.runId)).toMatchObject({ status: "interrupted" });
+    });
   });
 });

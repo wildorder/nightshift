@@ -9,6 +9,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { IsoTimestamp } from "@nightshift/contracts";
 import { createInMemoryStores, type InMemoryStores } from "../memory/index.js";
 import type { Atomically } from "../memory/scoped-map.js";
 import { createSqliteTable } from "./sqlite-table.js";
@@ -18,6 +19,8 @@ export { createSqliteTable, prefixUpperBound } from "./sqlite-table.js";
 export interface LocalStoresOptions {
   /** The database file. Created, with its directory, if absent. `:memory:` for a test. */
   readonly file: string;
+  /** The store's trusted clock (see `InMemoryOptions.now`). Defaults to the system clock. */
+  readonly now?: () => IsoTimestamp;
 }
 
 export interface LocalStores extends InMemoryStores {
@@ -51,6 +54,7 @@ export const createLocalStores = (options: LocalStoresOptions): LocalStores => {
   const stores = createInMemoryStores({
     tables: (name) => createSqliteTable(db, name),
     atomically,
+    ...(options.now === undefined ? {} : { now: options.now }),
   });
   // Assigned, not spread: a spread would read `size` once and freeze it.
   return Object.assign(stores, { close: () => db.close() });
