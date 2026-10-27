@@ -309,9 +309,31 @@ export const createAwsStores = ({
       listPage(ProjectSchema, inTable(keys.orgProjectPartition(orgId)), page),
   };
 
+  /** Placeholders until J2 stores the project line; a call fails loudly rather than seeming to work. */
+  const notYet = (what: string) => async (): Promise<never> => {
+    throw new Error(`${what} is not stored in DynamoDB yet (Pipkin M1b, J2)`);
+  };
+
   return {
     projects,
     credentials,
+
+    // Pipkin M1b: J2 implements these three.
+    lines: {
+      get: notYet("the project line"),
+      update: notYet("the project line"),
+      listWithWork: notYet("the project line"),
+    },
+    lineDispatches: {
+      get: notYet("the line dispatch"),
+      start: notYet("the line dispatch"),
+      update: notYet("the line dispatch"),
+      listByStatus: notYet("the line dispatch"),
+    },
+    projectSelfStartedUsage: {
+      get: notYet("the project's self-started usage"),
+      update: notYet("the project's self-started usage"),
+    },
 
     // P10 (D-P10-19): one row per org and month, read to refuse a dispatch.
     computeLedger: {

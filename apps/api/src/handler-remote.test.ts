@@ -481,8 +481,9 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
       issuer: ISSUER,
       now: Date.parse(NOW),
     });
-    expect(verified.ok && verified.principal.role).toBe("engine");
-    expect(verified.ok && verified.principal.generation).toBe(1);
+    const principal = verified.ok ? verified.principal : undefined;
+    expect(principal?.kind === "execution" && principal.role).toBe("engine");
+    expect(principal?.generation).toBe(1);
 
     const running = await call(
       w,

@@ -132,7 +132,7 @@ describe("evidence identity", () => {
   const example = AGGREGATE_EXAMPLES.Verification as Record<string, unknown>;
 
   it("declares the phases in render order", () => {
-    expect([...VERIFICATION_PHASES]).toEqual(["queue", "candidate", "run"]);
+    expect([...VERIFICATION_PHASES]).toEqual(["queue", "candidate", "run", "line"]);
     expect(Object.keys(VERIFICATION_PHASE_HAS_JOB).sort()).toEqual([...VERIFICATION_PHASES].sort());
   });
 

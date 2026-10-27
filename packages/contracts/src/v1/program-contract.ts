@@ -9,6 +9,7 @@ import { z } from "zod";
 import { DecisionIdSchema, ProgramIdSchema, RunIdSchema } from "../ids.js";
 import { IsoTimestampSchema, PathGlobSchema, programScoped, RiskLevelSchema } from "./common.js";
 import { ComputeChoiceSchema } from "./compute.js";
+import { LineConfigSchema } from "./line.js";
 import {
   MAX_RATIFICATION_HISTORY,
   PlanDocumentRefSchema,
@@ -357,6 +358,8 @@ export const ProgramContractSchema = z
      * recommendation, else `good`.
      */
     compute: ComputeChoiceSchema.optional(),
+    /** The project line this program's landed work is composed onto; inherited from `nightshift.config.json`. Absent means off. */
+    line: LineConfigSchema.optional(),
     createdAt: IsoTimestampSchema,
     /**
      * The planned part (P7, `./plan.ts`). Every field is optional and absent

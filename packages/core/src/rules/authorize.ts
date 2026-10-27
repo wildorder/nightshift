@@ -146,6 +146,15 @@ export type Operation =
   | "dispatch.cancel"
   | "dispatch.resume"
   | "dispatch.heartbeat"
+  // Pipkin M1b: the project line, its owner's batches and compositions, its push and its machine.
+  | "line.get"
+  | "line.takeBatch"
+  | "line.compose"
+  | "line.park"
+  | "line.push"
+  | "line.createBundleUploadUrl"
+  | "line.heartbeat"
+  | "line.cancel"
   // Publication of the program branch (D-P10-22).
   | "publication.request"
   // A strand's branch, as it moves (A-60).
@@ -340,6 +349,14 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
+  "line.get": "forbidden",
+  "line.takeBatch": "forbidden",
+  "line.compose": "forbidden",
+  "line.park": "forbidden",
+  "line.push": "forbidden",
+  "line.createBundleUploadUrl": "forbidden",
+  "line.heartbeat": "forbidden",
+  "line.cancel": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -487,6 +504,14 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
+  "line.get": "forbidden",
+  "line.takeBatch": "forbidden",
+  "line.compose": "forbidden",
+  "line.park": "forbidden",
+  "line.push": "forbidden",
+  "line.createBundleUploadUrl": "forbidden",
+  "line.heartbeat": "forbidden",
+  "line.cancel": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -665,6 +690,14 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "own_run",
+  "line.get": "forbidden",
+  "line.takeBatch": "forbidden",
+  "line.compose": "forbidden",
+  "line.park": "forbidden",
+  "line.push": "forbidden",
+  "line.createBundleUploadUrl": "forbidden",
+  "line.heartbeat": "forbidden",
+  "line.cancel": "forbidden",
   "publication.request": "own_run",
   "publication.strand": "own_run",
   "publication.list": "own_program",
@@ -752,6 +785,7 @@ export const READ_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
   "artifact.get",
   "orgConfig.get",
   "dispatch.get",
+  "line.get",
   "publication.list",
   "computeUtilization.get",
   "computeRecommendation.get",
@@ -968,6 +1002,11 @@ export const authorize = (
   target: AuthorizationTarget,
 ): Authorization => {
   if (principal.kind === "user") return authorizeUser(principal, operation, target);
+  // The line owner's reach is opened operation by operation by the line routes (J3);
+  // until then it may do nothing.
+  if (principal.kind === "line") {
+    return refuse("execution_forbidden_operation", `a line token may not ${operation}`);
+  }
 
   const access = ACCESS_BY_ROLE[principal.role][operation];
   if (access === "forbidden") {

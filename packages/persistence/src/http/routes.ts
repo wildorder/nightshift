@@ -44,6 +44,24 @@ export const routes = {
   projectSecret: (projectId: ProjectId, name: string) =>
     `/projects/${projectId}/secrets/${encodeURIComponent(name)}`,
 
+  /**
+   * A project's line (Pipkin M1b), one segment per branch: `nightshift/develop`
+   * is `nightshift%2Fdevelop`, as a project secret's name is encoded.
+   */
+  line: (projectId: ProjectId, branch: string) =>
+    `/projects/${projectId}/line/${encodeURIComponent(branch)}`,
+  lineBatch: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/batch`,
+  lineCompositions: (projectId: ProjectId, branch: string) =>
+    `${routes.line(projectId, branch)}/compositions`,
+  lineParked: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/parked`,
+  linePush: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/push`,
+  lineBundleUploadUrl: (projectId: ProjectId, branch: string) =>
+    `${routes.line(projectId, branch)}/bundle-upload-url`,
+  lineHeartbeat: (projectId: ProjectId, branch: string) =>
+    `${routes.line(projectId, branch)}/heartbeat`,
+  lineCancel: (projectId: ProjectId, branch: string) =>
+    `${routes.line(projectId, branch)}/dispatch/cancel`,
+
   projects: () => "/projects",
   project: (projectId: ProjectId) => `/projects/${projectId}`,
   programs: (projectId: ProjectId) => `/projects/${projectId}/programs`,

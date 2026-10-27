@@ -62,7 +62,7 @@ const parseTestPrincipal = (encoded: string): RequestPrincipal | undefined => {
     return undefined;
   }
   const execution = PrincipalSchema.safeParse(parsed);
-  if (execution.success && execution.data.kind === "execution") return execution.data;
+  if (execution.success && execution.data.kind !== "user") return execution.data;
   const user = UserTokenLikeSchema.safeParse(parsed);
   if (!user.success) return undefined;
   const { userId, activeOrg } = user.data;

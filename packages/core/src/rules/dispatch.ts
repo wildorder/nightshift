@@ -31,6 +31,20 @@ import type {
 import { computeTierRank, MAX_RESOLVED_INTENTS } from "@nightshift/contracts";
 import { IllegalTransitionError } from "../errors.js";
 
+/**
+ * What the machine rules need of a record, structurally: a run's `Dispatch`
+ * and the project line's `LineDispatch` both have it, so one set of rules
+ * drives both.
+ */
+export interface DispatchMachine {
+  readonly status: DispatchStatus;
+  readonly generation: number;
+  readonly attempts: readonly DispatchAttempt[];
+  readonly leaseExpiresAt?: string | undefined;
+  readonly instanceId?: string | undefined;
+  readonly updatedAt: string;
+}
+
 export type DispatchTransitionEvent =
   /** The dispatch Lambda took it: a volume and an instance are being created. */
   | "provision"
@@ -124,11 +138,11 @@ export const canTransitionDispatch = (
 ): boolean => nextDispatchStatus(from, event) !== undefined;
 
 /** Applies one event, or throws `IllegalTransitionError` naming the pair. */
-export const transitionDispatch = (
-  dispatch: Dispatch,
+export const transitionDispatch = <D extends DispatchMachine>(
+  dispatch: D,
   event: DispatchTransitionEvent,
   at: string,
-): Dispatch => {
+): D => {
   const to = nextDispatchStatus(dispatch.status, event);
   if (to === undefined) {
     throw new IllegalTransitionError(dispatch.status, event);
@@ -154,11 +168,11 @@ export const RUNNER_FAILABLE_STATUSES: readonly DispatchStatus[] = [
  * to stop by the plane, whose reason it keeps; a failure reported then only
  * settles it `stopped`. Anywhere else the report changes nothing.
  */
-export const runnerStopped = (
-  dispatch: Dispatch,
+export const runnerStopped = <D extends DispatchMachine>(
+  dispatch: D,
   failure: RunnerFailure | undefined,
   at: string,
-): Dispatch => {
+): D => {
   if (failure !== undefined && RUNNER_FAILABLE_STATUSES.includes(dispatch.status)) {
     return transitionDispatch({ ...dispatch, failure }, "fail", at);
   }
@@ -221,7 +235,7 @@ export const leaseExpiryFrom = (nowMs: number): string =>
  * live and has a machine to lose. A `requested` dispatch has no lease yet; a
  * terminal one has nothing to lose.
  */
-export const leaseLost = (dispatch: Dispatch, nowMs: number): boolean => {
+export const leaseLost = (dispatch: DispatchMachine, nowMs: number): boolean => {
   if (dispatch.status === "requested" || isDispatchTerminal(dispatch.status)) return false;
   if (dispatch.status === "stopping") return false;
   if (dispatch.leaseExpiresAt === undefined) return false;
@@ -230,42 +244,50 @@ export const leaseLost = (dispatch: Dispatch, nowMs: number): boolean => {
 
 /** The attempts are spent: there has been a machine `MAX_DISPATCH_ATTEMPTS` times already. */
 export const attemptsExhausted = (
-  dispatch: Dispatch,
+  dispatch: Pick<DispatchMachine, "attempts">,
   max: number = MAX_DISPATCH_ATTEMPTS,
 ): boolean => dispatch.attempts.length >= max;
 
 /** The generation a replacement is launched under. Never anything but plus one. */
-export const nextGeneration = (dispatch: Dispatch): number => dispatch.generation + 1;
+export const nextGeneration = (dispatch: Pick<DispatchMachine, "generation">): number =>
+  dispatch.generation + 1;
 
 /** Whether a runner's claimed generation is the dispatch's current one. */
-export const isCurrentGeneration = (dispatch: Dispatch, claimed: number | undefined): boolean =>
-  claimed !== undefined && claimed === dispatch.generation;
+export const isCurrentGeneration = (
+  dispatch: Pick<DispatchMachine, "generation">,
+  claimed: number | undefined,
+): boolean => claimed !== undefined && claimed === dispatch.generation;
 
 /**
  * Begins a replacement (D-P10-18): the generation moves, the attempt is recorded
  * with its reason, and the dispatch is `provisioning` again on the same volume.
  */
-export const beginReplacement = (
-  dispatch: Dispatch,
+export const beginReplacement = <D extends DispatchMachine>(
+  dispatch: D,
   reason: "lease_lost" | "resume",
   at: string,
   endReason: NonNullable<DispatchAttempt["endReason"]> = reason === "resume"
     ? "replaced"
     : "lease_lost",
-): Dispatch => {
+): D => {
   const generation = nextGeneration(dispatch);
   const attempts = dispatch.attempts.map((attempt, index) =>
     index === dispatch.attempts.length - 1 && attempt.endedAt === undefined
       ? { ...attempt, endedAt: at, endReason }
       : attempt,
   );
-  const { instanceId: _instanceId, leaseExpiresAt: _lease, failure: _failure, ...rest } = dispatch;
+  const {
+    instanceId: _instanceId,
+    leaseExpiresAt: _lease,
+    failure: _failure,
+    ...rest
+  } = dispatch as D & { failure?: unknown };
   return transitionDispatch(
     {
       ...rest,
       generation,
       attempts: [...attempts, { generation, reason, startedAt: at }],
-    },
+    } as unknown as D,
     reason === "resume" ? "resume" : "recover",
     at,
   );
@@ -301,7 +323,7 @@ export const foldStages = (
 
 /** Whether a settled dispatch can still be resumed: it has a snapshot inside its retention. */
 export const mayResume = (
-  dispatch: Dispatch,
+  dispatch: Pick<Dispatch, "status" | "cleanup" | "updatedAt">,
   nowMs: number,
 ): { readonly ok: true } | { readonly ok: false; readonly reason: string } => {
   if (!isDispatchTerminal(dispatch.status)) {

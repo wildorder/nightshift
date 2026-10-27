@@ -6,6 +6,8 @@
  */
 import {
   type ProgramContract,
+  RUN_VERIFICATION_PHASES,
+  type RunVerificationPhase,
   SETUP_STEP_ID_PREFIX,
   stepRunsAt,
   VERIFICATION_PHASES,
@@ -17,7 +19,7 @@ import { type Recommendation, recommend } from "../forecast/catalogue.js";
 import { END_GATE_RUNS, forecast, type MeasuredStep } from "../forecast/model.js";
 import { resolvedFromRecord } from "../forecast/record.js";
 
-export { VERIFICATION_PHASES, type VerificationPhase };
+export { RUN_VERIFICATION_PHASES, VERIFICATION_PHASES, type VerificationPhase };
 
 export interface PhaseTime {
   readonly runs: number;
@@ -36,7 +38,7 @@ export interface StepTimeReport {
   readonly rerunMs: number;
   /** Quiet before the first output, summed over the runs that measured it. */
   readonly quietMs: number;
-  readonly byPhase: Readonly<Record<VerificationPhase, PhaseTime>>;
+  readonly byPhase: Readonly<Record<RunVerificationPhase, PhaseTime>>;
   /** The forecast's one measured run, when the record kept one. */
   readonly forecastMs?: number;
 }
@@ -59,10 +61,10 @@ export interface VerificationTimeReport {
   readonly recommendations: readonly Recommendation[];
 }
 
-const emptyPhases = (): Record<VerificationPhase, { runs: number; totalMs: number }> =>
+const emptyPhases = (): Record<RunVerificationPhase, { runs: number; totalMs: number }> =>
   Object.fromEntries(
-    VERIFICATION_PHASES.map((phase) => [phase, { runs: 0, totalMs: 0 }]),
-  ) as Record<VerificationPhase, { runs: number; totalMs: number }>;
+    RUN_VERIFICATION_PHASES.map((phase) => [phase, { runs: 0, totalMs: 0 }]),
+  ) as Record<RunVerificationPhase, { runs: number; totalMs: number }>;
 
 const kindOf = (program: ProgramContract, id: string): StepTimeReport["kind"] => {
   if (id.startsWith(SETUP_STEP_ID_PREFIX)) return "setup";
@@ -158,7 +160,8 @@ export const verificationTimeOf = (
       phases: emptyPhases(),
     });
   for (const verification of verifications) {
-    const phase: VerificationPhase = verification.phase ?? "queue";
+    // A run's store holds no `line` verification: the record's schema refuses one.
+    const phase = (verification.phase ?? "queue") as RunVerificationPhase;
     for (const command of verification.commands) {
       if (command.exitCode === undefined) continue;
       const total = totalOf(totals, command.stepId);

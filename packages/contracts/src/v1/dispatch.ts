@@ -343,6 +343,13 @@ export const DispatchPublicationSchema = z.strictObject({
   intents: z.array(PublicationIntentSchema),
   /** Each strand branch's newest head (A-60). Absent before any was asked for. */
   strands: z.array(StrandPublicationSchema).optional(),
+  /**
+   * The project line (Pipkin M1b): a published range is owed to the line's
+   * queue. `lineQueuedUpTo` is the head last queued there, so the publisher
+   * queues durably, and once, across its retries.
+   */
+  lineOwed: z.boolean().optional(),
+  lineQueuedUpTo: CommitShaSchema.optional(),
 });
 export type DispatchPublication = z.infer<typeof DispatchPublicationSchema>;
 

@@ -151,9 +151,19 @@ export const outcomeOfCommands = (
  * The verification phases, declared once. The order is the order the report
  * and Studio render: queue / candidate / end.
  */
-export const VERIFICATION_PHASES = ["queue", "candidate", "run"] as const;
+export const VERIFICATION_PHASES = ["queue", "candidate", "run", "line"] as const;
 export type VerificationPhase = (typeof VERIFICATION_PHASES)[number];
 export const VerificationPhaseSchema = z.enum(VERIFICATION_PHASES);
+
+/**
+ * The phases a run's own verifications can have, in render order. `line` is not
+ * one: a line verification is embedded in the project line's composition and is
+ * never in the run's store, so a run's report has no column for it.
+ */
+export type RunVerificationPhase = Exclude<VerificationPhase, "line">;
+export const RUN_VERIFICATION_PHASES: readonly RunVerificationPhase[] = VERIFICATION_PHASES.filter(
+  (phase): phase is RunVerificationPhase => phase !== "line",
+);
 
 /**
  * Whether a verification of this phase names a job. Total over the phases, so a
@@ -163,6 +173,8 @@ export const VERIFICATION_PHASE_HAS_JOB: Readonly<Record<VerificationPhase, bool
   queue: true,
   candidate: true,
   run: false,
+  /** A verification of a composition on the project line: embedded in the composition, no job. */
+  line: false,
 };
 
 /**
@@ -231,6 +243,11 @@ export const VerificationSchema = z
     message:
       "outcome must agree with the commands: failed when any step that ran exited non-zero, otherwise deferred when any step could not run, otherwise passed; a skipped step decides nothing",
     path: ["outcome"],
+  })
+  .refine((value) => value.phase !== "line", {
+    message:
+      "a line verification is embedded in the project line's composition, never a run's record",
+    path: ["phase"],
   })
   .refine(
     (value) =>

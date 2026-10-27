@@ -40,7 +40,8 @@ export const principalFrom = (event: ApiEvent): RequestPrincipal | undefined => 
     return undefined;
   }
   const execution = PrincipalSchema.safeParse(parsed);
-  if (execution.success && execution.data.kind === "execution") return execution.data;
+  // A line owner's principal (Pipkin M1b) arrives like an execution's; `enforce` refuses it.
+  if (execution.success && execution.data.kind !== "user") return execution.data;
   const user = UserTokenLikeSchema.safeParse(parsed);
   if (!user.success) return undefined;
   // Rebuilt rather than spread: `exactOptionalPropertyTypes` distinguishes an

@@ -26,6 +26,8 @@ const LANDING_EVIDENCE: Readonly<Record<VerificationPhase, boolean>> = {
   queue: true,
   candidate: false,
   run: false,
+  /** A line verification is the line's own evidence, never a run's (Pipkin M1b). */
+  line: false,
 };
 
 /**

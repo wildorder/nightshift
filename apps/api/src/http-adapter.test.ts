@@ -69,6 +69,7 @@ import {
   makeEvent,
   makeGateHealth,
   makeJobContract,
+  makeLineDispatch,
   makeMembership,
   makeNode,
   makeProgramContract,
@@ -142,6 +143,10 @@ const PORT_METHODS = {
   completionHistories: ["put", "get", "listByRun", "listByProject"],
   // P21: the reads go over the routes; the two writes name the routes that make versions.
   planDrafts: ["get", "listByProject", "getVersion", "listVersions", "appendVersion", "update"],
+  // Pipkin M1b: the line is read over its view route (J3 serves it) and written by the plane.
+  lines: ["get", "update", "listWithWork"],
+  lineDispatches: ["get", "start", "update", "listByStatus"],
+  projectSelfStartedUsage: ["get", "update"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
 /** `store.method` for every entry above. */
@@ -994,6 +999,29 @@ describe("the remote runner's records (P10)", () => {
     await expect(
       http.programContracts.update(f.scope.projectId, f.scope.programId, (current) => current),
     ).rejects.toThrow(/prerequisites/);
+  });
+});
+
+describe("the project line's records (Pipkin M1b)", () => {
+  it("reads nothing where the line has no view route yet, and refuses to write one whole", async () => {
+    const { http, f } = world;
+    await seed();
+    const { projectId } = f.scope;
+    expect(await http.lines.get(projectId, "nightshift/develop")).toBeUndefined();
+    expect(await http.lineDispatches.get(projectId, "nightshift/develop")).toBeUndefined();
+    await expect(http.lines.update(projectId, "b", () => undefined)).rejects.toThrow(/line record/);
+    await expect(http.lines.listWithWork()).rejects.toThrow(/reconciler/);
+    await expect(http.lineDispatches.start(makeLineDispatch(f))).rejects.toThrow(/line dispatch/);
+    await expect(http.lineDispatches.update(projectId, "b", () => undefined)).rejects.toThrow(
+      /line dispatch/,
+    );
+    await expect(http.lineDispatches.listByStatus(["requested"])).rejects.toThrow(/reconciler/);
+    await expect(http.projectSelfStartedUsage.get(projectId, "2026-09")).rejects.toThrow(
+      /line view/,
+    );
+    await expect(
+      http.projectSelfStartedUsage.update(projectId, "2026-09", () => undefined),
+    ).rejects.toThrow(/self-started/);
   });
 });
 

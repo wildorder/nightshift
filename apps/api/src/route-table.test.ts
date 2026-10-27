@@ -14,6 +14,17 @@ import { ROUTES } from "./handler.js";
 
 const declared = ROUTES.map((route) => route.operation);
 
+// The line.* operations (Pipkin M1b) exist in `core` before their routes do:
+// J3 adds the routes and removes this exemption. Until then no principal may
+// perform one (`authorize` refuses the line principal; every execution table
+// says forbidden), so an unserved operation opens nothing.
+const LINE_OPERATIONS_AWAITING_ROUTES = ALL_OPERATIONS.filter((operation) =>
+  operation.startsWith("line."),
+);
+const served = ALL_OPERATIONS.filter(
+  (operation) => !LINE_OPERATIONS_AWAITING_ROUTES.includes(operation),
+);
+
 describe("the route table", () => {
   it("names an operation on every route", () => {
     for (const route of ROUTES) {
@@ -22,7 +33,7 @@ describe("the route table", () => {
   });
 
   it("is total over the operation union: every operation has a route", () => {
-    const missing = ALL_OPERATIONS.filter((operation) => !declared.includes(operation));
+    const missing = served.filter((operation) => !declared.includes(operation));
     expect(missing).toEqual([]);
   });
 
@@ -40,6 +51,6 @@ describe("the route table", () => {
   });
 
   it("has as many routes as operations", () => {
-    expect(ROUTES).toHaveLength(ALL_OPERATIONS.length);
+    expect(ROUTES).toHaveLength(served.length);
   });
 });

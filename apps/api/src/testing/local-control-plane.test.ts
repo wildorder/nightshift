@@ -17,6 +17,7 @@ import {
 import {
   createFixedClock,
   createFixtures,
+  lineBundleObjectKey,
   makeMembership,
   makeProgramContract,
   makeProject,
@@ -167,6 +168,28 @@ describe("the local control plane", () => {
       expect(uploaded.status).toBe(200);
       expect(local.bodies.text(target.key)).toBe(body);
       expect(local.bodies.get(target.key)?.contentType).toBe("text/plain");
+    });
+
+    it("signs a key the caller names, for a line bundle, and holds what is PUT to it (Pipkin M1b)", async () => {
+      const { plane: local, f } = await start();
+      const key = lineBundleObjectKey(f.scope.projectId, "nightshift/develop", 2, "pack-1");
+      const target = await local.deps.uploads?.signKey?.(key, "application/octet-stream");
+      expect(target?.key).toBe(key);
+      expect(target?.uploadUrl.startsWith(`${local.url}/`)).toBe(true);
+      const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+      const wrongType = await fetch(target?.uploadUrl ?? "", {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+        body: bytes,
+      });
+      expect(wrongType.status).toBe(400);
+      const uploaded = await fetch(target?.uploadUrl ?? "", {
+        method: "PUT",
+        headers: { "content-type": "application/octet-stream" },
+        body: bytes,
+      });
+      expect(uploaded.status).toBe(200);
+      expect([...(local.bodies.get(key)?.body ?? [])]).toEqual([1, 2, 3, 4, 5]);
     });
 
     it("refuses a URL it never signed", async () => {

@@ -43,6 +43,7 @@ import {
   GateHealthSchema,
   type JobContractId,
   JobContractSchema,
+  LineViewSchema,
   MeasurementSummarySchema,
   OrgConfigSchema,
   type OrgId,
@@ -76,6 +77,8 @@ import type {
   GateHealthStore,
   InstallationClaimStore,
   JobContractStore,
+  LineDispatchStore,
+  LineStore,
   MeasurementSummaryStore,
   OrgConfigStore,
   Page,
@@ -83,6 +86,7 @@ import type {
   PlanDraftStore,
   ProgramContractStore,
   ProgramScope,
+  ProjectSelfStartedUsageStore,
   ProjectStore,
   ProjectStores,
   RoutingDecisionStore,
@@ -562,6 +566,40 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     },
   };
 
+  // Pipkin M1b: the line is read through its one view route; the plane writes it.
+  const planeOwns = (record: string, route: string) => async (): Promise<never> => {
+    throw new Error(
+      `the control plane owns the ${record}; there is no route that writes one whole. Use ${route}.`,
+    );
+  };
+  const lineView = (projectId: Parameters<LineStore["get"]>[0], branch: string) =>
+    getOrUndefined(transport, LineViewSchema, routes.line(projectId, branch));
+  const lines: LineStore = {
+    get: async (projectId, branch) => (await lineView(projectId, branch))?.record,
+    update: planeOwns("line record", "the line routes (batch, compositions, parked, push)"),
+    listWithWork: async () => {
+      throw new Error("listing lines with work is the reconciler's read; no route serves it");
+    },
+  };
+  const lineDispatches: LineDispatchStore = {
+    get: async (projectId, branch) => (await lineView(projectId, branch))?.dispatch,
+    start: planeOwns("line dispatch", "the plane's own start of the line owner"),
+    update: planeOwns("line dispatch", "the line's heartbeat or cancel"),
+    listByStatus: async () => {
+      throw new Error(
+        "listing line dispatches by status is the reconciler's read; no route serves it",
+      );
+    },
+  };
+  const projectSelfStartedUsage: ProjectSelfStartedUsageStore = {
+    get: async (projectId, month) => {
+      throw new Error(
+        `a project's self-started usage for ${month} is read in the line view (${projectId}), not by month`,
+      );
+    },
+    update: planeOwns("self-started usage ledger", "the line's heartbeat"),
+  };
+
   const computeUtilizations: ComputeUtilizationStore = {
     put: controlPlaneOwns("utilization record", "POST .../dispatch/heartbeat"),
     get: (scope) =>
@@ -701,6 +739,9 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     orgConfigs,
     projects,
     dispatches,
+    lines,
+    lineDispatches,
+    projectSelfStartedUsage,
     computeUtilizations,
     warmCaches,
     gateHealth,

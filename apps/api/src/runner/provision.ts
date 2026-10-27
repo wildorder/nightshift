@@ -139,7 +139,7 @@ export const provisionDispatch = async (
   }
   const at = nowIso(deps.clock);
   const fail = async (reason: string): Promise<ProvisionOutcome> => {
-    const failed = transitionDispatch(
+    const failed = transitionDispatch<Dispatch>(
       { ...dispatch, failure: { code: "provisioning_failed", message: reason } },
       "fail",
       nowIso(deps.clock),

@@ -89,9 +89,24 @@ export const ExecutionPrincipalSchema = z.strictObject({
 });
 export type ExecutionPrincipal = z.infer<typeof ExecutionPrincipalSchema>;
 
+/**
+ * The line owner (Pipkin M1b): the machine the plane starts for a project's
+ * line. It is project scoped, so it has no run or node; `generation` is the
+ * line dispatch's fence, as an engine's is.
+ */
+export const LinePrincipalSchema = z.strictObject({
+  kind: z.literal("line"),
+  projectId: ProjectIdSchema,
+  branch: z.string().min(1),
+  agentId: AgentIdSchema,
+  generation: z.int().min(1),
+});
+export type LinePrincipal = z.infer<typeof LinePrincipalSchema>;
+
 export const PrincipalSchema = z.discriminatedUnion("kind", [
   UserPrincipalSchema,
   ExecutionPrincipalSchema,
+  LinePrincipalSchema,
 ]);
 export type Principal = z.infer<typeof PrincipalSchema>;
 
@@ -127,6 +142,27 @@ export const ExecutionTokenClaimsSchema = z.strictObject({
   exp: z.int().min(0),
 });
 export type ExecutionTokenClaims = z.infer<typeof ExecutionTokenClaimsSchema>;
+
+/**
+ * The claims of a line owner's token (Pipkin M1b): the same envelope, with the
+ * line principal in `nightshift`. A schema of its own rather than a second
+ * alternative inside `ExecutionTokenClaimsSchema`, so every reader of an
+ * engine's claims keeps its narrow type; `TokenClaimsSchema` is the union a
+ * verifier parses.
+ */
+export const LineTokenClaimsSchema = z.strictObject({
+  iss: z.string().min(1),
+  sub: AgentIdSchema,
+  aud: z.literal(EXECUTION_TOKEN_AUDIENCE),
+  nightshift: LinePrincipalSchema,
+  iat: z.int().min(0),
+  exp: z.int().min(0),
+});
+export type LineTokenClaims = z.infer<typeof LineTokenClaimsSchema>;
+
+/** Either kind of token Nightshift mints: an execution token or a line owner's. */
+export const TokenClaimsSchema = z.union([ExecutionTokenClaimsSchema, LineTokenClaimsSchema]);
+export type TokenClaims = z.infer<typeof TokenClaimsSchema>;
 
 /**
  * The ceiling on an execution token's life (D-P4-03). The actual expiry is

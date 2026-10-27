@@ -301,7 +301,7 @@ export const cancelDispatch: Handler = async ({ deps, params }) => {
   const at = nowIso(deps.clock);
   if (isDispatchTerminal(dispatch.status)) return { status: 200, body: dispatch };
   if (dispatch.status === "stopping") return { status: 200, body: dispatch };
-  let next = transitionDispatch(
+  let next = transitionDispatch<Dispatch>(
     { ...dispatch, failure: { code: "cancelled", message: "cancelled by the operator" } },
     "stop",
     at,

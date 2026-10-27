@@ -40,6 +40,8 @@ import type {
   GateHealth,
   JobContract,
   JobContractId,
+  LineDispatch,
+  LineRecord,
   MeasurementSummary,
   MeasurementSummaryId,
   Membership,
@@ -56,6 +58,7 @@ import type {
   ProjectId,
   ProjectSecret,
   ProjectSecretView,
+  ProjectSelfStartedUsage,
   Provider,
   RoutingDecision,
   Run,
@@ -520,6 +523,70 @@ export interface ComputeLedgerStore {
 }
 
 /**
+ * A project's line (Pipkin M1b): one record per (project, line branch), written
+ * by compare-and-swap on its `version`.
+ */
+export interface LineStore {
+  get(projectId: ProjectId, branch: string): Promise<LineRecord | undefined>;
+  /**
+   * Applies `change` to the current record (`undefined` when absent) and stores
+   * what it returns, stamped with the next `version` (1 when created). A
+   * concurrent writer is met by re-reading and calling `change` again, so
+   * `change` must be pure. Returning `undefined` changes nothing. Answers the
+   * stored record, or the current one when nothing changed.
+   */
+  update(
+    projectId: ProjectId,
+    branch: string,
+    change: (current: LineRecord | undefined) => LineRecord | undefined,
+  ): Promise<LineRecord | undefined>;
+  /**
+   * Every line, across projects, for which `lineHasWork` holds: the
+   * **reconciler's** read, like `DispatchStore.listByStatus`. No route serves it.
+   */
+  listWithWork(): Promise<readonly LineRecord[]>;
+}
+
+/** Whether `LineDispatchStore.start` stored the dispatch, or one was already live. */
+export type LineDispatchStart = "started" | "live";
+
+/** The machine of one line owner, one per (project, line branch). */
+export interface LineDispatchStore {
+  get(projectId: ProjectId, branch: string): Promise<LineDispatch | undefined>;
+  /**
+   * Stores `next` only when none is stored, or the stored one is `stopped` or
+   * `failed` with `cleanup.settledAt` set and `next.generation` is its
+   * generation plus one. Otherwise `live`, and nothing changes. Atomic, so of
+   * two concurrent starts exactly one answers `started`.
+   */
+  start(next: LineDispatch): Promise<LineDispatchStart>;
+  /**
+   * Applies `change` to the stored dispatch by compare-and-swap on `version`,
+   * for claims and transitions; stamps the next `version`. `change` must be
+   * pure: it is called again on a lost race. Returning `undefined` changes
+   * nothing. Answers the stored dispatch, or `undefined` when there is none.
+   */
+  update(
+    projectId: ProjectId,
+    branch: string,
+    change: (current: LineDispatch) => LineDispatch | undefined,
+  ): Promise<LineDispatch | undefined>;
+  /** Every dispatch in one of `statuses`, across projects: the reconciler's read. */
+  listByStatus(statuses: readonly DispatchStatus[]): Promise<readonly LineDispatch[]>;
+}
+
+/** What the plane's own starts have cost one project this month, against its cap. */
+export interface ProjectSelfStartedUsageStore {
+  get(projectId: ProjectId, month: CalendarMonth): Promise<ProjectSelfStartedUsage | undefined>;
+  /** As `LineStore.update`, keyed by project and month. */
+  update(
+    projectId: ProjectId,
+    month: CalendarMonth,
+    change: (current: ProjectSelfStartedUsage | undefined) => ProjectSelfStartedUsage | undefined,
+  ): Promise<ProjectSelfStartedUsage | undefined>;
+}
+
+/**
  * Everything a *run* persists (T2).
  *
  * Split out from {@link NightshiftStores} in P3 because the two halves have
@@ -559,6 +626,10 @@ export interface ProjectStores {
   readonly feedback: RunFeedbackStore;
   // P20 (D-05): explicit groupings of runs that delivered one outcome.
   readonly completionHistories: CompletionHistoryStore;
+  // Pipkin M1b: the project line, its owner's machine, and the project's self-started spend.
+  readonly lines: LineStore;
+  readonly lineDispatches: LineDispatchStore;
+  readonly projectSelfStartedUsage: ProjectSelfStartedUsageStore;
 }
 
 /**

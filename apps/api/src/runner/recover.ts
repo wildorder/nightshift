@@ -58,7 +58,7 @@ export const recoverLostLease = async (
   }
   if (attemptsExhausted(dispatch)) {
     const last = dispatch.attempts.length - 1;
-    const failed = transitionDispatch(
+    const failed = transitionDispatch<Dispatch>(
       {
         ...dispatch,
         attempts: dispatch.attempts.map((attempt, index) =>

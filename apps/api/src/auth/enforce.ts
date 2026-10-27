@@ -239,6 +239,14 @@ export const enforce = async (options: EnforceOptions): Promise<Principal> => {
     ...(requested === undefined ? {} : { requestedNodeStatus: requested }),
   };
 
+  // The line owner's reach is not open yet (J3 opens it, operation by
+  // operation); `authorize` refuses it for every operation, so no store is read.
+  if (principal.kind === "line") {
+    const decision = authorize(principal, operation, target);
+    if (!decision.allowed) throw new HttpError(403, decision.reason, decision.detail);
+    return principal;
+  }
+
   if (!isUserToken(principal)) {
     // Only an orchestrator's table has a reach that depends on the tree, and
     // only a request inside its own run is worth a read to place. Likewise only

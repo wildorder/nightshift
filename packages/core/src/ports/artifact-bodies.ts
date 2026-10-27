@@ -81,6 +81,13 @@ export interface ArtifactUploadTarget {
  */
 export interface ArtifactUploadSigner {
   sign(request: ArtifactUploadRequest): Promise<ArtifactUploadTarget>;
+  /**
+   * Signs an upload to a key the caller names (Pipkin M1b): the project line's
+   * bundles, `<projectId>/line/<encodedBranch>/<generation>/<id>.pack`, which
+   * belong to no run. The caller is the one that builds the key and vouches for
+   * it; this only signs. Optional: a signer without it cannot serve a line.
+   */
+  signKey?(key: string, contentType: string): Promise<ArtifactUploadTarget>;
 }
 
 /** What the control plane is asked to sign a read of (P11, D-P11-06). */
@@ -118,6 +125,20 @@ export interface ArtifactDownloadSigner {
 /** The object key for one artifact: `<projectId>/<programId>/<runId>/<artifactId>` (D-P2-08). */
 export const artifactObjectKey = (scope: RunScope, artifactId: ArtifactId): string =>
   `${scope.projectId}/${scope.programId}/${scope.runId}/${artifactId}`;
+
+/**
+ * The object key of one of the project line's bundles (Pipkin M1b):
+ * `<projectId>/line/<encodedBranch>/<generation>/<id>.pack`. The branch is
+ * encoded as one path segment, so `nightshift/develop` cannot read as two
+ * levels and no branch can name another's prefix. Belongs to no run, so it is
+ * built here and signed with `ArtifactUploadSigner.signKey`.
+ */
+export const lineBundleObjectKey = (
+  projectId: string,
+  branch: string,
+  generation: number,
+  id: string,
+): string => `${projectId}/line/${encodeURIComponent(branch)}/${generation}/${id}.pack`;
 
 /**
  * Where ratified plan documents live (P7, D-P7-02).
