@@ -163,15 +163,21 @@ const appendBody = (f: Fixtures, overrides: Partial<Record<keyof Event, unknown>
 const rootNodeFor = (f: Fixtures) => makeRootNode(f, { status: "validated" });
 
 /**
- * A second run under project A's program, used only by the P3 lifecycle
- * assertions. Separate so the run the state-reconstruction test reads (SC-P2-10)
- * is never moved out from under it.
+ * A second program under project A, with a run of its own, used only by the P3
+ * lifecycle assertions. Separate so the run the state-reconstruction test reads
+ * (SC-P2-10) is never moved out from under it, and a program of its own because
+ * a program has at most one live run (A-66), which program A's run holds.
  */
 const lifecycleRunId = ids.next("run");
 const lifecycleRootNodeId = ids.next("node");
-const lifecycleScope: RunScope = { ...worldA.scope, runId: lifecycleRunId };
+const lifecycleScope: RunScope = {
+  projectId: worldA.scope.projectId,
+  programId: ids.next("prog"),
+  runId: lifecycleRunId,
+};
 const lifecycleWorld: Fixtures = { ids, scope: lifecycleScope, rootNodeId: lifecycleRootNodeId };
-const lifecycleRunPath = `${programPath(worldA)}/runs/${lifecycleRunId}`;
+const lifecycleProgramPath = `${projectPath(worldA)}/programs/${lifecycleScope.programId}`;
+const lifecycleRunPath = `${lifecycleProgramPath}/runs/${lifecycleRunId}`;
 
 /**
  * A planned program under project A (P7, T1), with a run of its own. Separate
@@ -191,30 +197,38 @@ const sha256Hex = (input: string | Uint8Array): string =>
 
 // --- Conformance bookkeeping (phase 2) ------------------------------------------------
 // The suite expects fresh stores per test, and its identifiers repeat between tests,
-// so every partition a test writes is remembered and emptied before the next.
-const written = new Set<string>();
-const remember = (partition: unknown): void => {
-  if (typeof partition === "string") written.add(partition);
+// so every partition a test writes is remembered, by table, and emptied before the
+// next: the credentials table's as well as the main one's.
+const written = new Map<string, Set<string>>();
+const remember = (table: string | undefined, partition: unknown): void => {
+  if (table === undefined || typeof partition !== "string") return;
+  const partitions = written.get(table) ?? new Set<string>();
+  partitions.add(partition);
+  written.set(table, partitions);
 };
 const trackingTable: TableClient = {
   ...clients.table,
   put: (input) => {
-    remember(input.Item?.PK);
+    remember(input.TableName, input.Item?.PK);
     return clients.table.put(input);
   },
   update: (input) => {
-    remember(input.Key?.PK);
+    remember(input.TableName, input.Key?.PK);
     return clients.table.update(input);
   },
   transactWrite: (input) => {
     for (const item of input.TransactItems ?? []) {
-      remember(item.Put?.Item?.PK ?? item.Update?.Key?.PK ?? item.Delete?.Key?.PK);
+      const write = item.Put ?? item.Update ?? item.Delete;
+      remember(
+        write?.TableName,
+        item.Put?.Item?.PK ?? item.Update?.Key?.PK ?? item.Delete?.Key?.PK,
+      );
     }
     return clients.table.transactWrite(input);
   },
 };
 const writtenRuns = (): RunScope[] =>
-  [...written]
+  [...(written.get(tableName) ?? [])]
     .filter((partition) => partition.startsWith("EVT#"))
     .map((partition) => {
       const [, projectId, programIdPart, runIdPart] = partition.split("#");
@@ -395,7 +409,9 @@ describePortConformance(
   "phase 2: the deployed DynamoDB adapter (SC-P2-12)",
   async (clock) => {
     await waitForNumbering(stores.events, writtenRuns());
-    await deletePartitions(clients.table, tableName, written);
+    for (const [table, partitions] of written) {
+      await deletePartitions(clients.table, table, partitions);
+    }
     written.clear();
     // P10 (D-P10-23): the credentials table too, so the identity section proves
     // the deployed table and not a refusal.
@@ -625,7 +641,26 @@ describe("phase 3: live-only assertions", () => {
     expect(listedAgents.items.map((a) => a.agentId)).toEqual([agent.agentId]);
   });
 
+  it("refuses a second live run of a program, naming the one it has (A-66)", async () => {
+    const second = makeRun(
+      { ...worldA, scope: { ...worldA.scope, runId: ids.next("run") } },
+      { status: "pending" },
+    );
+    const refused = await api.put(`${programPath(worldA)}/runs/${second.runId}`, second);
+    expectStatus(refused, 409);
+    expect(refused.body).toMatchObject({
+      error: { code: "program_run_live", programId, liveRunId: runId },
+    });
+  });
+
   it("moves a run pending, running, succeeded, and refuses an illegal jump (T2)", async () => {
+    expectStatus(
+      await api.put(
+        lifecycleProgramPath,
+        makeProgramContract(lifecycleWorld, { objective: `${runLabel}: the lifecycle program` }),
+      ),
+      201,
+    );
     const pending = makeRun(lifecycleWorld, { status: "pending" });
     expectStatus(await api.put(lifecycleRunPath, pending), 201);
     expectStatus(
@@ -651,15 +686,21 @@ describe("phase 3: live-only assertions", () => {
     expectStatus(await api.put(lifecycleRunPath, succeeded), 200);
     expect((await api.get(lifecycleRunPath)).body).toEqual(succeeded);
 
-    const listedRuns = (await api.get(`${programPath(worldA)}/runs`)).body as {
-      items: { runId: string }[];
-    };
-    expect(listedRuns.items.map((r) => r.runId).sort()).toEqual([runId, lifecycleRunId].sort());
+    // Each program lists its own runs, and the project both programs.
+    for (const [path, expected] of [
+      [programPath(worldA), runId],
+      [lifecycleProgramPath, lifecycleRunId],
+    ] as const) {
+      const listedRuns = (await api.get(`${path}/runs`)).body as { items: { runId: string }[] };
+      expect(listedRuns.items.map((r) => r.runId)).toEqual([expected]);
+    }
 
     const listedPrograms = (await api.get(`${projectPath(worldA)}/programs`)).body as {
       items: { programId: string }[];
     };
-    expect(listedPrograms.items.map((p) => p.programId)).toEqual([programId]);
+    expect(listedPrograms.items.map((p) => p.programId).sort()).toEqual(
+      [programId, lifecycleScope.programId].sort(),
+    );
   });
 
   it("ends a program node succeeded, never a job, and fills a routing decision in once (P5, D-P5-06)", async () => {

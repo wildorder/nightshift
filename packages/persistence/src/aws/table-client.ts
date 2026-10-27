@@ -48,7 +48,7 @@ export const documentTableClient = (client: DynamoDBDocumentClient): TableClient
   delete: (input) => client.send(new DeleteCommand(input)),
   query: (input) => client.send(new QueryCommand(input)),
   scan: (input) => client.send(new ScanCommand(input)),
-  transactWrite: (input) => client.send(new TransactWriteCommand(input)),
+  transactWrite: (input) => withConflictRetries(() => client.send(new TransactWriteCommand(input))),
 });
 
 /** The `name` DynamoDB gives a failed condition on a single write. */
@@ -76,3 +76,44 @@ export const conditionFailures = (error: unknown): readonly boolean[] | undefine
 
 export const isConditionalCheckFailure = (error: unknown): boolean =>
   error instanceof Error && error.name === CONDITIONAL_CHECK_FAILED;
+
+/** How many times a transaction cancelled only by a concurrent one is sent. */
+export const TRANSACTION_CONFLICT_ATTEMPTS = 5;
+
+/**
+ * True when `error` is a transaction DynamoDB cancelled only because another
+ * transaction was writing the same items (`TransactionConflict`): no condition
+ * failed and nothing was written, so the same transaction can be sent again.
+ * The SDK does not retry these itself.
+ */
+export const isTransactionConflict = (error: unknown): boolean => {
+  if (!(error instanceof Error) || error.name !== TRANSACTION_CANCELED) return false;
+  const reasons = (error as Error & { CancellationReasons?: readonly CancellationReason[] })
+    .CancellationReasons;
+  if (reasons === undefined) return false;
+  const codes = reasons.map((reason) => reason.Code ?? "None");
+  return (
+    codes.includes("TransactionConflict") &&
+    codes.every((code) => code === "TransactionConflict" || code === "None")
+  );
+};
+
+/**
+ * Sends a transaction, again after a short jittered wait while it is cancelled
+ * only by a conflicting one, so a caller sees either its outcome or a failed
+ * condition it can read, never a race it cannot. The last conflict is thrown
+ * as it came.
+ */
+export const withConflictRetries = async <T>(
+  send: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<T> => {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await send();
+    } catch (error) {
+      if (!isTransactionConflict(error) || attempt >= TRANSACTION_CONFLICT_ATTEMPTS) throw error;
+      await sleep(25 * 2 ** (attempt - 1) * (0.5 + Math.random()));
+    }
+  }
+};
