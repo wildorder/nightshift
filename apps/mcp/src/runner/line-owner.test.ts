@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -252,7 +252,16 @@ const makePlane = (
         cwd: world.origin,
         input: readFileSync(file),
       });
-      git(world.origin, "update-ref", `refs/heads/${LINE}`, push.head, push.expectedPredecessor);
+      const exists = spawnSync("git", ["rev-parse", "-q", "--verify", `refs/heads/${LINE}`], {
+        cwd: world.origin,
+      });
+      git(
+        world.origin,
+        "update-ref",
+        `refs/heads/${LINE}`,
+        push.head,
+        exists.status === 0 ? push.expectedPredecessor : "0".repeat(40),
+      );
       return { status: "published" as const, detail: undefined };
     } catch (error) {
       return {
@@ -520,6 +529,27 @@ describe("composing and publishing", () => {
     expect(plane.record.push?.status).toBe("published");
     expect(plane.record.compositions[0]?.pushed).toBeDefined();
     expect(lastBeat(plane)?.body.report).toBe("stopped");
+  });
+
+  it("composes onto main's head when the line has no ref at the remote yet", async () => {
+    git(world.origin, "branch", "-D", LINE);
+    const machine = lineMachine();
+    const plane = makePlane(world, machine);
+    const log: string[] = [];
+    const aHead = world.head(world.branches.a);
+    plane.enqueue(world.programs.a, aHead);
+    const main = world.head("main");
+
+    expect(await own(machine, plane, { log })).toBe(0);
+
+    const settle = plane.settles[0]?.body;
+    expect(settle?.push?.expectedPredecessor).toBe(main);
+    expect(settle?.composition?.parent).toBe(main);
+    expect(log.join("\n")).toContain("does not exist at the remote yet");
+    const after = world.head(LINE);
+    expect(after).toBe(settle?.composition?.commit);
+    expect(git(world.origin, "show", `${after}:a.txt`)).toBe("a");
+    expect(plane.record.push?.status).toBe("published");
   });
 
   it("refetches the line and recomposes after a conflict outcome", async () => {

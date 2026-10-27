@@ -651,7 +651,10 @@ const pushLine = async (
     await settle("published", "already at GitHub");
     return "already_published";
   }
-  if (current !== push.expectedPredecessor) {
+  // A line whose ref was never created is created here, by an absent-ref compare-and-swap;
+  // a ref that vanished after the record had a head is someone else's doing and stays a conflict.
+  const creating = current === ZERO_OID && record.head === undefined;
+  if (!creating && current !== push.expectedPredecessor) {
     const detail = `the line is at ${current.slice(0, 12)}, not the ${push.expectedPredecessor.slice(0, 12)} the owner built on; someone else moved ${branch}`;
     log(`line ${branch}: conflict: ${detail}`);
     await settle("conflict", detail, current === ZERO_OID ? undefined : current);
@@ -661,7 +664,7 @@ const pushLine = async (
     repositoryUrl,
     authorization,
     ref,
-    expectedOld: push.expectedPredecessor,
+    expectedOld: creating ? ZERO_OID : push.expectedPredecessor,
     newOid: push.head,
     pack: await deps.bundles.get(push.bundleKey),
   });
@@ -671,7 +674,13 @@ const pushLine = async (
     return "published";
   }
   const reason = outcome.kind === "rejected" ? outcome.reason : outcome.detail;
-  const kind = outcome.kind === "rejected" ? classify(reason) : "error";
+  // An absent-ref swap that the remote refuses means the ref now exists: someone else created it.
+  const kind =
+    outcome.kind !== "rejected"
+      ? "error"
+      : creating && /failed to update ref|already exists/i.test(reason)
+        ? "conflict"
+        : classify(reason);
   log(`line ${branch}: ${kind}: ${reason}`);
   if (kind === "conflict") {
     await settle("conflict", `the remote refused the lease: ${reason}`);

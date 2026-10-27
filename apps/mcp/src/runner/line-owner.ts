@@ -204,13 +204,26 @@ const ownLine = async (
   const fetchHeads = async (view: LineView): Promise<{ lineHead: string; mainHead: string }> => {
     const required = [branch, mainBranch];
     const refspec = (name: string) => `+${headRef(name)}:${headRef(name)}`;
-    const fetched = await gitWithToken(machine, layout.mirror, githubToken(), [
+    const mainFetched = await gitWithToken(machine, layout.mirror, githubToken(), [
       "fetch",
       "origin",
-      ...required.map(refspec),
+      refspec(mainBranch),
     ]);
-    if (fetched.exitCode !== 0)
-      throw new Error(`fetch ${required.join(", ")}: ${fetched.stderr.trim()}`);
+    if (mainFetched.exitCode !== 0)
+      throw new Error(`fetch ${mainBranch}: ${mainFetched.stderr.trim()}`);
+    // A line that has never been pushed has no ref at GitHub yet: it starts at main's head.
+    const lineFetched = await gitWithToken(machine, layout.mirror, githubToken(), [
+      "fetch",
+      "origin",
+      refspec(branch),
+    ]);
+    let lineAbsent = false;
+    if (lineFetched.exitCode !== 0) {
+      if (!/couldn't find remote ref/i.test(lineFetched.stderr))
+        throw new Error(`fetch ${branch}: ${lineFetched.stderr.trim()}`);
+      lineAbsent = true;
+      log(`line ${branch} does not exist at the remote yet; composing onto ${mainBranch}`);
+    }
     for (const program of view.programs) {
       if (required.includes(program.branch)) continue;
       const result = await gitWithToken(machine, layout.mirror, githubToken(), [
@@ -254,7 +267,8 @@ const ownLine = async (
           cwd: layout.checkout,
         })
       ).trim();
-    return { lineHead: await head(branch), mainHead: await head(mainBranch) };
+    const mainHead = await head(mainBranch);
+    return { lineHead: lineAbsent ? mainHead : await head(branch), mainHead };
   };
 
   say("fetching the line and its programs");

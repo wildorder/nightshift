@@ -687,6 +687,36 @@ describe("the project line, end to end", () => {
     expect(linePlane.settles.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("creates the line branch on the git server when the first composition finds it absent", async () => {
+    const { commits } = origin;
+    // The configured line branch was never pushed.
+    git(origin.bare, "update-ref", "-d", LINE_REF);
+    expect(origin.refOf(LINE_REF)).toBeUndefined();
+    await plane.land("a", commits.a1, commits.base);
+    const record0 = await plane.lineRecord();
+    expect(record0.head).toBeUndefined();
+    const requested = await plane.lineDispatch();
+
+    const { code } = await ownerFor(requested, {});
+    expect(code).toBe(0);
+
+    const head = origin.refOf(LINE_REF);
+    expect(head).toBeDefined();
+    if (head === undefined) return;
+    expect(origin.show(head, "a.txt")).toBe("a");
+    expect(origin.isAncestor(commits.base, head)).toBe(true);
+    expect(origin.linePushes).toEqual([head]);
+    const record = await plane.lineRecord();
+    expect(record.head).toBe(head);
+    expect(record.push).toMatchObject({
+      head,
+      expectedPredecessor: commits.base,
+      status: "published",
+    });
+    expect(record.compositions[0]?.parent).toBe(commits.base);
+    expect(origin.refOf("refs/heads/main")).toBe(commits.base);
+  });
+
   it("resumes a held batch under a replacement generation and publishes it once", async () => {
     const { commits } = origin;
     await plane.land("a", commits.a1, commits.base);

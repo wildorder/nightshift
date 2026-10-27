@@ -375,6 +375,67 @@ describe("publishLine", () => {
     expect((await w.stores.lines.get(projectId(w), LINE))?.head).toBe(head);
   });
 
+  it("creates an absent line from main's head by an absent-ref compare-and-swap", async () => {
+    const olds: string[] = [];
+    const remote: GitRemote = {
+      advertise: smartHttpRemote.advertise,
+      push: async (input) => {
+        olds.push(input.expectedOld);
+        return smartHttpRemote.push(input);
+      },
+    };
+    const w = await world({ remote });
+    const head = commit(work, "o.txt", "fifteen\n", "fifteenth");
+    expect(refOf(LINE_REF)).toBeUndefined();
+    await arrange(w, head, base, await packOf(work, head, base));
+    expect(await publishLine(w.deps, { projectId: projectId(w), branch: LINE })).toBe("published");
+    expect(olds).toEqual([ZERO_OID]);
+    expect(refOf(LINE_REF)).toBe(head);
+    const line = await w.stores.lines.get(projectId(w), LINE);
+    expect(line?.head).toBe(head);
+    expect(line?.push?.status).toBe("published");
+  });
+
+  it("treats an absent ref as a conflict when the record has had a head", async () => {
+    const pushes: string[] = [];
+    const remote: GitRemote = {
+      advertise: smartHttpRemote.advertise,
+      push: async (input) => {
+        pushes.push(input.newOid);
+        return smartHttpRemote.push(input);
+      },
+    };
+    const w = await world({ remote });
+    const head = commit(work, "p.txt", "sixteen\n", "sixteenth");
+    await arrange(w, head, base, await packOf(work, head, base));
+    await w.stores.lines.update(projectId(w), LINE, (current) =>
+      current === undefined ? undefined : { ...current, head: base as CommitSha },
+    );
+    expect(await publishLine(w.deps, { projectId: projectId(w), branch: LINE })).toBe("conflict");
+    expect(pushes).toEqual([]);
+    expect(refOf(LINE_REF)).toBeUndefined();
+    expect((await w.stores.lines.get(projectId(w), LINE))?.push?.status).toBe("conflict");
+  });
+
+  it("records a conflict when a ref created meanwhile beats the absent-ref swap", async () => {
+    const w = await world();
+    const theirs = commit(work, "q.txt", "seventeen\n", "seventeenth");
+    const ours = commit(work, "r.txt", "eighteen\n", "eighteenth");
+    await arrange(w, ours, base, await packOf(work, ours, base));
+    const remote: GitRemote = {
+      advertise: smartHttpRemote.advertise,
+      push: async (input) => {
+        setRef(LINE_REF, theirs);
+        return smartHttpRemote.push(input);
+      },
+    };
+    expect(
+      await publishLine({ ...w.deps, remote }, { projectId: projectId(w), branch: LINE }),
+    ).toBe("conflict");
+    expect(refOf(LINE_REF)).toBe(theirs);
+    expect((await w.stores.lines.get(projectId(w), LINE))?.push?.status).toBe("conflict");
+  });
+
   it("records a conflict with the remote head when the line moved, and pushes nothing", async () => {
     const pushes: string[] = [];
     const remote: GitRemote = {
