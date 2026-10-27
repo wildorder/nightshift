@@ -224,7 +224,7 @@ export interface Prepared {
 const sha256Hex = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 /** `https://x-access-token:<token>@github.com/owner/name.git` is never written anywhere; git gets it per command. */
-const gitWithToken = async (
+export const gitWithToken = async (
   machine: Machine,
   cwd: string | undefined,
   token: string,
@@ -632,7 +632,14 @@ export const prepareCheckout = async (machine: Machine, input: PrepareInput): Pr
   return { setupSeconds: 0, lockfileHashes: {}, warm, environment, environmentFile };
 };
 
-export type PrepareProjectInput = Omit<PrepareInput, "planText" | "githubToken">;
+export type PrepareProjectInput = Omit<
+  PrepareInput,
+  "planText" | "githubToken" | "dispatch" | "program"
+> & {
+  /** Only the setup steps are read: a line owner has the project's, not a program's. */
+  readonly program: Pick<ProgramContract, "setup">;
+  readonly dispatch?: Dispatch;
+};
 
 /** Retryable project setup. Never moves or resets the checkout. */
 export const prepareProject = async (

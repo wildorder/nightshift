@@ -53,6 +53,9 @@ export const routes = {
   lineBatch: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/batch`,
   lineCompositions: (projectId: ProjectId, branch: string) =>
     `${routes.line(projectId, branch)}/compositions`,
+  lineDecisions: (projectId: ProjectId, branch: string) =>
+    `${routes.line(projectId, branch)}/decisions`,
+  lineAgents: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/agents`,
   lineSettle: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/settle`,
   lineParked: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/parked`,
   linePush: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/push`,

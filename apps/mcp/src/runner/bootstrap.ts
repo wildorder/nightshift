@@ -11,8 +11,12 @@
  * disk afterwards.
  */
 import {
+  type AgentId,
+  AgentIdSchema,
   ExecutionTokenClaimsSchema,
+  LineBranchSchema,
   ProgramIdSchema,
+  type ProjectId,
   ProjectIdSchema,
   RunIdSchema,
 } from "@nightshift/contracts";
@@ -31,6 +35,17 @@ export const RUNNER_TAGS = {
   api: "nightshift-api",
 } as const;
 
+/** The tags a line owner's machine carries (`lineMachineTags`, apps/api provision-line.ts). */
+export const LINE_TAGS = {
+  kind: "nightshift-kind",
+  project: "nightshift-project",
+  line: "nightshift-line",
+  agent: "nightshift-agent",
+  generation: "nightshift-generation",
+  stage: "nightshift-stage",
+  api: "nightshift-api",
+} as const;
+
 export interface RunnerIdentity {
   readonly scope: RunScope;
   readonly generation: number;
@@ -39,9 +54,28 @@ export interface RunnerIdentity {
   readonly instanceId: string;
 }
 
+/** Who a line owner's machine is: the project's line on a branch, and the engine agent its token is minted for. */
+export interface LineIdentity {
+  readonly kind: "line";
+  readonly projectId: ProjectId;
+  readonly branch: string;
+  readonly engineAgentId: AgentId;
+  readonly generation: number;
+  readonly stage: string;
+  readonly apiEndpoint: string;
+  readonly instanceId: string;
+}
+
+export const isLineIdentity = (identity: RunnerIdentity | LineIdentity): identity is LineIdentity =>
+  "kind" in identity && identity.kind === "line";
+
+/** The name a machine's directory and first token are kept under: the run's id, or the line owner's agent id. */
+export const machineKeyOf = (identity: RunnerIdentity | LineIdentity): string =>
+  isLineIdentity(identity) ? identity.engineAgentId : identity.scope.runId;
+
 /** The parameter the first engine token waits in (the runner stack's `dispatchParameterPrefix`). */
-export const firstTokenParameter = (identity: RunnerIdentity): string =>
-  `/nightshift/${identity.stage}/dispatch/${identity.scope.runId}/${identity.generation}`;
+export const firstTokenParameter = (identity: RunnerIdentity | LineIdentity): string =>
+  `/nightshift/${identity.stage}/dispatch/${machineKeyOf(identity)}/${identity.generation}`;
 
 export class BootstrapError extends Error {
   override readonly name = "BootstrapError";
@@ -67,10 +101,38 @@ const metadata = async (machine: Machine, token: string, path: string): Promise<
   return response.text.trim();
 };
 
-/** Who this machine is, from the tags the dispatch Lambda set. */
-export const readIdentity = async (machine: Machine): Promise<RunnerIdentity> => {
+/** The tag, or `undefined` when the instance has none by that name. */
+const optionalMetadata = async (
+  machine: Machine,
+  token: string,
+  path: string,
+): Promise<string | undefined> => {
+  const response = await machine.http("GET", `${IMDS}/latest/meta-data/${path}`, {
+    "X-aws-ec2-metadata-token": token,
+  });
+  return response.status === 200 ? response.text.trim() : undefined;
+};
+
+/** Who this machine is, from the tags the dispatch Lambda set: a run's, or a line owner's. */
+export const readIdentity = async (machine: Machine): Promise<RunnerIdentity | LineIdentity> => {
   const token = await imdsToken(machine);
   const tag = (name: string) => metadata(machine, token, `tags/instance/${name}`);
+  if ((await optionalMetadata(machine, token, `tags/instance/${LINE_TAGS.kind}`)) === "line") {
+    const lineGeneration = Number.parseInt(await tag(LINE_TAGS.generation), 10);
+    if (!Number.isInteger(lineGeneration) || lineGeneration < 1) {
+      throw new BootstrapError("the generation tag is not a positive integer");
+    }
+    return {
+      kind: "line",
+      projectId: ProjectIdSchema.parse(await tag(LINE_TAGS.project)),
+      branch: LineBranchSchema.parse(await tag(LINE_TAGS.line)),
+      engineAgentId: AgentIdSchema.parse(await tag(LINE_TAGS.agent)),
+      generation: lineGeneration,
+      stage: await tag(LINE_TAGS.stage),
+      apiEndpoint: await tag(LINE_TAGS.api),
+      instanceId: await metadata(machine, token, "instance-id"),
+    };
+  }
   const generation = Number.parseInt(await tag(RUNNER_TAGS.generation), 10);
   if (!Number.isInteger(generation) || generation < 1) {
     throw new BootstrapError("the generation tag is not a positive integer");
@@ -95,7 +157,7 @@ export const readIdentity = async (machine: Machine): Promise<RunnerIdentity> =>
  */
 export const takeFirstToken = async (
   machine: Machine,
-  identity: RunnerIdentity,
+  identity: RunnerIdentity | LineIdentity,
   beforeDelete?: (token: string) => Promise<void>,
 ): Promise<string> => {
   const name = firstTokenParameter(identity);
@@ -142,14 +204,16 @@ export const takeFirstToken = async (
  */
 export const bootstrapEngineToken = async (
   machine: Machine,
-  identity: RunnerIdentity,
+  identity: RunnerIdentity | LineIdentity,
   options: {
     readonly readCachedToken?: () => Promise<string | undefined>;
     readonly installToken?: (token: string) => Promise<void>;
   } = {},
 ): Promise<string> => {
-  const cached = (await options.readCachedToken?.())?.trim();
-  if (cached !== undefined && cached !== "") {
+  // A line owner has no cache: its claims are not a run's, and a restarted
+  // process finds no first token and is left to the reconciler's replacement.
+  const cached = isLineIdentity(identity) ? undefined : (await options.readCachedToken?.())?.trim();
+  if (cached !== undefined && cached !== "" && !isLineIdentity(identity)) {
     try {
       const parts = cached.split(".");
       if (parts.length !== 3) throw new Error("not a JWT");

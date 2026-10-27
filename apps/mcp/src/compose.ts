@@ -26,10 +26,12 @@ import {
   CommitShaSchema,
   DispatchSchema,
   HeartbeatResponseSchema,
+  LineViewSchema,
   type ProgramContract,
   ProgramIdSchema,
   ProjectIdSchema,
   RunIdSchema,
+  TakeLineBatchResponseSchema,
 } from "@nightshift/contracts";
 import type {
   ArtifactBodyStore,
@@ -98,7 +100,7 @@ import {
 } from "./role.js";
 import { createProjectUser, createReclaim } from "./run-as.js";
 import { nodeMachine } from "./runner/machine.js";
-import type { PlaneFactory } from "./runner/plane.js";
+import type { LinePlaneFactory, PlaneFactory } from "./runner/plane.js";
 import {
   createProjectSetup,
   type ProjectSetup,
@@ -126,6 +128,66 @@ export const createRunnerPlane: PlaneFactory = (endpoint, tokens) => {
       ),
     nodes: (scope) => everyPage((page) => stores.executionNodes.listByRun(scope, page)),
     jobs: (scope) => everyPage((page) => stores.jobContracts.listByRun(scope, page)),
+  };
+};
+
+/**
+ * The line owner's view of the control plane (Pipkin M1b, S-04), over the line
+ * routes. Every call carries the dispatch generation the plane fences on.
+ */
+export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target) => {
+  const transport = createFetchTransport({ endpoint, tokens });
+  const { projectId, branch, generation } = target;
+  return {
+    line: async () =>
+      LineViewSchema.parse(
+        await send(transport, { method: "GET", path: routes.line(projectId, branch) }),
+      ),
+    takeBatch: async () =>
+      TakeLineBatchResponseSchema.parse(
+        await send(transport, {
+          method: "POST",
+          path: routes.lineBatch(projectId, branch),
+          body: { generation },
+        }),
+      ).batch,
+    settle: async (body) => {
+      await send(transport, {
+        method: "POST",
+        path: routes.lineSettle(projectId, branch),
+        body,
+      });
+    },
+    heartbeat: async (body) =>
+      HeartbeatResponseSchema.parse(
+        await send(transport, {
+          method: "POST",
+          path: routes.lineHeartbeat(projectId, branch),
+          body,
+        }),
+      ),
+    bundleUploadUrl: async (id) => {
+      const signed = (await send(transport, {
+        method: "POST",
+        path: routes.lineBundleUploadUrl(projectId, branch),
+        body: { generation, id },
+      })) as { uploadUrl: string; key: string; contentType: string };
+      return { uploadUrl: signed.uploadUrl, key: signed.key, contentType: signed.contentType };
+    },
+    decide: async (decision) => {
+      await send(transport, {
+        method: "POST",
+        path: routes.lineDecisions(projectId, branch),
+        body: { ...decision, generation },
+      });
+    },
+    announce: async (agent) => {
+      await send(transport, {
+        method: "POST",
+        path: routes.lineAgents(projectId, branch),
+        body: { generation, agent },
+      });
+    },
   };
 };
 
@@ -458,6 +520,30 @@ export const createRoutedHarness = (construct: (harness: string) => Harness): Ha
     status: async (handle) => (await owners.get(handle)?.status(handle)) ?? "created",
   };
 };
+
+/**
+ * The harnesses a line owner's agents launch through, by `RouteTarget.harness`
+ * (Pipkin M1b, S-04): built on a machine, on first use, over the environment
+ * the agents run in.
+ */
+export const createLineHarnesses = (env: Env): { get(harness: string): Harness | undefined } => {
+  const adapters = new Map<string, Harness | undefined>();
+  return {
+    get: (harness) => {
+      if (!adapters.has(harness)) {
+        try {
+          adapters.set(harness, constructAdapter(harness, env, true));
+        } catch {
+          adapters.set(harness, undefined);
+        }
+      }
+      return adapters.get(harness);
+    },
+  };
+};
+
+/** Where a line owner's verification scratch directories live. */
+export const createLineScratchPaths = (env: Env): LocalPaths => createLocalPaths({ env });
 
 const createHarness = async (env: Env, onMachine: boolean): Promise<Harness> => {
   const specifier = env[HARNESS_MODULE_ENV];

@@ -1,5 +1,10 @@
 /** Same-machine NVMe survives a process restart; its older sidecar must not win. */
-import type { RunnerIdentity } from "./bootstrap.js";
+import {
+  isLineIdentity,
+  type LineIdentity,
+  machineKeyOf,
+  type RunnerIdentity,
+} from "./bootstrap.js";
 import type { Machine } from "./machine.js";
 import { restoreFromSidecar, SIDECAR_MARKER, sidecarHoldsCopy } from "./sidecar.js";
 
@@ -43,14 +48,17 @@ export const recoverLocalWorkspace = async (
   options: {
     readonly workspace: string;
     readonly sidecar: string;
-    readonly identity: RunnerIdentity;
+    readonly identity: RunnerIdentity | LineIdentity;
   },
 ): Promise<"restored" | "preserved" | "empty"> => {
   const { workspace, sidecar, identity } = options;
   const marker = `${workspace}/${SIDECAR_MARKER}`;
+  const key = machineKeyOf(identity);
   const owner = {
     schemaVersion: 1,
-    ...identity.scope,
+    ...(isLineIdentity(identity)
+      ? { projectId: identity.projectId, branch: identity.branch, engineAgentId: key }
+      : identity.scope),
     instanceId: identity.instanceId,
     generation: identity.generation,
   };
@@ -89,8 +97,7 @@ export const recoverLocalWorkspace = async (
   if (populated && !restoring) {
     if (
       marked === undefined &&
-      (await machine.exec("test", ["-d", `${workspace}/runs/${identity.scope.runId}`])).exitCode !==
-        0
+      (await machine.exec("test", ["-d", `${workspace}/runs/${key}`])).exitCode !== 0
     ) {
       throw new WorkspaceRecoveryError(
         `the nonempty local workspace at ${workspace} does not identify this run; preserving it`,
@@ -107,7 +114,7 @@ export const recoverLocalWorkspace = async (
     return "empty";
   }
   await mark("restoring");
-  await restoreFromSidecar(machine, sidecar, workspace, identity.scope.runId);
+  await restoreFromSidecar(machine, sidecar, workspace, key);
   await mark("ready");
   return "restored";
 };

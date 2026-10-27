@@ -9,7 +9,13 @@ import type {
   HeartbeatBody,
   HeartbeatResponse,
   JobContract,
+  LineAgentBody,
+  LineBatch,
+  LineDecisionBody,
+  LineSettleBody,
+  LineView,
   ProgramContract,
+  ProjectId,
 } from "@nightshift/contracts";
 import type { ProgramScope, RunScope } from "@nightshift/core";
 
@@ -31,3 +37,41 @@ export interface RunnerPlane {
 }
 
 export type PlaneFactory = (endpoint: string, tokens: EngineTokens) => RunnerPlane;
+
+/** A line owner's dispatch: whose line it is, and the generation every call carries. */
+export interface LineTarget {
+  readonly projectId: ProjectId;
+  readonly branch: string;
+  readonly generation: number;
+}
+
+/**
+ * What the line owner needs from the control plane, as a port (Pipkin M1b, S-04):
+ * the line routes, each already bound to the owner's project, branch and
+ * generation. The adapter is in `compose.ts`; the tests use a fake.
+ */
+export interface LineRunnerPlane {
+  /** The line's record, its dispatch, the policy its agents route under, and the programs that feed it. */
+  line(): Promise<LineView>;
+  /** The whole queue as one batch, or the batch already held; `undefined` when there is nothing. */
+  takeBatch(): Promise<LineBatch | undefined>;
+  /** Settles the held batch, with its composition and push when there is one. */
+  settle(body: LineSettleBody): Promise<void>;
+  heartbeat(body: HeartbeatBody): Promise<HeartbeatResponse>;
+  /** A presigned PUT for one bundle; `key` is what the push names. */
+  bundleUploadUrl(id: string): Promise<{
+    readonly uploadUrl: string;
+    readonly key: string;
+    readonly contentType: string;
+  }>;
+  /** A resolver's decision, recorded for review. */
+  decide(decision: Omit<LineDecisionBody, "generation">): Promise<void>;
+  /** An agent announced before it runs. */
+  announce(agent: LineAgentBody["agent"]): Promise<void>;
+}
+
+export type LinePlaneFactory = (
+  endpoint: string,
+  tokens: EngineTokens,
+  target: LineTarget,
+) => LineRunnerPlane;

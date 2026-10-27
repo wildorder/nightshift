@@ -53,6 +53,8 @@ export interface LineAgentsOptions {
     agentId: AgentId;
     role: LineAgentRole;
     model: string;
+    /** The whole route the agent runs on, which the plane records. */
+    target: RouteTarget;
   }) => Promise<void> | void;
   /** The worktree's own temp directory, when it has one. */
   readonly tmpDirOf?: (worktree: LineWorktree) => string | undefined;
@@ -100,7 +102,7 @@ export const createLineAgents = (options: LineAgentsOptions): LineResolverAgentP
     }
     const agentId = options.ids.next("agent");
     try {
-      await options.announce({ agentId, role, model: target.model });
+      await options.announce({ agentId, role, model: target.model, target });
     } catch (error) {
       return {
         kind: "not_launched",
