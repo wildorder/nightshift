@@ -365,14 +365,14 @@ export const resolvePush = (
     unpushed === undefined
       ? record.queue
       : [
-          ...record.queue,
           ...unpushed.ranges
             .filter((range) => !record.queue.some((queued) => sameRange(queued, range)))
             .map((range) => ({
               program: range.program,
               upTo: range.upTo,
-              enqueuedAt: at,
+              enqueuedAt: unpushed.composedAt,
             })),
+          ...record.queue,
         ];
   return {
     ok: true,

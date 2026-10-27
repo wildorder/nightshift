@@ -39,8 +39,33 @@ const groupRanges = async (
         Date.parse(a.entry.enqueuedAt) - Date.parse(b.entry.enqueuedAt) || a.index - b.index,
     )
     .map((item) => item.entry);
+  // Programs keep the order of their earliest entry.
+  const byProgram = new Map<ProgramId, CommitSha[]>();
+  for (const entry of entries) {
+    const commits = byProgram.get(entry.program) ?? [];
+    commits.push(entry.upTo);
+    byProgram.set(entry.program, commits);
+  }
   const upTo = new Map<ProgramId, CommitSha>();
-  for (const entry of entries) upTo.set(entry.program, entry.upTo);
+  for (const [program, commits] of byProgram) {
+    // The head is the entry that descends from every other; only diverged
+    // history falls back to the newest by enqueue time.
+    let head: CommitSha | undefined;
+    for (const candidate of commits) {
+      let holdsAll = true;
+      for (const other of commits) {
+        if (other !== candidate && !(await ports.checkout.isAncestor(other, candidate))) {
+          holdsAll = false;
+          break;
+        }
+      }
+      if (holdsAll) {
+        head = candidate;
+        break;
+      }
+    }
+    upTo.set(program, head ?? (commits.at(-1) as CommitSha));
+  }
   const ranges: LineRange[] = [];
   for (const [program, last] of upTo) {
     if (await ports.checkout.isAncestor(last, lineHead)) continue;

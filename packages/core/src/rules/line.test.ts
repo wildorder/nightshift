@@ -707,6 +707,19 @@ describe("settleBatch", () => {
     expect(again.record.queue).toHaveLength(1);
   });
 
+  it("requeues a failed push ahead of a head queued while it was pending, at its composedAt", () => {
+    const record = settled();
+    const newer = { program: P1, upTo: B };
+    const withNewer = appendQueueEntry(record, newer, "2030-01-01T00:00:00.000Z");
+    expect(withNewer.queue).toHaveLength(1);
+    const failed = resolvePush(withNewer, C, "conflict", "moved", "2031-01-01T00:00:00.000Z");
+    if (!failed.ok) throw new Error("expected ok");
+    expect(failed.record.queue).toEqual([
+      { program: P1, upTo: A, enqueuedAt: LATER },
+      { ...newer, enqueuedAt: "2030-01-01T00:00:00.000Z" },
+    ]);
+  });
+
   it("does not requeue when the push published", () => {
     const published = resolvePush(settled(), C, "published", undefined, LATER);
     if (!published.ok) throw new Error("expected ok");

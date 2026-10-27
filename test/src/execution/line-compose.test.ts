@@ -12,6 +12,7 @@ import {
   appendQueueEntry,
   createFixtures,
   makeLineRecord,
+  resolvePush,
   settleBatch,
   takeBatch,
 } from "@nightshift/core";
@@ -515,5 +516,93 @@ describe("drainLine", () => {
       head: commit,
       expectedPredecessor: line,
     });
+  });
+
+  it("composes the descendant head of a program whatever the enqueue order", async () => {
+    const h = await setup();
+    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
+    const b = await h.lr.commit("p1", { "b.txt": "b\n" });
+    const out = await composeLineBatch(h.ports, {
+      lineHead: h.lr.initial,
+      mainHead: h.lr.initial,
+      batch: batchOf([entry(P1, b, 1), entry(P1, a, 2)]),
+    });
+    expect(out.composed).toEqual([{ program: P1, upTo: b }]);
+    const commit = h.settled[0]?.composition?.commit as CommitSha;
+    expect(await isAnc(h.lr, b, commit)).toBe(true);
+  });
+
+  it("falls back to the newest entry when a program's history has diverged", async () => {
+    const h = await setup();
+    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
+    const x = await h.lr.commit("p1-other", { "x.txt": "x\n" });
+    const out = await composeLineBatch(h.ports, {
+      lineHead: h.lr.initial,
+      mainHead: h.lr.initial,
+      batch: batchOf([entry(P1, a, 1), entry(P1, x, 2)]),
+    });
+    expect(out.composed).toEqual([{ program: P1, upTo: x }]);
+  });
+
+  it("keeps a newer queued head after the failed push of its ancestor's composition", async () => {
+    const h = await setup();
+    const fixtures = createFixtures();
+    const t = (m: number) => new Date(START + m * 60_000).toISOString();
+    const line = await h.lr.commit("line", { "l.txt": "l\n" });
+    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
+    const b = await h.lr.commit("p1", { "b.txt": "b\n" });
+    let record: LineRecord = appendQueueEntry(
+      makeLineRecord(fixtures),
+      { program: P1, upTo: a },
+      t(0),
+    );
+    let batchNo = 0;
+    let at = t(1);
+    h.ports.queue.takeBatch = async () => {
+      const taken = takeBatch(record, 1, { batchId: `b${++batchNo}` }, at);
+      record = taken.record;
+      return taken.batch ?? record.batch;
+    };
+    h.ports.queue.settle = async (s) => {
+      const change = settleBatch(
+        record,
+        s,
+        { compositionId: `comp-${batchNo}`, parkedIds: [] },
+        1,
+        at,
+      );
+      if (!change.ok) throw new Error("settle refused");
+      record = change.record;
+    };
+    h.ports.publisher.outcome = async () => {
+      throw new Error("owner died");
+    };
+    const first = (await h.ports.queue.takeBatch()) as LineBatch;
+    await expect(
+      composeLineBatch(h.ports, { lineHead: line, mainHead: line, batch: first }),
+    ).rejects.toThrow("owner died");
+    const composedA = record.compositions[0];
+    expect(composedA?.ranges).toEqual([{ program: P1, upTo: a }]);
+
+    at = t(2);
+    record = appendQueueEntry(record, { program: P1, upTo: b }, at);
+    at = t(3);
+    const failed = resolvePush(record, composedA?.commit as CommitSha, "conflict", "moved", at);
+    if (!failed.ok) throw new Error("resolve refused");
+    record = failed.record;
+    expect(record.queue.map((q) => q.upTo)).toEqual([a, b]);
+
+    at = t(4);
+    const next = (await h.ports.queue.takeBatch()) as LineBatch;
+    expect(next.entries.map((q) => q.upTo)).toEqual([a, b]);
+    h.ports.publisher.outcome = async () => ({ status: "published" });
+    const out = await composeLineBatch(h.ports, { lineHead: line, mainHead: line, batch: next });
+    expect(out.composed).toEqual([{ program: P1, upTo: b }]);
+    const composed = record.compositions.at(-1);
+    expect(await isAnc(h.lr, b, composed?.commit as CommitSha)).toBe(true);
+    expect(composed?.ranges).toEqual([{ program: P1, upTo: b }]);
+    expect(record.queue).toEqual([]);
+    expect(record.batch).toBeUndefined();
+    expect(record.push).toMatchObject({ head: composed?.commit });
   });
 });
