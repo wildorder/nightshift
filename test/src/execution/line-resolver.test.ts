@@ -32,6 +32,7 @@ interface Opts {
   examine?: (n: number) => { model: string; verdict: "approved" | "rejected"; findings: string[] };
   passes?: (read: (path: string) => Promise<string | undefined>) => boolean | Promise<boolean>;
   advanceOnVerify?: number;
+  advanceOnExamine?: number;
   attempts?: number;
 }
 
@@ -82,6 +83,7 @@ const setup = async (opts: Opts = {}) => {
     },
     async examine() {
       examineCalls += 1;
+      now.ms += opts.advanceOnExamine ?? 0;
       return (
         opts.examine?.(examineCalls) ?? { model: "model-b", verdict: "approved", findings: [] }
       );
@@ -239,6 +241,21 @@ describe("resolveLineFailure", () => {
     expect(res.reason).toContain("time limit");
     expect(h.calls().examine).toBe(0);
     expect(h.calls().resolve).toBe(1);
+    expect(h.open.size).toBe(0);
+  });
+
+  it("parks an approval whose examination ended past the deadline, recording nothing", async () => {
+    const h = await setup({ edit: mergeEdit, advanceOnExamine: 61_000 });
+    const { failure } = await conflict(h.lr);
+    const res = await resolveLineFailure(h.ports, failure);
+    expect(res.kind).toBe("parked");
+    if (res.kind !== "parked") return;
+    expect(res.reason).toContain("time limit");
+    expect(res.resolver.decision).toBe("gave_up");
+    expect(res.commit).toBeDefined();
+    expect(res.verification?.outcome).toBe("passed");
+    expect(h.calls().examine).toBe(1);
+    expect(h.recorded).toHaveLength(0);
     expect(h.open.size).toBe(0);
   });
 });

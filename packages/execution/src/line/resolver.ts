@@ -150,6 +150,7 @@ export const resolveLineFailure = async (
         avoidModel: resolved.model,
         deadline: failure.deadline,
       });
+      if (passed()) return parked(lastNote(), true);
       if (examined.model === resolved.model) {
         fail(
           `the examiner used the resolver's own model (${resolved.model}); no independent review`,
