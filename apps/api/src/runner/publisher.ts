@@ -22,15 +22,26 @@
  * lock row for the run, resolves every pending intent, releases, and looks
  * once more, so an intent recorded while it held the lock is not left behind.
  */
-import type { Dispatch, PublicationIntent } from "@nightshift/contracts";
+import type {
+  Dispatch,
+  ProgramContract,
+  ProjectId,
+  PublicationIntent,
+} from "@nightshift/contracts";
 import {
+  appendQueueEntry,
   blocksPublication,
   type Clock,
   chainOrder,
+  createUlidIdGenerator,
+  DEFAULT_LINE_MONTHLY_USD,
+  ensureLineDispatch,
   type GitHubAppClient,
   hasPendingIntent,
   holdBehind,
+  type IdGenerator,
   installationGranting,
+  lineQueueOwed,
   type NightshiftStores,
   nextPendingIntent,
   nowIso,
@@ -38,6 +49,7 @@ import {
   type RunScope,
   repositoryNameOf,
   resolveIntent,
+  resolvePush,
   resolveStrandPublication,
 } from "@nightshift/core";
 import {
@@ -53,29 +65,44 @@ export interface BundleStore {
   get(key: string): Promise<Uint8Array>;
 }
 
+/** What the publisher locks besides a run: one line, by its project and branch. */
+export interface LineScope {
+  readonly kind: "line";
+  readonly projectId: ProjectId;
+  readonly branch: string;
+}
+
+/** What one publisher invocation works on: a run's intents, or a line's push. */
+export type PublishTarget = RunScope | LineScope;
+
+export const isLineScope = (target: PublishTarget): target is LineScope =>
+  "kind" in target && target.kind === "line";
+
 /**
- * One publisher per run at a time. `acquire` succeeds when no one holds the
- * run, or the holder's lease has lapsed (a Lambda that died mid-push); the
- * lease is the function's timeout.
+ * One publisher per run, and per line, at a time. `acquire` succeeds when no
+ * one holds the key, or the holder's lease has lapsed (a Lambda that died
+ * mid-push); the lease is the function's timeout.
  */
 export interface PublishLock {
-  acquire(scope: RunScope, leaseMs: number): Promise<boolean>;
-  release(scope: RunScope): Promise<void>;
+  acquire(key: PublishTarget, leaseMs: number): Promise<boolean>;
+  release(key: PublishTarget): Promise<void>;
 }
 
 /** A lock for one process: the tests' and the local plane's. */
 export const createLocalPublishLock = (): PublishLock => {
   const held = new Map<string, number>();
+  const idOf = (key: PublishTarget): string =>
+    isLineScope(key) ? `line\u0000${key.projectId}\u0000${key.branch}` : key.runId;
   return {
-    acquire: async (scope, leaseMs) => {
+    acquire: async (key, leaseMs) => {
       const now = Date.now();
-      const until = held.get(scope.runId);
+      const until = held.get(idOf(key));
       if (until !== undefined && until > now) return false;
-      held.set(scope.runId, now + leaseMs);
+      held.set(idOf(key), now + leaseMs);
       return true;
     },
-    release: async (scope) => {
-      held.delete(scope.runId);
+    release: async (key) => {
+      held.delete(idOf(key));
     },
   };
 };
@@ -112,6 +139,12 @@ export interface PublisherDeps {
   /** Rewrites a contract's repository URL into the one the remote serves; the tests point it at a local server. */
   readonly remoteUrlOf?: (repositoryUrl: string) => string;
   readonly log?: (line: string) => void;
+  readonly ids?: IdGenerator;
+  /** Brings the line owner's machine up for a dispatch just stored `requested`; absent where no plane starts machines. */
+  readonly startLineMachine?: (target: {
+    readonly projectId: ProjectId;
+    readonly branch: string;
+  }) => Promise<void>;
 }
 
 /** How many times a transient push failure is tried before the intent blocks. */
@@ -179,6 +212,12 @@ const targetOf = async (deps: PublisherDeps, scope: RunScope) => {
   return { program, repository, installation };
 };
 
+/** A published resolution, plus the line's claim on the range when the program feeds one. */
+const owing = (next: Dispatch, program: ProgramContract): Dispatch =>
+  program.line === undefined
+    ? next
+    : { ...next, publication: { ...next.publication, lineOwed: true } };
+
 /**
  * Resolves the oldest pending intent of the run's dispatch. Returns what
  * happened; the caller loops until `nothing_pending` or a block.
@@ -228,7 +267,7 @@ export const publishNext = async (deps: PublisherDeps, scope: RunScope): Promise
   const already = publishedUpTo(dispatch, intent, current, at);
   if (already !== undefined) {
     log(`${scope.runId}: ${branch} already at ${current.slice(0, 12)}`);
-    await put(already);
+    await put(owing(already, program));
     return "already_published";
   }
   if (current !== intent.expectedPredecessor) {
@@ -251,7 +290,7 @@ export const publishNext = async (deps: PublisherDeps, scope: RunScope): Promise
     log(
       `${scope.runId}: published ${branch} ${intent.expectedPredecessor.slice(0, 12)} → ${intent.head.slice(0, 12)}`,
     );
-    await put(resolveIntent(dispatch, intent.head, "published", undefined, at));
+    await put(owing(resolveIntent(dispatch, intent.head, "published", undefined, at), program));
     return "published";
   }
   const refusal = refused(dispatch, intent, branch, outcome, at);
@@ -410,6 +449,95 @@ export const publishStrands = async (
   return steps;
 };
 
+/** The line ref's head at GitHub, from one advertisement; `undefined` when the ref does not exist or cannot be read. */
+const lineRefHead = async (
+  deps: PublisherDeps,
+  scope: RunScope,
+  program: ProgramContract,
+): Promise<string | undefined> => {
+  const branch = program.line?.branch;
+  const target = await targetOf(deps, scope);
+  if (branch === undefined || target === undefined) return undefined;
+  const { token } = await deps.github.writeToken(
+    target.installation.installationId,
+    target.repository,
+  );
+  const advertised = await (deps.remote ?? smartHttpRemote).advertise(
+    (deps.remoteUrlOf ?? cloneUrlOf)(program.repository.url),
+    installationAuthorization(token),
+  );
+  return advertised.get(`refs/heads/${branch}`);
+};
+
+/**
+ * Settles what a published range owes the line: queues it (idempotently, by
+ * program and head), records that on the run's dispatch, and makes sure the
+ * line's owner is started. Every failure is logged and left for the next
+ * invocation (or the reconciler): `lineQueueOwed` stays true until the range is
+ * recorded as queued, and nothing here touches the run's counts or intents.
+ */
+const settleLineObligation = async (deps: PublisherDeps, scope: RunScope): Promise<void> => {
+  const log = deps.log ?? (() => undefined);
+  try {
+    const dispatch = await deps.stores.dispatches.get(scope);
+    if (dispatch === undefined || !lineQueueOwed(dispatch)) return;
+    const upTo = dispatch.publication.head;
+    if (upTo === undefined) return;
+    const program = await deps.stores.programContracts.get(scope.projectId, scope.programId);
+    if (program?.line === undefined) return;
+    const { branch } = program.line;
+    const at = nowIso(deps.clock);
+    // A line is created by its first range, with one look at where its ref stands.
+    const existing = await deps.stores.lines.get(scope.projectId, branch);
+    const head = existing === undefined ? await lineRefHead(deps, scope, program) : undefined;
+    await deps.stores.lines.update(scope.projectId, branch, (current) =>
+      appendQueueEntry(
+        current ?? {
+          schemaVersion: 1,
+          projectId: scope.projectId,
+          branch,
+          repositoryUrl: program.repository.url,
+          version: 1,
+          ...(head === undefined ? {} : { head }),
+          queue: [],
+          compositions: [],
+          parked: [],
+          updatedAt: at,
+        },
+        { program: scope.programId, upTo },
+        at,
+      ),
+    );
+    const latest = (await deps.stores.dispatches.get(scope)) ?? dispatch;
+    await deps.stores.dispatches.put({
+      ...latest,
+      publication: { ...latest.publication, lineQueuedUpTo: upTo },
+      updatedAt: nowIso(deps.clock),
+    });
+    if (deps.startLineMachine !== undefined) {
+      const project = await deps.stores.projects.get(scope.projectId);
+      if (project !== undefined) {
+        const result = await ensureLineDispatch(
+          {
+            stores: deps.stores,
+            clock: deps.clock,
+            ids: deps.ids ?? createUlidIdGenerator(deps.clock),
+            startMachine: deps.startLineMachine,
+          },
+          {
+            projectId: scope.projectId,
+            branch,
+            capUsd: program.line.monthlyUsd ?? DEFAULT_LINE_MONTHLY_USD,
+          },
+        );
+        log(`${scope.runId}: line ${branch}: ${result.kind}`);
+      }
+    }
+  } catch (error) {
+    log(`${scope.runId}: could not queue the range on the line: ${String(error)}`);
+  }
+};
+
 /**
  * Every pending intent of the run, in order, under the run's lock, until none
  * is left or one blocks; then once more after releasing, for an intent that
@@ -441,6 +569,8 @@ export const publishAll = async (
       }
       // Strand branches go whatever the program branch's chain did (A-60).
       for (const step of await publishStrands(deps, scope)) count(step);
+      // The line is owed whatever the loop ended with, and also when nothing was pending.
+      await settleLineObligation(deps, scope);
     } finally {
       await lock.release(scope);
     }
@@ -449,4 +579,126 @@ export const publishAll = async (
     if (dispatch === undefined || !hasPendingIntent(dispatch)) break;
   }
   return counts;
+};
+
+/**
+ * Moves the line's branch to the head the owner asked for (`line.push`), under
+ * the line's lock. The same compare-and-swap as a program branch, never forced;
+ * every outcome is written to the line record alone, and a run's dispatch is
+ * never touched from here.
+ */
+export const publishLine = async (
+  deps: PublisherDeps,
+  input: { readonly projectId: ProjectId; readonly branch: string },
+): Promise<PublishStep> => {
+  const log = deps.log ?? (() => undefined);
+  const key: LineScope = { kind: "line", ...input };
+  const lock = deps.lock ?? createLocalPublishLock();
+  if (!(await lock.acquire(key, PUBLISH_LEASE_MS))) return "locked";
+  try {
+    return await pushLine(deps, input, log);
+  } finally {
+    await lock.release(key);
+  }
+};
+
+const pushLine = async (
+  deps: PublisherDeps,
+  { projectId, branch }: { readonly projectId: ProjectId; readonly branch: string },
+  log: (line: string) => void,
+): Promise<PublishStep> => {
+  const remote = deps.remote ?? smartHttpRemote;
+  const record = await deps.stores.lines.get(projectId, branch);
+  const push = record?.push;
+  if (record === undefined || push === undefined || push.status !== "pending") {
+    return "nothing_pending";
+  }
+  const settle = async (
+    status: Parameters<typeof resolvePush>[2],
+    detail: string | undefined,
+    remoteHead?: string,
+  ): Promise<void> => {
+    const at = nowIso(deps.clock);
+    await deps.stores.lines.update(projectId, branch, (current) => {
+      const change = resolvePush(current ?? record, push.head, status, detail, at);
+      if (!change.ok) return undefined;
+      return remoteHead === undefined ? change.record : { ...change.record, head: remoteHead };
+    });
+  };
+  const project = await deps.stores.projects.get(projectId);
+  const orgConfig =
+    project === undefined ? undefined : await deps.stores.orgConfigs.get(project.orgId);
+  const repository = repositoryNameOf(record.repositoryUrl);
+  const installation =
+    repository === undefined
+      ? undefined
+      : installationGranting(orgConfig?.installations ?? [], repository);
+  if (repository === undefined || installation === undefined) {
+    await settle(
+      "error",
+      "the org has no GitHub installation granting the repository, or the line names no GitHub repository",
+    );
+    return "not_configured";
+  }
+  const { token } = await deps.github.writeToken(installation.installationId, repository);
+  const authorization = installationAuthorization(token);
+  const repositoryUrl = (deps.remoteUrlOf ?? cloneUrlOf)(record.repositoryUrl);
+  const ref = `refs/heads/${branch}`;
+  const current = (await remote.advertise(repositoryUrl, authorization)).get(ref) ?? ZERO_OID;
+
+  if (current === push.head) {
+    log(`line ${branch} already at ${current.slice(0, 12)}`);
+    await settle("published", "already at GitHub");
+    return "already_published";
+  }
+  if (current !== push.expectedPredecessor) {
+    const detail = `the line is at ${current.slice(0, 12)}, not the ${push.expectedPredecessor.slice(0, 12)} the owner built on; someone else moved ${branch}`;
+    log(`line ${branch}: conflict: ${detail}`);
+    await settle("conflict", detail, current === ZERO_OID ? undefined : current);
+    return "conflict";
+  }
+  const outcome = await remote.push({
+    repositoryUrl,
+    authorization,
+    ref,
+    expectedOld: push.expectedPredecessor,
+    newOid: push.head,
+    pack: await deps.bundles.get(push.bundleKey),
+  });
+  if (outcome.kind === "ok") {
+    log(`line ${branch}: ${push.expectedPredecessor.slice(0, 12)} → ${push.head.slice(0, 12)}`);
+    await settle("published", undefined);
+    return "published";
+  }
+  const reason = outcome.kind === "rejected" ? outcome.reason : outcome.detail;
+  const kind = outcome.kind === "rejected" ? classify(reason) : "error";
+  log(`line ${branch}: ${kind}: ${reason}`);
+  if (kind === "conflict") {
+    await settle("conflict", `the remote refused the lease: ${reason}`);
+    return "conflict";
+  }
+  if (kind === "protected") {
+    await settle("protected", `${branch} is protected: ${reason}`);
+    return "protected";
+  }
+  if (kind === "forbidden") {
+    await settle("forbidden", forbiddenDetail(branch, reason));
+    return "forbidden";
+  }
+  const attempt = attemptOf(push) + 1;
+  if (attempt >= PUBLISH_ATTEMPTS) {
+    await settle("error", `attempt ${attempt} failed: ${reason}; giving up`);
+    return "error";
+  }
+  // Retryable: still pending, with the attempt counted for the next invocation.
+  await deps.stores.lines.update(projectId, branch, (latest) =>
+    latest?.push === undefined || latest.push.head !== push.head
+      ? undefined
+      : {
+          ...latest,
+          push: { ...latest.push, detail: `attempt ${attempt} failed: ${reason}` },
+          updatedAt: nowIso(deps.clock),
+        },
+  );
+  return "retrying";
 };

@@ -159,6 +159,12 @@ export const keys = {
   /** The publisher's lock on a run's intents (P10, D-P10-22): one row per run, with an expiry. */
   publishLock: (runId: RunId): TableKey => ({ PK: `RUN#${runId}`, SK: "PUBLISH-LOCK" }),
 
+  /** The publisher's lock on a line's push (Pipkin M1b): one row per line branch, with an expiry. */
+  linePublishLock: (projectId: ProjectId, branch: string): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `LINE-PUBLISH-LOCK#${branch}`,
+  }),
+
   /** Which org holds a GitHub App installation (P10, D-P10-02): one row per installation. */
   installationClaim: (installationId: number): TableKey => ({
     PK: `INSTALL#${installationId}`,

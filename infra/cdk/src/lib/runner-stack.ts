@@ -367,6 +367,12 @@ export class NightshiftRunnerStack extends Stack {
         actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
         resources: [tableArn],
       }),
+      // Provisioning counts the live run dispatches and line dispatches by
+      // status, which is a query on the node index.
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Query"],
+        resources: [`${tableArn}/index/${NODE_INDEX_NAME}`],
+      }),
       // Launch a machine from the one template, create its volume (from a
       // snapshot or empty), and tag what it makes. `RunInstances` needs the
       // template, the image, the subnet, the security group, the network
@@ -598,6 +604,14 @@ export class NightshiftRunnerStack extends Stack {
     // passing push failure is retried, and a run's last landing is never left
     // waiting for a next one that will not come.
     publisherFunction.grantInvoke(reconcilerRole);
+    // The reconciler also starts a line owner for a line with work and no live
+    // dispatch, and the publisher starts one when it queues a range (Pipkin M1b).
+    dispatchFunction.grantInvoke(reconcilerRole);
+    dispatchFunction.grantInvoke(publisherRole);
+    publisherFunction.addEnvironment(
+      "NIGHTSHIFT_DISPATCH_FUNCTION_ARN",
+      dispatchFunction.functionArn,
+    );
     reconcilerFunction.addEnvironment(
       "NIGHTSHIFT_PUBLISHER_FUNCTION_ARN",
       publisherFunction.functionArn,
