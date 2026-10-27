@@ -22,6 +22,7 @@ import type {
   LineRange,
   LineRecord,
   LineResolver,
+  LineSettleBody,
   ProgramId,
   ProjectId,
   ProjectSelfStartedUsage,
@@ -39,6 +40,8 @@ export const DEFAULT_LINE_MONTHLY_USD = 25;
 export const LINE_COMPOSITION_SECONDS = 3600;
 /** The most attempts the conflict resolver gets at one composition. */
 export const LINE_RESOLVER_ATTEMPTS = 3;
+/** The most queue entries one batch takes; the rest wait for the next. */
+export const MAX_LINE_BATCH_ENTRIES = 25;
 
 export type LineRefusal =
   /** The batch named is not the one the line holds: the owner is stale, or the batch was settled already. */
@@ -87,7 +90,7 @@ export const appendQueueEntry = (
 };
 
 /**
- * Moves the whole queue into one batch for the owner of `generation`. An empty
+ * Moves the oldest `MAX_LINE_BATCH_ENTRIES` of the queue into one batch for the owner of `generation`. An empty
  * queue gives no batch. A batch already held is the owner's to finish, so it is
  * handed back instead (re-bound to `generation` when a newer owner asks), and
  * the queue waits behind it.
@@ -106,11 +109,18 @@ export const takeBatch = (
   if (record.queue.length === 0) return { record };
   const batch: LineBatch = {
     batchId: ids.batchId,
-    entries: record.queue,
+    entries: record.queue.slice(0, MAX_LINE_BATCH_ENTRIES),
     takenAt: at,
     generation,
   };
-  return { record: { ...record, queue: [], batch, updatedAt: at } };
+  return {
+    record: {
+      ...record,
+      queue: record.queue.slice(MAX_LINE_BATCH_ENTRIES),
+      batch,
+      updatedAt: at,
+    },
+  };
 };
 
 const staleBatch = (record: LineRecord, batchId: string): LineRefusal | undefined =>
@@ -198,6 +208,69 @@ export const parkBatch = (
         ],
         MAX_LINE_PARKED,
       ),
+      updatedAt: at,
+    },
+  };
+};
+
+/**
+ * Settles a batch with a composition and/or parked entries in one change. The
+ * refusals are `composeBatch`'s and `parkBatch`'s: a stale batch, and a
+ * resolver over its attempts (on the composition or any parked entry).
+ */
+export const settleBatch = (
+  record: LineRecord,
+  body: LineSettleBody,
+  ids: { readonly compositionId?: string; readonly parkedIds: readonly string[] },
+  at: string,
+): LineChange => {
+  const refusal =
+    staleBatch(record, body.batchId) ??
+    resolverOver(body.composition?.resolver) ??
+    body.parked.map((entry) => resolverOver(entry.resolver)).find((r) => r !== undefined);
+  if (refusal !== undefined) return refuse(refusal);
+  const { batch: _settled, ...rest } = record;
+  const composition = body.composition;
+  return {
+    ok: true,
+    record: {
+      ...rest,
+      compositions:
+        composition === undefined
+          ? record.compositions
+          : newest(
+              [
+                ...record.compositions,
+                {
+                  compositionId: ids.compositionId ?? "",
+                  commit: composition.commit,
+                  parent: composition.parent,
+                  ranges: composition.ranges,
+                  verification: composition.verification,
+                  ...(composition.resolver === undefined ? {} : { resolver: composition.resolver }),
+                  composedAt: at,
+                },
+              ],
+              MAX_LINE_COMPOSITIONS,
+            ),
+      parked:
+        body.parked.length === 0
+          ? record.parked
+          : newest(
+              [
+                ...record.parked,
+                ...body.parked.map((entry, index) => ({
+                  compositionId: ids.parkedIds[index] ?? "",
+                  ranges: entry.ranges,
+                  reason: entry.reason,
+                  ...(entry.commit === undefined ? {} : { commit: entry.commit }),
+                  ...(entry.verification === undefined ? {} : { verification: entry.verification }),
+                  ...(entry.resolver === undefined ? {} : { resolver: entry.resolver }),
+                  parkedAt: at,
+                })),
+              ],
+              MAX_LINE_PARKED,
+            ),
       updatedAt: at,
     },
   };

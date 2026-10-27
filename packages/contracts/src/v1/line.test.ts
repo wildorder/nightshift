@@ -9,6 +9,7 @@ import {
   LineParkBodySchema,
   LinePushBodySchema,
   LineRecordSchema,
+  LineSettleBodySchema,
   LineVerificationSchema,
   LineViewSchema,
   TakeLineBatchBodySchema,
@@ -146,6 +147,28 @@ describe("the line record", () => {
         resolver: { decision: "gave_up", attempts: 4 },
       }).success,
     ).toBe(false);
+  });
+
+  it("settles a batch with a composition, parked entries, both or neither", () => {
+    const composition = {
+      commit: B,
+      parent: A,
+      ranges: [{ program: PROGRAM, upTo: B }],
+      verification,
+    };
+    const parked = { ranges: [{ program: PROGRAM, upTo: A }], reason: "conflict" };
+    const ok = (body: unknown) => LineSettleBodySchema.safeParse(body).success;
+    expect(ok({ batchId: "b", composition, parked: [] })).toBe(true);
+    expect(ok({ batchId: "b", parked: [parked] })).toBe(true);
+    expect(ok({ batchId: "b", composition, parked: [parked] })).toBe(true);
+    expect(ok({ batchId: "b", parked: [] })).toBe(true);
+    expect(ok({ batchId: "b", composition: { ...composition, ranges: [] }, parked: [] })).toBe(
+      false,
+    );
+    expect(ok({ batchId: "b", composition: { ...composition, batchId: "b" }, parked: [] })).toBe(
+      false,
+    );
+    expect(ok({ batchId: "b", parked: [], stray: 1 })).toBe(false);
   });
 
   it("only ever carries a line verification", () => {

@@ -59,6 +59,7 @@ const FORBIDDEN: readonly Operation[] = [
   "line.takeBatch",
   "line.compose",
   "line.park",
+  "line.settle",
   "line.push",
   "line.createBundleUploadUrl",
   "line.heartbeat",
