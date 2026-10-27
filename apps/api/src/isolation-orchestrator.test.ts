@@ -99,6 +99,8 @@ const seed = async (stores: InMemoryStores): Promise<World> => {
       installationId: "1",
       // A-62: a project's secret.
       name: "NPM_TOKEN",
+      // Pipkin M1b: a project line is named by its branch, one encoded segment.
+      branch: "nightshift%2Fdevelop",
       agentId: agent.agentId,
       siblingAgentId: siblingAgent.agentId,
     },

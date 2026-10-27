@@ -28,6 +28,7 @@ import {
   type Clock,
   type DispatchStore,
   type ExecutionNodeStore,
+  type LineDispatchStore,
   type MembershipStore,
   type NodeRelation,
   type Operation,
@@ -128,6 +129,7 @@ export const targetFrom = (params: PathParams, body: unknown): AuthorizationTarg
     runId?: string;
     nodeId?: string;
     agentId?: string;
+    branch?: string;
   } = {};
   // P8: `/orgs/{orgId}/…` names the org itself, and `authorize` holds it to the
   // caller's acting org as it does a project's owner.
@@ -136,6 +138,7 @@ export const targetFrom = (params: PathParams, body: unknown): AuthorizationTarg
   if (params.programId !== undefined) target.programId = params.programId;
   if (params.runId !== undefined) target.runId = params.runId;
   if (params.agentId !== undefined) target.agentId = params.agentId;
+  if (params.branch !== undefined) target.branch = params.branch;
 
   const fromBody =
     body !== null && typeof body === "object"
@@ -164,6 +167,8 @@ export interface EnforceOptions {
    * current, and `authorize` compares the two.
    */
   readonly dispatches: Pick<DispatchStore, "get">;
+  /** The project line's dispatch, read to hold a line owner's write to its current generation. */
+  readonly lineDispatches: Pick<LineDispatchStore, "get">;
 }
 
 /** How far up a parent chain is followed before the answer is "outside". */
@@ -239,10 +244,19 @@ export const enforce = async (options: EnforceOptions): Promise<Principal> => {
     ...(requested === undefined ? {} : { requestedNodeStatus: requested }),
   };
 
-  // The line owner's reach is not open yet (J3 opens it, operation by
-  // operation); `authorize` refuses it for every operation, so no store is read.
+  // The line owner's write is held to the line dispatch's current generation,
+  // a stored fact, read only for a request inside its own project and branch.
   if (principal.kind === "line") {
-    const decision = authorize(principal, operation, target);
+    let placed: AuthorizationTarget = target;
+    if (
+      target.projectId === principal.projectId &&
+      target.branch === principal.branch &&
+      !READ_OPERATIONS.has(operation)
+    ) {
+      const dispatch = await options.lineDispatches.get(principal.projectId, principal.branch);
+      if (dispatch !== undefined) placed = { ...target, currentGeneration: dispatch.generation };
+    }
+    const decision = authorize(principal, operation, placed);
     if (!decision.allowed) throw new HttpError(403, decision.reason, decision.detail);
     return principal;
   }
