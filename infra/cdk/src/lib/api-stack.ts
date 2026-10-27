@@ -263,12 +263,18 @@ export class NightshiftApiStack extends Stack {
     // --- The control-plane API function ------------------------------------------
     const apiLogs = this.logGroup("ApiFunctionLogs");
     const apiRole = this.executionRole("ApiFunctionRole", apiLogs, [
-      // Exactly what the adapters call: gets and puts (including the puts inside
-      // TransactWriteItems, which IAM authorises per item), the condition checks
-      // inside them (the one-live-run guard, A-66), and queries on the table and
-      // its two indexes. No update or delete: the API never issues one.
+      // Exactly what the adapters call: gets, puts and deletes (including those
+      // inside TransactWriteItems, which IAM authorises per item: a run that ends
+      // deletes the program's live-run marker), the condition checks inside them
+      // (the one-live-run guard, A-66), and queries on the table and its two
+      // indexes. No update: the API never issues one.
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:ConditionCheckItem",
+        ],
         resources: [tableArn],
       }),
       new iam.PolicyStatement({

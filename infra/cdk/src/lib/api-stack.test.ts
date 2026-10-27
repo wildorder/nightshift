@@ -428,7 +428,8 @@ describe("NightshiftApiStack", () => {
           // A-66: the condition checks inside TransactWriteItems (the one-live-run guard).
           "dynamodb:ConditionCheckItem",
           "dynamodb:Query",
-          // A-62: a project's secret is deleted from the credentials table.
+          // A-62: a project's secret is deleted from the credentials table; A-66: an
+          // ended run's live-run marker from the main one.
           "dynamodb:DeleteItem",
           "s3:PutObject",
           // P7 (D-P7-02): ratification reads the uploaded plan document back.

@@ -1,10 +1,12 @@
 /**
  * Every role that writes the main table may make the condition checks the
- * DynamoDB adapter issues inside its transactions (P23, 2026-10-27). IAM
- * authorises each item of a TransactWriteItems by its own action, so a
- * ConditionCheck needs `dynamodb:ConditionCheckItem`; the adapter's tests run
- * on a fake table with no IAM, so a missing grant passed them all and would
- * have refused every run start in production.
+ * DynamoDB adapter issues inside its transactions, and the API, which serves
+ * the adapter's whole store surface, may make every kind of item they hold
+ * (P23, 2026-10-27). IAM authorises each item of a TransactWriteItems by its
+ * own action, so a ConditionCheck needs `dynamodb:ConditionCheckItem` and a
+ * Delete `dynamodb:DeleteItem`; the adapter's tests run on a fake table with no
+ * IAM, so a missing grant passed them all, and in production refused every run
+ * start (the check) and then every run's end (the live-run marker's delete).
  */
 import { readFileSync } from "node:fs";
 import { App } from "aws-cdk-lib";
@@ -29,6 +31,18 @@ const strings = (value: unknown): string[] => {
   if (value !== null && typeof value === "object") return Object.values(value).flatMap(strings);
   return [];
 };
+
+/** The IAM action that authorises each kind of TransactWriteItems item. */
+const ITEM_ACTIONS: Record<string, string> = {
+  Put: "dynamodb:PutItem",
+  Update: "dynamodb:UpdateItem",
+  Delete: "dynamodb:DeleteItem",
+  ConditionCheck: "dynamodb:ConditionCheckItem",
+};
+
+/** The kinds of item the adapter's transactions hold, read from its source. */
+const transactionItemKinds = (): string[] =>
+  Object.keys(ITEM_ACTIONS).filter((kind) => new RegExp(`\\b${kind}: \\{`).test(adapter));
 
 const tableWritersOf = (
   template: Template,
@@ -67,5 +81,18 @@ describe("the table's writers and the adapter's transactions", () => {
     for (const writer of writers) {
       expect(writer.actions, writer.role).toContain("dynamodb:ConditionCheckItem");
     }
+  });
+
+  it("grants the API every action an item of the adapter's transactions needs", () => {
+    const kinds = transactionItemKinds();
+    expect(kinds).toEqual(expect.arrayContaining(["Put", "Delete", "ConditionCheck"]));
+    const app = new App({ context: { "aws:cdk:bundling-stacks": [] } });
+    const template = Template.fromStack(new NightshiftApiStack(app, "Api", { stage: "dev" }));
+    const api = tableWritersOf(template).filter((writer) =>
+      writer.role.startsWith("ApiFunctionRole"),
+    );
+    expect(api.length).toBeGreaterThan(0);
+    const granted = api.flatMap((writer) => writer.actions);
+    for (const kind of kinds) expect(granted, kind).toContain(ITEM_ACTIONS[kind]);
   });
 });
