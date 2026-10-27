@@ -37,6 +37,11 @@ export interface LaunchRequest {
   readonly subnetId: string;
   /** Tags every resource carries, `nightshift:managed=true` among them. */
   readonly tags: Readonly<Record<string, string>>;
+  /**
+   * EC2's idempotency token for the launch: the same token returns the instance
+   * the first call made, so a retried or duplicated launch makes one machine.
+   */
+  readonly clientToken?: string;
   /** Absent for a replacement (T6): the run's existing volume is attached once the machine runs. */
   readonly volume?: {
     readonly device: string;

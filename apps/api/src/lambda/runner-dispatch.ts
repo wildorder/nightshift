@@ -16,6 +16,7 @@ import { createAwsClients, createAwsStores } from "@nightshift/persistence/aws";
 import { createEc2Compute, createSsmFirstTokens } from "../aws/ec2-compute.js";
 import { loadConfig, loadRunnerConfig, loadTokenConfig } from "../config.js";
 import { type ProvisionOutcome, provisionDispatch } from "../runner/provision.js";
+import { type LineProvisionOutcome, provisionLineDispatch } from "../runner/provision-line.js";
 import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
 
 const config = loadConfig(process.env);
@@ -33,37 +34,57 @@ const signer = createKmsExecutionTokenSigner({
   keyId: tokenConfig.executionTokenKeyId,
 });
 
-export interface DispatchEvent {
+export interface RunDispatchEvent {
   readonly projectId: string;
   readonly programId: string;
   readonly runId: string;
 }
 
-export const handler = async (event: DispatchEvent): Promise<ProvisionOutcome> => {
+/** The project line's owner machine, asked for by the API or the reconciler. */
+export interface LineDispatchEvent {
+  readonly kind: "line";
+  readonly projectId: string;
+  readonly branch: string;
+}
+
+export type DispatchEvent = RunDispatchEvent | LineDispatchEvent;
+
+const provisionDeps = {
+  stores,
+  compute,
+  tokens,
+  signer,
+  clock: systemClock,
+  stage: config.stage,
+  apiEndpoint: runner.apiEndpoint,
+  issuer: tokenConfig.tokenIssuer,
+  imageVersion: runner.imageVersion,
+  subnetIds: runner.subnetIds,
+  // A replacement lands in its volume's zone; without the map every
+  // replacement and resume through this Lambda failed "no subnet in <zone>"
+  // while the reconciler, which passed it, replaced lost machines fine (2026-10-21).
+  subnetZones: runner.subnetZones,
+};
+
+export const handler = async (
+  event: DispatchEvent,
+): Promise<ProvisionOutcome | LineProvisionOutcome> => {
+  if ("branch" in event) {
+    const outcome = await provisionLineDispatch(provisionDeps, {
+      projectId: ProjectIdSchema.parse(event.projectId),
+      branch: event.branch,
+    });
+    console.warn(
+      `line dispatch ${event.projectId}/${event.branch}: ${outcome.kind}${"reason" in outcome ? ` (${outcome.reason})` : ""}`,
+    );
+    return outcome;
+  }
   const scope = {
     projectId: ProjectIdSchema.parse(event.projectId),
     programId: ProgramIdSchema.parse(event.programId),
     runId: RunIdSchema.parse(event.runId),
   };
-  const outcome = await provisionDispatch(
-    {
-      stores,
-      compute,
-      tokens,
-      signer,
-      clock: systemClock,
-      stage: config.stage,
-      apiEndpoint: runner.apiEndpoint,
-      issuer: tokenConfig.tokenIssuer,
-      imageVersion: runner.imageVersion,
-      subnetIds: runner.subnetIds,
-      // A replacement lands in its volume's zone; without the map every
-      // replacement and resume through this Lambda failed "no subnet in <zone>"
-      // while the reconciler, which passed it, replaced lost machines fine (2026-10-21).
-      subnetZones: runner.subnetZones,
-    },
-    scope,
-  );
+  const outcome = await provisionDispatch(provisionDeps, scope);
   console.warn(
     `dispatch ${scope.runId}: ${outcome.kind}${"reason" in outcome ? ` (${outcome.reason})` : ""}`,
   );

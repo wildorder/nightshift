@@ -18,6 +18,7 @@ import {
   architectureOf,
   type Clock,
   type ComputeControl,
+  type DispatchMachine,
   HEARTBEAT_INTERVAL_SECONDS,
   type NightshiftStores,
   nowIso,
@@ -75,13 +76,13 @@ const recordFailure = async (
  * overwritten, a request time never replaces an earlier one, and a failure
  * never replaces either.
  */
-export const withMachineEnding = (
-  dispatch: Dispatch,
+export const withMachineEnding = <D extends DispatchMachine>(
+  dispatch: D,
   ending:
     | { readonly terminatedAt: string }
     | { readonly terminationRequestedAt: string }
     | { readonly terminationFailed: true },
-): Dispatch => {
+): D => {
   const last = dispatch.attempts.length - 1;
   return {
     ...dispatch,

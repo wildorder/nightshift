@@ -10,20 +10,19 @@
  * that still holds a pending publication intent has the publisher asked again:
  * a push that failed for a passing reason is retried, and the last landing of a
  * run is never left waiting for a next one that will not come (2026-10-14).
+ * The project line's dispatches and lines with work are walked the same way.
  *
- * Composition only: the rules are `runner/provision.ts` and `runner/cleanup.ts`.
+ * Composition only: the rules are `runner/reconcile.ts`.
  */
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { SSMClient } from "@aws-sdk/client-ssm";
-import { hasPendingIntent, systemClock } from "@nightshift/core";
+import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import { createAwsClients, createAwsStores } from "@nightshift/persistence/aws";
 import { createEc2Compute, createSsmFirstTokens } from "../aws/ec2-compute.js";
 import { loadConfig, loadRunnerConfig, loadTokenConfig } from "../config.js";
-import { cleanupStopped, enforceStop } from "../runner/cleanup.js";
-import { provisionDispatch } from "../runner/provision.js";
-import { recoverLostLease } from "../runner/recover.js";
+import { type PublisherRequest, reconcile } from "../runner/reconcile.js";
 import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
 
 const config = loadConfig(process.env);
@@ -35,7 +34,6 @@ const compute = createEc2Compute({
   launchTemplateId: runner.launchTemplateId,
   imageVersionTag: "nightshift:amiVersion",
 });
-const cleanup = { stores, compute, clock: systemClock, stage: config.stage };
 const provision = {
   stores,
   compute,
@@ -56,78 +54,23 @@ const provision = {
 const publisherFunctionArn = config.publisherFunctionArn;
 const lambda = new LambdaClient({});
 /** The publisher, asked asynchronously, as the API asks it when an intent is recorded. */
-const askPublisher = async (scope: {
-  readonly projectId: string;
-  readonly programId: string;
-  readonly runId: string;
-}): Promise<void> => {
+const askPublisher = async (request: PublisherRequest): Promise<void> => {
   if (publisherFunctionArn === undefined) return;
   await lambda.send(
     new InvokeCommand({
       FunctionName: publisherFunctionArn,
       InvocationType: "Event",
-      Payload: Buffer.from(JSON.stringify(scope)),
+      Payload: Buffer.from(JSON.stringify(request)),
     }),
   );
 };
 
-/** A `requested` dispatch older than this was not picked up by the API's invocation. */
-const REQUESTED_GRACE_MS = 2 * 60_000;
-
 export const handler = async (): Promise<Record<string, number>> => {
-  const counts: Record<string, number> = {};
-  const count = (key: string) => {
-    counts[key] = (counts[key] ?? 0) + 1;
-  };
-  const live = await stores.dispatches.listByStatus([
-    "requested",
-    "provisioning",
-    "ready",
-    "running",
-    "stopping",
-    "stopped",
-    "failed",
-  ]);
-  for (const dispatch of live) {
-    const scope = {
-      projectId: dispatch.projectId,
-      programId: dispatch.programId,
-      runId: dispatch.runId,
-    };
-    try {
-      if (
-        (dispatch.status === "requested" &&
-          Date.now() - Date.parse(dispatch.updatedAt) > REQUESTED_GRACE_MS) ||
-        (dispatch.status === "provisioning" && dispatch.instanceId === undefined)
-      ) {
-        count(`provision:${(await provisionDispatch(provision, scope)).kind}`);
-      } else if (
-        dispatch.status === "ready" ||
-        dispatch.status === "running" ||
-        (dispatch.status === "provisioning" && dispatch.instanceId !== undefined)
-      ) {
-        // T6: a live machine whose lease lapsed is replaced, on the same volume,
-        // in the same tick when there is an attempt left.
-        const step = await recoverLostLease(cleanup, dispatch);
-        count(`lease:${step}`);
-        if (step === "replacing") {
-          count(`provision:${(await provisionDispatch(provision, scope)).kind}`);
-        }
-      } else if (dispatch.status === "stopping") {
-        count(`stop:${await enforceStop(cleanup, dispatch)}`);
-      } else if (dispatch.status === "stopped" || dispatch.status === "failed") {
-        if (!dispatch.cleanup.volumeDeleted)
-          count(`cleanup:${await cleanupStopped(cleanup, dispatch)}`);
-      }
-      if (hasPendingIntent(dispatch)) {
-        await askPublisher(scope);
-        count("publish:asked");
-      }
-    } catch (error) {
-      count("error");
-      console.error(`reconciler: ${dispatch.runId}:`, error);
-    }
-  }
+  const counts = await reconcile({
+    provision,
+    ids: createUlidIdGenerator(systemClock),
+    askPublisher,
+  });
   console.warn(`reconciler: ${JSON.stringify(counts)}`);
   return counts;
 };
