@@ -24,6 +24,7 @@ import { recordedGates, recordGates } from "./commands/gate-health.js";
 import { gates } from "./commands/gates.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
+import { lineStatus } from "./commands/line.js";
 import { runLocal, useStage } from "./commands/local.js";
 import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
@@ -71,6 +72,7 @@ Usage:
   nightshift run <program> --remote [--compute good|better|best] [--repo <path>]
   nightshift remote status <program> [--watch] [--run <id>] [--repo <path>]
   nightshift remote cancel|resume <program> [--run <id>] [--repo <path>]
+  nightshift line status [--repo <path>]
   nightshift resume <program> [--run <id>] [--repo <path>]
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision reverse <program> <decisionId> --choice <new> --reason <why> [--run <id>] [--repo <path>]
@@ -903,6 +905,25 @@ const doRemote = async (environment: CliEnvironment, args: readonly string[]): P
   return remoteResume(environment, options);
 };
 
+/** `nightshift line status`: the project line's state, from the plane. */
+const doLine = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage = "nightshift line status [--repo <path>]";
+  const { values, positionals } = parse(
+    {
+      args: [...args],
+      options: { repo: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    },
+    usage,
+  );
+  if (positionals.length !== 1 || positionals[0] !== "status") {
+    throw new UsageError("`nightshift line` takes `status`", usage);
+  }
+  const repo = optional(values, "repo");
+  return lineStatus(environment, repo === undefined ? {} : { repo });
+};
+
 const doRoutes = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage =
     "nightshift routes export <program> [--run <id>] [--repo <path>] | nightshift routes export --project <id>";
@@ -995,6 +1016,8 @@ const dispatch = async (
       return doSecret(environment, args);
     case "remote":
       return doRemote(environment, args);
+    case "line":
+      return doLine(environment, args);
     case "routes":
       return doRoutes(environment, args);
     case "id":
