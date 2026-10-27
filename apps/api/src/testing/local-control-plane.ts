@@ -35,8 +35,16 @@ import { ephemeralKeys } from "../local/credentials.js";
 import { createMemoryObjectStore, type LocalBody } from "../local/objects.js";
 import { bearerOf, executionTokenPrincipal, startLocalServer } from "../local/server.js";
 
+// The publisher and the git server it is tested against, for suites that drive both.
+export { type GitHttpServer, startGitHttpServer } from "../github/git-http-server.js";
 export { LOCAL_TOKEN_ISSUER } from "../local/credentials.js";
 export { LOCAL_BUCKET, type LocalBody } from "../local/objects.js";
+export {
+  type PublisherDeps,
+  publishAll,
+  publishLine,
+  smartHttpRemote,
+} from "../runner/publisher.js";
 
 /**
  * One RSA key pair per process, standing in for KMS (P4, T4). Generated once at

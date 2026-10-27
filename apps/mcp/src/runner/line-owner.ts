@@ -13,9 +13,10 @@
  * runner's last heartbeat is `stopped` with no failure; the plane's own stop and
  * cleanup take the machine away.
  *
- * Only the publisher writes to GitHub: the owner holds the read token, bundles
- * the commits it composed, and uploads the bundle through a presigned PUT.
+ * Only the publisher writes to GitHub: the owner holds the read token, packs
+ * the commits it composed, and uploads the pack through a presigned PUT.
  */
+import { writeFile } from "node:fs/promises";
 import {
   type CommitSha,
   DEFAULT_EXAMINATION_POLICY,
@@ -40,6 +41,7 @@ import {
   type LineComposerPorts,
   type LinePublisherPort,
   type LineQueuePort,
+  packCommits,
   resolveLineFailure,
   type ScratchPaths,
   tryGit,
@@ -61,7 +63,7 @@ export interface LineOwnerOptions {
   /** Where each worktree's verification scratch lives. */
   readonly paths: ScratchPaths;
   /**
-   * Uploads the file at `file` with a presigned PUT. The bytes are the bundle;
+   * Uploads the file at `file` with a presigned PUT. The bytes are the pack;
    * a refusal throws.
    */
   readonly upload: (target: {
@@ -365,16 +367,11 @@ const ownLine = async (
   const publisher: LinePublisherPort = {
     stage: async ({ head, expectedPredecessor }) => {
       await machine.exec("mkdir", ["-p", bundles]);
-      const file = `${bundles}/${head}.bundle`;
-      const ref = `refs/nightshift/line/${head}`;
-      await git(options.git, ["update-ref", ref, head], { cwd: layout.checkout });
-      try {
-        await git(options.git, ["bundle", "create", file, ref, `^${expectedPredecessor}`], {
-          cwd: layout.checkout,
-        });
-      } finally {
-        await tryGit(options.git, ["update-ref", "-d", ref], { cwd: layout.checkout });
-      }
+      const file = `${bundles}/${head}.pack`;
+      // A raw pack, not a `git bundle`: the publisher has no git and hands the
+      // bytes to the remote as they are, as for a run's landing (`packCommits`).
+      const pack = await packCommits(layout.checkout, bundles, head, expectedPredecessor);
+      await writeFile(file, pack);
       const target = await plane.bundleUploadUrl(`${head}-${expectedPredecessor.slice(0, 12)}`);
       await options.upload({ url: target.uploadUrl, contentType: target.contentType, file });
       return { bundleKey: target.key };

@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -248,13 +248,10 @@ const makePlane = (
     const file = plane.uploads.get(push.bundleKey);
     if (file === undefined) return { status: "error" as const, detail: "no bundle uploaded" };
     try {
-      git(
-        world.origin,
-        "fetch",
-        "-q",
-        file,
-        `+refs/nightshift/line/${push.head}:refs/nightshift/incoming`,
-      );
+      execFileSync("git", ["unpack-objects", "-q"], {
+        cwd: world.origin,
+        input: readFileSync(file),
+      });
       git(world.origin, "update-ref", `refs/heads/${LINE}`, push.head, push.expectedPredecessor);
       return { status: "published" as const, detail: undefined };
     } catch (error) {
