@@ -38,6 +38,7 @@ import {
   gatherReport,
   irreversibleConfirmationContext,
   nowIso,
+  ProgramRunLiveError,
   type RunReport,
   renderReport,
   strandsOf,
@@ -556,7 +557,17 @@ export const runProgram = async (
   const before = await beforeStart(environment, ratified, options);
   const remote = before.remote;
 
-  const started = await startAfter(deps, files, options, before);
+  let started: StartedRun;
+  try {
+    started = await startAfter(deps, files, options, before);
+  } catch (error) {
+    if (!(error instanceof ProgramRunLiveError)) throw error;
+    environment.err(
+      `program ${error.programId} already has a live run ${error.liveRunId}; ` +
+        "wait for it to end or cancel it before starting another",
+    );
+    return { started: undefined, exitCode: 1 };
+  }
   await keepAuditOutput(environment, session, started, before.audit);
   await recordConfirmations(environment, session, started, confirming);
   const sayCarried = (): void => {
