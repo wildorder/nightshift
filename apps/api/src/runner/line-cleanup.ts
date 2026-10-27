@@ -142,7 +142,18 @@ export const cleanupLineDispatch = async (
 
   // Every machine this dispatch ever launched is gone before its volume is.
   for (const instanceId of instancesOf(dispatch)) {
-    const described = await deps.compute.describe(instanceId).catch(() => undefined);
+    // Only "not found" (undefined) is proof the machine is gone; an error is not.
+    let described: Awaited<ReturnType<ComputeControl["describe"]>>;
+    try {
+      described = await deps.compute.describe(instanceId);
+    } catch (error) {
+      await recordFailure(
+        deps,
+        dispatch,
+        `describe ${instanceId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return "waiting";
+    }
     if (described === undefined || described.state === "terminated") continue;
     if (described.state !== "shutting-down") {
       try {

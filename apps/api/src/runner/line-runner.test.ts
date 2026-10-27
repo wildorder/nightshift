@@ -492,6 +492,98 @@ describe("reconcile: line dispatches", () => {
     expect(w.compute.deletedVolumes).toEqual([]);
   });
 
+  describe("when describe fails", () => {
+    const setup = async () => {
+      const w = await world();
+      const f = await w.addLine({ dispatched: false });
+      await w.stores.lineDispatches.start(makeLineDispatch(f));
+      await install(
+        w,
+        f,
+        live(f, {
+          status: "failed",
+          failure: { code: "wall_clock", message: "late" },
+          volumeId: undefined,
+          instanceId: "i-still-running",
+          attempts: [
+            {
+              generation: 1,
+              reason: "dispatch",
+              startedAt: "2026-10-15T11:00:00.000Z",
+              instanceId: "i-still-running",
+            },
+          ],
+        }),
+      );
+      w.compute.instances.set("i-still-running", {
+        instanceId: "i-still-running",
+        state: "running",
+        availabilityZone: "us-west-2a",
+      });
+      const started: string[] = [];
+      let broken = true;
+      const real = w.compute.describe;
+      const compute: ComputeControl = {
+        ...w.compute,
+        describe: async (id) => {
+          if (broken) throw new Error("throttled");
+          return real(id);
+        },
+        terminate: (id) => w.compute.terminate(id),
+      };
+      const cleanupDeps = {
+        stores: w.stores,
+        compute,
+        clock: w.clock,
+        ids: createFixtures().ids,
+        startMachine: async (line: { branch: string }) => void started.push(line.branch),
+      };
+      return {
+        w,
+        f,
+        started,
+        cleanupDeps,
+        recover: () => {
+          broken = false;
+        },
+      };
+    };
+
+    it("records the failure, does not settle and starts no generation", async () => {
+      const { w, f, started, cleanupDeps } = await setup();
+      const step = await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f));
+      expect(step).toBe("waiting");
+      const after = await dispatchOf(w, f);
+      expect(after.generation).toBe(1);
+      expect(after.cleanup.settledAt).toBeUndefined();
+      expect(after.cleanup.failures).toEqual([expect.stringContaining("describe i-still-running")]);
+      expect(w.compute.terminated).toEqual([]);
+      expect(started).toEqual([]);
+    });
+
+    it("terminates once describe recovers, then settles and restarts once the machine is gone", async () => {
+      const { w, f, started, cleanupDeps, recover } = await setup();
+      await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f));
+      recover();
+      expect(await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f))).toBe("terminating");
+      expect(w.compute.terminated).toEqual(["i-still-running"]);
+      expect((await dispatchOf(w, f)).cleanup.settledAt).toBeUndefined();
+      expect(await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f))).toBe("restarted");
+      expect(started).toEqual([BRANCH]);
+      expect(await dispatchOf(w, f)).toMatchObject({ status: "requested", generation: 2 });
+    });
+
+    it("settles and restarts when the instance is not found", async () => {
+      const { w, f, started, cleanupDeps, recover } = await setup();
+      recover();
+      w.compute.instances.delete("i-still-running");
+      expect(await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f))).toBe("restarted");
+      expect(w.compute.terminated).toEqual([]);
+      expect(started).toEqual([BRANCH]);
+      expect(await dispatchOf(w, f)).toMatchObject({ generation: 2 });
+    });
+  });
+
   it("launches three waiting lines one at a time under a ceiling of one, with no deadlock", async () => {
     const w = await world(1);
     const lines = [await w.addLine(), await w.addLine(), await w.addLine()];
