@@ -364,7 +364,12 @@ export class NightshiftRunnerStack extends Stack {
     const dispatchLogs = this.logGroup("DispatchFunctionLogs");
     const dispatchRole = this.executionRole("DispatchFunctionRole", dispatchLogs, [
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:Query",
+        ],
         resources: [tableArn],
       }),
       // Provisioning counts the live run dispatches and line dispatches by
@@ -453,7 +458,7 @@ export class NightshiftRunnerStack extends Stack {
     const reconcilerLogs = this.logGroup("ReconcilerFunctionLogs");
     const reconcilerRole = this.executionRole("ReconcilerFunctionRole", reconcilerLogs, [
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
         resources: [tableArn],
       }),
       // The reconciler's one cross-project read, every dispatch by status, is a
@@ -573,7 +578,7 @@ export class NightshiftRunnerStack extends Stack {
     const publisherLogs = this.logGroup("PublisherFunctionLogs");
     const publisherRole = this.executionRole("PublisherFunctionRole", publisherLogs, [
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
         resources: [tableArn],
       }),
       // The bundles the engine uploaded, read back to push (D-P10-22).

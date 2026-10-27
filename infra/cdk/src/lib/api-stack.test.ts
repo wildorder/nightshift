@@ -425,6 +425,8 @@ describe("NightshiftApiStack", () => {
         new Set([
           "dynamodb:GetItem",
           "dynamodb:PutItem",
+          // A-66: the condition checks inside TransactWriteItems (the one-live-run guard).
+          "dynamodb:ConditionCheckItem",
           "dynamodb:Query",
           // A-62: a project's secret is deleted from the credentials table.
           "dynamodb:DeleteItem",
@@ -479,6 +481,7 @@ describe("NightshiftApiStack", () => {
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
         ]),
       );
       expect([...actions].filter((action) => !action.startsWith("dynamodb:"))).toContain(

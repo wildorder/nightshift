@@ -426,6 +426,8 @@ const own = (
     workspace: world.workspace,
     device: "/dev/xvdf",
     engineUser: "engine",
+    // The machine's PATH, as the runner binary passes it: steps find the toolchain where it is installed.
+    ...(process.env.PATH === undefined ? {} : { inheritedPath: process.env.PATH }),
     plane: notRun as never,
     linePlane: (_endpoint, _tokens, target) => {
       expect(target).toEqual({

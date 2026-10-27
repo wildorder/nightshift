@@ -73,6 +73,8 @@ const LINE_REF = `refs/heads/${LINE}`;
 const REPOSITORY = "https://github.com/wildorder/fixture";
 const GITHUB_TOKEN = "gh-read-token";
 const IDLE_SECONDS = 3;
+/** How much faster than real time the plane's clock runs. */
+const SPEED = 100;
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync(
@@ -194,7 +196,21 @@ interface Plane {
 
 const makePlane = async (origin: Origin): Promise<Plane> => {
   const stores = createInMemoryStores();
-  const clock = { at: START, now: () => clock.at };
+  // Plane time is real time run SPEED times faster, from START: every actor
+  // reads one clock that moves on its own, so concurrent sleepers never move it
+  // for each other and a slow host cannot make time race ahead of the work.
+  // Setting `at` jumps it, as a lost machine's lease is waited out.
+  const began = Date.now();
+  let offset = 0;
+  const clock = {
+    now: () => START + (Date.now() - began) * SPEED + offset,
+    get at(): number {
+      return clock.now();
+    },
+    set at(value: number) {
+      offset += value - clock.now();
+    },
+  };
   const a = createFixtures();
   // The second program is another program of the same project.
   const b: Fixtures = {
@@ -490,11 +506,8 @@ const lineMachine = (
       const tag = tags[path.replace("tags/instance/", "")];
       return tag === undefined ? { status: 404, text: "" } : { status: 200, text: tag };
     },
-    // One clock for the machine and the plane, moved by waiting.
-    sleep: async (ms) => {
-      await new Promise((resolve) => setImmediate(resolve));
-      plane.clock.at += Math.min(ms, 500);
-    },
+    // One clock for the machine and the plane: a sleep waits its plane time.
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms / SPEED)),
     now: () => plane.clock.at,
   };
 };
@@ -577,6 +590,8 @@ const ownerFor = async (
     workspace,
     device: "/dev/xvdf",
     engineUser: "engine",
+    // The machine's PATH, as the runner binary passes it: steps find the toolchain where it is installed.
+    ...(process.env.PATH === undefined ? {} : { inheritedPath: process.env.PATH }),
     plane: () => {
       throw new Error("this is a line machine: the run plane is not used");
     },
