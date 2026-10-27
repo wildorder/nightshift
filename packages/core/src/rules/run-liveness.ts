@@ -37,3 +37,35 @@ export const isNeverStartedRun = (
   { hasDispatch, now, claimedAt, grace = NEVER_STARTED_GRACE }: NeverStartedContext,
 ): boolean =>
   holder.status === "pending" && !hasDispatch && Date.parse(now) > Date.parse(claimedAt) + grace;
+
+/** A live run of a program, as far as choosing which one holds it is concerned. */
+export interface LiveRunCandidate {
+  readonly runId: Run["runId"];
+  readonly status: Run["status"];
+  /** Whether the run has a dispatch. */
+  readonly hasDispatch: boolean;
+}
+
+/**
+ * The live run that should hold a program with no marker, or whose never-started
+ * holder was just settled. Prefers a run that can never be settled as never
+ * started: one past `pending` (running) first, then a pending one with a
+ * dispatch, then the lowest run id.
+ */
+export const chooseLiveHolder = <T extends LiveRunCandidate>(
+  candidates: readonly T[],
+): T | undefined => {
+  const rank = (c: LiveRunCandidate): number =>
+    c.status !== "pending" ? 0 : c.hasDispatch ? 1 : 2;
+  let best: T | undefined;
+  for (const c of candidates) {
+    if (
+      best === undefined ||
+      rank(c) < rank(best) ||
+      (rank(c) === rank(best) && c.runId < best.runId)
+    ) {
+      best = c;
+    }
+  }
+  return best;
+};

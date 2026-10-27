@@ -74,8 +74,15 @@ describe("DynamoDB adapter specifics", () => {
         StaleWriteError,
       );
       await stores.orgConfigs.put(configOf(orgId, 1));
-      const stored = await table.get({ TableName: tableName, Key: keys.orgConfig(orgId) });
-      expect(stored.Item).toMatchObject({ PK: `ORG#${orgId}`, SK: "CONFIG", version: 1 });
+      const stored = await table.get({
+        TableName: tableName,
+        Key: keys.orgConfig(orgId),
+      });
+      expect(stored.Item).toMatchObject({
+        PK: `ORG#${orgId}`,
+        SK: "CONFIG",
+        version: 1,
+      });
       await expect(stores.orgConfigs.put(configOf(orgId, 1))).rejects.toBeInstanceOf(
         StaleWriteError,
       );
@@ -88,24 +95,37 @@ describe("DynamoDB adapter specifics", () => {
     const credentialsTableName = "nightshift-test-credentials";
 
     it("live in the credentials table and never the main one", async () => {
-      const credentialsTable = new FakeTable({ tableName: credentialsTableName });
+      const credentialsTable = new FakeTable({
+        tableName: credentialsTableName,
+      });
       const client = routingTableClient({
         [tableName]: table,
         [credentialsTableName]: credentialsTable,
       });
-      const withCredentials = createAwsStores({ tableName, table: client, credentialsTableName });
+      const withCredentials = createAwsStores({
+        tableName,
+        table: client,
+        credentialsTableName,
+      });
       const orgId = f.ids.next("org");
       const sealed = makeOrgCredential(orgId);
       await withCredentials.credentials.put(sealed);
       expect(await withCredentials.credentials.sealed(orgId, "anthropic")).toEqual(sealed);
       expect(await withCredentials.credentials.view(orgId)).toEqual([
-        { provider: "anthropic", lastFour: sealed.lastFour, setAt: sealed.setAt },
+        {
+          provider: "anthropic",
+          lastFour: sealed.lastFour,
+          setAt: sealed.setAt,
+        },
       ]);
       const inCredentials = await credentialsTable.get({
         TableName: credentialsTableName,
         Key: keys.credential(orgId, "anthropic"),
       });
-      expect(inCredentials.Item).toMatchObject({ PK: `ORG#${orgId}`, SK: "PROVIDER#anthropic" });
+      expect(inCredentials.Item).toMatchObject({
+        PK: `ORG#${orgId}`,
+        SK: "PROVIDER#anthropic",
+      });
       const inMain = await table.get({
         TableName: tableName,
         Key: keys.credential(orgId, "anthropic"),
@@ -174,7 +194,10 @@ describe("DynamoDB adapter specifics", () => {
 
     it("changes an item written before revisions, which has none", async () => {
       const contract = makeProgramContract(f);
-      await table.put({ TableName: tableName, Item: { ...contract, ...keyOf() } });
+      await table.put({
+        TableName: tableName,
+        Item: { ...contract, ...keyOf() },
+      });
       expect(await revisionOf()).toBeUndefined();
       await stores.programContracts.update(f.scope.projectId, f.scope.programId, (current) => ({
         ...current,
@@ -193,9 +216,15 @@ describe("DynamoDB adapter specifics", () => {
         calls += 1;
         if (calls === 1) {
           // Another writer, after this one read: its change must survive.
-          void stores.programContracts.put({ ...contract, outOfScope: ["theirs"] });
+          void stores.programContracts.put({
+            ...contract,
+            outOfScope: ["theirs"],
+          });
         }
-        return { ...current, outOfScope: [...(current.outOfScope ?? []), "mine"] };
+        return {
+          ...current,
+          outOfScope: [...(current.outOfScope ?? []), "mine"],
+        };
       });
       expect(calls).toBe(2);
       expect(
@@ -241,7 +270,11 @@ describe("DynamoDB adapter specifics", () => {
     });
 
     it("accepts the maximal completion history and reads it back equal", async () => {
-      const actor = { kind: "user", userId: "ann", orgId: f.ids.next("org") } as never;
+      const actor = {
+        kind: "user",
+        userId: "ann",
+        orgId: f.ids.next("org"),
+      } as never;
       const members: CompletionMemberRef[] = [
         { programId: f.scope.programId, runId: f.scope.runId, role: "anchor" },
         ...Array.from(
@@ -271,8 +304,18 @@ describe("DynamoDB adapter specifics", () => {
           inputConventionUnknown: 3,
         },
         usd: { estimated: 1234.5678, reported: 1234.5678 },
-        coverage: { complete: 40, partial: 5, unknown: 3, legacy: 1, missing: 1 },
-        infrastructure: { usd: 12.345678, members: MAX_COMPLETION_MEMBERS, withoutMachine: 0 },
+        coverage: {
+          complete: 40,
+          partial: 5,
+          unknown: 3,
+          legacy: 1,
+          missing: 1,
+        },
+        infrastructure: {
+          usd: 12.345678,
+          members: MAX_COMPLETION_MEMBERS,
+          withoutMachine: 0,
+        },
         recordedAt: "2026-01-01T00:00:00.000Z",
       };
       const checkpoints = Array.from({ length: MAX_COMPLETION_CHECKPOINTS }, (_, i) => ({
@@ -338,7 +381,10 @@ describe("DynamoDB adapter specifics", () => {
       const event = makeEvent(f, { idempotencyKey: "k1", sequence: 7 });
       const result = await stores.events.append(event);
 
-      expect(result).toEqual({ stored: true, event: { ...event, sequence: null } });
+      expect(result).toEqual({
+        stored: true,
+        event: { ...event, sequence: null },
+      });
       const stored = await table.get({
         TableName: tableName,
         Key: keys.event(f.scope, event.eventId),
@@ -372,7 +418,10 @@ describe("DynamoDB adapter specifics", () => {
 
     it("never lists the counter or the markers as events", async () => {
       await stores.events.append(makeEvent(f, { idempotencyKey: "k" }));
-      await table.put({ TableName: tableName, Item: { ...keys.counter(f.scope), next: 1 } });
+      await table.put({
+        TableName: tableName,
+        Item: { ...keys.counter(f.scope), next: 1 },
+      });
       const listed = (await stores.events.listByRun(f.scope)).items;
       expect(listed.map((e: Event) => e.idempotencyKey)).toEqual(["k"]);
     });
@@ -382,7 +431,9 @@ describe("DynamoDB adapter specifics", () => {
         RangeError,
       );
       await expect(
-        stores.events.listByRun(f.scope, { cursor: encodeCursor({ sequence: "x", eventId: 1 }) }),
+        stores.events.listByRun(f.scope, {
+          cursor: encodeCursor({ sequence: "x", eventId: 1 }),
+        }),
       ).rejects.toThrow(RangeError);
     });
   });
@@ -411,7 +462,10 @@ describe("DynamoDB adapter specifics", () => {
       }
       const page = await stores.projects.listByOrg(orgOne, { limit: 1 });
       await expect(
-        stores.projects.listByOrg(orgTwo, { limit: 1, cursor: page.cursor as string }),
+        stores.projects.listByOrg(orgTwo, {
+          limit: 1,
+          cursor: page.cursor as string,
+        }),
       ).rejects.toThrow(RangeError);
       await expect(
         stores.projects.listByOrg(orgOne, { cursor: "not-base64-json" }),
@@ -487,7 +541,11 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
         return table.transactWrite(input);
       },
     };
-    return { table, transactions, stores: createAwsStores({ tableName, table: client }) };
+    return {
+      table,
+      transactions,
+      stores: createAwsStores({ tableName, table: client }),
+    };
   };
 
   it("writes the run and the marker claim in one transaction, and puts the marker beside no run", async () => {
@@ -519,7 +577,11 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
     const run = makeRun(f);
     await stores.runs.put(run);
     transactions.length = 0;
-    await stores.runs.put({ ...run, status: "succeeded", endedAt: "2026-01-01T01:00:00.000Z" });
+    await stores.runs.put({
+      ...run,
+      status: "succeeded",
+      endedAt: "2026-01-01T01:00:00.000Z",
+    });
 
     expect(transactions).toHaveLength(1);
     const [runPut, release] = transactions[0] ?? [];
@@ -570,7 +632,9 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
       status: "pending",
       startedAt: "2026-01-01T01:00:00.000Z",
     });
-    await expect(stores.runs.put(fresh)).rejects.toMatchObject({ liveRunId: holder.runId });
+    await expect(stores.runs.put(fresh)).rejects.toMatchObject({
+      liveRunId: holder.runId,
+    });
     expect(interleaved).toBe(true);
     expect(await stores.runs.get(f.scope, holder.runId)).toEqual(holder);
     expect(await stores.runs.get(f.scope, fresh.runId)).toBeUndefined();
@@ -588,7 +652,10 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
       const client = {
         get: (input: Parameters<FakeTable["get"]>[0]) => table.get(input),
         put: (input: Parameters<FakeTable["put"]>[0]) => {
-          writes.push({ kind: "put", item: input as unknown as Record<string, unknown> });
+          writes.push({
+            kind: "put",
+            item: input as unknown as Record<string, unknown>,
+          });
           return table.put(input);
         },
         update: (input: Parameters<FakeTable["update"]>[0]) => table.update(input),
@@ -603,7 +670,10 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
       const stores = createAwsStores({ tableName, table: client, now });
       const f = createFixtures();
       const seed = (run: ReturnType<typeof makeRun>) =>
-        table.put({ TableName: tableName, Item: { ...run, ...keys.run(f.scope, run.runId) } });
+        table.put({
+          TableName: tableName,
+          Item: { ...run, ...keys.run(f.scope, run.runId) },
+        });
       return {
         f,
         table,
@@ -679,6 +749,99 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
       });
       expect(marker.Item).toMatchObject({ runId: fresh.runId });
       expect(await stores.runs.get(f.scope, fresh.runId)).toEqual(fresh);
+    });
+
+    describe("settling a holder beside a live legacy run", () => {
+      const prepare = async () => {
+        const ctx = setup();
+        const { f, table, seed } = ctx;
+        const pending = makeRun(f, { status: "pending" });
+        const running = makeRun(f, {
+          runId: f.ids.next("run") as typeof pending.runId,
+          status: "running",
+        });
+        await seed(pending);
+        await seed(running);
+        await table.put({
+          TableName: tableName,
+          Item: {
+            ...keys.programLiveRun(f.scope),
+            runId: pending.runId,
+            claimedAt: ctx.now(),
+          },
+        });
+        ctx.advance(GRACE + 1000);
+        const fresh = makeRun(f, {
+          runId: f.ids.next("run") as typeof pending.runId,
+        });
+        return { ...ctx, pending, running, fresh };
+      };
+      const markerOf = async (table: FakeTable, scope: ReturnType<typeof setup>["f"]["scope"]) =>
+        (
+          await table.get({
+            TableName: tableName,
+            Key: keys.programLiveRun(scope),
+            ConsistentRead: true,
+          })
+        ).Item;
+
+      it("hands the marker to the live run in one transaction and refuses", async () => {
+        const { f, table, stores, transactions, pending, running, fresh } = await prepare();
+        await expect(stores.runs.put(fresh)).rejects.toMatchObject({
+          liveRunId: running.runId,
+        });
+        expect(transactions).toHaveLength(1);
+        const items = transactions[0] as Array<Record<string, Record<string, unknown>>>;
+        expect(items).toHaveLength(4);
+        expect(items[0]?.Put).toMatchObject({
+          ConditionExpression: "#status = :pending AND #startedAt = :startedAt",
+          Item: { runId: pending.runId, status: "interrupted" },
+        });
+        expect(items[1]?.ConditionCheck).toMatchObject({
+          ConditionExpression: "attribute_not_exists(#pk)",
+        });
+        expect(items[2]?.Put).toMatchObject({
+          ConditionExpression: "#runId = :holder AND #claimedAt = :claimedAt",
+          Item: { runId: running.runId },
+        });
+        expect(items[3]?.ConditionCheck).toMatchObject({
+          Key: keys.run(f.scope, running.runId),
+        });
+        expect(await markerOf(table, f.scope)).toMatchObject({
+          runId: running.runId,
+        });
+        expect(await stores.runs.get(f.scope, fresh.runId)).toBeUndefined();
+        expect((await stores.runs.get(f.scope, pending.runId))?.status).toBe("interrupted");
+        expect((await stores.runs.get(f.scope, running.runId))?.status).toBe("running");
+      });
+
+      it("reads again when the live run ends between the query and the write", async () => {
+        const { f, table, stores, running, fresh } = await prepare();
+        const original = table.transactWrite.bind(table);
+        let raced = false;
+        table.transactWrite = async (input) => {
+          if (!raced) {
+            raced = true;
+            await table.put({
+              TableName: tableName,
+              Item: {
+                ...running,
+                status: "succeeded",
+                endedAt: "2026-01-01T00:00:01.000Z",
+                ...keys.run(f.scope, running.runId),
+              },
+            });
+          }
+          return original(input);
+        };
+        await stores.runs.put(fresh);
+        expect(raced).toBe(true);
+        expect(await markerOf(table, f.scope)).toMatchObject({
+          runId: fresh.runId,
+        });
+        expect(await stores.runs.get(f.scope, fresh.runId)).toEqual(fresh);
+        expect((await stores.runs.get(f.scope, running.runId))?.status).toBe("succeeded");
+      });
     });
 
     it("replaces a marker whose holder is terminal, and refuses one whose holder is live", async () => {
@@ -780,33 +943,54 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
           raced = true;
           await table.put({
             TableName: tableName,
-            Item: { ...keys.programLiveRun(f.scope), runId: holder.runId, claimedAt: now() },
+            Item: {
+              ...keys.programLiveRun(f.scope),
+              runId: holder.runId,
+              claimedAt: now(),
+            },
           });
         }
         return original(input);
       };
-      const fresh = makeRun(f, { runId: f.ids.next("run") as typeof holder.runId });
-      await expect(stores.runs.put(fresh)).rejects.toMatchObject({ liveRunId: holder.runId });
+      const fresh = makeRun(f, {
+        runId: f.ids.next("run") as typeof holder.runId,
+      });
+      await expect(stores.runs.put(fresh)).rejects.toMatchObject({
+        liveRunId: holder.runId,
+      });
       expect(await stores.runs.get(f.scope, holder.runId)).toEqual(holder);
     });
 
     it("treats a marker without claimedAt as claimed when first read", async () => {
       const { f, table, stores, advance } = setup();
-      const holder = makeRun(f, { status: "pending", startedAt: "2025-12-01T00:00:00.000Z" });
+      const holder = makeRun(f, {
+        status: "pending",
+        startedAt: "2025-12-01T00:00:00.000Z",
+      });
       await table.put({
         TableName: tableName,
         Item: { ...holder, ...keys.run(f.scope, holder.runId) },
       });
       await table.put({
         TableName: tableName,
-        Item: { ...keys.programLiveRun(f.scope), entity: "ProgramLiveRun", runId: holder.runId },
+        Item: {
+          ...keys.programLiveRun(f.scope),
+          entity: "ProgramLiveRun",
+          runId: holder.runId,
+        },
       });
       advance(GRACE * 10);
-      const fresh = makeRun(f, { runId: f.ids.next("run") as typeof holder.runId });
-      await expect(stores.runs.put(fresh)).rejects.toMatchObject({ liveRunId: holder.runId });
+      const fresh = makeRun(f, {
+        runId: f.ids.next("run") as typeof holder.runId,
+      });
+      await expect(stores.runs.put(fresh)).rejects.toMatchObject({
+        liveRunId: holder.runId,
+      });
       advance(GRACE + 1000);
       await stores.runs.put(fresh);
-      expect(await stores.runs.get(f.scope, holder.runId)).toMatchObject({ status: "interrupted" });
+      expect(await stores.runs.get(f.scope, holder.runId)).toMatchObject({
+        status: "interrupted",
+      });
     });
   });
 });

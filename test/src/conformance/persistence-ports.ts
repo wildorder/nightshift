@@ -291,7 +291,10 @@ export const describePortConformance = <S extends ProjectStores>(
         const base = makeVerification(a, node, { gateFingerprint: undefined });
         const verification = {
           ...base,
-          commands: base.commands.map((command) => ({ ...command, quietMs: undefined })),
+          commands: base.commands.map((command) => ({
+            ...command,
+            quietMs: undefined,
+          })),
         };
         await stores.verifications.put(verification);
         await stores.verifications.put({ ...verification });
@@ -300,12 +303,18 @@ export const describePortConformance = <S extends ProjectStores>(
           1,
         );
         await expect(
-          stores.verifications.put({ ...verification, endedAt: "2031-01-01T00:00:00.000Z" }),
+          stores.verifications.put({
+            ...verification,
+            endedAt: "2031-01-01T00:00:00.000Z",
+          }),
         ).rejects.toThrow(VerificationExistsError);
         await expect(
           stores.verifications.put({
             ...verification,
-            commands: verification.commands.map((command) => ({ ...command, quietMs: 5 })),
+            commands: verification.commands.map((command) => ({
+              ...command,
+              quietMs: 5,
+            })),
           }),
         ).rejects.toThrow(VerificationExistsError);
         const kept = await stores.verifications.get(a.scope, verification.verificationId);
@@ -2107,16 +2116,23 @@ export const describePortConformance = <S extends ProjectStores>(
         await stores.runs.put(holder);
         clock.advance(5 * 60 * 1000);
         const other = next(a, HOURS_AHEAD);
-        await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: holder.runId });
+        await expect(stores.runs.put(other)).rejects.toMatchObject({
+          liveRunId: holder.runId,
+        });
         expect(await stores.runs.get(a.scope, holder.runId)).toEqual(holder);
         expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
       });
 
       it("is not settled when the holder's startedAt is hours behind but its claim is within the grace", async () => {
-        const holder = makeRun(a, { status: "pending", startedAt: HOURS_BEHIND });
+        const holder = makeRun(a, {
+          status: "pending",
+          startedAt: HOURS_BEHIND,
+        });
         await stores.runs.put(holder);
         const other = next(a);
-        await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: holder.runId });
+        await expect(stores.runs.put(other)).rejects.toMatchObject({
+          liveRunId: holder.runId,
+        });
         expect(await stores.runs.get(a.scope, holder.runId)).toEqual(holder);
         expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
       });
@@ -2126,7 +2142,9 @@ export const describePortConformance = <S extends ProjectStores>(
         await stores.runs.put(holder);
         clock.advance(GRACE_PASSED);
         const other = next(a);
-        await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: holder.runId });
+        await expect(stores.runs.put(other)).rejects.toMatchObject({
+          liveRunId: holder.runId,
+        });
         expect(await stores.runs.get(a.scope, holder.runId)).toEqual(holder);
         expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
       });
@@ -2147,7 +2165,9 @@ export const describePortConformance = <S extends ProjectStores>(
         await stores.dispatches.put(makeDispatch(a));
         clock.advance(GRACE_PASSED);
         const other = next(a);
-        await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: holder.runId });
+        await expect(stores.runs.put(other)).rejects.toMatchObject({
+          liveRunId: holder.runId,
+        });
         expect(await stores.runs.get(a.scope, holder.runId)).toEqual(holder);
         expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
       });
@@ -2260,11 +2280,15 @@ export const describePortConformance = <S extends ProjectStores>(
           // Its own startedAt is long past the grace, but the trusted clock has only just seen it.
           clock.advance(NEVER_STARTED_GRACE * 4);
           const first = fresh();
-          await expect(stores.runs.put(first)).rejects.toMatchObject({ liveRunId: legacy.runId });
+          await expect(stores.runs.put(first)).rejects.toMatchObject({
+            liveRunId: legacy.runId,
+          });
           expect(await stores.runs.get(a.scope, legacy.runId)).toEqual(legacy);
 
           clock.advance(NEVER_STARTED_GRACE - 1000);
-          await expect(stores.runs.put(first)).rejects.toMatchObject({ liveRunId: legacy.runId });
+          await expect(stores.runs.put(first)).rejects.toMatchObject({
+            liveRunId: legacy.runId,
+          });
 
           clock.advance(2000);
           await stores.runs.put(first);
@@ -2282,9 +2306,13 @@ export const describePortConformance = <S extends ProjectStores>(
         await seed(legacy);
         await stores.dispatches.put(makeDispatch(a));
         const other = fresh();
-        await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: legacy.runId });
+        await expect(stores.runs.put(other)).rejects.toMatchObject({
+          liveRunId: legacy.runId,
+        });
         clock.advance(NEVER_STARTED_GRACE * 2);
-        await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: legacy.runId });
+        await expect(stores.runs.put(other)).rejects.toMatchObject({
+          liveRunId: legacy.runId,
+        });
         expect(await stores.runs.get(a.scope, legacy.runId)).toEqual(legacy);
       });
 
@@ -2292,14 +2320,116 @@ export const describePortConformance = <S extends ProjectStores>(
         "adopts one of several legacy live runs deterministically, and refuses",
         async () => {
           const first = seeded("running");
-          const second = makeRun(a, { runId: a.ids.next("run") as RunId, status: "running" });
+          const second = makeRun(a, {
+            runId: a.ids.next("run") as RunId,
+            status: "running",
+          });
           await seed(first);
           await seed(second);
           const lowest = [first.runId, second.runId].sort()[0];
           const other = fresh();
-          await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: lowest });
-          await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: lowest });
+          await expect(stores.runs.put(other)).rejects.toMatchObject({
+            liveRunId: lowest,
+          });
+          await expect(stores.runs.put(other)).rejects.toMatchObject({
+            liveRunId: lowest,
+          });
           expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
+        },
+      );
+
+      const live = async (): Promise<Run[]> =>
+        (await stores.runs.listByProgram(a.scope)).items.filter(
+          (r) => r.status === "pending" || r.status === "running",
+        );
+      const statusOf = async (runId: RunId): Promise<Run["status"] | undefined> =>
+        (await stores.runs.get(a.scope, runId))?.status;
+
+      legacyIt(
+        "never admits a run beside a live legacy run when the adopted holder is settleable (F-01)",
+        async () => {
+          const pending = seeded("pending");
+          const running = makeRun(a, {
+            runId: a.ids.next("run") as RunId,
+            status: "running",
+          });
+          await seed(pending);
+          await seed(running);
+          const other = fresh();
+          // Adoption prefers the run that cannot be settled.
+          await expect(stores.runs.put(other)).rejects.toMatchObject({
+            liveRunId: running.runId,
+          });
+          clock.advance(NEVER_STARTED_GRACE * 2);
+          const refusal = await stores.runs.put(other).then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+          expect(refusal).toBeInstanceOf(ProgramRunLiveError);
+          expect([pending.runId, running.runId]).toContain(
+            (refusal as { liveRunId: RunId }).liveRunId,
+          );
+          expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
+          expect((await live()).map((r) => r.runId).sort()).toEqual(
+            [pending.runId, running.runId].sort(),
+          );
+
+          await stores.runs.put({
+            ...running,
+            status: "succeeded",
+            endedAt: "2026-01-01T01:00:00.000Z" as IsoTimestamp,
+          });
+          // The remaining legacy run is settled one start at a time, then the run is admitted.
+          for (let step = 0; step < 4; step += 1) {
+            clock.advance(NEVER_STARTED_GRACE * 2);
+            const outcome = await stores.runs.put(other).then(
+              () => "admitted",
+              (error: unknown) => error,
+            );
+            if (outcome === "admitted") break;
+            expect(outcome).toBeInstanceOf(ProgramRunLiveError);
+            expect((await live()).length).toBeLessThanOrEqual(1);
+          }
+          expect(await stores.runs.get(a.scope, other.runId)).toEqual(other);
+          expect((await live()).map((r) => r.runId)).toEqual([other.runId]);
+          expect(await statusOf(pending.runId)).toBe("interrupted");
+        },
+      );
+
+      legacyIt(
+        "settles two legacy pending runs one start at a time, then admits the new run",
+        async () => {
+          const first = seeded("pending");
+          const second = makeRun(a, {
+            runId: a.ids.next("run") as RunId,
+            status: "pending",
+          });
+          await seed(first);
+          await seed(second);
+          const other = fresh();
+          let admitted = false;
+          for (let step = 0; step < 6 && !admitted; step += 1) {
+            const outcome = await stores.runs.put(other).then(
+              () => "admitted",
+              (error: unknown) => error,
+            );
+            if (outcome === "admitted") {
+              admitted = true;
+            } else {
+              expect(outcome).toBeInstanceOf(ProgramRunLiveError);
+              expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
+              expect((await live()).length).toBeLessThanOrEqual(2);
+              clock.advance(NEVER_STARTED_GRACE + 1000);
+            }
+          }
+          expect(admitted).toBe(true);
+          for (const legacy of [first, second]) {
+            expect(await stores.runs.get(a.scope, legacy.runId)).toMatchObject({
+              status: "interrupted",
+              outcomeReason: "never started",
+            });
+          }
+          expect((await live()).map((r) => r.runId)).toEqual([other.runId]);
         },
       );
     });

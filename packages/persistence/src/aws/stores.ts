@@ -43,6 +43,7 @@ import {
 } from "@nightshift/contracts";
 import {
   type CredentialsStore,
+  chooseLiveHolder,
   IllegalTransitionError,
   isNeverStartedRun,
   isRunTerminal,
@@ -118,7 +119,11 @@ export const createAwsStores = ({
 }: AwsStoresConfig): NightshiftStores => {
   const trustedNow = clockNow ?? ((): IsoTimestamp => nowIso(systemClock) as IsoTimestamp);
   const getRecord = async <T>(schema: Parser<T>, key: TableKey): Promise<T | undefined> => {
-    const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
+    const output = await table.get({
+      TableName: tableName,
+      Key: key,
+      ConsistentRead: true,
+    });
     return output.Item === undefined ? undefined : fromItem(schema, output.Item);
   };
 
@@ -128,7 +133,10 @@ export const createAwsStores = ({
     record: object,
     index?: NodeIndexKey,
   ): Promise<void> => {
-    await table.put({ TableName: tableName, Item: toItem(entity, key, record, index) });
+    await table.put({
+      TableName: tableName,
+      Item: toItem(entity, key, record, index),
+    });
   };
 
   /** A compare-and-set put on `version` (absent counts as 0), as an org's config uses. */
@@ -207,7 +215,11 @@ export const createAwsStores = ({
             });
             return items
               .map((item) => fromItem(OrgCredentialSchema, item))
-              .map(({ provider, lastFour, setAt }) => ({ provider, lastFour, setAt }));
+              .map(({ provider, lastFour, setAt }) => ({
+                provider,
+                lastFour,
+                setAt,
+              }));
           },
           sealed: async (orgId, provider) => {
             const output = await table.get({
@@ -385,7 +397,10 @@ export const createAwsStores = ({
       listByProject: (projectId, page) =>
         listPage(
           ComputeUtilizationSchema,
-          { ...inTable(keys.computeUtilizationPartition(projectId)), descending: true },
+          {
+            ...inTable(keys.computeUtilizationPartition(projectId)),
+            descending: true,
+          },
           page,
         ),
     },
@@ -399,7 +414,10 @@ export const createAwsStores = ({
       get: (projectId, architecture) =>
         getRecord(WarmCacheSchema, keys.warmCache(projectId, architecture)),
       delete: async (projectId, architecture) => {
-        await table.delete({ TableName: tableName, Key: keys.warmCache(projectId, architecture) });
+        await table.delete({
+          TableName: tableName,
+          Key: keys.warmCache(projectId, architecture),
+        });
       },
     },
 
@@ -470,8 +488,13 @@ export const createAwsStores = ({
                         { programId: parsedVersion.programId },
                       ),
                       ConditionExpression: "attribute_not_exists(#pk) OR #program = :program",
-                      ExpressionAttributeNames: { "#pk": "PK", "#program": "programId" },
-                      ExpressionAttributeValues: { ":program": parsedVersion.programId },
+                      ExpressionAttributeNames: {
+                        "#pk": "PK",
+                        "#program": "programId",
+                      },
+                      ExpressionAttributeValues: {
+                        ":program": parsedVersion.programId,
+                      },
                     },
                   },
                 ];
@@ -510,7 +533,9 @@ export const createAwsStores = ({
                       : typeof read === "string"
                         ? {
                             ConditionExpression: "#rev = :rev",
-                            ExpressionAttributeNames: { "#rev": REVISION_ATTRIBUTE },
+                            ExpressionAttributeNames: {
+                              "#rev": REVISION_ATTRIBUTE,
+                            },
                             ExpressionAttributeValues: { ":rev": read },
                           }
                         : {
@@ -561,7 +586,11 @@ export const createAwsStores = ({
       update: async (projectId, programId, change) => {
         const key = keys.planDraft(projectId, programId);
         for (let attempt = 1; ; attempt += 1) {
-          const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
+          const output = await table.get({
+            TableName: tableName,
+            Key: key,
+            ConsistentRead: true,
+          });
           if (output.Item === undefined) return undefined;
           const current = fromItem(PlanDraftSchema, output.Item);
           const changed = change(current);
@@ -581,7 +610,10 @@ export const createAwsStores = ({
           try {
             await table.put({
               TableName: tableName,
-              Item: { ...toItem("PlanDraft", key, parsed), [REVISION_ATTRIBUTE]: randomUUID() },
+              Item: {
+                ...toItem("PlanDraft", key, parsed),
+                [REVISION_ATTRIBUTE]: randomUUID(),
+              },
               ...(typeof read === "string"
                 ? {
                     ConditionExpression: "#rev = :rev",
@@ -590,7 +622,10 @@ export const createAwsStores = ({
                   }
                 : {
                     ConditionExpression: "attribute_exists(#pk) AND attribute_not_exists(#rev)",
-                    ExpressionAttributeNames: { "#pk": "PK", "#rev": REVISION_ATTRIBUTE },
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#rev": REVISION_ATTRIBUTE,
+                    },
                   }),
             });
             return parsed;
@@ -652,7 +687,11 @@ export const createAwsStores = ({
         try {
           await table.put({
             TableName: tableName,
-            Item: toItem("InstallationClaim", key, { installationId, orgId, at }),
+            Item: toItem("InstallationClaim", key, {
+              installationId,
+              orgId,
+              at,
+            }),
             ConditionExpression: "attribute_not_exists(#pk) OR #orgId = :orgId",
             ExpressionAttributeNames: { "#pk": "PK", "#orgId": "orgId" },
             ExpressionAttributeValues: { ":orgId": orgId },
@@ -729,7 +768,11 @@ export const createAwsStores = ({
       update: async (projectId, programId, change) => {
         const key = keys.programContract(projectId, programId);
         for (let attempt = 1; ; attempt += 1) {
-          const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
+          const output = await table.get({
+            TableName: tableName,
+            Key: key,
+            ConsistentRead: true,
+          });
           if (output.Item === undefined) return undefined;
           const current = fromItem(ProgramContractSchema, output.Item);
           const changed = change(current);
@@ -752,7 +795,10 @@ export const createAwsStores = ({
                   }
                 : {
                     ConditionExpression: "attribute_exists(#pk) AND attribute_not_exists(#rev)",
-                    ExpressionAttributeNames: { "#pk": "PK", "#rev": REVISION_ATTRIBUTE },
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#rev": REVISION_ATTRIBUTE,
+                    },
                   }),
             });
             return parsed;
@@ -794,13 +840,32 @@ export const createAwsStores = ({
           runId,
           claimedAt,
         });
-        /** The stored live run of the program that is not this one, lowest id first. */
-        const findLegacyHolder = async (): Promise<RunId | undefined> => {
+        /**
+         * The stored live run of the program that is not this one (nor `except`),
+         * preferring one that cannot be settled: running, then pending with a
+         * dispatch, then lowest id.
+         */
+        const findLegacyHolder = async (except?: RunId): Promise<RunId | undefined> => {
           const stored = await listAll(RunSchema, inTable(keys.runPartition(parsed)));
-          return stored
-            .filter((other) => other.runId !== parsed.runId && !isRunTerminal(other.status))
-            .map((other) => other.runId)
-            .sort()[0];
+          const live = stored.filter(
+            (other) =>
+              other.runId !== parsed.runId &&
+              other.runId !== except &&
+              !isRunTerminal(other.status),
+          );
+          const candidates = await Promise.all(
+            live.map(async (other) => ({
+              runId: other.runId,
+              status: other.status,
+              hasDispatch:
+                other.status === "pending" &&
+                (await getRecord(
+                  DispatchSchema,
+                  keys.dispatch({ ...parsed, runId: other.runId }),
+                )) !== undefined,
+            })),
+          );
+          return chooseLiveHolder(candidates)?.runId;
         };
 
         /**
@@ -811,7 +876,7 @@ export const createAwsStores = ({
         const settleNeverStarted = async (
           holder: Required<LiveMarker>,
           now: IsoTimestamp,
-        ): Promise<"settled" | "live" | "retry"> => {
+        ): Promise<"settled" | "live" | "retry" | { readonly handedTo: RunId }> => {
           const holderKey = keys.run(parsed, holder.runId);
           const stored = await getRecord(RunSchema, holderKey);
           if (stored === undefined) return "live";
@@ -830,6 +895,12 @@ export const createAwsStores = ({
             endedAt: now,
             outcomeReason: NEVER_STARTED_REASON,
           });
+          // Another live run of the program (a legacy one) keeps it held: the
+          // holder is still ended, but the marker goes to that run and this one
+          // is refused. Runs without a marker only move toward terminal, so a
+          // snapshot showing none is sound; one that ends before the write
+          // fails the new holder's check and is decided again.
+          const next = await findLegacyHolder(holder.runId);
           try {
             await table.transactWrite({
               TransactItems: [
@@ -838,7 +909,10 @@ export const createAwsStores = ({
                     TableName: tableName,
                     Item: toItem("Run", holderKey, ended),
                     ConditionExpression: "#status = :pending AND #startedAt = :startedAt",
-                    ExpressionAttributeNames: { "#status": "status", "#startedAt": "startedAt" },
+                    ExpressionAttributeNames: {
+                      "#status": "status",
+                      "#startedAt": "startedAt",
+                    },
                     ExpressionAttributeValues: {
                       ":pending": "pending",
                       ":startedAt": stored.startedAt,
@@ -856,27 +930,46 @@ export const createAwsStores = ({
                 {
                   Put: {
                     TableName: tableName,
-                    Item: markerItem(parsed.runId, now),
+                    Item: markerItem(next ?? parsed.runId, now),
                     ConditionExpression: "#runId = :holder AND #claimedAt = :claimedAt",
-                    ExpressionAttributeNames: { "#runId": "runId", "#claimedAt": "claimedAt" },
+                    ExpressionAttributeNames: {
+                      "#runId": "runId",
+                      "#claimedAt": "claimedAt",
+                    },
                     ExpressionAttributeValues: {
                       ":holder": holder.runId,
                       ":claimedAt": holder.claimedAt,
                     },
                   },
                 },
-                {
-                  Put: {
-                    TableName: tableName,
-                    Item: runItem,
-                    ConditionExpression: `attribute_not_exists(#pk) OR (${notTerminal})`,
-                    ExpressionAttributeNames: { "#pk": "PK", "#status": "status" },
-                    ExpressionAttributeValues: terminalValues,
-                  },
-                },
+                next === undefined
+                  ? {
+                      Put: {
+                        TableName: tableName,
+                        Item: runItem,
+                        ConditionExpression: `attribute_not_exists(#pk) OR (${notTerminal})`,
+                        ExpressionAttributeNames: {
+                          "#pk": "PK",
+                          "#status": "status",
+                        },
+                        ExpressionAttributeValues: terminalValues,
+                      },
+                    }
+                  : {
+                      ConditionCheck: {
+                        TableName: tableName,
+                        Key: keys.run(parsed, next),
+                        ConditionExpression: `attribute_exists(#pk) AND ${notTerminal}`,
+                        ExpressionAttributeNames: {
+                          "#pk": "PK",
+                          "#status": "status",
+                        },
+                        ExpressionAttributeValues: terminalValues,
+                      },
+                    },
               ],
             });
-            return "settled";
+            return next === undefined ? "settled" : { handedTo: next };
           } catch (error) {
             if (conditionFailures(error) === undefined) throw error;
             return "retry";
@@ -1018,7 +1111,10 @@ export const createAwsStores = ({
                   TableName: tableName,
                   Item: markerItem(marker.runId, now),
                   ConditionExpression: "#runId = :runId AND attribute_not_exists(#claimedAt)",
-                  ExpressionAttributeNames: { "#runId": "runId", "#claimedAt": "claimedAt" },
+                  ExpressionAttributeNames: {
+                    "#runId": "runId",
+                    "#claimedAt": "claimedAt",
+                  },
                   ExpressionAttributeValues: { ":runId": marker.runId },
                 });
               } catch (error) {
@@ -1050,6 +1146,9 @@ export const createAwsStores = ({
                 now,
               );
               if (outcome === "settled") return;
+              if (typeof outcome === "object") {
+                throw new ProgramRunLiveError(parsed.programId, outcome.handedTo);
+              }
               if (outcome === "live") throw new ProgramRunLiveError(parsed.programId, marker.runId);
               if (attempt >= MAX_UPDATE_ATTEMPTS) {
                 throw new ProgramRunLiveError(parsed.programId, marker.runId);
@@ -1065,7 +1164,10 @@ export const createAwsStores = ({
                       TableName: tableName,
                       Item: runItem,
                       ConditionExpression: `attribute_not_exists(#pk) OR (${notTerminal})`,
-                      ExpressionAttributeNames: { "#pk": "PK", "#status": "status" },
+                      ExpressionAttributeNames: {
+                        "#pk": "PK",
+                        "#status": "status",
+                      },
                       ExpressionAttributeValues: terminalValues,
                     },
                   },
@@ -1081,7 +1183,9 @@ export const createAwsStores = ({
                         : {
                             ConditionExpression: "#runId = :runId",
                             ExpressionAttributeNames: { "#runId": "runId" },
-                            ExpressionAttributeValues: { ":runId": parsed.runId },
+                            ExpressionAttributeValues: {
+                              ":runId": parsed.runId,
+                            },
                           }),
                     },
                   },
@@ -1127,7 +1231,10 @@ export const createAwsStores = ({
                         TableName: tableName,
                         Key: markerKey,
                         ConditionExpression: "attribute_not_exists(#pk) OR #runId <> :runId",
-                        ExpressionAttributeNames: { "#pk": "PK", "#runId": "runId" },
+                        ExpressionAttributeNames: {
+                          "#pk": "PK",
+                          "#runId": "runId",
+                        },
                         ExpressionAttributeValues: { ":runId": parsed.runId },
                       },
                     },
@@ -1311,7 +1418,10 @@ export const createAwsStores = ({
               keys.nodeIndex(scope, parsed.executionNodeId, "MEAS", parsed.measurementSummaryId),
             ),
             ConditionExpression: "attribute_not_exists(#pk) OR #updatedAt <= :updatedAt",
-            ExpressionAttributeNames: { "#pk": "PK", "#updatedAt": "updatedAt" },
+            ExpressionAttributeNames: {
+              "#pk": "PK",
+              "#updatedAt": "updatedAt",
+            },
             ExpressionAttributeValues: { ":updatedAt": parsed.updatedAt },
           });
         } catch (error) {

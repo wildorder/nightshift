@@ -136,14 +136,20 @@ export interface RunStore {
    *   the program holds it, throws `ProgramRunLiveError` naming the holder and
    *   writes nothing. A run that holds the marker itself may be put again.
    * - An absent marker is not proof the program is free: a live run stored before
-   *   the marker existed holds it. The store finds such a run (lowest run id if
-   *   several), claims the marker on its behalf, and decides as for any holder.
+   *   the marker existed holds it. The store finds such a run, claims the marker
+   *   on its behalf, and decides as for any holder. With several it prefers one
+   *   that cannot be settled: running first, then pending with a dispatch, then
+   *   the lowest run id (`chooseLiveHolder`).
    *   The legacy run's own live and terminal puts keep working.
    * - A holder that is still `pending`, has no dispatch, and was claimed longer
    *   than `NEVER_STARTED_GRACE` ago is ended as interrupted ("never started")
    *   in the same operation. "Ago" and the ending time are the store's own
    *   trusted clock; the marker records `claimedAt` from it, and a marker without
    *   one counts as claimed when first read. A run's `startedAt` is never used.
+   *   If other non-terminal runs of the program remain (legacy runs), the holder
+   *   is still ended, the marker moves to one of them (chosen as above, claimed
+   *   now), and the put is refused with `ProgramRunLiveError` naming it without
+   *   storing the run. The run is admitted only when no other live run remains.
    * - A marker whose holder run is missing or already terminal is stale (a
    *   release or an adoption raced): it never refuses a put. The new run's claim
    *   replaces it in the same atomic operation. Adopting a legacy holder's marker

@@ -100,6 +100,7 @@ import {
   type ComputeLedgerStore,
   type ComputeUtilizationStore,
   type CredentialsStore,
+  chooseLiveHolder,
   type DecisionStore,
   type DispatchStore,
   type EventStore,
@@ -248,9 +249,11 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   // P20: a run's verdict, and the project's completion histories.
   const feedback = table<RunFeedback>("feedback");
   const completionHistories = table<CompletionHistory>("completionHistories");
-  const installationClaims = table<{ installationId: number; orgId: OrgId; at: string }>(
-    "installationClaims",
-  );
+  const installationClaims = table<{
+    installationId: number;
+    orgId: OrgId;
+    at: string;
+  }>("installationClaims");
   const credentials = table<OrgCredential>("credentials");
   const projectSecrets = table<ProjectSecret>("projectSecrets");
   const computeLedger = table<OrgComputeUsage>("computeLedger");
@@ -396,10 +399,16 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
         const now = trustedNow();
         if (marker === undefined) {
           // A run stored before the marker existed holds the program all the same.
-          const legacy = runs
-            .scan(liveKey)
-            .filter((other) => other.runId !== parsed.runId && !isRunTerminal(other.status))
-            .sort((x, y) => (x.runId < y.runId ? -1 : x.runId > y.runId ? 1 : 0))[0];
+          const legacy = chooseLiveHolder(
+            runs
+              .scan(liveKey)
+              .filter((other) => other.runId !== parsed.runId && !isRunTerminal(other.status))
+              .map((other) => ({
+                runId: other.runId,
+                status: other.status,
+                hasDispatch: dispatches.get(runPrefix(other)) !== undefined,
+              })),
+          );
           if (legacy !== undefined) {
             marker = { runId: legacy.runId, claimedAt: now };
             liveRuns.set(liveKey, marker);
@@ -433,6 +442,27 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
                 outcomeReason: NEVER_STARTED_REASON,
               }),
             );
+            // Another live run of the program (a legacy one) still holds it:
+            // the marker goes to it and this run is refused.
+            const remaining = chooseLiveHolder(
+              runs
+                .scan(liveKey)
+                .filter(
+                  (other) =>
+                    other.runId !== parsed.runId &&
+                    other.runId !== holder.runId &&
+                    !isRunTerminal(other.status),
+                )
+                .map((other) => ({
+                  runId: other.runId,
+                  status: other.status,
+                  hasDispatch: dispatches.get(runPrefix(other)) !== undefined,
+                })),
+            );
+            if (remaining !== undefined) {
+              liveRuns.set(liveKey, { runId: remaining.runId, claimedAt: now });
+              return remaining.runId;
+            }
           }
         }
         runs.set(key, parsed);
@@ -878,9 +908,11 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       credentials.set(`${orgPrefix(parsed.orgId)}${parsed.provider}`, parsed);
     },
     view: async (orgId: OrgId) =>
-      credentials
-        .scan(orgPrefix(orgId))
-        .map(({ provider, lastFour, setAt }) => ({ provider, lastFour, setAt })),
+      credentials.scan(orgPrefix(orgId)).map(({ provider, lastFour, setAt }) => ({
+        provider,
+        lastFour,
+        setAt,
+      })),
     sealed: async (orgId: OrgId, provider: Provider) =>
       credentials.get(`${orgPrefix(orgId)}${provider}`),
     putSecret: async (secret) => {
