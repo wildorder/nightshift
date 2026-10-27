@@ -4,9 +4,18 @@ import {
   type LineBatch,
   LineCompositionBodySchema,
   LineParkBodySchema,
+  type LineRecord,
   type ProgramId,
   ProgramIdSchema,
 } from "@nightshift/contracts";
+import {
+  appendQueueEntry,
+  createFixtures,
+  makeLineRecord,
+  requestPush,
+  settleBatch,
+  takeBatch,
+} from "@nightshift/core";
 import {
   composeLineBatch,
   drainLine,
@@ -47,6 +56,7 @@ interface Harness {
   ports: LineComposerPorts;
   settled: LineSettlement[];
   published: { head: CommitSha; expectedPredecessor: CommitSha }[];
+  staged: { head: CommitSha; expectedPredecessor: CommitSha }[];
   resolves: LineFailure[];
   verifies: { commit: CommitSha; deadline?: string }[];
   open: Set<string>;
@@ -60,6 +70,7 @@ const setup = async (
     passes?: (read: (path: string) => Promise<string | undefined>) => boolean | Promise<boolean>;
     resolve?: (failure: LineFailure, h: Harness) => Promise<LineResolution> | LineResolution;
     reject?: boolean;
+    stageThrows?: boolean;
     advanceOnVerify?: number;
     timedOut?: boolean;
   } = {},
@@ -86,6 +97,7 @@ const setup = async (
     lr,
     settled: [],
     published: [],
+    staged: [],
     resolves: [],
     verifies: [],
     open,
@@ -115,8 +127,16 @@ const setup = async (
     checkout,
     verifier,
     publisher: {
-      publish: async (input) => {
-        h.published.push(input);
+      stage: async (input) => {
+        if (opts.stageThrows) throw new Error("upload failed");
+        h.staged.push(input);
+        return { bundleKey: `bundles/${input.head}` };
+      },
+      outcome: async (input) => {
+        h.published.push({
+          head: input.head,
+          expectedPredecessor: h.staged.at(-1)?.expectedPredecessor as CommitSha,
+        });
         return opts.reject ? { status: "rejected", detail: "moved" } : { status: "published" };
       },
     },
@@ -134,7 +154,10 @@ const assertSchemas = (h: Harness) => {
   for (const s of h.settled) {
     if (s.composition)
       expect(
-        LineCompositionBodySchema.safeParse({ batchId: s.batchId, ...s.composition }).success,
+        LineCompositionBodySchema.safeParse({
+          batchId: s.batchId,
+          ...s.composition,
+        }).success,
       ).toBe(true);
     for (const p of s.parked)
       expect(LineParkBodySchema.safeParse({ batchId: s.batchId, ...p }).success).toBe(true);
@@ -167,6 +190,11 @@ describe("composeLineBatch", () => {
     for (const x of [main, a, b]) expect(await isAnc(lr, x, c?.commit as CommitSha)).toBe(true);
     expect(h.settled[0]?.parked).toEqual([]);
     expect(h.published).toEqual([{ head: c?.commit, expectedPredecessor: line }]);
+    expect(h.settled[0]?.push).toEqual({
+      head: c?.commit,
+      expectedPredecessor: line,
+      bundleKey: `bundles/${c?.commit}`,
+    });
     expect(out.head).toBe(c?.commit);
     expect(h.open.size).toBe(0);
     assertSchemas(h);
@@ -306,7 +334,11 @@ describe("composeLineBatch", () => {
       advanceOnVerify: 1000,
       resolve: (_f, hh) => {
         hh.now.ms += 3_600_000;
-        return { kind: "parked", reason: "no", resolver: { decision: "gave_up", attempts: 1 } };
+        return {
+          kind: "parked",
+          reason: "no",
+          resolver: { decision: "gave_up", attempts: 1 },
+        };
       },
     });
     const { lr } = h;
@@ -401,5 +433,95 @@ describe("drainLine", () => {
     }));
     expect(outs).toHaveLength(1);
     expect(h.queue).toHaveLength(1);
+  });
+
+  it("settles nothing when staging throws, and the batch can be composed again", async () => {
+    const opts = { stageThrows: true };
+    const h = await setup(opts);
+    const line = await h.lr.commit("line", { "l.txt": "l\n" });
+    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
+    const batch = batchOf([entry(P1, a, 1)]);
+    await expect(
+      composeLineBatch(h.ports, { lineHead: line, mainHead: line, batch }),
+    ).rejects.toThrow("upload failed");
+    expect(h.settled).toEqual([]);
+    expect(h.open.size).toBe(0);
+    opts.stageThrows = false;
+    const out = await composeLineBatch(h.ports, {
+      lineHead: line,
+      mainHead: line,
+      batch,
+    });
+    expect(out.composed).toHaveLength(1);
+  });
+
+  it("gives two conflicting ranges one shared budget of three resolver attempts", async () => {
+    const h = await setup({
+      resolve: async (f) => ({
+        kind: "parked",
+        reason: "no luck",
+        resolver: { decision: "gave_up", attempts: f.attemptsLeft },
+      }),
+    });
+    const line = await h.lr.commit("line", { "x.txt": "base\n" });
+    const a = await h.lr.commit("p1", { "x.txt": "a\n" });
+    const b = await h.lr.commit("p2", { "x.txt": "b\n" });
+    const out = await composeLineBatch(h.ports, {
+      lineHead: line,
+      mainHead: line,
+      batch: batchOf([entry(P1, a, 1), entry(P2, b, 2)]),
+    });
+    expect(h.resolves.map((f) => f.attemptsLeft)).toEqual([3]);
+    expect(out.parked.map((p) => p.ranges.length)).toEqual([1, 1]);
+    expect(out.parked.some((p) => p.reason.includes("resolver attempts are spent"))).toBe(true);
+  });
+
+  it("leaves a pending push to the composition and no batch when the owner dies after settling", async () => {
+    const h = await setup();
+    const fixtures = createFixtures();
+    const at = new Date(START).toISOString();
+    const line = await h.lr.commit("line", { "l.txt": "l\n" });
+    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
+    let record: LineRecord = appendQueueEntry(
+      makeLineRecord(fixtures),
+      { program: P1, upTo: a },
+      at,
+    );
+    // The real rules over an in-memory record. The settle path's push is modelled
+    // with requestPush until settleBatch carries it itself.
+    let outcomeCalls = 0;
+    h.ports.queue.takeBatch = async () => {
+      const taken = takeBatch(record, 1, { batchId: "b1" }, at);
+      record = taken.record;
+      return taken.batch ?? record.batch;
+    };
+    h.ports.queue.settle = async (s) => {
+      const { push, ...body } = s;
+      const change = settleBatch(record, body, { compositionId: "comp-1", parkedIds: [] }, at);
+      if (!change.ok) throw new Error("settle refused");
+      record = change.record;
+      if (push) {
+        const pushed = requestPush(record, push, 1, at);
+        if (!pushed.ok) throw new Error("push refused");
+        record = pushed.record;
+      }
+    };
+    h.ports.publisher.outcome = async () => {
+      outcomeCalls += 1;
+      throw new Error("owner died");
+    };
+    const batch = (await h.ports.queue.takeBatch()) as LineBatch;
+    await expect(
+      composeLineBatch(h.ports, { lineHead: line, mainHead: line, batch }),
+    ).rejects.toThrow("owner died");
+    expect(outcomeCalls).toBe(1);
+    const commit = record.compositions[0]?.commit;
+    expect(record.batch).toBeUndefined();
+    expect(record.compositions).toHaveLength(1);
+    expect(record.push).toMatchObject({
+      status: "pending",
+      head: commit,
+      expectedPredecessor: line,
+    });
   });
 });

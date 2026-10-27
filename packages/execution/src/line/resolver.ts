@@ -62,7 +62,10 @@ export const resolveLineFailure = async (
   failure: LineFailure,
 ): Promise<LineResolution> => {
   const { checkout, verifier, agents, decisions, clock } = ports;
-  const limit = ports.limits?.attempts ?? LINE_RESOLVER_ATTEMPTS;
+  const limit = Math.max(
+    0,
+    Math.min(failure.attemptsLeft, ports.limits?.attempts ?? LINE_RESOLVER_ATTEMPTS),
+  );
   const deadlineMs = Date.parse(failure.deadline);
   const passed = () => clock.now() >= deadlineMs;
   const commitOfUnit = unitCommit(failure.unit);
@@ -91,7 +94,11 @@ export const resolveLineFailure = async (
       await checkout.startMerge(wt, commitOfUnit);
       const brief = briefOf(failure, notes);
 
-      const resolved = await agents.resolve({ brief, worktree: wt, deadline: failure.deadline });
+      const resolved = await agents.resolve({
+        brief,
+        worktree: wt,
+        deadline: failure.deadline,
+      });
       if (resolved.status !== "finished") {
         fail(`the resolver agent failed${resolved.summary ? `: ${resolved.summary}` : ""}`);
         continue;

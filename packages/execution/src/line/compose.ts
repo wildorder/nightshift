@@ -6,7 +6,7 @@ import type {
   LineVerification,
   ProgramId,
 } from "@nightshift/contracts";
-import { LINE_COMPOSITION_SECONDS } from "@nightshift/core";
+import { LINE_COMPOSITION_SECONDS, LINE_RESOLVER_ATTEMPTS } from "@nightshift/core";
 import type {
   LineBatchOutcome,
   LineComposerPorts,
@@ -45,7 +45,11 @@ const groupRanges = async (
   for (const [program, last] of upTo) {
     if (await ports.checkout.isAncestor(last, lineHead)) continue;
     const from = await ports.queue.lastComposed(program);
-    ranges.push({ program, ...(from === undefined ? {} : { from }), upTo: last });
+    ranges.push({
+      program,
+      ...(from === undefined ? {} : { from }),
+      upTo: last,
+    });
   }
   return ranges;
 };
@@ -56,6 +60,7 @@ export const composeLineBatch = async (
 ): Promise<LineBatchOutcome> => {
   const { lineHead, mainHead, batch } = input;
   const { checkout, verifier, queue, publisher, clock } = ports;
+  let attemptsLeft = ports.limits?.attempts ?? LINE_RESOLVER_ATTEMPTS;
   const deadlineMs = clock.now() + (ports.limits?.seconds ?? LINE_COMPOSITION_SECONDS) * 1000;
   const deadline = new Date(deadlineMs).toISOString();
   const passed = () => clock.now() >= deadlineMs;
@@ -119,25 +124,45 @@ export const composeLineBatch = async (
       }
       if (result.verification.outcome === "passed") {
         outcome.composed = ranges;
-        await queue.settle({
-          batchId: batch.batchId,
-          composition: {
+        await settleComposed(
+          {
             commit: head,
             parent: lineHead,
             ranges,
             verification: result.verification,
           },
-          parked: [],
-        });
-        return await publish(head);
+          [],
+        );
+        return await awaitPush(head);
       }
     }
   } finally {
     if (wt) await checkout.close(wt);
   }
 
-  async function publish(head: CommitSha): Promise<LineBatchOutcome> {
-    const result = await publisher.publish({ head, expectedPredecessor: lineHead });
+  // Stage first (a throw settles nothing and leaves the batch held), then settle with the push.
+  async function settleComposed(
+    composition: NonNullable<LineSettlement["composition"]>,
+    parked: ParkPart[],
+  ): Promise<void> {
+    const { bundleKey } = await publisher.stage({
+      head: composition.commit,
+      expectedPredecessor: composition.parent,
+    });
+    await queue.settle({
+      batchId: batch.batchId,
+      composition,
+      parked,
+      push: {
+        head: composition.commit,
+        expectedPredecessor: composition.parent,
+        bundleKey,
+      },
+    });
+  }
+
+  async function awaitPush(head: CommitSha): Promise<LineBatchOutcome> {
+    const result = await publisher.outcome({ head });
     outcome.published =
       result.status === "published"
         ? { status: result.status }
@@ -172,8 +197,22 @@ export const composeLineBatch = async (
     await reopen(lineHead);
 
     const resolveUnit = async (unit: LineUnit, cause: LineFailure["cause"]) => {
-      const failure: LineFailure = { unit, base: head, deadline, cause };
+      if (attemptsLeft <= 0) {
+        return {
+          kind: "parked",
+          reason: "the composition's resolver attempts are spent",
+          resolver: { decision: "gave_up", attempts: 0 },
+        } satisfies LineResolution;
+      }
+      const failure: LineFailure = {
+        unit,
+        base: head,
+        deadline,
+        attemptsLeft,
+        cause,
+      };
       const resolution = await ports.resolve(failure);
+      attemptsLeft -= resolution.resolver.attempts;
       outcome.resolutions.push(resolution);
       return resolution;
     };
@@ -286,18 +325,17 @@ export const composeLineBatch = async (
     attempts: fix.resolver.attempts,
     detail: `the resolver fixed ${fixedUnits.join("; ")}`,
   };
-  await queue.settle({
-    batchId: batch.batchId,
-    composition: {
+  await settleComposed(
+    {
       commit: head,
       parent: lineHead,
       ranges: composed,
       verification: headVerification,
       ...(resolver ? { resolver } : {}),
     },
-    parked: parkedParts,
-  });
-  return publish(head);
+    parkedParts,
+  );
+  return awaitPush(head);
 };
 
 export const drainLine = async (
@@ -309,7 +347,11 @@ export const drainLine = async (
     const batch = await ports.queue.takeBatch();
     if (batch === undefined) return outcomes;
     const { lineHead, mainHead } = await heads();
-    const outcome = await composeLineBatch(ports, { lineHead, mainHead, batch });
+    const outcome = await composeLineBatch(ports, {
+      lineHead,
+      mainHead,
+      batch,
+    });
     outcomes.push(outcome);
     if (outcome.published?.status === "rejected") return outcomes;
   }
