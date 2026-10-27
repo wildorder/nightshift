@@ -107,10 +107,12 @@ import {
   type GateHealthStore,
   IllegalTransitionError,
   type InstallationClaimStore,
+  isNeverStartedRun,
   isRunTerminal,
   type JobContractStore,
   type MeasurementSummaryStore,
   type MembershipStore,
+  NEVER_STARTED_REASON,
   type NightshiftStores,
   type OrgConfigStore,
   OwnershipViolationError,
@@ -131,6 +133,7 @@ import {
   type SequenceLedger,
   StaleWriteError,
   type StampOutcome,
+  transitionRun,
   type UserStore,
   VerificationExistsError,
   type VerificationStore,
@@ -375,7 +378,25 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
           throw new IllegalTransitionError(stored.status, `put ${parsed.status}`);
         }
         if (marker !== undefined && marker.runId !== parsed.runId) {
-          throw new ProgramRunLiveError(parsed.programId, marker.runId);
+          // A holder that never started is ended in this same unit (D-07).
+          const holderKey = `${programPrefix(parsed)}${marker.runId}`;
+          const holder = runs.get(holderKey);
+          if (
+            holder === undefined ||
+            !isNeverStartedRun(holder, {
+              hasDispatch: dispatches.get(runPrefix(holder)) !== undefined,
+              at: parsed.startedAt,
+            })
+          ) {
+            throw new ProgramRunLiveError(parsed.programId, marker.runId);
+          }
+          runs.set(
+            holderKey,
+            transitionRun(holder, "interrupt", {
+              endedAt: parsed.startedAt,
+              outcomeReason: NEVER_STARTED_REASON,
+            }),
+          );
         }
         runs.set(key, parsed);
         liveRuns.set(liveKey, { runId: parsed.runId });
@@ -629,7 +650,18 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const dispatchStore: DispatchStore = {
     put: async (dispatch) => {
       const parsed = DispatchSchema.parse(dispatch);
-      dispatches.set(runPrefix(parsed), parsed);
+      // A new dispatch commits only while its run is pending, in one unit with
+      // the check, so it cannot race a never-started settlement (D-07).
+      atomically(() => {
+        const key = runPrefix(parsed);
+        if (dispatches.get(key) === undefined) {
+          const run = runs.get(`${programPrefix(parsed)}${parsed.runId}`);
+          if (run?.status !== "pending") {
+            throw new IllegalTransitionError(run?.status ?? "absent", "dispatch");
+          }
+        }
+        dispatches.set(key, parsed);
+      });
     },
     get: async (scope: RunScope) => dispatches.get(runPrefix(scope)),
     listByStatus: async (statuses) =>

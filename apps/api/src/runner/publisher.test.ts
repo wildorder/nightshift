@@ -20,6 +20,7 @@ import {
   makeMembership,
   makeProgramContract,
   makeProject,
+  makeRun,
   nextUserId,
   nowIso,
   rearmPublication,
@@ -125,7 +126,9 @@ const world = async (remote: GitRemote = smartHttpRemote): Promise<World> => {
       },
     }),
   );
+  await stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
   await stores.dispatches.put(makeDispatch(f, { status: "running", instanceId: "i-1" }));
+  await stores.runs.put(makeRun(f, { status: "running", location: "remote" }));
   const bundles = new Map<string, Uint8Array>();
   const bundleStore: BundleStore = {
     get: async (key) => {

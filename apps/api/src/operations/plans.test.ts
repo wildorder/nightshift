@@ -603,8 +603,9 @@ describe("prerequisites (D-P7-05, D-P7-10)", () => {
     const dispatched = async (generation = 1) => {
       const w = await setup();
       const ratified = await ratify(w);
-      await call(w, "PUT", w.paths.run, makeRun(w.f));
+      await w.deps.stores.runs.put(makeRun(w.f, { status: "pending" }));
       await w.deps.stores.dispatches.put(makeDispatch(w.f, { generation }));
+      await call(w, "PUT", w.paths.run, makeRun(w.f));
       const path = `${w.paths.program}/prerequisites/HP-01`;
       const stored = async (): Promise<Prerequisite | undefined> =>
         (

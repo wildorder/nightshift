@@ -21,6 +21,7 @@ import {
   makeAgent,
   makeCompletionHistory,
   makeComputeUtilization,
+  makeDispatch,
   makeEvent,
   makeGateHealth,
   makeNode,
@@ -529,5 +530,43 @@ describe("a run and the program's live-run marker (S-01, PIP-9)", () => {
       ConsistentRead: true,
     });
     expect(gone.Item).toBeUndefined();
+  });
+
+  it("fails the settle's condition when a dispatch commits between its read and its write", async () => {
+    const f = createFixtures();
+    const table = new FakeTable({ tableName });
+    let stores: ReturnType<typeof createAwsStores> | undefined;
+    let interleaved = false;
+    const client = {
+      get: (input: Parameters<FakeTable["get"]>[0]) => table.get(input),
+      put: (input: Parameters<FakeTable["put"]>[0]) => table.put(input),
+      update: (input: Parameters<FakeTable["update"]>[0]) => table.update(input),
+      delete: (input: Parameters<FakeTable["delete"]>[0]) => table.delete(input),
+      scan: (input: Parameters<FakeTable["scan"]>[0]) => table.scan(input),
+      query: (input: Parameters<FakeTable["query"]>[0]) => table.query(input),
+      transactWrite: async (input: Parameters<FakeTable["transactWrite"]>[0]) => {
+        const settling = (input.TransactItems ?? []).some(
+          (item) => item.ConditionCheck?.Key?.SK === "DISPATCH",
+        );
+        if (settling && !interleaved) {
+          interleaved = true;
+          await stores?.dispatches.put(makeDispatch(f));
+        }
+        return table.transactWrite(input);
+      },
+    };
+    stores = createAwsStores({ tableName, table: client });
+    const holder = makeRun(f, { status: "pending", location: "remote" });
+    await stores.runs.put(holder);
+    const fresh = makeRun(f, {
+      runId: f.ids.next("run") as typeof holder.runId,
+      status: "pending",
+      startedAt: "2026-01-01T01:00:00.000Z",
+    });
+    await expect(stores.runs.put(fresh)).rejects.toMatchObject({ liveRunId: holder.runId });
+    expect(interleaved).toBe(true);
+    expect(await stores.runs.get(f.scope, holder.runId)).toEqual(holder);
+    expect(await stores.runs.get(f.scope, fresh.runId)).toBeUndefined();
+    expect(await stores.dispatches.get(f.scope)).toBeDefined();
   });
 });

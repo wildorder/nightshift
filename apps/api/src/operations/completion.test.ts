@@ -45,6 +45,8 @@ const setup = async (
   ) => ReturnType<typeof createInMemoryStores> = (stores) => stores,
   /** The sibling's run is stored still running, as `seedMeasured` needs it: a stored terminal run is never put back (PIP-9). */
   siblingOpen = false,
+  /** The anchor run has a dispatch, stored while it was still pending (D-07). */
+  anchorDispatched = false,
 ) => {
   const stores = createInMemoryStores();
   const f = createFixtures();
@@ -57,6 +59,10 @@ const setup = async (
   await stores.programContracts.put(makeProgramContract(f));
   const root = makeRootNode(f);
   await stores.executionNodes.put(root);
+  if (anchorDispatched) {
+    await stores.runs.put(makeRun(f, { status: "pending", rootNodeId: root.executionNodeId }));
+    await stores.dispatches.put(makeDispatch(f, { ...f.scope }));
+  }
   await stores.runs.put(
     makeRun(f, {
       status: "succeeded",
@@ -862,10 +868,9 @@ describe("measuring a checkpoint (D-05)", () => {
   });
 
   it("stores a local-run member's checkpoint with withoutMachine and no machine dollars", async () => {
-    const w = await setup(undefined, true);
+    const w = await setup(undefined, true, true);
     await seedMeasured(w);
     // The anchor has a dispatch; the open sibling is a local run with none.
-    await w.stores.dispatches.put(makeDispatch(w.f, { ...w.f.scope }));
     const stored = await created(w);
     const response = await w.call("PUT", w.path(), withSibling(w, stored));
     expect(response.status, JSON.stringify(response.body)).toBe(200);

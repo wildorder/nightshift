@@ -42,6 +42,7 @@ import {
   foldProgress,
   foldStages,
   foldUtilization,
+  IllegalTransitionError,
   installationGranting,
   isDispatchTerminal,
   isPlanned,
@@ -215,7 +216,14 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
     requestedAt: at,
     updatedAt: at,
   };
-  await deps.stores.dispatches.put(dispatch);
+  // The store commits a new dispatch only while the run is pending; a run
+  // settled as never started since the read above refuses it.
+  await deps.stores.dispatches.put(dispatch).catch((error: unknown) => {
+    if (error instanceof IllegalTransitionError) {
+      throw new HttpError(409, "run_not_pending", `run ${scope.runId} is no longer pending`);
+    }
+    throw error;
+  });
   // Recorded first, then provisioned: an invocation that fails leaves a
   // `requested` dispatch the reconciler picks up within its grace.
   await dispatcher.provision(scope).catch((error: unknown) => {
