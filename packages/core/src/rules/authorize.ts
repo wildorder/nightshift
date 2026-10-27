@@ -146,6 +146,18 @@ export type Operation =
   | "dispatch.cancel"
   | "dispatch.resume"
   | "dispatch.heartbeat"
+  // Pipkin M1b: the project line, its owner's batches and compositions, its push and its machine.
+  | "line.get"
+  | "line.takeBatch"
+  | "line.compose"
+  | "line.park"
+  | "line.decide"
+  | "line.announce"
+  | "line.settle"
+  | "line.push"
+  | "line.createBundleUploadUrl"
+  | "line.heartbeat"
+  | "line.cancel"
   // Publication of the program branch (D-P10-22).
   | "publication.request"
   // A strand's branch, as it moves (A-60).
@@ -340,6 +352,17 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
+  "line.get": "forbidden",
+  "line.takeBatch": "forbidden",
+  "line.compose": "forbidden",
+  "line.park": "forbidden",
+  "line.decide": "forbidden",
+  "line.announce": "forbidden",
+  "line.settle": "forbidden",
+  "line.push": "forbidden",
+  "line.createBundleUploadUrl": "forbidden",
+  "line.heartbeat": "forbidden",
+  "line.cancel": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -487,6 +510,17 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
+  "line.get": "forbidden",
+  "line.takeBatch": "forbidden",
+  "line.compose": "forbidden",
+  "line.park": "forbidden",
+  "line.decide": "forbidden",
+  "line.announce": "forbidden",
+  "line.settle": "forbidden",
+  "line.push": "forbidden",
+  "line.createBundleUploadUrl": "forbidden",
+  "line.heartbeat": "forbidden",
+  "line.cancel": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -665,6 +699,17 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "own_run",
+  "line.get": "forbidden",
+  "line.takeBatch": "forbidden",
+  "line.compose": "forbidden",
+  "line.park": "forbidden",
+  "line.decide": "forbidden",
+  "line.announce": "forbidden",
+  "line.settle": "forbidden",
+  "line.push": "forbidden",
+  "line.createBundleUploadUrl": "forbidden",
+  "line.heartbeat": "forbidden",
+  "line.cancel": "forbidden",
   "publication.request": "own_run",
   "publication.strand": "own_run",
   "publication.list": "own_program",
@@ -752,6 +797,7 @@ export const READ_OPERATIONS: ReadonlySet<Operation> = new Set<Operation>([
   "artifact.get",
   "orgConfig.get",
   "dispatch.get",
+  "line.get",
   "publication.list",
   "computeUtilization.get",
   "computeRecommendation.get",
@@ -792,6 +838,8 @@ export interface AuthorizationTarget {
   readonly runId?: RunId;
   readonly nodeId?: ExecutionNodeId;
   readonly agentId?: AgentId;
+  /** A project line's branch, decoded from the path (Pipkin M1b). */
+  readonly branch?: string;
   /**
    * For `node.put` only: the status the request asks the node to have. A plain
    * string because the body has not been validated yet when this is read; an
@@ -956,6 +1004,42 @@ const authorizeGeneration = (
 };
 
 /**
+ * The line owner (Pipkin M1b): every `line.*` operation but `line.cancel`, on
+ * its own project's own branch, and a write only under the line dispatch's
+ * current generation. Fails closed on an unresolved generation.
+ */
+const authorizeLine = (
+  principal: Extract<Principal, { kind: "line" }>,
+  operation: Operation,
+  target: AuthorizationTarget,
+): Authorization => {
+  if (!operation.startsWith("line.") || operation === "line.cancel") {
+    return refuse("execution_forbidden_operation", `a line token may not ${operation}`);
+  }
+  if (target.projectId !== principal.projectId || target.branch !== principal.branch) {
+    return refuse(
+      "execution_out_of_scope",
+      `a line token may only ${operation} for the project and branch it was issued for`,
+    );
+  }
+  if (!READ_OPERATIONS.has(operation)) {
+    if (target.currentGeneration === undefined) {
+      return refuse(
+        "stale_generation",
+        `a line token may ${operation} only once its dispatch's generation is known`,
+      );
+    }
+    if (principal.generation !== target.currentGeneration) {
+      return refuse(
+        "stale_generation",
+        `a line token minted under generation ${String(principal.generation)} may not ${operation}: the dispatch is at generation ${target.currentGeneration}`,
+      );
+    }
+  }
+  return ALLOWED;
+};
+
+/**
  * The one place a principal's reach is decided (D-P4-05).
  *
  * Pure and total: same inputs, same answer, no I/O, no clock. A user may do
@@ -968,6 +1052,7 @@ export const authorize = (
   target: AuthorizationTarget,
 ): Authorization => {
   if (principal.kind === "user") return authorizeUser(principal, operation, target);
+  if (principal.kind === "line") return authorizeLine(principal, operation, target);
 
   const access = ACCESS_BY_ROLE[principal.role][operation];
   if (access === "forbidden") {

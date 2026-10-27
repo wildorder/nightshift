@@ -3,8 +3,18 @@
  * memory and AWS adapters pass: `createInMemoryStores` over SQLite tables.
  */
 import { createLocalStores } from "@nightshift/persistence/local";
+import { describeLinePortConformance } from "./line-ports.js";
 import { describePortConformance } from "./persistence-ports.js";
 
-describePortConformance("local (SQLite)", () => createLocalStores({ file: ":memory:" }), {
-  identity: (stores) => stores,
-});
+describePortConformance(
+  "local (SQLite)",
+  (clock) => createLocalStores({ file: ":memory:", now: clock.now }),
+  {
+    identity: (stores) => stores,
+    seedLegacyRun: (stores, run) => stores.seedRunWithoutMarker(run),
+  },
+);
+
+describeLinePortConformance("local (SQLite)", (clock) =>
+  createLocalStores({ file: ":memory:", now: clock.now }),
+);

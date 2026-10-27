@@ -4,7 +4,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { join as posixJoin } from "node:path/posix";
@@ -1698,7 +1698,8 @@ describe("placing provider credentials (D-P10-23, D-P10-30)", () => {
   const codexLogin = JSON.stringify({ tokens: { access_token: "a", refresh_token: "r" } });
 
   it("owns the project user's copies again before writing them, once, and grants them after (2026-10-21)", async () => {
-    const base = await mkdtemp(join(tmpdir(), "nightshift-credentials-"));
+    const root = await mkdtemp(join(tmpdir(), "nightshift-credentials-"));
+    const base = posixJoin(root, "nightshift", "agent");
     const calls: string[] = [];
     const place = () =>
       placeProviderCredentials(
@@ -1726,11 +1727,12 @@ describe("placing provider credentials (D-P10-23, D-P10-30)", () => {
       `reclaim ${posixJoin(base, "project")}`,
       `grant project ${posixJoin(base, "project")}`,
     ]);
-    await rm(base, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   });
 
   it("reclaims nothing when no project user needs a copy", async () => {
-    const base = await mkdtemp(join(tmpdir(), "nightshift-credentials-"));
+    const root = await mkdtemp(join(tmpdir(), "nightshift-credentials-"));
+    const base = posixJoin(root, "nightshift", "agent");
     const calls: string[] = [];
     await placeProviderCredentials(
       f.scope.runId,
@@ -1742,7 +1744,30 @@ describe("placing provider credentials (D-P10-23, D-P10-30)", () => {
       base,
     );
     expect(calls).toEqual([]);
-    await rm(base, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("makes every ancestor of the project's CODEX_HOME traversable with no token installed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "nightshift-credentials-"));
+    const shm = posixJoin(root, "nightshift");
+    const base = posixJoin(shm, "agent");
+    const granted: string[] = [];
+    const env = await placeProviderCredentials(
+      "agent",
+      { openai: codexLogin },
+      { user: "project", grant: async (_user, path) => void granted.push(path) },
+      base,
+    );
+    const mode = async (path: string) => (await stat(path)).mode & 0o777;
+    if (process.platform !== "win32") {
+      expect(await mode(shm)).toBe(0o711);
+      expect(await mode(base)).toBe(0o711);
+      expect(await mode(posixJoin(base, "project"))).toBe(0o711);
+      expect(await mode(env.CODEX_HOME as string)).toBe(0o700);
+      expect(await mode(posixJoin(env.CODEX_HOME as string, "auth.json"))).toBe(0o600);
+    }
+    expect(granted).toEqual([posixJoin(base, "project")]);
+    await rm(root, { recursive: true, force: true });
   });
 });
 

@@ -7,16 +7,25 @@
  */
 import { readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { createEventOutbox, recordArtifact } from "@nightshift/execution";
-import { createRunnerPlane, createRuntime } from "../compose.js";
+import { createUlidIdGenerator, systemClock } from "@nightshift/core";
+import { createEventOutbox, nodeGitRunner, recordArtifact } from "@nightshift/execution";
+import {
+  createLineHarnesses,
+  createLineRunnerPlane,
+  createLineScratchPaths,
+  createRunnerPlane,
+  createRuntime,
+} from "../compose.js";
 import { describeHeadlessEnding, describeRoutesLimited, runHeadless } from "../headless.js";
-import { createReclaim } from "../run-as.js";
+import { createProjectUser, createReclaim } from "../run-as.js";
+import { runLineOwner } from "../runner/line-owner.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
 import {
   awaitProviderCredentials,
   installTokenFile,
   placeProviderCredentials,
+  projectCredentialRoot,
   rootEnvironment,
   startCodexWatch,
   tokenFile,
@@ -30,6 +39,7 @@ runRunner({
   machine: nodeMachine,
   log: say,
   plane: createRunnerPlane,
+  linePlane: createLineRunnerPlane,
   workspace: process.env.NIGHTSHIFT_WORKSPACE ?? "/workspace",
   device: process.env.NIGHTSHIFT_WORKSPACE_DEVICE ?? "/dev/xvdf",
   sidecar: process.env.NIGHTSHIFT_SIDECAR ?? "/workspace-sidecar",
@@ -41,6 +51,8 @@ runRunner({
     : { projectUser: process.env.NIGHTSHIFT_PROJECT_USER }),
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
   onToken: (token, scope) => installTokenFile(scope.runId, token),
+  // The line owner's token, where a run's is: the machine's layout is the same.
+  onLineToken: (token, identity) => installTokenFile(identity.engineAgentId, token),
   readCachedToken: async (scope) => {
     try {
       return await readFile(tokenFile(scope.runId), "utf8");
@@ -48,6 +60,57 @@ runRunner({
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     }
+  },
+  // The line owner (Pipkin M1b): a machine tagged as a line's runs this, not the root.
+  lineWork: async (context) => {
+    const projectUser = process.env.NIGHTSHIFT_PROJECT_USER;
+    const user = projectUser === undefined || projectUser === "" ? undefined : projectUser;
+    const agentId = context.identity.engineAgentId;
+    return runLineOwner(context, {
+      git: nodeGitRunner,
+      ids: createUlidIdGenerator(),
+      clock: systemClock,
+      paths: createLineScratchPaths(process.env),
+      parentEnv: process.env,
+      upload: async ({ url, contentType, file }) => {
+        const bytes = await readFile(file);
+        const response = await fetch(url, {
+          method: "PUT",
+          headers: { "content-type": contentType, "content-length": String(bytes.length) },
+          body: bytes,
+        });
+        if (!response.ok) {
+          throw new Error(`the bundle upload answered ${response.status}`);
+        }
+      },
+      createHarnesses: createLineHarnesses,
+      placeCredentials: (credentials) =>
+        placeProviderCredentials(agentId, credentials, {
+          ...(user === undefined ? {} : { user }),
+          grant: async (granted, path) => {
+            const owned = await context.machine.exec("sudo", [
+              "chown",
+              "-R",
+              `${granted}:${granted}`,
+              path,
+            ]);
+            if (owned.exitCode !== 0)
+              throw new Error(`chown ${path} to ${granted}: ${owned.stderr}`);
+          },
+          reclaim: createReclaim(userInfo().username),
+        }),
+      ...(user === undefined
+        ? {}
+        : {
+            runAs: (projectEnv) =>
+              createProjectUser({
+                user,
+                credentialRoot: projectCredentialRoot(agentId),
+                projectEnv,
+              })({ agentId, role: "line" }),
+            reclaim: createReclaim(userInfo().username),
+          }),
+    });
   },
   work: async (context) => {
     // `running` first: the plane hands the org's provider keys to a running

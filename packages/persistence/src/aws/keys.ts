@@ -159,6 +159,12 @@ export const keys = {
   /** The publisher's lock on a run's intents (P10, D-P10-22): one row per run, with an expiry. */
   publishLock: (runId: RunId): TableKey => ({ PK: `RUN#${runId}`, SK: "PUBLISH-LOCK" }),
 
+  /** The publisher's lock on a line's push (Pipkin M1b): one row per line branch, with an expiry. */
+  linePublishLock: (projectId: ProjectId, branch: string): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `LINE-PUBLISH-LOCK#${branch}`,
+  }),
+
   /** Which org holds a GitHub App installation (P10, D-P10-02): one row per installation. */
   installationClaim: (installationId: number): TableKey => ({
     PK: `INSTALL#${installationId}`,
@@ -240,6 +246,61 @@ export const keys = {
   run: (scope: ProgramScope, runId: RunId): TableKey => ({
     PK: `PROJ#${scope.projectId}#PROG#${scope.programId}`,
     SK: `RUN#${runId}`,
+  }),
+
+  /**
+   * The program's live-run marker (S-01, PIP-9): the run that holds the program's
+   * one live slot. Beside the program's runs, but its sort key does not begin
+   * with `RUN#`, so a listing of the runs never reads it.
+   */
+  programLiveRun: (scope: ProgramScope): TableKey => ({
+    PK: `PROJ#${scope.projectId}#PROG#${scope.programId}`,
+    SK: "LIVERUN",
+  }),
+
+  /** A project's line (Pipkin M1b), one row per line branch, under the project. */
+  line: (projectId: ProjectId, branch: string): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `LINE#${branch}`,
+  }),
+
+  /**
+   * The line's place in the work index: sparse, the line carries it only while
+   * `lineHasWork` holds, so one query of the partition lists every line with work.
+   */
+  lineWorkIndex: (projectId: ProjectId, branch: string): NodeIndexKey => ({
+    GSI1PK: "LINEWORK",
+    GSI1SK: `${projectId}#${branch}`,
+  }),
+
+  lineWorkIndexPartition: () => ({ GSI1PK: "LINEWORK", prefix: "" }),
+
+  /** A line owner's dispatch (Pipkin M1b): one row per line branch. */
+  lineDispatch: (projectId: ProjectId, branch: string): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `LINEDISPATCH#${branch}`,
+  }),
+
+  /** The line dispatches by status, on the node index as `dispatchIndex` is. */
+  lineDispatchIndex: (
+    status: DispatchStatus,
+    updatedAt: string,
+    projectId: ProjectId,
+    branch: string,
+  ): NodeIndexKey => ({
+    GSI1PK: `LINEDISPATCH#${status}`,
+    GSI1SK: `${updatedAt}#${projectId}#${branch}`,
+  }),
+
+  lineDispatchIndexPartition: (status: DispatchStatus) => ({
+    GSI1PK: `LINEDISPATCH#${status}`,
+    prefix: "",
+  }),
+
+  /** What a project's plane-started runs have cost it in one month. */
+  projectSelfStartedUsage: (projectId: ProjectId, month: CalendarMonth): TableKey => ({
+    PK: `PROJ#${projectId}`,
+    SK: `SELFSTARTED#${month}`,
   }),
 
   runPartition: (scope: ProgramScope) => ({

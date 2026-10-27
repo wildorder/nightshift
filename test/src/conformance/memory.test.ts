@@ -11,19 +11,24 @@
  * `identity` and the identity section runs.
  */
 import { createInMemoryStores } from "@nightshift/persistence/memory";
+import { describeLinePortConformance } from "./line-ports.js";
 import { describePortConformance } from "./persistence-ports.js";
 
-describePortConformance("in-memory", () => createInMemoryStores(), {
+describePortConformance("in-memory", (clock) => createInMemoryStores({ now: clock.now }), {
   identity: (stores) => stores,
+  seedLegacyRun: (stores, run) => stores.seedRunWithoutMarker(run),
 });
 
 describePortConformance(
   "in-memory, deferred sequencing",
-  () => createInMemoryStores({ deferSequencing: true }),
+  (clock) => createInMemoryStores({ deferSequencing: true, now: clock.now }),
   {
     identity: (stores) => stores,
+    seedLegacyRun: (stores, run) => stores.seedRunWithoutMarker(run),
     settle: (stores) => {
       stores.materializeSequences();
     },
   },
 );
+
+describeLinePortConformance("in-memory", (clock) => createInMemoryStores({ now: clock.now }));

@@ -40,6 +40,8 @@ import type {
   GateHealth,
   JobContract,
   JobContractId,
+  LineDispatch,
+  LineRecord,
   MeasurementSummary,
   MeasurementSummaryId,
   Membership,
@@ -56,6 +58,7 @@ import type {
   ProjectId,
   ProjectSecret,
   ProjectSecretView,
+  ProjectSelfStartedUsage,
   Provider,
   RoutingDecision,
   Run,
@@ -128,6 +131,42 @@ export interface ProgramContractStore {
 }
 
 export interface RunStore {
+  /**
+   * Writes the run and guards one live run per program, atomically (S-01, PIP-9):
+   *
+   * - A non-terminal status (pending/running) claims the program's live-run
+   *   marker in the same atomic operation as the run record. If another run of
+   *   the program holds it, throws `ProgramRunLiveError` naming the holder and
+   *   writes nothing. A run that holds the marker itself may be put again.
+   * - An absent marker is not proof the program is free: a live run stored before
+   *   the marker existed holds it. The store finds such a run, claims the marker
+   *   on its behalf, and decides as for any holder. With several it prefers one
+   *   that cannot be settled: running first, then pending with a dispatch, then
+   *   the lowest run id (`chooseLiveHolder`).
+   *   The legacy run's own live and terminal puts keep working.
+   * - A holder that is still `pending`, has no dispatch, and was claimed longer
+   *   than `NEVER_STARTED_GRACE` ago is ended as interrupted ("never started")
+   *   in the same operation. "Ago" and the ending time are the store's own
+   *   trusted clock; the marker records `claimedAt` from it, and a marker without
+   *   one counts as claimed when first read. A run's `startedAt` is never used.
+   *   If other non-terminal runs of the program remain (legacy runs), the holder
+   *   is still ended, the marker moves to one of them (chosen as above, claimed
+   *   now), and the put is refused with `ProgramRunLiveError` naming it without
+   *   storing the run. The run is admitted only when no other live run remains.
+   * - A marker whose holder run is missing or already terminal is stale (a
+   *   release or an adoption raced): it never refuses a put. The new run's claim
+   *   replaces it in the same atomic operation. Adopting a legacy holder's marker
+   *   is atomic with that holder still being live, so no marker is ever left for
+   *   a terminal run.
+   * - A terminal status (`RUN_TERMINAL_STATUSES`) always persists the run, and
+   *   releases the marker in the same atomic operation if and only if this run
+   *   holds it. A terminal put of a run that does not hold the marker (absent,
+   *   held by another run, or a repeated terminal write after release) persists
+   *   the run and leaves the marker untouched.
+   * - A put that would move a stored terminal run back to a non-terminal status
+   *   throws `IllegalTransitionError`, so an attach cannot revive a run ended
+   *   under it.
+   */
   put(run: Run): Promise<void>;
   get(scope: ProgramScope, runId: RunId): Promise<Run | undefined>;
   listByProgram(scope: ProgramScope, page?: PageRequest): Promise<Page<Run>>;
@@ -484,6 +523,70 @@ export interface ComputeLedgerStore {
 }
 
 /**
+ * A project's line (Pipkin M1b): one record per (project, line branch), written
+ * by compare-and-swap on its `version`.
+ */
+export interface LineStore {
+  get(projectId: ProjectId, branch: string): Promise<LineRecord | undefined>;
+  /**
+   * Applies `change` to the current record (`undefined` when absent) and stores
+   * what it returns, stamped with the next `version` (1 when created). A
+   * concurrent writer is met by re-reading and calling `change` again, so
+   * `change` must be pure. Returning `undefined` changes nothing. Answers the
+   * stored record, or the current one when nothing changed.
+   */
+  update(
+    projectId: ProjectId,
+    branch: string,
+    change: (current: LineRecord | undefined) => LineRecord | undefined,
+  ): Promise<LineRecord | undefined>;
+  /**
+   * Every line, across projects, for which `lineHasWork` holds: the
+   * **reconciler's** read, like `DispatchStore.listByStatus`. No route serves it.
+   */
+  listWithWork(): Promise<readonly LineRecord[]>;
+}
+
+/** Whether `LineDispatchStore.start` stored the dispatch, or one was already live. */
+export type LineDispatchStart = "started" | "live";
+
+/** The machine of one line owner, one per (project, line branch). */
+export interface LineDispatchStore {
+  get(projectId: ProjectId, branch: string): Promise<LineDispatch | undefined>;
+  /**
+   * Stores `next` only when none is stored, or the stored one is `stopped` or
+   * `failed` with `cleanup.settledAt` set and `next.generation` is its
+   * generation plus one. Otherwise `live`, and nothing changes. Atomic, so of
+   * two concurrent starts exactly one answers `started`.
+   */
+  start(next: LineDispatch): Promise<LineDispatchStart>;
+  /**
+   * Applies `change` to the stored dispatch by compare-and-swap on `version`,
+   * for claims and transitions; stamps the next `version`. `change` must be
+   * pure: it is called again on a lost race. Returning `undefined` changes
+   * nothing. Answers the stored dispatch, or `undefined` when there is none.
+   */
+  update(
+    projectId: ProjectId,
+    branch: string,
+    change: (current: LineDispatch) => LineDispatch | undefined,
+  ): Promise<LineDispatch | undefined>;
+  /** Every dispatch in one of `statuses`, across projects: the reconciler's read. */
+  listByStatus(statuses: readonly DispatchStatus[]): Promise<readonly LineDispatch[]>;
+}
+
+/** What the plane's own starts have cost one project this month, against its cap. */
+export interface ProjectSelfStartedUsageStore {
+  get(projectId: ProjectId, month: CalendarMonth): Promise<ProjectSelfStartedUsage | undefined>;
+  /** As `LineStore.update`, keyed by project and month. */
+  update(
+    projectId: ProjectId,
+    month: CalendarMonth,
+    change: (current: ProjectSelfStartedUsage | undefined) => ProjectSelfStartedUsage | undefined,
+  ): Promise<ProjectSelfStartedUsage | undefined>;
+}
+
+/**
  * Everything a *run* persists (T2).
  *
  * Split out from {@link NightshiftStores} in P3 because the two halves have
@@ -523,6 +626,10 @@ export interface ProjectStores {
   readonly feedback: RunFeedbackStore;
   // P20 (D-05): explicit groupings of runs that delivered one outcome.
   readonly completionHistories: CompletionHistoryStore;
+  // Pipkin M1b: the project line, its owner's machine, and the project's self-started spend.
+  readonly lines: LineStore;
+  readonly lineDispatches: LineDispatchStore;
+  readonly projectSelfStartedUsage: ProjectSelfStartedUsageStore;
 }
 
 /**

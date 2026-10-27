@@ -364,8 +364,19 @@ export class NightshiftRunnerStack extends Stack {
     const dispatchLogs = this.logGroup("DispatchFunctionLogs");
     const dispatchRole = this.executionRole("DispatchFunctionRole", dispatchLogs, [
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:Query",
+        ],
         resources: [tableArn],
+      }),
+      // Provisioning counts the live run dispatches and line dispatches by
+      // status, which is a query on the node index.
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Query"],
+        resources: [`${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
       // Launch a machine from the one template, create its volume (from a
       // snapshot or empty), and tag what it makes. `RunInstances` needs the
@@ -447,7 +458,7 @@ export class NightshiftRunnerStack extends Stack {
     const reconcilerLogs = this.logGroup("ReconcilerFunctionLogs");
     const reconcilerRole = this.executionRole("ReconcilerFunctionRole", reconcilerLogs, [
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
         resources: [tableArn],
       }),
       // The reconciler's one cross-project read, every dispatch by status, is a
@@ -567,7 +578,7 @@ export class NightshiftRunnerStack extends Stack {
     const publisherLogs = this.logGroup("PublisherFunctionLogs");
     const publisherRole = this.executionRole("PublisherFunctionRole", publisherLogs, [
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
         resources: [tableArn],
       }),
       // The bundles the engine uploaded, read back to push (D-P10-22).
@@ -598,6 +609,14 @@ export class NightshiftRunnerStack extends Stack {
     // passing push failure is retried, and a run's last landing is never left
     // waiting for a next one that will not come.
     publisherFunction.grantInvoke(reconcilerRole);
+    // The reconciler also starts a line owner for a line with work and no live
+    // dispatch, and the publisher starts one when it queues a range (Pipkin M1b).
+    dispatchFunction.grantInvoke(reconcilerRole);
+    dispatchFunction.grantInvoke(publisherRole);
+    publisherFunction.addEnvironment(
+      "NIGHTSHIFT_DISPATCH_FUNCTION_ARN",
+      dispatchFunction.functionArn,
+    );
     reconcilerFunction.addEnvironment(
       "NIGHTSHIFT_PUBLISHER_FUNCTION_ARN",
       publisherFunction.functionArn,

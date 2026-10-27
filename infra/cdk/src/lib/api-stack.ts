@@ -264,10 +264,11 @@ export class NightshiftApiStack extends Stack {
     const apiLogs = this.logGroup("ApiFunctionLogs");
     const apiRole = this.executionRole("ApiFunctionRole", apiLogs, [
       // Exactly what the adapters call: gets and puts (including the puts inside
-      // TransactWriteItems, which IAM authorises per item) and queries on the
-      // table and its two indexes. No update or delete: the API never issues one.
+      // TransactWriteItems, which IAM authorises per item), the condition checks
+      // inside them (the one-live-run guard, A-66), and queries on the table and
+      // its two indexes. No update or delete: the API never issues one.
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
         resources: [tableArn],
       }),
       new iam.PolicyStatement({
@@ -476,7 +477,13 @@ export class NightshiftApiStack extends Stack {
       // Reads of the event and counter, the counter's first put, and the
       // transactional updates that advance it and stamp the event.
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          // Any writer of the table may meet the shared adapter's condition checks.
+          "dynamodb:ConditionCheckItem",
+        ],
         resources: [tableArn],
       }),
     ]);

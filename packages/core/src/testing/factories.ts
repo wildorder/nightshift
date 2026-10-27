@@ -31,6 +31,12 @@ import {
   GateHealthSchema,
   type JobContract,
   JobContractSchema,
+  type LineDispatch,
+  LineDispatchSchema,
+  type LineRecord,
+  LineRecordSchema,
+  type LineVerification,
+  LineVerificationSchema,
   type PlanDraft,
   PlanDraftSchema,
   type PlanDraftVersion,
@@ -526,3 +532,60 @@ export const makeCompletionHistory = (
 };
 
 export const FIXTURE_TIMESTAMP = AT;
+
+/** Pipkin M1b: a project's line with nothing queued. */
+export const makeLineRecord = (f: Fixtures, overrides: Overrides<LineRecord> = {}): LineRecord =>
+  LineRecordSchema.parse({
+    schemaVersion: 1,
+    projectId: f.scope.projectId,
+    branch: "nightshift/develop",
+    repositoryUrl: "https://github.com/example/fixture",
+    version: 1,
+    queue: [],
+    compositions: [],
+    parked: [],
+    updatedAt: AT,
+    ...overrides,
+  });
+
+/** Pipkin M1b: the line owner's machine, freshly requested. */
+export const makeLineDispatch = (
+  f: Fixtures,
+  overrides: Overrides<LineDispatch> = {},
+): LineDispatch =>
+  LineDispatchSchema.parse({
+    schemaVersion: 1,
+    projectId: f.scope.projectId,
+    branch: "nightshift/develop",
+    version: 1,
+    status: "requested",
+    tier: "good",
+    instanceType: "c8id.2xlarge",
+    usdPerHour: 0.44352,
+    amiVersion: "1.0.0",
+    generation: 1,
+    engineAgentId: f.ids.next("agent"),
+    attempts: [{ generation: 1, reason: "dispatch", startedAt: AT }],
+    spend: { estimatedUsd: 0.45, meteredUsd: 0, meteredSeconds: 0 },
+    cleanup: { volumeDeleted: false, failures: [] },
+    requestedAt: AT,
+    updatedAt: AT,
+    ...overrides,
+  });
+
+/** Pipkin M1b: a passing verification made on the line. */
+export const makeLineVerification = (
+  f: Fixtures,
+  overrides: Overrides<LineVerification> = {},
+): LineVerification =>
+  LineVerificationSchema.parse({
+    verificationId: f.ids.next("ver"),
+    phase: "line",
+    commitSha: FIXTURE_COMMIT,
+    baseSha: FIXTURE_COMMIT,
+    commands: [{ stepId: "test", command: "npm test", exitCode: 0, durationMs: 1 }],
+    outcome: "passed",
+    startedAt: AT,
+    endedAt: AT,
+    ...overrides,
+  });

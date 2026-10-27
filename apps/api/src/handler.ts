@@ -48,6 +48,19 @@ import { getFeedback, listFeedbackByProgram, putFeedback } from "./operations/fe
 import { getGateHealth, putGateHealth } from "./operations/gate-health.js";
 import { deleteOrgGithub, getGithubApp, getOrgGithub, putOrgGithub } from "./operations/github.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
+import {
+  cancelLineDispatch,
+  createLineBundleUploadUrl,
+  getLine,
+  lineHeartbeat,
+  postLineAgent,
+  postLineComposition,
+  postLineDecision,
+  postLineParked,
+  postLinePush,
+  postLineSettle,
+  takeLineBatch,
+} from "./operations/line.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
 import { getOrgConfig, putOrgConfig } from "./operations/org-config.js";
 import {
@@ -117,12 +130,52 @@ const PROJECT = "/projects/{projectId}";
 const PROGRAM = `${PROJECT}/programs/{programId}`;
 const RUN = `${PROGRAM}/runs/{runId}`;
 const NODE = `${RUN}/nodes/{nodeId}`;
+// The project line (Pipkin M1b): the branch is one URL-encoded segment, matching `routes.line`.
+const LINE = `${PROJECT}/line/{branch}`;
 
 /**
  * The API surface, grouped by aggregate. P11 will read this table, so it is kept
  * readable and nothing is added that the slice does not use (T2).
  */
 export const ROUTES: readonly Route[] = [
+  // The project line and its owner (Pipkin M1b).
+  { method: "GET", path: LINE, operation: "line.get", handler: getLine },
+  { method: "POST", path: `${LINE}/batch`, operation: "line.takeBatch", handler: takeLineBatch },
+  {
+    method: "POST",
+    path: `${LINE}/compositions`,
+    operation: "line.compose",
+    handler: postLineComposition,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/decisions`,
+    operation: "line.decide",
+    handler: postLineDecision,
+  },
+  { method: "POST", path: `${LINE}/agents`, operation: "line.announce", handler: postLineAgent },
+  { method: "POST", path: `${LINE}/parked`, operation: "line.park", handler: postLineParked },
+  { method: "POST", path: `${LINE}/settle`, operation: "line.settle", handler: postLineSettle },
+  { method: "POST", path: `${LINE}/push`, operation: "line.push", handler: postLinePush },
+  {
+    method: "POST",
+    path: `${LINE}/bundle-upload-url`,
+    operation: "line.createBundleUploadUrl",
+    handler: createLineBundleUploadUrl,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/heartbeat`,
+    operation: "line.heartbeat",
+    handler: lineHeartbeat,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/dispatch/cancel`,
+    operation: "line.cancel",
+    handler: cancelLineDispatch,
+  },
+
   // An organisation's routing and examination policy (P8, D-P8-02).
   {
     method: "GET",
@@ -648,6 +701,7 @@ export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise
       memberships: deps.stores.memberships,
       nodes: deps.stores.executionNodes,
       dispatches: deps.stores.dispatches,
+      lineDispatches: deps.stores.lineDispatches,
       projectOrgs:
         deps.projectOrgs ??
         createProjectOrgCache({ projects: deps.stores.projects, clock: deps.clock }),

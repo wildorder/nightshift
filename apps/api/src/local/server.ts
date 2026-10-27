@@ -130,7 +130,8 @@ interface Issued {
 
 interface IssuedUpload extends Issued {
   readonly contentType: string;
-  readonly sizeBytes: number;
+  /** Absent for a key signed without a declared size (`signKey`). */
+  readonly sizeBytes: number | undefined;
 }
 
 const readBody = (request: IncomingMessage): Promise<Buffer> =>
@@ -179,7 +180,7 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
   let nextToken = 0;
   let origin = "";
 
-  const signUploadTo = (key: string, contentType: string, sizeBytes: number) => {
+  const signUploadTo = (key: string, contentType: string, sizeBytes: number | undefined) => {
     nextToken += 1;
     const token = `t${nextToken}`;
     const expiresAtMs = clock.now() + SIGNATURE_TTL_SECONDS * 1000;
@@ -225,6 +226,8 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
         request.contentType,
         request.sizeBytes,
       ),
+    // The line's bundles (Pipkin M1b): a key the caller built, no declared size.
+    signKey: async (key, contentType) => signUploadTo(key, contentType, undefined),
   };
 
   const downloads: ArtifactDownloadSigner = {
@@ -281,7 +284,7 @@ export const startLocalServer = async (options: LocalServerOptions): Promise<Loc
       );
     }
     const body = await readBody(request);
-    if (body.length !== promised.sizeBytes) {
+    if (promised.sizeBytes !== undefined && body.length !== promised.sizeBytes) {
       return refuse(
         response,
         400,

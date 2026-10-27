@@ -32,6 +32,7 @@ import {
   DEFAULT_ROUTING_POLICY,
   type Event,
   type ExaminationPolicy,
+  type IsoTimestamp,
   type OrgId,
   type ProgramContract,
   type ProgramId,
@@ -217,7 +218,14 @@ export const createBaseWorld = async (options: BaseWorldOptions = {}): Promise<B
   await mkdir(stateDir, { recursive: true });
   await writeFixture(repo);
 
-  const backing = createInMemoryStores({ deferSequencing: true });
+  // A suite that pins the clock pins the store's too (F-02): its liveness
+  // decisions read the trusted clock, and the default stepping one would be
+  // advanced by every put.
+  const pinned = options.clock;
+  const backing = createInMemoryStores({
+    deferSequencing: true,
+    ...(pinned === undefined ? {} : { now: () => nowIso(pinned) as IsoTimestamp }),
+  });
   const ids = createUlidIdGenerator();
   const subject = "11111111-2222-3333-4444-555555555555";
   const orgId = ids.next("org");
@@ -393,7 +401,6 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
     programId: program.programId,
     runId: started.run.runId,
   };
-  await stores.runs.put({ ...started.run, status: "running" });
 
   const orchestrator: Agent = {
     schemaVersion: 1,
@@ -417,11 +424,15 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
 
   // The engine's world: what a machine holds instead of the operator's session.
   let acting = { stores, bodies, tokens: base.tokens };
+  // A new dispatch is stored only while its run is pending (D-07), so the run
+  // is attached after the engine's dispatch.
+  if (options.engine !== true) await stores.runs.put({ ...started.run, status: "running" });
   if (options.engine === true) {
     const fixtures = createFixtures();
     await base.backing.dispatches.put(
       makeDispatch(fixtures, { ...scope, engineAgentId: orchestrator.agentId, generation: 1 }),
     );
+    await stores.runs.put({ ...started.run, status: "running" });
     // An earlier run of the same program: the program's memory the engine reads.
     await base.backing.runs.put(
       makeRun(fixtures, {

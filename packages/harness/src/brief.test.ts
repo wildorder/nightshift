@@ -7,7 +7,12 @@ import {
   makeRootNode,
 } from "@nightshift/core";
 import { describe, expect, it } from "vitest";
-import { nightshiftToolNames, renderWorkerBrief, STRAND_DEPARTURE_PREFIX } from "./brief.js";
+import {
+  nightshiftToolNames,
+  renderLineBrief,
+  renderWorkerBrief,
+  STRAND_DEPARTURE_PREFIX,
+} from "./brief.js";
 import type { EarlierFinding } from "./harness.js";
 
 const build = (programOverrides: Partial<Record<keyof ProgramContract, unknown>> = {}) => {
@@ -825,5 +830,22 @@ describe("the earlier findings an examiner is shown (P20 S-05)", () => {
   it("says nothing of earlier findings on a first attempt", () => {
     const text = brief(undefined, 0);
     expect(text).not.toContain("repeats: { examinationId, findingId }");
+  });
+});
+
+describe("renderLineBrief (strand S-04)", () => {
+  it("renders the resolver's task with the git write rule", () => {
+    const text = renderLineBrief({ kind: "line_resolve", brief: "CONFLICT IN a.ts" });
+    expect(text).toContain("line resolver");
+    expect(text).toContain("CONFLICT IN a.ts");
+    expect(text).toContain("Do not run git commands that write state");
+  });
+
+  it("asks the examiner for a final fenced JSON verdict and forbids edits", () => {
+    const text = renderLineBrief({ kind: "line_examine", brief: "COMMIT abc" });
+    expect(text).toContain("COMMIT abc");
+    expect(text).toContain('"verdict": "approved" | "rejected"');
+    expect(text).toContain("```json");
+    expect(text).toContain("do not edit any file");
   });
 });

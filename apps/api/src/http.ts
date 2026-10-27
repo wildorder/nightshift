@@ -2,7 +2,7 @@
  * The request and response shapes the handler works in, independent of API
  * Gateway. Tests speak these; only `lambda/api-handler.ts` knows the Lambda event.
  */
-import type { ErrorResponse } from "@nightshift/contracts";
+import type { ErrorResponse, ProjectId } from "@nightshift/contracts";
 import type {
   ArtifactDownloadSigner,
   ArtifactUploadSigner,
@@ -103,6 +103,10 @@ export interface Dispatcher {
   provision(scope: RunScope): Promise<void>;
   /** The publisher Lambda (D-P10-22), invoked when an intent is recorded; absent where nothing publishes. */
   publish?(scope: RunScope): Promise<void>;
+  /** Brings up the project line's owner machine (Pipkin M1b); absent where nothing provisions a line. */
+  provisionLine?(target: { readonly projectId: ProjectId; readonly branch: string }): Promise<void>;
+  /** The publisher for the project line's push (Pipkin M1b); absent where nothing publishes. */
+  publishLine?(target: { readonly projectId: ProjectId; readonly branch: string }): Promise<void>;
 }
 
 /** Where execution tokens come from, and who they say issued them. */
@@ -129,8 +133,14 @@ export const errorBody = (
   code: string,
   message: string,
   issues?: readonly unknown[],
+  fields?: Readonly<Record<string, unknown>>,
 ): ErrorResponse => ({
-  error: issues === undefined ? { code, message } : { code, message, issues: [...issues] },
+  error: {
+    code,
+    message,
+    ...(issues === undefined ? {} : { issues: [...issues] }),
+    ...fields,
+  },
 });
 
 /** Validates a request body. Always the first thing an operation does (T4 deliverable 2). */

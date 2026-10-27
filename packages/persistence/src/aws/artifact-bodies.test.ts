@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import type { S3Client } from "@aws-sdk/client-s3";
-import { createFixtures } from "@nightshift/core";
+import { createFixtures, lineBundleObjectKey } from "@nightshift/core";
 import { describe, expect, it } from "vitest";
 import {
   createArtifactBodyStore,
   createArtifactDownloadSigner,
+  createArtifactUploadSigner,
   createPlanDocumentStore,
   DOWNLOAD_URL_TTL_SECONDS,
   UPLOAD_URL_TTL_SECONDS,
@@ -179,5 +180,57 @@ describe("signed downloads (P11, D-P11-06)", () => {
       },
     ]);
     expect(DOWNLOAD_URL_TTL_SECONDS).toBe(UPLOAD_URL_TTL_SECONDS);
+  });
+});
+
+describe("signed uploads to a key the caller names (Pipkin M1b)", () => {
+  it("signs a line bundle's key with its content type, and no declared size", async () => {
+    const f = createFixtures();
+    const signed: unknown[] = [];
+    const signer = createArtifactUploadSigner({
+      bucketName: "bucket",
+      s3: {} as S3Client,
+      now: () => Date.parse("2026-10-27T10:00:00.000Z"),
+      sign: async (input) => {
+        signed.push(input);
+        return "https://signed.invalid/line";
+      },
+    });
+    const key = lineBundleObjectKey(f.scope.projectId, "nightshift/develop", 3, "pack-1");
+    expect(key).toBe(`${f.scope.projectId}/line/nightshift%2Fdevelop/3/pack-1.pack`);
+    const target = await signer.signKey?.(key, "application/octet-stream");
+    expect(target).toEqual({
+      uri: `s3://bucket/${key}`,
+      uploadUrl: "https://signed.invalid/line",
+      key,
+      contentType: "application/octet-stream",
+      expiresAt: new Date(
+        Date.parse("2026-10-27T10:00:00.000Z") + UPLOAD_URL_TTL_SECONDS * 1000,
+      ).toISOString(),
+    });
+    expect(signed).toEqual([
+      {
+        bucket: "bucket",
+        key,
+        contentType: "application/octet-stream",
+        expiresIn: UPLOAD_URL_TTL_SECONDS,
+      },
+    ]);
+  });
+
+  it("presigns a real URL that signs the content type and not a length", async () => {
+    const signer = createArtifactUploadSigner({
+      bucketName: "bucket",
+      s3: new (await import("@aws-sdk/client-s3")).S3Client({
+        region: "eu-west-1",
+        credentials: { accessKeyId: "AKIAFAKE", secretAccessKey: "secret" },
+      }),
+    });
+    const target = await signer.signKey?.("proj/line/b/1/p.pack", "application/octet-stream");
+    const url = new URL(target?.uploadUrl ?? "");
+    expect(url.pathname).toBe("/proj/line/b/1/p.pack");
+    const signedHeaders = url.searchParams.get("X-Amz-SignedHeaders") ?? "";
+    expect(signedHeaders.split(";")).toContain("content-type");
+    expect(signedHeaders.split(";")).not.toContain("content-length");
   });
 });

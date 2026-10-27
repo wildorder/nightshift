@@ -5,7 +5,7 @@
  * each repair with the decision it was made under
  * and the gate definitions it landed, and each check that flaked.
  */
-import { type EnvironmentFaultPayload, VERIFICATION_PHASES } from "@nightshift/contracts";
+import { type EnvironmentFaultPayload, RUN_VERIFICATION_PHASES } from "@nightshift/contracts";
 import type {
   GateHealthReport,
   RepairReport,
@@ -87,7 +87,7 @@ export const VerificationTime = ({ time }: { readonly time: VerificationTimeRepo
                 {step.runs === 0 ? "—" : humanDuration(step.quietMs / step.runs)}
               </td>
               <td className="p-1">
-                {VERIFICATION_PHASES.map((phase) => step.byPhase[phase].runs).join(" / ")}
+                {RUN_VERIFICATION_PHASES.map((phase) => step.byPhase[phase].runs).join(" / ")}
               </td>
               <td className="p-1">
                 {step.forecastMs === undefined ? "—" : humanDuration(step.forecastMs)}

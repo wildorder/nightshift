@@ -12,6 +12,7 @@ import { z } from "zod";
 import { ProjectIdSchema } from "../ids.js";
 import { RiskLevelSchema } from "./common.js";
 import { ComputeChoiceSchema } from "./compute.js";
+import { LineConfigSchema } from "./line-config.js";
 import {
   CostPolicySchema,
   DelegationLimitsSchema,
@@ -66,6 +67,8 @@ export const NightshiftConfigSchema = z.strictObject({
    * the customer's choice; `recommended` is what the probe said at `init`.
    */
   compute: ComputeChoiceSchema.optional(),
+  /** The project line (Pipkin M1b): one development branch every program's landed work meets on. Absent means off. */
+  line: LineConfigSchema.optional(),
   /**
    * A-62: the project's secrets every setup step, check and agent is given, by
    * name. Values are set with `nightshift secret set` and never live here.
@@ -79,6 +82,7 @@ export const INHERITED_CONTRACT_FIELDS = [
   "projectId",
   "setup",
   "compute",
+  "line",
   "verification",
   "modelPolicy",
   "delegationLimits",

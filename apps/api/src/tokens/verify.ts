@@ -14,8 +14,13 @@
  * any claim logic at all.
  */
 import { createPublicKey, type KeyObject, verify as verifySignature } from "node:crypto";
-import type { ExecutionPrincipal, ExecutionTokenClaims } from "@nightshift/contracts";
-import { EXECUTION_TOKEN_AUDIENCE, ExecutionTokenClaimsSchema } from "@nightshift/contracts";
+import type {
+  ExecutionPrincipal,
+  ExecutionTokenClaims,
+  LinePrincipal,
+  LineTokenClaims,
+} from "@nightshift/contracts";
+import { EXECUTION_TOKEN_AUDIENCE, TokenClaimsSchema } from "@nightshift/contracts";
 import { hasExecutionTokenHeader, splitToken } from "./jwt.js";
 
 export type ExecutionTokenRefusal =
@@ -37,8 +42,9 @@ export type ExecutionTokenRefusal =
 export type ExecutionTokenVerification =
   | {
       readonly ok: true;
-      readonly principal: ExecutionPrincipal;
-      readonly claims: ExecutionTokenClaims;
+      /** An execution principal, or a line owner's (Pipkin M1b). */
+      readonly principal: ExecutionPrincipal | LinePrincipal;
+      readonly claims: ExecutionTokenClaims | LineTokenClaims;
     }
   | { readonly ok: false; readonly reason: ExecutionTokenRefusal };
 
@@ -93,7 +99,7 @@ export const verifyExecutionToken = (
   }
   if (!signatureIsValid) return refused("bad_signature");
 
-  const parsed = ExecutionTokenClaimsSchema.safeParse(parts.payload);
+  const parsed = TokenClaimsSchema.safeParse(parts.payload);
   if (!parsed.success) return refused("bad_claims");
   const claims = parsed.data;
 

@@ -19,6 +19,7 @@ import {
   makeMembership,
   makeProgramContract,
   makeProject,
+  makeRun,
   nextUserId,
   type PlanDocumentStore,
   planDocumentObjectKey,
@@ -706,6 +707,7 @@ describe("who may do what", () => {
 
   it("lets an execution of every role read, write a version and mark awaiting_owner in its own project only", async () => {
     const w = await setup();
+    await w.deps.stores.runs.put(makeRun(w.f, { status: "pending" }));
     await w.deps.stores.dispatches.put(makeDispatch(w.f, { generation: 1 }));
     await putVersion(w, draftContract(w), null);
     const elsewhere = createFixtures();

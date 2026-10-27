@@ -15,13 +15,30 @@
  * orchestrator instead. The work can end the dispatch with a
  * failure of its own (`environment_fault`, D-07).
  */
-import type { Dispatch, ProgramContract, RunnerFailure } from "@nightshift/contracts";
+import type {
+  Dispatch,
+  HeartbeatBody,
+  ProgramContract,
+  RunnerFailure,
+} from "@nightshift/contracts";
 import { orchestratingDetail, type RunScope } from "@nightshift/core";
 import { WORKER_GROUP } from "../run-as.js";
-import { bootstrapEngineToken, type RunnerIdentity, readIdentity } from "./bootstrap.js";
+import {
+  bootstrapEngineToken,
+  isLineIdentity,
+  type LineIdentity,
+  type RunnerIdentity,
+  readIdentity,
+} from "./bootstrap.js";
 import { createHeartbeat, type Heartbeat } from "./heartbeat.js";
 import type { Machine } from "./machine.js";
-import type { EngineTokens, PlaneFactory, RunnerPlane } from "./plane.js";
+import type {
+  EngineTokens,
+  LinePlaneFactory,
+  LineRunnerPlane,
+  PlaneFactory,
+  RunnerPlane,
+} from "./plane.js";
 import { ProjectSetupStatusSchema } from "./project-setup.js";
 import { recoverLocalWorkspace } from "./recovery.js";
 import { createSampler } from "./sampler.js";
@@ -61,6 +78,12 @@ export interface RunnerOptions {
   readonly inheritedPath?: string;
   /** The user project code runs as (D-P10-30); absent, the setup runs as this process. */
   readonly projectUser?: string;
+  /** The line owner's plane, for a machine tagged as a line's (Pipkin M1b, S-04). */
+  readonly linePlane?: LinePlaneFactory;
+  /** What a line owner does between `ready` and the stop: `runLineOwner`. Absent, it waits. */
+  readonly lineWork?: (context: LineRunnerContext) => Promise<RunnerWorkEnd | undefined>;
+  /** Told the line owner's every engine token, first and renewed. */
+  readonly onLineToken?: (token: string, identity: LineIdentity) => Promise<void>;
 }
 
 /** How the work ends the dispatch when it cannot go on: the failure the plane records. */
@@ -86,6 +109,60 @@ export interface RunnerContext {
   readonly projectEnv: Readonly<Record<string, string>>;
   /** Where it was written, for the processes the runner launches: `<run>/project.env`. */
   readonly projectEnvFile: string;
+}
+
+/** What a line owner's work is given (Pipkin M1b, S-04): the run context's counterpart, with the line's plane. */
+export interface LineRunnerContext {
+  readonly identity: LineIdentity;
+  readonly plane: LineRunnerPlane;
+  readonly heartbeat: Heartbeat;
+  readonly machine: Machine;
+  readonly layout: WorkspaceLayout;
+  readonly log: (line: string) => void;
+  /** Where the workspace is mounted. */
+  readonly workspace: string;
+  /** The user project code runs as (D-P10-30); absent, as this process. */
+  readonly projectUser?: string;
+  /** The runner's own PATH, kept in the project environment after the runtimes and the image's. */
+  readonly inheritedPath?: string;
+  /** How long to wait for the plane to hand over the credentials. */
+  readonly credentialTimeoutMs?: number;
+}
+
+/**
+ * What differs between a run's machine and a line owner's, and nothing else:
+ * boot, the heartbeat, token renewal, the volume and the sidecar, and the
+ * report of a setup that failed are shared (`runRunner`).
+ */
+interface Mode {
+  readonly key: string;
+  readonly identity: RunnerIdentity | LineIdentity;
+  readonly onToken: ((token: string) => Promise<void>) | undefined;
+  readonly readCachedToken: (() => Promise<string | undefined>) | undefined;
+  /** Binds the mode's plane to the machine's token. */
+  connect(tokens: EngineTokens): ModePlane;
+}
+
+interface ModePlane {
+  postHeartbeat(body: HeartbeatBody): Promise<unknown>;
+  /** The epoch milliseconds this generation's attempt started, when the record says. */
+  startedAt(): Promise<number | undefined>;
+  /** The disk the record asks for. */
+  askedDisk(): Promise<string | undefined>;
+  /** The file the project setup writes its status to, when this mode has setup. */
+  readonly setupStatusFile?: string;
+  /** After the mount: makes the checkout usable and answers how to start the work. */
+  prepare(shared: {
+    readonly heartbeat: Heartbeat;
+    readonly layout: WorkspaceLayout;
+  }): Promise<Started>;
+}
+
+interface Started {
+  start(): {
+    readonly working: Promise<RunnerWorkEnd | undefined>;
+    readonly stopWatching: () => void;
+  };
 }
 
 /** A token the heartbeat replaces (D-P10-20); never on the volume. */
@@ -116,7 +193,7 @@ const causeOf = (error: unknown): string => {
 };
 
 /** Waits for the heartbeat to bring the clone's credential, or gives up. */
-const awaitGithubToken = async (
+export const awaitGithubToken = async (
   heartbeat: Heartbeat,
   machine: Machine,
   timeoutMs: number,
@@ -135,29 +212,203 @@ const awaitGithubToken = async (
   }
 };
 
+/** A run's machine: its dispatch, program and plan, the headless root as the work. */
+const runMode = (options: RunnerOptions, identity: RunnerIdentity): Mode => {
+  const { machine, log } = options;
+  return {
+    key: identity.scope.runId,
+    identity,
+    onToken:
+      options.onToken === undefined
+        ? undefined
+        : (renewed) =>
+            (options.onToken as NonNullable<typeof options.onToken>)(renewed, identity.scope),
+    readCachedToken:
+      options.readCachedToken === undefined
+        ? undefined
+        : () =>
+            (options.readCachedToken as NonNullable<typeof options.readCachedToken>)(
+              identity.scope,
+            ),
+    connect: (tokens) => {
+      const plane = options.plane(identity.apiEndpoint, tokens);
+      return {
+        postHeartbeat: (body) => plane.heartbeat(identity.scope, body),
+        startedAt: async () => {
+          const attempt = (await plane.dispatch(identity.scope))?.attempts.find(
+            (entry) => entry.generation === identity.generation,
+          );
+          return attempt === undefined ? undefined : Date.parse(attempt.startedAt);
+        },
+        askedDisk: async () => (await plane.dispatch(identity.scope))?.workspace?.disk,
+        setupStatusFile: `${options.workspace}/runs/${identity.scope.runId}/project-setup.json`,
+        prepare: async ({ heartbeat, layout }) => {
+          const [dispatch, program] = await Promise.all([
+            plane.dispatch(identity.scope),
+            plane.program(identity.scope),
+          ]);
+          if (dispatch === undefined || program === undefined) {
+            throw new Error("the plane has no dispatch or program for this run");
+          }
+          const planDocument =
+            program.planDocument === undefined
+              ? undefined
+              : await plane.planDocument(identity.scope, program.planDocument.sha256);
+          if (planDocument === undefined) {
+            throw new Error("the ratified plan's document is not on the plane");
+          }
+          const prepared = await prepareCheckout(machine, {
+            layout,
+            dispatch,
+            program,
+            planText: planDocument.text,
+            githubToken: () =>
+              awaitGithubToken(heartbeat, machine, options.credentialTimeoutMs ?? 2 * 60_000),
+            log,
+            onProgress: (progress) => heartbeat.progress(progress),
+            ...(options.inheritedPath === undefined
+              ? {}
+              : { inheritedPath: options.inheritedPath }),
+            ...(options.projectUser === undefined ? {} : { projectUser: options.projectUser }),
+          });
+          log(
+            `workspace ${prepared.warm ? "warm" : "cold"}: checkout ready; project setup belongs to the orchestrator`,
+          );
+          const context: RunnerContext = {
+            identity,
+            scope: identity.scope,
+            plane,
+            heartbeat,
+            machine,
+            layout,
+            dispatch,
+            program,
+            projectEnv: prepared.environment,
+            projectEnvFile: prepared.environmentFile,
+          };
+          return {
+            start: () => {
+              // With no work yet (T3), the runner's job is to stay: it heartbeats until
+              // the plane says stop, and a promise that never settles is what "no work"
+              // means to the race in `runRunner`.
+              // A stage of its own once the work (the root) starts, so the record stops
+              // showing the last boot step for the whole run (2026-10-13).
+              if (options.work !== undefined) {
+                heartbeat.progress({
+                  stage: "orchestrating",
+                  detail: "the root orchestrator is starting",
+                });
+              }
+              // And then, for as long as the root runs, where the work stands by the
+              // record (2026-10-21): the engine writes the nodes, the runner reads them.
+              const watching =
+                options.work === undefined
+                  ? undefined
+                  : watchOrchestration(context, {
+                      intervalMs: options.progressIntervalMs ?? 60_000,
+                      log,
+                    });
+              const working = (
+                options.work === undefined
+                  ? new Promise<RunnerWorkEnd | undefined>(() => undefined)
+                  : options.work(context)
+              )
+                // The work's last word is the last word: nothing is read of the record once it has ended.
+                .finally(() => watching?.stop());
+              return { working, stopWatching: () => watching?.stop() };
+            },
+          };
+        },
+      };
+    },
+  };
+};
+
+/** A line owner's machine: the line's view, and `lineWork` (`runLineOwner`) as the work. */
+const lineMode = (options: RunnerOptions, identity: LineIdentity): Mode => {
+  const { machine, log } = options;
+  const linePlane = options.linePlane;
+  if (linePlane === undefined) {
+    throw new Error("this machine is a line owner's, and the runner was given no line plane");
+  }
+  const onLineToken = options.onLineToken;
+  return {
+    key: identity.engineAgentId,
+    identity,
+    onToken: onLineToken === undefined ? undefined : (renewed) => onLineToken(renewed, identity),
+    readCachedToken: undefined,
+    connect: (tokens) => {
+      const plane = linePlane(identity.apiEndpoint, tokens, {
+        projectId: identity.projectId,
+        branch: identity.branch,
+        generation: identity.generation,
+      });
+      return {
+        postHeartbeat: (body) => plane.heartbeat(body),
+        startedAt: async () => {
+          const attempt = (await plane.line()).dispatch?.attempts.find(
+            (entry) => entry.generation === identity.generation,
+          );
+          return attempt === undefined ? undefined : Date.parse(attempt.startedAt);
+        },
+        askedDisk: async () => (await plane.line()).dispatch?.workspace?.disk,
+        prepare: async ({ heartbeat, layout }) => {
+          // The mirror and the checkout are the owner's to keep (`runLineOwner`),
+          // once the read token has come; the machine's directory is made now.
+          await machine.exec("mkdir", ["-p", layout.stores, layout.run, `${layout.run}/worktrees`]);
+          const context: LineRunnerContext = {
+            identity,
+            plane,
+            heartbeat,
+            machine,
+            layout,
+            log,
+            workspace: options.workspace,
+            ...(options.projectUser === undefined ? {} : { projectUser: options.projectUser }),
+            ...(options.inheritedPath === undefined
+              ? {}
+              : { inheritedPath: options.inheritedPath }),
+            ...(options.credentialTimeoutMs === undefined
+              ? {}
+              : { credentialTimeoutMs: options.credentialTimeoutMs }),
+          };
+          return {
+            start: () => {
+              heartbeat.progress({ stage: "orchestrating", detail: "the line owner is starting" });
+              const working =
+                options.lineWork === undefined
+                  ? new Promise<RunnerWorkEnd | undefined>(() => undefined)
+                  : options.lineWork(context);
+              return { working, stopWatching: () => undefined };
+            },
+          };
+        },
+      };
+    },
+  };
+};
+
 export const runRunner = async (options: RunnerOptions): Promise<number> => {
   const { machine, log } = options;
   const identity = await readIdentity(machine);
-  log(`run ${identity.scope.runId}, generation ${identity.generation}, on ${identity.instanceId}`);
-  const onToken = options.onToken;
-  const readCachedToken = options.readCachedToken;
+  const mode = isLineIdentity(identity) ? lineMode(options, identity) : runMode(options, identity);
+  log(
+    isLineIdentity(identity)
+      ? `line ${identity.branch} of ${identity.projectId}, generation ${identity.generation}, on ${identity.instanceId}`
+      : `run ${identity.scope.runId}, generation ${identity.generation}, on ${identity.instanceId}`,
+  );
+  const onToken = mode.onToken;
+  const readCachedToken = mode.readCachedToken;
   const token = renewableToken(
     await bootstrapEngineToken(machine, identity, {
-      ...(readCachedToken === undefined
-        ? {}
-        : { readCachedToken: () => readCachedToken(identity.scope) }),
-      ...(onToken === undefined
-        ? {}
-        : { installToken: (initial: string) => onToken(initial, identity.scope) }),
+      ...(readCachedToken === undefined ? {} : { readCachedToken }),
+      ...(onToken === undefined ? {} : { installToken: onToken }),
     }),
-    onToken === undefined ? undefined : (renewed) => onToken(renewed, identity.scope),
+    onToken,
   );
-  await onToken?.(await token.provider.idToken(), identity.scope);
-  const plane = options.plane(identity.apiEndpoint, token.provider);
-  const initialDispatch = await plane.dispatch(identity.scope);
-  const attempt = initialDispatch?.attempts.find(
-    (entry) => entry.generation === identity.generation,
-  );
+  await onToken?.(await token.provider.idToken());
+  const plane = mode.connect(token.provider);
+  const startedAt = await plane.startedAt();
   const sample = createSampler(machine, options.workspace).sample;
   let setupAttempt = 0;
 
@@ -165,12 +416,13 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   // reported; the disk samples read the root's until the mount is there.
   const heartbeat = createHeartbeat({
     generation: identity.generation,
-    post: (body) => plane.heartbeat(identity.scope, body),
+    post: (body) => plane.postHeartbeat(body),
     installToken: token.install,
     sample: async () => {
-      const saved = await machine.readFile(
-        `${options.workspace}/runs/${identity.scope.runId}/project-setup.json`,
-      );
+      const saved =
+        plane.setupStatusFile === undefined
+          ? undefined
+          : await machine.readFile(plane.setupStatusFile);
       if (saved !== undefined) {
         try {
           const status = ProjectSetupStatusSchema.parse(JSON.parse(saved));
@@ -188,7 +440,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
       }
       return sample();
     },
-    ...(attempt === undefined ? {} : { startedAt: Date.parse(attempt.startedAt) }),
+    ...(startedAt === undefined ? {} : { startedAt }),
     sleep: machine.sleep,
     now: machine.now,
     log,
@@ -215,14 +467,14 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
   // The workspace (T3): the volume mounted; what the run is, from the plane;
   // the clone's credential, from the heartbeat; then a usable checkout.
   // Runtime installation and project setup happen after the root starts.
-  const layout = layoutOf(options.workspace, identity.scope.runId);
-  let context: RunnerContext;
+  const layout = layoutOf(options.workspace, mode.key);
+  let started: Started;
   try {
     // The workspace goes on the instance's local disk when it has one (D-P10-27),
     // with the volume mounted beside it as the sidecar; on the volume itself when
     // the record says so or the instance type has no local disk.
     heartbeat.progress({ stage: "workspace", detail: "mounting the volume" });
-    const asked = (await plane.dispatch(identity.scope))?.workspace?.disk;
+    const asked = await plane.askedDisk();
     const localDisk =
       asked === "volume" ? undefined : await findLocalDisk(machine, options.workspace);
     const sidecar =
@@ -253,35 +505,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
         `workspace mounted at ${options.workspace} (volume${asked === "volume" ? ", as the record asks" : "; no local disk"})`,
       );
     }
-    const [dispatch, program] = await Promise.all([
-      plane.dispatch(identity.scope),
-      plane.program(identity.scope),
-    ]);
-    if (dispatch === undefined || program === undefined) {
-      throw new Error("the plane has no dispatch or program for this run");
-    }
-    const planDocument =
-      program.planDocument === undefined
-        ? undefined
-        : await plane.planDocument(identity.scope, program.planDocument.sha256);
-    if (planDocument === undefined) {
-      throw new Error("the ratified plan's document is not on the plane");
-    }
-    const prepared = await prepareCheckout(machine, {
-      layout,
-      dispatch,
-      program,
-      planText: planDocument.text,
-      githubToken: () =>
-        awaitGithubToken(heartbeat, machine, options.credentialTimeoutMs ?? 2 * 60_000),
-      log,
-      onProgress: (progress) => heartbeat.progress(progress),
-      ...(options.inheritedPath === undefined ? {} : { inheritedPath: options.inheritedPath }),
-      ...(options.projectUser === undefined ? {} : { projectUser: options.projectUser }),
-    });
-    log(
-      `workspace ${prepared.warm ? "warm" : "cold"}: checkout ready; project setup belongs to the orchestrator`,
-    );
+    started = await plane.prepare({ heartbeat, layout });
     if (sidecar !== undefined) {
       sync = startSidecarSync(machine, {
         workspace: options.workspace,
@@ -291,18 +515,6 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
       });
     }
     heartbeat.report("ready");
-    context = {
-      identity,
-      scope: identity.scope,
-      plane,
-      heartbeat,
-      machine,
-      layout,
-      dispatch,
-      program,
-      projectEnv: prepared.environment,
-      projectEnvFile: prepared.environmentFile,
-    };
   } catch (error) {
     const cause = causeOf(error);
     log(`the workspace could not be prepared: ${cause}`);
@@ -316,27 +528,8 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     return 1;
   }
 
-  // With no work yet (T3), the runner's job is to stay: it heartbeats until
-  // the plane says stop, and a promise that never settles is what "no work"
-  // means to the race below.
-  // A stage of its own once the work (the root) starts, so the record stops
-  // showing the last boot step for the whole run (2026-10-13).
-  if (options.work !== undefined) {
-    heartbeat.progress({ stage: "orchestrating", detail: "the root orchestrator is starting" });
-  }
-  // And then, for as long as the root runs, where the work stands by the
-  // record (2026-10-21): the engine writes the nodes, the runner reads them.
-  const watching =
-    options.work === undefined
-      ? undefined
-      : watchOrchestration(context, { intervalMs: options.progressIntervalMs ?? 60_000, log });
-  const working = (
-    options.work === undefined
-      ? new Promise<RunnerWorkEnd | undefined>(() => undefined)
-      : options.work(context)
-  )
-    // The work's last word is the last word: nothing is read of the record once it has ended.
-    .finally(() => watching?.stop())
+  const { working: work, stopWatching } = started.start();
+  const working = work
     .then((ended) => (ended ? ended.failure : ("worked" as const)))
     .catch((error: unknown) => {
       const cause = causeOf(error);
@@ -345,7 +538,7 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     });
 
   const outcome = await Promise.race([beating, working]);
-  watching?.stop();
+  stopWatching();
   if (typeof outcome === "object" && "failed" in outcome) {
     // A process crash is not a request to finish the dispatch: its durable run
     // stays alive for systemd's restart (or a lease-based replacement). But a

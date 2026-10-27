@@ -4,7 +4,7 @@
  * GitHub installation, all through the real handler over the memory stores.
  */
 import { generateKeyPairSync, sign as signWith } from "node:crypto";
-import type { Dispatch, OrgId, ProgramContract } from "@nightshift/contracts";
+import type { Dispatch, LineDispatch, OrgId, ProgramContract } from "@nightshift/contracts";
 import {
   COMPUTE_TIERS,
   DEFAULT_COMPUTE_CEILINGS,
@@ -21,6 +21,7 @@ import {
   LEASE_SECONDS,
   makeComputeUtilization,
   makeDispatch,
+  makeLineDispatch,
   makeMembership,
   makeProgramContract,
   makeProject,
@@ -347,10 +348,12 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       updatedAt: NOW,
     });
     // Another run of the org's, still being provisioned.
-    const other = makeDispatch(w.f, {
+    const otherScope = {
+      programId: "prog_01M49ZZZZZZZZZZZZZZZZZZZZY" as never,
       runId: "run_01M49ZZZZZZZZZZZZZZZZZZZZZ" as never,
-      status: "provisioning",
-    });
+    };
+    await w.stores.runs.put(makeRun(w.f, { ...otherScope, status: "pending" }));
+    const other = makeDispatch(w.f, { ...otherScope, status: "provisioning" });
     await w.stores.dispatches.put(other);
     expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody()))).toBe(
       "concurrency_over_ceiling",
@@ -361,6 +364,36 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       status: "failed",
       failure: { code: "provisioning_failed", message: "no capacity" },
     });
+    const accepted = await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody());
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+  });
+
+  it("counts the org's line dispatches that hold a slot, and not a requested one (Pipkin M1b)", async () => {
+    const w = await setup();
+    await seed(w);
+    const current = await w.stores.orgConfigs.get(w.orgId);
+    await w.stores.orgConfigs.put({
+      schemaVersion: 1,
+      orgId: w.orgId,
+      routingPolicy: DEFAULT_ROUTING_POLICY,
+      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      installations: current?.installations ?? [],
+      compute: { ...DEFAULT_COMPUTE_CEILINGS, maxConcurrentRuns: 1 },
+      version: (current?.version ?? 0) + 1,
+      updatedAt: NOW,
+    });
+    const line = makeLineDispatch(w.f, { status: "requested" });
+    expect(await w.stores.lineDispatches.start(line)).toBe("started");
+    const setLine = (status: LineDispatch["status"]) =>
+      w.stores.lineDispatches.update(line.projectId, line.branch, (held) => ({ ...held, status }));
+    // Provisioning or running, the line holds the org's only slot.
+    for (const status of ["provisioning", "running"] as const) {
+      await setLine(status);
+      const run = await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody());
+      expect(code(run), status).toBe("concurrency_over_ceiling");
+    }
+    // Waiting for capacity, a line holds no slot: the run is accepted.
+    await setLine("requested");
     const accepted = await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody());
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
   });
@@ -479,8 +512,9 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
       issuer: ISSUER,
       now: Date.parse(NOW),
     });
-    expect(verified.ok && verified.principal.role).toBe("engine");
-    expect(verified.ok && verified.principal.generation).toBe(1);
+    const principal = verified.ok ? verified.principal : undefined;
+    expect(principal?.kind === "execution" && principal.role).toBe("engine");
+    expect(principal?.generation).toBe(1);
 
     const running = await call(
       w,

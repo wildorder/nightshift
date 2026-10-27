@@ -172,6 +172,8 @@ export interface CodexCommandInput {
    * allowlist holding no credential but the declared secrets.
    */
   readonly passSecrets?: boolean;
+  /** An examiner: the sandbox is read-only, so it cannot edit a file. */
+  readonly readOnly?: boolean;
 }
 
 /**
@@ -185,7 +187,9 @@ export const buildCodexArgs = (input: CodexCommandInput): readonly string[] => [
   ...(input.resumeSessionId === undefined ? [] : ["resume"]),
   "--json",
   ...(input.resumeSessionId === undefined ? ["-C", input.worktree] : []),
-  "--dangerously-bypass-approvals-and-sandbox",
+  ...(input.readOnly === true
+    ? ["--sandbox", "read-only"]
+    : ["--dangerously-bypass-approvals-and-sandbox"]),
   "-c",
   "allow_login_shell=false",
   ...(input.shellPath === undefined

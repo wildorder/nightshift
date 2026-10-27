@@ -103,7 +103,8 @@ export interface ArtifactUploadSignerConfig {
     readonly bucket: string;
     readonly key: string;
     readonly contentType: string;
-    readonly sizeBytes: number;
+    /** Absent for a key signed without a declared size (`signKey`). */
+    readonly sizeBytes?: number;
     readonly expiresIn: number;
   }) => Promise<string>;
   readonly now?: () => number;
@@ -147,9 +148,14 @@ export const createArtifactUploadSigner = (
           Bucket: bucket,
           Key: key,
           ContentType: contentType,
-          ContentLength: sizeBytes,
+          ...(sizeBytes === undefined ? {} : { ContentLength: sizeBytes }),
         }),
-        { expiresIn, signableHeaders: new Set(["content-type", "content-length"]) },
+        {
+          expiresIn,
+          signableHeaders: new Set(
+            sizeBytes === undefined ? ["content-type"] : ["content-type", "content-length"],
+          ),
+        },
       ));
 
   return {
@@ -167,6 +173,24 @@ export const createArtifactUploadSigner = (
         uploadUrl,
         key,
         contentType: request.contentType,
+        expiresAt: new Date(now() + UPLOAD_URL_TTL_SECONDS * 1000).toISOString(),
+      };
+    },
+    // The project line's bundles (Pipkin M1b) belong to no run, so the caller
+    // names the key. The content type is still signed; the size is not known
+    // before a pack is cut, so it is the one thing the signature leaves open.
+    signKey: async (key, contentType): Promise<ArtifactUploadTarget> => {
+      const uploadUrl = await sign({
+        bucket: config.bucketName,
+        key,
+        contentType,
+        expiresIn: UPLOAD_URL_TTL_SECONDS,
+      });
+      return {
+        uri: `s3://${config.bucketName}/${key}`,
+        uploadUrl,
+        key,
+        contentType,
         expiresAt: new Date(now() + UPLOAD_URL_TTL_SECONDS * 1000).toISOString(),
       };
     },

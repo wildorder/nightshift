@@ -7,7 +7,13 @@
  * is that it can be checked completely, and because SC-P4-04 is the claim that a
  * worker's token does exactly the operations §4.4 grants and nothing else.
  */
-import { type OrgId, type Principal, PrincipalSchema, type UserId } from "@nightshift/contracts";
+import {
+  type OrgId,
+  type Principal,
+  PrincipalSchema,
+  type ProjectId,
+  type UserId,
+} from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { createFixturePair } from "../testing/factories.js";
 import {
@@ -185,6 +191,17 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
+  "line.get": "forbidden",
+  "line.takeBatch": "forbidden",
+  "line.compose": "forbidden",
+  "line.park": "forbidden",
+  "line.decide": "forbidden",
+  "line.announce": "forbidden",
+  "line.settle": "forbidden",
+  "line.push": "forbidden",
+  "line.createBundleUploadUrl": "forbidden",
+  "line.heartbeat": "forbidden",
+  "line.cancel": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -540,6 +557,63 @@ describe("what an execution may ask its own node to become", () => {
       expect(
         authorize(execution, operation, { ...ownTarget, requestedNodeStatus: "verifying" }).allowed,
       ).toBe(true);
+    }
+  });
+});
+
+describe("the project line (Pipkin M1b)", () => {
+  const LINE_OPERATIONS = ALL_OPERATIONS.filter((operation) => operation.startsWith("line."));
+  const line = {
+    kind: "line" as const,
+    projectId: ownTarget.projectId as ProjectId,
+    branch: "nightshift/develop",
+    agentId: OWN_AGENT,
+    generation: 1,
+  };
+
+  it("names the nine line operations", () => {
+    expect([...LINE_OPERATIONS].sort()).toEqual(
+      [
+        "line.get",
+        "line.takeBatch",
+        "line.compose",
+        "line.park",
+        "line.decide",
+        "line.announce",
+        "line.settle",
+        "line.push",
+        "line.createBundleUploadUrl",
+        "line.heartbeat",
+        "line.cancel",
+      ].sort(),
+    );
+  });
+
+  it("lets a user do each within their own organisation, and not another's", () => {
+    for (const operation of LINE_OPERATIONS) {
+      expect(authorize(user, operation, ownTarget), operation).toEqual({ allowed: true });
+      expect(authorize(user, operation, { ...ownTarget, orgId: ORG_B }), operation).toMatchObject({
+        allowed: false,
+        reason: "wrong_org",
+      });
+    }
+  });
+
+  it("forbids every execution role every line operation", () => {
+    for (const operation of LINE_OPERATIONS) {
+      for (const role of ["worker", "orchestrator", "examiner", "arbiter", "engine"] as const) {
+        const access = ACCESS_BY_ROLE[role][operation];
+        expect(access, `${role} ${operation}`).toBe("forbidden");
+      }
+    }
+  });
+
+  it("refuses a line principal every operation outside line.* (authorize-line.test.ts covers line.*)", () => {
+    for (const operation of ALL_OPERATIONS.filter((op) => !op.startsWith("line."))) {
+      expect(authorize(line, operation, ownTarget), operation).toMatchObject({
+        allowed: false,
+        reason: "execution_forbidden_operation",
+      });
     }
   });
 });

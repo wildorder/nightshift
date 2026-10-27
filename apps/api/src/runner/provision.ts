@@ -12,9 +12,11 @@
  */
 import {
   COMPUTE_TIERS,
+  type ComputeArchitecture,
+  type ComputeTier,
   type Dispatch,
   type Project,
-  type RunId,
+  type ProjectId,
   type WarmCache,
 } from "@nightshift/contracts";
 import {
@@ -23,6 +25,7 @@ import {
   type ComputeControl,
   type FirstTokenStore,
   firstTokenParameterName,
+  type InstanceDescription,
   type NightshiftStores,
   nowIso,
   type RunScope,
@@ -74,7 +77,7 @@ export type ProvisionOutcome =
   | { readonly kind: "failed"; readonly dispatch: Dispatch; readonly reason: string };
 
 /** A zone for the run: stable per run id, spread across the subnets. */
-export const subnetFor = (runId: RunId, subnetIds: readonly string[]): string | undefined =>
+export const subnetFor = (runId: string, subnetIds: readonly string[]): string | undefined =>
   subnetsFor(runId, subnetIds)[0];
 
 /**
@@ -83,7 +86,7 @@ export const subnetFor = (runId: RunId, subnetIds: readonly string[]): string | 
  * is new, and a warm snapshot is regional), so a zone with no capacity for the
  * instance type is not the end of the launch.
  */
-export const subnetsFor = (runId: RunId, subnetIds: readonly string[]): readonly string[] => {
+export const subnetsFor = (runId: string, subnetIds: readonly string[]): readonly string[] => {
   if (subnetIds.length === 0) return [];
   let hash = 0;
   for (const char of runId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
@@ -114,100 +117,96 @@ export const WARM_RESTORE_RATE_MIBPS = 300;
 const warmSnapshotOf = (cache: WarmCache | undefined): string | undefined =>
   cache?.current.snapshotId;
 
-export const provisionDispatch = async (
-  deps: ProvisionDeps,
-  scope: RunScope,
-): Promise<ProvisionOutcome> => {
-  const { stores, compute } = deps;
-  const dispatch = await stores.dispatches.get(scope);
-  if (dispatch === undefined) return { kind: "skipped", reason: "no dispatch for this run" };
-  // A fresh attempt is `requested` (the first) or `provisioning` with no
-  // machine yet (a replacement or a resume); anything else is already done.
-  if (
-    !(
-      dispatch.status === "requested" ||
-      (dispatch.status === "provisioning" && dispatch.instanceId === undefined)
-    )
-  ) {
-    return { kind: "skipped", reason: `dispatch is ${dispatch.status} with a machine` };
-  }
-  const run = await stores.runs.get(scope, scope.runId);
-  const program = await stores.programContracts.get(scope.projectId, scope.programId);
-  const project: Project | undefined = await stores.projects.get(scope.projectId);
-  if (run === undefined || program === undefined || project === undefined) {
-    return { kind: "skipped", reason: "the run, program or project is missing" };
-  }
-  const at = nowIso(deps.clock);
-  const fail = async (reason: string): Promise<ProvisionOutcome> => {
-    const failed = transitionDispatch(
-      { ...dispatch, failure: { code: "provisioning_failed", message: reason } },
-      "fail",
-      nowIso(deps.clock),
-    );
-    await stores.dispatches.put(failed);
-    return { kind: "failed", dispatch: failed, reason };
-  };
+/** What launching a machine needs of the deps: the ports and the runner stack's settings. */
+export type LaunchCoreDeps = Pick<
+  ProvisionDeps,
+  "stores" | "compute" | "imageVersion" | "subnetIds" | "subnetZones" | "describeAttempts" | "sleep"
+>;
 
-  const architecture = architectureOf(dispatch.instanceType);
-  const imageId = await compute.latestImage(deps.imageVersion, architecture);
+export interface LaunchMachineInput {
+  /** Names the dispatch in the log. */
+  readonly label: string;
+  readonly projectId: ProjectId;
+  /** Chooses the first subnet: stable per run, or per line owner. */
+  readonly hashKey: string;
+  readonly architecture: ComputeArchitecture;
+  readonly instanceType: string;
+  readonly tier: ComputeTier;
+  readonly tags: Readonly<Record<string, string>>;
+  readonly workspace?:
+    | { readonly iops?: number | undefined; readonly throughputMiBps?: number | undefined }
+    | undefined;
+  /** EC2's idempotency token: a retried launch under it returns the same instance. */
+  readonly clientToken?: string;
+  /** A replacement: the volume to attach, in its zone, instead of a new one. */
+  readonly replacing?:
+    | {
+        readonly volumeId: string;
+        readonly availabilityZone?: string | undefined;
+      }
+    | undefined;
+  /** A resume's own snapshot, which a missing one makes a refusal rather than a cold start. */
+  readonly retainedSnapshotId?: string | undefined;
+  /** Runs once the image and subnet are settled and before launching: parks the first token. A string is a refusal. */
+  readonly park: () => Promise<string | undefined>;
+  /** Takes back what `park` made, when the launch does not happen. */
+  readonly unpark: () => Promise<void>;
+}
+
+export type LaunchMachineResult =
+  | {
+      readonly ok: true;
+      readonly instanceId: string;
+      readonly description: InstanceDescription | undefined;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * The launch core a run and the line share: the image, the subnet, the first
+ * token (`park`), the warm snapshot, the launch itself, and the describes. A
+ * failure after something was made terminates it (the instance) or takes it
+ * back (`unpark`) and answers the reason.
+ */
+export const launchMachine = async (
+  deps: LaunchCoreDeps,
+  input: LaunchMachineInput,
+): Promise<LaunchMachineResult> => {
+  const { stores, compute } = deps;
+  const { replacing, retainedSnapshotId: retained } = input;
+  const fail = (reason: string): LaunchMachineResult => ({ ok: false, reason });
+  const imageId = await compute.latestImage(deps.imageVersion, input.architecture);
   if (imageId === undefined) {
-    return fail(`no available ${architecture} image for version ${deps.imageVersion}`);
+    return fail(`no available ${input.architecture} image for version ${deps.imageVersion}`);
   }
   // A replacement must land in its volume's zone (T6); a first machine goes
-  // where the hash says. A resume after cleanup deleted the volume (D-P10-18)
-  // has no volume to land beside: it gets a new one from the run's retained
-  // snapshot, in any zone, like a first machine from the warm cache — not an
-  // attach of a volume that is gone (2026-10-21).
-  const retained =
-    dispatch.cleanup.volumeDeleted && dispatch.volumeId !== undefined
-      ? dispatch.cleanup.snapshotId
-      : undefined;
-  const replacing = dispatch.volumeId !== undefined && !dispatch.cleanup.volumeDeleted;
+  // where the hash says.
   const inZone =
-    replacing && dispatch.availabilityZone !== undefined && deps.subnetZones !== undefined
-      ? deps.subnetIds.find((id) => deps.subnetZones?.[id] === dispatch.availabilityZone)
+    replacing?.availabilityZone !== undefined && deps.subnetZones !== undefined
+      ? deps.subnetIds.find((id) => deps.subnetZones?.[id] === replacing.availabilityZone)
       : undefined;
   // A replacement must use its volume's zone; a first machine may try them all.
-  const subnets = inZone !== undefined ? [inZone] : subnetsFor(scope.runId, deps.subnetIds);
+  const subnets = inZone !== undefined ? [inZone] : subnetsFor(input.hashKey, deps.subnetIds);
   if (subnets.length === 0) return fail("the runner stack has no subnets");
-  if (replacing && inZone === undefined && dispatch.availabilityZone !== undefined) {
+  if (replacing !== undefined && inZone === undefined && replacing.availabilityZone !== undefined) {
     return fail(
-      `no subnet in ${dispatch.availabilityZone} for the replacement to attach the volume in`,
+      `no subnet in ${replacing.availabilityZone} for the replacement to attach the volume in`,
     );
   }
 
-  // The first token, parked before the machine exists so it is there when the
-  // machine boots. Minted under this attempt's generation (D-P10-20).
-  let token: string;
-  try {
-    token = (
-      await mintEngineToken(deps.signer, {
-        dispatch,
-        run,
-        program,
-        issuer: deps.issuer,
-        now: deps.clock.now(),
-      })
-    ).token;
-  } catch (error) {
-    return fail(
-      `could not mint the first token: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  const parameter = firstTokenParameterName(deps.stage, scope.runId, dispatch.generation);
-  await deps.tokens.put(parameter, token);
+  const refused = await input.park();
+  if (refused !== undefined) return fail(refused);
 
-  const cache = await stores.warmCaches.get(scope.projectId, architecture);
+  const cache = await stores.warmCaches.get(input.projectId, input.architecture);
   if (retained !== undefined) {
     // The run's own snapshot is what a resume promises to continue from; one
     // that is gone is a refusal, not a cold start.
     const described = await compute.describeSnapshot(retained).catch(() => undefined);
     if (described === undefined || described.state === "error") {
-      await deps.tokens.delete(parameter).catch(() => undefined);
+      await input.unpark();
       return fail(`the run's retained snapshot ${retained} is gone; nothing to resume from`);
     }
   }
-  let fromSnapshotId = replacing ? undefined : (retained ?? warmSnapshotOf(cache));
+  let fromSnapshotId = replacing !== undefined ? undefined : (retained ?? warmSnapshotOf(cache));
   if (fromSnapshotId !== undefined && retained === undefined && cache !== undefined) {
     // The snapshot must still exist: one deleted behind the record's back (by
     // hand, 2026-10-06) failed every launch of the project until the record
@@ -215,20 +214,21 @@ export const provisionDispatch = async (
     const described = await compute.describeSnapshot(fromSnapshotId).catch(() => undefined);
     if (described === undefined || described.state === "error") {
       console.warn(
-        `dispatch ${scope.runId}: warm snapshot ${fromSnapshotId} is gone; starting cold and forgetting the cache`,
+        `${input.label}: warm snapshot ${fromSnapshotId} is gone; starting cold and forgetting the cache`,
       );
-      await stores.warmCaches.delete(scope.projectId, architecture);
+      await stores.warmCaches.delete(input.projectId, input.architecture);
       fromSnapshotId = undefined;
     }
   }
-  const spec = COMPUTE_TIERS[dispatch.tier];
+  const spec = COMPUTE_TIERS[input.tier];
   const launchIn = (subnetId: string) =>
     compute.launch({
       imageId,
-      instanceType: dispatch.instanceType,
+      instanceType: input.instanceType,
       subnetId,
-      tags: machineTags(dispatch, deps.stage, deps.apiEndpoint),
-      ...(replacing
+      tags: input.tags,
+      ...(input.clientToken === undefined ? {} : { clientToken: input.clientToken }),
+      ...(replacing !== undefined
         ? {}
         : {
             volume: {
@@ -237,10 +237,10 @@ export const provisionDispatch = async (
               ...(fromSnapshotId === undefined
                 ? {}
                 : { fromSnapshotId, initializationRateMiBps: WARM_RESTORE_RATE_MIBPS }),
-              ...(dispatch.workspace?.iops === undefined ? {} : { iops: dispatch.workspace.iops }),
-              ...(dispatch.workspace?.throughputMiBps === undefined
+              ...(input.workspace?.iops === undefined ? {} : { iops: input.workspace.iops }),
+              ...(input.workspace?.throughputMiBps === undefined
                 ? {}
-                : { throughputMiBps: dispatch.workspace.throughputMiBps }),
+                : { throughputMiBps: input.workspace.throughputMiBps }),
             },
           }),
     });
@@ -253,14 +253,14 @@ export const provisionDispatch = async (
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!isCapacityRefusal(error)) {
-        await deps.tokens.delete(parameter).catch(() => undefined);
+        await input.unpark();
         return fail(`launch failed: ${message}`);
       }
       refusals.push(`${deps.subnetZones?.[subnetId] ?? subnetId}: ${message}`);
     }
   }
   if (instanceId === undefined) {
-    await deps.tokens.delete(parameter).catch(() => undefined);
+    await input.unpark();
     return fail(`launch failed: no zone had capacity. ${refusals.join(" | ")}`);
   }
 
@@ -269,11 +269,11 @@ export const provisionDispatch = async (
   let description = await compute.describe(instanceId);
   const sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const describeAttempts = deps.describeAttempts ?? 12;
-  if (replacing && dispatch.volumeId !== undefined) {
+  if (replacing !== undefined) {
     // The run's volume onto the new machine (T6): once the machine runs, and
     // once the old machine has let the volume go, which the terminate may still
     // be doing; so the attach is tried for as long as the describes are.
-    const volumeId = dispatch.volumeId;
+    const volumeId = replacing.volumeId;
     let attached = false;
     let lastError: unknown;
     for (let attempt = 0; attempt < Math.max(describeAttempts, 24) && !attached; attempt += 1) {
@@ -304,6 +304,92 @@ export const provisionDispatch = async (
     await sleep(5_000);
     description = await compute.describe(instanceId);
   }
+  return { ok: true, instanceId, description };
+};
+
+export const provisionDispatch = async (
+  deps: ProvisionDeps,
+  scope: RunScope,
+): Promise<ProvisionOutcome> => {
+  const { stores } = deps;
+  const dispatch = await stores.dispatches.get(scope);
+  if (dispatch === undefined) return { kind: "skipped", reason: "no dispatch for this run" };
+  // A fresh attempt is `requested` (the first) or `provisioning` with no
+  // machine yet (a replacement or a resume); anything else is already done.
+  if (
+    !(
+      dispatch.status === "requested" ||
+      (dispatch.status === "provisioning" && dispatch.instanceId === undefined)
+    )
+  ) {
+    return { kind: "skipped", reason: `dispatch is ${dispatch.status} with a machine` };
+  }
+  const run = await stores.runs.get(scope, scope.runId);
+  const program = await stores.programContracts.get(scope.projectId, scope.programId);
+  const project: Project | undefined = await stores.projects.get(scope.projectId);
+  if (run === undefined || program === undefined || project === undefined) {
+    return { kind: "skipped", reason: "the run, program or project is missing" };
+  }
+  const at = nowIso(deps.clock);
+  const fail = async (reason: string): Promise<ProvisionOutcome> => {
+    const failed = transitionDispatch<Dispatch>(
+      { ...dispatch, failure: { code: "provisioning_failed", message: reason } },
+      "fail",
+      nowIso(deps.clock),
+    );
+    await stores.dispatches.put(failed);
+    return { kind: "failed", dispatch: failed, reason };
+  };
+
+  const architecture = architectureOf(dispatch.instanceType);
+  // A resume after cleanup deleted the volume (D-P10-18) has no volume to land
+  // beside: it gets a new one from the run's retained snapshot, in any zone,
+  // like a first machine from the warm cache — not an attach of a volume that
+  // is gone (2026-10-21).
+  const retained =
+    dispatch.cleanup.volumeDeleted && dispatch.volumeId !== undefined
+      ? dispatch.cleanup.snapshotId
+      : undefined;
+  const replacing = dispatch.volumeId !== undefined && !dispatch.cleanup.volumeDeleted;
+  const parameter = firstTokenParameterName(deps.stage, scope.runId, dispatch.generation);
+  const launched = await launchMachine(deps, {
+    label: `dispatch ${scope.runId}`,
+    projectId: scope.projectId,
+    hashKey: scope.runId,
+    architecture,
+    instanceType: dispatch.instanceType,
+    tier: dispatch.tier,
+    tags: machineTags(dispatch, deps.stage, deps.apiEndpoint),
+    workspace: dispatch.workspace,
+    replacing:
+      replacing && dispatch.volumeId !== undefined
+        ? { volumeId: dispatch.volumeId, availabilityZone: dispatch.availabilityZone }
+        : undefined,
+    retainedSnapshotId: retained,
+    // The first token, parked before the machine exists so it is there when the
+    // machine boots. Minted under this attempt's generation (D-P10-20).
+    park: async () => {
+      let token: string;
+      try {
+        token = (
+          await mintEngineToken(deps.signer, {
+            dispatch,
+            run,
+            program,
+            issuer: deps.issuer,
+            now: deps.clock.now(),
+          })
+        ).token;
+      } catch (error) {
+        return `could not mint the first token: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      await deps.tokens.put(parameter, token);
+      return undefined;
+    },
+    unpark: () => deps.tokens.delete(parameter).catch(() => undefined),
+  });
+  if (!launched.ok) return fail(launched.reason);
+  const { instanceId, description } = launched;
 
   const attempts = dispatch.attempts.map((attempt) =>
     attempt.generation === dispatch.generation ? { ...attempt, instanceId } : attempt,

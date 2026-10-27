@@ -21,7 +21,7 @@ export const validationError = (message: string): Error =>
   Object.assign(new Error(message), { name: "ValidationException" });
 
 type Operand =
-  | { readonly kind: "path"; readonly name: string }
+  | { readonly kind: "path"; readonly name: string; readonly rest: readonly string[] }
   | { readonly kind: "value"; readonly value: unknown };
 
 type Comparator = "=" | "<>" | "<" | "<=" | ">" | ">=";
@@ -42,6 +42,7 @@ export type Condition =
       readonly low: Operand;
       readonly high: Operand;
     }
+  | { readonly kind: "in"; readonly target: Operand; readonly candidates: readonly Operand[] }
   | { readonly kind: "function"; readonly name: string; readonly args: readonly Operand[] };
 
 const COMPARATORS = new Set<string>(["=", "<>", "<", "<=", ">", ">="]);
@@ -51,7 +52,8 @@ const FUNCTIONS = new Set([
   "attribute_type",
   "begins_with",
 ]);
-const TOKEN = /\s*(<>|<=|>=|[=<>(),+]|[#:]?[A-Za-z_][A-Za-z0-9_]*)/y;
+const TOKEN =
+  /\s*(<>|<=|>=|[=<>(),+]|#?[A-Za-z_][A-Za-z0-9_]*(?:\.#[A-Za-z_][A-Za-z0-9_]*)*|:[A-Za-z_][A-Za-z0-9_]*)/y;
 
 export const tokenize = (expression: string): string[] => {
   const tokens: string[] = [];
@@ -183,6 +185,17 @@ class ConditionParser {
       return { kind: "function", name: token, args };
     }
     const left = this.operand();
+    if (this.keyword("IN")) {
+      this.next();
+      this.expect("(");
+      const candidates = [this.operand()];
+      while (this.peek() === ",") {
+        this.next();
+        candidates.push(this.operand());
+      }
+      this.expect(")");
+      return { kind: "in", target: left, candidates };
+    }
     if (this.keyword("BETWEEN")) {
       this.next();
       const low = this.operand();
@@ -198,7 +211,12 @@ class ConditionParser {
   operand(): Operand {
     const token = this.next();
     if (token.startsWith("#")) {
-      return { kind: "path", name: this.usage.resolveName(token, this.names) };
+      const [first = token, ...rest] = token.split(".");
+      return {
+        kind: "path",
+        name: this.usage.resolveName(first, this.names),
+        rest: rest.map((part) => this.usage.resolveName(part, this.names)),
+      };
     }
     if (token.startsWith(":")) {
       return { kind: "value", value: this.usage.resolveValue(token, this.values) };
@@ -229,7 +247,15 @@ export const typeOf = (value: unknown): string | undefined => {
 };
 
 const resolve = (operand: Operand, item: Item | undefined): unknown =>
-  operand.kind === "value" ? operand.value : item?.[operand.name];
+  operand.kind === "value"
+    ? operand.value
+    : operand.rest.reduce<unknown>(
+        (value, name) =>
+          typeof value === "object" && value !== null && !Array.isArray(value)
+            ? (value as Item)[name]
+            : undefined,
+        item?.[operand.name],
+      );
 
 const compare = (op: Comparator, left: unknown, right: unknown): boolean => {
   if (left === undefined || right === undefined) return false;
@@ -263,6 +289,12 @@ export const evaluate = (condition: Condition, item: Item | undefined): boolean 
       return !evaluate(condition.operand, item);
     case "compare":
       return compare(condition.op, resolve(condition.left, item), resolve(condition.right, item));
+    case "in": {
+      const target = resolve(condition.target, item);
+      return condition.candidates.some((candidate) =>
+        compare("=", target, resolve(candidate, item)),
+      );
+    }
     case "between": {
       const target = resolve(condition.target, item);
       return (

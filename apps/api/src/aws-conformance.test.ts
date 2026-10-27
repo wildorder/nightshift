@@ -8,14 +8,16 @@
  * and ledger — the same path events take in AWS. The smoke suite wires the same
  * suite to the deployed table.
  */
+import type { IsoTimestamp } from "@nightshift/contracts";
 import type { NightshiftStores } from "@nightshift/core";
 import {
   createAwsStores,
   createDynamoSequenceLedger,
+  keys,
   parseStreamRecord,
 } from "@nightshift/persistence/aws";
 import { FakeTable, routingTableClient, toStreamRecord } from "@nightshift/persistence/aws/testing";
-import { describePortConformance } from "@nightshift/test/conformance";
+import { describeLinePortConformance, describePortConformance } from "@nightshift/test/conformance";
 import { materializeBatch } from "./materializer/materialize.js";
 
 const tableName = "nightshift-conformance";
@@ -26,27 +28,34 @@ interface FakeBackedStores extends NightshiftStores {
   readonly table: FakeTable;
 }
 
-describePortConformance<FakeBackedStores>(
-  "DynamoDB adapter on FakeTable",
-  () => {
-    const table = new FakeTable({ tableName, pageItemCap: 3 });
-    const credentials = new FakeTable({ tableName: credentialsTableName, pageItemCap: 3 });
-    const client = routingTableClient({ [tableName]: table, [credentialsTableName]: credentials });
-    return { ...createAwsStores({ tableName, table: client, credentialsTableName }), table };
+const fakeBackedStores = (clock: { now(): IsoTimestamp }): FakeBackedStores => {
+  const table = new FakeTable({ tableName, pageItemCap: 3 });
+  const credentials = new FakeTable({ tableName: credentialsTableName, pageItemCap: 3 });
+  const client = routingTableClient({ [tableName]: table, [credentialsTableName]: credentials });
+  return {
+    ...createAwsStores({ tableName, table: client, credentialsTableName, now: clock.now }),
+    table,
+  };
+};
+
+describeLinePortConformance<FakeBackedStores>("DynamoDB adapter on FakeTable", fakeBackedStores);
+
+describePortConformance<FakeBackedStores>("DynamoDB adapter on FakeTable", fakeBackedStores, {
+  // The DynamoDB adapter implements both halves of the split (T2).
+  identity: (stores) => stores,
+  // Below the port: the run record alone, with no marker beside it.
+  seedLegacyRun: async ({ table }, run) => {
+    await table.put({ TableName: tableName, Item: { ...run, ...keys.run(run, run.runId) } });
   },
-  {
-    // The DynamoDB adapter implements both halves of the split (T2).
-    identity: (stores) => stores,
-    settle: async ({ table }) => {
-      const ledger = createDynamoSequenceLedger({ tableName, table });
-      // Stamping writes stream records of its own (all ignored), so drain until quiet.
-      for (let batch = table.drainStream(); batch.length > 0; batch = table.drainStream()) {
-        const records = batch.map((record) => parseStreamRecord(toStreamRecord(record)));
-        const result = await materializeBatch(ledger, records);
-        if (result.batchItemFailures.length > 0) {
-          throw new Error(`materializer failed ${result.batchItemFailures.length} records`);
-        }
+  settle: async ({ table }) => {
+    const ledger = createDynamoSequenceLedger({ tableName, table });
+    // Stamping writes stream records of its own (all ignored), so drain until quiet.
+    for (let batch = table.drainStream(); batch.length > 0; batch = table.drainStream()) {
+      const records = batch.map((record) => parseStreamRecord(toStreamRecord(record)));
+      const result = await materializeBatch(ledger, records);
+      if (result.batchItemFailures.length > 0) {
+        throw new Error(`materializer failed ${result.batchItemFailures.length} records`);
       }
-    },
+    }
   },
-);
+});

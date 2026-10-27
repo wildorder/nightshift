@@ -27,6 +27,32 @@ describe("FakeTable", () => {
     });
   });
 
+  it("evaluates IN and a nested attribute path in a condition", async () => {
+    const t = table();
+    await t.put({
+      TableName,
+      Item: { PK: "a", SK: "1", status: "failed", cleanup: { settledAt: "x" } },
+    });
+    const put = (names: Record<string, string>, expression: string) =>
+      t.put({
+        TableName,
+        Item: { PK: "a", SK: "1", status: "failed", cleanup: { settledAt: "x" } },
+        ConditionExpression: expression,
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: { ":a": "stopped", ":b": "failed" },
+      });
+    const names = { "#s": "status", "#c": "cleanup", "#t": "settledAt" };
+    await put(names, "#s IN (:a, :b) AND attribute_exists(#c.#t)");
+    await expect(
+      put(names, "#s IN (:a, :a) AND attribute_exists(#c.#t) AND #s <> :b"),
+    ).rejects.toMatchObject({
+      name: "ConditionalCheckFailedException",
+    });
+    await expect(
+      put(names, "#s IN (:a, :b) AND attribute_not_exists(#c.#t)"),
+    ).rejects.toMatchObject({ name: "ConditionalCheckFailedException" });
+  });
+
   it("applies a transaction all or nothing, reporting reasons by position", async () => {
     const t = table();
     await t.put({ TableName, Item: { PK: "a", SK: "2" } });

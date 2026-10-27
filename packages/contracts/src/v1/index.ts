@@ -19,6 +19,7 @@ export * from "./gate-health.js";
 export * from "./identity-registry.js";
 export * from "./job-contract.js";
 export * from "./lifecycle.js";
+export * from "./line.js";
 export * from "./measurement.js";
 export * from "./membership.js";
 export * from "./model-catalog.js";

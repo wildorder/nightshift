@@ -340,18 +340,40 @@ describe("NightshiftRunnerStack", () => {
       expect(actionsOfRole(template, "PublisherFunctionRole")).not.toContain("ec2:RunInstances");
     });
 
-    it("lets the reconciler query the node index, where dispatches are listed by status", () => {
+    it("lets the reconciler and the dispatch function query the node index", () => {
       const { template } = synth();
       const queries = statementsOf(template).filter(
         (statement) =>
           actionsOf(statement).includes("dynamodb:Query") &&
           stringsIn(statement.Resource).some((value) => value.includes("/index/gsi_node")),
       );
-      // The reconciler's, and no one else's: the dispatch Lambda and the
-      // publisher read a dispatch by its run, never across projects.
-      expect(queries).toHaveLength(1);
+      // The reconciler lists dispatches and lines across projects; provisioning
+      // (the dispatch function) counts live run and line dispatches. The
+      // publisher reads a dispatch by its run, never across projects.
+      expect(queries).toHaveLength(2);
       expect(actionsOfRole(template, "ReconcilerFunctionRole")).toContain("dynamodb:Query");
+      expect(actionsOfRole(template, "DispatchFunctionRole")).toContain("dynamodb:Query");
       expect(actionsOfRole(template, "PublisherFunctionRole")).not.toContain("dynamodb:Query");
+    });
+
+    it("lets the publisher and the reconciler invoke the dispatch function, and tells the publisher its ARN", () => {
+      const { template } = synth();
+      for (const role of ["PublisherFunctionRole", "ReconcilerFunctionRole"]) {
+        expect(actionsOfRole(template, role)).toContain("lambda:InvokeFunction");
+      }
+      expect(actionsOfRole(template, "DispatchFunctionRole")).not.toContain(
+        "lambda:InvokeFunction",
+      );
+      const publisher = resourcesOf(template, "AWS::Lambda::Function").find((fn) =>
+        JSON.stringify(fn.Properties?.Environment).includes("NIGHTSHIFT_GITHUB_APP_SECRET"),
+      );
+      const environment = property<{ Variables: Record<string, unknown> }>(
+        publisher,
+        "Environment",
+      );
+      expect(JSON.stringify(environment.Variables.NIGHTSHIFT_DISPATCH_FUNCTION_ARN)).toContain(
+        "DispatchFunction",
+      );
     });
 
     it("exports the dispatch function's ARN for the API stack to invoke", () => {

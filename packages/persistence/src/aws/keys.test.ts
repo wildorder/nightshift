@@ -21,6 +21,19 @@ describe("key schema matches contract §4.1 and §4.2", () => {
     ],
     ["run feedback", keys.feedback(f.scope), `PROJ#${p}#PROG#${g}`, `FEEDBACK#${r}`],
     ["completion history", keys.completionHistory(p, "comp_X"), `PROJ#${p}`, "COMPLETION#comp_X"],
+    ["line", keys.line(p, "nightshift/develop"), `PROJ#${p}`, "LINE#nightshift/develop"],
+    [
+      "line dispatch",
+      keys.lineDispatch(p, "nightshift/develop"),
+      `PROJ#${p}`,
+      "LINEDISPATCH#nightshift/develop",
+    ],
+    [
+      "project self-started usage",
+      keys.projectSelfStartedUsage(p, "2026-01"),
+      `PROJ#${p}`,
+      "SELFSTARTED#2026-01",
+    ],
     ["run", keys.run(f.scope, r), `PROJ#${p}#PROG#${g}`, `RUN#${r}`],
     [
       "execution node",
@@ -71,5 +84,22 @@ describe("key schema matches contract §4.1 and §4.2", () => {
 
   it("prefixes artifact objects with the full ownership chain (D-P2-08)", () => {
     expect(artifactPrefix(f.scope)).toBe(`${p}/${g}/${r}/`);
+  });
+});
+
+describe("the line indexes on the node GSI", () => {
+  it("places a line with work in one partition, ordered by project and branch", () => {
+    expect(keys.lineWorkIndex(p, "line/x")).toEqual({
+      GSI1PK: keys.lineWorkIndexPartition().GSI1PK,
+      GSI1SK: `${p}#line/x`,
+    });
+  });
+
+  it("places a line dispatch under its status, oldest update first", () => {
+    expect(keys.lineDispatchIndex("running", "2026-01-01T00:00:00.000Z", p, "line/x")).toEqual({
+      GSI1PK: "LINEDISPATCH#running",
+      GSI1SK: `2026-01-01T00:00:00.000Z#${p}#line/x`,
+    });
+    expect(keys.lineDispatchIndexPartition("running").GSI1PK).toBe("LINEDISPATCH#running");
   });
 });

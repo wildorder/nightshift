@@ -14,7 +14,7 @@
  * publication intent (D-P10-22).
  */
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path/posix";
+import { dirname, join } from "node:path/posix";
 import {
   CODEX_AUTH_FILE,
   CODEX_HOME_ENV,
@@ -143,11 +143,25 @@ export const projectCredentialRoot = (runId: string): string =>
 export const tokenDirectory = (runId: string): string => `/dev/shm/nightshift/${runId}`;
 export const tokenFile = (runId: string): string => join(tokenDirectory(runId), "engine-token");
 
+/**
+ * Makes the credential base and its parent (`/dev/shm/nightshift`) 0711,
+ * traversable and not listable, whether or not a token was ever installed:
+ * the project user must reach its granted copy beneath them, and a recursive
+ * mkdir would have left them the engine's and 0700.
+ */
+export const ensureTokenDirectory = async (
+  id: string,
+  base: string = tokenDirectory(id),
+): Promise<void> => {
+  for (const dir of [dirname(base), base]) {
+    await mkdir(dir, { recursive: true, mode: 0o711 });
+    await chmod(dir, 0o711);
+  }
+};
+
 /** Writes the token where the root's processes read it. Called at start and on every renewal. */
 export const installTokenFile = async (runId: string, token: string): Promise<void> => {
-  const dir = tokenDirectory(runId);
-  await mkdir(dir, { recursive: true, mode: 0o711 });
-  await chmod(dir, 0o711);
+  await ensureTokenDirectory(runId);
   const path = tokenFile(runId);
   const temporary = `${path}.next`;
   await writeFile(temporary, `${token}\n`, { mode: 0o600 });
@@ -208,6 +222,7 @@ export const placeProviderCredentials = async (
   base: string = tokenDirectory(runId),
 ): Promise<Record<string, string>> => {
   const env: Record<string, string> = {};
+  await ensureTokenDirectory(runId, base);
   const mine = join(base, "project");
   let reclaimed = false;
   for (const [provider, secret] of Object.entries(credentials) as [Provider, string][]) {

@@ -46,9 +46,14 @@ import {
   ExecutionNodeSchema,
   type GateHealth,
   GateHealthSchema,
+  type IsoTimestamp,
   type JobContract,
   type JobContractId,
   JobContractSchema,
+  type LineDispatch,
+  LineDispatchSchema,
+  type LineRecord,
+  LineRecordSchema,
   type MeasurementSummary,
   type MeasurementSummaryId,
   MeasurementSummarySchema,
@@ -73,6 +78,8 @@ import {
   ProjectSchema,
   type ProjectSecret,
   ProjectSecretSchema,
+  type ProjectSelfStartedUsage,
+  ProjectSelfStartedUsageSchema,
   type Provider,
   type RoutingDecision,
   RoutingDecisionSchema,
@@ -99,17 +106,27 @@ import {
   type ComputeLedgerStore,
   type ComputeUtilizationStore,
   type CredentialsStore,
+  chooseLiveHolder,
   type DecisionStore,
   type DispatchStore,
   type EventStore,
   type ExaminationStore,
   type ExecutionNodeStore,
   type GateHealthStore,
+  IllegalTransitionError,
   type InstallationClaimStore,
+  isDispatchTerminal,
+  isNeverStartedRun,
+  isRunTerminal,
   type JobContractStore,
+  type LineDispatchStore,
+  type LineStore,
+  lineHasWork,
   type MeasurementSummaryStore,
   type MembershipStore,
+  NEVER_STARTED_REASON,
   type NightshiftStores,
+  nowIso,
   type OrgConfigStore,
   OwnershipViolationError,
   orderEvents,
@@ -119,7 +136,9 @@ import {
   type PlanDraftStore,
   ProgramContractExistsError,
   type ProgramContractStore,
+  ProgramRunLiveError,
   type ProgramScope,
+  type ProjectSelfStartedUsageStore,
   type ProjectStore,
   type RoutingDecisionStore,
   type RunFeedbackStore,
@@ -128,6 +147,8 @@ import {
   type SequenceLedger,
   StaleWriteError,
   type StampOutcome,
+  systemClock,
+  transitionRun,
   type UserStore,
   VerificationExistsError,
   type VerificationStore,
@@ -160,6 +181,11 @@ export interface InMemoryState {
    */
   materializeSequences(): number;
   /**
+   * Stores a run as an older version did, with no live-run marker beside it. A
+   * seam for testing the legacy-run guard; nothing in the product calls it.
+   */
+  seedRunWithoutMarker(run: Run): void;
+  /**
    * The same numbering one event at a time, through the port the Streams
    * consumer uses, so the consumer's logic can be tested offline (T6).
    */
@@ -181,6 +207,11 @@ export interface InMemoryOptions {
   readonly tables?: TableFactory;
   /** Runs a multi-write step as one unit. The default runs it directly. */
   readonly atomically?: Atomically;
+  /**
+   * The store's own clock, which dates a live-run claim and ends a never-started
+   * run. Never a client's `startedAt`. Defaults to the system clock.
+   */
+  readonly now?: () => IsoTimestamp;
 }
 
 export interface InMemoryStores extends NightshiftStores, InMemoryState {}
@@ -193,10 +224,13 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const deferSequencing = options.deferSequencing ?? false;
   const table = options.tables ?? mapTables;
   const atomically: Atomically = options.atomically ?? ((fn) => fn());
+  const trustedNow = options.now ?? ((): IsoTimestamp => nowIso(systemClock) as IsoTimestamp);
   const projects = table<Project>("projects");
   const projectsByOrg = table<Project>("projectsByOrg");
   const programContracts = table<ProgramContract>("programContracts");
   const runs = table<Run>("runs");
+  // PIP-9: (project, program) -> the run that holds the program's live-run marker.
+  const liveRuns = table<{ runId: RunId; claimedAt?: IsoTimestamp }>("programLiveRuns");
   const executionNodes = table<ExecutionNode>("executionNodes");
   const jobContracts = table<JobContract>("jobContracts");
   const agents = table<Agent>("agents");
@@ -226,18 +260,25 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   // P20: a run's verdict, and the project's completion histories.
   const feedback = table<RunFeedback>("feedback");
   const completionHistories = table<CompletionHistory>("completionHistories");
-  const installationClaims = table<{ installationId: number; orgId: OrgId; at: string }>(
-    "installationClaims",
-  );
+  const installationClaims = table<{
+    installationId: number;
+    orgId: OrgId;
+    at: string;
+  }>("installationClaims");
   const credentials = table<OrgCredential>("credentials");
   const projectSecrets = table<ProjectSecret>("projectSecrets");
   const computeLedger = table<OrgComputeUsage>("computeLedger");
+  // Pipkin M1b: the project line, its owner's machine, and the project's self-started spend.
+  const lines = table<LineRecord>("lines");
+  const lineDispatches = table<LineDispatch>("lineDispatches");
+  const selfStartedUsage = table<ProjectSelfStartedUsage>("projectSelfStartedUsage");
 
   const all = [
     projects,
     projectsByOrg,
     programContracts,
     runs,
+    liveRuns,
     executionNodes,
     jobContracts,
     agents,
@@ -266,6 +307,9 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     credentials,
     projectSecrets,
     computeLedger,
+    lines,
+    lineDispatches,
+    selfStartedUsage,
   ];
 
   /**
@@ -353,7 +397,100 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const runStore: RunStore = {
     put: async (run) => {
       const parsed = RunSchema.parse(run);
-      runs.set(`${programPrefix(parsed)}${parsed.runId}`, parsed);
+      // One unit (S-01, PIP-9): the run and the program's live-run marker move
+      // together, so no interleaving puts two live runs of one program. A refusal
+      // is returned out of the unit and thrown after it, so what the unit settled
+      // or adopted (a legacy holder's marker) commits even under SQLite.
+      const refused = atomically((): RunId | undefined => {
+        const key = `${programPrefix(parsed)}${parsed.runId}`;
+        const liveKey = programPrefix(parsed);
+        let marker = liveRuns.get(liveKey);
+        if (isRunTerminal(parsed.status)) {
+          runs.set(key, parsed);
+          if (marker?.runId === parsed.runId) liveRuns.delete(liveKey);
+          return undefined;
+        }
+        const stored = runs.get(key);
+        if (stored !== undefined && isRunTerminal(stored.status)) {
+          throw new IllegalTransitionError(stored.status, `put ${parsed.status}`);
+        }
+        const now = trustedNow();
+        if (marker === undefined) {
+          // A run stored before the marker existed holds the program all the same.
+          const legacy = chooseLiveHolder(
+            runs
+              .scan(liveKey)
+              .filter((other) => other.runId !== parsed.runId && !isRunTerminal(other.status))
+              .map((other) => ({
+                runId: other.runId,
+                status: other.status,
+                hasDispatch: dispatches.get(runPrefix(other)) !== undefined,
+              })),
+          );
+          if (legacy !== undefined) {
+            marker = { runId: legacy.runId, claimedAt: now };
+            liveRuns.set(liveKey, marker);
+          }
+        } else if (marker.claimedAt === undefined) {
+          // A marker from before claims were timed: claimed when first read.
+          marker = { runId: marker.runId, claimedAt: now };
+          liveRuns.set(liveKey, marker);
+        }
+        if (marker !== undefined && marker.runId !== parsed.runId) {
+          // A holder that never started is ended in this same unit (D-07).
+          const holderKey = `${liveKey}${marker.runId}`;
+          const holder = runs.get(holderKey);
+          // A marker whose holder is missing or terminal is stale: the new
+          // run's claim replaces it below.
+          if (holder !== undefined && !isRunTerminal(holder.status)) {
+            if (
+              marker.claimedAt === undefined ||
+              !isNeverStartedRun(holder, {
+                hasDispatch: dispatches.get(runPrefix(holder)) !== undefined,
+                now,
+                claimedAt: marker.claimedAt,
+              })
+            ) {
+              return marker.runId;
+            }
+            runs.set(
+              holderKey,
+              transitionRun(holder, "interrupt", {
+                endedAt: now,
+                outcomeReason: NEVER_STARTED_REASON,
+              }),
+            );
+            // Another live run of the program (a legacy one) still holds it:
+            // the marker goes to it and this run is refused.
+            const remaining = chooseLiveHolder(
+              runs
+                .scan(liveKey)
+                .filter(
+                  (other) =>
+                    other.runId !== parsed.runId &&
+                    other.runId !== holder.runId &&
+                    !isRunTerminal(other.status),
+                )
+                .map((other) => ({
+                  runId: other.runId,
+                  status: other.status,
+                  hasDispatch: dispatches.get(runPrefix(other)) !== undefined,
+                })),
+            );
+            if (remaining !== undefined) {
+              liveRuns.set(liveKey, { runId: remaining.runId, claimedAt: now });
+              return remaining.runId;
+            }
+          }
+        }
+        runs.set(key, parsed);
+        liveRuns.set(
+          liveKey,
+          marker?.runId === parsed.runId ? marker : { runId: parsed.runId, claimedAt: now },
+        );
+        return undefined;
+      });
+      if (refused !== undefined) throw new ProgramRunLiveError(parsed.programId, refused);
     },
     get: async (scope: ProgramScope, runId: RunId) => runs.get(`${programPrefix(scope)}${runId}`),
     listByProgram: async (scope: ProgramScope, page?: PageRequest) =>
@@ -603,7 +740,18 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const dispatchStore: DispatchStore = {
     put: async (dispatch) => {
       const parsed = DispatchSchema.parse(dispatch);
-      dispatches.set(runPrefix(parsed), parsed);
+      // A new dispatch commits only while its run is pending, in one unit with
+      // the check, so it cannot race a never-started settlement (D-07).
+      atomically(() => {
+        const key = runPrefix(parsed);
+        if (dispatches.get(key) === undefined) {
+          const run = runs.get(`${programPrefix(parsed)}${parsed.runId}`);
+          if (run?.status !== "pending") {
+            throw new IllegalTransitionError(run?.status ?? "absent", "dispatch");
+          }
+        }
+        dispatches.set(key, parsed);
+      });
     },
     get: async (scope: RunScope) => dispatches.get(runPrefix(scope)),
     listByStatus: async (statuses) =>
@@ -778,9 +926,11 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       credentials.set(`${orgPrefix(parsed.orgId)}${parsed.provider}`, parsed);
     },
     view: async (orgId: OrgId) =>
-      credentials
-        .scan(orgPrefix(orgId))
-        .map(({ provider, lastFour, setAt }) => ({ provider, lastFour, setAt })),
+      credentials.scan(orgPrefix(orgId)).map(({ provider, lastFour, setAt }) => ({
+        provider,
+        lastFour,
+        setAt,
+      })),
     sealed: async (orgId: OrgId, provider: Provider) =>
       credentials.get(`${orgPrefix(orgId)}${provider}`),
     putSecret: async (secret) => {
@@ -807,6 +957,91 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       const parsed = OrgComputeUsageSchema.parse(usage);
       computeLedger.set(`${orgPrefix(parsed.orgId)}${parsed.month}`, parsed);
     },
+  };
+
+  /** `/` separates key parts and cannot appear in an encoded branch. */
+  const lineKey = (projectId: ProjectId, branch: string): string =>
+    `${projectPrefix({ projectId })}${encodeURIComponent(branch)}`;
+
+  // Every method below reads and writes with no `await` between, so each is
+  // atomic in JavaScript (and `atomically` makes it atomic on disk): the
+  // compare-and-swap never loses a race here, and a lost one would re-read.
+  const lineStore: LineStore = {
+    get: async (projectId, branch) => lines.get(lineKey(projectId, branch)),
+    update: async (projectId, branch, change) =>
+      atomically(() => {
+        const key = lineKey(projectId, branch);
+        const current = lines.get(key);
+        const next = change(current);
+        if (next === undefined) return current;
+        const parsed = LineRecordSchema.parse({
+          ...next,
+          projectId,
+          branch,
+          version: (current?.version ?? 0) + 1,
+        });
+        lines.set(key, parsed);
+        return parsed;
+      }),
+    listWithWork: async () => lines.all().filter(lineHasWork),
+  };
+
+  const lineDispatchStore: LineDispatchStore = {
+    get: async (projectId, branch) => lineDispatches.get(lineKey(projectId, branch)),
+    start: async (next) => {
+      const parsed = LineDispatchSchema.parse(next);
+      return atomically(() => {
+        const key = lineKey(parsed.projectId, parsed.branch);
+        const stored = lineDispatches.get(key);
+        if (stored !== undefined) {
+          const settled =
+            isDispatchTerminal(stored.status) &&
+            stored.cleanup.settledAt !== undefined &&
+            parsed.generation === stored.generation + 1;
+          if (!settled) return "live" as const;
+        }
+        lineDispatches.set(key, { ...parsed, version: (stored?.version ?? 0) + 1 });
+        return "started" as const;
+      });
+    },
+    update: async (projectId, branch, change) =>
+      atomically(() => {
+        const key = lineKey(projectId, branch);
+        const current = lineDispatches.get(key);
+        if (current === undefined) return undefined;
+        const next = change(current);
+        if (next === undefined) return current;
+        const parsed = LineDispatchSchema.parse({
+          ...next,
+          projectId,
+          branch,
+          version: current.version + 1,
+        });
+        lineDispatches.set(key, parsed);
+        return parsed;
+      }),
+    listByStatus: async (statuses) =>
+      lineDispatches.all().filter((dispatch) => statuses.includes(dispatch.status)),
+  };
+
+  const projectSelfStartedUsageStore: ProjectSelfStartedUsageStore = {
+    get: async (projectId, month) =>
+      selfStartedUsage.get(`${projectPrefix({ projectId })}${month}`),
+    update: async (projectId, month, change) =>
+      atomically(() => {
+        const key = `${projectPrefix({ projectId })}${month}`;
+        const current = selfStartedUsage.get(key);
+        const next = change(current);
+        if (next === undefined) return current;
+        const parsed = ProjectSelfStartedUsageSchema.parse({
+          ...next,
+          projectId,
+          month,
+          version: (current?.version ?? 0) + 1,
+        });
+        selfStartedUsage.set(key, parsed);
+        return parsed;
+      }),
   };
 
   return {
@@ -837,6 +1072,9 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     installationClaims: installationClaimStore,
     credentials: credentialsStore,
     computeLedger: computeLedgerStore,
+    lines: lineStore,
+    lineDispatches: lineDispatchStore,
+    projectSelfStartedUsage: projectSelfStartedUsageStore,
     sequenceLedger: {
       stamp: async (scope, eventId) => stampStored(`${runPrefix(scope)}${eventId}`),
     },
@@ -844,6 +1082,10 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
       for (const store of all) store.clear();
       sequences.clear();
       appendOrder.length = 0;
+    },
+    seedRunWithoutMarker: (run) => {
+      const parsed = RunSchema.parse(run);
+      runs.set(`${programPrefix(parsed)}${parsed.runId}`, parsed);
     },
     materializeSequences: () => {
       // Append order, so numbering matches the order an ordered stream consumer

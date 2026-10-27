@@ -83,6 +83,7 @@ export const createEc2Compute = (options: Ec2ComputeOptions): ComputeControl => 
           SubnetId: request.subnetId,
           MinCount: 1,
           MaxCount: 1,
+          ...(request.clientToken === undefined ? {} : { ClientToken: request.clientToken }),
           // The workspace, made at launch from the warm snapshot or empty, and
           // kept when the instance goes: it is the recovery point (D-P10-15).
           // A replacement launches without one and attaches the run's (T6).

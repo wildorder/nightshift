@@ -18,7 +18,11 @@ import {
   ExaminationSchema,
   ExecutionNodeSchema,
   GateHealthSchema,
+  type IsoTimestamp,
   JobContractSchema,
+  type LineDispatch,
+  LineDispatchSchema,
+  LineRecordSchema,
   MeasurementSummarySchema,
   MembershipSchema,
   OrgComputeUsageSchema,
@@ -32,8 +36,10 @@ import {
   ProjectSchema,
   type ProjectSecret,
   ProjectSecretSchema,
+  ProjectSelfStartedUsageSchema,
   RoutingDecisionSchema,
   RunFeedbackSchema,
+  type RunId,
   RunSchema,
   UserSchema,
   VerificationSchema,
@@ -41,15 +47,26 @@ import {
 } from "@nightshift/contracts";
 import {
   type CredentialsStore,
+  chooseLiveHolder,
+  IllegalTransitionError,
+  isNeverStartedRun,
+  isRunTerminal,
+  lineHasWork,
+  NEVER_STARTED_REASON,
   type NightshiftStores,
+  nowIso,
   OwnershipViolationError,
   type Page,
   type PageRequest,
   PlanDraftError,
   ProgramContractExistsError,
+  ProgramRunLiveError,
   type ProjectStore,
+  RUN_TERMINAL_STATUSES,
   runScopeOf,
   StaleWriteError,
+  systemClock,
+  transitionRun,
   VerificationExistsError,
 } from "@nightshift/core";
 import { persistedEqual } from "../persisted-equal.js";
@@ -69,6 +86,17 @@ export interface AwsStoresConfig {
    * name rather than writing a key into the main table.
    */
   readonly credentialsTableName?: string;
+  /**
+   * The store's own clock, which dates a live-run claim and ends a never-started
+   * run. Never a client's `startedAt`. Defaults to the system clock.
+   */
+  readonly now?: () => IsoTimestamp;
+}
+
+/** A program's live-run marker; `claimedAt` is absent on one an older version wrote. */
+interface LiveMarker {
+  readonly runId: RunId;
+  readonly claimedAt?: IsoTimestamp;
 }
 
 /** The credentials table was not configured. The API answers 501 for it. */
@@ -92,9 +120,15 @@ export const createAwsStores = ({
   tableName,
   table,
   credentialsTableName,
+  now: clockNow,
 }: AwsStoresConfig): NightshiftStores => {
+  const trustedNow = clockNow ?? ((): IsoTimestamp => nowIso(systemClock) as IsoTimestamp);
   const getRecord = async <T>(schema: Parser<T>, key: TableKey): Promise<T | undefined> => {
-    const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
+    const output = await table.get({
+      TableName: tableName,
+      Key: key,
+      ConsistentRead: true,
+    });
     return output.Item === undefined ? undefined : fromItem(schema, output.Item);
   };
 
@@ -104,7 +138,10 @@ export const createAwsStores = ({
     record: object,
     index?: NodeIndexKey,
   ): Promise<void> => {
-    await table.put({ TableName: tableName, Item: toItem(entity, key, record, index) });
+    await table.put({
+      TableName: tableName,
+      Item: toItem(entity, key, record, index),
+    });
   };
 
   /** A compare-and-set put on `version` (absent counts as 0), as an org's config uses. */
@@ -183,7 +220,11 @@ export const createAwsStores = ({
             });
             return items
               .map((item) => fromItem(OrgCredentialSchema, item))
-              .map(({ provider, lastFour, setAt }) => ({ provider, lastFour, setAt }));
+              .map(({ provider, lastFour, setAt }) => ({
+                provider,
+                lastFour,
+                setAt,
+              }));
           },
           sealed: async (orgId, provider) => {
             const output = await table.get({
@@ -273,9 +314,154 @@ export const createAwsStores = ({
       listPage(ProjectSchema, inTable(keys.orgProjectPartition(orgId)), page),
   };
 
+  /**
+   * Reads the item at `key`, applies `change` and puts the result with `version`
+   * one higher, only if the stored `version` is still the one read; a lost race
+   * reads again. `create` handles an absent item (undefined: refuse the update).
+   */
+  const updateVersioned = async <T extends { readonly version: number }>(
+    entity: string,
+    schema: Parser<T>,
+    key: TableKey,
+    change: (current: T | undefined) => T | undefined,
+    indexOf?: (record: T) => NodeIndexKey | undefined,
+  ): Promise<T | undefined> => {
+    for (let attempt = 1; ; attempt += 1) {
+      const current = await getRecord(schema, key);
+      const next = change(current);
+      if (next === undefined) return current;
+      const parsed = schema.parse({ ...next, version: (current?.version ?? 0) + 1 });
+      try {
+        await table.put({
+          TableName: tableName,
+          Item: toItem(entity, key, parsed, indexOf?.(parsed)),
+          ConditionExpression:
+            current === undefined ? "attribute_not_exists(#pk)" : "#version = :previous",
+          ExpressionAttributeNames:
+            current === undefined ? { "#pk": "PK" } : { "#version": "version" },
+          ...(current === undefined
+            ? {}
+            : { ExpressionAttributeValues: { ":previous": current.version } }),
+        });
+        return parsed;
+      } catch (error) {
+        if (!isConditionalCheckFailure(error) || attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+      }
+    }
+  };
+
+  const lines: NightshiftStores["lines"] = {
+    get: (projectId, branch) => getRecord(LineRecordSchema, keys.line(projectId, branch)),
+    update: (projectId, branch, change) =>
+      updateVersioned(
+        "LineRecord",
+        LineRecordSchema,
+        keys.line(projectId, branch),
+        (current) => {
+          const next = change(current);
+          return next === undefined ? undefined : { ...next, projectId, branch };
+        },
+        (record) => (lineHasWork(record) ? keys.lineWorkIndex(projectId, branch) : undefined),
+      ),
+    listWithWork: async () => listAll(LineRecordSchema, inIndex(keys.lineWorkIndexPartition())),
+  };
+
+  const lineDispatches: NightshiftStores["lineDispatches"] = {
+    get: (projectId, branch) => getRecord(LineDispatchSchema, keys.lineDispatch(projectId, branch)),
+    start: async (next) => {
+      // The version continues a settled predecessor's, so a stale writer of the old
+      // row cannot match the new one; the condition alone decides who starts.
+      const stored = await getRecord(
+        LineDispatchSchema,
+        keys.lineDispatch(next.projectId, next.branch),
+      );
+      const parsed = LineDispatchSchema.parse({ ...next, version: (stored?.version ?? 0) + 1 });
+      try {
+        await table.put({
+          TableName: tableName,
+          Item: toItem(
+            "LineDispatch",
+            keys.lineDispatch(parsed.projectId, parsed.branch),
+            parsed,
+            keys.lineDispatchIndex(
+              parsed.status,
+              parsed.updatedAt,
+              parsed.projectId,
+              parsed.branch,
+            ),
+          ),
+          // Nothing stored, or a terminal dispatch whose cleanup settled and whose
+          // generation this one follows.
+          ConditionExpression:
+            "attribute_not_exists(#pk) OR ((#status = :stopped OR #status = :failed) AND " +
+            "attribute_exists(#cleanup.#settledAt) AND #generation = :previous)",
+          ExpressionAttributeNames: {
+            "#pk": "PK",
+            "#status": "status",
+            "#cleanup": "cleanup",
+            "#settledAt": "settledAt",
+            "#generation": "generation",
+          },
+          ExpressionAttributeValues: {
+            ":stopped": "stopped",
+            ":failed": "failed",
+            ":previous": parsed.generation - 1,
+          },
+        });
+        return "started";
+      } catch (error) {
+        if (!isConditionalCheckFailure(error)) throw error;
+        return "live";
+      }
+    },
+    update: async (projectId, branch, change) => {
+      const key = keys.lineDispatch(projectId, branch);
+      return updateVersioned(
+        "LineDispatch",
+        LineDispatchSchema,
+        key,
+        (current) => {
+          if (current === undefined) return undefined;
+          const next = change(current);
+          return next === undefined ? undefined : { ...next, projectId, branch };
+        },
+        (record) => keys.lineDispatchIndex(record.status, record.updatedAt, projectId, branch),
+      );
+    },
+    listByStatus: async (statuses) => {
+      const found: LineDispatch[] = [];
+      for (const status of statuses) {
+        found.push(
+          ...(await listAll(LineDispatchSchema, inIndex(keys.lineDispatchIndexPartition(status)))),
+        );
+      }
+      return found;
+    },
+  };
+
+  const projectSelfStartedUsage: NightshiftStores["projectSelfStartedUsage"] = {
+    get: (projectId, month) =>
+      getRecord(ProjectSelfStartedUsageSchema, keys.projectSelfStartedUsage(projectId, month)),
+    update: (projectId, month, change) =>
+      updateVersioned(
+        "ProjectSelfStartedUsage",
+        ProjectSelfStartedUsageSchema,
+        keys.projectSelfStartedUsage(projectId, month),
+        (current) => {
+          const next = change(current);
+          return next === undefined ? undefined : { ...next, projectId, month };
+        },
+      ),
+  };
+
   return {
     projects,
     credentials,
+
+    // Pipkin M1b: the project line.
+    lines,
+    lineDispatches,
+    projectSelfStartedUsage,
 
     // P10 (D-P10-19): one row per org and month, read to refuse a dispatch.
     computeLedger: {
@@ -290,12 +476,49 @@ export const createAwsStores = ({
     dispatches: {
       put: async (dispatch) => {
         const parsed = DispatchSchema.parse(dispatch);
-        await putRecord(
-          "Dispatch",
-          keys.dispatch(runScopeOf(parsed)),
-          parsed,
-          keys.dispatchIndex(parsed.status, parsed.updatedAt, parsed.runId),
-        );
+        const dispatchKey = keys.dispatch(runScopeOf(parsed));
+        const index = keys.dispatchIndex(parsed.status, parsed.updatedAt, parsed.runId);
+        for (let attempt = 1; ; attempt += 1) {
+          // An update of an existing dispatch is a plain put.
+          if ((await getRecord(DispatchSchema, dispatchKey)) !== undefined) {
+            await putRecord("Dispatch", dispatchKey, parsed, index);
+            return;
+          }
+          // A new dispatch commits only while its run is pending (D-07), so it
+          // cannot both commit and lose to a never-started settlement.
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: toItem("Dispatch", dispatchKey, parsed, index),
+                    ConditionExpression: "attribute_not_exists(#pk)",
+                    ExpressionAttributeNames: { "#pk": "PK" },
+                  },
+                },
+                {
+                  ConditionCheck: {
+                    TableName: tableName,
+                    Key: keys.run(parsed, parsed.runId),
+                    ConditionExpression: "#status = :pending",
+                    ExpressionAttributeNames: { "#status": "status" },
+                    ExpressionAttributeValues: { ":pending": "pending" },
+                  },
+                },
+              ],
+            });
+            return;
+          } catch (error) {
+            const failed = conditionFailures(error);
+            if (failed === undefined) throw error;
+            if (failed[1] === true) {
+              const run = await getRecord(RunSchema, keys.run(parsed, parsed.runId));
+              throw new IllegalTransitionError(run?.status ?? "absent", "dispatch");
+            }
+            if (attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+          }
+        }
       },
       get: (scope) => getRecord(DispatchSchema, keys.dispatch(scope)),
       listByStatus: async (statuses) => {
@@ -324,7 +547,10 @@ export const createAwsStores = ({
       listByProject: (projectId, page) =>
         listPage(
           ComputeUtilizationSchema,
-          { ...inTable(keys.computeUtilizationPartition(projectId)), descending: true },
+          {
+            ...inTable(keys.computeUtilizationPartition(projectId)),
+            descending: true,
+          },
           page,
         ),
     },
@@ -338,7 +564,10 @@ export const createAwsStores = ({
       get: (projectId, architecture) =>
         getRecord(WarmCacheSchema, keys.warmCache(projectId, architecture)),
       delete: async (projectId, architecture) => {
-        await table.delete({ TableName: tableName, Key: keys.warmCache(projectId, architecture) });
+        await table.delete({
+          TableName: tableName,
+          Key: keys.warmCache(projectId, architecture),
+        });
       },
     },
 
@@ -409,8 +638,13 @@ export const createAwsStores = ({
                         { programId: parsedVersion.programId },
                       ),
                       ConditionExpression: "attribute_not_exists(#pk) OR #program = :program",
-                      ExpressionAttributeNames: { "#pk": "PK", "#program": "programId" },
-                      ExpressionAttributeValues: { ":program": parsedVersion.programId },
+                      ExpressionAttributeNames: {
+                        "#pk": "PK",
+                        "#program": "programId",
+                      },
+                      ExpressionAttributeValues: {
+                        ":program": parsedVersion.programId,
+                      },
                     },
                   },
                 ];
@@ -449,7 +683,9 @@ export const createAwsStores = ({
                       : typeof read === "string"
                         ? {
                             ConditionExpression: "#rev = :rev",
-                            ExpressionAttributeNames: { "#rev": REVISION_ATTRIBUTE },
+                            ExpressionAttributeNames: {
+                              "#rev": REVISION_ATTRIBUTE,
+                            },
                             ExpressionAttributeValues: { ":rev": read },
                           }
                         : {
@@ -500,7 +736,11 @@ export const createAwsStores = ({
       update: async (projectId, programId, change) => {
         const key = keys.planDraft(projectId, programId);
         for (let attempt = 1; ; attempt += 1) {
-          const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
+          const output = await table.get({
+            TableName: tableName,
+            Key: key,
+            ConsistentRead: true,
+          });
           if (output.Item === undefined) return undefined;
           const current = fromItem(PlanDraftSchema, output.Item);
           const changed = change(current);
@@ -520,7 +760,10 @@ export const createAwsStores = ({
           try {
             await table.put({
               TableName: tableName,
-              Item: { ...toItem("PlanDraft", key, parsed), [REVISION_ATTRIBUTE]: randomUUID() },
+              Item: {
+                ...toItem("PlanDraft", key, parsed),
+                [REVISION_ATTRIBUTE]: randomUUID(),
+              },
               ...(typeof read === "string"
                 ? {
                     ConditionExpression: "#rev = :rev",
@@ -529,7 +772,10 @@ export const createAwsStores = ({
                   }
                 : {
                     ConditionExpression: "attribute_exists(#pk) AND attribute_not_exists(#rev)",
-                    ExpressionAttributeNames: { "#pk": "PK", "#rev": REVISION_ATTRIBUTE },
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#rev": REVISION_ATTRIBUTE,
+                    },
                   }),
             });
             return parsed;
@@ -591,7 +837,11 @@ export const createAwsStores = ({
         try {
           await table.put({
             TableName: tableName,
-            Item: toItem("InstallationClaim", key, { installationId, orgId, at }),
+            Item: toItem("InstallationClaim", key, {
+              installationId,
+              orgId,
+              at,
+            }),
             ConditionExpression: "attribute_not_exists(#pk) OR #orgId = :orgId",
             ExpressionAttributeNames: { "#pk": "PK", "#orgId": "orgId" },
             ExpressionAttributeValues: { ":orgId": orgId },
@@ -668,7 +918,11 @@ export const createAwsStores = ({
       update: async (projectId, programId, change) => {
         const key = keys.programContract(projectId, programId);
         for (let attempt = 1; ; attempt += 1) {
-          const output = await table.get({ TableName: tableName, Key: key, ConsistentRead: true });
+          const output = await table.get({
+            TableName: tableName,
+            Key: key,
+            ConsistentRead: true,
+          });
           if (output.Item === undefined) return undefined;
           const current = fromItem(ProgramContractSchema, output.Item);
           const changed = change(current);
@@ -691,7 +945,10 @@ export const createAwsStores = ({
                   }
                 : {
                     ConditionExpression: "attribute_exists(#pk) AND attribute_not_exists(#rev)",
-                    ExpressionAttributeNames: { "#pk": "PK", "#rev": REVISION_ATTRIBUTE },
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#rev": REVISION_ATTRIBUTE,
+                    },
                   }),
             });
             return parsed;
@@ -707,7 +964,439 @@ export const createAwsStores = ({
     runs: {
       put: async (run) => {
         const parsed = RunSchema.parse(run);
-        await putRecord("Run", keys.run(parsed, parsed.runId), parsed);
+        const runKey = keys.run(parsed, parsed.runId);
+        const markerKey = keys.programLiveRun(parsed);
+        const runItem = toItem("Run", runKey, parsed);
+        const terminal = RUN_TERMINAL_STATUSES;
+        const terminalValues = Object.fromEntries(terminal.map((s, i) => [`:t${i}`, s]));
+        const notTerminal = terminal.map((_, i) => `#status <> :t${i}`).join(" AND ");
+        const readMarker = async (): Promise<LiveMarker | undefined> => {
+          const output = await table.get({
+            TableName: tableName,
+            Key: markerKey,
+            ConsistentRead: true,
+          });
+          const holder = output.Item?.runId;
+          if (typeof holder !== "string") return undefined;
+          const claimed = output.Item?.claimedAt;
+          return {
+            runId: holder as RunId,
+            ...(typeof claimed === "string" ? { claimedAt: claimed as IsoTimestamp } : {}),
+          };
+        };
+        const markerItem = (runId: RunId, claimedAt: IsoTimestamp) => ({
+          ...markerKey,
+          entity: "ProgramLiveRun",
+          runId,
+          claimedAt,
+        });
+        /**
+         * The stored live run of the program that is not this one (nor `except`),
+         * preferring one that cannot be settled: running, then pending with a
+         * dispatch, then lowest id.
+         */
+        const findLegacyHolder = async (except?: RunId): Promise<RunId | undefined> => {
+          const stored = await listAll(RunSchema, inTable(keys.runPartition(parsed)));
+          const live = stored.filter(
+            (other) =>
+              other.runId !== parsed.runId &&
+              other.runId !== except &&
+              !isRunTerminal(other.status),
+          );
+          const candidates = await Promise.all(
+            live.map(async (other) => ({
+              runId: other.runId,
+              status: other.status,
+              hasDispatch:
+                other.status === "pending" &&
+                (await getRecord(
+                  DispatchSchema,
+                  keys.dispatch({ ...parsed, runId: other.runId }),
+                )) !== undefined,
+            })),
+          );
+          return chooseLiveHolder(candidates)?.runId;
+        };
+
+        /**
+         * Ends a never-started `holder` and takes the marker, in one transaction.
+         * "live" when it is not never-started (refuse); "retry" when the
+         * transaction's conditions failed, so the caller reads again and decides.
+         */
+        const settleNeverStarted = async (
+          holder: Required<LiveMarker>,
+          now: IsoTimestamp,
+        ): Promise<"settled" | "live" | "retry" | { readonly handedTo: RunId }> => {
+          const holderKey = keys.run(parsed, holder.runId);
+          const stored = await getRecord(RunSchema, holderKey);
+          if (stored === undefined) return "live";
+          const dispatchKey = keys.dispatch({ ...parsed, runId: holder.runId });
+          const dispatched = (await getRecord(DispatchSchema, dispatchKey)) !== undefined;
+          if (
+            !isNeverStartedRun(stored, {
+              hasDispatch: dispatched,
+              now,
+              claimedAt: holder.claimedAt,
+            })
+          ) {
+            return "live";
+          }
+          const ended = transitionRun(stored, "interrupt", {
+            endedAt: now,
+            outcomeReason: NEVER_STARTED_REASON,
+          });
+          // Another live run of the program (a legacy one) keeps it held: the
+          // holder is still ended, but the marker goes to that run and this one
+          // is refused. Runs without a marker only move toward terminal, so a
+          // snapshot showing none is sound; one that ends before the write
+          // fails the new holder's check and is decided again.
+          const next = await findLegacyHolder(holder.runId);
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: toItem("Run", holderKey, ended),
+                    ConditionExpression: "#status = :pending AND #startedAt = :startedAt",
+                    ExpressionAttributeNames: {
+                      "#status": "status",
+                      "#startedAt": "startedAt",
+                    },
+                    ExpressionAttributeValues: {
+                      ":pending": "pending",
+                      ":startedAt": stored.startedAt,
+                    },
+                  },
+                },
+                {
+                  ConditionCheck: {
+                    TableName: tableName,
+                    Key: dispatchKey,
+                    ConditionExpression: "attribute_not_exists(#pk)",
+                    ExpressionAttributeNames: { "#pk": "PK" },
+                  },
+                },
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: markerItem(next ?? parsed.runId, now),
+                    ConditionExpression: "#runId = :holder AND #claimedAt = :claimedAt",
+                    ExpressionAttributeNames: {
+                      "#runId": "runId",
+                      "#claimedAt": "claimedAt",
+                    },
+                    ExpressionAttributeValues: {
+                      ":holder": holder.runId,
+                      ":claimedAt": holder.claimedAt,
+                    },
+                  },
+                },
+                next === undefined
+                  ? {
+                      Put: {
+                        TableName: tableName,
+                        Item: runItem,
+                        ConditionExpression: `attribute_not_exists(#pk) OR (${notTerminal})`,
+                        ExpressionAttributeNames: {
+                          "#pk": "PK",
+                          "#status": "status",
+                        },
+                        ExpressionAttributeValues: terminalValues,
+                      },
+                    }
+                  : {
+                      ConditionCheck: {
+                        TableName: tableName,
+                        Key: keys.run(parsed, next),
+                        ConditionExpression: `attribute_exists(#pk) AND ${notTerminal}`,
+                        ExpressionAttributeNames: {
+                          "#pk": "PK",
+                          "#status": "status",
+                        },
+                        ExpressionAttributeValues: terminalValues,
+                      },
+                    },
+              ],
+            });
+            return next === undefined ? "settled" : { handedTo: next };
+          } catch (error) {
+            if (conditionFailures(error) === undefined) throw error;
+            return "retry";
+          }
+        };
+
+        /**
+         * Takes the marker on behalf of a legacy `holder`, only while no marker
+         * exists and the holder is still live, in one transaction. False when
+         * either changed, so the caller discovers again.
+         */
+        const adoptLegacy = async (holder: RunId, now: IsoTimestamp): Promise<boolean> => {
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: markerItem(holder, now),
+                    ConditionExpression: "attribute_not_exists(#pk)",
+                    ExpressionAttributeNames: { "#pk": "PK" },
+                  },
+                },
+                {
+                  ConditionCheck: {
+                    TableName: tableName,
+                    Key: keys.run(parsed, holder),
+                    ConditionExpression: `attribute_exists(#pk) AND ${notTerminal}`,
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#status": "status",
+                    },
+                    ExpressionAttributeValues: terminalValues,
+                  },
+                },
+              ],
+            });
+            return true;
+          } catch (error) {
+            if (conditionFailures(error) === undefined) throw error;
+            return false;
+          }
+        };
+
+        /**
+         * Replaces a stale marker (its holder is missing or terminal) with this
+         * run's claim, in one transaction with the run. "notStale" when the
+         * holder is live; "retry" when a condition failed.
+         */
+        const replaceStale = async (
+          holder: Required<LiveMarker>,
+          now: IsoTimestamp,
+        ): Promise<"replaced" | "notStale" | "retry"> => {
+          const stored = await getRecord(RunSchema, keys.run(parsed, holder.runId));
+          if (stored !== undefined && !isRunTerminal(stored.status)) return "notStale";
+          const holderGone = `attribute_not_exists(#pk) OR ${terminal
+            .map((_, i) => `#status = :t${i}`)
+            .join(" OR ")}`;
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: runItem,
+                    ConditionExpression: `attribute_not_exists(#pk) OR (${notTerminal})`,
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#status": "status",
+                    },
+                    ExpressionAttributeValues: terminalValues,
+                  },
+                },
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: markerItem(parsed.runId, now),
+                    ConditionExpression: "#runId = :holder AND #claimedAt = :claimedAt",
+                    ExpressionAttributeNames: {
+                      "#runId": "runId",
+                      "#claimedAt": "claimedAt",
+                    },
+                    ExpressionAttributeValues: {
+                      ":holder": holder.runId,
+                      ":claimedAt": holder.claimedAt,
+                    },
+                  },
+                },
+                {
+                  ConditionCheck: {
+                    TableName: tableName,
+                    Key: keys.run(parsed, holder.runId),
+                    ConditionExpression: holderGone,
+                    ExpressionAttributeNames: {
+                      "#pk": "PK",
+                      "#status": "status",
+                    },
+                    ExpressionAttributeValues: terminalValues,
+                  },
+                },
+              ],
+            });
+            return "replaced";
+          } catch (error) {
+            const failed = conditionFailures(error);
+            if (failed === undefined) throw error;
+            if (failed[0] === true) {
+              const own = await getRecord(RunSchema, runKey);
+              if (own !== undefined && isRunTerminal(own.status)) {
+                throw new IllegalTransitionError(own.status, `put ${parsed.status}`);
+              }
+            }
+            return "retry";
+          }
+        };
+
+        if (!isRunTerminal(parsed.status)) {
+          // Claim (S-01, PIP-9): the run and the marker in one transaction. The
+          // run is refused if it is stored terminal; the marker if another run holds it.
+          for (let attempt = 1; ; attempt += 1) {
+            const now = trustedNow();
+            let marker = await readMarker();
+            if (marker === undefined) {
+              // A live run stored before the marker existed holds the program:
+              // claim the marker on its behalf, then decide as for any holder.
+              const legacy = await findLegacyHolder();
+              if (legacy !== undefined) {
+                if (!(await adoptLegacy(legacy, now))) {
+                  if (attempt >= MAX_UPDATE_ATTEMPTS)
+                    throw new ProgramRunLiveError(parsed.programId, legacy);
+                  continue;
+                }
+                marker = { runId: legacy, claimedAt: now };
+              }
+            } else if (marker.claimedAt === undefined) {
+              // Written before claims were timed: claimed when first read.
+              try {
+                await table.put({
+                  TableName: tableName,
+                  Item: markerItem(marker.runId, now),
+                  ConditionExpression: "#runId = :runId AND attribute_not_exists(#claimedAt)",
+                  ExpressionAttributeNames: {
+                    "#runId": "runId",
+                    "#claimedAt": "claimedAt",
+                  },
+                  ExpressionAttributeValues: { ":runId": marker.runId },
+                });
+              } catch (error) {
+                if (!isConditionalCheckFailure(error)) throw error;
+                if (attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+                continue;
+              }
+              marker = { runId: marker.runId, claimedAt: now };
+            }
+
+            if (marker !== undefined && marker.runId !== parsed.runId) {
+              // A marker whose holder is missing or terminal is stale: this
+              // run's claim replaces it.
+              const replaced = await replaceStale(
+                { runId: marker.runId, claimedAt: marker.claimedAt ?? now },
+                now,
+              );
+              if (replaced === "replaced") return;
+              if (replaced === "retry") {
+                if (attempt >= MAX_UPDATE_ATTEMPTS) {
+                  throw new ProgramRunLiveError(parsed.programId, marker.runId);
+                }
+                continue;
+              }
+              // A holder that never started is ended in the same transaction
+              // that moves the marker (D-07).
+              const outcome = await settleNeverStarted(
+                { runId: marker.runId, claimedAt: marker.claimedAt ?? now },
+                now,
+              );
+              if (outcome === "settled") return;
+              if (typeof outcome === "object") {
+                throw new ProgramRunLiveError(parsed.programId, outcome.handedTo);
+              }
+              if (outcome === "live") throw new ProgramRunLiveError(parsed.programId, marker.runId);
+              if (attempt >= MAX_UPDATE_ATTEMPTS) {
+                throw new ProgramRunLiveError(parsed.programId, marker.runId);
+              }
+              continue;
+            }
+
+            try {
+              await table.transactWrite({
+                TransactItems: [
+                  {
+                    Put: {
+                      TableName: tableName,
+                      Item: runItem,
+                      ConditionExpression: `attribute_not_exists(#pk) OR (${notTerminal})`,
+                      ExpressionAttributeNames: {
+                        "#pk": "PK",
+                        "#status": "status",
+                      },
+                      ExpressionAttributeValues: terminalValues,
+                    },
+                  },
+                  {
+                    Put: {
+                      TableName: tableName,
+                      Item: markerItem(parsed.runId, marker?.claimedAt ?? now),
+                      ...(marker === undefined
+                        ? {
+                            ConditionExpression: "attribute_not_exists(#pk)",
+                            ExpressionAttributeNames: { "#pk": "PK" },
+                          }
+                        : {
+                            ConditionExpression: "#runId = :runId",
+                            ExpressionAttributeNames: { "#runId": "runId" },
+                            ExpressionAttributeValues: {
+                              ":runId": parsed.runId,
+                            },
+                          }),
+                    },
+                  },
+                ],
+              });
+              return;
+            } catch (error) {
+              const failed = conditionFailures(error);
+              if (failed === undefined) throw error;
+              if (failed[0] === true) {
+                const stored = await getRecord(RunSchema, runKey);
+                if (stored !== undefined && isRunTerminal(stored.status)) {
+                  throw new IllegalTransitionError(stored.status, `put ${parsed.status}`);
+                }
+              }
+              // The marker moved between the read and the write: read again,
+              // a bounded number of times.
+              if (attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+            }
+          }
+        }
+
+        // Release (S-01, PIP-9): the run always persists; the marker goes with it
+        // only if this run holds it. A release race is retried, never a live-run refusal.
+        for (let attempt = 1; ; attempt += 1) {
+          const holder = (await readMarker())?.runId;
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                { Put: { TableName: tableName, Item: runItem } },
+                holder === parsed.runId
+                  ? {
+                      Delete: {
+                        TableName: tableName,
+                        Key: markerKey,
+                        ConditionExpression: "#runId = :runId",
+                        ExpressionAttributeNames: { "#runId": "runId" },
+                        ExpressionAttributeValues: { ":runId": parsed.runId },
+                      },
+                    }
+                  : {
+                      ConditionCheck: {
+                        TableName: tableName,
+                        Key: markerKey,
+                        ConditionExpression: "attribute_not_exists(#pk) OR #runId <> :runId",
+                        ExpressionAttributeNames: {
+                          "#pk": "PK",
+                          "#runId": "runId",
+                        },
+                        ExpressionAttributeValues: { ":runId": parsed.runId },
+                      },
+                    },
+              ],
+            });
+            return;
+          } catch (error) {
+            if (conditionFailures(error) === undefined || attempt >= MAX_UPDATE_ATTEMPTS) {
+              throw error;
+            }
+          }
+        }
       },
       get: (scope, runId) => getRecord(RunSchema, keys.run(scope, runId)),
       listByProgram: (scope, page) => listPage(RunSchema, inTable(keys.runPartition(scope)), page),
@@ -879,7 +1568,10 @@ export const createAwsStores = ({
               keys.nodeIndex(scope, parsed.executionNodeId, "MEAS", parsed.measurementSummaryId),
             ),
             ConditionExpression: "attribute_not_exists(#pk) OR #updatedAt <= :updatedAt",
-            ExpressionAttributeNames: { "#pk": "PK", "#updatedAt": "updatedAt" },
+            ExpressionAttributeNames: {
+              "#pk": "PK",
+              "#updatedAt": "updatedAt",
+            },
             ExpressionAttributeValues: { ":updatedAt": parsed.updatedAt },
           });
         } catch (error) {

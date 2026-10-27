@@ -68,6 +68,9 @@ export const ErrorResponseSchema = z.strictObject({
     message: z.string().min(1),
     /** Schema issues, present on `validation_failed`. */
     issues: z.array(z.unknown()).optional(),
+    /** `program_run_live` (PIP-9): the program, and the run that holds its live-run marker. */
+    programId: z.string().min(1).optional(),
+    liveRunId: z.string().min(1).optional(),
   }),
 });
 export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;

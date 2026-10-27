@@ -79,15 +79,20 @@ import type {
   Harness,
   HarnessExit,
   HarnessHandle,
+  HarnessLineStartInput,
   HarnessStartInput,
+  HookSink,
   RunAs,
 } from "@nightshift/harness";
 import {
   agentStatusForExit,
   type CliLauncher,
+  cancelAtDeadline,
   commandAs,
   hookTypeForExit,
+  nullHookSink,
   promptFor,
+  renderLineBrief,
   startLocalReceiver,
   withTmpDir,
 } from "@nightshift/harness";
@@ -140,6 +145,32 @@ interface RunState {
   settledExit: HarnessExit | undefined;
   cancelRequested: boolean;
   timers: ReturnType<typeof setTimeout>[];
+}
+
+/**
+ * One launch, normalised: what `start` and `startLine` both reduce to, so the
+ * command, permission and process code below is written once.
+ */
+interface Launch {
+  readonly agentId: HarnessHandle["agentId"];
+  readonly prompt: string;
+  readonly worktree: string;
+  readonly tmpDir?: string | undefined;
+  readonly model: HarnessStartInput["model"];
+  readonly mcp?: HarnessStartInput["mcp"];
+  readonly runAs?: RunAs | undefined;
+  readonly sink: HookSink;
+  readonly measurements?: HarnessStartInput["measurements"];
+  readonly transcriptPath?: string | undefined;
+  readonly resume?: HarnessStartInput["resume"];
+  /** The environment the allowlist is filtered out of. */
+  readonly parentEnv: Readonly<Record<string, string | undefined>>;
+  /** Added past the allowlist: declared secrets, or a line agent's whole handed-in environment. */
+  readonly extraEnv: Readonly<Record<string, string>>;
+  /** Let the model's shell see credential-named variables (declared secrets only). */
+  readonly passSecrets?: boolean;
+  /** No file edits: the examiner's sandbox. */
+  readonly readOnly?: boolean;
 }
 
 export interface CodexHarnessOptions {
@@ -195,10 +226,8 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
     return `${guardDir}${posix.delimiter}${state.env.PATH ?? ""}`;
   };
 
-  const start = async (input: HarnessStartInput): Promise<HarnessHandle> => {
-    const prompt = promptFor(input, (brief, mcpServerName, tools) =>
-      codexPrompt(brief, codexBriefAddendum({ mcpServerName, tools })),
-    );
+  const launch = async (input: Launch): Promise<HarnessHandle> => {
+    const prompt = input.prompt;
 
     let resolveExit: (exit: HarnessExit) => void = () => {};
     const exitPromise = new Promise<HarnessExit>((resolve) => {
@@ -208,7 +237,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
     const interpreter = createStreamInterpreter({
       sink: input.sink,
       clock,
-      context: { agentId: input.agent.agentId },
+      context: { agentId: input.agentId },
       ...(input.runAs === undefined ? {} : { started: { user: input.runAs.user } }),
     });
 
@@ -219,9 +248,8 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       env: withTmpDir(
         sanitizeCodexEnvironment({
           platform,
-          parentEnv,
-          // A-62: the project's secrets the program declares, as this process holds them.
-          extra: declaredSecrets(input.program.secrets, parentEnv),
+          parentEnv: input.parentEnv,
+          extra: input.extraEnv,
         }),
         input.tmpDir,
       ),
@@ -261,7 +289,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
     const failToLaunch = (reason: string): HarnessHandle => {
       if (state.guardDir !== undefined) fs.removeDir(state.guardDir);
       settle({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE }, { summary: reason });
-      const handle: HarnessHandle = { agentId: input.agent.agentId, exit: exitPromise };
+      const handle: HarnessHandle = { agentId: input.agentId, exit: exitPromise };
       runs.set(handle, state);
       return handle;
     };
@@ -309,7 +337,8 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       shellPath,
       ...(input.resume === undefined ? {} : { resumeSessionId: input.resume.sessionId }),
       ...(capture?.otel === undefined ? {} : { otel: capture.otel }),
-      passSecrets: Object.keys(declaredSecrets(input.program.secrets, parentEnv)).length > 0,
+      passSecrets: input.readOnly !== true && input.passSecrets === true,
+      ...(input.readOnly === true ? { readOnly: true } : {}),
     });
 
     let child: SpawnedChild;
@@ -404,12 +433,55 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
     });
 
     const handle: HarnessHandle = {
-      agentId: input.agent.agentId,
+      agentId: input.agentId,
       ...optionalField("pid", child.pid),
       exit: exitPromise,
       ...optionalField("transcript", transcript === undefined ? undefined : input.transcriptPath),
     };
     runs.set(handle, state);
+    return handle;
+  };
+
+  const start = (input: HarnessStartInput): Promise<HarnessHandle> =>
+    launch({
+      agentId: input.agent.agentId,
+      prompt: promptFor(input, (brief, mcpServerName, tools) =>
+        codexPrompt(brief, codexBriefAddendum({ mcpServerName, tools })),
+      ),
+      worktree: input.worktree,
+      tmpDir: input.tmpDir,
+      model: input.model,
+      ...(input.mcp === undefined ? {} : { mcp: input.mcp }),
+      runAs: input.runAs,
+      sink: input.sink,
+      ...(input.measurements === undefined ? {} : { measurements: input.measurements }),
+      transcriptPath: input.transcriptPath,
+      ...(input.resume === undefined ? {} : { resume: input.resume }),
+      parentEnv,
+      // A-62: the project's secrets the program declares, as this process holds them.
+      extraEnv: declaredSecrets(input.program.secrets, parentEnv),
+      passSecrets: Object.keys(declaredSecrets(input.program.secrets, parentEnv)).length > 0,
+    });
+
+  /**
+   * The line owner's resolver or examiner: no MCP server, no run-scoped records,
+   * the environment handed in and none of the engine's. Git writes are refused
+   * by the same guard as a worker's; an examiner runs in a read-only sandbox.
+   */
+  const startLine = async (input: HarnessLineStartInput): Promise<HarnessHandle> => {
+    const handle = await launch({
+      agentId: input.agentId,
+      prompt: `${renderLineBrief(input.task).trimEnd()}\n`,
+      worktree: input.worktree,
+      tmpDir: input.tmpDir,
+      model: input.model,
+      runAs: input.runAs,
+      sink: nullHookSink,
+      parentEnv: {},
+      extraEnv: input.env,
+      readOnly: input.role === "line_examiner",
+    });
+    cancelAtDeadline({ handle, deadline: input.deadline, nowMs: clock.now(), cancel });
     return handle;
   };
 
@@ -474,6 +546,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
     id: CODEX_HARNESS_ID,
     capabilities: { usage: true, observations: true },
     start,
+    startLine,
     cancel,
     status,
   };
