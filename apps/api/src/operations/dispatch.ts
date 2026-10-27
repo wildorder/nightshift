@@ -51,6 +51,7 @@ import {
   mayResume,
   meterUsd,
   nowIso,
+  occupiesComputeSlot,
   type RunScope,
   repositoryNameOf,
   runHoursOf,
@@ -74,7 +75,7 @@ export const requireDispatch = async (deps: ApiDeps, scope: RunScope): Promise<D
 };
 
 /** The org's ledger for this month, as it stands, or empty. */
-const usageOf = async (deps: ApiDeps, orgId: OrgId, at: string): Promise<OrgComputeUsage> =>
+export const usageOf = async (deps: ApiDeps, orgId: OrgId, at: string): Promise<OrgComputeUsage> =>
   (await deps.stores.computeLedger.get(orgId, calendarMonthOf(at))) ??
   emptyComputeUsage(orgId, calendarMonthOf(at), at);
 
@@ -101,6 +102,32 @@ const liveRunsOf = async (deps: ApiDeps, orgId: OrgId): Promise<readonly RunId[]
   }
   return runs;
 };
+
+/** The statuses in which a line dispatch holds one of the org's compute slots. */
+const SLOT_DISPATCH_STATUSES: readonly DispatchStatus[] =
+  DispatchStatusSchema.options.filter(occupiesComputeSlot);
+
+/**
+ * The org's line dispatches holding a compute slot (Pipkin M1b): a machine
+ * being made, up, or being stopped. A `requested` one has no machine and holds
+ * none, so lines waiting for capacity cannot deadlock each other.
+ */
+const slotLinesOf = async (deps: ApiDeps, orgId: OrgId): Promise<number> => {
+  const lines = await deps.stores.lineDispatches.listByStatus(SLOT_DISPATCH_STATUSES);
+  const orgOf = new Map<string, OrgId | undefined>();
+  let count = 0;
+  for (const line of lines) {
+    if (!orgOf.has(line.projectId)) {
+      orgOf.set(line.projectId, (await deps.stores.projects.get(line.projectId))?.orgId);
+    }
+    if (orgOf.get(line.projectId) === orgId) count += 1;
+  }
+  return count;
+};
+
+/** What the org's concurrency ceiling counts: its live runs and its line dispatches holding a slot. */
+const concurrentOf = async (deps: ApiDeps, orgId: OrgId): Promise<number> =>
+  (await liveRunsOf(deps, orgId)).length + (await slotLinesOf(deps, orgId));
 
 /**
  * `POST …/runs/{runId}/dispatch` — authorise a machine for a run.
@@ -179,7 +206,7 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
     runHours,
     estimatedUsd,
     monthSpentUsd: usage.meteredUsd,
-    concurrentRuns: (await liveRunsOf(deps, project.orgId)).length,
+    concurrentRuns: await concurrentOf(deps, project.orgId),
   });
   if (refusal !== undefined) throw new HttpError(409, refusal.reason, refusal.detail);
 
@@ -324,12 +351,12 @@ export const resumeDispatch: Handler = async ({ deps, params }) => {
   const project = await requireProject(deps.stores, scope.projectId);
   const ceilings =
     (await deps.stores.orgConfigs.get(project.orgId))?.compute ?? DEFAULT_COMPUTE_CEILINGS;
-  const live = await liveRunsOf(deps, project.orgId);
-  if (live.length >= ceilings.maxConcurrentRuns) {
+  const live = await concurrentOf(deps, project.orgId);
+  if (live >= ceilings.maxConcurrentRuns) {
     throw new HttpError(
       409,
       "concurrency_over_ceiling",
-      `${live.length} remote run(s) are live; the org's ceiling is ${ceilings.maxConcurrentRuns}`,
+      `${live} remote run(s) are live; the org's ceiling is ${ceilings.maxConcurrentRuns}`,
     );
   }
   const dispatcher = deps.dispatcher;
@@ -537,7 +564,7 @@ const renewedToken = async (
  * Never fails the heartbeat: a refusal or a fault is logged, without the
  * secret, and the old copy stays.
  */
-const keepRefreshedLogin = async (
+export const keepRefreshedLogin = async (
   deps: ApiDeps,
   orgId: OrgId,
   runId: string,

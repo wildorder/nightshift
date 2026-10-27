@@ -602,8 +602,8 @@ describe("the project line (Pipkin M1b)", () => {
     }
   });
 
-  it("refuses a line principal everything, for now", () => {
-    for (const operation of ALL_OPERATIONS) {
+  it("refuses a line principal every operation outside line.* (authorize-line.test.ts covers line.*)", () => {
+    for (const operation of ALL_OPERATIONS.filter((op) => !op.startsWith("line."))) {
       expect(authorize(line, operation, ownTarget), operation).toMatchObject({
         allowed: false,
         reason: "execution_forbidden_operation",

@@ -99,6 +99,7 @@ describe("enforce, for a line principal", () => {
         projectOrgs,
         nodes: stores.executionNodes,
         dispatches: stores.dispatches,
+        lineDispatches: stores.lineDispatches,
       }).then(
         () => undefined,
         (error: unknown) => error,
