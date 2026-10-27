@@ -16,8 +16,10 @@ import {
   type ProjectSelfStartedUsage,
 } from "@nightshift/contracts";
 import {
+  beginReplacement,
   createFixedClock,
   createFixtures,
+  dispatchChargeKey,
   type Fixtures,
   lineBundleObjectKey,
   makeLineDispatch,
@@ -705,8 +707,67 @@ describe("the heartbeat's charge to the project's ledger", () => {
     const spent = (await heldDispatch(w)).spend.meteredUsd;
     const row = await usageOf(w);
     expect(row?.meteredUsd).toBeCloseTo(spent);
-    expect(row?.charged?.[`${BRANCH}#1`]).toBeCloseTo(spent);
+    expect(row?.charged?.[dispatchChargeKey(BRANCH, dispatch.engineAgentId)]).toBeCloseTo(spent);
     expect(row?.version).toBe(1);
+  });
+
+  it("charges a replaced dispatch once: the earlier generation's spend is not charged again", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w, { capUsd: 0.6 });
+    const first = await call(
+      w,
+      "POST",
+      url(w),
+      beat(1, { meteredSeconds: 3600 }),
+      linePrincipal(w, dispatch),
+    );
+    expect(first.body).toMatchObject({ stop: false });
+    const spent = (await heldDispatch(w)).spend.meteredUsd;
+    expect(spent).toBeGreaterThan(0.4);
+    expect(spent).toBeLessThan(0.6);
+    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(spent);
+
+    await w.stores.lineDispatches.update(w.f.scope.projectId, BRANCH, (current) => ({
+      ...beginReplacement(current, "lease_lost", NOW),
+      status: "running" as const,
+      instanceId: "i-2",
+    }));
+    const second = linePrincipal(w, await heldDispatch(w));
+    expect(second.kind === "line" && second.generation).toBe(2);
+    const zero = await call(w, "POST", url(w), beat(2, { meteredSeconds: 0 }), second);
+    expect(zero.body).toMatchObject({ stop: false });
+    expect((await heldDispatch(w)).spend.meteredUsd).toBeCloseTo(spent);
+    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(spent);
+    expect((await usageOf(w))?.reachedAt).toBeUndefined();
+
+    const more = await call(w, "POST", url(w), beat(2, { meteredSeconds: 600 }), second);
+    expect(more.body).toMatchObject({ stop: false });
+    const total = (await heldDispatch(w)).spend.meteredUsd;
+    expect(total).toBeGreaterThan(spent);
+    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(total);
+  });
+
+  it("charges each of two successive line dispatches its own spend", async () => {
+    const w = await setup();
+    const dispatch = await seedLine(w, { capUsd: 100 });
+    await call(w, "POST", url(w), beat(1, { meteredSeconds: 1800 }), linePrincipal(w, dispatch));
+    const one = (await heldDispatch(w)).spend.meteredUsd;
+    await w.stores.lineDispatches.update(w.f.scope.projectId, BRANCH, () =>
+      makeLineDispatch(w.f, {
+        status: "running",
+        instanceId: "i-3",
+        generation: 2,
+        attempts: [{ generation: 2, reason: "dispatch", startedAt: NOW }],
+      }),
+    );
+    const next = await heldDispatch(w);
+    expect(next.engineAgentId).not.toBe(dispatch.engineAgentId);
+    await call(w, "POST", url(w), beat(2, { meteredSeconds: 900 }), linePrincipal(w, next));
+    const two = (await heldDispatch(w)).spend.meteredUsd;
+    expect(two).toBeGreaterThan(0);
+    const row = await usageOf(w);
+    expect(row?.meteredUsd).toBeCloseTo(one + two);
+    expect(Object.keys(row?.charged ?? {})).toHaveLength(2);
   });
 
   it("charges only the spend after a month boundary in the new month's row", async () => {

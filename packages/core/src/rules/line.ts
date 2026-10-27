@@ -331,9 +331,13 @@ export const meterProjectUsage = (
   };
 };
 
-/** The key of a line dispatch in a usage row's `charged`. */
-export const dispatchChargeKey = (branch: string, generation: number): string =>
-  `${branch}#${generation}`;
+/**
+ * The key of a line dispatch in a usage row's `charged`. The engine agent id is
+ * fixed for the dispatch's life, so it survives lease replacements (which only
+ * move the generation), and is fresh for each dispatch started after a settle.
+ */
+export const dispatchChargeKey = (branch: string, engineAgentId: string): string =>
+  `${branch}#${engineAgentId}`;
 
 /** The calendar month before `month`. */
 export const previousMonthOf = (month: CalendarMonth): CalendarMonth => {

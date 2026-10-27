@@ -15,6 +15,7 @@ import {
   composeBatch,
   DEFAULT_LINE_MONTHLY_USD,
   dispatchChargeDue,
+  dispatchChargeKey,
   LINE_COMPOSITION_SECONDS,
   LINE_RESOLVER_ATTEMPTS,
   lineHasWork,
@@ -53,6 +54,14 @@ const compositionBody = (batchId: string, extra: Record<string, unknown> = {}) =
   ranges: [{ program: P1, upTo: A }],
   verification: makeLineVerification(f),
   ...extra,
+});
+
+describe("dispatchChargeKey", () => {
+  it("is the same across generations of one dispatch and differs between dispatches", () => {
+    expect(dispatchChargeKey("b", "agent_1")).toBe(dispatchChargeKey("b", "agent_1"));
+    expect(dispatchChargeKey("b", "agent_1")).not.toBe(dispatchChargeKey("b", "agent_2"));
+    expect(dispatchChargeKey("b", "agent_1")).not.toBe(dispatchChargeKey("c", "agent_1"));
+  });
 });
 
 describe("the constants", () => {
