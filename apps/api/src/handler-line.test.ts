@@ -31,7 +31,7 @@ import {
   nextUserId,
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RequestPrincipal } from "./auth/principal.js";
 import { handleRequest } from "./handler.js";
 import type { ApiDeps, ApiResponse } from "./http.js";
@@ -404,6 +404,78 @@ describe("batch, compositions, parked and push", () => {
     });
     // Settled: the same batch again is stale.
     expect((await call(w, "POST", url, body, me)).status).toBe(409);
+  });
+
+  describe("settle asks the publisher", () => {
+    const settleWorld = async () => {
+      const w = await setup();
+      const dispatch = await seedLine(w, { queue: [entry(w)] });
+      const me = linePrincipal(w, dispatch);
+      const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
+      const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
+      const withPush = {
+        batchId,
+        composition: {
+          commit: SHA_B,
+          parent: SHA,
+          ranges: [{ program: w.f.scope.programId, upTo: SHA }],
+          verification: makeLineVerification(w.f),
+        },
+        push: { head: SHA_B, expectedPredecessor: SHA, bundleKey: "bundles/k" },
+        parked: [],
+      };
+      return { w, me, batchId, withPush };
+    };
+
+    it("once for a settle that carries a push", async () => {
+      const { w, me, withPush } = await settleWorld();
+      const ok = await call(w, "POST", lineUrl(w, BRANCH, "/settle"), withPush, me);
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+      expect(published).toEqual([BRANCH]);
+    });
+
+    it("not for a settle without a push", async () => {
+      const { w, me, batchId } = await settleWorld();
+      const parked = {
+        ranges: [{ program: w.f.scope.programId, upTo: SHA }],
+        reason: "conflict",
+      };
+      const ok = await call(
+        w,
+        "POST",
+        lineUrl(w, BRANCH, "/settle"),
+        { batchId, parked: [parked] },
+        me,
+      );
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+      expect(published).toEqual([]);
+    });
+
+    it("still returns 200 with the push pending when the publisher throws", async () => {
+      const { w, me, withPush } = await settleWorld();
+      const failing: World = {
+        ...w,
+        deps: {
+          ...w.deps,
+          dispatcher: {
+            provision: async () => undefined,
+            publishLine: async () => {
+              throw new Error("publisher down");
+            },
+          },
+        },
+      };
+      const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      try {
+        const ok = await call(failing, "POST", lineUrl(w, BRANCH, "/settle"), withPush, me);
+        expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+        expect(spy).toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+      const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+      expect(record?.push).toMatchObject({ head: SHA_B, status: "pending" });
+    });
   });
 
   it("refuses to settle a composition while a different push is pending", async () => {

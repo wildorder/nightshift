@@ -329,6 +329,17 @@ export const postLineParked: Handler = async ({ deps, request, params }) => {
   return { status: 200, body: record };
 };
 
+/** Ask the publisher for a pending push; recorded first, then published, so an error is only logged. */
+const askPublisher = async (deps: ApiDeps, target: LineTarget): Promise<void> => {
+  await deps.dispatcher?.publishLine?.(target).catch((error: unknown) => {
+    // Recorded first, then published: a push left pending is found by the reconciler.
+    console.error(
+      `line ${target.projectId} ${target.branch}: the publisher could not be invoked`,
+      error,
+    );
+  });
+};
+
 /** `POST …/line/{branch}/settle` — the batch settled with a composition and/or parked entries. */
 export const postLineSettle: Handler = async ({ deps, request, params }) => {
   const target = targetOf(params);
@@ -350,6 +361,12 @@ export const postLineSettle: Handler = async ({ deps, request, params }) => {
       at,
     ),
   );
+  if (
+    body.push !== undefined &&
+    record.push?.head === body.push.head &&
+    record.push.status === "pending"
+  )
+    await askPublisher(deps, target);
   return { status: 200, body: record };
 };
 
@@ -362,13 +379,7 @@ export const postLinePush: Handler = async ({ deps, request, params }) => {
   const record = await applyLineChange(deps, target, (current) =>
     requestPush(current, body, dispatch.generation, at),
   );
-  await deps.dispatcher?.publishLine?.(target).catch((error: unknown) => {
-    // Recorded first, then published: a push left pending is found by the reconciler.
-    console.error(
-      `line ${target.projectId} ${target.branch}: the publisher could not be invoked`,
-      error,
-    );
-  });
+  await askPublisher(deps, target);
   return { status: 200, body: record };
 };
 

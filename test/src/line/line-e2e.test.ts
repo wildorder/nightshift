@@ -9,11 +9,8 @@
  * agents go through `createLineAgents` over a fake harness whose `startLine`
  * scripts the processes.
  *
- * Two stand-ins are worth naming. The machine's `exec` swaps GitHub's clone URL
- * for the local server's, as the machine would reach GitHub. And the settle
- * route records a push but does not itself invoke the publisher: the
- * reconciler asks for a pending push (`reconcileLinesWithWork`), so the plane
- * here asks the publisher straight after a settle that carries one.
+ * One stand-in is worth naming. The machine's `exec` swaps GitHub's clone URL
+ * for the local server's, as the machine would reach GitHub.
  */
 import { execFile, execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -393,8 +390,6 @@ const planeFor = (
     settle: async (body) => {
       await call("POST", "/settle", body);
       settles.push({ batchId: body.batchId, generation });
-      if (body.push !== undefined)
-        await publishLine(plane.publisher, { projectId: plane.projectId, branch: LINE });
       await hooks.afterSettle?.({ batchId: body.batchId, pushed: body.push !== undefined });
     },
     heartbeat: async (body: HeartbeatBody) =>
