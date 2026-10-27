@@ -13,8 +13,10 @@ import type {
   CommitSha,
   Dispatch,
   DispatchStatus,
+  LineAgent,
   LineBatch,
   LineCompositionBody,
+  LineDecisionBody,
   LineDispatch,
   LineParkBody,
   LinePushBody,
@@ -30,7 +32,9 @@ import type {
 import {
   type AgentId,
   type ComputeTier,
+  MAX_LINE_AGENTS,
   MAX_LINE_COMPOSITIONS,
+  MAX_LINE_DECISIONS,
   MAX_LINE_PARKED,
 } from "@nightshift/contracts";
 
@@ -38,6 +42,8 @@ import {
 export const DEFAULT_LINE_MONTHLY_USD = 25;
 /** The most an owner is given to compose one batch, in seconds. */
 export const LINE_COMPOSITION_SECONDS = 3600;
+/** How long the owner waits with an empty queue and nothing in flight before it stops, in seconds. */
+export const LINE_IDLE_SECONDS = 600;
 /** The most attempts the conflict resolver gets at one composition. */
 export const LINE_RESOLVER_ATTEMPTS = 3;
 /** The most queue entries one batch takes; the rest wait for the next. */
@@ -51,7 +57,9 @@ export type LineRefusal =
   /** A push is already pending for another head. */
   | { readonly reason: "push_pending"; readonly detail: string }
   /** The push named is not the one the line holds. */
-  | { readonly reason: "no_such_push"; readonly detail: string };
+  | { readonly reason: "no_such_push"; readonly detail: string }
+  /** The write is from an owner generation the line has moved past. */
+  | { readonly reason: "stale_generation"; readonly detail: string };
 
 export type LineChange =
   | { readonly ok: true; readonly record: LineRecord }
@@ -394,6 +402,81 @@ export const resolvePush = (
                 : composition,
             )
           : record.compositions,
+      updatedAt: at,
+    },
+  };
+};
+
+/**
+ * Records a resolver's decision on the line record. The same (commit, unit)
+ * again is the same decision and is stored once; a generation other than the
+ * current one is refused.
+ */
+export const recordLineDecision = (
+  record: LineRecord,
+  body: LineDecisionBody,
+  decisionId: string,
+  generation: number,
+  at: string,
+): LineChange => {
+  if (body.generation !== generation) {
+    return refuse({
+      reason: "stale_generation",
+      detail: `this decision is from generation ${body.generation}; the line's dispatch is at ${generation}`,
+    });
+  }
+  const decisions = record.decisions ?? [];
+  const key = unitKey(body.unit);
+  if (decisions.some((held) => held.commit === body.commit && unitKey(held.unit) === key)) {
+    return { ok: true, record };
+  }
+  const { generation: _generation, ...decision } = body;
+  return {
+    ok: true,
+    record: {
+      ...record,
+      decisions: newest(
+        [...decisions, { ...decision, decisionId, generation }],
+        MAX_LINE_DECISIONS,
+      ),
+      updatedAt: at,
+    },
+  };
+};
+
+const unitKey = (unit: LineDecisionBody["unit"]): string =>
+  unit.kind === "main"
+    ? `main:${unit.commit}`
+    : `range:${unit.range.program}:${unit.range.from ?? ""}:${unit.range.upTo}`;
+
+/** A line dispatch with one more announced agent, or a refusal as a value. */
+export type LineAgentChange =
+  | { readonly ok: true; readonly dispatch: LineDispatch }
+  | { readonly ok: false; readonly reason: "stale_generation"; readonly detail: string };
+
+/**
+ * Appends an announced agent to the dispatch. Idempotent per `agentId`; refused
+ * when `agent.generation` is not the dispatch's current generation.
+ */
+export const announceLineAgent = (
+  dispatch: LineDispatch,
+  agent: LineAgent,
+  at: string,
+): LineAgentChange => {
+  if (agent.generation !== dispatch.generation) {
+    return {
+      ok: false,
+      reason: "stale_generation",
+      detail: `this announcement is from generation ${agent.generation}; the line's dispatch is at ${dispatch.generation}`,
+    };
+  }
+  const agents = dispatch.agents ?? [];
+  if (agents.some((held) => held.agentId === agent.agentId)) return { ok: true, dispatch };
+  return {
+    ok: true,
+    dispatch: {
+      ...dispatch,
+      agents: newest([...agents, agent], MAX_LINE_AGENTS),
       updatedAt: at,
     },
   };

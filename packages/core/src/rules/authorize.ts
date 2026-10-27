@@ -151,6 +151,8 @@ export type Operation =
   | "line.takeBatch"
   | "line.compose"
   | "line.park"
+  | "line.decide"
+  | "line.announce"
   | "line.settle"
   | "line.push"
   | "line.createBundleUploadUrl"
@@ -354,6 +356,8 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.takeBatch": "forbidden",
   "line.compose": "forbidden",
   "line.park": "forbidden",
+  "line.decide": "forbidden",
+  "line.announce": "forbidden",
   "line.settle": "forbidden",
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
@@ -510,6 +514,8 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "line.takeBatch": "forbidden",
   "line.compose": "forbidden",
   "line.park": "forbidden",
+  "line.decide": "forbidden",
+  "line.announce": "forbidden",
   "line.settle": "forbidden",
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
@@ -697,6 +703,8 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.takeBatch": "forbidden",
   "line.compose": "forbidden",
   "line.park": "forbidden",
+  "line.decide": "forbidden",
+  "line.announce": "forbidden",
   "line.settle": "forbidden",
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",

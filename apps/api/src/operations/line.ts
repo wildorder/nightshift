@@ -14,9 +14,11 @@ import {
   DEFAULT_COMPUTE_CEILINGS,
   type HeartbeatResponse,
   HeartbeatResponseSchema,
+  LineAgentBodySchema,
   LineBundleUploadUrlBodySchema,
   type LineCompositionBody,
   LineCompositionBodySchema,
+  LineDecisionBodySchema,
   type LineDispatch,
   type LineDispatchFailureCode,
   LineHeartbeatBodySchema,
@@ -36,6 +38,7 @@ import {
   TakeLineBatchBodySchema,
 } from "@nightshift/contracts";
 import {
+  announceLineAgent,
   chargeDispatchUsage,
   composeBatch,
   createUlidIdGenerator,
@@ -57,8 +60,10 @@ import {
   nowIso,
   parkBatch,
   previousMonthOf,
+  recordLineDecision,
   repositoryNameOf,
   requestPush,
+  requireEffectivePolicy,
   runnerStopped,
   settleBatch,
   takeBatch,
@@ -125,11 +130,11 @@ const requireGeneration = async (
 const refusalStatus = (refusal: LineRefusal): HttpError =>
   new HttpError(
     409,
-    refusal.reason === "stale_batch"
-      ? "stale_batch"
-      : refusal.reason === "resolver_attempts"
-        ? "resolver_attempts"
-        : "conflict",
+    refusal.reason === "stale_batch" ||
+      refusal.reason === "resolver_attempts" ||
+      refusal.reason === "stale_generation"
+      ? refusal.reason
+      : "conflict",
     refusal.detail,
   );
 
@@ -201,10 +206,23 @@ export const getLine: Handler = async ({ deps, params }) => {
       programs.push({ program, branch: contract.repository.programBranch });
     }
   }
+  // The org's policy as a run's snapshot is computed (`requireEffectivePolicy`,
+  // start-run.ts), at org level: it takes one program's narrowing, and the line
+  // is fed by several, so the view shows what the org allows before any program
+  // narrows it. Omitted while the org has no config.
+  const project = await requireProject(deps.stores, target.projectId);
+  const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
+  const policy =
+    orgConfig === undefined
+      ? undefined
+      : requireEffectivePolicy(orgConfig, {
+          examinationPolicy: orgConfig.examinationPolicy,
+        });
   const view: LineView = {
     record,
     ...(dispatch === undefined ? {} : { dispatch }),
     ...(usage === undefined ? {} : { usage }),
+    ...(policy === undefined ? {} : { policy }),
     programs,
   };
   return { status: 200, body: LineViewSchema.parse(view) };
@@ -260,6 +278,42 @@ export const postLineComposition: Handler = async ({ deps, request, params }) =>
     composeBatch(current, body, compositionId, at),
   );
   return { status: 200, body: record };
+};
+
+/** `POST …/line/{branch}/decisions` — a resolver's decision, recorded for later review. */
+export const postLineDecision: Handler = async ({ deps, request, params }) => {
+  const target = targetOf(params);
+  const body = parseBody(LineDecisionBodySchema, request.body);
+  const dispatch = await requireGeneration(deps, target, body.generation);
+  const at = nowIso(deps.clock);
+  const decisionId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("dec");
+  const record = await applyLineChange(deps, target, (current) =>
+    recordLineDecision(current, body, decisionId, dispatch.generation, at),
+  );
+  return { status: 200, body: record };
+};
+
+/** `POST …/line/{branch}/agents` — an agent announced before it runs (A-04). */
+export const postLineAgent: Handler = async ({ deps, request, params }) => {
+  const target = targetOf(params);
+  const body = parseBody(LineAgentBodySchema, request.body);
+  await requireGeneration(deps, target, body.generation);
+  const at = nowIso(deps.clock);
+  let refused: string | undefined;
+  const stored = await deps.stores.lineDispatches.update(
+    target.projectId,
+    target.branch,
+    (current) => {
+      const change = announceLineAgent(current, { ...body.agent, generation: body.generation }, at);
+      refused = change.ok ? undefined : change.detail;
+      return change.ok && change.dispatch !== current ? change.dispatch : undefined;
+    },
+  );
+  if (refused !== undefined) throw new HttpError(409, "stale_generation", refused);
+  if (stored === undefined) {
+    throw new HttpError(404, "not_found", `the line on ${target.branch} has no dispatch`);
+  }
+  return { status: 200, body: stored };
 };
 
 /** `POST …/line/{branch}/parked`. */
