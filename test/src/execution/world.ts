@@ -393,7 +393,6 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
     programId: program.programId,
     runId: started.run.runId,
   };
-  await stores.runs.put({ ...started.run, status: "running" });
 
   const orchestrator: Agent = {
     schemaVersion: 1,
@@ -417,11 +416,15 @@ export const createWorld = async (options: WorldOptions): Promise<World> => {
 
   // The engine's world: what a machine holds instead of the operator's session.
   let acting = { stores, bodies, tokens: base.tokens };
+  // A new dispatch is stored only while its run is pending (D-07), so the run
+  // is attached after the engine's dispatch.
+  if (options.engine !== true) await stores.runs.put({ ...started.run, status: "running" });
   if (options.engine === true) {
     const fixtures = createFixtures();
     await base.backing.dispatches.put(
       makeDispatch(fixtures, { ...scope, engineAgentId: orchestrator.agentId, generation: 1 }),
     );
+    await stores.runs.put({ ...started.run, status: "running" });
     // An earlier run of the same program: the program's memory the engine reads.
     await base.backing.runs.put(
       makeRun(fixtures, {

@@ -23,6 +23,7 @@ export * from "./policy.js";
 export * from "./prerequisite-checks.js";
 export * from "./publication.js";
 export * from "./routing-transitions.js";
+export * from "./run-liveness.js";
 export * from "./run-transitions.js";
 export * from "./step-adjustments.js";
 export * from "./strand-brief.js";

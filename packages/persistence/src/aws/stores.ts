@@ -34,6 +34,7 @@ import {
   ProjectSecretSchema,
   RoutingDecisionSchema,
   RunFeedbackSchema,
+  type RunId,
   RunSchema,
   UserSchema,
   VerificationSchema,
@@ -42,7 +43,9 @@ import {
 import {
   type CredentialsStore,
   IllegalTransitionError,
+  isNeverStartedRun,
   isRunTerminal,
+  NEVER_STARTED_REASON,
   type NightshiftStores,
   OwnershipViolationError,
   type Page,
@@ -54,6 +57,7 @@ import {
   RUN_TERMINAL_STATUSES,
   runScopeOf,
   StaleWriteError,
+  transitionRun,
   VerificationExistsError,
 } from "@nightshift/core";
 import { persistedEqual } from "../persisted-equal.js";
@@ -294,12 +298,49 @@ export const createAwsStores = ({
     dispatches: {
       put: async (dispatch) => {
         const parsed = DispatchSchema.parse(dispatch);
-        await putRecord(
-          "Dispatch",
-          keys.dispatch(runScopeOf(parsed)),
-          parsed,
-          keys.dispatchIndex(parsed.status, parsed.updatedAt, parsed.runId),
-        );
+        const dispatchKey = keys.dispatch(runScopeOf(parsed));
+        const index = keys.dispatchIndex(parsed.status, parsed.updatedAt, parsed.runId);
+        for (let attempt = 1; ; attempt += 1) {
+          // An update of an existing dispatch is a plain put.
+          if ((await getRecord(DispatchSchema, dispatchKey)) !== undefined) {
+            await putRecord("Dispatch", dispatchKey, parsed, index);
+            return;
+          }
+          // A new dispatch commits only while its run is pending (D-07), so it
+          // cannot both commit and lose to a never-started settlement.
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: toItem("Dispatch", dispatchKey, parsed, index),
+                    ConditionExpression: "attribute_not_exists(#pk)",
+                    ExpressionAttributeNames: { "#pk": "PK" },
+                  },
+                },
+                {
+                  ConditionCheck: {
+                    TableName: tableName,
+                    Key: keys.run(parsed, parsed.runId),
+                    ConditionExpression: "#status = :pending",
+                    ExpressionAttributeNames: { "#status": "status" },
+                    ExpressionAttributeValues: { ":pending": "pending" },
+                  },
+                },
+              ],
+            });
+            return;
+          } catch (error) {
+            const failed = conditionFailures(error);
+            if (failed === undefined) throw error;
+            if (failed[1] === true) {
+              const run = await getRecord(RunSchema, keys.run(parsed, parsed.runId));
+              throw new IllegalTransitionError(run?.status ?? "absent", "dispatch");
+            }
+            if (attempt >= MAX_UPDATE_ATTEMPTS) throw error;
+          }
+        }
       },
       get: (scope) => getRecord(DispatchSchema, keys.dispatch(scope)),
       listByStatus: async (statuses) => {
@@ -714,14 +755,81 @@ export const createAwsStores = ({
         const runKey = keys.run(parsed, parsed.runId);
         const markerKey = keys.programLiveRun(parsed);
         const runItem = toItem("Run", runKey, parsed);
-        const readMarker = async (): Promise<string | undefined> => {
+        const readMarker = async (): Promise<RunId | undefined> => {
           const output = await table.get({
             TableName: tableName,
             Key: markerKey,
             ConsistentRead: true,
           });
           const holder = output.Item?.runId;
-          return typeof holder === "string" ? holder : undefined;
+          return typeof holder === "string" ? (holder as RunId) : undefined;
+        };
+
+        /** Ends a never-started `holder` and takes the marker, in one transaction; false if it is not (or no longer) never-started. */
+        const settleNeverStarted = async (holder: RunId): Promise<boolean> => {
+          const holderKey = keys.run(parsed, holder);
+          const stored = await getRecord(RunSchema, holderKey);
+          if (stored === undefined) return false;
+          const dispatchKey = keys.dispatch({ ...parsed, runId: holder });
+          const dispatched = (await getRecord(DispatchSchema, dispatchKey)) !== undefined;
+          if (!isNeverStartedRun(stored, { hasDispatch: dispatched, at: parsed.startedAt })) {
+            return false;
+          }
+          const ended = transitionRun(stored, "interrupt", {
+            endedAt: parsed.startedAt,
+            outcomeReason: NEVER_STARTED_REASON,
+          });
+          const terminal = RUN_TERMINAL_STATUSES;
+          const terminalValues = Object.fromEntries(terminal.map((s, i) => [`:t${i}`, s]));
+          const notTerminal = terminal.map((_, i) => `#status <> :t${i}`).join(" AND ");
+          try {
+            await table.transactWrite({
+              TransactItems: [
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: toItem("Run", holderKey, ended),
+                    ConditionExpression: "#status = :pending AND #startedAt = :startedAt",
+                    ExpressionAttributeNames: { "#status": "status", "#startedAt": "startedAt" },
+                    ExpressionAttributeValues: {
+                      ":pending": "pending",
+                      ":startedAt": stored.startedAt,
+                    },
+                  },
+                },
+                {
+                  ConditionCheck: {
+                    TableName: tableName,
+                    Key: dispatchKey,
+                    ConditionExpression: "attribute_not_exists(#pk)",
+                    ExpressionAttributeNames: { "#pk": "PK" },
+                  },
+                },
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: { ...markerKey, entity: "ProgramLiveRun", runId: parsed.runId },
+                    ConditionExpression: "#runId = :holder",
+                    ExpressionAttributeNames: { "#runId": "runId" },
+                    ExpressionAttributeValues: { ":holder": holder },
+                  },
+                },
+                {
+                  Put: {
+                    TableName: tableName,
+                    Item: runItem,
+                    ConditionExpression: `attribute_not_exists(#pk) OR (${notTerminal})`,
+                    ExpressionAttributeNames: { "#pk": "PK", "#status": "status" },
+                    ExpressionAttributeValues: terminalValues,
+                  },
+                },
+              ],
+            });
+            return true;
+          } catch (error) {
+            if (conditionFailures(error) === undefined) throw error;
+            return false;
+          }
         };
 
         if (!isRunTerminal(parsed.status)) {
@@ -767,7 +875,24 @@ export const createAwsStores = ({
               if (failed[1] === true) {
                 const holder = await readMarker();
                 if (holder !== undefined && holder !== parsed.runId) {
-                  throw new ProgramRunLiveError(parsed.programId, holder);
+                  // A holder that never started is ended in the same transaction
+                  // that moves the marker (D-07); any condition failure re-decides.
+                  if (await settleNeverStarted(holder)) return;
+                  const again = await readMarker();
+                  if (again !== undefined && again !== parsed.runId && again === holder) {
+                    const stored = await getRecord(RunSchema, keys.run(parsed, holder));
+                    const dispatched =
+                      (await getRecord(
+                        DispatchSchema,
+                        keys.dispatch({ ...parsed, runId: holder }),
+                      )) !== undefined;
+                    if (
+                      stored === undefined ||
+                      !isNeverStartedRun(stored, { hasDispatch: dispatched, at: parsed.startedAt })
+                    ) {
+                      throw new ProgramRunLiveError(parsed.programId, holder);
+                    }
+                  }
                 }
               }
               // Neither holds on a re-read: a concurrent release or write moved

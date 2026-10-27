@@ -180,7 +180,11 @@ const putFeedback = async (
   }
 };
 
-/** The machine the run used, and how busy it was. */
+/**
+ * The machine the run used, and how busy it was. A new dispatch is stored only
+ * while its run is pending (D-07), so a caller seeds it before the run's final
+ * record.
+ */
 const seedMachine = async (
   w: World,
   status: "running" | "stopped",
@@ -230,6 +234,8 @@ const complete: Scenario = async (stores, ids, now) => {
   const EXAMINER = "gpt-6-astra";
   const END = 95;
 
+  await stores.runs.put(makeRun(f, { status: "pending", startedAt: w.t(0) }));
+  await seedMachine(w, "stopped", 2, END);
   await stores.runs.put(makeRun(f, { status: "succeeded", startedAt: w.t(0), endedAt: w.t(END) }));
   const root = makeRootNode(f, {
     status: "succeeded",
@@ -245,7 +251,6 @@ const complete: Scenario = async (stores, ids, now) => {
     end: 2,
     refs: [{ kind: "dispatch", ref: f.scope.runId }],
   });
-  await seedMachine(w, "stopped", 2, END);
 
   // Two strands, in parallel.
   const s1Job = job(w, "S-01 Invoice persistence", 2, { strandId: "S-01" });
@@ -872,13 +877,17 @@ const completionHistory = async (
  */
 const seedFailedRun = async (
   w: World,
-  options: { from: number; strandsFailed: number },
+  options: { from: number; strandsFailed: number; machine?: { from: number; to: number } },
 ): Promise<{ node: ExecutionNode }> => {
   const { f, stores } = w;
   const at = (m: number) => options.from + m;
   const SONNET = "claude-sonnet-5";
   const OPUS = "claude-opus-5-5";
   const END = at(41);
+  if (options.machine !== undefined) {
+    await stores.runs.put(makeRun(f, { status: "pending", startedAt: w.t(at(0)) }));
+    await seedMachine(w, "stopped", options.machine.from, options.machine.to);
+  }
   await stores.runs.put(
     makeRun(f, {
       status: "failed",
@@ -970,8 +979,7 @@ const seedFailedRun = async (
 const failed: Scenario = async (stores, ids, now) => {
   const startedAt = startOf(now, 2);
   const { f, orgId, w } = await seedProgram(stores, ids, startedAt);
-  await seedFailedRun(w, { from: 0, strandsFailed: 1 });
-  await seedMachine(w, "stopped", 2, 41);
+  await seedFailedRun(w, { from: 0, strandsFailed: 1, machine: { from: 2, to: 41 } });
   return { scope: f.scope, orgId };
 };
 
@@ -1037,12 +1045,13 @@ const running: Scenario = async (stores, ids, now) => {
   const { f, orgId, w } = await seedProgram(stores, ids, startedAt);
   const SONNET = "claude-sonnet-5";
   const OPUS = "claude-opus-5-5";
+  await stores.runs.put(makeRun(f, { status: "pending", startedAt: w.t(0) }));
+  await seedMachine(w, "running", 2, 40);
   await stores.runs.put(makeRun(f, { status: "running", startedAt: w.t(0) }));
   const root = makeRootNode(f, { status: "running", createdAt: w.t(0), updatedAt: w.t(40) });
   await stores.executionNodes.put(root);
   await w.event("run.started", 0, null);
   await observe(w, root.executionNodeId, { phase: "provisioning", start: 0, end: 2 });
-  await seedMachine(w, "running", 2, 40);
 
   const s1Job = job(w, "S-01 Invoice persistence", 2, { strandId: "S-01" });
   const s2Job = job(w, "S-02 Webhook delivery", 2, { strandId: "S-02" });

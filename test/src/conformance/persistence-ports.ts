@@ -754,6 +754,7 @@ export const describePortConformance = <S extends ProjectStores>(
 
     describe("the remote runner's records (P10)", () => {
       it("stores one dispatch per run, read by the run's scope and by no other", async () => {
+        await stores.runs.put(makeRun(a, { status: "pending" }));
         const dispatch = makeDispatch(a);
         await stores.dispatches.put(dispatch);
         expect(await stores.dispatches.get(a.scope)).toEqual(dispatch);
@@ -2029,6 +2030,80 @@ export const describePortConformance = <S extends ProjectStores>(
         expect(await stores.runs.get(a.scope, first.runId)).toEqual(done);
         // The marker was released and stays released.
         await stores.runs.put(second(a));
+      });
+    });
+
+    describe("a never-started run is settled by the next start (D-07)", () => {
+      const LATE = "2026-01-01T01:00:00.000Z" as Run["startedAt"];
+      const SOON = "2026-01-01T00:05:00.000Z" as Run["startedAt"];
+      const next = (
+        f: Fixtures,
+        startedAt: Run["startedAt"],
+        status: "pending" | "running" = "pending",
+      ): Run => makeRun(f, { runId: f.ids.next("run") as RunId, status, startedAt });
+
+      it("ends a stale pending holder as interrupted and gives the new run the marker", async () => {
+        const holder = makeRun(a, { status: "pending" });
+        await stores.runs.put(holder);
+        const fresh = next(a, LATE);
+        await stores.runs.put(fresh);
+        expect(await stores.runs.get(a.scope, fresh.runId)).toEqual(fresh);
+        expect(await stores.runs.get(a.scope, holder.runId)).toMatchObject({
+          status: "interrupted",
+          endedAt: LATE,
+          outcomeReason: "never started",
+        });
+        const refusal = await stores.runs.put(next(a, LATE)).catch((error: unknown) => error);
+        expect(refusal).toMatchObject({ liveRunId: fresh.runId });
+      });
+
+      it("refuses beside a running holder", async () => {
+        const holder = makeRun(a, { status: "running" });
+        await stores.runs.put(holder);
+        const other = next(a, LATE);
+        await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: holder.runId });
+        expect(await stores.runs.get(a.scope, holder.runId)).toEqual(holder);
+        expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
+      });
+
+      it("refuses beside a pending holder within the grace", async () => {
+        const holder = makeRun(a, { status: "pending" });
+        await stores.runs.put(holder);
+        const other = next(a, SOON);
+        await expect(stores.runs.put(other)).rejects.toBeInstanceOf(ProgramRunLiveError);
+        expect(await stores.runs.get(a.scope, holder.runId)).toEqual(holder);
+        expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
+      });
+
+      it("refuses beside a pending holder with a dispatch", async () => {
+        const holder = makeRun(a, { status: "pending", location: "remote" });
+        await stores.runs.put(holder);
+        await stores.dispatches.put(makeDispatch(a));
+        const other = next(a, LATE);
+        await expect(stores.runs.put(other)).rejects.toMatchObject({ liveRunId: holder.runId });
+        expect(await stores.runs.get(a.scope, holder.runId)).toEqual(holder);
+        expect(await stores.runs.get(a.scope, other.runId)).toBeUndefined();
+      });
+
+      it("refuses and stores a new dispatch for a run no longer pending", async () => {
+        const holder = makeRun(a, { status: "pending", location: "remote" });
+        await stores.runs.put(holder);
+        await stores.runs.put(next(a, LATE));
+        await expect(stores.dispatches.put(makeDispatch(a))).rejects.toBeInstanceOf(
+          IllegalTransitionError,
+        );
+        expect(await stores.dispatches.get(a.scope)).toBeUndefined();
+      });
+
+      it("refuses a new dispatch for a running or absent run", async () => {
+        await expect(stores.dispatches.put(makeDispatch(a))).rejects.toBeInstanceOf(
+          IllegalTransitionError,
+        );
+        await stores.runs.put(makeRun(a, { status: "running" }));
+        await expect(stores.dispatches.put(makeDispatch(a))).rejects.toBeInstanceOf(
+          IllegalTransitionError,
+        );
+        expect(await stores.dispatches.get(a.scope)).toBeUndefined();
       });
     });
 

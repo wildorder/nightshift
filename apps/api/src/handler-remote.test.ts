@@ -347,10 +347,12 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       updatedAt: NOW,
     });
     // Another run of the org's, still being provisioned.
-    const other = makeDispatch(w.f, {
+    const otherScope = {
+      programId: "prog_01M49ZZZZZZZZZZZZZZZZZZZZY" as never,
       runId: "run_01M49ZZZZZZZZZZZZZZZZZZZZZ" as never,
-      status: "provisioning",
-    });
+    };
+    await w.stores.runs.put(makeRun(w.f, { ...otherScope, status: "pending" }));
+    const other = makeDispatch(w.f, { ...otherScope, status: "provisioning" });
     await w.stores.dispatches.put(other);
     expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody()))).toBe(
       "concurrency_over_ceiling",

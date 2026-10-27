@@ -31,7 +31,11 @@ const OTHER_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
 export const errorCode = (response: ApiResponse): string =>
   (response.body as { error: { code: string } }).error.code;
 
-const setup = async (runPatch: Record<string, unknown> = {}) => {
+const setup = async (
+  runPatch: Record<string, unknown> = {},
+  /** The run's dispatch, stored while it was still pending (D-07). */
+  dispatch?: Record<string, unknown>,
+) => {
   const stores = createInMemoryStores();
   const f = createFixtures();
   const orgId = f.ids.next("org");
@@ -43,6 +47,10 @@ const setup = async (runPatch: Record<string, unknown> = {}) => {
   await stores.programContracts.put(makeProgramContract(f));
   const root = makeRootNode(f, { commitSha: COMMIT });
   await stores.executionNodes.put(root);
+  if (dispatch !== undefined) {
+    await stores.runs.put(makeRun(f, { status: "pending", rootNodeId: root.executionNodeId }));
+    await stores.dispatches.put(makeDispatch(f, dispatch));
+  }
   await stores.runs.put(
     makeRun(f, {
       status: "succeeded",
@@ -112,11 +120,8 @@ describe("rating a run (D-04)", () => {
   });
 
   it("takes the commit from a remote dispatch's publication when the root node has none", async () => {
-    const w = await setup();
+    const w = await setup({}, { publication: { intents: [], head: OTHER_COMMIT } });
     await w.stores.executionNodes.put({ ...w.root, commitSha: null } as typeof w.root);
-    await w.stores.dispatches.put(
-      makeDispatch(w.f, { publication: { intents: [], head: OTHER_COMMIT } }),
-    );
     const response = await w.call("PUT", `${w.run}/feedback`, w.propose(1, "worked"));
     expect((response.body as RunFeedback).resultCommit).toBe(OTHER_COMMIT);
   });
@@ -251,8 +256,7 @@ describe("who may touch feedback", () => {
   });
 
   it.each(roles)("refuses a %s token the write and the reads", async (role) => {
-    const w = await setup();
-    await w.stores.dispatches.put(makeDispatch(w.f));
+    const w = await setup({}, {});
     const token = executionAs(w, role);
     const program = w.run.replace(/\/runs\/.*$/, "");
     const attempts = [
