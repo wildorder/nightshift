@@ -1,0 +1,449 @@
+{
+  "schemaVersion": 1,
+  "projectId": "proj_01M49RRHPS6B770S9G5HDCPSD2",
+  "programId": "prog_01M5XVPANBKXF26TDHZ0MDV32R",
+  "objective": "Give a project one development line where every program's landed work meets, composed and checked by a single line owner the control plane starts when there is work and stops when the line has caught up; and let a program have at most one live run at a time. Pipkin M1b, PK-3 (PIP-9). The authority is the plan document stored with this contract.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p23-project-line"
+  },
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "Starting a run of a program that already has a live run is refused, atomically in the control plane, naming the live run; a run still pending with no attach and no dispatch after a short grace period is ended as interrupted (never started) and no longer counts.",
+      "serves": [
+        "US-02"
+      ]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "A project opts in with a line branch in nightshift.config.json; when a remote run's program branch is pushed to GitHub, the control plane queues its new range for the line and, if no line owner is live, starts exactly one.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "The line owner takes everything queued (up to a cap), merges main and then each program branch's new range onto the line head, runs the landing checks on the result, and publishes the line with a compare-and-swap push; a failed batch is composed one range at a time; the queue and the owner survive the machine dying, and two owners never run at once.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "When a composition conflicts or its checks go red, a resolver agent repairs it from the line head on the line owner's machine; its fix lands on the line after the same checks and an examination by a different model, and is recorded as a decision; after three failed attempts or an hour the composition is parked and reported, and the rest of the queue goes on.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-05",
+      "outcome": "Work the control plane starts by itself is held to a per-project monthly compute cap (default $25); at the cap the line stops composing and says why, and programs keep landing on their branches.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-06",
+      "outcome": "`nightshift line status` shows the line's head, what is queued, what each composed commit contains (program ranges, its verification, any resolver decision), and any parked composition; and the architecture records the project line.",
+      "serves": [
+        "US-01"
+      ]
+    }
+  ],
+  "constraints": [
+    "Runs land on their program branches exactly as today; a run never waits on the line, and nothing the line does can fail a run.",
+    "Programs still reach main through their own pull requests; nothing in this program merges or pushes to main.",
+    "The line moves only by the publisher's compare-and-swap push, and only one line owner per line is ever live.",
+    "A project without a line configured behaves exactly as today.",
+    "No new credential reaches a run's engine: the line owner reads GitHub as a machine already does, and only the publisher writes.",
+    "A verification made on the line is never landing evidence for a run.",
+    "Windows keeps working: nothing added assumes a POSIX shell or path."
+  ],
+  "scope": {
+    "includes": [
+      "packages/**",
+      "apps/**",
+      "infra/**",
+      "test/**",
+      "docs/**",
+      "skills/**",
+      "AGENTS.md"
+    ],
+    "excludes": [],
+    "forbiddenActions": [
+      "deploy any stack",
+      "build a runner image",
+      "push to main",
+      "edit another program's documents under docs/programs/"
+    ]
+  },
+  "setup": [
+    {
+      "id": "install",
+      "command": "npm ci --prefer-offline"
+    }
+  ],
+  "verification": [
+    {
+      "id": "build",
+      "command": "npm run build"
+    },
+    {
+      "id": "typecheck",
+      "command": "npm run typecheck"
+    },
+    {
+      "id": "lint",
+      "command": "npm run lint"
+    },
+    {
+      "id": "test",
+      "command": "npm run test"
+    },
+    {
+      "id": "synth",
+      "command": "npm --workspace @nightshift/cdk run synth"
+    },
+    {
+      "id": "sterility",
+      "command": "npm run check:sterility"
+    }
+  ],
+  "modelPolicy": {
+    "allowedProviders": [
+      "anthropic",
+      "openai"
+    ],
+    "allowedModels": [],
+    "forbiddenModels": []
+  },
+  "examinationPolicy": {
+    "low": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "medium": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "high": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    }
+  },
+  "delegationLimits": {
+    "maxDepth": 2,
+    "maxConcurrency": 2
+  },
+  "costPolicy": {},
+  "defaultRisk": "medium",
+  "createdAt": "2026-10-27T05:00:26Z",
+  "status": "ratified",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "The owner of a project with several Nightshift programs running at once",
+      "problem": "Each program builds and lands on its own program branch in isolation, so two programs that change the same code only find out they break each other when their pull requests meet main, and the conflict lands on the owner by hand.",
+      "outcome": "Every program's landed strands are composed onto one project line as they land, checked together, and a conflict or break between programs is repaired by Nightshift and recorded, long before anything reaches main.",
+      "words": [
+        "how far through pipkin do i need to get to be able to spin up many programs building at the same time?"
+      ]
+    },
+    {
+      "id": "US-02",
+      "who": "The owner starting runs of a program",
+      "problem": "Nothing stops two runs of one program writing its program branch at the same time, a forgotten local run beside a remote one, and a run that was recorded but never started stays pending forever.",
+      "outcome": "A program has at most one live run; a second is refused with the reason and the run that holds it, and a run that never started stops counting as live."
+    }
+  ],
+  "strands": [
+    {
+      "id": "S-01",
+      "name": "One live run per program",
+      "scope": {
+        "summary": "An atomic live-run guard per program in the plane, refusal at run start and dispatch, and ending runs that never started",
+        "includes": [
+          "packages/core/src/rules/run-*.ts",
+          "packages/core/src/ports/stores.ts",
+          "packages/persistence/**",
+          "packages/execution/src/start-run.ts",
+          "apps/api/src/operations/projects.ts",
+          "apps/api/src/operations/dispatch.ts",
+          "apps/cli/src/commands/run-program.ts",
+          "apps/mcp/src/session.ts",
+          "test/src/conformance/**"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "A second run of a program with a live run is refused by the control plane, atomically on every store, naming the live run, and the CLI says so",
+        "A run pending with no attach and no dispatch beyond the grace period is ended as interrupted (never started) by the next start of that program, and the start proceeds",
+        "A run that ends, however it ends, releases the program",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-01"
+      ],
+      "dependsOn": [],
+      "prerequisites": []
+    },
+    {
+      "id": "S-02",
+      "name": "The project line in the plane",
+      "scope": {
+        "summary": "The line setting, the line queue and line record, the publisher queuing a program branch's new range and pushing the line, the line dispatch with at most one live per line, the self-started compute cap, and `nightshift line status`",
+        "includes": [
+          "packages/contracts/**",
+          "packages/core/**",
+          "packages/persistence/**",
+          "apps/api/**",
+          "apps/cli/**",
+          "infra/**",
+          "test/src/conformance/**"
+        ],
+        "excludes": [
+          "packages/execution/src/line/**",
+          "apps/mcp/**"
+        ]
+      },
+      "acceptance": [
+        "nightshift.config.json accepts an optional line setting; without it nothing changes",
+        "The verification phase vocabulary gains `line`, classified as not landing evidence",
+        "After the publisher pushes a remote run's program branch, its new range is queued for the line and exactly one line dispatch is live, fenced by generation",
+        "The publisher pushes the line with a compare-and-swap and returns the outcome to the line owner; a refusal never blocks the run's own publication chain",
+        "Self-started compute is held to the project's monthly cap; at the cap the queue waits and the reason is recorded",
+        "`nightshift line status` shows head, queue, composed commits with their contents, verification and resolver decisions, and parked compositions",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-02",
+        "SC-05",
+        "SC-06"
+      ],
+      "dependsOn": [
+        "S-01"
+      ],
+      "prerequisites": []
+    },
+    {
+      "id": "S-03",
+      "name": "Composition and the resolver",
+      "scope": {
+        "summary": "The composition engine in execution: batch the queue by program-branch range, merge main then ranges onto the line head, landing checks with a `line` verification phase, the one-at-a-time fallback, the resolver and its examination, behind ports",
+        "includes": [
+          "packages/execution/src/line/**",
+          "test/src/execution/line*.test.ts"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "Given a line head, main and queued program ranges, composition merges them into one candidate and runs the landing checks; green yields a line head to publish, recorded with the batch's members",
+        "A failed batch is composed one range at a time, and the range that fails is the one given to the resolver",
+        "The resolver repairs from the line head; its fix is checked and examined by a different model before it is published, and is recorded as a decision; three failed attempts or an hour parks the composition",
+        "Line verifications use a `line` phase that is not landing evidence",
+        "build, typecheck, lint and test are green"
+      ],
+      "successCriteria": [
+        "SC-03",
+        "SC-04"
+      ],
+      "dependsOn": [
+        "S-02"
+      ],
+      "prerequisites": []
+    },
+    {
+      "id": "S-04",
+      "name": "The line owner on a machine",
+      "scope": {
+        "summary": "The runner as line owner: started by a line dispatch, reads GitHub as a machine does, drains the queue with S-03's engine through S-02's plane, exits when idle; an end-to-end test against a local plane and git server; docs",
+        "includes": [
+          "apps/mcp/**",
+          "apps/api/src/runner/**",
+          "test/**",
+          "docs/**",
+          "skills/**",
+          "AGENTS.md"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "A line dispatch boots the runner as line owner, which fetches the line, main and the queued program heads, composes with S-03's engine, hands each green line head to the publisher and reads the outcome, recomposing on a refusal",
+        "The owner works until the queue has been empty for the idle period, then exits and the machine stops; a replacement after a lost machine resumes the queue where it stood",
+        "An end-to-end test drives two programs' landings through the plane, the publisher and a git server to a composed line, including a conflict the resolver repairs",
+        "docs/architecture.md records the project line and the line owner",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-03",
+        "SC-04",
+        "SC-06"
+      ],
+      "dependsOn": [
+        "S-02",
+        "S-03"
+      ],
+      "prerequisites": []
+    }
+  ],
+  "prerequisites": [],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "Who composes onto the project line: each run for itself, or one line owner?",
+      "options": [
+        "One line owner per line, started by the control plane when work is queued and stopped when idle",
+        "Each run composes its own strands, with compare-and-swap pushes"
+      ],
+      "leaning": "One line owner per line, started by the control plane when work is queued and stopped when idle",
+      "answer": "One line owner per line, started by the control plane when work is queued and stopped when idle",
+      "rationale": "It removes the engine's need for GitHub mid-run and for push outcomes, outlives any one run, and is the one place batching and later bisection can live (PK-7).",
+      "touches": "all"
+    },
+    {
+      "id": "D-02",
+      "question": "When and in what units does the line owner compose?",
+      "options": [
+        "Natural batching: compose at once when idle, and take everything that arrived meanwhile as one batch, by program-branch range; a failed batch is composed one range at a time",
+        "Each strand on its own as it lands",
+        "Collect landings for a fixed time window"
+      ],
+      "leaning": "Natural batching: compose at once when idle, and take everything that arrived meanwhile as one batch, by program-branch range; a failed batch is composed one range at a time",
+      "answer": "Natural batching: compose at once when idle, and take everything that arrived meanwhile as one batch, by program-branch range; a failed batch is composed one range at a time",
+      "rationale": "No added latency at low volume, batches grow with load, a program's own strands are already proven together, and the fallback is the simple form of the bisection PK-7 brings.",
+      "touches": [
+        "S-02",
+        "S-03",
+        "S-04"
+      ]
+    },
+    {
+      "id": "D-03",
+      "question": "May the resolver land its own fix onto the line?",
+      "options": [
+        "Yes, after the landing checks and an examination by a different model, recorded as a decision for later review",
+        "No, it stops for the owner",
+        "Mechanical conflicts only; red checks wait for the owner"
+      ],
+      "leaning": "Yes, after the landing checks and an examination by a different model, recorded as a decision for later review",
+      "answer": "Yes, after the landing checks and an examination by a different model, recorded as a decision for later review",
+      "rationale": "Runs fix and record rather than stop; nothing ships from the line in M1b, so a wrong fix costs a later repair.",
+      "touches": [
+        "S-03",
+        "S-04"
+      ]
+    },
+    {
+      "id": "D-04",
+      "question": "How is work the control plane starts by itself bounded?",
+      "options": [
+        "A per-project monthly compute cap (default $25), an hour per composition and three resolver attempts, under the org's ceilings",
+        "The org's ceilings only"
+      ],
+      "leaning": "A per-project monthly compute cap (default $25), an hour per composition and three resolver attempts, under the org's ceilings",
+      "answer": "A per-project monthly compute cap (default $25), an hour per composition and three resolver attempts, under the org's ceilings",
+      "rationale": "The first work that spends without the owner starting it; models run on the org's subscriptions, so the attempt and time limits bound quota and the cap bounds machine spend.",
+      "touches": [
+        "S-02",
+        "S-03",
+        "S-04"
+      ]
+    },
+    {
+      "id": "D-05",
+      "question": "How does main relate to the line in M1b?",
+      "options": [
+        "Programs still reach main through their own pull requests, merged with a merge commit; the line takes main in before composing; a conflict the resolver fixed on the line is fixed again at the pull request, with the line's fix as reference",
+        "A pull request from the line to main"
+      ],
+      "leaning": "Programs still reach main through their own pull requests, merged with a merge commit; the line takes main in before composing; a conflict the resolver fixed on the line is fixed again at the pull request, with the line's fix as reference",
+      "answer": "Programs still reach main through their own pull requests, merged with a merge commit; the line takes main in before composing; a conflict the resolver fixed on the line is fixed again at the pull request, with the line's fix as reference",
+      "rationale": "main only ever receives whole programs; a line pull request would carry half-finished programs. M2's candidates feed main from the line and close the gap.",
+      "touches": "all"
+    },
+    {
+      "id": "D-06",
+      "question": "Does a local run's work reach the line?",
+      "options": [
+        "Not in M1b: the line composes what reaches GitHub through the publisher, which is remote runs' program branches",
+        "Yes: local runs push their program branch with the owner's credentials and queue it"
+      ],
+      "leaning": "Not in M1b: the line composes what reaches GitHub through the publisher, which is remote runs' program branches",
+      "answer": "Not in M1b: the line composes what reaches GitHub through the publisher, which is remote runs' program branches",
+      "rationale": "The line composes what reaches GitHub through the publisher; a laptop pushing the line would be a new path trusting the owner's own credentials.",
+      "touches": [
+        "S-02",
+        "S-04"
+      ]
+    },
+    {
+      "id": "D-07",
+      "question": "How does a run that never started stop counting as live?",
+      "options": [
+        "The next start of that program ends a run still pending with no attach and no dispatch after a grace period as interrupted (never started)",
+        "A periodic sweep in the control plane"
+      ],
+      "leaning": "The next start of that program ends a run still pending with no attach and no dispatch after a grace period as interrupted (never started)",
+      "answer": "The next start of that program ends a run still pending with no attach and no dispatch after a grace period as interrupted (never started)",
+      "rationale": "The next start can settle it; a sweeper is more moving parts for the same case.",
+      "touches": [
+        "S-01"
+      ]
+    },
+    {
+      "id": "D-08",
+      "question": "What is the line setting called, and its default branch?",
+      "options": [
+        "`\"line\": { \"branch\": \"nightshift/develop\" }` in nightshift.config.json, absent meaning off; docs say \"project line\" to keep it apart from the provisional line",
+        "A top-level `developBranch` string"
+      ],
+      "leaning": "`\"line\": { \"branch\": \"nightshift/develop\" }` in nightshift.config.json, absent meaning off; docs say \"project line\" to keep it apart from the provisional line",
+      "answer": "`\"line\": { \"branch\": \"nightshift/develop\" }` in nightshift.config.json, absent meaning off; docs say \"project line\" to keep it apart from the provisional line",
+      "rationale": "Opt-in and explicit, and the docs keep it apart from the provisional line.",
+      "touches": [
+        "S-02"
+      ]
+    }
+  ],
+  "outOfScope": [
+    "Pull requests from the line to main, and release candidates (M2: PK-5, PK-6)",
+    "Landing on targeted checks and proving snapshots afterwards, and bisection (PK-7)",
+    "Local runs' work reaching the line",
+    "A Studio view of the line"
+  ],
+  "planHash": "fd37cc169b827eb9347ff1eac043d3cdd45442ce5077d8d02fc32d870d10546d",
+  "planDocument": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M5XVPANBKXF26TDHZ0MDV32R/5cebb6467f15f89d2b53bd1cc7997a724c62ef6b2de3a150cd23533010603b37.md",
+    "sha256": "5cebb6467f15f89d2b53bd1cc7997a724c62ef6b2de3a150cd23533010603b37",
+    "sizeBytes": 10253
+  },
+  "conversation": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M5XVPANBKXF26TDHZ0MDV32R/e3a05765d1693bcf6a12e3bc41247816145fb54342709089c99c4a9773950483.md",
+    "sha256": "e3a05765d1693bcf6a12e3bc41247816145fb54342709089c99c4a9773950483",
+    "sizeBytes": 47385
+  },
+  "ratifications": [
+    {
+      "planHash": "fd37cc169b827eb9347ff1eac043d3cdd45442ce5077d8d02fc32d870d10546d",
+      "planDocument": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M5XVPANBKXF26TDHZ0MDV32R/5cebb6467f15f89d2b53bd1cc7997a724c62ef6b2de3a150cd23533010603b37.md",
+        "sha256": "5cebb6467f15f89d2b53bd1cc7997a724c62ef6b2de3a150cd23533010603b37",
+        "sizeBytes": 10253
+      },
+      "conversation": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M5XVPANBKXF26TDHZ0MDV32R/e3a05765d1693bcf6a12e3bc41247816145fb54342709089c99c4a9773950483.md",
+        "sha256": "e3a05765d1693bcf6a12e3bc41247816145fb54342709089c99c4a9773950483",
+        "sizeBytes": 47385
+      },
+      "ratifiedAt": "2026-10-27T05:10:04.460Z"
+    }
+  ]
+}
