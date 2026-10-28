@@ -575,6 +575,28 @@ describe("the report's publication (2026-10-14)", () => {
     expect(text).toContain("| `333333333333` | held | behind the block above |");
   });
 
+  it("says plainly that landings were still queued, behind which the published report follows, with no alarm", () => {
+    const text = renderReport(
+      report({
+        publication: {
+          branch: "program/edge",
+          state: {
+            kind: "pending",
+            head: sha("1") as never,
+            tip: sha("2") as never,
+            unpublished: [intent("2", "pending")] as never,
+          },
+          unlanded: [],
+        },
+      }),
+    );
+    expect(text).not.toContain("NOT ON GITHUB");
+    expect(text).toContain(
+      "1 landing of this run was still queued for the publisher when this report was written (`222222222222`).",
+    );
+    expect(text).toContain("the run's published report follows them");
+  });
+
   it("says in one line that GitHub has every landing", () => {
     const text = renderReport(
       report({
