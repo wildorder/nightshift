@@ -1,4 +1,4 @@
-import { defaultOrgConfig } from "@nightshift/contracts";
+import { DEFAULT_COMPUTE_CEILINGS, defaultOrgConfig } from "@nightshift/contracts";
 import { makeProject } from "@nightshift/core";
 import { screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
@@ -65,6 +65,60 @@ describe("organisation settings", () => {
     await userEvent.click(screen.getByRole("button", { name: /Save as version 1/ }));
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toMatch(/Orchestrator has a row with no model/),
+    );
+  });
+
+  it("shows the compute ceilings, the shipped defaults until the org sets its own, and saves them", async () => {
+    const { stores, orgId } = await mountStudio(async (stores, f, orgId) => {
+      await stores.projects.put(makeProject(f, { orgId }));
+    }, "/settings");
+    await waitFor(() => expect(screen.getByText(/configuration version 0/)).toBeTruthy());
+    expect(screen.getByText(/the shipped defaults apply/)).toBeTruthy();
+    const machines = screen.getByLabelText("Machines at once") as HTMLInputElement;
+    expect(machines.value).toBe("2");
+
+    await userEvent.clear(machines);
+    await userEvent.type(machines, "4");
+    await userEvent.selectOptions(screen.getByLabelText("Largest machine"), "better");
+    await userEvent.click(screen.getByRole("button", { name: /Save as version 1/ }));
+
+    await waitFor(() => expect(screen.getByText("Saved.")).toBeTruthy());
+    expect((await stores.orgConfigs.get(orgId))?.compute).toEqual({
+      ...DEFAULT_COMPUTE_CEILINGS,
+      maxConcurrentRuns: 4,
+      maxTier: "better",
+    });
+  });
+
+  it("keeps the org's ceilings through a save that changes something else, and leaves defaults unset", async () => {
+    const compute = { ...DEFAULT_COMPUTE_CEILINGS, maxConcurrentRuns: 5 };
+    const { stores, orgId } = await mountStudio(async (stores, f, orgId) => {
+      await stores.projects.put(makeProject(f, { orgId }));
+      await stores.orgConfigs.put({
+        ...defaultOrgConfig(orgId, "2026-10-28T00:00:00.000Z"),
+        compute,
+        version: 1,
+      });
+    }, "/settings");
+    await waitFor(() => expect(screen.getByText(/configuration version 1/)).toBeTruthy());
+    await userEvent.click(screen.getByLabelText("low required"));
+    await userEvent.click(screen.getByRole("button", { name: /Save as version 2/ }));
+    await waitFor(() => expect(screen.getByText("Saved.")).toBeTruthy());
+    expect((await stores.orgConfigs.get(orgId))?.compute).toEqual(compute);
+  });
+
+  it("says which compute field cannot be saved", async () => {
+    await mountStudio(async (stores, f, orgId) => {
+      await stores.projects.put(makeProject(f, { orgId }));
+    }, "/settings");
+    await waitFor(() => expect(screen.getByText(/configuration version 0/)).toBeTruthy());
+    // The browser refuses a number below its minimum itself; an empty field reaches the page.
+    await userEvent.clear(screen.getByLabelText("Machines at once"));
+    await userEvent.click(screen.getByRole("button", { name: /Save as version 1/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toMatch(
+        /Machines at once must be a whole number of at least 1/,
+      ),
     );
   });
 });

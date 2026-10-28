@@ -539,6 +539,10 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
         body: {
           routingPolicy: config.routingPolicy,
           examinationPolicy: config.examinationPolicy,
+          // The compute ceilings travel with the rest (D-P10-19): the plane takes
+          // a write without them to mean the shipped defaults, so leaving them
+          // out cleared any the org had set (2026-10-28).
+          ...(config.compute === undefined ? {} : { compute: config.compute }),
           replacesVersion: config.version - 1,
         },
       });

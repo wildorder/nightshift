@@ -1,10 +1,13 @@
 /**
  * Settings › organisation (T3, D-P11-10; by role since D-RR-01): which models
- * run each role, in order of preference, and how work is examined, edited and
- * saved with the version it was read at. A save over a newer version is refused
+ * run each role, in order of preference, how work is examined, and the compute
+ * ceilings remote machines run under (D-P10-19), edited and saved with the
+ * version it was read at. A save over a newer version is refused
  * by the store (`StaleWriteError`) and shown as such, never retried silently.
  */
 import type {
+  ComputeCeilings,
+  ComputeTier,
   ExaminationPolicy,
   OrgConfig,
   RolePreferences,
@@ -13,7 +16,11 @@ import type {
   RoutingRole,
 } from "@nightshift/contracts";
 import {
+  COMPUTE_TIER_ORDER,
+  COMPUTE_TIERS,
+  ComputeCeilingsSchema,
   catalogEntry,
+  DEFAULT_COMPUTE_CEILINGS,
   defaultOrgConfig,
   EffortSchema,
   ExaminationPolicySchema,
@@ -23,7 +30,7 @@ import {
 } from "@nightshift/contracts";
 import { StaleWriteError } from "@nightshift/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Json } from "../components/json.js";
 import { useStudio } from "../studio.js";
@@ -62,19 +69,91 @@ const ROLES: Readonly<Record<RoutingRole, { readonly title: string; readonly abo
 /** The `<select>` value for a model outside the catalog. */
 const OTHER = "__other__";
 
+/** The compute ceilings as typed: the numbers stay text until a save reads them. */
+interface ComputeDraft {
+  readonly maxTier: ComputeTier;
+  readonly maxConcurrentRuns: string;
+  readonly maxRunHours: string;
+  readonly maxUsdPerMonth: string;
+  readonly maxUsdPerRun: string;
+}
+
 interface Draft {
   readonly roles: RolePreferences;
   readonly unavailableJson: string;
   readonly pricesJson: string;
   readonly examinationPolicy: ExaminationPolicy;
+  readonly compute: ComputeDraft;
 }
+
+const computeDraftOf = (ceilings: ComputeCeilings): ComputeDraft => ({
+  maxTier: ceilings.maxTier,
+  maxConcurrentRuns: String(ceilings.maxConcurrentRuns),
+  maxRunHours: String(ceilings.maxRunHours),
+  maxUsdPerMonth: String(ceilings.maxUsdPerMonth),
+  maxUsdPerRun: String(ceilings.maxUsdPerRun),
+});
 
 const draftOf = (config: OrgConfig): Draft => ({
   roles: config.routingPolicy.roles,
   unavailableJson: JSON.stringify(config.routingPolicy.unavailable, null, 2),
   pricesJson: JSON.stringify(config.routingPolicy.prices, null, 2),
   examinationPolicy: config.examinationPolicy,
+  compute: computeDraftOf(config.compute ?? DEFAULT_COMPUTE_CEILINGS),
 });
+
+/** The compute fields, in the order the page shows them, said the way a person would. */
+const COMPUTE_FIELDS = [
+  [
+    "maxConcurrentRuns",
+    "Machines at once",
+    "Remote runs and line owners running at the same time, across the organisation. A start past it is refused.",
+  ],
+  ["maxRunHours", "Longest run (hours)", "A run is stopped when it reaches this."],
+  [
+    "maxUsdPerMonth",
+    "Monthly compute cap ($)",
+    "No machine starts once the month's spend reaches this.",
+  ],
+  ["maxUsdPerRun", "Per-run cap ($)", "A run is stopped when its own compute reaches this."],
+] as const;
+
+const sameCeilings = (a: ComputeCeilings, b: ComputeCeilings): boolean =>
+  a.maxTier === b.maxTier &&
+  a.maxConcurrentRuns === b.maxConcurrentRuns &&
+  a.maxRunHours === b.maxRunHours &&
+  a.maxUsdPerMonth === b.maxUsdPerMonth &&
+  a.maxUsdPerRun === b.maxUsdPerRun;
+
+/**
+ * The ceilings a save writes: what the draft says, or none while an org that
+ * never set its own still has the shipped defaults, so it keeps following them.
+ */
+export const computeOf = (
+  draft: ComputeDraft,
+  stored: ComputeCeilings | undefined,
+): ComputeCeilings | undefined => {
+  const parsed = ComputeCeilingsSchema.safeParse({
+    maxTier: draft.maxTier,
+    maxConcurrentRuns: Number(draft.maxConcurrentRuns),
+    maxRunHours: Number(draft.maxRunHours),
+    maxUsdPerMonth: Number(draft.maxUsdPerMonth),
+    maxUsdPerRun: Number(draft.maxUsdPerRun),
+  });
+  if (!parsed.success) {
+    const names = new Map<string, string>(COMPUTE_FIELDS.map(([key, label]) => [key, label]));
+    throw new Error(
+      `Compute: ${parsed.error.issues
+        .map((issue) => {
+          const key = String(issue.path[0] ?? "");
+          return `${names.get(key) ?? key} must be ${key === "maxConcurrentRuns" ? "a whole number of at least 1" : "a number above 0"}`;
+        })
+        .join("; ")}.`,
+    );
+  }
+  if (stored === undefined && sameCeilings(parsed.data, DEFAULT_COMPUTE_CEILINGS)) return undefined;
+  return parsed.data;
+};
 
 const parseJson = (text: string, what: string): unknown => {
   try {
@@ -313,10 +392,12 @@ export const OrgSettingsPage = () => {
       const base = config.data;
       if (base === undefined || draft === undefined) throw new Error("nothing to save");
       const policies = policiesOf(draft);
+      const compute = computeOf(draft.compute, base.compute);
       await stores.orgConfigs.put({
         schemaVersion: 1,
         orgId: base.orgId,
         ...policies,
+        ...(compute === undefined ? {} : { compute }),
         // A policy write leaves the org's GitHub installations as they are (D-P10-28).
         installations: base.installations,
         version: base.version + 1,
@@ -482,6 +563,69 @@ export const OrgSettingsPage = () => {
               ))}
             </tbody>
           </table>
+        </div>
+
+        <div>
+          <h2 className="font-semibold">Compute</h2>
+          <p className="mb-2 text-sm text-muted-foreground">
+            The ceilings remote machines run under. A project or a program may lower them, never
+            raise them.
+            {base.compute === undefined
+              ? " This organisation has not set its own, so the shipped defaults apply."
+              : ""}
+          </p>
+          <div className="grid max-w-xl grid-cols-[max-content_1fr] items-start gap-x-4 gap-y-3 text-sm">
+            <label htmlFor="compute-maxTier" className="pt-1.5 font-medium">
+              Largest machine
+            </label>
+            <div>
+              <select
+                id="compute-maxTier"
+                className={field}
+                value={draft.compute.maxTier}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    compute: { ...draft.compute, maxTier: e.target.value as ComputeTier },
+                  })
+                }
+              >
+                {COMPUTE_TIER_ORDER.map((tier) => {
+                  const spec = COMPUTE_TIERS[tier];
+                  return (
+                    <option key={tier} value={tier}>
+                      {tier}: {spec.vcpu} vCPU, {spec.memoryGiB} GiB, ${spec.usdPerHour.toFixed(2)}
+                      /h
+                    </option>
+                  );
+                })}
+              </select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                A run asking for a bigger machine is refused.
+              </p>
+            </div>
+            {COMPUTE_FIELDS.map(([key, label, hint]) => (
+              <Fragment key={key}>
+                <label htmlFor={`compute-${key}`} className="pt-1.5 font-medium">
+                  {label}
+                </label>
+                <div>
+                  <input
+                    id={`compute-${key}`}
+                    type="number"
+                    min={key === "maxConcurrentRuns" ? 1 : 0}
+                    step={key === "maxConcurrentRuns" ? 1 : "any"}
+                    className={`${field} w-32`}
+                    value={draft.compute[key]}
+                    onChange={(e) =>
+                      setDraft({ ...draft, compute: { ...draft.compute, [key]: e.target.value } })
+                    }
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">{hint}</p>
+                </div>
+              </Fragment>
+            ))}
+          </div>
         </div>
 
         <details>
