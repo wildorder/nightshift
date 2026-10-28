@@ -50,7 +50,11 @@ import type {
   UserId,
   Verification,
 } from "@nightshift/contracts";
-import { DEFAULT_EXAMINATION_POLICY, DEFAULT_ROUTING_POLICY } from "@nightshift/contracts";
+import {
+  DEFAULT_COMPUTE_CEILINGS,
+  DEFAULT_EXAMINATION_POLICY,
+  DEFAULT_ROUTING_POLICY,
+} from "@nightshift/contracts";
 import {
   buildCompletionHistory,
   buildRunFeedback,
@@ -572,6 +576,10 @@ describe("decisions, checkpoints, verifications, examinations and routing", () =
     await expect(world.http.orgConfigs.put(first)).rejects.toBeInstanceOf(StaleWriteError);
     await world.http.orgConfigs.put({ ...first, version: 2 });
     expect((await world.http.orgConfigs.get(world.orgId))?.version).toBe(2);
+    // The compute ceilings go with a write, and stay what was written.
+    const compute = { ...DEFAULT_COMPUTE_CEILINGS, maxConcurrentRuns: 4 };
+    await world.http.orgConfigs.put({ ...first, compute, version: 3 });
+    expect((await world.http.orgConfigs.get(world.orgId))?.compute).toEqual(compute);
   });
 
   it("round trips a routing decision and lists a node's routing decisions", async () => {
