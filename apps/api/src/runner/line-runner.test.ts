@@ -19,6 +19,7 @@ import type {
   LaunchRequest,
 } from "@nightshift/core";
 import {
+  BOOT_LEASE_SECONDS,
   createFixtures,
   FIXTURE_COMMIT,
   type Fixtures,
@@ -360,6 +361,27 @@ describe("reconcile: line dispatches", () => {
     expect(counts["line-provision:provisioned"]).toBe(1);
     expect((await dispatchOf(w, f)).status).toBe("provisioning");
     expect(w.compute.launches).toHaveLength(1);
+  });
+
+  it("replaces a machine that never heartbeats once its boot lease has passed", async () => {
+    const w = await world();
+    const f = await w.addLine();
+    await w.reconcile();
+    const launched = await dispatchOf(w, f);
+    expect(launched).toMatchObject({ status: "provisioning", instanceId: "i-1" });
+    expect(launched.leaseExpiresAt).toBe(
+      new Date(w.clock.now() + BOOT_LEASE_SECONDS * 1000).toISOString(),
+    );
+    // Within the boot lease the quiet machine is left to boot.
+    w.clock.at += (BOOT_LEASE_SECONDS - 1) * 1000;
+    await w.reconcile();
+    expect(w.compute.terminated).toEqual([]);
+    // Past it, the machine is lost: it goes, and a replacement takes its place.
+    w.clock.at += 2_000;
+    await w.reconcile();
+    await w.reconcile();
+    expect(w.compute.terminated).toContain("i-1");
+    expect(await dispatchOf(w, f)).toMatchObject({ generation: 2, status: "provisioning" });
   });
 
   it("replaces a lost lease with a higher generation", async () => {

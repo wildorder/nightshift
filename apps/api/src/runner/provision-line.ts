@@ -21,6 +21,7 @@ import {
 } from "@nightshift/contracts";
 import {
   architectureOf,
+  bootLeaseFrom,
   firstTokenParameterName,
   isDispatchTerminal,
   LINE_COMPOSITION_SECONDS,
@@ -331,6 +332,7 @@ export const launchLineDispatch = async (
       ? {
           ...current,
           instanceId,
+          leaseExpiresAt: bootLeaseFrom(deps.clock.now()),
           ...(description?.availabilityZone === undefined
             ? {}
             : { availabilityZone: description.availabilityZone }),

@@ -85,7 +85,11 @@ interface LineTarget {
 const targetOf = (params: RouteContext["params"]): LineTarget => {
   const branch = params.branch;
   if (branch === undefined || branch === "") {
-    throw new HttpError(400, "invalid_path", "the line's branch is missing from the path");
+    throw new HttpError(
+      400,
+      "invalid_query",
+      "the line's branch is missing: name it as `?branch=`",
+    );
   }
   return { projectId: projectIdFrom(params), branch };
 };
@@ -192,7 +196,7 @@ const fedProgramsOf = (record: LineRecord) => [
   ]),
 ];
 
-/** `GET …/line/{branch}`. */
+/** `GET …/line?branch=`. */
 export const getLine: Handler = async ({ deps, params }) => {
   const target = targetOf(params);
   const record = await requireLine(deps, target);
@@ -228,7 +232,7 @@ export const getLine: Handler = async ({ deps, params }) => {
   return { status: 200, body: LineViewSchema.parse(view) };
 };
 
-/** `POST …/line/{branch}/batch` — the whole queue as one batch, or none. */
+/** `POST …/line/batch?branch=` — the whole queue as one batch, or none. */
 export const takeLineBatch: Handler = async ({ deps, request, params }) => {
   const target = targetOf(params);
   const body = parseBody(TakeLineBatchBodySchema, request.body);
@@ -267,7 +271,7 @@ const refuseResolverOver = (body: unknown): void => {
   }
 };
 
-/** `POST …/line/{branch}/compositions`. */
+/** `POST …/line/compositions?branch=`. */
 export const postLineComposition: Handler = async ({ deps, request, params }) => {
   const target = targetOf(params);
   refuseResolverOver(request.body);
@@ -280,7 +284,7 @@ export const postLineComposition: Handler = async ({ deps, request, params }) =>
   return { status: 200, body: record };
 };
 
-/** `POST …/line/{branch}/decisions` — a resolver's decision, recorded for later review. */
+/** `POST …/line/decisions?branch=` — a resolver's decision, recorded for later review. */
 export const postLineDecision: Handler = async ({ deps, request, params }) => {
   const target = targetOf(params);
   const body = parseBody(LineDecisionBodySchema, request.body);
@@ -293,7 +297,7 @@ export const postLineDecision: Handler = async ({ deps, request, params }) => {
   return { status: 200, body: record };
 };
 
-/** `POST …/line/{branch}/agents` — an agent announced before it runs (A-04). */
+/** `POST …/line/agents?branch=` — an agent announced before it runs (A-04). */
 export const postLineAgent: Handler = async ({ deps, request, params }) => {
   const target = targetOf(params);
   const body = parseBody(LineAgentBodySchema, request.body);
@@ -316,7 +320,7 @@ export const postLineAgent: Handler = async ({ deps, request, params }) => {
   return { status: 200, body: stored };
 };
 
-/** `POST …/line/{branch}/parked`. */
+/** `POST …/line/parked?branch=`. */
 export const postLineParked: Handler = async ({ deps, request, params }) => {
   const target = targetOf(params);
   refuseResolverOver(request.body);
@@ -340,7 +344,7 @@ const askPublisher = async (deps: ApiDeps, target: LineTarget): Promise<void> =>
   });
 };
 
-/** `POST …/line/{branch}/settle` — the batch settled with a composition and/or parked entries. */
+/** `POST …/line/settle?branch=` — the batch settled with a composition and/or parked entries. */
 export const postLineSettle: Handler = async ({ deps, request, params }) => {
   const target = targetOf(params);
   const raw = request.body as { composition?: unknown; parked?: unknown } | null | undefined;
@@ -370,7 +374,7 @@ export const postLineSettle: Handler = async ({ deps, request, params }) => {
   return { status: 200, body: record };
 };
 
-/** `POST …/line/{branch}/push` — recorded pending, then the publisher is asked. */
+/** `POST …/line/push?branch=` — recorded pending, then the publisher is asked. */
 export const postLinePush: Handler = async ({ deps, request, params }) => {
   const target = targetOf(params);
   const body = parseBody(LinePushBodySchema, request.body);
@@ -386,7 +390,7 @@ export const postLinePush: Handler = async ({ deps, request, params }) => {
 /** An id that is one safe segment of the object key. */
 const BUNDLE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-/** `POST …/line/{branch}/bundle-upload-url` — a presigned PUT for one bundle. */
+/** `POST …/line/bundle-upload-url?branch=` — a presigned PUT for one bundle. */
 export const createLineBundleUploadUrl: Handler = async ({ deps, request, params }) => {
   const target = targetOf(params);
   const body = parseBody(LineBundleUploadUrlBodySchema, request.body);
@@ -419,7 +423,7 @@ export const createLineBundleUploadUrl: Handler = async ({ deps, request, params
 const STOP_STATUSES = ["stopping", "stopped", "failed"] as const;
 
 /**
- * `POST …/line/{branch}/dispatch/cancel` — a human stops the line owner.
+ * `POST …/line/dispatch/cancel?branch=` — a human stops the line owner.
  * `authorize` refuses the line principal this operation.
  */
 export const cancelLineDispatch: Handler = async ({ deps, params }) => {
@@ -445,7 +449,7 @@ export const cancelLineDispatch: Handler = async ({ deps, params }) => {
   return { status: 200, body: stored };
 };
 
-/** `POST …/line/{branch}/heartbeat`. */
+/** `POST …/line/heartbeat?branch=`. */
 export const lineHeartbeat: Handler = async (context) => {
   const { deps, request, params } = context;
   const target = targetOf(params);

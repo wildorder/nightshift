@@ -106,15 +106,20 @@ const setup = async (): Promise<World> => {
 };
 
 const lineUrl = (w: World, branch = BRANCH, tail = "") =>
-  `/projects/${w.f.scope.projectId}/line/${encodeURIComponent(branch)}${tail}`;
+  `/projects/${w.f.scope.projectId}/line${tail}?branch=${encodeURIComponent(branch)}`;
 
+/** A request as the gateway hands it over: the path, and the query apart from it. */
 const call = (
   w: World,
   method: string,
-  path: string,
+  url: string,
   body?: unknown,
   principal: RequestPrincipal = w.user,
-): Promise<ApiResponse> => handleRequest(w.deps, { method, path, query: {}, body, principal });
+): Promise<ApiResponse> => {
+  const [path = url, search = ""] = url.split("?");
+  const query = Object.fromEntries(new URLSearchParams(search));
+  return handleRequest(w.deps, { method, path, query, body, principal });
+};
 
 const linePrincipal = (
   _w: World,
@@ -868,6 +873,9 @@ describe("the heartbeat's charge to the project's ledger", () => {
   const usageOf = (w: World, month = "2026-10") =>
     w.stores.projectSelfStartedUsage.get(w.f.scope.projectId, month);
   const url = (w: World) => lineUrl(w, BRANCH, "/heartbeat");
+  // A direct request: the path, and the query apart from it.
+  const path = (w: World) => `/projects/${w.f.scope.projectId}/line/heartbeat`;
+  const query = { branch: BRANCH };
 
   it("repairs a failed ledger write on the retry, records the cap and stops the machine", async () => {
     const w = await setup();
@@ -891,8 +899,8 @@ describe("the heartbeat's charge to the project's ledger", () => {
     const principal = linePrincipal(w, dispatch);
     const first = await handleRequest(flaky, {
       method: "POST",
-      path: url(w),
-      query: {},
+      path: path(w),
+      query,
       body: beat(1, { meteredSeconds: 3600 }),
       principal,
     });
@@ -903,8 +911,8 @@ describe("the heartbeat's charge to the project's ledger", () => {
 
     const retry = await handleRequest(flaky, {
       method: "POST",
-      path: url(w),
-      query: {},
+      path: path(w),
+      query,
       body: beat(1, { meteredSeconds: 3600 }),
       principal,
     });
@@ -1003,8 +1011,8 @@ describe("the heartbeat's charge to the project's ledger", () => {
       },
       {
         method: "POST",
-        path: url(w),
-        query: {},
+        path: path(w),
+        query,
         body: beat(1, { meteredSeconds: 3600 }),
         principal,
       },

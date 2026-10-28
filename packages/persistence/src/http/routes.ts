@@ -45,26 +45,28 @@ export const routes = {
     `/projects/${projectId}/secrets/${encodeURIComponent(name)}`,
 
   /**
-   * A project's line (Pipkin M1b), one segment per branch: `nightshift/develop`
-   * is `nightshift%2Fdevelop`, as a project secret's name is encoded.
+   * A project's line (Pipkin M1b), and what is done to it. The branch is the
+   * `branch` query parameter, never a path segment: API Gateway decodes a
+   * `%2F` in the path before the API sees it, so `nightshift/develop` would
+   * arrive as two segments and match no route (2026-10-28).
    */
-  line: (projectId: ProjectId, branch: string) =>
-    `/projects/${projectId}/line/${encodeURIComponent(branch)}`,
-  lineBatch: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/batch`,
+  line: (projectId: ProjectId, branch: string, action = "") =>
+    `/projects/${projectId}/line${action}?branch=${encodeURIComponent(branch)}`,
+  lineBatch: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/batch"),
   lineCompositions: (projectId: ProjectId, branch: string) =>
-    `${routes.line(projectId, branch)}/compositions`,
+    routes.line(projectId, branch, "/compositions"),
   lineDecisions: (projectId: ProjectId, branch: string) =>
-    `${routes.line(projectId, branch)}/decisions`,
-  lineAgents: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/agents`,
-  lineSettle: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/settle`,
-  lineParked: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/parked`,
-  linePush: (projectId: ProjectId, branch: string) => `${routes.line(projectId, branch)}/push`,
+    routes.line(projectId, branch, "/decisions"),
+  lineAgents: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/agents"),
+  lineSettle: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/settle"),
+  lineParked: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/parked"),
+  linePush: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/push"),
   lineBundleUploadUrl: (projectId: ProjectId, branch: string) =>
-    `${routes.line(projectId, branch)}/bundle-upload-url`,
+    routes.line(projectId, branch, "/bundle-upload-url"),
   lineHeartbeat: (projectId: ProjectId, branch: string) =>
-    `${routes.line(projectId, branch)}/heartbeat`,
+    routes.line(projectId, branch, "/heartbeat"),
   lineCancel: (projectId: ProjectId, branch: string) =>
-    `${routes.line(projectId, branch)}/dispatch/cancel`,
+    routes.line(projectId, branch, "/dispatch/cancel"),
 
   projects: () => "/projects",
   project: (projectId: ProjectId) => `/projects/${projectId}`,

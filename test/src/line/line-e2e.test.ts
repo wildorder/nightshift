@@ -376,7 +376,7 @@ const planeFor = (
   } = {},
 ): LineRunnerPlane & { readonly settles: { batchId: string; generation: number }[] } => {
   const { generation } = dispatch;
-  const base = `/projects/${plane.projectId}/line/${encodeURIComponent(LINE)}`;
+  const base = `/projects/${plane.projectId}/line`;
   const principal = {
     kind: "line",
     projectId: plane.projectId,
@@ -388,7 +388,7 @@ const planeFor = (
     const response = await handleRequest(plane.deps, {
       method,
       path: `${base}${tail}`,
-      query: {},
+      query: { branch: LINE },
       body,
       principal,
     });

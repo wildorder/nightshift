@@ -231,6 +231,19 @@ export const leaseExpiryFrom = (nowMs: number): string =>
   new Date(nowMs + LEASE_SECONDS * 1000).toISOString();
 
 /**
+ * How long a launched machine has to send its first heartbeat (2026-10-28).
+ * The runner starts heartbeating straight after it reads its first token,
+ * before anything slow, about a minute after launch; a machine that never
+ * does is lost like one that stopped, rather than left provisioning with no
+ * lease to lose (a foodfly line owner restarted 500 times in 50 minutes).
+ */
+export const BOOT_LEASE_SECONDS = 600;
+
+/** The lease a machine launched at `nowMs` holds until its first heartbeat. */
+export const bootLeaseFrom = (nowMs: number): string =>
+  new Date(nowMs + BOOT_LEASE_SECONDS * 1000).toISOString();
+
+/**
  * Whether the runner has gone quiet: the lease has expired on a dispatch that is
  * live and has a machine to lose. A `requested` dispatch has no lease yet; a
  * terminal one has nothing to lose.

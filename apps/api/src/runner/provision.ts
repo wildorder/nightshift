@@ -21,6 +21,7 @@ import {
 } from "@nightshift/contracts";
 import {
   architectureOf,
+  bootLeaseFrom,
   type Clock,
   type ComputeControl,
   type FirstTokenStore,
@@ -397,6 +398,7 @@ export const provisionDispatch = async (
   const withMachine: Dispatch = {
     ...dispatch,
     instanceId,
+    leaseExpiresAt: bootLeaseFrom(deps.clock.now()),
     ...(description?.availabilityZone === undefined
       ? {}
       : { availabilityZone: description.availabilityZone }),
