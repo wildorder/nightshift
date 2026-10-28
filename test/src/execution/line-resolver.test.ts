@@ -224,6 +224,8 @@ describe("resolveLineFailure", () => {
     if (res.kind !== "parked") return;
     expect(res.resolver).toEqual({ decision: "gave_up", attempts: 3 });
     expect(res.reason).toContain("attempt limit");
+    // It leads with what the resolver was asked to repair (2026-10-28).
+    expect(res.reason).toMatch(/^the merge conflicted in /);
     expect(h.recorded).toHaveLength(0);
     expect(h.calls().resolve).toBe(3);
     expect(h.open.size).toBe(0);

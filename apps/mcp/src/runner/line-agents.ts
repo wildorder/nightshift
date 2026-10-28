@@ -243,7 +243,7 @@ const describe = (exit: HarnessExit): string => {
     case "completed":
       return "finished";
     case "failed":
-      return `failed (exit ${exit.exitCode})`;
+      return `failed (exit ${exit.exitCode})${exit.detail === undefined ? "" : `: ${exit.detail}`}`;
     case "interrupted":
       return `was killed by ${exit.signal}`;
     case "cancelled":

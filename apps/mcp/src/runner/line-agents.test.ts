@@ -127,6 +127,18 @@ describe("resolve", () => {
     expect(result).toMatchObject({ model: "claude-sonnet-5", status: "failed" });
   });
 
+  it("says why the agent failed, in the adapter's own words (2026-10-28)", async () => {
+    const { agents } = setup({
+      claude: [
+        { kind: "failed", exitCode: 127, detail: "could not start claude: spawn sudo ENOENT" },
+      ],
+    });
+    const result = await agents.resolve({ brief: "x", worktree: WORKTREE, deadline: FAR });
+    expect(result.summary).toBe(
+      "the resolver failed (exit 127): could not start claude: spawn sudo ENOENT",
+    );
+  });
+
   it("does not launch when announce throws", async () => {
     const { agents, claude, order } = setup({
       announce: async () => {

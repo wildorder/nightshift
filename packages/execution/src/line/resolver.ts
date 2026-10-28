@@ -39,6 +39,27 @@ const describeFailure = (failure: LineFailure): string[] => {
   return lines;
 };
 
+/** At most `max` characters of `text`, the end kept: a log's last lines say why. */
+const clip = (text: string, max: number): string =>
+  text.length <= max ? text : `…${text.slice(text.length - max)}`;
+
+/**
+ * What went wrong before any resolver ran, in one line for the parked record
+ * (2026-10-28): without it a parked composition said only how the resolver
+ * failed, never what it had been asked to repair.
+ */
+const causeOf = (failure: LineFailure): string => {
+  const { cause } = failure;
+  if (cause.kind === "conflict") {
+    return `the merge conflicted in ${cause.paths.join(", ") || "paths git did not list"}`;
+  }
+  const failing = cause.logs.filter((log) => log.exitCode !== 0);
+  const first = failing[0];
+  return first === undefined
+    ? `the landing checks failed on ${cause.candidate} (${cause.verification.outcome})`
+    : `the landing checks failed on ${cause.candidate}: \`${first.command}\` exit ${first.exitCode ?? "none"}: ${clip(first.tail.trim(), 800)}`;
+};
+
 const briefOf = (failure: LineFailure, earlier: string[]): string => {
   const lines = [
     `The line could not take ${unitLabel(failure.unit)} (commit ${unitCommit(failure.unit)}) onto line head ${failure.base}.`,
@@ -75,7 +96,7 @@ export const resolveLineFailure = async (
 
   const parked = (reason: string, timeLimit: boolean): LineResolution => ({
     kind: "parked",
-    reason: `${timeLimit ? "the composition's time limit passed" : `the resolver's attempt limit (${limit}) was spent`}; last failure: ${reason}`,
+    reason: `${causeOf(failure)}; ${timeLimit ? "the composition's time limit passed" : `the resolver's attempt limit (${limit}) was spent`}; last failure: ${clip(reason, 1500)}`,
     resolver: { decision: "gave_up", attempts },
     ...(last ? { commit: last.commit, verification: last.verification } : {}),
   });
